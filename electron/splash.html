@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>EterX</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+      }
+
+      body {
+        margin: 0;
+        display: grid;
+        place-items: center;
+        overflow: hidden;
+        background: #141414;
+        color: #f3f3f3;
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        user-select: none;
+      }
+
+      .boot {
+        display: grid;
+        place-items: center;
+        width: 100%;
+        height: 100%;
+      }
+
+      .lockup {
+        position: relative;
+        width: 560px;
+        height: 136px;
+      }
+
+      .mark {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        width: 104px;
+        height: 104px;
+        display: grid;
+        place-items: center;
+        transform-origin: center;
+        filter: drop-shadow(0 22px 42px rgba(0, 0, 0, 0.42));
+        animation: mark-motion 2820ms cubic-bezier(0.22, 0.72, 0.18, 1) both;
+        will-change: transform, opacity;
+      }
+
+      .mark img {
+        width: 96px;
+        height: 96px;
+        object-fit: contain;
+      }
+
+      .wordmark {
+        position: absolute;
+        left: calc(50% - 58px);
+        top: 50%;
+        overflow: hidden;
+        padding: 0 12px 9px 0;
+        transform: translateY(-50%);
+        isolation: isolate;
+        background: transparent;
+      }
+
+      .wordmark span {
+        position: relative;
+        display: inline-block;
+        color: transparent;
+        font-family: Georgia, "Times New Roman", ui-serif, serif;
+        font-size: 92px;
+        font-weight: 500;
+        line-height: 0.95;
+        letter-spacing: 0;
+        background: linear-gradient(90deg, #555350 0%, #E8E6E3 50%, #555350 100%);
+        background-size: 300% auto;
+        background-position: 200% 50%;
+        background-clip: text;
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        opacity: 0;
+        filter: blur(12px);
+        transform: translateX(-18px);
+        clip-path: inset(0 100% 0 0);
+        text-shadow: none;
+        -webkit-mask-image: linear-gradient(#000, #000);
+        mask-image: linear-gradient(#000, #000);
+        contain: paint;
+        animation:
+          wordmark-write 780ms cubic-bezier(0.16, 1, 0.3, 1) 1860ms forwards,
+          wordmark-inline-shimmer 3s linear 2820ms infinite;
+        will-change: transform, opacity, filter, clip-path, background-position;
+      }
+
+      @keyframes mark-motion {
+        0% {
+          opacity: 0;
+          transform: translate(-50%, -50%) scale(0.08) rotate(-90deg);
+        }
+        30% {
+          opacity: 1;
+          transform: translate(calc(-50% - 4px), -50%) scale(0.54) rotate(185deg);
+        }
+        56% {
+          opacity: 1;
+          transform: translate(calc(-50% - 42px), -50%) scale(1.02) rotate(430deg);
+        }
+        78% {
+          opacity: 1;
+          transform: translate(calc(-50% - 96px), -50%) scale(1.01) rotate(600deg);
+        }
+        100% {
+          opacity: 1;
+          transform: translate(calc(-50% - 132px), -50%) scale(1) rotate(720deg);
+        }
+      }
+
+      @keyframes wordmark-write {
+        0% {
+          opacity: 0;
+          filter: blur(12px);
+          transform: translateX(-18px);
+          clip-path: inset(0 100% 0 0);
+        }
+        72% {
+          opacity: 1;
+          filter: blur(0);
+          transform: translateX(3px);
+          clip-path: inset(0 0 0 0);
+        }
+        100% {
+          opacity: 1;
+          filter: blur(0);
+          transform: translateX(0);
+          clip-path: inset(0 0 0 0);
+        }
+      }
+
+      @keyframes wordmark-inline-shimmer {
+        0% {
+          background-position: 200% 50%;
+        }
+        100% {
+          background-position: -200% 50%;
+        }
+      }
+
+      body.is-leaving .boot {
+        opacity: 0;
+        transform: translateY(-4px) scale(0.99);
+        transition:
+          opacity 260ms ease,
+          transform 260ms ease;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="boot" aria-label="Starting EterX">
+      <div class="lockup" aria-hidden="true">
+        <div class="mark">
+          <img src="../public/logo.png" alt="" />
+        </div>
+        <div class="wordmark"><span data-text="EterX">EterX</span></div>
+      </div>
+    </main>
+  </body>
+</html>

@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "EterX Browser Control Overlay",
+  "version": "1.0.1",
+  "description": "Shows EterX browser-control cursor, action state, and element refs inside controlled Chrome tabs.",
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_start",
+      "all_frames": false
+    }
+  ],
+  "host_permissions": ["<all_urls>"]
+}
