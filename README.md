@@ -8,13 +8,6 @@
 EterX-Agent is a self-improving AI agent platform built by Harshil Soni for intelligent task execution, persistent memory, autonomous workflows, skill creation, and multi-provider AI infrastructure.
 </p>
 
-<p align="center">
-  <img src="https://img.shields.io/badge/DOCS-ETERX--AGENT-black?style=for-the-badge">
-  <img src="https://img.shields.io/badge/LICENSE-MIT-green?style=for-the-badge">
-  <img src="https://img.shields.io/badge/STATUS-ACTIVE-blueviolet?style=for-the-badge">
-  <img src="https://img.shields.io/badge/BUILT%20BY-HARSHIL%20SONI-purple?style=for-the-badge">
-</p>
-
 ---
 
 ## About EterX Agent
@@ -151,17 +144,17 @@ All data is stored locally on your machine.
 
 ```text
 .workspaces/
-├── memory/                  # MemoryV2 persistent storage
-│   ├── user_memory.json     # Long-term user facts and preferences
-│   ├── project_memory/      # Per-project context
-│   ├── session_memory/      # Session continuation data
-│   ├── credential_refs.json # Safe vault references without raw keys
-│   └── overlays/            # Self-improvement patches
-├── dynamic_tools/           # Agent-created tools that persist across restarts
-├── config/
-│   ├── eterx.config.json    # App settings
-│   └── setup-meta.json      # Installation metadata
-└── backups/                 # Timestamped config backups
+|-- memory/                  # MemoryV2 persistent storage
+|   |-- user_memory.json     # Long-term user facts and preferences
+|   |-- project_memory/      # Per-project context
+|   |-- session_memory/      # Session continuation data
+|   |-- credential_refs.json # Safe vault references without raw keys
+|   `-- overlays/            # Self-improvement patches
+|-- dynamic_tools/           # Agent-created tools that persist across restarts
+|-- config/
+|   |-- eterx.config.json    # App settings
+|   `-- setup-meta.json      # Installation metadata
+`-- backups/                 # Timestamped config backups
 ```
 
 ---
