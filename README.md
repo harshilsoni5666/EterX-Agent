@@ -171,17 +171,7 @@ All data is stored locally on your machine — nothing is sent to any cloud.
 
 ---
 
-## 🔌 Integrations
 
-| Platform | Description |
-|----------|-------------|
-| **Telegram** | Full bot integration — talk to EterX from anywhere |
-| **Slack** | Workspace connector |
-| **Tavily** | Web search for agent research (free tier: 1000/month) |
-| **Electron** | Native desktop app with custom titlebar |
-| **Browser** | Web interface at localhost:3000 |
-
----
 
 ## 📌 Status
 
