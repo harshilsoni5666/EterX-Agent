@@ -783,7 +783,7 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
       <AnimatePresence>
         {previewUserMessage && (
           <motion.div
-            className={`fixed bottom-0 right-0 top-0 z-[80] flex items-center justify-center bg-black/45 px-4 py-6 backdrop-blur-[2px] ${ sidebarOpen ? 'left-0 md:left-[280px]' : 'left-0' }`}
+            className={`fixed bottom-0 right-0 top-0 z-[80] flex items-center justify-center bg-black/45 px-4 py-6 backdrop-blur-[2px] ${ sidebarOpen ? 'left-0 md:left-[280px]' : 'left-0 md:left-[68px]' }`}
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}

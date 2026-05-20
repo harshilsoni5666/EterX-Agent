@@ -2,8 +2,47 @@ import React from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Plus, X, ChevronRight, Check } from 'lucide-react';
-import { PremiumShare, PremiumEdit, PremiumStar, PremiumFolder, PremiumTrash, PremiumSearch, PremiumDashboard, PremiumBot, PremiumLayers, PremiumFolderOpen, PremiumPanelLeft, PremiumDownload, PremiumMoreHorizontal, PremiumCheckSquare } from '../ui/premium-icons';
+import { PremiumShare, PremiumEdit, PremiumStar, PremiumFolder, PremiumTrash, PremiumSearch, PremiumDashboard, PremiumBot, PremiumLayers, PremiumFolderOpen, PremiumPanelLeft, PremiumDownload, PremiumMoreHorizontal, PremiumCheckSquare, PremiumSettings } from '../ui/premium-icons';
 import { Tooltip } from '../ui/tooltip';
+
+const SidebarToggleIcon = ({ isOpen, isHovered }: { isOpen: boolean, isHovered: boolean }) => {
+  if (isOpen) {
+    if (isHovered) {
+      return (
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="w-[18px] h-[18px] text-[#E8E6E3] transition-all duration-200">
+          <rect x="3" y="3" width="18" height="18" rx="5" />
+          <path d="M9 3v18" />
+          <path d="M16 15l-3-3 3-3" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      );
+    } else {
+      return (
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="w-[18px] h-[18px] text-[#8C8A88] transition-all duration-200">
+          <rect x="3" y="3" width="18" height="18" rx="5" />
+          <path d="M9 3v18" />
+        </svg>
+      );
+    }
+  } else {
+    if (isHovered) {
+      return (
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="w-[18px] h-[18px] text-[#E8E6E3] transition-all duration-200">
+          <rect x="3" y="3" width="18" height="18" rx="5" />
+          <path d="M9 3v18" />
+          <path d="M13 9l3 3-3 3" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      );
+    } else {
+      return (
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="w-[18px] h-[18px] text-[#8C8A88] transition-all duration-200">
+          <rect x="3" y="3" width="18" height="18" rx="5" />
+          <path d="M9 3v18" />
+        </svg>
+      );
+    }
+  }
+};
+
 
 interface ChatSession {
   id: string;
@@ -35,6 +74,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
   isOpen, setIsOpen, createNewChat, chats, activeChatId, loadChat, deleteChat, deleteChats, renameChat, toggleFavorite, onSearchClick, activeView, setActiveView, runningChats, onSettingsClick
 }) => {
   const [menuState, setMenuState] = React.useState<{ id: string, x: number, y: number, dropUp: boolean } | null>(null);
+  const [toggleHovered, setToggleHovered] = React.useState(false);
+  const [isMobile, setIsMobile] = React.useState(false);
+  React.useEffect(() => {
+    const handleResize = () => setIsMobile(window.innerWidth < 768);
+    handleResize();
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
   const scrollContainerRef = React.useRef<HTMLDivElement>(null);
   const dragPointerXRef = React.useRef<number | null>(null);
   const dragPointerYRef = React.useRef<number | null>(null);
@@ -301,86 +349,137 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   return (
     <>
-      <AnimatePresence>
-        {isOpen && (
-          <motion.div
-            initial={{ width: 0, opacity: 0 }}
-            animate={{ width: 280, opacity: 1 }}
-            exit={{ width: 0, opacity: 0 }}
-            className="relative border-r border-white/[0.055] bg-[linear-gradient(180deg,#0C0C0C_0%,#070707_46%,#030303_100%)] shadow-[inset_-1px_0_0_rgba(255,255,255,0.025),10px_0_36px_rgba(0,0,0,0.28)] flex flex-col flex-shrink-0 z-[60] h-full rounded-tr-[32px] rounded-br-[32px] overflow-visible"
-          >
-            <div className="pointer-events-none absolute inset-0 rounded-tr-[32px] rounded-br-[32px] bg-[linear-gradient(90deg,rgba(255,255,255,0.026),transparent_18%,transparent_100%)]" />
-            <div className="relative z-10 p-3 pb-2">
-              <div className="px-3 py-3.5 flex items-center justify-between cursor-pointer tracking-tight">
-                <span className="font-serif text-[26px] text-[#E8E6E3] font-medium leading-none hover:opacity-85 transition-opacity">EterX</span>
-                <div
-                  onClick={(e) => { e.stopPropagation(); setIsOpen(false); }}
-                  className="h-8 w-8 rounded-[10px] hover:bg-white/[0.075] active:bg-white/[0.12] active:scale-95 transition-all duration-200 ease-out text-[#8C8A88] hover:text-[#E8E6E3] flex items-center justify-center cursor-pointer border border-transparent hover:border-white/[0.06]"
+      <motion.div
+        animate={{ 
+          width: isOpen ? 280 : (isMobile ? 0 : 68),
+          opacity: (isOpen || !isMobile) ? 1 : 0
+        }}
+        transition={{ duration: 0.35, ease: [0.2, 0.8, 0.2, 1] }}
+        className="relative border-r border-white/[0.055] bg-[linear-gradient(180deg,#0C0C0C_0%,#070707_46%,#030303_100%)] shadow-[inset_-1px_0_0_rgba(255,255,255,0.025),10px_0_36px_rgba(0,0,0,0.28)] flex flex-col flex-shrink-0 z-[60] h-full rounded-tr-[32px] rounded-br-[32px] overflow-hidden"
+      >
+        <div className="pointer-events-none absolute inset-0 rounded-tr-[32px] rounded-br-[32px] bg-[linear-gradient(90deg,rgba(255,255,255,0.026),transparent_18%,transparent_100%)]" />
+        
+        <div className="relative z-10 flex flex-col h-full w-full overflow-hidden">
+          {/* Header containing Branding + Toggle */}
+          <div className={`px-3 py-3.5 flex items-center justify-between cursor-pointer tracking-tight ${!isOpen ? 'justify-center' : ''}`}>
+            {isOpen ? (
+              <motion.span
+                initial={{ opacity: 0, x: -10 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: -10 }}
+                transition={{ duration: 0.2 }}
+                className="font-serif text-[26px] text-[#E8E6E3] font-medium leading-none hover:opacity-85 transition-opacity whitespace-nowrap"
+              >
+                EterX
+              </motion.span>
+            ) : null}
+            <Tooltip text={isOpen ? "Close sidebar" : "Open sidebar"} side="right">
+              <div
+                onClick={(e) => { e.stopPropagation(); setIsOpen(!isOpen); }}
+                onMouseEnter={() => setToggleHovered(true)}
+                onMouseLeave={() => setToggleHovered(false)}
+                className="h-8 w-8 rounded-[10px] hover:bg-white/[0.075] active:bg-white/[0.12] active:scale-95 transition-all duration-200 ease-out text-[#8C8A88] hover:text-[#E8E6E3] flex items-center justify-center cursor-pointer border border-transparent hover:border-white/[0.06]"
+              >
+                <SidebarToggleIcon isOpen={isOpen} isHovered={toggleHovered} />
+              </div>
+            </Tooltip>
+          </div>
+
+          {/* Navigation Actions */}
+          <div className="px-3 pb-2">
+            {isOpen ? (
+              // Expanded "New Chat" Button
+              <Tooltip text="Start a fresh conversation" side="right">
+                <button
+                  onClick={() => { createNewChat(); setActiveView('chat'); }}
+                  className="w-full h-[48px] flex items-center justify-between px-3 text-[14px] font-semibold text-[#E8E6E3] bg-white/[0.035] border border-white/[0.07] rounded-[16px] transition-all duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)] hover:bg-white/[0.075] hover:border-white/[0.14] active:scale-[0.985] shadow-[0_8px_22px_rgba(0,0,0,0.24),inset_0_1px_0_rgba(255,255,255,0.045)] hover:shadow-[0_10px_26px_rgba(0,0,0,0.32),inset_0_1px_0_rgba(255,255,255,0.08)] group relative overflow-hidden"
                 >
-                  <PremiumPanelLeft className="w-[18px] h-[18px]" strokeWidth={2.2} />
-                </div>
-              </div>
-
-              <div className="space-y-[3px] mt-2">
-                <Tooltip text="Start a fresh conversation" side="right">
-                  <button
-                    onClick={() => { createNewChat(); setActiveView('chat'); }}
-                    className="w-full h-[48px] flex items-center justify-between px-3 text-[14px] font-semibold text-[#E8E6E3] bg-white/[0.035] border border-white/[0.07] rounded-[16px] transition-all duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)] hover:bg-white/[0.075] hover:border-white/[0.14] active:scale-[0.985] shadow-[0_8px_22px_rgba(0,0,0,0.24),inset_0_1px_0_rgba(255,255,255,0.045)] hover:shadow-[0_10px_26px_rgba(0,0,0,0.32),inset_0_1px_0_rgba(255,255,255,0.08)] group relative overflow-hidden"
-                  >
-                    <div className="absolute inset-0 bg-gradient-to-t from-white/0 to-white/[0.055] opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none" />
-                    <div className="flex items-center gap-3 relative z-10">
-                      <div className="w-[30px] h-[30px] flex items-center justify-center bg-white/[0.045] border border-white/[0.085] rounded-[11px] group-hover:bg-white/[0.12] group-hover:border-white/[0.16] transition-all duration-300 shadow-sm">
-                        <Plus className="w-[16px] h-[16px] text-[#E8E6E3] group-hover:rotate-90 group-hover:scale-105 transition-all duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)]" strokeWidth={2.5} />
-                      </div>
-                      New chat
+                  <div className="absolute inset-0 bg-gradient-to-t from-white/0 to-white/[0.055] opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none" />
+                  <div className="flex items-center gap-3 relative z-10">
+                    <div className="w-[30px] h-[30px] flex items-center justify-center bg-white/[0.045] border border-white/[0.085] rounded-[11px] group-hover:bg-white/[0.12] group-hover:border-white/[0.16] transition-all duration-300 shadow-sm shrink-0">
+                      <PremiumEdit className="w-[16px] h-[16px] text-[#E8E6E3]" strokeWidth={2.2} />
                     </div>
-                    <span className="text-[10px] text-white/20 tracking-widest font-mono group-hover:text-white/40 transition-colors"></span>
-                  </button>
-                </Tooltip>
+                    New chat
+                  </div>
+                </button>
+              </Tooltip>
+            ) : (
+              // Collapsed Circular "New Chat" Button
+              <Tooltip text="New chat" side="right">
+                <button
+                  onClick={() => { createNewChat(); setActiveView('chat'); }}
+                  className="w-10 h-10 flex items-center justify-center text-[#E8E6E3] bg-white/[0.035] border border-white/[0.07] rounded-full transition-all duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)] hover:bg-white/[0.075] hover:border-white/[0.14] active:scale-[0.95] shadow-[0_8px_22px_rgba(0,0,0,0.24),inset_0_1px_0_rgba(255,255,255,0.045)] hover:shadow-[0_10px_26px_rgba(0,0,0,0.32),inset_0_1px_0_rgba(255,255,255,0.08)] group relative mx-auto"
+                >
+                  <div className="absolute inset-0 bg-gradient-to-t from-white/0 to-white/[0.055] opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none rounded-full" />
+                  <PremiumEdit className="w-[18px] h-[18px] text-[#E8E6E3] group-hover:scale-110 transition-all duration-300 relative z-10" strokeWidth={2.2} />
+                </button>
+              </Tooltip>
+            )}
 
-                <div className="h-2"></div>
+            <div className="h-2"></div>
 
-                <Tooltip text="Search conversations" side="right">
-                  <button
-                    onClick={onSearchClick}
-                    className="w-full h-[40px] flex items-center gap-3 px-3 text-[14px] font-medium text-[#A7A39D] hover:text-[#E8E6E3] hover:bg-white/[0.055] active:bg-white/[0.085] rounded-[13px] transition-all duration-200 ease-[cubic-bezier(0.2,0.8,0.2,1)] active:scale-[0.985] group border border-transparent hover:border-white/[0.045]"
-                  >
-                    <PremiumSearch className="w-[18px] h-[18px] text-[#8C8A88] group-hover:text-[#E8E6E3] group-hover:scale-[1.06] transition-all duration-200 ease-out" strokeWidth={2.2} /> Search
-                  </button>
-                </Tooltip>
-                <Tooltip text="Manage workspace" side="right">
-                  <button className="w-full h-[40px] flex items-center gap-3 px-3 text-[14px] font-medium text-[#A7A39D] hover:text-[#E8E6E3] hover:bg-white/[0.055] active:bg-white/[0.085] rounded-[13px] transition-all duration-200 ease-[cubic-bezier(0.2,0.8,0.2,1)] active:scale-[0.985] group border border-transparent hover:border-white/[0.045]">
-                    <PremiumDashboard className="w-[18px] h-[18px] text-[#8C8A88] group-hover:text-[#E8E6E3] group-hover:scale-[1.06] transition-all duration-200 ease-out" strokeWidth={2.2} /> Workspace
-                  </button>
-                </Tooltip>
-
-                <Tooltip text="Manage agents" side="right">
-                  <button
-                    onClick={() => setActiveView('agents')}
-                    className={`w-full h-[40px] flex items-center gap-3 px-3 text-[14px] font-medium rounded-[13px] transition-all duration-200 ease-[cubic-bezier(0.2,0.8,0.2,1)] active:scale-[0.985] group border relative overflow-hidden ${ activeView === 'agents'
-                      ? 'bg-white/[0.085] text-[#E8E6E3] border-white/[0.095] shadow-[inset_0_1px_0_rgba(255,255,255,0.05),0_8px_18px_rgba(0,0,0,0.18)]'
-                      : 'text-[#A7A39D] hover:text-[#E8E6E3] hover:bg-white/[0.055] active:bg-white/[0.085] border-transparent hover:border-white/[0.045]'
-                      }`}
-                  >
-                    {activeView === 'agents' && <div className="absolute inset-0 bg-gradient-to-r from-white/0 via-white/5 to-white/0 pointer-events-none" />}
-                    <PremiumBot className={`w-[18px] h-[18px] transition-all duration-200 ease-out relative z-10 ${ activeView === 'agents' ? 'text-[#E8E6E3] scale-[1.05]' : 'text-[#8C8A88] group-hover:text-[#E8E6E3] group-hover:scale-[1.06]'
-                      }`} strokeWidth={2.2} /> <span className="relative z-10">Agents</span>
-                  </button>
-                </Tooltip>
-                <Tooltip text="View channels" side="right">
-                  <button className="w-full h-[40px] flex items-center gap-3 px-3 text-[14px] font-medium text-[#A7A39D] hover:text-[#E8E6E3] hover:bg-white/[0.055] active:bg-white/[0.085] rounded-[13px] transition-all duration-200 ease-[cubic-bezier(0.2,0.8,0.2,1)] active:scale-[0.985] group border border-transparent hover:border-white/[0.045]">
-                    <PremiumLayers className="w-[18px] h-[18px] text-[#8C8A88] group-hover:text-[#E8E6E3] group-hover:scale-[1.06] transition-all duration-200 ease-out" strokeWidth={2.2} /> Channels
-                  </button>
-                </Tooltip>
-                <Tooltip text="File Manager" side="right">
-                  <button className="w-full h-[40px] flex items-center gap-3 px-3 text-[14px] font-medium text-[#A7A39D] hover:text-[#E8E6E3] hover:bg-white/[0.055] active:bg-white/[0.085] rounded-[13px] transition-all duration-200 ease-[cubic-bezier(0.2,0.8,0.2,1)] active:scale-[0.985] group border border-transparent hover:border-white/[0.045]">
-                    <PremiumFolderOpen className="w-[18px] h-[18px] text-[#8C8A88] group-hover:text-[#E8E6E3] group-hover:scale-[1.06] transition-all duration-200 ease-out" strokeWidth={2.2} /> File Manager
-                  </button>
-                </Tooltip>
-              </div>
+            {/* Menu Items */}
+            <div className="space-y-[3px] mt-2">
+              {[
+                { id: 'search', label: 'Search', icon: PremiumSearch, tooltip: 'Search conversations', onClick: onSearchClick },
+                { id: 'workspace', label: 'Workspace', icon: PremiumDashboard, tooltip: 'Manage workspace' },
+                { id: 'agents', label: 'Agents', icon: PremiumBot, tooltip: 'Manage agents', onClick: () => setActiveView('agents'), active: activeView === 'agents' },
+                { id: 'channels', label: 'Channels', icon: PremiumLayers, tooltip: 'View channels' },
+                { id: 'file-manager', label: 'File Manager', icon: PremiumFolderOpen, tooltip: 'File Manager' },
+              ].map(item => {
+                const Icon = item.icon;
+                const isActive = item.active;
+                
+                if (isOpen) {
+                  return (
+                    <Tooltip key={item.id} text={item.tooltip} side="right">
+                      <button
+                        onClick={item.onClick}
+                        className={`w-full h-[40px] flex items-center gap-3 px-3 text-[14px] font-medium rounded-[13px] transition-all duration-200 ease-[cubic-bezier(0.2,0.8,0.2,1)] active:scale-[0.985] group border relative overflow-hidden ${
+                          isActive
+                            ? 'bg-white/[0.085] text-[#E8E6E3] border-white/[0.095] shadow-[inset_0_1px_0_rgba(255,255,255,0.05),0_8px_18px_rgba(0,0,0,0.18)]'
+                            : 'text-[#A7A39D] hover:text-[#E8E6E3] hover:bg-white/[0.055] active:bg-white/[0.085] border-transparent hover:border-white/[0.045]'
+                        }`}
+                      >
+                        {isActive && <div className="absolute inset-0 bg-gradient-to-r from-white/0 via-white/5 to-white/0 pointer-events-none" />}
+                        <Icon
+                          className={`w-[18px] h-[18px] transition-all duration-200 ease-out relative z-10 ${
+                            isActive ? 'text-[#E8E6E3] scale-[1.05]' : 'text-[#8C8A88] group-hover:text-[#E8E6E3] group-hover:scale-[1.06]'
+                          }`}
+                          strokeWidth={2.2}
+                        />
+                        <span className="relative z-10 whitespace-nowrap">{item.label}</span>
+                      </button>
+                    </Tooltip>
+                  );
+                } else {
+                  return (
+                    <Tooltip key={item.id} text={item.tooltip} side="right">
+                      <button
+                        onClick={item.onClick}
+                        className={`w-10 h-10 flex items-center justify-center rounded-[13px] transition-all duration-200 ease-[cubic-bezier(0.2,0.8,0.2,1)] active:scale-[0.95] group border relative mx-auto ${
+                          isActive
+                            ? 'bg-white/[0.085] text-[#E8E6E3] border-white/[0.095] shadow-[inset_0_1px_0_rgba(255,255,255,0.05),0_8px_18px_rgba(0,0,0,0.18)]'
+                            : 'text-[#A7A39D] hover:text-[#E8E6E3] hover:bg-white/[0.055] active:bg-white/[0.085] border-transparent hover:border-white/[0.045]'
+                        }`}
+                      >
+                        {isActive && <div className="absolute inset-0 bg-gradient-to-r from-white/0 via-white/5 to-white/0 pointer-events-none" />}
+                        <Icon
+                          className={`w-[18px] h-[18px] transition-all duration-200 ease-out relative z-10 ${
+                            isActive ? 'text-[#E8E6E3] scale-[1.05]' : 'text-[#8C8A88] group-hover:text-[#E8E6E3] group-hover:scale-[1.1]'
+                          }`}
+                          strokeWidth={2.2}
+                        />
+                      </button>
+                    </Tooltip>
+                  );
+                }
+              })}
             </div>
+          </div>
 
-            {/* Recents List */}
+          {/* Expanded Recents List */}
+          {isOpen ? (
             <div className="flex-1 mt-1 mx-[6px] mb-[6px] bg-[linear-gradient(180deg,rgba(24,24,24,0.76),rgba(7,7,7,0.96))] backdrop-blur-2xl rounded-[22px] border border-white/[0.045] shadow-[0_12px_34px_rgba(0,0,0,0.32),inset_0_1px_0_rgba(255,255,255,0.026)] flex flex-col py-3 overflow-hidden relative">
               <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-white/[0.055]" />
               <div className="flex items-center justify-between px-4 mb-2 min-h-[26px] relative z-30">
@@ -464,7 +563,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         key={chat.id}
                         onPointerDown={(e) => {
                           if (isSelectMode) {
-                            e.preventDefault(); // prevent text selection
+                            e.preventDefault();
                             try { e.currentTarget.setPointerCapture(e.pointerId); } catch { }
                             dragPointerXRef.current = e.clientX;
                             dragPointerYRef.current = e.clientY;
@@ -526,7 +625,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
                           )}
                         </div>
 
-                        {/* Loading Spinner — works for both active and background running chats */}
                         {isWorking && (
                           <div className={`absolute right-0 top-0 bottom-0 w-[4.5rem] pointer-events-none z-20 flex items-center justify-end pr-3 ${isActive ? 'bg-gradient-to-l from-[#242424] via-[#242424]/92 to-transparent rounded-r-[14px]' : 'bg-gradient-to-l from-[#141414] via-[#141414]/90 to-transparent rounded-r-[14px]'}`}>
                             <div className="w-[14px] h-[14px] rounded-full border-[2px] border-[#1e3a8a] border-r-[#3b82f6] animate-[spin_0.8s_linear_infinite]" />
@@ -556,10 +654,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   })
                 )}
               </div>
-
             </div>
+          ) : (
+            <div className="flex-1" />
+          )}
 
-            {/* Bottom Profile Area */}
+          {/* Bottom Profile Area */}
+          {isOpen ? (
             <div className="relative z-10 p-3 pt-2 border-t border-white/[0.055] bg-[linear-gradient(180deg,rgba(9,9,9,0.9),rgba(3,3,3,1))] rounded-br-[32px]">
               <Tooltip text="User settings & plan" side="right">
                 <div onClick={onSettingsClick} className="flex items-center justify-between cursor-pointer group px-2.5 py-2.5 hover:bg-white/[0.055] rounded-[16px] w-full transition-all duration-200 border border-transparent hover:border-white/[0.055] active:scale-[0.988]">
@@ -579,9 +680,29 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 </div>
               </Tooltip>
             </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+          ) : (
+            <div className="relative z-10 p-3 pt-2 border-t border-white/[0.055] bg-[linear-gradient(180deg,rgba(9,9,9,0.9),rgba(3,3,3,1))] rounded-br-[32px] flex flex-col items-center gap-3">
+              <Tooltip text="Settings" side="right">
+                <button
+                  onClick={onSettingsClick}
+                  className="w-10 h-10 flex items-center justify-center rounded-[12px] hover:bg-white/[0.055] text-[#8C8A88] hover:text-[#E8E6E3] border border-transparent hover:border-white/[0.045] transition-all active:scale-95 group"
+                >
+                  <PremiumSettings className="w-5 h-5 group-hover:scale-[1.08] transition-transform" strokeWidth={2.2} />
+                </button>
+              </Tooltip>
+              
+              <Tooltip text="User plan" side="right">
+                <div
+                  onClick={onSettingsClick}
+                  className="w-8 h-8 rounded-full bg-gradient-to-br from-[#343230] to-[#1A1918] flex items-center justify-center text-[#E8E6E3] font-semibold text-xs shrink-0 border border-white/[0.12] shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_4px_12px_rgba(0,0,0,0.22)] cursor-pointer hover:border-white/20 hover:scale-[1.04] transition-all active:scale-[0.96]"
+                >
+                  H
+                </div>
+              </Tooltip>
+            </div>
+          )}
+        </div>
+      </motion.div>
 
       {menuState && typeof document !== 'undefined' && createPortal(
         <div

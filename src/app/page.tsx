@@ -2153,15 +2153,10 @@ function DeepWorkUI() {
             <div className="h-14 flex items-center justify-between pl-4 pr-[140px] z-50 pointer-events-none [-webkit-app-region:drag] shrink-0">
               <div className="flex items-center gap-2 pointer-events-auto [-webkit-app-region:no-drag] h-full pt-3">
                 {!sidebarOpen && (
-                  <div className="flex items-center gap-1 mr-2 mt-0">
+                  <div className="flex md:hidden items-center gap-1 mr-2 mt-0">
                     <Tooltip text="Open sidebar" side="bottom">
                       <div onClick={() => setSidebarOpen(true)} className="p-1.5 rounded-full hover:bg-white/10 active:bg-white/20 active:scale-95 transition-all text-[#8C8A88] hover:text-white cursor-pointer">
                         <PanelLeft className="w-[18px] h-[18px]" />
-                      </div>
-                    </Tooltip>
-                    <Tooltip text="New chat" side="bottom">
-                      <div onClick={() => createNewChat()} className="p-1.5 rounded-full hover:bg-white/10 active:bg-white/20 active:scale-95 transition-all text-[#8C8A88] hover:text-white cursor-pointer">
-                        <SquarePen className="w-[18px] h-[18px]" />
                       </div>
                     </Tooltip>
                   </div>
