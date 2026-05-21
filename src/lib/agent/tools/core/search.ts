@@ -28,6 +28,20 @@ let currentKeyIndex = 0;
 // PRE-INITIALIZE the clients to completely remove "loading/indexing" overhead
 const tavilyClients = tavilyKeys.map(apiKey => tavily({ apiKey }));
 
+const normalizeImages = (images: any): Array<{ url: string; description?: string }> => {
+  if (!Array.isArray(images)) return [];
+
+  return images
+    .map((image: any) => {
+      if (typeof image === 'string') return { url: image };
+      return {
+        url: String(image?.url || '').trim(),
+        description: image?.description ? String(image.description).trim() : undefined,
+      };
+    })
+    .filter((image: { url: string }) => image.url);
+};
+
 // Function to get the next client in a round-robin fashion
 const getNextTavilyClient = () => {
   if (tavilyClients.length === 0) {
@@ -61,7 +75,8 @@ HOW TO USE:
 - Use \`action: "crawl"\` to deep-crawl a single website URL (provide URL in \`urls[0]\`). Good for scraping an entire domain or documentation site.
 - Use \`action: "map"\` to discover all pages on a domain (provide URL in \`urls[0]\`). Good for understanding site structure.
 - Use \`action: "research"\` to trigger an end-to-end autonomous research report on heavy topics. This takes longer but yields an exhaustive deep-dive report.
-- Use \`includeImages: true\` when you need visual assets related to your query.
+- Use \`includeImages: true\` to set Tavily include_images=true and return contextual image URLs alongside search or extraction results.
+- Use \`includeImageDescriptions: true\` with \`includeImages: true\` when visual relevance matters.
 - Use \`includeRawContent: true\` if you need to read the full page text rather than just a snippet.
 - Use \`topic: "news"\` or \`topic: "finance"\` when relevant.`,
   category: 'research',
@@ -72,7 +87,8 @@ HOW TO USE:
     topic: z.enum(['general', 'news', 'finance']).optional().default('general').describe('The category of the search (search only)'),
     searchDepth: z.enum(['basic', 'advanced']).optional().default('basic').describe('Search depth. Advanced uses more AI processing for deeper research.'),
     includeAnswer: z.boolean().optional().default(true).describe('Generate a concise AI-summarized answer from the results (search only)'),
-    includeImages: z.boolean().optional().default(false).describe('Fetch an array of relevant image URLs (search only)'),
+    includeImages: z.boolean().optional().default(false).describe('Set Tavily include_images=true. Search returns query-level images and per-source result images; extract/crawl return images found on the requested pages. For website assets, prefer image_asset_search because it downloads and validates files.'),
+    includeImageDescriptions: z.boolean().optional().default(true).describe('Set Tavily include_image_descriptions=true when includeImages is true, useful for visual relevance checks in search results.'),
     includeRawContent: z.boolean().optional().default(false).describe('Include the full markdown text of the retrieved pages'),
     numResults: z.number().optional().default(5).describe('Number of raw search results to return')
   }),
@@ -90,7 +106,12 @@ HOW TO USE:
           includeImages: input.includeImages || false
         });
         return {
-          results: response.results,
+          results: Array.isArray(response.results)
+            ? response.results.map((result: any) => ({
+              ...result,
+              images: normalizeImages(result.images),
+            }))
+            : response.results,
           failed: response.failedResults
         };
       }
@@ -138,24 +159,38 @@ HOW TO USE:
           topic: input.topic || 'general',
           includeAnswer: input.includeAnswer !== false, // default true
           includeImages: input.includeImages || false,
+          includeImageDescriptions: input.includeImages ? input.includeImageDescriptions !== false : false,
           includeRawContent: input.includeRawContent ? 'markdown' : false,
           maxResults: input.numResults || 5,
         });
+
+        const images = normalizeImages(response.images);
+        const results = Array.isArray(response.results) ? response.results : [];
         
         // Safety handling of empty payloads
-        if (!response || !response.results || response.results.length === 0) {
-           return [{ title: "No Results", url: "", content: "Search returned no results. Try modifying your query." }];
+        if (!response || results.length === 0) {
+          return {
+            ai_summary: response?.answer || null,
+            images,
+            results: [],
+            message: images.length > 0
+              ? "Search returned images but no text results. Try a more specific query for source text."
+              : "Search returned no results. Try modifying your query."
+          };
         }
         
         return {
           ai_summary: response.answer || null,
-          images: response.images || [],
-          results: response.results.map((r: any) => ({
+          images,
+          results: results.map((r: any) => ({
             title: r.title,
             url: r.url,
             content: r.content,
             rawContent: r.rawContent,
-            score: r.score
+            score: r.score,
+            favicon: r.favicon,
+            publishedDate: r.publishedDate || r.published_date,
+            images: normalizeImages(r.images)
           }))
         };
       }

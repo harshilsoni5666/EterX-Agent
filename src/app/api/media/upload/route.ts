@@ -15,20 +15,21 @@ export async function POST(req: NextRequest) {
   try {
     const { filePath, fileData, fileName, mimeType } = await req.json();
     const fs = require('fs');
+    const fsp = fs.promises;
     const path = require('path');
 
     const workspaceTemp = path.resolve(process.cwd(), '.workspaces', 'temp');
-    if (!fs.existsSync(workspaceTemp)) fs.mkdirSync(workspaceTemp, { recursive: true });
+    await fsp.mkdir(workspaceTemp, { recursive: true });
 
     const safeName = (fileName || `upload_${Date.now()}`).replace(/[<>:"/\\|?*]/g, '_');
     const destPath = path.join(workspaceTemp, safeName);
 
     if (filePath) {
       if (!fs.existsSync(destPath) || filePath !== destPath) {
-        fs.copyFileSync(filePath, destPath);
+        await fsp.copyFile(filePath, destPath);
       }
     } else if (fileData) {
-      fs.writeFileSync(destPath, Buffer.from(fileData, 'base64'));
+      await fsp.writeFile(destPath, Buffer.from(fileData, 'base64'));
     } else {
       return NextResponse.json({ error: 'No file data provided' }, { status: 400 });
     }
@@ -36,7 +37,7 @@ export async function POST(req: NextRequest) {
     let inlineData = null;
     if (String(mimeType || '').startsWith('image/')) {
       try {
-        const imgBuffer = fs.readFileSync(destPath);
+        const imgBuffer = await fsp.readFile(destPath);
         if (imgBuffer.length < 4 * 1024 * 1024) {
           inlineData = { mimeType, data: imgBuffer.toString('base64') };
         }

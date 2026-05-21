@@ -49,6 +49,8 @@ Every website you build must feel like a **cinematic experience**. Think: Apple 
 ### Mode 1: Build from Scratch
 When starting fresh with assets and a brief. Follow the complete workflow below (Steps 1-5).
 
+If the user did not provide image assets and the design needs real photos, product cutouts, hero visuals, or scene backgrounds, use `image_asset_search` before coding. Save validated assets into the site's public asset folder and build with the returned local/browser paths. Do not use random remote stock URLs, placeholder image services, or unrelated decorative images as substitutes.
+
 ### Mode 2: Enhance Existing Site
 When adding 2.5D effects to an existing page. Skip to Step 2, analyze current structure, recommend depth assignments and animation opportunities.
 

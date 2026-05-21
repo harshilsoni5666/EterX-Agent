@@ -33,14 +33,20 @@ type GeminiAgentClientOptions = {
   provider?: MainAgentProvider;
 };
 
+function positiveIntEnv(name: string, fallback: number): number {
+  const raw = Number(process.env[name]);
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : fallback;
+}
+
 export class GeminiAgentClient {
   private ai!: GoogleGenAI;
   private apiKeys: string[] = [];
   private currentKeyIndex = 0;
-  private modelName = 'gemini-3-flash-preview';
-  private fallbackModel = 'gemini-3-flash-preview';
+  private modelName = 'gemini-3.5-flash';
+  private fallbackModel = 'gemini-3.5-flash';
   private activeProvider: MainAgentProvider = 'gemini';
   private mistralModelName = process.env.MISTRAL_MODEL || process.env.MISTRAL_MODEL_NAME || MAIN_AGENT_MODE_CONFIG.mistral.modelName;
+  private readonly geminiHttpTimeoutMs = positiveIntEnv('GEMINI_HTTP_TIMEOUT_MS', 300_000);
 
   constructor(options: GeminiAgentClientOptions = {}) {
     this.activeProvider = options.provider || 'gemini';
@@ -76,7 +82,12 @@ export class GeminiAgentClient {
 
   private initializeClient() {
     if (!this.apiKeys[this.currentKeyIndex]) return;
-    this.ai = new GoogleGenAI({ apiKey: this.apiKeys[this.currentKeyIndex] });
+    this.ai = new GoogleGenAI({
+      apiKey: this.apiKeys[this.currentKeyIndex],
+      httpOptions: {
+        timeout: this.geminiHttpTimeoutMs,
+      },
+    });
   }
 
   private rotateKey() {
@@ -90,6 +101,12 @@ export class GeminiAgentClient {
 
   private rotateKeyForError(context: ProjectContext | undefined, errorMsg: string): void {
     const projectId = context?.projectId;
+    if (this.isNonKeyNetworkError(errorMsg || '')) {
+      console.warn('[GeminiClient] Network/stream timeout detected; rotating locally without penalizing API-key health.');
+      if (this.apiKeys.length > 1) this.rotateKey();
+      return;
+    }
+
     const errorType = apiKeyPool.classifyError(errorMsg || '');
     if (projectId && errorType !== 'unknown') {
       try {
@@ -103,6 +120,18 @@ export class GeminiAgentClient {
       }
     }
     this.rotateKey();
+  }
+
+  private isNonKeyNetworkError(errorMsg: string): boolean {
+    const lower = errorMsg.toLowerCase();
+    return lower.includes('stream_connect_timeout') ||
+      lower.includes('stream_chunk_timeout') ||
+      lower.includes('telegram_fast_timeout') ||
+      lower.includes('deadline_exceeded') ||
+      lower.includes('fetch failed') ||
+      lower.includes('econnreset') ||
+      lower.includes('network') ||
+      (lower.includes('timeout') && !lower.includes('429') && !lower.includes('quota') && !lower.includes('rate limit'));
   }
 
   private extractTelegramUserMessage(message: string): string {
@@ -215,7 +244,7 @@ export class GeminiAgentClient {
 
   /**
    * Switch between Think (deep reasoning) and Fast (quick response) modes.
-   * Think = gemini-3-flash-preview, Fast = gemini-3-flash-preview
+   * Think = gemini-3.5-flash, Fast = gemini-3.5-flash
    */
   public setMode(mode: MainAgentMode): void {
     if (mode === 'mistral') {
@@ -227,11 +256,11 @@ export class GeminiAgentClient {
 
     this.activeProvider = 'gemini';
     if (mode === 'fast') {
-      this.modelName = 'gemini-3-flash-preview';
-      this.fallbackModel = 'gemini-3-flash-preview';
+      this.modelName = 'gemini-3.5-flash';
+      this.fallbackModel = 'gemini-3.5-flash';
     } else {
-      this.modelName = 'gemini-3-flash-preview';
-      this.fallbackModel = 'gemini-3-flash-preview';
+      this.modelName = 'gemini-3.5-flash';
+      this.fallbackModel = 'gemini-3.5-flash';
     }
     console.log(`[GeminiClient] 🧠 Mode: ${ mode } → Model: ${ this.modelName } | Fallback: ${ this.fallbackModel }`);
   }
@@ -379,29 +408,56 @@ export class GeminiAgentClient {
     const name = String(toolCall?.function?.name || toolCall?.name || '');
     const args = this.parseMistralToolArguments(toolCall?.function?.arguments ?? toolCall?.arguments);
     const normalizedSig = this.normalizeCallSignature(name, args);
-    const labelMap: Record<string, { text: string; type: string; argKey?: string }> = {
-      system_shell: { text: 'Running command', type: 'command', argKey: 'command' },
-      workspace_run_command: { text: 'Running project command', type: 'command', argKey: 'command' },
-      web_search: { text: 'Researching', type: 'exploration', argKey: 'query' },
-      web_scraper: { text: 'Reading source', type: 'exploration', argKey: 'url' },
-      workspace_read_file: { text: 'Reading file', type: 'exploration', argKey: 'filename' },
-      workspace_search_text: { text: 'Searching codebase', type: 'exploration', argKey: 'pattern' },
-      workspace_write_file: { text: 'Writing artifact', type: 'file_edit', argKey: 'filename' },
-      workspace_edit_file: { text: 'Editing file', type: 'file_edit', argKey: 'filename' },
-      workspace_verify_code: { text: 'Verifying code', type: 'command', argKey: 'checkType' },
-      browser_control: { text: 'Using browser', type: 'browser', argKey: 'action' },
-      deep_research: { text: 'Deep researching', type: 'exploration', argKey: 'topic' },
-      get_skill_guidelines: { text: 'Loading skill', type: 'exploration', argKey: 'skill_name' },
+    const labelMap: Record<string, { text: string; type: string; iconCategory: string; argKey?: string }> = {
+      system_shell: { text: 'Running command', type: 'command', iconCategory: 'computer', argKey: 'command' },
+      workspace_run_command: { text: 'Running project command', type: 'command', iconCategory: 'computer', argKey: 'command' },
+      web_search: { text: 'Researching', type: 'exploration', iconCategory: 'web_search', argKey: 'query' },
+      web_scraper: { text: 'Reading source', type: 'exploration', iconCategory: 'web_search', argKey: 'url' },
+      workspace_read_file: { text: 'Reading file', type: 'exploration', iconCategory: 'folder_read', argKey: 'filename' },
+      workspace_search_text: { text: 'Searching codebase', type: 'exploration', iconCategory: 'search', argKey: 'pattern' },
+      workspace_write_file: { text: 'Writing artifact', type: 'file_edit', iconCategory: 'file_create', argKey: 'filename' },
+      workspace_edit_file: { text: 'Editing file', type: 'file_edit', iconCategory: 'file_edit', argKey: 'filename' },
+      workspace_verify_code: { text: 'Verifying code', type: 'command', iconCategory: 'verification', argKey: 'checkType' },
+      browser_control: { text: 'Using browser', type: 'browser', iconCategory: 'computer', argKey: 'action' },
+      deep_research: { text: 'Deep researching', type: 'exploration', iconCategory: 'web_search', argKey: 'topic' },
+      get_skill_guidelines: { text: 'Loading skill', type: 'exploration', iconCategory: 'folder_read', argKey: 'skill_name' },
     };
-    const label = labelMap[name] || { text: name || 'Tool call', type: 'command' };
+    const label = labelMap[name] || { text: name || 'Tool call', type: 'command', iconCategory: 'computer' };
     const secondary = label.argKey ? String(args?.[label.argKey] || args?.path || '').substring(0, 100) : name;
 
     if (!name) return { error: 'Mistral returned a tool call without a function name.' };
+
+    let iconCategory = label.iconCategory || 'computer';
+    if (args?.uiIcon) {
+      const lowerUiIcon = String(args.uiIcon).toLowerCase();
+      if (['computer', 'file_create', 'file_edit', 'folder_read', 'folder_create', 'search', 'web_search', 'verification'].includes(lowerUiIcon)) {
+        iconCategory = lowerUiIcon;
+      } else {
+        if (['terminal', 'code', 'settings', 'barchart', 'monitor', 'cpu'].includes(lowerUiIcon)) {
+          iconCategory = 'computer';
+        } else if (['search', 'database'].includes(lowerUiIcon)) {
+          iconCategory = 'search';
+        } else if (['globe', 'rss', 'compass'].includes(lowerUiIcon)) {
+          iconCategory = 'web_search';
+        } else if (['filetext', 'file', 'edit', 'pen'].includes(lowerUiIcon)) {
+          iconCategory = 'file_edit';
+        } else if (['fileplus', 'fileadd'].includes(lowerUiIcon)) {
+          iconCategory = 'file_create';
+        } else if (['folder', 'folderopen'].includes(lowerUiIcon)) {
+          iconCategory = 'folder_read';
+        } else if (['folderplus', 'folderadd'].includes(lowerUiIcon)) {
+          iconCategory = 'folder_create';
+        } else if (['check', 'checkcircle', 'shield', 'award'].includes(lowerUiIcon)) {
+          iconCategory = 'verification';
+        }
+      }
+    }
 
     const evt = {
       type: label.type,
       text: args?.uiActionText || label.text,
       icon: args?.uiIcon,
+      iconCategory,
       secondary,
       filename: args?.filename || args?.path || 'system',
       add: args?.content?.split?.('\n')?.length || 0,
@@ -650,6 +706,25 @@ export class GeminiAgentClient {
       .trim();
 
     if (!text) return '';
+
+    // Clean up dangling extensions, dots, or naked filenames at the very beginning of the note
+    if (text.startsWith('.')) {
+      text = text.replace(/^\.+/, '').trim();
+    }
+    
+    // Case A: starts with a dangling extension followed by a conjunction, e.g. "py to see..." -> "To see..."
+    text = text.replace(/^(?:jsx?|tsx?|ts|css|scss|json|md|html|py|sh|ps1)\b\s*[:\-]?\s*(?=\b(to|how|if|whether|for|what)\b)/i, '');
+
+    // Case B: starts with a naked filename and a conjunction, e.g. "search_segments_fy.py to see..." -> "Checking search_segments_fy.py to see..."
+    text = text.replace(/^(?:\.?\/)?([a-zA-Z0-9_-]+\.(?:jsx?|tsx?|ts|css|scss|json|md|html|py|sh|ps1))\b\s*(?=\b(to|how|if|whether|for|what|show|check|verify)\b)/i, 'Checking $1 ');
+
+    // Case C: starts with raw extension like "py: check if..." without a conjunction -> strip extension prefix
+    text = text.replace(/^(?:jsx?|tsx?|ts|css|scss|json|md|html|py|sh|ps1)\b\s*[:\-]?\s*/i, '');
+
+    // Capitalize first character
+    if (text) {
+      text = text.charAt(0).toUpperCase() + text.slice(1);
+    }
 
     text = text
       .replace(/^(?:jsx?|tsx?|ts|css|scss|json|md|html|py|sh|ps1)\s*(?=\b(where|which|that|has|is|was|the)\b)/i, 'The file ')
@@ -1021,11 +1096,12 @@ export class GeminiAgentClient {
           cleaned.properties = cleaned.properties || {};
           cleaned.properties.uiActionText = {
             type: 'string',
-            description: 'A precise, highly professional, 2-5 word agentic summary of what you are currently executing (e.g. "Analyzing structural complexity", "Cross-referencing core dependencies", "Refactoring state logic"). Make it sound like a high-end autonomous system. Avoid generic phrasing.'
+            description: 'A precise, highly professional, 2-5 word agentic summary of what you are currently executing (e.g. "Analyzing structural complexity", "Cross-referencing core dependencies", "Refactoring state logic"). RULES: NO step numbers ("1.", "2.", "(3)"), NO brackets, NO code fragments, NO special characters. Plain words only. Make it sound like a high-end autonomous system. Avoid generic phrasing.'
           };
           cleaned.properties.uiIcon = {
             type: 'string',
-            description: 'Lucide icon name such as Terminal, Search, Code, FileText, BarChart, Globe, or Settings.'
+            enum: ['computer', 'file_create', 'file_edit', 'folder_read', 'folder_create', 'search', 'web_search', 'verification'],
+            description: 'The premium category of action being performed. Must be one of: "computer" (default/command/browser), "file_create" (creating new files), "file_edit" (editing existing files), "folder_read" (reading directories or folder contents), "folder_create" (creating folders), "search" (searching files/codebase), "web_search" (searching/reading web pages), "verification" (running tests/checks/audits).'
           };
           cleaned.required = Array.isArray(cleaned.required) ? [...cleaned.required, 'uiActionText', 'uiIcon'] : ['uiActionText', 'uiIcon'];
         }
@@ -1468,10 +1544,12 @@ You have ${ toolCount } tools. Use them like a pro:
 RESEARCH INTELLIGENCE:
 - web_search(action="search"): Discovery. Use it to find candidate sources, not as the only evidence for serious work.
 - web_search(searchDepth="advanced", includeRawContent=true): Use for stronger evidence when you need current facts or source text.
+- web_search(action="search", includeImages=true): Use when research needs contextual visuals, diagrams, charts, product photos, or page-linked images from the same Tavily source results. Use includeImageDescriptions=true when choosing between visuals.
 - web_search(action="extract"): Read selected URLs after search when the source matters.
 - web_search(action="research"): Use for heavy, broad research tasks where an autonomous deep dive is appropriate.
 - web_scraper: Read a SPECIFIC source URL after search. Prefer primary sources, official docs, filings, reports, reputable articles, and data pages.
 - deep_research: Use for reports, market research, competitive analysis, stock/company analysis, technology comparisons, product reviews, academic/current-trend research.
+- image_asset_search: Use this for website/app/document visual assets. It searches image candidates, downloads real files, validates MIME type and dimensions, rejects placeholders/mismatches, and returns local file paths plus browser-ready src paths. Do not rely on raw web_search image URLs for built websites.
 - Source budget: quick fact = 0-2 sources; normal research = 3-5 sources; professional report/document = 6-12 reliable sources when available.
 - Prefer source quality over count. Do not repeat similar searches; change angle only when it adds new evidence.
 
@@ -1507,6 +1585,8 @@ RESEARCH INTELLIGENCE:
 🎨 UI/WEB DESIGN:
 - Load ui_engine skill ONCE at the start of UI tasks.
 - Load sub-skills only if needed (dark_mode_theming, etc.) — ONCE each.
+- For any website/app/landing page that needs photos, hero art, product visuals, gallery images, avatars, or background images and the user did not provide exact assets, call image_asset_search before writing the final UI code. Save assets into the project public asset folder when possible and use returned publicPath values in HTML/React.
+- Do not use raw Tavily image URLs, random Unsplash source URLs, picsum.photos, placeholder image services, or generic remote stock links in final website code. If image_asset_search cannot validate a relevant image, build a clean code-native visual treatment or state the missing asset instead of using a false/mismatched image.
 - ⚠️ USE LIVE PREVIEW: You have a native "ui_live_preview" tool. ANY TIME you write frontend code (HTML/Tailwind/Components), you MUST execute this tool and pass in the HTML content so the user can see a live visual render inside the chat stream!
 
 💬 SLACK & COMMUNICATION (DEEP INTEGRATION):
@@ -1749,6 +1829,25 @@ READ YOUR HISTORY before every tool call. If the data is already there, USE IT.
 Only warn for TRULY destructive operations: deleting system files, formatting drives.
 ⚠️ AGENTX SOURCE PROTECTION: You CANNOT modify files in the AgentX src/, electron/, public/ directories.
 If you try, it will be blocked. Save user files to Desktop or their specified directory.
+
+━━━ ACTION ICON (uiIcon) — CRITICAL RULE ━━━
+Every tool call requires a uiIcon field. Always pick from this EXACT list of 8 values:
+- "computer"     → Running commands, terminal, git, browser, API calls, system, sub-agents, default
+- "file_create"  → Creating NEW files, generating documents, images, charts, artifacts, writing data
+- "file_edit"    → Editing/patching EXISTING files, refactoring, updating code
+- "folder_read"  → Reading files, scanning directories, loading skills, opening/viewing any file/folder
+- "folder_create"→ Creating project structure, scaffolding directories, new project folders
+- "search"       → Searching codebase, listing files, analyzing code structure, finding patterns, csv analysis
+- "web_search"   → Web searching, scraping URLs, deep research, fetching web content
+- "verification" → Running tests, verifying code, type-checking, linting, auditing, safety checks
+
+RULES:
+- NEVER output a Lucide icon name like "Terminal", "Search", "Globe" — these are INVALID for uiIcon.
+- ALWAYS use one of the 8 exact lowercase strings above.
+- Number prefixes like "1.", "2.", "(Step 3)" must NEVER appear in uiActionText.
+- uiActionText must be 2-5 clean words, professional, no numbering, no brackets.
+- Good uiActionText: "Analyzing project structure", "Scaffolding component tree", "Patching auth logic"
+- Bad uiActionText: "1. Scan files", "[Step 2] Edit", "(3) Create", "Step 4: Verify"
 
 ━━━ AVAILABLE TOOLS ━━━
 ${ toolNames }
@@ -2090,7 +2189,9 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
 
     let attempts = 0;
     const isTelegramContext = (context as any).source === 'telegram' || !!(context as any).forceFastMode;
-    const maxAttempts = isTelegramContext ? 2 : Math.max(this.apiKeys.length, 3);
+    const maxAttempts = isTelegramContext
+      ? positiveIntEnv('GEMINI_TELEGRAM_LOOP_MAX_ATTEMPTS', 2)
+      : positiveIntEnv('GEMINI_REACT_LOOP_MAX_ATTEMPTS', 3);
 
     // === SURVIVOR STATE: Persists across API key rotations ===
     // When a 429/503 hits mid-task, we resume with ALL prior context intact.
@@ -2155,8 +2256,14 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
             });
           }
 
-          if (errorMsg.includes('503') || errorMsg.includes('unavailable') || errorMsg.includes('demand') || errorMsg.includes('500') || errorMsg.includes('404') || errorMsg.includes('not found')) {
-            console.warn(`[GeminiClient] 🛑 Model ${ this.modelName } unavailable. Swapping to fallback model: ${ this.fallbackModel }`);
+          if (errorMsg.includes('503') || errorMsg.includes('unavailable') || errorMsg.includes('demand') || errorMsg.includes('500')) {
+            // Server overload — NOT a key or model issue. Rotate key without penalizing health.
+            console.warn(`[GeminiClient] 🛑 Server overload (503/500). Rotating key without penalty and retrying.`);
+            this.rotateKeyForError(context, errorMsg);
+            attempts++;
+          } else if (errorMsg.includes('404') || errorMsg.includes('not found')) {
+            // Model not found — switch to fallback
+            console.warn(`[GeminiClient] 🛑 Model ${ this.modelName } not found. Swapping to fallback: ${ this.fallbackModel }`);
             if (this.fallbackModel !== this.modelName) {
               const tempModel = this.modelName;
               this.modelName = this.fallbackModel;
@@ -2332,7 +2439,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
   }
 
   /**
-   * The ReAct execution loop with LIVE Gemini 3 Flash thinking.
+   * The ReAct execution loop with LIVE Gemini 3.5 Flash thinking.
    * 
    * KEY IMPROVEMENTS over v1:
    * 1. Reads task tracker on every iteration for progress awareness
@@ -2949,13 +3056,27 @@ EXTERNAL ACTION NOTE CUE
 
       let stream: any = null;
       let streamAttempts = 0;
+      const configuredMaxStreamAttempts = positiveIntEnv(
+        'GEMINI_STREAM_MAX_ATTEMPTS',
+        lightweightTelegramMode ? 3 : 4
+      );
       const maxStreamAttempts = lightweightTelegramMode
-        ? Math.max(this.apiKeys.length, 1)
-        : Math.min(Math.max(this.apiKeys.length * 2, 8), 50);
+        ? Math.min(Math.max(configuredMaxStreamAttempts, 1), 4)
+        : Math.min(Math.max(configuredMaxStreamAttempts, 1), 8);
       let currentModel = this.modelName;
       let lastStreamError = '';
-      const streamConnectTimeoutMs = lightweightTelegramMode ? (lastHasFunctionResponse ? 12_000 : 6_000) : 25_000;
-      const streamChunkTimeoutMs = lightweightTelegramMode ? (lastHasFunctionResponse ? 12_000 : 8_000) : 25_000;
+      let streamConnectTimeouts = 0;
+      let activeStreamAbortController: AbortController | null = null;
+      const streamConnectTimeoutMs = lightweightTelegramMode
+        ? (lastHasFunctionResponse ? 12_000 : 6_000)
+        : positiveIntEnv('GEMINI_STREAM_CONNECT_TIMEOUT_MS', 60_000);
+      const streamChunkTimeoutMs = lightweightTelegramMode
+        ? (lastHasFunctionResponse ? 12_000 : 8_000)
+        : positiveIntEnv('GEMINI_STREAM_CHUNK_TIMEOUT_MS', 60_000);
+      const streamRequestTimeoutMs = positiveIntEnv(
+        'GEMINI_STREAM_REQUEST_TIMEOUT_MS',
+        Math.max(this.geminiHttpTimeoutMs, streamConnectTimeoutMs + streamChunkTimeoutMs)
+      );
 
       const removeFileDataParts = () => {
         let removed = 0;
@@ -2973,24 +3094,32 @@ EXTERNAL ACTION NOTE CUE
         return removed;
       };
 
-      const nextStreamChunk = async (iterator: AsyncIterator<any>, timeoutMs: number) => {
-        let timeoutId: ReturnType<typeof setTimeout> | null = null;
+      const waitBeforeStreamRetry = async (attempt: number, reason: string) => {
+        // 503/500 server overload needs longer backoff — Google needs time to recover
+        const baseMs = reason === 'rate_limit' ? 1_200 : reason === 'server_error' ? 2_000 : 800;
+        const capMs  = reason === 'server_error' ? 12_000 : 8_000;
+        const delayMs = Math.min(capMs, baseMs * Math.pow(2, Math.max(0, attempt - 1))) + Math.floor(Math.random() * 350);
+        const end = Date.now() + delayMs;
+        while (Date.now() < end) {
+          if (isCancelled(context.projectId)) throw new Error('CANCELLED_BY_USER');
+          await new Promise(resolve => setTimeout(resolve, Math.min(250, end - Date.now())));
+        }
+      };
+
+      const nextStreamChunk = async (iterator: AsyncIterator<any>, timeoutMs: number, abortController?: AbortController | null) => {
         let cancelInterval: ReturnType<typeof setInterval> | null = null;
         try {
-          const timeout = new Promise<never>((_, reject) => {
-            timeoutId = setTimeout(() => reject(new Error(`STREAM_CHUNK_TIMEOUT_${ timeoutMs }ms`)), timeoutMs);
-          });
           const cancel = new Promise<never>((_, reject) => {
             cancelInterval = setInterval(() => {
               if (isCancelled(context.projectId)) {
                 if (cancelInterval) clearInterval(cancelInterval);
+                abortController?.abort();
                 reject(new Error('CANCELLED_BY_USER'));
               }
             }, 150);
           });
-          return await Promise.race([iterator.next(), timeout, cancel]);
+          return await Promise.race([iterator.next(), cancel]);
         } finally {
-          if (timeoutId) clearTimeout(timeoutId);
           if (cancelInterval) clearInterval(cancelInterval);
         }
       };
@@ -3007,6 +3136,7 @@ EXTERNAL ACTION NOTE CUE
         }
 
         const _cleanupRef = { cleanup: null as null | (() => void) };
+        const attemptAbortController = new AbortController();
         try {
           // Use Promise.race to detect cancellation during the API connection wait
           // (the gap between calling generateContentStream and the first chunk arriving)
@@ -3014,11 +3144,13 @@ EXTERNAL ACTION NOTE CUE
             const iv = setInterval(() => {
               if (isCancelled(context.projectId)) {
                 clearInterval(iv);
+                attemptAbortController.abort();
                 reject(new Error('CANCELLED_BY_USER'));
               }
             }, 150);
             const connectTimer = setTimeout(() => {
               clearInterval(iv);
+              attemptAbortController.abort();
               reject(new Error(`STREAM_CONNECT_TIMEOUT_${ streamConnectTimeoutMs }ms`));
             }, streamConnectTimeoutMs);
             _cleanupRef.cleanup = () => {
@@ -3026,15 +3158,24 @@ EXTERNAL ACTION NOTE CUE
               clearTimeout(connectTimer);
             };
           });
+          const attemptConfig: import('@google/genai').GenerateContentConfig = {
+            ...config,
+            httpOptions: {
+              ...(config.httpOptions || {}),
+              timeout: streamRequestTimeoutMs,
+            },
+            abortSignal: attemptAbortController.signal,
+          };
           stream = await Promise.race([
             this.ai.models.generateContentStream({
               model: currentModel,
               contents,
-              config,
+              config: attemptConfig,
             }),
             _connectionGuard,
           ]);
           _cleanupRef.cleanup?.(); // cleanup on success
+          activeStreamAbortController = attemptAbortController;
           if (onTrace && lightweightTelegramMode && streamAttempts > 1) {
             onTrace({ type: 'progress', text: 'Connected; continuing' });
           }
@@ -3092,7 +3233,19 @@ EXTERNAL ACTION NOTE CUE
             // Switch to fallback model immediately
             currentModel = this.fallbackModel;
             console.log(`[GeminiClient] 🔄 Switching to fallback model: ${ this.fallbackModel }`);
-          } else if (isRateLimit || isServerError || isTimeout || isAuthError) {
+          } else if (isConnectTimeout) {
+            streamConnectTimeouts++;
+            console.warn(`[GeminiClient] Stream connection timeout ${ streamConnectTimeouts }/${ maxStreamAttempts }; API-key health unchanged.`);
+            if (!hasFileDataParts && this.apiKeys.length > 1 && streamConnectTimeouts >= 2) {
+              console.warn('[GeminiClient] Repeated stream connect timeouts; trying another local key without reporting failure.');
+              this.rotateKey();
+              streamConnectTimeouts = 0;
+            }
+            if (streamAttempts < maxStreamAttempts) {
+              if (isCancelled(context.projectId)) throw new Error('CANCELLED_BY_USER');
+              await waitBeforeStreamRetry(streamAttempts, 'connect_timeout');
+              continue;
+            }
             // Rotate API key immediately (no delay — speed is priority)
             if (hasFileDataParts) {
               console.warn('[GeminiClient] Media fileData is present; retrying same key to preserve Files API access.');
@@ -3101,7 +3254,11 @@ EXTERNAL ACTION NOTE CUE
             }
           } else {
             // Unknown error — rotate key and try
-            this.rotateKeyForError(context, errMsg);
+            if (hasFileDataParts && (isRateLimit || isServerError || isTimeout || isAuthError)) {
+              console.warn('[GeminiClient] Model/network issue with media fileData present; retrying same key.');
+            } else {
+              this.rotateKeyForError(context, errMsg);
+            }
           }
 
           if (streamAttempts >= maxStreamAttempts) {
@@ -3128,6 +3285,10 @@ EXTERNAL ACTION NOTE CUE
 
           // Between retries — check cancel one more time so stop is instant even at 50ms pause
           if (isCancelled(context.projectId)) throw new Error('CANCELLED_BY_USER');
+          await waitBeforeStreamRetry(
+            streamAttempts,
+            isRateLimit ? 'rate_limit' : isServerError ? 'server_error' : 'transient'
+          );
 
           // No cooldown here: rotation/fallback is immediate, and hard retirement
           // happens in the key pool for genuinely bad keys.
@@ -3183,7 +3344,7 @@ EXTERNAL ACTION NOTE CUE
       const streamIterator = stream[Symbol.asyncIterator]();
       try {
         while (true) {
-          const next = await nextStreamChunk(streamIterator, streamChunkTimeoutMs);
+          const next = await nextStreamChunk(streamIterator, streamChunkTimeoutMs, activeStreamAbortController);
           if (next.done) break;
           const chunk = next.value;
           // Instant cancel check during streaming — throw so it propagates immediately
@@ -3247,6 +3408,7 @@ EXTERNAL ACTION NOTE CUE
         };
         throw retryErr;
       }
+      activeStreamAbortController = null;
 
       // Build the full response content for history
       fullResponseContent = { role: 'model', parts: allResponseParts };
@@ -3405,78 +3567,84 @@ EXTERNAL ACTION NOTE CUE
       // ═══════════════════════════════════════════════════════
 
       // Compact tool label lookup
-      const toolLabels: Record<string, { text: string, type: string, argKey?: string }> = {
-        system_shell: { text: 'Running command', type: 'command', argKey: 'command' },
-        web_search: { text: 'Researching', type: 'exploration', argKey: 'query' },
-        web_scraper: { text: 'Reading source', type: 'exploration', argKey: 'url' },
-        workspace_list_directory: { text: 'Scanning directory', type: 'exploration', argKey: 'directory' },
-        workspace_read_file: { text: 'Reading file', type: 'exploration', argKey: 'filename' },
-        workspace_write_file: { text: 'Writing artifact', type: 'file_edit', argKey: 'filename' },
-        workspace_edit_file: { text: 'Editing file', type: 'file_edit', argKey: 'filename' },
-        workspace_run_command: { text: 'Running project command', type: 'command', argKey: 'command' },
-        workspace_verify_code: { text: 'Verifying code', type: 'command', argKey: 'checkType' },
-        workspace_search_text: { text: 'Searching codebase', type: 'exploration', argKey: 'pattern' },
-        get_skill_guidelines: { text: 'Loading skill', type: 'exploration', argKey: 'skill_name' },
-        git_operations: { text: 'Git operation', type: 'command', argKey: 'operation' },
-        screenshot_capture: { text: 'Capturing screen', type: 'exploration', argKey: 'target' },
-        code_execution_js: { text: 'Evaluating logic', type: 'command' },
-        system_monitor: { text: 'Monitoring system', type: 'exploration', argKey: 'check' },
-        desktop_notification: { text: 'Notifying', type: 'command', argKey: 'title' },
-        task_decomposer: { text: 'Decomposing task', type: 'command', argKey: 'complexTask' },
-        pdf_parser: { text: 'Reading PDF', type: 'exploration', argKey: 'filePath' },
-        docx_generator: { text: 'Generating document', type: 'file_edit', argKey: 'filename' },
-        office_artifact_builder: { text: 'Generating artifact', type: 'file_edit', argKey: 'format' },
-        image_generator: { text: 'Generating image', type: 'file_edit', argKey: 'prompt' },
-        email_manager: { text: 'Managing email', type: 'command', argKey: 'subject' },
-        process_manager: { text: 'Managing process', type: 'command', argKey: 'command' },
-        network_tools: { text: 'Network operation', type: 'exploration', argKey: 'target' },
-        file_compression: { text: 'Compressing files', type: 'file_edit', argKey: 'source' },
-        local_database: { text: 'Database query', type: 'command', argKey: 'table' },
-        api_caller: { text: 'API request', type: 'exploration', argKey: 'url' },
-        calculator: { text: 'Calculating', type: 'command', argKey: 'expression' },
-        csv_analyzer: { text: 'Analyzing data', type: 'exploration', argKey: 'filename' },
-        smart_api_hub: { text: 'API call', type: 'exploration', argKey: 'connector' },
-        chain_executor: { text: 'Executing chain', type: 'command' },
-        http_server: { text: 'HTTP server', type: 'command', argKey: 'action' },
-        youtube_transcript: { text: 'Extracting transcript', type: 'exploration', argKey: 'videoUrl' },
-        clipboard_manager: { text: 'Clipboard', type: 'command', argKey: 'action' },
-        text_to_speech: { text: 'Generating speech', type: 'command', argKey: 'text' },
-        rss_feed_reader: { text: 'Reading RSS feed', type: 'exploration', argKey: 'feedUrl' },
-        browser_control: { text: 'Using browser', type: 'browser', argKey: 'action' },
-        whatsapp_controller: { text: 'WhatsApp', type: 'communication', argKey: 'action' },
-        telegram_user_controller: { text: 'Telegram', type: 'communication', argKey: 'action' },
-        code_generator: { text: 'Scaffolding project', type: 'file_edit', argKey: 'template' },
-        self_improve: { text: 'Self-improving', type: 'command', argKey: 'action' },
-        memory_v2: { text: 'Updating memory', type: 'command', argKey: 'action' },
-        diff_patch: { text: 'Comparing files', type: 'exploration' },
-        markdown_to_html: { text: 'Converting markdown', type: 'file_edit', argKey: 'title' },
-        json_yaml_transform: { text: 'Transforming data', type: 'command', argKey: 'operation' },
-        regex_text_processor: { text: 'Processing text', type: 'command', argKey: 'operation' },
-        system_automation: { text: 'System automation', type: 'command', argKey: 'action' },
-        file_watcher: { text: 'Watching files', type: 'exploration', argKey: 'path' },
-        safety_guard: { text: 'Safety check', type: 'command', argKey: 'action' },
-        crypto_utils: { text: 'Crypto operation', type: 'command', argKey: 'operation' },
-        api_key_vault: { text: 'Vault operation', type: 'command', argKey: 'action' },
-        context_manager: { text: 'Context operation', type: 'command', argKey: 'action' },
-        task_scheduler: { text: 'Scheduled task', type: 'command', argKey: 'taskName' },
+      const toolLabels: Record<string, { text: string, type: string, iconCategory: string, argKey?: string }> = {
+        system_shell: { text: 'Running command', type: 'command', iconCategory: 'computer', argKey: 'command' },
+        web_search: { text: 'Researching', type: 'exploration', iconCategory: 'web_search', argKey: 'query' },
+        web_scraper: { text: 'Reading source', type: 'exploration', iconCategory: 'web_search', argKey: 'url' },
+        workspace_list_directory: { text: 'Scanning directory', type: 'exploration', iconCategory: 'folder_read', argKey: 'directory' },
+        workspace_read_file: { text: 'Reading file', type: 'exploration', iconCategory: 'folder_read', argKey: 'filename' },
+        workspace_write_file: { text: 'Writing artifact', type: 'file_edit', iconCategory: 'file_create', argKey: 'filename' },
+        workspace_edit_file: { text: 'Editing file', type: 'file_edit', iconCategory: 'file_edit', argKey: 'filename' },
+        workspace_run_command: { text: 'Running project command', type: 'command', iconCategory: 'computer', argKey: 'command' },
+        workspace_verify_code: { text: 'Verifying code', type: 'command', iconCategory: 'verification', argKey: 'checkType' },
+        workspace_search_text: { text: 'Searching codebase', type: 'exploration', iconCategory: 'search', argKey: 'pattern' },
+        get_skill_guidelines: { text: 'Loading skill', type: 'exploration', iconCategory: 'folder_read', argKey: 'skill_name' },
+        git_operations: { text: 'Git operation', type: 'command', iconCategory: 'computer', argKey: 'operation' },
+        screenshot_capture: { text: 'Capturing screen', type: 'exploration', iconCategory: 'computer', argKey: 'target' },
+        code_execution_js: { text: 'Evaluating logic', type: 'command', iconCategory: 'computer' },
+        system_monitor: { text: 'Monitoring system', type: 'exploration', iconCategory: 'computer', argKey: 'check' },
+        desktop_notification: { text: 'Notifying', type: 'command', iconCategory: 'computer', argKey: 'title' },
+        task_decomposer: { text: 'Decomposing task', type: 'command', iconCategory: 'computer', argKey: 'complexTask' },
+        pdf_parser: { text: 'Reading PDF', type: 'exploration', iconCategory: 'folder_read', argKey: 'filePath' },
+        docx_generator: { text: 'Generating document', type: 'file_edit', iconCategory: 'file_create', argKey: 'filename' },
+        office_artifact_builder: { text: 'Generating artifact', type: 'file_edit', iconCategory: 'file_create', argKey: 'format' },
+        image_generator: { text: 'Generating image', type: 'file_edit', iconCategory: 'file_create', argKey: 'prompt' },
+        email_manager: { text: 'Managing email', type: 'command', iconCategory: 'computer', argKey: 'subject' },
+        process_manager: { text: 'Managing process', type: 'command', iconCategory: 'computer', argKey: 'command' },
+        network_tools: { text: 'Network operation', type: 'exploration', iconCategory: 'computer', argKey: 'target' },
+        file_compression: { text: 'Compressing files', type: 'file_edit', iconCategory: 'file_create', argKey: 'source' },
+        local_database: { text: 'Database query', type: 'command', iconCategory: 'computer', argKey: 'table' },
+        api_caller: { text: 'API request', type: 'exploration', iconCategory: 'computer', argKey: 'url' },
+        calculator: { text: 'Calculating', type: 'command', iconCategory: 'computer', argKey: 'expression' },
+        csv_analyzer: { text: 'Analyzing data', type: 'exploration', iconCategory: 'search', argKey: 'filename' },
+        smart_api_hub: { text: 'API call', type: 'exploration', iconCategory: 'computer', argKey: 'connector' },
+        chain_executor: { text: 'Executing chain', type: 'command', iconCategory: 'computer' },
+        http_server: { text: 'HTTP server', type: 'command', iconCategory: 'computer', argKey: 'action' },
+        youtube_transcript: { text: 'Extracting transcript', type: 'exploration', iconCategory: 'folder_read', argKey: 'videoUrl' },
+        clipboard_manager: { text: 'Clipboard', type: 'command', iconCategory: 'computer', argKey: 'action' },
+        text_to_speech: { text: 'Generating speech', type: 'command', iconCategory: 'file_create', argKey: 'text' },
+        rss_feed_reader: { text: 'Reading RSS feed', type: 'exploration', iconCategory: 'folder_read', argKey: 'feedUrl' },
+        browser_control: { text: 'Using browser', type: 'browser', iconCategory: 'computer', argKey: 'action' },
+        whatsapp_controller: { text: 'WhatsApp', type: 'communication', iconCategory: 'computer', argKey: 'action' },
+        telegram_user_controller: { text: 'Telegram', type: 'communication', iconCategory: 'computer', argKey: 'action' },
+        code_generator: { text: 'Scaffolding project', type: 'file_edit', iconCategory: 'folder_create', argKey: 'template' },
+        self_improve: { text: 'Self-improving', type: 'command', iconCategory: 'computer', argKey: 'action' },
+        memory_v2: { text: 'Updating memory', type: 'command', iconCategory: 'file_create', argKey: 'action' },
+        diff_patch: { text: 'Comparing files', type: 'exploration', iconCategory: 'search' },
+        markdown_to_html: { text: 'Converting markdown', type: 'file_edit', iconCategory: 'file_create', argKey: 'title' },
+        json_yaml_transform: { text: 'Transforming data', type: 'command', iconCategory: 'computer', argKey: 'operation' },
+        regex_text_processor: { text: 'Processing text', type: 'command', iconCategory: 'computer', argKey: 'operation' },
+        system_automation: { text: 'System automation', type: 'command', iconCategory: 'computer', argKey: 'action' },
+        file_watcher: { text: 'Watching files', type: 'exploration', iconCategory: 'folder_read', argKey: 'path' },
+        safety_guard: { text: 'Safety check', type: 'command', iconCategory: 'verification', argKey: 'action' },
+        crypto_utils: { text: 'Crypto operation', type: 'command', iconCategory: 'computer', argKey: 'operation' },
+        api_key_vault: { text: 'Vault operation', type: 'command', iconCategory: 'computer', argKey: 'action' },
+        context_manager: { text: 'Context operation', type: 'command', iconCategory: 'computer', argKey: 'action' },
+        task_scheduler: { text: 'Scheduled task', type: 'command', iconCategory: 'computer', argKey: 'taskName' },
         // Next-Gen tools
-        spawn_sub_agent: { text: 'Spawning sub-agents', type: 'command', argKey: 'mode' },
-        deep_research: { text: 'Deep researching', type: 'exploration', argKey: 'topic' },
-        code_intelligence: { text: 'Analyzing code', type: 'exploration', argKey: 'target' },
-        smart_refactor: { text: 'Refactoring code', type: 'file_edit', argKey: 'file' },
-        project_scaffolder: { text: 'Scaffolding project', type: 'file_edit', argKey: 'name' },
-        env_manager: { text: 'Managing environment', type: 'command', argKey: 'mode' },
-        auto_docs: { text: 'Generating docs', type: 'file_edit', argKey: 'target' },
-        git_intelligence: { text: 'Git operation', type: 'command', argKey: 'mode' },
-        chart_generator: { text: 'Generating chart', type: 'file_edit', argKey: 'title' },
-        smart_file_analyzer: { text: 'Analyzing files', type: 'exploration', argKey: 'path' },
-        background_task: { text: 'Background task', type: 'command', argKey: 'command' },
-        realtime_verify: { text: 'Verifying output', type: 'command', argKey: 'target' },
-        create_dynamic_tool: { text: 'Creating tool', type: 'command', argKey: 'toolName' },
-        workspace_analyze: { text: 'Analyzing workspace', type: 'exploration', argKey: 'directory' },
-        run_macro: { text: 'Running macro', type: 'command', argKey: 'macroName' },
-        ask_user: { text: 'Asking user', type: 'ask_user', argKey: 'question' },
-        task_checkpoint: { text: 'Saving progress', type: 'command', argKey: 'action' },
+        spawn_sub_agent: { text: 'Spawning sub-agents', type: 'command', iconCategory: 'computer', argKey: 'mode' },
+        deep_research: { text: 'Deep researching', type: 'exploration', iconCategory: 'web_search', argKey: 'topic' },
+        code_intelligence: { text: 'Analyzing code', type: 'exploration', iconCategory: 'search', argKey: 'target' },
+        smart_refactor: { text: 'Refactoring code', type: 'file_edit', iconCategory: 'file_edit', argKey: 'file' },
+        project_scaffolder: { text: 'Scaffolding project', type: 'file_edit', iconCategory: 'folder_create', argKey: 'name' },
+        env_manager: { text: 'Managing environment', type: 'command', iconCategory: 'computer', argKey: 'mode' },
+        auto_docs: { text: 'Generating docs', type: 'file_edit', iconCategory: 'file_create', argKey: 'target' },
+        git_intelligence: { text: 'Git operation', type: 'command', iconCategory: 'computer', argKey: 'mode' },
+        chart_generator: { text: 'Generating chart', type: 'file_edit', iconCategory: 'file_create', argKey: 'title' },
+        smart_file_analyzer: { text: 'Analyzing files', type: 'exploration', iconCategory: 'search', argKey: 'path' },
+        background_task: { text: 'Background task', type: 'command', iconCategory: 'computer', argKey: 'command' },
+        realtime_verify: { text: 'Verifying output', type: 'command', iconCategory: 'verification', argKey: 'target' },
+        create_dynamic_tool: { text: 'Creating tool', type: 'command', iconCategory: 'computer', argKey: 'toolName' },
+        workspace_analyze: { text: 'Analyzing workspace', type: 'exploration', iconCategory: 'search', argKey: 'directory' },
+        run_macro: { text: 'Running macro', type: 'command', iconCategory: 'computer', argKey: 'macroName' },
+        ask_user: { text: 'Asking user', type: 'ask_user', iconCategory: 'computer', argKey: 'question' },
+        task_checkpoint: { text: 'Saving progress', type: 'command', iconCategory: 'computer', argKey: 'action' },
+        image_asset_search: { text: 'Searching images', type: 'exploration', iconCategory: 'search', argKey: 'query' },
+        ui_live_preview: { text: 'Previewing UI', type: 'command', iconCategory: 'computer' },
+        desktop_control: { text: 'Controlling desktop', type: 'command', iconCategory: 'computer', argKey: 'action' },
+        agent_cron_scheduler: { text: 'Scheduling agent cron', type: 'command', iconCategory: 'computer', argKey: 'cronExpression' },
+        agent_connector_trigger: { text: 'Triggering connector', type: 'command', iconCategory: 'computer', argKey: 'connectorId' },
+        slack_controller: { text: 'Slack operation', type: 'communication', iconCategory: 'computer', argKey: 'action' },
       };
 
       // Safety detection pattern
@@ -3518,7 +3686,7 @@ EXTERNAL ACTION NOTE CUE
         }
 
         // Get label from compact lookup
-        const label: { text: string; type: string; argKey?: string } = toolLabels[call.name] || { text: call.name, type: 'command' };
+        const label = toolLabels[call.name] || { text: call.name, type: 'command', iconCategory: 'computer' };
         const argKey = label.argKey;
         let secondary = argKey ? String(args?.[argKey] || args?.path || '').substring(0, 100) : call.name;
 
@@ -3535,12 +3703,44 @@ EXTERNAL ACTION NOTE CUE
 
         // Emit INSTANT UI feedback
         // Use the model's dynamically generated personalized action text if provided
-        const displayText = args?.uiActionText || label.text;
+        // Sanitize: strip any numbered prefixes (1., 2., (3), [Step 4], etc.) the model might accidentally output
+        const rawDisplayText = args?.uiActionText || label.text;
+        const displayText = String(rawDisplayText)
+          .replace(/^(?:step\s+\d+[:\s.]*|\[\s*step\s+\d+\s*\]\s*|\(\s*step\s+\d+\s*\)\s*|\(\s*\d+\s*\)\s*|\[\s*\d+(?:\/\d+)?\s*\]\s*|\d+[.:]\s*)/i, '')
+          .trim() || label.text;
+
+        // Map custom uiIcon to iconCategory
+        let iconCategory = label.iconCategory || 'computer';
+        if (args?.uiIcon) {
+          const lowerUiIcon = String(args.uiIcon).toLowerCase();
+          if (['computer', 'file_create', 'file_edit', 'folder_read', 'folder_create', 'search', 'web_search', 'verification'].includes(lowerUiIcon)) {
+            iconCategory = lowerUiIcon;
+          } else {
+            if (['terminal', 'code', 'settings', 'barchart', 'monitor', 'cpu'].includes(lowerUiIcon)) {
+              iconCategory = 'computer';
+            } else if (['search', 'database'].includes(lowerUiIcon)) {
+              iconCategory = 'search';
+            } else if (['globe', 'rss', 'compass'].includes(lowerUiIcon)) {
+              iconCategory = 'web_search';
+            } else if (['filetext', 'file', 'edit', 'pen'].includes(lowerUiIcon)) {
+              iconCategory = 'file_edit';
+            } else if (['fileplus', 'fileadd'].includes(lowerUiIcon)) {
+              iconCategory = 'file_create';
+            } else if (['folder', 'folderopen'].includes(lowerUiIcon)) {
+              iconCategory = 'folder_read';
+            } else if (['folderplus', 'folderadd'].includes(lowerUiIcon)) {
+              iconCategory = 'folder_create';
+            } else if (['check', 'checkcircle', 'shield', 'award'].includes(lowerUiIcon)) {
+              iconCategory = 'verification';
+            }
+          }
+        }
 
         const evt = {
           type: label.type,
           text: displayText,
           icon: args?.uiIcon,
+          iconCategory,
           secondary,
           filename: args?.filename || args?.path || 'system',
           add: args?.content?.split?.('\n')?.length || 0,

@@ -103,8 +103,12 @@ if (Test-Path "$INSTALL_DIR\.git") {
 Write-Host ""
 Write-Host "  ℹ Starting EterX setup wizard..." -ForegroundColor Cyan
 Write-Host ""
-if (Test-Path ".env.local") {
-    node setup.js --auto
-} else {
-    node setup.js
+$hadEnv = Test-Path ".env.local"
+node setup.js --auto --no-doctor
+
+if (-not $hadEnv -and $env:ETERX_SKIP_API -ne "1") {
+    Write-Host ""
+    Write-Host "  ℹ Add API keys now. Press Enter to skip any optional key." -ForegroundColor Cyan
+    Write-Host ""
+    node setup.js --api
 }

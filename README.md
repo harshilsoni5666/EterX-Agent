@@ -44,6 +44,18 @@ curl -fsSL https://raw.githubusercontent.com/harshilsoni5666/EterX-agent-/main/i
 
 The installer handles Node.js, Git, dependencies, API key configuration, local storage, desktop shortcuts, and application launch.
 
+For an existing install, the installer repairs setup and dependencies only. It does not update source files unless you explicitly set `ETERX_UPDATE=1` before running it.
+
+### Quick API Setup
+
+After install, add keys any time with:
+
+```bash
+eterx api
+```
+
+The quick wizard asks for Gemini first, then lets you optionally add Tavily, OpenAI, Groq, Telegram, and Slack keys. Existing keys are preserved unless you choose to add or update them.
+
 ### Manual Install
 
 ```bash
@@ -115,6 +127,7 @@ npm run eterx:telegram
 ```bash
 # Setup and configuration
 eterx setup            # Full setup wizard
+eterx api              # Quick API key setup
 eterx config           # Change API keys
 eterx add-key          # Add a single key
 

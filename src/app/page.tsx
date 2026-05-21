@@ -2109,22 +2109,28 @@ function DeepWorkUI() {
   ], [liveState, traceLogs, getLiveTraceLogs]);
 
   return (
-    <div className="flex h-screen bg-[#101010] text-[#E8E6E3] font-sans overflow-hidden selection:bg-[#E2765A]/30 transition-colors relative">
-      {/* Background Volumetric Glow (Sits globally behind the apps so curves reveal it) */}
+    <div className="flex h-screen bg-[#0F0F0F] text-[#E3E3E3] font-sans overflow-hidden selection:bg-[#E2765A]/30 transition-colors relative">
+      {/* Empty-state motion field: soft Gemini-style color waves behind the app shell. */}
       <div className={`absolute bottom-0 left-0 right-0 h-[45vh] pointer-events-none overflow-hidden z-0 ${activeView === 'agents' ? 'hidden' : 'flex'} items-end justify-center ${ (traceLogs.length === 0 && liveState === 'idle' && activeView !== 'agents') ? 'opacity-100 transition-all duration-[1000ms] ease-out' : 'opacity-0 transition-all duration-[1000ms] ease-in' }`}>
-        {/* Base Color Plasma */}
-        <div className="absolute w-[130%] h-[30vh] -bottom-[15vh] flex justify-center items-center opacity-90 blur-[80px] animate-breathe">
-          <div className="absolute left-[0%] w-[35vw] h-[25vh] bg-[#FF82E6] rounded-[100%] animate-blob mix-blend-screen"></div>
-          <div className="absolute left-[25%] w-[40vw] h-[30vh] bg-[#10b981] rounded-[100%] animate-blob animation-delay-2000 mix-blend-screen"></div>
-          <div className="absolute right-[25%] w-[40vw] h-[30vh] bg-[#5F8EFE] rounded-[100%] animate-blob animation-delay-4000 mix-blend-screen"></div>
-          <div className="absolute right-[0%] w-[35vw] h-[25vh] bg-[#C27CF7] rounded-[100%] animate-blob animation-delay-6000 mix-blend-screen"></div>
-
-          {/* Volumetric Hot Cores */}
-          <div className="absolute left-[15%] w-[20vw] h-[15vh] bg-white opacity-40 rounded-[100%] blur-[40px] animate-core-blob mix-blend-overlay"></div>
-          <div className="absolute right-[15%] w-[20vw] h-[20vh] bg-[#a5f3fc] opacity-30 rounded-[100%] blur-[50px] animate-core-blob animation-delay-3000 mix-blend-overlay"></div>
+        <div key={`eterx-home-field-${activeChatId ?? 'new'}`} className="eterx-home-field">
+          <div className="eterx-home-plasma">
+            <div className="eterx-home-plasma-blob eterx-home-plasma-pink" />
+            <div className="eterx-home-plasma-blob eterx-home-plasma-emerald" />
+            <div className="eterx-home-plasma-blob eterx-home-plasma-blue" />
+            <div className="eterx-home-plasma-blob eterx-home-plasma-lime" />
+          </div>
+          <div className="eterx-home-wave-stage">
+            <div className="eterx-home-wave-depth eterx-home-wave-depth-back" />
+            <div className="eterx-home-wave-volume eterx-home-wave-volume-back" />
+            <div className="eterx-home-lobe eterx-home-lobe-left" />
+            <div className="eterx-home-lobe eterx-home-lobe-center" />
+            <div className="eterx-home-wave-volume eterx-home-wave-volume-mid" />
+            <div className="eterx-home-lobe eterx-home-lobe-right" />
+            <div className="eterx-home-wave-depth eterx-home-wave-depth-front" />
+            <div className="eterx-home-wave-volume eterx-home-wave-volume-front" />
+          </div>
         </div>
-        {/* Tactile Grain Overlay */}
-        <div className="absolute inset-0 z-10 mix-blend-overlay pointer-events-none opacity-[0.15]" style={{ background: 'url("data:image/svg+xml,%3Csvg viewBox=%220 0 200 200%22 xmlns=%22http://www.w3.org/2000/svg%22%3E%3Cfilter id=%22noiseFilter%22%3E%3CfeTurbulence type=%22fractalNoise%22 baseFrequency=%221.85%22 numOctaves=%223%22 stitchTiles=%22stitch%22/%3E%3C/filter%3E%3Crect width=%22100%25%22 height=%22100%25%22 filter=%22url(%23noiseFilter)%22/%3E%3C/svg%3E")', WebkitMaskImage: 'linear-gradient(to top, black 0%, transparent 100%)', maskImage: 'linear-gradient(to top, black 0%, transparent 100%)' }}></div>
+        <div className="eterx-home-vignette" />
       </div>
 
       <Sidebar
@@ -2381,34 +2387,346 @@ function DeepWorkUI() {
 
       <style dangerouslySetInnerHTML={{
         __html: `
-        @keyframes color-shift {
-          0% { filter: hue-rotate(0deg); }
-          100% { filter: hue-rotate(360deg); }
+        .eterx-home-field {
+          position: absolute;
+          inset: 0;
+          overflow: hidden;
+          isolation: isolate;
+          background: linear-gradient(180deg, transparent 0%, transparent 20%, rgba(10, 22, 24, 0.18) 72%, rgba(13, 207, 187, 0.10) 100%);
+          animation: eterx-home-field-enter 900ms cubic-bezier(0.16, 1, 0.3, 1) both;
         }
-        @keyframes blob-movement {
-          0%, 100% { transform: translate(0px, 0px) scale(1); }
-          33% { transform: translate(30px, -30px) scale(1.05); }
-          66% { transform: translate(-20px, 20px) scale(0.95); }
+
+        .eterx-home-plasma,
+        .eterx-home-plasma-blob,
+        .eterx-home-wave-stage,
+        .eterx-home-wave-volume,
+        .eterx-home-wave-depth,
+        .eterx-home-lobe,
+        .eterx-home-vignette {
+          position: absolute;
+          pointer-events: none;
         }
-        @keyframes breathe-container {
-          0%, 100% { transform: scaleY(1); opacity: 0.85; }
-          50% { transform: scaleY(1.03); opacity: 1; }
+
+        .eterx-home-plasma {
+          z-index: 1;
+          left: 50%;
+          bottom: -14vh;
+          width: min(1480px, 122vw);
+          height: 32vh;
+          transform: translateX(-50%);
+          filter: blur(36px) saturate(1.10);
+          opacity: 0.42;
+          mix-blend-mode: normal;
+          animation: eterx-home-plasma-breathe 13s ease-in-out infinite;
+          will-change: transform;
         }
-        @keyframes core-movement {
-          0%, 100% { transform: translate(0px, 0px) scale(0.8); }
-          50% { transform: translate(40px, -15px) scale(1.1); }
+
+        .eterx-home-plasma-blob {
+          top: 15%;
+          height: 76%;
+          border-radius: 999px;
+          mix-blend-mode: normal;
+          will-change: transform;
         }
-        .animate-blob { 
-            animation: 
-              blob-movement 25s cubic-bezier(0.4, 0, 0.2, 1) infinite,
-              color-shift 35s linear infinite; 
+
+        .eterx-home-plasma-pink {
+          left: -6%;
+          width: 31%;
+          background: #e6509f;
+          animation: eterx-home-plasma-drift-a 14s cubic-bezier(0.4, 0, 0.2, 1) infinite;
         }
-        .animate-breathe { animation: breathe-container 20s ease-in-out infinite; }
-        .animate-core-blob { animation: core-movement 18s ease-in-out infinite; }
-        .animation-delay-2000 { animation-delay: -5s, -7.5s; }
-        .animation-delay-3000 { animation-delay: -7.5s, -10s; }
-        .animation-delay-4000 { animation-delay: -10s, -15s; }
-        .animation-delay-6000 { animation-delay: -15s, -22.5s; }
+
+        .eterx-home-plasma-emerald {
+          left: 13%;
+          width: 45%;
+          background: #12d4b3;
+          animation: eterx-home-plasma-drift-b 12.8s cubic-bezier(0.4, 0, 0.2, 1) -2.6s infinite;
+        }
+
+        .eterx-home-plasma-blue {
+          right: 13%;
+          width: 47%;
+          background: #328cf6;
+          animation: eterx-home-plasma-drift-a 15s cubic-bezier(0.4, 0, 0.2, 1) -5.4s infinite;
+        }
+
+        .eterx-home-plasma-lime {
+          right: -5%;
+          width: 30%;
+          background: #a7c941;
+          animation: eterx-home-plasma-drift-b 14.4s cubic-bezier(0.4, 0, 0.2, 1) -7.8s infinite;
+        }
+
+        .eterx-home-wave-stage {
+          z-index: 4;
+          left: 50%;
+          bottom: -9vh;
+          width: min(1620px, 132vw);
+          height: 39vh;
+          overflow: hidden;
+          contain: strict;
+          backface-visibility: hidden;
+          transform: translateX(-50%) perspective(820px) rotateX(8deg) translateY(0);
+          transform-origin: 50% 100%;
+          opacity: 0.92;
+          filter: saturate(1.08);
+          mix-blend-mode: normal;
+          animation: eterx-home-wave-stage-float 9.2s ease-in-out infinite;
+          will-change: transform;
+        }
+
+        .eterx-home-wave-volume {
+          z-index: 3;
+          left: 50%;
+          border-radius: 50% 50% 0 0 / 76% 76% 0 0;
+          transform-origin: 50% 100%;
+          will-change: transform, opacity;
+          -webkit-mask-image: radial-gradient(ellipse at 50% 88%, black 0%, black 54%, transparent 74%);
+          mask-image: radial-gradient(ellipse at 50% 88%, black 0%, black 54%, transparent 74%);
+        }
+
+        .eterx-home-wave-volume-back {
+          z-index: 2;
+          bottom: 8.5vh;
+          width: 112%;
+          height: 26vh;
+          background:
+            radial-gradient(ellipse at 18% 62%, rgba(204, 58, 145, 0.18), transparent 48%),
+            radial-gradient(ellipse at 38% 56%, rgba(17, 188, 160, 0.28), transparent 56%),
+            radial-gradient(ellipse at 65% 48%, rgba(46, 129, 230, 0.32), transparent 58%),
+            radial-gradient(ellipse at 92% 62%, rgba(150, 178, 56, 0.14), transparent 48%);
+          filter: blur(22px);
+          opacity: 0.32;
+          transform: translateX(-50%) rotate(-2deg) scale(1.06, 0.70);
+          animation: eterx-home-wave-volume-back 11.8s ease-in-out infinite;
+        }
+
+        .eterx-home-wave-volume-mid {
+          z-index: 4;
+          bottom: 0.5vh;
+          width: 122%;
+          height: 31vh;
+          background:
+            radial-gradient(ellipse at 12% 68%, rgba(214, 69, 151, 0.20), transparent 48%),
+            radial-gradient(ellipse at 34% 58%, rgba(18, 213, 178, 0.46), transparent 58%),
+            radial-gradient(ellipse at 61% 53%, rgba(39, 187, 228, 0.44), transparent 60%),
+            radial-gradient(ellipse at 76% 56%, rgba(58, 139, 241, 0.42), transparent 58%),
+            radial-gradient(ellipse at 98% 64%, rgba(158, 188, 58, 0.20), transparent 48%);
+          filter: blur(15px);
+          opacity: 0.58;
+          transform: translateX(-50%) rotate(1.2deg) scale(1.02, 0.78);
+          animation: eterx-home-wave-volume-mid 8.8s ease-in-out infinite;
+        }
+
+        .eterx-home-wave-volume-front {
+          z-index: 6;
+          bottom: -4.5vh;
+          width: 130%;
+          height: 29vh;
+          background:
+            radial-gradient(ellipse at 13% 52%, rgba(220, 72, 158, 0.16), transparent 45%),
+            radial-gradient(ellipse at 38% 48%, rgba(23, 226, 190, 0.54), transparent 58%),
+            radial-gradient(ellipse at 66% 48%, rgba(53, 204, 239, 0.46), transparent 59%),
+            radial-gradient(ellipse at 82% 52%, rgba(77, 150, 246, 0.46), transparent 58%),
+            radial-gradient(ellipse at 98% 58%, rgba(170, 198, 62, 0.17), transparent 45%);
+          filter: blur(12px);
+          opacity: 0.68;
+          transform: translateX(-50%) rotate(-0.8deg) scale(1.08, 0.72);
+          animation: eterx-home-wave-volume-front 7.8s ease-in-out infinite;
+        }
+
+        .eterx-home-wave-depth {
+          z-index: 5;
+          left: 50%;
+          border-radius: 50% 50% 0 0 / 70% 70% 0 0;
+          background:
+            radial-gradient(ellipse at 50% 100%, rgba(1, 9, 11, 0.78), rgba(2, 10, 13, 0.42) 42%, transparent 72%);
+          mix-blend-mode: multiply;
+          transform-origin: 50% 100%;
+          will-change: transform, opacity;
+          -webkit-mask-image: radial-gradient(ellipse at 50% 86%, black 0%, black 48%, transparent 75%);
+          mask-image: radial-gradient(ellipse at 50% 86%, black 0%, black 48%, transparent 75%);
+        }
+
+        .eterx-home-wave-depth-back {
+          z-index: 1;
+          bottom: 8.5vh;
+          width: 114%;
+          height: 24vh;
+          filter: blur(18px);
+          opacity: 0.58;
+          transform: translateX(-50%) rotate(1.4deg) scale(1.08, 0.66);
+          animation: eterx-home-wave-depth-back 10.4s ease-in-out infinite;
+        }
+
+        .eterx-home-wave-depth-front {
+          z-index: 5;
+          bottom: 0;
+          width: 126%;
+          height: 24vh;
+          filter: blur(14px);
+          opacity: 0.24;
+          transform: translateX(-50%) rotate(-1deg) scale(1.08, 0.58);
+          animation: eterx-home-wave-depth-front 8.4s ease-in-out infinite;
+        }
+
+        .eterx-home-lobe {
+          z-index: 5;
+          bottom: -1vh;
+          width: 34%;
+          height: 28vh;
+          border-radius: 999px;
+          filter: blur(22px);
+          opacity: 0.42;
+          will-change: transform, opacity;
+          -webkit-mask-image: radial-gradient(ellipse at 50% 70%, black 0%, black 54%, transparent 76%);
+          mask-image: radial-gradient(ellipse at 50% 70%, black 0%, black 54%, transparent 76%);
+        }
+
+        .eterx-home-lobe-left {
+          left: 7%;
+          background: radial-gradient(ellipse at 50% 50%, rgba(224, 74, 158, 0.46), rgba(20, 222, 188, 0.24) 48%, transparent 76%);
+          animation: eterx-home-lobe-left 9s ease-in-out infinite;
+        }
+
+        .eterx-home-lobe-center {
+          left: 36%;
+          width: 40%;
+          background: radial-gradient(ellipse at 50% 54%, rgba(20, 228, 194, 0.52), rgba(53, 204, 240, 0.34) 50%, transparent 76%);
+          opacity: 0.46;
+          animation: eterx-home-lobe-center 7.8s ease-in-out infinite;
+        }
+
+        .eterx-home-lobe-right {
+          right: 2%;
+          width: 36%;
+          background: radial-gradient(ellipse at 50% 52%, rgba(72, 154, 250, 0.48), rgba(170, 202, 64, 0.24) 48%, transparent 76%);
+          animation: eterx-home-lobe-right 10s ease-in-out infinite;
+        }
+
+        .eterx-home-vignette {
+          inset: 0;
+          z-index: 8;
+          background:
+            linear-gradient(180deg, #0F0F0F 0%, rgba(15, 15, 15, 0.78) 14%, rgba(15, 15, 15, 0.20) 42%, transparent 100%),
+            radial-gradient(122% 104% at 50% 100%, transparent 0%, transparent 58%, rgba(15, 15, 15, 0.42) 83%, #0F0F0F 100%),
+            linear-gradient(90deg, #0F0F0F 0%, rgba(15, 15, 15, 0.30) 10%, transparent 23%, transparent 78%, rgba(15, 15, 15, 0.34) 90%, #0F0F0F 100%);
+        }
+
+        @keyframes eterx-home-field-enter {
+          0% { opacity: 0; transform: translateY(20px) scale(0.985); }
+          100% { opacity: 1; transform: translateY(0) scale(1); }
+        }
+
+        @keyframes eterx-home-plasma-breathe {
+          0%, 100% { transform: translateX(-50%) translateY(0) scale(1, 1); }
+          45% { transform: translateX(-50%) translateY(-0.8vh) scale(1.02, 1.06); }
+          72% { transform: translateX(-50%) translateY(0.3vh) scale(0.995, 0.96); }
+        }
+
+        @keyframes eterx-home-plasma-drift-a {
+          0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+          38% { transform: translate3d(5.4%, -8%, 0) scale(1.08); }
+          70% { transform: translate3d(-4.2%, 4.8%, 0) scale(0.96); }
+        }
+
+        @keyframes eterx-home-plasma-drift-b {
+          0%, 100% { transform: translate3d(0, 1%, 0) scale(1); }
+          44% { transform: translate3d(-5.6%, -7%, 0) scale(1.07); }
+          74% { transform: translate3d(4.4%, 4.2%, 0) scale(0.97); }
+        }
+
+        @keyframes eterx-home-wave-stage-float {
+          0%, 100% { transform: translateX(-50%) perspective(820px) rotateX(8deg) translate3d(0, 0, 0); }
+          45% { transform: translateX(-50%) perspective(820px) rotateX(10deg) translate3d(0, -0.8vh, 0); }
+          74% { transform: translateX(-50%) perspective(820px) rotateX(7deg) translate3d(0, 0.35vh, 0); }
+        }
+
+        @keyframes eterx-home-wave-volume-back {
+          0%, 100% { transform: translateX(-50%) rotate(-2deg) translate3d(-1.2%, 0, 0) scale(1.05, 0.68); opacity: 0.32; }
+          43% { transform: translateX(-50%) rotate(-0.7deg) translate3d(1.8%, -1.1vh, 0) scale(1.10, 0.74); opacity: 0.42; }
+          72% { transform: translateX(-50%) rotate(-2.6deg) translate3d(-1.9%, 0.45vh, 0) scale(1.02, 0.67); opacity: 0.36; }
+        }
+
+        @keyframes eterx-home-wave-volume-mid {
+          0%, 100% { transform: translateX(-50%) rotate(1.2deg) translate3d(1.2%, 0, 0) scale(1.02, 0.76); opacity: 0.60; }
+          38% { transform: translateX(-50%) rotate(-0.35deg) translate3d(-2%, -1.45vh, 0) scale(1.07, 0.83); opacity: 0.70; }
+          68% { transform: translateX(-50%) rotate(2deg) translate3d(2%, 0.55vh, 0) scale(0.99, 0.74); opacity: 0.64; }
+        }
+
+        @keyframes eterx-home-wave-volume-front {
+          0%, 100% { transform: translateX(-50%) rotate(-0.8deg) translate3d(-1.2%, 0, 0) scale(1.07, 0.70); opacity: 0.68; }
+          44% { transform: translateX(-50%) rotate(0.75deg) translate3d(2.1%, -1.2vh, 0) scale(1.12, 0.78); opacity: 0.78; }
+          78% { transform: translateX(-50%) rotate(-1.5deg) translate3d(-2.3%, 0.55vh, 0) scale(1.03, 0.69); opacity: 0.72; }
+        }
+
+        @keyframes eterx-home-wave-depth-back {
+          0%, 100% { transform: translateX(-50%) rotate(1.4deg) translate3d(1.8%, 0, 0) scale(1.08, 0.66); opacity: 0.58; }
+          45% { transform: translateX(-50%) rotate(-0.4deg) translate3d(-2.2%, -1.5vh, 0) scale(1.15, 0.72); opacity: 0.72; }
+          76% { transform: translateX(-50%) rotate(2.1deg) translate3d(2.6%, 0.5vh, 0) scale(1.04, 0.64); opacity: 0.62; }
+        }
+
+        @keyframes eterx-home-wave-depth-front {
+          0%, 100% { transform: translateX(-50%) rotate(-1deg) translate3d(-1.5%, 0, 0) scale(1.08, 0.58); opacity: 0.24; }
+          42% { transform: translateX(-50%) rotate(0.7deg) translate3d(2.3%, -1.1vh, 0) scale(1.13, 0.64); opacity: 0.34; }
+          74% { transform: translateX(-50%) rotate(-1.9deg) translate3d(-2.7%, 0.6vh, 0) scale(1.04, 0.56); opacity: 0.28; }
+        }
+
+        @keyframes eterx-home-lobe-left {
+          0%, 100% { transform: translate3d(-2%, 1vh, 0) scale(0.92, 0.86); opacity: 0.28; }
+          45% { transform: translate3d(8%, -1.1vh, 0) scale(1.10, 0.98); opacity: 0.46; }
+          76% { transform: translate3d(2%, 0.2vh, 0) scale(0.98, 0.90); opacity: 0.34; }
+        }
+
+        @keyframes eterx-home-lobe-center {
+          0%, 100% { transform: translate3d(2%, 0.5vh, 0) scale(1, 0.92); opacity: 0.34; }
+          40% { transform: translate3d(-6%, -1.3vh, 0) scale(1.08, 1); opacity: 0.50; }
+          72% { transform: translate3d(4%, 0.35vh, 0) scale(0.96, 0.90); opacity: 0.40; }
+        }
+
+        @keyframes eterx-home-lobe-right {
+          0%, 100% { transform: translate3d(3%, 0.8vh, 0) scale(0.94, 0.88); opacity: 0.28; }
+          48% { transform: translate3d(-9%, -1vh, 0) scale(1.09, 0.98); opacity: 0.44; }
+          78% { transform: translate3d(-2%, 0.35vh, 0) scale(0.98, 0.90); opacity: 0.34; }
+        }
+
+        @media (max-width: 720px) {
+          .eterx-home-plasma {
+            bottom: -13vh;
+            width: 148vw;
+            height: 34vh;
+          }
+
+          .eterx-home-wave-stage {
+            width: 158vw;
+            height: 42vh;
+          }
+
+          .eterx-home-wave-volume-mid {
+            width: 132%;
+          }
+
+          .eterx-home-wave-volume-front {
+            width: 140%;
+          }
+
+          .eterx-home-lobe {
+            width: 42%;
+          }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+          .eterx-home-field,
+          .eterx-home-plasma,
+          .eterx-home-plasma-blob,
+          .eterx-home-wave-stage,
+          .eterx-home-wave-volume,
+          .eterx-home-wave-depth,
+          .eterx-home-lobe {
+            animation-duration: 1ms;
+            animation-iteration-count: 1;
+          }
+        }
 
         @keyframes loading-dot {
           0%, 100% { transform: translateY(0); opacity: 0.3; }

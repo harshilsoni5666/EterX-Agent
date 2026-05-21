@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import * as fs from 'fs';
+import { promises as fs } from 'fs';
 import * as path from 'path';
+import { createHash } from 'crypto';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -14,43 +15,81 @@ interface FileEntry {
   children?: FileEntry[];
 }
 
-// Directories/files to always skip
+interface TreeBuildState {
+  entries: number;
+  truncated: boolean;
+  signatureParts: string[];
+}
+
+const MAX_TREE_DEPTH = 4;
+const MAX_TREE_ENTRIES = 1400;
+const MAX_CHILDREN_PER_DIR = 180;
+const MAX_FILE_SIZE = 2 * 1024 * 1024;
+
 const SKIP_NAMES = new Set([
-  'node_modules', '.git', '.next', 'dist', '.cache',
-  '__pycache__', '.DS_Store', 'Thumbs.db', '.env.local',
-  '.env', 'package-lock.json', 'bun.lock', 'tsconfig.tsbuildinfo'
+  'node_modules',
+  '.git',
+  '.next',
+  'dist',
+  'build',
+  'out',
+  'coverage',
+  '.cache',
+  '.turbo',
+  '.vercel',
+  '.workspaces',
+  'target',
+  'vendor',
+  '__pycache__',
+  '.DS_Store',
+  'Thumbs.db',
+  '.env.local',
+  '.env',
+  'package-lock.json',
+  'bun.lock',
+  'tsconfig.tsbuildinfo',
 ]);
 
-function getFileTree(dirPath: string, depth: number = 0, maxDepth: number = 3): FileEntry[] {
-  if (depth > maxDepth) return [];
-  
+const isSkippedName = (name: string) => {
+  if (SKIP_NAMES.has(name)) return true;
+  return name.startsWith('.') && name !== '.vscode';
+};
+
+async function getFileTree(dirPath: string, depth: number, maxDepth: number, state: TreeBuildState): Promise<FileEntry[]> {
+  if (depth > maxDepth || state.entries >= MAX_TREE_ENTRIES) return [];
+
   try {
-    const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+    const entries = await fs.readdir(dirPath, { withFileTypes: true });
+    const sorted = entries
+      .filter(entry => !isSkippedName(entry.name) && !entry.isSymbolicLink())
+      .sort((a, b) => {
+        if (a.isDirectory() && !b.isDirectory()) return -1;
+        if (!a.isDirectory() && b.isDirectory()) return 1;
+        return a.name.localeCompare(b.name);
+      });
+
     const result: FileEntry[] = [];
-
-    // Sort: directories first, then files, alphabetically
-    const sorted = entries.sort((a, b) => {
-      if (a.isDirectory() && !b.isDirectory()) return -1;
-      if (!a.isDirectory() && b.isDirectory()) return 1;
-      return a.name.localeCompare(b.name);
-    });
-
     for (const entry of sorted) {
-      if (SKIP_NAMES.has(entry.name)) continue;
-      if (entry.name.startsWith('.') && entry.name !== '.vscode') continue;
+      if (state.entries >= MAX_TREE_ENTRIES || result.length >= MAX_CHILDREN_PER_DIR) {
+        state.truncated = true;
+        break;
+      }
 
       const fullPath = path.join(dirPath, entry.name);
+      state.entries++;
 
       if (entry.isDirectory()) {
+        state.signatureParts.push(`d:${fullPath}`);
         result.push({
           name: entry.name,
           path: fullPath,
           type: 'directory',
-          children: getFileTree(fullPath, depth + 1, maxDepth),
+          children: await getFileTree(fullPath, depth + 1, maxDepth, state),
         });
       } else {
         try {
-          const stats = fs.statSync(fullPath);
+          const stats = await fs.stat(fullPath);
+          state.signatureParts.push(`f:${fullPath}:${stats.size}:${Math.floor(stats.mtimeMs)}`);
           result.push({
             name: entry.name,
             path: fullPath,
@@ -59,6 +98,7 @@ function getFileTree(dirPath: string, depth: number = 0, maxDepth: number = 3): 
             extension: path.extname(entry.name).slice(1).toLowerCase(),
           });
         } catch {
+          state.signatureParts.push(`f:${fullPath}:0:0`);
           result.push({
             name: entry.name,
             path: fullPath,
@@ -70,39 +110,49 @@ function getFileTree(dirPath: string, depth: number = 0, maxDepth: number = 3): 
     }
 
     return result;
-  } catch (error) {
+  } catch {
     return [];
   }
 }
 
-// GET: List directory contents or get file tree
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
     const dirPath = searchParams.get('path') || process.cwd();
-    const maxDepth = parseInt(searchParams.get('depth') || '3', 10);
+    const requestedDepth = Number.parseInt(searchParams.get('depth') || '3', 10);
+    const maxDepth = Number.isFinite(requestedDepth)
+      ? Math.min(Math.max(requestedDepth, 0), MAX_TREE_DEPTH)
+      : 3;
 
-    if (!fs.existsSync(dirPath)) {
+    let stats;
+    try {
+      stats = await fs.stat(dirPath);
+    } catch {
       return NextResponse.json({ error: 'Path does not exist' }, { status: 404 });
     }
 
-    const stats = fs.statSync(dirPath);
     if (!stats.isDirectory()) {
       return NextResponse.json({ error: 'Path is not a directory' }, { status: 400 });
     }
 
-    const tree = getFileTree(dirPath, 0, maxDepth);
-    return NextResponse.json({ 
+    const state: TreeBuildState = { entries: 0, truncated: false, signatureParts: [] };
+    const tree = await getFileTree(dirPath, 0, maxDepth, state);
+
+    const signature = createHash('sha1').update(state.signatureParts.join('|')).digest('hex');
+
+    return NextResponse.json({
       root: dirPath,
       tree,
-      name: path.basename(dirPath)
+      name: path.basename(dirPath),
+      truncated: state.truncated,
+      totalEntries: state.entries,
+      signature: `${state.entries}:${state.truncated ? 1 : 0}:${signature}`,
     });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
 
-// POST: Read file content
 export async function POST(req: NextRequest) {
   try {
     const { filePath, offset, limit } = await req.json();
@@ -111,29 +161,29 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'filePath is required' }, { status: 400 });
     }
 
-    if (!fs.existsSync(filePath)) {
+    let stats;
+    try {
+      stats = await fs.stat(filePath);
+    } catch {
       return NextResponse.json({ error: 'File does not exist' }, { status: 404 });
     }
 
-    const stats = fs.statSync(filePath);
     if (stats.isDirectory()) {
       return NextResponse.json({ error: 'Path is a directory, not a file' }, { status: 400 });
     }
 
-    // Safety: max 2MB files
-    if (stats.size > 2 * 1024 * 1024) {
-      return NextResponse.json({ 
+    if (stats.size > MAX_FILE_SIZE) {
+      return NextResponse.json({
         error: 'File too large',
         size: stats.size,
-        maxSize: 2 * 1024 * 1024
+        maxSize: MAX_FILE_SIZE,
       }, { status: 413 });
     }
 
-    const content = fs.readFileSync(filePath, 'utf-8');
+    const content = await fs.readFile(filePath, 'utf-8');
     const lines = content.split('\n');
     const totalLines = lines.length;
 
-    // Apply offset and limit if provided
     const startLine = Math.max(0, (offset || 1) - 1);
     const endLine = limit ? Math.min(startLine + limit, totalLines) : totalLines;
     const slicedContent = lines.slice(startLine, endLine).join('\n');
@@ -144,6 +194,7 @@ export async function POST(req: NextRequest) {
       totalLines,
       startLine: startLine + 1,
       endLine,
+      truncated: endLine < totalLines,
       language: getLanguageFromExt(path.extname(filePath).slice(1).toLowerCase()),
       size: stats.size,
     });

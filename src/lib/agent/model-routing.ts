@@ -14,17 +14,17 @@ export const MAIN_AGENT_MODE_CONFIG: Record<MainAgentMode, MainAgentModelConfig>
   think: {
     id: 'think',
     provider: 'gemini',
-    label: 'Gemini 3 Flash',
+    label: 'Gemini 3.5 Flash',
     compactLabel: 'Gemini',
-    modelName: 'gemini-3-flash-preview',
+    modelName: 'gemini-3.5-flash',
     selectable: true,
   },
   fast: {
     id: 'fast',
     provider: 'gemini',
-    label: 'Gemini 3 Flash',
+    label: 'Gemini 3.5 Flash',
     compactLabel: 'Gemini',
-    modelName: 'gemini-3-flash-preview',
+    modelName: 'gemini-3.5-flash',
     selectable: false,
   },
   mistral: {

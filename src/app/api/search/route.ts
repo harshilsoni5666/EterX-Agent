@@ -5,13 +5,32 @@ export const dynamic = 'force-dynamic';
 
 export async function POST(req: Request) {
   try {
-    const { query } = await req.json();
+    const {
+      query,
+      includeImages = false,
+      includeImageDescriptions = true,
+      includeRawContent = false,
+      searchDepth = 'basic',
+      topic = 'general',
+      numResults = 5,
+    } = await req.json();
+
     if (!query) {
       return NextResponse.json({ error: 'Query is required' }, { status: 400 });
     }
 
     // Execute the Tavily Search core tool
-    const results = await webSearchTool.execute({ query }, {} as any);
+    const results = await webSearchTool.execute({
+      action: 'search',
+      query,
+      includeImages,
+      includeImageDescriptions,
+      includeRawContent,
+      searchDepth,
+      topic,
+      numResults,
+    }, {} as any);
+
     return NextResponse.json({ results });
   } catch (error: any) {
     console.error('[API/Search] Error performing web search:', error);

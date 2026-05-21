@@ -67,10 +67,11 @@ export const PremiumShare = ({ className, strokeWidth = 2 }: any) => (
   </svg>
 );
 
-export const PremiumEdit = ({ className, strokeWidth = 2 }: any) => (
+export const PremiumEdit = ({ className, strokeWidth = 1.8 }: any) => (
   <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
-    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
-    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" fill="currentColor" fillOpacity="0.15" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M12 3H7a4 4 0 0 0-4 4v10a4 4 0 0 0 4 4h10a4 4 0 0 0 4-4v-5" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M18.4 2.6a2.121 2.121 0 0 1 3 3L11.5 15.5l-4.5 1 1-4.5L18.4 2.6z" fill="currentColor" fillOpacity="0.15" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M16.5 4.5l3 3" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" />
   </svg>
 );
 
@@ -96,44 +97,47 @@ export const PremiumTrash = ({ className, strokeWidth = 2 }: any) => (
 );
 
 // Main Navigation & UI Icons
-export const PremiumSearch = ({ className, strokeWidth = 2 }: any) => (
+export const PremiumSearch = ({ className, strokeWidth = 1.8 }: any) => (
   <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
-    <circle cx="11" cy="11" r="8" fill="currentColor" fillOpacity="0.15" stroke="currentColor" strokeWidth={strokeWidth} />
-    <path d="M21 21l-4.35-4.35" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" />
+    <circle cx="10.5" cy="10.5" r="6.5" fill="currentColor" fillOpacity="0.08" stroke="currentColor" strokeWidth={strokeWidth} />
+    <path d="M16 16l5.5 5.5" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M10.5 7a3.5 3.5 0 0 1 3.5 3.5" stroke="currentColor" strokeWidth={1.2} strokeLinecap="round" opacity="0.4" />
   </svg>
 );
 
-export const PremiumDashboard = ({ className, strokeWidth = 2 }: any) => (
+export const PremiumDashboard = ({ className, strokeWidth = 1.8 }: any) => (
   <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
-    <rect x="3" y="3" width="7" height="9" rx="2" fill="currentColor" fillOpacity="0.15" stroke="currentColor" strokeWidth={strokeWidth} />
-    <rect x="14" y="3" width="7" height="5" rx="2" stroke="currentColor" strokeWidth={strokeWidth} />
-    <rect x="14" y="12" width="7" height="9" rx="2" fill="currentColor" fillOpacity="0.15" stroke="currentColor" strokeWidth={strokeWidth} />
-    <rect x="3" y="16" width="7" height="5" rx="2" stroke="currentColor" strokeWidth={strokeWidth} />
+    <rect x="3.5" y="3.5" width="6.5" height="6.5" rx="1.75" fill="currentColor" fillOpacity="0.08" stroke="currentColor" strokeWidth={strokeWidth} />
+    <rect x="14" y="3.5" width="6.5" height="6.5" rx="1.75" fill="currentColor" fillOpacity="0.08" stroke="currentColor" strokeWidth={strokeWidth} />
+    <rect x="3.5" y="14" width="6.5" height="6.5" rx="1.75" fill="currentColor" fillOpacity="0.08" stroke="currentColor" strokeWidth={strokeWidth} />
+    <rect x="14" y="14" width="6.5" height="6.5" rx="1.75" fill="currentColor" fillOpacity="0.08" stroke="currentColor" strokeWidth={strokeWidth} />
   </svg>
 );
 
-export const PremiumBot = ({ className, strokeWidth = 2 }: any) => (
+export const PremiumBot = ({ className, strokeWidth = 1.8 }: any) => (
   <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
-    <rect x="3" y="9" width="18" height="12" rx="4" fill="currentColor" fillOpacity="0.15" stroke="currentColor" strokeWidth={strokeWidth} />
-    <path d="M12 9V5" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" />
-    <path d="M12 5H9m3 0h3" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" />
-    <circle cx="9" cy="15" r="1.5" fill="currentColor" />
-    <circle cx="15" cy="15" r="1.5" fill="currentColor" />
+    <rect x="3.5" y="7.5" width="17" height="12" rx="3.5" fill="currentColor" fillOpacity="0.08" stroke="currentColor" strokeWidth={strokeWidth} />
+    <path d="M12 7.5V4.5" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" />
+    <circle cx="12" cy="3.5" r="1" fill="currentColor" />
+    <rect x="6.5" y="11" width="11" height="4" rx="1.5" fill="currentColor" fillOpacity="0.12" stroke="currentColor" strokeWidth={strokeWidth - 0.25} />
+    <circle cx="9" cy="13" r="1.2" fill="currentColor" />
+    <circle cx="15" cy="13" r="1.2" fill="currentColor" />
+    <path d="M3.5 12H2M20.5 12H22" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" />
   </svg>
 );
 
-export const PremiumLayers = ({ className, strokeWidth = 2 }: any) => (
+export const PremiumLayers = ({ className, strokeWidth = 1.8 }: any) => (
   <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
-    <path d="M12 2L2 7l10 5 10-5-10-5z" fill="currentColor" fillOpacity="0.15" stroke="currentColor" strokeWidth={strokeWidth} strokeLinejoin="round" />
-    <path d="M2 12l10 5 10-5" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" opacity="0.6"/>
-    <path d="M2 17l10 5 10-5" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" opacity="0.3"/>
+    <path d="M12 2L2 7l10 5 10-5-10-5z" fill="currentColor" fillOpacity="0.1" stroke="currentColor" strokeWidth={strokeWidth} strokeLinejoin="round" />
+    <path d="M2 12l10 5 10-5" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M2 17l10 5 10-5" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" opacity="0.6" />
   </svg>
 );
 
-export const PremiumFolderOpen = ({ className, strokeWidth = 2 }: any) => (
+export const PremiumFolderOpen = ({ className, strokeWidth = 1.8 }: any) => (
   <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
-    <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" fill="currentColor" fillOpacity="0.15" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
-    <path d="M2 10h20" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" opacity="0.4" />
+    <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h16Z" fill="currentColor" fillOpacity="0.08" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M2 10h20" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" opacity="0.3" />
   </svg>
 );
 

@@ -113,8 +113,20 @@ interface ChatInputProps {
   isCompressed?: boolean;
 }
 
+const fileToBase64 = async (file: File) => {
+  const buffer = new Uint8Array(await file.arrayBuffer());
+  const chunkSize = 0x8000;
+  let binary = '';
+
+  for (let i = 0; i < buffer.length; i += chunkSize) {
+    binary += String.fromCharCode.apply(null, Array.from(buffer.subarray(i, i + chunkSize)));
+  }
+
+  return btoa(binary);
+};
+
 const VoiceWaveform = ({ volume, isProcessing, cancelVoice, acceptVoice }: { volume: number, isProcessing: boolean, cancelVoice: () => void, acceptVoice: () => void }) => {
-  const BAR_COUNT = 90;
+  const BAR_COUNT = 64;
   const [volumes, setVolumes] = useState<number[]>(new Array(BAR_COUNT).fill(2));
   const volumeRef = useRef(volume);
   const tickRef = useRef(0);
@@ -215,7 +227,7 @@ const VoiceWaveform = ({ volume, isProcessing, cancelVoice, acceptVoice }: { vol
   );
 };
 
-const inputControlButton = "w-[40px] h-[40px] flex items-center justify-center rounded-full border border-white/[0.13] bg-[#202020]/92 text-[#F4F4F4] shadow-[inset_0_1px_0_rgba(255,255,255,0.07),0_5px_14px_rgba(0,0,0,0.24)] transition-all duration-200 ease-[cubic-bezier(0.2,0.8,0.2,1)] active:scale-[0.96] active:bg-[#303030] hover:text-white hover:bg-[#2B2B2B] hover:border-white/[0.22] hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.09),0_7px_18px_rgba(0,0,0,0.3)] group relative overflow-hidden";
+const inputControlButton = "eterx-control-button w-[40px] h-[40px] shrink-0 flex items-center justify-center rounded-full border border-white/[0.13] bg-[#202020]/92 text-[#F4F4F4] shadow-[inset_0_1px_0_rgba(255,255,255,0.07),0_5px_14px_rgba(0,0,0,0.24)] transition-all duration-200 ease-[cubic-bezier(0.2,0.8,0.2,1)] active:scale-[0.96] active:bg-[#303030] hover:text-white hover:bg-[#2B2B2B] hover:border-white/[0.22] hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.09),0_7px_18px_rgba(0,0,0,0.3)] group relative overflow-hidden";
 const inputControlSheen = "absolute inset-0 bg-gradient-to-b from-white/[0.12] to-transparent opacity-0 transition-opacity duration-200 group-hover:opacity-100";
 
 const PinFolderIcon = ({ className = "" }: { className?: string }) => (
@@ -433,10 +445,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       if (filePath) {
         body.filePath = filePath;
       } else {
-        // Convert to base64 for clipboard/browser files
-        const arrayBuffer = await file.arrayBuffer();
-        const base64 = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
-        body.fileData = base64;
+        // Convert in chunks; spreading a large Uint8Array can freeze or crash the renderer.
+        body.fileData = await fileToBase64(file);
       }
 
       const res = await fetch('/api/media/upload', {
@@ -473,10 +483,13 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     }));
     setAttachments(prev => [...prev, ...newAttachments]);
 
-    // Fire pre-uploads in parallel
-    files.forEach((file, i) => {
-      preUploadFile(file, startIdx + i);
-    });
+    // Upload in small batches so several large dropped files do not saturate the renderer or API route.
+    const uploadBatch = async () => {
+      for (let i = 0; i < files.length; i += 2) {
+        await Promise.all(files.slice(i, i + 2).map((file, offset) => preUploadFile(file, startIdx + i + offset)));
+      }
+    };
+    void uploadBatch();
   }, [attachments.length, setAttachments, preUploadFile]);
 
   useEffect(() => {
@@ -659,8 +672,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   }
 
   const isEmptyHome = traceLogsLength === 0 && liveState === 'idle';
-  const shellMaxWidth = isCompressed ? 'max-w-[520px]' : 'max-w-[800px]';
-  const inputSidePadding = isCompressed ? 'pl-3 pr-12 sm:pl-4 sm:pr-14' : 'px-4 sm:px-12';
+  const shellMaxWidth = 'max-w-[800px]';
+  const inputSidePadding = isCompressed ? 'px-4' : 'px-4 sm:px-12';
   const modelOptions = MAIN_AGENT_MODEL_OPTIONS;
   const selectedModel = getMainAgentModelConfig(agentMode);
   const modelDisplayLabel = selectedModel.label;
@@ -668,7 +681,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   return (
     <div className={`absolute left-0 flex flex-col items-center z-30 ${ isEmptyHome ? 'right-0 w-full' : 'right-[14px] w-auto' } ${ isEmptyHome
       ? `top-[45%] -translate-y-1/2 ${ inputSidePadding }`
-      : `top-auto bottom-0 ${ isCompressed ? 'pb-4 pt-10' : 'pb-6 pt-12' } ${ inputSidePadding } bg-gradient-to-t from-[#101010] via-[#101010]/95 to-transparent`
+      : `top-auto bottom-0 ${ isCompressed ? 'pb-4 pt-10' : 'pb-6 pt-12' } ${ inputSidePadding } bg-gradient-to-t from-[#0F0F0F] via-[#0F0F0F]/95 to-transparent`
       }`}>
 
       <AnimatePresence>
@@ -723,14 +736,14 @@ export const ChatInput: React.FC<ChatInputProps> = ({
         )}
       </AnimatePresence>
 
-      <div className={`w-full ${ shellMaxWidth } flex flex-col pointer-events-auto relative`}>
+      <div className={`eterx-composer-shell w-full ${ shellMaxWidth } flex flex-col pointer-events-auto relative`}>
 
         <motion.div
           animate={liveAnimateState}
           transition={liveTransition}
           className={`w-full ${ isCompressed ? 'rounded-[28px]' : 'rounded-[32px]' } flex flex-col ${ attachments.length > 0 ? 'pt-1' : isCompressed ? 'pt-3' : 'pt-4' } pb-2 transition-all duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)] overflow-visible relative ${ liveState !== 'idle'
-            ? 'bg-[linear-gradient(180deg,rgba(37,37,37,0.92),rgba(25,25,25,0.92))] backdrop-blur-3xl border border-white/[0.13] ring-1 ring-white/[0.055]'
-            : `bg-[linear-gradient(180deg,#222222_0%,#1B1B1B_100%)] backdrop-blur-[28px] ring-1 ring-white/[0.045] ${ isRecording ? 'border border-white/[0.24]' : 'border border-white/[0.105] hover:border-white/[0.155] focus-within:border-white/[0.22]' }`
+            ? 'bg-[#1E1E1E] backdrop-blur-3xl border border-white/[0.10] ring-1 ring-white/[0.05]'
+            : `bg-[#1E1E1E] backdrop-blur-[28px] ring-1 ring-white/[0.035] ${ isRecording ? 'border border-white/[0.20]' : 'border border-white/[0.08] hover:border-white/[0.12] focus-within:border-white/[0.18]' }`
             }`}>
           <input type="file" multiple ref={fileInputRef} onChange={handleFileSelect} className="hidden" />
 
@@ -1017,8 +1030,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({
             </AnimatePresence>
           </div>
 
-          <div className={`flex items-center justify-between ${ isCompressed ? 'gap-2 px-2.5' : 'px-3.5' } mt-1.5 relative z-10 transition-all duration-300`}>
-            <div className="flex min-w-0 items-center gap-2">
+          <div className={`eterx-chat-controls ${ isCompressed ? 'px-2.5' : 'px-3.5' } mt-1.5 relative z-10 transition-all duration-300`}>
+            <div className="eterx-chat-controls-left">
               <Tooltip text="Attach files" side="top">
                 <button
                   onClick={() => fileInputRef.current?.click()}
@@ -1042,8 +1055,15 @@ export const ChatInput: React.FC<ChatInputProps> = ({
               <div className="relative">
                 <Tooltip text="Pin folder or files" side="top">
                   <button
-                    onClick={(e) => { e.stopPropagation(); setShowPinMenu(!showPinMenu); }}
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setOpenPillDrop(null);
+                      setShowPinMenu(prev => !prev);
+                    }}
                     className={`${inputControlButton} ${ showPinMenu || pinnedItems.length > 0 ? '!bg-[#292929] !border-white/[0.24] !text-white' : '' }`}
+                    aria-haspopup="menu"
+                    aria-expanded={showPinMenu}
                   >
                     <div className={inputControlSheen} />
                     <PremiumPin className={`w-[16px] h-[16px] transition-all duration-200 ease-out group-hover:scale-[1.1] ${ showPinMenu ? '-rotate-12' : '' }`} strokeWidth={2.2} />
@@ -1057,10 +1077,10 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       animate={{ opacity: 1, y: 0, scale: 1 }}
                       exit={{ opacity: 0, y: 8, scale: 0.96 }}
                       transition={{ duration: 0.18, ease: 'easeOut' }}
-                      className="absolute bottom-[calc(100%+10px)] left-1/2 z-[120] flex w-[150px] -translate-x-[27px] flex-col rounded-[15px] border border-white/[0.105] bg-[#101010]/95 backdrop-blur-2xl p-[3px] shadow-[0_16px_34px_rgba(0,0,0,0.58),inset_0_1px_0_rgba(255,255,255,0.055)]"
+                      className="absolute bottom-[calc(100%+10px)] left-1/2 z-[120] flex w-[150px] -translate-x-[27px] flex-col rounded-[15px] border border-white/[0.105] bg-[#1A1A1A]/95 backdrop-blur-2xl p-[3px] shadow-[0_16px_34px_rgba(0,0,0,0.58),inset_0_1px_0_rgba(255,255,255,0.055)]"
                     >
-                      <span className="pointer-events-none absolute -bottom-[5px] left-[8px] z-0 h-[10px] w-[10px] rotate-45 border-b border-r border-white/[0.105] bg-[#101010]/95" />
-                      <button onClick={handlePinFolder} className="group/menu relative z-10 flex h-[40px] w-full items-center gap-[9px] rounded-[12px] px-[9px] text-left text-[#F0EDEA] transition-all duration-150 hover:bg-white/[0.095] hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] focus-visible:bg-white/[0.095] focus-visible:outline-none active:scale-[0.99]">
+                      <span className="pointer-events-none absolute -bottom-[5px] left-[8px] z-0 h-[10px] w-[10px] rotate-45 border-b border-r border-white/[0.105] bg-[#1A1A1A]/95" />
+                      <button type="button" onClick={handlePinFolder} className="group/menu relative z-10 flex h-[40px] w-full items-center gap-[9px] rounded-[12px] px-[9px] text-left text-[#F0EDEA] transition-all duration-150 hover:bg-white/[0.095] hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] focus-visible:bg-white/[0.095] focus-visible:outline-none active:scale-[0.99]">
                         <span className="flex h-[25px] w-[25px] shrink-0 items-center justify-center text-[#C7C3BC] transition-colors group-hover/menu:text-white">
                           <PinFolderIcon className="h-[24px] w-[24px]" />
                         </span>
@@ -1069,7 +1089,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                         </span>
                       </button>
                       <div className="relative z-10 mx-[9px] h-px bg-white/[0.05]" />
-                      <button onClick={handlePinFiles} className="group/menu relative z-10 flex h-[40px] w-full items-center gap-[9px] rounded-[12px] px-[9px] text-left text-[#F0EDEA] transition-all duration-150 hover:bg-white/[0.095] hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] focus-visible:bg-white/[0.095] focus-visible:outline-none active:scale-[0.99]">
+                      <button type="button" onClick={handlePinFiles} className="group/menu relative z-10 flex h-[40px] w-full items-center gap-[9px] rounded-[12px] px-[9px] text-left text-[#F0EDEA] transition-all duration-150 hover:bg-white/[0.095] hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] focus-visible:bg-white/[0.095] focus-visible:outline-none active:scale-[0.99]">
                         <span className="flex h-[25px] w-[25px] shrink-0 items-center justify-center text-[#C7C3BC] transition-colors group-hover/menu:text-white">
                           <PinFileIcon className="h-[24px] w-[24px]" />
                         </span>
@@ -1089,7 +1109,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                   const files = pinnedItems.filter(i => i.type === 'file');
 
                   return (
-                    <div className={`flex min-w-0 items-center gap-1.5 ${ isCompressed ? 'ml-0 max-w-[142px] overflow-hidden' : 'ml-1.5 flex-wrap' }`}>
+                    <div className={`eterx-pinned-items flex min-w-0 items-center gap-1.5 ${ isCompressed ? `ml-0 max-w-[180px] ${ openPillDrop ? 'overflow-visible' : 'overflow-hidden' }` : 'ml-1.5 flex-wrap' }`}>
                       {/* FOLDERS PILL */}
                       {folders.length > 0 && (
                         <motion.div
@@ -1102,6 +1122,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                             onClick={(e) => {
                               e.stopPropagation();
                               if (folders.length > 1) {
+                                setShowPinMenu(false);
                                 setOpenPillDrop(openPillDrop === 'folders' ? null : 'folders');
                               }
                             }}
@@ -1168,6 +1189,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                             onClick={(e) => {
                               e.stopPropagation();
                               if (files.length > 1) {
+                                setShowPinMenu(false);
                                 setOpenPillDrop(openPillDrop === 'files' ? null : 'files');
                               }
                             }}
@@ -1226,37 +1248,35 @@ export const ChatInput: React.FC<ChatInputProps> = ({
               </AnimatePresence>
             </div>
 
-            <div className="flex shrink-0 items-center gap-2">
+            <div className="eterx-chat-controls-right">
               {/* Model selector */}
-              <div ref={modelSelectorRef} className="relative">
-                <Tooltip text={isModelLocked ? 'Model locked for active run' : selectedModel.modelName} side="top">
-                  <button
-                    onClick={() => {
-                      if (isModelLocked) return;
-                      setShowModelMenu(prev => !prev);
-                    }}
-                    className={`${ isCompressed ? 'mr-0 px-2.5' : 'mr-1 px-3.5' } flex h-[38px] items-center gap-1.5 rounded-full border border-white/[0.085] bg-[#151515]/92 text-[#D5D2CC] shadow-[inset_0_1px_0_rgba(255,255,255,0.055),0_5px_16px_rgba(0,0,0,0.2)] transition-all duration-200 hover:bg-[#1B1B1B] hover:text-[#F3F3F3] hover:border-white/[0.13] active:scale-[0.98] group ${ showModelMenu ? '!bg-[#1A1A1A] !border-white/[0.16] !text-white' : '' } ${ isModelLocked ? 'cursor-not-allowed opacity-70 hover:bg-[#151515]/92 hover:text-[#D5D2CC] hover:border-white/[0.085] active:scale-100' : '' }`}
-                    aria-haspopup="listbox"
-                    aria-expanded={showModelMenu}
-                    aria-disabled={isModelLocked}
-                  >
-                    <AnimatePresence mode="wait">
-                      <motion.div
-                        key={agentMode}
-                        initial={{ opacity: 0, scale: 0.8, y: 4 }}
-                        animate={{ opacity: 1, scale: 1, y: 0 }}
-                        exit={{ opacity: 0, scale: 0.8, y: -4 }}
-                        transition={{ duration: 0.2, ease: "easeOut" }}
-                        className="flex items-center gap-1.5"
-                      >
-                        <span className="text-[14px] font-semibold tracking-normal transition-colors">
-                          {modelDisplayLabel}
-                        </span>
-                        <ChevronDown className={`h-3.5 w-3.5 text-[#8D8D8D] transition-all duration-200 group-hover:text-[#BEBEBE] ${ showModelMenu ? 'rotate-180' : 'group-hover:translate-y-px' }`} strokeWidth={2.1} />
-                      </motion.div>
-                    </AnimatePresence>
-                  </button>
-                </Tooltip>
+              <div ref={modelSelectorRef} className="eterx-model-selector relative min-w-0">
+                <button
+                  onClick={() => {
+                    if (isModelLocked) return;
+                    setShowModelMenu(prev => !prev);
+                  }}
+                  className={`eterx-model-button ${ isCompressed ? 'mr-0 max-w-[160px] px-2.5' : 'mr-1 px-3.5' } flex h-[38px] w-full min-w-0 items-center gap-1.5 rounded-full border border-white/[0.085] bg-[#151515]/92 text-[#D5D2CC] shadow-[inset_0_1px_0_rgba(255,255,255,0.055),0_5px_16px_rgba(0,0,0,0.2)] transition-all duration-200 hover:bg-[#1B1B1B] hover:text-[#F3F3F3] hover:border-white/[0.13] active:scale-[0.98] group ${ showModelMenu ? '!bg-[#1A1A1A] !border-white/[0.16] !text-white' : '' } ${ isModelLocked ? 'cursor-not-allowed opacity-70 hover:bg-[#151515]/92 hover:text-[#D5D2CC] hover:border-white/[0.085] active:scale-100' : '' }`}
+                  aria-haspopup="listbox"
+                  aria-expanded={showModelMenu}
+                  aria-disabled={isModelLocked}
+                >
+                  <AnimatePresence mode="wait">
+                    <motion.div
+                      key={agentMode}
+                      initial={{ opacity: 0, scale: 0.8, y: 4 }}
+                      animate={{ opacity: 1, scale: 1, y: 0 }}
+                      exit={{ opacity: 0, scale: 0.8, y: -4 }}
+                      transition={{ duration: 0.2, ease: "easeOut" }}
+                      className="flex min-w-0 items-center gap-1.5"
+                    >
+                      <span className="min-w-0 truncate text-[14px] font-semibold tracking-normal transition-colors">
+                        {modelDisplayLabel}
+                      </span>
+                      <ChevronDown className={`h-3.5 w-3.5 text-[#8D8D8D] transition-all duration-200 group-hover:text-[#BEBEBE] ${ showModelMenu ? 'rotate-180' : 'group-hover:translate-y-px' }`} strokeWidth={2.1} />
+                    </motion.div>
+                  </AnimatePresence>
+                </button>
 
                 <AnimatePresence>
                   {showModelMenu && (
@@ -1295,7 +1315,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
               </div>
 
               <Tooltip text="Voice dictation" side="top">
-                <button onClick={toggleSpeech} className={`w-[40px] h-[40px] flex items-center justify-center rounded-full border border-transparent text-[#A8A8A8] transition-all duration-200 ease-out hover:text-[#F1F1F1] hover:bg-white/[0.045] hover:border-white/[0.07] active:scale-[0.96] relative group ${ isRecording ? '!text-[#E2765A] animate-pulse bg-[#E2765A]/10 border-[#E2765A]/25' : '' }`}>
+                <button onClick={toggleSpeech} className={`eterx-control-button w-[40px] h-[40px] shrink-0 flex items-center justify-center rounded-full border border-transparent text-[#A8A8A8] transition-all duration-200 ease-out hover:text-[#F1F1F1] hover:bg-white/[0.045] hover:border-white/[0.07] active:scale-[0.96] relative group ${ isRecording ? '!text-[#E2765A] animate-pulse bg-[#E2765A]/10 border-[#E2765A]/25' : '' }`}>
                   <PremiumMic className="w-[18px] h-[18px] group-hover:scale-[1.1] transition-transform duration-200 ease-out" strokeWidth={2} />
                 </button>
               </Tooltip>
@@ -1316,7 +1336,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       <Tooltip text="Stop Agent" side="top">
                         <button
                           onClick={() => { setIsStopping(true); handleStop(); }}
-                          className="w-[40px] h-[40px] flex items-center justify-center rounded-full bg-[#F2EFEA] hover:bg-white transition-all duration-200 shadow-[0_8px_22px_rgba(242,239,234,0.15),inset_0_1px_0_rgba(255,255,255,0.82)] active:scale-[0.96] group cursor-pointer overflow-hidden relative"
+                          className="eterx-control-button w-[40px] h-[40px] shrink-0 flex items-center justify-center rounded-full bg-[#F2EFEA] hover:bg-white transition-all duration-200 shadow-[0_8px_22px_rgba(242,239,234,0.15),inset_0_1px_0_rgba(255,255,255,0.82)] active:scale-[0.96] group cursor-pointer overflow-hidden relative"
                         >
                           <div className="absolute inset-0 bg-gradient-to-t from-black/0 to-black/5" />
                           <div className="w-[12px] h-[12px] rounded-[3px] bg-[#161616] group-hover:scale-90 transition-transform duration-200" />
@@ -1331,7 +1351,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       exit={{ opacity: 0, scale: 0.8 }}
                       transition={{ duration: 0.18, ease: 'easeOut' }}
                     >
-                      <div className="w-[40px] h-[40px] flex items-center justify-center rounded-full bg-[#242424] border border-white/[0.13] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] cursor-not-allowed">
+                      <div className="eterx-control-button w-[40px] h-[40px] shrink-0 flex items-center justify-center rounded-full bg-[#242424] border border-white/[0.13] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] cursor-not-allowed">
                         <motion.div
                           className="w-[18px] h-[18px] rounded-full border-[2px] border-white/20 border-t-white"
                           animate={{ rotate: 360 }}
@@ -1350,7 +1370,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       <Tooltip text="Send message" side="top">
                         <button
                           onClick={submitPrompt}
-                          className="w-[40px] h-[40px] flex items-center justify-center rounded-full transition-all duration-200 bg-[#F2EFEA] text-black hover:bg-white shadow-[0_8px_22px_rgba(242,239,234,0.15),inset_0_1px_0_rgba(255,255,255,0.82)] active:scale-[0.96] group relative overflow-hidden"
+                          className="eterx-control-button w-[40px] h-[40px] shrink-0 flex items-center justify-center rounded-full transition-all duration-200 bg-[#F2EFEA] text-black hover:bg-white shadow-[0_8px_22px_rgba(242,239,234,0.15),inset_0_1px_0_rgba(255,255,255,0.82)] active:scale-[0.96] group relative overflow-hidden"
                         >
                           <div className="absolute inset-0 bg-gradient-to-t from-black/0 to-black/5" />
                           <PremiumSend className="w-[20px] h-[20px] text-black group-hover:-translate-y-0.5 group-hover:scale-110 transition-all duration-200 ease-out" strokeWidth={2.8} />
@@ -1368,7 +1388,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       <Tooltip text="Start Live Conversation" side="top">
                         <button
                           onClick={onLiveStart}
-                          className={`w-[40px] h-[40px] flex items-center justify-center rounded-full border border-white/[0.13] bg-[#202020]/92 text-[#F4F4F4] shadow-[inset_0_1px_0_rgba(255,255,255,0.07),0_5px_14px_rgba(0,0,0,0.24)] transition-all duration-200 active:scale-[0.96] active:bg-[#303030] cursor-pointer group relative overflow-hidden hover:bg-[#2B2B2B] hover:border-white/[0.22] hover:text-white ${ isRecording ? '!text-[#E2765A]' : '' }`}
+                          className={`eterx-control-button w-[40px] h-[40px] shrink-0 flex items-center justify-center rounded-full border border-white/[0.13] bg-[#202020]/92 text-[#F4F4F4] shadow-[inset_0_1px_0_rgba(255,255,255,0.07),0_5px_14px_rgba(0,0,0,0.24)] transition-all duration-200 active:scale-[0.96] active:bg-[#303030] cursor-pointer group relative overflow-hidden hover:bg-[#2B2B2B] hover:border-white/[0.22] hover:text-white ${ isRecording ? '!text-[#E2765A]' : '' }`}
                         >
                           <div className={inputControlSheen} />
                           <PremiumAudioLines className={`w-[20px] h-[20px] text-[#F3F3F3] transition-all duration-200 ease-out group-hover:scale-110 ${ isRecording ? '!text-[#E2765A] animate-pulse scale-110' : '' }`} strokeWidth={2.2} />

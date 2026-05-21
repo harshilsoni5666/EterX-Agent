@@ -5,11 +5,11 @@ import { Plus, X, ChevronRight, Check } from 'lucide-react';
 import { PremiumShare, PremiumEdit, PremiumStar, PremiumFolder, PremiumTrash, PremiumSearch, PremiumDashboard, PremiumBot, PremiumLayers, PremiumFolderOpen, PremiumPanelLeft, PremiumDownload, PremiumMoreHorizontal, PremiumCheckSquare, PremiumSettings } from '../ui/premium-icons';
 import { Tooltip } from '../ui/tooltip';
 
-const SidebarToggleIcon = ({ isOpen, isHovered }: { isOpen: boolean, isHovered: boolean }) => {
+const SidebarToggleIcon = ({ isOpen, isHovered, sizeClass = "w-[18px] h-[18px]" }: { isOpen: boolean, isHovered: boolean, sizeClass?: string }) => {
   if (isOpen) {
     if (isHovered) {
       return (
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="w-[18px] h-[18px] text-[#E8E6E3] transition-all duration-200">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className={`${sizeClass} text-[#E8E6E3] transition-all duration-200`}>
           <rect x="3" y="3" width="18" height="18" rx="5" />
           <path d="M9 3v18" />
           <path d="M16 15l-3-3 3-3" strokeLinecap="round" strokeLinejoin="round" />
@@ -17,7 +17,7 @@ const SidebarToggleIcon = ({ isOpen, isHovered }: { isOpen: boolean, isHovered: 
       );
     } else {
       return (
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="w-[18px] h-[18px] text-[#8C8A88] transition-all duration-200">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className={`${sizeClass} text-[#8C8A88] transition-all duration-200`}>
           <rect x="3" y="3" width="18" height="18" rx="5" />
           <path d="M9 3v18" />
         </svg>
@@ -26,7 +26,7 @@ const SidebarToggleIcon = ({ isOpen, isHovered }: { isOpen: boolean, isHovered: 
   } else {
     if (isHovered) {
       return (
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="w-[18px] h-[18px] text-[#E8E6E3] transition-all duration-200">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className={`${sizeClass} text-[#E8E6E3] transition-all duration-200`}>
           <rect x="3" y="3" width="18" height="18" rx="5" />
           <path d="M9 3v18" />
           <path d="M13 9l3 3-3 3" strokeLinecap="round" strokeLinejoin="round" />
@@ -34,7 +34,7 @@ const SidebarToggleIcon = ({ isOpen, isHovered }: { isOpen: boolean, isHovered: 
       );
     } else {
       return (
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="w-[18px] h-[18px] text-[#8C8A88] transition-all duration-200">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className={`${sizeClass} text-[#8C8A88] transition-all duration-200`}>
           <rect x="3" y="3" width="18" height="18" rx="5" />
           <path d="M9 3v18" />
         </svg>
@@ -103,6 +103,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   // Smart drag selection states
   const [isDragSelecting, setIsDragSelecting] = React.useState(false);
   const [dragSelectState, setDragSelectState] = React.useState<boolean>(true);
+
+  const isNewChatActive = activeView === 'chat' && !activeChatId;
 
   React.useEffect(() => {
     selectedChatIdsRef.current = selectedChatIds;
@@ -355,50 +357,76 @@ export const Sidebar: React.FC<SidebarProps> = ({
           opacity: (isOpen || !isMobile) ? 1 : 0
         }}
         transition={{ duration: 0.35, ease: [0.2, 0.8, 0.2, 1] }}
-        className="relative border-r border-white/[0.055] bg-[linear-gradient(180deg,#0C0C0C_0%,#070707_46%,#030303_100%)] shadow-[inset_-1px_0_0_rgba(255,255,255,0.025),10px_0_36px_rgba(0,0,0,0.28)] flex flex-col flex-shrink-0 z-[60] h-full rounded-tr-[32px] rounded-br-[32px] overflow-hidden"
+        className="relative border-r border-white/[0.06] bg-[linear-gradient(180deg,#181818_0%,#111111_46%,#0A0A0A_100%)] shadow-[inset_-1px_0_0_rgba(255,255,255,0.04),10px_0_36px_rgba(0,0,0,0.32)] flex flex-col flex-shrink-0 z-[60] h-full rounded-tr-[32px] rounded-br-[32px] overflow-hidden"
       >
         <div className="pointer-events-none absolute inset-0 rounded-tr-[32px] rounded-br-[32px] bg-[linear-gradient(90deg,rgba(255,255,255,0.026),transparent_18%,transparent_100%)]" />
         
         <div className="relative z-10 flex flex-col h-full w-full overflow-hidden">
           {/* Header containing Branding + Toggle */}
-          <div className={`px-3 py-3.5 flex items-center justify-between cursor-pointer tracking-tight ${!isOpen ? 'justify-center' : ''}`}>
+          <div className={`px-3 cursor-pointer tracking-tight ${isOpen ? 'pt-4 pb-2.5 flex items-center justify-between' : 'pt-4 pb-2 flex justify-center'}`}>
             {isOpen ? (
-              <motion.span
+              <motion.div
                 initial={{ opacity: 0, x: -10 }}
                 animate={{ opacity: 1, x: 0 }}
                 exit={{ opacity: 0, x: -10 }}
                 transition={{ duration: 0.2 }}
-                className="font-serif text-[26px] text-[#E8E6E3] font-medium leading-none hover:opacity-85 transition-opacity whitespace-nowrap"
+                className="flex items-center gap-2.5 select-none pl-3"
               >
-                EterX
-              </motion.span>
+                <img src="/logo.png" alt="EterX logo" className="w-7 h-7 object-contain" />
+                <span className="font-serif text-[24px] text-[#E8E6E3] font-medium leading-none hover:opacity-85 transition-opacity whitespace-nowrap">
+                  EterX
+                </span>
+              </motion.div>
             ) : null}
             <Tooltip text={isOpen ? "Close sidebar" : "Open sidebar"} side="right">
               <div
                 onClick={(e) => { e.stopPropagation(); setIsOpen(!isOpen); }}
                 onMouseEnter={() => setToggleHovered(true)}
                 onMouseLeave={() => setToggleHovered(false)}
-                className="h-8 w-8 rounded-[10px] hover:bg-white/[0.075] active:bg-white/[0.12] active:scale-95 transition-all duration-200 ease-out text-[#8C8A88] hover:text-[#E8E6E3] flex items-center justify-center cursor-pointer border border-transparent hover:border-white/[0.06]"
+                className={`${isOpen ? "h-8 w-8 rounded-[10px]" : "h-10 w-10 rounded-[13px] mx-auto"} hover:bg-white/[0.075] active:bg-white/[0.12] active:scale-95 transition-all duration-200 ease-out text-[#8C8A88] hover:text-[#E8E6E3] flex items-center justify-center cursor-pointer border border-transparent hover:border-white/[0.06]`}
               >
-                <SidebarToggleIcon isOpen={isOpen} isHovered={toggleHovered} />
+                {!isOpen && !toggleHovered ? (
+                  <motion.img
+                    key="logo"
+                    initial={{ opacity: 0, scale: 0.8 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    exit={{ opacity: 0, scale: 0.8 }}
+                    transition={{ duration: 0.15 }}
+                    src="/logo.png"
+                    alt="EterX logo"
+                    className="w-[24px] h-[24px] object-contain"
+                  />
+                ) : (
+                  <motion.div
+                    key="toggle"
+                    initial={{ opacity: 0, scale: 0.8 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    exit={{ opacity: 0, scale: 0.8 }}
+                    transition={{ duration: 0.15 }}
+                  >
+                    <SidebarToggleIcon isOpen={isOpen} isHovered={toggleHovered} sizeClass={isOpen ? "w-[18px] h-[18px]" : "w-[24px] h-[24px]"} />
+                  </motion.div>
+                )}
               </div>
             </Tooltip>
           </div>
 
           {/* Navigation Actions */}
-          <div className="px-3 pb-2">
+          <div className={`px-3 pb-1.5 ${isOpen ? 'pt-2' : 'pt-0'}`}>
             {isOpen ? (
               // Expanded "New Chat" Button
               <Tooltip text="Start a fresh conversation" side="right">
                 <button
                   onClick={() => { createNewChat(); setActiveView('chat'); }}
-                  className="w-full h-[48px] flex items-center justify-between px-3 text-[14px] font-semibold text-[#E8E6E3] bg-white/[0.035] border border-white/[0.07] rounded-[16px] transition-all duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)] hover:bg-white/[0.075] hover:border-white/[0.14] active:scale-[0.985] shadow-[0_8px_22px_rgba(0,0,0,0.24),inset_0_1px_0_rgba(255,255,255,0.045)] hover:shadow-[0_10px_26px_rgba(0,0,0,0.32),inset_0_1px_0_rgba(255,255,255,0.08)] group relative overflow-hidden"
+                  className={`w-full h-[40px] flex items-center justify-between px-3 text-[14px] font-semibold transition-all duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)] active:scale-[0.985] group border relative overflow-hidden ${
+                    isNewChatActive
+                      ? 'text-[#E8E6E3] bg-white/[0.035] border-white/[0.07] rounded-[13px] shadow-[0_8px_22px_rgba(0,0,0,0.24),inset_0_1px_0_rgba(255,255,255,0.045)] hover:bg-white/[0.075] hover:border-white/[0.14] hover:shadow-[0_10px_26px_rgba(0,0,0,0.32),inset_0_1px_0_rgba(255,255,255,0.08)]'
+                      : 'text-[#A7A39D] bg-transparent border-transparent hover:bg-white/[0.055] hover:text-[#E8E6E3] rounded-[13px]'
+                  }`}
                 >
                   <div className="absolute inset-0 bg-gradient-to-t from-white/0 to-white/[0.055] opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none" />
                   <div className="flex items-center gap-3 relative z-10">
-                    <div className="w-[30px] h-[30px] flex items-center justify-center bg-white/[0.045] border border-white/[0.085] rounded-[11px] group-hover:bg-white/[0.12] group-hover:border-white/[0.16] transition-all duration-300 shadow-sm shrink-0">
-                      <PremiumEdit className="w-[16px] h-[16px] text-[#E8E6E3]" strokeWidth={2.2} />
-                    </div>
+                    <PremiumEdit className={`w-[18px] h-[18px] transition-all duration-200 ease-out group-hover:scale-[1.06] ${isNewChatActive ? 'text-[#E8E6E3]' : 'text-[#8C8A88] group-hover:text-[#E8E6E3]'}`} strokeWidth={2.2} />
                     New chat
                   </div>
                 </button>
@@ -408,18 +436,22 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <Tooltip text="New chat" side="right">
                 <button
                   onClick={() => { createNewChat(); setActiveView('chat'); }}
-                  className="w-10 h-10 flex items-center justify-center text-[#E8E6E3] bg-white/[0.035] border border-white/[0.07] rounded-full transition-all duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)] hover:bg-white/[0.075] hover:border-white/[0.14] active:scale-[0.95] shadow-[0_8px_22px_rgba(0,0,0,0.24),inset_0_1px_0_rgba(255,255,255,0.045)] hover:shadow-[0_10px_26px_rgba(0,0,0,0.32),inset_0_1px_0_rgba(255,255,255,0.08)] group relative mx-auto"
+                  className={`w-10 h-10 flex items-center justify-center transition-all duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)] active:scale-[0.95] group relative mx-auto border ${
+                    isNewChatActive
+                      ? 'text-[#E8E6E3] bg-white/[0.035] border-white/[0.07] rounded-full shadow-[0_8px_22px_rgba(0,0,0,0.24),inset_0_1px_0_rgba(255,255,255,0.045)] hover:bg-white/[0.075] hover:border-white/[0.14] hover:shadow-[0_10px_26px_rgba(0,0,0,0.32),inset_0_1px_0_rgba(255,255,255,0.08)]'
+                      : 'text-[#A7A39D] bg-transparent border-transparent hover:bg-white/[0.055] hover:text-[#E8E6E3] rounded-full'
+                  }`}
                 >
                   <div className="absolute inset-0 bg-gradient-to-t from-white/0 to-white/[0.055] opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none rounded-full" />
-                  <PremiumEdit className="w-[18px] h-[18px] text-[#E8E6E3] group-hover:scale-110 transition-all duration-300 relative z-10" strokeWidth={2.2} />
+                  <PremiumEdit className={`w-[18px] h-[18px] transition-all duration-300 relative z-10 ${isNewChatActive ? 'text-[#E8E6E3] scale-100' : 'text-[#8C8A88] group-hover:text-[#E8E6E3] group-hover:scale-110'}`} strokeWidth={2.2} />
                 </button>
               </Tooltip>
             )}
 
-            <div className="h-2"></div>
+            <div className={isOpen ? "h-1" : "h-2"}></div>
 
             {/* Menu Items */}
-            <div className="space-y-[3px] mt-2">
+            <div className={isOpen ? "space-y-1 mt-0" : "space-y-2 mt-0"}>
               {[
                 { id: 'search', label: 'Search', icon: PremiumSearch, tooltip: 'Search conversations', onClick: onSearchClick },
                 { id: 'workspace', label: 'Workspace', icon: PremiumDashboard, tooltip: 'Manage workspace' },
@@ -437,14 +469,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         onClick={item.onClick}
                         className={`w-full h-[40px] flex items-center gap-3 px-3 text-[14px] font-medium rounded-[13px] transition-all duration-200 ease-[cubic-bezier(0.2,0.8,0.2,1)] active:scale-[0.985] group border relative overflow-hidden ${
                           isActive
-                            ? 'bg-white/[0.085] text-[#E8E6E3] border-white/[0.095] shadow-[inset_0_1px_0_rgba(255,255,255,0.05),0_8px_18px_rgba(0,0,0,0.18)]'
-                            : 'text-[#A7A39D] hover:text-[#E8E6E3] hover:bg-white/[0.055] active:bg-white/[0.085] border-transparent hover:border-white/[0.045]'
+                            ? 'text-[#E8E6E3] border-white/[0.07] bg-white/[0.035] shadow-[0_8px_22px_rgba(0,0,0,0.24),inset_0_1px_0_rgba(255,255,255,0.045)] hover:bg-white/[0.075]'
+                            : 'text-[#C4C7C5] hover:text-[#E8E6E3] hover:bg-white/[0.055] active:bg-white/[0.085] border-transparent hover:border-white/[0.045]'
                         }`}
                       >
-                        {isActive && <div className="absolute inset-0 bg-gradient-to-r from-white/0 via-white/5 to-white/0 pointer-events-none" />}
                         <Icon
                           className={`w-[18px] h-[18px] transition-all duration-200 ease-out relative z-10 ${
-                            isActive ? 'text-[#E8E6E3] scale-[1.05]' : 'text-[#8C8A88] group-hover:text-[#E8E6E3] group-hover:scale-[1.06]'
+                            isActive ? 'text-[#E8E6E3] scale-[1.05]' : 'text-[#A7A39D] group-hover:text-[#E8E6E3] group-hover:scale-[1.06]'
                           }`}
                           strokeWidth={2.2}
                         />
@@ -459,14 +490,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         onClick={item.onClick}
                         className={`w-10 h-10 flex items-center justify-center rounded-[13px] transition-all duration-200 ease-[cubic-bezier(0.2,0.8,0.2,1)] active:scale-[0.95] group border relative mx-auto ${
                           isActive
-                            ? 'bg-white/[0.085] text-[#E8E6E3] border-white/[0.095] shadow-[inset_0_1px_0_rgba(255,255,255,0.05),0_8px_18px_rgba(0,0,0,0.18)]'
-                            : 'text-[#A7A39D] hover:text-[#E8E6E3] hover:bg-white/[0.055] active:bg-white/[0.085] border-transparent hover:border-white/[0.045]'
+                            ? 'text-[#E8E6E3] border-white/[0.07] bg-white/[0.035] shadow-[0_8px_22px_rgba(0,0,0,0.24),inset_0_1px_0_rgba(255,255,255,0.045)] hover:bg-white/[0.075]'
+                            : 'text-[#C4C7C5] hover:text-[#E8E6E3] hover:bg-white/[0.055] active:bg-white/[0.085] border-transparent hover:border-white/[0.045]'
                         }`}
                       >
-                        {isActive && <div className="absolute inset-0 bg-gradient-to-r from-white/0 via-white/5 to-white/0 pointer-events-none" />}
                         <Icon
                           className={`w-[18px] h-[18px] transition-all duration-200 ease-out relative z-10 ${
-                            isActive ? 'text-[#E8E6E3] scale-[1.05]' : 'text-[#8C8A88] group-hover:text-[#E8E6E3] group-hover:scale-[1.1]'
+                            isActive ? 'text-[#E8E6E3] scale-[1.05]' : 'text-[#A7A39D] group-hover:text-[#E8E6E3] group-hover:scale-[1.1]'
                           }`}
                           strokeWidth={2.2}
                         />
@@ -480,12 +510,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
           {/* Expanded Recents List */}
           {isOpen ? (
-            <div className="flex-1 mt-1 mx-[6px] mb-[6px] bg-[linear-gradient(180deg,rgba(24,24,24,0.76),rgba(7,7,7,0.96))] backdrop-blur-2xl rounded-[22px] border border-white/[0.045] shadow-[0_12px_34px_rgba(0,0,0,0.32),inset_0_1px_0_rgba(255,255,255,0.026)] flex flex-col py-3 overflow-hidden relative">
+            <div className="flex-1 mt-2 mx-[6px] mb-[6px] bg-[#0C0C0C]/80 backdrop-blur-2xl rounded-[22px] border border-white/[0.055] shadow-[0_12px_34px_rgba(0,0,0,0.28),inset_0_1px_0_rgba(255,255,255,0.03)] flex flex-col py-3 overflow-hidden relative">
               <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-white/[0.055]" />
               <div className="flex items-center justify-between px-4 mb-2 min-h-[26px] relative z-30">
                 <div className="flex min-w-0 items-baseline gap-2">
-                  <span className="text-[13px] font-semibold text-[#B8B4AE] tracking-normal shrink-0 transition-colors duration-300">
-                    {isSelectMode ? `${selectedCount} selected` : 'Recents'}
+                  <span className="text-[13px] font-medium text-[#8E918F] tracking-wide shrink-0 transition-colors duration-300">
+                    {isSelectMode ? `${selectedCount} selected` : 'Recent'}
                   </span>
                 </div>
                 <div className="flex items-center gap-1">
@@ -582,10 +612,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
                             loadChat(chat.id); setActiveView('chat'); 
                           }
                         }}
-                        className={`w-full h-[44px] text-left px-3.5 transition-all duration-200 ease-[cubic-bezier(0.2,0.8,0.2,1)] flex items-center justify-between group cursor-pointer active:scale-[0.988] text-[13.5px] leading-none rounded-[14px] border relative z-0 ${ isActive && !isSelectMode ? 'bg-[#2A2A2A]/95 text-[#F1EFEB] border-white/[0.085] font-semibold shadow-[inset_0_1px_0_rgba(255,255,255,0.05),0_8px_18px_rgba(0,0,0,0.22)]' : isWorking && !isSelectMode ? 'bg-white/[0.04] text-[#E8E6E3] border-white/[0.04]' : 'text-[#A7A39D] border-transparent hover:bg-white/[0.052] active:bg-white/[0.075] hover:text-[#E8E6E3]' } ${isSelectMode && selectedChatIds.has(chat.id) ? 'bg-white/[0.065] text-[#E8E6E3] border-white/[0.075]' : ''} ${isSelectMode ? 'select-none touch-none' : ''}`}
+                        className={`w-full h-[36px] text-left px-3 transition-all duration-200 ease-[cubic-bezier(0.2,0.8,0.2,1)] flex items-center justify-between group cursor-pointer active:scale-[0.988] text-[13px] leading-normal rounded-[10px] border relative z-0 ${ isActive && !isSelectMode ? 'bg-white/[0.035] text-[#E8E6E3] border-white/[0.07] font-medium shadow-[inset_0_1px_0_rgba(255,255,255,0.045),0_8px_20px_rgba(0,0,0,0.24)]' : isWorking && !isSelectMode ? 'bg-white/[0.04] text-[#E8E6E3] border-white/[0.04]' : 'text-[#C4C7C5] border-transparent hover:bg-white/[0.045] active:bg-white/[0.07] hover:text-[#E8E6E3]' } ${isSelectMode && selectedChatIds.has(chat.id) ? 'bg-white/[0.065] text-[#E8E6E3] border-white/[0.065]' : ''} ${isSelectMode ? 'select-none touch-none' : ''}`}
                       >
-                        <div className="flex items-center overflow-hidden flex-1 relative z-10 w-full">
-                          <div className={`transition-all duration-200 ease-[cubic-bezier(0.2,0.8,0.2,1)] overflow-hidden flex items-center justify-center shrink-0 ${isSelectMode ? 'w-[15px] h-[15px] mr-2.5 rounded-[5px] border opacity-100' : 'w-0 h-[15px] mr-0 border-0 opacity-0'} ${selectedChatIds.has(chat.id) ? 'bg-[#E8E6E3] border-[#E8E6E3] text-[#0A0A0A]' : 'border-white/20 bg-transparent text-transparent group-hover:border-white/40'}`}>
+                        <div className="flex items-center overflow-hidden flex-1 relative z-10 w-full pl-0">
+                           <div className={`transition-all duration-200 ease-[cubic-bezier(0.2,0.8,0.2,1)] overflow-hidden flex items-center justify-center shrink-0 ${isSelectMode ? 'w-[15px] h-[15px] mr-2.5 rounded-[5px] border opacity-100' : 'w-0 h-[15px] mr-0 border-0 opacity-0'} ${selectedChatIds.has(chat.id) ? 'bg-[#E8E6E3] border-[#E8E6E3] text-[#0A0A0A]' : 'border-white/20 bg-transparent text-transparent group-hover:border-white/40'}`}>
                             <Check className="w-[10px] h-[10px] shrink-0" strokeWidth={3} />
                           </div>
                           {isWorking ? (
@@ -593,7 +623,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                               animate={{ backgroundPosition: ["200% 50%", "-200% 50%"] }}
                               transition={{ duration: 3, repeat: Infinity, ease: "linear" }}
                               style={{ backgroundSize: '300% auto' }}
-                              className="truncate pr-2 relative z-10 bg-gradient-to-r from-[#555350] via-[#E8E6E3] to-[#555350] bg-clip-text text-transparent font-medium leading-none"
+                              className="truncate pr-2 relative z-10 bg-gradient-to-r from-[#555350] via-[#E8E6E3] to-[#555350] bg-clip-text text-transparent font-medium leading-normal"
                             >
                               {chat.title}
                             </motion.span>
@@ -614,19 +644,19 @@ export const Sidebar: React.FC<SidebarProps> = ({
                                   setEditingChatId(null);
                                 }
                               }}
-                              className="bg-transparent border-none outline-none text-[#E8E6E3] font-medium w-full text-[13.5px] leading-none relative z-10 p-0 m-0"
+                              className="bg-transparent border-none outline-none text-[#E8E6E3] font-medium w-full text-[13px] leading-normal relative z-10 p-0 m-0"
                               onClick={(e) => e.stopPropagation()}
                             />
                           ) : (
                             <div className="flex items-center truncate pr-2 relative z-10 w-full min-w-0">
                               {chat.isFavorite && <PremiumStar className="w-3.5 h-3.5 text-yellow-500/90 mr-1.5 shrink-0 drop-shadow-[0_0_6px_rgba(234,179,8,0.4)]" />}
-                              <span className="truncate text-current leading-none">{chat.title}</span>
+                              <span className="truncate text-current leading-normal">{chat.title}</span>
                             </div>
                           )}
                         </div>
 
                         {isWorking && (
-                          <div className={`absolute right-0 top-0 bottom-0 w-[4.5rem] pointer-events-none z-20 flex items-center justify-end pr-3 ${isActive ? 'bg-gradient-to-l from-[#242424] via-[#242424]/92 to-transparent rounded-r-[14px]' : 'bg-gradient-to-l from-[#141414] via-[#141414]/90 to-transparent rounded-r-[14px]'}`}>
+                          <div className={`absolute right-0 top-0 bottom-0 w-[4.5rem] pointer-events-none z-20 flex items-center justify-end pr-3 ${isActive ? 'bg-gradient-to-l from-[#181818] via-[#181818]/95 to-transparent rounded-r-[10px]' : 'bg-gradient-to-l from-[#111111] via-[#111111]/95 to-transparent rounded-r-[10px]'}`}>
                             <div className="w-[14px] h-[14px] rounded-full border-[2px] border-[#1e3a8a] border-r-[#3b82f6] animate-[spin_0.8s_linear_infinite]" />
                           </div>
                         )}
@@ -661,7 +691,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
           {/* Bottom Profile Area */}
           {isOpen ? (
-            <div className="relative z-10 p-3 pt-2 border-t border-white/[0.055] bg-[linear-gradient(180deg,rgba(9,9,9,0.9),rgba(3,3,3,1))] rounded-br-[32px]">
+            <div className="relative z-10 p-3 pt-2 border-t border-white/[0.065] bg-[#0E0E0E]/90 backdrop-blur-md rounded-br-[32px]">
               <Tooltip text="User settings & plan" side="right">
                 <div onClick={onSettingsClick} className="flex items-center justify-between cursor-pointer group px-2.5 py-2.5 hover:bg-white/[0.055] rounded-[16px] w-full transition-all duration-200 border border-transparent hover:border-white/[0.055] active:scale-[0.988]">
                   <div className="flex items-center gap-3">
@@ -669,19 +699,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       H
                     </div>
                     <div className="flex flex-col">
-                      <span className="text-[13px] font-medium text-[#E8E6E3] group-hover:text-white">harshil</span>
-                      <span className="text-[11px] text-[#A3A19E]"></span>
+                      <span className="text-[13px] font-medium text-[#E8E6E3] group-hover:text-white leading-tight">Harshil Soni</span>
+                      <span className="text-[11px] text-[#8E918F] leading-none">Pro</span>
                     </div>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <PremiumDownload className="w-4 h-4 text-[#8C8A88] group-hover:text-[#E8E6E3] transition-all duration-200 group-hover:scale-[1.06]" strokeWidth={2.2} />
-                    <div className="w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(52,211,153,0.58)]"></div>
+                  <div className="flex items-center justify-center w-7 h-7 rounded-[8px] transition-colors group-hover:bg-white/[0.06]">
+                    <PremiumSettings className="w-[18px] h-[18px] text-[#8E918F] group-hover:text-white transition-all duration-300 group-hover:rotate-45" strokeWidth={2.2} />
                   </div>
                 </div>
               </Tooltip>
             </div>
           ) : (
-            <div className="relative z-10 p-3 pt-2 border-t border-white/[0.055] bg-[linear-gradient(180deg,rgba(9,9,9,0.9),rgba(3,3,3,1))] rounded-br-[32px] flex flex-col items-center gap-3">
+            <div className="relative z-10 p-3 pt-2 border-t border-white/[0.065] bg-[#0E0E0E]/90 backdrop-blur-md rounded-br-[32px] flex flex-col items-center gap-3">
               <Tooltip text="Settings" side="right">
                 <button
                   onClick={onSettingsClick}

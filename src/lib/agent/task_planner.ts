@@ -17,7 +17,7 @@ import { getMainAgentModelConfig, normalizeMainAgentMode, type MainAgentMode } f
  */
 
 const PLANNER_MODELS = [
-  'gemini-3-flash-preview'
+  'gemini-3.5-flash'
 ];
 
 const PLANNER_SYSTEM_PROMPT = `You are an expert Task Decomposition Engine for an autonomous AI agent OS called EterX.

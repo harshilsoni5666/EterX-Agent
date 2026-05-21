@@ -4,31 +4,32 @@
 
 @layer base {
   :root {
-    --background: #101010;
-    --foreground: #E8E6E3;
+    --background: #0F0F0F;
+    --foreground: #E3E3E3;
 
-    --muted: #1a1a1a;
-    --muted-foreground: #6B6966;
+    --muted: #1A1A1A;
+    --muted-foreground: #8A8A8A;
 
-    --border: #242424;
+    --border: rgba(255, 255, 255, 0.08);
 
     --primary: #ffffff;
     --primary-foreground: #000000;
 
-    --secondary: #141414;
-    --secondary-foreground: #E8E6E3;
+    --secondary: #222222;
+    --secondary-foreground: #E3E3E3;
 
-    --accent: #d97706;
+    --accent: #E2765A;
     --accent-foreground: #ffffff;
 
-    --input-bg: #141414;
-    --sidebar-bg: #101010;
+    --input-bg: #1A1A1A;
+    --sidebar-bg: #0E0E0E;
 
     --success: #34d399;
     --destructive: #ef4444;
     --info: #3b82f6;
 
-    --font-mono: var(--font-mono, 'JetBrains Mono', ui-monospace, 'Cascadia Code', 'Fira Code', monospace);
+    --font-inter: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --font-mono: 'JetBrains Mono', ui-monospace, 'Cascadia Code', 'Fira Code', monospace;
 
     --sb-size: 12px;
     --sb-track: transparent;
@@ -41,7 +42,7 @@
   }
 
   html, body {
-    background-color: #101010;
+    background-color: var(--background);
     color: var(--foreground);
     font-family: var(--font-inter, 'Inter'), -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     -webkit-font-smoothing: antialiased;
@@ -49,6 +50,8 @@
     overflow-x: hidden;
     max-width: 100vw;
     font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    overscroll-behavior: none;
+    text-size-adjust: 100%;
   }
 
   /* Use JetBrains Mono for all monospace content */
@@ -66,10 +69,17 @@
   /* Modern slim scrollbar used throughout the app */
   .custom-scrollbar,
   .eterx-modern-scrollbar,
-  .eterx-prompt-preview-scroll {
+  .eterx-prompt-preview-scroll,
+  .eterx-action-scroll {
     scroll-behavior: smooth;
     scrollbar-gutter: stable;
   }
+
+  /* Action-chips container: ultra-slim 3px scrollbar */
+  .eterx-action-scroll::-webkit-scrollbar { width: 3px; }
+  .eterx-action-scroll::-webkit-scrollbar-track { background: transparent; }
+  .eterx-action-scroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 99px; }
+  .eterx-action-scroll::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.18); }
 
   .custom-scrollbar::-webkit-scrollbar,
   .eterx-modern-scrollbar::-webkit-scrollbar,
@@ -175,6 +185,139 @@
   .eterx-modern-scrollbar::-webkit-scrollbar-corner,
   .eterx-prompt-preview-scroll::-webkit-scrollbar-corner {
     background: var(--sb-track);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+.eterx-composer-shell {
+  container-type: inline-size;
+}
+
+.eterx-chat-controls {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.eterx-chat-controls-left,
+.eterx-chat-controls-right {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.eterx-chat-controls-left {
+  flex: 0 1 auto;
+  overflow: visible;
+}
+
+.eterx-chat-controls-right {
+  flex: 1 1 auto;
+  margin-left: auto;
+  justify-content: flex-end;
+}
+
+.eterx-model-selector,
+.eterx-model-button {
+  min-width: 0;
+}
+
+.eterx-model-selector {
+  flex: 0 1 160px;
+}
+
+.eterx-model-selector > .eterx-model-button {
+  width: 100%;
+  min-width: 0;
+}
+
+.eterx-model-button {
+  justify-content: center;
+}
+
+@container (max-width: 430px) {
+  .eterx-chat-controls {
+    gap: 7px;
+    padding-left: 8px !important;
+    padding-right: 8px !important;
+  }
+
+  .eterx-chat-controls-left,
+  .eterx-chat-controls-right {
+    gap: 6px;
+  }
+
+  .eterx-model-selector {
+    flex: 1 1 96px;
+    max-width: 136px;
+  }
+
+  .eterx-model-button {
+    height: 36px !important;
+    width: 100%;
+    padding-left: 10px !important;
+    padding-right: 8px !important;
+  }
+
+  .eterx-model-button span {
+    font-size: 13px;
+  }
+
+  .eterx-control-button {
+    width: 36px !important;
+    height: 36px !important;
+  }
+
+  .eterx-pinned-items {
+    max-width: 88px !important;
+  }
+}
+
+@container (max-width: 340px) {
+  .eterx-chat-controls {
+    gap: 6px;
+  }
+
+  .eterx-chat-controls-left,
+  .eterx-chat-controls-right {
+    gap: 5px;
+  }
+
+  .eterx-control-button {
+    width: 34px !important;
+    height: 34px !important;
+  }
+
+  .eterx-model-selector {
+    flex-basis: 82px;
+    max-width: 112px;
+  }
+
+  .eterx-model-button {
+    height: 34px !important;
+    padding-left: 9px !important;
+    padding-right: 7px !important;
+  }
+
+  .eterx-model-button span {
+    font-size: 12px;
+  }
+
+  .eterx-pinned-items {
+    max-width: 0 !important;
   }
 }
 

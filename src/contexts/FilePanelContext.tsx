@@ -1,16 +1,21 @@
 'use client';
-import React, { createContext, useContext, useState, ReactNode, useCallback } from 'react';
-import { FilePanelProps } from '../components/chat/file-panel';
+import React, { createContext, useContext, useState, ReactNode, useCallback, useMemo } from 'react';
+import type { FilePanelProps } from '../components/chat/file-panel';
 
-interface FilePanelContextType {
+interface FilePanelStateContextType {
   openFiles: FilePanelProps[];
   activeIndex: number;
+}
+
+interface FilePanelActionsContextType {
   openPanel: (props: FilePanelProps) => void;
   closePanel: (index: number) => void;
   setActiveIndex: (index: number) => void;
 }
 
-const FilePanelContext = createContext<FilePanelContextType | null>(null);
+const FilePanelStateContext = createContext<FilePanelStateContextType | null>(null);
+const FilePanelActionsContext = createContext<FilePanelActionsContextType | null>(null);
+const FilePanelPresenceContext = createContext<boolean>(false);
 
 export function FilePanelProvider({ children }: { children: ReactNode }) {
   const [openFiles, setOpenFiles] = useState<FilePanelProps[]>([]);
@@ -46,15 +51,37 @@ export function FilePanelProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
+  const stateValue = useMemo(() => ({ openFiles, activeIndex }), [openFiles, activeIndex]);
+  const actionsValue = useMemo(
+    () => ({ openPanel, closePanel, setActiveIndex }),
+    [openPanel, closePanel]
+  );
+  const hasOpenFiles = openFiles.length > 0;
+
   return (
-    <FilePanelContext.Provider value={{ openFiles, activeIndex, openPanel, closePanel, setActiveIndex }}>
-      {children}
-    </FilePanelContext.Provider>
+    <FilePanelActionsContext.Provider value={actionsValue}>
+      <FilePanelPresenceContext.Provider value={hasOpenFiles}>
+        <FilePanelStateContext.Provider value={stateValue}>
+          {children}
+        </FilePanelStateContext.Provider>
+      </FilePanelPresenceContext.Provider>
+    </FilePanelActionsContext.Provider>
   );
 }
 
 export function useGlobalFilePanel() {
-  const ctx = useContext(FilePanelContext);
-  if (!ctx) throw new Error('useGlobalFilePanel must be used within FilePanelProvider');
-  return ctx;
+  const state = useContext(FilePanelStateContext);
+  const actions = useContext(FilePanelActionsContext);
+  if (!state || !actions) throw new Error('useGlobalFilePanel must be used within FilePanelProvider');
+  return { ...state, ...actions };
+}
+
+export function useFilePanelActions() {
+  const actions = useContext(FilePanelActionsContext);
+  if (!actions) throw new Error('useFilePanelActions must be used within FilePanelProvider');
+  return actions;
+}
+
+export function useHasOpenFiles() {
+  return useContext(FilePanelPresenceContext);
 }

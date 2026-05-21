@@ -1,23 +1,16 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { createPortal } from 'react-dom';
-import { useGlobalFilePanel } from '../../contexts/FilePanelContext';
+import { useFilePanelActions } from '../../contexts/FilePanelContext';
+// Only the Lucide icons actually rendered in JSX (not icon-map/TOOL_META)
 import {
-  ChevronRight, ChevronDown, Terminal, Search, Code, MessageSquare, ShieldAlert, Cpu, Sparkles, Check, Loader2,
-  FilePlus, FileEdit, FileSearch, FolderSearch, BookOpen, GitBranch, LayoutTemplate,
-  MonitorPlay, Camera, Activity, Bell, FileText, Image as ImageIcon,
-  Mail, Settings, Globe, FileArchive, Database, Link, Calculator, BarChart, Server,
-  Youtube, Clipboard, Mic, Rss, Smartphone, ArrowRightLeft, FileJson, Hash, Settings2,
-  Clock, Lock, RefreshCcw, Eye, PlayCircle, Split, Monitor,
-  TerminalSquare, Pencil, Zap, Wand2, Bot, Layers, Gauge, Network, Palette, Timer,
-  Braces, CheckCircle2, FolderOpen, ScanLine, Package, Send, Waypoints, FileCode2,
-  ScrollText, PenLine, Webhook, ShieldHalf, BrainCircuit, Boxes, Maximize2, Copy, CheckCircle, ExternalLink, Lightbulb
+  ChevronRight, ChevronDown, Monitor, ShieldHalf, Copy, CheckCircle, Maximize2
 } from 'lucide-react';
 // @ts-ignore
 import ReactMarkdown from 'react-markdown';
 import { markdownComponents, remarkPlugins, rehypePlugins } from './markdown-renderer';
 import { getConnectorIcon } from '../layout/connectors-modal';
-import { AGENT_ICONS, resolveAgentIcon } from './agent-icons';
+import { AGENT_ICONS, resolveAgentIcon, ComputerIcon } from './agent-icons';
 import { AgentFace } from './agent-face';
 
 
@@ -37,138 +30,100 @@ const PostmanIcon = ({ className }: any) => <svg className={className} viewBox="
 const TrelloIcon = ({ className }: any) => <svg className={className} viewBox="0 0 24 24" fill="currentColor"><path d="M21 0H3C1.343 0 0 1.343 0 3v18c0 1.656 1.343 3 3 3h18c1.656 0 3-1.344 3-3V3c0-1.657-1.344-3-3-3zm-11.5 17c0 .828-.672 1.5-1.5 1.5H5c-.829 0-1.5-.672-1.5-1.5V5c0-.829.671-1.5 1.5-1.5h3c.828 0 1.5.671 1.5 1.5v12zm10 -6c0 .828-.672 1.5-1.5 1.5H15c-.828 0-1.5-.672-1.5-1.5V5c0-.829.672-1.5 1.5-1.5h3c.828 0 1.5.671 1.5 1.5v6z" /></svg>;
 const HubSpotIcon = ({ className }: any) => <svg className={className} viewBox="0 0 24 24" fill="currentColor"><path d="M18.164 7.93V5.084a2.198 2.198 0 0 0 1.266-1.978V3.04a2.199 2.199 0 0 0-2.198-2.198h-.066a2.199 2.199 0 0 0-2.198 2.198v.066a2.199 2.199 0 0 0 1.266 1.978V7.93a6.232 6.232 0 0 0-2.963 1.302L4.3 4.066a2.45 2.45 0 1 0-1.285 1.465l10.765 5.126a6.236 6.236 0 0 0-.838 3.144 6.236 6.236 0 0 0 3.144 5.413l-1.52 2.89a1.98 1.98 0 1 0 1.74.91l1.52-2.89a6.272 6.272 0 0 0 2.41.48A6.272 6.272 0 0 0 26 13.8a6.272 6.272 0 0 0-7.836-6.07zm.977 9.8a3.492 3.492 0 1 1 0-6.984 3.492 3.492 0 0 1 0 6.984z" transform="scale(0.92) translate(-0.2, 0)" /></svg>;
 
-const IconMap: Record<string, any> = {
-  Terminal, TerminalSquare, Search, Code, MessageSquare, Cpu, Sparkles, Check, CheckCircle2, FilePlus, FileEdit, FileSearch, FileCode2,
-  FolderSearch, FolderOpen, BookOpen, GitBranch, LayoutTemplate, MonitorPlay, Camera, Activity, Bell, FileText, Mail, Settings,
-  Globe, FileArchive, Database, Link, Calculator, BarChart, Server, Youtube, Clipboard, Mic, Rss, Smartphone, ArrowRightLeft,
-  FileJson, Hash, Settings2, Clock, Lock, RefreshCcw, Eye, PlayCircle, Split, Monitor, Pencil, Zap, Wand2, Bot, Layers,
-  Gauge, Network, Palette, Timer, Braces, ScanLine, Package, Send, Waypoints, ScrollText, PenLine, Webhook, ShieldHalf,
-  BrainCircuit, Boxes, ImageIcon
+// Verb-only lookup — icon is ALWAYS resolved by resolveAgentIcon (8 premium icons)
+// No Lucide icons stored here — just past-tense display labels
+const VERB_MAP: Record<string, string> = {
+  'Running command':         'Ran',
+  'Running project command': 'Ran',
+  'Reading file':            'Read',
+  'Scanning directory':      'Listed',
+  'Editing file':            'Edited',
+  'Writing artifact':        'Created',
+  'Searching codebase':      'Searched',
+  'Researching':             'Web searched',
+  'Reading source':          'Scraped',
+  'Deep researching':        'Researched',
+  'Analyzing code':          'Analyzed',
+  'Refactoring code':        'Refactored',
+  'Analyzing workspace':     'Analyzed',
+  'Analyzing files':         'Analyzed',
+  'Verifying code':          'Verified',
+  'Verifying output':        'Verified',
+  'Scaffolding project':     'Scaffolded',
+  'Git operation':           'Git',
+  'Spawning sub-agents':     'Spawned',
+  'Decomposing task':        'Decomposed',
+  'Loading skill':           'Loaded',
+  'API request':             'Called API',
+  'API call':                'Called API',
+  'Network operation':       'Network',
+  'Reading PDF':             'Read PDF',
+  'Generating document':     'Generated',
+  'Generating image':        'Generated',
+  'Generating docs':         'Generated docs',
+  'Generating chart':        'Generated',
+  'Generating speech':       'Generated',
+  'Capturing screen':        'Captured',
+  'Evaluating logic':        'Evaluated',
+  'Monitoring system':       'Monitored',
+  'Managing email':          'Email',
+  'Comparing files':         'Compared',
+  'Transforming data':       'Transformed',
+  'Compressing files':       'Compressed',
+  'Database query':          'Queried',
+  'Calculating':             'Calculated',
+  'Analyzing data':          'Analyzed',
+  'Clipboard':               'Clipboard',
+  'Extracting transcript':   'Extracted',
+  'Reading RSS feed':        'Read feed',
+  'WhatsApp':                'WhatsApp',
+  'Telegram':                'Telegram',
+  'Slack':                   'Slack',
+  'Sending Slack':           'Slack',
+  'Slack message':           'Slack',
+  'GitHub':                  'GitHub',
+  'GitHub push':             'Pushed',
+  'GitHub PR':               'Pull Request',
+  'GitHub issue':            'Issue',
+  'Notion':                  'Notion',
+  'Notion page':             'Notion',
+  'Linear':                  'Linear',
+  'Linear issue':            'Linear',
+  'Jira':                    'Jira',
+  'Jira issue':              'Jira',
+  'Figma':                   'Figma',
+  'Discord':                 'Discord',
+  'Discord message':         'Discord',
+  'Stripe':                  'Stripe',
+  'Vercel':                  'Vercel',
+  'Airtable':                'Airtable',
+  'Postman':                 'Postman',
+  'Trello':                  'Trello',
+  'HubSpot':                 'HubSpot',
+  'Safety check':            'Checked',
+  'Context operation':       'Context',
+  'Saving progress':         'Saved',
+  'Background task':         'Background',
+  'Creating tool':           'Created tool',
+  'Converting markdown':     'Converted',
+  'System automation':       'Automated',
+  'Managing process':        'Process',
+  'HTTP server':             'Server',
+  'Processing text':         'Processed',
+  'Notifying':               'Notified',
+  'Running macro':           'Ran macro',
+  'Executing chain':         'Executed',
+  'Self-improving':          'Improved',
+  'Watching files':          'Watching',
+  'Vault operation':         'Vault',
+  'Managing environment':    'Env',
+  'Scheduled task':          'Scheduled',
 };
 
-const I = "w-3.5 h-3.5 shrink-0";
-const S = 1.75;
-
-// Full mapping of every gemini.ts tool label → icon + verb
-const TOOL_META: Record<string, { icon: any; verb: string; color?: string }> = {
-  'Running command': { icon: TerminalSquare, verb: 'Ran', color: '#8b949e' },
-  'Running project command': { icon: TerminalSquare, verb: 'Ran', color: '#8b949e' },
-  'Reading file': { icon: FileText, verb: 'Read', color: '#8b949e' },
-  'Scanning directory': { icon: FolderOpen, verb: 'Listed', color: '#8b949e' },
-  'Editing file': { icon: PenLine, verb: 'Edited', color: '#4FC1FF' },
-  'Writing artifact': { icon: FilePlus, verb: 'Created', color: '#3fb950' },
-  'Searching codebase': { icon: FileSearch, verb: 'Searched', color: '#8b949e' },
-  'Researching': { icon: Globe, verb: 'Web searched', color: '#8b949e' },
-  'Reading source': { icon: Globe, verb: 'Scraped', color: '#8b949e' },
-  'Deep researching': { icon: BrainCircuit, verb: 'Researched', color: '#8b949e' },
-  'Analyzing code': { icon: FileCode2, verb: 'Analyzed', color: '#8b949e' },
-  'Refactoring code': { icon: PenLine, verb: 'Refactored', color: '#4FC1FF' },
-  'Analyzing workspace': { icon: Boxes, verb: 'Analyzed', color: '#8b949e' },
-  'Analyzing files': { icon: FolderSearch, verb: 'Analyzed', color: '#8b949e' },
-  'Verifying code': { icon: CheckCircle2, verb: 'Verified', color: '#3fb950' },
-  'Verifying output': { icon: CheckCircle2, verb: 'Verified', color: '#3fb950' },
-  'Scaffolding project': { icon: Layers, verb: 'Scaffolded', color: '#3fb950' },
-  'Git operation': { icon: GitBranch, verb: 'Git', color: '#8b949e' },
-  'Spawning sub-agents': { icon: Bot, verb: 'Spawned', color: '#a78bfa' },
-  'Decomposing task': { icon: Split, verb: 'Decomposed', color: '#8b949e' },
-  'Loading skill': { icon: BookOpen, verb: 'Loaded', color: '#8b949e' },
-  'API request': { icon: Webhook, verb: 'Called API', color: '#8b949e' },
-  'API call': { icon: Webhook, verb: 'Called API', color: '#8b949e' },
-  'Network operation': { icon: Network, verb: 'Network', color: '#8b949e' },
-  'Reading PDF': { icon: ScrollText, verb: 'Read PDF', color: '#8b949e' },
-  'Generating document': { icon: FileText, verb: 'Generated', color: '#3fb950' },
-  'Generating image': { icon: Palette, verb: 'Generated', color: '#3fb950' },
-  'Generating docs': { icon: BookOpen, verb: 'Generated docs', color: '#3fb950' },
-  'Generating chart': { icon: BarChart, verb: 'Generated', color: '#3fb950' },
-  'Generating speech': { icon: Mic, verb: 'Generated', color: '#3fb950' },
-  'Capturing screen': { icon: Camera, verb: 'Captured', color: '#8b949e' },
-  'Evaluating logic': { icon: Zap, verb: 'Evaluated', color: '#8b949e' },
-  'Monitoring system': { icon: Gauge, verb: 'Monitored', color: '#8b949e' },
-  'Managing email': { icon: Mail, verb: 'Email', color: '#8b949e' },
-  'Comparing files': { icon: ArrowRightLeft, verb: 'Compared', color: '#8b949e' },
-  'Transforming data': { icon: Braces, verb: 'Transformed', color: '#8b949e' },
-  'Compressing files': { icon: Package, verb: 'Compressed', color: '#8b949e' },
-  'Database query': { icon: Database, verb: 'Queried', color: '#8b949e' },
-  'Calculating': { icon: Calculator, verb: 'Calculated', color: '#8b949e' },
-  'Analyzing data': { icon: BarChart, verb: 'Analyzed', color: '#8b949e' },
-  'Clipboard': { icon: Clipboard, verb: 'Clipboard', color: '#8b949e' },
-  'Extracting transcript': { icon: Youtube, verb: 'Extracted', color: '#8b949e' },
-  'Reading RSS feed': { icon: Rss, verb: 'Read feed', color: '#8b949e' },
-  'WhatsApp': { icon: MessageSquare, verb: 'WhatsApp', color: '#3fb950' },
-  'Telegram': { icon: Send, verb: 'Telegram', color: '#8b949e' },
-  'Slack': { icon: SlackIcon, verb: 'Slack', color: '#E01E5A' },
-  'Sending Slack': { icon: SlackIcon, verb: 'Slack', color: '#E01E5A' },
-  'Slack message': { icon: SlackIcon, verb: 'Slack', color: '#E01E5A' },
-  'GitHub': { icon: GitHubIcon, verb: 'GitHub', color: '#8b949e' },
-  'GitHub push': { icon: GitHubIcon, verb: 'Pushed', color: '#8b949e' },
-  'GitHub PR': { icon: GitHubIcon, verb: 'Pull Request', color: '#8b949e' },
-  'GitHub issue': { icon: GitHubIcon, verb: 'Issue', color: '#f85149' },
-  'Notion': { icon: NotionIcon, verb: 'Notion', color: '#E8E6E3' },
-  'Notion page': { icon: NotionIcon, verb: 'Notion', color: '#E8E6E3' },
-  'Linear': { icon: LinearIcon, verb: 'Linear', color: '#5E6AD2' },
-  'Linear issue': { icon: LinearIcon, verb: 'Linear', color: '#5E6AD2' },
-  'Jira': { icon: JiraIcon, verb: 'Jira', color: '#0052CC' },
-  'Jira issue': { icon: JiraIcon, verb: 'Jira', color: '#0052CC' },
-  'Figma': { icon: FigmaIcon, verb: 'Figma', color: '#A259FF' },
-  'Discord': { icon: DiscordIcon, verb: 'Discord', color: '#5865F2' },
-  'Discord message': { icon: DiscordIcon, verb: 'Discord', color: '#5865F2' },
-  'Stripe': { icon: StripeIcon, verb: 'Stripe', color: '#635BFF' },
-  'Vercel': { icon: VercelIcon, verb: 'Vercel', color: '#E8E6E3' },
-  'Airtable': { icon: AirtableIcon, verb: 'Airtable', color: '#18BFFF' },
-  'Postman': { icon: PostmanIcon, verb: 'Postman', color: '#FF6C37' },
-  'Trello': { icon: TrelloIcon, verb: 'Trello', color: '#0052CC' },
-  'HubSpot': { icon: HubSpotIcon, verb: 'HubSpot', color: '#FF7A59' },
-  'Safety check': { icon: ShieldHalf, verb: 'Checked', color: '#f85149' },
-  'Context operation': { icon: Database, verb: 'Context', color: '#8b949e' },
-  'Saving progress': { icon: CheckCircle2, verb: 'Saved', color: '#3fb950' },
-  'Background task': { icon: Timer, verb: 'Background', color: '#8b949e' },
-  'Creating tool': { icon: Wand2, verb: 'Created tool', color: '#a78bfa' },
-  'Converting markdown': { icon: FileText, verb: 'Converted', color: '#8b949e' },
-  'System automation': { icon: Settings2, verb: 'Automated', color: '#8b949e' },
-  'Managing process': { icon: Activity, verb: 'Process', color: '#8b949e' },
-  'HTTP server': { icon: Server, verb: 'Server', color: '#8b949e' },
-  'Processing text': { icon: Hash, verb: 'Processed', color: '#8b949e' },
-  'Notifying': { icon: Bell, verb: 'Notified', color: '#8b949e' },
-  'Running macro': { icon: Waypoints, verb: 'Ran macro', color: '#8b949e' },
-  'Executing chain': { icon: Waypoints, verb: 'Executed', color: '#8b949e' },
-  'Self-improving': { icon: RefreshCcw, verb: 'Improved', color: '#a78bfa' },
-  'Watching files': { icon: Eye, verb: 'Watching', color: '#8b949e' },
-  'Vault operation': { icon: Lock, verb: 'Vault', color: '#8b949e' },
-  'Managing environment': { icon: Lock, verb: 'Env', color: '#8b949e' },
-  'Scheduled task': { icon: Clock, verb: 'Scheduled', color: '#8b949e' },
-};
-
-const getToolMeta = (text: string, type: string, iconName?: string) => {
-  if (iconName && IconMap[iconName]) return { icon: IconMap[iconName], verb: text, color: '#8b949e' };
-  // Exact match first
-  const exact = TOOL_META[text];
-  if (exact) return exact;
-  // Fuzzy match on custom uiActionText from AI
-  const t = (text || '').toLowerCase();
-  if (t.includes('planning') || t.includes('plan ') || t.includes('approach')) return { icon: BrainCircuit, verb: text, color: '#a78bfa' };
-  if (t.includes('spawn') || t.includes('agent') || t.includes('sub-agent')) return { icon: Bot, verb: text, color: '#a78bfa' };
-  if (t.includes('deep research') || t.includes('researching')) return { icon: BrainCircuit, verb: text, color: '#8b949e' };
-  if (t.includes('web search') || t.includes('browsing') || t.includes('scraping')) return { icon: Globe, verb: text, color: '#8b949e' };
-  if (t.includes('checking') || t.includes('inspecting')) return { icon: (t.includes('folder') || t.includes('project') || t.includes('src') || t.includes('components')) ? FolderSearch : FileSearch, verb: text, color: '#8b949e' };
-  if (t.includes('reading') || t.includes('reading file') || t.includes('read ')) return { icon: FileText, verb: text, color: '#8b949e' };
-  if (t.includes('created') || t.includes('create ')) return { icon: FilePlus, verb: text, color: '#3fb950' };
-  if (t.includes('edited') || t.includes('edit ')) return { icon: PenLine, verb: text, color: '#4FC1FF' };
-  if (t.includes('creating') || t.includes('writing') || t.includes('generating') || t.includes('scaffolding')) return { icon: FilePlus, verb: text, color: '#3fb950' };
-  if (t.includes('editing') || t.includes('modifying') || t.includes('updating') || t.includes('refactor')) return { icon: PenLine, verb: text, color: '#4FC1FF' };
-  if (t.includes('running') || t.includes('executing') || t.includes('building') || t.includes('installing')) return { icon: TerminalSquare, verb: text, color: '#8b949e' };
-  if (t.includes('search') || t.includes('scan') || t.includes('analyz') || t.includes('listing')) return { icon: Search, verb: text, color: '#8b949e' };
-  if (t.includes('verif') || t.includes('check') || t.includes('test')) return { icon: CheckCircle2, verb: text, color: '#3fb950' };
-  if (t.includes('git') || t.includes('commit') || t.includes('push') || t.includes('clone')) return { icon: GitBranch, verb: text, color: '#8b949e' };
-  if (t.includes('api') || t.includes('request') || t.includes('fetch')) return { icon: Webhook, verb: text, color: '#8b949e' };
-  if (t.includes('notif') || t.includes('alert')) return { icon: Bell, verb: text, color: '#8b949e' };
-  // Type-based fallback
-  if (type === 'command') return { icon: TerminalSquare, verb: 'Ran', color: '#8b949e' };
-  if (type === 'progress') return { icon: Loader2, verb: text || 'Working', color: '#8b949e' };
-  if (type === 'browser') return { icon: Globe, verb: text || 'Using browser', color: '#8b949e' };
-  if (type === 'exploration') return { icon: Search, verb: 'Searched', color: '#8b949e' };
-  if (type === 'file_edit') return { icon: PenLine, verb: 'Edited', color: '#4FC1FF' };
-  if (type === 'communication') return { icon: MessageSquare, verb: text, color: '#8b949e' };
-  return { icon: Zap, verb: text || 'Action', color: '#8b949e' };
+// getToolMeta — verb extraction only; icon is always resolved by resolveAgentIcon
+const getToolMeta = (text: string, type: string, _iconName?: string) => {
+  const verb = VERB_MAP[text] || text || 'Action';
+  return { icon: null, verb, color: '#E8E6E3' };
 };
 
 const displayedTextRegistry = new Map<string, number>();
@@ -178,14 +133,53 @@ const useTypewriter = (targetText: string, _isActive: boolean) => {
   return { displayedText: targetText };
 };
 
+// Live-second counter — startRef is null until first live tick, so elapsed is always real
+const useThinkTimer = (isLive: boolean) => {
+  const [secs, setSecs] = useState(0);
+  const startRef = useRef<number | null>(null);   // null until isLive first fires
+  const frozenRef = useRef<number | null>(null);  // set once when isLive goes false
+
+  useEffect(() => {
+    if (isLive) {
+      // Always reset on new live session
+      startRef.current = Date.now();
+      frozenRef.current = null;
+      setSecs(0);
+      const id = setInterval(() => {
+        setSecs(Math.floor((Date.now() - startRef.current!) / 1000));
+      }, 1000);
+      return () => clearInterval(id); // stops interval immediately when isLive → false
+    } else {
+      // Freeze exactly once when thinking ends
+      if (startRef.current !== null && frozenRef.current === null) {
+        frozenRef.current = Math.floor((Date.now() - startRef.current) / 1000);
+        setSecs(frozenRef.current);
+      }
+    }
+  }, [isLive]);
+
+  // Always return the frozen value if available (never re-tick after done)
+  return frozenRef.current !== null ? frozenRef.current : secs;
+};
+
 export const ProfessionalThought = ({ text, isLatest, isThinking, variant = 'thought', suffix }: { text: string, isLatest: boolean, isThinking: boolean, variant?: 'thought' | 'answer' | 'note', suffix?: React.ReactNode }) => {
   const [open, setOpen] = useState(false);
+  const isLive = isLatest && isThinking;
+  const secs = useThinkTimer(isLive);
+
   const renderText = useMemo(() => {
     if (!text) return '';
     let f = text.replace(/!\[.*?\]\(\/absolute.*?\.png\)/gi, '').replace(/<\/?thought>/gi, '');
     f = f.replace(/([^\n])(#{1,6}\s)/g, '$1\n\n$2').replace(/([.!?:])(\s*\n)(#{1,6}\s)/g, '$1\n\n$3');
     return f.trim();
   }, [text]);
+
+  // "Thinking... 4s" while live → "Thought for 4s" when done
+  const thinkLabel = isLive
+    ? `Thinking... ${secs}s`
+    : secs > 0
+      ? `Thought for ${secs}s`
+      : 'Thought';
 
   if (variant === 'thought') {
     return (
@@ -199,15 +193,11 @@ export const ProfessionalThought = ({ text, isLatest, isThinking, variant = 'tho
         <div className={`overflow-hidden rounded-[14px] border bg-[#161616]/82 shadow-[inset_0_1px_0_rgba(255,255,255,0.04),0_2px_12px_rgba(0,0,0,0.18)] transition-colors ${ open ? 'border-white/[0.14]' : 'border-white/[0.08] hover:border-white/[0.14]' }`}>
           <button
             onClick={() => setOpen(!open)}
-            className="flex min-h-[42px] w-full items-center gap-2.5 px-2.5 py-1.5 text-left transition-colors hover:bg-white/[0.03] group"
+            className="flex min-h-[42px] w-full items-center gap-2.5 px-3.5 py-1.5 text-left transition-colors hover:bg-white/[0.03] group"
           >
-            <div className="w-0.5 shrink-0" />
-            <span className="flex h-7 w-7 items-center justify-center rounded-[9px] border border-white/[0.10] bg-[#1C1C1C]/80 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] shrink-0 group-hover:border-white/[0.18] group-hover:bg-[#242424] transition-all">
-              {AGENT_ICONS['Think']
-                ? <AGENT_ICONS.Think.Icon isLive={isLatest && isThinking} size={14} color="#A99CFF" />
-                : <Lightbulb className="h-3.5 w-3.5 shrink-0 text-[#A99CFF]" strokeWidth={1.75} />}
+            <span className={`flex-1 text-[14.5px] font-semibold ${ isLive ? 'text-[#A0A0A0] eterx-live-text' : 'text-[#6B6966]' }`}>
+              {thinkLabel}
             </span>
-            <span className={`flex-1 text-[14.5px] font-semibold text-[#E8E6E3] ${ isLatest && isThinking ? 'eterx-live-text' : '' }`}>Think</span>
             <ChevronRight className={`h-4 w-4 text-[#5E5A55] group-hover:text-[#A3A19E] transition-all ${ open ? 'rotate-90' : '' }`} />
           </button>
           <AnimatePresence initial={false}>
@@ -219,14 +209,14 @@ export const ProfessionalThought = ({ text, isLatest, isThinking, variant = 'tho
                 transition={{ duration: 0.18, ease: 'easeOut' }}
                 className="overflow-hidden"
               >
-                <div className="pl-[59px] pr-5 pb-5 pt-1 text-[14px] leading-[1.72] text-[#B6B2AB]">
+                <div className="eterx-action-scroll pl-[59px] pr-5 pb-5 pt-1 text-[14px] leading-[1.72] text-[#A8A5A0] overflow-y-auto" style={{ maxHeight: '320px' }}>
                   <ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} components={{
                     ...markdownComponents,
-                    p: ({ node, ...props }: any) => <p className="mb-3.5 last:mb-0 break-words leading-[1.72] text-[#B6B2AB]" {...props} />,
-                    ol: ({ node, ...props }: any) => <ol className="my-3.5 list-decimal space-y-3 pl-6 text-[#B6B2AB]" {...props} />,
-                    ul: ({ node, ...props }: any) => <ul className="my-3.5 list-disc space-y-3 pl-6 text-[#B6B2AB]" {...props} />,
-                    li: ({ node, ...props }: any) => <li className="pl-2 leading-[1.7] marker:text-[#918D87]" {...props} />,
-                    strong: ({ node, ...props }: any) => <strong className="font-semibold text-[#DAD7D2]" {...props} />,
+                    p: ({ node, ...props }: any) => <p className="mb-3.5 last:mb-0 break-words leading-[1.72] text-[#A8A5A0]" {...props} />,
+                    ol: ({ node, ...props }: any) => <ol className="my-3.5 list-decimal space-y-3 pl-6 text-[#A8A5A0]" {...props} />,
+                    ul: ({ node, ...props }: any) => <ul className="my-3.5 list-disc space-y-3 pl-6 text-[#A8A5A0]" {...props} />,
+                    li: ({ node, ...props }: any) => <li className="pl-2 leading-[1.7] marker:text-[#807D78]" {...props} />,
+                    strong: ({ node, ...props }: any) => <strong className="font-semibold text-[#C4C1BC]" {...props} />,
                     a: ({ node, ...props }: any) => <a className="text-[#E2765A] hover:underline" target="_blank" rel="noopener" {...props} />,
                   }}>{renderText}</ReactMarkdown>
                 </div>
@@ -246,16 +236,16 @@ export const ProfessionalThought = ({ text, isLatest, isThinking, variant = 'tho
       initial={isNote ? { opacity: 0, y: 4 } : false}
       animate={isNote ? { opacity: 1, y: 0 } : undefined}
       transition={isNote ? { duration: 0.2, ease: [0.22, 1, 0.36, 1] } : undefined}
-      className={`professional-thought relative w-full max-w-full font-sans font-normal selection:bg-[#E2765A]/20 select-text tracking-normal ${ isNote ? 'py-1 text-[15.5px] leading-[1.62] text-[#D8D5CF]' : 'text-[15.5px] leading-[1.78] text-[#E8E6E3]' }`}
+      className={`professional-thought relative w-full max-w-full font-sans font-normal selection:bg-[#E2765A]/20 select-text tracking-normal ${ isNote ? 'py-1 text-[15.5px] leading-[1.62] text-[#B6B2AB]' : 'text-[15.5px] leading-[1.78] text-[#C4C1BC]' }`}
     >
       <ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} components={{
         ...markdownComponents,
-        p: ({ node, ...props }: any) => <p className={`mb-1.5 last:mb-0 break-words tracking-normal ${ isNote ? 'leading-[1.62] text-[#D8D5CF]' : 'leading-[1.78] text-[#E8E6E3]' }`} {...props} />,
-        h1: ({ node, ...props }: any) => <h1 className="mt-0 mb-4 text-[24px] font-bold leading-tight text-[#E8E6E3]" {...props} />,
-        h2: ({ node, ...props }: any) => <h2 className="mt-0 mb-3 text-[20px] font-bold leading-tight text-[#E8E6E3]" {...props} />,
-        h3: ({ node, ...props }: any) => <h3 className="mt-0 mb-3 text-[17px] font-bold leading-tight text-[#E8E6E3]" {...props} />,
-        h4: ({ node, ...props }: any) => <h4 className="mt-0 mb-2 text-[15px] font-semibold leading-tight text-[#E8E6E3]" {...props} />,
-        strong: ({ node, ...props }: any) => <strong className="font-semibold text-[#E4E1DC]" {...props} />,
+        p: ({ node, ...props }: any) => <p className={`mb-1.5 last:mb-0 break-words tracking-normal ${ isNote ? 'leading-[1.62] text-[#B6B2AB]' : 'leading-[1.78] text-[#C4C1BC]' }`} {...props} />,
+        h1: ({ node, ...props }: any) => <h1 className="mt-0 mb-4 text-[24px] font-bold leading-tight text-[#C4C1BC]" {...props} />,
+        h2: ({ node, ...props }: any) => <h2 className="mt-0 mb-3 text-[20px] font-bold leading-tight text-[#C4C1BC]" {...props} />,
+        h3: ({ node, ...props }: any) => <h3 className="mt-0 mb-3 text-[17px] font-bold leading-tight text-[#C4C1BC]" {...props} />,
+        h4: ({ node, ...props }: any) => <h4 className="mt-0 mb-2 text-[15px] font-semibold leading-tight text-[#C4C1BC]" {...props} />,
+        strong: ({ node, ...props }: any) => <strong className="font-semibold text-[#D0CDC7]" {...props} />,
         a: ({ node, ...props }: any) => <a className="text-[#E2765A] hover:underline" target="_blank" rel="noopener" {...props} />,
       }}>{renderText}</ReactMarkdown>
       {suffix}
@@ -373,7 +363,10 @@ const InlineConsole = ({ command, content, exitCode, durationMs }: { command: st
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-2.5 bg-[#161616] border-b border-white/[0.06]">
         <div className="flex items-center gap-3">
-          <Terminal className="w-3.5 h-3.5 text-[#555350]" />
+          <svg className="w-3.5 h-3.5 text-[#555350]" fill="none" viewBox="0 0 16 16" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+            <rect x="1.5" y="2.5" width="13" height="11" rx="1.5" />
+            <path d="M4 6l2.5 2L4 10" /><path d="M9 10h3" />
+          </svg>
           <span className="text-[11px] text-[#555350] font-bold uppercase tracking-widest">Terminal</span>
         </div>
         <div className="flex items-center gap-2">
@@ -547,8 +540,9 @@ const ActionChip = ({
   log: any, isLastChip: boolean, isActiveGroup: boolean, allLogs: any[],
   isNested?: boolean, inCard?: boolean
 }) => {
+  const isLiveChip = isActiveGroup && isLastChip;
   const isEdit = log.type === 'file_edit';
-  const { openPanel } = useGlobalFilePanel();
+  const { openPanel } = useFilePanelActions();
   // Determine the filename to show as a blue link
   const rawPath = log.filename && log.filename !== 'system' ? log.filename : '';
   const fileName = rawPath.split(/[\\/]/).pop() || '';
@@ -573,27 +567,34 @@ const ActionChip = ({
   const [isExpanded, setIsExpanded] = useState(false);
   // Resolve the full path for IDE link
   const fullPath = rawPath || preview?.filepath || '';
-  // Get meta (icon + verb + color) from the tool label
+  // Past-tense verb for display; live overrides to present tense below
   const meta = useMemo(() => {
-    // If it's a file_edit with a known preview, use Created/Edited
     if (isEdit && preview) return {
-      ...(preview.isEdit ? TOOL_META['Editing file'] : TOOL_META['Writing artifact']),
-      verb: preview.isEdit ? 'Edited' : 'Created',
-      color: preview.isEdit ? '#4FC1FF' : '#3fb950'
+      icon: null,
+      verbDone: preview.isEdit ? 'Edited' : 'Created',
+      verbLive: preview.isEdit ? 'Editing' : 'Creating',
+      color: '#E8E6E3',
     };
     if (isEdit && !preview) {
       const lowerText = String(log.text || '').toLowerCase();
       const isCreate = lowerText.includes('created') || lowerText.includes('writing') || lowerText.includes('artifact');
-      return {
-        ...(isCreate ? TOOL_META['Writing artifact'] : TOOL_META['Editing file']),
-        verb: isCreate ? 'Created' : 'Edited',
-        color: isCreate ? '#3fb950' : '#4FC1FF'
-      };
+      return { icon: null, verbDone: isCreate ? 'Created' : 'Edited', verbLive: isCreate ? 'Creating' : 'Editing', color: '#E8E6E3' };
     }
-    return getToolMeta(log.text, log.type, log.icon);
+    const base = getToolMeta(log.text, log.type, log.icon);
+    // Map past-tense verbs → live present-tense
+    const LIVE_VERBS: Record<string, string> = {
+      'Ran': 'Running', 'Read': 'Reading', 'Listed': 'Listing',
+      'Edited': 'Editing', 'Created': 'Creating', 'Searched': 'Searching',
+      'Web searched': 'Web searching', 'Scraped': 'Scraping',
+      'Researched': 'Researching', 'Analyzed': 'Analyzing',
+      'Refactored': 'Refactoring', 'Verified': 'Verifying',
+      'Scaffolded': 'Scaffolding', 'Loaded': 'Loading',
+      'Called API': 'Calling API', 'Generated': 'Generating',
+      'Queried': 'Querying', 'Comparing': 'Compared',
+    };
+    return { ...base, verbDone: base.verb, verbLive: LIVE_VERBS[base.verb] || base.verb };
   }, [isEdit, log.text, log.type, log.icon, preview]);
-  const Icon = meta.icon;
-  const isLiveChip = isActiveGroup && isLastChip;
+  const displayVerb = isLiveChip ? (meta.verbLive || meta.verbDone) : (meta.verbDone || (meta as any).verb);
   const hasDetail = hasFile || !!subtitle;
   // Open a file into the IDE panel
   const openInIde = (e: React.MouseEvent, mode?: 'preview') => {
@@ -609,6 +610,9 @@ const ActionChip = ({
     });
   };
 
+  // Think chips: no icon, just label
+  const isThinkChip = log.text === 'Think' || log.type === 'think';
+
   return (
     <div className="w-full">
       <div
@@ -616,25 +620,23 @@ const ActionChip = ({
         className={`flex min-h-[42px] items-center gap-2.5 px-2.5 py-1.5 transition-colors group ${ inCard ? 'rounded-none border-0 bg-transparent hover:bg-white/[0.04]' : preview ? 'cursor-pointer rounded-[14px] border border-white/[0.08] bg-[#161616]/82 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] hover:bg-[#1C1C1C]/92 hover:border-white/[0.14]' : 'cursor-default rounded-[14px] hover:bg-white/[0.03]' } ${ preview ? 'cursor-pointer' : 'cursor-default' }`}
       >
         {inCard ? <div className="w-0 shrink-0" /> : <div className="w-1 shrink-0" />}
-        {(() => {
-          const agentEntry = resolveAgentIcon(meta.verb, log.text);
-          const boxCls = `flex h-7 w-7 items-center justify-center rounded-[9px] border shrink-0 transition-all ${isLiveChip ? 'border-white/[0.18] bg-[#2A2A2A] shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]' : 'border-white/[0.10] bg-[#1C1C1C]/85 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] group-hover:border-white/[0.16] group-hover:bg-[#242424]'}`;
-          if (agentEntry) {
-            const { Icon: AI, color: ac } = agentEntry;
-            return <span className={boxCls}><AI isLive={isLiveChip} size={14} color={ac} /></span>;
-          }
-          return <span className={boxCls}><Icon className="h-3.5 w-3.5 shrink-0" strokeWidth={1.9} style={{ color: meta.color || '#8C8A88' }} /></span>;
+        {!isThinkChip && (() => {
+          // Always use the 8 premium white icons via resolveAgentIcon
+          const agentEntry = resolveAgentIcon(displayVerb, log.text, log.iconCategory);
+          const { Icon: AI, color: ac } = agentEntry;
+          return <span className="flex h-7 w-7 items-center justify-center shrink-0"><AI isLive={isLiveChip} size={18} color={isLiveChip ? ac : '#6B6966'} /></span>;
         })()}
-        <span className={`shrink-0 truncate text-[14.5px] font-semibold leading-tight tracking-normal ${isLiveChip ? 'eterx-live-text' : 'text-[#E8E6E3]'}`}>{meta.verb}</span>
-        {hasDetail && <span className="shrink-0 text-[#5A5650] text-[13px] font-light select-none px-0.5">|</span>}
+        {isThinkChip && <div className="w-1 shrink-0" />}
+        <span className={`shrink-0 truncate text-[14.5px] font-semibold leading-tight tracking-normal ${isLiveChip ? 'eterx-live-text' : 'text-[#A7A39E]'}`}>{displayVerb}</span>
+        {hasDetail && <span className="shrink-0 text-[#403D39] text-[13px] font-light select-none px-0.5">|</span>}
         {hasFile && (
           <span
             onClick={(e) => openInIde(e)}
-            className={`min-w-0 truncate font-mono text-[13.5px] leading-tight cursor-pointer hover:underline ${isLiveChip ? 'eterx-live-text' : 'text-[#4FC1FF]'}`}
+            className="min-w-0 truncate font-mono text-[13.5px] leading-tight cursor-pointer hover:underline text-[#4A9CD0]"
           >{fileName}</span>
         )}
         {!hasFile && subtitle && (
-          <span className={`min-w-0 truncate font-mono text-[13.5px] leading-tight ${isLiveChip ? 'eterx-live-text' : 'text-[#8C8A88]'}`}>{subtitle}</span>
+          <span className="min-w-0 truncate font-mono text-[13.5px] leading-tight text-[#605D59]">{subtitle}</span>
         )}
         {hasFile && fullPath.toLowerCase().match(/\.(html|htm)$/) && (
           <button
@@ -673,8 +675,8 @@ const SubAgentCard = ({ log }: { log: any }) => {
   return (
     <div className="ml-1 my-1.5 overflow-hidden">
       <button onClick={() => setOpen(!open)} className="w-full flex min-h-[42px] items-center gap-3 rounded-[12px] px-2.5 py-1.5 hover:bg-white/[0.035] transition-colors group">
-        <span className="flex h-8 w-8 items-center justify-center rounded-[10px] border border-white/[0.075] bg-[#111111]/90 shadow-[inset_0_1px_0_rgba(255,255,255,0.035)] shrink-0 transition-colors group-hover:border-white/[0.12] group-hover:bg-[#161616]">
-          <Bot className="h-4 w-4 text-[#9B8ACB] shrink-0" strokeWidth={1.9} />
+        <span className="flex h-8 w-8 items-center justify-center shrink-0">
+          <ComputerIcon size={19} color="#E8E6E3" />
         </span>
         <span className="min-w-0 flex-1 text-left">
           <span className="block truncate text-[15px] font-semibold tracking-normal text-[#A7A39E]">{log.agentName || log.secondary || 'Sub-agent result'}</span>
@@ -723,7 +725,7 @@ const CollapsibleActionGroup = ({
       initial={{ opacity: 0, y: 5 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
-      className="w-full overflow-hidden rounded-[14px] border border-white/[0.095] bg-[#101010]/60 shadow-[inset_0_1px_0_rgba(255,255,255,0.028),0_2px_12px_rgba(0,0,0,0.18)]"
+      className="w-full overflow-hidden rounded-[14px] border border-white/[0.08] bg-[#1A1A1A]/80 shadow-[inset_0_1px_0_rgba(255,255,255,0.04),0_4px_16px_rgba(0,0,0,0.22)]"
     >
       {visibleLogs.map((log, i) => (
         <motion.div
@@ -936,6 +938,12 @@ export const ThinkingProcess = ({ logs, isThinking, isLast }: { logs: any[], isT
     else { aBuf.push(log); }
   });
   flush(flowLogs.length - 1);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (scrollRef.current && isThinking) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [segs.length, isThinking]);
   return (
     <div ref={containerRef} className="w-full flex flex-col gap-1 py-0">
       {segs.map((seg, i) => {
@@ -943,6 +951,22 @@ export const ThinkingProcess = ({ logs, isThinking, isLast }: { logs: any[], isT
         if (seg.kind === 'note') return <ProfessionalThought key={`n-${ seg.idx }`} text={seg.log.text} isLatest={false} isThinking={false} variant="note" />;
         if (seg.kind === 'safety') return <SafetyBanner key={`sf-${ seg.idx }`} log={seg.log} />;
         if (seg.kind === 'subagent') return <SubAgentCard key={`sa-${ seg.idx }`} log={seg.log} />;
+        
+        // Unpack single action chip — wrap in card so it sits inside the container
+        if (seg.logs.length === 1) {
+          return (
+            <div key={`g-${ seg.lastIdx }`} className="w-full overflow-hidden rounded-[14px] border border-white/[0.08] bg-[#1A1A1A]/80 shadow-[inset_0_1px_0_rgba(255,255,255,0.04),0_4px_16px_rgba(0,0,0,0.22)]">
+              <ActionChip
+                log={seg.logs[0]}
+                isLastChip={isLast && i === segs.length - 1}
+                isActiveGroup={isThinking && isLast && i === segs.length - 1}
+                allLogs={flowLogs}
+                isNested={false}
+                inCard={true}
+              />
+            </div>
+          );
+        }
         return <CollapsibleActionGroup key={`g-${ seg.lastIdx }`} logs={seg.logs} isActiveGroup={isThinking && isLast && i === segs.length - 1} isLast={isLast} allLogs={flowLogs} />;
       })}
       {isThinking && isLast && <LiveWorkingIndicator logs={flowLogs} />}

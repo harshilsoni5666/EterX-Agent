@@ -8,10 +8,12 @@
  * Usage:
  *   node setup.js                    Full setup wizard
  *   node setup.js --auto             Automatic no-prompt setup/repair
+ *   node setup.js --auto --no-doctor Automatic setup without diagnostics
  *   node setup.js --reconfigure      Re-run API key wizard
  *   node setup.js --status           Show current config
  *   node setup.js --health           Run health check (test all keys)
  *   node setup.js --repair           Re-install dependencies
+ *   node setup.js --api              Quick API key setup
  *   node setup.js --upgrade          Pull latest + re-install
  *   node setup.js --backup           Backup config & memory
  *   node setup.js --restore          Restore from backup
@@ -52,6 +54,10 @@ async function main() {
     case '--status': return showStatus();
     case '--health': return healthCheck();
     case '--repair': return repair();
+    case '--api':
+    case '--apis':
+    case '--keys':
+      return apiSetup();
     case '--uninstall': return uninstall();
     case '--reconfigure': return reconfigure();
     case '--add-key': return addKey();
@@ -303,9 +309,11 @@ async function autoSetup(options = {}) {
   }, null, 2));
   ok('Setup metadata written');
 
-  step('Diagnostics');
-  const { runDoctor } = require('./setup/doctor');
-  await runDoctor(ROOT);
+  if (!options.skipDoctor && !args.includes('--no-doctor')) {
+    step('Diagnostics');
+    const { runDoctor } = require('./setup/doctor');
+    await runDoctor(ROOT);
+  }
 
   step('Automatic Setup Complete');
   console.log(`
@@ -385,6 +393,157 @@ function ensureAutoEnvFile(projectRoot) {
   }
 
   return generateEnvFile(config, projectRoot);
+}
+
+function readEnvVars(projectRoot) {
+  const envPath = path.join(projectRoot, '.env.local');
+  const vars = {};
+  if (!fs.existsSync(envPath)) return vars;
+
+  fs.readFileSync(envPath, 'utf8').split(/\r?\n/).forEach((lineText) => {
+    if (!lineText || lineText.trim().startsWith('#') || !lineText.includes('=')) return;
+    const [key, ...rest] = lineText.split('=');
+    vars[key.trim()] = rest.join('=').trim();
+  });
+  return vars;
+}
+
+function maskKey(value) {
+  if (!value) return '(empty)';
+  if (value.length <= 8) return '****';
+  return `${value.slice(0, 4)}${'*'.repeat(Math.min(value.length - 8, 16))}${value.slice(-4)}`;
+}
+
+function nextNumberedEnvKey(vars, prefix) {
+  for (let i = 1; i <= 50; i++) {
+    const key = `${prefix}${i}`;
+    if (!vars[key]) return key;
+  }
+  return `${prefix}${Date.now()}`;
+}
+
+function writeEnvUpdates(projectRoot, updates) {
+  const envPath = path.join(projectRoot, '.env.local');
+  const pending = new Map(Object.entries(updates).filter(([, value]) => value));
+  let lines = fs.existsSync(envPath)
+    ? fs.readFileSync(envPath, 'utf8').split(/\r?\n/)
+    : [
+      '# EterX Agent - Environment Configuration',
+      `# Generated: ${new Date().toISOString()}`,
+      '',
+    ];
+
+  lines = lines.map((lineText) => {
+    if (!lineText || lineText.trim().startsWith('#') || !lineText.includes('=')) return lineText;
+    const [key] = lineText.split('=');
+    const cleanKey = key.trim();
+    if (!pending.has(cleanKey)) return lineText;
+    const value = pending.get(cleanKey);
+    pending.delete(cleanKey);
+    return `${cleanKey}=${value}`;
+  });
+
+  if (pending.size > 0) {
+    if (lines.length > 0 && lines[lines.length - 1].trim() !== '') lines.push('');
+    lines.push('# Added by EterX setup');
+    for (const [key, value] of pending.entries()) {
+      lines.push(`${key}=${value}`);
+    }
+  }
+
+  if (!lines.some(lineText => lineText.startsWith('NEXT_PUBLIC_APP_URL='))) {
+    lines.push('NEXT_PUBLIC_APP_URL=http://localhost:3000');
+  }
+
+  fs.writeFileSync(envPath, lines.join('\n').replace(/\n{3,}/g, '\n\n'), 'utf8');
+  ok(`Saved ${Object.keys(updates).filter(key => updates[key]).length} API setting(s)`);
+}
+
+// ══════════════════════════════════════════════
+//  --api
+// ══════════════════════════════════════════════
+async function apiSetup(options = {}) {
+  if (!options.bannerAlreadyShown) showBanner();
+  step('Quick API Setup');
+  setupLocalStorage(ROOT);
+
+  if (!process.stdin.isTTY) {
+    warn('Quick API setup needs an interactive terminal.');
+    info(`Run ${c.bold}eterx api${c.reset}${c.cyan} later to add Gemini, Tavily, Telegram, Slack, and other keys.${c.reset}`);
+    return;
+  }
+
+  const rl = createRL();
+  const updates = {};
+  const vars = readEnvVars(ROOT);
+
+  try {
+    header('Required AI Provider');
+    info(`Gemini key URL: ${c.cyan}https://aistudio.google.com/apikey${c.reset}`);
+    const geminiKeys = Object.entries(vars)
+      .filter(([key, value]) => key.startsWith('GEMINI_API_KEY') && value)
+      .map(([key, value]) => `${key}=${maskKey(value)}`);
+
+    if (geminiKeys.length > 0) {
+      ok(`Gemini already configured (${geminiKeys.length} key${geminiKeys.length === 1 ? '' : 's'})`);
+      if (await confirm(rl, 'Add another Gemini key for load balancing?', false)) {
+        const key = await askSecret(rl, 'New Gemini API key');
+        if (key) updates[nextNumberedEnvKey(vars, 'GEMINI_API_KEY_')] = key;
+      }
+    } else {
+      const key = await askSecret(rl, 'Gemini API key (Enter to skip for now)');
+      if (key) {
+        updates.GEMINI_API_KEY = key;
+        updates.GEMINI_API_KEY_1 = key;
+      } else {
+        warn('No Gemini key added. EterX can install, but AI chat needs at least one model key.');
+      }
+    }
+
+    const optionalTargets = [
+      { id: 'tavily', label: 'Tavily Search', envKey: 'TAVILY_API_KEY', url: 'https://app.tavily.com/home', description: 'web search and research' },
+      { id: 'openai', label: 'OpenAI', envKey: 'OPENAI_API_KEY', url: 'https://platform.openai.com/api-keys', description: 'GPT / OpenAI-compatible workflows' },
+      { id: 'groq', label: 'Groq', envKey: 'GROQ_API_KEY', url: 'https://console.groq.com/keys', description: 'fast fallback inference' },
+      { id: 'telegram', label: 'Telegram Bot', envKey: 'TELEGRAM_BOT_TOKEN', url: 'https://t.me/BotFather', description: 'remote Telegram control' },
+      { id: 'slack', label: 'Slack Access Token', envKey: 'SLACK_ACCESS_TOKEN', url: 'https://api.slack.com/apps', description: 'Slack workspace integration' },
+    ];
+
+    header('Optional Integrations');
+    optionalTargets.forEach((target, index) => {
+      const status = vars[target.envKey] ? `${c.brightGreen}configured${c.reset}` : `${c.gray}not set${c.reset}`;
+      console.log(`  ${c.cyan}[${index + 1}]${c.reset} ${target.label} ${c.dim}- ${target.description}${c.reset} ${status}`);
+    });
+    console.log(`  ${c.dim}Enter numbers separated by commas, or press Enter to skip.${c.reset}\n`);
+
+    const selected = await ask(rl, 'Add optional APIs now');
+    const indexes = selected
+      .split(/[,\s]+/)
+      .map(value => parseInt(value, 10) - 1)
+      .filter(index => index >= 0 && index < optionalTargets.length);
+
+    for (const index of [...new Set(indexes)]) {
+      const target = optionalTargets[index];
+      info(`${target.label} key URL: ${c.cyan}${target.url}${c.reset}`);
+      const value = await askSecret(rl, `${target.envKey} (Enter to skip)`);
+      if (value) updates[target.envKey] = value;
+    }
+
+    if (Object.keys(updates).length > 0) {
+      writeEnvUpdates(ROOT, updates);
+    } else if (!fs.existsSync(path.join(ROOT, '.env.local'))) {
+      writeEnvUpdates(ROOT, {});
+    } else {
+      info('No API changes made.');
+    }
+
+    if (await confirm(rl, 'Run live API health check now?', true)) {
+      const results = await runHealthCheck(ROOT);
+      line();
+      console.log(`\n  ${c.bold}Results:${c.reset} ${c.green}${results.passed} passed${c.reset}  ${results.warnings > 0 ? c.yellow + results.warnings + ' warnings' + c.reset + '  ' : ''}${results.failed > 0 ? c.red + results.failed + ' failed' + c.reset : ''}\n`);
+    }
+  } finally {
+    rl.close();
+  }
 }
 
 // ══════════════════════════════════════════════

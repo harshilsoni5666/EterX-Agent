@@ -293,7 +293,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose })
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, y: 10, scale: 0.98 }}
               transition={{ duration: 0.3, ease: [0.2, 0.8, 0.2, 1] }}
-              className="relative w-[820px] max-w-[92vw] h-[600px] max-h-[85vh] rounded-2xl overflow-hidden flex shadow-[0_25px_80px_rgba(0,0,0,0.7)] border border-white/[0.08]"
+              className="relative w-[820px] max-w-[92vw] h-[600px] max-h-[85vh] rounded-2xl overflow-hidden flex flex-col sm:flex-row shadow-[0_25px_80px_rgba(0,0,0,0.7)] border border-white/[0.08]"
             >
               {/* Glass Background */}
               <div className="absolute inset-0 bg-[#0E0E0E]/95 backdrop-blur-3xl" />
@@ -301,17 +301,17 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose })
               <div className="absolute -top-20 -left-20 w-60 h-60 bg-[#E2765A]/[0.04] rounded-full blur-[80px] pointer-events-none" />
 
               {/* ─── Sidebar Tabs ─── */}
-              <div className="relative w-[200px] shrink-0 border-r border-white/[0.06] flex flex-col bg-white/[0.01]">
-                <div className="p-5 pb-3">
+              <div className="relative w-full sm:w-[200px] shrink-0 border-b sm:border-b-0 sm:border-r border-white/[0.06] flex flex-col bg-white/[0.01]">
+                <div className="p-4 pb-2 sm:p-5 sm:pb-3">
                   <h2 className="text-[15px] font-semibold text-[#E8E6E3] tracking-tight">Settings</h2>
                   <p className="text-[11px] text-[#555] mt-0.5">Configure EterX</p>
                 </div>
-                <nav className="flex-1 px-2 space-y-[2px]">
+                <nav className="flex gap-1 overflow-x-auto px-2 pb-2 sm:block sm:flex-1 sm:space-y-[2px] sm:overflow-visible sm:pb-0">
                   {tabs.map(tab => (
                     <button
                       key={tab.id}
                       onClick={() => setActiveTab(tab.id)}
-                      className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-[13px] font-medium transition-all duration-300 ${ activeTab === tab.id
+                      className={`shrink-0 sm:w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-[13px] font-medium transition-all duration-300 ${ activeTab === tab.id
                         ? 'bg-white/[0.08] text-[#E8E6E3] shadow-sm border border-white/[0.08]'
                         : 'text-[#8C8A88] hover:text-[#E8E6E3] hover:bg-white/[0.03] border border-transparent'
                         }`}
@@ -322,7 +322,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose })
                   ))}
                 </nav>
                 {/* Version footer */}
-                <div className="p-4 pt-2 border-t border-white/[0.04]">
+                <div className="hidden sm:block p-4 pt-2 border-t border-white/[0.04]">
                   <div className="text-[10px] text-[#444] font-mono">EterX Agent v2.4.0</div>
                   <div className="text-[10px] text-[#333] font-mono mt-0.5">Build 2026.04.11</div>
                 </div>

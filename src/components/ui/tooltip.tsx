@@ -4,34 +4,73 @@ import { motion, AnimatePresence } from 'framer-motion';
 
 export const Tooltip = ({ children, text, side = 'bottom' }: { children: React.ReactNode, text: string, side?: 'top' | 'bottom' | 'left' | 'right' }) => {
   const [visible, setVisible] = useState(false);
-  const [coords, setCoords] = useState({ x: 0, y: 0 });
+  const [coords, setCoords] = useState({ left: 0, top: 0, width: 96, arrowLeft: 43, arrowTop: 10 });
   const ref = useRef<HTMLDivElement>(null);
+  const tooltipFontFamily = '"Google Sans Text", "Google Sans", "Product Sans", Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
 
   useEffect(() => {
-    if (visible && ref.current) {
-      const rect = ref.current.getBoundingClientRect();
-      let x = 0, y = 0;
-      if (side === 'top') { x = rect.left + rect.width / 2; y = rect.top - 8; }
-      if (side === 'bottom') { x = rect.left + rect.width / 2; y = rect.bottom + 8; }
-      if (side === 'left') { x = rect.left - 8; y = rect.top + rect.height / 2; }
-      if (side === 'right') { x = rect.right + 8; y = rect.top + rect.height / 2; }
-      setCoords({ x, y });
-    }
-  }, [visible, side]);
+    if (!visible || !ref.current || typeof window === 'undefined') return;
 
-  const originClass = {
-    top: "-translate-x-1/2 -translate-y-full",
-    bottom: "-translate-x-1/2",
-    left: "-translate-x-full -translate-y-1/2",
-    right: "-translate-y-1/2"
-  };
+    const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
+    const updatePosition = () => {
+      const trigger = ref.current;
+      if (!trigger) return;
+      const rect = trigger.getBoundingClientRect();
+      const margin = 16;
+      const gap = 10;
+      const width = Math.min(
+        window.innerWidth - margin * 2,
+        Math.max(76, Math.ceil(text.length * 6.8 + 24))
+      );
+      const height = 30;
+      const centerX = rect.left + rect.width / 2;
+      const centerY = rect.top + rect.height / 2;
+      let left = centerX - width / 2;
+      let top = rect.bottom + gap;
+
+      if (side === 'top') {
+        top = rect.top - gap - height;
+      } else if (side === 'left') {
+        left = rect.left - gap - width;
+        top = centerY - height / 2;
+      } else if (side === 'right') {
+        left = rect.right + gap;
+        top = centerY - height / 2;
+      }
+
+      left = clamp(left, margin, window.innerWidth - margin - width);
+      top = clamp(top, margin, window.innerHeight - margin - height);
+
+      setCoords({
+        left,
+        top,
+        width,
+        arrowLeft: clamp(centerX - left - 5, 16, width - 26),
+        arrowTop: clamp(centerY - top - 5, 10, height - 20),
+      });
+    };
+
+    updatePosition();
+    window.addEventListener('resize', updatePosition);
+    window.addEventListener('scroll', updatePosition, true);
+    return () => {
+      window.removeEventListener('resize', updatePosition);
+      window.removeEventListener('scroll', updatePosition, true);
+    };
+  }, [visible, side, text]);
 
   const arrowClass = {
-    top: "bottom-[-4px] left-1/2 -translate-x-1/2 rotate-45 border-b border-r",
-    bottom: "-top-[5px] left-1/2 -translate-x-1/2 rotate-45 border-t border-l",
-    left: "right-[-4px] top-1/2 -translate-y-1/2 rotate-45 border-t border-r",
-    right: "-left-[5px] top-1/2 -translate-y-1/2 rotate-45 border-b border-l"
+    top: "border-b border-r",
+    bottom: "border-t border-l",
+    left: "border-t border-r",
+    right: "border-b border-l"
   };
+
+  const arrowStyle =
+    side === 'top' ? { left: coords.arrowLeft, bottom: -5 } :
+      side === 'bottom' ? { left: coords.arrowLeft, top: -5 } :
+        side === 'left' ? { right: -5, top: coords.arrowTop } :
+          { left: -5, top: coords.arrowTop };
 
   return (
     <div ref={ref} className="relative flex items-center justify-center shrink-0" onMouseEnter={() => setVisible(true)} onMouseLeave={() => setVisible(false)}>
@@ -39,8 +78,8 @@ export const Tooltip = ({ children, text, side = 'bottom' }: { children: React.R
       {visible && typeof document !== 'undefined' && createPortal(
         <AnimatePresence>
           <div 
-            style={{ position: 'fixed', left: coords.x, top: coords.y, zIndex: 99999 }} 
-            className={`pointer-events-none ${originClass[side]}`}
+            style={{ position: 'fixed', left: coords.left, top: coords.top, zIndex: 99999, width: coords.width }} 
+            className="pointer-events-none"
           >
             <motion.div
               initial={{ opacity: 0, scale: 0.9, y: side === 'top' ? 4 : side === 'bottom' ? -4 : side === 'left' ? 4 : -4 }}
@@ -48,9 +87,15 @@ export const Tooltip = ({ children, text, side = 'bottom' }: { children: React.R
               exit={{ opacity: 0, scale: 0.9 }}
               transition={{ type: "spring", stiffness: 400, damping: 25 }}
             >
-              <div className={`relative px-2.5 py-1.5 bg-[#000000] border border-white/10 text-white text-[12px] font-medium rounded-lg shadow-2xl whitespace-nowrap`}>
+              <div
+                className="relative w-full whitespace-nowrap rounded-[10px] border border-white bg-white px-2.5 py-1.5 text-center text-[12px] font-semibold tracking-[0.005em] text-[#1F2933] shadow-[0_10px_22px_rgba(0,0,0,0.22),inset_0_1px_0_rgba(255,255,255,1)]"
+                style={{ fontFamily: tooltipFontFamily }}
+              >
                 {text}
-                <div className={`absolute w-2.5 h-2.5 bg-[#000000] border-white/10 ${arrowClass[side]}`} />
+                <div
+                  className={`absolute h-2.5 w-2.5 rotate-45 border-white bg-white ${arrowClass[side]}`}
+                  style={arrowStyle}
+                />
               </div>
             </motion.div>
           </div>

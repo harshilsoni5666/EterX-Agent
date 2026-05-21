@@ -211,7 +211,7 @@ export async function POST(req: NextRequest) {
 
           // Call Gemini with tools
           const response = await requestAiClient.models.generateContent({
-            model: 'gemini-3-flash-preview',
+            model: 'gemini-3.5-flash',
             contents: messages,
             config: {
               systemInstruction: systemPrompt,

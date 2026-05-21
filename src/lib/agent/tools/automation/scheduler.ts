@@ -98,6 +98,7 @@ export const schedulerTool: ToolDefinition = {
               await globalTaskCallback(task);
             }
           }, intervalMs);
+          task.timerId.unref?.();
 
           scheduledTasks.set(taskId, task);
 

@@ -71,6 +71,9 @@ switch (cmd) {
   case 'config': case 'configure': case 'keys':
     runSetup('--reconfigure', extraArgs); break;
 
+  case 'api': case 'apis': case 'api-key': case 'api-keys':
+    runSetup('--api', extraArgs); break;
+
   case 'health': case 'check': case 'test':
     runSetup('--health', extraArgs); break;
 
@@ -146,6 +149,7 @@ function showFirstRun() {
   console.log(`  ${c.dim}   This will install dependencies, configure your`);
   console.log(`   API keys, set up local storage, and launch EterX.${c.reset}\n`);
   console.log(`  ${c.dim}No prompts / repair mode:${c.reset} ${c.bold}eterx setup --auto${c.reset}\n`);
+  console.log(`  ${c.dim}Only add API keys:${c.reset} ${c.bold}eterx api${c.reset}\n`);
 
   console.log(`  ${c.gray}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${c.reset}\n`);
   console.log(`  ${c.dim}Or jump straight in:${c.reset}`);
@@ -249,6 +253,7 @@ function showInteractiveMenu() {
   console.log(`  ${c.bold}${i.gear} Setup${c.reset}`);
   console.log(`    ${c.cyan}eterx setup${c.reset}        ${i.sparkle} Full setup wizard`);
   console.log(`    ${c.cyan}eterx setup --auto${c.reset} ${i.gear} Automatic no-prompt setup`);
+  console.log(`    ${c.cyan}eterx api${c.reset}          ${i.api} Quick API key setup`);
   console.log(`    ${c.cyan}eterx config${c.reset}       ${i.key} Change API keys`);
   console.log(`    ${c.cyan}eterx add-key${c.reset}      ${i.key} Quick-add one key`);
   console.log();

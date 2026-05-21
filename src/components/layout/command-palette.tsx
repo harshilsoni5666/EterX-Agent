@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useDeferredValue, useState, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Search, Bot, Maximize2, Command } from 'lucide-react';
 
@@ -19,25 +19,31 @@ interface CommandPaletteProps {
 
 export const CommandPalette: React.FC<CommandPaletteProps> = ({ isOpen, onClose, createNewChat, chats, loadChat }) => {
   const [searchQuery, setSearchQuery] = useState("");
+  const deferredSearchQuery = useDeferredValue(searchQuery);
 
   const filteredChats = useMemo(() => {
-    if (!searchQuery.trim()) return chats.slice(0, 6);
-    const query = searchQuery.toLowerCase();
+    const trimmedQuery = deferredSearchQuery.trim();
+    if (!trimmedQuery) return chats.slice(0, 6);
+    const query = trimmedQuery.toLowerCase();
+    const searchableChats = chats.slice(0, 120);
 
     const results: any[] = [];
 
-    chats.forEach(chat => {
+    searchableChats.forEach(chat => {
       if (chat.title.toLowerCase().includes(query)) {
         results.push({ ...chat, matchType: 'title' });
         return;
       }
 
-      const matchingLog = chat.traceLogs?.find(log => 
-        log.text && typeof log.text === 'string' && log.text.toLowerCase().includes(query)
-      );
+      if (query.length < 2) return;
+
+      const matchingLog = chat.traceLogs?.slice(-80).find(log => {
+        if (!log.text || typeof log.text !== 'string') return false;
+        return log.text.slice(0, 6000).toLowerCase().includes(query);
+      });
 
       if (matchingLog) {
-        const text = matchingLog.text as string;
+        const text = String(matchingLog.text || '').slice(0, 6000);
         const index = text.toLowerCase().indexOf(query);
         const start = Math.max(0, index - 30);
         const end = Math.min(text.length, index + 50);
@@ -54,7 +60,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ isOpen, onClose,
       if (a.matchType === 'content' && b.matchType === 'title') return 1;
       return b.updatedAt - a.updatedAt;
     }).slice(0, 10);
-  }, [chats, searchQuery]);
+  }, [chats, deferredSearchQuery]);
 
   const formatDate = (timestamp: number) => {
     try {

@@ -11,18 +11,43 @@ function getMimeType(filename: string) {
     '.js': 'application/javascript',
     '.mjs': 'application/javascript',
     '.json': 'application/json',
+    '.map': 'application/json',
+    '.md': 'text/markdown',
+    '.csv': 'text/csv',
+    '.xml': 'application/xml',
+    '.txt': 'text/plain',
+    '.pdf': 'application/pdf',
     '.png': 'image/png',
     '.jpg': 'image/jpeg',
     '.jpeg': 'image/jpeg',
     '.gif': 'image/gif',
+    '.webp': 'image/webp',
+    '.avif': 'image/avif',
+    '.bmp': 'image/bmp',
     '.svg': 'image/svg+xml',
     '.ico': 'image/x-icon',
     '.wav': 'audio/wav',
     '.mp3': 'audio/mpeg',
+    '.ogg': 'audio/ogg',
+    '.m4a': 'audio/mp4',
+    '.flac': 'audio/flac',
     '.mp4': 'video/mp4',
-    '.txt': 'text/plain',
+    '.webm': 'video/webm',
+    '.mov': 'video/quicktime',
+    '.doc': 'application/msword',
+    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    '.ppt': 'application/vnd.ms-powerpoint',
+    '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    '.xls': 'application/vnd.ms-excel',
+    '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    '.zip': 'application/zip',
   };
   return mimes[ext] || 'application/octet-stream';
+}
+
+function inlineFileNameHeader(filename: string) {
+  const safeName = path.basename(filename).replace(/["\r\n]/g, '');
+  return `inline; filename="${safeName}"`;
 }
 
 export async function GET(req: NextRequest, { params }: { params: { path: string[] } }) {
@@ -42,7 +67,56 @@ export async function GET(req: NextRequest, { params }: { params: { path: string
        }
     }
     
+    const stats = fs.statSync(absolutePath);
+    if (!stats.isFile()) {
+      return new NextResponse('Not found', { status: 404 });
+    }
+
     const mimeType = getMimeType(absolutePath);
+    const sharedHeaders = {
+      'Content-Type': mimeType,
+      'Cache-Control': 'no-store, must-revalidate',
+      'Content-Disposition': inlineFileNameHeader(absolutePath),
+      'X-Content-Type-Options': 'nosniff',
+      'Accept-Ranges': 'bytes',
+    };
+
+    const range = req.headers.get('range');
+    if (range && mimeType !== 'text/html') {
+      const match = range.match(/bytes=(\d*)-(\d*)/);
+      if (match) {
+        const requestedStart = match[1] ? Number(match[1]) : 0;
+        const requestedEnd = match[2] ? Number(match[2]) : stats.size - 1;
+        const start = Math.max(0, requestedStart);
+        const end = Math.min(stats.size - 1, requestedEnd);
+
+        if (start <= end && Number.isFinite(start) && Number.isFinite(end)) {
+          const chunkSize = end - start + 1;
+          const fileHandle = fs.openSync(absolutePath, 'r');
+          const chunk = Buffer.alloc(chunkSize);
+          fs.readSync(fileHandle, chunk, 0, chunkSize, start);
+          fs.closeSync(fileHandle);
+
+          return new NextResponse(chunk, {
+            status: 206,
+            headers: {
+              ...sharedHeaders,
+              'Content-Length': String(chunkSize),
+              'Content-Range': `bytes ${start}-${end}/${stats.size}`,
+            },
+          });
+        }
+      }
+
+      return new NextResponse(null, {
+        status: 416,
+        headers: {
+          ...sharedHeaders,
+          'Content-Range': `bytes */${stats.size}`,
+        },
+      });
+    }
+
     let fileBuffer = fs.readFileSync(absolutePath);
     
     if (mimeType === 'text/html') {
@@ -101,16 +175,16 @@ export async function GET(req: NextRequest, { params }: { params: { path: string
       
       return new NextResponse(html, {
         headers: {
+          ...sharedHeaders,
           'Content-Type': 'text/html; charset=utf-8',
-          'Cache-Control': 'no-store, must-revalidate',
         }
       });
     }
     
     return new NextResponse(fileBuffer, {
       headers: {
-        'Content-Type': mimeType,
-        'Cache-Control': 'no-store, must-revalidate',
+        ...sharedHeaders,
+        'Content-Length': String(stats.size),
       }
     });
     

@@ -18,6 +18,7 @@ import { screenshotTool } from './core/screenshot';
 import { emailTool } from './core/email';
 import { ttsTool } from './core/tts';
 import { imageGenTool } from './core/imagegen';
+import { imageAssetSearchTool } from './core/image_asset_search';
 import { taskDecomposerTool } from './core/task_decomposer';
 import { networkTool } from './core/network';
 import { databaseTool } from './core/database';
@@ -100,7 +101,7 @@ export function bootstrapTools() {
     shellTool, webSearchTool, calculatorTool, apiCallerTool,
     jsRunnerTool, skillLoaderTool, systemMonitorTool, gitTool,
     clipboardTool, desktopNotifyTool, jsonTransformTool, screenshotTool,
-    emailTool, ttsTool, imageGenTool, taskDecomposerTool, networkTool,
+    emailTool, ttsTool, imageGenTool, imageAssetSearchTool, taskDecomposerTool, networkTool,
     databaseTool, cryptoTool, regexTool, sysAutomationTool, selfImproveTool, memoryV2Tool,
     apiHubTool, apiKeyVaultTool, contextManagerTool, safetyGuardTool,
     realTimeVerifierTool, spawnSubAgentTool, uiLivePreviewTool,

@@ -22,6 +22,21 @@ Frontend development patterns, performance optimization, and automation tools fo
 
 ---
 
+## Visual Asset Rules
+
+For websites, apps, landing pages, and product pages, do not place unverified remote image URLs directly into final code. If the user did not provide exact assets and the UI needs real photos, hero art, product visuals, gallery images, avatars, or background images, use `image_asset_search` first.
+
+Recommended workflow:
+
+1. Create or identify the project asset folder, usually `public/eterx-assets` for Next/Vite projects or `assets/images` for standalone HTML.
+2. Call `image_asset_search` with a precise query, the intended `visualRole`, `outputDir`, and matching `publicPath`.
+3. Use only returned `assets[].publicPath` values in React/HTML.
+4. If no validated asset is returned, use a code-native visual treatment or explain the missing asset. Do not fall back to picsum, placeholder services, random Unsplash source URLs, or unrelated stock images.
+
+Match each query to the actual design need. A hero for a dental clinic, a SaaS analytics dashboard, and a restaurant booking site need different subjects, moods, crops, and aspect ratios.
+
+---
+
 ## Project Scaffolding
 
 Generate a new Next.js or React project with TypeScript, Tailwind CSS, and best practice configurations.

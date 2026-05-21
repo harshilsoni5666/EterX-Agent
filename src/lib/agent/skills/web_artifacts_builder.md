@@ -19,6 +19,12 @@ To build powerful frontend claude.ai artifacts, follow these steps:
 
 VERY IMPORTANT: To avoid what is often referred to as "AI slop", avoid using excessive centered layouts, purple gradients, uniform rounded corners, and Inter font.
 
+## Image Asset Rules
+
+If the artifact needs real imagery, do not hardcode random remote image URLs. Use `image_asset_search` to find and download validated assets, then reference the returned local/browser path in the artifact. Reject placeholder services, unrelated stock imagery, and image URLs that were not downloaded or validated.
+
+For standalone HTML artifacts, save images beside the artifact in an `assets/images` folder and pass `publicPath: "assets/images"` to `image_asset_search`.
+
 ## Quick Start
 
 ### Step 1: Initialize Project

@@ -94,8 +94,16 @@ fi
 echo ""
 echo -e "  ${CYAN}ℹ${NC} Starting EterX setup wizard..."
 echo ""
+HAD_ENV=0
 if [ -f ".env.local" ]; then
-    node setup.js --auto
-else
-    node setup.js
+    HAD_ENV=1
+fi
+
+node setup.js --auto --no-doctor
+
+if [ "$HAD_ENV" = "0" ] && [ "$ETERX_SKIP_API" != "1" ]; then
+    echo ""
+    echo -e "  ${CYAN}ℹ${NC} Add API keys now. Press Enter to skip any optional key."
+    echo ""
+    node setup.js --api
 fi

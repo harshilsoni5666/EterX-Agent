@@ -253,15 +253,24 @@ class APIKeyPool {
    * 
    * @returns A new lease with a different key, or null if no alternatives
    */
-  public reportFailure(chatId: string, errorType: 'rate_limit' | 'auth' | 'transient' | 'unknown', errorMsg: string = ''): KeyLease | null {
+  public reportFailure(chatId: string, errorType: 'rate_limit' | 'auth' | 'transient' | 'server_error' | 'unknown', errorMsg: string = ''): KeyLease | null {
     const currentLease = this.activeLeases.get(chatId);
     if (!currentLease) return null;
 
     const failedKeyIndex = currentLease.keyIndex;
     const health = this.keyHealth.get(failedKeyIndex)!;
 
-    health.failures++;
     health.lastError = errorMsg.substring(0, 200);
+
+    // 503/500 are Google-side overloads — NOT the key's fault.
+    // Never penalize key health or retire keys for server-side overload.
+    if (errorType === 'server_error') {
+      console.warn(`[APIKeyPool] Key #${failedKeyIndex} got server overload (503/500); rotating without health penalty.`);
+      this.activeLeases.delete(chatId);
+      return this.leaseKey(chatId, currentLease.purpose, failedKeyIndex);
+    }
+
+    health.failures++;
 
     const retireKey = errorType === 'auth' || health.failures >= APIKeyPool.MAX_CONSECUTIVE_FAILURES;
     if (retireKey) {
@@ -401,13 +410,17 @@ class APIKeyPool {
   /**
    * Classify an error message into a failure type for failover routing.
    */
-  public classifyError(errorMsg: string): 'rate_limit' | 'auth' | 'transient' | 'unknown' {
+  public classifyError(errorMsg: string): 'rate_limit' | 'auth' | 'transient' | 'server_error' | 'unknown' {
     const lower = errorMsg.toLowerCase();
+    if (lower.includes('stream_connect_timeout') || lower.includes('stream_chunk_timeout') ||
+        lower.includes('telegram_fast_timeout') || lower.includes('deadline_exceeded')) return 'unknown';
     if (lower.includes('429') || lower.includes('quota') || lower.includes('rate')) return 'rate_limit';
     if (lower.includes('401') || lower.includes('403') || lower.includes('forbidden') || lower.includes('unauthenticated') ||
         lower.includes('api_key_invalid') || lower.includes('api key not valid') || lower.includes('leaked')) return 'auth';
-    if (lower.includes('500') || lower.includes('503') || lower.includes('unavailable') || lower.includes('fetch failed') ||
-        lower.includes('econnreset') || lower.includes('timeout') || lower.includes('network')) return 'transient';
+    // 503/500/UNAVAILABLE = Google server overload — NOT a key problem, never penalize key health
+    if (lower.includes('503') || lower.includes('500') || lower.includes('unavailable') || lower.includes('service unavailable')) return 'server_error';
+    // True transient network errors where key rotation may help
+    if (lower.includes('fetch failed') || lower.includes('econnreset') || lower.includes('timeout') || lower.includes('network')) return 'transient';
     return 'unknown';
   }
 }

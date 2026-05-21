@@ -43,14 +43,172 @@ function highlightSyntax(code: string): string {
 
 function getLanguage(fn: string) {
   const ext = fn.split('.').pop()?.toLowerCase() || '';
-  const m: Record<string,string> = { js:'JS', jsx:'JSX', ts:'TS', tsx:'TSX', html:'HTML', css:'CSS', scss:'SCSS', json:'JSON', md:'MD', py:'Python', rb:'Ruby', go:'Go', rs:'Rust', c:'C', cpp:'C++', cs:'C#', java:'Java', php:'PHP', sh:'Shell', yml:'YAML', yaml:'YAML', xml:'XML', sql:'SQL' };
+  const m: Record<string,string> = {
+    js:'JS', jsx:'JSX', ts:'TS', tsx:'TSX', html:'HTML', htm:'HTML', css:'CSS', scss:'SCSS', less:'LESS',
+    json:'JSON', md:'MD', mdx:'MDX', py:'Python', rb:'Ruby', go:'Go', rs:'Rust', c:'C', cpp:'C++', cs:'C#',
+    java:'Java', php:'PHP', sh:'Shell', yml:'YAML', yaml:'YAML', xml:'XML', sql:'SQL', pdf:'PDF',
+    ppt:'PPT', pptx:'PPTX', doc:'DOC', docx:'DOCX', xls:'XLS', xlsx:'XLSX', csv:'CSV', png:'PNG',
+    jpg:'JPG', jpeg:'JPG', webp:'WEBP', svg:'SVG', mp4:'MP4', webm:'WEBM', mp3:'MP3', wav:'WAV', zip:'ZIP'
+  };
   return m[ext] || ext.toUpperCase() || 'Text';
 }
 
 function getFileColor(fn: string) {
   const ext = fn.split('.').pop()?.toLowerCase() || '';
-  const c: Record<string,string> = { ts:'#3178c6', tsx:'#3178c6', js:'#f7df1e', jsx:'#61dafb', html:'#e44d26', css:'#1572b6', scss:'#cd6799', json:'#a4b856', py:'#3572a5', go:'#00add8', rs:'#dea584', md:'#8b949e' };
+  const c: Record<string,string> = {
+    ts:'#3178c6', tsx:'#3178c6', js:'#f7df1e', jsx:'#61dafb', html:'#e44d26', htm:'#e44d26',
+    css:'#1572b6', scss:'#cd6799', less:'#1d365d', json:'#a4b856', py:'#3572a5', go:'#00add8',
+    rs:'#dea584', md:'#8b949e', mdx:'#8b949e', pdf:'#e5484d', ppt:'#d65f2a', pptx:'#d65f2a',
+    doc:'#2f6fed', docx:'#2f6fed', xls:'#2b8a3e', xlsx:'#2b8a3e', csv:'#2b8a3e',
+    png:'#9b6bff', jpg:'#9b6bff', jpeg:'#9b6bff', webp:'#9b6bff', gif:'#9b6bff', svg:'#f59e0b',
+    mp4:'#f97316', webm:'#f97316', mov:'#f97316', mp3:'#22c55e', wav:'#22c55e', zip:'#9ca3af'
+  };
   return c[ext] || '#8b949e';
+}
+
+type PreviewKind =
+  | 'html'
+  | 'pdf'
+  | 'image'
+  | 'video'
+  | 'audio'
+  | 'markdown'
+  | 'data'
+  | 'text'
+  | 'office'
+  | 'archive'
+  | 'code'
+  | 'unknown';
+
+type PreviewDevice = 'desktop' | 'mobile';
+
+type PreviewFile = { filename: string; filepath: string; content?: string };
+
+const TEXT_PREVIEW_LIMIT = 80000;
+const FILE_TREE_DEPTH = 3;
+const FILE_TREE_POLL_MS = 15000;
+const FILE_READ_LINE_LIMIT = 5000;
+
+const countLines = (value: string) => {
+  if (!value) return 0;
+  const matches = value.match(/\n/g);
+  return (matches?.length || 0) + 1;
+};
+
+function getFileExtension(fn: string) {
+  const ext = fn.split('.').pop()?.toLowerCase() || '';
+  return ext || 'file';
+}
+
+function getPreviewKind(fn: string): PreviewKind {
+  const ext = getFileExtension(fn);
+  if (['html', 'htm'].includes(ext)) return 'html';
+  if (ext === 'pdf') return 'pdf';
+  if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'avif', 'bmp', 'svg', 'ico'].includes(ext)) return 'image';
+  if (['mp4', 'webm', 'mov', 'm4v'].includes(ext)) return 'video';
+  if (['mp3', 'wav', 'ogg', 'm4a', 'flac'].includes(ext)) return 'audio';
+  if (['md', 'mdx'].includes(ext)) return 'markdown';
+  if (['json', 'csv', 'xml', 'yaml', 'yml', 'toml', 'ini'].includes(ext)) return 'data';
+  if (['txt', 'log', 'env'].includes(ext)) return 'text';
+  if (['doc', 'docx', 'ppt', 'pptx', 'xls', 'xlsx'].includes(ext)) return 'office';
+  if (['zip', 'rar', '7z', 'tar', 'gz'].includes(ext)) return 'archive';
+  if (['js', 'jsx', 'ts', 'tsx', 'css', 'scss', 'less', 'vue', 'svelte'].includes(ext)) return 'code';
+  return 'unknown';
+}
+
+function isConnectedWebAsset(fn?: string) {
+  if (!fn) return false;
+  return ['code'].includes(getPreviewKind(fn));
+}
+
+function getPreviewLabel(fn?: string) {
+  if (!fn) return 'Live preview';
+  const ext = getFileExtension(fn);
+  const labels: Record<string, string> = {
+    html: 'Web page', htm: 'Web page', pdf: 'PDF document',
+    ppt: 'Presentation deck', pptx: 'Presentation deck',
+    doc: 'Word document', docx: 'Word document',
+    xls: 'Spreadsheet', xlsx: 'Spreadsheet', csv: 'Data table',
+    md: 'Markdown', mdx: 'Markdown',
+    png: 'Image', jpg: 'Image', jpeg: 'Image', webp: 'Image', svg: 'Vector image',
+    mp4: 'Video', webm: 'Video', mov: 'Video', mp3: 'Audio', wav: 'Audio',
+    zip: 'Archive'
+  };
+  return labels[ext] || getLanguage(fn);
+}
+
+function buildPreviewUrl(filepath: string) {
+  return `/api/preview/${filepath.replace(/\\/g, '/').split('/').filter(Boolean).map(encodeURIComponent).join('/')}`;
+}
+
+function getPreviewAddress(file?: PreviewFile | null, fallback = 'http://localhost:3000') {
+  if (!file?.filepath) return fallback;
+  return `file:///${normalizeWorkspacePath(file.filepath)}`;
+}
+
+function resolvePreviewAddress(input: string) {
+  const trimmed = input.trim();
+  if (!trimmed) return 'http://localhost:3000';
+  if (/^https?:\/\//i.test(trimmed) || trimmed.startsWith('/api/preview/')) return trimmed;
+
+  const filePath = trimmed.replace(/^file:\/\/\//i, '').replace(/^file:\/\//i, '');
+  if (/^[A-Za-z]:[\\/]/.test(filePath) || filePath.startsWith('/')) {
+    return buildPreviewUrl(filePath);
+  }
+
+  return trimmed;
+}
+
+function normalizeWorkspacePath(filepath?: string) {
+  return (filepath || '').replace(/\\/g, '/').replace(/^([A-Za-z])\//, '$1:/');
+}
+
+function getDirname(filepath?: string) {
+  const normalized = normalizeWorkspacePath(filepath);
+  return normalized.split('/').slice(0, -1).join('/');
+}
+
+function flattenFileEntries(entries: FileEntry[] = []): PreviewFile[] {
+  const files: PreviewFile[] = [];
+  const walk = (nodes: FileEntry[]) => {
+    nodes.forEach(node => {
+      if (node.type === 'file') files.push({ filename: node.name, filepath: node.path });
+      if (node.children?.length) walk(node.children);
+    });
+  };
+  walk(entries);
+  return files;
+}
+
+function findConnectedHtmlFile(activeFile: PreviewFile | null, openFiles: PreviewFile[], workspaceFiles: PreviewFile[]) {
+  const candidates = [...openFiles, ...workspaceFiles]
+    .filter(file => /\.(html|htm)$/i.test(file.filename))
+    .filter((file, index, all) => all.findIndex(next => normalizeWorkspacePath(next.filepath) === normalizeWorkspacePath(file.filepath)) === index);
+
+  if (!candidates.length) return null;
+  if (!activeFile?.filepath) return candidates[0];
+
+  const activeDir = getDirname(activeFile.filepath);
+  return [...candidates].sort((a, b) => {
+    const aDir = getDirname(a.filepath);
+    const bDir = getDirname(b.filepath);
+    const aSame = aDir === activeDir ? 0 : 1;
+    const bSame = bDir === activeDir ? 0 : 1;
+    if (aSame !== bSame) return aSame - bSame;
+
+    const aIndex = /^index\.(html|htm)$/i.test(a.filename) ? 0 : 1;
+    const bIndex = /^index\.(html|htm)$/i.test(b.filename) ? 0 : 1;
+    if (aIndex !== bIndex) return aIndex - bIndex;
+
+    const aDistance = Math.abs(aDir.length - activeDir.length);
+    const bDistance = Math.abs(bDir.length - activeDir.length);
+    return aDistance - bDistance;
+  })[0];
+}
+
+function withReloadKey(url: string, key: number) {
+  if (!url || key === 0) return url;
+  return `${url}${url.includes('?') ? '&' : '?'}previewReload=${key}`;
 }
 
 type TabMode = 'code' | 'diff' | 'preview';
@@ -95,9 +253,10 @@ export const FilePanelModal = ({ filename, filepath, content: initialContent, di
     }
   }, [filepath]);
 
-  // Build URL for preview, supporting localhost for non-HTML
-  const [urlInput, setUrlInput] = useState<string>(isHtml ? `/api/preview/${filepath.replace(/\\/g, '/').split('/').filter(Boolean).map(encodeURIComponent).join('/')}` : 'http://localhost:3000');
-  const [previewUrl, setPreviewUrl] = useState<string>(urlInput);
+  // Build URL for preview, keeping the visible address readable for local files.
+  const modalPreviewUrl = isHtml ? buildPreviewUrl(filepath) : 'http://localhost:3000';
+  const [urlInput, setUrlInput] = useState<string>(isHtml ? getPreviewAddress({ filename, filepath }, modalPreviewUrl) : modalPreviewUrl);
+  const [previewUrl, setPreviewUrl] = useState<string>(modalPreviewUrl);
 
   useEffect(() => {
     const handleMessage = (e: MessageEvent) => {
@@ -124,7 +283,7 @@ export const FilePanelModal = ({ filename, filepath, content: initialContent, di
 
   const added   = diffLines?.filter(l => l.type === 'added').length   ?? 0;
   const removed = diffLines?.filter(l => l.type === 'removed').length ?? 0;
-  const lineCount = (localContent || '').split('\n').length;
+  const lineCount = countLines(localContent || '');
   const lang = getLanguage(filename);
   const fileColor = getFileColor(filename);
   const normalizedPath = filepath.replace(/\\/g, '/');
@@ -161,12 +320,14 @@ export const FilePanelModal = ({ filename, filepath, content: initialContent, di
             lineHeight: 24,
             padding: { top: 16, bottom: 16 },
             scrollBeyondLastLine: false,
-            smoothScrolling: true,
-            cursorBlinking: 'smooth',
-            cursorSmoothCaretAnimation: 'on',
+            smoothScrolling: false,
+            cursorBlinking: 'blink',
+            cursorSmoothCaretAnimation: 'off',
             formatOnPaste: true,
             wordWrap: 'on',
-            renderLineHighlight: 'all',
+            renderLineHighlight: 'none',
+            fontLigatures: false,
+            renderValidationDecorations: 'off',
           }}
           loading={
             <div className="flex items-center justify-center h-full text-[#555350] text-[12px] font-mono">
@@ -206,7 +367,7 @@ export const FilePanelModal = ({ filename, filepath, content: initialContent, di
             readOnly: true,
             renderSideBySide: true,
             scrollBeyondLastLine: false,
-            smoothScrolling: true,
+            smoothScrolling: false,
             wordWrap: 'off'
           }}
           loading={<div className="flex items-center justify-center h-full text-[#555350] text-[12px] font-mono">Loading Diff...</div>}
@@ -262,7 +423,7 @@ export const FilePanelModal = ({ filename, filepath, content: initialContent, di
           <input 
             value={urlInput}
             onChange={e => setUrlInput(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter') setPreviewUrl(urlInput); }}
+            onKeyDown={e => { if (e.key === 'Enter') setPreviewUrl(resolvePreviewAddress(urlInput)); }}
             className="text-[11px] text-[#A3A19E] font-mono truncate bg-transparent outline-none flex-1" 
           />
         </div>
@@ -396,6 +557,33 @@ const FileNodeIcon = ({ name, isDir, isOpen }: { name: string, isDir: boolean, i
   return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-[#8C8A88]"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>;
 };
 
+const PreviewFileNodeIcon = ({ name, isDir, isOpen }: { name: string, isDir: boolean, isOpen?: boolean }) => {
+  if (isDir) {
+    return isOpen
+      ? <FolderOpen className="h-[14px] w-[14px] shrink-0 text-[#C09553]" strokeWidth={1.8} />
+      : <Folder className="h-[14px] w-[14px] shrink-0 text-[#C09553]" strokeWidth={1.8} />;
+  }
+
+  const ext = getFileExtension(name);
+  const labels: Record<string, string> = {
+    ts: 'TS', tsx: 'TX', js: 'JS', jsx: 'JX', html: 'WEB', htm: 'WEB', css: 'CSS', scss: 'SC', json: '{}',
+    py: 'PY', md: 'MD', mdx: 'MX', pdf: 'PDF', ppt: 'PPT', pptx: 'PPT', doc: 'DOC', docx: 'DOC',
+    xls: 'XLS', xlsx: 'XLS', csv: 'CSV', png: 'IMG', jpg: 'IMG', jpeg: 'IMG', webp: 'IMG', gif: 'IMG',
+    svg: 'SVG', mp4: 'VID', webm: 'VID', mov: 'VID', mp3: 'AUD', wav: 'AUD', zip: 'ZIP'
+  };
+  const label = labels[ext] || 'FILE';
+  const color = getFileColor(name);
+
+  return (
+    <div
+      className="flex h-[15px] min-w-[22px] max-w-[28px] shrink-0 items-center justify-center rounded-[4px] border px-[3px] text-[7.5px] font-black leading-none tracking-[-0.01em]"
+      style={{ color, borderColor: `${color}55`, backgroundColor: `${color}14` }}
+    >
+      {label}
+    </div>
+  );
+};
+
 interface FileEntry { name: string; path: string; type: 'file' | 'directory'; children?: FileEntry[]; extension?: string; }
 
 const FileTreeNode = ({ node, depth, openFilePaths, activeFilePath, onFileClick }: {
@@ -417,7 +605,7 @@ const FileTreeNode = ({ node, depth, openFilePaths, activeFilePath, onFileClick 
           style={{ paddingLeft: `${8 + depth * 14}px` }}
         >
           {expanded ? <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="text-[#888] shrink-0"><polyline points="6 9 12 15 18 9"></polyline></svg> : <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="text-[#888] shrink-0"><polyline points="9 18 15 12 9 6"></polyline></svg>}
-          <FileNodeIcon name={node.name} isDir={true} isOpen={expanded} />
+          <PreviewFileNodeIcon name={node.name} isDir={true} isOpen={expanded} />
           <span className="text-[12px] text-[#CCCCCC] truncate">{node.name}</span>
         </div>
         {expanded && node.children?.map((child, i) => (
@@ -435,7 +623,7 @@ const FileTreeNode = ({ node, depth, openFilePaths, activeFilePath, onFileClick 
       }`}
       style={{ paddingLeft: `${8 + depth * 14 + 12}px`, paddingRight: '8px' }}
     >
-      <FileNodeIcon name={node.name} isDir={false} />
+      <PreviewFileNodeIcon name={node.name} isDir={false} />
       <span className={`text-[12px] truncate flex-1 ${isActive ? 'text-white' : isOpen ? 'text-[#E8E6E3]' : 'text-[#BBBBBB]'}`}>{node.name}</span>
       {isOpen && <div className="w-1.5 h-1.5 rounded-full bg-[#4FC1FF] shrink-0 opacity-70" />}
     </div>
@@ -455,18 +643,54 @@ export const IdePanel = () => {
   const [isPreviewLoading, setIsPreviewLoading] = useState(false);
   const [isTreeLoading, setIsTreeLoading] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [previewDevice, setPreviewDevice] = useState<PreviewDevice>('desktop');
   const [iframeHistory, setIframeHistory] = useState<string[]>([]);
   const [iframeHistoryIndex, setIframeHistoryIndex] = useState(-1);
   const [consoleLogs, setConsoleLogs] = useState<{ type: 'info' | 'warn' | 'error', text: string }[]>([]);
   const [isPanelClosing, setIsPanelClosing] = useState(false);
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const panelShellRef = useRef<HTMLDivElement>(null);
+  const fileContainerRef = useRef<HTMLDivElement>(null);
   const treeSignatureRef = useRef('');
   const treeFetchInFlightRef = useRef(false);
+  const fileReadAbortRef = useRef<AbortController | null>(null);
   const panelCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [dockPosition, setDockPosition] = useState<{ left: number; top: number } | null>(null);
 
   useEffect(() => () => {
     if (panelCloseTimerRef.current) clearTimeout(panelCloseTimerRef.current);
+    fileReadAbortRef.current?.abort();
   }, []);
+
+  useEffect(() => {
+    if (isFullscreen) {
+      setDockPosition(null);
+      return;
+    }
+
+    const updateDockPosition = () => {
+      const rect = fileContainerRef.current?.getBoundingClientRect();
+      if (!rect) return;
+
+      setDockPosition({
+        left: rect.left + rect.width / 2,
+        top: 24,
+      });
+    };
+
+    updateDockPosition();
+    const frame = window.requestAnimationFrame(updateDockPosition);
+    const observer = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(updateDockPosition) : null;
+    if (observer && panelShellRef.current) observer.observe(panelShellRef.current);
+    if (observer && fileContainerRef.current) observer.observe(fileContainerRef.current);
+    window.addEventListener('resize', updateDockPosition);
+
+    return () => {
+      window.cancelAnimationFrame(frame);
+      observer?.disconnect();
+      window.removeEventListener('resize', updateDockPosition);
+    };
+  }, [activeTabMode, isFullscreen, openFiles.length, sidebarOpen]);
 
   // Derive workspace root — go 1 level up (direct parent = project folder)
   useEffect(() => {
@@ -488,11 +712,11 @@ export const IdePanel = () => {
     treeFetchInFlightRef.current = true;
     if (!silent) setIsTreeLoading(true);
     try {
-      const res = await fetch(`/api/code/files?path=${encodeURIComponent(root)}&depth=4`);
+      const res = await fetch(`/api/code/files?path=${encodeURIComponent(root)}&depth=${FILE_TREE_DEPTH}`);
       if (!res.ok) return;
       const data = await res.json();
       if (data.tree) {
-        const nextSignature = JSON.stringify(data.tree);
+        const nextSignature = data.signature || `${data.root || root}:${data.totalEntries || data.tree.length}`;
         if (nextSignature !== treeSignatureRef.current) {
           treeSignatureRef.current = nextSignature;
           setFileTree(data.tree);
@@ -508,12 +732,13 @@ export const IdePanel = () => {
   useEffect(() => {
     if (!workspaceRoot) return;
     fetchFileTree(workspaceRoot, false);
+    if (!sidebarOpen || activeTabMode !== 'code') return;
     const interval = setInterval(() => {
       if (document.hidden) return;
       fetchFileTree(workspaceRoot, true);
-    }, 5000);
+    }, FILE_TREE_POLL_MS);
     return () => clearInterval(interval);
-  }, [workspaceRoot, fetchFileTree]);
+  }, [workspaceRoot, fetchFileTree, sidebarOpen, activeTabMode]);
 
   // Capture real console logs from preview iframe via postMessage (silent — never auto-opens console)
   useEffect(() => {
@@ -550,21 +775,44 @@ export const IdePanel = () => {
   }, [isFullscreen]);
 
   const activeFile = activeIndex >= 0 && activeIndex < openFiles.length ? openFiles[activeIndex] : null;
-  const htmlEntryFile = openFiles.find(f => /\.(html|htm)$/i.test(f.filename));
-  const previewTarget = activeTabMode === 'preview' ? (htmlEntryFile || activeFile) : activeFile;
+  const workspaceFiles = useMemo(() => flattenFileEntries(fileTree), [fileTree]);
+  const connectedHtmlFile = useMemo(
+    () => findConnectedHtmlFile(activeFile, openFiles, workspaceFiles),
+    [activeFile?.filepath, openFiles, workspaceFiles]
+  );
+  const shouldUseConnectedWebPreview = activeTabMode === 'preview' && !!activeFile && isConnectedWebAsset(activeFile.filename) && !!connectedHtmlFile;
+  const previewTarget = activeTabMode === 'preview'
+    ? (shouldUseConnectedWebPreview ? connectedHtmlFile : (activeFile || connectedHtmlFile))
+    : activeFile;
+  const previewKind = previewTarget ? getPreviewKind(previewTarget.filename) : 'html';
+  const previewFileUrl = previewTarget?.filepath ? buildPreviewUrl(previewTarget.filepath) : '';
+  const previewTitleFile = shouldUseConnectedWebPreview && activeFile ? activeFile : previewTarget;
+  const previewFileExtension = previewTitleFile ? getFileExtension(previewTitleFile.filename).toUpperCase() : 'URL';
+  const previewFileColor = previewTitleFile ? getFileColor(previewTitleFile.filename) : '#8b949e';
+  const previewPath = previewTitleFile?.filepath ? normalizeWorkspacePath(previewTitleFile.filepath) : 'http://localhost:3000';
+  const previewContent = previewTarget?.content || '';
+  const textPreview = previewContent.length > TEXT_PREVIEW_LIMIT ? previewContent.slice(0, TEXT_PREVIEW_LIMIT) : previewContent;
+  const isTextPreviewTrimmed = previewContent.length > TEXT_PREVIEW_LIMIT;
+  const previewLineCount = useMemo(() => countLines(previewContent), [previewContent]);
+  const [previewReloadKey, setPreviewReloadKey] = useState(0);
+  const [copiedPreviewPath, setCopiedPreviewPath] = useState(false);
 
   // Real-time URL State for Full Project Previews
   const [urlInput, setUrlInput] = useState('http://localhost:3000');
   const [previewUrl, setPreviewUrl] = useState('http://localhost:3000');
 
-  // Auto-switch to single-file preview ONLY if user explicitly opens an HTML file
+  const handlePreviewAddressSubmit = () => {
+    setPreviewUrl(resolvePreviewAddress(urlInput));
+    setIsPreviewLoading(true);
+  };
+
+  // Keep preview connected to the selected file, or to its nearest HTML entry for scripts/styles.
   useEffect(() => {
     const target = previewTarget;
-    if (target?.filepath && /\.(html|htm)$/i.test(target.filename)) {
-      const pathSegments = target.filepath.replace(/\\/g, '/').split('/').filter(Boolean).map(encodeURIComponent);
-      const url = `/api/preview/${pathSegments.join('/')}`;
+    if (target?.filepath) {
+      const url = buildPreviewUrl(target.filepath);
       setPreviewUrl(url);
-      setUrlInput(url);
+      setUrlInput(getPreviewAddress(target, url));
     }
   }, [previewTarget?.filepath]);
 
@@ -580,22 +828,47 @@ export const IdePanel = () => {
     }
   }, [previewUrl]);
 
-  const openFilePaths = new Set(openFiles.map(f => f.filepath.replace(/\\/g, '/')));
-  const activeFilePath = activeFile?.filepath.replace(/\\/g, '/') || '';
+  useEffect(() => {
+    if (activeTabMode !== 'preview') return;
+    if (['text', 'markdown', 'data', 'code', 'office', 'archive', 'unknown'].includes(previewKind)) {
+      setIsPreviewLoading(false);
+    }
+  }, [activeTabMode, previewKind, previewTarget?.filepath, previewContent]);
+
+  const openFilePaths = useMemo(
+    () => new Set(openFiles.map(f => f.filepath.replace(/\\/g, '/'))),
+    [openFiles]
+  );
+  const activeFilePath = useMemo(() => activeFile?.filepath.replace(/\\/g, '/') || '', [activeFile?.filepath]);
 
   const handleTreeFileClick = (filePath: string, fileName: string) => {
-    // 0-Latency UI Update: Open tab instantly before network fetch
+    fileReadAbortRef.current?.abort();
+    const controller = new AbortController();
+    fileReadAbortRef.current = controller;
+
+    // Open the tab immediately, then hydrate content in the background.
     openPanel({ filename: fileName, filepath: filePath, content: undefined });
+
+    if (!['text', 'markdown', 'data', 'code'].includes(getPreviewKind(fileName))) {
+      fileReadAbortRef.current = null;
+      return;
+    }
 
     fetch('/api/code/files', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ filePath })
+      body: JSON.stringify({ filePath, limit: FILE_READ_LINE_LIMIT }),
+      signal: controller.signal,
     }).then(r => r.json()).then(data => {
-      // Background update: populate the content
-      openPanel({ filename: fileName, filepath: filePath, content: data.content || '' });
+      const content = data.truncated
+        ? `${data.content || ''}\n\n[Preview truncated to ${FILE_READ_LINE_LIMIT} lines for editor performance.]`
+        : data.content || '';
+      openPanel({ filename: fileName, filepath: filePath, content });
     }).catch(() => {
+      if (controller.signal.aborted) return;
       openPanel({ filename: fileName, filepath: filePath, content: '' });
+    }).finally(() => {
+      if (fileReadAbortRef.current === controller) fileReadAbortRef.current = null;
     });
   };
 
@@ -653,67 +926,314 @@ export const IdePanel = () => {
 
   const handleRefresh = () => {
     setIsPreviewLoading(true);
+    setPreviewReloadKey(k => k + 1);
     if (iframeRef.current?.contentWindow) {
       try { iframeRef.current.contentWindow.location.reload(); }
       catch { if (iframeRef.current) iframeRef.current.src = iframeRef.current.src; }
+    } else {
+      window.setTimeout(() => setIsPreviewLoading(false), 240);
     }
+  };
+
+  const handleCopyPreviewPath = () => {
+    const pathToCopy = previewTitleFile?.filepath ? getPreviewAddress(previewTitleFile, previewUrl) : previewUrl;
+    navigator.clipboard.writeText(pathToCopy);
+    setCopiedPreviewPath(true);
+    window.setTimeout(() => setCopiedPreviewPath(false), 1400);
+  };
+
+  const handleOpenPreviewFile = () => {
+    if (previewFileUrl) window.open(previewFileUrl, '_blank');
+    else if (previewUrl) window.open(previewUrl, '_blank');
   };
 
   const canGoBack = iframeHistoryIndex > 0;
   const canGoForward = iframeHistoryIndex < iframeHistory.length - 1;
 
-  const panelContent = (
-    <div className={`flex-1 flex flex-col relative z-10 h-full overflow-hidden transition-[opacity,transform,padding] duration-200 ease-out ${isPanelClosing ? 'translate-x-5 scale-[0.992] opacity-0' : 'translate-x-0 scale-100 opacity-100 animate-in slide-in-from-right-8'} ${isFullscreen ? 'p-0' : 'py-2.5 pr-2.5 pl-2'}`} onContextMenu={e => e.preventDefault()}>
-      
-      {/* ── UNIFIED LIQUID GLASS CONTAINER ── */}
-      <div
-        className={`${isFullscreen ? 'rounded-none' : 'rounded-[24px]'} flex-1 flex flex-col bg-[#1F1F1F] backdrop-blur-3xl overflow-hidden relative isolate border border-white/[0.08] shadow-[0_24px_60px_rgba(0,0,0,0.34),inset_0_1px_0_rgba(255,255,255,0.055)]`}
-        style={{ clipPath: isFullscreen ? 'none' : 'inset(0 round 24px)' }}
+  const renderPreviewSurface = () => {
+    const surfaceRadius = isFullscreen ? 0 : '0 0 24px 24px';
+    const frameSrc = withReloadKey(previewUrl || previewFileUrl, previewReloadKey);
+    const fileSrc = withReloadKey(previewFileUrl || previewUrl, previewReloadKey);
+    const isDeviceFramed = previewDevice !== 'desktop';
+    const deviceFrameStyle = previewDevice === 'mobile'
+      ? {
+          width: 'min(360px, calc(100% - 32px))',
+          height: 'min(760px, calc(100% - 38px))',
+          aspectRatio: '390 / 844',
+          borderRadius: 40,
+          boxSizing: 'border-box' as const,
+        }
+      : { width: '100%', height: '100%', borderRadius: surfaceRadius };
+
+    if (!previewTarget && !previewUrl) {
+      return (
+        <div className="flex h-full items-center justify-center bg-[#f6f5f2] p-8">
+          <div className="flex flex-col items-center gap-4 text-center">
+            <div className="flex h-14 w-14 items-center justify-center rounded-2xl border border-black/10 bg-white shadow-sm">
+              <Monitor className="h-6 w-6 text-black/45" strokeWidth={1.7} />
+            </div>
+            <div>
+              <div className="text-[13px] font-bold uppercase tracking-[0.16em] text-black/65">Preview</div>
+              <div className="mt-1 text-[12px] text-black/38">Open a file or enter a URL</div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    if (previewKind === 'html' || previewKind === 'pdf') {
+      return (
+        <div className={`h-full w-full ${isDeviceFramed ? 'flex items-center justify-center overflow-auto bg-black p-3' : 'bg-white'}`}>
+          <div
+            className={`${isDeviceFramed ? 'relative overflow-hidden border-[8px] border-[#050505] bg-white shadow-[0_28px_90px_rgba(0,0,0,0.72)] ring-1 ring-white/[0.16]' : 'h-full w-full overflow-hidden bg-white'}`}
+            style={deviceFrameStyle}
+          >
+            {previewDevice === 'mobile' && (
+              <div className="pointer-events-none absolute left-1/2 top-2 z-10 h-1.5 w-20 -translate-x-1/2 rounded-full bg-black/80 shadow-[0_1px_0_rgba(255,255,255,0.18)]" />
+            )}
+            <iframe
+              ref={iframeRef}
+              key={frameSrc}
+              src={frameSrc || ''}
+              className="h-full w-full border-none bg-white"
+              style={{ borderRadius: isDeviceFramed ? 32 : surfaceRadius }}
+              onLoad={handlePreviewLoad}
+              title={previewTarget ? `Preview: ${previewTarget.filename}` : 'Preview'}
+              sandbox="allow-scripts allow-same-origin allow-forms allow-modals allow-downloads"
+            />
+          </div>
+        </div>
+      );
+    }
+
+    if (previewKind === 'image') {
+      return (
+        <div
+          className="flex h-full w-full items-center justify-center overflow-auto p-8"
+          style={{
+            backgroundColor: '#f4f3ef',
+            backgroundImage: 'linear-gradient(45deg, rgba(0,0,0,0.035) 25%, transparent 25%), linear-gradient(-45deg, rgba(0,0,0,0.035) 25%, transparent 25%), linear-gradient(45deg, transparent 75%, rgba(0,0,0,0.035) 75%), linear-gradient(-45deg, transparent 75%, rgba(0,0,0,0.035) 75%)',
+            backgroundSize: '24px 24px',
+            backgroundPosition: '0 0, 0 12px, 12px -12px, -12px 0px',
+          }}
+        >
+          <img
+            key={fileSrc}
+            src={fileSrc}
+            alt={previewTarget?.filename || 'Preview'}
+            onLoad={() => setIsPreviewLoading(false)}
+            onError={() => setIsPreviewLoading(false)}
+            className="max-h-full max-w-full rounded-[14px] border border-black/10 bg-white shadow-[0_18px_50px_rgba(0,0,0,0.18)]"
+          />
+        </div>
+      );
+    }
+
+    if (previewKind === 'video') {
+      return (
+        <div className="flex h-full w-full items-center justify-center bg-[#101012] p-8">
+          <video
+            key={fileSrc}
+            src={fileSrc}
+            controls
+            playsInline
+            onLoadedData={() => setIsPreviewLoading(false)}
+            className="max-h-full max-w-full rounded-[16px] border border-white/10 bg-black shadow-[0_24px_70px_rgba(0,0,0,0.42)]"
+          />
+        </div>
+      );
+    }
+
+    if (previewKind === 'audio') {
+      return (
+        <div className="flex h-full w-full items-center justify-center bg-[radial-gradient(circle_at_50%_30%,rgba(255,255,255,0.08),transparent_32%),#101012] p-8">
+          <div className="w-full max-w-[520px] rounded-[22px] border border-white/10 bg-white/[0.06] p-6 shadow-[0_24px_70px_rgba(0,0,0,0.35)] backdrop-blur-xl">
+            <div className="mb-5 flex items-center gap-4">
+              <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-white/10 bg-white/[0.08]">
+                <TerminalSquare className="h-5 w-5 text-white/65" strokeWidth={1.8} />
+              </div>
+              <div className="min-w-0">
+                <div className="truncate text-[14px] font-semibold text-white/88">{previewTarget?.filename}</div>
+                <div className="mt-1 text-[10px] font-bold uppercase tracking-[0.16em] text-white/32">{previewFileExtension}</div>
+              </div>
+            </div>
+            <audio key={fileSrc} src={fileSrc} controls onLoadedData={() => setIsPreviewLoading(false)} className="w-full" />
+          </div>
+        </div>
+      );
+    }
+
+    if (['text', 'markdown', 'data', 'code'].includes(previewKind)) {
+      return (
+        <div className="h-full w-full overflow-hidden bg-[#0f1012] text-[#d8d5d0]">
+          <div className="flex h-[38px] items-center justify-between border-b border-white/[0.07] bg-white/[0.035] px-4">
+            <div className="flex min-w-0 items-center gap-2">
+              <div className="h-2 w-2 rounded-full" style={{ backgroundColor: previewFileColor }} />
+              <span className="truncate text-[11px] font-bold uppercase tracking-[0.14em] text-white/52">{getLanguage(previewTarget?.filename || '')}</span>
+            </div>
+            <div className="flex items-center gap-2 text-[10px] font-mono text-white/30">
+              {previewLineCount > 0 && <span>{previewLineCount}L</span>}
+              {isTextPreviewTrimmed && <span>Trimmed</span>}
+            </div>
+          </div>
+          <pre className="h-[calc(100%-38px)] overflow-auto p-5 text-[12.5px] leading-[1.75] scrollbar-hide" style={{ fontFamily: '"JetBrains Mono", "Fira Code", Menlo, monospace', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+            {textPreview || 'No preview content'}
+          </pre>
+        </div>
+      );
+    }
+
+    return (
+      <div className="flex h-full w-full items-center justify-center bg-[#f5f4f0] p-8">
+        <div className="grid w-full max-w-[760px] grid-cols-[minmax(0,1fr)_220px] gap-5 rounded-[26px] border border-black/[0.075] bg-white p-5 shadow-[0_24px_80px_rgba(0,0,0,0.12)] max-[900px]:grid-cols-1">
+          <div className="min-w-0 rounded-[20px] border border-black/[0.06] bg-[#faf9f6] p-5">
+            <div className="mb-5 flex items-start gap-4">
+              <div
+                className="flex h-16 w-16 shrink-0 items-center justify-center rounded-[20px] border text-[13px] font-black"
+                style={{ color: previewFileColor, borderColor: `${previewFileColor}55`, backgroundColor: `${previewFileColor}12` }}
+              >
+                {previewFileExtension}
+              </div>
+              <div className="min-w-0 pt-1">
+                <div className="truncate text-[19px] font-bold tracking-[-0.01em] text-[#161616]">{previewTarget?.filename || 'Preview asset'}</div>
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <span className="rounded-full border border-black/[0.08] bg-white px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.14em] text-black/48">{getPreviewLabel(previewTarget?.filename)}</span>
+                  {previewKind === 'office' && <span className="rounded-full border border-black/[0.08] bg-white px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.14em] text-black/48">Document</span>}
+                  {previewKind === 'archive' && <span className="rounded-full border border-black/[0.08] bg-white px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.14em] text-black/48">Archive</span>}
+                </div>
+              </div>
+            </div>
+            <div className="rounded-[16px] border border-black/[0.06] bg-white px-3 py-2">
+              <div className="truncate text-[11px] font-mono text-black/42">{previewPath}</div>
+            </div>
+          </div>
+
+          <div className="flex flex-col justify-between rounded-[20px] border border-black/[0.06] bg-[#171717] p-4 text-white">
+            <div>
+              <div className="mb-3 flex items-center justify-between">
+                <FileText className="h-4 w-4 text-white/44" strokeWidth={1.8} />
+                <span className="text-[10px] font-black uppercase tracking-[0.17em] text-white/32">{previewFileExtension}</span>
+              </div>
+              <div className="text-[12px] font-medium leading-5 text-white/64">
+                {previewKind === 'office' ? 'Open or download this document asset.' : 'Open this asset outside the inline preview.'}
+              </div>
+            </div>
+            <div className="mt-6 flex flex-col gap-2">
+              <button onClick={handleOpenPreviewFile} className="flex h-9 items-center justify-center gap-2 rounded-full bg-white text-[11px] font-bold uppercase tracking-[0.12em] text-black transition-transform active:scale-[0.98]">
+                <ExternalLink className="h-3.5 w-3.5" strokeWidth={2.2} />
+                Open
+              </button>
+              <a href={previewFileUrl || previewUrl} download={previewTarget?.filename} className="flex h-9 items-center justify-center gap-2 rounded-full border border-white/[0.12] bg-white/[0.06] text-[11px] font-bold uppercase tracking-[0.12em] text-white/74 transition-colors hover:bg-white/[0.1]">
+                <Download className="h-3.5 w-3.5" strokeWidth={2.2} />
+                Download
+              </a>
+              <button onClick={handleCopyPreviewPath} className="flex h-9 items-center justify-center gap-2 rounded-full border border-white/[0.12] bg-white/[0.04] text-[11px] font-bold uppercase tracking-[0.12em] text-white/68 transition-colors hover:bg-white/[0.08]">
+                {copiedPreviewPath ? <Check className="h-3.5 w-3.5" strokeWidth={2.2} /> : <Copy className="h-3.5 w-3.5" strokeWidth={2.2} />}
+                {copiedPreviewPath ? 'Copied' : 'Copy path'}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const workspaceControlDock = (
+    <div className="relative flex h-[34px] items-center gap-1 rounded-full border border-white/[0.10] bg-[linear-gradient(180deg,#202020_0%,#161616_100%)] px-1.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.07)] backdrop-blur-xl">
+      {activeTabMode === 'code' && (
+        <button onClick={() => setSidebarOpen(s => !s)} className={`flex h-7 w-7 items-center justify-center rounded-full transition-all ${sidebarOpen ? 'bg-white/[0.13] text-white shadow-inner' : 'text-[#74716D] hover:bg-white/[0.07] hover:text-white'}`} title="Toggle Sidebar">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="9" y1="3" x2="9" y2="21"></line></svg>
+        </button>
+      )}
+      {!isFullscreen && (
+        <button onClick={() => setTerminalOpen(t => !t)} className={`relative flex h-7 w-7 items-center justify-center rounded-full transition-all ${terminalOpen ? 'bg-white/[0.13] text-white shadow-inner' : 'text-[#74716D] hover:bg-white/[0.07] hover:text-white'}`} title="Toggle Terminal">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>
+          {consoleLogs.length > 0 && <span className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-[#FF5F57]" />}
+        </button>
+      )}
+      <button onClick={() => setIsFullscreen(f => !f)} className={`flex h-7 w-7 items-center justify-center rounded-full transition-all ${isFullscreen ? 'bg-white/[0.13] text-white shadow-inner' : 'text-[#74716D] hover:bg-white/[0.07] hover:text-white'}`} title="Fullscreen">
+        {isFullscreen ?
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"/></svg>
+          : <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
+        }
+      </button>
+      <button className="flex h-7 w-7 items-center justify-center rounded-full text-[#74716D] transition-all hover:bg-white/[0.07] hover:text-white" title="Settings">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+      </button>
+      <button
+        onClick={handleCloseAll}
+        className="flex h-7 w-7 items-center justify-center rounded-full border border-white/[0.075] bg-white/[0.035] text-[#777] shadow-[inset_0_1px_0_rgba(255,255,255,0.045)] transition-all duration-200 hover:border-white/[0.16] hover:bg-white/[0.085] hover:text-white active:scale-95"
+        title="Close file workspace"
+        aria-label="Close file workspace"
       >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <rect x="4.25" y="4.25" width="15.5" height="15.5" rx="4" stroke="currentColor" strokeWidth="1.55" opacity="0.78" />
+          <path d="M9 8.75h4.7a2.8 2.8 0 0 1 0 5.6H8.75" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
+          <path d="M10.45 11.2 8.35 8.75l2.1-2.45" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </button>
+    </div>
+  );
+
+  const panelContent = (
+    <div ref={panelShellRef} className={`flex-1 flex flex-col relative z-10 h-full overflow-hidden transition-opacity duration-150 ease-out ${isPanelClosing ? 'opacity-0' : 'opacity-100'} ${isFullscreen ? 'p-0' : 'pt-1.5 pb-1 pr-3 pl-1.5'}`} onContextMenu={e => e.preventDefault()}>
+      {isFullscreen && (
+      <div className="pointer-events-none absolute inset-x-0 top-2 z-[90] flex justify-center">
+        <div className="pointer-events-auto [-webkit-app-region:no-drag]">
+          {workspaceControlDock}
+        </div>
+      </div>
+      )}
+
+      {/* Unified liquid glass container */}
+      <div
+        ref={fileContainerRef}
+        className={`${isFullscreen ? 'rounded-none' : 'rounded-[24px]'} flex-1 flex flex-col bg-[linear-gradient(180deg,#202020_0%,#161616_100%)] backdrop-blur-3xl overflow-hidden relative isolate border border-white/[0.10] shadow-[0_28px_70px_rgba(0,0,0,0.42),inset_0_1px_0_rgba(255,255,255,0.07)]`}
+      >
+        <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/20 to-transparent" />
         
-        {/* ── UNIFIED HEADER ROW ── */}
-        <div className={`${isFullscreen ? '' : 'rounded-t-[24px]'} flex h-[52px] border-b border-white/5 shrink-0 bg-white/[0.02] overflow-hidden`}>
-        
-        {/* Left Header (Mode Toggle) — always 256px wide to anchor layout */}
-        <div className="flex items-center px-4 shrink-0 justify-start w-64 border-r border-white/5">
-          <div className="flex bg-white/[0.05] rounded-full p-0.5 border border-white/5">
+        {/* Unified header row */}
+        <div className={`${isFullscreen ? '' : 'rounded-t-[24px]'} relative flex h-[56px] border-b border-white/[0.075] shrink-0 bg-[linear-gradient(180deg,rgba(255,255,255,0.055),rgba(255,255,255,0.018))] overflow-hidden`}>
+        {/* Left header mode toggle */}
+        <div className="flex items-center px-2.5 shrink-0 justify-start w-[196px] max-w-[34%] border-r border-white/[0.06]">
+          <div className="flex h-[36px] items-center rounded-full border border-white/[0.085] bg-[#151515]/85 p-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.045),0_10px_24px_rgba(0,0,0,0.18)]">
              <button
                onClick={() => setActiveTabMode('preview')}
-               className={`px-4 py-1.5 text-[10px] font-bold uppercase tracking-[0.1em] rounded-full transition-all duration-200 ${activeTabMode === 'preview' ? 'bg-white text-black' : 'text-[#666666] hover:text-white'}`}
+               className={`h-[28px] px-3.5 text-[10px] font-bold uppercase tracking-[0.13em] rounded-full transition-all duration-200 ${activeTabMode === 'preview' ? 'bg-[#F3F0EA] text-[#111] shadow-[0_6px_18px_rgba(255,255,255,0.12),inset_0_1px_0_rgba(255,255,255,0.8)]' : 'text-[#7D7A75] hover:text-[#E8E6E3] hover:bg-white/[0.045]'}`}
              >Preview</button>
              <button
                onClick={() => setActiveTabMode('code')}
-               className={`px-4 py-1.5 text-[10px] font-bold uppercase tracking-[0.1em] rounded-full transition-all duration-200 flex items-center gap-1.5 ${activeTabMode === 'code' ? 'bg-white/[0.1] text-white' : 'text-[#666666] hover:text-white'}`}
+               className={`h-[28px] px-3.5 text-[10px] font-bold uppercase tracking-[0.13em] rounded-full transition-all duration-200 flex items-center gap-1.5 ${activeTabMode === 'code' ? 'bg-[#F3F0EA] text-[#111] shadow-[0_6px_18px_rgba(255,255,255,0.12),inset_0_1px_0_rgba(255,255,255,0.8)]' : 'text-[#7D7A75] hover:text-[#E8E6E3] hover:bg-white/[0.045]'}`}
              >
-               {activeTabMode === 'code' && <div className="w-1.5 h-1.5 rounded-full bg-white" />}
+               {activeTabMode === 'code' && <div className="w-1.5 h-1.5 rounded-full bg-[#111]" />}
                Code
              </button>
           </div>
         </div>
 
-            <div className="flex-1 flex items-center justify-between px-4 min-w-0">
-             {/* Tab bar — only in Code mode */}
+            <div className="flex-1 flex items-center justify-between px-3 min-w-0">
+             {/* Tab bar, only in code mode */}
              {activeTabMode === 'code' && (
                <div className="flex-1 min-w-0 h-full flex items-center" style={{ WebkitMaskImage: 'linear-gradient(to right, black calc(100% - 32px), transparent)', maskImage: 'linear-gradient(to right, black calc(100% - 32px), transparent)' }}>
-                 <div className="flex items-center gap-2 overflow-x-auto scrollbar-hide h-full w-full" style={{ scrollbarWidth: 'none' }}>
+                 <div className="flex items-center gap-1.5 overflow-x-auto scrollbar-hide h-full w-full" style={{ scrollbarWidth: 'none' }}>
                   {openFiles.map((f, i) => {
                    const lang = getLanguage(f.filename).substring(0, 2).toLowerCase();
                    let iconChar = '{}'; let iconCol = 'text-[#666]';
                    if (lang === 'ts' || lang === 'tx') { iconChar = 'TS'; iconCol = 'text-[#999]'; }
-                   if (lang === 'ht') { iconChar = '</>'; iconCol = 'text-[#FFF]'; }
+                   if (lang === 'ht') { iconChar = 'WEB'; iconCol = 'text-[#FFF]'; }
                    if (lang === 'js') { iconChar = 'JS'; iconCol = 'text-[#AAA]'; }
                    return (
                      <div 
                        key={`${f.filepath}-${i}`}
                        onClick={() => setActiveIndex(i)}
                        onContextMenu={(e) => { e.preventDefault(); setContextMenu({ x: e.clientX, y: e.clientY, index: i }); }}
-                       className={`group relative flex items-center gap-2.5 px-3.5 py-1.5 rounded-full text-[12px] cursor-pointer shrink-0 transition-all duration-200 border ${activeIndex === i ? 'bg-white/10 text-white border-white/20' : 'text-[#666] hover:bg-white/[0.05] border-transparent hover:text-white'}`}
+                       className={`group relative flex h-[30px] max-w-[210px] items-center gap-2 px-2.5 rounded-full text-[12px] cursor-pointer shrink-0 transition-all duration-200 border ${activeIndex === i ? 'bg-white/[0.105] text-white border-white/[0.18] shadow-[inset_0_1px_0_rgba(255,255,255,0.065)]' : 'text-[#74716D] hover:bg-white/[0.055] border-transparent hover:text-[#E8E6E3]'}`}
                      >
-                      <div className={`font-mono font-bold text-[10px] ${iconCol}`}>{iconChar}</div>
-                      {f.filename}
+                      <div className={`min-w-[18px] text-center font-mono font-bold text-[9.5px] ${iconCol}`}>{iconChar}</div>
+                      <span className="min-w-0 truncate">{f.filename}</span>
                       <button 
                         onClick={(e) => { e.stopPropagation(); closePanel(i); }} 
-                        className={`flex items-center justify-center w-4 h-4 rounded-[4px] hover:bg-white/[0.1] hover:text-white transition-all ${activeIndex === i ? 'opacity-100 text-[#888]' : 'opacity-0 group-hover:opacity-100 text-[#555]'}`}
+                        className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-full hover:bg-white/[0.1] hover:text-white transition-all ${activeIndex === i ? 'opacity-100 text-[#888]' : 'opacity-0 group-hover:opacity-100 text-[#555]'}`}
                       >
                         <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
                       </button>
@@ -724,57 +1244,24 @@ export const IdePanel = () => {
                </div>
              )}
             
-            <div className="flex items-center gap-1.5 shrink-0 px-2 ml-4">
-               {activeTabMode === 'code' && (
-                 <button onClick={() => setSidebarOpen(s => !s)} className={`w-8 h-8 flex items-center justify-center transition-all rounded-[6px] ${sidebarOpen ? 'text-white bg-white/10 shadow-inner' : 'text-[#666] hover:text-white hover:bg-white/5'}`} title="Toggle Sidebar">
-                   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="9" y1="3" x2="9" y2="21"></line></svg>
-                 </button>
-               )}
-               {!isFullscreen && (
-                 <button onClick={() => setTerminalOpen(!terminalOpen)} className={`w-8 h-8 flex items-center justify-center transition-all rounded-[6px] ${terminalOpen ? 'text-white bg-white/10 shadow-inner' : 'text-[#666] hover:text-white hover:bg-white/5'}`} title="Toggle Terminal">
-                   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>
-                 </button>
-               )}
-               <button onClick={() => setIsFullscreen(f => !f)} className={`w-8 h-8 flex items-center justify-center transition-all rounded-[6px] ${isFullscreen ? 'text-white bg-white/10 shadow-inner' : 'text-[#666] hover:text-white hover:bg-white/5'}`} title="Fullscreen">
-                 {isFullscreen ? 
-                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"/></svg>
-                  : <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
-                 }
-               </button>
-               <button className="w-8 h-8 flex items-center justify-center text-[#666] hover:text-white hover:bg-white/5 transition-all rounded-[6px]" title="Settings">
-                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
-               </button>
-               <button
-                 onClick={handleCloseAll}
-                 className="group flex h-8 w-8 items-center justify-center rounded-full border border-white/[0.075] bg-white/[0.035] text-[#777] shadow-[inset_0_1px_0_rgba(255,255,255,0.045)] transition-all duration-200 hover:border-white/[0.16] hover:bg-white/[0.085] hover:text-white active:scale-95"
-                 title="Close file workspace"
-                 aria-label="Close file workspace"
-               >
-                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                   <rect x="4.25" y="4.25" width="15.5" height="15.5" rx="4" stroke="currentColor" strokeWidth="1.55" opacity="0.78" />
-                   <path d="M9 8.75h4.7a2.8 2.8 0 0 1 0 5.6H8.75" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
-                   <path d="M10.45 11.2 8.35 8.75l2.1-2.45" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
-                 </svg>
-               </button>
-            </div>
           </div>
         </div>
 
-      {/* ── MAIN WORKSPACE AREA ── */}
+      {/* Main workspace area */}
       <div className={`${isFullscreen ? '' : 'rounded-b-[24px]'} flex-1 flex overflow-hidden`}>
         
-        {/* Left Sidebar — hidden in Preview mode for full-screen render */}
+        {/* Left sidebar, hidden in preview mode for full render space */}
         {sidebarOpen && activeTabMode === 'code' && (
-          <div className="w-64 bg-white/[0.01] border-r border-white/5 flex flex-col shrink-0 select-none">
-            <div className="px-3 py-2 flex items-center justify-between group border-b border-white/[0.05]">
+          <div className="w-[250px] bg-[#121212]/72 border-r border-white/[0.065] flex flex-col shrink-0 select-none">
+            <div className="px-3 py-2.5 flex items-center justify-between group border-b border-white/[0.055] bg-white/[0.018]">
               <div className="flex items-center gap-1.5 min-w-0">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#888" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="shrink-0"><polyline points="9 18 15 12 9 6"></polyline></svg>
                 <span className="text-[11.5px] font-semibold text-[#CCCCCC] tracking-wide truncate uppercase">{workspaceName || 'Explorer'}</span>
               </div>
               <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
-                 <button title="Search" onClick={() => setPaletteOpen(true)} className="p-1 rounded-[4px] hover:bg-white/[0.05] transition-all"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#888" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg></button>
-                 <button title="Refresh" onClick={() => fetchFileTree(workspaceRoot)} className="p-1 rounded-[4px] hover:bg-white/[0.05] transition-all"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#888" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/></svg></button>
-                 <button onClick={() => setSidebarOpen(false)} className="p-1 rounded-[4px] hover:bg-white/[0.05] transition-all"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#888" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg></button>
+                 <button title="Search" onClick={() => setPaletteOpen(true)} className="p-1 rounded-[6px] text-[#888] hover:text-white hover:bg-white/[0.07] transition-all"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg></button>
+                 <button title="Refresh" onClick={() => fetchFileTree(workspaceRoot)} className="p-1 rounded-[6px] text-[#888] hover:text-white hover:bg-white/[0.07] transition-all"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/></svg></button>
+                 <button onClick={() => setSidebarOpen(false)} className="p-1 rounded-[6px] text-[#888] hover:text-white hover:bg-white/[0.07] transition-all"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg></button>
               </div>
             </div>
             
@@ -807,7 +1294,7 @@ export const IdePanel = () => {
             </div>
 
             {/* Live status bar */}
-            <div className="px-3 py-2 border-t border-white/[0.04] flex items-center gap-2">
+            <div className="px-3 py-2 border-t border-white/[0.055] bg-white/[0.015] flex items-center gap-2">
               <div className={`w-1.5 h-1.5 rounded-full transition-colors ${isTreeLoading ? 'bg-white/30 animate-pulse' : 'bg-white/60'}`} />
               <span className="text-[10px] text-white/20 font-mono uppercase tracking-widest">
                 {isTreeLoading ? 'Syncing…' : `${openFiles.length} open`}
@@ -835,17 +1322,19 @@ export const IdePanel = () => {
                     options={{
                       readOnly: true,
                       minimap: { enabled: false },
-                      fontSize: 13,
-                      lineHeight: 22,
+                      fontSize: 14,
+                      lineHeight: 24,
                       fontFamily: '"JetBrains Mono", "Fira Code", monospace',
-                      fontLigatures: true,
+                      fontLigatures: false,
                       scrollBeyondLastLine: false,
-                      renderLineHighlight: 'line',
-                      cursorBlinking: 'smooth',
-                      smoothScrolling: true,
-                      padding: { top: 16, bottom: 16 },
+                      renderLineHighlight: 'none',
+                      cursorBlinking: 'blink',
+                      cursorSmoothCaretAnimation: 'off',
+                      smoothScrolling: false,
+                      padding: { top: 18, bottom: 18 },
                       overviewRulerBorder: false,
                       hideCursorInOverviewRuler: true,
+                      renderValidationDecorations: 'off',
                       scrollbar: { verticalScrollbarSize: 4, horizontalScrollbarSize: 4 },
                     }}
                     loading={
@@ -863,72 +1352,82 @@ export const IdePanel = () => {
                   </div>
                 )
               ) : (
-                <div className={`${isFullscreen ? '' : 'rounded-b-[24px]'} h-full flex flex-col overflow-hidden`} style={{ background: '#2C2C2E' }}>
+                <div className={`${isFullscreen ? '' : 'rounded-b-[24px]'} h-full flex flex-col overflow-hidden`} style={{ background: '#262628' }}>
                   {/* Premium Browser Chrome - Redesigned to match high-end concept */}
                   <div
-                    className="h-[52px] shrink-0 flex items-center justify-between px-4"
-                    style={{ background: '#323233', borderBottom: '1px solid rgba(0,0,0,0.3)' }}
+                    className="h-[54px] shrink-0 flex items-center justify-between px-4"
+                    style={{ background: 'linear-gradient(180deg,#343436 0%,#2D2D2F 100%)', borderBottom: '1px solid rgba(255,255,255,0.06)' }}
                   >
                     {/* Left: Device Toggles & Nav */}
-                    <div className="flex items-center gap-3">
-                      <div className="flex items-center p-0.5 rounded-[8px]" style={{ background: 'rgba(0,0,0,0.2)', border: '1px solid rgba(255,255,255,0.03)' }}>
-                        <button className="p-1.5 rounded-[6px] bg-[#454547] text-white shadow-sm transition-all" title="Desktop view">
+                    <div className="flex min-w-0 items-center gap-3">
+                      <div className="flex items-center p-1 rounded-[10px]" style={{ background: 'rgba(0,0,0,0.22)', border: '1px solid rgba(255,255,255,0.06)' }}>
+                        <button
+                          onClick={() => setPreviewDevice('desktop')}
+                          className={`p-1.5 rounded-[7px] transition-all ${previewDevice === 'desktop' ? 'bg-[#F3F0EA] text-[#151515] shadow-[0_5px_14px_rgba(255,255,255,0.10)]' : 'text-white/35 hover:text-white/75 hover:bg-white/[0.06]'}`}
+                          title="Desktop view"
+                        >
                           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg>
                         </button>
-                        <button className="p-1.5 rounded-[6px] text-white/30 hover:text-white/60 transition-all" title="Mobile view">
+                        <button
+                          onClick={() => setPreviewDevice('mobile')}
+                          className={`p-1.5 rounded-[7px] transition-all ${previewDevice === 'mobile' ? 'bg-[#F3F0EA] text-[#151515] shadow-[0_5px_14px_rgba(255,255,255,0.10)]' : 'text-white/35 hover:text-white/75 hover:bg-white/[0.06]'}`}
+                          title="Mobile view"
+                        >
                           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"></rect><line x1="12" y1="18" x2="12.01" y2="18"></line></svg>
                         </button>
                       </div>
                       
                       {/* Nav Buttons integrated seamlessly */}
-                      <div className="flex items-center gap-1 opacity-60">
-                        <button onClick={handleBack} disabled={!canGoBack} className={`w-6 h-6 flex items-center justify-center transition-all ${canGoBack ? 'text-white hover:text-white' : 'text-white/20 cursor-default'}`}>
+                      <div className="flex items-center gap-1">
+                        <button onClick={handleBack} disabled={!canGoBack} className={`w-7 h-7 rounded-full flex items-center justify-center transition-all ${canGoBack ? 'text-white/75 hover:text-white hover:bg-white/[0.06]' : 'text-white/18 cursor-default'}`}>
                           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M15 18l-6-6 6-6"/></svg>
                         </button>
-                        <button onClick={handleForward} disabled={!canGoForward} className={`w-6 h-6 flex items-center justify-center transition-all ${canGoForward ? 'text-white hover:text-white' : 'text-white/20 cursor-default'}`}>
+                        <button onClick={handleForward} disabled={!canGoForward} className={`w-7 h-7 rounded-full flex items-center justify-center transition-all ${canGoForward ? 'text-white/75 hover:text-white hover:bg-white/[0.06]' : 'text-white/18 cursor-default'}`}>
                           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M9 18l6-6-6-6"/></svg>
                         </button>
                       </div>
+
                     </div>
 
-                    {/* Center: URL Bar Pill */}
-                    <div className="flex-1 flex justify-center max-w-[600px] mx-4">
+                    {/* Center: Address bar and preview controls */}
+                    <div className="flex min-w-[220px] flex-1 justify-center max-w-[680px] mx-4">
                       <div
-                        className="w-full h-[32px] flex items-center justify-between px-3 rounded-[8px] transition-all group focus-within:ring-1 focus-within:ring-white/20"
-                        style={{ background: 'rgba(0,0,0,0.2)', border: '1px solid rgba(255,255,255,0.03)' }}
+                        className="w-full h-[34px] flex items-center justify-between gap-3 px-3 rounded-[10px] transition-all group focus-within:ring-1 focus-within:ring-white/22"
+                        style={{ background: 'rgba(0,0,0,0.26)', border: '1px solid rgba(255,255,255,0.07)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.035)' }}
                       >
-                        <div className="flex items-center gap-3 w-full">
-                           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-white/40"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><polyline points="9 22 9 12 15 12 15 22"></polyline></svg>
-                           <input
-                             value={urlInput}
-                             onChange={e => setUrlInput(e.target.value)}
-                             onKeyDown={e => { if (e.key === 'Enter') { setPreviewUrl(urlInput); setIsPreviewLoading(true); } }}
-                             className="text-[12.5px] text-white/60 font-mono truncate flex-1 tracking-wide bg-transparent outline-none"
-                             placeholder="Enter dev server URL (e.g. http://localhost:3000)"
-                           />
-                           <div className="flex items-center gap-3 shrink-0">
-                             <button onClick={() => previewUrl && window.open(previewUrl, '_blank')} className="text-white/30 hover:text-white/80 transition-colors" title="Open in browser">
-                               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>
-                             </button>
-                             <button onClick={handleRefresh} className="text-white/30 hover:text-white/80 transition-colors" title="Reload frame">
-                               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/></svg>
-                             </button>
-                           </div>
+                        <input
+                          value={urlInput}
+                          onChange={e => setUrlInput(e.target.value)}
+                          onKeyDown={e => { if (e.key === 'Enter') handlePreviewAddressSubmit(); }}
+                          aria-label="Preview address"
+                          className="min-w-0 flex-1 truncate bg-transparent font-mono text-[12px] tracking-wide text-white/68 outline-none placeholder:text-white/22"
+                          placeholder="Enter dev server URL (e.g. http://localhost:3000)"
+                        />
+                        <div className="flex shrink-0 items-center gap-2.5">
+                          <button onClick={handleCopyPreviewPath} className="text-white/35 hover:text-white/85 transition-colors" title="Copy path">
+                            {copiedPreviewPath ? <Check className="h-[13px] w-[13px]" strokeWidth={2.5} /> : <Copy className="h-[13px] w-[13px]" strokeWidth={2.5} />}
+                          </button>
+                          <button onClick={handleOpenPreviewFile} className="text-white/35 hover:text-white/85 transition-colors" title="Open in browser">
+                            <ExternalLink className="h-[13px] w-[13px]" strokeWidth={2.5} />
+                          </button>
+                          <button onClick={handleRefresh} className="text-white/35 hover:text-white/85 transition-colors" title="Reload frame">
+                            <RefreshCw className="h-[13px] w-[13px]" strokeWidth={2.5} />
+                          </button>
                         </div>
                       </div>
                     </div>
 
                     {/* Right: Actions */}
-                    <div className="flex items-center gap-3 shrink-0">
-                      <button onClick={() => setActiveTabMode('code')} className="flex items-center gap-2 px-3 py-1.5 rounded-[6px] text-white/80 hover:text-white transition-all text-[11.5px] font-medium" style={{ border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(255,255,255,0.03)' }}>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button onClick={() => setActiveTabMode('code')} className="flex items-center gap-2 px-3 py-1.5 rounded-[8px] text-white/78 hover:text-white transition-all text-[11.5px] font-medium" style={{ border: '1px solid rgba(255,255,255,0.09)', background: 'rgba(255,255,255,0.045)' }}>
                         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9"></path><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path></svg>
                         Edit
                       </button>
-                      <button onClick={() => setTerminalOpen(t => !t)} className="text-white/40 hover:text-white transition-all relative p-1" title="Toggle Console">
+                      <button onClick={() => setTerminalOpen(t => !t)} className="h-8 w-8 rounded-full flex items-center justify-center text-white/40 hover:text-white hover:bg-white/[0.06] transition-all relative" title="Toggle Console">
                         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>
-                        {consoleLogs.length > 0 && <span className="absolute 1 top-0 right-0 w-2 h-2 rounded-full bg-[#FF5F57] border border-[#323233]" />}
+                        {consoleLogs.length > 0 && <span className="absolute top-0 right-0 w-2 h-2 rounded-full bg-[#FF5F57] border border-[#323233]" />}
                       </button>
-                      <button onClick={() => setIsFullscreen(f => !f)} className="text-white/40 hover:text-white transition-all p-1" title="Fullscreen">
+                      <button onClick={() => setIsFullscreen(f => !f)} className="h-8 w-8 rounded-full flex items-center justify-center text-white/40 hover:text-white hover:bg-white/[0.06] transition-all" title="Fullscreen">
                         {isFullscreen ? 
                           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"/></svg>
                         : <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
@@ -937,7 +1436,7 @@ export const IdePanel = () => {
                     </div>
                   </div>
 
-                  {/* Preview iframe — full remaining height */}
+                  {/* Preview frame, full remaining height */}
                   <div className={`${isFullscreen ? '' : 'rounded-b-[24px]'} flex-1 relative overflow-hidden bg-white`}>
                     <AnimatePresence>
                       {isPreviewLoading && (
@@ -973,28 +1472,19 @@ export const IdePanel = () => {
                             transition={{ duration: 1.5, repeat: Infinity }}
                             className="text-[12px] text-[#A3A19E] tracking-[0.2em] font-medium font-mono uppercase"
                           >
-                            Connecting to server...
+                            Loading preview...
                           </motion.span>
                         </motion.div>
                       )}
                     </AnimatePresence>
-                    <iframe
-                      ref={iframeRef}
-                      key={previewUrl}
-                      src={previewUrl || ''}
-                      className="w-full h-full border-none"
-                      style={{ borderRadius: isFullscreen ? 0 : '0 0 24px 24px' }}
-                      onLoad={handlePreviewLoad}
-                      title="Preview"
-                      sandbox="allow-scripts allow-same-origin allow-forms allow-modals"
-                    />
+                    {renderPreviewSurface()}
                   </div>
                 </div>
               )}
             </div>
           </div>
 
-          {/* ── CONSOLE OUTPUT PANEL ── */}
+          {/* Console output panel */}
           <AnimatePresence>
             {terminalOpen && (
               <motion.div 
@@ -1104,11 +1594,26 @@ export const IdePanel = () => {
     </div>
   );
 
+  const dockPortal = !isFullscreen && dockPosition && typeof document !== 'undefined' ? createPortal(
+    <div
+      className="fixed z-[9999] -translate-x-1/2 [-webkit-app-region:no-drag]"
+      style={{ left: dockPosition.left, top: dockPosition.top }}
+    >
+      {workspaceControlDock}
+    </div>,
+    document.body
+  ) : null;
+
   return isFullscreen ? (
     <div
       style={{ position: 'fixed', inset: 0, zIndex: 100, display: 'flex', flexDirection: 'column' }}
     >
       {panelContent}
     </div>
-  ) : panelContent;
+  ) : (
+    <>
+      {panelContent}
+      {dockPortal}
+    </>
+  );
 };

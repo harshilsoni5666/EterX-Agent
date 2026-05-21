@@ -260,6 +260,7 @@ ${autonomousAction}
               console.error(`[AgentConnectorTrigger] Deep Polling error: ${err.message}`);
             }
           }, 3000); // Fast Polling: every 3 seconds
+        pollInterval.unref?.();
 
         activeTriggers.set(triggerId, pollInterval);
 

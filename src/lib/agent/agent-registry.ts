@@ -64,6 +64,7 @@ class AgentRegistry {
   constructor() {
     // Start periodic cleanup
     this.cleanupTimer = setInterval(() => this.cleanup(), CLEANUP_INTERVAL);
+    this.cleanupTimer.unref?.();
   }
 
   /**

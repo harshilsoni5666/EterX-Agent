@@ -12,12 +12,13 @@ export const InteractiveGrid = () => {
     if (!ctx) return;
 
     let particles: Particle[] = [];
-    let animationFrameId: number;
+    let animationFrameId: number | null = null;
     let mx = 9999;
     let my = 9999;
     let cols = 0;
     let rows = 0;
-    const dpr = window.devicePixelRatio || 1;
+    let isVisible = document.visibilityState !== 'hidden';
+    const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
 
     // Strict void configuration matching the screenshot exactly
     const SPACING = 24;
@@ -74,9 +75,10 @@ export const InteractiveGrid = () => {
       const width = canvas.parentElement?.clientWidth || window.innerWidth;
       const height = canvas.parentElement?.clientHeight || window.innerHeight;
 
-      canvas.width = width * dpr;
-      canvas.height = height * dpr;
-      ctx.scale(dpr, dpr);
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      canvas.width = Math.floor(width * dpr);
+      canvas.height = Math.floor(height * dpr);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       canvas.style.width = `${width}px`;
       canvas.style.height = `${height}px`;
 
@@ -91,43 +93,82 @@ export const InteractiveGrid = () => {
       }
     };
 
-    const animate = () => {
+    const drawStatic = () => {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
-      
       for (let i = 0; i < particles.length; i++) {
+        particles[i].draw(ctx);
+      }
+    };
+
+    const animate = () => {
+      if (!isVisible || prefersReducedMotion.matches) {
+        animationFrameId = null;
+        drawStatic();
+        return;
+      }
+
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      let moving = mx !== 9999 || my !== 9999;
+
+      for (let i = 0; i < particles.length; i++) {
+        const beforeX = particles[i].x;
+        const beforeY = particles[i].y;
         particles[i].update(mx, my);
+        if (Math.abs(particles[i].x - beforeX) > 0.02 || Math.abs(particles[i].y - beforeY) > 0.02) {
+          moving = true;
+        }
         particles[i].draw(ctx);
       }
 
-      animationFrameId = requestAnimationFrame(animate);
+      animationFrameId = moving ? requestAnimationFrame(animate) : null;
+    };
+
+    const requestDraw = () => {
+      if (animationFrameId === null) animationFrameId = requestAnimationFrame(animate);
     };
 
     init();
-    animate();
+    drawStatic();
 
-    const onResize = () => init();
+    const onResize = () => {
+      init();
+      drawStatic();
+    };
     
     // IMPORTANT: Calculate mouse relative to canvas layout box, not window screen
     const onMouseMove = (e: MouseEvent) => {
       const rect = canvas.getBoundingClientRect();
       mx = e.clientX - rect.left;
       my = e.clientY - rect.top;
+      requestDraw();
     };
     
     const onMouseLeave = () => {
       mx = 9999;
       my = 9999;
+      requestDraw();
+    };
+
+    const onVisibilityChange = () => {
+      isVisible = document.visibilityState !== 'hidden';
+      if (isVisible) requestDraw();
+      else if (animationFrameId !== null) {
+        cancelAnimationFrame(animationFrameId);
+        animationFrameId = null;
+      }
     };
 
     window.addEventListener('resize', onResize);
     window.addEventListener('mousemove', onMouseMove);
     window.addEventListener('mouseleave', onMouseLeave);
+    document.addEventListener('visibilitychange', onVisibilityChange);
 
     return () => {
-      cancelAnimationFrame(animationFrameId);
+      if (animationFrameId !== null) cancelAnimationFrame(animationFrameId);
       window.removeEventListener('resize', onResize);
       window.removeEventListener('mousemove', onMouseMove);
       window.removeEventListener('mouseleave', onMouseLeave);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
     };
   }, []);
 

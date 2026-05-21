@@ -49,22 +49,35 @@ const NakedCopyButton = ({ content }: { content: string }) => {
   );
 };
 
-export const LiveActionChip = ({ text, secondary, isActive }: { text: string, secondary?: string, isActive?: boolean }) => {
+const ComputerIcon = ({ size = 18, color = '#E8E6E3' }: { size?: number, color?: string }) => (
+  <svg width={size} height={size} viewBox="0 0 16 16" fill="none">
+    <rect x="1.25" y="2.25" width="13.5" height="9.5" rx="1.75" stroke={color} strokeWidth="1.15" fill="none" />
+    <line x1="1.25" y1="8.75" x2="14.75" y2="8.75" stroke={color} strokeWidth="0.9" opacity="0.25" />
+    <circle cx="3.25" cy="4" r="0.65" fill={color} opacity="0.75" />
+    <circle cx="5" cy="4" r="0.65" fill={color} opacity="0.75" />
+    <circle cx="6.75" cy="4" r="0.65" fill={color} opacity="0.75" />
+    <path d="M5.5 11.75 L10.5 11.75" stroke={color} strokeWidth="1.15" strokeLinecap="round" />
+    <path d="M8 11.75 L8 13.75" stroke={color} strokeWidth="1.15" strokeLinecap="round" />
+    <path d="M6 13.75 L10 13.75" stroke={color} strokeWidth="1.15" strokeLinecap="round" />
+  </svg>
+);
+
+export const LiveActionChip = ({ text, secondary, isActive, inCard = false }: { text: string, secondary?: string, isActive?: boolean, inCard?: boolean }) => {
   return (
     <motion.div
       initial={{ opacity: 0, y: -3, scale: 0.97 }}
       animate={{ opacity: 1, y: 0, scale: 1 }}
       exit={{ opacity: 0, scale: 0.96, transition: { duration: 0.15 } }}
-      className="flex min-h-[46px] w-full items-center gap-3 px-3 py-2 text-[#8C8A88] transition-colors hover:bg-white/[0.035]"
+      className={`flex min-h-[46px] w-full items-center gap-3 px-3 py-2 text-[#8C8A88] transition-colors ${ inCard ? 'hover:bg-white/[0.035]' : 'rounded-[14px] hover:bg-white/[0.03]' }`}
     >
-      <span className="flex h-8 w-8 items-center justify-center rounded-[10px] border border-white/[0.075] bg-[#111111]/90 shadow-[inset_0_1px_0_rgba(255,255,255,0.035)] shrink-0">
-        <Activity className="h-4 w-4 text-[#77736E] shrink-0" strokeWidth={1.9} />
+      <span className="flex h-8 w-8 items-center justify-center shrink-0">
+        <ComputerIcon size={19} color="#E8E6E3" />
       </span>
-      <span className={`${ isActive ? 'eterx-live-text' : '' } max-w-[46%] shrink-0 truncate text-[14px] font-semibold tracking-normal text-[#A7A39E]`}>
+      <span className={`max-w-[46%] shrink-0 truncate text-[14px] font-semibold tracking-normal ${ isActive ? 'eterx-live-text' : 'text-[#A7A39E]' }`}>
         {text}
       </span>
       {secondary && <span className="h-4 w-px shrink-0 bg-white/[0.08]" />}
-      {secondary && <span className={`${ isActive ? 'eterx-live-text' : '' } min-w-0 truncate font-mono text-[13px] text-[#605D59]`}>{secondary}</span>}
+      {secondary && <span className="min-w-0 truncate font-mono text-[13px] text-[#605D59]">{secondary}</span>}
       <ChevronRight className="ml-auto h-4 w-4 shrink-0 text-[#45423E]" />
     </motion.div>
   );
@@ -167,31 +180,35 @@ const liveMotionStyles = `
     0%, 76%, 100% { transform: translateY(0) scale(.92); opacity: .36; box-shadow: 0 0 0 rgba(190,190,186,0); }
     38% { transform: translateY(-2px) scale(1.08); opacity: .95; box-shadow: 0 0 9px rgba(190,190,186,.34); }
   }
-  @keyframes eterx-live-text {
-    0%, 100% { opacity: .72; }
-    50% { opacity: 1; }
+  @keyframes eterx-shimmer {
+    0%   { background-position: 200% center; }
+    100% { background-position: -200% center; }
   }
   .eterx-live-text {
-    color: #DCD8D1 !important;
-    animation: eterx-live-text 1.65s ease-in-out infinite;
-    will-change: opacity;
+    background: linear-gradient(
+      90deg,
+      #6B6966 0%,
+      #C8C5BF 30%,
+      #FFFFFF 50%,
+      #C8C5BF 70%,
+      #6B6966 100%
+    );
+    background-size: 200% auto;
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    animation: eterx-shimmer 1.8s linear infinite;
+    will-change: background-position;
   }
-  .eterx-live-text * {
-    color: inherit !important;
-  }
+  .eterx-live-text * { -webkit-text-fill-color: inherit; }
   .eterx-live-dot { animation: eterx-live-dot 1.15s ease-in-out infinite; }
   @media (prefers-reduced-motion: reduce) {
     .eterx-live-text {
-      color: #E8E1D4 !important;
+      background: none;
+      -webkit-text-fill-color: #C8C5BF;
       animation: none;
     }
-    .eterx-live-text * {
-      color: inherit !important;
-    }
-    .eterx-live-dot {
-      animation: none;
-      opacity: .75;
-    }
+    .eterx-live-dot { animation: none; opacity: .75; }
   }
 `;
 
@@ -212,6 +229,8 @@ const WORKFLOW_COUNT_TYPES = new Set([
 const HIDDEN_HELPER_TYPES = new Set(['answer', 'ask_user', 'file_preview', 'console_output']);
 const USER_QUERY_PREVIEW_LIMIT = 520;
 const USER_QUERY_PREVIEW_LINES = 8;
+const INITIAL_VISIBLE_GROUPS = 40;
+const LIVE_KARAOKE_TEXT_LIMIT = 12000;
 
 const normalizeTraceText = (value: any) => String(value || '')
   .replace(/<\/?thought>/gi, '')
@@ -250,11 +269,15 @@ const getUserQueryPreview = (value: any) => {
 const CollapsibleThinking = ({
   logs, isThinking, isLast, hasAnswer, stepCount
 }: { logs: any[], isThinking: boolean, isLast: boolean, hasAnswer: boolean, stepCount: number }) => {
-  const [open, setOpen] = React.useState(true);
+  const [open, setOpen] = React.useState(() => isThinking || !hasAnswer);
   const containerRef = React.useRef<HTMLDivElement>(null);
   const prevHasAnswer = React.useRef(false);
 
   React.useEffect(() => {
+    if (isThinking) {
+      setOpen(true);
+      return;
+    }
     if (hasAnswer && !prevHasAnswer.current) {
       setOpen(false);
       prevHasAnswer.current = true;
@@ -265,7 +288,7 @@ const CollapsibleThinking = ({
     } else if (!hasAnswer) {
       prevHasAnswer.current = false;
     }
-  }, [hasAnswer]);
+  }, [hasAnswer, isThinking]);
 
   const toggleOpen = () => {
     setOpen(currentOpen => {
@@ -387,6 +410,7 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
   const lastFaceTraceRef = useRef('');
   const lastFaceLiveNotifyAtRef = useRef(0);
   const [previewUserMessage, setPreviewUserMessage] = useState<{ text: string; index: number } | null>(null);
+  const [historyWindowSize, setHistoryWindowSize] = useState(INITIAL_VISIBLE_GROUPS);
   const AUTO_FOLLOW_THRESHOLD = 24;
 
   useEffect(() => {
@@ -483,6 +507,9 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
     return nextGroups;
   }, [traceLogs, isThinking]);
 
+  const hiddenGroupCount = Math.max(0, groups.length - historyWindowSize);
+  const visibleGroups = hiddenGroupCount > 0 ? groups.slice(hiddenGroupCount) : groups;
+
   return (
     <>
       <style>{liveMotionStyles}</style>
@@ -508,41 +535,53 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
 
       {traceLogs.length > 0 && (
         <div className={`w-full mx-auto pb-4 relative ${ isCompressed ? 'max-w-[520px] pt-16' : 'max-w-[800px] pt-20' }`}>
-          {groups.map((group, groupIdx) => {
+          {hiddenGroupCount > 0 && (
+            <div className="mb-8 flex justify-center">
+              <button
+                type="button"
+                onClick={() => setHistoryWindowSize(size => size + INITIAL_VISIBLE_GROUPS)}
+                className="rounded-full border border-white/[0.08] bg-white/[0.04] px-3 py-1.5 text-[12px] font-medium text-[#A3A19E] transition-colors hover:border-white/[0.16] hover:bg-white/[0.07] hover:text-[#E8E6E3]"
+              >
+                Show previous {hiddenGroupCount} messages
+              </button>
+            </div>
+          )}
+          {visibleGroups.map((group, visibleGroupIdx) => {
+            const groupIdx = hiddenGroupCount + visibleGroupIdx;
             const first = group[0];
             if (first?.type === 'user_action') {
               const userText = String(first.text || '');
               const { isLong } = getUserQueryPreview(userText);
               return (
                 <div key={`group-${ groupIdx }`} id={`message-${ groupIdx }`} className="mt-10 mb-6 flex flex-col items-end w-full group/user scroll-m-20">
-                  <div className={`bg-[#242424] text-[#E8E6E3] px-5 py-3.5 rounded-[22px] rounded-tr-[6px] ml-auto text-[15.5px] shadow-[0_2px_12px_rgba(0,0,0,0.25)] leading-relaxed whitespace-pre-wrap relative border border-white/[0.06] select-text selection:bg-[#E2765A]/30 flex flex-col items-end ${ isCompressed ? 'max-w-[92%]' : 'max-w-[84%]' }`}>
+                  <div className={`bg-[#242424] text-[#E3E3E3] px-5 py-3.5 rounded-[22px] rounded-tr-[6px] ml-auto text-[15.5px] shadow-[0_2px_12px_rgba(0,0,0,0.28)] leading-relaxed whitespace-pre-wrap relative border border-white/[0.07] select-text selection:bg-[#E2765A]/30 flex flex-col items-end ${ isCompressed ? 'max-w-[92%]' : 'max-w-[84%]' }`}>
                     {first.attachments && first.attachments.length > 0 && (
                       <div className="flex flex-wrap justify-end gap-2.5 mb-3 w-full">
                         {first.attachments.map((att: any, i: number) => {
                           const isImage = !!att.preview;
-                          const fileName = att.file?.name || att.name || 'file';
-                          const extension = fileName.split('.').pop()?.toUpperCase() || 'FILE';
-                          const isPdf = extension === 'PDF';
-
-                          if (isImage) {
-                            return (
-                              <a key={i} href={att.preview} target="_blank" rel="noopener noreferrer" className="relative group w-[72px] h-[72px] rounded-[16px] shadow-sm hover:shadow-md transition-all cursor-pointer border border-white/10 shrink-0">
-                                <img src={att.preview} alt="attached" className="w-full h-full object-cover rounded-[16px] hover:opacity-80 transition-opacity" />
-                              </a>
-                            );
-                          }
-
-                          return (
-                            <div key={i} className="flex flex-col items-center justify-center gap-1.5 w-[72px] h-[72px] rounded-[16px] bg-[#1A1A1A] border border-white/10 shadow-sm shrink-0">
-                              <div className={`w-[26px] h-[26px] rounded-md flex items-center justify-center shrink-0 shadow-sm ${ isPdf ? 'bg-[#EF4444]' : 'bg-[#007AFF]' }`}>
-                                <FileText className="w-3.5 h-3.5 text-white" strokeWidth={2.5} />
-                              </div>
-                              <span className="text-[10px] font-medium text-[#E8E6E3] truncate max-w-[90%] px-1">{att.name || fileName}</span>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
+                           const fileName = att.file?.name || att.name || 'file';
+                           const extension = fileName.split('.').pop()?.toUpperCase() || 'FILE';
+                           const isPdf = extension === 'PDF';
+ 
+                           if (isImage) {
+                             return (
+                               <a key={i} href={att.preview} target="_blank" rel="noopener noreferrer" className="relative group w-[72px] h-[72px] rounded-[16px] shadow-sm hover:shadow-md transition-all cursor-pointer border border-white/[0.06] shrink-0">
+                                 <img src={att.preview} alt="attached" className="w-full h-full object-cover rounded-[16px] hover:opacity-80 transition-opacity" />
+                               </a>
+                             );
+                           }
+ 
+                           return (
+                             <div key={i} className="flex flex-col items-center justify-center gap-1.5 w-[72px] h-[72px] rounded-[16px] bg-white/[0.025] border border-white/[0.05] shadow-sm shrink-0">
+                               <div className={`w-[26px] h-[26px] rounded-md flex items-center justify-center shrink-0 shadow-sm ${ isPdf ? 'bg-[#EF4444]' : 'bg-[#007AFF]' }`}>
+                                 <FileText className="w-3.5 h-3.5 text-white" strokeWidth={2.5} />
+                               </div>
+                               <span className="text-[10px] font-medium text-[#C4C1BC] truncate max-w-[90%] px-1">{att.name || fileName}</span>
+                             </div>
+                           );
+                         })}
+                       </div>
+                     )}
                     <div className={`relative w-full text-left ${ isLong ? 'max-h-[230px] overflow-hidden pb-8' : '' }`}>
                       <span className="block w-full text-left break-words [word-break:break-word] [overflow-wrap:anywhere]">{userText}</span>
                       {isLong && (
@@ -552,7 +591,7 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
                           className="absolute inset-x-0 bottom-0 flex h-24 items-end justify-center bg-gradient-to-b from-[#242424]/0 via-[#242424]/82 to-[#242424] pb-1.5 text-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/20"
                           aria-label="Show full prompt"
                         >
-                          <span className="text-[13px] font-medium text-[#A4A19D] transition-colors hover:text-[#E8E6E3]">
+                          <span className="text-[13px] font-medium text-[#A4A19D] transition-colors hover:text-[#C4C1BC]">
                             Show more
                           </span>
                         </button>
@@ -581,10 +620,17 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
             let tailLogs: any[] = [];
 
             // 2. Of the standard logs, identify the final answer
-            const answerIndices = standardLogs.map((l: any, i: number) => l.type === 'answer' ? i : -1).filter((i: number) => i !== -1);
-            if (answerIndices.length > 0) {
-              const firstIdx = answerIndices[0];
-              const lastIdx = answerIndices[answerIndices.length - 1];
+            let firstAnswerIdx = -1;
+            let lastAnswerIdx = -1;
+            for (let i = 0; i < standardLogs.length; i++) {
+              if (standardLogs[i].type === 'answer') {
+                if (firstAnswerIdx === -1) firstAnswerIdx = i;
+                lastAnswerIdx = i;
+              }
+            }
+            if (firstAnswerIdx >= 0) {
+              const firstIdx = firstAnswerIdx;
+              const lastIdx = lastAnswerIdx;
               processLogs = standardLogs.slice(0, firstIdx);
               const lastAnswerLog = standardLogs[lastIdx];
 
@@ -676,21 +722,27 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
                 {/* Render Live Action Chips */}
                 <AnimatePresence>
                   {liveCommandLogs.length > 0 && (
-                    <motion.div
-                      key={`live-actions-${ groupIdx }`}
-                      layout
-                      initial={{ opacity: 0, y: 4 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, y: -3 }}
-                      transition={{ duration: 0.18, ease: 'easeOut' }}
-                      className="mb-4 mt-1 overflow-hidden rounded-[14px] border border-white/[0.095] bg-[#101010]/58 shadow-[inset_0_1px_0_rgba(255,255,255,0.026)]"
-                    >
-                      {liveCommandLogs.map((cmd: any, cmdIdx: number) => (
-                        <div key={`live-cmd-wrap-${ groupIdx }-${ cmdIdx }`} className={cmdIdx > 0 ? 'border-t border-white/[0.055]' : ''}>
-                          <LiveActionChip key={`live-cmd-${ groupIdx }-${ cmdIdx }`} text={cmd.text} secondary={cmd.secondary} isActive={isThinkingTurn} />
-                        </div>
-                      ))}
-                    </motion.div>
+                    <>
+                      {liveCommandLogs.length === 1 ? (
+                        <LiveActionChip key={`live-cmd-${ groupIdx }-0`} text={liveCommandLogs[0].text} secondary={liveCommandLogs[0].secondary} isActive={isThinkingTurn} inCard={false} />
+                      ) : (
+                        <motion.div
+                          key={`live-actions-${ groupIdx }`}
+                          layout
+                          initial={{ opacity: 0, y: 4 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0, y: -3 }}
+                          transition={{ duration: 0.18, ease: 'easeOut' }}
+                          className="mb-4 mt-1 overflow-hidden rounded-[14px] border border-white/[0.08] bg-[#1A1A1A]/80 shadow-[inset_0_1px_0_rgba(255,255,255,0.04),0_4px_16px_rgba(0,0,0,0.22)]"
+                        >
+                          {liveCommandLogs.map((cmd: any, cmdIdx: number) => (
+                            <div key={`live-cmd-wrap-${ groupIdx }-${ cmdIdx }`} className={cmdIdx > 0 ? 'border-t border-white/[0.055]' : ''}>
+                              <LiveActionChip key={`live-cmd-${ groupIdx }-${ cmdIdx }`} text={cmd.text} secondary={cmd.secondary} isActive={isThinkingTurn} inCard={true} />
+                            </div>
+                          ))}
+                        </motion.div>
+                      )}
+                    </>
                   )}
                 </AnimatePresence>
 
@@ -699,8 +751,11 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
                     <div className="relative group/thought">
                       {/* Live typing: karaoke dim-to-bright */}
                       {displayFinalAnswer.isLiveTyping ? (
-                        <div className="text-[15.5px] leading-[1.8] font-sans whitespace-pre-wrap text-[#E8E6E3]">
+                        <div className="text-[15.5px] leading-[1.8] font-sans whitespace-pre-wrap text-[#C4C1BC]">
                           {(() => {
+                            if (displayFinalAnswer.text.length > LIVE_KARAOKE_TEXT_LIMIT) {
+                              return displayFinalAnswer.text;
+                            }
                             const words = displayFinalAnswer.text.split(/(\s+)/);
                             const spokenWordsCount = displayFinalAnswer.spokenText ? displayFinalAnswer.spokenText.split(/(\s+)/).length : 0;
                             return words.map((word: string, i: number) => {
@@ -710,7 +765,7 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
                                 <span
                                   key={i}
                                   className="transition-colors duration-150 ease-out"
-                                  style={{ color: isSpoken ? '#E8E6E3' : '#555350' }}
+                                  style={{ color: isSpoken ? '#C4C1BC' : '#555350' }}
                                 >
                                   {word}
                                 </span>
@@ -731,7 +786,7 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
                           </span>
                         </div>
                       ) : (
-                        <div className="text-[15.5px] leading-[1.85] text-[#E8E6E3] font-sans relative">
+                        <div className="text-[15.5px] leading-[1.85] text-[#C4C1BC] font-sans relative">
                           <ProfessionalThought
                             text={displayFinalAnswer.text}
                             isLatest={groupIdx === groups.length - 1 && !isThinking}
@@ -813,7 +868,7 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
                 ref={previewScrollRef}
                 className="max-h-[82vh] overflow-y-auto eterx-modern-scrollbar eterx-prompt-preview-scroll px-6 py-8 pr-8 sm:px-8 sm:py-9 sm:pr-10"
               >
-                <div className="whitespace-pre-wrap break-words text-[16px] leading-[1.75] text-[#E8E6E3] [overflow-wrap:anywhere]">
+                <div className="whitespace-pre-wrap break-words text-[16px] leading-[1.75] text-[#C4C1BC] [overflow-wrap:anywhere]">
                   {previewUserMessage.text}
                 </div>
               </div>
