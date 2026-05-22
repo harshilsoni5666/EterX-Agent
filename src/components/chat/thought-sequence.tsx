@@ -4,7 +4,7 @@ import { createPortal } from 'react-dom';
 import { useFilePanelActions } from '../../contexts/FilePanelContext';
 // Only the Lucide icons actually rendered in JSX (not icon-map/TOOL_META)
 import {
-  ChevronRight, ChevronDown, Monitor, ShieldHalf, Copy, CheckCircle, Maximize2
+  ChevronRight, ChevronDown, Monitor, ShieldHalf, Copy, CheckCircle, Maximize2, CornerDownLeft
 } from 'lucide-react';
 // @ts-ignore
 import ReactMarkdown from 'react-markdown';
@@ -133,39 +133,92 @@ const useTypewriter = (targetText: string, _isActive: boolean) => {
   return { displayedText: targetText };
 };
 
-// Live-second counter — startRef is null until first live tick, so elapsed is always real
-const useThinkTimer = (isLive: boolean) => {
+// Live-second counter. Prefer trace timestamps so a finished thought never keeps counting.
+const asTimestamp = (value: unknown) =>
+  typeof value === 'number' && Number.isFinite(value) ? value : null;
+
+const LIVE_THOUGHT_FRESH_MS = 2400;
+const LIVE_ACTION_SETTLE_MS = 1400;
+
+const getLogUpdatedAt = (log: any) =>
+  asTimestamp(log?.endTime) ?? asTimestamp(log?.updatedAt) ?? asTimestamp(log?.timestamp) ?? asTimestamp(log?.startTime);
+
+const isLiveThoughtFresh = (log: any, now = Date.now()) => {
+  if (!log || (log.type !== 'thought_stream' && log.type !== 'work_note')) return false;
+  const updatedAt = getLogUpdatedAt(log);
+  return updatedAt === null || now - updatedAt <= LIVE_THOUGHT_FRESH_MS;
+};
+
+const useThinkTimer = (isLive: boolean, startedAt?: number, updatedAt?: number) => {
   const [secs, setSecs] = useState(0);
-  const startRef = useRef<number | null>(null);   // null until isLive first fires
-  const frozenRef = useRef<number | null>(null);  // set once when isLive goes false
+  const fallbackStartRef = useRef<number | null>(null);
+  const frozenRef = useRef<number | null>(null);
+  const startMs = asTimestamp(startedAt);
+  const updateMs = asTimestamp(updatedAt);
 
   useEffect(() => {
+    const elapsedFrom = (endMs: number) => {
+      const origin = startMs ?? fallbackStartRef.current ?? endMs;
+      return Math.max(0, Math.floor((endMs - origin) / 1000));
+    };
+
     if (isLive) {
-      // Always reset on new live session
-      startRef.current = Date.now();
+      if (fallbackStartRef.current === null) fallbackStartRef.current = startMs ?? Date.now();
       frozenRef.current = null;
-      setSecs(0);
+      setSecs(elapsedFrom(Date.now()));
       const id = setInterval(() => {
-        setSecs(Math.floor((Date.now() - startRef.current!) / 1000));
+        setSecs(elapsedFrom(Date.now()));
       }, 1000);
-      return () => clearInterval(id); // stops interval immediately when isLive → false
-    } else {
-      // Freeze exactly once when thinking ends
-      if (startRef.current !== null && frozenRef.current === null) {
-        frozenRef.current = Math.floor((Date.now() - startRef.current) / 1000);
-        setSecs(frozenRef.current);
-      }
+      return () => clearInterval(id);
     }
-  }, [isLive]);
+
+    const frozen = startMs !== null && updateMs !== null
+      ? Math.max(0, Math.floor((updateMs - startMs) / 1000))
+      : fallbackStartRef.current !== null
+        ? elapsedFrom(Date.now())
+        : 0;
+    frozenRef.current = frozen;
+    fallbackStartRef.current = null;
+    setSecs(frozen);
+  }, [isLive, startMs, updateMs]);
 
   // Always return the frozen value if available (never re-tick after done)
   return frozenRef.current !== null ? frozenRef.current : secs;
 };
 
-export const ProfessionalThought = ({ text, isLatest, isThinking, variant = 'thought', suffix }: { text: string, isLatest: boolean, isThinking: boolean, variant?: 'thought' | 'answer' | 'note', suffix?: React.ReactNode }) => {
+export const ProfessionalThought = ({ text, isLatest, isThinking, variant = 'thought', suffix, startedAt, updatedAt }: { text: string, isLatest: boolean, isThinking: boolean, variant?: 'thought' | 'answer' | 'note', suffix?: React.ReactNode, startedAt?: number, updatedAt?: number }) => {
   const [open, setOpen] = useState(false);
-  const isLive = isLatest && isThinking;
-  const secs = useThinkTimer(isLive);
+  const [thoughtCanScroll, setThoughtCanScroll] = useState(false);
+  const thoughtScrollRef = useRef<HTMLDivElement>(null);
+  const thoughtAutoScrollRef = useRef(true);
+  const requestedLive = isLatest && isThinking;
+  const lastUpdateMs = asTimestamp(updatedAt);
+  const [isFresh, setIsFresh] = useState(false);
+
+  useEffect(() => {
+    if (!requestedLive) {
+      setIsFresh(false);
+      return;
+    }
+
+    if (lastUpdateMs === null) {
+      setIsFresh(true);
+      return;
+    }
+
+    const age = Date.now() - lastUpdateMs;
+    if (age >= LIVE_THOUGHT_FRESH_MS) {
+      setIsFresh(false);
+      return;
+    }
+
+    setIsFresh(true);
+    const timeout = window.setTimeout(() => setIsFresh(false), LIVE_THOUGHT_FRESH_MS - age);
+    return () => window.clearTimeout(timeout);
+  }, [requestedLive, lastUpdateMs, text]);
+
+  const isLive = requestedLive && isFresh;
+  const secs = useThinkTimer(isLive, startedAt, updatedAt);
 
   const renderText = useMemo(() => {
     if (!text) return '';
@@ -173,6 +226,49 @@ export const ProfessionalThought = ({ text, isLatest, isThinking, variant = 'tho
     f = f.replace(/([^\n])(#{1,6}\s)/g, '$1\n\n$2').replace(/([.!?:])(\s*\n)(#{1,6}\s)/g, '$1\n\n$3');
     return f.trim();
   }, [text]);
+
+  const scrollThoughtToBottom = () => {
+    const el = thoughtScrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  };
+
+  const handleThoughtScroll = () => {
+    const el = thoughtScrollRef.current;
+    if (!el) return;
+    thoughtAutoScrollRef.current = el.scrollHeight - el.scrollTop - el.clientHeight <= 28;
+  };
+
+  const syncThoughtOverflow = () => {
+    const el = thoughtScrollRef.current;
+    if (!el) {
+      setThoughtCanScroll(false);
+      return;
+    }
+    setThoughtCanScroll(el.scrollHeight > el.clientHeight + 1);
+  };
+
+  useEffect(() => {
+    if (!open) {
+      setThoughtCanScroll(false);
+      return;
+    }
+    thoughtAutoScrollRef.current = true;
+    const frame = window.requestAnimationFrame(() => {
+      syncThoughtOverflow();
+      scrollThoughtToBottom();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const frame = window.requestAnimationFrame(() => {
+      syncThoughtOverflow();
+      if (thoughtAutoScrollRef.current) scrollThoughtToBottom();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [open, renderText]);
 
   // "Thinking... 4s" while live → "Thought for 4s" when done
   const thinkLabel = isLive
@@ -209,7 +305,7 @@ export const ProfessionalThought = ({ text, isLatest, isThinking, variant = 'tho
                 transition={{ duration: 0.18, ease: 'easeOut' }}
                 className="overflow-hidden"
               >
-                <div className="eterx-action-scroll pl-[59px] pr-5 pb-5 pt-1 text-[14px] leading-[1.72] text-[#A8A5A0] overflow-y-auto" style={{ maxHeight: '320px' }}>
+                <div ref={thoughtScrollRef} onScroll={handleThoughtScroll} className={`${ thoughtCanScroll ? 'eterx-modern-scrollbar overflow-y-auto' : 'overflow-y-hidden' } pl-[59px] pr-5 pb-5 pt-1 text-[14px] leading-[1.72] text-[#A8A5A0]`} style={{ maxHeight: 'min(52vh, 520px)' }}>
                   <ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} components={{
                     ...markdownComponents,
                     p: ({ node, ...props }: any) => <p className="mb-3.5 last:mb-0 break-words leading-[1.72] text-[#A8A5A0]" {...props} />,
@@ -289,44 +385,63 @@ const highlightSyntax = (code: string): string => {
 
 const FullScreenModal = ({ onClose, children, title }: { onClose: () => void, children: React.ReactNode, title?: string }) => {
   useEffect(() => {
-    const h = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
-    document.addEventListener('keydown', h); document.body.style.overflow = 'hidden';
-    return () => { document.removeEventListener('keydown', h); document.body.style.overflow = ''; };
+    const h = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      e.stopPropagation();
+      onClose();
+    };
+    document.addEventListener('keydown', h, true); document.body.style.overflow = 'hidden';
+    return () => { document.removeEventListener('keydown', h, true); document.body.style.overflow = ''; };
   }, [onClose]);
   return createPortal(
-    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="fixed inset-0 z-[99999] flex flex-col bg-[#060606]/98 backdrop-blur-xl">
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      onPointerDown={(e) => e.stopPropagation()}
+      onClick={(e) => {
+        e.stopPropagation();
+        if (e.target === e.currentTarget) onClose();
+      }}
+      className="fixed inset-0 z-[99999] flex flex-col bg-[#060606]/98 backdrop-blur-xl"
+    >
       <div className="flex items-center justify-between px-6 py-4 border-b border-white/5"><span className="text-[13px] font-mono text-[#8C8A88] font-bold uppercase tracking-widest">{title || 'Preview'}</span><button onClick={onClose} className="w-8 h-8 rounded-lg hover:bg-white/5 text-[#8C8A88] hover:text-white transition-all text-xl">×</button></div>
       <div className="flex-1 overflow-hidden">{children}</div>
     </motion.div>, document.body
   );
 };
 
-const CopyButton = ({ content }: { content: string }) => {
+const IconCopyButton = ({ content, label = 'Copy content' }: { content: string, label?: string }) => {
   const [copied, setCopied] = useState(false);
   const handle = async (e: React.MouseEvent) => {
     e.stopPropagation();
     e.preventDefault();
     try {
       if (navigator.clipboard && navigator.clipboard.writeText) {
-        await navigator.clipboard.writeText(content);
+        await navigator.clipboard.writeText(content || '');
       } else {
-        const textArea = document.createElement("textarea");
-        textArea.value = content;
+        const textArea = document.createElement('textarea');
+        textArea.value = content || '';
         document.body.appendChild(textArea);
         textArea.select();
-        document.execCommand("copy");
+        document.execCommand('copy');
         document.body.removeChild(textArea);
       }
       setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      setTimeout(() => setCopied(false), 1600);
     } catch (err) {
       console.error('Failed to copy:', err);
     }
   };
   return (
-    <button onClick={handle} className="px-2 py-1 rounded bg-white/5 hover:bg-white/10 text-[#555350] hover:text-[#8C8A88] transition-all flex items-center gap-1.5 border border-white/5">
-      {copied ? <CheckCircle className="w-3 h-3 text-emerald-500" /> : <Copy className="w-3 h-3" />}
-      <span className="text-[10px] font-mono uppercase tracking-tighter">{copied ? 'Copied' : 'Copy'}</span>
+    <button
+      type="button"
+      onClick={handle}
+      aria-label={copied ? 'Copied' : label}
+      title={copied ? 'Copied' : label}
+      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[9px] border border-white/[0.065] bg-white/[0.035] text-[#9F9991] transition-colors hover:bg-white/[0.07] hover:text-white"
+    >
+      {copied ? <CheckCircle className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
     </button>
   );
 };
@@ -350,91 +465,147 @@ const ansiToHtml = (text: string): string => {
 
 const InlineConsole = ({ command, content, exitCode, durationMs }: { command: string, content: string, exitCode?: number, durationMs?: number }) => {
   const [full, setFull] = useState(false);
+  const [copiedOutput, setCopiedOutput] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const shouldFollowOutputRef = useRef(exitCode === undefined);
+  const previousContentLengthRef = useRef((content || '').length);
+  const atBottomRef = useRef(true);
   const [atBottom, setAtBottom] = useState(true);
-  useEffect(() => { if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight; }, [content]);
+  useEffect(() => {
+    const el = scrollRef.current;
+    const nextLength = (content || '').length;
+    const grew = nextLength > previousContentLengthRef.current;
+    previousContentLengthRef.current = nextLength;
+    if (!el || exitCode !== undefined || !grew || !shouldFollowOutputRef.current) return;
+    const frame = window.requestAnimationFrame(() => {
+      el.scrollTo({ top: el.scrollHeight, behavior: 'auto' });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [content, exitCode]);
   const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
-    const el = e.currentTarget; setAtBottom(el.scrollHeight - el.scrollTop - el.clientHeight < 20);
+    const el = e.currentTarget;
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+    shouldFollowOutputRef.current = nearBottom;
+    if (nearBottom !== atBottomRef.current) {
+      atBottomRef.current = nearBottom;
+      setAtBottom(nearBottom);
+    }
   };
-  const lines = (content || '').split('\n');
+  const copyOutput = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(content || '');
+      } else {
+        const textArea = document.createElement('textarea');
+        textArea.value = content || '';
+        document.body.appendChild(textArea);
+        textArea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textArea);
+      }
+      setCopiedOutput(true);
+      setTimeout(() => setCopiedOutput(false), 1800);
+    } catch (err) {
+      console.error('Failed to copy terminal output:', err);
+    }
+  };
+  const lines = content ? content.split(/\r?\n/) : [];
+  const lineCount = lines.length;
   const success = exitCode === 0 || exitCode === undefined;
-  const C = () => (
-    <div className={`flex flex-col h-full bg-[#0D0D0D] font-mono ${ full ? '' : 'rounded-xl border border-white/[0.07] overflow-hidden ml-5 mt-2 mb-2' }`}>
-      {/* Header */}
-      <div className="flex items-center justify-between px-4 py-2.5 bg-[#161616] border-b border-white/[0.06]">
-        <div className="flex items-center gap-3">
-          <svg className="w-3.5 h-3.5 text-[#555350]" fill="none" viewBox="0 0 16 16" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
-            <rect x="1.5" y="2.5" width="13" height="11" rx="1.5" />
-            <path d="M4 6l2.5 2L4 10" /><path d="M9 10h3" />
-          </svg>
-          <span className="text-[11px] text-[#555350] font-bold uppercase tracking-widest">Terminal</span>
-        </div>
-        <div className="flex items-center gap-2">
-          {exitCode !== undefined && (
-            <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${ success ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-red-500/10 text-red-400 border border-red-500/20' }`}>
-              {success ? '✓ exit 0' : `✗ exit ${ exitCode }`}
-            </span>
-          )}
-          {durationMs !== undefined && <span className="text-[10px] text-[#555350] font-mono">{durationMs < 1000 ? `${ durationMs }ms` : `${ (durationMs / 1000).toFixed(1) }s`}</span>}
-          <span className="text-[10px] text-[#555350] font-mono">{lines.length} lines</span>
-          <CopyButton content={content} />
-          {!full && <button onClick={(e) => { e.stopPropagation(); setFull(true); }} className="p-1 text-[#555350] hover:text-[#8C8A88]"><Maximize2 className="w-3 h-3" /></button>}
+  const durationLabel = durationMs === undefined ? null : durationMs < 1000 ? `${ durationMs }ms` : `${ (durationMs / 1000).toFixed(1) }s`;
+  const consolePanel = (
+    <div className={`flex flex-col bg-[#1F1F1F] font-mono text-[#DCD7CE] shadow-[0_10px_26px_rgba(0,0,0,0.28),inset_0_1px_0_rgba(255,255,255,0.035)] ${ full ? 'h-full rounded-none border-0' : 'mx-3 mt-1.5 mb-2 overflow-hidden rounded-[13px] border border-white/[0.085]' }`}>
+      <div className="flex items-center justify-between gap-3 px-3 py-1 bg-[#232323]">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <span className="text-[10.5px] font-semibold text-[#AFA9A0]">Shell</span>
+          {lineCount > 0 && <span className="hidden sm:inline text-[10.5px] text-[#77716A]">{lineCount} lines</span>}
+          {durationLabel && <span className="hidden sm:inline text-[10.5px] text-[#6D6861]">{durationLabel}</span>}
         </div>
       </div>
-      {/* Command line */}
-      <div className="flex items-center gap-3 px-4 py-2 bg-[#111] border-b border-white/[0.04]">
-        <span className="text-emerald-400 font-bold shrink-0">$</span>
-        <span className="text-[13px] text-[#C8C6C3] break-all">{command}</span>
+      <div className="flex items-start gap-2.5 border-y border-white/[0.055] bg-[#202020] px-3 py-2">
+        <span className="select-none text-[16px] leading-5 font-semibold text-[#D8D4CC]">$</span>
+        <span className="min-w-0 flex-1 break-words text-[12.5px] leading-5 font-medium text-[#E7E2D9]">{command}</span>
+        <button
+          onClick={copyOutput}
+          className="mt-[-2px] flex h-7 w-7 shrink-0 items-center justify-center rounded-[9px] border border-white/[0.065] bg-white/[0.035] text-[#9F9991] transition-colors hover:bg-white/[0.07] hover:text-white"
+          aria-label={copiedOutput ? 'Copied shell output' : 'Copy shell output'}
+          title={copiedOutput ? 'Copied' : 'Copy output'}
+        >
+          {copiedOutput ? <CheckCircle className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
+        </button>
       </div>
-      {/* Output */}
-      <div className="relative">
-        <div ref={scrollRef} onScroll={handleScroll} className={`px-4 py-3 overflow-y-auto custom-scrollbar text-[12.5px] leading-relaxed whitespace-pre-wrap ${ full ? 'flex-1' : 'max-h-[280px]' }`}>
-          {content
-            ? <span dangerouslySetInnerHTML={{ __html: ansiToHtml(content) }} />
-            : <span className="text-[#555350] italic">(no output)</span>
-          }
+      <div className={`relative min-h-0 ${ full ? 'flex-1' : '' }`}>
+        <div
+          ref={scrollRef}
+          onScroll={handleScroll}
+          className={`eterx-modern-scrollbar overflow-auto px-3 py-2.5 text-[12px] leading-[1.55] text-[#CFCAC2] ${ full ? 'h-full' : 'max-h-[260px] min-h-[74px]' }`}
+        >
+          <div className="min-w-max whitespace-pre pr-4">
+            {content
+              ? <span dangerouslySetInnerHTML={{ __html: ansiToHtml(content) }} />
+              : <span className="text-[#8A857D] italic">(no output)</span>
+            }
+          </div>
         </div>
-        {!atBottom && lines.length > 8 && (
-          <button onClick={(e) => { e.stopPropagation(); scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' }); }} className="absolute bottom-2 right-2 w-6 h-6 flex items-center justify-center rounded-full bg-[#1C1C1E] border border-white/10 text-[#8C8A88] hover:text-white transition-all">
-            <ChevronDown className="w-3.5 h-3.5" />
+        {!atBottom && lineCount > 8 && (
+          <button onClick={(e) => { e.stopPropagation(); const el = scrollRef.current; if (!el) return; shouldFollowOutputRef.current = true; el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' }); }} className="absolute bottom-2.5 right-2.5 flex h-7 w-7 items-center justify-center rounded-full border border-white/[0.10] bg-[#2E2E2E]/95 text-[#BFB9B0] shadow-[0_8px_22px_rgba(0,0,0,0.35)] transition-colors hover:bg-[#3A3A3A] hover:text-white">
+            <ChevronDown className="h-3.5 w-3.5" />
           </button>
         )}
       </div>
+      <div className="flex items-center justify-end gap-2 border-t border-white/[0.055] bg-[#202020] px-3 py-1.5 text-[11.5px] font-medium text-[#AFA9A0]">
+        <span className={`inline-flex items-center gap-1.5 ${ success ? 'text-[#BDB8AF]' : 'text-red-300' }`}>
+          {success ? <CheckCircle className="h-3.5 w-3.5 text-[#BDB8AF]" /> : <CornerDownLeft className="h-3.5 w-3.5 text-red-300" />}
+          {success ? 'Success' : `Exit ${ exitCode }`}
+        </span>
+      </div>
     </div>
   );
-  return <>{full ? <FullScreenModal onClose={() => setFull(false)} title="Terminal"><C /></FullScreenModal> : <motion.div layout initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }}><C /></motion.div>}</>;
+  return <>{full ? <FullScreenModal onClose={() => setFull(false)} title="Shell">{consolePanel}</FullScreenModal> : <motion.div layout initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }}>{consolePanel}</motion.div>}</>;
 };
 
 const InlineDiffView = ({ filename, diffLines }: { filename: string, diffLines: any[] }) => {
   const [full, setFull] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const atBottomRef = useRef(false);
   const [atBottom, setAtBottom] = useState(false);
   const added = diffLines.filter(l => l.type === 'added').length;
   const removed = diffLines.filter(l => l.type === 'removed').length;
   const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
     const el = e.currentTarget;
-    setAtBottom(el.scrollHeight - el.scrollTop - el.clientHeight < 20);
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 20;
+    if (nearBottom !== atBottomRef.current) {
+      atBottomRef.current = nearBottom;
+      setAtBottom(nearBottom);
+    }
   };
-  const C = () => (
-    <div className={`flex flex-col bg-[#080808] font-mono ${ full ? 'h-full' : 'rounded-xl border border-white/[0.07] overflow-hidden ml-5 mt-2 mb-2' }`}>
+  const diffPanel = (
+    <div className={`flex flex-col bg-[#1F1F1F] font-mono text-[#DCD7CE] shadow-[0_10px_26px_rgba(0,0,0,0.28),inset_0_1px_0_rgba(255,255,255,0.035)] ${ full ? 'h-full rounded-none border-0' : 'mx-3 mt-1.5 mb-2 overflow-hidden rounded-[13px] border border-white/[0.085]' }`}>
       {/* Header */}
-      <div className="flex items-center justify-between px-3 py-2.5 bg-[#0E0E0E] border-b border-white/[0.06] shrink-0">
-        <div className="flex items-center gap-3">
-          <span className="text-[12.5px] font-semibold text-[#C8C6C3]">{filename}</span>
-          {added > 0 && <span className="text-[11px] font-mono font-bold text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded">+{added}</span>}
-          {removed > 0 && <span className="text-[11px] font-mono font-bold text-red-400 bg-red-500/10 px-1.5 py-0.5 rounded">-{removed}</span>}
+      <div className="flex items-center justify-between gap-3 bg-[#232323] px-3 py-1.5">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <span className="min-w-0 truncate text-[12px] font-semibold text-[#D7D2C9]">{filename}</span>
+          <span className="shrink-0 text-[10.5px] font-semibold text-[#77716A]">Diff</span>
+          {(added > 0 || removed > 0) && (
+            <span className="flex shrink-0 items-center gap-1 font-mono text-[11px] font-semibold tabular-nums">
+              <span className="text-[#3FB950]">+{added}</span>
+              <span className="text-[#FF7B72]">-{removed}</span>
+            </span>
+          )}
         </div>
-        <div className="flex items-center gap-1">
-          <CopyButton content={diffLines.filter(l => l.type !== 'removed').map(l => l.content).join('\n')} />
-          {!full && <button onClick={(e) => { e.stopPropagation(); setFull(true); }} className="p-1 text-[#555350] hover:text-[#8C8A88]"><Maximize2 className="w-3 h-3" /></button>}
+        <div className="flex shrink-0 items-center gap-1.5">
+          <IconCopyButton content={diffLines.filter(l => l.type !== 'removed').map(l => l.content).join('\n')} label="Copy diff output" />
+          {!full && <button onClick={(e) => { e.stopPropagation(); setFull(true); }} className="flex h-7 w-7 items-center justify-center rounded-[9px] border border-white/[0.06] bg-white/[0.03] text-[#918B83] transition-colors hover:bg-white/[0.07] hover:text-white" aria-label="Expand diff" title="Expand"><Maximize2 className="h-3.5 w-3.5" /></button>}
         </div>
       </div>
       {/* Single unified scroll container — horizontal + vertical together */}
-      <div className="relative">
+      <div className={`relative min-h-0 ${ full ? 'flex-1' : '' }`}>
         <div
           ref={scrollRef}
           onScroll={handleScroll}
-          className={`overflow-x-auto overflow-y-auto custom-scrollbar text-[12.5px] leading-5 ${ full ? 'flex-1 h-[calc(100vh-60px)]' : 'max-h-[340px]' }`}
+          className={`eterx-modern-scrollbar overflow-auto text-[12px] leading-[1.55] ${ full ? 'h-full' : 'max-h-[300px] min-h-[74px]' }`}
         >
           {/* Inner container expands to content width — all lines share same horizontal scroll */}
           <div style={{ minWidth: 'max-content' }}>
@@ -442,19 +613,19 @@ const InlineDiffView = ({ filename, diffLines }: { filename: string, diffLines: 
               const isAdd = l.type === 'added';
               const isDel = l.type === 'removed';
               return (
-                <div key={i} className={`flex items-stretch ${ isAdd ? 'bg-[#0d2010]' : isDel ? 'bg-[#200d0d]' : 'hover:bg-white/[0.02]'
+                <div key={i} className={`flex items-stretch ${ isAdd ? 'bg-[#143118]/42' : isDel ? 'bg-[#361818]/42' : 'hover:bg-white/[0.025]'
                   }`}>
                   {/* Left colored bar */}
                   <div className={`w-[3px] shrink-0 ${ isAdd ? 'bg-emerald-500' : isDel ? 'bg-red-500' : 'bg-transparent'
                     }`} />
                   {/* Line number */}
-                  <div className="w-[40px] shrink-0 text-right pr-3 select-none text-[10px] py-[3px] text-[#555350] border-r border-white/[0.06]">{l.newLine || (isDel ? l.oldLine : '')}</div>
+                  <div className="w-[42px] shrink-0 select-none border-r border-white/[0.055] py-[3px] pr-3 text-right text-[10.5px] text-[#6F6962]">{l.newLine || (isDel ? l.oldLine : '')}</div>
                   {/* +/- glyph */}
                   <div className={`w-[20px] shrink-0 text-center py-[3px] font-bold ${ isAdd ? 'text-emerald-400' : isDel ? 'text-red-400' : 'text-transparent'
                     }`}>{isAdd ? '+' : isDel ? '-' : ' '}</div>
                   {/* Content — no overflow, parent scrolls */}
                   <div
-                    className={`px-3 py-[3px] whitespace-pre ${ isAdd ? 'text-[#aeffc0]' : isDel ? 'text-[#ffb3b3]' : 'text-[#8b949e]'
+                    className={`px-3 py-[3px] whitespace-pre ${ isAdd ? 'text-[#B7EFC0]' : isDel ? 'text-[#F0B0AA]' : 'text-[#BDB7AE]'
                       }`}
                     dangerouslySetInnerHTML={{ __html: highlightSyntax(l.content) }}
                   />
@@ -466,54 +637,59 @@ const InlineDiffView = ({ filename, diffLines }: { filename: string, diffLines: 
         {!atBottom && diffLines.length > 10 && (
           <button
             onClick={(e) => { e.stopPropagation(); scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' }); }}
-            className="absolute bottom-2 right-2 w-6 h-6 flex items-center justify-center rounded-full bg-[#1C1C1E] border border-white/10 text-[#8C8A88] hover:text-white transition-all"
-          ><ChevronDown className="w-3.5 h-3.5" /></button>
+            className="absolute bottom-2.5 right-2.5 flex h-7 w-7 items-center justify-center rounded-full border border-white/[0.10] bg-[#2E2E2E]/95 text-[#BFB9B0] shadow-[0_8px_22px_rgba(0,0,0,0.35)] transition-colors hover:bg-[#3A3A3A] hover:text-white"
+          ><ChevronDown className="h-3.5 w-3.5" /></button>
         )}
       </div>
     </div>
   );
-  return <>{full ? <FullScreenModal onClose={() => setFull(false)} title={`Diff: ${ filename }`}><C /></FullScreenModal> : <motion.div layout initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }}><C /></motion.div>}</>;
+  return <>{full ? <FullScreenModal onClose={() => setFull(false)} title={`Diff: ${ filename }`}>{diffPanel}</FullScreenModal> : <motion.div layout initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }}>{diffPanel}</motion.div>}</>;
 };
 
 const InlineCodeView = ({ filename, content }: { filename: string, content: string }) => {
   const [full, setFull] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const atBottomRef = useRef(false);
   const [atBottom, setAtBottom] = useState(false);
   const lines = useMemo(() => (content || '').split('\n'), [content]);
   const lineCount = lines.length;
   const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
     const el = e.currentTarget;
-    setAtBottom(el.scrollHeight - el.scrollTop - el.clientHeight < 20);
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 20;
+    if (nearBottom !== atBottomRef.current) {
+      atBottomRef.current = nearBottom;
+      setAtBottom(nearBottom);
+    }
   };
-  const C = () => (
-    <div className={`flex flex-col bg-[#080808] font-mono ${ full ? 'h-full' : 'rounded-xl border border-white/[0.07] overflow-hidden ml-5 mt-2 mb-2' }`}>
+  const codePanel = (
+    <div className={`flex flex-col bg-[#1F1F1F] font-mono text-[#DCD7CE] shadow-[0_10px_26px_rgba(0,0,0,0.28),inset_0_1px_0_rgba(255,255,255,0.035)] ${ full ? 'h-full rounded-none border-0' : 'mx-3 mt-1.5 mb-2 overflow-hidden rounded-[13px] border border-white/[0.085]' }`}>
       {/* Header */}
-      <div className="flex items-center justify-between px-3 py-2.5 bg-[#0E0E0E] border-b border-white/[0.06] shrink-0">
-        <div className="flex items-center gap-3">
-          <span className="text-[12.5px] font-semibold text-[#C8C6C3]">{filename}</span>
-          <span className="text-[10px] text-[#555350] font-mono">{lineCount} lines</span>
+      <div className="flex items-center justify-between gap-3 bg-[#232323] px-3 py-1.5">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <span className="min-w-0 truncate text-[12px] font-semibold text-[#D7D2C9]">{filename}</span>
+          <span className="shrink-0 text-[10.5px] font-semibold text-[#77716A]">{lineCount} lines</span>
         </div>
-        <div className="flex items-center gap-1">
-          <CopyButton content={content} />
-          {!full && <button onClick={(e) => { e.stopPropagation(); setFull(true); }} className="p-1 text-[#555350] hover:text-[#8C8A88]"><Maximize2 className="w-3 h-3" /></button>}
+        <div className="flex shrink-0 items-center gap-1.5">
+          <IconCopyButton content={content} label="Copy file content" />
+          {!full && <button onClick={(e) => { e.stopPropagation(); setFull(true); }} className="flex h-7 w-7 items-center justify-center rounded-[9px] border border-white/[0.06] bg-white/[0.03] text-[#918B83] transition-colors hover:bg-white/[0.07] hover:text-white" aria-label="Expand file" title="Expand"><Maximize2 className="h-3.5 w-3.5" /></button>}
         </div>
       </div>
       {/* Single unified scroll container */}
-      <div className="relative">
+      <div className={`relative min-h-0 ${ full ? 'flex-1' : '' }`}>
         <div
           ref={scrollRef}
           onScroll={handleScroll}
-          className={`overflow-x-auto overflow-y-auto custom-scrollbar text-[12.5px] leading-5 ${ full ? 'h-[calc(100vh-60px)]' : 'max-h-[340px]' }`}
+          className={`eterx-modern-scrollbar overflow-auto text-[12px] leading-[1.55] ${ full ? 'h-full' : 'max-h-[300px] min-h-[74px]' }`}
         >
           {/* Inner div expands to content width — all lines share the same horizontal scroll */}
           <div style={{ minWidth: 'max-content' }}>
             {lines.map((l, i) => (
               <div key={i} className="flex items-stretch hover:bg-white/[0.025] group">
                 {/* Line number — sticky left via position (plain div, no overflow) */}
-                <div className="w-[44px] shrink-0 text-right pr-3 select-none text-[11px] py-[3px] text-[#555350] group-hover:text-[#8C8A88] border-r border-white/[0.06] transition-colors">{i + 1}</div>
+                <div className="w-[42px] shrink-0 select-none border-r border-white/[0.055] py-[3px] pr-3 text-right text-[10.5px] text-[#6F6962] transition-colors group-hover:text-[#9B948B]">{i + 1}</div>
                 {/* Content — whitespace-pre, no per-line overflow */}
                 <div
-                  className="px-4 py-[3px] whitespace-pre text-[#8b949e]"
+                  className="px-3 py-[3px] whitespace-pre text-[#CFCAC2]"
                   dangerouslySetInnerHTML={{ __html: highlightSyntax(l) }}
                 />
               </div>
@@ -523,16 +699,56 @@ const InlineCodeView = ({ filename, content }: { filename: string, content: stri
         {!atBottom && lineCount > 10 && (
           <button
             onClick={(e) => { e.stopPropagation(); scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' }); }}
-            className="absolute bottom-2 right-2 w-6 h-6 flex items-center justify-center rounded-full bg-[#1C1C1E] border border-white/10 text-[#8C8A88] hover:text-white transition-all"
-          ><ChevronDown className="w-3.5 h-3.5" /></button>
+            className="absolute bottom-2.5 right-2.5 flex h-7 w-7 items-center justify-center rounded-full border border-white/[0.10] bg-[#2E2E2E]/95 text-[#BFB9B0] shadow-[0_8px_22px_rgba(0,0,0,0.35)] transition-colors hover:bg-[#3A3A3A] hover:text-white"
+          ><ChevronDown className="h-3.5 w-3.5" /></button>
         )}
       </div>
     </div>
   );
-  return <>{full ? <FullScreenModal onClose={() => setFull(false)} title={`File: ${ filename }`}><C /></FullScreenModal> : <motion.div layout initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }}><C /></motion.div>}</>;
+  return <>{full ? <FullScreenModal onClose={() => setFull(false)} title={`File: ${ filename }`}>{codePanel}</FullScreenModal> : <motion.div layout initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }}>{codePanel}</motion.div>}</>;
 };
 
 // ─── Single row inside a tool card ──────────────────────────────────────────
+const numberFrom = (...values: any[]) => {
+  for (const value of values) {
+    const n = Number(value);
+    if (Number.isFinite(n) && n >= 0) return n;
+  }
+  return 0;
+};
+
+const getDiffStats = (preview: any, log: any) => {
+  let added = numberFrom(log.added, log.additions, log.insertions, log.linesAdded);
+  let removed = numberFrom(log.removed, log.deleted, log.deletions, log.linesRemoved);
+  if (preview?.diffLines?.length) {
+    added = preview.diffLines.filter((line: any) => line.type === 'added').length;
+    removed = preview.diffLines.filter((line: any) => line.type === 'removed').length;
+  } else if (!preview?.isEdit && preview?.content && added === 0 && removed === 0) {
+    added = String(preview.content).split('\n').length;
+  }
+  if (added === 0 && removed === 0) return null;
+  return { added, removed };
+};
+
+const getLineContext = (subtitle: string, fileName: string) => {
+  const text = String(subtitle || '').trim();
+  if (!text) return '';
+  const lineMatch = text.match(/#?L\d+(?:[-:]\d+)?/i);
+  if (lineMatch) {
+    const value = lineMatch[0].replace(/^#?/, '#');
+    return value.replace(/:/g, '-');
+  }
+  const normalizedFile = fileName.toLowerCase();
+  if (normalizedFile && text.toLowerCase().includes(normalizedFile)) {
+    const afterFile = text.slice(text.toLowerCase().lastIndexOf(normalizedFile) + normalizedFile.length).trim();
+    if (afterFile && afterFile.length <= 32) return afterFile;
+  }
+  return text.length <= 42 ? text : '';
+};
+
+const ACTION_CARD_CLASS = "w-full overflow-hidden rounded-[14px] border border-white/[0.10] bg-[#111111]/76 shadow-[inset_0_1px_0_rgba(255,255,255,0.035),0_4px_16px_rgba(0,0,0,0.20)]";
+const ACTION_ROW_DIVIDER_CLASS = "border-t border-white/[0.07]";
+
 const ActionChip = ({
   log, isLastChip, isActiveGroup, allLogs,
   isNested = false, inCard = false
@@ -567,17 +783,28 @@ const ActionChip = ({
   const [isExpanded, setIsExpanded] = useState(false);
   // Resolve the full path for IDE link
   const fullPath = rawPath || preview?.filepath || '';
+  const fullPathLabel = fullPath || rawPath || fileName;
+  const lineContext = hasFile ? getLineContext(subtitle, fileName) : '';
+  const diffStats = isEdit ? getDiffStats(preview, log) : null;
   // Past-tense verb for display; live overrides to present tense below
   const meta = useMemo(() => {
-    if (isEdit && preview) return {
-      icon: null,
-      verbDone: preview.isEdit ? 'Edited' : 'Created',
-      verbLive: preview.isEdit ? 'Editing' : 'Creating',
-      color: '#E8E6E3',
-    };
-    if (isEdit && !preview) {
+    if (isEdit) {
       const lowerText = String(log.text || '').toLowerCase();
-      const isCreate = lowerText.includes('created') || lowerText.includes('writing') || lowerText.includes('artifact');
+      const lowerIcon = String(log.iconCategory || '').toLowerCase();
+      const isDelete = /delete|remove|unlink/.test(lowerText);
+      const isRefactor = /refactor|restructure|rework|cleanup|clean up|dedupe|extract|rename|move/.test(lowerText);
+      const isScaffold = /scaffold/.test(lowerText);
+      const isGenerate = /generat|artifact|compose|draft/.test(lowerText);
+      const isCreate = lowerIcon.includes('create') || lowerText.includes('created') || lowerText.includes('writing') || lowerText.includes('artifact') || lowerText.includes('generating') || lowerText.includes('scaffolding');
+      if (isDelete) return { icon: null, verbDone: 'Deleted', verbLive: 'Deleting', color: '#E8E6E3' };
+      if (isRefactor) return { icon: null, verbDone: 'Refactored', verbLive: 'Refactoring', color: '#E8E6E3' };
+      if (isScaffold) return { icon: null, verbDone: 'Scaffolded', verbLive: 'Scaffolding', color: '#E8E6E3' };
+      if (preview) return {
+        icon: null,
+        verbDone: preview.isEdit ? 'Edited' : isGenerate ? 'Generated' : 'Created',
+        verbLive: preview.isEdit ? 'Editing' : isGenerate ? 'Generating' : 'Creating',
+        color: '#E8E6E3',
+      };
       return { icon: null, verbDone: isCreate ? 'Created' : 'Edited', verbLive: isCreate ? 'Creating' : 'Editing', color: '#E8E6E3' };
     }
     const base = getToolMeta(log.text, log.type, log.icon);
@@ -593,9 +820,8 @@ const ActionChip = ({
       'Queried': 'Querying', 'Comparing': 'Compared',
     };
     return { ...base, verbDone: base.verb, verbLive: LIVE_VERBS[base.verb] || base.verb };
-  }, [isEdit, log.text, log.type, log.icon, preview]);
+  }, [isEdit, log.text, log.type, log.icon, log.iconCategory, preview]);
   const displayVerb = isLiveChip ? (meta.verbLive || meta.verbDone) : (meta.verbDone || (meta as any).verb);
-  const hasDetail = hasFile || !!subtitle;
   // Open a file into the IDE panel
   const openInIde = (e: React.MouseEvent, mode?: 'preview') => {
     e.stopPropagation();
@@ -616,42 +842,59 @@ const ActionChip = ({
   return (
     <div className="w-full">
       <div
-        onClick={() => preview && setIsExpanded(!isExpanded)}
-        className={`flex min-h-[42px] items-center gap-2.5 px-2.5 py-1.5 transition-colors group ${ inCard ? 'rounded-none border-0 bg-transparent hover:bg-white/[0.04]' : preview ? 'cursor-pointer rounded-[14px] border border-white/[0.08] bg-[#161616]/82 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] hover:bg-[#1C1C1C]/92 hover:border-white/[0.14]' : 'cursor-default rounded-[14px] hover:bg-white/[0.03]' } ${ preview ? 'cursor-pointer' : 'cursor-default' }`}
+        onClick={(e) => {
+          e.stopPropagation();
+          if (preview) setIsExpanded((open) => !open);
+        }}
+        className={`flex min-h-[42px] items-center gap-2.5 px-2.5 py-1.5 transition-colors group ${ inCard ? 'rounded-none border-0 bg-transparent hover:bg-white/[0.035]' : preview ? `${ACTION_CARD_CLASS} cursor-pointer hover:bg-[#151515]/92 hover:border-white/[0.16]` : `${ACTION_CARD_CLASS} cursor-default hover:bg-[#151515]/72` } ${ preview ? 'cursor-pointer' : 'cursor-default' }`}
       >
         {inCard ? <div className="w-0 shrink-0" /> : <div className="w-1 shrink-0" />}
         {!isThinkChip && (() => {
           // Always use the 8 premium white icons via resolveAgentIcon
           const agentEntry = resolveAgentIcon(displayVerb, log.text, log.iconCategory);
           const { Icon: AI, color: ac } = agentEntry;
-          return <span className="flex h-7 w-7 items-center justify-center shrink-0"><AI isLive={isLiveChip} size={18} color={isLiveChip ? ac : '#6B6966'} /></span>;
+          return <span className="flex h-7 w-7 items-center justify-center shrink-0"><AI isLive={isLiveChip} size={18} color={isLiveChip ? ac : '#DAD6CF'} /></span>;
         })()}
         {isThinkChip && <div className="w-1 shrink-0" />}
-        <span className={`shrink-0 truncate text-[14.5px] font-semibold leading-tight tracking-normal ${isLiveChip ? 'eterx-live-text' : 'text-[#A7A39E]'}`}>{displayVerb}</span>
-        {hasDetail && <span className="shrink-0 text-[#403D39] text-[13px] font-light select-none px-0.5">|</span>}
+        <span className={`shrink-0 truncate text-[14px] font-semibold leading-tight tracking-normal ${isLiveChip ? 'eterx-live-text' : 'text-[#C9C5BE]'}`}>{displayVerb}</span>
         {hasFile && (
-          <span
-            onClick={(e) => openInIde(e)}
-            className="min-w-0 truncate font-mono text-[13.5px] leading-tight cursor-pointer hover:underline text-[#4A9CD0]"
-          >{fileName}</span>
+          <span className="flex min-w-0 items-center gap-1.5" title={fullPathLabel}>
+            <span
+              onClick={(e) => openInIde(e)}
+              className="min-w-0 truncate text-[14px] font-medium leading-tight cursor-pointer hover:underline text-[#D6D2CB]"
+            >{fileName}</span>
+            {lineContext && (
+              <span className="shrink-0 font-mono text-[12px] font-medium leading-tight text-[#817C74]">
+                {lineContext}
+              </span>
+            )}
+          </span>
         )}
         {!hasFile && subtitle && (
-          <span className="min-w-0 truncate font-mono text-[13.5px] leading-tight text-[#605D59]">{subtitle}</span>
-        )}
-        {hasFile && fullPath.toLowerCase().match(/\.(html|htm)$/) && (
-          <button
-            onClick={(e) => { e.stopPropagation(); openPanel({ filename: fileName, filepath: fullPath, content: preview?.content || '' }); }}
-            className="flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] uppercase font-bold text-[#555350] hover:text-[#4FC1FF] bg-white/5 hover:bg-[#4FC1FF]/10 transition-all border border-white/5 shrink-0"
-          ><Monitor className="w-2.5 h-2.5" /> Preview</button>
+          <span className="min-w-0 truncate font-mono text-[13px] leading-tight text-[#8D887F]">{subtitle}</span>
         )}
         <span className="ml-auto flex shrink-0 items-center justify-end gap-2 pl-3">
+          {diffStats && (
+            <span className="flex shrink-0 items-center gap-1 font-mono text-[13px] font-semibold tabular-nums">
+              <span className="text-[#3FB950]">+{diffStats.added}</span>
+              <span className="text-[#FF7B72]">-{diffStats.removed}</span>
+            </span>
+          )}
           {!isActiveGroup && fullPath && !fullPath.toLowerCase().match(/\.(html|htm)$/) && (
             <button
               onClick={(e) => openInIde(e)}
-              className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 rounded-md border border-transparent px-1.5 py-0.5 text-[9.5px] font-bold uppercase text-[#5D5954] hover:border-[#4FC1FF]/20 hover:bg-[#4FC1FF]/10 hover:text-[#4FC1FF]"
+              className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 rounded-md border border-transparent px-1.5 py-0.5 text-[9.5px] font-bold uppercase text-[#8D8982] hover:border-[#4FC1FF]/20 hover:bg-[#4FC1FF]/10 hover:text-[#4FC1FF]"
             >IDE</button>
           )}
-          <ChevronRight className={`h-4 w-4 shrink-0 transition-all ${preview && isExpanded ? 'rotate-90 text-[#B3B0AA]' : 'text-[#625E58]'} group-hover:translate-x-0.5 group-hover:text-[#B3B0AA]`} />
+          {preview && (
+            <ChevronRight className={`h-4 w-4 shrink-0 transition-all ${isExpanded ? 'rotate-90 text-[#C9C5BE]' : 'text-[#8F897F]'} group-hover:translate-x-0.5 group-hover:text-[#C9C5BE]`} />
+          )}
+          {hasFile && fullPath.toLowerCase().match(/\.(html|htm)$/) && (
+            <button
+              onClick={(e) => { e.stopPropagation(); openPanel({ filename: fileName, filepath: fullPath, content: preview?.content || '' }); }}
+              className="flex items-center gap-1 rounded-md border border-white/[0.08] bg-white/[0.045] px-2 py-0.5 text-[10px] font-bold uppercase text-[#C8C6C3] transition-all hover:border-[#4FC1FF]/25 hover:bg-[#4FC1FF]/10 hover:text-[#4FC1FF] shrink-0"
+            ><Monitor className="w-2.5 h-2.5" /> Preview</button>
+          )}
         </span>
       </div>
       <AnimatePresence>{isExpanded && preview && (
@@ -689,7 +932,7 @@ const SubAgentCard = ({ log }: { log: any }) => {
       <AnimatePresence>
         {open && (
           <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} className="overflow-hidden">
-            <div className="ml-6 border-l border-white/[0.055] pl-4 pb-3 pt-1 text-[12.5px] text-[#8b949e] leading-relaxed whitespace-pre-wrap font-mono max-h-[300px] overflow-y-auto custom-scrollbar">
+            <div className="ml-6 border-l border-white/[0.055] pl-4 pb-3 pt-1 text-[12.5px] text-[#8b949e] leading-relaxed whitespace-pre-wrap font-mono max-h-[300px] overflow-y-auto eterx-modern-scrollbar">
               {log.result || log.content || log.text || '(no result)'}
             </div>
           </motion.div>
@@ -725,7 +968,7 @@ const CollapsibleActionGroup = ({
       initial={{ opacity: 0, y: 5 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
-      className="w-full overflow-hidden rounded-[14px] border border-white/[0.08] bg-[#1A1A1A]/80 shadow-[inset_0_1px_0_rgba(255,255,255,0.04),0_4px_16px_rgba(0,0,0,0.22)]"
+      className={ACTION_CARD_CLASS}
     >
       {visibleLogs.map((log, i) => (
         <motion.div
@@ -733,7 +976,7 @@ const CollapsibleActionGroup = ({
           initial={{ opacity: 0, x: -4 }}
           animate={{ opacity: 1, x: 0 }}
           transition={{ duration: 0.18, delay: i * 0.06, ease: 'easeOut' }}
-          className={i > 0 ? 'border-t border-white/[0.055]' : ''}
+          className={i > 0 ? ACTION_ROW_DIVIDER_CLASS : ''}
         >
           <ActionChip
             log={log}
@@ -753,23 +996,14 @@ const CollapsibleActionGroup = ({
 // 3 modes: thinking (thought_stream/work_note last), acting (real action last), idle (between)
 
 const THINKING_PHRASES = [
-  { text: 'Synthesizing deep context', dur: 4500 },
-  { text: 'Mapping cognitive pathways', dur: 5000 },
-  { text: 'Evaluating strategic branches', dur: 4000 },
-  { text: 'Analyzing dimensional constraints', dur: 5500 },
-  { text: 'Processing neural embeddings', dur: 4800 },
-  { text: 'Cross-referencing active memory', dur: 5200 },
+  { text: 'Starting', dur: 0 },
 ];
 
 const IDLE_PHRASES = [
-  { text: 'Structuring next sequence', dur: 4000 },
-  { text: 'Awaiting tool resolution', dur: 4500 },
-  { text: 'Calibrating local vectors', dur: 5000 },
-  { text: 'Validating stream integrity', dur: 3800 },
-  { text: 'Synchronizing state', dur: 4200 },
+  { text: 'Working', dur: 0 },
 ];
 
-const DEFAULT_LIVE_PHRASE = { text: 'Computing execution flow', dur: 4500 };
+const DEFAULT_LIVE_PHRASE = { text: 'Working', dur: 0 };
 
 function makeShuffledQueue<T>(arr: T[], exclude?: T): T[] {
   const source = arr.length > 0 ? arr : [DEFAULT_LIVE_PHRASE as T];
@@ -785,22 +1019,54 @@ function makeShuffledQueue<T>(arr: T[], exclude?: T): T[] {
 const LiveWorkingIndicator = ({ logs }: { logs: any[] }) => {
   // Derive real-time state from the last log
   const getLogState = (ls: any[]): { mode: 'thinking' | 'acting' | 'idle'; label: string | null } => {
-    if (ls.length === 0) return { mode: 'thinking', label: null };
+    if (ls.length === 0) return { mode: 'thinking', label: 'Starting' };
     const last = ls[ls.length - 1];
-    if (last.type === 'thought_stream' || last.type === 'work_note') return { mode: 'thinking', label: null };
+    if (last.type === 'thought_stream' || last.type === 'work_note') {
+      return isLiveThoughtFresh(last)
+        ? { mode: 'thinking', label: 'Working' }
+        : { mode: 'idle', label: 'Working' };
+    }
     if (['command', 'exploration', 'file_edit', 'communication', 'progress', 'browser'].includes(last.type)) {
       const meta = getToolMeta(last.text, last.type, last.icon);
       const fileName = (last.filename || '').split(/[\\/]/).pop() || '';
-      const label = fileName ? `${ meta.verb } ${ fileName }` : (meta.verb || null);
-      return { mode: 'acting', label };
+      const LIVE_VERBS: Record<string, string> = {
+        Ran: 'Running',
+        Read: 'Reading',
+        Listed: 'Listing',
+        Edited: 'Editing',
+        Created: 'Creating',
+        Searched: 'Searching',
+        Analyzed: 'Analyzing',
+        Refactored: 'Refactoring',
+        Verified: 'Verifying',
+        Generated: 'Generating',
+      };
+      const verb = LIVE_VERBS[meta.verb] || meta.verb || 'Working';
+      const label = fileName ? `${ verb } ${ fileName }` : verb;
+      return { mode: 'acting', label: 'Working' };
     }
-    return { mode: 'idle', label: null };
+    return { mode: 'idle', label: 'Working' };
   };
 
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const modeRef = useRef<'thinking' | 'acting' | 'idle'>('idle');
   const queueRef = useRef<{ text: string; dur: number }[]>([]);
   const lastLabelRef = useRef<string>('');
+  const [statusTick, setStatusTick] = useState(0);
+  const logSignature = useMemo(() => {
+    const last = logs[logs.length - 1];
+    if (!last) return 'empty';
+    return [
+      logs.length,
+      last.type,
+      last._traceIdx ?? '',
+      last.text ? String(last.text).length : 0,
+      last.endTime ?? '',
+      last.startTime ?? '',
+      last.filename ?? '',
+      last.secondary ?? '',
+    ].join(':');
+  }, [logs]);
 
   const [label, setLabel] = useState<string>(() => {
     const s = getLogState(logs);
@@ -816,7 +1082,7 @@ const LiveWorkingIndicator = ({ logs }: { logs: any[] }) => {
       lastLabelRef.current = nextText;
       setFlip(false);
     }, 260);
-    timerRef.current = setTimeout(() => advancePhrase(modeRef.current), nextDur);
+    if (nextDur > 0) timerRef.current = setTimeout(() => advancePhrase(modeRef.current), nextDur);
   };
 
   const advancePhrase = (mode: 'thinking' | 'acting' | 'idle') => {
@@ -844,18 +1110,30 @@ const LiveWorkingIndicator = ({ logs }: { logs: any[] }) => {
   }, []);
 
   // React to log changes — immediately reflect mode/action
-  const prevLogsLenRef = useRef(logs.length);
   useEffect(() => {
-    if (logs.length === prevLogsLenRef.current) return;
-    prevLogsLenRef.current = logs.length;
+    const last = logs[logs.length - 1];
+    if (!last || (last.type !== 'thought_stream' && last.type !== 'work_note')) return;
+    if (!isLiveThoughtFresh(last)) return;
+    const updatedAt = getLogUpdatedAt(last);
+    if (updatedAt === null) return;
+    const delay = Math.max(120, LIVE_THOUGHT_FRESH_MS - (Date.now() - updatedAt) + 10);
+    const timeout = window.setTimeout(() => setStatusTick(t => t + 1), delay);
+    return () => window.clearTimeout(timeout);
+  }, [logSignature, logs, statusTick]);
+
+  const prevSignatureRef = useRef(logSignature);
+  useEffect(() => {
+    const signatureChanged = logSignature !== prevSignatureRef.current;
+    if (!signatureChanged && statusTick === 0) return;
+    prevSignatureRef.current = logSignature;
     const { mode, label: ctxLabel } = getLogState(logs);
     const prevMode = modeRef.current;
     modeRef.current = mode;
 
-    if (mode === 'acting' && ctxLabel && ctxLabel !== lastLabelRef.current) {
+    if (ctxLabel && ctxLabel !== lastLabelRef.current) {
       // New real action — show it immediately
       queueRef.current = [];
-      doTransition(ctxLabel, 4200);
+      doTransition(ctxLabel, 0);
     } else if (mode === 'thinking' && prevMode !== 'thinking') {
       // Just entered thinking mode
       queueRef.current = makeShuffledQueue(THINKING_PHRASES);
@@ -868,19 +1146,61 @@ const LiveWorkingIndicator = ({ logs }: { logs: any[] }) => {
       doTransition(next.text, next.dur);
     }
     // Same mode: let the current timer naturally advance
-  }, [logs.length]);
+  }, [logSignature, statusTick, logs]);
+
+  const latestLog = logs[logs.length - 1];
+  const signatureSeenAtRef = useRef({ signature: logSignature, at: Date.now() });
+  if (signatureSeenAtRef.current.signature !== logSignature) {
+    signatureSeenAtRef.current = { signature: logSignature, at: Date.now() };
+  }
+
+  useEffect(() => {
+    const timeout = window.setTimeout(() => setStatusTick(t => t + 1), LIVE_ACTION_SETTLE_MS + 24);
+    return () => window.clearTimeout(timeout);
+  }, [logSignature]);
+
+  const hideDuringFreshThought = !!latestLog
+    && (latestLog.type === 'thought_stream' || latestLog.type === 'work_note')
+    && isLiveThoughtFresh(latestLog);
+  const isRecentAction = !!latestLog
+    && !hideDuringFreshThought
+    && logs.length > 0
+    && Date.now() - signatureSeenAtRef.current.at <= LIVE_ACTION_SETTLE_MS;
+  const shouldHideLiveStatus = hideDuringFreshThought || isRecentAction;
 
   return (
-    <div className="mt-0.5 mb-1 flex min-h-[34px] w-fit items-center">
-      <AgentFace
-        size="work"
-        mode={modeRef.current === 'acting' ? 'working' : modeRef.current === 'thinking' ? 'thinking' : 'idle'}
-        actionKey={label}
-        interactive
-        syncWithController={false}
-        ariaLabel="EterX active agent face"
-      />
-    </div>
+    <AnimatePresence initial={false}>
+      {!shouldHideLiveStatus && (
+        <motion.div
+          key={label}
+          layout
+          initial={{ opacity: 0, x: -14, scale: 0.98 }}
+          animate={{ opacity: 1, x: 0, scale: 1 }}
+          exit={{ opacity: 0, x: -12, scale: 0.98, transition: { duration: 0.18, ease: 'easeInOut' } }}
+          transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
+          className="mt-1 mb-2 flex min-h-[42px] w-fit max-w-full items-center gap-2 overflow-visible py-0.5"
+        >
+          <AgentFace
+            size="work"
+            mode={modeRef.current === 'acting' ? 'working' : modeRef.current === 'thinking' ? 'thinking' : 'idle'}
+            actionKey={label}
+            interactive
+            syncWithController={false}
+            ariaLabel="EterX active agent face"
+          />
+          <motion.span
+            key={`label-${label}`}
+            initial={{ opacity: 0, x: -7 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: -7 }}
+            transition={{ duration: 0.2, ease: 'easeOut' }}
+            className="eterx-live-text min-w-0 truncate pb-[2px] text-[14px] font-semibold leading-[1.35] tracking-normal"
+          >
+            {label}
+          </motion.span>
+        </motion.div>
+      )}
+    </AnimatePresence>
   );
 };
 
@@ -901,16 +1221,44 @@ const useElapsed = (active: boolean) => {
 };
 
 
-export const ThinkingProcess = ({ logs, isThinking, isLast }: { logs: any[], isThinking: boolean, isLast: boolean }) => {
+// ═══════════════════════════════════════════════════════════════════
+// SteeringCard — rendered when the user sends a live steering message
+// while the agent is running. Shows immediately in the timeline.
+// ═══════════════════════════════════════════════════════════════════
+const SteeringCard = ({ log }: { log: any }) => {
+  return (
+    <motion.div
+      initial={{ opacity: 0, x: 20, y: 10, scale: 0.95 }}
+      animate={{ opacity: 1, x: 0, y: 0, scale: 1 }}
+      transition={{ type: 'spring', stiffness: 450, damping: 24 }}
+      className="flex justify-end w-full my-3.5 relative z-10 group/steer"
+    >
+      <div className="bg-[#242424] text-white px-5 py-3.5 rounded-[22px] rounded-tr-[6px] ml-auto text-[15.5px] shadow-[0_2px_12px_rgba(0,0,0,0.28)] leading-relaxed whitespace-pre-wrap relative border border-white/[0.07] select-text flex flex-row items-end gap-3.5 max-w-[84%]">
+        <span className="block w-full text-left break-words [word-break:break-word] [overflow-wrap:anywhere]">{log.text}</span>
+        
+        {/* CornerDownLeft arrow representing steering entry */}
+        <div className="shrink-0 mb-1 select-none text-[#8C8A88]">
+          <CornerDownLeft className="w-[18px] h-[18px]" strokeWidth={2.5} />
+        </div>
+      </div>
+    </motion.div>
+  );
+};
+
+
+export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showLiveIndicator = false }: { logs: any[], liveLogs?: any[], isThinking: boolean, isLast: boolean, showLiveIndicator?: boolean }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   // NOTE: 'ask_user' is intentionally excluded here — it's rendered as a full AskUserPrompt
   // card in chat-feed.tsx. Including it here causes a duplicate ActionChip to appear.
   const NOISE_PATTERN = /reconnect|retrying|stalled|stream interrupted|model error|fallback|cancelled/i;
-  const flowLogs = logs.filter(l =>
+  const isFlowLog = (l: any) =>
     ['thought_stream', 'work_note', 'command', 'exploration', 'file_edit', 'progress', 'browser', 'safety_warning', 'communication', 'sub_agent_answer', 'sub_agent_result', 'file_preview', 'console_output'].includes(l.type) &&
     !(['progress', 'command', 'exploration'].includes(l.type) && /analyz(?:e|ing) task complexity/i.test(String(l.text || ''))) &&
-    !(l.type === 'progress' && NOISE_PATTERN.test(String(l.text || '')))
-  );
+    !(l.type === 'progress' && NOISE_PATTERN.test(String(l.text || '')));
+  const flowLogs = logs.filter(isFlowLog);
+  const liveFlowLogs = liveLogs.filter(isFlowLog);
+  const statusLogs = [...flowLogs, ...liveFlowLogs];
+  const hasExternalLiveWork = liveFlowLogs.length > 0;
   const segs: any[] = []; let aBuf: any[] = [];
   const SPEC = new Set(['file_preview', 'console_output', 'sub_agent_answer', 'sub_agent_result', 'safety_warning']);
   const flush = (idx: number) => {
@@ -933,6 +1281,7 @@ export const ThinkingProcess = ({ logs, isThinking, isLast }: { logs: any[], isT
     if (log.type === 'thought_stream') { flush(idx - 1); segs.push({ kind: 'thought', log, idx }); }
     else if (log.type === 'work_note') { flush(idx - 1); segs.push({ kind: 'note', log, idx }); }
     else if (log.type === 'safety_warning') { flush(idx - 1); segs.push({ kind: 'safety', log, idx }); }
+    else if (log.type === 'steering_received') { flush(idx - 1); segs.push({ kind: 'steering', log, idx }); }
     else if (log.type === 'sub_agent_answer' || log.type === 'sub_agent_result') { flush(idx - 1); segs.push({ kind: 'subagent', log, idx }); }
     else if (SPEC.has(log.type)) { flush(idx - 1); }
     else { aBuf.push(log); }
@@ -947,19 +1296,20 @@ export const ThinkingProcess = ({ logs, isThinking, isLast }: { logs: any[], isT
   return (
     <div ref={containerRef} className="w-full flex flex-col gap-1 py-0">
       {segs.map((seg, i) => {
-        if (seg.kind === 'thought') return <ProfessionalThought key={`t-${ seg.idx }`} text={seg.log.text} isLatest={isLast && i === segs.length - 1} isThinking={isThinking} />;
+        if (seg.kind === 'thought') return <ProfessionalThought key={`t-${ seg.idx }`} text={seg.log.text} isLatest={isLast && i === segs.length - 1 && !hasExternalLiveWork} isThinking={isThinking} startedAt={seg.log.startTime} updatedAt={seg.log.endTime} />;
         if (seg.kind === 'note') return <ProfessionalThought key={`n-${ seg.idx }`} text={seg.log.text} isLatest={false} isThinking={false} variant="note" />;
         if (seg.kind === 'safety') return <SafetyBanner key={`sf-${ seg.idx }`} log={seg.log} />;
+        if (seg.kind === 'steering') return <SteeringCard key={`steer-${ seg.idx }`} log={seg.log} />;
         if (seg.kind === 'subagent') return <SubAgentCard key={`sa-${ seg.idx }`} log={seg.log} />;
         
         // Unpack single action chip — wrap in card so it sits inside the container
         if (seg.logs.length === 1) {
           return (
-            <div key={`g-${ seg.lastIdx }`} className="w-full overflow-hidden rounded-[14px] border border-white/[0.08] bg-[#1A1A1A]/80 shadow-[inset_0_1px_0_rgba(255,255,255,0.04),0_4px_16px_rgba(0,0,0,0.22)]">
+            <div key={`g-${ seg.lastIdx }`} className={ACTION_CARD_CLASS}>
               <ActionChip
                 log={seg.logs[0]}
                 isLastChip={isLast && i === segs.length - 1}
-                isActiveGroup={isThinking && isLast && i === segs.length - 1}
+                isActiveGroup={isThinking && isLast && i === segs.length - 1 && !hasExternalLiveWork}
                 allLogs={flowLogs}
                 isNested={false}
                 inCard={true}
@@ -967,9 +1317,12 @@ export const ThinkingProcess = ({ logs, isThinking, isLast }: { logs: any[], isT
             </div>
           );
         }
-        return <CollapsibleActionGroup key={`g-${ seg.lastIdx }`} logs={seg.logs} isActiveGroup={isThinking && isLast && i === segs.length - 1} isLast={isLast} allLogs={flowLogs} />;
+        return <CollapsibleActionGroup key={`g-${ seg.lastIdx }`} logs={seg.logs} isActiveGroup={isThinking && isLast && i === segs.length - 1 && !hasExternalLiveWork} isLast={isLast} allLogs={flowLogs} />;
       })}
-      {isThinking && isLast && <LiveWorkingIndicator logs={flowLogs} />}
+      <AnimatePresence>
+        {showLiveIndicator && isThinking && isLast && <LiveWorkingIndicator key="live-working" logs={statusLogs} />}
+      </AnimatePresence>
     </div>
   );
 };
+

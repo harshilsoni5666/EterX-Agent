@@ -45,6 +45,7 @@ interface AgentExecution {
   cancelled: boolean;          // Per-chat cancel flag
   promise: Promise<void>;      // The running execution
   keyLeaseId: string;          // API key lease identifier
+  steeringQueue: string[];     // Live steering messages from user mid-run
   mode: MainAgentMode;
   // === EXECUTION METRICS (new) ===
   toolCallCount: number;       // Total tool calls in this execution
@@ -111,6 +112,7 @@ class AgentRegistry {
       keyLeaseId: isMistralMode ? 'mistral' : chatId,
       mode,
       promise: Promise.resolve(), // Placeholder, replaced below
+      steeringQueue: [],
       // Execution metrics
       toolCallCount: 0,
       effectiveModel: modelConfig.modelName,
@@ -177,7 +179,7 @@ class AgentRegistry {
         const path = require('path');
 
         const GEMINI_NATIVE_MIMES = new Set([
-          'image/png', 'image/jpeg', 'image/webp', 'image/bmp', 'image/gif', 'image/heic', 'image/heif',
+          'image/png', 'image/jpeg', 'image/webp', 'image/heic', 'image/heif',
           'application/pdf', 'application/json',
           'text/plain', 'text/html', 'text/css', 'text/xml', 'text/csv', 'text/rtf', 'text/javascript',
           'audio/mp3', 'audio/wav', 'audio/mpeg', 'audio/ogg',
@@ -268,9 +270,8 @@ class AgentRegistry {
         }
 
         // ═══════════════════════════════════════════════════════════
-        // UPLOAD NON-IMAGE FILES VIA FILES API
-        // Images are passed from local bytes inside GeminiClient.
-        // File URIs are still used for non-image documents/videos where needed.
+        // Upload Gemini-native media with the same leased key used by the model call.
+        // This keeps the renderer fast and avoids base64 payloads in the chat input.
         // ═══════════════════════════════════════════════════════════
         const uploadedImageParts: { fileData: { fileUri: string, mimeType: string } }[] = [];
         let hasNewImages = false;
@@ -280,14 +281,6 @@ class AgentRegistry {
         for (const file of geminiNativeFiles) {
           try {
             const isImage = String(file.mimeType || '').startsWith('image/');
-
-            // Images are sent from local bytes in GeminiClient. File URIs are
-            // key-scoped; sending image fileData and then rotating keys causes
-            // 403 permission failures.
-            if (isImage) {
-              hasNewImages = true;
-              continue;
-            }
 
             // If the file has a URI from VISUAL MEMORY (previously uploaded with this key ecosystem), reuse it
             if (file.fileUri && !currentGeminiNativeFiles.some(f => f.name === file.name)) {
@@ -302,8 +295,8 @@ class AgentRegistry {
               continue;
             }
 
-            console.log(`[AgentRegistry] 📤 Uploading via Files API: ${ file.name } (${ file.mimeType })`);
-            onTrace({ type: 'progress', text: `Uploading ${ file.name }`, percent: 8 });
+            console.log(`[AgentRegistry] Preparing media via Files API: ${ file.name } (${ file.mimeType })`);
+            onTrace({ type: 'progress', text: `Preparing ${ isImage ? 'image' : 'file' }`, percent: 8 });
             const uploadResult = await geminiAI.files.upload({
               file: file.path,
               config: { mimeType: file.mimeType }
@@ -569,6 +562,46 @@ class AgentRegistry {
 
     console.log(`[AgentRegistry] 🛑 Stopped agent for chat ${ chatId.substring(0, 8) }...`);
     return true;
+  }
+
+  /**
+   * Enqueue a live steering message for a running agent.
+   * Returns true if the agent is running and the message was queued.
+   * Also immediately emits a steering_received trace to the buffer so the UI
+   * can show the user that their steering was acknowledged instantly.
+   */
+  public addSteeringMessage(chatId: string, message: string): boolean {
+    const execution = this.executions.get(chatId);
+    if (!execution || execution.status !== 'running') return false;
+
+    execution.steeringQueue.push(message);
+
+    // Immediately emit a trace so the UI shows the steering card right away
+    const entry: TraceEvent = {
+      index: execution.traceCounter++,
+      timestamp: Date.now(),
+      data: {
+        type: 'steering_received',
+        text: message,
+        timestamp: Date.now(),
+      },
+    };
+    execution.traceBuffer.push(entry);
+
+    console.log(`[AgentRegistry] 🧭 Steering message queued for chat ${ chatId.substring(0, 8) }...: "${ message.substring(0, 60) }"`);
+    return true;
+  }
+
+  /**
+   * Dequeue all pending steering messages for a chat (clears the queue).
+   * Called by the ReAct loop at the start of each iteration.
+   */
+  public getAndClearSteeringQueue(chatId: string): string[] {
+    const execution = this.executions.get(chatId);
+    if (!execution || execution.steeringQueue.length === 0) return [];
+    const messages = [...execution.steeringQueue];
+    execution.steeringQueue = [];
+    return messages;
   }
 
   /**

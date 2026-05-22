@@ -8,7 +8,12 @@ import { globalSessionManager } from './session';
 // Critic removed — was causing false rejections on user-stopped outputs and wasting execution time
 import fs from 'fs-extra';
 import path from 'path';
-import { getMainAgentModelConfig, type MainAgentMode } from './model-routing';
+import {
+  getMainAgentModelConfig,
+  normalizeMainAgentThinkingLevel,
+  type MainAgentMode,
+  type MainAgentThinkingLevel,
+} from './model-routing';
 
 /**
  * The Enhanced Orchestrator v2
@@ -50,6 +55,7 @@ type RuntimeProjectContext = ProjectContext & {
   forceFastMode?: boolean;
   selectedModelMode?: MainAgentMode;
   selectedModelName?: string;
+  selectedThinkingLevel?: MainAgentThinkingLevel;
   source?: string;
   telegram?: unknown;
   userId?: string;
@@ -296,8 +302,10 @@ export class AgentOrchestrator {
     const complexity = pinnedContext?.forceFastMode ? 'standard' : this.classifyComplexity(userRequest);
     const effectiveMode = pinnedContext?.forceFastMode ? 'fast' : this.resolveOptimalMode(mode, complexity);
     const modelConfig = getMainAgentModelConfig(effectiveMode);
+    const selectedThinkingLevel = normalizeMainAgentThinkingLevel(pinnedContext?.thinkingLevel);
     context.selectedModelMode = effectiveMode;
     context.selectedModelName = modelConfig.modelName;
+    context.selectedThinkingLevel = selectedThinkingLevel;
     
     // Auto-route to optimal model based on complexity
     if (effectiveMode !== mode) {

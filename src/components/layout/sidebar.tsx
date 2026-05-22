@@ -370,9 +370,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 animate={{ opacity: 1, x: 0 }}
                 exit={{ opacity: 0, x: -10 }}
                 transition={{ duration: 0.2 }}
-                className="flex items-center gap-2.5 select-none pl-3"
+                className="flex items-center select-none pl-3"
               >
-                <img src="/logo.png" alt="EterX logo" className="w-7 h-7 object-contain" />
                 <span className="font-serif text-[24px] text-[#E8E6E3] font-medium leading-none hover:opacity-85 transition-opacity whitespace-nowrap">
                   EterX
                 </span>

@@ -212,12 +212,12 @@ function createWindow() {
     height: 900,
     minWidth: 800,
     minHeight: 600,
-    backgroundColor: '#171717', // Match the EterX root black
+    backgroundColor: '#0F0F0F', // Match the EterX root black
     title: 'EterX', // Defines standard Task Manager/Taskbar labeling
     icon: path.join(__dirname, '../public/logo.png'), // Explicit application taskbar Favicon mapping
     titleBarStyle: 'hidden', // Provides the modern frame-less aesthetic while preserving OS buttons
     titleBarOverlay: {
-      color: '#171717',
+      color: '#0F0F0F',
       symbolColor: '#d1d1d1',
       height: 38
     },

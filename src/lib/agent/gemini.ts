@@ -19,7 +19,7 @@ import {
 } from './adaptive';
 import { globalSessionManager } from './session';
 import { isCancelled } from './roles/sub_agent';
-import { MAIN_AGENT_MODE_CONFIG, type MainAgentMode, type MainAgentProvider } from './model-routing';
+import { MAIN_AGENT_MODE_CONFIG, type MainAgentMode, type MainAgentProvider, type MainAgentThinkingLevel } from './model-routing';
 
 type SkillCandidate = {
   id: string;
@@ -31,6 +31,13 @@ type SkillCandidate = {
 
 type GeminiAgentClientOptions = {
   provider?: MainAgentProvider;
+};
+
+type AgentMediaFile = {
+  path: string;
+  mimeType: string;
+  name?: string;
+  fileUri?: string;
 };
 
 function positiveIntEnv(name: string, fallback: number): number {
@@ -326,6 +333,97 @@ export class GeminiAgentClient {
     return this.apiKeys[this.currentKeyIndex] || '';
   }
 
+  private isGeminiFilesApiMime(mimeType: string): boolean {
+    return new Set([
+      'image/png', 'image/jpeg', 'image/webp', 'image/heic', 'image/heif',
+      'application/pdf', 'application/json',
+      'text/plain', 'text/html', 'text/css', 'text/xml', 'text/csv', 'text/rtf', 'text/javascript',
+      'audio/mp3', 'audio/wav', 'audio/mpeg', 'audio/ogg',
+      'video/mp4', 'video/mpeg', 'video/webm', 'video/mov',
+    ]).has(String(mimeType || '').toLowerCase());
+  }
+
+  private async uploadMediaFileDataParts(
+    mediaFiles: AgentMediaFile[] = [],
+    onTrace?: (t: any) => void,
+    traceLabel = 'Preparing media'
+  ): Promise<any[]> {
+    if (!mediaFiles.length) return [];
+    const fs = require('fs');
+    const parts: any[] = [];
+
+    for (const file of mediaFiles) {
+      const mimeType = String(file.mimeType || 'application/octet-stream').toLowerCase();
+      if (!this.isGeminiFilesApiMime(mimeType)) continue;
+      if (!file.path || !fs.existsSync(file.path)) continue;
+
+      try {
+        const isImage = mimeType.startsWith('image/');
+        onTrace?.({
+          type: 'progress',
+          text: isImage ? 'Preparing image' : traceLabel,
+          percent: 8,
+        });
+        const uploadedMedia = await this.ai.files.upload({
+          file: file.path,
+          config: { mimeType },
+        });
+        if (uploadedMedia?.uri) {
+          file.fileUri = uploadedMedia.uri;
+          parts.push({
+            fileData: {
+              fileUri: uploadedMedia.uri,
+              mimeType: uploadedMedia.mimeType || mimeType,
+            },
+          });
+          console.log(`[GeminiClient] Media ready for current key: ${ file.name || file.path } (${ mimeType })`);
+        }
+      } catch (error: any) {
+        console.warn(`[GeminiClient] Media upload failed for ${ file.name || file.path }: ${ error?.message?.substring(0, 120) || String(error) }`);
+      }
+    }
+
+    return parts;
+  }
+
+  private async refreshFileDataPartsForCurrentKey(
+    contents: any[],
+    mediaFiles: AgentMediaFile[] = [],
+    onTrace?: (t: any) => void
+  ): Promise<{ refreshed: boolean; contents: any[] }> {
+    const freshParts = await this.uploadMediaFileDataParts(mediaFiles, onTrace, 'Re-preparing media');
+    if (freshParts.length === 0) return { refreshed: false, contents };
+
+    let inserted = false;
+    const nextContents = contents.map((content: any) => {
+      if (!Array.isArray(content?.parts)) return content;
+      const hadFileData = content.parts.some((part: any) => !!part?.fileData);
+      const withoutFileData = content.parts.filter((part: any) => !part?.fileData);
+      const isCurrentUserRequest = content.role === 'user'
+        && withoutFileData.some((part: any) => typeof part?.text === 'string' && part.text.includes('[CURRENT USER REQUEST'));
+
+      if (!inserted && content.role === 'user' && (hadFileData || isCurrentUserRequest)) {
+        inserted = true;
+        return { ...content, parts: [...freshParts, ...withoutFileData] };
+      }
+
+      return hadFileData ? { ...content, parts: withoutFileData } : content;
+    });
+
+    if (!inserted) {
+      const firstUserIndex = nextContents.findIndex((content: any) => content?.role === 'user' && Array.isArray(content?.parts));
+      if (firstUserIndex >= 0) {
+        nextContents[firstUserIndex] = {
+          ...nextContents[firstUserIndex],
+          parts: [...freshParts, ...nextContents[firstUserIndex].parts.filter((part: any) => !part?.fileData)],
+        };
+        inserted = true;
+      }
+    }
+
+    return { refreshed: inserted, contents: nextContents };
+  }
+
   private getMistralApiKey(): string {
     const apiKey = process.env.MISTRAL_API_KEY || process.env.MISTRAL_AI_API_KEY || process.env.MISTRALAI_API_KEY || '';
     if (!apiKey) {
@@ -517,7 +615,7 @@ export class GeminiAgentClient {
     message: string,
     history: any[] = [],
     onTrace?: (t: any) => void,
-    mediaFiles: { path: string, mimeType: string, name?: string, fileUri?: string }[] = []
+    mediaFiles: AgentMediaFile[] = []
   ): Promise<{ text: string, trace: any[] }> {
     const trace: any[] = [];
     const sharedCacheDisabled = !!(context as any).disableSharedCache;
@@ -1661,13 +1759,13 @@ Sequential execution of independent tasks is a PERFORMANCE BUG.
 - ⚠️ NEVER loop: "I should do X" → thinks more → "I should do X" → thinks more. STOP. Do X.
 - If you catch yourself re-analyzing, STOP thinking and call the next tool immediately.
 - Do not expose private/internal chain-of-thought. Keep internal reasoning private.
-- External action notes are visible user-facing narration, not hidden reasoning.
-- Before a new action phase, emit exactly one external action note as ordinary assistant text, then call the related tool(s) immediately.
-- Each note should sound like a real live agent thinking externally, not a UI action label. Use first-person or state-aware language when natural.
-- Each note should say what you just observed, what changed, or what you are about to do now, not the whole plan.
-- Let the note length fit the task: simple phases can be one sentence; complex design/build phases can be a short polished paragraph of 2-4 sentences like a premium live work update.
+- External action notes are visible user-facing status updates, not hidden reasoning and not generic planning.
+- Emit an external note only when it helps the user understand meaningful progress. Many action phases need no note.
+- Notes should report concrete current work, what you just found, what changed, or what you are verifying. Do not generate vague prompt-like narration.
+- Prefer 1 short sentence. Use 2 sentences only when there is a real finding plus next action. Longer paragraphs are rare and must be justified by complex work.
 - Do not write a fresh note after every single tool result. Continue related reads, edits, terminal checks, and verification under the same action phase when the intent has not changed.
-- As a cadence target, one external note should usually cover 2-4 related action rows. Only about 25-35% of action turns need a new note.
+- Use judgment rather than a fixed cadence. If a note would feel generic, repetitive, or obvious from the action card, skip it.
+- The best note is the one a capable real agent would naturally say at that moment: specific, useful, and grounded in what just happened.
 - Emit a fresh note when the phase truly changes, for example from inspection to editing, editing to verification, setup to asset generation, or failure to recovery.
 - When several tools are part of the same compact phase, one note should cover the whole action group.
 - Native thought text does NOT count as the external action note. The note must be ordinary non-thought assistant text in the same response as the tool call.
@@ -1677,21 +1775,23 @@ Sequential execution of independent tasks is a PERFORMANCE BUG.
 - Avoid bare gerund/action-label notes such as "Initializing project", "Provisioning frontend stack", "Executing bootstrap", or "Scaffolding architecture"; turn them into natural live narration.
 - Do not dump the full task plan in a note. Keep it realistic and action-wise.
 - Do not repeat the same note. If the next note would be the same, call the tool without rephrasing it.
-- Good: "Now let me inspect the chat stream path and see where action cards are appended."
-- Good: "I found the note gate. Now I'll make it reject label-style action text."
-- Good: "Project initialized. Now let me install the missing dependencies and start the asset pipeline."
-- Good for reading: "I need to see how this component renders today, so I'll open the chat feed now."
-- Good for editing: "I found the spacing rule. Now I'll patch the layout without touching the input behavior."
-- Good for terminal: "The project is scaffolded. Now let me run the install step and watch for dependency issues."
-- Good for verification: "The patch is in place. Now I'll run a focused type check before moving on."
-- Good for recovery: "That route failed in this environment, so I'll switch to the local scaffold path."
-- Good for error fixing: "Hero.tsx is missing its closing brace. Now I'll patch that structure before verifying again."
+- Good: "I found the note gate in the feed renderer. I’m tightening it so action cards stay clean."
+- Good: "The media path is now binary through the server; I’m checking the Gemini retry path next."
+- Good: "The edit is in place. I’m running a focused type check before calling this done."
+- Good for reading: "I’m tracing where the chat stream decides whether text becomes an action card or a loose note."
+- Good for editing: "The cursor state is restored in one place, but the missed-release path still needs cleanup."
+- Good for terminal: "The compiler caught a type mismatch in the retry state; I’m fixing that before re-running it."
+- Good for verification: "Type-check passed; I’m doing one quick diff review for unrelated churn."
+- Good for recovery: "That retry would reuse stale media, so I’m rebuilding the file parts from the saved upload."
+- Good for error fixing: "Hero.tsx is missing its closing brace. I’m patching that structure before verifying again."
 - Bad: "CLASSIFY: code task. DECOMPOSE: inspect files. I need to think about..."
 - Bad: "tsx\` where a missing closing parenthesis before the export statement is breaking the build."
 - Bad: "tsx\`: the component function is missing its closing brace and parenthesis."
 - Bad: "Initializing the Nike 2026 project using the artifacts builder."
 - Bad: "Executing multi-step project initialization using PowerShell compatible chaining."
 - Bad: "I will complete the entire project with every feature, all assets, tests, and final delivery."
+- Bad: "I will search for occurrences of gemini and model to see how models are managed in the UI."
+- Bad: "To find the exact structure of the state methods, I will inspect the code."
 - When sub-agents are running, CONTINUE YOUR OWN WORK on other parts of the task. Don't idle.
 
 ━━━ CHAT MEMORY PROTOCOL (CRITICAL) ━━━
@@ -2170,7 +2270,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
     message: string,
     history: any[] = [],
     onTrace?: (t: any) => void,
-    mediaFiles: { path: string, mimeType: string, name?: string, fileUri?: string }[] = [],
+    mediaFiles: AgentMediaFile[] = [], 
     imageBackupParts: any[] = []
   ): Promise<{ text: string, trace: any[] }> {
     const telegramFastDirect = (context as any).source === 'telegram'
@@ -2209,9 +2309,19 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
       trace: any[];
       loopAccumulatedText: string;
     } | null = null;
+    let mediaPartsKey = this.getCurrentApiKey();
 
     while (attempts < maxAttempts) {
       try {
+        if (survivorState && survivorState.contents.length > 0 && mediaFiles.length > 0 && this.getCurrentApiKey() !== mediaPartsKey) {
+          const refreshed = await this.refreshFileDataPartsForCurrentKey(survivorState.contents, mediaFiles, onTrace);
+          if (refreshed.refreshed) {
+            survivorState.contents = refreshed.contents;
+            imageBackupParts = [];
+            mediaPartsKey = this.getCurrentApiKey();
+            console.log('[GeminiClient] Re-uploaded media for rotated API key before retry.');
+          }
+        }
         return await this.runReActLoop(context, message, history, onTrace, mediaFiles, imageBackupParts, survivorState);
       } catch (error: any) {
         const errorMsg = error.message?.toLowerCase() || '';
@@ -2454,7 +2564,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
     message: string,
     history: any[] = [],
     onTrace?: (t: any) => void,
-    mediaFiles: { path: string, mimeType: string, name?: string, fileUri?: string }[] = [],
+    mediaFiles: AgentMediaFile[] = [],
     imageBackupParts: any[] = [],
     survivorState?: {
       contents: any[];
@@ -2581,24 +2691,18 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
     // Skip all the initial prompt building if we're resuming (contents already includes everything)
     const isResuming = !!survivorState?.contents && survivorState.contents.length > 0;
 
-    // Build the user parts incorporating media references
-    // STRATEGY (Gemma-4 compatible):
-    //   - imageBackupParts contains { fileData: { fileUri, mimeType } } from agent-registry
-    //   - We ALSO inject inline base64 as DUAL fallback to GUARANTEE image visibility
+    // Build the user parts incorporating media references.
+    // Primary path: Gemini Files API parts prepared by agent-registry with the
+    // same leased key used by this model request. Inline bytes are fallback only.
     let initialUserParts: any[] = [];
-    const hasLocalImageForInline = mediaFiles.some((meta) =>
-      String(meta.mimeType || '').startsWith('image/') && !!meta.path
+    const hasFileApiImageParts = !!imageBackupParts?.some((part) =>
+      String(part?.fileData?.mimeType || '').startsWith('image/')
     );
 
-    // Inject pre-uploaded Files API parts (images + documents)
+    // Inject Files API parts (images + documents)
     if (imageBackupParts && imageBackupParts.length > 0) {
       console.log(`[GeminiClient] \u{1F441}\uFE0F Injecting ${ imageBackupParts.length } Files API media part(s)`);
       for (const part of imageBackupParts) {
-        const partMime = String(part.fileData?.mimeType || '');
-        if (hasLocalImageForInline && partMime.startsWith('image/')) {
-          console.log('[GeminiClient] Skipping image fileData; using local inline image bytes to avoid key-scoped fileUri 403s');
-          continue;
-        }
         if (part.fileData) {
           console.log(`[GeminiClient]   \u2192 fileData: ${ part.fileData.mimeType } | ${ part.fileData.fileUri?.substring(0, 80) }`);
         }
@@ -2606,9 +2710,9 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
       }
     }
 
-    // DUAL FALLBACK: Also inject inline base64 for images on disk
-    // This guarantees the model sees the image even if fileData/fileUri has issues
-    if (mediaFiles && mediaFiles.length > 0) {
+    // Fallback only: if Files API image preparation failed, use local inline bytes
+    // server-side so the renderer never pays the base64 cost.
+    if (!hasFileApiImageParts && mediaFiles && mediaFiles.length > 0) {
       const fs = require('fs');
       for (const meta of mediaFiles) {
         if (meta.mimeType.startsWith('image/') && fs.existsSync(meta.path)) {
@@ -2621,7 +2725,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
                   data: imgBuffer.toString('base64')
                 }
               });
-              console.log(`[GeminiClient] \u{1F4F7} Inline base64 injected: ${ meta.name || 'image' } (${ (imgBuffer.length / 1024).toFixed(1) }KB)`);
+              console.log(`[GeminiClient] \u{1F4F7} Server-side inline image fallback: ${ meta.name || 'image' } (${ (imgBuffer.length / 1024).toFixed(1) }KB)`);
             }
           } catch (e: any) {
             console.warn(`[GeminiClient] \u26A0\uFE0F Inline fallback failed: ${ e.message?.substring(0, 80) }`);
@@ -2817,7 +2921,12 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
 
     const isGemmaModel = this.modelName.toLowerCase().includes('gemma');
     const plannerToolsDisabled = !!(context as any).disablePlannerTools;
-    const thinkingLevel = lightweightTelegramMode ? ThinkingLevel.LOW : ThinkingLevel.MEDIUM;
+    const selectedThinkingLevel = ((context as any).selectedThinkingLevel || 'low') as MainAgentThinkingLevel;
+    const thinkingLevel = lightweightTelegramMode
+      ? ThinkingLevel.LOW
+      : selectedThinkingLevel === 'high'
+        ? ThinkingLevel.HIGH
+        : ThinkingLevel.MEDIUM;
     const includeThoughts = !lightweightTelegramMode;
     if (!isGemmaModel) {
       // Gemini 3 defaults to high thinking, which is too slow for live chat.
@@ -3004,6 +3113,31 @@ EXTERNAL ACTION NOTE CUE
         return { text: cancelText, trace };
       }
 
+      // === LIVE STEERING: Drain user mid-run feedback ===
+      // Messages are queued by POST /api/agent/steer and injected here at
+      // the start of each ReAct iteration — never mid-tool-call, never disruptive.
+      try {
+        const __reg = (globalThis as any).__eterxAgentRegistry;
+        if (__reg && typeof __reg.getAndClearSteeringQueue === 'function') {
+          const __steers: string[] = __reg.getAndClearSteeringQueue(context.projectId);
+          if (__steers.length > 0) {
+            const __steerText = __steers
+              .map((m: string, i: number) => `[LIVE USER STEERING ${i + 1}]\n${m}\n[/LIVE USER STEERING]`)
+              .join('\n\n');
+            const __last = contents[contents.length - 1];
+            if (__last?.role === 'user' && Array.isArray(__last.parts)) {
+              __last.parts.push({ text: __steerText });
+            } else {
+              contents.push({ role: 'user', parts: [{ text: __steerText }] });
+            }
+            trace.push({ type: 'steering_received', text: __steers.join('\n\n'), timestamp: Date.now() });
+            console.log(`[GeminiClient] Steering injected (${__steers.length} msg) at iteration ${interactions}`);
+          }
+        }
+      } catch (__steerErr: any) {
+        console.warn('[GeminiClient] Steering queue check failed (non-fatal):', String(__steerErr?.message).substring(0, 80));
+      }
+
       // === ULTRA-FAST CONTEXT MANAGEMENT (Zero-Latency Mode) ===
       // Keep initial prompt (index 0) + last ~8 turns — enough context without megabyte payloads
       if (contents.length > 9) {
@@ -3092,6 +3226,16 @@ EXTERNAL ACTION NOTE CUE
           return { ...content, parts: nextParts };
         });
         return removed;
+      };
+
+      const refreshFileDataParts = async () => {
+        const refreshed = await this.refreshFileDataPartsForCurrentKey(contents, mediaFiles, onTrace);
+        if (refreshed.refreshed) {
+          contents = refreshed.contents;
+          console.warn('[GeminiClient] Re-uploaded stale media for the current Gemini key.');
+          return true;
+        }
+        return false;
       };
 
       const waitBeforeStreamRetry = async (attempt: number, reason: string) => {
@@ -3224,6 +3368,9 @@ EXTERNAL ACTION NOTE CUE
           }
 
           if (isFilePermissionError && hasFileDataParts) {
+            if (await refreshFileDataParts()) {
+              continue;
+            }
             const removed = removeFileDataParts();
             console.warn(`[GeminiClient] Removed ${ removed } key-scoped fileData part(s); retrying without stale Gemini file references.`);
             continue;
@@ -3426,7 +3573,7 @@ EXTERNAL ACTION NOTE CUE
         if (shouldEmitFinalWorkNote) {
           const noteEvt = { type: 'work_note', text: noteText, isDelta: false, isStreaming: false, noteId: workNoteId };
           trace.push(noteEvt);
-          if (!workNoteEmitted && onTrace) onTrace(noteEvt);
+          if (onTrace) onTrace(noteEvt);
           lastVisibleWorkNote = noteText.toLowerCase();
           lastVisibleWorkNoteInteraction = interactions;
           workNoteEmitted = true;

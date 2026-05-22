@@ -1,5 +1,6 @@
 export type MainAgentProvider = 'gemini' | 'mistral';
 export type MainAgentMode = 'think' | 'fast' | 'mistral';
+export type MainAgentThinkingLevel = 'low' | 'high';
 
 export type MainAgentModelConfig = {
   id: MainAgentMode;
@@ -39,6 +40,13 @@ export const MAIN_AGENT_MODE_CONFIG: Record<MainAgentMode, MainAgentModelConfig>
 
 export const MAIN_AGENT_MODEL_OPTIONS = Object.values(MAIN_AGENT_MODE_CONFIG).filter(option => option.selectable);
 
+export const MAIN_AGENT_THINKING_LEVEL_STORAGE_KEY = 'eterx-thinking-level';
+
+export const MAIN_AGENT_THINKING_LEVEL_OPTIONS: Array<{ id: MainAgentThinkingLevel; label: string }> = [
+  { id: 'low', label: 'Low' },
+  { id: 'high', label: 'High' },
+];
+
 export function normalizeMainAgentMode(value: unknown): MainAgentMode {
   if (typeof value !== 'string') return 'think';
   if (value in MAIN_AGENT_MODE_CONFIG) return value as MainAgentMode;
@@ -47,4 +55,9 @@ export function normalizeMainAgentMode(value: unknown): MainAgentMode {
 
 export function getMainAgentModelConfig(mode: unknown): MainAgentModelConfig {
   return MAIN_AGENT_MODE_CONFIG[normalizeMainAgentMode(mode)];
+}
+
+export function normalizeMainAgentThinkingLevel(value: unknown): MainAgentThinkingLevel {
+  if (value === 'high' || value === 'enterprise' || value === 'extended') return 'high';
+  return 'low';
 }

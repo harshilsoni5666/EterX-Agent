@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { agentRegistry } from '../../../../lib/agent/agent-registry';
-import { normalizeMainAgentMode } from '../../../../lib/agent/model-routing';
+import { normalizeMainAgentMode, normalizeMainAgentThinkingLevel } from '../../../../lib/agent/model-routing';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -22,6 +22,7 @@ export async function POST(req: NextRequest) {
       prompt, 
       history = [], 
       mode = 'think', 
+      thinkingLevel = 'low',
       userId = 'default_user', 
       pinnedContext = null, 
       mediaAttachments = [], 
@@ -36,6 +37,11 @@ export async function POST(req: NextRequest) {
     }
 
     const safeMode = normalizeMainAgentMode(mode);
+    const safeThinkingLevel = normalizeMainAgentThinkingLevel(thinkingLevel);
+    const effectivePinnedContext = {
+      ...(pinnedContext || {}),
+      thinkingLevel: safeThinkingLevel,
+    };
 
     const result = agentRegistry.startAgent(
       chatId,
@@ -43,7 +49,7 @@ export async function POST(req: NextRequest) {
       history,
       safeMode,
       userId,
-      pinnedContext,
+      effectivePinnedContext,
       mediaAttachments,
       userName
     );

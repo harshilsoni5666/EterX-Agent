@@ -1,12 +1,19 @@
-import React, { useRef, useState, useEffect, useCallback } from 'react';
+﻿import React, { useRef, useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { FileText, X, Check, Folder, FolderOpen, Files, File as FileIcon, Loader2, ChevronDown } from 'lucide-react';
-import { PremiumMic, PremiumSend, PremiumPlus, PremiumPin, PremiumAudioLines, PremiumVolume2, PremiumVolumeX, PremiumMicOff } from '../ui/premium-icons';
+import { FileText, X, Check, Folder, FolderOpen, Files, File as FileIcon, ChevronDown, ChevronRight, Image as ImageIcon, AlertCircle } from 'lucide-react';
+import { PremiumMic, PremiumSend, PremiumPlus, PremiumAudioLines, PremiumVolume2, PremiumVolumeX, PremiumMicOff } from '../ui/premium-icons';
 import { Tooltip } from '../ui/tooltip';
 import { ConnectorsModal, ConnectorsButton } from './connectors-modal';
 import { AgentFace } from '../chat/agent-face';
 import { notifyAgentFaceFiles, notifyAgentFaceInputChange, notifyAgentFaceSend } from '../chat/agent-face-controller';
-import { MAIN_AGENT_MODEL_OPTIONS, getMainAgentModelConfig, type MainAgentMode } from '../../lib/agent/model-routing';
+import {
+  MAIN_AGENT_MODEL_OPTIONS,
+  MAIN_AGENT_THINKING_LEVEL_OPTIONS,
+  getMainAgentModelConfig,
+  normalizeMainAgentThinkingLevel,
+  type MainAgentMode,
+  type MainAgentThinkingLevel,
+} from '../../lib/agent/model-routing';
 
 // ─── Connector State Hook ────────────────────────────────
 const useConnectors = () => {
@@ -68,12 +75,13 @@ const useConnectors = () => {
 
 
 interface Attachment {
+  id?: string;
   file: File;
+  name?: string;
   preview: string;
   uploadStatus?: 'uploading' | 'done' | 'error';
   fileUri?: string;
   localPath?: string;
-  inlineData?: { mimeType: string; data: string };
 }
 
 interface ChatInputProps {
@@ -83,6 +91,7 @@ interface ChatInputProps {
   isRecording: boolean;
   handleSend: () => void;
   handleStop: () => void;
+  handleSteer?: () => void;  // Send live steering to running agent
   toggleSpeech: () => void;
   attachments: Attachment[];
   setAttachments: React.Dispatch<React.SetStateAction<Attachment[]>>;
@@ -94,6 +103,8 @@ interface ChatInputProps {
   acceptVoice?: () => void;
   agentMode?: MainAgentMode;
   onModeChange?: (mode: MainAgentMode) => void;
+  thinkingLevel?: MainAgentThinkingLevel;
+  onThinkingLevelChange?: (level: MainAgentThinkingLevel) => void;
   pinnedItems?: any[];
   setPinnedItems?: (items: any[]) => void;
   // ═══ Gemini Live Session ═══
@@ -113,16 +124,28 @@ interface ChatInputProps {
   isCompressed?: boolean;
 }
 
-const fileToBase64 = async (file: File) => {
-  const buffer = new Uint8Array(await file.arrayBuffer());
-  const chunkSize = 0x8000;
-  let binary = '';
+const inferFileExtension = (mimeType: string) => {
+  const map: Record<string, string> = {
+    'image/png': 'png',
+    'image/jpeg': 'jpg',
+    'image/webp': 'webp',
+    'image/heic': 'heic',
+    'image/heif': 'heif',
+  };
+  return map[mimeType] || 'file';
+};
 
-  for (let i = 0; i < buffer.length; i += chunkSize) {
-    binary += String.fromCharCode.apply(null, Array.from(buffer.subarray(i, i + chunkSize)));
-  }
+const getAttachmentName = (file: File) => {
+  const existing = file.name?.trim();
+  if (existing) return existing;
+  const ext = inferFileExtension(file.type || '');
+  return `${ file.type?.startsWith('image/') ? 'pasted-image' : 'pasted-file' }-${ Date.now() }.${ ext }`;
+};
 
-  return btoa(binary);
+const formatAttachmentSize = (bytes: number) => {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '';
+  if (bytes < 1024 * 1024) return `${ Math.max(1, Math.round(bytes / 1024)) } KB`;
+  return `${ (bytes / (1024 * 1024)).toFixed(bytes < 10 * 1024 * 1024 ? 1 : 0) } MB`;
 };
 
 const VoiceWaveform = ({ volume, isProcessing, cancelVoice, acceptVoice }: { volume: number, isProcessing: boolean, cancelVoice: () => void, acceptVoice: () => void }) => {
@@ -227,8 +250,8 @@ const VoiceWaveform = ({ volume, isProcessing, cancelVoice, acceptVoice }: { vol
   );
 };
 
-const inputControlButton = "eterx-control-button w-[40px] h-[40px] shrink-0 flex items-center justify-center rounded-full border border-white/[0.13] bg-[#202020]/92 text-[#F4F4F4] shadow-[inset_0_1px_0_rgba(255,255,255,0.07),0_5px_14px_rgba(0,0,0,0.24)] transition-all duration-200 ease-[cubic-bezier(0.2,0.8,0.2,1)] active:scale-[0.96] active:bg-[#303030] hover:text-white hover:bg-[#2B2B2B] hover:border-white/[0.22] hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.09),0_7px_18px_rgba(0,0,0,0.3)] group relative overflow-hidden";
-const inputControlSheen = "absolute inset-0 bg-gradient-to-b from-white/[0.12] to-transparent opacity-0 transition-opacity duration-200 group-hover:opacity-100";
+const inputControlButton = "eterx-control-button w-[40px] h-[40px] shrink-0 flex items-center justify-center rounded-full border border-white/[0.18] bg-[#242424]/96 text-white transition-all duration-200 ease-[cubic-bezier(0.2,0.8,0.2,1)] active:scale-[0.96] active:bg-[#303030] hover:text-white hover:bg-[#2D2D2D] hover:border-white/[0.30] group relative overflow-hidden";
+const inputControlSheen = "hidden";
 
 const PinFolderIcon = ({ className = "" }: { className?: string }) => (
   <svg viewBox="0 0 36 36" className={className} fill="none" aria-hidden="true">
@@ -334,10 +357,11 @@ const PinFileIcon = ({ className = "" }: { className?: string }) => (
 );
 
 export const ChatInput: React.FC<ChatInputProps> = ({
-  inputValue, setInputValue, isThinking, isRecording, handleSend, handleStop,
+  inputValue, setInputValue, isThinking, isRecording, handleSend, handleStop, handleSteer = () => { },
   toggleSpeech, attachments, setAttachments, greeting, traceLogsLength,
   isProcessingVoice = false, audioVolume = 0, cancelVoice = () => { }, acceptVoice = () => { },
   agentMode = 'think', onModeChange = () => { },
+  thinkingLevel = 'low', onThinkingLevelChange = () => { },
   pinnedItems = [], setPinnedItems = () => { },
   liveState = 'idle', onLiveStart = () => { }, onLiveStop = () => { },
   liveOutputText = '', liveInputText = '',
@@ -350,6 +374,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const modelSelectorRef = useRef<HTMLDivElement>(null);
   const initialFocusAppliedRef = useRef(false);
+  const queuedSendRef = useRef(false);
   const [showPinMenu, setShowPinMenu] = useState(false);
   const [openPillDrop, setOpenPillDrop] = useState<'files' | 'folders' | null>(null);
   const [isOverflowing, setIsOverflowing] = useState(false);
@@ -358,6 +383,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const [isLogoHovered, setIsLogoHovered] = useState(false);
   const [isStopping, setIsStopping] = useState(false); // Intermediate stop state
   const [showModelMenu, setShowModelMenu] = useState(false);
+  const [showThinkingLevels, setShowThinkingLevels] = useState(false);
   const connectors = useConnectors();
   const textareaMaxHeight = isCompressed ? 260 : 400;
   const isModelLocked = isThinking;
@@ -367,8 +393,14 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     if (!isThinking) setIsStopping(false);
   }, [isThinking]);
   useEffect(() => {
-    if (isModelLocked) setShowModelMenu(false);
+    if (isModelLocked) {
+      setShowModelMenu(false);
+      setShowThinkingLevels(false);
+    }
   }, [isModelLocked]);
+  useEffect(() => {
+    if (!showModelMenu) setShowThinkingLevels(false);
+  }, [showModelMenu]);
   useEffect(() => {
     if (initialFocusAppliedRef.current) return;
     initialFocusAppliedRef.current = true;
@@ -394,9 +426,13 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       const target = event.target as Node | null;
       if (target && modelSelectorRef.current?.contains(target)) return;
       setShowModelMenu(false);
+      setShowThinkingLevels(false);
     };
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setShowModelMenu(false);
+      if (event.key === 'Escape') {
+        setShowModelMenu(false);
+        setShowThinkingLevels(false);
+      }
     };
 
     document.addEventListener('pointerdown', handlePointerDown);
@@ -436,61 +472,73 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     setIsAtBottom(el.scrollTop + el.clientHeight >= el.scrollHeight - threshold);
   }, []);
 
-  // Pre-upload a file to Gemini in the background
-  const preUploadFile = useCallback(async (file: File, index: number) => {
+  // Save pasted/browser files as binary FormData so the renderer never base64-encodes media.
+  const saveFileForAgent = useCallback(async (file: File, attachmentId: string, displayName: string) => {
     try {
       const filePath = (file as any).path;
-      let body: any = { fileName: file.name, mimeType: file.type || 'application/octet-stream' };
-
       if (filePath) {
-        body.filePath = filePath;
-      } else {
-        // Convert in chunks; spreading a large Uint8Array can freeze or crash the renderer.
-        body.fileData = await fileToBase64(file);
+        setAttachments(prev => prev.map(att => att.id === attachmentId ? {
+          ...att,
+          uploadStatus: 'done' as const,
+          localPath: filePath,
+        } : att));
+        return;
       }
+
+      const formData = new FormData();
+      formData.append('file', file, displayName);
+      formData.append('fileName', displayName);
+      formData.append('mimeType', file.type || 'application/octet-stream');
 
       const res = await fetch('/api/media/upload', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
+        body: formData,
       });
 
-      if (res.ok) {
-        const data = await res.json();
-        setAttachments(prev => prev.map((att, i) => i === index ? {
-          ...att,
-          uploadStatus: 'done' as const,
-          fileUri: data.fileUri || undefined,
-          localPath: data.localPath,
-          inlineData: data.inlineData || undefined
-        } : att));
-      } else {
-        setAttachments(prev => prev.map((att, i) => i === index ? { ...att, uploadStatus: 'error' as const } : att));
+      if (!res.ok) {
+        setAttachments(prev => prev.map(att => att.id === attachmentId ? { ...att, uploadStatus: 'error' as const } : att));
+        return;
       }
+
+      const data = await res.json();
+      setAttachments(prev => prev.map(att => att.id === attachmentId ? {
+        ...att,
+        uploadStatus: 'done' as const,
+        localPath: data.localPath,
+      } : att));
     } catch {
-      setAttachments(prev => prev.map((att, i) => i === index ? { ...att, uploadStatus: 'error' as const } : att));
+      setAttachments(prev => prev.map(att => att.id === attachmentId ? { ...att, uploadStatus: 'error' as const } : att));
     }
   }, [setAttachments]);
 
-  // Attach files and immediately start pre-upload
+  // Attach files instantly, then prepare only files that do not already have a local path.
   const addFilesAndUpload = useCallback((files: File[]) => {
-    notifyAgentFaceFiles(files);
-    const startIdx = attachments.length;
-    const newAttachments = files.map(file => ({
-      file,
-      preview: file.type.startsWith('image/') ? URL.createObjectURL(file) : '',
-      uploadStatus: 'uploading' as const,
-    }));
+    const validFiles = files.filter(file => file && file.size > 0);
+    if (validFiles.length === 0) return;
+
+    notifyAgentFaceFiles(validFiles);
+
+    const newAttachments = validFiles.map((file, index) => {
+      const displayName = getAttachmentName(file);
+      const localPath = (file as any).path;
+      return {
+        id: `${ Date.now() }-${ index }-${ Math.random().toString(36).slice(2) }`,
+        file,
+        name: displayName,
+        preview: file.type.startsWith('image/') ? URL.createObjectURL(file) : '',
+        uploadStatus: localPath ? 'done' as const : 'uploading' as const,
+        localPath: localPath || undefined,
+      };
+    });
+
     setAttachments(prev => [...prev, ...newAttachments]);
 
-    // Upload in small batches so several large dropped files do not saturate the renderer or API route.
-    const uploadBatch = async () => {
-      for (let i = 0; i < files.length; i += 2) {
-        await Promise.all(files.slice(i, i + 2).map((file, offset) => preUploadFile(file, startIdx + i + offset)));
+    for (const att of newAttachments) {
+      if (att.uploadStatus === 'uploading') {
+        void saveFileForAgent(att.file, att.id, att.name);
       }
-    };
-    void uploadBatch();
-  }, [attachments.length, setAttachments, preUploadFile]);
+    }
+  }, [setAttachments, saveFileForAgent]);
 
   useEffect(() => {
     const handleClickOutside = () => {
@@ -576,9 +624,16 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   };
 
   const handlePaste = (e: React.ClipboardEvent) => {
-    if (e.clipboardData.files && e.clipboardData.files.length > 0) {
+    const pastedFiles = Array.from(e.clipboardData.files || []);
+    const itemFiles = Array.from(e.clipboardData.items || [])
+      .filter(item => item.kind === 'file')
+      .map(item => item.getAsFile())
+      .filter((file): file is File => !!file);
+    const files = pastedFiles.length > 0 ? pastedFiles : itemFiles;
+
+    if (files.length > 0) {
       e.preventDefault();
-      addFilesAndUpload(Array.from(e.clipboardData.files));
+      addFilesAndUpload(files);
     }
   };
 
@@ -604,16 +659,31 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     });
   };
 
+  const hasPreparingAttachments = attachments.some(att => att.uploadStatus === 'uploading');
+  const hasErroredAttachments = attachments.some(att => att.uploadStatus === 'error');
+
+  useEffect(() => {
+    if (!queuedSendRef.current || hasPreparingAttachments || hasErroredAttachments) return;
+    if (!inputValue.trim() && attachments.length === 0) return;
+    queuedSendRef.current = false;
+    notifyAgentFaceSend();
+    handleSend();
+  }, [attachments.length, handleSend, hasErroredAttachments, hasPreparingAttachments, inputValue]);
+
   const submitPrompt = useCallback(() => {
+    if (hasPreparingAttachments) {
+      queuedSendRef.current = true;
+      return;
+    }
+    if (hasErroredAttachments) return;
     if (inputValue.trim() || attachments.length > 0) {
       notifyAgentFaceSend();
     }
     handleSend();
-  }, [attachments.length, handleSend, inputValue]);
+  }, [attachments.length, handleSend, hasErroredAttachments, hasPreparingAttachments, inputValue]);
 
-  // --- Dynamic Live Mode Glow Calculations ---
-  let liveAnimateState: any = { boxShadow: `0 18px 44px rgba(0,0,0,0.38), inset 0 1px 0 rgba(255,255,255,0.06)` };
-  let liveTransition: any = { duration: 0.5, ease: "easeInOut" };
+  let liveAnimateState: any = { boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.04)' };
+  let liveTransition: any = { duration: 0.2, ease: "easeOut" };
 
   if (liveState !== 'idle' && liveState !== 'error') {
     const micVol = Math.min(1, Math.max(0, liveMicVolume / 100));
@@ -661,14 +731,6 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       };
       liveTransition = { duration: 1.5, ease: "easeInOut" };
     }
-  } else {
-    // Default mode styling
-    liveAnimateState = {
-      boxShadow: isRecording
-        ? `0 0 40px rgba(255,255,255,0.06), 0 0 0 6px rgba(255,255,255,0.04), inset 0 1px 0 rgba(255,255,255,0.06)`
-        : `0 18px 44px rgba(0,0,0,0.38), inset 0 1px 0 rgba(255,255,255,0.06)`
-    };
-    liveTransition = { duration: 0.8, ease: "easeInOut" };
   }
 
   const isEmptyHome = traceLogsLength === 0 && liveState === 'idle';
@@ -676,7 +738,15 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const inputSidePadding = isCompressed ? 'px-4' : 'px-4 sm:px-12';
   const modelOptions = MAIN_AGENT_MODEL_OPTIONS;
   const selectedModel = getMainAgentModelConfig(agentMode);
+  const safeThinkingLevel = normalizeMainAgentThinkingLevel(thinkingLevel);
+  const selectedThinkingLevel = MAIN_AGENT_THINKING_LEVEL_OPTIONS.find(option => option.id === safeThinkingLevel) || MAIN_AGENT_THINKING_LEVEL_OPTIONS[0];
   const modelDisplayLabel = selectedModel.label;
+  const modelMenuOpensDown = isEmptyHome;
+  const modelMenuVerticalClass = modelMenuOpensDown ? 'top-[calc(100%+10px)]' : 'bottom-[calc(100%+10px)]';
+  const modelMenuOffset = modelMenuOpensDown ? -8 : 8;
+  const thinkingMenuHorizontalClass = modelMenuOpensDown ? 'left-[calc(100%+8px)]' : 'right-[calc(100%+8px)]';
+  const thinkingMenuVerticalClass = modelMenuOpensDown ? 'top-0' : 'bottom-0';
+  const thinkingMenuOffset = modelMenuOpensDown ? -8 : 8;
 
   return (
     <div className={`absolute left-0 flex flex-col items-center z-30 ${ isEmptyHome ? 'right-0 w-full' : 'right-[14px] w-auto' } ${ isEmptyHome
@@ -743,7 +813,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
           transition={liveTransition}
           className={`w-full ${ isCompressed ? 'rounded-[28px]' : 'rounded-[32px]' } flex flex-col ${ attachments.length > 0 ? 'pt-1' : isCompressed ? 'pt-3' : 'pt-4' } pb-2 transition-all duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)] overflow-visible relative ${ liveState !== 'idle'
             ? 'bg-[#1E1E1E] backdrop-blur-3xl border border-white/[0.10] ring-1 ring-white/[0.05]'
-            : `bg-[#1E1E1E] backdrop-blur-[28px] ring-1 ring-white/[0.035] ${ isRecording ? 'border border-white/[0.20]' : 'border border-white/[0.08] hover:border-white/[0.12] focus-within:border-white/[0.18]' }`
+            : `bg-[#1E1E1E] backdrop-blur-[28px] ${ isRecording ? 'border border-white/[0.20]' : 'border border-white/[0.08] hover:border-white/[0.12] focus-within:border-white/[0.18]' }`
             }`}>
           <input type="file" multiple ref={fileInputRef} onChange={handleFileSelect} className="hidden" />
 
@@ -762,31 +832,28 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                 <div className="flex items-center gap-3 px-5 pb-3 pt-2 overflow-x-auto w-full [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
                   {attachments.map((att, i) => {
                     const isImage = !!att.preview;
-                    const extension = att.file.name.split('.').pop()?.toUpperCase() || 'FILE';
+                    const displayName = att.name || att.file.name || 'file';
+                    const extension = displayName.split('.').pop()?.toUpperCase() || 'FILE';
                     const isPdf = extension === 'PDF';
-                    const isUploading = att.uploadStatus === 'uploading';
-                    const isDone = att.uploadStatus === 'done';
+                    const isPreparing = att.uploadStatus === 'uploading';
+                    const isErrored = att.uploadStatus === 'error';
+                    const fileSize = formatAttachmentSize(att.file.size);
 
                     if (isImage) {
                       return (
-                        <div key={i} className="relative group w-[56px] h-[56px] shrink-0 rounded-2xl shadow-[0_5px_16px_rgba(0,0,0,0.22)] hover:shadow-[0_8px_22px_rgba(0,0,0,0.3)] transition-all cursor-pointer border border-white/[0.11] hover:border-white/[0.18]">
-                          <img src={att.preview} alt="preview" className={`w-full h-full object-cover rounded-2xl transition-all ${ isUploading ? 'opacity-60' : 'opacity-100' }`} />
-                          {/* Upload Status Overlay */}
-                          {isUploading && (
-                            <div className="absolute inset-0 flex items-center justify-center rounded-2xl bg-black/30">
-                              <Loader2 className="w-5 h-5 text-white animate-spin" />
+                        <div key={att.id || i} className={`relative group w-[62px] h-[62px] shrink-0 rounded-[18px] shadow-[0_5px_16px_rgba(0,0,0,0.24)] hover:shadow-[0_8px_24px_rgba(0,0,0,0.34)] transition-all cursor-pointer border ${ isErrored ? 'border-[#E2765A]/55' : 'border-white/[0.12] hover:border-white/[0.20]' } overflow-visible`}>
+                          <img src={att.preview} alt={displayName} className={`w-full h-full object-cover rounded-[18px] transition-all ${ isErrored ? 'opacity-45 grayscale' : 'opacity-100' }`} />
+                          {isPreparing && (
+                            <div className="pointer-events-none absolute inset-0 rounded-[18px] bg-[linear-gradient(110deg,transparent_0%,rgba(255,255,255,0.16)_45%,transparent_78%)] bg-[length:220%_100%] animate-[eterx-attachment-sheen_1.8s_ease-in-out_infinite]" />
+                          )}
+                          {isErrored && (
+                            <div className="absolute inset-0 flex items-center justify-center rounded-[18px] bg-black/28">
+                              <AlertCircle className="w-5 h-5 text-[#F0B6A7]" strokeWidth={2.2} />
                             </div>
                           )}
-                          {isDone && (
-                            <motion.div
-                              initial={{ opacity: 1, scale: 1.2 }}
-                              animate={{ opacity: 0, scale: 0.8 }}
-                              transition={{ duration: 1.2, delay: 0.3 }}
-                              className="absolute inset-0 flex items-center justify-center rounded-2xl bg-emerald-500/20"
-                            >
-                              <Check className="w-4 h-4 text-emerald-400" strokeWidth={3} />
-                            </motion.div>
-                          )}
+                          <div className="pointer-events-none absolute left-1.5 top-1.5 flex h-5 w-5 items-center justify-center rounded-full border border-white/[0.12] bg-black/45 text-white/90 backdrop-blur-md">
+                            <ImageIcon className="h-3 w-3" strokeWidth={2.15} />
+                          </div>
                           <button
                             onClick={() => removeAttachment(i)}
                             className="absolute -top-1.5 -right-1.5 w-[18px] h-[18px] flex items-center justify-center rounded-full border border-white/[0.14] bg-[#202020]/95 text-[#D8D5CF] shadow-[0_4px_12px_rgba(0,0,0,0.45)] transition-all hover:scale-110 hover:border-[#E2765A]/70 hover:bg-[#E2765A] hover:text-white z-20"
@@ -798,19 +865,22 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                     }
 
                     return (
-                      <div key={i} className="relative group w-[200px] shrink-0 h-[56px] rounded-[16px] bg-[#202020]/82 border border-white/[0.095] shadow-[inset_0_1px_0_rgba(255,255,255,0.045),0_5px_16px_rgba(0,0,0,0.2)] hover:bg-[#272727]/90 hover:border-white/[0.17] transition-all flex items-center p-2 cursor-pointer">
+                      <div key={att.id || i} className={`relative group w-[200px] shrink-0 h-[58px] rounded-[16px] bg-[#202020]/82 border ${ isErrored ? 'border-[#E2765A]/45' : 'border-white/[0.095] hover:border-white/[0.17]' } shadow-[inset_0_1px_0_rgba(255,255,255,0.045),0_5px_16px_rgba(0,0,0,0.2)] hover:bg-[#272727]/90 transition-all flex items-center p-2 cursor-pointer overflow-hidden`}>
+                        {isPreparing && (
+                          <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(110deg,transparent_0%,rgba(255,255,255,0.08)_44%,transparent_76%)] bg-[length:230%_100%] animate-[eterx-attachment-sheen_1.8s_ease-in-out_infinite]" />
+                        )}
                         <div className={`w-[40px] h-[40px] rounded-[10px] flex items-center justify-center shrink-0 border border-white/5 ${ isPdf ? 'bg-[#EF4444]' : 'bg-[#007AFF]' }`}>
-                          {isUploading ? (
-                            <Loader2 className="w-5 h-5 text-white animate-spin" />
+                          {isErrored ? (
+                            <AlertCircle className="w-5 h-5 text-white" strokeWidth={2.15} />
                           ) : (
                             <FileText className="w-5 h-5 text-white" strokeWidth={2} />
                           )}
                         </div>
 
                         <div className="flex flex-col overflow-hidden ml-3 justify-center h-full w-full pr-1">
-                          <span className="text-[13px] font-medium text-[#E8E6E3] truncate tracking-wide leading-tight">{att.file.name}</span>
-                          <span className={`text-[11px] font-medium truncate mt-0.5 ${ isUploading ? 'text-blue-400' : isDone ? 'text-emerald-400' : 'text-[#8C8A88]' }`}>
-                            {isUploading ? 'Uploading...' : isDone ? 'Ready' : extension}
+                          <span className="text-[13px] font-medium text-[#E8E6E3] truncate tracking-wide leading-tight">{displayName}</span>
+                          <span className={`text-[11px] font-medium truncate mt-0.5 ${ isErrored ? 'text-[#F0B6A7]' : 'text-[#8C8A88]' }`}>
+                            {isErrored ? 'Attach failed' : isPreparing ? 'Preparing' : (fileSize ? `${ extension } · ${ fileSize }` : extension)}
                           </span>
                         </div>
 
@@ -845,7 +915,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                     <Tooltip text={isSpeakerMuted ? "Unmute system voice" : "Mute system voice"} side="top">
                       <button
                         onClick={onToggleSpeakerMute}
-                        className={`w-[34px] h-[34px] flex items-center justify-center rounded-full transition-all duration-300 group ${ isSpeakerMuted ? 'text-[#E2765A] bg-[#E2765A]/15' : 'text-white/60 hover:bg-white/10 hover:text-[#E8E6E3] active:scale-95' }`}
+                        className={`w-[34px] h-[34px] flex items-center justify-center rounded-full transition-all duration-300 group ${ isSpeakerMuted ? 'text-[#E2765A] bg-[#E2765A]/15' : 'text-[#F4F4F4] hover:bg-white/10 hover:text-white active:scale-95' }`}
                       >
                         {isSpeakerMuted ? (
                           <PremiumVolumeX className="w-[16px] h-[16px] transition-transform duration-300 group-hover:scale-110" strokeWidth={2.2} />
@@ -858,7 +928,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                     <Tooltip text={isMicMuted ? "Unmute your microphone" : "Mute your microphone"} side="top">
                       <button
                         onClick={onToggleMicMute}
-                        className={`w-[34px] h-[34px] flex items-center justify-center rounded-full transition-all duration-300 group ${ isMicMuted ? 'text-[#E2765A] bg-[#E2765A]/15' : 'text-white/60 hover:bg-white/10 hover:text-[#E8E6E3] active:scale-95' }`}
+                        className={`w-[34px] h-[34px] flex items-center justify-center rounded-full transition-all duration-300 group ${ isMicMuted ? 'text-[#E2765A] bg-[#E2765A]/15' : 'text-[#F4F4F4] hover:bg-white/10 hover:text-white active:scale-95' }`}
                       >
                         {isMicMuted ? (
                           <PremiumMicOff className="w-[17px] h-[17px] transition-transform duration-300 group-hover:scale-110" strokeWidth={2.2} />
@@ -938,7 +1008,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                           key="connecting"
                           initial={{ opacity: 0, x: 10 }}
                           animate={{ opacity: 1, x: 0 }}
-                          className="text-[12.5px] text-[#A3A19E] tracking-wide font-medium whitespace-nowrap"
+                          className="text-[12.5px] text-[#F0F0F0] tracking-wide font-medium whitespace-nowrap"
                         >
                           Connecting...
                         </motion.span>
@@ -949,7 +1019,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                           animate={{ opacity: 1, x: 0 }}
                           exit={{ opacity: 0, x: -10 }}
                           transition={{ duration: 0.3 }}
-                          className="text-[12.5px] text-[#A3A19E] tracking-wide font-medium whitespace-nowrap"
+                          className="text-[12.5px] text-[#F0F0F0] tracking-wide font-medium whitespace-nowrap"
                         >
                           {(() => {
                             switch (liveActiveTool) {
@@ -1038,7 +1108,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                   className={inputControlButton}
                 >
                   <div className={inputControlSheen} />
-                    <PremiumPlus className="w-[18px] h-[18px] transition-all duration-200 ease-out group-hover:scale-[1.1]" strokeWidth={2.2} />
+                    <PremiumPlus className="w-[22px] h-[22px] text-white transition-transform duration-200 ease-out group-hover:scale-[1.06]" strokeWidth={2.45} />
                 </button>
               </Tooltip>
               <ConnectorsButton
@@ -1066,7 +1136,11 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                     aria-expanded={showPinMenu}
                   >
                     <div className={inputControlSheen} />
-                    <PremiumPin className={`w-[16px] h-[16px] transition-all duration-200 ease-out group-hover:scale-[1.1] ${ showPinMenu ? '-rotate-12' : '' }`} strokeWidth={2.2} />
+                    <img
+                      src="https://img.icons8.com/sf-regular/48/pin.png"
+                      alt="Pin"
+                      className={`h-[23px] w-[23px] object-contain opacity-100 invert brightness-200 transition-transform duration-200 ease-out group-hover:scale-[1.06] ${ showPinMenu ? '-rotate-12' : '' }`}
+                    />
                   </button>
                 </Tooltip>
 
@@ -1080,8 +1154,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       className="absolute bottom-[calc(100%+10px)] left-1/2 z-[120] flex w-[150px] -translate-x-[27px] flex-col rounded-[15px] border border-white/[0.105] bg-[#1A1A1A]/95 backdrop-blur-2xl p-[3px] shadow-[0_16px_34px_rgba(0,0,0,0.58),inset_0_1px_0_rgba(255,255,255,0.055)]"
                     >
                       <span className="pointer-events-none absolute -bottom-[5px] left-[8px] z-0 h-[10px] w-[10px] rotate-45 border-b border-r border-white/[0.105] bg-[#1A1A1A]/95" />
-                      <button type="button" onClick={handlePinFolder} className="group/menu relative z-10 flex h-[40px] w-full items-center gap-[9px] rounded-[12px] px-[9px] text-left text-[#F0EDEA] transition-all duration-150 hover:bg-white/[0.095] hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] focus-visible:bg-white/[0.095] focus-visible:outline-none active:scale-[0.99]">
-                        <span className="flex h-[25px] w-[25px] shrink-0 items-center justify-center text-[#C7C3BC] transition-colors group-hover/menu:text-white">
+                      <button type="button" onClick={handlePinFolder} className="group/menu relative z-10 flex h-[40px] w-full items-center gap-[9px] rounded-[12px] px-[9px] text-left text-white transition-all duration-150 hover:bg-white/[0.095] hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] focus-visible:bg-white/[0.095] focus-visible:outline-none active:scale-[0.99]">
+                        <span className="flex h-[25px] w-[25px] shrink-0 items-center justify-center text-white transition-colors">
                           <PinFolderIcon className="h-[24px] w-[24px]" />
                         </span>
                         <span className="min-w-0 text-[13.5px] font-semibold leading-none tracking-[-0.004em]">
@@ -1089,8 +1163,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                         </span>
                       </button>
                       <div className="relative z-10 mx-[9px] h-px bg-white/[0.05]" />
-                      <button type="button" onClick={handlePinFiles} className="group/menu relative z-10 flex h-[40px] w-full items-center gap-[9px] rounded-[12px] px-[9px] text-left text-[#F0EDEA] transition-all duration-150 hover:bg-white/[0.095] hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] focus-visible:bg-white/[0.095] focus-visible:outline-none active:scale-[0.99]">
-                        <span className="flex h-[25px] w-[25px] shrink-0 items-center justify-center text-[#C7C3BC] transition-colors group-hover/menu:text-white">
+                      <button type="button" onClick={handlePinFiles} className="group/menu relative z-10 flex h-[40px] w-full items-center gap-[9px] rounded-[12px] px-[9px] text-left text-white transition-all duration-150 hover:bg-white/[0.095] hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] focus-visible:bg-white/[0.095] focus-visible:outline-none active:scale-[0.99]">
+                        <span className="flex h-[25px] w-[25px] shrink-0 items-center justify-center text-white transition-colors">
                           <PinFileIcon className="h-[24px] w-[24px]" />
                         </span>
                         <span className="min-w-0 text-[13.5px] font-semibold leading-none tracking-[-0.004em]">
@@ -1128,7 +1202,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                             }}
                           >
                             <Folder className="w-[14px] h-[14px] text-[#A78BFA] shrink-0" strokeWidth={2.5} />
-                            <span className={`text-[12px] font-medium text-[#DEDAD3] truncate tracking-wide ${ isCompressed ? 'max-w-[62px]' : 'max-w-[120px]' }`}>
+                            <span className={`text-[12px] font-medium text-white truncate tracking-wide ${ isCompressed ? 'max-w-[62px]' : 'max-w-[120px]' }`}>
                               {folders.length === 1 ? folders[0].name : `${ folders.length } folders`}
                             </span>
                             <button onClick={(e) => {
@@ -1140,7 +1214,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                                 setPinnedItems(pinnedItems.filter(i => i.type !== 'folder'));
                                 setOpenPillDrop(null);
                               }
-                            }} className="ml-0.5 p-0.5 text-[#8C8A88] hover:text-[#E2765A] rounded-full transition-colors shrink-0">
+                            }} className="ml-0.5 p-0.5 text-[#F0F0F0] hover:text-[#E2765A] rounded-full transition-colors shrink-0">
                               <X className="w-3.5 h-3.5" strokeWidth={2.5} />
                             </button>
                           </div>
@@ -1166,7 +1240,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                                       const newItems = pinnedItems.filter(i => i.id !== f.id);
                                       setPinnedItems(newItems);
                                       if (newItems.filter(i => i.type === 'folder').length <= 1) setOpenPillDrop(null);
-                                    }} className="ml-auto flex-shrink-0 text-[#8C8A88] hover:text-[#E2765A] opacity-0 group-hover/item:opacity-100 transition-opacity">
+                                    }} className="ml-auto flex-shrink-0 text-[#F0F0F0] hover:text-[#E2765A] opacity-0 group-hover/item:opacity-100 transition-opacity">
                                       <X className="w-3 h-3" />
                                     </button>
                                   </div>
@@ -1195,7 +1269,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                             }}
                           >
                             <FileIcon className="w-[14px] h-[14px] text-[#FCD34D] shrink-0" strokeWidth={2.5} />
-                            <span className={`text-[12px] font-medium text-[#DEDAD3] truncate tracking-wide ${ isCompressed ? 'max-w-[62px]' : 'max-w-[120px]' }`}>
+                            <span className={`text-[12px] font-medium text-white truncate tracking-wide ${ isCompressed ? 'max-w-[62px]' : 'max-w-[120px]' }`}>
                               {files.length === 1 ? files[0].name : `${ files.length } files`}
                             </span>
                             <button onClick={(e) => {
@@ -1206,7 +1280,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                                 setPinnedItems(pinnedItems.filter(i => i.type !== 'file'));
                                 setOpenPillDrop(null);
                               }
-                            }} className="ml-0.5 p-0.5 text-[#8C8A88] hover:text-[#E2765A] rounded-full transition-colors shrink-0">
+                            }} className="ml-0.5 p-0.5 text-[#F0F0F0] hover:text-[#E2765A] rounded-full transition-colors shrink-0">
                               <X className="w-3.5 h-3.5" strokeWidth={2.5} />
                             </button>
                           </div>
@@ -1232,7 +1306,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                                       const newItems = pinnedItems.filter(i => i.id !== f.id);
                                       setPinnedItems(newItems);
                                       if (newItems.filter(i => i.type === 'file').length === 0) setOpenPillDrop(null);
-                                    }} className="ml-auto flex-shrink-0 text-[#8C8A88] hover:text-[#E2765A] opacity-0 group-hover/item:opacity-100 transition-opacity">
+                                    }} className="ml-auto flex-shrink-0 text-[#F0F0F0] hover:text-[#E2765A] opacity-0 group-hover/item:opacity-100 transition-opacity">
                                       <X className="w-3 h-3" />
                                     </button>
                                   </div>
@@ -1256,8 +1330,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                     if (isModelLocked) return;
                     setShowModelMenu(prev => !prev);
                   }}
-                  className={`eterx-model-button ${ isCompressed ? 'mr-0 max-w-[160px] px-2.5' : 'mr-1 px-3.5' } flex h-[38px] w-full min-w-0 items-center gap-1.5 rounded-full border border-white/[0.085] bg-[#151515]/92 text-[#D5D2CC] shadow-[inset_0_1px_0_rgba(255,255,255,0.055),0_5px_16px_rgba(0,0,0,0.2)] transition-all duration-200 hover:bg-[#1B1B1B] hover:text-[#F3F3F3] hover:border-white/[0.13] active:scale-[0.98] group ${ showModelMenu ? '!bg-[#1A1A1A] !border-white/[0.16] !text-white' : '' } ${ isModelLocked ? 'cursor-not-allowed opacity-70 hover:bg-[#151515]/92 hover:text-[#D5D2CC] hover:border-white/[0.085] active:scale-100' : '' }`}
-                  aria-haspopup="listbox"
+                  className={`eterx-model-button ${ isCompressed ? 'mr-0 max-w-[160px] px-2.5' : 'mr-1 px-3.5' } flex h-[38px] w-full min-w-0 items-center gap-1.5 rounded-full border border-white/[0.16] bg-[#202020]/95 text-[#F4F4F4] transition-all duration-200 hover:bg-[#2A2A2A] hover:text-white hover:border-white/[0.26] active:scale-[0.98] group ${ showModelMenu ? '!bg-[#252525] !border-white/[0.30] !text-white' : '' } ${ isModelLocked ? 'cursor-not-allowed opacity-70 hover:bg-[#202020]/95 hover:text-[#F4F4F4] hover:border-white/[0.16] active:scale-100' : '' }`}
+                  aria-haspopup="dialog"
                   aria-expanded={showModelMenu}
                   aria-disabled={isModelLocked}
                 >
@@ -1273,7 +1347,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       <span className="min-w-0 truncate text-[14px] font-semibold tracking-normal transition-colors">
                         {modelDisplayLabel}
                       </span>
-                      <ChevronDown className={`h-3.5 w-3.5 text-[#8D8D8D] transition-all duration-200 group-hover:text-[#BEBEBE] ${ showModelMenu ? 'rotate-180' : 'group-hover:translate-y-px' }`} strokeWidth={2.1} />
+                      <ChevronDown className={`h-3.5 w-3.5 text-[#F0F0F0] transition-all duration-200 group-hover:text-white ${ showModelMenu ? 'rotate-180' : 'group-hover:translate-y-px' }`} strokeWidth={2.1} />
                     </motion.div>
                   </AnimatePresence>
                 </button>
@@ -1281,14 +1355,15 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                 <AnimatePresence>
                   {showModelMenu && (
                     <motion.div
-                      initial={{ opacity: 0, y: 6, x: '-50%', scale: 0.98 }}
-                      animate={{ opacity: 1, y: 0, x: '-50%', scale: 1 }}
-                      exit={{ opacity: 0, y: 6, x: '-50%', scale: 0.98 }}
-                      transition={{ duration: 0.16, ease: 'easeOut' }}
-                      className="absolute bottom-[calc(100%+8px)] left-1/2 z-[130] flex w-[192px] flex-col rounded-[15px] border border-white/[0.095] bg-[#121212]/98 p-1 shadow-[0_18px_40px_rgba(0,0,0,0.66),inset_0_1px_0_rgba(255,255,255,0.045)] backdrop-blur-2xl"
-                      role="listbox"
+                      initial={{ opacity: 0, y: modelMenuOffset, scale: 0.98 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      exit={{ opacity: 0, y: modelMenuOffset, scale: 0.98 }}
+                      transition={{ duration: 0.18, ease: [0.2, 0.8, 0.2, 1] }}
+                      className={`absolute ${ modelMenuVerticalClass } right-0 z-[130] flex ${ isCompressed ? 'w-[248px]' : 'w-[286px]' } max-w-[calc(100vw-32px)] flex-col rounded-[20px] border border-white/[0.08] bg-[#111111] p-1.5 text-[#F4F1EA] shadow-[0_18px_44px_rgba(0,0,0,0.62),inset_0_1px_0_rgba(255,255,255,0.04)]`}
+                      role="dialog"
+                      aria-label="Model and thinking settings"
                     >
-                      {modelOptions.map((option, index) => {
+                      {modelOptions.map((option) => {
                         const selected = option.id === selectedModel.id;
                         return (
                           <React.Fragment key={option.id}>
@@ -1296,26 +1371,95 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                               onClick={() => {
                                 onModeChange(option.id);
                                 setShowModelMenu(false);
+                                setShowThinkingLevels(false);
                               }}
-                              className={`flex h-[35px] w-full items-center rounded-[11px] px-3 text-left transition-all duration-150 ${ selected ? 'bg-[#1F1F1F] text-white' : 'text-[#D8D5CF] hover:bg-[#1A1A1A] hover:text-white' }`}
-                              role="option"
-                              aria-selected={selected}
+                              className={`group flex min-h-[44px] w-full items-center gap-2.5 rounded-[15px] px-2.5 py-1.5 text-left transition-colors duration-150 ${ selected ? 'text-white hover:bg-[#202020]' : 'text-[#F4F4F4] hover:bg-[#202020] hover:text-white' }`}
+                              aria-pressed={selected}
                             >
-                              <span className="min-w-0 truncate text-[13px] font-semibold leading-none tracking-normal">
-                                {option.label}
+                              <span className="flex h-5 w-5 shrink-0 items-center justify-center text-white/95">
+                                {selected && <Check className="h-4 w-4" strokeWidth={2.35} />}
+                              </span>
+                              <span className="flex min-w-0 flex-1 items-center">
+                                <span className="truncate text-[13px] font-semibold leading-5 tracking-normal">
+                                  {option.label}
+                                </span>
                               </span>
                             </button>
-                            {index < modelOptions.length - 1 && <div className="mx-2 h-px bg-white/[0.05]" />}
                           </React.Fragment>
                         );
                       })}
+
+                      <div className="mx-2 my-1.5 h-px bg-white/[0.09]" />
+
+                      <div className="px-0.5 pb-0.5">
+                        <div
+                          className="relative"
+                          onMouseEnter={() => setShowThinkingLevels(true)}
+                          onMouseLeave={() => setShowThinkingLevels(false)}
+                        >
+                          <button
+                            type="button"
+                            onClick={() => setShowThinkingLevels(prev => !prev)}
+                            onFocus={() => setShowThinkingLevels(true)}
+                            className={`flex min-h-[46px] w-full items-center gap-2.5 rounded-[15px] px-2.5 py-1.5 text-left text-white transition-colors duration-150 hover:bg-[#242424] ${ showThinkingLevels ? 'bg-[#242424]' : '' }`}
+                            aria-expanded={showThinkingLevels}
+                          >
+                            <span className="h-5 w-5 shrink-0" />
+                            <span className="flex min-w-0 flex-1 flex-col">
+                              <span className="truncate text-[13px] font-semibold leading-5 tracking-normal">
+                                Thinking level
+                              </span>
+                              <span className="truncate text-[12px] font-medium leading-4 text-[#E7E7E7]">
+                                {selectedThinkingLevel.label}
+                              </span>
+                            </span>
+                            <ChevronRight className={`h-3.5 w-3.5 shrink-0 text-white transition-transform duration-150 ${ showThinkingLevels ? 'rotate-90' : '' }`} strokeWidth={2.2} />
+                          </button>
+
+                          <AnimatePresence initial={false}>
+                            {showThinkingLevels && (
+                              <motion.div
+                                initial={{ opacity: 0, x: thinkingMenuOffset, scale: 0.98 }}
+                                animate={{ opacity: 1, x: 0, scale: 1 }}
+                                exit={{ opacity: 0, x: thinkingMenuOffset, scale: 0.98 }}
+                                transition={{ duration: 0.16, ease: 'easeOut' }}
+                                className={`absolute ${ thinkingMenuVerticalClass } ${ thinkingMenuHorizontalClass } z-[140] w-[188px] max-w-[calc(100vw-44px)] overflow-hidden rounded-[18px] border border-white/[0.08] bg-[#111111] p-1.5 shadow-[0_18px_44px_rgba(0,0,0,0.62),inset_0_1px_0_rgba(255,255,255,0.04)]`}
+                              >
+                                {MAIN_AGENT_THINKING_LEVEL_OPTIONS.map(option => {
+                                  const selected = option.id === safeThinkingLevel;
+                                  return (
+                                    <button
+                                      key={option.id}
+                                      type="button"
+                                      onClick={() => {
+                                        onThinkingLevelChange(option.id);
+                                        setShowThinkingLevels(false);
+                                      }}
+                                      className={`flex min-h-[42px] w-full items-center gap-2.5 rounded-[14px] px-2.5 py-1.5 text-left transition-colors duration-150 ${ selected ? 'text-white hover:bg-[#202020]' : 'text-[#F4F4F4] hover:bg-[#202020] hover:text-white' }`}
+                                    >
+                                      <span className="flex h-5 w-5 shrink-0 items-center justify-center text-white/95">
+                                        {selected && <Check className="h-4 w-4" strokeWidth={2.35} />}
+                                      </span>
+                                      <span className="min-w-0 flex-1">
+                                        <span className="block truncate text-[13px] font-semibold leading-5">
+                                          {option.label}
+                                        </span>
+                                      </span>
+                                    </button>
+                                  );
+                                })}
+                              </motion.div>
+                            )}
+                          </AnimatePresence>
+                        </div>
+                      </div>
                     </motion.div>
                   )}
                 </AnimatePresence>
               </div>
 
               <Tooltip text="Voice dictation" side="top">
-                <button onClick={toggleSpeech} className={`eterx-control-button w-[40px] h-[40px] shrink-0 flex items-center justify-center rounded-full border border-transparent text-[#A8A8A8] transition-all duration-200 ease-out hover:text-[#F1F1F1] hover:bg-white/[0.045] hover:border-white/[0.07] active:scale-[0.96] relative group ${ isRecording ? '!text-[#E2765A] animate-pulse bg-[#E2765A]/10 border-[#E2765A]/25' : '' }`}>
+                <button onClick={toggleSpeech} className={`eterx-control-button w-[40px] h-[40px] shrink-0 flex items-center justify-center rounded-full border border-white/[0.18] bg-[#242424]/96 text-white transition-all duration-200 ease-out hover:text-white hover:bg-[#2D2D2D] hover:border-white/[0.30] active:scale-[0.96] relative group ${ isRecording ? '!text-[#E2765A] animate-pulse bg-[#E2765A]/10 border-[#E2765A]/25' : '' }`}>
                   <PremiumMic className="w-[18px] h-[18px] group-hover:scale-[1.1] transition-transform duration-200 ease-out" strokeWidth={2} />
                 </button>
               </Tooltip>
@@ -1324,9 +1468,29 @@ export const ChatInput: React.FC<ChatInputProps> = ({
               {liveState !== 'idle' && liveState !== 'error' ? (
                 null /* Cancel/Stop is already rendered in the live overlay above */
               ) : (
-                <AnimatePresence mode="wait">
-                  {isThinking && !isStopping ? (
-                    /* ── STOP button (agent running) ── */
+                                <AnimatePresence mode="wait">
+                  {isThinking && !isStopping && inputValue.trim() ? (
+                    /* ── STEER button (agent running + user typed something) ── */
+                    <motion.div key="steer"
+                      initial={{ opacity: 0, scale: 0.8 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      exit={{ opacity: 0, scale: 0.7 }}
+                      transition={{ duration: 0.18, ease: 'easeOut' }}
+                    >
+                      <Tooltip text="Steer agent live" side="top">
+                        <button
+                          onClick={handleSteer}
+                          className={inputControlButton}
+                        >
+                          <div className={inputControlSheen} />
+                          <svg className="w-[20px] h-[20px] text-white group-hover:scale-110 transition-transform duration-200 ease-out relative z-10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                            <circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76" fill="currentColor" opacity="0.75"/>
+                          </svg>
+                        </button>
+                      </Tooltip>
+                    </motion.div>
+                  ) : isThinking && !isStopping ? (
+                    /* ── STOP button (agent running, input empty) ── */
                     <motion.div key="stop"
                       initial={{ opacity: 0, scale: 0.8 }}
                       animate={{ opacity: 1, scale: 1 }}
@@ -1367,10 +1531,10 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       exit={{ opacity: 0, scale: 0.7 }}
                       transition={{ duration: 0.18, ease: 'easeOut' }}
                     >
-                      <Tooltip text="Send message" side="top">
+                      <Tooltip text={hasErroredAttachments ? "Remove failed attachment" : hasPreparingAttachments ? "Preparing media" : "Send message"} side="top">
                         <button
                           onClick={submitPrompt}
-                          className="eterx-control-button w-[40px] h-[40px] shrink-0 flex items-center justify-center rounded-full transition-all duration-200 bg-[#F2EFEA] text-black hover:bg-white shadow-[0_8px_22px_rgba(242,239,234,0.15),inset_0_1px_0_rgba(255,255,255,0.82)] active:scale-[0.96] group relative overflow-hidden"
+                          className={`eterx-control-button w-[40px] h-[40px] shrink-0 flex items-center justify-center rounded-full transition-all duration-200 bg-[#F2EFEA] text-black hover:bg-white shadow-[0_8px_22px_rgba(242,239,234,0.15),inset_0_1px_0_rgba(255,255,255,0.82)] active:scale-[0.96] group relative overflow-hidden ${ hasErroredAttachments ? 'opacity-60 cursor-not-allowed' : '' }`}
                         >
                           <div className="absolute inset-0 bg-gradient-to-t from-black/0 to-black/5" />
                           <PremiumSend className="w-[20px] h-[20px] text-black group-hover:-translate-y-0.5 group-hover:scale-110 transition-all duration-200 ease-out" strokeWidth={2.8} />
@@ -1388,10 +1552,10 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       <Tooltip text="Start Live Conversation" side="top">
                         <button
                           onClick={onLiveStart}
-                          className={`eterx-control-button w-[40px] h-[40px] shrink-0 flex items-center justify-center rounded-full border border-white/[0.13] bg-[#202020]/92 text-[#F4F4F4] shadow-[inset_0_1px_0_rgba(255,255,255,0.07),0_5px_14px_rgba(0,0,0,0.24)] transition-all duration-200 active:scale-[0.96] active:bg-[#303030] cursor-pointer group relative overflow-hidden hover:bg-[#2B2B2B] hover:border-white/[0.22] hover:text-white ${ isRecording ? '!text-[#E2765A]' : '' }`}
+                          className={`eterx-control-button w-[40px] h-[40px] shrink-0 flex items-center justify-center rounded-full border border-white/[0.18] bg-[#242424]/96 text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_5px_14px_rgba(0,0,0,0.24)] transition-all duration-200 active:scale-[0.96] active:bg-[#303030] cursor-pointer group relative overflow-hidden hover:bg-[#2D2D2D] hover:border-white/[0.30] hover:text-white ${ isRecording ? '!text-[#E2765A]' : '' }`}
                         >
                           <div className={inputControlSheen} />
-                          <PremiumAudioLines className={`w-[20px] h-[20px] text-[#F3F3F3] transition-all duration-200 ease-out group-hover:scale-110 ${ isRecording ? '!text-[#E2765A] animate-pulse scale-110' : '' }`} strokeWidth={2.2} />
+                          <PremiumAudioLines className={`w-[20px] h-[20px] text-white transition-all duration-200 ease-out group-hover:scale-110 ${ isRecording ? '!text-[#E2765A] animate-pulse scale-110' : '' }`} strokeWidth={2.2} />
                         </button>
                       </Tooltip>
                     </motion.div>

@@ -103,8 +103,51 @@ export const taskStore = {
   addTrace(chatId: string, traceEvent: any): void {
     const task = taskCache.get(chatId);
     if (!task) return;
-    
-    task.traceLogs.push(traceEvent);
+
+    if (traceEvent?.type === 'work_note_cancel') {
+      const noteId = traceEvent.noteId || null;
+      const subAgent = traceEvent.subAgent || null;
+      for (let i = task.traceLogs.length - 1; i >= 0; i--) {
+        const log = task.traceLogs[i];
+        if (
+          log?.type === 'work_note' &&
+          (log.subAgent || null) === subAgent &&
+          (!noteId || log.noteId === noteId)
+        ) {
+          task.traceLogs.splice(i, 1);
+          break;
+        }
+      }
+    } else if (traceEvent?.type === 'work_note') {
+      const noteText = String(traceEvent.text || '').trim();
+      if (!noteText) return;
+      const noteId = traceEvent.noteId || null;
+      const subAgent = traceEvent.subAgent || null;
+      let mergeIdx = -1;
+      for (let i = task.traceLogs.length - 1; i >= 0; i--) {
+        const log = task.traceLogs[i];
+        if (log?.type !== 'work_note' || (log.subAgent || null) !== subAgent) continue;
+        const sameNote = noteId && log.noteId && log.noteId === noteId;
+        const sameText = String(log.text || '').trim() === noteText;
+        if (sameNote || sameText) {
+          mergeIdx = i;
+          break;
+        }
+      }
+      if (mergeIdx >= 0) {
+        task.traceLogs[mergeIdx] = {
+          ...task.traceLogs[mergeIdx],
+          ...traceEvent,
+          text: noteText,
+          noteId,
+          subAgent,
+        };
+      } else {
+        task.traceLogs.push({ ...traceEvent, text: noteText, noteId, subAgent });
+      }
+    } else {
+      task.traceLogs.push(traceEvent);
+    }
     task.lastUpdatedAt = Date.now();
     
     // Keep trace logs bounded to prevent massive files

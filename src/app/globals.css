@@ -518,6 +518,15 @@
   }
 }
 
+@keyframes eterx-attachment-sheen {
+  0% {
+    background-position: 180% 50%;
+  }
+  100% {
+    background-position: -180% 50%;
+  }
+}
+
 /* Streaming text cursor blink animation */
 @keyframes blink {
   0%, 100% { opacity: 0.7; }

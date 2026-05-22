@@ -13,7 +13,6 @@ export const runtime = 'nodejs';
  */
 export async function POST(req: NextRequest) {
   try {
-    const { filePath, fileData, fileName, mimeType } = await req.json();
     const fs = require('fs');
     const fsp = fs.promises;
     const path = require('path');
@@ -21,10 +20,38 @@ export async function POST(req: NextRequest) {
     const workspaceTemp = path.resolve(process.cwd(), '.workspaces', 'temp');
     await fsp.mkdir(workspaceTemp, { recursive: true });
 
-    const safeName = (fileName || `upload_${Date.now()}`).replace(/[<>:"/\\|?*]/g, '_');
+    const contentType = req.headers.get('content-type') || '';
+    let filePath: string | undefined;
+    let fileData: string | undefined;
+    let fileBuffer: Buffer | undefined;
+    let fileName = `upload_${Date.now()}`;
+    let mimeType = 'application/octet-stream';
+
+    if (contentType.includes('multipart/form-data')) {
+      const formData = await req.formData();
+      const file = formData.get('file');
+      if (!file || typeof (file as any).arrayBuffer !== 'function') {
+        return NextResponse.json({ error: 'No file provided' }, { status: 400 });
+      }
+
+      fileName = String(formData.get('fileName') || (file as any).name || fileName);
+      mimeType = String(formData.get('mimeType') || (file as any).type || mimeType);
+      fileBuffer = Buffer.from(await (file as any).arrayBuffer());
+    } else {
+      const body = await req.json();
+      filePath = body.filePath;
+      fileData = body.fileData;
+      fileName = body.fileName || fileName;
+      mimeType = body.mimeType || mimeType;
+    }
+
+    const safeBaseName = (fileName || `upload_${Date.now()}`).replace(/[<>:"/\\|?*]/g, '_');
+    const safeName = `${Date.now()}_${safeBaseName}`;
     const destPath = path.join(workspaceTemp, safeName);
 
-    if (filePath) {
+    if (fileBuffer) {
+      await fsp.writeFile(destPath, fileBuffer);
+    } else if (filePath) {
       if (!fs.existsSync(destPath) || filePath !== destPath) {
         await fsp.copyFile(filePath, destPath);
       }
@@ -34,25 +61,12 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'No file data provided' }, { status: 400 });
     }
 
-    let inlineData = null;
-    if (String(mimeType || '').startsWith('image/')) {
-      try {
-        const imgBuffer = await fsp.readFile(destPath);
-        if (imgBuffer.length < 4 * 1024 * 1024) {
-          inlineData = { mimeType, data: imgBuffer.toString('base64') };
-        }
-      } catch {
-        // The file is still saved locally; the agent can read/upload it later.
-      }
-    }
-
     return NextResponse.json({
       success: true,
       fileUri: null,
       localPath: destPath,
       mimeType,
       fileName: safeName,
-      inlineData,
       isNative: false,
     });
   } catch (error: any) {

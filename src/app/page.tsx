@@ -6,12 +6,17 @@ import { CommandPalette } from '../components/layout/command-palette';
 import { SettingsPanel } from '../components/layout/settings-panel';
 import { ChatInput } from '../components/layout/chat-input';
 import { ChatFeed } from '../components/chat/chat-feed';
-import { ChevronDown, Code2, GraduationCap, MessageSquare, PenTool, PanelLeft, SquarePen, Search, X, ArrowLeft } from 'lucide-react';
+import { ChevronDown, Code2, GraduationCap, MessageSquare, PenTool, PanelLeft, SquarePen, Search, X, ArrowLeft, Trash } from 'lucide-react';
 import { Tooltip } from '../components/ui/tooltip';
 import { motion, AnimatePresence } from 'framer-motion';
 import { InteractiveGrid } from '../components/ui/interactive-grid';
 import { GeminiLiveSession, LiveSessionState } from '../lib/live/gemini-live';
-import type { MainAgentMode } from '../lib/agent/model-routing';
+import {
+  MAIN_AGENT_THINKING_LEVEL_STORAGE_KEY,
+  normalizeMainAgentThinkingLevel,
+  type MainAgentMode,
+  type MainAgentThinkingLevel,
+} from '../lib/agent/model-routing';
 import { FilePanelProvider, useGlobalFilePanel } from '../contexts/FilePanelContext';
 import { IdePanel } from '../components/chat/file-panel';
 import { AgentsView } from '../components/agents/agents-view';
@@ -23,6 +28,16 @@ interface ChatSession {
   traceLogs: any[];
   isFavorite?: boolean;
 }
+
+type ComposerAttachment = {
+  id?: string;
+  file: File;
+  name?: string;
+  preview: string;
+  uploadStatus?: 'uploading' | 'done' | 'error';
+  localPath?: string;
+  fileUri?: string;
+};
 
 const sortChats = (chats: ChatSession[]) => {
   return [...chats].sort((a, b) => {
@@ -155,6 +170,7 @@ function DeepWorkUI() {
   const [chatPanelWidth, setChatPanelWidth] = useState<number | null>(null);
   const [isResizingPanels, setIsResizingPanels] = useState(false);
   const [inputValue, setInputValue] = useState("");
+  const [pendingSteering, setPendingSteering] = useState<{id: string, text: string}[]>([]);
   // Per-chat thinking state: Set of chatIds that have running agents
   const [runningChats, setRunningChats] = useState<Set<string>>(new Set());
   const [traceLogs, setTraceLogs] = useState<any[]>([]);
@@ -164,7 +180,7 @@ function DeepWorkUI() {
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
   const [buildingAgentId, setBuildingAgentId] = useState<string | null>(null);
 
-  const [attachments, setAttachments] = useState<{ file: File, preview: string }[]>([]);
+  const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [isRecording, setIsRecording] = useState(false);
   const [audioVolume, setAudioVolume] = useState<number>(0);
   const [isProcessingVoice, setIsProcessingVoice] = useState(false);
@@ -176,6 +192,7 @@ function DeepWorkUI() {
   const [headerSearchQuery, setHeaderSearchQuery] = useState("");
   const [activeView, setActiveView] = useState<'chat' | 'code' | 'agents'>('chat');
   const [agentMode, setAgentMode] = useState<MainAgentMode>('think');
+  const [thinkingLevel, setThinkingLevelState] = useState<MainAgentThinkingLevel>('low');
   const [pinnedItems, setPinnedItems] = useState<PinnedItem[]>([]);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
@@ -212,8 +229,26 @@ function DeepWorkUI() {
   const activeChatIdRef = useRef<string | null>(null);
   const localStorageTimerRef = useRef<NodeJS.Timeout | null>(null);
   const pendingLocalStorageWrite = useRef(false);
+  const panelResizeCleanupRef = useRef<(() => void) | null>(null);
   // Keep ref synced with state
   activeChatIdRef.current = activeChatId;
+
+  useEffect(() => {
+    try {
+      const savedThinkingLevel = localStorage.getItem(MAIN_AGENT_THINKING_LEVEL_STORAGE_KEY);
+      if (savedThinkingLevel) {
+        setThinkingLevelState(normalizeMainAgentThinkingLevel(savedThinkingLevel));
+      }
+    } catch { }
+  }, []);
+
+  const setThinkingLevel = useCallback((level: MainAgentThinkingLevel) => {
+    const safeLevel = normalizeMainAgentThinkingLevel(level);
+    setThinkingLevelState(safeLevel);
+    try {
+      localStorage.setItem(MAIN_AGENT_THINKING_LEVEL_STORAGE_KEY, safeLevel);
+    } catch { }
+  }, []);
 
   const resizeChatPanelBy = useCallback((delta: number) => {
     const container = splitContainerRef.current;
@@ -245,13 +280,20 @@ function DeepWorkUI() {
     if (!hasOpenFiles || !container) return;
 
     event.preventDefault();
+    panelResizeCleanupRef.current?.();
     const containerRect = container.getBoundingClientRect();
-    const previousCursor = document.body.style.cursor;
+    const previousBodyCursor = document.body.style.cursor === 'col-resize' ? '' : document.body.style.cursor;
+    const previousHtmlCursor = document.documentElement.style.cursor === 'col-resize' ? '' : document.documentElement.style.cursor;
     const previousUserSelect = document.body.style.userSelect;
+    const resizeButton = event.currentTarget;
 
     setIsResizingPanels(true);
     document.body.style.cursor = 'col-resize';
+    document.documentElement.style.cursor = 'col-resize';
     document.body.style.userSelect = 'none';
+    try {
+      resizeButton.setPointerCapture(event.pointerId);
+    } catch { }
 
     const handlePointerMove = (moveEvent: PointerEvent) => {
       moveEvent.preventDefault();
@@ -261,20 +303,43 @@ function DeepWorkUI() {
     };
 
     const finishResize = () => {
+      if (!panelResizeCleanupRef.current) return;
       setIsResizingPanels(false);
-      document.body.style.cursor = previousCursor;
+      document.body.style.cursor = previousBodyCursor;
+      document.documentElement.style.cursor = previousHtmlCursor;
       document.body.style.userSelect = previousUserSelect;
       if (latestChatPanelWidthRef.current !== null) {
         localStorage.setItem(SPLIT_CHAT_WIDTH_KEY, String(latestChatPanelWidthRef.current));
       }
+      try {
+        if (resizeButton.hasPointerCapture(event.pointerId)) resizeButton.releasePointerCapture(event.pointerId);
+      } catch { }
       window.removeEventListener('pointermove', handlePointerMove);
       window.removeEventListener('pointerup', finishResize);
       window.removeEventListener('pointercancel', finishResize);
+      window.removeEventListener('blur', finishResize);
+      document.removeEventListener('pointerup', finishResize);
+      document.removeEventListener('pointercancel', finishResize);
+      document.removeEventListener('mouseup', finishResize);
+      document.removeEventListener('mouseleave', finishResize);
+      document.removeEventListener('keydown', handleKeyDown);
+      panelResizeCleanupRef.current = null;
+    };
+
+    const handleKeyDown = (keyEvent: KeyboardEvent) => {
+      if (keyEvent.key === 'Escape') finishResize();
     };
 
     window.addEventListener('pointermove', handlePointerMove);
     window.addEventListener('pointerup', finishResize);
     window.addEventListener('pointercancel', finishResize);
+    window.addEventListener('blur', finishResize);
+    document.addEventListener('pointerup', finishResize);
+    document.addEventListener('pointercancel', finishResize);
+    document.addEventListener('mouseup', finishResize);
+    document.addEventListener('mouseleave', finishResize);
+    document.addEventListener('keydown', handleKeyDown);
+    panelResizeCleanupRef.current = finishResize;
   }, [hasOpenFiles]);
 
   const handlePanelResizeKeyDown = useCallback((event: React.KeyboardEvent<HTMLButtonElement>) => {
@@ -291,6 +356,14 @@ function DeepWorkUI() {
       resetPanelSplit();
     }
   }, [resetPanelSplit, resizeChatPanelBy]);
+
+  useEffect(() => {
+    if (!hasOpenFiles) panelResizeCleanupRef.current?.();
+  }, [hasOpenFiles]);
+
+  useEffect(() => {
+    return () => panelResizeCleanupRef.current?.();
+  }, []);
 
   useEffect(() => {
     if (!hasOpenFiles) return;
@@ -979,18 +1052,23 @@ function DeepWorkUI() {
         const noteId = trace.noteId || null;
         const noteText = String(trace.text || '').trim();
         if (!noteText) continue;
+        const incomingIsFinal = trace.isStreaming === false || trace.isDelta === false;
         let mergeIdx = -1;
         let duplicateIdx = -1;
         for (let i = logs.length - 1; i >= 0; i--) {
           if (logs[i].type === 'user_action') break;
           if (logs[i].type === 'work_note' && (logs[i].subAgent || null) === subAgent) {
             const existingText = String(logs[i].text || '').trim();
-            if (existingText === noteText) {
-              duplicateIdx = i;
-              break;
-            }
             if (noteId && logs[i].noteId && logs[i].noteId === noteId) {
               mergeIdx = i;
+              break;
+            }
+            if (existingText === noteText) {
+              if (incomingIsFinal && (logs[i].isStreaming || logs[i].isDelta)) {
+                mergeIdx = i;
+              } else {
+                duplicateIdx = i;
+              }
               break;
             }
             if (!noteId || !logs[i].noteId) {
@@ -1001,9 +1079,19 @@ function DeepWorkUI() {
         }
         if (duplicateIdx >= 0) continue;
         if (mergeIdx >= 0) {
-          logs[mergeIdx] = { ...logs[mergeIdx], text: noteText, subAgent, noteId, _traceIdx: trace._traceIdx, endTime: Date.now() };
+          logs[mergeIdx] = {
+            ...logs[mergeIdx],
+            ...trace,
+            type: 'work_note',
+            text: noteText,
+            subAgent,
+            noteId,
+            _traceIdx: trace._traceIdx ?? logs[mergeIdx]._traceIdx,
+            startTime: logs[mergeIdx].startTime || Date.now(),
+            endTime: Date.now(),
+          };
         } else {
-          logs.push({ type: 'work_note', text: noteText, subAgent, noteId, _traceIdx: trace._traceIdx, startTime: Date.now(), endTime: Date.now() });
+          logs.push({ ...trace, type: 'work_note', text: noteText, subAgent, noteId, _traceIdx: trace._traceIdx, startTime: Date.now(), endTime: Date.now() });
         }
       } else if (trace.type === 'answer' && !trace.subAgent) {
         let answerIdx = -1;
@@ -1241,18 +1329,23 @@ function DeepWorkUI() {
                 const noteId = trace.noteId || null;
                 const noteText = String(trace.text || '').trim();
                 if (!noteText) continue;
+                const incomingIsFinal = trace.isStreaming === false || trace.isDelta === false;
                 let mergeIdx = -1;
                 let duplicateIdx = -1;
                 for (let i = logs.length - 1; i >= 0; i--) {
                   if (logs[i].type === 'user_action') break;
                   if (logs[i].type === 'work_note' && (logs[i].subAgent || null) === subAgent) {
                     const existingText = String(logs[i].text || '').trim();
-                    if (existingText === noteText) {
-                      duplicateIdx = i;
-                      break;
-                    }
                     if (noteId && logs[i].noteId && logs[i].noteId === noteId) {
                       mergeIdx = i;
+                      break;
+                    }
+                    if (existingText === noteText) {
+                      if (incomingIsFinal && (logs[i].isStreaming || logs[i].isDelta)) {
+                        mergeIdx = i;
+                      } else {
+                        duplicateIdx = i;
+                      }
                       break;
                     }
                     if (!noteId || !logs[i].noteId) {
@@ -1263,9 +1356,19 @@ function DeepWorkUI() {
                 }
                 if (duplicateIdx >= 0) continue;
                 if (mergeIdx >= 0) {
-                  logs[mergeIdx] = { ...logs[mergeIdx], text: noteText, subAgent, noteId, _traceIdx: trace._traceIdx, endTime: Date.now() };
+                  logs[mergeIdx] = {
+                    ...logs[mergeIdx],
+                    ...trace,
+                    type: 'work_note',
+                    text: noteText,
+                    subAgent,
+                    noteId,
+                    _traceIdx: trace._traceIdx ?? logs[mergeIdx]._traceIdx,
+                    startTime: logs[mergeIdx].startTime || Date.now(),
+                    endTime: Date.now(),
+                  };
                 } else {
-                  logs.push({ type: 'work_note', text: noteText, subAgent, noteId, _traceIdx: trace._traceIdx, startTime: Date.now(), endTime: Date.now() });
+                  logs.push({ ...trace, type: 'work_note', text: noteText, subAgent, noteId, _traceIdx: trace._traceIdx, startTime: Date.now(), endTime: Date.now() });
                 }
               } else if (trace.type === 'answer' && !trace.subAgent) {
                 let answerIdx = -1;
@@ -1590,6 +1693,54 @@ function DeepWorkUI() {
     ]);
   };
 
+  // Remove pending steering messages when they appear in traceLogs
+  useEffect(() => {
+    if (pendingSteering.length === 0) return;
+    
+    const lastUserIdx = traceLogs.reduceRight((found, l, i) => found === -1 && l.type === 'user_action' ? i : found, -1);
+    const currentTurnLogs = lastUserIdx >= 0 ? traceLogs.slice(lastUserIdx) : traceLogs;
+
+    const receivedTexts = new Set(
+      currentTurnLogs
+        .filter(l => l.type === 'steering_received')
+        .map(l => l.text)
+    );
+
+    if (receivedTexts.size > 0) {
+      setPendingSteering(prev => prev.filter(p => !receivedTexts.has(p.text)));
+    }
+  }, [traceLogs, pendingSteering.length]);
+
+  /**
+   * handleSteer - sends a live steering comment to the running agent.
+   * The message is queued server-side and injected into the model context
+   * at the next free ReAct iteration (non-disruptive, agent is never paused).
+   */
+  const handleSteer = async () => {
+    if (!activeChatId || !inputValue.trim()) return;
+    const steerMessage = inputValue.trim();
+    setInputValue('');
+
+    const newSteering = { id: Date.now().toString(), text: steerMessage };
+    setPendingSteering(prev => [...prev, newSteering]);
+
+    try {
+      const res = await fetch('/api/agent/steer', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chatId: activeChatId, message: steerMessage }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        console.warn('[handleSteer] Steer failed:', err.reason || res.status);
+      } else {
+        console.log('[handleSteer] Steering message sent:', steerMessage.substring(0, 60));
+      }
+    } catch (e: any) {
+      console.warn('[handleSteer] Network error:', e?.message);
+    }
+  };
+
   const toggleSpeech = () => {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       return alert("Microphone access is not supported in this environment.");
@@ -1823,9 +1974,10 @@ function DeepWorkUI() {
 
     const promptText = inputValue;
     const runAgentMode = agentMode;
+    const runThinkingLevel = thinkingLevel;
     const currentAttachments = [...attachments];
     const runStartedAt = Date.now();
-    const userLog = { type: 'user_action', text: promptText, attachments: currentAttachments };
+    const userLog = { type: 'user_action', text: promptText, attachments: currentAttachments, startTime: runStartedAt, endTime: runStartedAt };
     const historySourceLogs = activeChatId ? stripAgentConnectionLogs(traceLogs) : [];
     setInputValue("");
     setAttachments([]);
@@ -1837,13 +1989,12 @@ function DeepWorkUI() {
 
     // Use pre-uploaded media data from background uploads (already done when attached)
     const mediaAttachments: any[] = currentAttachments.map(att => ({
-      name: att.file.name,
+      name: att.name || att.file.name,
       path: (att as any).localPath || (att.file as any).path || undefined,
       mimeType: att.file.type || 'application/octet-stream',
       // Gemini file URIs are API-key scoped. The agent must upload with its
       // leased key instead of using any pre-send URI from the UI.
       fileUri: undefined,
-      inlineData: (att as any).inlineData || undefined,
     }));
 
     if (!chatIdToUse) {
@@ -1930,6 +2081,7 @@ function DeepWorkUI() {
           userId: 'default',
           projectId: chatIdToUse,
           mode: runAgentMode,
+          thinkingLevel: runThinkingLevel,
           pinnedContext: pinnedItems.length > 0 ? { paths: pinnedItems.map(p => p.path) } : null
         }),
         signal: controller.signal
@@ -2154,6 +2306,7 @@ function DeepWorkUI() {
       <SettingsPanel isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} />
 
       <div className="flex-1 flex flex-col relative bg-transparent overflow-hidden z-10 transition-all duration-300">
+        <div className="pointer-events-none absolute left-0 right-0 top-0 z-40 h-[92px] bg-[linear-gradient(180deg,#0F0F0F_0%,rgba(15,15,15,0.98)_46%,rgba(15,15,15,0.56)_78%,transparent_100%)]" />
         {/* Absolute Header (Draggable Region for Electron) */}
         <>
             <div className="h-14 flex items-center justify-between pl-4 pr-[140px] z-50 pointer-events-none [-webkit-app-region:drag] shrink-0">
@@ -2302,6 +2455,26 @@ function DeepWorkUI() {
                       isCompressed={hasOpenFiles}
                     />
 
+                  {/* Pending Steering Queue */}
+                  {pendingSteering.length > 0 && (
+                    <div className={`px-4 ${hasOpenFiles ? 'sm:px-4' : 'sm:px-12'} w-full max-w-[800px] mx-auto flex flex-col gap-2 pb-2`}>
+                      <div className="text-xs text-neutral-500 font-medium px-1 flex items-center gap-1.5">
+                        Pending messages <span className="w-4 h-4 inline-flex items-center justify-center rounded-full bg-neutral-800 text-[10px] text-neutral-400">i</span>
+                      </div>
+                      {pendingSteering.map(msg => (
+                        <div key={msg.id} className="bg-[#242424] rounded-xl py-2.5 px-3.5 flex items-center justify-between gap-3 text-sm text-neutral-200 shadow-sm border border-white/[0.04]">
+                          <span className="truncate">{msg.text}</span>
+                          <button 
+                            onClick={() => setPendingSteering(prev => prev.filter(p => p.id !== msg.id))}
+                            className="text-neutral-500 hover:text-red-400 transition-colors p-1 -mr-1"
+                          >
+                            <Trash className="w-4 h-4" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
                 <ChatInput
                   inputValue={inputValue}
                   setInputValue={setInputValue}
@@ -2309,6 +2482,7 @@ function DeepWorkUI() {
                   isRecording={isRecording}
                   handleSend={handleSend}
                   handleStop={handleStop}
+                  handleSteer={handleSteer}
                   toggleSpeech={toggleSpeech}
                   attachments={attachments}
                   setAttachments={setAttachments}
@@ -2320,6 +2494,8 @@ function DeepWorkUI() {
                   acceptVoice={acceptVoice}
                   agentMode={agentMode}
                   onModeChange={setAgentMode}
+                  thinkingLevel={thinkingLevel}
+                  onThinkingLevelChange={setThinkingLevel}
                   pinnedItems={pinnedItems}
                   setPinnedItems={setPinnedItems}
                   liveState={liveState}

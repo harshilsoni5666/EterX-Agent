@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Copy, RefreshCw, ChevronDown, FileText, Check, Clock, ChevronRight, MessageSquarePlus, Activity, Minimize2 } from 'lucide-react';
+import { Copy, RefreshCw, ChevronDown, FileText, Check, Clock, ChevronRight, MessageSquarePlus, Activity, Minimize2, CornerDownLeft } from 'lucide-react';
 import { ThinkingProcess, ProfessionalThought } from '../chat/thought-sequence';
 import { AskUserPrompt } from '../chat/ask-user-prompt';
 import { Tooltip } from '../ui/tooltip';
@@ -172,6 +172,29 @@ const CopyButton = ({ text }: { text: string }) => {
   );
 };
 
+// ════════════════════════════════════════════════════════════════════
+// SteeringFeedCard — left-aligned enterprise card shown in the main
+// chat feed whenever the user sends a live steering message while the
+// agent is running. Feels native to the conversation thread.
+// ════════════════════════════════════════════════════════════════════
+const SteeringFeedCard = ({ log, isCompressed = false }: { log: any; isCompressed?: boolean }) => (
+  <motion.div
+    initial={{ opacity: 0, x: 20, y: 10, scale: 0.95 }}
+    animate={{ opacity: 1, x: 0, y: 0, scale: 1 }}
+    transition={{ type: 'spring', stiffness: 450, damping: 24 }}
+    className="flex justify-end w-full my-3.5 relative z-10 group/steer"
+  >
+    <div className={`bg-[#242424] text-white px-5 py-3.5 rounded-[22px] rounded-tr-[6px] ml-auto text-[15.5px] shadow-[0_2px_12px_rgba(0,0,0,0.28)] leading-relaxed whitespace-pre-wrap relative border border-white/[0.07] select-text flex flex-row items-end gap-3.5 ${ isCompressed ? 'max-w-[92%]' : 'max-w-[84%]' }`}>
+      <span className="block w-full text-left break-words [word-break:break-word] [overflow-wrap:anywhere]">{log.text}</span>
+      
+      {/* CornerDownLeft arrow representing steering entry */}
+      <div className="shrink-0 mb-1 select-none text-[#8C8A88]">
+        <CornerDownLeft className="w-[18px] h-[18px]" strokeWidth={2.5} />
+      </div>
+    </div>
+  </motion.div>
+);
+
 const liveMotionStyles = `
   @keyframes blink { 0%,100%{opacity:0.7} 50%{opacity:0} }
   @keyframes wi-spin { 0%{transform:rotate(0deg)} 100%{transform:rotate(360deg)} }
@@ -187,21 +210,21 @@ const liveMotionStyles = `
   .eterx-live-text {
     background: linear-gradient(
       90deg,
-      #6B6966 0%,
-      #C8C5BF 30%,
+      #7D7972 0%,
+      #E1DDD4 32%,
       #FFFFFF 50%,
-      #C8C5BF 70%,
-      #6B6966 100%
+      #E1DDD4 68%,
+      #7D7972 100%
     );
-    background-size: 200% auto;
+    background-size: 210% auto;
     -webkit-background-clip: text;
     background-clip: text;
     -webkit-text-fill-color: transparent;
-    animation: eterx-shimmer 1.8s linear infinite;
+    animation: eterx-shimmer 2.4s linear infinite;
     will-change: background-position;
   }
   .eterx-live-text * { -webkit-text-fill-color: inherit; }
-  .eterx-live-dot { animation: eterx-live-dot 1.15s ease-in-out infinite; }
+  .eterx-live-dot { animation: eterx-live-dot 1.45s ease-in-out infinite; }
   @media (prefers-reduced-motion: reduce) {
     .eterx-live-text {
       background: none;
@@ -243,6 +266,23 @@ const isNarrationThought = (value: any) => {
   return /^(i['’]?ll|i will|i['’]?m|i am|let me|now let me|next\b|i need to|i can|i should|i will now)\b/i.test(text);
 };
 
+const isExternalWorkNoteNoise = (value: any) => {
+  const text = String(value || '').trim();
+  if (!text) return true;
+  if (isNarrationThought(text)) return true;
+  return /^(?:i will|i['â€™]?ll|i need|i am|i['â€™]?m|let me|to (?:find|see|check|verify|inspect|understand|locate|confirm)\b|checking|searching|reading|analyzing|this will\b|now i\b)/i.test(text);
+};
+
+const isInternalStatusThought = (log: any) => {
+  if (!log || log.type !== 'thought') return false;
+  const text = normalizeTraceText(log.text);
+  return !text ||
+    /^generation stopped by user\.?$/.test(text) ||
+    /^agent stopped\b/.test(text) ||
+    /^agent connection failed\b/.test(text) ||
+    /^agent start failed\b/.test(text);
+};
+
 const isLikelyAnswerEcho = (candidate: any, answer: any) => {
   const left = normalizeTraceText(candidate);
   const right = normalizeTraceText(answer);
@@ -266,15 +306,115 @@ const getUserQueryPreview = (value: any) => {
  * After answer delivered: auto-collapses to a compact "N steps" pill.
  * User can click to expand/re-read the full work.
  */
-const CollapsibleThinking = ({
-  logs, isThinking, isLast, hasAnswer, stepCount
-}: { logs: any[], isThinking: boolean, isLast: boolean, hasAnswer: boolean, stepCount: number }) => {
+const HIDDEN_MODEL_STATUS_PATTERN = /^(?:(?:using|starting|selected)\s+)?(?:model\s*:?\s*)?(?:gemini[\s-]*3(?:\.5)?[\s-]*flash|gemini-3\.5-flash|mistral\s+devstral\s+2|devstral-2512)(?:\s+(?:is\s+)?(?:starting|loading|initializing|selected|ready|working))?(?:\s+model)?$/i;
+const DASH_ONLY_STATUS_PATTERN = /^[\s\-–—]{2,}$/;
+
+const isHiddenStatusOnlyLog = (log: any) => {
+  if (!log || log.type === 'user_action' || log.type === 'answer') return false;
+  const values = [log.text, log.secondary, log.modelName, log.model]
+    .map(value => String(value || '').trim())
+    .filter(Boolean);
+  return values.some(value =>
+    HIDDEN_MODEL_STATUS_PATTERN.test(value) ||
+    DASH_ONLY_STATUS_PATTERN.test(value)
+  );
+};
+
+const isWorkNoteDisplayNoise = (value: any) => {
+  const text = String(value || '').trim();
+  if (!text) return true;
+  if (HIDDEN_MODEL_STATUS_PATTERN.test(text) || DASH_ONLY_STATUS_PATTERN.test(text)) return true;
+  if (/^(?:generation stopped by user|agent stopped|agent connection failed|agent start failed)\.?$/i.test(text)) return true;
+  if (/^(?:checking|searching|reading|analyzing|running|executing|creating|generating|processing|loading)(?:\s+[\w.-]+){0,4}$/i.test(text)) return true;
+  return false;
+};
+
+const formatWorkElapsed = (seconds: number) => {
+  const safeSeconds = Math.max(0, seconds);
+  const minutes = Math.floor(safeSeconds / 60);
+  const rest = safeSeconds % 60;
+  return minutes > 0 ? `${ minutes }m ${ rest }s` : `${ rest }s`;
+};
+
+const MAX_REASONABLE_WORK_MS = 24 * 60 * 60 * 1000;
+
+const normalizeWorkTimestamp = (value: unknown): number | null => {
+  const raw = Number(value);
+  if (!Number.isFinite(raw) || raw <= 0) return null;
+
+  // Some persisted/live traces may store epoch seconds while newer traces store
+  // epoch milliseconds. Normalize before comparing or elapsed time explodes.
+  let timestamp = raw < 10_000_000_000 ? raw * 1000 : raw;
+
+  // Guard against microsecond/nanosecond-ish values without accepting tiny
+  // relative timers like performance.now(), which cannot be mixed with Date.now().
+  while (timestamp > 10_000_000_000_000) timestamp = Math.floor(timestamp / 1000);
+
+  const now = Date.now();
+  const minPlausible = Date.UTC(2020, 0, 1);
+  if (timestamp < minPlausible || timestamp > now + 60_000) return null;
+  return timestamp;
+};
+
+const getWorkTimeBounds = (logs: any[], startedAt?: number | null) => {
+  let start: number | null = normalizeWorkTimestamp(startedAt);
+  let end: number | null = null;
+  logs.forEach((log) => {
+    const startValue = normalizeWorkTimestamp(log?.startTime ?? log?.timestamp ?? log?.endTime);
+    const endValue = normalizeWorkTimestamp(log?.endTime ?? log?.timestamp ?? log?.startTime);
+    if (startValue !== null) start = start === null ? startValue : Math.min(start, startValue);
+    if (endValue !== null) end = end === null ? endValue : Math.max(end, endValue);
+  });
+  if (start !== null && end !== null && end < start) end = start;
+  return { start, end };
+};
+
+const getWorkElapsedFromBounds = (start: number | null, end: number | null) => {
+  if (start === null || end === null) return 0;
+  const elapsedMs = Math.max(0, Math.min(end - start, MAX_REASONABLE_WORK_MS));
+  return Math.floor(elapsedMs / 1000);
+};
+
+const useWorkElapsedSeconds = (active: boolean, logs: any[], startedAt?: number | null) => {
+  const startRef = React.useRef<number | null>(null);
+  const [seconds, setSeconds] = React.useState(0);
+  const bounds = React.useMemo(() => getWorkTimeBounds(logs, startedAt), [logs, startedAt]);
+
+  React.useEffect(() => {
+    if (!active) {
+      const finalSeconds = getWorkElapsedFromBounds(bounds.start, bounds.end);
+      startRef.current = null;
+      setSeconds(finalSeconds);
+      return;
+    }
+
+    const nextStart = bounds.start ?? Date.now();
+    startRef.current = startRef.current === null ? nextStart : Math.min(startRef.current, nextStart);
+
+    const tick = () => {
+      const start = startRef.current ?? Date.now();
+      const elapsedMs = Math.max(0, Math.min(Date.now() - start, MAX_REASONABLE_WORK_MS));
+      setSeconds(Math.floor(elapsedMs / 1000));
+    };
+
+    tick();
+    const interval = window.setInterval(tick, 1000);
+    return () => window.clearInterval(interval);
+  }, [active, bounds.start, bounds.end]);
+
+  return seconds;
+};
+
+const ThoughtSequence = ({
+  logs, liveLogs = [], isThinking, isLast, hasAnswer, stepCount, turnStartedAt
+}: { logs: any[], liveLogs?: any[], isThinking: boolean, isLast: boolean, hasAnswer: boolean, stepCount: number, turnStartedAt?: number | null }) => {
   const [open, setOpen] = React.useState(() => isThinking || !hasAnswer);
   const containerRef = React.useRef<HTMLDivElement>(null);
   const prevHasAnswer = React.useRef(false);
+  const isLiveThinking = isThinking && !hasAnswer;
 
   React.useEffect(() => {
-    if (isThinking) {
+    if (isLiveThinking) {
       setOpen(true);
       return;
     }
@@ -288,7 +428,7 @@ const CollapsibleThinking = ({
     } else if (!hasAnswer) {
       prevHasAnswer.current = false;
     }
-  }, [hasAnswer, isThinking]);
+  }, [hasAnswer, isLiveThinking]);
 
   const toggleOpen = () => {
     setOpen(currentOpen => {
@@ -309,13 +449,22 @@ const CollapsibleThinking = ({
   };
 
   const isOpen = open;
+  const elapsedLogs = React.useMemo(() => [...logs, ...liveLogs], [logs, liveLogs]);
+  const workElapsedSeconds = useWorkElapsedSeconds(isLiveThinking, elapsedLogs, turnStartedAt);
+  const workElapsedLabel = formatWorkElapsed(workElapsedSeconds);
 
-  if (stepCount === 0 && logs.length === 0 && !isThinking) return null;
+  if (stepCount === 0 && logs.length === 0 && !isLiveThinking) return null;
 
-  const isWaitingForFirstTrace = isThinking && !hasAnswer && stepCount === 0 && logs.length === 0;
-  const label = `${ stepCount } action${ stepCount !== 1 ? 's' : '' }`;
-  const hasCounter = stepCount > 0;
+  const isWaitingForFirstTrace = isLiveThinking && stepCount === 0 && logs.length === 0 && liveLogs.length === 0;
+  const shouldShowFaceStatus = isLiveThinking && isLast;
+  const actionLabel = stepCount > 0
+    ? `${ stepCount } action${ stepCount !== 1 ? 's' : '' }`
+    : 'Saved thinking';
+  const hasCounter = stepCount > 0 || logs.length > 0;
   const isCollapsedWithAnswer = hasAnswer && !isOpen;
+  const isLiveWorkCounter = isLiveThinking && hasCounter && !isWaitingForFirstTrace;
+  const showWorkedSummary = !isLiveThinking && hasCounter;
+  const shouldStickCounter = hasAnswer || isLiveWorkCounter;
   const counterColor = '#E8E6E3';
   const counterBackground = 'rgba(28,28,28,0.76)';
   const counterHoverBackground = 'rgba(38,38,38,0.92)';
@@ -335,47 +484,74 @@ const CollapsibleThinking = ({
 
   return (
     <div className="relative" ref={containerRef}>
+      {showWorkedSummary && (
+        <div className="mb-2 flex w-full items-center gap-4 pt-1">
+          <div className="h-px flex-1 bg-white/[0.08]" />
+          <span className="shrink-0 py-[1px] text-center text-[14.5px] font-medium leading-[1.35] tracking-normal text-[#8F8B85]">
+            {`Worked for ${ workElapsedLabel }`}
+          </span>
+          <div className="h-px flex-1 bg-white/[0.08]" />
+        </div>
+      )}
+
       {hasCounter && (
-        <div className={`${hasAnswer ? 'sticky top-2 z-20' : ''} ${isCollapsedWithAnswer ? 'mb-2' : 'mb-1'} flex w-full items-center pt-1`}>
-          <button
-            type="button"
-            onClick={toggleOpen}
-            aria-expanded={isOpen}
-            className="inline-flex h-[30px] items-center gap-1.5 transition-all duration-200"
-            style={{
-              ...compactCounterStyle,
-              cursor: 'pointer',
-              position: 'relative',
-              zIndex: 1,
-            }}
-            onMouseEnter={e => {
-              (e.currentTarget as HTMLElement).style.color = '#C2BFBA';
-              (e.currentTarget as HTMLElement).style.background = counterHoverBackground;
-            }}
-            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = counterColor; (e.currentTarget as HTMLElement).style.background = counterBackground; }}
-          >
-            <span
-              className={isThinking ? 'eterx-live-text' : undefined}
-              style={{
-                display: 'inline-flex',
-                width: 20,
-                height: 20,
-                alignItems: 'center',
-                justifyContent: 'center',
-                borderRadius: 8,
-                color: 'inherit',
-                background: 'rgba(255,255,255,0.055)',
-                outline: '1px solid rgba(255,255,255,0.12)',
-              }}
+        <div className={`${shouldStickCounter ? 'sticky top-3 z-20' : ''} ${isCollapsedWithAnswer ? 'mb-2' : 'mb-1'} flex w-full items-center overflow-visible py-1.5`}>
+          {isLiveWorkCounter ? (
+            <button
+              type="button"
+              onClick={toggleOpen}
+              aria-expanded={isOpen}
+              className="group inline-flex min-h-[36px] shrink-0 items-center gap-1.5 rounded-full bg-[#1C1C1C]/78 px-3 py-[6px] text-[13px] font-semibold leading-[1.35] tracking-normal text-[#C9C6C0] outline outline-1 outline-white/[0.12] backdrop-blur-xl transition-colors duration-150 hover:bg-[#262626]/92 hover:text-[#E8E6E3]"
             >
-              <StepCounterIcon live={isThinking} />
-            </span>
-            <span className={isThinking ? 'eterx-live-text' : undefined} style={{ fontSize: 13, fontWeight: 650, letterSpacing: 0, lineHeight: 1 }}>{label}</span>
-            {isOpen
-              ? <ChevronDown style={{ width: 9, height: 9, flexShrink: 0, opacity: 0.6 }} />
-              : <ChevronRight style={{ width: 9, height: 9, flexShrink: 0, opacity: 0.6 }} />
-            }
-          </button>
+              <span className="eterx-live-text inline-flex items-center pb-[1px] leading-[1.35]">
+                {`Working for ${ workElapsedLabel }`}
+              </span>
+              {isOpen
+                ? <ChevronDown className="h-3 w-3 opacity-55 transition-opacity group-hover:opacity-80" />
+                : <ChevronRight className="h-3 w-3 opacity-55 transition-opacity group-hover:opacity-80" />
+              }
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={toggleOpen}
+              aria-expanded={isOpen}
+              className="inline-flex h-[30px] items-center gap-1.5 transition-all duration-200"
+              style={{
+                ...compactCounterStyle,
+                cursor: 'pointer',
+                position: 'relative',
+                zIndex: 1,
+              }}
+              onMouseEnter={e => {
+                (e.currentTarget as HTMLElement).style.color = '#C2BFBA';
+                (e.currentTarget as HTMLElement).style.background = counterHoverBackground;
+              }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = counterColor; (e.currentTarget as HTMLElement).style.background = counterBackground; }}
+            >
+              <span
+                className={isLiveThinking ? 'eterx-live-text' : undefined}
+                style={{
+                  display: 'inline-flex',
+                  width: 20,
+                  height: 20,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  borderRadius: 8,
+                  color: 'inherit',
+                  background: 'rgba(255,255,255,0.055)',
+                  outline: '1px solid rgba(255,255,255,0.12)',
+                }}
+              >
+                <StepCounterIcon live={isLiveThinking} />
+              </span>
+              <span className={isLiveThinking ? 'eterx-live-text' : undefined} style={{ fontSize: 13, fontWeight: 650, letterSpacing: 0, lineHeight: 1 }}>{actionLabel}</span>
+              {isOpen
+                ? <ChevronDown style={{ width: 9, height: 9, flexShrink: 0, opacity: 0.6 }} />
+                : <ChevronRight style={{ width: 9, height: 9, flexShrink: 0, opacity: 0.6 }} />
+              }
+            </button>
+          )}
         </div>
       )}
 
@@ -388,11 +564,11 @@ const CollapsibleThinking = ({
             exit={{ height: 0, opacity: 0, transition: { duration: 0 } }}
             style={{ overflow: 'hidden' }}
             transition={{ duration: 0.18, ease: 'easeOut' }}
-            className={isWaitingForFirstTrace
-              ? 'mb-2 flex min-h-[50px] items-center'
+            className={shouldShowFaceStatus
+              ? 'mb-2 flex items-center'
               : 'mb-1'}
           >
-            <ThinkingProcess logs={logs} isThinking={isThinking} isLast={isLast} />
+            <ThinkingProcess logs={logs} liveLogs={liveLogs} isThinking={isLiveThinking} isLast={isLast} showLiveIndicator={shouldShowFaceStatus} />
           </motion.div>
         )}
       </AnimatePresence>
@@ -559,20 +735,20 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
                       <div className="flex flex-wrap justify-end gap-2.5 mb-3 w-full">
                         {first.attachments.map((att: any, i: number) => {
                           const isImage = !!att.preview;
-                           const fileName = att.file?.name || att.name || 'file';
+                           const fileName = att.name || att.file?.name || 'file';
                            const extension = fileName.split('.').pop()?.toUpperCase() || 'FILE';
                            const isPdf = extension === 'PDF';
  
                            if (isImage) {
                              return (
-                               <a key={i} href={att.preview} target="_blank" rel="noopener noreferrer" className="relative group w-[72px] h-[72px] rounded-[16px] shadow-sm hover:shadow-md transition-all cursor-pointer border border-white/[0.06] shrink-0">
+                               <a key={att.id || i} href={att.preview} target="_blank" rel="noopener noreferrer" className="relative group w-[72px] h-[72px] rounded-[16px] shadow-sm hover:shadow-md transition-all cursor-pointer border border-white/[0.06] shrink-0">
                                  <img src={att.preview} alt="attached" className="w-full h-full object-cover rounded-[16px] hover:opacity-80 transition-opacity" />
                                </a>
                              );
                            }
  
                            return (
-                             <div key={i} className="flex flex-col items-center justify-center gap-1.5 w-[72px] h-[72px] rounded-[16px] bg-white/[0.025] border border-white/[0.05] shadow-sm shrink-0">
+                             <div key={att.id || i} className="flex flex-col items-center justify-center gap-1.5 w-[72px] h-[72px] rounded-[16px] bg-white/[0.025] border border-white/[0.05] shadow-sm shrink-0">
                                <div className={`w-[26px] h-[26px] rounded-md flex items-center justify-center shrink-0 shadow-sm ${ isPdf ? 'bg-[#EF4444]' : 'bg-[#007AFF]' }`}>
                                  <FileText className="w-3.5 h-3.5 text-white" strokeWidth={2.5} />
                                </div>
@@ -610,10 +786,16 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
             }
 
             const isThinkingTurn = isThinking && groupIdx === groups.length - 1;
+            const previousUserLog = groups
+              .slice(0, groupIdx)
+              .reverse()
+              .find((candidate) => candidate[0]?.type === 'user_action')?.[0];
+            const turnStartedAtRaw = previousUserLog?.startTime ?? previousUserLog?.timestamp ?? previousUserLog?.endTime;
+            const turnStartedAt = Number.isFinite(Number(turnStartedAtRaw)) ? Number(turnStartedAtRaw) : null;
 
             // 1. Separate logs into those rendered as LiveActionChips and those rendered via ThoughtSequence
-            const liveCommandLogs = group.filter((l: any) => l.type === 'command' && l.isLive);
-            const standardLogs = group.filter((l: any) => !(l.type === 'command' && l.isLive));
+            const liveCommandLogs = group.filter((l: any) => l.type === 'command' && l.isLive && !isHiddenStatusOnlyLog(l));
+            const standardLogs = group.filter((l: any) => !(l.type === 'command' && l.isLive) && !isHiddenStatusOnlyLog(l));
 
             let processLogs: any[] = [];
             let finalAnswer: any = null;
@@ -644,8 +826,14 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
               };
               tailLogs = standardLogs.slice(lastIdx + 1).filter((l: any) => l.type !== 'answer');
             } else {
-              // Only treat 'thought' type (not 'thought_stream') as a potential final answer
-              const lastThoughtIdx = [...standardLogs].reverse().findIndex((l: any) => l.type === 'thought');
+              // Only treat user-visible thought logs as a potential final answer.
+              // Internal stop/status notes and generic work narration should stay out
+              // of the chat transcript instead of becoming loose assistant text.
+              const lastThoughtIdx = [...standardLogs].reverse().findIndex((l: any) =>
+                l.type === 'thought' &&
+                !isInternalStatusThought(l) &&
+                !isExternalWorkNoteNoise(l.text)
+              );
               const actualLastThoughtIdx = lastThoughtIdx === -1 ? -1 : standardLogs.length - 1 - lastThoughtIdx;
               // Everything except the final 'thought' goes into processLogs (including thought_stream)
               processLogs = actualLastThoughtIdx === -1 ? standardLogs : standardLogs.slice(0, actualLastThoughtIdx);
@@ -664,60 +852,97 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
             const hasStructuredWork = rawWorkLogs.some((l: any) =>
               WORKFLOW_COUNT_TYPES.has(l.type) && !HIDDEN_HELPER_TYPES.has(l.type)
             );
-            const nonAskLogs = rawWorkLogs
-              .filter((l: any) => l.type !== 'ask_user')
-              .filter((l: any) => !(['progress', 'command', 'exploration'].includes(l.type) && /analyz(?:e|ing) task complexity/i.test(String(l.text || ''))))
-              .filter((l: any) => {
-                if (l.type !== 'thought_stream') return true;
-                if (displayFinalAnswer && isLikelyAnswerEcho(l.text, displayFinalAnswer.text)) return false;
-                if (displayFinalAnswer) return false;
-                if (hasStructuredWork && isNarrationThought(l.text)) return false;
-                return true;
-              })
-              .filter((l: any) => {
-                if (l.type !== 'work_note') return true;
-                const text = String(l.text || '').trim().toLowerCase();
-                if (!text) return false;
-                const key = `${ l.subAgent || '' }::${ text }`;
-                if (seenWorkNotes.has(key)) return false;
-                seenWorkNotes.add(key);
-                return true;
-              });
 
-            // Count only visible action rows. Think cards and external work
-            // notes remain visible, but they do not inflate the action count.
-            const stepCount = nonAskLogs.filter((l: any) =>
-              WORKFLOW_COUNT_TYPES.has(l.type) && !HIDDEN_HELPER_TYPES.has(l.type)
-            ).length + liveCommandLogs.length;
+            const segments: { type: 'thoughts' | 'steering' | 'ask_user'; logs?: any[]; log?: any }[] = [];
+            let currentThoughts: any[] = [];
+
+            rawWorkLogs.forEach(log => {
+              if (log.type === 'steering_received') {
+                if (currentThoughts.length > 0) {
+                  segments.push({ type: 'thoughts', logs: currentThoughts });
+                  currentThoughts = [];
+                }
+                segments.push({ type: 'steering', log });
+              } else if (log.type === 'ask_user') {
+                if (currentThoughts.length > 0) {
+                  segments.push({ type: 'thoughts', logs: currentThoughts });
+                  currentThoughts = [];
+                }
+                segments.push({ type: 'ask_user', log });
+              } else {
+                let isValid = true;
+                if (['progress', 'command', 'exploration'].includes(log.type) && /analyz(?:e|ing) task complexity/i.test(String(log.text || ''))) isValid = false;
+                
+                if (log.type === 'thought_stream') {
+                  if (displayFinalAnswer && isLikelyAnswerEcho(log.text, displayFinalAnswer.text)) isValid = false;
+                  if (hasStructuredWork && isExternalWorkNoteNoise(log.text)) isValid = false;
+                }
+                if (log.type === 'work_note') {
+                  const text = String(log.text || '').trim().toLowerCase();
+                  if (!text) isValid = false;
+                  else if (isWorkNoteDisplayNoise(log.text)) isValid = false;
+                  else {
+                    const key = `${ log.subAgent || '' }::${ text }`;
+                    if (seenWorkNotes.has(key)) isValid = false;
+                    seenWorkNotes.add(key);
+                  }
+                }
+                
+                if (isValid) {
+                  currentThoughts.push(log);
+                }
+              }
+            });
+
+            if (currentThoughts.length > 0 || isThinkingTurn) {
+              segments.push({ type: 'thoughts', logs: currentThoughts });
+            }
 
             return (
               <div key={`group-${ groupIdx }`} id={`message-${ groupIdx }`} className="w-full flex flex-col mb-8 scroll-m-20 relative">
-                {(nonAskLogs.length > 0 || isThinkingTurn) && (
-                  <CollapsibleThinking
-                    logs={nonAskLogs}
-                    isThinking={isThinkingTurn}
-                    isLast={groupIdx === groups.length - 1}
-                    hasAnswer={!!displayFinalAnswer}
-                    stepCount={stepCount}
-                  />
-                )}
+                {segments.map((seg, segIdx) => {
+                  if (seg.type === 'steering') {
+                    return <SteeringFeedCard key={`steer-${groupIdx}-${segIdx}`} log={seg.log} />;
+                  }
+                  if (seg.type === 'ask_user') {
+                    return (
+                      <AskUserPrompt
+                        key={`ask-${ groupIdx }-${ segIdx }`}
+                        question={seg.log.question}
+                        mode={seg.log.mode || 'text'}
+                        options={seg.log.options || []}
+                        context={seg.log.context}
+                        defaultValue={seg.log.defaultValue}
+                        urgent={seg.log.urgent}
+                        timestamp={seg.log.timestamp}
+                        onAnswer={(answer) => {
+                          console.log('[ChatFeed] User answered ask_user:', answer);
+                        }}
+                      />
+                    );
+                  }
+                  
+                  // 'thoughts'
+                  const isLastThoughts = segIdx === segments.length - 1 || segments.slice(segIdx + 1).every(s => s.type !== 'thoughts');
+                  const stepCount = (seg.logs || []).filter((l: any) =>
+                    WORKFLOW_COUNT_TYPES.has(l.type) && !HIDDEN_HELPER_TYPES.has(l.type)
+                  ).length + (isLastThoughts ? liveCommandLogs.length : 0);
 
-                {/* Render Ask User prompts inline */}
-                {askUserLogs.map((askLog: any, askIdx: number) => (
-                  <AskUserPrompt
-                    key={`ask-${ groupIdx }-${ askIdx }`}
-                    question={askLog.question}
-                    mode={askLog.mode || 'text'}
-                    options={askLog.options || []}
-                    context={askLog.context}
-                    defaultValue={askLog.defaultValue}
-                    urgent={askLog.urgent}
-                    timestamp={askLog.timestamp}
-                    onAnswer={(answer) => {
-                      console.log('[ChatFeed] User answered ask_user:', answer);
-                    }}
-                  />
-                ))}
+                  if (stepCount === 0 && (seg.logs || []).length === 0 && !(isThinkingTurn && isLastThoughts)) return null;
+
+                  return (
+                    <ThoughtSequence
+                      key={`thoughts-${groupIdx}-${segIdx}`}
+                      logs={seg.logs || []}
+                      liveLogs={isLastThoughts ? liveCommandLogs : []}
+                      isThinking={isThinkingTurn && isLastThoughts}
+                      isLast={groupIdx === groups.length - 1 && isLastThoughts}
+                      hasAnswer={!!displayFinalAnswer && isLastThoughts}
+                      stepCount={stepCount}
+                      turnStartedAt={turnStartedAt}
+                    />
+                  );
+                })}
 
                 {/* Render Live Action Chips */}
                 <AnimatePresence>
