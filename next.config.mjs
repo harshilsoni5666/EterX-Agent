@@ -2,6 +2,7 @@
 const nextConfig = {
   experimental: {
     serverComponentsExternalPackages: ['cheerio', 'undici', 'fs-extra', 'pdf-parse', 'mathjs', 'playwright-core'],
+    optimizePackageImports: ['lucide-react'],
   },
   webpack: (config, { isServer }) => {
     config.resolve.alias = {

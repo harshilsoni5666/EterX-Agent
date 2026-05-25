@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import * as fs from 'fs';
 import * as path from 'path';
+import { checkEterXProtection } from '../../../../lib/agent/workspace/path_resolver';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -14,8 +15,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'filePath and content are required' }, { status: 400 });
     }
 
-    // Safety: don't write outside project scope
-    const normalizedPath = path.normalize(filePath);
+    const normalizedPath = path.resolve(path.normalize(filePath));
+    const protection = checkEterXProtection(normalizedPath);
+    if (protection.blocked) {
+      return NextResponse.json({ error: protection.reason }, { status: 403 });
+    }
 
     // Create parent directories if needed
     if (createDirs) {
@@ -29,6 +33,9 @@ export async function POST(req: NextRequest) {
     const parentDir = path.dirname(normalizedPath);
     if (!fs.existsSync(parentDir)) {
       return NextResponse.json({ error: 'Parent directory does not exist' }, { status: 400 });
+    }
+    if (fs.existsSync(normalizedPath) && fs.statSync(normalizedPath).isDirectory()) {
+      return NextResponse.json({ error: 'Path is a directory, not a file' }, { status: 400 });
     }
 
     const isNew = !fs.existsSync(normalizedPath);

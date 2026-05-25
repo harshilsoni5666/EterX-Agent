@@ -17,6 +17,7 @@ class ToolRegistry {
    * Register multiple tools at once.
    */
   public registerTools(tools: ToolDefinition[]) {
+    this.tools.clear();
     tools.forEach(t => this.registerTool(t));
   }
 

@@ -4,6 +4,7 @@ import { globalToolRegistry } from './registry';
 // CORE TOOLS (27 tools)
 // ==========================================
 import { shellTool } from './core/shell';
+import { terminalAccessTool } from './core/terminal_access';
 import { webSearchTool } from './core/search';
 import { calculatorTool } from './core/math';
 import { apiCallerTool } from './core/api';
@@ -49,6 +50,9 @@ import { browserControlTool } from './core/browser_control';
 import { askUserTool } from './core/ask_user';
 import { checkpointTool } from './core/checkpoint';
 import { uiLivePreviewTool } from './core/ui_preview';
+import { computerTool } from './core/computer';
+import { screenAgentTool } from './core/screen_agent';
+import { waitTimerTool } from './core/wait_timer';
 
 // ==========================================
 // WORKSPACE & DATA TOOLS (13 tools)
@@ -98,9 +102,9 @@ import { slackControllerTool } from './communication/slack';
  */
 export function bootstrapTools() {
   globalToolRegistry.registerTools([
-    shellTool, webSearchTool, calculatorTool, apiCallerTool,
+    shellTool, terminalAccessTool, webSearchTool, calculatorTool, apiCallerTool,
     jsRunnerTool, skillLoaderTool, systemMonitorTool, gitTool,
-    clipboardTool, desktopNotifyTool, jsonTransformTool, screenshotTool,
+    clipboardTool, desktopNotifyTool, jsonTransformTool,
     emailTool, ttsTool, imageGenTool, imageAssetSearchTool, taskDecomposerTool, networkTool,
     databaseTool, cryptoTool, regexTool, sysAutomationTool, selfImproveTool, memoryV2Tool,
     apiHubTool, apiKeyVaultTool, contextManagerTool, safetyGuardTool,
@@ -109,7 +113,8 @@ export function bootstrapTools() {
     backgroundTaskTool, smartFileAnalyzerTool, chartGeneratorTool, codeIntelTool,
     deepResearchTool, smartRefactorTool, projectScaffolderTool,
     envManagerTool, autoDocsTool, gitIntelTool,
-    desktopControlTool, browserControlTool, askUserTool, checkpointTool,
+    browserControlTool, askUserTool, checkpointTool, computerTool, screenAgentTool,
+    waitTimerTool,
     workspaceReadTool, workspaceWriteTool, workspaceListDirectoryTool,
     workspaceSearchTextTool, workspaceEditFileTool,
     workspaceRunCommandTool, workspaceVerifyCodeTool,

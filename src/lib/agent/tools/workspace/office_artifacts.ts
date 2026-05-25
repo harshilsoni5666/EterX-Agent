@@ -6,7 +6,12 @@ import fse from 'fs-extra';
 import pptxgen from 'pptxgenjs';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { resolveReadableWorkspacePath, resolveFinalArtifactPath } from '../../workspace/path_resolver';
+import {
+  hasRuntimeWorkspaceContext,
+  resolveFinalArtifactPathForContext,
+  resolveReadableWorkspacePath,
+  resolveReadableWorkspacePathForContext,
+} from '../../workspace/path_resolver';
 import { docxGeneratorTool } from './docx';
 
 const AdmZip = require('adm-zip');
@@ -118,12 +123,12 @@ Workflow:
     message: z.string(),
     error: z.string().optional(),
   }),
-  execute: async (input: any) => {
+  execute: async (input: any, context?: any) => {
     try {
       const theme = THEMES[input.theme || 'modern'] || THEMES.modern;
-      const markdown = await loadMarkdown(input.markdown, input.source_md_path);
+      const markdown = await loadMarkdown(input.markdown, input.source_md_path, context);
       const parsedSheets = parseSheetsInput(input.sheets);
-      const targetPath = resolveFinalArtifactPath(input.filepath, `.${input.format}`, input.title);
+      const targetPath = resolveFinalArtifactPathForContext(input.filepath, `.${input.format}`, input.title, context);
       await fse.ensureDir(path.dirname(targetPath));
 
       if (input.format === 'docx') {
@@ -132,15 +137,15 @@ Workflow:
           title: input.title || 'Document',
           markdown: markdown || sheetRowsToMarkdown(normalizeSheets(parsedSheets, '', input.title)[0].rows),
           theme: input.theme || 'modern',
-        }, {});
+        }, context);
         if (!result.success) throw new Error(result.error || 'DOCX generation failed');
       } else if (input.format === 'pdf') {
         const pdfText = markdown || sheetRowsToMarkdown(normalizeSheets(parsedSheets, '', input.title)[0].rows);
-        const converted = await tryBuildPdfViaDocx(targetPath, input.title || 'Document', pdfText, input.theme || 'modern');
+        const converted = await tryBuildPdfViaDocx(targetPath, input.title || 'Document', pdfText, input.theme || 'modern', context);
         if (!converted) await fs.writeFile(targetPath, buildPdf(input.title || 'Document', pdfText, theme));
       } else if (input.format === 'pptx') {
         const slides = normalizeSlides(input.slides, markdown, input.title, input.audience, input.purpose);
-        await buildPptx(targetPath, input.title || 'Presentation', slides, theme);
+        await buildPptx(targetPath, input.title || 'Presentation', slides, theme, context);
       } else if (input.format === 'xlsx') {
         const sheets = normalizeSheets(parsedSheets, markdown, input.title);
         await buildXlsx(targetPath, sheets, theme);
@@ -167,14 +172,20 @@ Workflow:
   },
 };
 
-async function loadMarkdown(markdown?: string, sourcePath?: string): Promise<string> {
+function resolveReadableForContext(sourcePath: string, context?: any): string {
+  return hasRuntimeWorkspaceContext(context)
+    ? resolveReadableWorkspacePathForContext(sourcePath, context)
+    : resolveReadableWorkspacePath(sourcePath);
+}
+
+async function loadMarkdown(markdown?: string, sourcePath?: string, context?: any): Promise<string> {
   if (sourcePath) {
-    return fs.readFile(resolveReadableWorkspacePath(sourcePath), 'utf-8');
+    return fs.readFile(resolveReadableForContext(sourcePath, context), 'utf-8');
   }
   return markdown || '';
 }
 
-async function tryBuildPdfViaDocx(targetPath: string, title: string, markdown: string, theme: string): Promise<boolean> {
+async function tryBuildPdfViaDocx(targetPath: string, title: string, markdown: string, theme: string, context?: any): Promise<boolean> {
   const tempDir = path.resolve(process.cwd(), '.temp', 'office-artifacts');
   await fse.ensureDir(tempDir);
   const tempDocx = path.join(tempDir, `pdf_source_${Date.now()}.docx`);
@@ -185,7 +196,7 @@ async function tryBuildPdfViaDocx(targetPath: string, title: string, markdown: s
     markdown,
     theme,
     internal_output: true,
-  }, {});
+  }, context);
   if (!docxResult.success) return false;
 
   const commands = [
@@ -213,10 +224,10 @@ async function tryBuildPdfViaDocx(targetPath: string, title: string, markdown: s
   return false;
 }
 
-async function materializeImage(source: string): Promise<string | null> {
+async function materializeImage(source: string, context?: any): Promise<string | null> {
   try {
     if (!/^https?:\/\//i.test(source)) {
-      return resolveReadableWorkspacePath(source);
+      return resolveReadableForContext(source, context);
     }
 
     const response = await fetch(source);
@@ -264,7 +275,7 @@ function normalizeSlides(inputSlides?: SlideInput[], markdown = '', title = 'Pre
   }).slice(0, 40);
 }
 
-async function buildPptx(filePath: string, title: string, slides: SlideInput[], theme: ArtifactTheme): Promise<void> {
+async function buildPptx(filePath: string, title: string, slides: SlideInput[], theme: ArtifactTheme, context?: any): Promise<void> {
   const pptx = new pptxgen();
   pptx.layout = 'LAYOUT_WIDE';
   pptx.author = 'EterX AI';
@@ -310,7 +321,7 @@ async function buildPptx(filePath: string, title: string, slides: SlideInput[], 
     }
 
     if (slideInput.image) {
-      const imagePath = await materializeImage(slideInput.image);
+      const imagePath = await materializeImage(slideInput.image, context);
       if (imagePath) {
         slide.addImage({ path: imagePath, x: 7.65, y: 1.45, w: 4.95, h: 3.7 });
       }

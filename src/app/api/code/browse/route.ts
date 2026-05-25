@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { getPathResolverInfo } from '../../../../lib/agent/workspace/path_resolver';
 
 export const dynamic = 'force-dynamic';
 
@@ -18,7 +19,7 @@ export async function GET(req: NextRequest) {
   // If no path, return common starting points
   if (!browsePath) {
     const home = os.homedir();
-    const desktop = path.join(home, 'Desktop');
+    const desktop = getPathResolverInfo().desktopPath;
     const docs = path.join(home, 'Documents');
     const projects = path.join(home, 'Projects');
     
@@ -116,9 +117,28 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'parentPath and folderName are required' }, { status: 400 });
   }
 
-  const newPath = path.join(parentPath, folderName);
-
   try {
+    const cleanName = String(folderName).trim();
+    if (
+      !cleanName ||
+      cleanName === '.' ||
+      cleanName === '..' ||
+      /[<>:"/\\|?*\x00-\x1F]/.test(cleanName)
+    ) {
+      return NextResponse.json({ error: 'Invalid folder name' }, { status: 400 });
+    }
+
+    const resolvedParent = path.resolve(String(parentPath));
+    if (!fs.existsSync(resolvedParent) || !fs.statSync(resolvedParent).isDirectory()) {
+      return NextResponse.json({ error: 'Parent folder does not exist' }, { status: 404 });
+    }
+
+    const newPath = path.join(resolvedParent, cleanName);
+    const relative = path.relative(resolvedParent, newPath);
+    if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+      return NextResponse.json({ error: 'Folder path escapes parent directory' }, { status: 400 });
+    }
+
     if (fs.existsSync(newPath)) {
       return NextResponse.json({ error: 'Folder already exists', path: newPath }, { status: 409 });
     }

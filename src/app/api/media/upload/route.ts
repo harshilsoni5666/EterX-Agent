@@ -16,6 +16,7 @@ export async function POST(req: NextRequest) {
     const fs = require('fs');
     const fsp = fs.promises;
     const path = require('path');
+    const { randomUUID } = require('crypto');
 
     const workspaceTemp = path.resolve(process.cwd(), '.workspaces', 'temp');
     await fsp.mkdir(workspaceTemp, { recursive: true });
@@ -45,8 +46,12 @@ export async function POST(req: NextRequest) {
       mimeType = body.mimeType || mimeType;
     }
 
-    const safeBaseName = (fileName || `upload_${Date.now()}`).replace(/[<>:"/\\|?*]/g, '_');
-    const safeName = `${Date.now()}_${safeBaseName}`;
+    const safeBaseName = (fileName || `upload_${Date.now()}`)
+      .replace(/[<>:"/\\|?*\x00-\x1F]/g, '_')
+      .trim() || `upload_${Date.now()}`;
+    const ext = path.extname(safeBaseName);
+    const stem = path.basename(safeBaseName, ext).slice(0, 140) || 'upload';
+    const safeName = `${Date.now()}_${randomUUID().slice(0, 8)}_${stem}${ext}`;
     const destPath = path.join(workspaceTemp, safeName);
 
     if (fileBuffer) {
@@ -68,6 +73,11 @@ export async function POST(req: NextRequest) {
       mimeType,
       fileName: safeName,
       isNative: false,
+    }, {
+      headers: {
+        'Cache-Control': 'no-store, no-cache, must-revalidate',
+        'Pragma': 'no-cache',
+      },
     });
   } catch (error: any) {
     console.error('[MediaUpload] Error:', error);

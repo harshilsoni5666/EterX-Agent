@@ -2,7 +2,8 @@ import { z } from 'zod';
 import { ToolDefinition } from '../../schemas';
 import { exec, spawn, ChildProcess } from 'child_process';
 import { promisify } from 'util';
-import path from 'path';
+import fs from 'fs-extra';
+import { resolveWorkspaceDirectoryForContext } from '../../workspace/path_resolver';
 
 const execAsync = promisify(exec);
 
@@ -19,6 +20,8 @@ interface ManagedProcess {
   pid: number;
   status: 'running' | 'stopped' | 'crashed';
   startedAt: number;
+  cwd: string;
+  exitCode?: number | null;
   output: string[];
   errors: string[];
   process?: ChildProcess;
@@ -41,7 +44,10 @@ export const processManagerTool: ToolDefinition = {
       .describe('Action: start a new process, stop/kill one, check status, view logs, list all'),
     command: z.string().optional().describe('Shell command to start (required for start action)'),
     processId: z.string().optional().describe('Process ID for stop/status/logs actions'),
-    name: z.string().optional().describe('Friendly name for the process (e.g., "dev-server")')
+    name: z.string().optional().describe('Friendly name for the process (e.g., "dev-server")'),
+    cwd: z.string().optional().describe('Working directory for start action. Absolute path or relative to workspace root. Defaults to workspace root.'),
+    shellType: z.enum(['default', 'powershell', 'cmd']).optional().default('default').describe('Shell for start action. Use default unless a command specifically needs PowerShell or cmd.'),
+    env: z.string().optional().describe('Optional JSON object string of environment variables, e.g. {"PORT":"3001"}')
   }),
   outputSchema: z.object({
     success: z.boolean(),
@@ -49,7 +55,7 @@ export const processManagerTool: ToolDefinition = {
     processId: z.string().optional(),
     output: z.string().optional()
   }),
-  execute: async (input: any) => {
+  execute: async (input: any, context?: any) => {
     console.log(`[Tool: process_manager] Action: ${input.action}`);
 
     try {
@@ -58,13 +64,23 @@ export const processManagerTool: ToolDefinition = {
           if (!input.command) return { success: false, message: 'command is required for start action' };
 
           const id = input.name || `proc_${Date.now()}`;
-          const workingDir = path.resolve(process.cwd(), '.workspaces', 'temp');
+          const workingDir = resolveProcessCwd(input.cwd, context);
+          if (!await fs.pathExists(workingDir)) {
+            return { success: false, message: `Working directory not found: ${workingDir}` };
+          }
+
+          const shell = input.shellType === 'powershell'
+            ? 'powershell.exe'
+            : input.shellType === 'cmd'
+              ? 'cmd.exe'
+              : true;
 
           const child = spawn(input.command, [], {
-            shell: true,
+            shell,
             cwd: workingDir,
             stdio: ['pipe', 'pipe', 'pipe'],
-            detached: false
+            detached: false,
+            env: { ...process.env, ...parseStringRecord(input.env) }
           });
 
           const managed: ManagedProcess = {
@@ -73,6 +89,8 @@ export const processManagerTool: ToolDefinition = {
             pid: child.pid || 0,
             status: 'running',
             startedAt: Date.now(),
+            cwd: workingDir,
+            exitCode: null,
             output: [],
             errors: [],
             process: child
@@ -93,6 +111,7 @@ export const processManagerTool: ToolDefinition = {
 
           child.on('exit', (code) => {
             managed.status = code === 0 ? 'stopped' : 'crashed';
+            managed.exitCode = code;
             console.log(`[ProcessManager] Process "${id}" exited with code ${code}`);
           });
 
@@ -107,7 +126,8 @@ export const processManagerTool: ToolDefinition = {
             success: true,
             message: `✅ Process "${id}" started (PID: ${child.pid}). Command: ${input.command}`,
             processId: id,
-            pid: child.pid
+            pid: child.pid,
+            cwd: workingDir
           };
         }
 
@@ -137,8 +157,10 @@ export const processManagerTool: ToolDefinition = {
           const uptime = proc.status === 'running' ? `${((Date.now() - proc.startedAt) / 1000).toFixed(0)}s` : 'N/A';
           return {
             success: true,
-            message: `Process "${proc.id}": status=${proc.status}, pid=${proc.pid}, uptime=${uptime}, output_lines=${proc.output.length}, error_lines=${proc.errors.length}`,
-            processId: proc.id
+            message: `Process "${proc.id}": status=${proc.status}, pid=${proc.pid}, cwd=${proc.cwd}, uptime=${uptime}, exitCode=${proc.exitCode ?? 'N/A'}, output_lines=${proc.output.length}, error_lines=${proc.errors.length}`,
+            processId: proc.id,
+            cwd: proc.cwd,
+            exitCode: proc.exitCode
           };
         }
 
@@ -161,6 +183,8 @@ export const processManagerTool: ToolDefinition = {
             command: p.command.substring(0, 80),
             pid: p.pid,
             status: p.status,
+            cwd: p.cwd,
+            exitCode: p.exitCode,
             uptime: p.status === 'running' ? `${((Date.now() - p.startedAt) / 1000).toFixed(0)}s` : 'stopped'
           }));
           return {
@@ -195,4 +219,24 @@ function findProcess(idOrName?: string): ManagedProcess | undefined {
   if (!idOrName) return undefined;
   return managedProcesses.get(idOrName) ||
     Array.from(managedProcesses.values()).find(p => p.id === idOrName || p.command.includes(idOrName));
+}
+
+function resolveProcessCwd(cwd?: string, context?: any): string {
+  return resolveWorkspaceDirectoryForContext(cwd, context);
+}
+
+function parseStringRecord(value: Record<string, string> | string | undefined): Record<string, string> {
+  if (!value) return {};
+  if (typeof value !== 'string') return value;
+  try {
+    const parsed = JSON.parse(value);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    const normalized: Record<string, string> = {};
+    for (const [key, recordValue] of Object.entries(parsed)) {
+      normalized[key] = String(recordValue);
+    }
+    return normalized;
+  } catch {
+    return {};
+  }
 }

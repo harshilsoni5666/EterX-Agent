@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { exec } from 'child_process';
 import * as path from 'path';
+import { getPathResolverInfo } from '@/lib/agent/workspace/path_resolver';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -15,7 +16,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'command is required' }, { status: 400 });
     }
 
-    const workingDir = cwd || process.cwd();
+    const defaultDir = getPathResolverInfo().desktopPath;
+    const workingDir = cwd
+      ? (path.isAbsolute(cwd) ? cwd : path.resolve(defaultDir, cwd))
+      : defaultDir;
 
     const result = await new Promise<{ stdout: string; stderr: string; exitCode: number }>((resolve) => {
       const child = exec(command, {

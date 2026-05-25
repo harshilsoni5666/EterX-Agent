@@ -4,8 +4,19 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import path from 'path';
 import fs from 'fs-extra';
+import {
+  hasRuntimeWorkspaceContext,
+  resolveFinalArtifactPathForContext,
+  resolveReadableWorkspacePath,
+  resolveReadableWorkspacePathForContext,
+  resolveWorkspacePathForContext,
+} from '../../workspace/path_resolver';
 
 const execAsync = promisify(exec);
+
+function psQuote(value: string): string {
+  return `'${String(value).replace(/'/g, "''")}'`;
+}
 
 /**
  * Compression Tool — Zip/Unzip/Archive
@@ -28,9 +39,10 @@ export const compressionTool: ToolDefinition = {
     message: z.string(),
     outputPath: z.string().optional()
   }),
-  execute: async (input: any) => {
-    const workspaceRoot = path.resolve(process.cwd(), '.workspaces', 'temp');
-    const sourcePath = path.resolve(workspaceRoot, input.source);
+  execute: async (input: any, context?: any) => {
+    const sourcePath = hasRuntimeWorkspaceContext(context)
+      ? resolveReadableWorkspacePathForContext(input.source, context)
+      : resolveReadableWorkspacePath(input.source);
     
     console.log(`[Tool: file_compression] ${input.action}: ${sourcePath}`);
 
@@ -38,11 +50,11 @@ export const compressionTool: ToolDefinition = {
       switch (input.action) {
         case 'compress': {
           const destPath = input.destination 
-            ? path.resolve(workspaceRoot, input.destination)
-            : sourcePath + '.zip';
+            ? resolveFinalArtifactPathForContext(input.destination, '.zip', undefined, context)
+            : resolveFinalArtifactPathForContext(`${path.basename(sourcePath)}.zip`, '.zip', undefined, context);
 
-          const pattern = input.includePattern ? `-Filter "${input.includePattern}"` : '';
-          const psScript = `Compress-Archive -Path "${sourcePath}" -DestinationPath "${destPath}" -Force ${pattern}`;
+          const pattern = input.includePattern ? `-Filter ${psQuote(input.includePattern)}` : '';
+          const psScript = `Compress-Archive -Path ${psQuote(sourcePath)} -DestinationPath ${psQuote(destPath)} -Force ${pattern}`;
           
           await fs.ensureDir(path.dirname(destPath));
           await execAsync(psScript, { shell: 'powershell.exe' });
@@ -60,12 +72,12 @@ export const compressionTool: ToolDefinition = {
 
         case 'extract': {
           const destDir = input.destination 
-            ? path.resolve(workspaceRoot, input.destination)
+            ? resolveWorkspacePathForContext(input.destination, context)
             : sourcePath.replace('.zip', '_extracted');
 
           await fs.ensureDir(destDir);
           await execAsync(
-            `Expand-Archive -Path "${sourcePath}" -DestinationPath "${destDir}" -Force`,
+            `Expand-Archive -Path ${psQuote(sourcePath)} -DestinationPath ${psQuote(destDir)} -Force`,
             { shell: 'powershell.exe' }
           );
 
@@ -80,7 +92,7 @@ export const compressionTool: ToolDefinition = {
 
         case 'list': {
           const { stdout } = await execAsync(
-            `Add-Type -AssemblyName System.IO.Compression.FileSystem; [System.IO.Compression.ZipFile]::OpenRead("${sourcePath}").Entries | Select-Object FullName, Length, LastWriteTime | Format-Table -AutoSize | Out-String -Width 300`,
+            `Add-Type -AssemblyName System.IO.Compression.FileSystem; [System.IO.Compression.ZipFile]::OpenRead(${psQuote(sourcePath)}).Entries | Select-Object FullName, Length, LastWriteTime | Format-Table -AutoSize | Out-String -Width 300`,
             { shell: 'powershell.exe' }
           );
           return { success: true, message: stdout.trim() };

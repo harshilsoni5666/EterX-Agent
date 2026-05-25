@@ -1,6 +1,9 @@
 import { z } from 'zod';
 import { ToolDefinition } from '../../schemas';
 import { globalToolRegistry } from '../registry';
+import path from 'path';
+import fs from 'fs-extra';
+import { resolveFinalArtifactPathForContext } from '../../workspace/path_resolver';
 
 function detectTavilyTopic(text: string): 'general' | 'news' | 'finance' {
   const lower = text.toLowerCase();
@@ -104,7 +107,7 @@ Returns a structured research synthesis with sources.`,
     angles?: string[],
     depth?: string,
     outputFile?: string
-  }) => {
+  }, context?: any) => {
     const depth = input.depth || 'medium';
     const angles = (input.angles?.length ? input.angles : [
       input.topic,
@@ -252,10 +255,11 @@ Returns a structured research synthesis with sources.`,
     report += '\n';
 
     // Save report
-    const path = require('path');
-    const fs = require('fs-extra');
-    const outputFile = input.outputFile || path.resolve(
-      process.cwd(), '.workspaces', 'sandbox', `research_${Date.now()}.md`
+    const outputFile = resolveFinalArtifactPathForContext(
+      input.outputFile || `research_${Date.now()}.md`,
+      '.md',
+      input.topic,
+      context
     );
     try {
       await fs.ensureDir(path.dirname(outputFile));

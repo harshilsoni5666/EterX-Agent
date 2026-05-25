@@ -8,7 +8,14 @@ import {
 import fs from 'fs/promises';
 import fse from 'fs-extra';
 import path from 'path';
-import { resolveWorkspacePath, resolveFinalArtifactPath, getWorkspacePathCandidates, resolveReadableWorkspacePath } from '../../workspace/path_resolver';
+import {
+  getWorkspacePathCandidates,
+  hasRuntimeWorkspaceContext,
+  resolveFinalArtifactPathForContext,
+  resolveReadableWorkspacePath,
+  resolveReadableWorkspacePathForContext,
+  resolveWorkspacePathForContext,
+} from '../../workspace/path_resolver';
 
 /**
  * Rich DOCX Generator — creates professional Word documents with:
@@ -55,7 +62,7 @@ The file is saved to the EXACT path you specify — use full paths like C:\\User
     pages_estimate: z.number().optional(),
     error: z.string().optional()
   }),
-  execute: async (input: any) => {
+  execute: async (input: any, context?: any) => {
     console.log(`[Tool: docx_generator] Building professional document: ${ input.filepath }`);
 
     try {
@@ -64,7 +71,9 @@ The file is saved to the EXACT path you specify — use full paths like C:\\User
       if (input.source_md_path) {
          // Use the same read candidates as workspace_read_file: CWD,
          // sandbox/temp, Desktop, then the normal artifact path.
-         const candidatePaths = getWorkspacePathCandidates(input.source_md_path);
+         const candidatePaths = hasRuntimeWorkspaceContext(context)
+           ? [resolveReadableWorkspacePathForContext(input.source_md_path, context)]
+           : getWorkspacePathCandidates(input.source_md_path);
          
           let loaded = false;
           for (const candidatePath of candidatePaths) {
@@ -207,7 +216,10 @@ The file is saved to the EXACT path you specify — use full paths like C:\\User
             if (!/^image\//i.test(contentType)) throw new Error(`URL is not an image (${contentType || 'unknown content type'})`);
             data = Buffer.from(await response.arrayBuffer());
           } else {
-            data = await fs.readFile(resolveReadableWorkspacePath(source));
+            const imagePath = hasRuntimeWorkspaceContext(context)
+              ? resolveReadableWorkspacePathForContext(source, context)
+              : resolveReadableWorkspacePath(source);
+            data = await fs.readFile(imagePath);
           }
 
           return new Paragraph({
@@ -365,8 +377,8 @@ The file is saved to the EXACT path you specify — use full paths like C:\\User
       const buffer = await Packer.toBuffer(doc);
 
       const targetPath = input.internal_output
-        ? ensureExtension(resolveWorkspacePath(input.filepath), '.docx')
-        : resolveFinalArtifactPath(input.filepath, '.docx', input.title);
+        ? ensureExtension(resolveWorkspacePathForContext(input.filepath, context), '.docx')
+        : resolveFinalArtifactPathForContext(input.filepath, '.docx', input.title, context);
 
       // Ensure parent directory exists
       await fse.ensureDir(path.dirname(targetPath));

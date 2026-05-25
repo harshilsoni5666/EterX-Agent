@@ -5,5 +5,25 @@ contextBridge.exposeInMainWorld('electronAPI', {
   selectFiles: () => ipcRenderer.invoke('select-files'),
   listFolder: (path) => ipcRenderer.invoke('list-folder', path),
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
+  showNotification: (title, body) => ipcRenderer.invoke('show-notification', title, body),
+  openPetWindow: (status) => ipcRenderer.invoke('pet-window-open', status),
+  updatePetWindow: (status) => ipcRenderer.send('pet-window-status', status),
+  closePetWindow: () => ipcRenderer.send('pet-window-close'),
+  petReply: (message) => ipcRenderer.send('pet-reply', message),
+  onPetReply: (callback) => {
+    const listener = (_event, message) => callback(message);
+    ipcRenderer.on('pet-reply', listener);
+    return () => ipcRenderer.removeListener('pet-reply', listener);
+  },
+  onPetStatus: (callback) => {
+    const listener = (_event, status) => callback(status);
+    ipcRenderer.on('pet-status', listener);
+    return () => ipcRenderer.removeListener('pet-status', listener);
+  },
+  onPetWindowClosed: (callback) => {
+    const listener = () => callback();
+    ipcRenderer.on('pet-window-closed', listener);
+    return () => ipcRenderer.removeListener('pet-window-closed', listener);
+  },
   isElectron: true,
 });

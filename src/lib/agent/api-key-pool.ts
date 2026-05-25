@@ -38,6 +38,7 @@ class APIKeyPool {
   private lastProvenKeyIndex: number | null = null;
   private retiredKeyIndices: Set<number> = new Set();
   private initialized = false;
+  private autoRefreshStarted = false;
 
   private static readonly MAX_CONSECUTIVE_FAILURES = 5;
 
@@ -114,6 +115,7 @@ class APIKeyPool {
    */
   public leaseKey(chatId: string, purpose: 'main_agent' | 'sub_agent' = 'main_agent', avoidKeyIndex?: number): KeyLease | null {
     this.initialize();
+    this.startAutoRefresh();
 
     // If this chatId already has a lease, return it
     const existing = this.activeLeases.get(chatId);
@@ -422,6 +424,157 @@ class APIKeyPool {
     // True transient network errors where key rotation may help
     if (lower.includes('fetch failed') || lower.includes('econnreset') || lower.includes('timeout') || lower.includes('network')) return 'transient';
     return 'unknown';
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // HOT-RELOAD: Runtime key discovery and injection
+  // ═══════════════════════════════════════════════════════════════
+
+  /**
+   * Re-scan process.env for any new AIza* keys that appeared since last scan.
+   * Safe to call at any time — idempotent, never removes existing keys.
+   * @returns number of NEW keys discovered
+   */
+  public hotReload(): number {
+    this.initialize();
+    let newCount = 0;
+    const existingKeys = new Set(this.allKeys);
+
+    for (const [, value] of Object.entries(process.env)) {
+      if (typeof value === 'string' && value.startsWith('AIza') && value.length > 20) {
+        if (!existingKeys.has(value)) {
+          const newIdx = this.allKeys.length;
+          this.allKeys.push(value);
+          this.keyHealth.set(newIdx, { failures: 0, totalUses: 0, lastUsed: 0, lastError: '' });
+          newCount++;
+          console.log(`[APIKeyPool] 🔑 Hot-reload: discovered new key #${newIdx}`);
+        }
+      }
+    }
+
+    if (newCount > 0) {
+      console.log(`[APIKeyPool] ✅ Hot-reload complete: +${newCount} keys → ${this.allKeys.length} total`);
+    }
+    return newCount;
+  }
+
+  /**
+   * Inject a key at runtime (e.g., from a UI settings panel).
+   * Idempotent — if key already exists, just un-retires it.
+   */
+  public addKey(apiKey: string): boolean {
+    this.initialize();
+    if (!apiKey || !apiKey.startsWith('AIza') || apiKey.length <= 20) {
+      console.warn('[APIKeyPool] addKey: invalid key format, ignored.');
+      return false;
+    }
+    const existingIdx = this.allKeys.indexOf(apiKey);
+    if (existingIdx >= 0) {
+      // Un-retire it if it was retired
+      if (this.retiredKeyIndices.has(existingIdx)) {
+        this.retiredKeyIndices.delete(existingIdx);
+        const health = this.keyHealth.get(existingIdx);
+        if (health) health.failures = 0;
+        console.log(`[APIKeyPool] 🔑 Re-activated retired key #${existingIdx}`);
+      }
+      return false; // Already existed
+    }
+    const newIdx = this.allKeys.length;
+    this.allKeys.push(apiKey);
+    this.keyHealth.set(newIdx, { failures: 0, totalUses: 0, lastUsed: 0, lastError: '' });
+    console.log(`[APIKeyPool] ➕ Added runtime key #${newIdx}. Total: ${this.allKeys.length}`);
+    return true;
+  }
+
+  /**
+   * Remove (permanently retire) a key by value.
+   */
+  public removeKey(apiKey: string): boolean {
+    this.initialize();
+    const idx = this.allKeys.indexOf(apiKey);
+    if (idx < 0) return false;
+    this.retiredKeyIndices.add(idx);
+    // Release any leases using this key
+    for (const [chatId, lease] of this.activeLeases.entries()) {
+      if (lease.keyIndex === idx) {
+        this.activeLeases.delete(chatId);
+        console.warn(`[APIKeyPool] Evicted lease for [${chatId.substring(0, 8)}...] because key #${idx} was removed.`);
+      }
+    }
+    console.log(`[APIKeyPool] ➖ Removed key #${idx}. ${this.retiredKeyIndices.size} retired.`);
+    return true;
+  }
+
+  /**
+   * Un-retire rate-limited keys that have been cooling for >= 65 seconds.
+   * 65s = one full quota window. Called automatically on a 60s interval.
+   */
+  public unretireStaleKeys(): number {
+    this.initialize();
+    const now = Date.now();
+    const COOLDOWN_MS = 65_000;
+    let unretiredCount = 0;
+
+    for (const retiredIdx of Array.from(this.retiredKeyIndices)) {
+      const health = this.keyHealth.get(retiredIdx);
+      if (!health) continue;
+
+      // Only un-retire rate-limited keys (not auth failures)
+      const wasRateLimited = !health.lastError.toLowerCase().includes('401') &&
+                             !health.lastError.toLowerCase().includes('403') &&
+                             !health.lastError.toLowerCase().includes('auth') &&
+                             !health.lastError.toLowerCase().includes('forbidden');
+
+      if (wasRateLimited && (now - health.lastUsed) >= COOLDOWN_MS) {
+        this.retiredKeyIndices.delete(retiredIdx);
+        health.failures = 0;
+        unretiredCount++;
+        console.log(`[APIKeyPool] ♻️ Un-retired key #${retiredIdx} after ${Math.round((now - health.lastUsed) / 1000)}s cooldown`);
+      }
+    }
+
+    if (unretiredCount > 0) {
+      console.log(`[APIKeyPool] ✅ ${unretiredCount} key(s) un-retired and back in rotation`);
+    }
+    return unretiredCount;
+  }
+
+  /**
+   * Start background auto-refresh:
+   *   - Every 5 minutes: hot-reload env for new keys
+   *   - Every 65 seconds: un-retire cooled rate-limited keys
+   */
+  public startAutoRefresh(): void {
+    if (this.autoRefreshStarted) return;
+    this.autoRefreshStarted = true;
+
+    // Un-retire cooled keys every 65s
+    setInterval(() => {
+      this.unretireStaleKeys();
+    }, 65_000).unref?.();
+
+    // Hot-reload env every 5 minutes
+    setInterval(() => {
+      this.hotReload();
+    }, 5 * 60 * 1000).unref?.();
+
+    console.log('[APIKeyPool] 🔄 Auto-refresh started (key un-retire: 65s, env scan: 5min)');
+  }
+
+  /**
+   * Check if ALL non-retired keys are currently rate-limited (leased + failed).
+   * Used by universal-guard to know when to wait for quota reset.
+   */
+  public areAllKeysExhausted(): boolean {
+    this.initialize();
+    const leasedIndices = new Set<number>();
+    for (const lease of this.activeLeases.values()) leasedIndices.add(lease.keyIndex);
+
+    for (let i = 0; i < this.allKeys.length; i++) {
+      if (this.retiredKeyIndices.has(i)) continue;
+      if (!leasedIndices.has(i)) return false; // At least one free key
+    }
+    return true;
   }
 }
 

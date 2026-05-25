@@ -4,6 +4,12 @@ import path from 'path';
 import fs from 'fs-extra';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import {
+  resolveFinalArtifactPathForContext,
+  resolveReadableWorkspacePathForContext,
+  resolveWorkspaceDirectoryForContext,
+  resolveWorkspacePathForContext,
+} from '../../workspace/path_resolver';
 
 const execAsync = promisify(exec);
 
@@ -51,10 +57,8 @@ EXAMPLES:
     scanDir: z.string().optional().describe('Directory to scan for env usage (for scan_usage)')
   }),
   outputSchema: z.object({ success: z.boolean(), result: z.any(), message: z.string() }),
-  execute: async (input: any) => {
-    const envFile = path.isAbsolute(input.file || '.env')
-      ? input.file
-      : path.resolve(process.cwd(), input.file || '.env');
+  execute: async (input: any, context?: any) => {
+    const envFile = resolveWorkspacePathForContext(input.file || '.env', context);
 
     switch (input.mode) {
       case 'read': {
@@ -107,7 +111,7 @@ EXAMPLES:
 
       case 'compare': {
         if (!input.secondFile) return { success: false, result: null, message: 'secondFile is required' };
-        const file2 = path.isAbsolute(input.secondFile) ? input.secondFile : path.resolve(process.cwd(), input.secondFile);
+        const file2 = resolveReadableWorkspacePathForContext(input.secondFile, context);
 
         const parse = async (f: string) => {
           if (!await fs.pathExists(f)) return {};
@@ -182,8 +186,8 @@ EXAMPLES:
 
       case 'scan_usage': {
         const scanDir = input.scanDir
-          ? (path.isAbsolute(input.scanDir) ? input.scanDir : path.resolve(process.cwd(), input.scanDir))
-          : path.resolve(process.cwd(), 'src');
+          ? resolveWorkspaceDirectoryForContext(input.scanDir, context)
+          : path.resolve(resolveWorkspaceDirectoryForContext(undefined, context), 'src');
         
         const usedVars = new Set<string>();
         async function scan(dir: string, depth: number) {
@@ -263,8 +267,8 @@ EXAMPLES:
     outputFile: z.string().optional().describe('Where to save docs (default: auto-generated)')
   }),
   outputSchema: z.object({ success: z.boolean(), docs: z.string(), savedTo: z.string() }),
-  execute: async (input: { mode: string, target: string, outputFile?: string }) => {
-    const targetPath = path.isAbsolute(input.target) ? input.target : path.resolve(process.cwd(), input.target);
+  execute: async (input: { mode: string, target: string, outputFile?: string }, context?: any) => {
+    const targetPath = resolveReadableWorkspacePathForContext(input.target, context);
 
     switch (input.mode) {
       case 'readme': {
@@ -320,7 +324,10 @@ EXAMPLES:
 
         readme += `## License\n\nMIT\n`;
 
-        const outputPath = input.outputFile || path.join(targetPath, 'README.md');
+        const outputPath = input.outputFile
+          ? resolveFinalArtifactPathForContext(input.outputFile, '.md', 'README', context)
+          : path.join(targetPath, 'README.md');
+        await fs.ensureDir(path.dirname(outputPath));
         await fs.writeFile(outputPath, readme, 'utf-8');
         return { success: true, docs: readme.substring(0, 3000), savedTo: outputPath };
       }
@@ -357,7 +364,9 @@ EXAMPLES:
         }
         await scanRoutes(targetPath);
 
-        const outputPath = input.outputFile || path.join(process.cwd(), '.workspaces', 'sandbox', 'api_docs.md');
+        const outputPath = input.outputFile
+          ? resolveFinalArtifactPathForContext(input.outputFile, '.md', 'API Documentation', context)
+          : resolveFinalArtifactPathForContext('api_docs.md', '.md', 'API Documentation', context);
         await fs.ensureDir(path.dirname(outputPath));
         await fs.writeFile(outputPath, docs, 'utf-8');
         return { success: true, docs: docs.substring(0, 3000), savedTo: outputPath };
@@ -391,7 +400,9 @@ EXAMPLES:
           }
         }
 
-        const outputPath = input.outputFile || path.join(process.cwd(), '.workspaces', 'sandbox', `docs_${path.basename(targetPath, path.extname(targetPath))}.md`);
+        const outputPath = input.outputFile
+          ? resolveFinalArtifactPathForContext(input.outputFile, '.md', 'Function Documentation', context)
+          : resolveFinalArtifactPathForContext(`docs_${path.basename(targetPath, path.extname(targetPath))}.md`, '.md', 'Function Documentation', context);
         await fs.ensureDir(path.dirname(outputPath));
         await fs.writeFile(outputPath, docs, 'utf-8');
         return { success: true, docs: docs.substring(0, 3000), savedTo: outputPath };
@@ -414,7 +425,7 @@ EXAMPLES:
                 while ((match = compRegex.exec(content)) !== null) {
                   const name = match[1];
                   docs += `### \`<${name} />\`\n\n`;
-                  docs += `**File:** \`${path.relative(process.cwd(), path.join(dir, entry.name))}\`\n\n`;
+                  docs += `**File:** \`${path.relative(targetPath, path.join(dir, entry.name))}\`\n\n`;
 
                   // Find props interface
                   const propsMatch = content.match(new RegExp(`interface\\s+${name}Props\\s*\\{([^}]+)\\}`));
@@ -428,7 +439,9 @@ EXAMPLES:
         }
         await scanComponents(targetPath);
 
-        const outputPath = input.outputFile || path.join(process.cwd(), '.workspaces', 'sandbox', 'component_docs.md');
+        const outputPath = input.outputFile
+          ? resolveFinalArtifactPathForContext(input.outputFile, '.md', 'Component Documentation', context)
+          : resolveFinalArtifactPathForContext('component_docs.md', '.md', 'Component Documentation', context);
         await fs.ensureDir(path.dirname(outputPath));
         await fs.writeFile(outputPath, docs, 'utf-8');
         return { success: true, docs: docs.substring(0, 3000), savedTo: outputPath };

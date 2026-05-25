@@ -4,6 +4,7 @@ import { globalToolRegistry } from '@/lib/agent/tools/registry';
 import '@/lib/agent/tools/index';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { getCodeAgentSystemPrompt, getToolEnhancements } from '@/lib/code/code-prompts';
+import { getPathResolverInfo } from '@/lib/agent/workspace/path_resolver';
 import fs from 'fs';
 import path from 'path';
 import { execSync } from 'child_process';
@@ -42,7 +43,7 @@ function createAIClient(): GoogleGenAI {
 
 // ─── System Prompt — powered by full code/ engine knowledge ───
 function buildSystemPrompt(workspacePath: string): string {
-  const cwd = workspacePath || process.cwd();
+  const cwd = workspacePath || getPathResolverInfo().desktopPath;
 
   // Get the master coding agent prompt (extracted from 1888 code/ files)
   let prompt = getCodeAgentSystemPrompt(cwd);
@@ -159,9 +160,19 @@ async function executeRegistryTool(toolName: string, args: any, workspacePath: s
       if (args.file_path && !path.isAbsolute(args.file_path)) {
         args.file_path = path.resolve(workspacePath, args.file_path);
       }
+      if (args.cwd && !path.isAbsolute(args.cwd)) {
+        args.cwd = path.resolve(workspacePath, args.cwd);
+      }
+      if ((toolName === 'workspace_run_command' || toolName === 'workspace_verify_code') && !args.cwd) {
+        args.cwd = workspacePath;
+      }
+      if ((toolName === 'workspace_list_directory' || toolName === 'workspace_search_text') && !args.directory) {
+        args.directory = workspacePath;
+      }
     }
     if (toolName === 'system_shell' && workspacePath) {
-      args.cwd = args.cwd || workspacePath;
+      args.workingDir = args.workingDir || args.cwd || workspacePath;
+      delete args.cwd;
     }
 
     const result = await tool.execute(args, { workspacePath });

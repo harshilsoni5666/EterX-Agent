@@ -246,7 +246,7 @@ const VK: Record<string, number> = {
 for (let i = 0; i <= 9; i++) VK[String(i)] = 0x30 + i;
 for (let c = 65; c <= 90; c++) VK[String.fromCharCode(c).toLowerCase()] = c;
 
-export const desktopControlTool: ToolDefinition = {
+const _oldDesktopControlTool: ToolDefinition = {
   name: 'desktop_control',
   description: `🖥️ REAL-TIME COMPUTER USE — Full desktop control. See screen, move mouse, click, type, press hotkeys, scroll, manage windows, launch apps, read clipboard, capture regions, get pixel colors, and execute multi-step automation sequences.
 
@@ -744,7 +744,7 @@ CAPABILITIES: mouse control, keyboard input, hotkeys, scrolling, window manageme
             console.log(`[Desktop Control] 🔄 Step ${i + 1}/${input.steps.length}: ${step.action}`);
             
             // Recursively execute each step (without screenshot)
-            const stepResult = await desktopControlTool.execute({
+            const stepResult = await _oldDesktopControlTool.execute({
               ...step,
               captureAfter: false,
             }, {});
@@ -781,3 +781,72 @@ CAPABILITIES: mouse control, keyboard input, hotkeys, scrolling, window manageme
 function fail(action: string, msg: string) {
   return { success: false, action, result: msg };
 }
+
+// ═══════════════════════════════════════════════════════════════
+// ROUTER: All desktop_control calls → screen_agent (one engine)
+// ═══════════════════════════════════════════════════════════════
+import { screenAgentTool as _sa } from './screen_agent';
+
+const _ACTION_MAP: Record<string, string> = {
+  screenshot: 'see', capture_region: 'see_region',
+  click_at: 'click', mouse_move: 'hover', drag: 'drag',
+  type_text: 'type', press_key: 'key', hotkey: 'key',
+  scroll_up: 'scroll', scroll_down: 'scroll',
+  list_windows: 'list_apps', focus_window: 'focus_app',
+  launch_app: 'launch_app', open_url: 'run_command',
+  clipboard_read: 'clipboard_get', clipboard_write: 'clipboard_set',
+  minimize_window: 'minimize', maximize_window: 'maximize',
+  close_window: 'close_window', wait: 'wait_ms',
+  wait_for_window: 'wait_text', get_mouse_position: 'get_cursor',
+  open_start_menu: 'key', open_run_dialog: 'key',
+};
+
+function _mapArgs(old: string, a: any): any {
+  const b: any = {};
+  if (a.x != null) b.x = a.x;
+  if (a.y != null) b.y = a.y;
+  if (a.toX != null) b.x2 = a.toX;
+  if (a.toY != null) b.y2 = a.toY;
+  if (a.text != null) b.text = a.text;
+  if (a.key != null) b.text = a.key;
+  if (a.keys != null) b.text = Array.isArray(a.keys) ? a.keys.join('+') : a.keys;
+  if (a.app != null) b.text = a.app;
+  if (a.title != null && !b.text) b.text = a.title;
+  if (old === 'scroll_up')   { b.direction = 'up';   b.amount = a.amount ?? 3; }
+  if (old === 'scroll_down') { b.direction = 'down'; b.amount = a.amount ?? 3; }
+  if (a.width != null) b.width = a.width;
+  if (a.height != null) b.height = a.height;
+  if (a.ms != null || a.milliseconds != null) b.ms = a.ms ?? a.milliseconds ?? 1000;
+  if (a.windowTitle != null) b.text = a.windowTitle;
+  if (old === 'open_url' && a.url) b.text = `Start-Process '${String(a.url).replace(/'/g, "''")}'`;
+  if (old === 'open_start_menu') b.text = 'win';
+  if (old === 'open_run_dialog') b.text = 'win+r';
+  return b;
+}
+
+// Override the real export — desktopControlTool now routes to screen_agent
+export const desktopControlTool: ToolDefinition = {
+  name: 'desktop_control',
+  description: '⚡ Unified computer control — all actions route to screen_agent engine. Use screen_agent directly for best results.',
+  category: 'core',
+  inputSchema: z.object({
+    action: z.string(),
+    x: z.number().optional(), y: z.number().optional(),
+    toX: z.number().optional(), toY: z.number().optional(),
+    text: z.string().optional(), key: z.string().optional(),
+    keys: z.union([z.string(), z.array(z.string())]).optional(),
+    app: z.string().optional(), title: z.string().optional(),
+    url: z.string().optional(), amount: z.number().optional(),
+    width: z.number().optional(), height: z.number().optional(),
+    ms: z.number().optional(), milliseconds: z.number().optional(),
+    windowTitle: z.string().optional(),
+    chatId: z.string().optional(),
+  }),
+  execute: async (input: any, ctx?: any) => {
+    const old = String(input.action || 'screenshot');
+    const newAction = _ACTION_MAP[old] ?? 'see';
+    const mapped = _mapArgs(old, input);
+    console.log(`[desktop_control→screen_agent] ${old} → ${newAction}`);
+    return (_sa as any).execute({ action: newAction, ...mapped, chatId: input.chatId ?? ctx?.chatId }, ctx);
+  },
+};

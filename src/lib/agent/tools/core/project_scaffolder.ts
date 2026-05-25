@@ -2,6 +2,11 @@ import { z } from 'zod';
 import { ToolDefinition } from '../../schemas';
 import path from 'path';
 import fs from 'fs-extra';
+import {
+  checkEterXProtection,
+  getRuntimeWorkspaceRoot,
+  resolveWorkspacePathForContext,
+} from '../../workspace/path_resolver';
 
 /**
  * Project Scaffolder — Intelligent Project Generator
@@ -89,15 +94,21 @@ Creates ALL files in one shot — no placeholders, no todos. Production-start qu
     directory: z.string(),
     message: z.string()
   }),
-  execute: async (input: { template: string, name: string, directory?: string }) => {
+  execute: async (input: { template: string, name: string, directory?: string }, context?: any) => {
     const templateFn = TEMPLATES[input.template];
     if (!templateFn) {
       return { success: false, filesCreated: [], directory: '', message: `Unknown template: ${input.template}` };
     }
 
-    const dir = input.directory
-      ? (path.isAbsolute(input.directory) ? input.directory : path.resolve(process.cwd(), input.directory))
-      : path.resolve(process.cwd(), input.name);
+    const requestedDir = input.directory?.trim();
+    const projectFolder = path.basename(input.name.replace(/\\/g, '/')).trim() || 'project';
+    const dir = requestedDir
+      ? resolveWorkspacePathForContext(requestedDir, context)
+      : path.resolve(getRuntimeWorkspaceRoot(context), projectFolder);
+    const rootProtection = checkEterXProtection(dir);
+    if (rootProtection.blocked) {
+      return { success: false, filesCreated: [], directory: dir, message: rootProtection.reason };
+    }
 
     const files = templateFn(input.name);
     const created: string[] = [];
@@ -107,6 +118,16 @@ Creates ALL files in one shot — no placeholders, no todos. Production-start qu
     for (const file of files) {
       const fullPath = path.join(dir, file.path);
       try {
+        const relative = path.relative(dir, fullPath);
+        if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+          throw new Error(`Template path escapes target directory: ${file.path}`);
+        }
+
+        const protection = checkEterXProtection(fullPath);
+        if (protection.blocked) {
+          throw new Error(protection.reason);
+        }
+
         await fs.ensureDir(path.dirname(fullPath));
         await fs.writeFile(fullPath, file.content, 'utf-8');
         created.push(file.path);

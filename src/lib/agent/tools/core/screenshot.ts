@@ -4,6 +4,7 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import path from 'path';
 import fs from 'fs-extra';
+import { resolveFinalArtifactPathForContext } from '../../workspace/path_resolver';
 
 const execAsync = promisify(exec);
 
@@ -21,12 +22,10 @@ export const screenshotTool: ToolDefinition = {
     filePath: z.string(),
     message: z.string()
   }),
-  execute: async (input: { target?: string, filename?: string }) => {
-    const targetDir = path.resolve(process.cwd(), '.workspaces', 'temp', 'screenshots');
-    await fs.ensureDir(targetDir);
-
+  execute: async (input: { target?: string, filename?: string }, context?: any) => {
     const filename = input.filename || `screenshot_${ Date.now() }.png`;
-    const filePath = path.join(targetDir, filename);
+    const filePath = resolveFinalArtifactPathForContext(filename, '.png', 'Screenshot', context);
+    await fs.ensureDir(path.dirname(filePath));
 
     console.log(`[Tool: screenshot_capture] Capturing ${ input.target || 'fullscreen' } → ${ filePath }`);
 

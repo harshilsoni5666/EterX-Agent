@@ -3,7 +3,7 @@ import { ToolDefinition } from '../../schemas';
 import path from 'path';
 import fs from 'fs/promises';
 import fse from 'fs-extra';
-import { resolveWorkspacePath } from '../../workspace/path_resolver';
+import { resolveWorkspacePathForContext } from '../../workspace/path_resolver';
 
 /**
  * Code Generator — Template-Based Code Scaffolding
@@ -40,7 +40,7 @@ export const codeGeneratorTool: ToolDefinition = {
     files: z.array(z.string()),
     message: z.string()
   }),
-  execute: async (input: { template: string, name: string, options?: string }) => {
+  execute: async (input: { template: string, name: string, options?: string }, context?: any) => {
     const opts = input.options ? JSON.parse(input.options) : {};
     const generatedFiles: string[] = [];
 
@@ -48,7 +48,7 @@ export const codeGeneratorTool: ToolDefinition = {
 
     try {
       const writeFile = async (relativePath: string, content: string) => {
-        const fullPath = resolveWorkspacePath(relativePath);
+        const fullPath = resolveWorkspacePathForContext(relativePath, context);
         await fse.ensureDir(path.dirname(fullPath));
         await fs.writeFile(fullPath, content, 'utf-8');
         generatedFiles.push(fullPath);

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { agentRegistry } from '../../../../lib/agent/agent-registry';
+import { taskStore } from '../../../../lib/agent/task-store';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -27,7 +28,14 @@ export async function GET(req: NextRequest) {
     }
 
     const afterIndex = afterStr ? parseInt(afterStr, 10) : -1;
-    const result = agentRegistry.getTraces(chatId, afterIndex);
+    let result = agentRegistry.getTraces(chatId, afterIndex);
+
+    if (result.status === 'idle') {
+      const persisted = await taskStore.getPollState(chatId, afterIndex);
+      if (persisted.status !== 'idle') {
+        result = persisted;
+      }
+    }
 
     // Return with anti-cache headers for maximum freshness
     return new NextResponse(JSON.stringify(result), {

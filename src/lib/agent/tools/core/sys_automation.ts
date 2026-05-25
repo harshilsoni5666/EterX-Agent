@@ -2,8 +2,10 @@ import { z } from 'zod';
 import { ToolDefinition } from '../../schemas';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import { isUnsafeHostControlEnabled } from '../../computer/computer-session';
 
 const execAsync = promisify(exec);
+const SAFE_READONLY_ACTIONS = new Set(['battery']);
 
 /**
  * System Automation — Open apps, manage windows, control OS
@@ -28,6 +30,13 @@ export const sysAutomationTool: ToolDefinition = {
   }),
   outputSchema: z.object({ success: z.boolean(), result: z.any() }),
   execute: async (input: any) => {
+    if (!isUnsafeHostControlEnabled() && !SAFE_READONLY_ACTIONS.has(input.action)) {
+      return {
+        success: false,
+        result: 'Host OS automation and host process/app scanning are disabled for safety. Use computer or screen_agent inside isolated EterX Computer, or set ETERX_ALLOW_UNSAFE_HOST_COMPUTER=1 only when real host control is intentional.',
+      };
+    }
+
     try {
       switch (input.action) {
         case 'open_app':

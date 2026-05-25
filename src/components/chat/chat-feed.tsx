@@ -6,6 +6,7 @@ import { AskUserPrompt } from '../chat/ask-user-prompt';
 import { Tooltip } from '../ui/tooltip';
 import { AgentFace } from './agent-face';
 import { notifyAgentFaceTraceLog } from './agent-face-controller';
+import { resolveAgentIcon } from './agent-icons';
 
 interface ChatFeedProps {
   traceLogs: any[];
@@ -49,20 +50,8 @@ const NakedCopyButton = ({ content }: { content: string }) => {
   );
 };
 
-const ComputerIcon = ({ size = 18, color = '#E8E6E3' }: { size?: number, color?: string }) => (
-  <svg width={size} height={size} viewBox="0 0 16 16" fill="none">
-    <rect x="1.25" y="2.25" width="13.5" height="9.5" rx="1.75" stroke={color} strokeWidth="1.15" fill="none" />
-    <line x1="1.25" y1="8.75" x2="14.75" y2="8.75" stroke={color} strokeWidth="0.9" opacity="0.25" />
-    <circle cx="3.25" cy="4" r="0.65" fill={color} opacity="0.75" />
-    <circle cx="5" cy="4" r="0.65" fill={color} opacity="0.75" />
-    <circle cx="6.75" cy="4" r="0.65" fill={color} opacity="0.75" />
-    <path d="M5.5 11.75 L10.5 11.75" stroke={color} strokeWidth="1.15" strokeLinecap="round" />
-    <path d="M8 11.75 L8 13.75" stroke={color} strokeWidth="1.15" strokeLinecap="round" />
-    <path d="M6 13.75 L10 13.75" stroke={color} strokeWidth="1.15" strokeLinecap="round" />
-  </svg>
-);
-
 export const LiveActionChip = ({ text, secondary, isActive, inCard = false }: { text: string, secondary?: string, isActive?: boolean, inCard?: boolean }) => {
+  const { Icon, color } = resolveAgentIcon(text, secondary);
   return (
     <motion.div
       initial={{ opacity: 0, y: -3, scale: 0.97 }}
@@ -71,7 +60,7 @@ export const LiveActionChip = ({ text, secondary, isActive, inCard = false }: { 
       className={`flex min-h-[46px] w-full items-center gap-3 px-3 py-2 text-[#8C8A88] transition-colors ${ inCard ? 'hover:bg-white/[0.035]' : 'rounded-[14px] hover:bg-white/[0.03]' }`}
     >
       <span className="flex h-8 w-8 items-center justify-center shrink-0">
-        <ComputerIcon size={19} color="#E8E6E3" />
+        <Icon size={19} color={color} />
       </span>
       <span className={`max-w-[46%] shrink-0 truncate text-[14px] font-semibold tracking-normal ${ isActive ? 'eterx-live-text' : 'text-[#A7A39E]' }`}>
         {text}
@@ -310,6 +299,7 @@ const HIDDEN_MODEL_STATUS_PATTERN = /^(?:(?:using|starting|selected)\s+)?(?:mode
 const DASH_ONLY_STATUS_PATTERN = /^[\s\-–—]{2,}$/;
 
 const isHiddenStatusOnlyLog = (log: any) => {
+  if (log?.type === 'task_plan') return true;
   if (!log || log.type === 'user_action' || log.type === 'answer') return false;
   const values = [log.text, log.secondary, log.modelName, log.model]
     .map(value => String(value || '').trim())
@@ -691,7 +681,7 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
       <style>{liveMotionStyles}</style>
       <div className="relative flex-1 min-h-0 w-full overflow-hidden">
       <div
-        className={`relative h-full w-full flex flex-col overflow-y-auto overflow-x-hidden pb-44 eterx-modern-scrollbar ${ isCompressed ? 'pl-3 pr-3 sm:pl-4 sm:pr-4' : 'px-4 sm:px-12' }`}
+        className={`relative h-full w-full flex flex-col overflow-y-auto overflow-x-hidden pb-44 eterx-scrollbar ${ isCompressed ? 'pl-3 pr-3 sm:pl-4 sm:pr-4' : 'px-4 sm:px-12' }`}
         id="chat-container"
         ref={scrollContainerRef}
         onScroll={handleScrollWrap}
@@ -729,8 +719,8 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
               const userText = String(first.text || '');
               const { isLong } = getUserQueryPreview(userText);
               return (
-                <div key={`group-${ groupIdx }`} id={`message-${ groupIdx }`} className="mt-10 mb-6 flex flex-col items-end w-full group/user scroll-m-20">
-                  <div className={`bg-[#242424] text-[#E3E3E3] px-5 py-3.5 rounded-[22px] rounded-tr-[6px] ml-auto text-[15.5px] shadow-[0_2px_12px_rgba(0,0,0,0.28)] leading-relaxed whitespace-pre-wrap relative border border-white/[0.07] select-text selection:bg-[#E2765A]/30 flex flex-col items-end ${ isCompressed ? 'max-w-[92%]' : 'max-w-[84%]' }`}>
+                <div key={`group-${ groupIdx }`} id={`message-${ groupIdx }`} className="mt-9 mb-6 flex w-full scroll-m-20 flex-col items-end group/user">
+                  <div className={`ml-auto flex flex-col items-end rounded-[22px] border border-white/[0.055] bg-[#242424] px-[18px] py-3 text-[15.5px] leading-[1.56] text-[#E8E6E3] shadow-[0_10px_28px_rgba(0,0,0,0.22),inset_0_1px_0_rgba(255,255,255,0.035)] selection:bg-[#E2765A]/30 relative whitespace-pre-wrap select-text ${ isCompressed ? 'max-w-[92%]' : 'max-w-[560px]' }`}>
                     {first.attachments && first.attachments.length > 0 && (
                       <div className="flex flex-wrap justify-end gap-2.5 mb-3 w-full">
                         {first.attachments.map((att: any, i: number) => {
@@ -1091,7 +1081,7 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
               </button>
               <div
                 ref={previewScrollRef}
-                className="max-h-[82vh] overflow-y-auto eterx-modern-scrollbar eterx-prompt-preview-scroll px-6 py-8 pr-8 sm:px-8 sm:py-9 sm:pr-10"
+                className="max-h-[82vh] overflow-y-auto eterx-scrollbar eterx-prompt-preview-scroll px-6 py-8 pr-8 sm:px-8 sm:py-9 sm:pr-10"
               >
                 <div className="whitespace-pre-wrap break-words text-[16px] leading-[1.75] text-[#C4C1BC] [overflow-wrap:anywhere]">
                   {previewUserMessage.text}

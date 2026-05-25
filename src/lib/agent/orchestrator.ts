@@ -59,6 +59,10 @@ type RuntimeProjectContext = ProjectContext & {
   source?: string;
   telegram?: unknown;
   userId?: string;
+  workspacePath?: string;
+  workspaceRoot?: string;
+  allowedPaths?: string[];
+  paths?: string[];
 };
 
 export class AgentOrchestrator {
@@ -68,6 +72,39 @@ export class AgentOrchestrator {
   // Cache for hydrateContext results — avoids 4 disk reads per message
   private _hydrateCache: Map<string, { context: any; ts: number }> = new Map();
   private static readonly HYDRATE_TTL_MS = 30_000; // 30 seconds
+  private static readonly MAX_HYDRATE_CACHE_ENTRIES = 40;
+
+  private pruneHydrateCache(): void {
+    const now = Date.now();
+    for (const [projectId, cached] of this._hydrateCache.entries()) {
+      if (now - cached.ts > AgentOrchestrator.HYDRATE_TTL_MS * 4) {
+        this._hydrateCache.delete(projectId);
+      }
+    }
+
+    while (this._hydrateCache.size > AgentOrchestrator.MAX_HYDRATE_CACHE_ENTRIES) {
+      let oldestProjectId: string | null = null;
+      let oldestTs = Number.POSITIVE_INFINITY;
+      for (const [projectId, cached] of this._hydrateCache.entries()) {
+        if (cached.ts < oldestTs) {
+          oldestTs = cached.ts;
+          oldestProjectId = projectId;
+        }
+      }
+      if (!oldestProjectId) break;
+      this._hydrateCache.delete(oldestProjectId);
+    }
+  }
+
+  private buildHydrateCachePayload(context: RuntimeProjectContext): Partial<RuntimeProjectContext> {
+    return {
+      userPreferences: context.userPreferences ? { ...context.userPreferences } : {},
+      errorHistory: Array.isArray(context.errorHistory) ? [...context.errorHistory] : [],
+      recentMemories: Array.isArray(context.recentMemories)
+        ? context.recentMemories.slice(0, 5).map((memory: any) => ({ ...memory }))
+        : [],
+    };
+  }
 
 
   /**
@@ -123,10 +160,14 @@ export class AgentOrchestrator {
    * This is the key fix: the agent now actually READS its own memory.
    */
   private async hydrateContext(context: any, projectId: string): Promise<void> {
+    this.pruneHydrateCache();
+
     // FAST PATH: Use cached hydration if it's fresh (< 30s old)
     const cached = this._hydrateCache.get(projectId);
     if (cached && (Date.now() - cached.ts) < AgentOrchestrator.HYDRATE_TTL_MS) {
       Object.assign(context, cached.context);
+      this._hydrateCache.delete(projectId);
+      this._hydrateCache.set(projectId, { ...cached, ts: Date.now() });
       return;
     }
 
@@ -201,9 +242,10 @@ export class AgentOrchestrator {
     }
     // Cache the result for this project
     this._hydrateCache.set(projectId, {
-      context: { ...context },
+      context: this.buildHydrateCachePayload(context),
       ts: Date.now()
     });
+    this.pruneHydrateCache();
   }
 
   /**
@@ -276,6 +318,19 @@ export class AgentOrchestrator {
         };
     if (userName) context.userName = userName;
     context.userId = userId;
+    if (Array.isArray(pinnedContext?.paths) && pinnedContext.paths.length > 0) {
+      const pinnedPaths = pinnedContext.paths.filter((p: unknown): p is string => typeof p === 'string' && p.trim().length > 0);
+      context.paths = pinnedPaths;
+      context.allowedPaths = pinnedPaths;
+      const firstDirectory = pinnedPaths.find((p: string) => {
+        try { return fs.existsSync(p) && fs.statSync(p).isDirectory(); } catch { return false; }
+      });
+      const firstPath = firstDirectory || pinnedPaths[0];
+      if (firstPath) {
+        context.workspaceRoot = firstDirectory || path.dirname(path.resolve(firstPath));
+        context.workspacePath = context.workspaceRoot;
+      }
+    }
     if (pinnedContext?.disableSubAgents) {
       context.disableSubAgents = true;
     }

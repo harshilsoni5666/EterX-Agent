@@ -3,6 +3,7 @@ import { ToolDefinition } from '../../schemas';
 import http from 'http';
 import path from 'path';
 import fs from 'fs-extra';
+import { resolveWorkspaceDirectoryForContext } from '../../workspace/path_resolver';
 
 /**
  * Quick HTTP Server
@@ -31,23 +32,24 @@ export const httpServerTool: ToolDefinition = {
     port: z.number().optional().default(8080).describe('Port to serve on (default: 8080)')
   }),
   outputSchema: z.object({ success: z.boolean(), message: z.string() }),
-  execute: async (input: any) => {
+  execute: async (input: any, context?: any) => {
     try {
       switch (input.action) {
         case 'start': {
           if (activeServer) {
             return { success: false, message: `Server already running on port ${activePort}. Stop it first.` };
           }
-          const root = path.resolve(process.cwd(), '.workspaces', 'temp', input.directory || '');
+          const root = resolveWorkspaceDirectoryForContext(input.directory, context);
           await fs.ensureDir(root);
           const port = input.port || 8080;
 
           activeServer = http.createServer(async (req, res) => {
             const urlPath = req.url === '/' ? '/index.html' : req.url || '/';
-            const filePath = path.join(root, decodeURIComponent(urlPath));
+            const filePath = path.resolve(root, `.${decodeURIComponent(urlPath)}`);
             
             // Security: prevent directory traversal
-            if (!filePath.startsWith(root)) {
+            const relative = path.relative(root, filePath);
+            if (relative.startsWith('..') || path.isAbsolute(relative)) {
               res.writeHead(403); res.end('Forbidden'); return;
             }
             try {

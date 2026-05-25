@@ -3,6 +3,7 @@ import { ToolDefinition } from '../../schemas';
 import { globalTaskPlanner } from '../../task_planner';
 import { normalizeMainAgentMode } from '../../model-routing';
 import { globalSessionManager } from '../../session';
+import { trackerToTrace, writeTaskTracker, type TaskTrackerData } from '../../task-tracker-store';
 
 /**
  * Task Decomposer v3 — API-Powered Deep Step Protocol Engine
@@ -23,6 +24,8 @@ export const taskDecomposerTool: ToolDefinition = {
   description: `Decompose a complex task into smaller, actionable subtasks using the selected model for AI-powered deep planning. Use this FIRST when facing any complex, multi-step request. Returns a structured execution plan with granular steps, tool assignments, and verification conditions. NEVER call this more than once per task — the plan is persistent.
   
   Examples:
+  - Use only when the task likely needs 4+ ordered steps, multiple files/systems, a long deliverable, deep research, or the user explicitly asks for tasks/a tracker
+  - Do NOT use for direct questions, tiny edits, one command, one-file reads, simple fixes, greetings, or short follow-ups
   - "Build me a full website with authentication"
   - "Create a 10-page research report on climate change"
   - "Set up CI/CD pipeline for this project"
@@ -41,6 +44,19 @@ export const taskDecomposerTool: ToolDefinition = {
   }),
   execute: async (input: { complexTask: string, context?: string, maxSubtasks?: number }, runtimeContext?: any) => {
     console.log(`[Tool: task_decomposer] Decomposing via API: "${ input.complexTask.substring(0, 80) }..."`);
+    const chatId = runtimeContext?.projectId || runtimeContext?.chatId || runtimeContext?.taskId || undefined;
+    const emitTrace = typeof runtimeContext?._onTrace === 'function' ? runtimeContext._onTrace : null;
+
+    emitTrace?.(trackerToTrace({
+      goal: input.complexTask,
+      chatId,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      complexity: 'pending',
+      estimatedMinutes: 0,
+      status: 'generating',
+      steps: [],
+    }, 'generating'));
 
     try {
       // === Call the selected-model Task Planner ===
@@ -49,8 +65,6 @@ export const taskDecomposerTool: ToolDefinition = {
       const steps = planResult.steps;
 
       // === Write DUAL tracker files for the ReAct loop to read back ===
-      const fs = require('fs-extra');
-
       // 1. Human-readable markdown tracker
       let trackerMd = `# INVISIBLE TASK TRACKER\n\n`;
       trackerMd += `**Goal:** ${ input.complexTask }\n`;
@@ -71,12 +85,14 @@ export const taskDecomposerTool: ToolDefinition = {
       });
 
       trackerMd += `---\n\n`;
-      trackerMd += `> **PROTOCOL**: After completing each step, use \`workspace_edit_file\` to change \`[ ]\` to \`[x]\` for that step. This prevents re-doing completed work.\n`;
+      trackerMd += `> **PROTOCOL**: This tracker is runtime-owned and stored inside the chat task folder. The agent runtime updates progress automatically after successful tools.\n`;
 
       // 2. Machine-readable JSON tracker (the ReAct loop reads this on every iteration)
-      const trackerJson = {
+      const trackerJson: TaskTrackerData = {
         goal: input.complexTask,
+        chatId,
         createdAt: Date.now(),
+        updatedAt: Date.now(),
         complexity: planResult.estimated_complexity,
         estimatedMinutes: planResult.estimated_time_minutes,
         status: 'in_progress',
@@ -94,9 +110,11 @@ export const taskDecomposerTool: ToolDefinition = {
         }))
       };
 
+      let trackerFiles: string[] = [];
       try {
-        fs.writeFileSync('.agent_task_tracker.md', trackerMd);
-        fs.writeFileSync('.agent_task_tracker.json', JSON.stringify(trackerJson, null, 2));
+        const paths = await writeTaskTracker(chatId, trackerJson, trackerMd);
+        trackerFiles = [paths.mdPath, paths.jsonPath];
+        emitTrace?.(trackerToTrace(trackerJson, 'generated'));
         console.log(`[Tool: task_decomposer] ✅ Trackers written (${ steps.length } steps, complexity: ${ planResult.estimated_complexity })`);
       } catch (e) {
         console.warn("[Tool: task_decomposer] Could not write tracker files, proceeding anyway.");
@@ -125,8 +143,8 @@ export const taskDecomposerTool: ToolDefinition = {
         complexity: planResult.estimated_complexity,
         estimatedMinutes: planResult.estimated_time_minutes,
         strategy: steps.length > 6 ? 'parallel_where_possible' : 'sequential',
-        trackerFiles: ['.agent_task_tracker.md', '.agent_task_tracker.json'],
-        message: `Task decomposed into ${ steps.length } deep steps via AI planner (${ planResult.estimated_complexity } complexity, ~${ planResult.estimated_time_minutes } min). Trackers written. Execute steps ONE AT A TIME in order. After each step, mark [x] in the .md tracker. Do NOT repeat any completed step. Focus on the NEXT pending step only.`
+        trackerFiles,
+        message: `Task decomposed into ${ steps.length } focused steps via AI planner (${ planResult.estimated_complexity } complexity, ~${ planResult.estimated_time_minutes } min). Tracker is stored inside this chat's task folder. Execute steps ONE AT A TIME in order. Do NOT repeat any completed step. Focus on the NEXT pending step only.`
       };
     } catch (error: any) {
       console.error(`[Tool: task_decomposer] ❌ Decomposition failed: ${ error.message }`);

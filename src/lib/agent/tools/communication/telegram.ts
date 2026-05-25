@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { ToolDefinition } from '../../schemas';
 import fs from 'fs-extra';
 import path from 'path';
+import { resolveReadableWorkspacePathForContext } from '../../workspace/path_resolver';
 
 let TelegramClient: any = null;
 let StringSession: any = null;
@@ -98,7 +99,7 @@ For inbound mobile requests, telegram-bot.ts automatically forwards every Telegr
     state: z.string().optional(),
     results: z.any().optional(),
   }),
-  execute: async (input: any) => {
+  execute: async (input: any, context?: any) => {
     try {
       if (input.action === 'bot_status') {
         const result = await telegramApi('getMe', {});
@@ -126,7 +127,7 @@ For inbound mobile requests, telegram-bot.ts automatically forwards every Telegr
 
       if (input.action === 'upload') {
         if (!input.data || !input.file_path) return { success: false, status: 'Missing target(data) or file_path.' };
-        const absolutePath = path.isAbsolute(input.file_path) ? input.file_path : path.resolve(process.cwd(), input.file_path);
+        const absolutePath = resolveReadableWorkspacePathForContext(input.file_path, context);
         if (!await fs.pathExists(absolutePath)) return { success: false, status: `File not found: ${input.file_path}` };
 
         const form = new FormData();

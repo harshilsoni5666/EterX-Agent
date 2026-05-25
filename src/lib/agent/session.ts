@@ -14,9 +14,18 @@ import path from 'path';
 
 const SESSION_DIR = path.resolve(process.cwd(), '.workspaces', '.session');
 const STATE_FILE = path.join(SESSION_DIR, 'state.json'); // Legacy fallback
-const SESSION_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
-const MAX_SESSION_AGE_MS = 2 * 60 * 60 * 1000; // 2 hours absolute max
-const STALE_CLEANUP_MS = 24 * 60 * 60 * 1000; // 24 hours — auto-GC
+const SESSION_TIMEOUT_MS = 72 * 60 * 60 * 1000;           // 72 hours idle — up from 24h
+const LONG_TASK_TIMEOUT_MS = 30 * 24 * 60 * 60 * 1000;    // 30 days for long-task mode (effectively never)
+const MAX_SESSION_AGE_MS = 30 * 24 * 60 * 60 * 1000;      // 30 days absolute max
+const STALE_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
+const MAX_ACTIVE_CHAT_SESSIONS = 40;
+const MAX_CALL_HISTORY = 500;
+const MAX_WRITTEN_FILES = 250;
+const MAX_LOADED_SKILLS = 80;
+const MAX_TOOL_RESULT_DIGEST = 150;
+const STALE_CLEANUP_MS = 7 * 24 * 60 * 60 * 1000; // 7 days auto-GC
+
+/** Rich file record — tracks what was done to each file and why */
 
 /** Rich file record — tracks what was done to each file and why */
 interface FileRecord {
@@ -41,7 +50,6 @@ export interface SessionState {
   taskDecomposerUsed: boolean;
   /** Per-tool call counts */
   toolCallCounts: Record<string, number>;
-
   /** Last user message (for "continue" context) */
   lastUserMessage: string;
   /** Summary of what the agent accomplished */
@@ -60,6 +68,12 @@ export interface SessionState {
   boundChatId: string;
   /** Digest of tool results to maintain memory across turns */
   toolResultDigest: Array<{ tool: string; args: string; result: string; iteration: number }>;
+  /** Whether this session is in long-task mode (never auto-expires) */
+  longTaskMode?: boolean;
+  /** Timestamp of last explicit extendSession() call */
+  lastExtendedAt?: number;
+  /** How many times the session has been extended */
+  extensionCount?: number;
 }
 
 const EMPTY_STATE: SessionState = {
@@ -92,6 +106,7 @@ export class SessionStateManager {
   private activeChatSessions: Map<string, SessionState> = new Map();
   private _saveTimer: ReturnType<typeof setTimeout> | null = null;
   private _savePending = false;
+  private _lastStaleCleanupAt = 0;
 
   /** Resolve the state file path for a given chatId */
   private getStateFilePath(chatId?: string): string {
@@ -106,13 +121,77 @@ export class SessionStateManager {
     return !!projectId && /^(telegram|whatsapp)-/i.test(projectId);
   }
 
+  private cloneState(state: SessionState): SessionState {
+    return {
+      ...state,
+      callHistory: [...state.callHistory],
+      writtenFiles: [...state.writtenFiles],
+      fileRecords: [...state.fileRecords],
+      loadedSkills: [...state.loadedSkills],
+      toolCallCounts: { ...state.toolCallCounts },
+      actionSummary: [...state.actionSummary],
+      taskPlanSteps: [...state.taskPlanSteps],
+      toolResultDigest: [...state.toolResultDigest],
+    };
+  }
+
+  private rememberActiveSession(chatId: string, state: SessionState = this.state): void {
+    if (!chatId) return;
+    this.activeChatSessions.delete(chatId);
+    this.activeChatSessions.set(chatId, this.cloneState(state));
+
+    while (this.activeChatSessions.size > MAX_ACTIVE_CHAT_SESSIONS) {
+      let oldestChatId: string | null = null;
+      let oldestActivity = Number.POSITIVE_INFINITY;
+
+      for (const [id, cachedState] of this.activeChatSessions.entries()) {
+        const activity = cachedState.lastActivityAt || cachedState.createdAt || 0;
+        if (activity < oldestActivity) {
+          oldestActivity = activity;
+          oldestChatId = id;
+        }
+      }
+
+      if (!oldestChatId) break;
+      this.activeChatSessions.delete(oldestChatId);
+    }
+  }
+
+  private trimStateForRetention(): void {
+    this.state.callHistory = this.state.callHistory.slice(-MAX_CALL_HISTORY);
+    this.state.writtenFiles = this.state.writtenFiles.slice(-MAX_WRITTEN_FILES);
+    this.state.loadedSkills = this.state.loadedSkills.slice(-MAX_LOADED_SKILLS);
+    this.state.toolResultDigest = this.state.toolResultDigest.slice(-MAX_TOOL_RESULT_DIGEST);
+    this.state.fileRecords = this.state.fileRecords.slice(-80); // Keep 80 for rich file history
+    this.state.actionSummary = this.state.actionSummary.slice(-15);
+    this.state.taskPlanSteps = this.state.taskPlanSteps.slice(0, 20);
+  }
+
+  private maybeCleanupStaleSessions(): void {
+    const now = Date.now();
+    if (now - this._lastStaleCleanupAt < STALE_CLEANUP_INTERVAL_MS) return;
+    this._lastStaleCleanupAt = now;
+    this.cleanupStaleSessions().catch(() => undefined);
+  }
+
+  private formatToolDigestForSummary(): string {
+    const digest = (this.state.toolResultDigest || []).slice(-10);
+    if (digest.length === 0) return '';
+
+    return digest.map((entry, index) => {
+      const args = String(entry.args || '').replace(/\s+/g, ' ').substring(0, 90);
+      const result = String(entry.result || '').replace(/\s+/g, ' ').substring(0, 220);
+      return `  ${ index + 1 }. ${ entry.tool }(${ args }) -> ${ result }`;
+    }).join('\n');
+  }
+
   /**
    * Load session state from disk. Returns true if a valid (non-expired) session was restored.
    */
   public async load(chatId?: string): Promise<boolean> {
     try {
       const stateFile = this.getStateFilePath(chatId || this.currentProjectId || undefined);
-      
+
       if (!await fs.pathExists(stateFile)) {
         this.state = { ...EMPTY_STATE, createdAt: Date.now(), lastActivityAt: Date.now(), boundChatId: chatId || '' };
         this.loaded = true;
@@ -122,9 +201,11 @@ export class SessionStateManager {
       const data = await fs.readJson(stateFile);
 
       // Check if session is expired (idle too long)
+      // Long-task sessions NEVER auto-expire
       const elapsed = Date.now() - (data.lastActivityAt || 0);
-      if (elapsed > SESSION_TIMEOUT_MS) {
-        console.log(`[Session] ⏰ Session expired (${ (elapsed / 60000).toFixed(1) } min idle). Starting fresh.`);
+      const effectiveTimeout = data.longTaskMode ? LONG_TASK_TIMEOUT_MS : SESSION_TIMEOUT_MS;
+      if (elapsed > effectiveTimeout) {
+        console.log(`[Session] ⏰ Session expired (${ (elapsed / 60000).toFixed(1) } min idle, mode: ${data.longTaskMode ? 'long-task' : 'normal'}). Starting fresh.`);
         this.state = { ...EMPTY_STATE, createdAt: Date.now(), lastActivityAt: Date.now(), messageCount: 0, boundChatId: '' };
         this.loaded = true;
         await this.save();
@@ -133,12 +214,7 @@ export class SessionStateManager {
 
       // BUG FIX: Check if session is TOO OLD (absolute age, not just idle time)
       const absoluteAge = Date.now() - (data.createdAt || 0);
-      const MAX_SESSION_AGE_MS = 2 * 60 * 60 * 1000; // 2 hours absolute max
       if (absoluteAge > MAX_SESSION_AGE_MS) {
-        console.log(`[Session] 🕐 Session too old (${ (absoluteAge / 60000).toFixed(1) } min absolute age). Starting fresh.`);
-        this.state = { ...EMPTY_STATE, createdAt: Date.now(), lastActivityAt: Date.now(), messageCount: 0, boundChatId: '' };
-        this.loaded = true;
-        await this.save();
         return false;
       }
 
@@ -160,6 +236,7 @@ export class SessionStateManager {
         boundChatId: data._projectId || '',
         toolResultDigest: Array.isArray(data.toolResultDigest) ? data.toolResultDigest : [],
       };
+      this.trimStateForRetention();
       this.loaded = true;
       this.currentProjectId = data._projectId || null;
 
@@ -231,11 +308,12 @@ export class SessionStateManager {
           boundChatId: projectId,
           toolResultDigest: Array.isArray(data.toolResultDigest) ? data.toolResultDigest : [],
         };
+        this.trimStateForRetention();
         this.currentProjectId = projectId;
         this.loaded = true;
         
         // Cache in memory for fast access
-        this.activeChatSessions.set(projectId, { ...this.state });
+        this.rememberActiveSession(projectId);
         
         const sessionAge = ((Date.now() - this.state.createdAt) / 60000).toFixed(1);
         console.log(`[Session] ✅ Restored ISOLATED session for chat ${projectId.substring(0, 8)}… (${sessionAge} min old, ${this.state.callHistory.length} calls, ${this.state.fileRecords.length} files, msg #${this.state.messageCount})`);
@@ -251,7 +329,7 @@ export class SessionStateManager {
       this.state = { ...EMPTY_STATE, createdAt: Date.now(), lastActivityAt: Date.now(), boundChatId: projectId, messageCount: 0 };
       this.currentProjectId = projectId;
       this.loaded = true;
-      this.activeChatSessions.set(projectId, { ...this.state });
+      this.rememberActiveSession(projectId);
       return false;
     }
 
@@ -290,9 +368,10 @@ export class SessionStateManager {
       
       if (chatId) {
         const chatFile = this.getStateFilePath(chatId);
+        this.trimStateForRetention();
         writes.push(fs.writeJson(chatFile, { ...this.state, _projectId: chatId }, { spaces: 2 }));
         // Update in-memory cache
-        this.activeChatSessions.set(chatId, { ...this.state });
+        this.rememberActiveSession(chatId);
       }
       
       // Also save to legacy file for backward compatibility, but never let
@@ -302,6 +381,7 @@ export class SessionStateManager {
       }
       
       await Promise.all(writes);
+      this.maybeCleanupStaleSessions();
     } catch (err: any) {
       console.warn(`[Session] ⚠️ Failed to save session: ${ err.message }`);
     }
@@ -358,6 +438,7 @@ export class SessionStateManager {
     if (partial.taskDecomposerUsed !== undefined) this.state.taskDecomposerUsed = partial.taskDecomposerUsed;
     if (partial.toolCallCounts) this.state.toolCallCounts = Object.fromEntries(partial.toolCallCounts);
     if (partial.toolResultDigest) this.state.toolResultDigest = [...partial.toolResultDigest];
+    this.trimStateForRetention();
 
   }
 
@@ -380,6 +461,44 @@ export class SessionStateManager {
   /** Get the agent's last output. */
   public getLastAgentOutput(): string {
     return this.state.lastAgentOutput;
+  }
+
+  /**
+   * Enable LONG-TASK MODE for this session.
+   * Session becomes immortal (30-day max instead of 72h idle).
+   */
+  public enableLongTaskMode(): void {
+    this.state.longTaskMode = true;
+    this.state.lastExtendedAt = Date.now();
+    this.state.extensionCount = (this.state.extensionCount ?? 0) + 1;
+    console.log(`[Session] 🚀 Long-task mode ENABLED — session immortal until task completion.`);
+    this.debouncedSave();
+  }
+
+  /** Disable long-task mode, return to 72h idle timeout. */
+  public disableLongTaskMode(): void {
+    this.state.longTaskMode = false;
+    console.log(`[Session] ⏱ Long-task mode disabled. Normal timeout restored.`);
+    this.debouncedSave();
+  }
+
+  /** Returns true if this session is in long-task mode (never auto-expires). */
+  public isLongTaskMode(): boolean {
+    return !!this.state.longTaskMode;
+  }
+
+  /**
+   * Extend session lifetime. Call on every tool execution.
+   * Resets idle timer. In long-task mode session never expires anyway.
+   * Saves every 10 extensions to avoid excessive disk writes.
+   */
+  public extendSession(): void {
+    this.state.lastActivityAt = Date.now();
+    this.state.lastExtendedAt = Date.now();
+    this.state.extensionCount = (this.state.extensionCount ?? 0) + 1;
+    if ((this.state.extensionCount % 10) === 0) {
+      this.debouncedSave();
+    }
   }
 
   /**
@@ -477,7 +596,14 @@ export class SessionStateManager {
    * Returns empty string if nothing meaningful happened yet.
    */
   public getSessionSummary(): string {
-    if (this.state.actionSummary.length === 0 && this.state.fileRecords.length === 0 && !this.state.lastUserMessage) {
+    if (
+      this.state.actionSummary.length === 0 &&
+      this.state.fileRecords.length === 0 &&
+      this.state.toolResultDigest.length === 0 &&
+      this.state.taskPlanSteps.length === 0 &&
+      !this.state.lastAgentOutput &&
+      !this.state.lastUserMessage
+    ) {
       return '';
     }
 
@@ -516,14 +642,32 @@ export class SessionStateManager {
       parts.push(`Recent actions:\n${ recent.map((a, i) => `  ${ i + 1 }. ${ a }`).join('\n') }`);
     }
 
-    // Brief mention of last output
-    if (this.state.lastAgentOutput) {
-      parts.push(`Last output preview: "${ this.state.lastAgentOutput.substring(0, 100) }..."`);
+    const toolDigestSummary = this.formatToolDigestForSummary();
+    if (toolDigestSummary) {
+      parts.push(`Recent tool evidence already gathered:\n${ toolDigestSummary }`);
     }
 
-    return parts.length > 0
-      ? `\n━━━ SESSION MEMORY ━━━\n${ parts.join('\n') }\n\nIMPORTANT: If user says "work more", "add more", "continue" — enhance the FILES LISTED ABOVE. Use workspace_read_file to review them, then workspace_edit_file to improve. Do NOT recreate from scratch.\n━━━ END SESSION ━━━`
-      : '';
+    if (this.state.lastAgentOutput) {
+      parts.push(`Last agent output: "${ this.state.lastAgentOutput.substring(0, 150) }"`);
+    }
+
+    if (parts.length === 0) return '';
+
+    return [
+      '',
+      '\u2501\u2501\u2501 AGENT SELF-AWARENESS (ALWAYS ACTIVE — EVERY SINGLE MESSAGE) \u2501\u2501\u2501',
+      ...parts,
+      '',
+      '\u26a1 IRON RULES — NON-NEGOTIABLE, EVERY MESSAGE:',
+      '  \u2022 NEVER re-create, re-download, re-profile, or re-inspect anything listed above.',
+      '  \u2022 File listed above = it EXISTS. Do NOT create it again. Do NOT check if it needs creation.',
+      '  \u2022 Tool evidence above = those commands ALREADY RAN. Do NOT re-run them.',
+      '  \u2022 Your ONLY valid job is the NEXT MISSING step — not redoing completed work.',
+      '  \u2022 Final deliverable (Excel/PDF/report) NOT in files list? \u2192 CREATE IT NOW as first action.',
+      '  \u2022 Any message (continue/cont/next/go/more) \u2192 resume from LAST PENDING STEP, not from scratch.',
+      '  \u2022 NEVER start an unrelated task when active work context exists above.',
+      '\u2501\u2501\u2501 END SELF-AWARENESS \u2501\u2501\u2501',
+    ].join('\n');
   }
 
   /**
@@ -547,11 +691,17 @@ export class SessionStateManager {
     } catch { /* silent */ }
   }
 
+
   /**
    * Check if we have an active session with meaningful state.
    */
   public hasActiveSession(): boolean {
-    return this.state.callHistory.length > 0 || this.state.fileRecords.length > 0;
+    return this.state.callHistory.length > 0 ||
+      this.state.fileRecords.length > 0 ||
+      this.state.actionSummary.length > 0 ||
+      this.state.toolResultDigest.length > 0 ||
+      !!this.state.lastAgentOutput ||
+      this.state.taskPlanSteps.length > 0;
   }
 
   /** Increment message count — called once per user message */
@@ -622,11 +772,12 @@ export class SessionStateManager {
     if (cached) {
       // Save current state before swapping
       if (this.currentProjectId && this.currentProjectId !== chatId) {
-        this.activeChatSessions.set(this.currentProjectId, { ...this.state });
+        this.rememberActiveSession(this.currentProjectId);
       }
-      this.state = { ...cached };
+      this.state = this.cloneState(cached);
       this.currentProjectId = chatId;
       this.loaded = true;
+      this.rememberActiveSession(chatId);
       console.log(`[Session] \u26a1 Hot-swapped to chat ${chatId.substring(0, 8)}\u2026 (from memory cache)`);
       return true;
     }

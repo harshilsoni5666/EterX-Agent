@@ -3,7 +3,7 @@ import { ToolDefinition } from '../../schemas';
 import Papa from 'papaparse';
 import fs from 'fs-extra';
 import { createReadStream } from 'fs';
-import { resolveReadableWorkspacePath } from '../../workspace/path_resolver';
+import { resolveReadableWorkspacePathForContext } from '../../workspace/path_resolver';
 
 export const csvAnalyzerTool: ToolDefinition = {
   name: 'csv_data_analyzer',
@@ -25,8 +25,8 @@ export const csvAnalyzerTool: ToolDefinition = {
     note: z.string().optional(),
     error: z.string().optional()
   }),
-  execute: async (input: { filename: string, previewRows: number, fullScan?: boolean }) => {
-    const safePath = resolveReadableWorkspacePath(input.filename);
+  execute: async (input: { filename: string, previewRows: number, fullScan?: boolean }, context?: any) => {
+    const safePath = resolveReadableWorkspacePathForContext(input.filename, context);
     console.log(`[Tool: csv_analyzer] Analyzing ${safePath}`);
     
     try {

@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { ToolDefinition } from '../../schemas';
 import { codeIntelligence } from '../../adaptive';
-import path from 'path';
+import { resolveReadableWorkspacePathForContext } from '../../workspace/path_resolver';
 
 /**
  * Code Intelligence Tool — Deep Code Understanding
@@ -33,10 +33,8 @@ Use this BEFORE modifying code to understand the codebase structure.`,
     mode: z.string(),
     result: z.any()
   }),
-  execute: async (input: { mode: string, target: string }) => {
-    const targetPath = path.isAbsolute(input.target)
-      ? input.target
-      : path.resolve(process.cwd(), input.target);
+  execute: async (input: { mode: string, target: string }, context?: any) => {
+    const targetPath = resolveReadableWorkspacePathForContext(input.target, context);
 
     try {
       if (input.mode === 'analyze') {

@@ -4,8 +4,13 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import path from 'path';
 import fs from 'fs-extra';
+import { resolveFinalArtifactPathForContext } from '../../workspace/path_resolver';
 
 const execAsync = promisify(exec);
+
+function ensureExtension(filePath: string, extension: string): string {
+  return filePath.toLowerCase().endsWith(extension.toLowerCase()) ? filePath : `${filePath}${extension}`;
+}
 
 /**
  * Text-to-Speech Tool
@@ -32,13 +37,11 @@ export const ttsTool: ToolDefinition = {
     filePath: z.string(),
     message: z.string()
   }),
-  execute: async (input: { text: string, voice?: string, filename?: string }) => {
-    const outputDir = path.resolve(process.cwd(), '.workspaces', 'temp', 'audio');
-    await fs.ensureDir(outputDir);
-
+  execute: async (input: { text: string, voice?: string, filename?: string }, context?: any) => {
     const voice = input.voice || 'en-US-GuyNeural';
-    const filename = input.filename || `speech_${Date.now()}.mp3`;
-    const filePath = path.join(outputDir, filename);
+    const filename = input.filename || `speech_${Date.now()}.wav`;
+    const filePath = ensureExtension(resolveFinalArtifactPathForContext(filename, '.wav', undefined, context), '.wav');
+    await fs.ensureDir(path.dirname(filePath));
     const textEscaped = input.text.replace(/'/g, "''").replace(/"/g, '`"').substring(0, 5000);
 
     console.log(`[Tool: text_to_speech] Converting ${input.text.length} chars with voice: ${voice}`);
@@ -49,13 +52,13 @@ export const ttsTool: ToolDefinition = {
       const psScript = `
         Add-Type -AssemblyName System.Speech;
         $synth = New-Object System.Speech.Synthesis.SpeechSynthesizer;
-        $synth.SetOutputToWaveFile('${filePath.replace(/\\/g, '\\\\').replace('.mp3', '.wav')}');
+        $synth.SetOutputToWaveFile('${filePath.replace(/\\/g, '\\\\')}');
         $synth.Speak('${textEscaped}');
         $synth.Dispose();
         Write-Output 'Speech generated successfully.';
       `.trim();
 
-      const wavPath = filePath.replace('.mp3', '.wav');
+      const wavPath = filePath;
       await execAsync(psScript, { shell: 'powershell.exe' });
 
       // Check if file was created
@@ -64,7 +67,7 @@ export const ttsTool: ToolDefinition = {
         return {
           success: true,
           filePath: wavPath,
-          message: `Audio generated: ${filename.replace('.mp3', '.wav')} (${(stats.size / 1024).toFixed(1)} KB) using System.Speech TTS`
+          message: `Audio generated: ${path.basename(wavPath)} (${(stats.size / 1024).toFixed(1)} KB) using System.Speech TTS`
         };
       }
 
@@ -80,13 +83,13 @@ export const ttsTool: ToolDefinition = {
           $synth.SetOutputToWaveStream($stream);
           $synth.Speak('${textEscaped}');
           $bytes = $stream.ToArray();
-          [System.IO.File]::WriteAllBytes('${filePath.replace(/\\/g, '\\\\').replace('.mp3', '.wav')}', $bytes);
+          [System.IO.File]::WriteAllBytes('${filePath.replace(/\\/g, '\\\\')}', $bytes);
           $synth.Dispose();
           $stream.Dispose();
           Write-Output 'OK';
         `.trim();
 
-        const wavPath = filePath.replace('.mp3', '.wav');
+        const wavPath = filePath;
         await execAsync(fallbackScript, { shell: 'powershell.exe' });
         
         if (await fs.pathExists(wavPath)) {

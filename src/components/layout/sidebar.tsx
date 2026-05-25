@@ -2,7 +2,7 @@ import React from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Plus, X, ChevronRight, Check } from 'lucide-react';
-import { PremiumShare, PremiumEdit, PremiumStar, PremiumFolder, PremiumTrash, PremiumSearch, PremiumDashboard, PremiumBot, PremiumLayers, PremiumFolderOpen, PremiumPanelLeft, PremiumDownload, PremiumMoreHorizontal, PremiumCheckSquare, PremiumSettings } from '../ui/premium-icons';
+import { PremiumShare, PremiumEdit, PremiumStar, PremiumFolder, PremiumTrash, PremiumSearch, PremiumDashboard, PremiumAgent, PremiumLayers, PremiumFolderOpen, PremiumPanelLeft, PremiumDownload, PremiumMoreHorizontal, PremiumCheckSquare, PremiumSettings } from '../ui/premium-icons';
 import { Tooltip } from '../ui/tooltip';
 
 const SidebarToggleIcon = ({ isOpen, isHovered, sizeClass = "w-[18px] h-[18px]" }: { isOpen: boolean, isHovered: boolean, sizeClass?: string }) => {
@@ -454,7 +454,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               {[
                 { id: 'search', label: 'Search', icon: PremiumSearch, tooltip: 'Search conversations', onClick: onSearchClick },
                 { id: 'workspace', label: 'Workspace', icon: PremiumDashboard, tooltip: 'Manage workspace' },
-                { id: 'agents', label: 'Agents', icon: PremiumBot, tooltip: 'Manage agents', onClick: () => setActiveView('agents'), active: activeView === 'agents' },
+                { id: 'agents', label: 'Agents', icon: PremiumAgent, tooltip: 'Manage agents', onClick: () => setActiveView('agents'), active: activeView === 'agents' },
                 { id: 'channels', label: 'Channels', icon: PremiumLayers, tooltip: 'View channels' },
                 { id: 'file-manager', label: 'File Manager', icon: PremiumFolderOpen, tooltip: 'File Manager' },
               ].map(item => {
@@ -576,7 +576,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
               <div
                 ref={scrollContainerRef}
-                className="flex-1 overflow-y-auto eterx-modern-scrollbar px-2.5 space-y-[3px] relative z-10"
+                className="flex-1 overflow-y-auto eterx-scrollbar pl-2.5 pr-1.5 mr-1 space-y-[3px] relative z-10"
                 style={{ scrollBehavior: isDragSelecting ? 'auto' : undefined, overscrollBehavior: 'contain' }}
               >
                 {chats.length === 0 ? (

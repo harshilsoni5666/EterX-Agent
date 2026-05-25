@@ -4,6 +4,7 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import path from 'path';
 import fs from 'fs-extra';
+import { resolveWorkspaceDirectoryForContext } from '../../workspace/path_resolver';
 
 const execAsync = promisify(exec);
 
@@ -77,7 +78,7 @@ Use for: long installs, builds, data processing, file watching, anything that ta
   execute: async (input: {
     mode: string, command?: string, description?: string,
     taskId?: string, cwd?: string
-  }) => {
+  }, context?: any) => {
     await fs.ensureDir(TASKS_DIR);
 
     switch (input.mode) {
@@ -87,9 +88,7 @@ Use for: long installs, builds, data processing, file watching, anything that ta
         }
 
         const taskId = `bg_${Date.now()}`;
-        const workDir = input.cwd && path.isAbsolute(input.cwd)
-          ? input.cwd
-          : input.cwd ? path.resolve(process.cwd(), input.cwd) : process.cwd();
+        const workDir = resolveWorkspaceDirectoryForContext(input.cwd, context);
 
         const task: BackgroundTask = {
           id: taskId,

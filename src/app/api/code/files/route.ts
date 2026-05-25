@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { promises as fs } from 'fs';
 import * as path from 'path';
 import { createHash } from 'crypto';
+import { getPathResolverInfo } from '@/lib/agent/workspace/path_resolver';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -118,7 +119,7 @@ async function getFileTree(dirPath: string, depth: number, maxDepth: number, sta
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
-    const dirPath = searchParams.get('path') || process.cwd();
+    const dirPath = searchParams.get('path') || getPathResolverInfo().desktopPath;
     const requestedDepth = Number.parseInt(searchParams.get('depth') || '3', 10);
     const maxDepth = Number.isFinite(requestedDepth)
       ? Math.min(Math.max(requestedDepth, 0), MAX_TREE_DEPTH)

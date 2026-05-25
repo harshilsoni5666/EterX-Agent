@@ -5,6 +5,7 @@ import fs from 'fs-extra';
 import { createReadStream } from 'fs';
 import { open as openFile } from 'fs/promises';
 import * as readline from 'readline';
+import { resolveReadableWorkspacePathForContext } from '../../workspace/path_resolver';
 
 const FULL_TEXT_STATS_LIMIT_BYTES = 2 * 1024 * 1024;
 const DIFF_FULL_READ_LIMIT_BYTES = 2 * 1024 * 1024;
@@ -54,8 +55,8 @@ MODES:
   execute: async (input: {
     mode: string, target: string, secondTarget?: string,
     lines?: number, pattern?: string
-  }) => {
-    const resolvePath = (p: string) => path.isAbsolute(p) ? p : path.resolve(process.cwd(), p);
+  }, context?: any) => {
+    const resolvePath = (p: string) => resolveReadableWorkspacePathForContext(p, context);
     const targetPath = resolvePath(input.target);
 
     switch (input.mode) {

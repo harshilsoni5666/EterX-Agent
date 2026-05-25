@@ -6,7 +6,12 @@ import fse from 'fs-extra';
 import fs from 'fs/promises';
 import path from 'path';
 import { imageSize } from 'image-size';
-import { checkEterXProtection } from '../../workspace/path_resolver';
+import {
+  checkEterXProtection,
+  getRuntimeWorkspaceRoot,
+  hasRuntimeWorkspaceContext,
+  resolveWorkspaceDirectoryForContext,
+} from '../../workspace/path_resolver';
 
 type RawImageCandidate = {
   url: string;
@@ -173,10 +178,19 @@ function extensionFromContentType(contentType: string, sourceUrl: string): strin
   return '.jpg';
 }
 
-function resolveOutputDir(outputDir?: string): string {
-  const targetDir = outputDir?.trim()
-    ? (path.isAbsolute(outputDir) ? outputDir : path.resolve(process.cwd(), outputDir))
-    : path.resolve(process.cwd(), '.workspaces', 'temp', 'image-assets');
+function resolveOutputDir(outputDir?: string, context?: any): string {
+  let targetDir: string;
+
+  if (outputDir?.trim()) {
+    targetDir = resolveWorkspaceDirectoryForContext(outputDir, context);
+  } else if (hasRuntimeWorkspaceContext(context)) {
+    const publicDir = path.join(getRuntimeWorkspaceRoot(context), 'public');
+    targetDir = fse.existsSync(publicDir)
+      ? path.join(publicDir, 'eterx-assets')
+      : path.resolve(process.cwd(), '.workspaces', 'temp', 'image-assets');
+  } else {
+    targetDir = path.resolve(process.cwd(), '.workspaces', 'temp', 'image-assets');
+  }
 
   const protection = checkEterXProtection(targetDir);
   if (protection.blocked) throw new Error(protection.reason);
@@ -357,7 +371,7 @@ For website projects, pass outputDir as the project's public asset folder, for e
     maxBytes?: number;
     allowSvg?: boolean;
     strictDescriptionMatch?: boolean;
-  }) => {
+  }, context?: any) => {
     const role = input.visualRole || 'card';
     const count = Math.min(8, Math.max(1, input.count || 3));
     const roleMin = ROLE_MIN_SIZE[role] || ROLE_MIN_SIZE.card;
@@ -366,7 +380,7 @@ For website projects, pass outputDir as the project's public asset folder, for e
     const maxBytes = Math.max(128 * 1024, input.maxBytes || 8 * 1024 * 1024);
     const allowSvg = input.allowSvg === true;
     const strictDescriptionMatch = input.strictDescriptionMatch !== false;
-    const outputDir = resolveOutputDir(input.outputDir);
+    const outputDir = resolveOutputDir(input.outputDir, context);
     const fileStem = safeFilenameStem(input.query);
     const queryTokens = tokenize(input.query);
     const searchQuery = `${input.query} ${ROLE_QUERY_HINTS[role] || ROLE_QUERY_HINTS.card}`.trim();

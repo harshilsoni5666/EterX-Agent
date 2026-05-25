@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { ToolDefinition } from '../../schemas';
 import fs from 'fs-extra';
-import path from 'path';
+import { resolveReadableWorkspacePathForContext } from '../../workspace/path_resolver';
 
 interface WatchedEntry {
   id: string;
@@ -24,13 +24,12 @@ export const fileWatcherTool: ToolDefinition = {
     watchId: z.string().optional().describe('ID of the watch')
   }),
   outputSchema: z.object({ success: z.boolean(), message: z.string(), data: z.any().optional() }),
-  execute: async (input: any) => {
-    const root = path.resolve(process.cwd(), '.workspaces', 'temp');
+  execute: async (input: any, context?: any) => {
     try {
       switch (input.action) {
         case 'watch': {
           if (!input.path) return { success: false, message: 'path required' };
-          const full = path.resolve(root, input.path);
+          const full = resolveReadableWorkspacePathForContext(input.path, context);
           if (!await fs.pathExists(full)) return { success: false, message: 'Path not found' };
           const stats = await fs.stat(full);
           const id = input.watchId || `watch_${Date.now()}`;

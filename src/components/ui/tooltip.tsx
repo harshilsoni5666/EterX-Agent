@@ -2,7 +2,17 @@ import React, { useState, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 
-export const Tooltip = ({ children, text, side = 'bottom' }: { children: React.ReactNode, text: string, side?: 'top' | 'bottom' | 'left' | 'right' }) => {
+export const Tooltip = ({
+  children,
+  text,
+  side = 'bottom',
+  variant = 'light',
+}: {
+  children: React.ReactNode;
+  text: string;
+  side?: 'top' | 'bottom' | 'left' | 'right';
+  variant?: 'light' | 'dark';
+}) => {
   const [visible, setVisible] = useState(false);
   const [coords, setCoords] = useState({ left: 0, top: 0, width: 96, arrowLeft: 43, arrowTop: 10 });
   const ref = useRef<HTMLDivElement>(null);
@@ -60,10 +70,10 @@ export const Tooltip = ({ children, text, side = 'bottom' }: { children: React.R
   }, [visible, side, text]);
 
   const arrowClass = {
-    top: "border-b border-r",
-    bottom: "border-t border-l",
-    left: "border-t border-r",
-    right: "border-b border-l"
+    top: variant === 'dark' ? "border-b border-r border-white/[0.08]" : "border-b border-r border-white",
+    bottom: variant === 'dark' ? "border-t border-l border-white/[0.08]" : "border-t border-l border-white",
+    left: variant === 'dark' ? "border-t border-r border-white/[0.08]" : "border-t border-r border-white",
+    right: variant === 'dark' ? "border-b border-l border-white/[0.08]" : "border-b border-l border-white"
   };
 
   const arrowStyle =
@@ -88,12 +98,16 @@ export const Tooltip = ({ children, text, side = 'bottom' }: { children: React.R
               transition={{ type: "spring", stiffness: 400, damping: 25 }}
             >
               <div
-                className="relative w-full whitespace-nowrap rounded-[10px] border border-white bg-white px-2.5 py-1.5 text-center text-[12px] font-semibold tracking-[0.005em] text-[#1F2933] shadow-[0_10px_22px_rgba(0,0,0,0.22),inset_0_1px_0_rgba(255,255,255,1)]"
+                className={`relative w-full whitespace-nowrap rounded-[10px] px-2.5 py-1.5 text-center text-[12px] font-semibold tracking-[0.005em] shadow-[0_10px_22px_rgba(0,0,0,0.22)] ${
+                  variant === 'dark'
+                    ? 'border border-white/[0.08] bg-[#2C2C2C] text-[#D4D1CB] shadow-[0_14px_32px_rgba(0,0,0,0.38),inset_0_1px_0_rgba(255,255,255,0.05)]'
+                    : 'border border-white bg-white text-[#1F2933] shadow-[0_10px_22px_rgba(0,0,0,0.22),inset_0_1px_0_rgba(255,255,255,1)]'
+                }`}
                 style={{ fontFamily: tooltipFontFamily }}
               >
                 {text}
                 <div
-                  className={`absolute h-2.5 w-2.5 rotate-45 border-white bg-white ${arrowClass[side]}`}
+                  className={`absolute h-2.5 w-2.5 rotate-45 ${variant === 'dark' ? 'bg-[#2C2C2C]' : 'bg-white'} ${arrowClass[side]}`}
                   style={arrowStyle}
                 />
               </div>

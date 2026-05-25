@@ -4,7 +4,7 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import path from 'path';
 import fs from 'fs-extra';
-import { resolveReadableWorkspacePath } from '../../workspace/path_resolver';
+import { resolveReadableWorkspacePathForContext, resolveWorkspaceDirectoryForContext } from '../../workspace/path_resolver';
 
 const execAsync = promisify(exec);
 
@@ -59,10 +59,11 @@ Use this to self-verify before reporting completion.`,
   execute: async (input: {
     mode: string, target: string, expected?: string,
     secondaryTarget?: string, minSize?: number, maxSize?: number
-  }) => {
+  }, context?: any) => {
     console.log(`[Tool: realtime_verify] Mode: ${input.mode} | Target: ${input.target}`);
 
-    const resolvePath = (p: string) => resolveReadableWorkspacePath(p);
+    const resolvePath = (p: string) => resolveReadableWorkspacePathForContext(p, context);
+    const commandCwd = resolveWorkspaceDirectoryForContext(undefined, context);
 
     try {
       switch (input.mode) {
@@ -146,7 +147,7 @@ Use this to self-verify before reporting completion.`,
             const { stdout, stderr } = await execAsync(input.target, {
               timeout: 30000,
               maxBuffer: 5 * 1024 * 1024,
-              cwd: process.cwd()
+              cwd: commandCwd
             });
             const output = stdout + stderr;
             const preview = output.substring(0, 1000);
@@ -208,7 +209,7 @@ Use this to self-verify before reporting completion.`,
           }
 
           try {
-            const { stdout, stderr } = await execAsync(command, { timeout: 30000, cwd: process.cwd() });
+            const { stdout, stderr } = await execAsync(command, { timeout: 30000, cwd: path.dirname(fp) });
             const output = (stdout + stderr).trim();
             const hasErrors = output.toLowerCase().includes('error');
             return {

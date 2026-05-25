@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { ToolDefinition } from '../../schemas';
+import { resolveReadableWorkspacePathForContext } from '../../workspace/path_resolver';
 
 /**
  * Full-Power Slack Connector Tool
@@ -95,7 +96,7 @@ Available actions:
     results: z.any().optional()
   }),
 
-  execute: async (input: any) => {
+  execute: async (input: any, context?: any) => {
     try {
       if (!slackAvailable) {
         return { success: false, status: 'Slack SDK not installed. Run: npm install @slack/web-api' };
@@ -216,7 +217,7 @@ Available actions:
         let finalFilename = input.filename || 'agent_output.txt';
 
         if (input.file_path) {
-          const absolutePath = pathMod.isAbsolute(input.file_path) ? input.file_path : pathMod.resolve(process.cwd(), input.file_path);
+          const absolutePath = resolveReadableWorkspacePathForContext(input.file_path, context);
           if (await fsExtra.pathExists(absolutePath)) {
             fileContent = await fsExtra.readFile(absolutePath);
             finalFilename = input.filename || pathMod.basename(absolutePath);

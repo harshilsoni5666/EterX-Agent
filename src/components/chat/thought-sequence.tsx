@@ -10,7 +10,7 @@ import {
 import ReactMarkdown from 'react-markdown';
 import { markdownComponents, remarkPlugins, rehypePlugins } from './markdown-renderer';
 import { getConnectorIcon } from '../layout/connectors-modal';
-import { AGENT_ICONS, resolveAgentIcon, ComputerIcon } from './agent-icons';
+import { AGENT_ICONS, resolveAgentIcon, AgentAssetIcon } from './agent-icons';
 import { AgentFace } from './agent-face';
 
 
@@ -126,6 +126,23 @@ const getToolMeta = (text: string, type: string, _iconName?: string) => {
   return { icon: null, verb, color: '#E8E6E3' };
 };
 
+const TERMINAL_ACTION_PATTERN = /\b(?:shell|terminal|command|exec|run|process|server|watch|powershell|pwsh|cmd(?:\.exe)?|bash|zsh|sh|git|npm|npx|pnpm|yarn|bun|node|python|py|pip|pytest|tsx|tsc|eslint|prettier|docker|cargo|go\s+(?:test|build|run|vet)|mvn|gradle|java|dotnet|php|ruby|rails|uv|poetry|rg|grep|curl|wget)\b/i;
+
+const shouldUseTerminalIcon = (log: any, subtitle = '', preview?: any) => {
+  const text = String(log?.text || '');
+  const secondary = String(log?.secondary || subtitle || '');
+  const command = String(log?.command || preview?.command || '');
+  const iconCategory = String(log?.iconCategory || '').toLowerCase();
+  const combined = `${text} ${secondary} ${command}`;
+
+  if (log?.type === 'file_edit' || preview?.type === 'file_preview') return false;
+  if (iconCategory === 'terminal') return true;
+  if (preview?.type === 'console_output') return true;
+  if (log?.type === 'console_output') return true;
+  if (['system_shell', 'workspace_run_command', 'terminal_access', 'process_manager'].includes(String(log?.tool || log?.name || ''))) return true;
+  return TERMINAL_ACTION_PATTERN.test(combined);
+};
+
 const displayedTextRegistry = new Map<string, number>();
 
 // No typewriter — show full text immediately for zero-latency reading
@@ -161,6 +178,10 @@ const useThinkTimer = (isLive: boolean, startedAt?: number, updatedAt?: number) 
       const origin = startMs ?? fallbackStartRef.current ?? endMs;
       return Math.max(0, Math.floor((endMs - origin) / 1000));
     };
+    const frozenElapsedFrom = (endMs: number) => {
+      const origin = startMs ?? fallbackStartRef.current ?? endMs;
+      return Math.max(1, Math.ceil(Math.max(0, endMs - origin) / 1000));
+    };
 
     if (isLive) {
       if (fallbackStartRef.current === null) fallbackStartRef.current = startMs ?? Date.now();
@@ -173,9 +194,9 @@ const useThinkTimer = (isLive: boolean, startedAt?: number, updatedAt?: number) 
     }
 
     const frozen = startMs !== null && updateMs !== null
-      ? Math.max(0, Math.floor((updateMs - startMs) / 1000))
+      ? frozenElapsedFrom(updateMs)
       : fallbackStartRef.current !== null
-        ? elapsedFrom(Date.now())
+        ? frozenElapsedFrom(Date.now())
         : 0;
     frozenRef.current = frozen;
     fallbackStartRef.current = null;
@@ -305,7 +326,7 @@ export const ProfessionalThought = ({ text, isLatest, isThinking, variant = 'tho
                 transition={{ duration: 0.18, ease: 'easeOut' }}
                 className="overflow-hidden"
               >
-                <div ref={thoughtScrollRef} onScroll={handleThoughtScroll} className={`${ thoughtCanScroll ? 'eterx-modern-scrollbar overflow-y-auto' : 'overflow-y-hidden' } pl-[59px] pr-5 pb-5 pt-1 text-[14px] leading-[1.72] text-[#A8A5A0]`} style={{ maxHeight: 'min(52vh, 520px)' }}>
+                <div ref={thoughtScrollRef} onScroll={handleThoughtScroll} className={`${ thoughtCanScroll ? 'eterx-scrollbar overflow-y-auto' : 'overflow-y-hidden' } pl-[59px] pr-5 pb-5 pt-1 text-[14px] leading-[1.72] text-[#A8A5A0]`} style={{ maxHeight: 'min(52vh, 520px)' }}>
                   <ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} components={{
                     ...markdownComponents,
                     p: ({ node, ...props }: any) => <p className="mb-3.5 last:mb-0 break-words leading-[1.72] text-[#A8A5A0]" {...props} />,
@@ -540,7 +561,7 @@ const InlineConsole = ({ command, content, exitCode, durationMs }: { command: st
         <div
           ref={scrollRef}
           onScroll={handleScroll}
-          className={`eterx-modern-scrollbar overflow-auto px-3 py-2.5 text-[12px] leading-[1.55] text-[#CFCAC2] ${ full ? 'h-full' : 'max-h-[260px] min-h-[74px]' }`}
+          className={`eterx-scrollbar overflow-auto px-3 py-2.5 text-[12px] leading-[1.55] text-[#CFCAC2] ${ full ? 'h-full' : 'max-h-[260px] min-h-[74px]' }`}
         >
           <div className="min-w-max whitespace-pre pr-4">
             {content
@@ -605,7 +626,7 @@ const InlineDiffView = ({ filename, diffLines }: { filename: string, diffLines: 
         <div
           ref={scrollRef}
           onScroll={handleScroll}
-          className={`eterx-modern-scrollbar overflow-auto text-[12px] leading-[1.55] ${ full ? 'h-full' : 'max-h-[300px] min-h-[74px]' }`}
+          className={`eterx-scrollbar overflow-auto text-[12px] leading-[1.55] ${ full ? 'h-full' : 'max-h-[300px] min-h-[74px]' }`}
         >
           {/* Inner container expands to content width — all lines share same horizontal scroll */}
           <div style={{ minWidth: 'max-content' }}>
@@ -679,7 +700,7 @@ const InlineCodeView = ({ filename, content }: { filename: string, content: stri
         <div
           ref={scrollRef}
           onScroll={handleScroll}
-          className={`eterx-modern-scrollbar overflow-auto text-[12px] leading-[1.55] ${ full ? 'h-full' : 'max-h-[300px] min-h-[74px]' }`}
+          className={`eterx-scrollbar overflow-auto text-[12px] leading-[1.55] ${ full ? 'h-full' : 'max-h-[300px] min-h-[74px]' }`}
         >
           {/* Inner div expands to content width — all lines share the same horizontal scroll */}
           <div style={{ minWidth: 'max-content' }}>
@@ -723,8 +744,12 @@ const getDiffStats = (preview: any, log: any) => {
   if (preview?.diffLines?.length) {
     added = preview.diffLines.filter((line: any) => line.type === 'added').length;
     removed = preview.diffLines.filter((line: any) => line.type === 'removed').length;
-  } else if (!preview?.isEdit && preview?.content && added === 0 && removed === 0) {
-    added = String(preview.content).split('\n').length;
+  } else if (preview) {
+    added = numberFrom(preview.added, preview.additions, preview.insertions, preview.linesAdded, added);
+    removed = numberFrom(preview.removed, preview.deleted, preview.deletions, preview.linesRemoved, removed);
+    if (!preview.isEdit && preview.content && added === 0 && removed === 0) {
+      added = String(preview.content).split('\n').length;
+    }
   }
   if (added === 0 && removed === 0) return null;
   return { added, removed };
@@ -773,10 +798,14 @@ const ActionChip = ({
       return searchLogs.find((l: any) => l.type === 'console_output' && String(l.command || '').includes(cmd.substring(0, 20))) || null;
     }
     if (isEdit) {
-      return searchLogs.find((l: any) => l.type === 'file_preview' && String(l.filename || '').includes(fileName)) || null;
+      return searchLogs.find((l: any) => l.type === 'file_preview' && String(l.filename || '').includes(fileName))
+        || allLogs.find((l: any) => l.type === 'file_preview' && String(l.filename || '').includes(fileName))
+        || null;
     }
     if (log.type === 'exploration' && (log.text === 'Reading file' || log.text?.toLowerCase().includes('read'))) {
-      return searchLogs.find((l: any) => l.type === 'file_preview' && String(l.filename || '').includes(fileName)) || null;
+      return searchLogs.find((l: any) => l.type === 'file_preview' && String(l.filename || '').includes(fileName))
+        || allLogs.find((l: any) => l.type === 'file_preview' && String(l.filename || '').includes(fileName))
+        || null;
     }
     return null;
   }, [allLogs, isEdit, log, fileName]);
@@ -786,6 +815,7 @@ const ActionChip = ({
   const fullPathLabel = fullPath || rawPath || fileName;
   const lineContext = hasFile ? getLineContext(subtitle, fileName) : '';
   const diffStats = isEdit ? getDiffStats(preview, log) : null;
+  const fileActionLabel = isEdit ? 'Open diff' : 'Open file';
   // Past-tense verb for display; live overrides to present tense below
   const meta = useMemo(() => {
     if (isEdit) {
@@ -823,16 +853,17 @@ const ActionChip = ({
   }, [isEdit, log.text, log.type, log.icon, log.iconCategory, preview]);
   const displayVerb = isLiveChip ? (meta.verbLive || meta.verbDone) : (meta.verbDone || (meta as any).verb);
   // Open a file into the IDE panel
-  const openInIde = (e: React.MouseEvent, mode?: 'preview') => {
+  const openInIde = (e: React.MouseEvent, mode?: 'preview' | 'code' | 'diff') => {
     e.stopPropagation();
     if (!fullPath) return;
-    const isHtml = /\.(html|htm)$/i.test(fullPath);
+    const preferredMode = mode || (isEdit ? 'diff' : 'code');
     openPanel({
       filename: fileName,
       filepath: fullPath,
       content: preview?.content || '',
       diffLines: preview?.diffLines,
       isEdit: preview?.isEdit || isEdit,
+      activeTabMode: preferredMode,
     });
   };
 
@@ -850,19 +881,40 @@ const ActionChip = ({
       >
         {inCard ? <div className="w-0 shrink-0" /> : <div className="w-1 shrink-0" />}
         {!isThinkChip && (() => {
-          // Always use the 8 premium white icons via resolveAgentIcon
-          const agentEntry = resolveAgentIcon(displayVerb, log.text, log.iconCategory);
+          // Terminal-style traces can arrive with custom text and older computer categories.
+          const iconCategory = shouldUseTerminalIcon(log, subtitle, preview) ? 'terminal' : log.iconCategory;
+          const agentEntry = resolveAgentIcon(displayVerb, log.text, iconCategory);
           const { Icon: AI, color: ac } = agentEntry;
           return <span className="flex h-7 w-7 items-center justify-center shrink-0"><AI isLive={isLiveChip} size={18} color={isLiveChip ? ac : '#DAD6CF'} /></span>;
         })()}
         {isThinkChip && <div className="w-1 shrink-0" />}
         <span className={`shrink-0 truncate text-[14px] font-semibold leading-tight tracking-normal ${isLiveChip ? 'eterx-live-text' : 'text-[#C9C5BE]'}`}>{displayVerb}</span>
         {hasFile && (
-          <span className="flex min-w-0 items-center gap-1.5" title={fullPathLabel}>
-            <span
-              onClick={(e) => openInIde(e)}
-              className="min-w-0 truncate text-[14px] font-medium leading-tight cursor-pointer hover:underline text-[#D6D2CB]"
-            >{fileName}</span>
+          <span className="flex min-w-0 items-center gap-1.5">
+            <button
+              type="button"
+              onClick={(e) => openInIde(e, 'code')}
+              className="min-w-0 truncate text-left text-[14px] font-semibold leading-tight text-[#8BD3FF] transition-colors duration-150 hover:text-[#B9E7FF] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8BD3FF]/25"
+              title={fullPathLabel}
+              aria-label={`Open file: ${fileName}`}
+            >
+              {fileName}
+            </button>
+            {diffStats && (
+              <button
+                type="button"
+                onClick={(e) => openInIde(e, 'diff')}
+                className="group/diff relative -my-1 inline-flex h-7 shrink-0 items-center gap-1 rounded-full px-2 font-mono text-[12.5px] font-bold tabular-nums leading-none text-[#C9C5BE] transition-all duration-150 hover:bg-white/[0.075] hover:shadow-[inset_0_0_0_1px_rgba(255,255,255,0.12),0_8px_20px_rgba(0,0,0,0.20)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/20"
+                aria-label={`${fileActionLabel}: ${fileName}`}
+                title={`${fileActionLabel}: ${fullPathLabel}`}
+              >
+                  <span className="text-[#3EE06F]">+{diffStats.added}</span>
+                  <span className="text-[#FF6D63]">-{diffStats.removed}</span>
+                  <span className="pointer-events-none absolute -top-8 left-1/2 z-30 -translate-x-1/2 whitespace-nowrap rounded-full border border-white/[0.10] bg-[#242424]/96 px-2.5 py-1 text-[11px] font-semibold text-[#E8E6E3] opacity-0 shadow-[0_10px_28px_rgba(0,0,0,0.35)] backdrop-blur-xl transition-all duration-150 group-hover/diff:-top-9 group-hover/diff:opacity-100">
+                    Open diff
+                  </span>
+              </button>
+            )}
             {lineContext && (
               <span className="shrink-0 font-mono text-[12px] font-medium leading-tight text-[#817C74]">
                 {lineContext}
@@ -874,24 +926,12 @@ const ActionChip = ({
           <span className="min-w-0 truncate font-mono text-[13px] leading-tight text-[#8D887F]">{subtitle}</span>
         )}
         <span className="ml-auto flex shrink-0 items-center justify-end gap-2 pl-3">
-          {diffStats && (
-            <span className="flex shrink-0 items-center gap-1 font-mono text-[13px] font-semibold tabular-nums">
-              <span className="text-[#3FB950]">+{diffStats.added}</span>
-              <span className="text-[#FF7B72]">-{diffStats.removed}</span>
-            </span>
-          )}
-          {!isActiveGroup && fullPath && !fullPath.toLowerCase().match(/\.(html|htm)$/) && (
-            <button
-              onClick={(e) => openInIde(e)}
-              className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 rounded-md border border-transparent px-1.5 py-0.5 text-[9.5px] font-bold uppercase text-[#8D8982] hover:border-[#4FC1FF]/20 hover:bg-[#4FC1FF]/10 hover:text-[#4FC1FF]"
-            >IDE</button>
-          )}
           {preview && (
             <ChevronRight className={`h-4 w-4 shrink-0 transition-all ${isExpanded ? 'rotate-90 text-[#C9C5BE]' : 'text-[#8F897F]'} group-hover:translate-x-0.5 group-hover:text-[#C9C5BE]`} />
           )}
           {hasFile && fullPath.toLowerCase().match(/\.(html|htm)$/) && (
             <button
-              onClick={(e) => { e.stopPropagation(); openPanel({ filename: fileName, filepath: fullPath, content: preview?.content || '' }); }}
+              onClick={(e) => { e.stopPropagation(); openPanel({ filename: fileName, filepath: fullPath, content: preview?.content || '', activeTabMode: 'preview' }); }}
               className="flex items-center gap-1 rounded-md border border-white/[0.08] bg-white/[0.045] px-2 py-0.5 text-[10px] font-bold uppercase text-[#C8C6C3] transition-all hover:border-[#4FC1FF]/25 hover:bg-[#4FC1FF]/10 hover:text-[#4FC1FF] shrink-0"
             ><Monitor className="w-2.5 h-2.5" /> Preview</button>
           )}
@@ -919,7 +959,7 @@ const SubAgentCard = ({ log }: { log: any }) => {
     <div className="ml-1 my-1.5 overflow-hidden">
       <button onClick={() => setOpen(!open)} className="w-full flex min-h-[42px] items-center gap-3 rounded-[12px] px-2.5 py-1.5 hover:bg-white/[0.035] transition-colors group">
         <span className="flex h-8 w-8 items-center justify-center shrink-0">
-          <ComputerIcon size={19} color="#E8E6E3" />
+          <AgentAssetIcon size={19} color="#E8E6E3" />
         </span>
         <span className="min-w-0 flex-1 text-left">
           <span className="block truncate text-[15px] font-semibold tracking-normal text-[#A7A39E]">{log.agentName || log.secondary || 'Sub-agent result'}</span>
@@ -932,7 +972,7 @@ const SubAgentCard = ({ log }: { log: any }) => {
       <AnimatePresence>
         {open && (
           <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} className="overflow-hidden">
-            <div className="ml-6 border-l border-white/[0.055] pl-4 pb-3 pt-1 text-[12.5px] text-[#8b949e] leading-relaxed whitespace-pre-wrap font-mono max-h-[300px] overflow-y-auto eterx-modern-scrollbar">
+            <div className="ml-6 border-l border-white/[0.055] pl-4 pb-3 pt-1 text-[12.5px] text-[#8b949e] leading-relaxed whitespace-pre-wrap font-mono max-h-[300px] overflow-y-auto eterx-scrollbar">
               {log.result || log.content || log.text || '(no result)'}
             </div>
           </motion.div>

@@ -1,6 +1,6 @@
-﻿import React, { useRef, useState, useEffect, useCallback } from 'react';
+﻿import React, { useRef, useState, useEffect, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { FileText, X, Check, Folder, FolderOpen, Files, File as FileIcon, ChevronDown, ChevronRight, Image as ImageIcon, AlertCircle } from 'lucide-react';
+import { FileText, X, Check, Folder, File as FileIcon, ChevronDown, ChevronRight, Image as ImageIcon, AlertCircle, ListTodo, CheckCircle2, Circle } from 'lucide-react';
 import { PremiumMic, PremiumSend, PremiumPlus, PremiumAudioLines, PremiumVolume2, PremiumVolumeX, PremiumMicOff } from '../ui/premium-icons';
 import { Tooltip } from '../ui/tooltip';
 import { ConnectorsModal, ConnectorsButton } from './connectors-modal';
@@ -84,6 +84,28 @@ interface Attachment {
   localPath?: string;
 }
 
+interface TaskTrackerStep {
+  id?: string;
+  step: number;
+  name: string;
+  description?: string;
+  status: 'pending' | 'in_progress' | 'done' | 'skipped';
+  tools?: string[];
+  done_when?: string;
+}
+
+interface TaskTrackerState {
+  goal?: string;
+  phase?: 'generating' | 'generated' | 'progress' | 'complete';
+  status?: 'generating' | 'in_progress' | 'completed' | 'failed' | 'stopped';
+  complexity?: string;
+  estimatedMinutes?: number;
+  completedSteps?: number;
+  totalSteps?: number;
+  activeStepName?: string | null;
+  steps?: TaskTrackerStep[];
+}
+
 interface ChatInputProps {
   inputValue: string;
   setInputValue: (val: string) => void;
@@ -122,6 +144,13 @@ interface ChatInputProps {
   isSpeakerMuted?: boolean;
   onToggleSpeakerMute?: () => void;
   isCompressed?: boolean;
+  taskTracker?: TaskTrackerState | null;
+  isNetworkPaused?: boolean;
+  onNetworkPausedAction?: () => void;
+  onOpenAgents?: () => void;
+  onOpenAgentBuilder?: (id: string) => void;
+  onOpenPet?: () => void;
+  activeChatId?: string | null;
 }
 
 const inferFileExtension = (mimeType: string) => {
@@ -146,6 +175,17 @@ const formatAttachmentSize = (bytes: number) => {
   if (!Number.isFinite(bytes) || bytes <= 0) return '';
   if (bytes < 1024 * 1024) return `${ Math.max(1, Math.round(bytes / 1024)) } KB`;
   return `${ (bytes / (1024 * 1024)).toFixed(bytes < 10 * 1024 * 1024 ? 1 : 0) } MB`;
+};
+
+const buildLocalFilePreviewUrl = (filePath?: string) => {
+  if (!filePath) return '';
+  return `/api/preview/${ filePath.replace(/\\/g, '/').split('/').filter(Boolean).map(encodeURIComponent).join('/') }`;
+};
+
+const revokeObjectPreview = (preview?: string) => {
+  if (preview?.startsWith('blob:')) {
+    try { URL.revokeObjectURL(preview); } catch { }
+  }
 };
 
 const VoiceWaveform = ({ volume, isProcessing, cancelVoice, acceptVoice }: { volume: number, isProcessing: boolean, cancelVoice: () => void, acceptVoice: () => void }) => {
@@ -253,6 +293,149 @@ const VoiceWaveform = ({ volume, isProcessing, cancelVoice, acceptVoice }: { vol
 const inputControlButton = "eterx-control-button w-[40px] h-[40px] shrink-0 flex items-center justify-center rounded-full border border-white/[0.18] bg-[#242424]/96 text-white transition-all duration-200 ease-[cubic-bezier(0.2,0.8,0.2,1)] active:scale-[0.96] active:bg-[#303030] hover:text-white hover:bg-[#2D2D2D] hover:border-white/[0.30] group relative overflow-hidden";
 const inputControlSheen = "hidden";
 
+type SlashTrigger = {
+  start: number;
+  end: number;
+  query: string;
+};
+
+type SlashCommand = {
+  id: string;
+  label: string;
+  description: string;
+  prompt: string;
+  iconSrc: string;
+  action?: 'agents' | 'goal' | 'plan' | 'pet';
+};
+
+type SlashPanel = 'agents' | 'goal' | null;
+
+type SavedAgentSummary = {
+  id: string;
+  name: string;
+  description?: string;
+  accessType?: string;
+  isSetup?: boolean;
+};
+
+const CHAT_GOALS_STORAGE_KEY = 'eterx_chat_goals';
+const AGENTS_STORAGE_KEY = 'eterx_agents';
+const NEW_CHAT_GOAL_KEY = 'new-chat';
+
+const getGoalStorageKey = (chatId?: string | null) => chatId || NEW_CHAT_GOAL_KEY;
+
+const readStoredAgents = (): SavedAgentSummary[] => {
+  if (typeof window === 'undefined') return [];
+  try {
+    const saved = window.localStorage.getItem(AGENTS_STORAGE_KEY);
+    if (!saved) return [];
+    const parsed = JSON.parse(saved);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((agent): agent is SavedAgentSummary => !!agent?.id && !!agent?.name)
+      .map(agent => ({
+        id: String(agent.id),
+        name: String(agent.name),
+        description: agent.description ? String(agent.description) : '',
+        accessType: agent.accessType ? String(agent.accessType) : '',
+        isSetup: agent.isSetup,
+      }));
+  } catch {
+    return [];
+  }
+};
+
+const readStoredGoal = (chatId?: string | null) => {
+  if (typeof window === 'undefined') return '';
+  try {
+    const saved = window.localStorage.getItem(CHAT_GOALS_STORAGE_KEY);
+    if (!saved) return '';
+    const parsed = JSON.parse(saved);
+    const value = parsed?.[getGoalStorageKey(chatId)];
+    return typeof value === 'string' ? value : '';
+  } catch {
+    return '';
+  }
+};
+
+const writeStoredGoal = (chatId: string | null | undefined, goal: string) => {
+  if (typeof window === 'undefined') return;
+  try {
+    const saved = window.localStorage.getItem(CHAT_GOALS_STORAGE_KEY);
+    const parsed = saved ? JSON.parse(saved) : {};
+    const key = getGoalStorageKey(chatId);
+    if (goal.trim()) {
+      parsed[key] = goal.trim();
+    } else {
+      delete parsed[key];
+    }
+    window.localStorage.setItem(CHAT_GOALS_STORAGE_KEY, JSON.stringify(parsed));
+  } catch { }
+};
+
+const SLASH_COMMANDS: SlashCommand[] = [
+  {
+    id: 'my-agents',
+    label: 'My Agents',
+    description: 'Open your agent room and custom agents',
+    prompt: '',
+    iconSrc: '/icons/agent-ui/agent.png',
+    action: 'agents',
+  },
+  {
+    id: 'goal',
+    label: 'Goal',
+    description: 'Set a goal for the agent to work toward',
+    prompt: '',
+    iconSrc: '/icons/agent-ui/commands/goal.png',
+    action: 'goal',
+  },
+  {
+    id: 'mcp',
+    label: 'MCP',
+    description: 'Show MCP server status and available tools',
+    prompt: 'Show MCP server status and available tools.',
+    iconSrc: '/icons/agent-ui/commands/mcp.png',
+  },
+  {
+    id: 'memories',
+    label: 'Memories',
+    description: 'Save useful context for future chats',
+    prompt: 'Remember this for future chats: ',
+    iconSrc: '/icons/agent-ui/commands/memories.png',
+  },
+  {
+    id: 'model',
+    label: 'Model',
+    description: 'Choose or explain the best model for this task',
+    prompt: 'Help me choose the best model for this task.',
+    iconSrc: '/icons/agent-ui/commands/model.png',
+  },
+  {
+    id: 'personality',
+    label: 'Personality',
+    description: 'Adjust how EterX responds',
+    prompt: 'Adjust how you respond: ',
+    iconSrc: '/icons/agent-ui/commands/personality.png',
+  },
+  {
+    id: 'pet',
+    label: 'Pet',
+    description: 'Wake or tuck away the desktop pet',
+    prompt: '',
+    iconSrc: '/icons/agent-ui/commands/pet.png',
+    action: 'pet',
+  },
+  {
+    id: 'plan-mode',
+    label: 'Plan mode',
+    description: 'Create a brief plan before making changes',
+    prompt: '',
+    iconSrc: '/icons/agent-ui/commands/plan-mode.png',
+    action: 'plan',
+  },
+];
+
 const PinFolderIcon = ({ className = "" }: { className?: string }) => (
   <svg viewBox="0 0 36 36" className={className} fill="none" aria-hidden="true">
     <path
@@ -356,6 +539,135 @@ const PinFileIcon = ({ className = "" }: { className?: string }) => (
   </svg>
 );
 
+const TaskStatusGlyph = ({ status, active }: { status?: string; active?: boolean }) => {
+  if (status === 'done') return <CheckCircle2 className="h-[15px] w-[15px] text-emerald-300" strokeWidth={2.2} />;
+  if (active || status === 'in_progress') {
+    return (
+      <span className="relative flex h-[15px] w-[15px] items-center justify-center">
+        <span className="absolute h-[15px] w-[15px] rounded-full border border-[#E2765A]/45" />
+        <span className="h-[6px] w-[6px] rounded-full bg-[#E2765A] shadow-[0_0_12px_rgba(226,118,90,0.42)]" />
+      </span>
+    );
+  }
+  return <Circle className="h-[15px] w-[15px] text-white/25" strokeWidth={2.1} />;
+};
+
+const GeneratingDots = () => (
+  <span className="inline-flex w-[18px] items-center gap-[2px] pl-0.5 align-middle">
+    {[0, 1, 2].map(index => (
+      <span
+        key={index}
+        className="h-[3px] w-[3px] rounded-full bg-current opacity-30 animate-[eterx-task-dot_2.4s_ease-in-out_infinite]"
+        style={{ animationDelay: `${ index * 0.28 }s` }}
+      />
+    ))}
+  </span>
+);
+
+const TaskTrackerDock = ({
+  tracker,
+  isThinking,
+  isCompressed,
+}: {
+  tracker?: TaskTrackerState | null;
+  isThinking: boolean;
+  isCompressed: boolean;
+}) => {
+  const [open, setOpen] = useState(false);
+  const hasTracker = !!tracker && (tracker.phase === 'generating' || (tracker.steps?.length || 0) > 0);
+  const steps = tracker?.steps || [];
+  const generating = tracker?.phase === 'generating' || tracker?.status === 'generating';
+  const completed = tracker?.completedSteps ?? steps.filter(step => step.status === 'done').length;
+  const total = tracker?.totalSteps ?? steps.length;
+  const activeStep = steps.find(step => step.status === 'in_progress') || steps.find(step => step.status === 'pending') || null;
+  const activeStepName = tracker?.activeStepName || activeStep?.name || (generating ? 'Generating tasks' : 'Finalizing task');
+  const isComplete = tracker?.status === 'completed' || (total > 0 && completed >= total);
+  const headerTitle = generating ? 'Generating tasks' : isComplete ? 'Tasks complete' : activeStepName;
+
+  useEffect(() => {
+    if (!hasTracker) return;
+    if (generating || tracker?.phase === 'generated') setOpen(true);
+  }, [generating, hasTracker, tracker?.phase, total]);
+
+  if (!hasTracker) return null;
+
+  return (
+    <motion.div
+      layout
+      initial={{ opacity: 0, y: 10, scale: 0.992 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      exit={{ opacity: 0, y: 8, scale: 0.992 }}
+      transition={{ duration: 0.2, ease: [0.2, 0.8, 0.2, 1] }}
+      className={`relative z-0 mx-auto -mb-3 w-[calc(100%-16px)] ${ isCompressed ? 'max-w-[504px]' : 'max-w-[784px]' } translate-y-2 overflow-hidden rounded-t-[24px] border border-b-0 border-white/[0.10] bg-[#242424] shadow-[0_-10px_26px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(255,255,255,0.045)]`}
+    >
+      <button
+        type="button"
+        onClick={() => setOpen(value => !value)}
+        className="group flex min-h-[44px] w-full items-center gap-2.5 px-4 py-2 text-left transition-colors hover:bg-white/[0.025]"
+        aria-expanded={open}
+      >
+        <span className="flex min-w-0 flex-1 -translate-y-[3px] items-center gap-2">
+          <ListTodo className="h-[15px] w-[15px] shrink-0 text-[#F2EFEA]/88" strokeWidth={2.35} />
+          <span className="truncate text-[13px] font-semibold leading-5 tracking-normal text-[#F4F1EA]">
+            {headerTitle}
+            {generating && <GeneratingDots />}
+          </span>
+        </span>
+
+        <ChevronDown className={`h-4 w-4 shrink-0 text-white/45 transition-transform duration-200 group-hover:text-white/70 ${ open ? 'rotate-180' : '' }`} strokeWidth={2.1} />
+      </button>
+
+      <AnimatePresence initial={false}>
+        {open && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.24, ease: [0.2, 0.8, 0.2, 1] }}
+            className="overflow-hidden"
+          >
+            <div className="px-3.5 pb-3.5 pt-1">
+              {generating ? (
+                <div className="space-y-2">
+                  {[0, 1, 2].map(index => (
+                    <div key={index} className="flex h-7 items-center gap-2.5 overflow-hidden rounded-[10px] px-2">
+                      <span className="h-2 w-2 shrink-0 rounded-full bg-white/[0.10]" />
+                      <div className="h-[9px] flex-1 overflow-hidden rounded-full bg-white/[0.035]">
+                        <div className="h-full w-full bg-[linear-gradient(110deg,transparent_0%,rgba(255,255,255,0.08)_42%,transparent_76%)] bg-[length:230%_100%] animate-[eterx-task-shimmer_3.2s_ease-in-out_infinite]" />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="relative max-h-[220px] space-y-0.5 overflow-y-auto pr-1 custom-scrollbar">
+                  {steps.map((step) => {
+                    const active = step.id === activeStep?.id || step.step === activeStep?.step;
+                    return (
+                      <div
+                        key={step.id || step.step}
+                        className="relative flex items-center gap-3 rounded-[11px] px-2.5 py-2 transition-colors hover:bg-white/[0.018]"
+                      >
+                        <span className="relative z-10 shrink-0">
+                          <TaskStatusGlyph status={step.status} active={active && isThinking && !isComplete} />
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className={`block truncate text-[13px] font-semibold leading-5 ${ step.status === 'done' ? 'text-[#B7B4AE]' : 'text-[#F0ECE5]' }`}>
+                            {step.name || `Task ${ step.step }`}
+                          </span>
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </motion.div>
+  );
+};
+
 export const ChatInput: React.FC<ChatInputProps> = ({
   inputValue, setInputValue, isThinking, isRecording, handleSend, handleStop, handleSteer = () => { },
   toggleSpeech, attachments, setAttachments, greeting, traceLogsLength,
@@ -368,10 +680,19 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   liveMicVolume = 0, liveModelVolume = 0, liveActiveTool = null,
   isMicMuted = false, onToggleMicMute = () => { },
   isSpeakerMuted = false, onToggleSpeakerMute = () => { },
-  isCompressed = false
+  isCompressed = false,
+  taskTracker = null,
+  isNetworkPaused = false,
+  onNetworkPausedAction = () => { },
+  onOpenAgents = () => { },
+  onOpenAgentBuilder = () => { },
+  onOpenPet = () => { },
+  activeChatId = null
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const goalTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const slashDragFrameRef = useRef<number | null>(null);
   const modelSelectorRef = useRef<HTMLDivElement>(null);
   const initialFocusAppliedRef = useRef(false);
   const queuedSendRef = useRef(false);
@@ -384,6 +705,13 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const [isStopping, setIsStopping] = useState(false); // Intermediate stop state
   const [showModelMenu, setShowModelMenu] = useState(false);
   const [showThinkingLevels, setShowThinkingLevels] = useState(false);
+  const [slashTrigger, setSlashTrigger] = useState<SlashTrigger | null>(null);
+  const [slashActiveIndex, setSlashActiveIndex] = useState(0);
+  const [slashPanel, setSlashPanel] = useState<SlashPanel>(null);
+  const [storedAgents, setStoredAgents] = useState<SavedAgentSummary[]>([]);
+  const [goalDraft, setGoalDraft] = useState('');
+  const [slashPanelOffset, setSlashPanelOffset] = useState({ x: 0, y: 0 });
+  const [planModeActive, setPlanModeActive] = useState(false);
   const connectors = useConnectors();
   const textareaMaxHeight = isCompressed ? 260 : 400;
   const isModelLocked = isThinking;
@@ -472,6 +800,189 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     setIsAtBottom(el.scrollTop + el.clientHeight >= el.scrollHeight - threshold);
   }, []);
 
+  const syncSlashTrigger = useCallback((value = inputValue, selectionStart?: number | null) => {
+    const cursor = typeof selectionStart === 'number'
+      ? selectionStart
+      : textareaRef.current?.selectionStart ?? value.length;
+    const beforeCursor = value.slice(0, cursor);
+    const lineStart = beforeCursor.lastIndexOf('\n') + 1;
+    const linePrefix = beforeCursor.slice(lineStart);
+    const slashQuery = linePrefix.slice(1);
+
+    if (!linePrefix.startsWith('/') || /\s/.test(slashQuery) || slashQuery.length > 48) {
+      setSlashTrigger(null);
+      return;
+    }
+
+    setSlashTrigger(prev => {
+      const next = { start: lineStart, end: cursor, query: slashQuery.toLowerCase() };
+      if (prev && prev.start === next.start && prev.end === next.end && prev.query === next.query) return prev;
+      setSlashActiveIndex(0);
+      return next;
+    });
+  }, [inputValue]);
+
+  const filteredSlashCommands = useMemo(() => {
+    if (!slashTrigger) return [];
+    const query = slashTrigger.query.trim();
+    if (!query) return SLASH_COMMANDS;
+
+    return SLASH_COMMANDS.filter(command => {
+      const target = `${ command.label } ${ command.description } ${ command.id }`.toLowerCase();
+      return target.includes(query);
+    });
+  }, [slashTrigger]);
+
+  const closeSlashPanel = useCallback(() => setSlashPanel(null), []);
+
+  const openSlashPanel = useCallback((panel: SlashPanel) => {
+    if (panel === 'agents') {
+      setStoredAgents(readStoredAgents());
+    }
+    if (panel === 'goal') {
+      setGoalDraft(readStoredGoal(activeChatId));
+    }
+    setSlashPanelOffset({ x: 0, y: 0 });
+    setSlashPanel(panel);
+  }, [activeChatId]);
+
+  const startSlashPanelDrag = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    const target = event.target as HTMLElement | null;
+    if (target?.closest('button,textarea,input,a')) return;
+
+    event.preventDefault();
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const origin = slashPanelOffset;
+
+    const handleMove = (moveEvent: PointerEvent) => {
+      const nextOffset = {
+        x: origin.x + moveEvent.clientX - startX,
+        y: origin.y + moveEvent.clientY - startY,
+      };
+
+      if (slashDragFrameRef.current !== null) {
+        window.cancelAnimationFrame(slashDragFrameRef.current);
+      }
+      slashDragFrameRef.current = window.requestAnimationFrame(() => {
+        setSlashPanelOffset(nextOffset);
+        slashDragFrameRef.current = null;
+      });
+    };
+
+    const stopDrag = () => {
+      if (slashDragFrameRef.current !== null) {
+        window.cancelAnimationFrame(slashDragFrameRef.current);
+        slashDragFrameRef.current = null;
+      }
+      window.removeEventListener('pointermove', handleMove);
+      window.removeEventListener('pointerup', stopDrag);
+      window.removeEventListener('pointercancel', stopDrag);
+    };
+
+    window.addEventListener('pointermove', handleMove);
+    window.addEventListener('pointerup', stopDrag);
+    window.addEventListener('pointercancel', stopDrag);
+  }, [slashPanelOffset]);
+
+  const selectSlashCommand = useCallback((command: SlashCommand) => {
+    if (!slashTrigger) return;
+    if (command.action === 'agents' || command.action === 'goal' || command.action === 'plan' || command.action === 'pet') {
+      const nextValue = `${ inputValue.slice(0, slashTrigger.start) }${ inputValue.slice(slashTrigger.end) }`;
+      notifyAgentFaceInputChange(inputValue, nextValue);
+      setInputValue(nextValue);
+      setSlashTrigger(null);
+      if (command.action === 'plan') {
+        setPlanModeActive(true);
+        window.requestAnimationFrame(() => textareaRef.current?.focus({ preventScroll: true }));
+        return;
+      }
+      if (command.action === 'pet') {
+        onOpenPet();
+        return;
+      }
+      openSlashPanel(command.action);
+      return;
+    }
+
+    const nextValue = `${ inputValue.slice(0, slashTrigger.start) }${ command.prompt }${ inputValue.slice(slashTrigger.end) }`;
+    const nextCaret = slashTrigger.start + command.prompt.length;
+
+    notifyAgentFaceInputChange(inputValue, nextValue);
+    setInputValue(nextValue);
+    setSlashTrigger(null);
+
+    window.requestAnimationFrame(() => {
+      const textarea = textareaRef.current;
+      if (!textarea) return;
+      textarea.focus({ preventScroll: true });
+      textarea.setSelectionRange(nextCaret, nextCaret);
+    });
+  }, [inputValue, onOpenPet, openSlashPanel, setInputValue, slashTrigger]);
+
+  const openAgentRoomFromPanel = useCallback(() => {
+    closeSlashPanel();
+    onOpenAgents();
+  }, [closeSlashPanel, onOpenAgents]);
+
+  const openAgentFromPanel = useCallback((agentId: string) => {
+    closeSlashPanel();
+    onOpenAgentBuilder(agentId);
+  }, [closeSlashPanel, onOpenAgentBuilder]);
+
+  const establishGoal = useCallback(() => {
+    writeStoredGoal(activeChatId, goalDraft);
+    closeSlashPanel();
+  }, [activeChatId, closeSlashPanel, goalDraft]);
+
+  const syncGoalTextareaHeight = useCallback(() => {
+    const textarea = goalTextareaRef.current;
+    if (!textarea) return;
+    textarea.style.height = '0px';
+    const nextHeight = Math.min(Math.max(textarea.scrollHeight, 86), 176);
+    textarea.style.height = `${ nextHeight }px`;
+    textarea.style.overflowY = textarea.scrollHeight > 176 ? 'auto' : 'hidden';
+  }, []);
+
+  useEffect(() => {
+    if (slashPanel !== 'goal') return;
+    window.requestAnimationFrame(syncGoalTextareaHeight);
+  }, [goalDraft, slashPanel, syncGoalTextareaHeight]);
+
+  useEffect(() => {
+    return () => {
+      if (slashDragFrameRef.current !== null) {
+        window.cancelAnimationFrame(slashDragFrameRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    SLASH_COMMANDS.forEach(command => {
+      const image = new Image();
+      image.decoding = 'sync';
+      image.src = command.iconSrc;
+    });
+  }, []);
+
+  useEffect(() => {
+    if (slashActiveIndex >= filteredSlashCommands.length) {
+      setSlashActiveIndex(Math.max(0, filteredSlashCommands.length - 1));
+    }
+  }, [filteredSlashCommands.length, slashActiveIndex]);
+
+  useEffect(() => {
+    if (!inputValue && slashTrigger) setSlashTrigger(null);
+  }, [inputValue, slashTrigger]);
+
+  useEffect(() => {
+    if (liveState !== 'idle' || isRecording || isProcessingVoice) {
+      setSlashTrigger(null);
+      setSlashPanel(null);
+    }
+  }, [isProcessingVoice, isRecording, liveState]);
+
   // Save pasted/browser files as binary FormData so the renderer never base64-encodes media.
   const saveFileForAgent = useCallback(async (file: File, attachmentId: string, displayName: string) => {
     try {
@@ -481,6 +992,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
           ...att,
           uploadStatus: 'done' as const,
           localPath: filePath,
+          preview: file.type.startsWith('image/') ? buildLocalFilePreviewUrl(filePath) : att.preview,
         } : att));
         return;
       }
@@ -501,11 +1013,19 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       }
 
       const data = await res.json();
-      setAttachments(prev => prev.map(att => att.id === attachmentId ? {
-        ...att,
-        uploadStatus: 'done' as const,
-        localPath: data.localPath,
-      } : att));
+      setAttachments(prev => prev.map(att => {
+        if (att.id !== attachmentId) return att;
+        const nextPreview = file.type.startsWith('image/') && data.localPath
+          ? buildLocalFilePreviewUrl(data.localPath)
+          : att.preview;
+        if (nextPreview !== att.preview) revokeObjectPreview(att.preview);
+        return {
+          ...att,
+          uploadStatus: 'done' as const,
+          localPath: data.localPath,
+          preview: nextPreview,
+        };
+      }));
     } catch {
       setAttachments(prev => prev.map(att => att.id === attachmentId ? { ...att, uploadStatus: 'error' as const } : att));
     }
@@ -525,7 +1045,9 @@ export const ChatInput: React.FC<ChatInputProps> = ({
         id: `${ Date.now() }-${ index }-${ Math.random().toString(36).slice(2) }`,
         file,
         name: displayName,
-        preview: file.type.startsWith('image/') ? URL.createObjectURL(file) : '',
+        preview: file.type.startsWith('image/')
+          ? (localPath ? buildLocalFilePreviewUrl(localPath) : URL.createObjectURL(file))
+          : '',
         uploadStatus: localPath ? 'done' as const : 'uploading' as const,
         localPath: localPath || undefined,
       };
@@ -544,12 +1066,13 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     const handleClickOutside = () => {
       setOpenPillDrop(null);
       setShowPinMenu(false);
+      setSlashTrigger(null);
     };
-    if (openPillDrop || showPinMenu) {
+    if (openPillDrop || showPinMenu || slashTrigger) {
       window.addEventListener('click', handleClickOutside);
     }
     return () => window.removeEventListener('click', handleClickOutside);
-  }, [openPillDrop, showPinMenu]);
+  }, [openPillDrop, showPinMenu, slashTrigger]);
 
   // Auto-resize textarea dynamically based on scrollHeight
   useEffect(() => {
@@ -653,7 +1176,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const removeAttachment = (index: number) => {
     setAttachments(prev => {
       const newArr = [...prev];
-      if (newArr[index].preview) URL.revokeObjectURL(newArr[index].preview);
+      revokeObjectPreview(newArr[index].preview);
       newArr.splice(index, 1);
       return newArr;
     });
@@ -665,12 +1188,27 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   useEffect(() => {
     if (!queuedSendRef.current || hasPreparingAttachments || hasErroredAttachments) return;
     if (!inputValue.trim() && attachments.length === 0) return;
+    if (isNetworkPaused) return;
     queuedSendRef.current = false;
+    if (isThinking) {
+      if (inputValue.trim() && attachments.length === 0) handleSteer();
+      return;
+    }
     notifyAgentFaceSend();
     handleSend();
-  }, [attachments.length, handleSend, hasErroredAttachments, hasPreparingAttachments, inputValue]);
+  }, [attachments.length, handleSend, handleSteer, hasErroredAttachments, hasPreparingAttachments, inputValue, isNetworkPaused, isThinking]);
 
   const submitPrompt = useCallback(() => {
+    if (isNetworkPaused) {
+      onNetworkPausedAction();
+      return;
+    }
+    if (isThinking) {
+      if (inputValue.trim() && attachments.length === 0) {
+        handleSteer();
+      }
+      return;
+    }
     if (hasPreparingAttachments) {
       queuedSendRef.current = true;
       return;
@@ -680,7 +1218,37 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       notifyAgentFaceSend();
     }
     handleSend();
-  }, [attachments.length, handleSend, hasErroredAttachments, hasPreparingAttachments, inputValue]);
+  }, [attachments.length, handleSend, handleSteer, hasErroredAttachments, hasPreparingAttachments, inputValue, isNetworkPaused, isThinking, onNetworkPausedAction]);
+
+  const handleTextareaKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (slashTrigger) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setSlashActiveIndex(index => filteredSlashCommands.length === 0 ? 0 : (index + 1) % filteredSlashCommands.length);
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setSlashActiveIndex(index => filteredSlashCommands.length === 0 ? 0 : (index - 1 + filteredSlashCommands.length) % filteredSlashCommands.length);
+        return;
+      }
+      if ((e.key === 'Enter' || e.key === 'Tab') && filteredSlashCommands.length > 0) {
+        e.preventDefault();
+        selectSlashCommand(filteredSlashCommands[slashActiveIndex] || filteredSlashCommands[0]);
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setSlashTrigger(null);
+        return;
+      }
+    }
+
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      submitPrompt();
+    }
+  }, [filteredSlashCommands, selectSlashCommand, slashActiveIndex, slashTrigger, submitPrompt]);
 
   let liveAnimateState: any = { boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.04)' };
   let liveTransition: any = { duration: 0.2, ease: "easeOut" };
@@ -734,8 +1302,9 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   }
 
   const isEmptyHome = traceLogsLength === 0 && liveState === 'idle';
-  const shellMaxWidth = 'max-w-[800px]';
+  const shellMaxWidth = isCompressed ? 'max-w-[520px]' : 'max-w-[800px]';
   const inputSidePadding = isCompressed ? 'px-4' : 'px-4 sm:px-12';
+  const composerRadius = isCompressed ? 'rounded-[28px]' : 'rounded-[32px]';
   const modelOptions = MAIN_AGENT_MODEL_OPTIONS;
   const selectedModel = getMainAgentModelConfig(agentMode);
   const safeThinkingLevel = normalizeMainAgentThinkingLevel(thinkingLevel);
@@ -747,6 +1316,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const thinkingMenuHorizontalClass = modelMenuOpensDown ? 'left-[calc(100%+8px)]' : 'right-[calc(100%+8px)]';
   const thinkingMenuVerticalClass = modelMenuOpensDown ? 'top-0' : 'bottom-0';
   const thinkingMenuOffset = modelMenuOpensDown ? -8 : 8;
+  const slashMenuVisible = !!slashTrigger && !slashPanel && liveState === 'idle' && !isRecording && !isProcessingVoice;
 
   return (
     <div className={`absolute left-0 flex flex-col items-center z-30 ${ isEmptyHome ? 'right-0 w-full' : 'right-[14px] w-auto' } ${ isEmptyHome
@@ -807,11 +1377,172 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       </AnimatePresence>
 
       <div className={`eterx-composer-shell w-full ${ shellMaxWidth } flex flex-col pointer-events-auto relative`}>
+        <TaskTrackerDock
+          tracker={taskTracker}
+          isThinking={isThinking}
+          isCompressed={isCompressed}
+        />
+
+        {slashPanel === 'agents' && (
+          <div
+            className="absolute bottom-[calc(100%+12px)] left-1/2 z-40 w-[min(360px,calc(100vw-64px))] select-none overflow-hidden rounded-[28px] border border-white/[0.10] bg-[#242424] p-2 text-[#F2F0EC] shadow-[0_18px_48px_rgba(0,0,0,0.28),inset_0_1px_0_rgba(255,255,255,0.045)]"
+            style={{ transform: `translate(calc(-50% + ${ slashPanelOffset.x }px), ${ slashPanelOffset.y }px)` }}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div
+              className="flex h-10 cursor-grab touch-none items-center justify-between gap-3 px-2 active:cursor-grabbing"
+              onPointerDown={startSlashPanelDrag}
+            >
+              <span className="flex min-w-0 items-center gap-2.5">
+                <img src="/icons/agent-ui/agent.png" alt="" aria-hidden="true" className="h-[18px] w-[18px] shrink-0 object-contain brightness-0 invert" />
+                <span className="truncate text-[14px] font-semibold tracking-normal text-white">My Agents</span>
+              </span>
+              <button
+                type="button"
+                onClick={closeSlashPanel}
+                aria-label="Close My Agents"
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-white/52 transition-colors hover:bg-white/[0.06] hover:text-white"
+              >
+                <X className="h-3.5 w-3.5" strokeWidth={2.4} />
+              </button>
+            </div>
+
+            <div className="max-h-[214px] overflow-y-auto px-1 pb-1 custom-scrollbar">
+              {storedAgents.length > 0 ? (
+                storedAgents.map(agent => (
+                  <button
+                    key={agent.id}
+                    type="button"
+                    onClick={() => openAgentFromPanel(agent.id)}
+                    className="group flex min-h-[46px] w-full items-center rounded-[18px] px-3.5 py-2 text-left transition-colors duration-75 hover:bg-white/[0.055]"
+                  >
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-[13.5px] font-semibold text-[#F2F0EC] group-hover:text-white">
+                        {agent.name}
+                      </span>
+                      <span className="block truncate text-[11.5px] font-medium text-[#8C8984]">
+                        {agent.accessType || agent.description || 'Custom agent'}
+                      </span>
+                    </span>
+                  </button>
+                ))
+              ) : (
+                <button
+                  type="button"
+                  onClick={openAgentRoomFromPanel}
+                  className="flex min-h-[112px] w-full flex-col items-center justify-center rounded-[22px] px-5 text-center transition-colors duration-75 hover:bg-white/[0.04]"
+                >
+                  <span className="text-[14px] font-semibold text-[#F2F0EC]">No agents found</span>
+                  <span className="mt-1.5 text-[12px] font-medium leading-5 text-[#8C8984]">
+                    Go to agent room and create your own agent
+                  </span>
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
+        {slashPanel === 'goal' && (
+          <div
+            className="absolute bottom-[calc(100%+12px)] left-1/2 z-40 w-[min(420px,calc(100vw-64px))] select-none overflow-hidden rounded-[22px] border border-white/[0.10] bg-[#242424] p-2 text-[#F2F0EC] shadow-[0_18px_48px_rgba(0,0,0,0.28),inset_0_1px_0_rgba(255,255,255,0.045)]"
+            style={{ transform: `translate(calc(-50% + ${ slashPanelOffset.x }px), ${ slashPanelOffset.y }px)` }}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div
+              className="flex min-h-10 cursor-grab touch-none items-center justify-between gap-2 px-2 active:cursor-grabbing"
+              onPointerDown={startSlashPanelDrag}
+            >
+              <span className="flex min-w-0 items-center gap-2.5">
+                <img src="/icons/agent-ui/commands/goal.png" alt="" aria-hidden="true" className="h-[18px] w-[18px] shrink-0 object-contain brightness-0 invert" />
+                <span className="truncate text-[14px] font-semibold tracking-normal text-white">Goal</span>
+              </span>
+              <span className="flex shrink-0 items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={closeSlashPanel}
+                  className="rounded-full px-2.5 py-1.5 text-[12px] font-semibold text-[#A7A39E] transition-colors hover:bg-white/[0.055] hover:text-white"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={establishGoal}
+                  className="rounded-full bg-[#F2EFEA] px-3 py-1.5 text-[12px] font-semibold text-black transition-colors hover:bg-white"
+                >
+                  Establish
+                </button>
+              </span>
+            </div>
+
+            <div className="px-1 pb-1 pt-1">
+              <textarea
+                ref={goalTextareaRef}
+                value={goalDraft}
+                onChange={(event) => setGoalDraft(event.target.value)}
+                onInput={syncGoalTextareaHeight}
+                placeholder="Write the goal for this chat..."
+                className="block min-h-[86px] w-full resize-none rounded-[16px] border border-white/[0.08] bg-[#1D1D1D] px-3.5 py-3 text-[13.5px] font-medium leading-5 text-[#F2F0EC] outline-none placeholder:text-[#716E69] focus:border-white/[0.16] custom-scrollbar select-text"
+              />
+            </div>
+          </div>
+        )}
+
+        {slashMenuVisible && (
+          <div
+            className={`relative z-20 mx-auto -mb-px w-[calc(100%-32px)] ${ isCompressed ? 'max-w-[488px]' : 'max-w-[752px]' } select-none overflow-hidden rounded-b-none rounded-t-[20px] border border-b-0 border-white/[0.10] bg-[#242424] p-1.5 text-[#F2F0EC] shadow-[0_-5px_16px_rgba(0,0,0,0.14),inset_0_1px_0_rgba(255,255,255,0.04)]`}
+            role="listbox"
+            aria-label="Slash commands"
+          >
+              <div className="max-h-[270px] overflow-y-auto custom-scrollbar">
+                {filteredSlashCommands.length > 0 ? (
+                  filteredSlashCommands.map((command, index) => {
+                    const active = index === slashActiveIndex;
+                    return (
+                      <button
+                        key={command.id}
+                        type="button"
+                        role="option"
+                        aria-selected={active}
+                        onMouseDown={(event) => {
+                          event.preventDefault();
+                          selectSlashCommand(command);
+                        }}
+                        className={`flex min-h-[33px] w-full items-center gap-2.5 rounded-[9px] px-2.5 py-1 text-left transition-colors duration-75 ${ active ? 'bg-white/[0.07] text-white' : 'text-[#D7D4CE] hover:bg-white/[0.045] hover:text-white' }`}
+                      >
+                        <span className="flex h-5 w-5 shrink-0 items-center justify-center">
+                          <img
+                            src={command.iconSrc}
+                            alt=""
+                            aria-hidden="true"
+                            loading="eager"
+                            decoding="sync"
+                            className={`h-[17px] w-[17px] object-contain brightness-0 invert ${ active ? 'opacity-100' : 'opacity-80' }`}
+                          />
+                        </span>
+                        <span className="flex min-w-0 flex-1 items-baseline gap-2">
+                          <span className="shrink-0 text-[13.5px] font-semibold tracking-normal">
+                            {command.label}
+                          </span>
+                          <span className="min-w-0 truncate text-[12.5px] font-medium text-[#8C8984]">
+                            {command.description}
+                          </span>
+                        </span>
+                      </button>
+                    );
+                  })
+                ) : (
+                  <div className="flex min-h-[42px] items-center rounded-[12px] px-2.5 text-[13px] font-medium text-[#8C8984]">
+                    No matching commands
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
 
         <motion.div
           animate={liveAnimateState}
           transition={liveTransition}
-          className={`w-full ${ isCompressed ? 'rounded-[28px]' : 'rounded-[32px]' } flex flex-col ${ attachments.length > 0 ? 'pt-1' : isCompressed ? 'pt-3' : 'pt-4' } pb-2 transition-all duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)] overflow-visible relative ${ liveState !== 'idle'
+          className={`w-full ${ composerRadius } flex flex-col ${ attachments.length > 0 ? 'pt-1' : isCompressed ? 'pt-3' : 'pt-4' } pb-2 transition-all duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)] overflow-visible relative ${ liveState !== 'idle'
             ? 'bg-[#1E1E1E] backdrop-blur-3xl border border-white/[0.10] ring-1 ring-white/[0.05]'
             : `bg-[#1E1E1E] backdrop-blur-[28px] ${ isRecording ? 'border border-white/[0.20]' : 'border border-white/[0.08] hover:border-white/[0.12] focus-within:border-white/[0.18]' }`
             }`}>
@@ -1056,6 +1787,32 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                 />
               ) : (
                 <div className="relative w-full">
+                  {planModeActive && (
+                    <div className="group mb-2 flex min-h-[36px] select-none items-center justify-between gap-3 rounded-[14px] border border-white/[0.08] bg-white/[0.035] px-3 py-2 text-[#F2F0EC] shadow-[inset_0_1px_0_rgba(255,255,255,0.035)]">
+                      <span className="flex min-w-0 items-center gap-2.5">
+                        <img
+                          src="/icons/agent-ui/commands/plan-mode.png"
+                          alt=""
+                          aria-hidden="true"
+                          className="h-[16px] w-[16px] shrink-0 object-contain brightness-0 invert opacity-90"
+                        />
+                        <span className="truncate text-[13px] font-semibold tracking-normal text-white">
+                          Plan mode
+                        </span>
+                        <span className="hidden truncate text-[12px] font-medium text-[#8C8984] sm:inline">
+                          Ask for a brief plan before changes
+                        </span>
+                      </span>
+                      <button
+                        type="button"
+                        onMouseDown={(event) => event.preventDefault()}
+                        onClick={() => setPlanModeActive(false)}
+                        className="shrink-0 rounded-full px-2.5 py-1 text-[12px] font-semibold text-[#A7A39E] opacity-0 transition-all duration-100 hover:bg-white/[0.065] hover:text-white group-hover:opacity-100 focus:opacity-100"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  )}
                   {isOverflowing && !isAtTop && (
                     <div className="absolute -top-1 left-0 right-3 h-10 bg-gradient-to-b from-[#1F1F1F] via-[#1F1F1F]/90 to-transparent pointer-events-none z-10 transition-opacity duration-200" />
                   )}
@@ -1070,12 +1827,13 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       const nextValue = e.target.value;
                       notifyAgentFaceInputChange(inputValue, nextValue);
                       setInputValue(nextValue);
+                      syncSlashTrigger(nextValue, e.target.selectionStart);
                     }}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && !e.shiftKey) {
-                        e.preventDefault();
-                        submitPrompt();
-                      }
+                    onKeyDown={handleTextareaKeyDown}
+                    onSelect={(e) => syncSlashTrigger(inputValue, e.currentTarget.selectionStart)}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      syncSlashTrigger(inputValue, e.currentTarget.selectionStart);
                     }}
                     onPaste={handlePaste}
                     onDragOver={handleDragOver}
@@ -1137,7 +1895,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                   >
                     <div className={inputControlSheen} />
                     <img
-                      src="https://img.icons8.com/sf-regular/48/pin.png"
+                      src="/icons/agent-ui/pin.png"
                       alt="Pin"
                       className={`h-[23px] w-[23px] object-contain opacity-100 invert brightness-200 transition-transform duration-200 ease-out group-hover:scale-[1.06] ${ showPinMenu ? '-rotate-12' : '' }`}
                     />
@@ -1469,23 +2227,41 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                 null /* Cancel/Stop is already rendered in the live overlay above */
               ) : (
                                 <AnimatePresence mode="wait">
-                  {isThinking && !isStopping && inputValue.trim() ? (
-                    /* ── STEER button (agent running + user typed something) ── */
-                    <motion.div key="steer"
+                  {isNetworkPaused ? (
+                    <motion.div key="network-paused"
                       initial={{ opacity: 0, scale: 0.8 }}
                       animate={{ opacity: 1, scale: 1 }}
                       exit={{ opacity: 0, scale: 0.7 }}
                       transition={{ duration: 0.18, ease: 'easeOut' }}
                     >
-                      <Tooltip text="Steer agent live" side="top">
+                      <Tooltip text="Waiting for network" side="top">
                         <button
-                          onClick={handleSteer}
-                          className={inputControlButton}
+                          onClick={onNetworkPausedAction}
+                          className="eterx-control-button w-[40px] h-[40px] shrink-0 flex items-center justify-center rounded-full bg-[#242424] border border-white/[0.13] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] transition-all duration-200 hover:bg-[#2D2D2D] hover:border-white/[0.24] active:scale-[0.96]"
                         >
-                          <div className={inputControlSheen} />
-                          <svg className="w-[20px] h-[20px] text-white group-hover:scale-110 transition-transform duration-200 ease-out relative z-10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                            <circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76" fill="currentColor" opacity="0.75"/>
-                          </svg>
+                          <motion.div
+                            className="w-[18px] h-[18px] rounded-full border-[2px] border-white/20 border-t-white"
+                            animate={{ rotate: 360 }}
+                            transition={{ duration: 0.82, repeat: Infinity, ease: 'linear' }}
+                          />
+                        </button>
+                      </Tooltip>
+                    </motion.div>
+                  ) : isThinking && !isStopping && inputValue.trim() ? (
+                    /* Running agent + typed text: normal send button sends live steering */
+                    <motion.div key="send-steering"
+                      initial={{ opacity: 0, scale: 0.8 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      exit={{ opacity: 0, scale: 0.7 }}
+                      transition={{ duration: 0.18, ease: 'easeOut' }}
+                    >
+                      <Tooltip text="Send to running agent" side="top">
+                        <button
+                          onClick={submitPrompt}
+                          className="eterx-control-button w-[40px] h-[40px] shrink-0 flex items-center justify-center rounded-full transition-all duration-200 bg-[#F2EFEA] text-black hover:bg-white shadow-[0_8px_22px_rgba(242,239,234,0.15),inset_0_1px_0_rgba(255,255,255,0.82)] active:scale-[0.96] group relative overflow-hidden"
+                        >
+                          <div className="absolute inset-0 bg-gradient-to-t from-black/0 to-black/5" />
+                          <PremiumSend className="w-[20px] h-[20px] text-black group-hover:-translate-y-0.5 group-hover:scale-110 transition-all duration-200 ease-out" strokeWidth={2.8} />
                         </button>
                       </Tooltip>
                     </motion.div>
@@ -1552,6 +2328,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       <Tooltip text="Start Live Conversation" side="top">
                         <button
                           onClick={onLiveStart}
+                          disabled={isNetworkPaused}
                           className={`eterx-control-button w-[40px] h-[40px] shrink-0 flex items-center justify-center rounded-full border border-white/[0.18] bg-[#242424]/96 text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_5px_14px_rgba(0,0,0,0.24)] transition-all duration-200 active:scale-[0.96] active:bg-[#303030] cursor-pointer group relative overflow-hidden hover:bg-[#2D2D2D] hover:border-white/[0.30] hover:text-white ${ isRecording ? '!text-[#E2765A]' : '' }`}
                         >
                           <div className={inputControlSheen} />

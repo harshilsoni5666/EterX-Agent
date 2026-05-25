@@ -13,7 +13,7 @@ export const runtime = 'nodejs';
  * interrupted mid-action; it sees the comment when it naturally becomes
  * ready to decide its next step.
  *
- * Body: { chatId: string; message: string }
+ * Body: { chatId: string; message: string; id?: string }
  * Returns:
  *   { success: true }  — queued successfully
  *   { success: false, reason: string }
@@ -21,7 +21,7 @@ export const runtime = 'nodejs';
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => ({}));
-    const { chatId, message } = body as { chatId?: string; message?: string };
+    const { chatId, message, id } = body as { chatId?: string; message?: string; id?: string };
 
     if (!chatId) {
       return NextResponse.json({ success: false, reason: 'chatId is required' }, { status: 400 });
@@ -30,7 +30,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: false, reason: 'message must be a non-empty string' }, { status: 400 });
     }
 
-    const queued = agentRegistry.addSteeringMessage(chatId, String(message).trim());
+    const queued = agentRegistry.addSteeringMessage(chatId, String(message).trim(), id);
 
     if (!queued) {
       return NextResponse.json(

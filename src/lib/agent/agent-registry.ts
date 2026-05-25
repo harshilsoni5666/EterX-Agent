@@ -32,6 +32,13 @@ interface TraceEvent {
   data: any;            // The raw trace event
 }
 
+interface SteeringMessage {
+  id: string;
+  text: string;
+  createdAt: number;
+  updatedAt?: number;
+}
+
 interface AgentExecution {
   chatId: string;
   prompt: string;
@@ -45,27 +52,138 @@ interface AgentExecution {
   cancelled: boolean;          // Per-chat cancel flag
   promise: Promise<void>;      // The running execution
   keyLeaseId: string;          // API key lease identifier
-  steeringQueue: string[];     // Live steering messages from user mid-run
+  steeringQueue: SteeringMessage[]; // Live steering messages from user mid-run
   mode: MainAgentMode;
   // === EXECUTION METRICS (new) ===
   toolCallCount: number;       // Total tool calls in this execution
   effectiveModel: string;      // Actual model used (may differ from mode due to smart routing)
   complexity: string;          // Task complexity classification
   peakMemoryMB: number;        // Peak memory usage during execution
+  retentionCompacted?: boolean;
 }
 
 const MAX_TRACE_BUFFER = 2000;          // Max traces kept in memory per chat
-const CLEANUP_INTERVAL = 60 * 60 * 1000; // Cleanup completed agents after 1 hour
+const MAX_COMPLETED_TRACE_BUFFER = 350;
+const MAX_STEERING_QUEUE = 25;
+const MAX_COMPLETED_EXECUTIONS = 30;
+const TRACE_COMPACTION_GRACE_MS = 60 * 1000;
+const CLEANUP_INTERVAL = 5 * 60 * 1000; // Cleanup completed agents frequently
+const TASK_STORE_CLEANUP_INTERVAL = 15 * 60 * 1000;
 const MAX_COMPLETED_AGE = 2 * 60 * 60 * 1000; // 2 hours max retention for completed agents
 
 class AgentRegistry {
   private executions: Map<string, AgentExecution> = new Map();
   private cleanupTimer: NodeJS.Timeout | null = null;
+  private lastTaskStoreCleanupAt = 0;
 
   constructor() {
     // Start periodic cleanup
     this.cleanupTimer = setInterval(() => this.cleanup(), CLEANUP_INTERVAL);
     this.cleanupTimer.unref?.();
+  }
+
+  private getProcessMemoryMB(): number {
+    try {
+      return Math.round(process.memoryUsage().rss / 1024 / 1024);
+    } catch {
+      return 0;
+    }
+  }
+
+  private compactTracePayload(data: any): any {
+    if (!data || typeof data !== 'object') return data;
+
+    if (data.type === 'file_preview') {
+      const { content, diffLines, ...rest } = data;
+      const compact: any = { ...rest };
+      if (typeof content === 'string') {
+        compact.contentPreview = content.substring(0, 2000);
+        compact._contentStripped = content.length > compact.contentPreview.length;
+      }
+      if (Array.isArray(diffLines)) {
+        compact.diffLines = diffLines.slice(-80);
+        compact._diffLinesStripped = diffLines.length > compact.diffLines.length;
+      }
+      return compact;
+    }
+
+    if (data.type === 'console_output') {
+      const { output, ...rest } = data;
+      const outputText = String(output || '');
+      return {
+        ...rest,
+        output: outputText.length > 2500 ? `${ outputText.substring(0, 2500) }\n...[output compacted]` : outputText,
+        _contentStripped: outputText.length > 2500,
+      };
+    }
+
+    if ((data.type === 'thought_stream' || data.type === 'work_note') && typeof data.text === 'string' && data.text.length > 12000) {
+      return {
+        ...data,
+        text: `${ data.text.substring(0, 12000) }\n...[trace compacted]`,
+        _contentStripped: true,
+      };
+    }
+
+    return data;
+  }
+
+  private compactExecutionForRetention(execution: AgentExecution): void {
+    if (execution.status === 'running') return;
+    if (execution.retentionCompacted) return;
+    if (execution.completedAt && Date.now() - execution.completedAt < TRACE_COMPACTION_GRACE_MS) return;
+
+    execution.prompt = execution.prompt.substring(0, 2000);
+    execution.steeringQueue = [];
+    execution.traceBuffer = execution.traceBuffer
+      .slice(-MAX_COMPLETED_TRACE_BUFFER)
+      .map(entry => ({
+        ...entry,
+        data: this.compactTracePayload(entry.data),
+      }));
+    execution.retentionCompacted = true;
+  }
+
+  private appendTrace(execution: AgentExecution, traceEvent: any, persistToTaskStore = true): TraceEvent {
+    if (traceEvent?.type === 'file_preview' && traceEvent.filepath) {
+      const existingIdx = execution.traceBuffer.findIndex(entry =>
+        entry.data?.type === 'file_preview' && entry.data?.filepath === traceEvent.filepath
+      );
+      if (existingIdx >= 0) execution.traceBuffer.splice(existingIdx, 1);
+    }
+
+    const entry: TraceEvent = {
+      index: execution.traceCounter++,
+      timestamp: Date.now(),
+      data: traceEvent,
+    };
+
+    execution.traceBuffer.push(entry);
+    execution.peakMemoryMB = Math.max(execution.peakMemoryMB || 0, this.getProcessMemoryMB());
+
+    if (traceEvent?.type === 'tool_call' || traceEvent?.type === 'action') {
+      execution.toolCallCount++;
+    }
+
+    if (traceEvent?.complexity) {
+      execution.complexity = traceEvent.complexity;
+    }
+
+    if (execution.traceBuffer.length > MAX_TRACE_BUFFER) {
+      execution.traceBuffer = execution.traceBuffer.slice(-MAX_TRACE_BUFFER);
+    }
+
+    if (persistToTaskStore) {
+      const compactTrace = this.compactTracePayload(traceEvent);
+      taskStore.addTrace(
+        execution.chatId,
+        compactTrace && typeof compactTrace === 'object'
+          ? { ...compactTrace, _traceIdx: entry.index }
+          : compactTrace
+      );
+    }
+
+    return entry;
   }
 
   /**
@@ -127,36 +245,7 @@ class AgentRegistry {
         throw new Error('CANCELLED_BY_USER');
       }
 
-      // Use monotonic counter — NEVER re-index, prevents stale cursor re-delivery
-      const traceIdx = execution.traceCounter++;
-
-      const entry: TraceEvent = {
-        index: traceIdx,
-        timestamp: Date.now(),
-        data: traceEvent,
-      };
-
-      execution.traceBuffer.push(entry);
-
-      // Track tool call count for metrics
-      if (traceEvent?.type === 'tool_call' || traceEvent?.type === 'action') {
-        execution.toolCallCount++;
-      }
-
-      // Track complexity if reported
-      if (traceEvent?.complexity) {
-        execution.complexity = traceEvent.complexity;
-      }
-
-      // Cap buffer size — trim old entries but DON'T re-index
-      if (execution.traceBuffer.length > MAX_TRACE_BUFFER) {
-        execution.traceBuffer = execution.traceBuffer.slice(-MAX_TRACE_BUFFER + 200);
-        // Indices are monotonic and stable — no re-indexing needed
-      }
-
-      if (!pinnedContext?.disableTaskStore) {
-        taskStore.addTrace(chatId, traceEvent);
-      }
+      this.appendTrace(execution, traceEvent, !pinnedContext?.disableTaskStore);
     };
 
     onTrace({
@@ -177,6 +266,7 @@ class AgentRegistry {
         // Pre-process media (same logic as chat route)
         const fs = require('fs');
         const path = require('path');
+        const { randomUUID } = require('crypto');
 
         const GEMINI_NATIVE_MIMES = new Set([
           'image/png', 'image/jpeg', 'image/webp', 'image/heic', 'image/heif',
@@ -191,35 +281,89 @@ class AgentRegistry {
         if (hasMediaAttachments && !fs.existsSync(workspaceTemp)) fs.mkdirSync(workspaceTemp, { recursive: true });
 
         const mediaFiles: { path: string, mimeType: string, name: string, fileUri?: string }[] = [];
+        const usedMediaNames = new Set<string>();
+
+        const normalizeMediaName = (value: any) => {
+          const rawName = String(value || '').trim() || `upload_${ Date.now() }`;
+          const safeName = rawName
+            .replace(/[<>:"/\\|?*\x00-\x1F]/g, '_')
+            .replace(/\s+/g, ' ')
+            .trim() || `upload_${ Date.now() }`;
+          const ext = path.extname(safeName);
+          const stem = path.basename(safeName, ext).slice(0, 140) || 'upload';
+          return `${ stem }${ ext }`;
+        };
+
+        const reserveMediaName = (candidateName: string) => {
+          const safeName = normalizeMediaName(candidateName);
+          if (!usedMediaNames.has(safeName)) {
+            usedMediaNames.add(safeName);
+            return safeName;
+          }
+
+          const ext = path.extname(safeName);
+          const stem = path.basename(safeName, ext);
+          let counter = 2;
+          let uniqueName = `${ stem }_${ counter }${ ext }`;
+          while (usedMediaNames.has(uniqueName)) {
+            counter++;
+            uniqueName = `${ stem }_${ counter }${ ext }`;
+          }
+          usedMediaNames.add(uniqueName);
+          return uniqueName;
+        };
+
+        const isInsideWorkspaceTemp = (candidatePath: string) => {
+          try {
+            const resolvedPath = path.resolve(candidatePath);
+            const resolvedTemp = path.resolve(workspaceTemp);
+            return resolvedPath === resolvedTemp || resolvedPath.startsWith(`${ resolvedTemp }${ path.sep }`);
+          } catch {
+            return false;
+          }
+        };
+
+        const getRunScopedMediaName = (att: any, index: number, sourcePath?: string) => {
+          if (sourcePath && isInsideWorkspaceTemp(sourcePath)) {
+            return reserveMediaName(path.basename(sourcePath));
+          }
+
+          const baseName = normalizeMediaName(att?.name || (sourcePath ? path.basename(sourcePath) : '') || `upload_${ index }`);
+          const uniquePrefix = `${ Date.now() }_${ index }_${ randomUUID().slice(0, 8) }`;
+          return reserveMediaName(`${ uniquePrefix }_${ baseName }`);
+        };
 
         if (hasMediaAttachments) {
-          for (const att of mediaAttachments) {
-            const safeName = (att.name || `upload_${ Date.now() }`).replace(/[<>:"/\\|?*]/g, '_');
-            const destPath = path.join(workspaceTemp, safeName);
+          for (let attachmentIndex = 0; attachmentIndex < mediaAttachments.length; attachmentIndex++) {
+            const att = mediaAttachments[attachmentIndex];
+            const mimeType = att.mimeType || 'application/octet-stream';
 
             if (att.path && fs.existsSync(att.path)) {
-              // File exists on disk (Electron path or pre-upload localPath)
-              if (!fs.existsSync(destPath) || att.path !== destPath) {
-                fs.copyFileSync(att.path, destPath);
+              const sourcePath = path.resolve(att.path);
+              const safeName = getRunScopedMediaName(att, attachmentIndex, sourcePath);
+              const destPath = isInsideWorkspaceTemp(sourcePath) ? sourcePath : path.join(workspaceTemp, safeName);
+
+              if (sourcePath !== destPath) {
+                fs.copyFileSync(sourcePath, destPath);
               }
-              // IMPORTANT: Do NOT pass pre-uploaded fileUri — we will re-upload with the leased key
-              mediaFiles.push({ path: destPath, mimeType: att.mimeType || 'application/octet-stream', name: safeName });
+              mediaFiles.push({ path: destPath, mimeType, name: safeName });
             } else if (att.data || att.inlineData) {
-              // Base64 data (clipboard paste or fallback) — handle BOTH field names
               const b64 = att.data || (att.inlineData?.data) || att.inlineData;
               if (typeof b64 === 'string') {
+                const safeName = getRunScopedMediaName(att, attachmentIndex);
+                const destPath = path.join(workspaceTemp, safeName);
                 fs.writeFileSync(destPath, Buffer.from(b64, 'base64'));
-                mediaFiles.push({ path: destPath, mimeType: att.mimeType || 'application/octet-stream', name: safeName });
+                mediaFiles.push({ path: destPath, mimeType, name: safeName });
               }
             } else if (att.fileUri) {
-              // Only fileUri without local file — still copy if original path exists
+              const safeName = getRunScopedMediaName(att, attachmentIndex, att.path);
+              const destPath = path.join(workspaceTemp, safeName);
               if (att.path) {
                 try { fs.copyFileSync(att.path, destPath); } catch { }
               }
-              // Don't trust pre-uploaded fileUri (different API key) — re-upload below
               const filePath = fs.existsSync(destPath) ? destPath : (att.path || destPath);
               if (fs.existsSync(filePath)) {
-                mediaFiles.push({ path: filePath, mimeType: att.mimeType || 'application/octet-stream', name: safeName });
+                mediaFiles.push({ path: filePath, mimeType, name: safeName });
               }
             }
           }
@@ -230,43 +374,17 @@ class AgentRegistry {
         const currentGeminiNativeFiles = [...preUploadedFiles, ...needsUploadFiles];
         const textFallbackFiles = mediaFiles.filter(f => !f.fileUri && !GEMINI_NATIVE_MIMES.has(f.mimeType));
 
-        // ═══════════════════════════════════════════════════════════
-        // PERSISTENT VISUAL MEMORY — Per-Conversation File Index
-        // Stores uploaded file URIs so the AI remembers images across turns.
-        // ═══════════════════════════════════════════════════════════
-        const visualMemoryDisabled = !!pinnedContext?.disableVisualMemory || !!pinnedContext?.disableMemoryHydration;
-        let geminiNativeFiles = [...currentGeminiNativeFiles];
+        // Media attachments are current-turn only. Re-attaching earlier images
+        // makes the model see stale screenshots/photos on unrelated later turns.
         const visualMemoryPath = path.join(workspaceTemp, `${ chatId }_visual_memory.json`);
+        let geminiNativeFiles = [...currentGeminiNativeFiles];
         try {
-          let historicalFiles: any[] = [];
-          if (!visualMemoryDisabled && fs.existsSync(visualMemoryPath)) {
-            historicalFiles = JSON.parse(fs.readFileSync(visualMemoryPath, 'utf8'));
-          }
-          // Merge historical files not already in current batch
-          for (const hFile of historicalFiles) {
-            if (hFile.fileUri && !geminiNativeFiles.some(f => f.name === hFile.name)) {
-              if (hFile.path && fs.existsSync(hFile.path)) {
-                geminiNativeFiles.push({
-                  path: hFile.path,
-                  mimeType: hFile.mimeType || 'application/octet-stream',
-                  name: hFile.name || path.basename(hFile.path),
-                });
-              } else {
-                console.warn(`[AgentRegistry] Skipping stale visual memory URI for ${ hFile.name || 'file' }`);
-              }
-            } else if (!hFile.fileUri && hFile.path && fs.existsSync(hFile.path) && !geminiNativeFiles.some(f => f.name === hFile.name)) {
-              geminiNativeFiles.push({
-                path: hFile.path,
-                mimeType: hFile.mimeType || 'application/octet-stream',
-                name: hFile.name || path.basename(hFile.path),
-              });
-            }
-          }
-          if (!visualMemoryDisabled || currentGeminiNativeFiles.length > 0) {
-            console.log(`[AgentRegistry] Visual memory: ${ currentGeminiNativeFiles.length } new + ${ historicalFiles.length } recalled = ${ geminiNativeFiles.length } total files`);
-          }
-        } catch (e) {
-          console.warn('[AgentRegistry] ⚠️ Visual memory load failed', e);
+          if (fs.existsSync(visualMemoryPath)) fs.unlinkSync(visualMemoryPath);
+        } catch (e: any) {
+          console.warn(`[AgentRegistry] Could not clear stale visual memory: ${ e?.message || e }`);
+        }
+        if (currentGeminiNativeFiles.length > 0) {
+          console.log(`[AgentRegistry] Media context: ${ currentGeminiNativeFiles.length } current attachment(s), 0 recalled`);
         }
 
         // ═══════════════════════════════════════════════════════════
@@ -314,16 +432,8 @@ class AgentRegistry {
         }
         }
 
-        // Save visual memory AFTER uploads so fileUris are persisted
-        if (!visualMemoryDisabled) {
-          try {
-            const filesToSave = geminiNativeFiles
-              .filter(f => f.fileUri || (f.path && fs.existsSync(f.path)))
-              .map(f => ({ path: f.path, mimeType: f.mimeType, name: f.name, fileUri: f.fileUri || null }));
-            fs.writeFileSync(visualMemoryPath, JSON.stringify(filesToSave, null, 2));
-            console.log(`[AgentRegistry] 💾 Visual memory saved: ${ filesToSave.length } files indexed`);
-          } catch { /* silent */ }
-        }
+        // Do not persist Files API media URIs between turns. Gemini file URIs are
+        // key scoped, and automatic reuse pollutes future prompts with old images.
 
         // Build enriched prompt with file context
         let enrichedPrompt = '';
@@ -444,14 +554,9 @@ class AgentRegistry {
             apiKeyPool.reportFailure(chatId, errorType, error.message);
           }
 
-          // Emit error to trace buffer — use monotonic counter
+          // Emit error to trace buffer.
           try {
-            const entry: TraceEvent = {
-              index: execution.traceCounter++,
-              timestamp: Date.now(),
-              data: { type: 'error', data: error.message },
-            };
-            execution.traceBuffer.push(entry);
+            this.appendTrace(execution, { type: 'error', data: error.message }, !pinnedContext?.disableTaskStore);
           } catch { /* buffer push failed, ignore */ }
 
           console.error(`[AgentRegistry] ❌ Agent failed for chat ${ chatId.substring(0, 8) }...: ${ error.message.substring(0, 100) }`);
@@ -502,14 +607,14 @@ class AgentRegistry {
     if (!execution) {
       return { status: 'idle', traces: [], totalTraces: 0, maxIndex: -1, finalAnswer: '' };
     }
+    this.compactExecutionForRetention(execution);
 
     // Get traces after the given index — indices are monotonic, never re-indexed
-    const filteredTraces = afterIndex >= 0
-      ? execution.traceBuffer.filter(t => t.index > afterIndex)
-      : execution.traceBuffer;
-
-    // Include _traceIdx in each trace so the client can deduplicate
-    const newTraces = filteredTraces.map(t => ({ ...t.data, _traceIdx: t.index }));
+    const newTraces: any[] = [];
+    for (const trace of execution.traceBuffer) {
+      if (afterIndex >= 0 && trace.index <= afterIndex) continue;
+      newTraces.push({ ...trace.data, _traceIdx: trace.index });
+    }
 
     // maxIndex = the highest monotonic index we've ever issued for this chat
     const maxIndex = execution.traceBuffer.length > 0
@@ -547,13 +652,7 @@ class AgentRegistry {
     execution.status = 'stopped';
     execution.completedAt = Date.now();
 
-    // Also add a trace event — use monotonic counter
-    const entry: TraceEvent = {
-      index: execution.traceCounter++,
-      timestamp: Date.now(),
-      data: { type: 'thought', text: '\n\n*Generation stopped by user.*' },
-    };
-    execution.traceBuffer.push(entry);
+    this.appendTrace(execution, { type: 'thought', text: '\n\n*Generation stopped by user.*' });
 
     taskStore.stopTask(chatId).catch(() => { });
     apiKeyPool.releaseKey(chatId);
@@ -570,25 +669,31 @@ class AgentRegistry {
    * Also immediately emits a steering_received trace to the buffer so the UI
    * can show the user that their steering was acknowledged instantly.
    */
-  public addSteeringMessage(chatId: string, message: string): boolean {
+  public addSteeringMessage(chatId: string, message: string, steeringId?: string): boolean {
     const execution = this.executions.get(chatId);
     if (!execution || execution.status !== 'running') return false;
 
-    execution.steeringQueue.push(message);
+    const trimmedMessage = message.substring(0, 8000);
+    const queuedMessage: SteeringMessage = {
+      id: steeringId || `steer_${ Date.now() }_${ Math.random().toString(36).slice(2, 8) }`,
+      text: trimmedMessage,
+      createdAt: Date.now(),
+    };
+    execution.steeringQueue.push(queuedMessage);
+    if (execution.steeringQueue.length > MAX_STEERING_QUEUE) {
+      execution.steeringQueue.splice(0, execution.steeringQueue.length - MAX_STEERING_QUEUE);
+    }
 
     // Immediately emit a trace so the UI shows the steering card right away
-    const entry: TraceEvent = {
-      index: execution.traceCounter++,
+    this.appendTrace(execution, {
+      type: 'steering_received',
+      text: trimmedMessage,
+      steeringId: queuedMessage.id,
+      steeringIds: [queuedMessage.id],
       timestamp: Date.now(),
-      data: {
-        type: 'steering_received',
-        text: message,
-        timestamp: Date.now(),
-      },
-    };
-    execution.traceBuffer.push(entry);
+    });
 
-    console.log(`[AgentRegistry] 🧭 Steering message queued for chat ${ chatId.substring(0, 8) }...: "${ message.substring(0, 60) }"`);
+    console.log(`[AgentRegistry] 🧭 Steering message queued for chat ${ chatId.substring(0, 8) }...: "${ trimmedMessage.substring(0, 60) }"`);
     return true;
   }
 
@@ -596,7 +701,7 @@ class AgentRegistry {
    * Dequeue all pending steering messages for a chat (clears the queue).
    * Called by the ReAct loop at the start of each iteration.
    */
-  public getAndClearSteeringQueue(chatId: string): string[] {
+  public getAndClearSteeringQueue(chatId: string): SteeringMessage[] {
     const execution = this.executions.get(chatId);
     if (!execution || execution.steeringQueue.length === 0) return [];
     const messages = [...execution.steeringQueue];
@@ -620,7 +725,14 @@ class AgentRegistry {
     status: string;
     startedAt: number;
     traceCount: number;
+    traceCounter: number;
     durationSec: number;
+    toolCallCount: number;
+    effectiveModel?: string;
+    complexity?: string;
+    peakMemoryMB: number;
+    steeringQueueLength: number;
+    completedAt?: number;
   }> {
     const now = Date.now();
     return Array.from(this.executions.entries())
@@ -630,10 +742,14 @@ class AgentRegistry {
         status: e.status,
         startedAt: e.startedAt,
         traceCount: e.traceBuffer.length,
+        traceCounter: e.traceCounter,
         durationSec: Math.round(((e.completedAt || now) - e.startedAt) / 1000),
         toolCallCount: e.toolCallCount,
         effectiveModel: e.effectiveModel,
         complexity: e.complexity,
+        peakMemoryMB: e.peakMemoryMB,
+        steeringQueueLength: e.steeringQueue.length,
+        completedAt: e.completedAt,
       }));
   }
 
@@ -651,14 +767,35 @@ class AgentRegistry {
   private cleanup(): void {
     const now = Date.now();
     let cleaned = 0;
+    const completedExecutions: Array<[string, AgentExecution]> = [];
 
     for (const [chatId, execution] of this.executions.entries()) {
       if (execution.status !== 'running' && execution.completedAt) {
+        this.compactExecutionForRetention(execution);
+        completedExecutions.push([chatId, execution]);
+
         if (now - execution.completedAt > MAX_COMPLETED_AGE) {
           this.executions.delete(chatId);
           cleaned++;
         }
       }
+    }
+
+    const retainedCompleted = completedExecutions
+      .filter(([chatId]) => this.executions.has(chatId))
+      .sort((a, b) => (a[1].completedAt || 0) - (b[1].completedAt || 0));
+
+    while (retainedCompleted.length > MAX_COMPLETED_EXECUTIONS) {
+      const [chatId] = retainedCompleted.shift()!;
+      this.executions.delete(chatId);
+      cleaned++;
+    }
+
+    if (now - this.lastTaskStoreCleanupAt > TASK_STORE_CLEANUP_INTERVAL) {
+      this.lastTaskStoreCleanupAt = now;
+      taskStore.cleanup().catch((error: any) => {
+        console.warn(`[AgentRegistry] Task store cleanup failed: ${ error?.message || error }`);
+      });
     }
 
     if (cleaned > 0) {
@@ -675,6 +812,7 @@ class AgentRegistry {
         execution.cancelled = true;
         execution.status = 'stopped';
         execution.completedAt = Date.now();
+        taskStore.stopTask(chatId).catch(() => { });
         apiKeyPool.releaseKey(chatId);
         apiKeyPool.releaseLeasesWithPrefix(`${ chatId }_sub_`);
       }

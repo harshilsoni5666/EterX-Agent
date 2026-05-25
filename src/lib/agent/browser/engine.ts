@@ -35,6 +35,10 @@ function getPlaywright(): any {
   return _pw;
 }
 
+function allowUserChromeAccess(): boolean {
+  return process.env.ETERX_ALLOW_USER_CHROME === '1' || process.env.ETERX_ALLOW_UNSAFE_HOST_COMPUTER === '1';
+}
+
 // ═══════════════════════════════════════
 // TYPES
 // ═══════════════════════════════════════
@@ -119,9 +123,10 @@ export class BrowserEngine {
     }
 
     const mode = options.mode || 'managed';
+    const userChromeAllowed = allowUserChromeAccess();
 
     // ─── 2. AUTO-DETECT: Try CDP first (user's Chrome with debug port already running) ───
-    if (!options.mode || mode === 'cdp') {
+    if (userChromeAllowed && mode === 'cdp') {
       try {
         const port = await this.findChromeDebugPort();
         if (port) {
@@ -135,7 +140,7 @@ export class BrowserEngine {
     }
 
     // ─── 3. LAUNCH USER'S CHROME with debug port (uses their actual logins!) ───
-    if (!options.mode || mode === 'managed') {
+    if (userChromeAllowed && options.mode === 'cdp') {
       try {
         const page = await this.launchUserChromeWithDebug(options);
         if (page) return page;
@@ -150,6 +155,9 @@ export class BrowserEngine {
     try {
       switch (mode) {
         case 'cdp':
+          if (!userChromeAllowed) {
+            throw new Error('Real Chrome/CDP access is disabled. Set ETERX_ALLOW_USER_CHROME=1 only when host Chrome control is intended.');
+          }
           return await this.connectCDP(options);
         case 'remote':
           return await this.connectRemote(options);

@@ -4,7 +4,7 @@ import path from 'path';
 import fs from 'fs/promises';
 import fse from 'fs-extra';
 import axios from 'axios';
-import { resolveWorkspacePath } from '../../workspace/path_resolver';
+import { resolveFinalArtifactPathForContext } from '../../workspace/path_resolver';
 
 /**
  * AI Image Generator Tool
@@ -30,6 +30,10 @@ const STYLE_ENHANCERS: Record<string, string> = {
 };
 
 const QUALITY_BOOSTERS = ['masterpiece', 'best quality', 'highly detailed'];
+
+function ensureExtension(filePath: string, extension: string): string {
+  return filePath.toLowerCase().endsWith(extension.toLowerCase()) ? filePath : `${filePath}${extension}`;
+}
 
 export const imageGenTool: ToolDefinition = {
   name: 'image_generator',
@@ -64,9 +68,9 @@ Styles: realistic, illustration, diagram, icon, abstract, photo, 3d, anime, logo
     height?: number,
     filename?: string,
     enhancePrompt?: boolean
-  }) => {
+  }, context?: any) => {
     const filename = input.filename || `generated_${Date.now()}.png`;
-    const filePath = resolveWorkspacePath(filename);
+    const filePath = ensureExtension(resolveFinalArtifactPathForContext(filename, '.png', undefined, context), '.png');
     const outputDir = path.dirname(filePath);
     await fse.ensureDir(outputDir);
 
@@ -136,13 +140,14 @@ Styles: realistic, illustration, diagram, icon, abstract, photo, 3d, anime, logo
       await fs.writeFile(filePath, Buffer.from(imageRes.data));
       const stats = await fs.stat(filePath);
 
-      console.log(`[Tool: image_generator] Image saved: ${filename} (${(stats.size / 1024).toFixed(1)} KB)`);
+      const savedName = path.basename(filePath);
+      console.log(`[Tool: image_generator] Image saved: ${savedName} (${(stats.size / 1024).toFixed(1)} KB)`);
 
       return {
         success: true,
         filePath,
         enhancedPrompt: finalPrompt,
-        message: `Real raster image generated: ${filename} (${(stats.size / 1024).toFixed(1)} KB). Saved at: ${filePath}`
+        message: `Real raster image generated: ${savedName} (${(stats.size / 1024).toFixed(1)} KB). Saved at: ${filePath}`
       };
     } catch (apiError: any) {
       const errorMessage = apiError?.message || String(apiError);

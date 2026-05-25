@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { ToolDefinition } from '../../schemas';
 import fs from 'fs-extra';
 import pdfParse from 'pdf-parse';
-import { resolveReadableWorkspacePath } from '../../workspace/path_resolver';
+import { resolveReadableWorkspacePathForContext } from '../../workspace/path_resolver';
 
 export const pdfParserTool: ToolDefinition = {
   name: 'parse_pdf',
@@ -16,8 +16,8 @@ export const pdfParserTool: ToolDefinition = {
     textContext: z.string(),
     error: z.string().optional()
   }),
-  execute: async (input: { filename: string }) => {
-    const safePath = resolveReadableWorkspacePath(input.filename);
+  execute: async (input: { filename: string }, context?: any) => {
+    const safePath = resolveReadableWorkspacePathForContext(input.filename, context);
     console.log(`[Tool: parse_pdf] Reading PDF ${safePath}`);
     
     try {

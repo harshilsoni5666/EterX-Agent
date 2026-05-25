@@ -1,6 +1,7 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 import { agentRegistry } from '../../../../../lib/agent/agent-registry';
 import { apiKeyPool } from '../../../../../lib/agent/api-key-pool';
+import { taskStore } from '../../../../../lib/agent/task-store';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -14,13 +15,22 @@ export async function GET() {
   try {
     const pool = apiKeyPool.getPoolStatus();
     const agents = agentRegistry.getAllStatus();
+    const tasks = taskStore.getCacheStatus();
     const canAcceptNew = apiKeyPool.canAcceptNewAgent();
+    const memory = process.memoryUsage();
 
     return NextResponse.json({
       pool,
       agents,
+      tasks,
       canAcceptNew,
       maxParallel: apiKeyPool.maxParallelAgents,
+      runtime: {
+        uptimeSec: Math.round(process.uptime()),
+        rssMB: Math.round(memory.rss / 1024 / 1024),
+        heapUsedMB: Math.round(memory.heapUsed / 1024 / 1024),
+        heapTotalMB: Math.round(memory.heapTotal / 1024 / 1024),
+      },
     });
   } catch (error: any) {
     return NextResponse.json(

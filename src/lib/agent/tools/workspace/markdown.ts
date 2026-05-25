@@ -3,7 +3,7 @@ import { ToolDefinition } from '../../schemas';
 import path from 'path';
 import fs from 'fs/promises';
 import fse from 'fs-extra';
-import { resolveReadableWorkspacePath, resolveWorkspacePath } from '../../workspace/path_resolver';
+import { resolveFinalArtifactPathForContext, resolveReadableWorkspacePathForContext } from '../../workspace/path_resolver';
 
 /**
  * Markdown → HTML Converter
@@ -23,15 +23,15 @@ export const markdownTool: ToolDefinition = {
     theme: z.enum(['light', 'dark', 'github']).optional().default('dark').describe('Visual theme')
   }),
   outputSchema: z.object({ success: z.boolean(), filePath: z.string(), message: z.string() }),
-  execute: async (input: any) => {
+  execute: async (input: any, context?: any) => {
     const filename = input.filename || `doc_${Date.now()}.html`;
-    const filePath = resolveWorkspacePath(filename);
+    const filePath = resolveFinalArtifactPathForContext(filename, '.html', input.title || 'Document', context);
     await fse.ensureDir(path.dirname(filePath));
     const theme = input.theme || 'dark';
 
     let markdown = input.markdown || '';
     if (input.source_md_path) {
-      const sourcePath = resolveReadableWorkspacePath(input.source_md_path);
+      const sourcePath = resolveReadableWorkspacePathForContext(input.source_md_path, context);
       markdown = await fs.readFile(sourcePath, 'utf-8');
     }
     if (!markdown.trim()) {

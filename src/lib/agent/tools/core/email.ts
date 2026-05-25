@@ -4,6 +4,10 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import path from 'path';
 import fs from 'fs-extra';
+import {
+  resolveFinalArtifactPathForContext,
+  resolveReadableWorkspacePathForContext,
+} from '../../workspace/path_resolver';
 
 const execAsync = promisify(exec);
 
@@ -31,7 +35,7 @@ export const emailTool: ToolDefinition = {
     success: z.boolean(),
     result: z.string()
   }),
-  execute: async (input: any) => {
+  execute: async (input: any, context?: any) => {
     console.log(`[Tool: email_manager] Action: ${input.action}`);
 
     try {
@@ -75,10 +79,9 @@ export const emailTool: ToolDefinition = {
         }
 
         case 'draft': {
-          const targetDir = path.resolve(process.cwd(), '.workspaces', 'temp', 'emails');
-          await fs.ensureDir(targetDir);
           const draftFilename = input.filename || `draft_${Date.now()}.eml`;
-          const draftPath = path.join(targetDir, draftFilename);
+          const draftPath = resolveFinalArtifactPathForContext(draftFilename, '.eml', input.subject || 'Email Draft', context);
+          await fs.ensureDir(path.dirname(draftPath));
 
           const emlContent = [
             `From: ${process.env.EMAIL_ADDRESS || 'agent@eterx.local'}`,
@@ -107,8 +110,7 @@ export const emailTool: ToolDefinition = {
 
         case 'read_eml': {
           if (!input.filename) return { success: false, result: 'filename required for read_eml' };
-          const targetDir = path.resolve(process.cwd(), '.workspaces', 'temp');
-          const emlPath = path.resolve(targetDir, input.filename);
+          const emlPath = resolveReadableWorkspacePathForContext(input.filename, context);
           if (!await fs.pathExists(emlPath)) {
             return { success: false, result: `File not found: ${input.filename}` };
           }

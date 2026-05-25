@@ -4,7 +4,27 @@ import fs from 'fs/promises';
 import fse from 'fs-extra';
 import path from 'path';
 
-import { resolveWorkspacePath, checkEterXProtection, resolveReadableWorkspacePath } from '../../workspace/path_resolver';
+import {
+  checkEterXProtection,
+  getPathResolverInfo,
+  resolveWorkspacePathForContext,
+  resolveReadableWorkspacePathForContext,
+  resolveWorkspaceDirectoryForContext,
+} from '../../workspace/path_resolver';
+
+const DESKTOP_SCRIPT_EXTENSIONS = new Set(['.py', '.ps1', '.js', '.mjs', '.cjs', '.bat', '.cmd', '.vbs', '.ahk']);
+
+function isDesktopHelperScript(filePath: string): boolean {
+  const desktopPath = path.resolve(getPathResolverInfo().desktopPath);
+  const resolved = path.resolve(filePath);
+  const relative = path.relative(desktopPath, resolved);
+  return Boolean(
+    relative &&
+    !relative.startsWith('..') &&
+    !path.isAbsolute(relative) &&
+    DESKTOP_SCRIPT_EXTENSIONS.has(path.extname(resolved).toLowerCase())
+  );
+}
 
 export const workspaceReadTool: ToolDefinition = {
   name: 'workspace_read_file',
@@ -14,8 +34,8 @@ export const workspaceReadTool: ToolDefinition = {
     filename: z.string().describe('File path — absolute (C:\\path\\to\\file) or relative to workspace')
   }),
   outputSchema: z.object({ content: z.string() }),
-  execute: async (input: { filename: string }) => {
-    const filePath = resolveReadableWorkspacePath(input.filename);
+  execute: async (input: { filename: string }, context?: any) => {
+    const filePath = resolveReadableWorkspacePathForContext(input.filename, context);
     console.log(`[Tool: workspace_read_file] Reading: ${ filePath }`);
 
     if (!await fse.pathExists(filePath)) {
@@ -50,12 +70,19 @@ export const workspaceWriteTool: ToolDefinition = {
     append: z.boolean().optional().describe('Set to true to append to the file instead of overwriting. EXTREMELY helpful for the auto-chunk workflow.')
   }),
   outputSchema: z.object({ success: z.boolean(), path: z.string() }),
-  execute: async (input: { filename: string, content: string, append?: boolean }) => {
+  execute: async (input: { filename: string, content: string, append?: boolean }, context?: any) => {
     // Guard against undefined/empty filename — this was causing "path must be string" crashes
     if (!input.filename || typeof input.filename !== 'string' || !input.filename.trim()) {
       return { success: false, error: 'INVALID FILENAME: You must provide a valid filename string. Do not pass undefined or empty string.', path: '' };
     }
-    const filePath = resolveWorkspacePath(input.filename);
+    const filePath = resolveWorkspacePathForContext(input.filename, context);
+    if (isDesktopHelperScript(filePath)) {
+      return {
+        success: false,
+        error: 'BLOCKED: Do not create helper scripts on the Desktop for app opening/clicking/inspection. Use the computer or screen_agent tool directly. Temporary scripts must stay in .workspaces/sandbox/.',
+        path: filePath,
+      };
+    }
 
     // EterX Source Protection Cloak — NEVER modify our own source
     const protection = checkEterXProtection(filePath);
@@ -86,15 +113,8 @@ export const workspaceListDirectoryTool: ToolDefinition = {
     directory: z.string().optional().describe('Directory path — absolute (C:\\Users\\...\\Desktop) or relative. Default: workspace root')
   }),
   outputSchema: z.object({ files: z.array(z.string()), tree: z.string() }),
-  execute: async (input: { directory?: string }) => {
-    let walkDir: string;
-    if (!input.directory) {
-      walkDir = process.cwd();
-    } else if (path.isAbsolute(input.directory)) {
-      walkDir = input.directory;
-    } else {
-      walkDir = path.resolve(process.cwd(), input.directory);
-    }
+  execute: async (input: { directory?: string }, context?: any) => {
+    const walkDir = resolveWorkspaceDirectoryForContext(input.directory, context);
 
     if (!await fse.pathExists(walkDir)) {
       throw new Error(`Directory not found: ${ walkDir }`);
@@ -131,13 +151,8 @@ export const workspaceSearchTextTool: ToolDefinition = {
     directory: z.string().optional().describe('Directory to search in (absolute or relative). Default: workspace')
   }),
   outputSchema: z.object({ results: z.array(z.any()) }),
-  execute: async (input: { pattern: string, directory?: string }) => {
-    let searchDir: string;
-    if (input.directory && path.isAbsolute(input.directory)) {
-      searchDir = input.directory;
-    } else {
-      searchDir = path.resolve(process.cwd(), input.directory || '');
-    }
+  execute: async (input: { pattern: string, directory?: string }, context?: any) => {
+    const searchDir = resolveWorkspaceDirectoryForContext(input.directory, context);
 
     if (!await fse.pathExists(searchDir)) return { results: [] };
 
@@ -184,8 +199,8 @@ export const workspaceEditFileTool: ToolDefinition = {
     }))
   }),
   outputSchema: z.object({ success: z.boolean(), message: z.string() }),
-  execute: async (input: { filename: string, edits: any[] }) => {
-    const filePath = resolveWorkspacePath(input.filename);
+  execute: async (input: { filename: string, edits: any[] }, context?: any) => {
+    const filePath = resolveWorkspacePathForContext(input.filename, context);
 
     const protection = checkEterXProtection(filePath);
     if (protection.blocked) {

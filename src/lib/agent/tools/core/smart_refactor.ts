@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { ToolDefinition } from '../../schemas';
-import path from 'path';
 import fs from 'fs-extra';
+import { checkEterXProtection, resolveWorkspacePathForContext } from '../../workspace/path_resolver';
 
 /**
  * Smart Code Refactor — Intelligent Code Modification Engine
@@ -59,10 +59,13 @@ EXAMPLES:
   execute: async (input: {
     operation: string, file: string, from?: string, to?: string,
     code?: string, pattern?: string, functionName?: string
-  }) => {
-    const filePath = path.isAbsolute(input.file)
-      ? input.file
-      : path.resolve(process.cwd(), input.file);
+  }, context?: any) => {
+    const filePath = resolveWorkspacePathForContext(input.file, context);
+
+    const protection = checkEterXProtection(filePath);
+    if (protection.blocked) {
+      return { success: false, message: protection.reason, linesChanged: 0 };
+    }
 
     if (!await fs.pathExists(filePath)) {
       return { success: false, message: `File not found: ${filePath}`, linesChanged: 0 };

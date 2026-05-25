@@ -6,6 +6,7 @@ import { browserEngine } from '../../browser/engine';
 import { domSnapshot } from '../../browser/snapshot';
 import { browserSessionManager } from '../../browser/session';
 import { networkMonitor } from '../../browser/network';
+import { monitorEmitter } from '../../monitor/emitter';
 
 // ═══════════════════════════════════════
 // PATHS & CONSTANTS
@@ -14,6 +15,26 @@ import { networkMonitor } from '../../browser/network';
 const SCREENSHOTS_DIR = path.resolve(process.cwd(), '.workspaces', 'temp', 'screenshots');
 const BROWSER_LOG = path.resolve(process.cwd(), '.workspaces', 'temp', 'browser_actions.log');
 const PDF_DIR = path.resolve(process.cwd(), '.workspaces', 'temp', 'pdfs');
+
+async function emitBrowserMonitorFrame(page: any, chatId?: string | null) {
+  try {
+    if (!page || page.isClosed?.()) return;
+    const url = page.url?.() || '';
+    if (url) monitorEmitter.browserNav(url, chatId || undefined);
+    const frame = await page.screenshot({
+      fullPage: false,
+      type: 'png',
+      timeout: 1800,
+    });
+    const base64 = Buffer.from(frame).toString('base64');
+    if (base64.length > 100) {
+      monitorEmitter.browserScreenshot(base64, url || undefined, chatId || undefined);
+    }
+  } catch {
+    // Monitor frames are best-effort and must never slow or fail browser work.
+  }
+}
+
 const BROWSER_VISUAL_BOOTSTRAP = `
 (() => {
   try {
@@ -1697,7 +1718,7 @@ USE THIS WHEN THE USER ASKS TO:
     // ── Connection ──
     mode: z.enum(['managed', 'cdp', 'remote']).optional().describe('Connection mode. managed=new Chrome, cdp=existing Chrome, remote=cloud'),
     profile: z.string().optional().describe('Named profile for session persistence (cookies survive restarts)'),
-    headless: z.boolean().optional().describe('Run headless (no visible window). Default: false'),
+    headless: z.boolean().optional().describe('Run headless without opening a host Chrome window. Default: true for EterX Computer isolation.'),
     cdpEndpoint: z.string().optional().describe('CDP endpoint for cdp mode: http://127.0.0.1:9222'),
     wsEndpoint: z.string().optional().describe('WebSocket endpoint for remote mode'),
 
@@ -1805,6 +1826,7 @@ USE THIS WHEN THE USER ASKS TO:
 
     // ── Dialog ──
     dialogAction: z.enum(['accept', 'dismiss']).optional().describe('How to handle dialogs'),
+    chatId: z.string().optional().describe('Internal chat id for routing monitor frames'),
   }),
 
   outputSchema: z.object({
@@ -1843,8 +1865,8 @@ USE THIS WHEN THE USER ASKS TO:
 
       if (action === 'launch' || action === 'connect') {
         page = await browserEngine.launch({
-          mode: input.mode || (action === 'connect' ? 'cdp' : 'managed'),
-          headless: input.headless ?? false,
+          mode: input.mode || 'managed',
+          headless: input.headless ?? true,
           profile: input.profile,
           cdpEndpoint: input.cdpEndpoint,
           wsEndpoint: input.wsEndpoint,
@@ -3143,6 +3165,16 @@ USE THIS WHEN THE USER ASKS TO:
     } finally {
       if (activityPage && input.visualFeedback !== false) {
         scheduleBrowserActivityIdleEnd(activityPage);
+      }
+      if (action !== 'disconnect') {
+        const monitorChatId = typeof input.chatId === 'string' ? input.chatId : undefined;
+        if (activityPage && !activityPage.isClosed?.()) {
+          void emitBrowserMonitorFrame(activityPage, monitorChatId);
+        } else if (browserEngine.connected) {
+          void browserEngine.getActivePage()
+            .then((activePage: any) => emitBrowserMonitorFrame(activePage, monitorChatId))
+            .catch(() => undefined);
+        }
       }
     }
     }); // end withBrowserLock

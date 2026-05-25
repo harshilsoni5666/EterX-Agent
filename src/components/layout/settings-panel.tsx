@@ -348,7 +348,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose })
                 </div>
 
                 {/* Scrollable Body */}
-                <div className="flex-1 overflow-y-auto custom-scrollbar px-6 py-2">
+                <div className="flex-1 overflow-y-auto eterx-scrollbar px-6 py-2">
                   <AnimatePresence mode="wait">
                     <motion.div
                       key={activeTab}

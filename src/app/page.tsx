@@ -1,12 +1,11 @@
 "use client";
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import dynamic from 'next/dynamic';
 import { Sidebar } from '../components/layout/sidebar';
-import { CommandPalette } from '../components/layout/command-palette';
-import { SettingsPanel } from '../components/layout/settings-panel';
 import { ChatInput } from '../components/layout/chat-input';
 import { ChatFeed } from '../components/chat/chat-feed';
-import { ChevronDown, Code2, GraduationCap, MessageSquare, PenTool, PanelLeft, SquarePen, Search, X, ArrowLeft, Trash } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, ChevronDown, Clock3, Code2, GraduationCap, MessageSquare, Monitor, Pencil, PenTool, PanelLeft, SendHorizontal, SquarePen, Search, X, ArrowLeft, Trash } from 'lucide-react';
 import { Tooltip } from '../components/ui/tooltip';
 import { motion, AnimatePresence } from 'framer-motion';
 import { InteractiveGrid } from '../components/ui/interactive-grid';
@@ -18,8 +17,31 @@ import {
   type MainAgentThinkingLevel,
 } from '../lib/agent/model-routing';
 import { FilePanelProvider, useGlobalFilePanel } from '../contexts/FilePanelContext';
-import { IdePanel } from '../components/chat/file-panel';
-import { AgentsView } from '../components/agents/agents-view';
+
+const CommandPalette = dynamic(
+  () => import('../components/layout/command-palette').then(mod => mod.CommandPalette),
+  { ssr: false },
+);
+
+const SettingsPanel = dynamic(
+  () => import('../components/layout/settings-panel').then(mod => mod.SettingsPanel),
+  { ssr: false },
+);
+
+const IdePanel = dynamic(
+  () => import('../components/chat/file-panel').then(mod => mod.IdePanel),
+  { ssr: false },
+);
+
+const AgentsView = dynamic(
+  () => import('../components/agents/agents-view').then(mod => mod.AgentsView),
+  { ssr: false },
+);
+
+const MonitorPanel = dynamic(
+  () => import('../components/monitor/ModernMonitorPanel').then(mod => mod.MonitorPanel),
+  { ssr: false },
+);
 
 interface ChatSession {
   id: string;
@@ -37,6 +59,290 @@ type ComposerAttachment = {
   uploadStatus?: 'uploading' | 'done' | 'error';
   localPath?: string;
   fileUri?: string;
+};
+
+type TaskTrackerStep = {
+  id?: string;
+  step: number;
+  name: string;
+  description?: string;
+  status: 'pending' | 'in_progress' | 'done' | 'skipped';
+  tools?: string[];
+  done_when?: string;
+};
+
+type TaskTrackerState = {
+  goal?: string;
+  phase?: 'generating' | 'generated' | 'progress' | 'complete';
+  status?: 'generating' | 'in_progress' | 'completed' | 'failed' | 'stopped';
+  complexity?: string;
+  estimatedMinutes?: number;
+  completedSteps?: number;
+  totalSteps?: number;
+  activeStepName?: string | null;
+  steps?: TaskTrackerStep[];
+};
+
+type NetworkBannerPhase = 'online' | 'offline' | 'restored';
+
+const NETWORK_PROBE_URL = 'https://www.gstatic.com/generate_204';
+
+const NetworkStatusBanner = ({
+  phase,
+  visible,
+  onDismiss,
+}: {
+  phase: NetworkBannerPhase;
+  visible: boolean;
+  onDismiss: () => void;
+}) => {
+  const offline = phase === 'offline';
+  if (phase === 'online') return null;
+
+  return (
+    <AnimatePresence>
+      {visible && (
+        <motion.div
+          initial={{ opacity: 0, y: -54, scale: 0.985 }}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          exit={{ opacity: 0, y: -54, scale: 0.985 }}
+          transition={{ duration: 0.32, ease: [0.22, 1, 0.36, 1] }}
+          className="pointer-events-none fixed inset-x-0 top-0 z-[9999] flex justify-center px-4 pt-5"
+        >
+          <div className="group pointer-events-auto relative flex min-h-[58px] w-full max-w-[520px] items-center gap-3 overflow-hidden rounded-[18px] border border-white/[0.12] bg-[#141414]/95 px-4 py-3 pr-12 text-[#F2F0EC] shadow-[0_18px_52px_rgba(0,0,0,0.48),inset_0_1px_0_rgba(255,255,255,0.06)] backdrop-blur-2xl">
+            <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/30 to-transparent" />
+            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-white/[0.13] bg-white/[0.055]">
+              {offline ? (
+                <motion.span
+                  className="h-[17px] w-[17px] rounded-full border-[2px] border-white/20 border-t-white"
+                  animate={{ rotate: 360 }}
+                  transition={{ duration: 0.82, repeat: Infinity, ease: 'linear' }}
+                />
+              ) : (
+                <CheckCircle2 className="h-[18px] w-[18px] text-white" strokeWidth={2.2} />
+              )}
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-[14px] font-semibold tracking-normal">
+                {offline ? 'No internet connection' : 'Connection restored'}
+              </span>
+              <span className="mt-0.5 block truncate text-[12.5px] font-medium text-[#A7A39E]">
+                {offline
+                  ? 'Agent activity is paused. You can keep using the app while we reconnect.'
+                  : 'Agent activity is resuming automatically.'}
+              </span>
+            </span>
+            <button
+              type="button"
+              onClick={onDismiss}
+              aria-label="Dismiss network status"
+              className="absolute right-2.5 top-2.5 flex h-7 w-7 items-center justify-center rounded-full border border-white/[0.09] bg-white/[0.055] text-white/70 opacity-0 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] transition-all duration-200 hover:bg-white/[0.11] hover:text-white focus:opacity-100 focus:outline-none group-hover:opacity-100"
+            >
+              <X className="h-3.5 w-3.5" strokeWidth={2.3} />
+            </button>
+          </div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+};
+
+const getPetLogText = (log: any) => {
+  const raw = log?.text || log?.command || log?.summary || log?.message || '';
+  return String(raw).replace(/\s+/g, ' ').trim();
+};
+
+const getLatestPetMonitorText = (logs: any[], isThinking: boolean) => {
+  for (let i = logs.length - 1; i >= 0; i--) {
+    const log = logs[i];
+    if (!log || log.type === 'user_action' || log.type === 'task_plan') continue;
+    const text = getPetLogText(log);
+    if (text) return text;
+  }
+  return isThinking ? 'Thinking' : '';
+};
+
+const FloatingPetMonitor = ({
+  open,
+  isThinking,
+  title,
+  logs,
+  onClose,
+  onReply,
+}: {
+  open: boolean;
+  isThinking: boolean;
+  title: string;
+  logs: any[];
+  onClose: () => void;
+  onReply: (message: string) => void;
+}) => {
+  const [position, setPosition] = useState({ x: 28, y: 82 });
+  const [replyOpen, setReplyOpen] = useState(false);
+  const [replyText, setReplyText] = useState('');
+  const dragFrameRef = useRef<number | null>(null);
+
+  const latestText = useMemo(() => getLatestPetMonitorText(logs, isThinking), [isThinking, logs]);
+
+  const displayTitle = title?.trim() || 'EterX agent';
+  const previewText = latestText || (isThinking ? 'Thinking' : '');
+
+  const startDrag = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    const target = event.target as HTMLElement | null;
+    if (target?.closest('button,input,textarea')) return;
+
+    event.preventDefault();
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const origin = position;
+
+    const handleMove = (moveEvent: PointerEvent) => {
+      const next = {
+        x: Math.max(8, Math.min(window.innerWidth - 96, origin.x + moveEvent.clientX - startX)),
+        y: Math.max(8, Math.min(window.innerHeight - 64, origin.y + moveEvent.clientY - startY)),
+      };
+
+      if (dragFrameRef.current !== null) window.cancelAnimationFrame(dragFrameRef.current);
+      dragFrameRef.current = window.requestAnimationFrame(() => {
+        setPosition(next);
+        dragFrameRef.current = null;
+      });
+    };
+
+    const stopDrag = () => {
+      if (dragFrameRef.current !== null) {
+        window.cancelAnimationFrame(dragFrameRef.current);
+        dragFrameRef.current = null;
+      }
+      window.removeEventListener('pointermove', handleMove);
+      window.removeEventListener('pointerup', stopDrag);
+      window.removeEventListener('pointercancel', stopDrag);
+    };
+
+    window.addEventListener('pointermove', handleMove);
+    window.addEventListener('pointerup', stopDrag);
+    window.addEventListener('pointercancel', stopDrag);
+  }, [position]);
+
+  useEffect(() => {
+    return () => {
+      if (dragFrameRef.current !== null) window.cancelAnimationFrame(dragFrameRef.current);
+    };
+  }, []);
+
+  const submitReply = useCallback(() => {
+    const message = replyText.trim();
+    if (!message) return;
+    onReply(message);
+    setReplyText('');
+    setReplyOpen(false);
+  }, [onReply, replyText]);
+
+  if (!open || !isThinking) return null;
+
+  return (
+    <div
+      className={`group fixed z-[9998] w-[372px] max-w-[calc(100vw-24px)] select-none rounded-[22px] border border-white/[0.16] bg-[#171717]/96 text-[#F2F0EC] shadow-[0_18px_54px_rgba(0,0,0,0.36),inset_0_1px_0_rgba(255,255,255,0.055)] backdrop-blur-2xl ${replyOpen ? 'p-3' : 'px-4 py-3'}`}
+      style={{ left: position.x, top: position.y }}
+      onPointerDown={startDrag}
+    >
+      <button
+        type="button"
+        onClick={onClose}
+        aria-label="Close pet monitor"
+        className="absolute -left-2 -top-2 flex h-8 w-8 items-center justify-center rounded-full border border-white/[0.16] bg-[#1F1F1F] text-white/72 opacity-0 shadow-[0_10px_26px_rgba(0,0,0,0.28)] transition-all duration-100 hover:bg-[#2A2A2A] hover:text-white group-hover:opacity-100 focus:opacity-100"
+      >
+        <X className="h-4 w-4" strokeWidth={2.3} />
+      </button>
+
+      <div className="flex min-w-0 items-start gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-[20px] font-semibold leading-6 tracking-normal text-white">
+            {displayTitle}
+          </div>
+          {replyOpen ? (
+            <div className="mt-2 line-clamp-2 text-[15px] font-medium leading-5 text-[#DAD7D1]">
+              {previewText}
+            </div>
+          ) : (
+            <div className="mt-1 line-clamp-2 text-[18px] font-medium leading-6 text-[#F2F0EC] group-hover:hidden">
+              {previewText}
+            </div>
+          )}
+          {!replyOpen && (
+            <div className="mt-1 hidden text-[18px] font-medium leading-6 text-[#F2F0EC] group-hover:block">
+              Thinking
+            </div>
+          )}
+        </div>
+
+        <span className="mt-1 h-[15px] w-[15px] shrink-0 rounded-full border-2 border-white/35 border-t-white animate-spin" />
+      </div>
+
+      {!replyOpen && (
+        <button
+          type="button"
+          onClick={() => setReplyOpen(true)}
+          className="absolute bottom-3 right-4 hidden rounded-full border border-white/[0.10] bg-white/[0.055] px-4 py-1.5 text-[15px] font-medium text-[#E8E5DF] transition-colors hover:bg-white/[0.10] hover:text-white group-hover:block"
+        >
+          Reply
+        </button>
+      )}
+
+      {replyOpen && (
+        <div className="mt-3 border-t border-white/[0.08] pt-3">
+          <div className="flex items-center gap-2">
+            <input
+              value={replyText}
+              onChange={(event) => setReplyText(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  event.preventDefault();
+                  submitReply();
+                }
+                if (event.key === 'Escape') {
+                  event.preventDefault();
+                  setReplyOpen(false);
+                }
+              }}
+              autoFocus
+              placeholder="Reply"
+              className="h-10 min-w-0 flex-1 select-text rounded-[10px] border border-[#6EA8FF]/70 bg-[#151515] px-3 text-[15px] font-medium text-white outline-none placeholder:text-[#8C8984] focus:border-[#8AB4FF]"
+            />
+            <button
+              type="button"
+              onClick={submitReply}
+              disabled={!replyText.trim()}
+              className="h-10 shrink-0 rounded-full bg-[#B8B4AC] px-4 text-[15px] font-semibold text-[#202020] transition-colors hover:bg-[#D8D4CC] disabled:cursor-default disabled:opacity-45"
+            >
+              Reply
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+const serializeComposerAttachment = (att: ComposerAttachment) => {
+  const fileName = att.name || att.file?.name || 'file';
+  const mimeType = att.file?.type || 'application/octet-stream';
+  return {
+    id: att.id,
+    name: fileName,
+    preview: att.preview,
+    uploadStatus: att.uploadStatus,
+    localPath: att.localPath,
+    fileUri: undefined,
+    mimeType,
+    size: att.file?.size || 0,
+    file: {
+      name: att.file?.name || fileName,
+      type: mimeType,
+      size: att.file?.size || 0,
+    },
+  };
 };
 
 const sortChats = (chats: ChatSession[]) => {
@@ -195,6 +501,19 @@ function DeepWorkUI() {
   const [thinkingLevel, setThinkingLevelState] = useState<MainAgentThinkingLevel>('low');
   const [pinnedItems, setPinnedItems] = useState<PinnedItem[]>([]);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [monitorOpen, setMonitorOpen] = useState(false);
+  const [petWidgetOpen, setPetWidgetOpen] = useState(false);
+  const [nativePetAvailable, setNativePetAvailable] = useState(false);
+  const canUseMonitor = activeView === 'chat' && !!activeChatId;
+  const [networkPhase, setNetworkPhase] = useState<NetworkBannerPhase>('online');
+  const [networkBannerVisible, setNetworkBannerVisible] = useState(false);
+  const networkPausedRef = useRef(false);
+  const networkOutageIdRef = useRef(0);
+  const networkDismissedOutageRef = useRef<number | null>(null);
+  const networkRestoreTimerRef = useRef<number | null>(null);
+  const networkBannerVisibleRef = useRef(false);
+  const runningChatsRef = useRef<Set<string>>(new Set());
+  const isNetworkPaused = networkPhase === 'offline';
 
   // ═══ Gemini Live Session State ═══
   const [liveState, setLiveState] = useState<LiveSessionState>('idle');
@@ -232,6 +551,33 @@ function DeepWorkUI() {
   const panelResizeCleanupRef = useRef<(() => void) | null>(null);
   // Keep ref synced with state
   activeChatIdRef.current = activeChatId;
+  runningChatsRef.current = runningChats;
+  networkBannerVisibleRef.current = networkBannerVisible;
+
+  const revealNetworkBanner = useCallback(() => {
+    if (!networkPausedRef.current) return;
+    if (networkDismissedOutageRef.current === networkOutageIdRef.current) return;
+    networkBannerVisibleRef.current = true;
+    setNetworkBannerVisible(true);
+  }, []);
+
+  const dismissNetworkBanner = useCallback(() => {
+    if (networkPausedRef.current) {
+      networkDismissedOutageRef.current = networkOutageIdRef.current;
+    }
+    networkBannerVisibleRef.current = false;
+    setNetworkBannerVisible(false);
+  }, []);
+
+  useEffect(() => {
+    setNativePetAvailable(!!(window as any).electronAPI?.openPetWindow);
+  }, []);
+
+  useEffect(() => {
+    if (!canUseMonitor && monitorOpen) {
+      setMonitorOpen(false);
+    }
+  }, [canUseMonitor, monitorOpen]);
 
   useEffect(() => {
     try {
@@ -432,6 +778,11 @@ function DeepWorkUI() {
   // ═══════════════════════════════════════════════════════════════
 
   const startLiveSession = useCallback(async () => {
+    if (networkPausedRef.current) {
+      revealNetworkBanner();
+      return;
+    }
+
     if (liveSessionRef.current) {
       liveSessionRef.current.disconnect();
       liveSessionRef.current = null;
@@ -576,7 +927,7 @@ function DeepWorkUI() {
         setLiveError(null);
       }, 4000);
     }
-  }, [activeChatId]);
+  }, [activeChatId, revealNetworkBanner]);
 
   const stopLiveSession = useCallback(() => {
     if (liveSessionRef.current) {
@@ -849,6 +1200,7 @@ function DeepWorkUI() {
   const createNewChat = () => {
     activeChatIdRef.current = null;
     setActiveChatId(null);
+    setMonitorOpen(false);
     setTraceLogs([]);
     setInputValue('');
     setBuildingAgentId(null);
@@ -1223,7 +1575,9 @@ function DeepWorkUI() {
       // UNIFORM SPEED: All chats get the same full-speed polling.
       // No active/background distinction — every agent is a first-class citizen.
       let delay: number;
-      if (errorBackoff > 0) {
+      if (networkPausedRef.current) {
+        delay = 1000;
+      } else if (errorBackoff > 0) {
         delay = Math.min(5000, 500 * Math.pow(2, errorBackoff - 1)); // 500ms, 1s, 2s, 4s, 5s cap
       } else {
         delay = lastHadData ? 150 : 250; // Full speed: 150ms streaming, 250ms idle
@@ -1240,6 +1594,12 @@ function DeepWorkUI() {
 
       // Safety: if we were stopped while waiting, don't run
       if (!pollingIntervalsRef.current.has(chatId)) return;
+      if (networkPausedRef.current) {
+        errorBackoff = 0;
+        lastHadData = false;
+        scheduleNextPoll();
+        return;
+      }
 
       try {
         const cursor = pollCursorsRef.current.get(chatId) ?? -1;
@@ -1588,6 +1948,118 @@ function DeepWorkUI() {
   };
 
   useEffect(() => {
+    let disposed = false;
+    let probeTimer: number | null = null;
+
+    const clearRestoreTimer = () => {
+      if (networkRestoreTimerRef.current !== null) {
+        window.clearTimeout(networkRestoreTimerRef.current);
+        networkRestoreTimerRef.current = null;
+      }
+    };
+
+    const markOffline = () => {
+      clearRestoreTimer();
+      if (!networkPausedRef.current) {
+        networkPausedRef.current = true;
+        networkOutageIdRef.current += 1;
+        networkDismissedOutageRef.current = null;
+      }
+      setNetworkPhase('offline');
+      if (networkDismissedOutageRef.current !== networkOutageIdRef.current) {
+        networkBannerVisibleRef.current = true;
+        setNetworkBannerVisible(true);
+      }
+
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+        abortControllerRef.current = null;
+      }
+      if (liveSessionRef.current) {
+        liveSessionRef.current.disconnect();
+        liveSessionRef.current = null;
+        setLiveState('idle');
+        setLiveOutputText('');
+        setLiveInputText('');
+      }
+    };
+
+    const markOnline = () => {
+      if (!networkPausedRef.current) return;
+      networkPausedRef.current = false;
+      clearRestoreTimer();
+      setNetworkPhase('restored');
+      networkBannerVisibleRef.current = true;
+      setNetworkBannerVisible(true);
+
+      for (const chatId of runningChatsRef.current) {
+        if (pollingIntervalsRef.current.has(chatId)) {
+          catchUpPollersRef.current.get(chatId)?.();
+        } else {
+          startPolling(chatId, pollCursorsRef.current.get(chatId) ?? -1, pollRunStartRef.current.get(chatId));
+        }
+      }
+
+      networkRestoreTimerRef.current = window.setTimeout(() => {
+        if (networkPausedRef.current) return;
+        setNetworkPhase('online');
+        networkBannerVisibleRef.current = false;
+        setNetworkBannerVisible(false);
+      }, 2200);
+    };
+
+    const probeNetwork = async () => {
+      if (disposed) return;
+      if (typeof navigator !== 'undefined' && !navigator.onLine) {
+        markOffline();
+        return;
+      }
+
+      // Independent heartbeat; do not rely on an active agent request to detect outages.
+      const controller = new AbortController();
+      const timeoutId = window.setTimeout(() => controller.abort(), 3200);
+
+      try {
+        await fetch(`${NETWORK_PROBE_URL}?t=${Date.now()}`, {
+          method: 'GET',
+          mode: 'no-cors',
+          cache: 'no-store',
+          signal: controller.signal,
+        });
+        markOnline();
+      } catch {
+        markOffline();
+      } finally {
+        window.clearTimeout(timeoutId);
+      }
+    };
+
+    const scheduleProbe = () => {
+      if (disposed) return;
+      probeTimer = window.setTimeout(async () => {
+        await probeNetwork();
+        scheduleProbe();
+      }, networkPausedRef.current ? 1800 : 5000);
+    };
+
+    const handleOffline = () => markOffline();
+    const handleOnline = () => { void probeNetwork(); };
+
+    window.addEventListener('offline', handleOffline);
+    window.addEventListener('online', handleOnline);
+    void probeNetwork();
+    scheduleProbe();
+
+    return () => {
+      disposed = true;
+      if (probeTimer !== null) window.clearTimeout(probeTimer);
+      clearRestoreTimer();
+      window.removeEventListener('offline', handleOffline);
+      window.removeEventListener('online', handleOnline);
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
     const getWatchedChatIds = () => {
       const ids = new Set<string>();
       if (activeChatId) ids.add(activeChatId);
@@ -1599,6 +2071,7 @@ function DeepWorkUI() {
 
     let cancelled = false;
     const reconcileDetachedPollers = async () => {
+      if (networkPausedRef.current) return;
       const ids = getWatchedChatIds();
       for (const chatId of ids) {
         if (cancelled) return;
@@ -1716,10 +2189,13 @@ function DeepWorkUI() {
    * The message is queued server-side and injected into the model context
    * at the next free ReAct iteration (non-disruptive, agent is never paused).
    */
-  const handleSteer = async () => {
-    if (!activeChatId || !inputValue.trim()) return;
-    const steerMessage = inputValue.trim();
-    setInputValue('');
+  const sendSteeringMessage = useCallback(async (message: string) => {
+    const steerMessage = message.trim();
+    if (!activeChatId || !steerMessage) return;
+    if (networkPausedRef.current) {
+      revealNetworkBanner();
+      return;
+    }
 
     const newSteering = { id: Date.now().toString(), text: steerMessage };
     setPendingSteering(prev => [...prev, newSteering]);
@@ -1739,6 +2215,13 @@ function DeepWorkUI() {
     } catch (e: any) {
       console.warn('[handleSteer] Network error:', e?.message);
     }
+  }, [activeChatId, revealNetworkBanner]);
+
+  const handleSteer = async () => {
+    if (!inputValue.trim()) return;
+    const steerMessage = inputValue.trim();
+    setInputValue('');
+    await sendSteeringMessage(steerMessage);
   };
 
   const toggleSpeech = () => {
@@ -1962,6 +2445,10 @@ function DeepWorkUI() {
     }
     if (!inputValue.trim() && attachments.length === 0) return;
     if (isThinking) return;
+    if (networkPausedRef.current) {
+      revealNetworkBanner();
+      return;
+    }
 
     // Request notification permissions implicitly during this user gesture
     try {
@@ -1976,8 +2463,9 @@ function DeepWorkUI() {
     const runAgentMode = agentMode;
     const runThinkingLevel = thinkingLevel;
     const currentAttachments = [...attachments];
+    const userLogAttachments = currentAttachments.map(serializeComposerAttachment);
     const runStartedAt = Date.now();
-    const userLog = { type: 'user_action', text: promptText, attachments: currentAttachments, startTime: runStartedAt, endTime: runStartedAt };
+    const userLog = { type: 'user_action', text: promptText, attachments: userLogAttachments, startTime: runStartedAt, endTime: runStartedAt };
     const historySourceLogs = activeChatId ? stripAgentConnectionLogs(traceLogs) : [];
     setInputValue("");
     setAttachments([]);
@@ -1989,6 +2477,7 @@ function DeepWorkUI() {
 
     // Use pre-uploaded media data from background uploads (already done when attached)
     const mediaAttachments: any[] = currentAttachments.map(att => ({
+      id: att.id,
       name: att.name || att.file.name,
       path: (att as any).localPath || (att.file as any).path || undefined,
       mimeType: att.file.type || 'application/octet-stream',
@@ -2220,7 +2709,7 @@ function DeepWorkUI() {
   // ═══════════════════════════════════════════════════════════════
   useEffect(() => {
     const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible' && activeChatId) {
+      if (document.visibilityState === 'visible' && activeChatId && !networkPausedRef.current) {
         // User returned to tab — check if active chat's agent is still running
         fetchAgentPoll(activeChatId, -1, 5000)
           .then(data => {
@@ -2259,9 +2748,93 @@ function DeepWorkUI() {
       : traceLogs),
     ...getLiveTraceLogs()
   ], [liveState, traceLogs, getLiveTraceLogs]);
+  const currentTaskTracker = useMemo<TaskTrackerState | null>(() => {
+    for (let i = traceLogs.length - 1; i >= 0; i--) {
+      const log = traceLogs[i];
+      if (log?.type === 'task_plan') {
+        return {
+          goal: log.goal,
+          phase: log.phase,
+          status: log.status,
+          complexity: log.complexity,
+          estimatedMinutes: log.estimatedMinutes,
+          completedSteps: log.completedSteps,
+          totalSteps: log.totalSteps,
+          activeStepName: log.activeStepName,
+          steps: Array.isArray(log.steps) ? log.steps : [],
+        };
+      }
+      if (log?.type === 'user_action') break;
+    }
+    return null;
+  }, [traceLogs]);
+  const petMonitorTitle = useMemo(() => {
+    const activeChat = activeChatId ? chats.find(chat => chat.id === activeChatId) : null;
+    if (activeChat?.title && activeChat.title !== 'New Chat') return activeChat.title;
+    for (let i = traceLogs.length - 1; i >= 0; i--) {
+      if (traceLogs[i]?.type === 'user_action') {
+        const text = String(traceLogs[i].text || '').trim();
+        if (text) return text;
+      }
+    }
+    return 'EterX agent';
+  }, [activeChatId, chats, traceLogs]);
+  const petMonitorStatus = useMemo(() => ({
+    title: petMonitorTitle,
+    text: getLatestPetMonitorText(displayTraceLogs, isThinking) || 'Thinking',
+    isThinking,
+  }), [displayTraceLogs, isThinking, petMonitorTitle]);
+
+  const openPetWidget = useCallback(() => {
+    if (!activeChatId || !isThinking) return;
+    setPetWidgetOpen(true);
+    const api = (window as any).electronAPI;
+    if (api?.openPetWindow) {
+      void api.openPetWindow(petMonitorStatus);
+    }
+  }, [activeChatId, isThinking, petMonitorStatus]);
+
+  useEffect(() => {
+    if (!isThinking) {
+      setPetWidgetOpen(false);
+      (window as any).electronAPI?.closePetWindow?.();
+    }
+  }, [isThinking]);
+
+  useEffect(() => {
+    if (!nativePetAvailable || !petWidgetOpen || !isThinking) return;
+    (window as any).electronAPI?.updatePetWindow?.(petMonitorStatus);
+  }, [isThinking, nativePetAvailable, petMonitorStatus, petWidgetOpen]);
+
+  useEffect(() => {
+    const api = (window as any).electronAPI;
+    const unsubscribeReply = api?.onPetReply?.((message: string) => {
+      void sendSteeringMessage(message);
+    });
+    const unsubscribeClosed = api?.onPetWindowClosed?.(() => {
+      setPetWidgetOpen(false);
+    });
+    return () => {
+      unsubscribeReply?.();
+      unsubscribeClosed?.();
+    };
+  }, [sendSteeringMessage]);
 
   return (
     <div className="flex h-screen bg-[#0F0F0F] text-[#E3E3E3] font-sans overflow-hidden selection:bg-[#E2765A]/30 transition-colors relative">
+      <NetworkStatusBanner
+        phase={networkPhase}
+        visible={networkBannerVisible}
+        onDismiss={dismissNetworkBanner}
+      />
+      <FloatingPetMonitor
+        open={petWidgetOpen && !nativePetAvailable}
+        isThinking={isThinking}
+        title={petMonitorTitle}
+        logs={displayTraceLogs}
+        onClose={() => setPetWidgetOpen(false)}
+        onReply={sendSteeringMessage}
+      />
       {/* Empty-state motion field: soft Gemini-style color waves behind the app shell. */}
       <div className={`absolute bottom-0 left-0 right-0 h-[45vh] pointer-events-none overflow-hidden z-0 ${activeView === 'agents' ? 'hidden' : 'flex'} items-end justify-center ${ (traceLogs.length === 0 && liveState === 'idle' && activeView !== 'agents') ? 'opacity-100 transition-all duration-[1000ms] ease-out' : 'opacity-0 transition-all duration-[1000ms] ease-in' }`}>
         <div key={`eterx-home-field-${activeChatId ?? 'new'}`} className="eterx-home-field">
@@ -2429,6 +3002,26 @@ function DeepWorkUI() {
               </div>
             </div>
 
+            {/* Computer Toggle Button */}
+            {canUseMonitor && (
+              <div className="absolute top-3 right-[152px] z-50 pointer-events-auto [-webkit-app-region:no-drag]">
+                <Tooltip text={monitorOpen ? 'Close Computer' : 'Open Computer'} side="bottom">
+                  <button id="computer-toggle-btn"
+                    onClick={() => setMonitorOpen(o => !o)}
+                    className={`flex items-center gap-1.5 h-8 px-2.5 rounded-lg text-[11px] font-semibold transition-all border shadow-[0_10px_28px_rgba(0,0,0,0.18)] ${
+                      monitorOpen
+                        ? 'bg-sky-400/[0.12] border-sky-300/30 text-sky-200 shadow-[0_0_0_1px_rgba(125,211,252,0.08),0_14px_34px_rgba(14,165,233,0.14)]'
+                        : 'bg-white/[0.035] border-white/[0.085] text-white/45 hover:border-sky-300/22 hover:bg-sky-300/[0.06] hover:text-sky-100'
+                    }`}
+                  >
+                    <Monitor className={`w-3.5 h-3.5 ${monitorOpen ? 'text-sky-300' : 'text-white/45'}`} />
+                    <span className="hidden sm:inline">Computer</span>
+                    {isThinking && <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse ml-0.5" />}
+                  </button>
+                </Tooltip>
+              </div>
+            )}
+
             {/* Split Content Area */}
             <div
               ref={splitContainerRef}
@@ -2511,7 +3104,17 @@ function DeepWorkUI() {
                   onToggleMicMute={toggleLiveMicMute}
                   isSpeakerMuted={liveSpeakerMuted}
                   onToggleSpeakerMute={toggleLiveSpeakerMute}
+                  isNetworkPaused={isNetworkPaused}
+                  onNetworkPausedAction={revealNetworkBanner}
                   isCompressed={hasOpenFiles}
+                  taskTracker={currentTaskTracker}
+                  activeChatId={activeChatId}
+                  onOpenAgentBuilder={handleOpenAgentBuilder}
+                  onOpenPet={openPetWidget}
+                  onOpenAgents={() => {
+                    setBuildingAgentId(null);
+                    setActiveView('agents');
+                  }}
                 />
 
                 {/* Disclaimer Text */}
@@ -2547,6 +3150,12 @@ function DeepWorkUI() {
               {hasOpenFiles && (
                 <IdePanel />
               )}
+              {/* Computer Panel */}
+              <AnimatePresence>
+                {canUseMonitor && monitorOpen && (
+                  <MonitorPanel isOpen={monitorOpen} onClose={() => setMonitorOpen(false)} chatId={activeChatId} defaultWidth={640} />
+                )}
+              </AnimatePresence>
                 </>
               )}
             </div>
@@ -2912,70 +3521,6 @@ function DeepWorkUI() {
         .anim-dot-2 { animation: loading-dot 1.2s ease-in-out infinite 0.2s; }
         .anim-dot-3 { animation: loading-dot 1.2s ease-in-out infinite 0.4s; }
 
-        .custom-scrollbar::-webkit-scrollbar {
-          width: var(--sb-size);
-          height: var(--sb-size);
-        }
-        .custom-scrollbar::-webkit-scrollbar-track {
-          background: var(--sb-track);
-        }
-        .custom-scrollbar::-webkit-scrollbar-thumb {
-          background-color: var(--sb-thumb);
-          border-radius: var(--sb-radius);
-          border: var(--sb-inset) solid transparent;
-          background-clip: padding-box;
-        }
-        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-          background-color: var(--sb-thumb-hover);
-        }
-        .custom-scrollbar::-webkit-scrollbar-button {
-          display: none !important;
-          width: 0 !important;
-          height: 0 !important;
-          background: transparent !important;
-        }
-        .custom-scrollbar::-webkit-scrollbar-button:single-button:vertical:decrement,
-        .custom-scrollbar::-webkit-scrollbar-button:vertical:decrement:start {
-          display: block !important;
-          width: var(--sb-size) !important;
-          height: 14px !important;
-          background-color: transparent !important;
-          background-repeat: no-repeat !important;
-          background-position: center !important;
-          background-size: 10px 8px !important;
-          opacity: .72;
-          background-image: url(data:image/svg+xml,%3Csvg%20width%3D%2210%22%20height%3D%228%22%20viewBox%3D%220%200%2010%208%22%20fill%3D%22none%22%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%3E%3Cpath%20d%3D%22M4.42%201.05C4.72%200.66%205.28%200.66%205.58%201.05L9.2%205.82C9.55%206.28%209.22%206.95%208.64%206.95H1.36C0.78%206.95%200.45%206.28%200.8%205.82L4.42%201.05Z%22%20fill%3D%22%23464646%22%2F%3E%3C%2Fsvg%3E) !important;
-        }
-        .custom-scrollbar::-webkit-scrollbar-button:single-button:vertical:increment,
-        .custom-scrollbar::-webkit-scrollbar-button:vertical:increment:end {
-          display: block !important;
-          width: var(--sb-size) !important;
-          height: 14px !important;
-          background-color: transparent !important;
-          background-repeat: no-repeat !important;
-          background-position: center !important;
-          background-size: 10px 8px !important;
-          opacity: .72;
-          background-image: url(data:image/svg+xml,%3Csvg%20width%3D%2210%22%20height%3D%228%22%20viewBox%3D%220%200%2010%208%22%20fill%3D%22none%22%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%3E%3Cpath%20d%3D%22M5.58%206.95C5.28%207.34%204.72%207.34%204.42%206.95L0.8%202.18C0.45%201.72%200.78%201.05%201.36%201.05H8.64C9.22%201.05%209.55%201.72%209.2%202.18L5.58%206.95Z%22%20fill%3D%22%23464646%22%2F%3E%3C%2Fsvg%3E) !important;
-        }
-        .custom-scrollbar::-webkit-scrollbar-button:vertical:increment:start,
-        .custom-scrollbar::-webkit-scrollbar-button:vertical:decrement:end {
-          display: none !important;
-          width: 0 !important;
-          height: 0 !important;
-          background-image: none !important;
-        }
-        .custom-scrollbar::-webkit-scrollbar-button:hover {
-          opacity: 1;
-          filter: brightness(1.35);
-        }
-        .custom-scrollbar::-webkit-scrollbar-button {
-          display: none !important;
-          width: 0 !important;
-          height: 0 !important;
-          background: none !important;
-          background-image: none !important;
-        }
         .code-span {
            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
         }

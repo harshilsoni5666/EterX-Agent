@@ -7,44 +7,69 @@ import fs from 'fs-extra';
 import { createReadStream } from 'fs';
 import { open as openFile } from 'fs/promises';
 import * as readline from 'readline';
+import { getPathResolverInfo, resolveWorkspaceDirectoryForContext } from '../../workspace/path_resolver';
+import {
+  emitRuntimeTrace,
+  isExecTimeoutError,
+  normalizeTimeoutMs,
+  terminalTimeoutNote
+} from '../core/terminal_timeout';
 
 const execAsync = promisify(exec);
-const COMMAND_TIMEOUT_MS = 120000;
+const HELPER_SCRIPT_PATTERN = /\.(py|ps1|js|mjs|cjs|bat|cmd|vbs|ahk)(['"\s]|$)/i;
+
+function referencesDesktopHelperScript(command: string, cwd: string): boolean {
+  if (!HELPER_SCRIPT_PATTERN.test(command)) return false;
+  const normalizedCommand = command.replace(/\\/g, '/').toLowerCase();
+  const desktopPath = path.resolve(getPathResolverInfo().desktopPath);
+  const normalizedDesktop = desktopPath.replace(/\\/g, '/').toLowerCase();
+  const normalizedCwd = path.resolve(cwd).replace(/\\/g, '/').toLowerCase();
+  const cwdInsideDesktop = normalizedCwd === normalizedDesktop || normalizedCwd.startsWith(`${normalizedDesktop}/`);
+  return cwdInsideDesktop || normalizedCommand.includes(normalizedDesktop) || /(^|[\\/])desktop[\\/]/i.test(command);
+}
 
 export const workspaceRunCommandTool: ToolDefinition = {
   name: 'workspace_run_command',
-  description: 'Execute a shell command inside any directory. Supports absolute paths (C:\\path\\to\\dir) and relative workspace paths. Use this to run tests, build projects, install dependencies, or execute any command.',
+  description: 'Execute a finite shell command inside any directory with streamed output and a hard timeout capped at 20 seconds. Supports absolute paths and relative workspace paths. Use process_manager/background_task plus wait_timer for long-running servers, watchers, or builds.',
   category: 'workspace',
   inputSchema: z.object({
     command: z.string().describe('The command to execute (e.g., "npm test", "ls -la")'),
+    timeoutSeconds: z.number().optional().describe('Optional command timeout in seconds. Hard-capped to 20 seconds.'),
     cwd: z.string().optional().describe('Working directory — absolute path or relative to workspace root. Default: workspace root')
   }),
   outputSchema: z.object({
     stdout: z.string(),
     stderr: z.string(),
-    exitCode: z.number()
+    exitCode: z.number(),
+    timedOut: z.boolean().optional(),
+    timeoutMs: z.number().optional(),
+    nextActionNote: z.string().optional()
   }),
-  execute: async (input: { command: string, cwd?: string }, context: any) => {
+  execute: async (input: { command: string, cwd?: string, timeoutSeconds?: number, timeoutMs?: number }, context: any) => {
+    const runDir = resolveWorkspaceDirectoryForContext(input.cwd, context);
+    const timeoutMs = normalizeTimeoutMs(input.timeoutSeconds ?? input.timeoutMs);
+
     const portableSampling = getPortableSamplingRequest(input.command);
     if (portableSampling) {
       return {
-        stdout: await runPortableSampling(portableSampling),
+        stdout: await runPortableSampling(portableSampling, runDir),
         stderr: '',
         exitCode: 0
       };
-    }
-
-    let runDir: string;
-    if (input.cwd && path.isAbsolute(input.cwd)) {
-      runDir = input.cwd;
-    } else {
-      runDir = input.cwd ? path.resolve(process.cwd(), input.cwd) : process.cwd();
     }
 
     if (!await fs.pathExists(runDir)) {
       return {
         stdout: '',
         stderr: `Working directory not found: ${runDir}`,
+        exitCode: 1
+      };
+    }
+
+    if (referencesDesktopHelperScript(input.command, runDir)) {
+      return {
+        stdout: '',
+        stderr: 'BLOCKED: Do not run Desktop helper scripts for app opening/clicking/inspection. Use computer or screen_agent directly for real app control.',
         exitCode: 1
       };
     }
@@ -58,17 +83,14 @@ export const workspaceRunCommandTool: ToolDefinition = {
       return new Promise((resolve) => {
         const { spawn } = require('child_process');
         // Run via shell to get exact command execution semantics
-        let timedOut = false;
         const child = spawn(input.command, { 
           cwd: runDir, 
-          shell: true,
-          timeout: COMMAND_TIMEOUT_MS
+          shell: true
         });
-        const timeoutHandle = setTimeout(() => {
-          timedOut = true;
-          combinedOutput += `\n[Command timed out after ${COMMAND_TIMEOUT_MS / 1000}s and was stopped]\n`;
-          child.kill('SIGTERM');
-        }, COMMAND_TIMEOUT_MS + 500);
+        let didTimeout = false;
+        let settled = false;
+
+        const timeoutNote = () => terminalTimeoutNote(input.command, timeoutMs);
 
         // Throttle updates to UI so we don't crash the React tree
         let UIThrottleBuffer = '';
@@ -94,6 +116,47 @@ export const workspaceRunCommandTool: ToolDefinition = {
           }
         };
 
+        const stopChildTree = () => {
+          if (!child.pid) {
+            child.kill('SIGTERM');
+            return;
+          }
+
+          if (process.platform === 'win32') {
+            const { exec } = require('child_process');
+            exec(`taskkill /PID ${child.pid} /T /F`, { windowsHide: true }, () => {});
+            return;
+          }
+
+          child.kill('SIGTERM');
+          const killTimer = setTimeout(() => {
+            try { child.kill('SIGKILL'); } catch {}
+          }, 2000);
+          killTimer.unref?.();
+        };
+
+        const timeoutTimer = setTimeout(() => {
+          didTimeout = true;
+          emitRuntimeTrace(context, {
+            type: 'timer_expired',
+            text: 'Terminal command: Timer has expired',
+            title: 'Terminal command',
+            note: timeoutNote(),
+            durationMs: timeoutMs,
+            command: input.command,
+            iconCategory: 'terminal'
+          });
+          stopChildTree();
+        }, timeoutMs);
+        timeoutTimer.unref?.();
+
+        const finish = (result: any) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeoutTimer);
+          resolve(result);
+        };
+
         const handleData = (chunk: Buffer) => {
           const text = chunk.toString();
           combinedOutput += text;
@@ -113,7 +176,6 @@ export const workspaceRunCommandTool: ToolDefinition = {
         child.stderr.on('data', handleData);
 
         child.on('close', (code: number) => {
-          clearTimeout(timeoutHandle);
           flushToUI(); // Final flush
           
           // Cap output sent back to API to prevent massive 50s API latencies
@@ -123,20 +185,47 @@ export const workspaceRunCommandTool: ToolDefinition = {
             finalOutput = `...[TRUNCATED ${finalOutput.length - 30000} chars]...\n` + finalOutput.substring(finalOutput.length - 30000);
           }
           
-          resolve({
+          if (didTimeout) {
+            const note = timeoutNote();
+            finish({
+              stdout: finalOutput,
+              stderr: note,
+              exitCode: 124,
+              timedOut: true,
+              timeoutMs,
+              nextActionNote: note
+            });
+            return;
+          }
+
+          finish({
             stdout: finalOutput,
             stderr: '', // Already combined into stdout for simplicity
-            exitCode: timedOut ? 124 : (code ?? 0)
+            exitCode: code ?? 0,
+            timeoutMs
           });
         });
 
         child.on('error', (err: any) => {
-          clearTimeout(timeoutHandle);
           flushToUI();
-          resolve({
+          if (didTimeout) {
+            const note = timeoutNote();
+            finish({
+              stdout: combinedOutput,
+              stderr: note,
+              exitCode: 124,
+              timedOut: true,
+              timeoutMs,
+              nextActionNote: note
+            });
+            return;
+          }
+
+          finish({
             stdout: combinedOutput,
             stderr: err.message,
-            exitCode: 1
+            exitCode: 1,
+            timeoutMs
           });
         });
       });
@@ -171,8 +260,8 @@ function stripShellQuotes(value: string): string {
   return clean;
 }
 
-async function runPortableSampling(request: { mode: 'head' | 'tail'; lines: number; target: string }): Promise<string> {
-  const targetPath = path.isAbsolute(request.target) ? request.target : path.resolve(process.cwd(), request.target);
+async function runPortableSampling(request: { mode: 'head' | 'tail'; lines: number; target: string }, cwd: string): Promise<string> {
+  const targetPath = path.isAbsolute(request.target) ? request.target : path.resolve(cwd, request.target);
   if (!await fs.pathExists(targetPath)) {
     return `File not found: ${targetPath}`;
   }
@@ -230,10 +319,11 @@ async function readTailLines(filePath: string, maxLines: number): Promise<string
 
 export const workspaceVerifyCodeTool: ToolDefinition = {
   name: 'workspace_verify_code',
-  description: 'Automatically run verification checks (lint/build/test) in any directory and report error/warning counts. Supports absolute and relative paths. Automatically detects framework (Python, Rust, Java, standard Node/Yarn/PNPM).',
+  description: 'Automatically run finite verification checks (lint/build/test) in any directory and report error/warning counts. Has a hard timeout capped at 20 seconds. Supports absolute and relative paths. Automatically detects framework (Python, Rust, Java, standard Node/Yarn/PNPM).',
   category: 'workspace',
   inputSchema: z.object({
     checkType: z.enum(['lint', 'build', 'test']).describe('The type of verification to perform'),
+    timeoutSeconds: z.number().optional().describe('Optional verification timeout in seconds. Hard-capped to 20 seconds.'),
     cwd: z.string().optional().describe('Working directory — absolute or relative. Default: workspace root')
   }),
   outputSchema: z.object({
@@ -241,15 +331,14 @@ export const workspaceVerifyCodeTool: ToolDefinition = {
     errors: z.number(),
     warnings: z.number(),
     output: z.string(),
-    commandUsed: z.string()
+    commandUsed: z.string(),
+    timedOut: z.boolean().optional(),
+    timeoutMs: z.number().optional(),
+    nextActionNote: z.string().optional()
   }),
-  execute: async (input: { checkType: 'lint' | 'build' | 'test', cwd?: string }, context: any) => {
-    let workDir: string;
-    if (input.cwd && path.isAbsolute(input.cwd)) {
-      workDir = input.cwd;
-    } else {
-      workDir = input.cwd ? path.resolve(process.cwd(), input.cwd) : process.cwd();
-    }
+  execute: async (input: { checkType: 'lint' | 'build' | 'test', cwd?: string, timeoutSeconds?: number, timeoutMs?: number }, context: any) => {
+    const workDir = resolveWorkspaceDirectoryForContext(input.cwd, context);
+    const timeoutMs = normalizeTimeoutMs(input.timeoutSeconds ?? input.timeoutMs);
 
     // Dynamic resolution based on Project Intelligence
     const { workspaceIntelligence } = require('../../engines');
@@ -285,8 +374,8 @@ export const workspaceVerifyCodeTool: ToolDefinition = {
     try {
       const { stdout, stderr } = await execAsync(command, { 
         cwd: workDir,
-        timeout: 120000,
-        maxBuffer: 10 * 1024 * 1024
+        maxBuffer: 10 * 1024 * 1024,
+        timeout: timeoutMs
       });
       const output = stdout + stderr;
       
@@ -298,18 +387,42 @@ export const workspaceVerifyCodeTool: ToolDefinition = {
         errors: errorMatch ? parseInt(errorMatch[1]) : 0,
         warnings: warnMatch ? parseInt(warnMatch[1]) : 0,
         output: output.substring(0, 5000),
-        commandUsed: command
+        commandUsed: command,
+        timeoutMs
       };
     } catch (error: any) {
       const output = (error.stdout || '') + (error.stderr || error.message);
       const errorMatch = output.match(/(\d+)\s+errors?/i);
+      if (isExecTimeoutError(error)) {
+        const note = terminalTimeoutNote(command, timeoutMs);
+        emitRuntimeTrace(context, {
+          type: 'timer_expired',
+          text: 'Verification check: Timer has expired',
+          title: 'Verification check',
+          note,
+          durationMs: timeoutMs,
+          command,
+          iconCategory: 'terminal'
+        });
+        return {
+          passed: false,
+          errors: errorMatch ? parseInt(errorMatch[1]) : 1,
+          warnings: 0,
+          output: `${output.substring(0, 4500)}\n\n${note}`.substring(0, 5000),
+          commandUsed: command,
+          timedOut: true,
+          timeoutMs,
+          nextActionNote: note
+        };
+      }
       
       return {
         passed: false,
         errors: errorMatch ? parseInt(errorMatch[1]) : 1,
         warnings: 0,
         output: output.substring(0, 5000),
-        commandUsed: command
+        commandUsed: command,
+        timeoutMs
       };
     }
   }

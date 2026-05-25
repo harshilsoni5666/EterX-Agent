@@ -1,5 +1,7 @@
 import React from 'react';
 
+const ICONS8_AGENT_URL = '/icons/agent-ui/agent.png';
+
 // A premium microphone with a subtle inner glass fill and thick clean strokes
 export const PremiumMic = ({ className, strokeWidth = 2 }: any) => (
   <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
@@ -124,6 +126,10 @@ export const PremiumBot = ({ className, strokeWidth = 1.8 }: any) => (
     <circle cx="15" cy="13" r="1.2" fill="currentColor" />
     <path d="M3.5 12H2M20.5 12H22" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" />
   </svg>
+);
+
+export const PremiumAgent = ({ className }: any) => (
+  <img src={ICONS8_AGENT_URL} alt="" className={`object-contain opacity-95 ${className || ''}`} draggable={false} />
 );
 
 export const PremiumLayers = ({ className, strokeWidth = 1.8 }: any) => (

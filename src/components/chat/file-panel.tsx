@@ -1,5 +1,6 @@
 'use client';
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import dynamic from 'next/dynamic';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -8,7 +9,12 @@ import {
   Maximize2, Minimize2, Terminal, Search, TerminalSquare, ShieldAlert,
   Download, Settings, ChevronDown, ChevronRight, Folder, FolderOpen, Plus
 } from 'lucide-react';
-import Editor, { DiffEditor } from '@monaco-editor/react';
+
+const Editor = dynamic(() => import('@monaco-editor/react'), { ssr: false });
+const DiffEditor = dynamic(
+  () => import('@monaco-editor/react').then(mod => mod.DiffEditor),
+  { ssr: false },
+);
 
 /* ─── Syntax highlighter ─── */
 const KW_FLOW = new Set(['if','else','elif','for','while','switch','case','break','continue','return','try','catch','finally','throw','raise','with','match','do']);
@@ -217,8 +223,15 @@ export interface FilePanelProps {
   filename: string;
   filepath: string;
   content?: string;
-  diffLines?: Array<{ type: 'added'|'removed'|'unchanged'; content: string; oldLine?: number; newLine?: number }>;
+  diffLines?: Array<{ type: 'added'|'removed'|'unchanged'|'context'; content: string; oldLine?: number; newLine?: number }>;
   isEdit?: boolean;
+  language?: string;
+  linesAdded?: number;
+  linesRemoved?: number;
+  added?: number;
+  removed?: number;
+  artifactKind?: 'code' | 'document' | 'media' | 'preview' | 'terminal' | 'task' | 'other';
+  updatedAt?: string | number | Date;
   onClose?: () => void;
   activeTabMode?: 'preview' | 'code' | 'diff';
 }
@@ -486,7 +499,7 @@ export const FilePanelModal = ({ filename, filepath, content: initialContent, di
                            <button onClick={() => setShowConsole(false)} className="p-1 rounded text-[#555350] hover:text-red-400 hover:bg-red-500/10 transition-colors"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button>
                          </div>
                        </div>
-                       <div className="flex-1 overflow-auto p-2 space-y-1 font-mono text-[11.5px] custom-scrollbar">
+                       <div className="eterx-scrollbar flex-1 overflow-auto p-2 space-y-1 font-mono text-[11.5px] [scrollbar-gutter:stable]">
                          {consoleLogs.map((log, i) => (
                            <div key={i} className={`flex gap-2 px-2 py-1 rounded-[4px] border ${log.level === 'error' ? 'bg-red-500/10 border-red-500/20 text-red-400' : log.level === 'warn' ? 'bg-yellow-500/10 border-yellow-500/20 text-yellow-400' : 'bg-transparent border-transparent text-[#E8E6E3] hover:bg-white/[0.02]'}`}>
                               <div className="shrink-0 pt-0.5">
@@ -541,6 +554,9 @@ export const FilePanelModal = ({ filename, filepath, content: initialContent, di
 /* ─── IDE Multi-Tab Panel ─── */
 import { useGlobalFilePanel } from '../../contexts/FilePanelContext';
 import { LayoutList } from 'lucide-react';
+import WorkspaceReviewEditor from './workspace-review-editor';
+
+type IdeTabMode = 'preview' | 'code' | 'review';
 
 // File icon for real filesystem nodes
 const FileNodeIcon = ({ name, isDir, isOpen }: { name: string, isDir: boolean, isOpen?: boolean }) => {
@@ -631,11 +647,11 @@ const FileTreeNode = ({ node, depth, openFilePaths, activeFilePath, onFileClick 
 };
 
 export const IdePanel = () => {
-  const { openFiles, activeIndex, closePanel, setActiveIndex, openPanel } = useGlobalFilePanel();
+  const { openFiles, reviewFiles, reviewSubagents, activeIndex, closePanel, setActiveIndex, openPanel } = useGlobalFilePanel();
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [contextMenu, setContextMenu] = useState<{ x: number, y: number, index: number } | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const [activeTabMode, setActiveTabMode] = useState<'preview'|'code'>('code');
+  const [activeTabMode, setActiveTabMode] = useState<IdeTabMode>('code');
   const [fileTree, setFileTree] = useState<FileEntry[]>([]);
   const [workspaceRoot, setWorkspaceRoot] = useState<string>('');
   const [workspaceName, setWorkspaceName] = useState<string>('');
@@ -775,6 +791,31 @@ export const IdePanel = () => {
   }, [isFullscreen]);
 
   const activeFile = activeIndex >= 0 && activeIndex < openFiles.length ? openFiles[activeIndex] : null;
+  const reviewSourceFiles = useMemo(() => {
+    const byPath = new Map<string, FilePanelProps>();
+    const absorb = (file: FilePanelProps) => {
+      const key = (file.filepath || file.filename || '').replace(/\\/g, '/').toLowerCase();
+      if (!key) return;
+      byPath.set(key, { ...byPath.get(key), ...file });
+    };
+    if (reviewFiles.length > 0) {
+      reviewFiles.forEach(absorb);
+      openFiles.forEach(file => {
+        const key = (file.filepath || file.filename || '').replace(/\\/g, '/').toLowerCase();
+        if (byPath.has(key)) absorb(file);
+      });
+    } else {
+      openFiles.forEach(absorb);
+    }
+    return Array.from(byPath.values());
+  }, [reviewFiles, openFiles]);
+
+  useEffect(() => {
+    const requestedMode = activeFile?.activeTabMode;
+    if (!requestedMode) return;
+    setActiveTabMode(requestedMode === 'diff' ? 'review' : requestedMode);
+  }, [activeFile?.filepath, activeFile?.activeTabMode]);
+
   const workspaceFiles = useMemo(() => flattenFileEntries(fileTree), [fileTree]);
   const connectedHtmlFile = useMemo(
     () => findConnectedHtmlFile(activeFile, openFiles, workspaceFiles),
@@ -845,9 +886,10 @@ export const IdePanel = () => {
     fileReadAbortRef.current?.abort();
     const controller = new AbortController();
     fileReadAbortRef.current = controller;
+    setActiveTabMode('code');
 
     // Open the tab immediately, then hydrate content in the background.
-    openPanel({ filename: fileName, filepath: filePath, content: undefined });
+    openPanel({ filename: fileName, filepath: filePath, content: undefined, activeTabMode: 'code' });
 
     if (!['text', 'markdown', 'data', 'code'].includes(getPreviewKind(fileName))) {
       fileReadAbortRef.current = null;
@@ -863,10 +905,10 @@ export const IdePanel = () => {
       const content = data.truncated
         ? `${data.content || ''}\n\n[Preview truncated to ${FILE_READ_LINE_LIMIT} lines for editor performance.]`
         : data.content || '';
-      openPanel({ filename: fileName, filepath: filePath, content });
+      openPanel({ filename: fileName, filepath: filePath, content, activeTabMode: 'code' });
     }).catch(() => {
       if (controller.signal.aborted) return;
-      openPanel({ filename: fileName, filepath: filePath, content: '' });
+      openPanel({ filename: fileName, filepath: filePath, content: '', activeTabMode: 'code' });
     }).finally(() => {
       if (fileReadAbortRef.current === controller) fileReadAbortRef.current = null;
     });
@@ -983,7 +1025,7 @@ export const IdePanel = () => {
 
     if (previewKind === 'html' || previewKind === 'pdf') {
       return (
-        <div className={`h-full w-full ${isDeviceFramed ? 'flex items-center justify-center overflow-auto bg-black p-3' : 'bg-white'}`}>
+        <div className={`h-full w-full ${isDeviceFramed ? 'eterx-scrollbar flex items-center justify-center overflow-auto bg-black p-3 [scrollbar-gutter:stable]' : 'bg-white'}`}>
           <div
             className={`${isDeviceFramed ? 'relative overflow-hidden border-[8px] border-[#050505] bg-white shadow-[0_28px_90px_rgba(0,0,0,0.72)] ring-1 ring-white/[0.16]' : 'h-full w-full overflow-hidden bg-white'}`}
             style={deviceFrameStyle}
@@ -1009,7 +1051,7 @@ export const IdePanel = () => {
     if (previewKind === 'image') {
       return (
         <div
-          className="flex h-full w-full items-center justify-center overflow-auto p-8"
+          className="eterx-scrollbar flex h-full w-full items-center justify-center overflow-auto p-8 [scrollbar-gutter:stable]"
           style={{
             backgroundColor: '#f4f3ef',
             backgroundImage: 'linear-gradient(45deg, rgba(0,0,0,0.035) 25%, transparent 25%), linear-gradient(-45deg, rgba(0,0,0,0.035) 25%, transparent 25%), linear-gradient(45deg, transparent 75%, rgba(0,0,0,0.035) 75%), linear-gradient(-45deg, transparent 75%, rgba(0,0,0,0.035) 75%)',
@@ -1076,7 +1118,7 @@ export const IdePanel = () => {
               {isTextPreviewTrimmed && <span>Trimmed</span>}
             </div>
           </div>
-          <pre className="h-[calc(100%-38px)] overflow-auto p-5 text-[12.5px] leading-[1.75] scrollbar-hide" style={{ fontFamily: '"JetBrains Mono", "Fira Code", Menlo, monospace', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+          <pre className="eterx-scrollbar h-[calc(100%-38px)] overflow-auto p-5 text-[12.5px] leading-[1.75] [scrollbar-gutter:stable]" style={{ fontFamily: '"JetBrains Mono", "Fira Code", Menlo, monospace', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
             {textPreview || 'No preview content'}
           </pre>
         </div>
@@ -1177,7 +1219,7 @@ export const IdePanel = () => {
 
   const panelContent = (
     <div ref={panelShellRef} className={`flex-1 flex flex-col relative z-10 h-full overflow-hidden transition-opacity duration-150 ease-out ${isPanelClosing ? 'opacity-0' : 'opacity-100'} ${isFullscreen ? 'p-0' : 'pt-1.5 pb-1 pr-3 pl-1.5'}`} onContextMenu={e => e.preventDefault()}>
-      {isFullscreen && (
+      {isFullscreen && activeTabMode !== 'review' && (
       <div className="pointer-events-none absolute inset-x-0 top-2 z-[90] flex justify-center">
         <div className="pointer-events-auto [-webkit-app-region:no-drag]">
           {workspaceControlDock}
@@ -1193,6 +1235,7 @@ export const IdePanel = () => {
         <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/20 to-transparent" />
         
         {/* Unified header row */}
+        {activeTabMode !== 'review' && (
         <div className={`${isFullscreen ? '' : 'rounded-t-[24px]'} relative flex h-[56px] border-b border-white/[0.075] shrink-0 bg-[linear-gradient(180deg,rgba(255,255,255,0.055),rgba(255,255,255,0.018))] overflow-hidden`}>
         {/* Left header mode toggle */}
         <div className="flex items-center px-2.5 shrink-0 justify-start w-[196px] max-w-[34%] border-r border-white/[0.06]">
@@ -1215,7 +1258,7 @@ export const IdePanel = () => {
              {/* Tab bar, only in code mode */}
              {activeTabMode === 'code' && (
                <div className="flex-1 min-w-0 h-full flex items-center" style={{ WebkitMaskImage: 'linear-gradient(to right, black calc(100% - 32px), transparent)', maskImage: 'linear-gradient(to right, black calc(100% - 32px), transparent)' }}>
-                 <div className="flex items-center gap-1.5 overflow-x-auto scrollbar-hide h-full w-full" style={{ scrollbarWidth: 'none' }}>
+                 <div className="eterx-tab-strip-scroll flex h-full w-full items-center gap-1.5 overflow-x-auto overflow-y-hidden">
                   {openFiles.map((f, i) => {
                    const lang = getLanguage(f.filename).substring(0, 2).toLowerCase();
                    let iconChar = '{}'; let iconCol = 'text-[#666]';
@@ -1246,6 +1289,7 @@ export const IdePanel = () => {
             
           </div>
         </div>
+        )}
 
       {/* Main workspace area */}
       <div className={`${isFullscreen ? '' : 'rounded-b-[24px]'} flex-1 flex overflow-hidden`}>
@@ -1265,7 +1309,7 @@ export const IdePanel = () => {
               </div>
             </div>
             
-            <div className="flex-1 overflow-y-auto py-1 relative" style={{ scrollbarWidth: 'none' }}>
+            <div className="eterx-scrollbar flex-1 overflow-y-auto overflow-x-hidden py-1 relative [scrollbar-gutter:stable]">
               {isTreeLoading && fileTree.length === 0 ? (
                 <div className="flex flex-col items-center justify-center h-full gap-3 py-12">
                   <div className="relative w-8 h-8">
@@ -1307,7 +1351,25 @@ export const IdePanel = () => {
         <div className={`${isFullscreen ? '' : 'rounded-b-[24px]'} flex-1 flex flex-col min-w-0 bg-transparent relative overflow-hidden`}>
           <div className="flex-1 flex flex-col min-w-0">
             <div className={`${isFullscreen ? '' : 'rounded-b-[24px]'} flex-1 relative overflow-hidden`} style={{ background: '#0d0d0f' }}>
-              {activeTabMode === 'code' ? (
+              {activeTabMode === 'review' ? (
+                <WorkspaceReviewEditor
+                  files={reviewSourceFiles}
+                  subagents={reviewSubagents}
+                  activeFileId={activeFile?.filepath}
+                  initialMode="review"
+                  title={workspaceName || 'Workspace'}
+                  className="border-l-0"
+                  onSelectFile={(file) => {
+                    const openIndex = openFiles.findIndex(openFile => openFile.filepath === file.filepath);
+                    if (openIndex >= 0) setActiveIndex(openIndex);
+                  }}
+                  onOpenDiff={(file) => {
+                    const openIndex = openFiles.findIndex(openFile => openFile.filepath === file.filepath);
+                    if (openIndex >= 0) setActiveIndex(openIndex);
+                  }}
+                  onClose={handleCloseAll}
+                />
+              ) : activeTabMode === 'code' ? (
                 activeFile ? (
                   <Editor
                     height="100%"
@@ -1505,7 +1567,7 @@ export const IdePanel = () => {
                     <button onClick={() => setTerminalOpen(false)}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="text-[#555350] hover:text-white"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button>
                   </div>
                 </div>
-                <div className="flex-1 overflow-y-auto p-4 font-mono text-[12px] leading-relaxed scrollbar-hide">
+                <div className="eterx-scrollbar flex-1 overflow-y-auto overflow-x-hidden p-4 font-mono text-[12px] leading-relaxed [scrollbar-gutter:stable]">
                   {consoleLogs.map((log, i) => (
                     <div key={i} className={`flex gap-3 p-2 rounded mb-2 ${log.type === 'warn' ? 'bg-yellow-500/5 border border-yellow-500/10 text-[#D4D4D4]' : 'text-[#D4D4D4]'}`}>
                       {log.type === 'warn' && <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-yellow-500/70 shrink-0 mt-0.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>}
@@ -1567,7 +1629,7 @@ export const IdePanel = () => {
                 />
                 <span className="text-[10px] text-[#555350] font-mono bg-white/[0.05] px-1.5 rounded">ESC</span>
               </div>
-              <div className="max-h-[300px] overflow-y-auto p-2" style={{ scrollbarWidth: 'none' }}>
+              <div className="eterx-scrollbar max-h-[300px] overflow-y-auto overflow-x-hidden p-2 [scrollbar-gutter:stable]">
                 <div className="px-3 py-1.5 text-[10px] font-bold text-[#555350] uppercase tracking-wider">Commands</div>
                 
                 <div onClick={() => { setSidebarOpen(!sidebarOpen); setPaletteOpen(false); }} className="flex items-center justify-between px-3 py-2 rounded-lg hover:bg-white/[0.05] cursor-pointer group">
@@ -1594,7 +1656,7 @@ export const IdePanel = () => {
     </div>
   );
 
-  const dockPortal = !isFullscreen && dockPosition && typeof document !== 'undefined' ? createPortal(
+  const dockPortal = activeTabMode !== 'review' && !isFullscreen && dockPosition && typeof document !== 'undefined' ? createPortal(
     <div
       className="fixed z-[9999] -translate-x-1/2 [-webkit-app-region:no-drag]"
       style={{ left: dockPosition.left, top: dockPosition.top }}
