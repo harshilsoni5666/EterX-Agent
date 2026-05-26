@@ -53,6 +53,7 @@ import { uiLivePreviewTool } from './core/ui_preview';
 import { computerTool } from './core/computer';
 import { screenAgentTool } from './core/screen_agent';
 import { waitTimerTool } from './core/wait_timer';
+import { agentCommTool } from './core/agent_comm';
 
 // ==========================================
 // WORKSPACE & DATA TOOLS (13 tools)
@@ -88,6 +89,7 @@ import { httpServerTool } from './automation/http_server';
 import { chainExecutorTool } from './automation/chain_executor';
 import { agentCronSchedulerTool } from './automation/agent_cron_scheduler';
 import { agentConnectorTriggerTool } from './automation/agent_connector_trigger';
+import { agentBuilderTools } from './automation/agent_builder';
 
 // ==========================================
 // COMMUNICATION TOOLS (2 tools)
@@ -114,7 +116,7 @@ export function bootstrapTools() {
     deepResearchTool, smartRefactorTool, projectScaffolderTool,
     envManagerTool, autoDocsTool, gitIntelTool,
     browserControlTool, askUserTool, checkpointTool, computerTool, screenAgentTool,
-    waitTimerTool,
+    waitTimerTool, agentCommTool,
     workspaceReadTool, workspaceWriteTool, workspaceListDirectoryTool,
     workspaceSearchTextTool, workspaceEditFileTool,
     workspaceRunCommandTool, workspaceVerifyCodeTool,
@@ -123,6 +125,7 @@ export function bootstrapTools() {
     webScraperTool, pdfParserTool, youtubeTranscriptTool, rssFeedTool,
     schedulerTool, processManagerTool, fileWatcherTool, httpServerTool,
     chainExecutorTool, agentCronSchedulerTool, agentConnectorTriggerTool,
+    ...agentBuilderTools,
     whatsappControllerTool, telegramUserControllerTool, slackControllerTool,
   ]);
 

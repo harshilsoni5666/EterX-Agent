@@ -1,6 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { agentRegistry } from '../../../../lib/agent/agent-registry';
 import { normalizeMainAgentMode, normalizeMainAgentThinkingLevel } from '../../../../lib/agent/model-routing';
+import {
+  buildAgentBuilderPinnedContext,
+  buildAgentBuilderUserRequest,
+  getAgentBuilderMode,
+  getAgentIdFromBuilderChatId,
+  isAgentBuilderChatId,
+} from '../../../../lib/agent/builder-agent';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -38,16 +45,20 @@ export async function POST(req: NextRequest) {
 
     const safeMode = normalizeMainAgentMode(mode);
     const safeThinkingLevel = normalizeMainAgentThinkingLevel(thinkingLevel);
+    const isBuilderChat = isAgentBuilderChatId(chatId);
+    const builderAgentId = isBuilderChat ? getAgentIdFromBuilderChatId(chatId) : '';
     const effectivePinnedContext = {
-      ...(pinnedContext || {}),
+      ...(isBuilderChat ? buildAgentBuilderPinnedContext(chatId, pinnedContext) : (pinnedContext || {})),
       thinkingLevel: safeThinkingLevel,
     };
+    const effectivePrompt = isBuilderChat ? buildAgentBuilderUserRequest(builderAgentId, prompt) : prompt;
+    const effectiveMode = isBuilderChat ? getAgentBuilderMode(safeMode) : safeMode;
 
     const result = agentRegistry.startAgent(
       chatId,
-      prompt,
+      effectivePrompt,
       history,
-      safeMode,
+      effectiveMode,
       userId,
       effectivePinnedContext,
       mediaAttachments,

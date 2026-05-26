@@ -17,6 +17,7 @@ interface ChatFeedProps {
   handleScroll: (e: any) => void;
   showScrollBottom: boolean;
   isCompressed?: boolean;
+  onOpenAgentTeam?: (agentName?: string) => void;
 }
 
 const NakedCopyButton = ({ content }: { content: string }) => {
@@ -193,23 +194,26 @@ const liveMotionStyles = `
     38% { transform: translateY(-2px) scale(1.08); opacity: .95; box-shadow: 0 0 9px rgba(190,190,186,.34); }
   }
   @keyframes eterx-shimmer {
-    0%   { background-position: 200% center; }
-    100% { background-position: -200% center; }
+    0%   { background-position: 185% center; }
+    100% { background-position: -185% center; }
   }
   .eterx-live-text {
     background: linear-gradient(
-      90deg,
-      #7D7972 0%,
-      #E1DDD4 32%,
-      #FFFFFF 50%,
-      #E1DDD4 68%,
-      #7D7972 100%
+      100deg,
+      #8A867F 0%,
+      #B9B3A8 26%,
+      #F3EFE7 42%,
+      #FFFFFF 49%,
+      #BFE7FF 54%,
+      #F1EDE5 62%,
+      #928E86 100%
     );
-    background-size: 210% auto;
+    background-size: 245% 100%;
     -webkit-background-clip: text;
     background-clip: text;
     -webkit-text-fill-color: transparent;
-    animation: eterx-shimmer 2.4s linear infinite;
+    animation: eterx-shimmer 3.7s cubic-bezier(.45, 0, .2, 1) infinite;
+    text-shadow: 0 0 14px rgba(255,255,255,.08);
     will-change: background-position;
   }
   .eterx-live-text * { -webkit-text-fill-color: inherit; }
@@ -365,14 +369,17 @@ const getWorkElapsedFromBounds = (start: number | null, end: number | null) => {
   return Math.floor(elapsedMs / 1000);
 };
 
-const useWorkElapsedSeconds = (active: boolean, logs: any[], startedAt?: number | null) => {
+const useWorkElapsedSeconds = (active: boolean, logs: any[], startedAt?: number | null, endedAt?: number | null) => {
   const startRef = React.useRef<number | null>(null);
   const [seconds, setSeconds] = React.useState(0);
   const bounds = React.useMemo(() => getWorkTimeBounds(logs, startedAt), [logs, startedAt]);
+  const normalizedEndedAt = React.useMemo(() => normalizeWorkTimestamp(endedAt), [endedAt]);
 
   React.useEffect(() => {
     if (!active) {
-      const finalSeconds = getWorkElapsedFromBounds(bounds.start, bounds.end);
+      const finalEnd = normalizedEndedAt ?? bounds.end ?? (startRef.current !== null ? Date.now() : null);
+      const finalStart = bounds.start ?? startRef.current;
+      const finalSeconds = getWorkElapsedFromBounds(finalStart, finalEnd);
       startRef.current = null;
       setSeconds(finalSeconds);
       return;
@@ -390,14 +397,14 @@ const useWorkElapsedSeconds = (active: boolean, logs: any[], startedAt?: number 
     tick();
     const interval = window.setInterval(tick, 1000);
     return () => window.clearInterval(interval);
-  }, [active, bounds.start, bounds.end]);
+  }, [active, bounds.start, bounds.end, normalizedEndedAt]);
 
   return seconds;
 };
 
 const ThoughtSequence = ({
-  logs, liveLogs = [], isThinking, isLast, hasAnswer, stepCount, turnStartedAt
-}: { logs: any[], liveLogs?: any[], isThinking: boolean, isLast: boolean, hasAnswer: boolean, stepCount: number, turnStartedAt?: number | null }) => {
+  logs, liveLogs = [], isThinking, isLast, hasAnswer, stepCount, turnStartedAt, turnEndedAt
+}: { logs: any[], liveLogs?: any[], isThinking: boolean, isLast: boolean, hasAnswer: boolean, stepCount: number, turnStartedAt?: number | null, turnEndedAt?: number | null }) => {
   const [open, setOpen] = React.useState(() => isThinking || !hasAnswer);
   const containerRef = React.useRef<HTMLDivElement>(null);
   const prevHasAnswer = React.useRef(false);
@@ -440,7 +447,7 @@ const ThoughtSequence = ({
 
   const isOpen = open;
   const elapsedLogs = React.useMemo(() => [...logs, ...liveLogs], [logs, liveLogs]);
-  const workElapsedSeconds = useWorkElapsedSeconds(isLiveThinking, elapsedLogs, turnStartedAt);
+  const workElapsedSeconds = useWorkElapsedSeconds(isLiveThinking, elapsedLogs, turnStartedAt, turnEndedAt);
   const workElapsedLabel = formatWorkElapsed(workElapsedSeconds);
 
   if (stepCount === 0 && logs.length === 0 && !isLiveThinking) return null;
@@ -520,7 +527,6 @@ const ThoughtSequence = ({
               onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = counterColor; (e.currentTarget as HTMLElement).style.background = counterBackground; }}
             >
               <span
-                className={isLiveThinking ? 'eterx-live-text' : undefined}
                 style={{
                   display: 'inline-flex',
                   width: 20,
@@ -812,7 +818,10 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
                 type: 'answer',
                 text: answerText,
                 isLiveTyping: lastAnswerLog?.isLiveTyping || false,
-                spokenText: lastAnswerLog?.spokenText || ''
+                spokenText: lastAnswerLog?.spokenText || '',
+                timestamp: lastAnswerLog?.timestamp,
+                startTime: lastAnswerLog?.startTime,
+                endTime: lastAnswerLog?.endTime
               };
               tailLogs = standardLogs.slice(lastIdx + 1).filter((l: any) => l.type !== 'answer');
             } else {
@@ -930,6 +939,7 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
                       hasAnswer={!!displayFinalAnswer && isLastThoughts}
                       stepCount={stepCount}
                       turnStartedAt={turnStartedAt}
+                      turnEndedAt={displayFinalAnswer?.endTime ?? displayFinalAnswer?.timestamp ?? null}
                     />
                   );
                 })}

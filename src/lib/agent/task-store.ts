@@ -179,11 +179,15 @@ export const taskStore = {
     const task = taskCache.get(chatId);
     if (!task) return;
 
+    const now = Date.now();
     const compactEvent = compactTraceEvent(traceEvent);
+    const timedEvent = compactEvent && typeof compactEvent === 'object'
+      ? { timestamp: now, ...compactEvent }
+      : compactEvent;
 
-    if (compactEvent?.type === 'work_note_cancel') {
-      const noteId = compactEvent.noteId || null;
-      const subAgent = compactEvent.subAgent || null;
+    if (timedEvent?.type === 'work_note_cancel') {
+      const noteId = timedEvent.noteId || null;
+      const subAgent = timedEvent.subAgent || null;
       for (let i = task.traceLogs.length - 1; i >= 0; i--) {
         const log = task.traceLogs[i];
         if (
@@ -195,11 +199,11 @@ export const taskStore = {
           break;
         }
       }
-    } else if (compactEvent?.type === 'work_note') {
-      const noteText = String(compactEvent.text || '').trim();
+    } else if (timedEvent?.type === 'work_note') {
+      const noteText = String(timedEvent.text || '').trim();
       if (!noteText) return;
-      const noteId = compactEvent.noteId || null;
-      const subAgent = compactEvent.subAgent || null;
+      const noteId = timedEvent.noteId || null;
+      const subAgent = timedEvent.subAgent || null;
       let mergeIdx = -1;
       for (let i = task.traceLogs.length - 1; i >= 0; i--) {
         const log = task.traceLogs[i];
@@ -214,18 +218,18 @@ export const taskStore = {
       if (mergeIdx >= 0) {
         task.traceLogs[mergeIdx] = {
           ...task.traceLogs[mergeIdx],
-          ...compactEvent,
+          ...timedEvent,
           text: noteText,
           noteId,
           subAgent,
         };
       } else {
-        task.traceLogs.push({ ...compactEvent, text: noteText, noteId, subAgent });
+        task.traceLogs.push({ ...timedEvent, text: noteText, noteId, subAgent });
       }
     } else {
-      task.traceLogs.push(compactEvent);
+      task.traceLogs.push(timedEvent);
     }
-    task.lastUpdatedAt = Date.now();
+    task.lastUpdatedAt = now;
     
     // Keep trace logs bounded to prevent massive files
     trimTask(task);
@@ -339,7 +343,9 @@ export const taskStore = {
       const traceIndex = Number.isFinite(traceObj._traceIdx) ? traceObj._traceIdx : index;
       if (traceIndex > maxIndex) maxIndex = traceIndex;
       if (afterIndex < 0 || traceIndex > afterIndex) {
-        traces.push(traceObj._traceIdx === traceIndex ? traceObj : { ...traceObj, _traceIdx: traceIndex });
+        const fallbackTimestamp = task.completedAt || task.lastUpdatedAt || task.startedAt;
+        const indexedTrace = traceObj._traceIdx === traceIndex ? traceObj : { ...traceObj, _traceIdx: traceIndex };
+        traces.push(indexedTrace.timestamp ? indexedTrace : { ...indexedTrace, timestamp: fallbackTimestamp });
       }
     }
 

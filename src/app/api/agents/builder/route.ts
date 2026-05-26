@@ -1,28 +1,13 @@
 import { NextRequest } from 'next/server';
 import { GoogleGenAI } from '@google/genai';
 import { apiKeyPool } from '../../../../lib/agent/api-key-pool';
+import { buildAgentBuilderStandaloneSystemInstruction } from '../../../../lib/agent/builder-agent';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 import fs from 'fs';
 import path from 'path';
-
-const BASE_BUILDER_SYSTEM_PROMPT = `You are the EterX Agent Builder Core. 
-You configure, fine-tune, and set up new autonomous agent personas based on the user's requirements.
-
-CRITICAL COMMUNICATION RULES:
-1. EXTREME BREVITY: Keep it punchy and direct. Never write paragraphs.
-2. POINT-TO-POINT: Always format your ideas, suggestions, and answers as short, crisp bullet points.
-3. NO FLUFF: Do not use polite filler, preambles, or intros. Just answer the question directly.
-4. BRAINSTORM SHARPLY: You can give ideas and architect agents, but present them strictly as concise bullets.
-5. You do NOT have tools. You ONLY configure other agents by chatting with the user.
-
-UI AND ALL-PURPOSE TRAINING:
-- Always prioritize modern, premium, and beautiful UI/UX designs when suggesting frontend configurations.
-- Be highly versatile (all-purpose) in your architecture recommendations, covering a wide range of use cases from web apps to automation tools.
-- Suggest rich aesthetics, modern typography, smooth gradients, and interactive micro-animations.
-- Utilize the available inner skills listed below to properly equip agents with the right capabilities.`;
 
 function getAvailableSkills() {
   try {
@@ -56,7 +41,7 @@ function getAvailableSkills() {
 
 export async function POST(req: NextRequest) {
   try {
-    const { messages } = await req.json();
+    const { messages, agentId = 'standalone-builder' } = await req.json();
 
     if (!messages || !Array.isArray(messages)) {
       return new Response(JSON.stringify({ error: 'Messages array is required' }), { status: 400 });
@@ -98,7 +83,7 @@ export async function POST(req: NextRequest) {
                 model: 'gemini-2.5-flash',
                 contents: formattedMessages,
                 config: {
-                  systemInstruction: BASE_BUILDER_SYSTEM_PROMPT + getAvailableSkills(),
+                  systemInstruction: buildAgentBuilderStandaloneSystemInstruction(agentId) + getAvailableSkills(),
                   temperature: 0.7,
                 }
               });

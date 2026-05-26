@@ -27,12 +27,12 @@ function timerNote(note: unknown): string {
 
 export const waitTimerTool: ToolDefinition = {
   name: 'wait_timer',
-  description: 'Wait for a short bounded interval, then return a check-in note so the agent can continue from the current work. Use after starting long-running work with process_manager/background_task or when a brief internal pause is needed. Maximum wait is 20 seconds.',
+  description: 'Wait for a bounded interval, then return a check-in note so the agent can continue from the current work. Use after starting long-running work with process_manager/background_task or when a brief internal pause is needed. Maximum wait is 120 seconds.',
   category: 'core',
   inputSchema: z.object({
-    seconds: z.number().optional().describe('Seconds to wait. Values are capped to 20 seconds.'),
-    timeoutSeconds: z.number().optional().describe('Alias for seconds. Values are capped to 20 seconds.'),
-    timeoutMs: z.number().optional().describe('Milliseconds to wait. Values are capped to 20000 ms.'),
+    seconds: z.number().optional().describe('Seconds to wait. Values are capped to 120 seconds.'),
+    timeoutSeconds: z.number().optional().describe('Alias for seconds. Values are capped to 120 seconds.'),
+    timeoutMs: z.number().optional().describe('Milliseconds to wait. Values are capped to 120000 ms.'),
     title: z.string().optional().describe('Short UI title for the check-in, e.g. "Schedule compilation check-in"'),
     note: z.string().optional().describe('Exact instruction for what to inspect or do after the timer expires.')
   }),

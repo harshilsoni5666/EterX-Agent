@@ -1,6 +1,6 @@
 ﻿import React, { useRef, useState, useEffect, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { FileText, X, Check, Folder, File as FileIcon, ChevronDown, ChevronRight, Image as ImageIcon, AlertCircle, ListTodo } from 'lucide-react';
+import { FileText, X, Check, Users, Activity, CheckCircle2, XCircle, Folder, File as FileIcon, ChevronDown, ChevronRight, Image as ImageIcon, AlertCircle, ListTodo } from 'lucide-react';
 import { PremiumMic, PremiumSend, PremiumPlus, PremiumAudioLines, PremiumVolume2, PremiumVolumeX, PremiumMicOff } from '../ui/premium-icons';
 import { Tooltip } from '../ui/tooltip';
 import { ConnectorsModal, ConnectorsButton } from './connectors-modal';
@@ -151,6 +151,16 @@ interface ChatInputProps {
   onOpenAgentBuilder?: (id: string) => void;
   onOpenPet?: () => void;
   activeChatId?: string | null;
+  onOpenTeamView?: () => void;
+  activeSubAgents?: Array<{
+    name: string;
+    status: 'spawning' | 'working' | 'completed' | 'error';
+    task: string;
+    currentAction?: string;
+    stepCount: number;
+    durationMs: number;
+    startedAt: number;
+  }>;
 }
 
 const inferFileExtension = (mimeType: string) => {
@@ -580,6 +590,131 @@ const GeneratingDots = ({ className = '' }: { className?: string }) => (
   </span>
 );
 
+
+const SubAgentDock = ({
+  onOpenTeamView,
+  agents,
+  isCompressed,
+}: {
+  onOpenTeamView?: () => void;
+  agents?: Array<{
+    name: string;
+    status: 'spawning' | 'working' | 'completed' | 'error';
+    task: string;
+    currentAction?: string;
+    stepCount: number;
+    durationMs: number;
+    startedAt: number;
+  }>;
+  isCompressed: boolean;
+}) => {
+  const [open, setOpen] = useState(false);
+  if (!agents || agents.length === 0) return null;
+
+  const activeCount = agents.filter(a => a.status === 'working' || a.status === 'spawning').length;
+  const completedCount = agents.filter(a => a.status === 'completed').length;
+  const isLive = activeCount > 0;
+  const headerTitle = open ? 'Agent Team' : (isLive ? `${activeCount} agent${activeCount > 1 ? 's' : ''} working` : `${completedCount} agent${completedCount > 1 ? 's' : ''} done`);
+
+  return (
+    <motion.div
+      layout
+      initial={{ opacity: 0, y: 10, scale: 0.992 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      exit={{ opacity: 0, y: 8, scale: 0.992 }}
+      transition={{ duration: 0.2, ease: [0.2, 0.8, 0.2, 1] }}
+      className={`relative z-0 mx-auto -mb-3 w-[calc(100%-16px)] ${ isCompressed ? 'max-w-[504px]' : 'max-w-[784px]' } translate-y-2 overflow-hidden rounded-t-[24px] border border-b-0 border-violet-500/[0.15] bg-[#1A1525] shadow-[0_-10px_26px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(139,92,246,0.06)]`}
+    >
+      <button
+        type="button"
+        onClick={() => { if (onOpenTeamView) onOpenTeamView(); else setOpen(v => !v); }}
+        className="group flex min-h-[44px] w-full items-center gap-2.5 px-4 py-2 text-left transition-colors hover:bg-white/[0.025]"
+        aria-expanded={open}
+      >
+        <span className="flex min-w-0 flex-1 items-center gap-2">
+          {isLive ? (
+            <ProgressLoader className="h-[15px] w-[15px]" />
+          ) : (
+            <Users className="h-[15px] w-[15px] shrink-0 text-violet-300/88" strokeWidth={2.35} />
+          )}
+          <span className="flex min-w-0 items-center">
+            <span className={`truncate text-[13px] font-semibold leading-5 tracking-normal ${ isLive ? 'bg-[linear-gradient(110deg,#C4B5FD_0%,#E9D5FF_42%,#A78BFA_76%)] bg-[length:230%_100%] bg-clip-text text-transparent animate-[eterx-task-shimmer_3.2s_ease-in-out_infinite]' : 'text-violet-200' }`}>
+              {headerTitle}
+            </span>
+            {isLive && <GeneratingDots className="shrink-0 text-violet-300" />}
+          </span>
+        </span>
+        <ChevronDown className={`h-4 w-4 shrink-0 text-violet-400/45 transition-transform duration-200 group-hover:text-violet-300/70 ${ open ? 'rotate-180' : '' }`} strokeWidth={2.1} />
+      </button>
+
+      <AnimatePresence initial={false}>
+        {open && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.24, ease: [0.2, 0.8, 0.2, 1] }}
+            className="overflow-hidden"
+          >
+            <div className="px-3.5 pb-3.5 pt-1">
+              <div className="relative max-h-[260px] space-y-1 overflow-y-auto py-1 pr-1 custom-scrollbar">
+                {agents.map((agent) => {
+                  const elapsed = agent.durationMs > 0
+                    ? `${(agent.durationMs / 1000).toFixed(1)}s`
+                    : `${Math.max(0, Math.round((Date.now() - agent.startedAt) / 1000))}s`;
+                  const isWorking = agent.status === 'working' || agent.status === 'spawning';
+                  return (
+                    <div
+                      key={agent.name}
+                      className="relative flex items-center gap-3 rounded-[11px] px-2.5 py-2 transition-colors hover:bg-white/[0.018]"
+                    >
+                      {/* Status glyph */}
+                      <span className="relative z-10 shrink-0">
+                        {agent.status === 'completed' ? (
+                          <span className="flex h-[18px] w-[18px] items-center justify-center rounded-full bg-emerald-500/80 text-[#1F1F1F] shadow-[inset_0_1px_0_rgba(255,255,255,0.28)]">
+                            <Check className="h-[11px] w-[11px]" strokeWidth={3.2} />
+                          </span>
+                        ) : agent.status === 'error' ? (
+                          <span className="flex h-[18px] w-[18px] items-center justify-center rounded-full bg-red-500/80 text-white">
+                            <X className="h-[11px] w-[11px]" strokeWidth={3.2} />
+                          </span>
+                        ) : isWorking ? (
+                          <ProgressLoader className="h-[18px] w-[18px]" />
+                        ) : (
+                          <span className="block h-[18px] w-[18px] rounded-full border-[2px] border-violet-400/40" />
+                        )}
+                      </span>
+
+                      {/* Agent info */}
+                      <span className="flex min-w-0 flex-1 flex-col">
+                        <span className="flex items-center gap-2">
+                          <span className={`text-[13px] font-semibold leading-5 ${ isWorking ? 'bg-[linear-gradient(110deg,#C4B5FD_0%,#F4F4F4_42%,#A78BFA_76%)] bg-[length:230%_100%] bg-clip-text text-transparent animate-[eterx-task-shimmer_3.2s_ease-in-out_infinite]' : 'text-[#BFBFBF]' }`}>
+                            {agent.name}
+                          </span>
+                          {isWorking && <GeneratingDots className="shrink-0 text-violet-300" />}
+                        </span>
+                        <span className="text-[11px] text-[#6B6660] truncate max-w-[280px]">
+                          {agent.currentAction || agent.task.substring(0, 50)}
+                        </span>
+                      </span>
+
+                      {/* Duration + steps */}
+                      <span className="shrink-0 text-right">
+                        <span className="block text-[11px] font-mono text-[#7A756F]">{elapsed}</span>
+                        <span className="block text-[10px] text-[#555350]">{agent.stepCount} steps</span>
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </motion.div>
+  );
+};
+
 const TaskTrackerDock = ({
   tracker,
   isThinking,
@@ -716,7 +851,9 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   onOpenAgents = () => { },
   onOpenAgentBuilder = () => { },
   onOpenPet = () => { },
-  activeChatId = null
+  activeChatId = null,
+  activeSubAgents = [],
+  onOpenTeamView,
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -1406,7 +1543,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       </AnimatePresence>
 
       <div className={`eterx-composer-shell w-full ${ shellMaxWidth } flex flex-col pointer-events-auto relative`}>
-        <TaskTrackerDock
+        <SubAgentDock onOpenTeamView={onOpenTeamView} agents={activeSubAgents} isCompressed={isCompressed} />
+              <TaskTrackerDock
           tracker={taskTracker}
           isThinking={isThinking}
           isCompressed={isCompressed}

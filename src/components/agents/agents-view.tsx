@@ -105,7 +105,7 @@ export const AgentsView = ({ onOpenBuilder }: { onOpenBuilder: (id: string) => v
   };
 
   return (
-    <div className="flex-1 w-full h-full flex flex-col px-6 py-5 md:px-10 md:pt-6 md:pb-6 overflow-hidden relative z-20 bg-[#050505]">
+    <div className="flex-1 w-full h-full flex flex-col px-6 py-5 md:px-10 md:pt-6 md:pb-6 overflow-hidden relative z-20 bg-transparent">
       {/* Header Area */}
       <div className="flex items-center justify-between mb-5 shrink-0">
         <div className="flex flex-col">
@@ -155,7 +155,7 @@ export const AgentsView = ({ onOpenBuilder }: { onOpenBuilder: (id: string) => v
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.4 }}
-          className="flex-1 bg-[#0A0A0A] border border-white/[0.04] rounded-[28px] p-3 md:p-4 w-full shadow-[inset_0_1px_1px_rgba(255,255,255,0.02)] overflow-y-auto custom-scrollbar flex flex-col gap-2"
+          className="flex-1 bg-[#0A0A0A]/70 backdrop-blur-sm border border-white/[0.04] rounded-[28px] p-3 md:p-4 w-full shadow-[inset_0_1px_1px_rgba(255,255,255,0.02)] overflow-y-auto custom-scrollbar flex flex-col gap-2"
         >
           {agents.map((agent) => (
             <div 

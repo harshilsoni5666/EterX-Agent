@@ -4,6 +4,7 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import dynamic from 'next/dynamic';
 import { Sidebar } from '../components/layout/sidebar';
 import { ChatInput } from '../components/layout/chat-input';
+import { AgentTeamView } from '../components/chat/agent-team-view';
 import { ChatFeed } from '../components/chat/chat-feed';
 import { AlertTriangle, CheckCircle2, ChevronDown, Clock3, Code2, GraduationCap, MessageSquare, Monitor, Pencil, PenTool, PanelLeft, SendHorizontal, SquarePen, Search, X, ArrowLeft, Trash } from 'lucide-react';
 import { Tooltip } from '../components/ui/tooltip';
@@ -507,6 +508,7 @@ function DeepWorkUI() {
   const [pinnedItems, setPinnedItems] = useState<PinnedItem[]>([]);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [monitorOpen, setMonitorOpen] = useState(false);
+  const [agentTeamOpen, setAgentTeamOpen] = useState(false);
   const [petWidgetOpen, setPetWidgetOpen] = useState(false);
   const [nativePetAvailable, setNativePetAvailable] = useState(false);
   const canUseMonitor = activeView === 'chat' && !!activeChatId;
@@ -1077,6 +1079,37 @@ function DeepWorkUI() {
   const isAgentConnectionLog = (log: any) =>
     !!log && (log._connection === true || (log.type === 'work_note' && log.noteId === AGENT_CONNECTION_NOTE_ID));
   const stripAgentConnectionLogs = (logs: any[] = []) => logs.filter(log => !isAgentConnectionLog(log));
+  const isTerminalAgentStatus = (status: any) => status === 'completed' || status === 'failed' || status === 'stopped';
+  const normalizeClientTraceTime = (value: unknown, fallback = Date.now()) => {
+    const raw = Number(value);
+    if (!Number.isFinite(raw) || raw <= 0) return fallback;
+    let timestamp = raw < 10_000_000_000 ? raw * 1000 : raw;
+    while (timestamp > 10_000_000_000_000) timestamp = Math.floor(timestamp / 1000);
+    const now = Date.now();
+    const minPlausible = Date.UTC(2020, 0, 1);
+    return timestamp >= minPlausible && timestamp <= now + 60_000 ? timestamp : fallback;
+  };
+  const withTraceTiming = (trace: any, fallback = Date.now()) => {
+    const timestamp = normalizeClientTraceTime(trace?.timestamp, fallback);
+    const startTime = normalizeClientTraceTime(trace?.startTime, timestamp);
+    const endTime = normalizeClientTraceTime(trace?.endTime, timestamp);
+    return { ...trace, timestamp, startTime, endTime };
+  };
+  const systemThoughtLog = (text: string, at = Date.now()) => ({
+    type: 'thought',
+    text,
+    timestamp: at,
+    startTime: at,
+    endTime: at,
+  });
+  const removeRunningChat = (chatId: string) => {
+    setRunningChats(prev => {
+      if (!prev.has(chatId)) return prev;
+      const next = new Set(prev);
+      next.delete(chatId);
+      return next;
+    });
+  };
 
   const setChatLogsById = (
     chatId: string,
@@ -1357,7 +1390,8 @@ function DeepWorkUI() {
       // Deduplicate by _traceIdx only within current turn
       if (trace._traceIdx !== undefined && dedupScope.some(l => l._traceIdx === trace._traceIdx)) continue;
 
-      let processedLog = { ...trace };
+      let processedLog = withTraceTiming(trace);
+      const traceAt = processedLog.endTime;
 
       // Preserve isLive status if this trace matches a local log that was marked as live
       if (trace.type === 'command' || trace.type === 'answer') {
@@ -1400,9 +1434,9 @@ function DeepWorkUI() {
           }
         }
         if (mergeIdx >= 0) {
-          logs[mergeIdx] = { ...logs[mergeIdx], text: trace.text, thoughtId, _traceIdx: trace._traceIdx, endTime: Date.now() };
+          logs[mergeIdx] = { ...logs[mergeIdx], text: trace.text, thoughtId, _traceIdx: trace._traceIdx, timestamp: traceAt, endTime: traceAt };
         } else {
-          logs.push({ type: 'thought_stream', text: trace.text, subAgent, thoughtId, _traceIdx: trace._traceIdx, startTime: Date.now(), endTime: Date.now() });
+          logs.push({ type: 'thought_stream', text: trace.text, subAgent, thoughtId, _traceIdx: trace._traceIdx, timestamp: traceAt, startTime: traceAt, endTime: traceAt });
         }
       } else if (trace.type === 'work_note') {
         const subAgent = trace.subAgent || null;
@@ -1444,11 +1478,12 @@ function DeepWorkUI() {
             subAgent,
             noteId,
             _traceIdx: trace._traceIdx ?? logs[mergeIdx]._traceIdx,
-            startTime: logs[mergeIdx].startTime || Date.now(),
-            endTime: Date.now(),
+            timestamp: traceAt,
+            startTime: logs[mergeIdx].startTime || processedLog.startTime,
+            endTime: traceAt,
           };
         } else {
-          logs.push({ ...trace, type: 'work_note', text: noteText, subAgent, noteId, _traceIdx: trace._traceIdx, startTime: Date.now(), endTime: Date.now() });
+          logs.push({ ...processedLog, type: 'work_note', text: noteText, subAgent, noteId, _traceIdx: trace._traceIdx, startTime: processedLog.startTime, endTime: traceAt });
         }
       } else if (trace.type === 'answer' && !trace.subAgent) {
         let answerIdx = -1;
@@ -1457,7 +1492,7 @@ function DeepWorkUI() {
           if (logs[i].type === 'answer') { answerIdx = i; break; }
         }
         if (answerIdx >= 0) {
-          logs[answerIdx] = { ...logs[answerIdx], text: trace.text, _traceIdx: trace._traceIdx, isLive: processedLog.isLive };
+          logs[answerIdx] = { ...logs[answerIdx], ...processedLog, text: trace.text, _traceIdx: trace._traceIdx, isLive: processedLog.isLive };
         } else {
           logs.push(processedLog);
         }
@@ -1465,19 +1500,19 @@ function DeepWorkUI() {
         // Replace existing preview for same file (post-edit update)
         const existingIdx = logs.findLastIndex((l: any) => l.type === 'file_preview' && l.filepath === trace.filepath);
         if (existingIdx >= 0) {
-          logs[existingIdx] = { ...trace, startTime: logs[existingIdx].startTime || Date.now(), endTime: Date.now() };
+          logs[existingIdx] = { ...processedLog, startTime: logs[existingIdx].startTime || processedLog.startTime, endTime: traceAt };
         } else {
-          logs.push({ ...trace, startTime: Date.now(), endTime: Date.now() });
+          logs.push(processedLog);
         }
       } else if (trace.type === 'console_output') {
         const isDup = logs.some((l: any) => l.type === 'console_output' && l.command === trace.command && l.output === trace.output);
         if (!isDup) {
-          logs.push({ ...trace, startTime: Date.now(), endTime: Date.now() });
+          logs.push(processedLog);
         }
       } else if (trace.type === 'done') {
         // Skip — handled by polling completion
       } else if (trace.type === 'error') {
-        logs.push({ type: 'thought_stream', text: `Error: ${ trace.data || trace.text || 'Unknown error' }`, _traceIdx: trace._traceIdx });
+        logs.push({ type: 'thought_stream', text: `Error: ${ trace.data || trace.text || 'Unknown error' }`, _traceIdx: trace._traceIdx, timestamp: traceAt, startTime: traceAt, endTime: traceAt });
       } else {
         // When a real (non-instant) action trace arrives, remove any preceding _instant preview
         if (!trace._instant && (trace.type === 'command' || trace.type === 'file_edit' || trace.type === 'exploration')) {
@@ -1488,7 +1523,7 @@ function DeepWorkUI() {
         if (trace._instant && logs.some(l => !l._instant && (l.type === 'command' || l.type === 'file_edit' || l.type === 'exploration'))) {
           continue;
         }
-        logs.push({ ...processedLog, startTime: Date.now(), endTime: Date.now() });
+        logs.push(processedLog);
       }
     }
     return logs;
@@ -1552,14 +1587,10 @@ function DeepWorkUI() {
     const finishDisconnectedStart = (message: string) => {
       stopPolling(chatId);
       clearAgentConnectionStatus(chatId);
-      setRunningChats(prev => {
-        const next = new Set(prev);
-        next.delete(chatId);
-        return next;
-      });
+      removeRunningChat(chatId);
       setChatLogsById(chatId, logs => [
         ...stripAgentConnectionLogs(logs),
-        { type: 'thought', text: `\n\n*${ message }*` }
+        systemThoughtLog(`\n\n*${ message }*`)
       ]);
     };
 
@@ -1654,6 +1685,8 @@ function DeepWorkUI() {
             for (const trace of data.traces) {
               // DEDUP: only skip if _traceIdx already exists in the CURRENT TURN (not old questions)
               if (trace._traceIdx !== undefined && currentTurnLogs.some((l: any) => l._traceIdx === trace._traceIdx)) continue;
+              const timedTrace = withTraceTiming(trace);
+              const traceAt = timedTrace.endTime;
 
               if (trace.type === 'work_note_cancel') {
                 const subAgent = trace.subAgent || null;
@@ -1685,9 +1718,9 @@ function DeepWorkUI() {
                   }
                 }
                 if (mergeIdx >= 0) {
-                  logs[mergeIdx] = { ...logs[mergeIdx], text: trace.text, thoughtId, _traceIdx: trace._traceIdx, endTime: Date.now() };
+                  logs[mergeIdx] = { ...logs[mergeIdx], text: trace.text, thoughtId, _traceIdx: trace._traceIdx, timestamp: traceAt, endTime: traceAt };
                 } else {
-                  logs.push({ type: 'thought_stream', text: trace.text, subAgent, thoughtId, _traceIdx: trace._traceIdx, startTime: Date.now(), endTime: Date.now() });
+                  logs.push({ type: 'thought_stream', text: trace.text, subAgent, thoughtId, _traceIdx: trace._traceIdx, timestamp: traceAt, startTime: traceAt, endTime: traceAt });
                 }
               } else if (trace.type === 'work_note') {
                 const subAgent = trace.subAgent || null;
@@ -1729,11 +1762,12 @@ function DeepWorkUI() {
                     subAgent,
                     noteId,
                     _traceIdx: trace._traceIdx ?? logs[mergeIdx]._traceIdx,
-                    startTime: logs[mergeIdx].startTime || Date.now(),
-                    endTime: Date.now(),
+                    timestamp: traceAt,
+                    startTime: logs[mergeIdx].startTime || timedTrace.startTime,
+                    endTime: traceAt,
                   };
                 } else {
-                  logs.push({ ...trace, type: 'work_note', text: noteText, subAgent, noteId, _traceIdx: trace._traceIdx, startTime: Date.now(), endTime: Date.now() });
+                  logs.push({ ...timedTrace, type: 'work_note', text: noteText, subAgent, noteId, _traceIdx: trace._traceIdx, startTime: timedTrace.startTime, endTime: traceAt });
                 }
               } else if (trace.type === 'answer' && !trace.subAgent) {
                 let answerIdx = -1;
@@ -1742,24 +1776,24 @@ function DeepWorkUI() {
                   if (logs[i].type === 'answer') { answerIdx = i; break; }
                 }
                 if (answerIdx >= 0) {
-                  logs[answerIdx] = { ...logs[answerIdx], text: trace.text, _traceIdx: trace._traceIdx };
+                  logs[answerIdx] = { ...logs[answerIdx], ...timedTrace, text: trace.text, _traceIdx: trace._traceIdx };
                 } else {
-                  logs.push({ ...trace });
+                  logs.push(timedTrace);
                 }
               } else if (trace.type === 'file_preview') {
                 // Dedup by filepath: replace existing preview for same file with latest post-edit version
                 const existingIdx = logs.findLastIndex((l: any) => l.type === 'file_preview' && l.filepath === trace.filepath);
                 if (existingIdx >= 0) {
-                  logs[existingIdx] = { ...trace, startTime: logs[existingIdx].startTime || Date.now(), endTime: Date.now() };
+                  logs[existingIdx] = { ...timedTrace, startTime: logs[existingIdx].startTime || timedTrace.startTime, endTime: traceAt };
                 } else {
-                  logs.push({ ...trace, startTime: Date.now(), endTime: Date.now() });
+                  logs.push(timedTrace);
                 }
               } else if (trace.type === 'console_output') {
                 // Always push new console output — each shell execution is a unique event
                 // Dedup only exact same command+output combo
                 const isDup = logs.some((l: any) => l.type === 'console_output' && l.command === trace.command && l.output === trace.output);
                 if (!isDup) {
-                  logs.push({ ...trace, startTime: Date.now(), endTime: Date.now() });
+                  logs.push(timedTrace);
                 }
               } else if (trace.type === 'done' || trace.type === 'error') {
                 // Skip — handled by status check below
@@ -1773,7 +1807,7 @@ function DeepWorkUI() {
                 if (trace._instant && logs.some(l => !l._instant && (l.type === 'command' || l.type === 'file_edit' || l.type === 'exploration'))) {
                   continue;
                 }
-                logs.push({ ...trace, startTime: Date.now(), endTime: Date.now() });
+                logs.push(timedTrace);
               }
             }
             return logs;
@@ -1821,11 +1855,11 @@ function DeepWorkUI() {
           if (isActiveChat) {
             setTraceLogs(prev => [
               ...stripAgentConnectionLogs(prev),
-              { type: 'thought', text: `\n\n*Agent stopped: ${ errMsg.slice(0, 200) }*` }
+              systemThoughtLog(`\n\n*Agent stopped: ${ errMsg.slice(0, 200) }*`, normalizeClientTraceTime(data.completedAt))
             ]);
           } else {
             setChats(currentChats => currentChats.map(c => c.id === chatId
-              ? { ...c, traceLogs: [...stripAgentConnectionLogs(c.traceLogs || []), { type: 'thought', text: `\n\n*Agent stopped: ${ errMsg.slice(0, 200) }*` }] }
+              ? { ...c, traceLogs: [...stripAgentConnectionLogs(c.traceLogs || []), systemThoughtLog(`\n\n*Agent stopped: ${ errMsg.slice(0, 200) }*`, normalizeClientTraceTime(data.completedAt))] }
               : c
             ));
           }
@@ -1836,11 +1870,7 @@ function DeepWorkUI() {
 
           clearAgentConnectionStatus(chatId);
           stopPolling(chatId);
-          setRunningChats(prev => {
-            const next = new Set(prev);
-            next.delete(chatId);
-            return next;
-          });
+          removeRunningChat(chatId);
 
           // TRIGGER DESKTOP NOTIFICATION (Outside setState to prevent React.StrictMode double-firing!)
           if (shouldNotify && data.status === 'completed' && 'Notification' in window) {
@@ -1945,9 +1975,9 @@ function DeepWorkUI() {
     const timeoutId = pollingIntervalsRef.current.get(chatId);
     if (timeoutId) {
       clearTimeout(timeoutId);
-      pollingIntervalsRef.current.delete(chatId);
-      pollCursorsRef.current.delete(chatId);
     }
+    pollingIntervalsRef.current.delete(chatId);
+    pollCursorsRef.current.delete(chatId);
     pollRunStartRef.current.delete(chatId);
     catchUpPollersRef.current.delete(chatId);
   };
@@ -2111,13 +2141,8 @@ function DeepWorkUI() {
             });
 
             startPolling(chatId, data.maxIndex ?? (data.totalTraces - 1));
-          } else if (data.status === 'completed' || data.status === 'failed' || data.status === 'stopped') {
-            setRunningChats(prev => {
-              if (!prev.has(chatId)) return prev;
-              const next = new Set(prev);
-              next.delete(chatId);
-              return next;
-            });
+          } else if (isTerminalAgentStatus(data.status) || (data.status === 'idle' && runningChatsRef.current.has(chatId))) {
+            removeRunningChat(chatId);
           }
         } catch {
           // Keep the UI quiet here; the normal poller/backoff path will recover.
@@ -2155,11 +2180,7 @@ function DeepWorkUI() {
     }).catch(() => { });
 
     // 4. Clear all running state for this chat
-    setRunningChats(prev => {
-      const next = new Set(prev);
-      next.delete(activeChatId!);
-      return next;
-    });
+    removeRunningChat(activeChatId);
 
     // 5. Clear notification tracking (so future runs can notify again)
     notifiedChatIdsRef.current.delete(activeChatId);
@@ -2167,7 +2188,7 @@ function DeepWorkUI() {
     // 6. Append stopped message to chat
     updateActiveChatLogs(prev => [
       ...stripAgentConnectionLogs(prev),
-      { type: 'thought', text: "\n\n*Generation stopped by user.*" }
+      systemThoughtLog("\n\n*Generation stopped by user.*")
     ]);
   };
 
@@ -2443,7 +2464,13 @@ function DeepWorkUI() {
     startRecording();
   };
 
-  const handleSend = async () => {
+    const handleOpenAgentTeam = useCallback((agentName?: string) => {
+    setAgentTeamOpen(true);
+    // If a specific agent name is passed, the AgentTeamView will focus on it
+    // via its own internal state from the traceLogs
+  }, []);
+
+const handleSend = async () => {
     if (isRecording && mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
       mediaRecorderRef.current.stop();
       setIsRecording(false);
@@ -2549,11 +2576,13 @@ function DeepWorkUI() {
     // a polling loop as backup/primary for trace updates.
     // ═══════════════════════════════════════════════════════════════
 
-    let backendPrompt = promptText;
-    if (chatIdToUse && chatIdToUse.startsWith('agent_builder_')) {
-      const agentId = chatIdToUse.replace('agent_builder_', '');
-      backendPrompt = `[System Directive: We are currently in the Agent Builder room. The user is talking to you to configure/train a custom agent variant. Please act as the Agent Builder core and help the user configure their agent based on their requests. Remember: you are configuring the agent with ID: ${agentId}]\n\nUser Request: ${promptText}`;
-    }
+    const isBuilderChat = !!chatIdToUse && chatIdToUse.startsWith('agent_builder_');
+    const builderAgentId = isBuilderChat ? chatIdToUse!.replace('agent_builder_', '') : null;
+    const requestPinnedContext = {
+      ...(pinnedItems.length > 0 ? { paths: pinnedItems.map(p => p.path) } : {}),
+      ...(isBuilderChat ? { agentRuntime: 'agent_builder', agentId: builderAgentId } : {}),
+    };
+    const hasPinnedContext = Object.keys(requestPinnedContext).length > 0;
 
     const controller = new AbortController();
     abortControllerRef.current = controller;
@@ -2569,14 +2598,14 @@ function DeepWorkUI() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          prompt: backendPrompt,
+          prompt: promptText,
           history: chatHistory,
           mediaAttachments,
           userId: 'default',
           projectId: chatIdToUse,
           mode: runAgentMode,
           thinkingLevel: runThinkingLevel,
-          pinnedContext: pinnedItems.length > 0 ? { paths: pinnedItems.map(p => p.path) } : null
+          pinnedContext: hasPinnedContext ? requestPinnedContext : null
         }),
         signal: controller.signal
       });
@@ -2589,14 +2618,10 @@ function DeepWorkUI() {
         } catch { }
 
         stopPolling(chatIdToUse!);
-        setRunningChats(prev => {
-          const next = new Set(prev);
-          next.delete(chatIdToUse!);
-          return next;
-        });
+        removeRunningChat(chatIdToUse!);
         setChatLogsById(chatIdToUse!, prev => [
           ...stripAgentConnectionLogs(prev),
-          { type: 'thought', text: `\n\n*${message}*` }
+          systemThoughtLog(`\n\n*${message}*`)
         ]);
         return;
       }
@@ -2640,14 +2665,10 @@ function DeepWorkUI() {
       if (error.name !== 'AbortError') {
         if (!serverAccepted) {
           stopPolling(chatIdToUse!);
-          setRunningChats(prev => {
-            const next = new Set(prev);
-            next.delete(chatIdToUse!);
-            return next;
-          });
+          removeRunningChat(chatIdToUse!);
           setChatLogsById(chatIdToUse!, prev => [
             ...stripAgentConnectionLogs(prev),
-            { type: 'thought', text: `\n\n*Agent connection failed: ${ String(error.message || error).slice(0, 180) }*` }
+            systemThoughtLog(`\n\n*Agent connection failed: ${ String(error.message || error).slice(0, 180) }*`)
           ]);
           return;
         }
@@ -2728,6 +2749,8 @@ function DeepWorkUI() {
               }
 
               startPolling(activeChatId!, data.maxIndex ?? (data.totalTraces - 1));
+            } else if (isTerminalAgentStatus(data.status) || data.status === 'idle') {
+              removeRunningChat(activeChatId!);
             }
           })
           .catch(() => { /* offline */ });
@@ -2772,6 +2795,30 @@ function DeepWorkUI() {
       if (log?.type === 'user_action') break;
     }
     return null;
+  }, [traceLogs]);
+  const currentSubAgents = useMemo(() => {
+    const agentMap = new Map<string, any>();
+    for (const log of traceLogs) {
+      if (!log) continue;
+      const name = log.agentName || log.subAgent;
+      if (!name) continue;
+      if (log.type === 'sub_agent_spawn') {
+        agentMap.set(name, {
+          name, status: 'spawning', task: log.secondary || log.text || '',
+          stepCount: 0, durationMs: 0, startedAt: Date.now(),
+        });
+      } else if (log.type === 'sub_agent_action') {
+        const a = agentMap.get(name);
+        if (a) { a.status = 'working'; a.currentAction = log.text?.substring(0, 80); a.stepCount = log.agentStep || (a.stepCount + 1); }
+      } else if (log.type === 'sub_agent_complete') {
+        const a = agentMap.get(name);
+        if (a) { a.status = 'completed'; a.durationMs = log.durationMs || 0; a.stepCount = log.stepCount || a.stepCount; }
+      } else if (log.type === 'sub_agent_error') {
+        const a = agentMap.get(name);
+        if (a) { a.status = 'error'; }
+      }
+    }
+    return Array.from(agentMap.values());
   }, [traceLogs]);
   const petMonitorTitle = useMemo(() => {
     const activeChat = activeChatId ? chats.find(chat => chat.id === activeChatId) : null;
@@ -2841,7 +2888,7 @@ function DeepWorkUI() {
         onReply={sendSteeringMessage}
       />
       {/* Empty-state motion field: soft Gemini-style color waves behind the app shell. */}
-      <div className={`absolute bottom-0 left-0 right-0 h-[45vh] pointer-events-none overflow-hidden z-0 ${activeView === 'agents' ? 'hidden' : 'flex'} items-end justify-center ${ (traceLogs.length === 0 && liveState === 'idle' && activeView !== 'agents') ? 'opacity-100 transition-all duration-[1000ms] ease-out' : 'opacity-0 transition-all duration-[1000ms] ease-in' }`}>
+      <div className={`absolute bottom-0 left-0 right-0 h-[45vh] pointer-events-none overflow-hidden z-0 flex items-end justify-center ${ ((traceLogs.length === 0 && liveState === 'idle') || (activeView === 'agents' && !buildingAgentId)) ? 'opacity-100 transition-all duration-[1000ms] ease-out' : 'opacity-0 transition-all duration-[1000ms] ease-in' }`}>
         <div key={`eterx-home-field-${activeChatId ?? 'new'}`} className="eterx-home-field">
           <div className="eterx-home-plasma">
             <div className="eterx-home-plasma-blob eterx-home-plasma-pink" />
@@ -3007,7 +3054,31 @@ function DeepWorkUI() {
               </div>
             </div>
 
-            {/* Computer Toggle Button */}
+            
+            {/* Agent Team Toggle Button */}
+            {(currentSubAgents.length > 0 || isThinking) && (
+              <div className="absolute top-3 right-[228px] z-50 pointer-events-auto [-webkit-app-region:no-drag]">
+                <button id="agent-team-toggle-btn"
+                  onClick={() => setAgentTeamOpen(o => !o)}
+                  className={`flex items-center gap-1.5 h-8 px-2.5 rounded-lg text-[11px] font-semibold transition-all border shadow-[0_10px_28px_rgba(0,0,0,0.18)] ${
+                    agentTeamOpen
+                      ? 'bg-violet-400/[0.12] border-violet-300/30 text-violet-200 shadow-[0_0_0_1px_rgba(139,92,246,0.08),0_14px_34px_rgba(139,92,246,0.14)]'
+                      : 'bg-white/[0.035] border-white/[0.085] text-white/45 hover:border-violet-300/22 hover:bg-violet-300/[0.06] hover:text-violet-100'
+                  }`}
+                >
+                  <svg className={`w-3.5 h-3.5 ${agentTeamOpen ? 'text-violet-300' : 'text-white/45'}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/>
+                    <path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+                  </svg>
+                  <span className="hidden sm:inline">Team</span>
+                  {currentSubAgents.filter((a: any) => a.status === 'working' || a.status === 'spawning').length > 0 && (
+                    <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse ml-0.5" />
+                  )}
+                </button>
+              </div>
+            )}
+
+{/* Computer Toggle Button */}
             {canUseMonitor && (
               <div className="absolute top-3 right-[152px] z-50 pointer-events-auto [-webkit-app-region:no-drag]">
                 <Tooltip text={monitorOpen ? 'Close Computer' : 'Open Computer'} side="bottom">
@@ -3113,6 +3184,8 @@ function DeepWorkUI() {
                   onNetworkPausedAction={revealNetworkBanner}
                   isCompressed={hasOpenFiles}
                   taskTracker={currentTaskTracker}
+                  activeSubAgents={currentSubAgents}
+                  onOpenTeamView={() => setAgentTeamOpen(true)}
                   activeChatId={activeChatId}
                   onOpenAgentBuilder={handleOpenAgentBuilder}
                   onOpenPet={openPetWidget}
@@ -3155,7 +3228,18 @@ function DeepWorkUI() {
               {hasOpenFiles && (
                 <IdePanel />
               )}
-              {/* Computer Panel */}
+              
+              {/* Agent Team Panel */}
+              <AnimatePresence>
+                {agentTeamOpen && (
+                  <AgentTeamView
+                    traceLogs={displayTraceLogs}
+                    isThinking={isThinking}
+                    onClose={() => setAgentTeamOpen(false)}
+                  />
+                )}
+              </AnimatePresence>
+{/* Computer Panel */}
               <AnimatePresence>
                 {canUseMonitor && monitorOpen && (
                   <MonitorPanel isOpen={monitorOpen} onClose={() => setMonitorOpen(false)} chatId={activeChatId} defaultWidth={640} />

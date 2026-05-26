@@ -31,6 +31,12 @@ let petWindow;
 let latestPetStatus = null;
 const DEFAULT_BOOT_TIMEOUT_MS = 120000;
 const MIN_SPLASH_MS = 3600;
+const DEFAULT_PET_WINDOW_SIZE = 'normal';
+const PET_WINDOW_SIZES = {
+  small: { width: 292, height: 90, replyHeight: 162 },
+  normal: { width: 326, height: 100, replyHeight: 178 },
+  large: { width: 384, height: 116, replyHeight: 198 },
+};
 let activeBootId = 0;
 let bootRetryTimer = null;
 
@@ -42,107 +48,141 @@ function getPetWindowHtml() {
     <meta http-equiv="Content-Security-Policy" content="default-src 'self' data:; img-src 'self' data: file:; style-src 'unsafe-inline'; script-src 'unsafe-inline';" />
     <style>
       * { box-sizing: border-box; }
-      html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: transparent; }
+      html, body {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        overflow: hidden;
+        background: rgba(0,0,0,0) !important;
+      }
       body {
-        display: grid;
-        place-items: start;
+        display: block;
+        padding: 0;
         font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
         color: #f2f0ec;
         user-select: none;
+        -webkit-app-region: drag;
       }
       .card {
         position: relative;
-        width: 372px;
-        margin: 10px;
+        width: 100%;
+        height: 100vh;
+        min-height: 100vh;
+        margin: 0;
         border: 1px solid rgba(255,255,255,0.16);
-        border-radius: 23px;
+        border-radius: 24px;
         background: rgba(23,23,23,0.965);
-        box-shadow: 0 18px 54px rgba(0,0,0,0.36), inset 0 1px 0 rgba(255,255,255,0.055);
-        backdrop-filter: blur(24px);
-        -webkit-backdrop-filter: blur(24px);
+        box-shadow: inset 0 1px 0 rgba(255,255,255,0.055);
         -webkit-app-region: drag;
-        overflow: visible;
+        overflow: hidden;
       }
-      .compact { padding: 12px 16px; min-height: 92px; }
-      .replying { padding: 12px; min-height: 156px; }
-      .close {
+      .compact { padding: 13px 16px 35px; }
+      .replying { padding: 11px; }
+      .hover-controls,
+      .size-controls {
         position: absolute;
-        left: -8px;
-        top: -8px;
-        width: 32px;
-        height: 32px;
-        border-radius: 999px;
-        border: 1px solid rgba(255,255,255,0.16);
-        background: #1f1f1f;
-        color: rgba(255,255,255,0.72);
-        display: grid;
-        place-items: center;
+        z-index: 5;
+        display: flex;
+        gap: 6px;
         opacity: 0;
-        transition: opacity 100ms ease, background 100ms ease, color 100ms ease;
+        pointer-events: none;
+        transform: translateY(3px);
+        transition: opacity 120ms ease, transform 120ms ease;
         -webkit-app-region: no-drag;
       }
-      .card:hover .close, .close:focus { opacity: 1; }
-      .close:hover { background: #2a2a2a; color: white; }
-      .head { display: flex; min-width: 0; align-items: flex-start; gap: 12px; }
-      .copy { min-width: 0; flex: 1; }
-      .title {
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-        color: white;
-        font-size: 20px;
-        line-height: 24px;
-        font-weight: 650;
-        letter-spacing: 0;
+      .hover-controls { right: 10px; bottom: 8px; }
+      .size-controls { left: 10px; bottom: 8px; }
+      .card:hover .hover-controls,
+      .card:hover .size-controls,
+      body.hovering .hover-controls,
+      body.hovering .size-controls,
+      .hover-controls:focus-within,
+      .size-controls:focus-within {
+        opacity: 1;
+        pointer-events: auto;
+        transform: translateY(0);
       }
+      .control {
+        height: 27px;
+        min-width: 30px;
+        border-radius: 999px;
+        border: 1px solid rgba(255,255,255,0.12);
+        background: rgba(255,255,255,0.075);
+        color: #ece9e3;
+        padding: 0 10px;
+        font-size: 13px;
+        font-weight: 650;
+        -webkit-app-region: no-drag;
+      }
+      .control:hover,
+      .control:focus {
+        background: rgba(255,255,255,0.14);
+        color: #fff;
+        outline: none;
+      }
+      .control:disabled {
+        opacity: 0.38;
+      }
+      .replying #replyOpen { display: none; }
+      .size-control { width: 30px; padding: 0; font-size: 18px; line-height: 1; }
+      .head { display: flex; min-width: 0; align-items: flex-start; gap: 10px; }
+      .copy { min-width: 0; flex: 1; }
       .preview {
-        margin-top: 4px;
+        margin: 0;
         display: -webkit-box;
         -webkit-line-clamp: 2;
         -webkit-box-orient: vertical;
         overflow: hidden;
         color: #f2f0ec;
-        font-size: 18px;
-        line-height: 24px;
-        font-weight: 500;
+        padding-right: 25px;
+        font-size: 16px;
+        line-height: 21px;
+        font-weight: 700;
       }
       .hover-status {
         display: none;
-        margin-top: 4px;
+        margin: 0;
         color: #f2f0ec;
-        font-size: 18px;
-        line-height: 24px;
-        font-weight: 500;
+        padding-right: 25px;
+        font-size: 16px;
+        line-height: 21px;
+        font-weight: 700;
       }
-      .card:hover:not(.replying) .preview { display: none; }
-      .card:hover:not(.replying) .hover-status { display: block; }
+      .preview, .hover-status {
+        background: linear-gradient(110deg, #b9b9b9 0%, #ffffff 42%, #a7a7a7 76%);
+        background-size: 230% 100%;
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+        -webkit-text-fill-color: transparent;
+        animation: petShimmer 3.2s ease-in-out infinite;
+      }
+      .card:hover:not(.replying) .preview,
+      body.hovering .card:not(.replying) .preview { display: none; }
+      .card:hover:not(.replying) .hover-status,
+      body.hovering .card:not(.replying) .hover-status { display: block; }
       .spinner {
+        position: absolute;
+        right: 16px;
+        top: 15px;
         width: 15px;
         height: 15px;
-        margin-top: 5px;
-        flex: 0 0 auto;
         border-radius: 999px;
         border: 2px solid rgba(255,255,255,0.35);
         border-top-color: white;
         animation: spin 0.82s linear infinite;
+        transition: opacity 120ms ease;
       }
+      .card:hover:not(.replying) .spinner,
+      body.hovering .card:not(.replying) .spinner { opacity: 0; }
+      .idle .spinner { display: none; }
       @keyframes spin { to { transform: rotate(360deg); } }
-      .reply-open {
-        position: absolute;
-        right: 16px;
-        bottom: 12px;
-        display: none;
-        border: 1px solid rgba(255,255,255,0.10);
-        border-radius: 999px;
-        background: rgba(255,255,255,0.055);
-        color: #e8e5df;
-        padding: 6px 16px;
-        font-size: 15px;
-        font-weight: 500;
-        -webkit-app-region: no-drag;
+      @keyframes petShimmer {
+        0% { background-position: 180% 50%; }
+        18% { background-position: 180% 50%; }
+        58% { background-position: -20% 50%; }
+        100% { background-position: -180% 50%; }
       }
-      .card:hover:not(.replying) .reply-open { display: block; }
-      .reply-open:hover { background: rgba(255,255,255,0.10); color: white; }
       .reply-area {
         display: none;
         margin-top: 12px;
@@ -184,16 +224,21 @@ function getPetWindowHtml() {
   </head>
   <body>
     <section id="card" class="card compact">
-      <button id="close" class="close" type="button" aria-label="Close">×</button>
       <div class="head">
         <div class="copy">
-          <div id="title" class="title">EterX agent</div>
           <div id="preview" class="preview">Thinking</div>
           <div class="hover-status">Thinking</div>
         </div>
         <div class="spinner" aria-hidden="true"></div>
       </div>
-      <button id="replyOpen" class="reply-open" type="button">Reply</button>
+      <div class="size-controls" aria-label="Pet size">
+        <button id="sizeDown" class="control size-control" type="button" aria-label="Make pet smaller">-</button>
+        <button id="sizeUp" class="control size-control" type="button" aria-label="Make pet larger">+</button>
+      </div>
+      <div class="hover-controls">
+        <button id="cancel" class="control" type="button">Cancel</button>
+        <button id="replyOpen" class="control" type="button">Reply</button>
+      </div>
       <div class="reply-area">
         <div class="reply-row">
           <input id="replyInput" placeholder="Reply" />
@@ -203,23 +248,43 @@ function getPetWindowHtml() {
     </section>
     <script>
       const card = document.getElementById('card');
-      const title = document.getElementById('title');
       const preview = document.getElementById('preview');
+      const hoverStatus = document.querySelector('.hover-status');
+      const cancel = document.getElementById('cancel');
       const replyOpen = document.getElementById('replyOpen');
       const replyInput = document.getElementById('replyInput');
       const replySend = document.getElementById('replySend');
-      let status = { title: 'EterX agent', text: 'Thinking', isThinking: true };
+      const sizeDown = document.getElementById('sizeDown');
+      const sizeUp = document.getElementById('sizeUp');
+      const petSizes = ['small', 'normal', 'large'];
+      let petSizeIndex = 1;
+      let status = { text: 'Thinking', isThinking: true };
 
       function render(next) {
         status = { ...status, ...(next || {}) };
-        title.textContent = status.title || 'EterX agent';
         preview.textContent = status.text || 'Thinking';
+        hoverStatus.textContent = status.text || 'Thinking';
+        card.classList.toggle('idle', status.isThinking === false);
+      }
+
+      function setHovering(isHovering) {
+        document.body.classList.toggle('hovering', isHovering);
       }
 
       function setReplyOpen(open) {
         card.classList.toggle('replying', open);
         card.classList.toggle('compact', !open);
+        window.electronAPI.resizePetWindow?.({ size: petSizes[petSizeIndex], replying: open });
         if (open) setTimeout(() => replyInput.focus(), 0);
+      }
+
+      function setPetSize(delta) {
+        petSizeIndex = Math.max(0, Math.min(petSizes.length - 1, petSizeIndex + delta));
+        const size = petSizes[petSizeIndex];
+        document.body.dataset.petSize = size;
+        sizeDown.disabled = petSizeIndex === 0;
+        sizeUp.disabled = petSizeIndex === petSizes.length - 1;
+        window.electronAPI.resizePetWindow?.({ size, replying: card.classList.contains('replying') });
       }
 
       function sendReply() {
@@ -231,8 +296,13 @@ function getPetWindowHtml() {
         setReplyOpen(false);
       }
 
-      document.getElementById('close').addEventListener('click', () => window.electronAPI.closePetWindow());
+      cancel.addEventListener('click', () => window.electronAPI.closePetWindow());
       replyOpen.addEventListener('click', () => setReplyOpen(true));
+      sizeDown.addEventListener('click', () => setPetSize(-1));
+      sizeUp.addEventListener('click', () => setPetSize(1));
+      document.body.addEventListener('mouseenter', () => setHovering(true));
+      document.body.addEventListener('mousemove', () => setHovering(true));
+      document.body.addEventListener('mouseleave', () => setHovering(false));
       replySend.addEventListener('click', sendReply);
       replyInput.addEventListener('input', () => { replySend.disabled = !replyInput.value.trim(); });
       replyInput.addEventListener('keydown', (event) => {
@@ -241,6 +311,7 @@ function getPetWindowHtml() {
       });
 
       window.electronAPI.onPetStatus(render);
+      setPetSize(0);
       render(status);
     </script>
   </body>
@@ -398,6 +469,66 @@ function sendPetStatus(status) {
   }
 }
 
+function getRoundedRectShape(width, height, radius = 24) {
+  const safeWidth = Math.max(1, Math.round(width));
+  const safeHeight = Math.max(1, Math.round(height));
+  const safeRadius = Math.min(Math.round(radius), Math.floor(safeWidth / 2), Math.floor(safeHeight / 2));
+  const shape = [];
+
+  for (let y = 0; y < safeHeight; y += 1) {
+    const isTop = y < safeRadius;
+    const isBottom = y >= safeHeight - safeRadius;
+    let inset = 0;
+
+    if (isTop || isBottom) {
+      const distanceFromEdge = isTop ? safeRadius - y - 1 : y - (safeHeight - safeRadius);
+      inset = Math.max(0, Math.ceil(safeRadius - Math.sqrt((safeRadius * safeRadius) - (distanceFromEdge * distanceFromEdge))));
+    }
+
+    shape.push({
+      x: inset,
+      y,
+      width: Math.max(1, safeWidth - (inset * 2)),
+      height: 1,
+    });
+  }
+
+  return shape;
+}
+
+function applyPetWindowShape(width, height) {
+  if (!petWindow || petWindow.isDestroyed() || typeof petWindow.setShape !== 'function') return;
+  petWindow.setShape(getRoundedRectShape(width, height));
+}
+
+function resizePetWindow(options = {}) {
+  if (!petWindow || petWindow.isDestroyed()) return;
+
+  const requestedSize = typeof options?.size === 'string' ? options.size : DEFAULT_PET_WINDOW_SIZE;
+  const size = PET_WINDOW_SIZES[requestedSize] ? requestedSize : DEFAULT_PET_WINDOW_SIZE;
+  const preset = PET_WINDOW_SIZES[size];
+  const nextHeight = options?.replying ? preset.replyHeight : preset.height;
+  const currentBounds = petWindow.getBounds();
+  const workArea = screen.getDisplayMatching(currentBounds).workArea;
+  const rightEdge = currentBounds.x + currentBounds.width;
+  const nextX = Math.min(
+    Math.max(rightEdge - preset.width, workArea.x),
+    workArea.x + workArea.width - preset.width
+  );
+  const nextY = Math.min(
+    Math.max(currentBounds.y, workArea.y),
+    workArea.y + workArea.height - nextHeight
+  );
+
+  petWindow.setBounds({
+    x: nextX,
+    y: nextY,
+    width: preset.width,
+    height: nextHeight,
+  });
+  applyPetWindowShape(preset.width, nextHeight);
+}
+
 async function openPetWindow(status) {
   sendPetStatus(status);
 
@@ -409,10 +540,11 @@ async function openPetWindow(status) {
   }
 
   const workArea = screen.getPrimaryDisplay().workArea;
+  const petSize = PET_WINDOW_SIZES[DEFAULT_PET_WINDOW_SIZE];
   petWindow = new BrowserWindow({
-    width: 392,
-    height: 182,
-    x: Math.max(workArea.x + 8, workArea.x + workArea.width - 420),
+    width: petSize.width,
+    height: petSize.height,
+    x: Math.max(workArea.x + 8, workArea.x + workArea.width - petSize.width - 16),
     y: workArea.y + 84,
     frame: false,
     transparent: true,
@@ -430,6 +562,7 @@ async function openPetWindow(status) {
     }
   });
 
+  applyPetWindowShape(petSize.width, petSize.height);
   petWindow.setAlwaysOnTop(true, 'screen-saver');
   petWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   petWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(getPetWindowHtml())}`);
@@ -627,6 +760,10 @@ ipcMain.on('pet-window-status', (_event, status) => {
 
 ipcMain.on('pet-window-close', () => {
   closePetWindow();
+});
+
+ipcMain.on('pet-window-resize', (_event, options) => {
+  resizePetWindow(options);
 });
 
 ipcMain.on('pet-reply', (_event, message) => {

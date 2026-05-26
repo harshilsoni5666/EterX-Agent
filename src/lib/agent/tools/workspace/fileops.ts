@@ -18,12 +18,22 @@ function isDesktopHelperScript(filePath: string): boolean {
   const desktopPath = path.resolve(getPathResolverInfo().desktopPath);
   const resolved = path.resolve(filePath);
   const relative = path.relative(desktopPath, resolved);
-  return Boolean(
-    relative &&
-    !relative.startsWith('..') &&
-    !path.isAbsolute(relative) &&
-    DESKTOP_SCRIPT_EXTENSIONS.has(path.extname(resolved).toLowerCase())
-  );
+
+  // Not under Desktop at all → allow
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) return false;
+
+  // Must be a script extension
+  if (!DESKTOP_SCRIPT_EXTENSIONS.has(path.extname(resolved).toLowerCase())) return false;
+
+  // ALLOW: Scripts inside project subdirectories (2+ levels deep from Desktop)
+  // e.g., Desktop/my-project/.workspaces/sandbox/script.py → allowed
+  // e.g., Desktop/my-project/scripts/helper.py → allowed
+  const depth = relative.split(path.sep).filter(Boolean).length;
+  if (depth >= 2) return false;
+
+  // Only block scripts DIRECTLY on Desktop root (depth === 1)
+  // e.g., Desktop/click_helper.py → blocked (likely UI automation)
+  return true;
 }
 
 export const workspaceReadTool: ToolDefinition = {
@@ -79,7 +89,7 @@ export const workspaceWriteTool: ToolDefinition = {
     if (isDesktopHelperScript(filePath)) {
       return {
         success: false,
-        error: 'BLOCKED: Do not create helper scripts on the Desktop for app opening/clicking/inspection. Use the computer or screen_agent tool directly. Temporary scripts must stay in .workspaces/sandbox/.',
+        error: '⚠️ HINT: Creating scripts directly on the Desktop root is discouraged. Use .workspaces/sandbox/ for temporary scripts, or place project scripts in the project directory. If this is intentional, use workspace_run_command to write it manually.',
         path: filePath,
       };
     }

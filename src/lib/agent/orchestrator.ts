@@ -53,6 +53,8 @@ type RuntimeProjectContext = ProjectContext & {
   disableTaskStore?: boolean;
   disableWorkspaceInit?: boolean;
   forceFastMode?: boolean;
+  agentRuntime?: string;
+  agentId?: string;
   selectedModelMode?: MainAgentMode;
   selectedModelName?: string;
   selectedThinkingLevel?: MainAgentThinkingLevel;
@@ -346,6 +348,8 @@ export class AgentOrchestrator {
       context.disableTaskStore = !!pinnedContext.disableTaskStore;
       context.disableWorkspaceInit = !!pinnedContext.disableWorkspaceInit;
       context.forceFastMode = !!pinnedContext.forceFastMode;
+      context.agentRuntime = pinnedContext.agentRuntime;
+      context.agentId = pinnedContext.agentId;
       context.source = pinnedContext.source;
       context.telegram = pinnedContext.telegram;
     }

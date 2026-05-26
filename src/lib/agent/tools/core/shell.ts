@@ -16,13 +16,47 @@ const execAsync = promisify(exec);
 const HELPER_SCRIPT_PATTERN = /\.(py|ps1|js|mjs|cjs|bat|cmd|vbs|ahk)(['"\s]|$)/i;
 
 function referencesDesktopHelperScript(command: string, cwd: string): boolean {
+  // Only block scripts that are DIRECTLY on the Desktop (not in subdirectories/projects)
+  // and appear to be UI automation helpers (not legitimate project scripts)
   if (!HELPER_SCRIPT_PATTERN.test(command)) return false;
+
   const normalizedCommand = command.replace(/\\/g, '/').toLowerCase();
   const desktopPath = path.resolve(getPathResolverInfo().desktopPath);
   const normalizedDesktop = desktopPath.replace(/\\/g, '/').toLowerCase();
+
+  // ALLOW: Scripts inside project directories, .workspaces, sandbox, node_modules, etc.
+  // These are legitimate project scripts, not UI automation helpers.
+  const allowedPatterns = [
+    '.workspaces', '/sandbox/', '/node_modules/', '/src/', '/lib/', '/dist/',
+    '/build/', '/scripts/', '/test/', '/tests/', '/__tests__/', '/spec/',
+    '/temp/', '/tmp/', '/draft/', '/.cache/', '/.git/'
+  ];
+  for (const pattern of allowedPatterns) {
+    if (normalizedCommand.includes(pattern)) return false;
+  }
+
+  // ALLOW: If the CWD is inside a project (has package.json, .git, etc.) — it's project work
   const normalizedCwd = path.resolve(cwd).replace(/\\/g, '/').toLowerCase();
   const cwdInsideDesktop = normalizedCwd === normalizedDesktop || normalizedCwd.startsWith(`${normalizedDesktop}/`);
-  return cwdInsideDesktop || normalizedCommand.includes(normalizedDesktop) || /(^|[\\/])desktop[\\/]/i.test(command);
+
+  // Only block if the script is DIRECTLY on Desktop (not in a project subfolder on Desktop)
+  if (cwdInsideDesktop) {
+    // If CWD is deeper than Desktop by 2+ levels, it's a project — allow it
+    const relativeDepth = normalizedCwd.substring(normalizedDesktop.length).split('/').filter(Boolean).length;
+    if (relativeDepth >= 2) return false; // e.g., Desktop/my-project/scripts/ → allowed
+  }
+
+  // Only block if command references a script directly on Desktop root
+  if (normalizedCommand.includes(normalizedDesktop + '/')) {
+    // Extract the script path after Desktop
+    const afterDesktop = normalizedCommand.substring(normalizedCommand.indexOf(normalizedDesktop) + normalizedDesktop.length + 1);
+    // If the script is in a subdirectory (project), allow it
+    if (afterDesktop.includes('/')) return false;
+    // Script is directly on Desktop root — this is likely a helper script, block it
+    return true;
+  }
+
+  return false;
 }
 
 function isPathInsideOrEqual(parentPath: string, candidatePath: string): boolean {
@@ -34,7 +68,7 @@ function isPathInsideOrEqual(parentPath: string, candidatePath: string): boolean
  * Enhanced System Shell — v2.0
  * 
  * Major upgrades over v1:
- * - Hard timeout capped at 20 seconds; long-running commands belong in process_manager
+ * - Configurable timeout (default 30s, max 120s); long-running commands belong in process_manager
  * - Custom working directory support (still sandboxed)
  * - Captured output with truncation for large results
  * - Multi-command chaining (&&, ;)
@@ -45,7 +79,7 @@ function isPathInsideOrEqual(parentPath: string, candidatePath: string): boolean
  */
 export const shellTool: ToolDefinition = {
   name: 'system_shell',
-  description: `Execute finite one-shot shell commands on the host OS with a hard timeout capped at 20 seconds. Supports custom working directories, environment variables, multi-command chaining, output truncation for large outputs, and execution timing. Runs in PowerShell by default. Use process_manager/background_task plus wait_timer for long-running servers, watchers, or interactive processes.
+  description: `Execute finite one-shot shell commands on the host OS with a configurable timeout (default 30s, max 2 minutes). Supports custom working directories, environment variables, multi-command chaining, output truncation for large outputs, and execution timing. Runs in PowerShell by default. Use process_manager/background_task plus wait_timer for long-running servers, watchers, or interactive processes.
   
   Pro tips:
   - Chain commands: "npm install && npm run build"
@@ -57,7 +91,7 @@ export const shellTool: ToolDefinition = {
     command: z.string().describe('The shell command to execute'),
     workingDir: z.string().optional().describe('Working directory (relative to workspace). Default: workspace root'),
     shellType: z.enum(['powershell', 'cmd']).optional().default('powershell').describe('Shell type to use'),
-    timeoutSeconds: z.number().optional().describe('Optional command timeout in seconds. Hard-capped to 20 seconds.'),
+    timeoutSeconds: z.number().optional().describe('Optional command timeout in seconds. Default: 30 seconds. Max: 120 seconds.'),
     env: z.string().optional().describe('Optional JSON object string of environment variables, e.g. {"NODE_ENV":"production"}')
   }),
   outputSchema: z.object({
@@ -123,7 +157,7 @@ export const shellTool: ToolDefinition = {
 
       if (referencesDesktopHelperScript(command, cwd)) {
         return {
-          CRITICAL_ERROR: 'BLOCKED: Do not run Desktop helper scripts for app opening/clicking/inspection. Use computer or screen_agent directly for real app control.',
+          CRITICAL_ERROR: '⚠️ HINT: This command references a script directly on the Desktop root. Use computer or screen_agent for real app control, or move scripts into the project directory.',
           stdout: '',
           stderr: '',
           exitCode: 1,

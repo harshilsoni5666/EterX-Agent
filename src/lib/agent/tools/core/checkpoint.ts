@@ -36,9 +36,12 @@ This is your insurance against interruption — save checkpoints every 3-5 tool 
     checkpoint: z.any().optional(),
     message: z.string()
   }),
-  execute: async (input: any) => {
+  execute: async (input: any, context?: any) => {
     await fs.ensureDir(CHECKPOINT_DIR);
-    const checkpointFile = path.join(CHECKPOINT_DIR, 'current_task.json');
+    // Chat-scoped checkpoint: each chat gets its own file
+    const chatId = context?.projectId || context?.chatId || 'default';
+    const safeChatId = chatId.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 64);
+    const checkpointFile = path.join(CHECKPOINT_DIR, `${safeChatId}.json`);
 
     try {
       switch (input.action) {

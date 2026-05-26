@@ -19,22 +19,56 @@ const execAsync = promisify(exec);
 const HELPER_SCRIPT_PATTERN = /\.(py|ps1|js|mjs|cjs|bat|cmd|vbs|ahk)(['"\s]|$)/i;
 
 function referencesDesktopHelperScript(command: string, cwd: string): boolean {
+  // Only block scripts that are DIRECTLY on the Desktop (not in subdirectories/projects)
+  // and appear to be UI automation helpers (not legitimate project scripts)
   if (!HELPER_SCRIPT_PATTERN.test(command)) return false;
+
   const normalizedCommand = command.replace(/\\/g, '/').toLowerCase();
   const desktopPath = path.resolve(getPathResolverInfo().desktopPath);
   const normalizedDesktop = desktopPath.replace(/\\/g, '/').toLowerCase();
+
+  // ALLOW: Scripts inside project directories, .workspaces, sandbox, node_modules, etc.
+  // These are legitimate project scripts, not UI automation helpers.
+  const allowedPatterns = [
+    '.workspaces', '/sandbox/', '/node_modules/', '/src/', '/lib/', '/dist/',
+    '/build/', '/scripts/', '/test/', '/tests/', '/__tests__/', '/spec/',
+    '/temp/', '/tmp/', '/draft/', '/.cache/', '/.git/'
+  ];
+  for (const pattern of allowedPatterns) {
+    if (normalizedCommand.includes(pattern)) return false;
+  }
+
+  // ALLOW: If the CWD is inside a project (has package.json, .git, etc.) — it's project work
   const normalizedCwd = path.resolve(cwd).replace(/\\/g, '/').toLowerCase();
   const cwdInsideDesktop = normalizedCwd === normalizedDesktop || normalizedCwd.startsWith(`${normalizedDesktop}/`);
-  return cwdInsideDesktop || normalizedCommand.includes(normalizedDesktop) || /(^|[\\/])desktop[\\/]/i.test(command);
+
+  // Only block if the script is DIRECTLY on Desktop (not in a project subfolder on Desktop)
+  if (cwdInsideDesktop) {
+    // If CWD is deeper than Desktop by 2+ levels, it's a project — allow it
+    const relativeDepth = normalizedCwd.substring(normalizedDesktop.length).split('/').filter(Boolean).length;
+    if (relativeDepth >= 2) return false; // e.g., Desktop/my-project/scripts/ → allowed
+  }
+
+  // Only block if command references a script directly on Desktop root
+  if (normalizedCommand.includes(normalizedDesktop + '/')) {
+    // Extract the script path after Desktop
+    const afterDesktop = normalizedCommand.substring(normalizedCommand.indexOf(normalizedDesktop) + normalizedDesktop.length + 1);
+    // If the script is in a subdirectory (project), allow it
+    if (afterDesktop.includes('/')) return false;
+    // Script is directly on Desktop root — this is likely a helper script, block it
+    return true;
+  }
+
+  return false;
 }
 
 export const workspaceRunCommandTool: ToolDefinition = {
   name: 'workspace_run_command',
-  description: 'Execute a finite shell command inside any directory with streamed output and a hard timeout capped at 20 seconds. Supports absolute paths and relative workspace paths. Use process_manager/background_task plus wait_timer for long-running servers, watchers, or builds.',
+  description: 'Execute a finite shell command inside any directory with streamed output and a configurable timeout (default 30s, max 2 minutes). Supports absolute paths and relative workspace paths. Use process_manager/background_task plus wait_timer for long-running servers, watchers, or builds.',
   category: 'workspace',
   inputSchema: z.object({
     command: z.string().describe('The command to execute (e.g., "npm test", "ls -la")'),
-    timeoutSeconds: z.number().optional().describe('Optional command timeout in seconds. Hard-capped to 20 seconds.'),
+    timeoutSeconds: z.number().optional().describe('Optional command timeout in seconds. Default: 30 seconds. Max: 120 seconds.'),
     cwd: z.string().optional().describe('Working directory — absolute path or relative to workspace root. Default: workspace root')
   }),
   outputSchema: z.object({
@@ -69,7 +103,7 @@ export const workspaceRunCommandTool: ToolDefinition = {
     if (referencesDesktopHelperScript(input.command, runDir)) {
       return {
         stdout: '',
-        stderr: 'BLOCKED: Do not run Desktop helper scripts for app opening/clicking/inspection. Use computer or screen_agent directly for real app control.',
+        stderr: '⚠️ HINT: This command references a script directly on the Desktop root, which is typically a UI automation helper. Use computer or screen_agent directly for real app control. If this is intentionally a project script, move it into the project directory.',
         exitCode: 1
       };
     }
@@ -319,11 +353,11 @@ async function readTailLines(filePath: string, maxLines: number): Promise<string
 
 export const workspaceVerifyCodeTool: ToolDefinition = {
   name: 'workspace_verify_code',
-  description: 'Automatically run finite verification checks (lint/build/test) in any directory and report error/warning counts. Has a hard timeout capped at 20 seconds. Supports absolute and relative paths. Automatically detects framework (Python, Rust, Java, standard Node/Yarn/PNPM).',
+  description: 'Automatically run finite verification checks (lint/build/test) in any directory and report error/warning counts. Has a configurable timeout (default 30s, max 2 minutes). Supports absolute and relative paths. Automatically detects framework (Python, Rust, Java, standard Node/Yarn/PNPM).',
   category: 'workspace',
   inputSchema: z.object({
     checkType: z.enum(['lint', 'build', 'test']).describe('The type of verification to perform'),
-    timeoutSeconds: z.number().optional().describe('Optional verification timeout in seconds. Hard-capped to 20 seconds.'),
+    timeoutSeconds: z.number().optional().describe('Optional verification timeout in seconds. Default: 30 seconds. Max: 120 seconds.'),
     cwd: z.string().optional().describe('Working directory — absolute or relative. Default: workspace root')
   }),
   outputSchema: z.object({

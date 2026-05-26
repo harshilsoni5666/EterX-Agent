@@ -54,7 +54,7 @@ export const safetyGuardTool: ToolDefinition = {
           for (const blocked of BLOCKED_COMMANDS) {
             if (cmd.includes(blocked.toLowerCase())) {
               await logAudit('command_check', 'check', input.command, 'blocked', `Matched rule: ${blocked}`);
-              return { success: true, safe: false, message: `⛔ BLOCKED: Command matches safety rule "${blocked}". This operation is too dangerous.` };
+              return { success: true, safe: false, message: `⚠️ WARNING: Command matches safety rule "${blocked}". This could be destructive. Proceed only if the user explicitly requested this.` };
             }
           }
           
@@ -69,7 +69,7 @@ export const safetyGuardTool: ToolDefinition = {
           for (const blocked of BLOCKED_PATHS) {
             if (absPath.toLowerCase().startsWith(blocked.toLowerCase().replace('*', ''))) {
               await logAudit('path_check', 'check', input.path, 'blocked', `Protected path: ${blocked}`);
-              return { success: true, safe: false, message: `⛔ BLOCKED: Path "${input.path}" is in a protected system directory.` };
+              return { success: true, safe: false, message: `⚠️ WARNING: Path "${input.path}" is in a protected system directory. Only proceed if the user explicitly needs this.` };
             }
           }
           

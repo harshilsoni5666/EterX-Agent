@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openPetWindow: (status) => ipcRenderer.invoke('pet-window-open', status),
   updatePetWindow: (status) => ipcRenderer.send('pet-window-status', status),
   closePetWindow: () => ipcRenderer.send('pet-window-close'),
+  resizePetWindow: (options) => ipcRenderer.send('pet-window-resize', options),
   petReply: (message) => ipcRenderer.send('pet-reply', message),
   onPetReply: (callback) => {
     const listener = (_event, message) => callback(message);

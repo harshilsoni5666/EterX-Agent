@@ -613,7 +613,7 @@ class AgentRegistry {
     const newTraces: any[] = [];
     for (const trace of execution.traceBuffer) {
       if (afterIndex >= 0 && trace.index <= afterIndex) continue;
-      newTraces.push({ ...trace.data, _traceIdx: trace.index });
+      newTraces.push({ timestamp: trace.timestamp, ...trace.data, _traceIdx: trace.index });
     }
 
     // maxIndex = the highest monotonic index we've ever issued for this chat

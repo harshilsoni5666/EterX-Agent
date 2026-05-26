@@ -952,33 +952,140 @@ const ActionChip = ({
   );
 };
 
-// Sub-agent answer card
-const SubAgentCard = ({ log }: { log: any }) => {
+// Sub-agent card — professional with status indicator
+const SubAgentCard = ({ log, onOpenAgentTeam }: { log: any; onOpenAgentTeam?: (name?: string) => void }) => {
   const [open, setOpen] = useState(false);
+  const agentName = log.agentName || log.subAgent || log.secondary || 'Sub-agent';
+  const isComplete = log.type === 'sub_agent_complete' || log.agentStatus === 'completed' || log.status === 'done';
+  const isFailed = log.type === 'sub_agent_error' || log.agentStatus === 'failed' || log.status === 'error';
+  const isWorking = !isComplete && !isFailed && (log.type === 'sub_agent_action' || log.agentStatus === 'running');
+  const durationLabel = log.durationMs ? `${Math.round(log.durationMs / 1000)}s` : null;
+  const stepLabel = log.stepCount ? `${log.stepCount} steps` : null;
+  const metaText = [durationLabel, stepLabel].filter(Boolean).join(' · ') || (isWorking ? 'Working...' : 'Parallel worker');
+  const displayText = log.taskSummary || log.result || log.content || log.text || '';
+
+  const statusRing = isComplete ? 'ring-emerald-500/25' : isFailed ? 'ring-red-500/25' : isWorking ? 'ring-amber-500/25' : 'ring-violet-500/20';
+  const statusDot = isComplete ? 'bg-emerald-400' : isFailed ? 'bg-red-400' : isWorking ? 'bg-amber-400 animate-pulse' : '';
+  const statusBadge = isComplete
+    ? { bg: 'bg-emerald-500/8 border-emerald-500/15', text: 'text-emerald-400', label: 'Done' }
+    : isFailed
+    ? { bg: 'bg-red-500/8 border-red-500/15', text: 'text-red-400', label: 'Error' }
+    : isWorking
+    ? { bg: 'bg-amber-500/8 border-amber-500/15', text: 'text-amber-400', label: 'Working' }
+    : { bg: 'bg-violet-500/8 border-violet-500/15', text: 'text-violet-400', label: 'Agent' };
+
   return (
-    <div className="ml-1 my-1.5 overflow-hidden">
-      <button onClick={() => setOpen(!open)} className="w-full flex min-h-[42px] items-center gap-3 rounded-[12px] px-2.5 py-1.5 hover:bg-white/[0.035] transition-colors group">
-        <span className="flex h-8 w-8 items-center justify-center shrink-0">
-          <AgentAssetIcon size={19} color="#E8E6E3" />
+    <div className="my-1.5 overflow-hidden">
+      <button onClick={() => setOpen(!open)} onDoubleClick={() => (onOpenAgentTeam as any)?.(agentName)} className={`w-full flex min-h-[52px] items-center gap-3 rounded-[14px] px-3.5 py-2.5 transition-all border ${open ? 'bg-[#110F1A] border-violet-500/15' : 'bg-white/[0.015] border-white/[0.04] hover:bg-white/[0.025] hover:border-white/[0.06]'}`}>
+        {/* Avatar */}
+        <span className={`relative flex h-9 w-9 items-center justify-center shrink-0 rounded-full bg-[#1a1a1a] ring-2 ${statusRing}`}>
+          <span className="text-[13px] font-bold text-[#D4D0CB]">{agentName.charAt(0)}</span>
+          {statusDot && <span className={`absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full ${statusDot} border-[1.5px] border-[#0F0F0F]`} />}
         </span>
+
+        {/* Info */}
         <span className="min-w-0 flex-1 text-left">
-          <span className="block truncate text-[15px] font-semibold tracking-normal text-[#A7A39E]">{log.agentName || log.secondary || 'Sub-agent result'}</span>
-          <span className="block truncate text-[12px] font-medium text-[#625E59]">{log.durationMs ? `${ Math.round(log.durationMs / 1000) }s` : 'Parallel worker output'}</span>
+          <span className="flex items-center gap-2">
+            <span className="truncate text-[13px] font-semibold tracking-normal text-[#E0DCD6]">{agentName}</span>
+            <span className={`shrink-0 inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider ${statusBadge.bg} ${statusBadge.text}`}>
+              {isWorking && <span className="relative flex h-2 w-2"><span className="absolute inset-0 rounded-full border border-white/10" /><span className="absolute inset-0 rounded-full border border-transparent border-t-amber-400 animate-[spin_1.1s_linear_infinite]" /></span>}
+              {statusBadge.label}
+            </span>
+          </span>
+          <span className="block truncate text-[11px] font-medium text-[#6B6660] mt-0.5">{metaText}</span>
         </span>
-        {log.status === 'done' && <span className="text-[11px] font-medium text-emerald-400/80">Done</span>}
-        {log.status === 'error' && <span className="text-[11px] font-medium text-red-400/80">Error</span>}
-        <ChevronRight className={`h-3.5 w-3.5 text-[#555350] group-hover:text-[#A3A19E] transition-all ${ open ? 'rotate-90' : '' }`} />
+
+        <ChevronRight className={`h-3.5 w-3.5 text-[#3A3835] transition-all ${ open ? 'rotate-90 text-violet-400/60' : '' }`} />
       </button>
       <AnimatePresence>
-        {open && (
-          <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} className="overflow-hidden">
-            <div className="ml-6 border-l border-white/[0.055] pl-4 pb-3 pt-1 text-[12.5px] text-[#8b949e] leading-relaxed whitespace-pre-wrap font-mono max-h-[300px] overflow-y-auto eterx-scrollbar">
-              {log.result || log.content || log.text || '(no result)'}
+        {open && displayText && (
+          <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.2 }} className="overflow-hidden">
+            <div className="ml-7 border-l-2 border-violet-500/10 pl-4 pb-3 pt-2 text-[12px] text-[#8B8580] leading-relaxed whitespace-pre-wrap font-mono max-h-[350px] overflow-y-auto eterx-scrollbar">
+              {displayText}
             </div>
           </motion.div>
         )}
       </AnimatePresence>
     </div>
+  );
+};
+
+// Sub-agent spawn card — shows when agents are launched
+const SubAgentSpawnCard = ({ log, onOpenAgentTeam }: { log: any; onOpenAgentTeam?: (name?: string) => void }) => {
+  const agents = log.agentDetails || log.spawnedAgents || [];
+  const agentList = Array.isArray(agents)
+    ? agents.map((a: any) => typeof a === 'string' ? a : a.name).filter(Boolean)
+    : [];
+  const nameStr = agentList.length > 0 ? agentList.join(' · ') : String(log.secondary || log.text || '');
+  const taskText = log.task || log.text || 'Spawning sub-agents';
+
+  return (
+    <div className="my-1.5 overflow-hidden">
+      <div onClick={() => (onOpenAgentTeam as any)?.('all')} className={`w-full flex min-h-[48px] items-center gap-3 rounded-[14px] px-3.5 py-2.5 bg-violet-500/[0.03] border border-violet-500/10 cursor-pointer hover:bg-violet-500/[0.05] transition-colors ${ACTION_CARD_CLASS}`}>
+        <span className="flex h-9 w-9 items-center justify-center shrink-0 rounded-[10px] bg-gradient-to-br from-violet-500/15 to-indigo-500/15 border border-violet-500/15">
+          <AgentAssetIcon size={18} color="#A78BFA" />
+        </span>
+        <span className="min-w-0 flex-1 text-left">
+          <span className="flex items-center gap-2">
+            <span className="text-[13px] font-semibold text-violet-200/90">Team Spawned</span>
+            <span className="text-[10px] text-violet-400/60 font-mono">{agentList.length > 0 ? `${agentList.length} agents` : ''}</span>
+          </span>
+          <span className="block truncate text-[11px] text-[#6B6660] mt-0.5">{nameStr || taskText}</span>
+        </span>
+      </div>
+    </div>
+  );
+};
+
+
+// Inter-agent communication card — shows messages between agents
+const InterAgentCommCard = ({ log, onOpenAgentTeam }: { log: any; onOpenAgentTeam?: (name?: string) => void }) => {
+  const fromAgent = log.from || log.agentName || 'Agent';
+  const toAgent = log.to || log.secondary || 'Main';
+  const msgType = log.messageType || log.commType || 'info_share';
+  const subject = log.subject || log.text || '';
+  const body = log.body || log.content || '';
+
+  const typeEmoji: Record<string, string> = {
+    info_share: '💡', question: '❓', answer: '✅', alert: '🚨',
+    coordination: '🤝', discovery: '🔍', progress: '📊', handoff: '📋',
+  };
+
+  return (
+    <div className="my-1.5 overflow-hidden">
+      <div className={`flex min-h-[44px] items-center gap-3 rounded-[14px] px-3.5 py-2.5 bg-indigo-500/[0.02] border border-indigo-500/10 ${ACTION_CARD_CLASS}`}>
+        <span className="text-[16px] shrink-0">{typeEmoji[msgType] || '📩'}</span>
+        <span className="min-w-0 flex-1">
+          <span className="flex items-center gap-1.5">
+            <span className="text-[12px] font-bold text-indigo-300/80">{fromAgent}</span>
+            <svg className="w-3 h-3 text-[#3A3835]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+            <span className="text-[12px] font-bold text-indigo-300/80">{toAgent === '*' ? 'All' : toAgent}</span>
+            <span className="px-1.5 py-0.5 rounded-full bg-indigo-500/8 border border-indigo-500/10 text-[8px] font-bold text-indigo-400/60 uppercase tracking-wider">{msgType.replace('_', ' ')}</span>
+          </span>
+          {subject && <span className="block text-[11px] text-[#8B8580] mt-0.5 truncate">{subject}</span>}
+        </span>
+      </div>
+    </div>
+  );
+};
+
+// Sub-agent error card
+const SubAgentErrorCard = ({ log }: { log: any }) => {
+  const agentName = log.agentName || log.subAgent || 'Agent';
+  return (
+    <motion.div
+      initial={{ opacity: 0, scale: 0.97 }}
+      animate={{ opacity: 1, scale: 1 }}
+      className={`my-1.5 flex min-h-[48px] items-center gap-3 rounded-[14px] px-3 py-2.5 ${ACTION_CARD_CLASS}`}
+    >
+      <span className="flex h-9 w-9 items-center justify-center shrink-0 rounded-[10px] bg-red-500/[0.08] border border-red-500/15">
+        <AgentAssetIcon size={18} color="#F87171" />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block text-[14px] font-semibold text-[#E8B4B4]">{agentName} {log.errorType === 'cancelled' ? 'stopped' : 'encountered an error'}</span>
+        <span className="block text-[12px] font-medium text-[#8B6B6B] mt-0.5 truncate">{log.secondary || ''}</span>
+      </span>
+    </motion.div>
   );
 };
 
@@ -1286,13 +1393,13 @@ const SteeringCard = ({ log }: { log: any }) => {
 };
 
 
-export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showLiveIndicator = false }: { logs: any[], liveLogs?: any[], isThinking: boolean, isLast: boolean, showLiveIndicator?: boolean }) => {
+export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showLiveIndicator = false, onOpenAgentTeam }: { logs: any[], liveLogs?: any[], isThinking: boolean, isLast: boolean, showLiveIndicator?: boolean, onOpenAgentTeam?: (agentName?: string) => void }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   // NOTE: 'ask_user' is intentionally excluded here — it's rendered as a full AskUserPrompt
   // card in chat-feed.tsx. Including it here causes a duplicate ActionChip to appear.
   const NOISE_PATTERN = /reconnect|retrying|stalled|stream interrupted|model error|fallback|cancelled/i;
   const isFlowLog = (l: any) =>
-    ['thought_stream', 'work_note', 'command', 'exploration', 'file_edit', 'progress', 'browser', 'safety_warning', 'communication', 'sub_agent_answer', 'sub_agent_result', 'file_preview', 'console_output'].includes(l.type) &&
+    ['thought_stream', 'work_note', 'command', 'exploration', 'file_edit', 'progress', 'browser', 'safety_warning', 'communication', 'sub_agent_answer', 'sub_agent_result', 'sub_agent_spawn', 'sub_agent_action', 'sub_agent_complete', 'sub_agent_error', 'inter_agent_comm', 'file_preview', 'console_output'].includes(l.type) &&
     !(['progress', 'command', 'exploration'].includes(l.type) && /analyz(?:e|ing) task complexity/i.test(String(l.text || ''))) &&
     !(l.type === 'progress' && NOISE_PATTERN.test(String(l.text || '')));
   const flowLogs = logs.filter(isFlowLog);
@@ -1300,7 +1407,7 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
   const statusLogs = [...flowLogs, ...liveFlowLogs];
   const hasExternalLiveWork = liveFlowLogs.length > 0;
   const segs: any[] = []; let aBuf: any[] = [];
-  const SPEC = new Set(['file_preview', 'console_output', 'sub_agent_answer', 'sub_agent_result', 'safety_warning']);
+  const SPEC = new Set(['file_preview', 'console_output', 'sub_agent_answer', 'sub_agent_result', 'sub_agent_spawn', 'sub_agent_action', 'sub_agent_complete', 'sub_agent_error', 'inter_agent_comm', 'safety_warning']);
   const flush = (idx: number) => {
     if (aBuf.length > 0) {
       const unique: any[] = [];
@@ -1322,7 +1429,10 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
     else if (log.type === 'work_note') { flush(idx - 1); segs.push({ kind: 'note', log, idx }); }
     else if (log.type === 'safety_warning') { flush(idx - 1); segs.push({ kind: 'safety', log, idx }); }
     else if (log.type === 'steering_received') { flush(idx - 1); segs.push({ kind: 'steering', log, idx }); }
-    else if (log.type === 'sub_agent_answer' || log.type === 'sub_agent_result') { flush(idx - 1); segs.push({ kind: 'subagent', log, idx }); }
+    else if (log.type === 'sub_agent_answer' || log.type === 'sub_agent_result' || log.type === 'sub_agent_complete') { flush(idx - 1); segs.push({ kind: 'subagent', log, idx }); }
+    else if (log.type === 'sub_agent_spawn') { flush(idx - 1); segs.push({ kind: 'subagent_spawn', log, idx }); }
+    else if (log.type === 'sub_agent_error') { flush(idx - 1); segs.push({ kind: 'subagent_error', log, idx }); }
+    else if (log.type === 'sub_agent_action') { aBuf.push({ ...log, type: 'command' }); }
     else if (SPEC.has(log.type)) { flush(idx - 1); }
     else { aBuf.push(log); }
   });
@@ -1340,7 +1450,10 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
         if (seg.kind === 'note') return <ProfessionalThought key={`n-${ seg.idx }`} text={seg.log.text} isLatest={false} isThinking={false} variant="note" />;
         if (seg.kind === 'safety') return <SafetyBanner key={`sf-${ seg.idx }`} log={seg.log} />;
         if (seg.kind === 'steering') return <SteeringCard key={`steer-${ seg.idx }`} log={seg.log} />;
-        if (seg.kind === 'subagent') return <SubAgentCard key={`sa-${ seg.idx }`} log={seg.log} />;
+        if (seg.kind === 'subagent') return <SubAgentCard key={`sa-${ seg.idx }`} log={seg.log} onOpenAgentTeam={onOpenAgentTeam} />;
+        if (seg.kind === 'comm') return <InterAgentCommCard key={`comm-${ seg.idx }`} log={seg.log} onOpenAgentTeam={onOpenAgentTeam} />;
+        if (seg.kind === 'subagent_spawn') return <SubAgentSpawnCard key={`ss-${ seg.idx }`} log={seg.log} />;
+        if (seg.kind === 'subagent_error') return <SubAgentErrorCard key={`se-${ seg.idx }`} log={seg.log} />;
         
         // Unpack single action chip — wrap in card so it sits inside the container
         if (seg.logs.length === 1) {

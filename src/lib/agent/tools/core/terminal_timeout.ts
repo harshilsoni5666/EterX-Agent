@@ -1,6 +1,6 @@
 export const MIN_TERMINAL_TIMEOUT_MS = 1_000;
-export const MAX_TERMINAL_TIMEOUT_MS = 20_000;
-export const DEFAULT_TERMINAL_TIMEOUT_MS = 20_000;
+export const MAX_TERMINAL_TIMEOUT_MS = 120_000;   // 2 minutes — realistic for builds, installs, tsc
+export const DEFAULT_TERMINAL_TIMEOUT_MS = 30_000;  // 30s default — enough for most commands
 
 export function normalizeTimeoutMs(value: unknown, defaultMs = DEFAULT_TERMINAL_TIMEOUT_MS): number {
   const raw = Number(value);

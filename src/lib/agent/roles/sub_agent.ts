@@ -2,6 +2,7 @@ import { ProjectContext, SubAgent } from '../schemas';
 import path from 'path';
 import fs from 'fs-extra';
 import { apiKeyPool, KeyLease } from '../api-key-pool';
+import { interAgentMailbox } from './inter_agent_comm';
 
 /**
  * Sub-Agent Spawner v5 — Parallel API Keys, Fire-and-Forget, Non-Blocking
@@ -196,6 +197,7 @@ export function hasPendingResults(projectId?: string): boolean {
   return Array.from(pendingResults.values()).some((value) => value.projectId === projectId);
 }
 
+
 export class SubAgentSpawner {
   private activeAgents: Map<string, SubAgentInstance> = new Map();
   private nameIndex: number = 0;
@@ -219,51 +221,27 @@ export class SubAgentSpawner {
 
   private resolveAgentName(projectId: string, preferredName?: string, reservedNames?: Set<SubAgentName>): SubAgentName {
     const preferred = this.isAgentName(preferredName) ? preferredName : undefined;
-    if (preferred && !this.isNameBusy(projectId, preferred, reservedNames)) {
-      return preferred;
-    }
-
+    if (preferred && !this.isNameBusy(projectId, preferred, reservedNames)) return preferred;
     for (let i = 0; i < AGENT_NAMES.length; i++) {
       const candidate = this.getNextName();
-      if (!this.isNameBusy(projectId, candidate, reservedNames)) {
-        return candidate;
-      }
+      if (!this.isNameBusy(projectId, candidate, reservedNames)) return candidate;
     }
-
     return preferred || this.getNextName();
   }
 
-  /**
-   * Build a LEAN task brief for a sub-agent.
-   */
+  /** Build a TEAM-AWARE task brief for a sub-agent. */
   private buildDeepBrief(task: string, agentName: SubAgentName, parentContext?: string): string {
-    return `━━━ ${ agentName } — Sub-Agent Task ━━━
-🎯 You are ${ agentName }, a parallel sub-agent on the EterX team. Complete this task independently:
-
-${ task }
-
-RULES:
-1. Full tool access. Use workspace_write_file, web_search, system_shell, etc.
-2. Work deeply — no shortcuts, no placeholders, no TODOs.
-3. NEVER call task_decomposer or spawn_sub_agent — plan internally (3-5 steps max).
-4. VERIFY your work with realtime_verify before finishing.
-5. When done, output a structured report — do NOT announce completion of the whole project.
-6. You are ONE of multiple parallel agents. Your report goes back to the MAIN AGENT for assembly.
-
-REPORT FORMAT:
-## ${ agentName } — Complete
-**Task:** [what you did]
-**Files:** [paths created/modified]
-**Key Results:** [findings or deliverables]
-**Verified:** [yes/no]
-
-${ parentContext ? `CONTEXT: ${ parentContext }\n` : '' }
-EXECUTE NOW.`.trim();
+    const otherAgents = Array.from(this.activeAgents.values())
+      .filter(a => a.status === 'running' && a.name !== agentName)
+      .map(a => `  • ${a.name}: "${(a as any).task?.substring(0, 60) || 'working'}"`)
+      .join('\n');
+    const teamSection = otherAgents
+      ? `\n🤝 TEAM — Other agents working:\n${otherAgents}\nUse agent_communicate tool to talk to them.\n`
+      : '';
+    return `━━━ ${agentName} — Sub-Agent Task ━━━\n🎯 You are ${agentName}, a parallel sub-agent.\n\n${task}\n${teamSection}\nRULES:\n1. Full tool access. Work deeply — no shortcuts.\n2. NEVER call task_decomposer or spawn_sub_agent.\n3. VERIFY your work before finishing.\n4. You are ONE of multiple parallel agents.\n\nINTER-AGENT COMMUNICATION (agent_communicate tool):\n- check: See messages from other agents\n- send: Send info/question/alert to a specific agent\n- broadcast: Alert ALL agents\n- handoff: Pass results to Main agent\n\n## ${agentName} — Report Format\n**Task:** [what you did]\n**Files:** [paths]\n**Key Results:** [findings]\n**Verified:** [yes/no]\n\n${parentContext ? `CONTEXT: ${parentContext}\n` : ''}EXECUTE NOW.`;
   }
 
-  /**
-   * Spawn a single sub-agent with its own API key.
-   */
+  /** Spawn a single sub-agent with its own API key. */
   public async spawnAgent(
     task: string,
     context: ProjectContext,
@@ -273,36 +251,36 @@ EXECUTE NOW.`.trim();
     customName?: SubAgentName
   ): Promise<{ agentId: string, name: SubAgentName, result: string, success: boolean, durationMs: number, traceLog: string[] }> {
     const name = customName || this.getNextName();
-    const agentId = `${ name.toLowerCase().replace('-', '_') }_${ Date.now() }`;
-
+    const agentId = `${name.toLowerCase().replace('-', '_')}_${Date.now()}`;
     if (isCancelled(context.projectId)) {
       return { agentId, name, result: 'Cancelled by user', success: false, durationMs: 0, traceLog: ['Cancelled before start'] };
     }
-
+    // Register agents in inter-agent mailbox
+    interAgentMailbox.registerAgent(context.projectId, name);
+    interAgentMailbox.registerAgent(context.projectId, 'Main');
     const deepBrief = this.buildDeepBrief(task, name, parentContext);
     const traceLog: string[] = [];
-
     const instance: SubAgentInstance = {
-      id: agentId,
-      name,
-      task,
-      deepBrief,
-      status: 'spawning',
-      traceLog,
-      startedAt: Date.now()
+      id: agentId, name, task, deepBrief,
+      status: 'spawning', traceLog, startedAt: Date.now()
     };
     this.activeAgents.set(agentId, instance);
-
     await agentMessageBus.writeAgentStatus(name, {
-      status: 'running',
-      task,
+      status: 'running', task,
       progress: 'Starting execution...',
       startedAt: instance.startedAt
     }, context.projectId);
 
-    // Emit spawn event to UI — shows the agent tab appearing
+    // Emit spawn event to UI
     if (onTrace) {
-      onTrace({ type: 'command', text: `${ name } spawned`, secondary: task.substring(0, 60), subAgent: name });
+      onTrace({
+        type: 'sub_agent_spawn',
+        text: `${ name } started`,
+        secondary: task.substring(0, 80),
+        subAgent: name,
+        agentName: name,
+        agentStatus: 'spawning'
+      });
     }
 
     instance.status = 'running';
@@ -339,13 +317,18 @@ EXECUTE NOW.`.trim();
             }, context.projectId).catch(() => { });
           }
 
-          // Forward trace to UI with subAgent tag — BUT filter out 'answer' type
+          // Forward trace to UI with subAgent tag
           // Sub-agents must NEVER emit 'answer' to the UI or it replays the typewriter
           if (onTrace && trace.type !== 'answer') {
             onTrace({
               ...trace,
+              type: trace.type === 'command' || trace.type === 'search' || trace.type === 'file_create' || trace.type === 'file_edit' || trace.type === 'file_read'
+                ? 'sub_agent_action' : trace.type,
               text: trace.text,
-              subAgent: name
+              subAgent: name,
+              agentName: name,
+              agentStatus: 'working',
+              agentStep: traceLog.length
             });
           }
         }
@@ -374,13 +357,16 @@ EXECUTE NOW.`.trim();
       apiKeyPool.reportSuccess(`${context.projectId}_sub_${name}`);
 
       if (onTrace) {
-        // Emit ONLY 'sub_agent_result' — NEVER 'answer'
         onTrace({
-          type: 'sub_agent_result',
-          text: `${ name } finished: ${ result.text.substring(0, 200) }`,
+          type: 'sub_agent_complete',
+          text: `${ name } completed`,
+          secondary: `${ (durationMs / 1000).toFixed(1) }s · ${ traceLog.length } steps`,
           subAgent: name,
-          fullResult: result.text,
+          agentName: name,
+          agentStatus: 'completed',
+          taskSummary: result.text.substring(0, 300),
           durationMs,
+          stepCount: traceLog.length,
           traceLog: traceLog.slice(-5)
         });
       }
@@ -448,11 +434,16 @@ EXECUTE NOW.`.trim();
 
     if (onTrace) {
       onTrace({
-        type: 'command',
-        text: `Spawning ${ teamSize } parallel agents`,
-        secondary: agentNames.join(' + '),
-        spawnedAgents: agentNames
-      });
+          type: 'sub_agent_spawn',
+          text: `Launching ${ teamSize } parallel agents`,
+          secondary: agentNames.join(' · '),
+          spawnedAgents: agentNames,
+          agentDetails: tasks.map((t, i) => ({
+            name: agentNames[i],
+            task: t.task.substring(0, 100),
+            status: 'spawning'
+          }))
+        });
     }
 
     // Launch all agents in parallel — each with a staggered start and different API key
