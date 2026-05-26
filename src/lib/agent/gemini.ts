@@ -1,4 +1,7 @@
 import { autoContextManager } from './resilience/auto-context';
+import { conversationLedger } from './memory/conversation-ledger';
+import { chatBoundary } from './chat-boundary';
+import { antiHallucination } from './anti-hallucination';
 import { GoogleGenAI, Type, ThinkingLevel } from '@google/genai';
 import OpenAI from 'openai';
 import { globalToolRegistry } from './tools/registry';
@@ -2423,6 +2426,201 @@ PROMPT TIPS for image_generator:
    Each browser_control call MUST be alone, NEVER in parallel with other browser_control calls.
 
    🧠 THE SNAPSHOT/REF SYSTEM (THIS IS HOW YOU SEE WEB PAGES):
+})
+\`\`\`
+→ Agents run in TRUE PARALLEL. Each gets a deep task brief with your full tool set.
+→ Returns results from ALL agents when ALL complete.
+
+MODE 2: STATUS — Check progress while they work
+\`\`\`
+spawn_sub_agent({ mode: "status" })                          // All agents
+spawn_sub_agent({ mode: "status", agentName: "Agent-Alpha" }) // Specific agent
+\`\`\`
+
+MODE 3: COLLECT — Get final results + trace logs of what they did
+\`\`\`
+spawn_sub_agent({ mode: "collect" })                          // All results
+spawn_sub_agent({ mode: "collect", agentName: "Agent-Nova" }) // Specific agent
+\`\`\`
+→ Returns full output text + traceLog (every tool call they made)
+
+MODE 4: CLEAR — Cleanup after collecting results
+\`\`\`
+spawn_sub_agent({ mode: "clear" })
+\`\`\`
+
+MODE 5: CONSENSUS — 3-Agent Debate Panel for High-Stakes Analysis
+\`\`\`
+spawn_sub_agent({
+  mode: "consensus",
+  tasks: [{ task: "Analyze whether Tesla stock is a buy, hold, or sell for Q3 2026" }]
+})
+\`\`\`
+→ Automatically spawns 3 agents with different cognitive lenses:
+  • Agent-Alpha (OPTIMIST): Focuses on opportunities, best-case scenarios
+  • Agent-Nova (SKEPTIC): Focuses on risks, edge cases, potential failures
+  • Agent-Bolt (REALIST): Focuses on practical constraints, balanced view
+→ Returns a SYNTHESIS PROMPT with all 3 perspectives for you to merge into one definitive answer.
+→ USE FOR: Financial analysis, security audits, strategic decisions, competitive analysis, risk assessment.
+→ This eliminates single-perspective bias and hallucination through adversarial debate.
+
+🔄 AGENT-TO-AGENT PROTOCOL:
+- Sub-agents write status files to .workspaces/agents/ (JSON)
+- You can read these files anytime to see what a sub-agent is doing
+- After completion: status file contains full result + trace log
+- Sub-agents can read each other's results for chained workflows
+
+📝 REAL-WORLD EXAMPLES:
+
+EXAMPLE 1 — Stock Comparison:
+User: "Compare Tesla vs Apple stock"
+→ spawn_sub_agent({ mode: "spawn", tasks: [
+    { task: "Research Tesla (TSLA): current price, 52-week range, P/E ratio, market cap, revenue growth, analyst consensus, recent news. Use web_search and web_scraper." },
+    { task: "Research Apple (AAPL): current price, 52-week range, P/E ratio, market cap, revenue growth, analyst consensus, recent news. Use web_search and web_scraper." }
+  ]})
+→ Wait for results
+→ YOU synthesize into comparative analysis table
+
+EXAMPLE 2 — Full Project Build:
+User: "Build a weather dashboard app"
+→ First: workspace_analyze to understand project structure
+→ spawn_sub_agent({ mode: "spawn", tasks: [
+    { task: "Create the frontend: src/components/WeatherDashboard.tsx with current weather display, 5-day forecast, search bar. Use React + TypeScript. Beautiful dark glassmorphic UI." },
+    { task: "Create the API layer: src/lib/weather-api.ts with functions to fetch weather from OpenWeatherMap. Include TypeScript types, error handling, caching." },
+    { task: "Create the styling: src/styles/weather.css with glassmorphic dark theme, responsive layout, smooth animations, gradient backgrounds." }
+  ]})
+→ After agents complete, YOU verify and integrate
+
+EXAMPLE 3 — Research Report:
+User: "Write a report on AI trends 2025"
+→ spawn_sub_agent({ mode: "spawn", tasks: [
+    { task: "Research and write section: 'LLM Advancements 2025' — cover GPT-5, Gemini 3, Claude 4, open-source models. Write to .workspaces/sandbox/section1.md" },
+    { task: "Research and write section: 'AI in Industry 2025' — cover healthcare, finance, autonomous vehicles, robotics. Write to .workspaces/sandbox/section2.md" },
+    { task: "Research and write section: 'AI Ethics & Regulation 2025' — cover EU AI Act, safety, alignment research. Write to .workspaces/sandbox/section3.md" }
+  ]})
+→ After agents complete, YOU compile sections into final report
+
+EXAMPLE 4 — Multi-source Data:
+User: "Analyze this CSV and also find industry benchmarks online"
+→ spawn_sub_agent({ mode: "spawn", tasks: [
+    { task: "Analyze data.csv using csv_analyzer: compute statistics, find trends, identify outliers. Write summary to .workspaces/sandbox/analysis.md" },
+    { task: "Research industry benchmarks for [relevant industry]. Use web_search. Write findings to .workspaces/sandbox/benchmarks.md" }
+  ]})
+→ After agents complete, YOU cross-reference data with benchmarks
+
+⚙️ DECISION TREE — Should I spawn sub-agents?
+1. Is there MORE THAN ONE distinct task? → If NO, do it yourself
+2. Are the tasks INDEPENDENT? → If NO (sequential), do them yourself in order
+3. Would each task take >30 seconds? → If NO, just do them yourself sequentially
+4. If YES to all 3 → SPAWN SUB-AGENTS for parallel execution
+
+━━━ NEXT-GEN TOOLS — HOW TO USE ━━━
+
+🔧 create_dynamic_tool: When you notice you're doing the same sequence of operations repeatedly, create a reusable tool.
+   Example: You keep calculating compound interest → create a "compound_interest" tool.
+
+⚡ run_macro: Chain multiple tools in sequence. Output of step N becomes available in step N+1.
+   Example: web_search → web_scraper → workspace_write_file in one call.
+
+🔍 workspace_analyze: Run at the START of coding tasks to understand the project (framework, deps, structure).
+
+✅ realtime_verify: ALWAYS verify after creating files. Modes: file_exists, file_content, code_syntax, json_valid, html_valid.
+
+📊 smart_file_analyzer: For logs use "tail", for large files use "head", for project overview use "tree".
+
+🏃 background_task: For long installs/builds — launch in background and continue other work. Check later.
+
+━━━ IMAGE & CHART CREATION — DEEP TRAINING ━━━
+
+You have TWO image creation tools. Choose the RIGHT one:
+
+📈 chart_generator (Python/Matplotlib) — For DATA VISUALIZATIONS:
+   USE FOR: bar charts, line graphs, pie charts, scatter plots, histograms, heatmaps, comparisons
+   Chart types: bar, line, pie, donut, scatter, histogram, heatmap, box, area, waterfall, grouped_bar, comparison
+   Example:
+   chart_generator({
+     chartType: "comparison",
+     title: "Tesla vs Apple Stock Performance",
+     data: {
+       labels: ["2022", "2023", "2024", "2025"],
+       values: [113, 248, 180, 342],
+       values2: [130, 192, 185, 228]
+     },
+     options: { ylabel: "Price ($)", label1: "TSLA", label2: "AAPL" }
+   })
+   → Dark themed, professional, pixel-perfect. Saves both PNG image + Python script.
+   ⚠️ Requires Python + matplotlib installed. Falls back gracefully with script saved.
+
+🎨 image_generator (AI/Pollinations) — For CREATIVE IMAGES:
+   USE FOR: logos, illustrations, photos, UI mockups, product shots, art, icons, landscapes
+   Styles: realistic, illustration, diagram, icon, abstract, photo, 3d, anime, logo, ui, product, landscape
+   Example:
+   image_generator({
+     prompt: "A futuristic AI robot sitting at a desk coding, cyberpunk city visible through window, neon lights",
+     style: "3d",
+     width: 1024,
+     height: 1024
+   })
+   → Auto-enhanced prompts with style-specific quality modifiers.
+
+🎯 DECISION: Data with numbers? → chart_generator. Creative/visual? → image_generator.
+
+PROMPT TIPS for image_generator:
+- Be EXTREMELY SPECIFIC: describe subject, action, environment, lighting, colors, mood
+- BAD:  "a dog" → generic, boring
+- GOOD: "A golden retriever puppy playing in autumn leaves, golden hour sunlight, bokeh background, warm tones, professional pet photography"
+
+━━━ ADVANCED TOOLS — DEEP TRAINING ━━━
+
+🔬 deep_research: Multi-angle parallel research engine. Use for stock analysis, competitive research, market research.
+   deep_research({ topic: "Tesla stock", angles: ["TSLA financials", "Tesla analyst ratings", "Tesla competition"] })
+   → Runs parallel searches, scrapes top results, synthesizes into structured report with sources.
+
+🧬 code_intelligence: Analyze code structure without reading full files.
+   code_intelligence({ mode: "analyze", target: "src/lib/utils.ts" }) → imports, exports, functions, classes, complexity
+   code_intelligence({ mode: "graph", target: "src/lib" }) → dependency graph, entry points, external deps
+   USE BEFORE modifying unfamiliar code.
+
+🔄 smart_refactor: 10 intelligent code refactoring operations.
+   { operation: "rename", file: "src/app.ts", from: "oldName", to: "newName" } → symbol-level rename
+   { operation: "add_import", file: "src/app.ts", code: "import x from 'y';" } → dedup-aware import
+   { operation: "wrap_try_catch", file: "src/api.ts", functionName: "fetchData" } → auto-wraps
+   Also: remove_import, insert_after, insert_before, add_to_top, add_to_bottom, comment_out, uncomment
+
+🏗️ project_scaffolder: Generate complete projects in one shot.
+   { template: "react", name: "my-app" } → Full React app with components, hooks, styles
+   { template: "express-api", name: "my-api" } → Express API with routes, middleware, TypeScript
+   { template: "html-landing", name: "MyBrand" } → Premium dark landing page
+   { template: "python-package", name: "my_pkg" } → Python package with tests
+
+🔐 env_manager: Smart .env management.
+   { mode: "read", file: ".env" } → read all vars (masked)
+   { mode: "set", file: ".env", key: "API_KEY", value: "..." } → set var
+   { mode: "scan_usage" } → find env vars used in code vs defined in .env
+
+📖 auto_docs: Auto-generate documentation from code.
+   { mode: "readme", target: "." } → Generate README from project
+   { mode: "api", target: "src/routes" } → Generate API docs from Express routes
+   { mode: "functions", target: "src/utils.ts" } → Generate function docs
+
+🔱 git_intelligence: Smart git with auto-generated messages.
+   { mode: "status" } → categorized change summary
+   { mode: "smart_commit" } → auto-generates commit message from diff
+   { mode: "changelog", count: 20 } → generate changelog
+   { mode: "conflict_check", branch: "main" } → check for merge conflicts
+
+━━━ BROWSER CONTROL — NEXT-GEN WEB AGENT (DEEP TRAINING) ━━━
+
+🌐 browser_control: Full Chrome automation via CDP + Playwright with Snapshot/Ref System.
+   This is your most advanced tool. You can do ANYTHING a human can do in a browser — faster and better.
+
+   🚨 CRITICAL RULE — ONE CALL AT A TIME:
+   Browser actions are SEQUENTIAL. NEVER call browser_control multiple times in the same tool batch.
+   ❌ WRONG: calling launch + goto together (goto runs before chrome is ready)
+   ✅ RIGHT: call launch first → wait for result → then call goto in next step
+   Each browser_control call MUST be alone, NEVER in parallel with other browser_control calls.
+
+   🧠 THE SNAPSHOT/REF SYSTEM (THIS IS HOW YOU SEE WEB PAGES):
    1. browser_control({ action: "launch", url: "https://google.com" })
       → Launches Chrome + navigates. Then call snapshot/read_page when refs or page context are needed.
    2. Call snapshot/read_page when refs or page context are needed
@@ -2444,61 +2642,36 @@ PROMPT TIPS for image_generator:
    - Use CDP/user Chrome only if ETERX_ALLOW_USER_CHROME=1 is enabled and the user explicitly asks for real Chrome control.
    - The Computer panel receives real frames from managed browser actions.
 
-   KEY ACTIONS:
-   Session UI: start_browser_session at the beginning of a visible browser workflow, end_browser_session when finished
-   Navigation: goto, back, forward, reload
-   See page:   read_page (full DOM understanding), snapshot (refs), show_refs (visible control state), observe, get_text, get_html
-   Interact:   click, fill, type, select, check, uncheck, hover, press, drag_drop
-   Scroll:     scroll (direction+amount), scroll_to (ref or y position)
-   Tabs:       switch_or_open_tab, new_tab, switch_tab, close_tab, list_tabs
-   Wait/User:  wait, wait_for (element, navigation, network, load), ask_user_browser
-   JavaScript: evaluate (run any JS in page context)
-   Files:      upload, pdf, get_downloads
-   Cookies:    get_cookies, set_cookie, clear_cookies
-   Network:    monitor_network, block_urls, get_requests, network_stats
-   Settings:   set_viewport, emulate_device, set_geolocation
-   Visual UI:  Add visualLabel on browser_control calls when the user will watch the browser. Generate it from the exact action intent, not a fixed template. Keep it short enough for a cursor bubble. You may also use marker syntax in bubbleLabel, e.g. [bubble: Comparing prices] or ::bubble{Checking cart}.
-   Browser session UI: For multi-step browser work, call start_browser_session after launch/connect, perform browser actions, then call end_browser_session when done. This keeps the animated frame/cursor/pill alive between actions instead of flickering for each action.
-
-   USER CHECKPOINTS INSIDE CHROME:
-   - Use browser_control action "ask_user_browser" when the user should answer while looking at Chrome: login/captcha/manual handoff, confirmation before checkout/delete/submit, validation of an important page, or a choice that needs human judgment.
-   - Do NOT ask for routine steps, reversible browsing, page reading, obvious choices from the user's request, or anything you can verify with snapshot/read_page/evaluate.
-   - Be intelligent and low-friction: ask once for a real blocker, remember the answer, then continue autonomously until a materially new blocker appears.
-   - Choose responseMode intentionally:
-     done_cancel = user completes something manually, then clicks Done or Cancel
-     yes_no = quick confirmation
-     multiple_choice = you provide options/choices and need one selected
-     short_answer = user types a compact value, code, note, or answer
-   - Keep promptTitle short, promptMessage clear, and options concise. The result returns choice/value/cancelled/timedOut; use it before continuing.
-   - Prefer ask_user_browser over chat ask_user whenever the browser context matters, so the user does not have to switch attention away from Chrome.
-
-   ⚠️ RULES:
-   - 🚨 ONE browser_control call per tool batch — NEVER parallel!
-   - When using browser_control, do not call any other tool in that same batch. Wait for the browser result first.
-   - Prefer read_page for understanding a full page without screenshots.
-   - Prefer snapshot when you need fresh clickable refs.
-   - Prefer show_refs only to visibly show browser-control state; it does not replace reading.
-   - Do NOT use screenshots for routine browsing.
-   - ALWAYS take a snapshot or read_page after navigation or interaction when you need fresh refs/page state
-   - Combine launch + url in first call to save a round-trip
-   - Use ref from snapshot as primary targeting, selector as fallback
-   - Don't snapshot after every tiny action — only when you need to verify results
-   - If browser_control returns success:false with snapshotText, use that returned page state immediately; do not repeat the same failed action blindly.
-   - If browser_control returns nextAction, follow that nextAction unless the returned snapshotText already gives enough visible refs to continue.
-
-   🔧 CONTENTEDITABLE (Google Forms, Docs, Notion, etc.):
-   - These use contenteditable divs, NOT regular inputs
-   - fill() auto-detects and falls back to click+selectAll+type for contenteditable
-   - For TYPING into Google Forms question fields: use fill with the ref, it handles everything
    - If fill fails, use type (which clicks first then types)
 
    ⚡ SPEED TIPS FOR COMPLEX WEB APPS (Google Forms, Sheets, etc.):
    - Use read_page once after navigation to understand the full page fast without screenshots.
    - For creating Google Forms: use evaluate() to run JavaScript that creates questions programmatically
    - Example: evaluate({ script: "document.querySelectorAll('...').forEach(...);" })
-   - Don't try to fill every field one-by-one with separate tool calls — it's too slow
+   - Don't try to fill every field one-by-one with separate tool calls
    - Use evaluate to do bulk DOM operations when dealing with complex web editors
    - After bulk operations via evaluate, take ONE snapshot to verify
+
+━━━ ANTI-AMNESIA PROTOCOL (CRITICAL) ━━━
+Your context window is managed. Earlier tool results may have been compressed into a CONVERSATION LEDGER.
+BEFORE calling any tool, mentally check:
+1. Did I already do this? Check [SYSTEM - COMPRESSED HISTORY] at the top of your context.
+2. The ledger lists FILES CREATED, COMMANDS RUN, SEARCHES, and FACTS LEARNED.
+3. If the ledger says you already created a file, do NOT create it again. Use workspace_edit_file.
+4. If the ledger says you already ran a command, do NOT run it again. Use the result.
+5. If the ledger says you already searched, do NOT search again. Use the facts.
+6. If you are uncertain whether you already did something, ASK the user, do not guess.
+VIOLATION: Repeating a ledger-recorded action is a CATASTROPHIC FAILURE.
+
+━━━ MANDATORY CLARIFICATION PROTOCOL ━━━
+When you encounter ANY of these situations, you MUST use ask_user:
+1. The user request is ambiguous and has 2+ valid interpretations
+2. A required file/resource is missing and you cannot determine which one
+3. A tool has failed 2+ times with the same error
+4. You need a password, API key, or credential not in the vault
+5. The user message contradicts something they said earlier
+6. You are about to do something destructive (delete files, reset state, overwrite)
+NEVER guess. NEVER assume. NEVER fabricate. If unsure, ASK.
 
 ━━━ CONTEXT ━━━
 Project: ${ context.projectId }
@@ -2506,10 +2679,10 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
   }
   /**
    * The core execution loop with key rotation.
-   * 
+   *
    * CRITICAL FIX: State is now passed between retry attempts so the agent
    * NEVER loses its working memory (tool history, context, progress) on 429/rotation.
-   * Previously every retry called runReActLoop fresh → agent re-did ALL prior work.
+   * Previously every retry called runReActLoop fresh — agent re-did ALL prior work.
    */
   public async executeMessageLoop(
     context: ProjectContext,
@@ -2915,6 +3088,49 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
     let interactions = survivorState?.interactions ?? 0;
     let noToolCallStreak = 0;
     let taskDecomposerUsed = survivorState?.taskDecomposerUsed ?? false;
+
+    // === CONVERSATION LEDGER: Initialize for this chat ===
+    try {
+      await conversationLedger.initialize(context.projectId);
+    } catch { /* ledger is advisory — never block the agent */ }
+
+    // === CHAT BOUNDARY DETECTION: Detect if this is a new task ===
+    let chatBoundaryDecision: ReturnType<typeof chatBoundary.detect> | null = null;
+    try {
+      chatBoundaryDecision = chatBoundary.detect({
+        newMessage: userVisibleMessage,
+        lastUserMessage: globalSessionManager.getLastUserMessage(),
+        lastAgentOutput: globalSessionManager.getLastAgentOutput?.() || '',
+        activeTaskPlan: null,
+        recentToolNames: Array.from(toolCallCounts.keys()),
+        recentFileNames: Array.from(writtenFiles),
+        pendingAskUser: false,
+      });
+      if (chatBoundaryDecision.decision === 'new_task' && chatBoundaryDecision.shouldResetSession) {
+        // Archive old context to lifetime brain, then reset working state
+        try {
+          const ledgerSummary = conversationLedger.buildContextSummary({ maxTokens: 1000 });
+          if (ledgerSummary) {
+            lifetimeBrain.record({
+              chatId: context.projectId,
+              projectId: context.projectId,
+              type: 'agent_decision',
+              title: `Task boundary: archived previous task context`,
+              detail: ledgerSummary.substring(0, 500),
+              tags: ['boundary', 'archive'],
+              importance: 6,
+            });
+          }
+        } catch { /* silent */ }
+        conversationLedger.clear();
+        callHistory.clear();
+        toolCallCounts.clear();
+        writtenFiles.clear();
+        loadedSkills.clear();
+        taskDecomposerUsed = false;
+        console.log(`[GeminiClient] 🔀 Chat boundary: new_task detected — session state reset (confidence: ${chatBoundaryDecision.confidence})`);
+      }
+    } catch { /* boundary detection is advisory */ }
 
     if (sessionHydrated) {
       console.log(`[GeminiClient] 🔄 Session restored: ${ callHistory.size } calls, ${ writtenFiles.size } files, ${ loadedSkills.size } skills, decomposer=${ taskDecomposerUsed }`);
@@ -3513,20 +3729,45 @@ EXTERNAL ACTION NOTE CUE
         console.warn('[GeminiClient] Steering queue check failed (non-fatal):', String(__steerErr?.message).substring(0, 80));
       }
 
-      // === ULTRA-FAST CONTEXT MANAGEMENT (Zero-Latency Mode) ===
-      // Keep initial prompt (index 0) + last ~8 turns — enough context without megabyte payloads
-      if (contents.length > 9) {
+      // === SMART CONTEXT MANAGEMENT (Ledger-Backed Reconstruction) ===
+      // Instead of brutally truncating to 8 turns (which destroys all memory),
+      // we keep 20 turns and inject a compressed ledger summary of older work.
+      // The AutoContextManager handles token-level compression; this handles turn-level.
+      if (contents.length > 22) {
+        // Build a compressed summary of what we've done so far from the ledger
+        let ledgerSummary = '';
+        try {
+          ledgerSummary = conversationLedger.buildContextSummary({
+            maxTokens: 4000,
+            includeFiles: true,
+            includeCommands: true,
+            includeSearchResults: true,
+            excludeLastN: 10, // Don't summarize recent turns — they're still in context
+          });
+        } catch { /* silent */ }
+
         // CRITICAL FIX: The first element after contents[0] (user) MUST be a 'model' turn
         // Model turns are at odd indices (1, 3, 5...). If we slice at an even index (user), 
         // the API throws a 400 Bad Request because of consecutive user roles.
-        let sliceStart = contents.length - 8;
+        let sliceStart = contents.length - 20;
+        if (sliceStart < 1) sliceStart = 1;
         if (sliceStart % 2 === 0) {
           sliceStart += 1; // Ensure slice starts on an odd index (model)
         }
-        contents = [
-          contents[0], // Initial prompt + any media
-          ...contents.slice(sliceStart) // Correctly alternating sequence
-        ];
+
+        if (ledgerSummary) {
+          contents = [
+            contents[0], // System prompt + any media
+            { role: 'user', parts: [{ text: `[SYSTEM - COMPRESSED HISTORY]\n${ledgerSummary}\n[END COMPRESSED HISTORY]\n\nI have the compressed history of my earlier actions. Continuing from the current state.` }] },
+            { role: 'model', parts: [{ text: 'Understood. I have the full record of my earlier actions from the compressed history. I will NOT repeat any of those actions. Continuing from the current state.' }] },
+            ...contents.slice(sliceStart)
+          ];
+        } else {
+          contents = [
+            contents[0], // System prompt
+            ...contents.slice(sliceStart)
+          ];
+        }
       }
 
       // === CONTINUOUS MEMORY INJECTION ===
@@ -4843,20 +5084,20 @@ EXTERNAL ACTION NOTE CUE
 
         // === TOOL RESULT MEMORY: Record what this tool returned ===
         try {
-          const argsKey = label.argKey ? String(args?.[label.argKey] || '').substring(0, 60) : '';
+          const argsKey = label.argKey ? String(args?.[label.argKey] || '').substring(0, 90) : '';
           let resultSummary = '';
           if (toolOutput?.error) {
-            resultSummary = `ERROR: ${ String(toolOutput.error).substring(0, 80) }`;
+            resultSummary = `ERROR: ${ String(toolOutput.error).substring(0, 120) }`;
           } else if (toolOutput?.content) {
             resultSummary = `OK (${ String(toolOutput.content).length } chars)`;
           } else if (toolOutput?.success !== undefined) {
-            resultSummary = toolOutput.success ? `SUCCESS: ${ toolOutput.path || toolOutput.message || 'done' }`.substring(0, 80) : 'FAILED';
+            resultSummary = toolOutput.success ? `SUCCESS: ${ toolOutput.path || toolOutput.message || 'done' }`.substring(0, 120) : 'FAILED';
           } else if (toolOutput?.stdout !== undefined) {
-            resultSummary = `OK: ${ String(toolOutput.stdout).substring(0, 80).replace(/\n/g, ' ') }`;
+            resultSummary = `OK: ${ String(toolOutput.stdout).substring(0, 120).replace(/\n/g, ' ') }`;
           } else if (toolOutput?.results) {
             resultSummary = `${ Array.isArray(toolOutput.results) ? toolOutput.results.length : 'N' } results`;
           } else if (toolOutput?.output) {
-            resultSummary = `OK: ${ String(typeof toolOutput.output === 'string' ? toolOutput.output : JSON.stringify(toolOutput.output)).substring(0, 80) }`;
+            resultSummary = `OK: ${ String(typeof toolOutput.output === 'string' ? toolOutput.output : JSON.stringify(toolOutput.output)).substring(0, 120) }`;
           } else {
             resultSummary = 'OK';
           }
@@ -4868,11 +5109,23 @@ EXTERNAL ACTION NOTE CUE
             iteration: interactions
           });
 
-          // Cap at 150 entries — trim from the FRONT (oldest) to keep latest context
-          if (toolResultDigest.length > 150) {
-            toolResultDigest.splice(0, toolResultDigest.length - 150);
+          // Cap at 500 entries (up from 150) — trim from the FRONT (oldest) to keep latest context
+          if (toolResultDigest.length > 500) {
+            toolResultDigest.splice(0, toolResultDigest.length - 500);
           }
         } catch { /* silent — digest is optional */ }
+
+        // === CONVERSATION LEDGER: Record to persistent structured log ===
+        try {
+          conversationLedger.recordToolCall({
+            chatId: context.projectId,
+            toolName: call.name,
+            args: args || {},
+            result: toolOutput,
+            iteration: interactions,
+            durationMs: 0, // Duration tracked elsewhere
+          });
+        } catch { /* ledger is advisory — never block */ }
 
         const artifactPaths = this.extractArtifactPathsFromToolOutput(toolOutput);
         // Max iterations reached — emit continue signal, don't hard-stop

@@ -345,6 +345,11 @@ const serializeComposerAttachment = (att: ComposerAttachment) => {
   };
 };
 
+const DEFAULT_CHAT_TITLE = 'New chat';
+
+const isDefaultChatTitle = (title?: string | null) =>
+  !title?.trim() || title.trim().toLowerCase() === DEFAULT_CHAT_TITLE.toLowerCase();
+
 const sortChats = (chats: ChatSession[]) => {
   return [...chats].sort((a, b) => {
     if (a.isFavorite && !b.isFavorite) return -1;
@@ -1041,7 +1046,7 @@ function DeepWorkUI() {
   useEffect(() => {
     if (activeChatId) {
       const activeChat = chats.find(c => c.id === activeChatId);
-      if (activeChat && activeChat.title && activeChat.title !== "New chat") {
+      if (activeChat && !isDefaultChatTitle(activeChat.title)) {
         document.title = activeChat.title;
         return;
       }
@@ -1289,7 +1294,7 @@ function DeepWorkUI() {
   const generateTitle = async (chatId: string, history: any[], currentTitle?: string, mode: MainAgentMode = agentMode) => {
     try {
       // Use passed title or fall back to finding in current state (for background updates)
-      const existingTitle = currentTitle || chats.find(c => c.id === chatId)?.title || "New chat";
+      const existingTitle = currentTitle || chats.find(c => c.id === chatId)?.title || DEFAULT_CHAT_TITLE;
 
       const res = await fetch('/api/chat/title', {
         method: 'POST',
@@ -1302,7 +1307,7 @@ function DeepWorkUI() {
       });
       if (res.ok) {
         const data = await res.json();
-        if (data.title && data.title !== existingTitle) {
+        if (data.title && !isDefaultChatTitle(data.title) && data.title !== existingTitle) {
           setChats(prev => {
             const updated = prev.map(c =>
               c.id === chatId ? { ...c, title: data.title, updatedAt: Date.now() } : c
@@ -1850,7 +1855,7 @@ function DeepWorkUI() {
                   const svdChats = localStorage.getItem('eterx_chats');
                   const parsedChats = svdChats ? JSON.parse(svdChats) : [];
                   const cht = parsedChats.find((c: any) => c.id === chatId);
-                  let titleName = cht && cht.title && cht.title !== "New chat" ? cht.title : '';
+                  let titleName = cht && !isDefaultChatTitle(cht.title) ? cht.title : '';
 
                   if (!titleName) {
                     const firstUserMsg = cht?.traceLogs?.find((l: any) => l.type === 'user_action')?.text;
@@ -2493,7 +2498,7 @@ function DeepWorkUI() {
 
       const newChat: ChatSession = {
         id: chatIdToUse,
-        title: "New chat",
+        title: DEFAULT_CHAT_TITLE,
         updatedAt: Date.now(),
         traceLogs: [userLog]
       };
@@ -2506,7 +2511,7 @@ function DeepWorkUI() {
       setTraceLogs([userLog]);
 
       // Initial parallel naming
-      generateTitle(chatIdToUse, [{ role: 'user', parts: [{ text: promptText }] }], "New chat", runAgentMode);
+      generateTitle(chatIdToUse, [{ role: 'user', parts: [{ text: promptText }] }], DEFAULT_CHAT_TITLE, runAgentMode);
     } else {
       const updatedLogs = [...stripAgentConnectionLogs(traceLogs), userLog];
       setChatLogsById(chatIdToUse, updatedLogs, { touchUpdatedAt: true });
@@ -2770,7 +2775,7 @@ function DeepWorkUI() {
   }, [traceLogs]);
   const petMonitorTitle = useMemo(() => {
     const activeChat = activeChatId ? chats.find(chat => chat.id === activeChatId) : null;
-    if (activeChat?.title && activeChat.title !== 'New Chat') return activeChat.title;
+    if (activeChat?.title && !isDefaultChatTitle(activeChat.title)) return activeChat.title;
     for (let i = traceLogs.length - 1; i >= 0; i--) {
       if (traceLogs[i]?.type === 'user_action') {
         const text = String(traceLogs[i].text || '').trim();
@@ -2911,7 +2916,7 @@ function DeepWorkUI() {
                 {(() => {
                   if (activeView === 'agents' && !buildingAgentId) return null;
                   const activeChat = activeChatId ? chats.find(c => c.id === activeChatId) : null;
-                  const titleText = activeChat ? activeChat.title : "New Chat";
+                  const titleText = activeChat ? activeChat.title : DEFAULT_CHAT_TITLE;
 
                   return (
                     <div className="relative [-webkit-app-region:no-drag]">

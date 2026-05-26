@@ -1,6 +1,6 @@
 ﻿import React, { useRef, useState, useEffect, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { FileText, X, Check, Folder, File as FileIcon, ChevronDown, ChevronRight, Image as ImageIcon, AlertCircle, ListTodo, CheckCircle2, Circle } from 'lucide-react';
+import { FileText, X, Check, Folder, File as FileIcon, ChevronDown, ChevronRight, Image as ImageIcon, AlertCircle, ListTodo } from 'lucide-react';
 import { PremiumMic, PremiumSend, PremiumPlus, PremiumAudioLines, PremiumVolume2, PremiumVolumeX, PremiumMicOff } from '../ui/premium-icons';
 import { Tooltip } from '../ui/tooltip';
 import { ConnectorsModal, ConnectorsButton } from './connectors-modal';
@@ -539,21 +539,37 @@ const PinFileIcon = ({ className = "" }: { className?: string }) => (
   </svg>
 );
 
+const ProgressLoader = ({ className = 'h-[18px] w-[18px]' }: { className?: string }) => (
+  <span className={`relative flex shrink-0 items-center justify-center ${ className }`} aria-hidden="true">
+    <span className="absolute inset-0 rounded-full border-[2px] border-white/[0.16]" />
+    <span className="absolute inset-0 rounded-full border-[2px] border-transparent border-r-white/45 border-t-white/90 animate-[spin_1.15s_linear_infinite] shadow-[0_0_10px_rgba(255,255,255,0.10)]" />
+  </span>
+);
+
 const TaskStatusGlyph = ({ status, active }: { status?: string; active?: boolean }) => {
-  if (status === 'done') return <CheckCircle2 className="h-[15px] w-[15px] text-emerald-300" strokeWidth={2.2} />;
-  if (active || status === 'in_progress') {
+  if (status === 'done') {
     return (
-      <span className="relative flex h-[15px] w-[15px] items-center justify-center">
-        <span className="absolute h-[15px] w-[15px] rounded-full border border-[#E2765A]/45" />
-        <span className="h-[6px] w-[6px] rounded-full bg-[#E2765A] shadow-[0_0_12px_rgba(226,118,90,0.42)]" />
-      </span>
+      <motion.span
+        key="done"
+        initial={{ opacity: 0, scale: 0.82 }}
+        animate={{ opacity: 1, scale: 1 }}
+        transition={{ duration: 0.2, ease: [0.2, 0.8, 0.2, 1] }}
+        className="flex h-[18px] w-[18px] items-center justify-center rounded-full bg-[#A9A9A9] text-[#1F1F1F] shadow-[inset_0_1px_0_rgba(255,255,255,0.28)]"
+      >
+        <Check className="h-[11px] w-[11px]" strokeWidth={3.2} />
+      </motion.span>
     );
   }
-  return <Circle className="h-[15px] w-[15px] text-white/25" strokeWidth={2.1} />;
+
+  if (active || status === 'in_progress') {
+    return <ProgressLoader />;
+  }
+
+  return <span className="block h-[18px] w-[18px] rounded-full border-[2px] border-[#A9A9A9]/62" />;
 };
 
-const GeneratingDots = () => (
-  <span className="inline-flex w-[18px] items-center gap-[2px] pl-0.5 align-middle">
+const GeneratingDots = ({ className = '' }: { className?: string }) => (
+  <span className={`inline-flex w-[18px] items-center gap-[2px] pl-0.5 align-middle ${ className }`}>
     {[0, 1, 2].map(index => (
       <span
         key={index}
@@ -580,9 +596,10 @@ const TaskTrackerDock = ({
   const completed = tracker?.completedSteps ?? steps.filter(step => step.status === 'done').length;
   const total = tracker?.totalSteps ?? steps.length;
   const activeStep = steps.find(step => step.status === 'in_progress') || steps.find(step => step.status === 'pending') || null;
-  const activeStepName = tracker?.activeStepName || activeStep?.name || (generating ? 'Generating tasks' : 'Finalizing task');
   const isComplete = tracker?.status === 'completed' || (total > 0 && completed >= total);
-  const headerTitle = generating ? 'Generating tasks' : isComplete ? 'Tasks complete' : activeStepName;
+  const currentStepName = (tracker?.activeStepName || activeStep?.name || '').trim();
+  const liveHeader = !open && !isComplete && (generating || isThinking);
+  const headerTitle = open ? 'Progress' : liveHeader ? (currentStepName || (generating ? 'Generating progress' : 'Working')) : 'Progress';
 
   useEffect(() => {
     if (!hasTracker) return;
@@ -607,10 +624,16 @@ const TaskTrackerDock = ({
         aria-expanded={open}
       >
         <span className="flex min-w-0 flex-1 -translate-y-[3px] items-center gap-2">
-          <ListTodo className="h-[15px] w-[15px] shrink-0 text-[#F2EFEA]/88" strokeWidth={2.35} />
-          <span className="truncate text-[13px] font-semibold leading-5 tracking-normal text-[#F4F1EA]">
-            {headerTitle}
-            {generating && <GeneratingDots />}
+          {liveHeader ? (
+            <ProgressLoader className="h-[15px] w-[15px]" />
+          ) : (
+            <ListTodo className="h-[15px] w-[15px] shrink-0 text-[#F2EFEA]/88" strokeWidth={2.35} />
+          )}
+          <span className="flex min-w-0 items-center">
+            <span className={`truncate text-[13px] font-semibold leading-5 tracking-normal ${ liveHeader ? 'bg-[linear-gradient(110deg,#B9B9B9_0%,#FFFFFF_42%,#A7A7A7_76%)] bg-[length:230%_100%] bg-clip-text text-transparent animate-[eterx-task-shimmer_3.2s_ease-in-out_infinite]' : 'text-[#F4F1EA]' }`}>
+              {headerTitle}
+            </span>
+            {liveHeader && <GeneratingDots className="shrink-0 text-[#D7D7D7]" />}
           </span>
         </span>
 
@@ -630,34 +653,40 @@ const TaskTrackerDock = ({
               {generating ? (
                 <div className="space-y-2">
                   {[0, 1, 2].map(index => (
-                    <div key={index} className="flex h-7 items-center gap-2.5 overflow-hidden rounded-[10px] px-2">
-                      <span className="h-2 w-2 shrink-0 rounded-full bg-white/[0.10]" />
-                      <div className="h-[9px] flex-1 overflow-hidden rounded-full bg-white/[0.035]">
+                    <div key={index} className="flex h-7 items-center gap-3 overflow-hidden rounded-[10px] px-2">
+                      <span className="block h-[18px] w-[18px] shrink-0 rounded-full border-[2px] border-[#A9A9A9]/35" />
+                      <div className={`h-[10px] overflow-hidden rounded-full bg-white/[0.04] ${ index === 1 ? 'w-[72%]' : 'w-[58%]' }`}>
                         <div className="h-full w-full bg-[linear-gradient(110deg,transparent_0%,rgba(255,255,255,0.08)_42%,transparent_76%)] bg-[length:230%_100%] animate-[eterx-task-shimmer_3.2s_ease-in-out_infinite]" />
                       </div>
                     </div>
                   ))}
                 </div>
               ) : (
-                <div className="relative max-h-[220px] space-y-0.5 overflow-y-auto pr-1 custom-scrollbar">
-                  {steps.map((step) => {
-                    const active = step.id === activeStep?.id || step.step === activeStep?.step;
-                    return (
-                      <div
-                        key={step.id || step.step}
-                        className="relative flex items-center gap-3 rounded-[11px] px-2.5 py-2 transition-colors hover:bg-white/[0.018]"
-                      >
-                        <span className="relative z-10 shrink-0">
-                          <TaskStatusGlyph status={step.status} active={active && isThinking && !isComplete} />
-                        </span>
-                        <span className="min-w-0 flex-1">
-                          <span className={`block truncate text-[13px] font-semibold leading-5 ${ step.status === 'done' ? 'text-[#B7B4AE]' : 'text-[#F0ECE5]' }`}>
-                            {step.name || `Task ${ step.step }`}
+                <div className="relative">
+                  <div className="pointer-events-none absolute inset-x-0 top-0 z-20 h-5 bg-gradient-to-b from-[#242424] to-transparent" />
+                  <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 h-6 bg-gradient-to-t from-[#242424] to-transparent" />
+                  <div className="relative max-h-[220px] space-y-0.5 overflow-y-auto py-1 pr-1 custom-scrollbar">
+                    {steps.map((step) => {
+                      const active = step.id === activeStep?.id || step.step === activeStep?.step;
+                      const activeWorking = active && !isComplete && (isThinking || step.status === 'in_progress');
+                      return (
+                        <div
+                          key={step.id || step.step}
+                          className="relative flex items-center gap-3 rounded-[11px] px-2.5 py-2 transition-colors hover:bg-white/[0.018]"
+                        >
+                          <span className="relative z-10 shrink-0">
+                            <TaskStatusGlyph status={step.status} active={activeWorking} />
                           </span>
-                        </span>
-                      </div>
-                    );
-                  })}
+                          <span className="flex min-w-0 flex-1 items-center">
+                            <span className={`block truncate text-[13px] font-semibold leading-5 ${ activeWorking ? 'bg-[linear-gradient(110deg,#AFAFAF_0%,#F4F4F4_42%,#9E9E9E_76%)] bg-[length:230%_100%] bg-clip-text text-transparent animate-[eterx-task-shimmer_3.2s_ease-in-out_infinite]' : 'text-[#AFAFAF]' }`}>
+                              {step.name || `Task ${ step.step }`}
+                            </span>
+                            {activeWorking && <GeneratingDots className="shrink-0 text-[#CFCFCF]" />}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               )}
             </div>

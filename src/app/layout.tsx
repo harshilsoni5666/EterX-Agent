@@ -1,6 +1,13 @@
 import type { Metadata } from 'next';
+import { DM_Sans } from 'next/font/google';
 import './globals.css';
 import 'katex/dist/katex.min.css';
+
+const dmSans = DM_Sans({
+  subsets: ['latin'],
+  display: 'swap',
+  variable: '--font-dm-sans',
+});
 
 export const metadata: Metadata = {
   title: 'EterX — Autonomous Agent OS',
@@ -17,7 +24,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" className="dark">
-      <body className="font-sans antialiased min-h-screen selection:bg-[#E2765A]/30 selection:text-white">
+      <body className={`${dmSans.variable} font-sans antialiased min-h-screen selection:bg-[#E2765A]/30 selection:text-white`}>
         {children}
       </body>
     </html>
