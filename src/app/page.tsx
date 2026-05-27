@@ -17,6 +17,14 @@ import {
   type MainAgentMode,
   type MainAgentThinkingLevel,
 } from '../lib/agent/model-routing';
+import {
+  createCustomToolActionLog,
+  createCustomToolResultLogs,
+  createCustomWorkNoteLog,
+  normalizeCustomAgentStatus,
+  shouldShowCustomAgentStatus,
+  type CustomToolActiveTrace,
+} from '../lib/agent/custom-agent-trace-adapter';
 import { FilePanelProvider, useGlobalFilePanel } from '../contexts/FilePanelContext';
 
 const CommandPalette = dynamic(
@@ -347,6 +355,32 @@ const serializeComposerAttachment = (att: ComposerAttachment) => {
 };
 
 const DEFAULT_CHAT_TITLE = 'New chat';
+const SELECTED_AGENT_STORAGE_KEY = 'eterx_selected_agent';
+
+type SelectedAgentState = {
+  agentId: string | null;
+  agentName: string;
+};
+
+const readSelectedAgentState = (): SelectedAgentState => {
+  if (typeof window === 'undefined') return { agentId: null, agentName: 'General' };
+  try {
+    const saved = localStorage.getItem(SELECTED_AGENT_STORAGE_KEY);
+    if (!saved) return { agentId: null, agentName: 'General' };
+    const parsed = JSON.parse(saved);
+    const agentId = typeof parsed?.agentId === 'string' && parsed.agentId.trim()
+      ? parsed.agentId.trim()
+      : null;
+    const agentName = typeof parsed?.agentName === 'string' && parsed.agentName.trim()
+      ? parsed.agentName.trim()
+      : agentId === 'coding'
+        ? 'Coding'
+        : agentId || 'General';
+    return { agentId, agentName };
+  } catch {
+    return { agentId: null, agentName: 'General' };
+  }
+};
 
 const isDefaultChatTitle = (title?: string | null) =>
   !title?.trim() || title.trim().toLowerCase() === DEFAULT_CHAT_TITLE.toLowerCase();
@@ -505,6 +539,10 @@ function DeepWorkUI() {
   const [activeView, setActiveView] = useState<'chat' | 'code' | 'agents'>('chat');
   const [agentMode, setAgentMode] = useState<MainAgentMode>('think');
   const [thinkingLevel, setThinkingLevelState] = useState<MainAgentThinkingLevel>('low');
+  const [selectedAgentState, setSelectedAgentState] = useState<SelectedAgentState>({
+    agentId: null,
+    agentName: 'General',
+  });
   const [pinnedItems, setPinnedItems] = useState<PinnedItem[]>([]);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [monitorOpen, setMonitorOpen] = useState(false);
@@ -514,6 +552,8 @@ function DeepWorkUI() {
   const canUseMonitor = activeView === 'chat' && !!activeChatId;
   const [networkPhase, setNetworkPhase] = useState<NetworkBannerPhase>('online');
   const [networkBannerVisible, setNetworkBannerVisible] = useState(false);
+  const selectedAgent = selectedAgentState.agentId;
+  const selectedAgentName = selectedAgentState.agentName;
   const networkPausedRef = useRef(false);
   const networkOutageIdRef = useRef(0);
   const networkDismissedOutageRef = useRef<number | null>(null);
@@ -581,6 +621,10 @@ function DeepWorkUI() {
   }, []);
 
   useEffect(() => {
+    setSelectedAgentState(readSelectedAgentState());
+  }, []);
+
+  useEffect(() => {
     if (!canUseMonitor && monitorOpen) {
       setMonitorOpen(false);
     }
@@ -600,6 +644,17 @@ function DeepWorkUI() {
     setThinkingLevelState(safeLevel);
     try {
       localStorage.setItem(MAIN_AGENT_THINKING_LEVEL_STORAGE_KEY, safeLevel);
+    } catch { }
+  }, []);
+
+  const handleAgentChange = useCallback((agentId: string | null, agentName: string) => {
+    const next: SelectedAgentState = {
+      agentId: agentId?.trim() ? agentId.trim() : null,
+      agentName: agentId?.trim() ? (agentName?.trim() || agentId.trim()) : 'General',
+    };
+    setSelectedAgentState(next);
+    try {
+      localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, JSON.stringify(next));
     } catch { }
   }, []);
 
@@ -1102,6 +1157,7 @@ function DeepWorkUI() {
     startTime: at,
     endTime: at,
   });
+
   const removeRunningChat = (chatId: string) => {
     setRunningChats(prev => {
       if (!prev.has(chatId)) return prev;
@@ -1234,6 +1290,20 @@ function DeepWorkUI() {
       loadChat(builderChatId);
     }
   };
+
+  const handleUseAgentInChat = useCallback((agentId: string | null, agentName: string) => {
+    handleAgentChange(agentId, agentName);
+    setBuildingAgentId(null);
+    setActiveView('chat');
+    setInputValue('');
+
+    if (activeChatIdRef.current?.startsWith('agent_builder_')) {
+      activeChatIdRef.current = null;
+      setActiveChatId(null);
+      setTraceLogs([]);
+      setMonitorOpen(false);
+    }
+  }, [handleAgentChange]);
 
   const createNewChat = () => {
     activeChatIdRef.current = null;
@@ -2569,6 +2639,211 @@ const handleSend = async () => {
         parts: [{ text: log.text }]
       }));
 
+    const isBuilderChat = !!chatIdToUse && chatIdToUse.startsWith('agent_builder_');
+    const builderAgentId = isBuilderChat ? chatIdToUse!.replace('agent_builder_', '') : null;
+    const isCustomAgentRun = !!selectedAgent && selectedAgent !== 'coding' && !isBuilderChat;
+
+    if (isCustomAgentRun) {
+      const controller = new AbortController();
+      abortControllerRef.current = controller;
+      const answerLogId = `custom_agent_answer_${runStartedAt}`;
+      let pendingCustomText = '';
+      let customTraceSeq = 0;
+      let customWorkNoteSeq = 0;
+      const activeCustomToolLogs = new Map<string, CustomToolActiveTrace>();
+
+      const setCustomAgentAnswer = (text: string, isLive: boolean) => {
+        const at = Date.now();
+        const answerLog = {
+          id: answerLogId,
+          type: 'answer',
+          text,
+          agentName: selectedAgentName,
+          customAgentId: selectedAgent,
+          isLive,
+          startTime: runStartedAt,
+          endTime: at,
+          timestamp: at,
+        };
+        setChatLogsById(chatIdToUse!, logs => {
+          const cleanLogs = stripAgentConnectionLogs(logs);
+          const existingIdx = cleanLogs.findIndex(log => log.id === answerLogId);
+          if (existingIdx >= 0) {
+            const next = [...cleanLogs];
+            next[existingIdx] = { ...next[existingIdx], ...answerLog };
+            return next;
+          }
+          return [...cleanLogs, answerLog];
+        }, { touchUpdatedAt: true });
+      };
+
+      const appendCustomAgentTrace = (log: any) => {
+        setChatLogsById(chatIdToUse!, logs => [
+          ...stripAgentConnectionLogs(logs),
+          { ...log, _traceIdx: customTraceSeq++ },
+        ], { touchUpdatedAt: true });
+      };
+
+      const updateCustomAgentTrace = (logId: string, patch: any) => {
+        setChatLogsById(chatIdToUse!, logs => {
+          const cleanLogs = stripAgentConnectionLogs(logs);
+          return cleanLogs.map(log => log.id === logId ? { ...log, ...patch } : log);
+        }, { touchUpdatedAt: true });
+      };
+
+      const appendCustomAgentStatus = (text: string) => {
+        const cleanText = normalizeCustomAgentStatus(text);
+        if (!shouldShowCustomAgentStatus(cleanText)) return;
+        const at = Date.now();
+        appendCustomAgentTrace({
+          id: `custom_status_${at}_${Math.random().toString(36).slice(2, 8)}`,
+          type: 'thought_stream',
+          text: cleanText,
+          subAgent: selectedAgentName,
+          startTime: at,
+          endTime: at,
+          timestamp: at,
+        });
+      };
+
+      const flushCustomWorkNote = () => {
+        const noteLog = createCustomWorkNoteLog(
+          pendingCustomText,
+          selectedAgentName,
+          `custom_work_${runStartedAt}_${customWorkNoteSeq++}`,
+          Date.now(),
+        );
+        pendingCustomText = '';
+        if (noteLog) appendCustomAgentTrace(noteLog);
+      };
+
+      const attachmentContext = mediaAttachments.length > 0
+        ? `\n\n[Attached files]\n${mediaAttachments.map(att => `- ${att.name}${att.path ? ` (${att.path})` : ''}`).join('\n')}`
+        : '';
+
+      const runnerMessages = [
+        ...historySourceLogs
+          .filter(log => log.type === 'user_action' || log.type === 'answer')
+          .map(log => ({
+            role: log.type === 'user_action' ? 'user' : 'model',
+            content: String(log.text || ''),
+          })),
+        { role: 'user', content: `${promptText}${attachmentContext}` },
+      ];
+
+      try {
+        const response = await fetch('/api/agents/run', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            agentId: selectedAgent,
+            messages: runnerMessages,
+          }),
+          signal: controller.signal,
+        });
+
+        if (!response.ok) {
+          let message = `Custom agent start failed (${response.status}).`;
+          try {
+            const payload = await response.json();
+            message = payload.error || message;
+          } catch { }
+          setChatLogsById(chatIdToUse!, logs => [
+            ...stripAgentConnectionLogs(logs),
+            systemThoughtLog(`\n\n*${message}*`),
+          ], { touchUpdatedAt: true });
+          return;
+        }
+
+        if (!response.body) throw new Error('No readable stream from custom agent.');
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        const handleRunnerEvent = (event: any) => {
+          if (!event || typeof event !== 'object') return;
+          if (event.type === 'text') {
+            pendingCustomText += String(event.text || '');
+          } else if (event.type === 'status') {
+            appendCustomAgentStatus(String(event.text || ''));
+          } else if (event.type === 'tool_call') {
+            const at = Date.now();
+            flushCustomWorkNote();
+            const actionLog = createCustomToolActionLog(event, selectedAgentName, at);
+            activeCustomToolLogs.set(String(event.toolName || ''), {
+              id: actionLog.id,
+              toolName: String(event.toolName || ''),
+              command: actionLog.command ? String(actionLog.command) : undefined,
+              filename: actionLog.filename ? String(actionLog.filename) : undefined,
+              toolArgs: event.toolArgs,
+            });
+            appendCustomAgentTrace(actionLog);
+          } else if (event.type === 'tool_result') {
+            const at = Date.now();
+            const active = activeCustomToolLogs.get(String(event.toolName || ''));
+            if (active) {
+              updateCustomAgentTrace(active.id, {
+                endTime: at,
+                timestamp: at,
+                toolResult: event.toolResult,
+              });
+              createCustomToolResultLogs(event, active, at).forEach(appendCustomAgentTrace);
+              activeCustomToolLogs.delete(String(event.toolName || ''));
+            }
+          } else if (event.type === 'error') {
+            const message = String(event.text || 'Custom agent failed.');
+            setChatLogsById(chatIdToUse!, logs => [
+              ...stripAgentConnectionLogs(logs),
+              systemThoughtLog(`\n\n*${message.slice(0, 240)}*`),
+            ], { touchUpdatedAt: true });
+          } else if (event.type === 'done') {
+            if (pendingCustomText.trim()) {
+              setCustomAgentAnswer(pendingCustomText, false);
+              pendingCustomText = '';
+            }
+            removeRunningChat(chatIdToUse!);
+          }
+        };
+
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed) continue;
+            try {
+              handleRunnerEvent(JSON.parse(trimmed));
+            } catch { }
+          }
+        }
+
+        if (buffer.trim()) {
+          try {
+            handleRunnerEvent(JSON.parse(buffer.trim()));
+          } catch { }
+        }
+        if (pendingCustomText.trim()) {
+          setCustomAgentAnswer(pendingCustomText, false);
+          pendingCustomText = '';
+        }
+      } catch (error: any) {
+        if (error.name !== 'AbortError') {
+          setChatLogsById(chatIdToUse!, logs => [
+            ...stripAgentConnectionLogs(logs),
+            systemThoughtLog(`\n\n*Custom agent connection failed: ${String(error.message || error).slice(0, 180)}*`),
+          ], { touchUpdatedAt: true });
+        }
+      } finally {
+        abortControllerRef.current = null;
+        removeRunningChat(chatIdToUse!);
+      }
+      return;
+    }
+
     // ═══════════════════════════════════════════════════════════════
     // FIRE-AND-FORGET: Start the SSE stream (backward compatible)
     // The agent runs via AgentRegistry on the server. Even if this
@@ -2576,8 +2851,6 @@ const handleSend = async () => {
     // a polling loop as backup/primary for trace updates.
     // ═══════════════════════════════════════════════════════════════
 
-    const isBuilderChat = !!chatIdToUse && chatIdToUse.startsWith('agent_builder_');
-    const builderAgentId = isBuilderChat ? chatIdToUse!.replace('agent_builder_', '') : null;
     const requestPinnedContext = {
       ...(pinnedItems.length > 0 ? { paths: pinnedItems.map(p => p.path) } : {}),
       ...(isBuilderChat ? { agentRuntime: 'agent_builder', agentId: builderAgentId } : {}),
@@ -3104,7 +3377,11 @@ const handleSend = async () => {
               className={`flex-1 flex overflow-hidden w-full relative ${isResizingPanels ? 'cursor-col-resize select-none' : ''}`}
             >
               {activeView === 'agents' && !buildingAgentId ? (
-                <AgentsView onOpenBuilder={handleOpenAgentBuilder} />
+                <AgentsView
+                  onOpenBuilder={handleOpenAgentBuilder}
+                  onUseAgent={handleUseAgentInChat}
+                  selectedAgentId={selectedAgent}
+                />
               ) : (
                 <>
                   {/* Chat Container */}
@@ -3188,6 +3465,9 @@ const handleSend = async () => {
                   onOpenTeamView={() => setAgentTeamOpen(true)}
                   activeChatId={activeChatId}
                   onOpenAgentBuilder={handleOpenAgentBuilder}
+                  selectedAgent={selectedAgent}
+                  selectedAgentName={selectedAgentName}
+                  onAgentChange={handleAgentChange}
                   onOpenPet={openPetWidget}
                   onOpenAgents={() => {
                     setBuildingAgentId(null);

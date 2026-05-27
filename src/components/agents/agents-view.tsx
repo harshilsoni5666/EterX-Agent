@@ -12,10 +12,19 @@ interface Agent {
   description: string;
   accessType: 'Full Access' | 'Selected Access' | 'Agent Decides';
   isSetup?: boolean;
+  toolCount?: number;
   builderMessages?: {role: 'user' | 'assistant', content: string}[];
 }
 
-export const AgentsView = ({ onOpenBuilder }: { onOpenBuilder: (id: string) => void }) => {
+export const AgentsView = ({
+  onOpenBuilder,
+  onUseAgent,
+  selectedAgentId,
+}: {
+  onOpenBuilder: (id: string) => void;
+  onUseAgent?: (id: string | null, name: string) => void;
+  selectedAgentId?: string | null;
+}) => {
   const [agents, setAgents] = useState<Agent[]>(() => {
     if (typeof window !== 'undefined') {
       const saved = localStorage.getItem('eterx_agents');
@@ -38,7 +47,68 @@ export const AgentsView = ({ onOpenBuilder }: { onOpenBuilder: (id: string) => v
 
   useEffect(() => {
     localStorage.setItem('eterx_agents', JSON.stringify(agents));
+    try {
+      window.dispatchEvent(new CustomEvent('eterx_agents_updated'));
+    } catch { }
   }, [agents]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const syncServerAgents = async () => {
+      try {
+        const res = await fetch('/api/agents/list', { cache: 'no-store' });
+        if (!res.ok) return;
+        const data = await res.json();
+        const serverAgents = Array.isArray(data.agents)
+          ? data.agents
+          : [];
+        if (cancelled) return;
+
+        setAgents(prev => {
+          const serverIds = new Set<string>();
+          const byId = new Map(
+            prev
+              .filter(agent => agent.id === 'default-1' || agent.isSetup !== true || !agent.id.startsWith('eterxagent-'))
+              .map(agent => [agent.id, agent])
+          );
+
+          for (const serverAgent of serverAgents) {
+            const id = String(serverAgent.agentId || '').trim();
+            if (!id) continue;
+            serverIds.add(id);
+            const existing = byId.get(id);
+            byId.set(id, {
+              id,
+              name: serverAgent.name || existing?.name || id,
+              description: serverAgent.mission || existing?.description || 'Ready custom agent.',
+              accessType: existing?.accessType || 'Agent Decides',
+              isSetup: serverAgent.status === 'ready',
+              toolCount: serverAgent.toolCount,
+              builderMessages: existing?.builderMessages || [],
+            });
+          }
+
+          for (const agent of prev) {
+            if (agent.id === 'default-1') continue;
+            if (!agent.id.startsWith('eterxagent-')) continue;
+            if (agent.isSetup === false && !serverIds.has(agent.id)) byId.set(agent.id, agent);
+          }
+
+          return Array.from(byId.values());
+        });
+      } catch {
+        // Local agents still render if the server list is unavailable.
+      }
+    };
+
+    syncServerAgents();
+    window.addEventListener('focus', syncServerAgents);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('focus', syncServerAgents);
+    };
+  }, []);
   
   const [editingAgentId, setEditingAgentId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState("");
@@ -55,10 +125,26 @@ export const AgentsView = ({ onOpenBuilder }: { onOpenBuilder: (id: string) => v
   // Settings modal state
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [settingsAgent, setSettingsAgent] = useState<Agent | null>(null);
+  const [deletingAgentId, setDeletingAgentId] = useState<string | null>(null);
 
-  const handleDeleteAgent = (id: string) => {
-    setAgents(prev => prev.filter(a => a.id !== id));
-    setIsSettingsOpen(false);
+  const handleDeleteAgent = async (id: string) => {
+    if (id === 'default-1' || deletingAgentId) return;
+    setDeletingAgentId(id);
+
+    try {
+      await fetch(`/api/agents/list?agentId=${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+      }).catch(() => null);
+    } finally {
+      setAgents(prev => prev.filter(a => a.id !== id));
+      if (selectedAgentId === id) onUseAgent?.(null, 'General');
+      try {
+        window.dispatchEvent(new CustomEvent('eterx_agents_updated', { detail: { deletedAgentId: id } }));
+      } catch { }
+      setDeletingAgentId(null);
+      setIsSettingsOpen(false);
+      setSettingsAgent(null);
+    }
   };
 
   const handleSave = () => {
@@ -105,24 +191,24 @@ export const AgentsView = ({ onOpenBuilder }: { onOpenBuilder: (id: string) => v
   };
 
   return (
-    <div className="flex-1 w-full h-full flex flex-col px-6 py-5 md:px-10 md:pt-6 md:pb-6 overflow-hidden relative z-20 bg-transparent">
+    <div className="flex-1 w-full h-full flex flex-col px-5 py-5 md:px-8 md:pt-6 md:pb-6 overflow-hidden relative z-20 bg-transparent">
       {/* Header Area */}
-      <div className="flex items-center justify-between mb-5 shrink-0">
+      <div className="flex items-center justify-between mb-4 shrink-0">
         <div className="flex flex-col">
           <motion.h1 
             initial={{ opacity: 0, y: -10 }}
             animate={{ opacity: 1, y: 0 }}
-            className="text-4xl md:text-[42px] font-semibold tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-white via-[#E8E6E3] to-[#8C8A88] pb-2"
+            className="text-[28px] md:text-[32px] font-semibold tracking-tight text-white pb-1"
           >
-            Agent-Room
+            Agents
           </motion.h1>
           <motion.p 
             initial={{ opacity: 0, y: -10 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.1 }}
-            className="text-[#8C8A88] mt-2 text-[14px] max-w-md leading-relaxed"
+            className="text-[#8C8A88] mt-1 text-[13px] max-w-md leading-relaxed"
           >
-            Manage and deploy autonomous agents. Build custom variants tailored to specific workflows.
+            Create, configure, and select custom agents for focused work.
           </motion.p>
         </div>
 
@@ -131,41 +217,44 @@ export const AgentsView = ({ onOpenBuilder }: { onOpenBuilder: (id: string) => v
           initial={{ opacity: 0, scale: 0.9 }}
           animate={{ opacity: 1, scale: 1 }}
           transition={{ delay: 0.2 }}
-          className="flex items-center gap-2.5 pl-2.5 pr-5 py-2 bg-white text-black font-semibold text-[13px] rounded-full hover:bg-[#E8E6E3] transition-all duration-300 active:scale-95 group"
+          className="flex h-9 items-center gap-2 px-4 bg-white text-black font-semibold text-[12px] rounded-full hover:bg-[#E8E6E3] transition-all duration-300 active:scale-95 group"
         >
-          <div className="w-7 h-7 rounded-full bg-black flex items-center justify-center shadow-sm">
-            <Plus className="w-4 h-4 text-white group-hover:rotate-90 transition-transform duration-500" strokeWidth={2.5} />
-          </div>
-          Create new agent
+          <Plus className="w-3.5 h-3.5 text-black" strokeWidth={2.5} />
+          New agent
         </motion.button>
       </div>
 
       {/* Agents container */}
-      <div className="flex flex-col gap-4 flex-1 min-h-0">
+      <div className="flex flex-col gap-3 flex-1 min-h-0">
         <motion.h2 
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           transition={{ delay: 0.3 }}
-          className="text-[18px] md:text-[20px] font-semibold text-[#E8E6E3] tracking-wide shrink-0"
+          className="text-[13px] font-semibold text-[#A3A19E] tracking-normal shrink-0"
         >
-          Your agents
+          Library
         </motion.h2>
 
         <motion.div 
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.4 }}
-          className="flex-1 bg-[#0A0A0A]/70 backdrop-blur-sm border border-white/[0.04] rounded-[28px] p-3 md:p-4 w-full shadow-[inset_0_1px_1px_rgba(255,255,255,0.02)] overflow-y-auto custom-scrollbar flex flex-col gap-2"
+          className="flex-1 bg-[#0A0A0A]/70 backdrop-blur-sm border border-white/[0.04] rounded-[18px] p-2.5 md:p-3 w-full shadow-[inset_0_1px_1px_rgba(255,255,255,0.02)] overflow-y-auto custom-scrollbar flex flex-col gap-2"
         >
-          {agents.map((agent) => (
+          {agents.map((agent) => {
+            const isDefaultAgent = agent.id === 'default-1';
+            const isReady = isDefaultAgent || agent.isSetup !== false;
+            const useLabel = isDefaultAgent ? 'Use General' : 'Use in chat';
+
+            return (
             <div 
               key={agent.id} 
               onClick={() => onOpenBuilder(agent.id)}
-              className="group relative bg-gradient-to-r from-[#121212] to-[#0F0F0F] border border-white/[0.06] rounded-[20px] p-3 md:p-4 hover:border-white/[0.12] hover:from-[#161616] hover:to-[#121212] transition-all duration-300 cursor-pointer overflow-hidden flex items-center justify-between shrink-0 shadow-sm"
+              className="group relative bg-[#111111] border border-white/[0.06] rounded-[14px] p-3 hover:border-white/[0.12] hover:bg-[#151515] transition-all duration-200 cursor-pointer overflow-hidden flex items-center justify-between shrink-0 shadow-sm"
             >
               <div className="absolute inset-0 bg-white/[0.02] opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none" />
               
-              <div className="flex items-center gap-4 relative z-10 w-full px-2">
+              <div className="flex items-center gap-3 relative z-10 w-full px-1">
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 mb-0.5">
                     {editingAgentId === agent.id ? (
@@ -190,7 +279,7 @@ export const AgentsView = ({ onOpenBuilder }: { onOpenBuilder: (id: string) => v
                       <>
                         <h3 className="text-[14px] md:text-[15px] font-semibold text-[#E8E6E3] group-hover:text-white transition-colors truncate">{agent.name}</h3>
                         <Tooltip text="Edit agent name" side="top">
-                          <button 
+                          <button
                             onClick={(e) => { 
                               e.stopPropagation(); 
                               setEditingName(agent.name);
@@ -202,11 +291,15 @@ export const AgentsView = ({ onOpenBuilder }: { onOpenBuilder: (id: string) => v
                           </button>
                         </Tooltip>
                         
-                        {agent.isSetup === false && (
-                          <div className="ml-2 flex items-center px-2 py-0.5 rounded-[6px] bg-[#f59e0b]/10 border border-[#f59e0b]/20">
-                            <span className="text-[11px] text-[#fbbf24] font-medium">Setup builder required!</span>
-                          </div>
-                        )}
+                        <div className={`ml-2 flex items-center px-2 py-0.5 rounded-[6px] border ${
+                          isReady
+                            ? 'bg-white/[0.055] border-white/[0.12]'
+                            : 'bg-white/[0.025] border-white/[0.08]'
+                        }`}>
+                          <span className={`text-[11px] font-medium ${isReady ? 'text-white/78' : 'text-white/50'}`}>
+                            {isReady ? 'Ready' : 'Setup needed'}
+                          </span>
+                        </div>
                       </>
                     )}
                   </div>
@@ -215,15 +308,37 @@ export const AgentsView = ({ onOpenBuilder }: { onOpenBuilder: (id: string) => v
                       {agent.description}
                     </p>
                     <div className="hidden md:flex items-center gap-1.5 px-2 py-0.5 rounded-[4px] bg-white/[0.03] border border-white/[0.05]">
-                      <span className="text-[10px] text-[#A3A19E] font-medium uppercase tracking-wider">{agent.accessType}</span>
+                      <span className="text-[10px] text-[#A3A19E] font-medium tracking-normal">{agent.accessType}</span>
                     </div>
+                    {typeof agent.toolCount === 'number' && (
+                      <div className="hidden lg:flex items-center gap-1.5 px-2 py-0.5 rounded-[4px] bg-white/[0.025] border border-white/[0.06]">
+                        <span className="text-[10px] text-white/45 font-medium tracking-normal">{agent.toolCount} tools</span>
+                      </div>
+                    )}
                   </div>
                 </div>
 
                 <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (!isReady) {
+                        onOpenBuilder(agent.id);
+                        return;
+                      }
+                      onUseAgent?.(isDefaultAgent ? null : agent.id, isDefaultAgent ? 'General' : agent.name);
+                    }}
+                    className={`flex items-center px-3.5 py-1.5 font-semibold text-[12px] rounded-full border transition-all duration-200 active:scale-95 ${
+                      isReady
+                        ? 'bg-white/[0.065] text-white border-white/[0.12] hover:bg-white/[0.10]'
+                        : 'bg-white/[0.025] text-white/58 border-white/[0.08] hover:bg-white/[0.05]'
+                    }`}
+                  >
+                    {isReady ? useLabel : 'Setup'}
+                  </button>
                   <button 
                     onClick={(e) => { e.stopPropagation(); onOpenBuilder(agent.id); }}
-                    className="px-4 py-1.5 bg-white text-black font-semibold text-[12px] rounded-full hover:bg-[#E8E6E3] transition-all duration-300 active:scale-95 mr-2"
+                    className="px-3.5 py-1.5 bg-white text-black font-semibold text-[12px] rounded-full hover:bg-[#E8E6E3] transition-all duration-200 active:scale-95 mr-2"
                   >
                     {agent.isSetup === false ? 'Setup' : 'Open'}
                   </button>
@@ -231,7 +346,7 @@ export const AgentsView = ({ onOpenBuilder }: { onOpenBuilder: (id: string) => v
                   <Tooltip text="View Statistics" side="top">
                     <button 
                       onClick={(e) => e.stopPropagation()}
-                      className="text-[#555350] hover:text-[#34d399] transition-colors p-2 rounded-xl hover:bg-[#34d399]/10 active:scale-95 group/btn"
+                      className="text-[#555350] hover:text-white transition-colors p-2 rounded-xl hover:bg-white/10 active:scale-95 group/btn"
                     >
                       <PremiumActivity className="w-[18px] h-[18px] group-hover/btn:scale-110 transition-transform" />
                     </button>
@@ -252,7 +367,8 @@ export const AgentsView = ({ onOpenBuilder }: { onOpenBuilder: (id: string) => v
                 </div>
               </div>
             </div>
-          ))}
+            );
+          })}
         </motion.div>
       </div>
 
@@ -332,11 +448,11 @@ export const AgentsView = ({ onOpenBuilder }: { onOpenBuilder: (id: string) => v
                     >
                       <div className="w-full h-[1px] bg-white/10 mb-2"></div>
                       <div className="flex flex-col gap-1.5">
-                        <label className="text-[12px] font-semibold uppercase tracking-wider text-[#34d399] flex items-center gap-1.5">
-                          <div className="w-1.5 h-1.5 rounded-full bg-[#34d399] animate-pulse"></div>
-                          Agent Initialized
+                        <label className="text-[12px] font-semibold tracking-normal text-white/82 flex items-center gap-1.5">
+                          <div className="w-1.5 h-1.5 rounded-full bg-white/75 animate-pulse"></div>
+                          Agent initialized
                         </label>
-                        <div className="bg-[#121212] border border-[#34d399]/20 rounded-xl p-3 flex flex-col gap-2">
+                        <div className="bg-[#121212] border border-white/[0.12] rounded-xl p-3 flex flex-col gap-2">
                           <div className="flex items-center justify-between">
                             <span className="text-[12px] text-[#8C8A88]">Generated ID</span>
                             <span className="text-[12px] font-mono text-[#E8E6E3] bg-white/5 px-2 py-0.5 rounded">{generatedId}</span>
@@ -456,13 +572,14 @@ export const AgentsView = ({ onOpenBuilder }: { onOpenBuilder: (id: string) => v
 
                 <div className="flex flex-col gap-2">
                   <h4 className="text-[14px] font-medium text-[#ef4444] mb-1">Danger Zone</h4>
-                  <p className="text-[12px] text-[#8C8A88] mb-3">Deleting this agent will remove all its configurations and memory history. This action cannot be undone.</p>
+                  <p className="text-[12px] text-[#8C8A88] mb-3">Deleting this agent removes its saved profile, tools, prompt, and local entry. This action cannot be undone.</p>
                   
                   <button 
                     onClick={() => handleDeleteAgent(settingsAgent.id)}
-                    className="w-full py-3 bg-[#ef4444]/10 border border-[#ef4444]/20 text-[#ef4444] font-semibold text-[13px] rounded-xl hover:bg-[#ef4444]/20 transition-all duration-300 active:scale-[0.98]"
+                    disabled={settingsAgent.id === 'default-1' || deletingAgentId === settingsAgent.id}
+                    className="w-full py-3 bg-[#ef4444]/10 border border-[#ef4444]/20 text-[#ef4444] font-semibold text-[13px] rounded-xl hover:bg-[#ef4444]/20 transition-all duration-300 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-45"
                   >
-                    Delete Agent
+                    {deletingAgentId === settingsAgent.id ? 'Deleting...' : 'Delete agent permanently'}
                   </button>
                 </div>
               </div>

@@ -1,6 +1,6 @@
-﻿import React, { useRef, useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useRef, useState, useEffect, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { FileText, X, Check, Users, Activity, CheckCircle2, XCircle, Folder, File as FileIcon, ChevronDown, ChevronRight, Image as ImageIcon, AlertCircle, ListTodo } from 'lucide-react';
+import { FileText, X, Check, Users, Activity, CheckCircle2, XCircle, Folder, File as FileIcon, ChevronDown, ChevronRight, Image as ImageIcon, AlertCircle, ListTodo, ArrowUpRight } from 'lucide-react';
 import { PremiumMic, PremiumSend, PremiumPlus, PremiumAudioLines, PremiumVolume2, PremiumVolumeX, PremiumMicOff } from '../ui/premium-icons';
 import { Tooltip } from '../ui/tooltip';
 import { ConnectorsModal, ConnectorsButton } from './connectors-modal';
@@ -152,6 +152,9 @@ interface ChatInputProps {
   onOpenPet?: () => void;
   activeChatId?: string | null;
   onOpenTeamView?: () => void;
+  selectedAgent?: string | null;
+  selectedAgentName?: string;
+  onAgentChange?: (agentId: string | null, agentName: string) => void;
   activeSubAgents?: Array<{
     name: string;
     status: 'spawning' | 'working' | 'completed' | 'error';
@@ -386,8 +389,8 @@ const writeStoredGoal = (chatId: string | null | undefined, goal: string) => {
 const SLASH_COMMANDS: SlashCommand[] = [
   {
     id: 'my-agents',
-    label: 'My Agents',
-    description: 'Open your agent room and custom agents',
+    label: 'Agents',
+    description: 'Open agent room and custom agents',
     prompt: '',
     iconSrc: '/icons/agent-ui/agent.png',
     action: 'agents',
@@ -623,7 +626,7 @@ const SubAgentDock = ({
       animate={{ opacity: 1, y: 0, scale: 1 }}
       exit={{ opacity: 0, y: 8, scale: 0.992 }}
       transition={{ duration: 0.2, ease: [0.2, 0.8, 0.2, 1] }}
-      className={`relative z-0 mx-auto -mb-3 w-[calc(100%-16px)] ${ isCompressed ? 'max-w-[504px]' : 'max-w-[784px]' } translate-y-2 overflow-hidden rounded-t-[24px] border border-b-0 border-violet-500/[0.15] bg-[#1A1525] shadow-[0_-10px_26px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(139,92,246,0.06)]`}
+      className={`relative z-0 mx-auto -mb-3 w-[calc(100%-16px)] ${ isCompressed ? 'max-w-[504px]' : 'max-w-[784px]' } translate-y-2 overflow-hidden rounded-t-[24px] border border-b-0 border-white/[0.10] bg-[#151515] shadow-[0_-10px_26px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(255,255,255,0.04)]`}
     >
       <button
         type="button"
@@ -635,16 +638,16 @@ const SubAgentDock = ({
           {isLive ? (
             <ProgressLoader className="h-[15px] w-[15px]" />
           ) : (
-            <Users className="h-[15px] w-[15px] shrink-0 text-violet-300/88" strokeWidth={2.35} />
+            <Users className="h-[15px] w-[15px] shrink-0 text-white/72" strokeWidth={2.35} />
           )}
           <span className="flex min-w-0 items-center">
-            <span className={`truncate text-[13px] font-semibold leading-5 tracking-normal ${ isLive ? 'bg-[linear-gradient(110deg,#C4B5FD_0%,#E9D5FF_42%,#A78BFA_76%)] bg-[length:230%_100%] bg-clip-text text-transparent animate-[eterx-task-shimmer_3.2s_ease-in-out_infinite]' : 'text-violet-200' }`}>
+            <span className={`truncate text-[13px] font-semibold leading-5 tracking-normal ${ isLive ? 'bg-[linear-gradient(110deg,#A3A3A3_0%,#FFFFFF_42%,#737373_76%)] bg-[length:230%_100%] bg-clip-text text-transparent animate-[eterx-task-shimmer_3.2s_ease-in-out_infinite]' : 'text-white/78' }`}>
               {headerTitle}
             </span>
-            {isLive && <GeneratingDots className="shrink-0 text-violet-300" />}
+            {isLive && <GeneratingDots className="shrink-0 text-white/70" />}
           </span>
         </span>
-        <ChevronDown className={`h-4 w-4 shrink-0 text-violet-400/45 transition-transform duration-200 group-hover:text-violet-300/70 ${ open ? 'rotate-180' : '' }`} strokeWidth={2.1} />
+        <ChevronDown className={`h-4 w-4 shrink-0 text-white/38 transition-transform duration-200 group-hover:text-white/70 ${ open ? 'rotate-180' : '' }`} strokeWidth={2.1} />
       </button>
 
       <AnimatePresence initial={false}>
@@ -671,7 +674,7 @@ const SubAgentDock = ({
                       {/* Status glyph */}
                       <span className="relative z-10 shrink-0">
                         {agent.status === 'completed' ? (
-                          <span className="flex h-[18px] w-[18px] items-center justify-center rounded-full bg-emerald-500/80 text-[#1F1F1F] shadow-[inset_0_1px_0_rgba(255,255,255,0.28)]">
+                          <span className="flex h-[18px] w-[18px] items-center justify-center rounded-full bg-white/85 text-[#1F1F1F] shadow-[inset_0_1px_0_rgba(255,255,255,0.28)]">
                             <Check className="h-[11px] w-[11px]" strokeWidth={3.2} />
                           </span>
                         ) : agent.status === 'error' ? (
@@ -681,17 +684,17 @@ const SubAgentDock = ({
                         ) : isWorking ? (
                           <ProgressLoader className="h-[18px] w-[18px]" />
                         ) : (
-                          <span className="block h-[18px] w-[18px] rounded-full border-[2px] border-violet-400/40" />
+                          <span className="block h-[18px] w-[18px] rounded-full border-[2px] border-white/30" />
                         )}
                       </span>
 
                       {/* Agent info */}
                       <span className="flex min-w-0 flex-1 flex-col">
                         <span className="flex items-center gap-2">
-                          <span className={`text-[13px] font-semibold leading-5 ${ isWorking ? 'bg-[linear-gradient(110deg,#C4B5FD_0%,#F4F4F4_42%,#A78BFA_76%)] bg-[length:230%_100%] bg-clip-text text-transparent animate-[eterx-task-shimmer_3.2s_ease-in-out_infinite]' : 'text-[#BFBFBF]' }`}>
+                          <span className={`text-[13px] font-semibold leading-5 ${ isWorking ? 'bg-[linear-gradient(110deg,#A3A3A3_0%,#F4F4F4_42%,#737373_76%)] bg-[length:230%_100%] bg-clip-text text-transparent animate-[eterx-task-shimmer_3.2s_ease-in-out_infinite]' : 'text-[#BFBFBF]' }`}>
                             {agent.name}
                           </span>
-                          {isWorking && <GeneratingDots className="shrink-0 text-violet-300" />}
+                          {isWorking && <GeneratingDots className="shrink-0 text-white/70" />}
                         </span>
                         <span className="text-[11px] text-[#6B6660] truncate max-w-[280px]">
                           {agent.currentAction || agent.task.substring(0, 50)}
@@ -854,6 +857,9 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   activeChatId = null,
   activeSubAgents = [],
   onOpenTeamView,
+  selectedAgent = null,
+  selectedAgentName = 'General',
+  onAgentChange,
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -870,6 +876,9 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const [isLogoHovered, setIsLogoHovered] = useState(false);
   const [isStopping, setIsStopping] = useState(false); // Intermediate stop state
   const [showModelMenu, setShowModelMenu] = useState(false);
+  const [showAgentMenu, setShowAgentMenu] = useState(false);
+  const [availableAgents, setAvailableAgents] = useState<Array<{agentId: string; name: string; status: string; mission: string}>>([]);
+  const agentSelectorRef = useRef<HTMLDivElement>(null);
   const [showThinkingLevels, setShowThinkingLevels] = useState(false);
   const [slashTrigger, setSlashTrigger] = useState<SlashTrigger | null>(null);
   const [slashActiveIndex, setSlashActiveIndex] = useState(0);
@@ -881,6 +890,78 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const connectors = useConnectors();
   const textareaMaxHeight = isCompressed ? 260 : 400;
   const isModelLocked = isThinking;
+  const activeAgentDisplay = useMemo(() => {
+    if (!selectedAgent) {
+      return {
+        label: 'General',
+        description: 'Default EterX agent',
+        activeClass: 'border-white/[0.16] bg-white/[0.055] text-white hover:bg-white/[0.08] hover:border-white/[0.24]',
+      };
+    }
+    if (selectedAgent === 'coding') {
+      return {
+        label: 'Coding',
+        description: 'Code-focused mode',
+        activeClass: 'border-white/[0.16] bg-white/[0.055] text-white hover:bg-white/[0.08] hover:border-white/[0.24]',
+      };
+    }
+    const serverAgent = availableAgents.find(agent => agent.agentId === selectedAgent);
+    const storedAgent = storedAgents.find(agent => agent.id === selectedAgent);
+    return {
+      label: serverAgent?.name || storedAgent?.name || selectedAgentName || selectedAgent,
+      description: serverAgent?.mission || storedAgent?.description || 'Custom-built agent',
+      activeClass: 'border-white/[0.18] bg-white/[0.065] text-white hover:bg-white/[0.09] hover:border-white/[0.26]',
+    };
+  }, [availableAgents, selectedAgent, selectedAgentName, storedAgents]);
+
+  const refreshAvailableAgents = useCallback(async () => {
+    try {
+      const response = await fetch('/api/agents/list', { cache: 'no-store' });
+      if (!response.ok) return;
+      const data = await response.json();
+      setAvailableAgents((data.agents || []).filter((agent: any) => agent.status === 'ready'));
+    } catch { }
+  }, []);
+
+  useEffect(() => {
+    if (showAgentMenu) refreshAvailableAgents();
+  }, [refreshAvailableAgents, showAgentMenu]);
+
+  useEffect(() => {
+    const handleAgentsUpdated = (event?: Event) => {
+      const deletedAgentId = (event as CustomEvent | undefined)?.detail?.deletedAgentId;
+      if (deletedAgentId && deletedAgentId === selectedAgent) {
+        onAgentChange?.(null, 'General');
+      }
+      setStoredAgents(readStoredAgents());
+      refreshAvailableAgents();
+    };
+    window.addEventListener('focus', handleAgentsUpdated);
+    window.addEventListener('eterx_agents_updated', handleAgentsUpdated as EventListener);
+    return () => {
+      window.removeEventListener('focus', handleAgentsUpdated);
+      window.removeEventListener('eterx_agents_updated', handleAgentsUpdated as EventListener);
+    };
+  }, [onAgentChange, refreshAvailableAgents, selectedAgent]);
+
+  // Close agent menu on outside click
+  useEffect(() => {
+    if (!showAgentMenu) return;
+    const handler = (e: MouseEvent) => {
+      const target = e.target as Node;
+      if (target && agentSelectorRef.current?.contains(target)) return;
+      setShowAgentMenu(false);
+    };
+    const escHandler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setShowAgentMenu(false);
+    };
+    document.addEventListener('mousedown', handler);
+    document.addEventListener('keydown', escHandler);
+    return () => {
+      document.removeEventListener('mousedown', handler);
+      document.removeEventListener('keydown', escHandler);
+    };
+  }, [showAgentMenu]);
 
   // Clear isStopping as soon as the agent actually stops
   useEffect(() => {
@@ -1093,9 +1174,11 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   }, [closeSlashPanel, onOpenAgents]);
 
   const openAgentFromPanel = useCallback((agentId: string) => {
+    const agent = storedAgents.find(item => item.id === agentId);
+    onAgentChange?.(agentId, agent?.name || agentId);
     closeSlashPanel();
-    onOpenAgentBuilder(agentId);
-  }, [closeSlashPanel, onOpenAgentBuilder]);
+    window.requestAnimationFrame(() => textareaRef.current?.focus({ preventScroll: true }));
+  }, [closeSlashPanel, onAgentChange, storedAgents]);
 
   const establishGoal = useCallback(() => {
     writeStoredGoal(activeChatId, goalDraft);
@@ -1552,22 +1635,21 @@ export const ChatInput: React.FC<ChatInputProps> = ({
 
         {slashPanel === 'agents' && (
           <div
-            className="absolute bottom-[calc(100%+12px)] left-1/2 z-40 w-[min(360px,calc(100vw-64px))] select-none overflow-hidden rounded-[28px] border border-white/[0.10] bg-[#242424] p-2 text-[#F2F0EC] shadow-[0_18px_48px_rgba(0,0,0,0.28),inset_0_1px_0_rgba(255,255,255,0.045)]"
+              className="absolute bottom-[calc(100%+12px)] left-1/2 z-40 w-[min(320px,calc(100vw-64px))] select-none overflow-hidden rounded-[20px] border border-white/[0.10] bg-[#1C1C1C] p-1.5 text-[#F2F0EC] shadow-[0_18px_48px_rgba(0,0,0,0.28),inset_0_1px_0_rgba(255,255,255,0.045)]"
             style={{ transform: `translate(calc(-50% + ${ slashPanelOffset.x }px), ${ slashPanelOffset.y }px)` }}
             onClick={(event) => event.stopPropagation()}
           >
             <div
-              className="flex h-10 cursor-grab touch-none items-center justify-between gap-3 px-2 active:cursor-grabbing"
+              className="flex h-9 cursor-grab touch-none items-center justify-between gap-3 px-2 active:cursor-grabbing"
               onPointerDown={startSlashPanelDrag}
             >
               <span className="flex min-w-0 items-center gap-2.5">
-                <img src="/icons/agent-ui/agent.png" alt="" aria-hidden="true" className="h-[18px] w-[18px] shrink-0 object-contain brightness-0 invert" />
-                <span className="truncate text-[14px] font-semibold tracking-normal text-white">My Agents</span>
+                <span className="truncate text-[13px] font-semibold tracking-normal text-white">Agents</span>
               </span>
               <button
                 type="button"
                 onClick={closeSlashPanel}
-                aria-label="Close My Agents"
+                aria-label="Close agents"
                 className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-white/52 transition-colors hover:bg-white/[0.06] hover:text-white"
               >
                 <X className="h-3.5 w-3.5" strokeWidth={2.4} />
@@ -1581,16 +1663,17 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                     key={agent.id}
                     type="button"
                     onClick={() => openAgentFromPanel(agent.id)}
-                    className="group flex min-h-[46px] w-full items-center rounded-[18px] px-3.5 py-2 text-left transition-colors duration-75 hover:bg-white/[0.055]"
+                    className={`group flex min-h-[40px] w-full items-center rounded-[13px] px-3 py-2 text-left transition-colors duration-75 ${selectedAgent === agent.id ? 'bg-white/[0.08]' : 'hover:bg-white/[0.055]'}`}
                   >
                     <span className="min-w-0 flex-1">
-                      <span className="block truncate text-[13.5px] font-semibold text-[#F2F0EC] group-hover:text-white">
+                      <span className="block truncate text-[13px] font-semibold text-[#F2F0EC] group-hover:text-white">
                         {agent.name}
                       </span>
-                      <span className="block truncate text-[11.5px] font-medium text-[#8C8984]">
+                      <span className="block truncate text-[11px] font-medium text-[#8C8984]">
                         {agent.accessType || agent.description || 'Custom agent'}
                       </span>
                     </span>
+                    {selectedAgent === agent.id && <Check className="ml-2 h-3.5 w-3.5 shrink-0 text-white" strokeWidth={2.4} />}
                   </button>
                 ))
               ) : (
@@ -2126,7 +2209,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                               }
                             }}
                           >
-                            <Folder className="w-[14px] h-[14px] text-[#A78BFA] shrink-0" strokeWidth={2.5} />
+                            <Folder className="w-[14px] h-[14px] text-white/72 shrink-0" strokeWidth={2.5} />
                             <span className={`text-[12px] font-medium text-white truncate tracking-wide ${ isCompressed ? 'max-w-[62px]' : 'max-w-[120px]' }`}>
                               {folders.length === 1 ? folders[0].name : `${ folders.length } folders`}
                             </span>
@@ -2157,7 +2240,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                                 {folders.map(f => (
                                   <div key={f.id} className="flex items-center px-2 py-1.5 hover:bg-white/5 rounded-[8px] group/item transition-colors">
                                     <div className="flex items-center gap-2 overflow-hidden min-w-0 pr-2">
-                                      <Folder className="w-3.5 h-3.5 text-[#A78BFA] shrink-0" />
+                                      <Folder className="w-3.5 h-3.5 text-white/70 shrink-0" />
                                       <span className="text-[11px] text-[#E8E6E3] truncate">{f.name}</span>
                                     </div>
                                     <button onClick={(e) => {
@@ -2247,7 +2330,144 @@ export const ChatInput: React.FC<ChatInputProps> = ({
               </AnimatePresence>
             </div>
 
-            <div className="eterx-chat-controls-right">
+            <div className="eterx-chat-controls-right flex items-center gap-1.5">
+              {/* Agent selector */}
+              <div ref={agentSelectorRef} className="eterx-agent-selector relative min-w-0">
+                <button
+                  onClick={() => {
+                    if (isThinking) return;
+                    setShowAgentMenu(prev => !prev);
+                  }}
+                  className={`flex h-[34px] min-w-0 items-center gap-1.5 rounded-full border px-3 transition-all duration-200 active:scale-[0.98] group ${
+                    selectedAgent
+                      ? activeAgentDisplay.activeClass
+                      : 'border-white/[0.12] bg-[#1A1A1A]/90 text-[#A3A19E] hover:bg-[#222]/90 hover:text-[#E8E6E3] hover:border-white/[0.20]'
+                  } ${ showAgentMenu ? '!border-white/[0.25] !text-white' : '' } ${ isThinking ? 'cursor-not-allowed opacity-60' : '' }`}
+                  aria-haspopup="dialog"
+                  aria-expanded={showAgentMenu}
+                >
+                  <AnimatePresence mode="wait">
+                    <motion.div
+                      key={selectedAgent || 'general'}
+                      initial={{ opacity: 0, scale: 0.85 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      exit={{ opacity: 0, scale: 0.85 }}
+                      transition={{ duration: 0.18 }}
+                      className="flex min-w-0 items-center gap-1.5"
+                    >
+                      <span className="min-w-0 truncate text-[12px] font-semibold tracking-tight max-w-[112px]">
+                        {activeAgentDisplay.label}
+                      </span>
+                      <ChevronDown className={`h-3 w-3 shrink-0 text-white/58 transition-transform duration-200 ${ showAgentMenu ? 'rotate-180' : '' }`} strokeWidth={2.2} />
+                    </motion.div>
+                  </AnimatePresence>
+                </button>
+
+                <AnimatePresence>
+                  {showAgentMenu && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 8, scale: 0.97 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      exit={{ opacity: 0, y: 8, scale: 0.97 }}
+                      transition={{ duration: 0.18, ease: [0.2, 0.8, 0.2, 1] }}
+                      className="absolute bottom-[calc(100%+7px)] left-0 z-[130] flex w-[224px] max-w-[calc(100vw-32px)] flex-col rounded-[15px] border border-white/[0.08] bg-[#111111] p-1.5 text-[#F4F1EA] shadow-[0_16px_38px_rgba(0,0,0,0.58),inset_0_1px_0_rgba(255,255,255,0.04)]"
+                      role="dialog"
+                      aria-label="Agent selection"
+                    >
+                      {/* Header */}
+                      <div className="px-3 pt-1 pb-1.5">
+                        <span className="text-[11.5px] font-semibold text-[#B8B4AC]">Agents</span>
+                      </div>
+
+                      {/* General (default) */}
+                      <button
+                        onClick={() => {
+                          onAgentChange?.(null, 'General');
+                          setShowAgentMenu(false);
+                        }}
+                        className={`flex w-full items-center gap-2.5 px-3 py-1.5 rounded-[10px] text-left transition-all duration-150 ${
+                          !selectedAgent
+                            ? 'bg-white/[0.08] text-white font-semibold'
+                            : 'text-[#E8E6E3] hover:bg-white/[0.04]'
+                        }`}
+                      >
+                        <div className="flex min-w-0 flex-1 flex-col items-start">
+                          <span className="text-[12.5px] font-medium truncate">General</span>
+                          <span className="text-[10px] text-[#6B6660]">Default EterX agent</span>
+                        </div>
+                        {!selectedAgent && <Check className="h-3.5 w-3.5 shrink-0 text-white" strokeWidth={2.4} />}
+                      </button>
+
+                      {/* Coding */}
+                      <button
+                        onClick={() => {
+                          onAgentChange?.('coding', 'Coding');
+                          setShowAgentMenu(false);
+                        }}
+                        className={`flex w-full items-center gap-2.5 px-3 py-1.5 rounded-[10px] text-left transition-all duration-150 ${
+                          selectedAgent === 'coding'
+                            ? 'bg-white/[0.08] text-white font-semibold'
+                            : 'text-[#E8E6E3] hover:bg-white/[0.04]'
+                        }`}
+                      >
+                        <div className="flex min-w-0 flex-1 flex-col items-start">
+                          <span className="text-[12.5px] font-medium truncate">Coding</span>
+                          <span className="text-[10px] text-[#6B6660]">Code-focused mode</span>
+                        </div>
+                        {selectedAgent === 'coding' && <Check className="h-3.5 w-3.5 shrink-0 text-white" strokeWidth={2.4} />}
+                      </button>
+
+                      {/* Separator + custom agents from agent room */}
+                      {availableAgents.length > 0 && (
+                        <>
+                          <div className="mx-2.5 my-1.5 h-[1px] bg-white/[0.06]" />
+                          <div className="px-3 py-0.5">
+                            <span className="text-[11px] font-medium text-white/46">Custom agents</span>
+                          </div>
+                          <div className="max-h-[126px] overflow-y-auto pr-0.5 custom-scrollbar">
+                            {availableAgents.map(agent => (
+                              <button
+                                key={agent.agentId}
+                                onClick={() => {
+                                  onAgentChange?.(agent.agentId, agent.name);
+                                  setShowAgentMenu(false);
+                                }}
+                                className={`flex min-h-[42px] w-full items-center gap-2.5 rounded-[10px] px-3 py-1.5 text-left transition-all duration-150 ${
+                                  selectedAgent === agent.agentId
+                                    ? 'bg-white/[0.08] text-white font-semibold'
+                                    : 'text-[#E8E6E3] hover:bg-white/[0.04]'
+                                }`}
+                              >
+                                <div className="flex min-w-0 flex-1 flex-col items-start">
+                                  <span className="max-w-[158px] truncate text-[12px] font-medium">{agent.name}</span>
+                                  {agent.mission && (
+                                    <span className="max-w-[158px] truncate text-[9px] text-[#6B6660]">{agent.mission}</span>
+                                  )}
+                                </div>
+                                {selectedAgent === agent.agentId && <Check className="h-3.5 w-3.5 shrink-0 text-white" strokeWidth={2.4} />}
+                              </button>
+                            ))}
+                          </div>
+                        </>
+                      )}
+
+                      {/* Link to Agent Room */}
+                      <div className="mx-2.5 my-1.5 h-[1px] bg-white/[0.06]" />
+                      <button
+                        onClick={() => {
+                          setShowAgentMenu(false);
+                          onOpenAgents?.();
+                        }}
+                        className="flex items-center justify-between gap-2 px-3 py-1.5 rounded-[10px] text-[#8C8A88] hover:text-[#E8E6E3] hover:bg-white/[0.03] transition-all duration-150"
+                      >
+                        <span className="text-[11.5px] font-medium">Go to agent room</span>
+                        <ArrowUpRight className="h-3.5 w-3.5 shrink-0" strokeWidth={2.2} />
+                      </button>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+
               {/* Model selector */}
               <div ref={modelSelectorRef} className="eterx-model-selector relative min-w-0">
                 <button
