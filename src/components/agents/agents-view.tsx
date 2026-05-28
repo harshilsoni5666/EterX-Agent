@@ -191,7 +191,7 @@ export const AgentsView = ({
   };
 
   return (
-    <div className="flex-1 w-full h-full flex flex-col px-5 py-5 md:px-8 md:pt-6 md:pb-6 overflow-hidden relative z-20 bg-transparent">
+    <div className="eterx-agents-view flex-1 w-full h-full flex flex-col px-5 py-5 md:px-8 md:pt-6 md:pb-6 overflow-hidden relative z-20 bg-transparent">
       {/* Header Area */}
       <div className="flex items-center justify-between mb-4 shrink-0">
         <div className="flex flex-col">
@@ -217,7 +217,7 @@ export const AgentsView = ({
           initial={{ opacity: 0, scale: 0.9 }}
           animate={{ opacity: 1, scale: 1 }}
           transition={{ delay: 0.2 }}
-          className="flex h-9 items-center gap-2 px-4 bg-white text-black font-semibold text-[12px] rounded-full hover:bg-[#E8E6E3] transition-all duration-300 active:scale-95 group"
+          className="eterx-agents-primary-button flex h-9 items-center gap-2 px-4 bg-white text-black font-semibold text-[12px] rounded-full hover:bg-[#E8E6E3] transition-all duration-300 active:scale-95 group"
         >
           <Plus className="w-3.5 h-3.5 text-black" strokeWidth={2.5} />
           New agent
@@ -239,7 +239,7 @@ export const AgentsView = ({
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.4 }}
-          className="flex-1 bg-[#0A0A0A]/70 backdrop-blur-sm border border-white/[0.04] rounded-[18px] p-2.5 md:p-3 w-full shadow-[inset_0_1px_1px_rgba(255,255,255,0.02)] overflow-y-auto custom-scrollbar flex flex-col gap-2"
+          className="eterx-agents-library-panel flex-1 bg-[#0A0A0A]/70 backdrop-blur-sm border border-white/[0.04] rounded-[18px] p-2.5 md:p-3 w-full shadow-[inset_0_1px_1px_rgba(255,255,255,0.02)] overflow-y-auto custom-scrollbar flex flex-col gap-2"
         >
           {agents.map((agent) => {
             const isDefaultAgent = agent.id === 'default-1';
@@ -250,7 +250,7 @@ export const AgentsView = ({
             <div 
               key={agent.id} 
               onClick={() => onOpenBuilder(agent.id)}
-              className="group relative bg-[#111111] border border-white/[0.06] rounded-[14px] p-3 hover:border-white/[0.12] hover:bg-[#151515] transition-all duration-200 cursor-pointer overflow-hidden flex items-center justify-between shrink-0 shadow-sm"
+              className="eterx-agent-card group relative bg-[#111111] border border-white/[0.06] rounded-[14px] p-3 hover:border-white/[0.12] hover:bg-[#151515] transition-all duration-200 cursor-pointer overflow-hidden flex items-center justify-between shrink-0 shadow-sm"
             >
               <div className="absolute inset-0 bg-white/[0.02] opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none" />
               
@@ -328,7 +328,7 @@ export const AgentsView = ({
                       }
                       onUseAgent?.(isDefaultAgent ? null : agent.id, isDefaultAgent ? 'General' : agent.name);
                     }}
-                    className={`flex items-center px-3.5 py-1.5 font-semibold text-[12px] rounded-full border transition-all duration-200 active:scale-95 ${
+                    className={`eterx-agent-use-button flex items-center px-3.5 py-1.5 font-semibold text-[12px] rounded-full border transition-all duration-200 active:scale-95 ${
                       isReady
                         ? 'bg-white/[0.065] text-white border-white/[0.12] hover:bg-white/[0.10]'
                         : 'bg-white/[0.025] text-white/58 border-white/[0.08] hover:bg-white/[0.05]'
@@ -338,7 +338,7 @@ export const AgentsView = ({
                   </button>
                   <button 
                     onClick={(e) => { e.stopPropagation(); onOpenBuilder(agent.id); }}
-                    className="px-3.5 py-1.5 bg-white text-black font-semibold text-[12px] rounded-full hover:bg-[#E8E6E3] transition-all duration-200 active:scale-95 mr-2"
+                    className="eterx-agent-open-button px-3.5 py-1.5 bg-white text-black font-semibold text-[12px] rounded-full hover:bg-[#E8E6E3] transition-all duration-200 active:scale-95 mr-2"
                   >
                     {agent.isSetup === false ? 'Setup' : 'Open'}
                   </button>
@@ -346,7 +346,7 @@ export const AgentsView = ({
                   <Tooltip text="View Statistics" side="top">
                     <button 
                       onClick={(e) => e.stopPropagation()}
-                      className="text-[#555350] hover:text-white transition-colors p-2 rounded-xl hover:bg-white/10 active:scale-95 group/btn"
+                      className="eterx-agent-icon-button text-[#555350] hover:text-white transition-colors p-2 rounded-xl hover:bg-white/10 active:scale-95 group/btn"
                     >
                       <PremiumActivity className="w-[18px] h-[18px] group-hover/btn:scale-110 transition-transform" />
                     </button>
@@ -359,7 +359,7 @@ export const AgentsView = ({
                         setSettingsAgent(agent);
                         setIsSettingsOpen(true);
                       }}
-                      className="text-[#555350] hover:text-white transition-colors p-2 rounded-xl hover:bg-white/10 active:scale-95 group/btn"
+                      className="eterx-agent-icon-button text-[#555350] hover:text-white transition-colors p-2 rounded-xl hover:bg-white/10 active:scale-95 group/btn"
                     >
                       <PremiumSettings className="w-[18px] h-[18px] group-hover/btn:rotate-90 transition-transform duration-500" />
                     </button>

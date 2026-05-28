@@ -484,16 +484,19 @@ export interface PinnedItem {
 }
 
 const SPLIT_CHAT_WIDTH_KEY = 'eterx_split_chat_width';
-const DEFAULT_CHAT_PANEL_RATIO = 0.42;
+const DEFAULT_CHAT_PANEL_RATIO = 0.52;
 const MIN_CHAT_PANEL_WIDTH = 420;
 const MIN_FILE_PANEL_WIDTH = 420;
 const MAX_CHAT_PANEL_WIDTH = 960;
+const MAX_FILE_PANEL_WIDTH = 940;
 
 const getClampedSplitWidth = (width: number, containerWidth: number) => {
   if (!Number.isFinite(containerWidth) || containerWidth <= 0) return width;
 
-  const minChat = Math.min(MIN_CHAT_PANEL_WIDTH, Math.max(320, containerWidth * 0.42));
+  const minChatBase = Math.min(MIN_CHAT_PANEL_WIDTH, Math.max(320, containerWidth * 0.42));
   const minFile = Math.min(MIN_FILE_PANEL_WIDTH, Math.max(320, containerWidth * 0.36));
+  const minChatByMaxFile = Math.max(0, containerWidth - MAX_FILE_PANEL_WIDTH);
+  const minChat = Math.min(containerWidth - minFile, Math.max(minChatBase, minChatByMaxFile));
   const maxByFilePanel = Math.max(minChat, containerWidth - minFile);
   const maxChat = Math.max(minChat, Math.min(MAX_CHAT_PANEL_WIDTH, maxByFilePanel));
 
@@ -3146,7 +3149,7 @@ const handleSend = async () => {
   }, [sendSteeringMessage]);
 
   return (
-    <div className="flex h-screen bg-[#0F0F0F] text-[#E3E3E3] font-sans overflow-hidden selection:bg-[#E2765A]/30 transition-colors relative">
+    <div className="eterx-app-shell flex h-screen font-sans overflow-hidden selection:bg-[#E2765A]/30 transition-colors relative">
       <NetworkStatusBanner
         phase={networkPhase}
         visible={networkBannerVisible}

@@ -39,7 +39,7 @@ export interface AppSettings {
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
-  theme: 'dark',
+  theme: 'light',
   userName: 'Developer',
   fontSize: 'default',
   animationsEnabled: true,
@@ -194,8 +194,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose })
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [apiKeys, setApiKeys] = useState<Record<string, string>>({});
   const [hasChanges, setHasChanges] = useState(false);
-  const [showBatmanEgg, setShowBatmanEgg] = useState(false);
-  const [eggQuoteIndex, setEggQuoteIndex] = useState(0);
+  const [showBatmanEgg] = useState(false);
+  const [eggQuoteIndex] = useState(0);
 
   const eggQuotes = [
     { line1: "BE A MAN.", line2: "FACE DARKNESS" },
@@ -229,12 +229,15 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose })
   // Apply theme to DOM — this is what triggers the CSS variable switch
   useEffect(() => {
     const applyTheme = (theme: string) => {
-      if (theme === 'system') {
-        const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-        document.documentElement.setAttribute('data-theme', prefersDark ? 'dark' : 'light');
-      } else {
-        document.documentElement.setAttribute('data-theme', theme);
-      }
+      const resolvedTheme = theme === 'system'
+        ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+        : theme;
+      const safeTheme = resolvedTheme === 'dark' ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', safeTheme);
+      document.documentElement.classList.toggle('dark', safeTheme === 'dark');
+      document.documentElement.classList.toggle('light', safeTheme === 'light');
+      document.documentElement.style.colorScheme = safeTheme;
+      (window as any).electronAPI?.setNativeTheme?.(safeTheme);
     };
     applyTheme(settings.theme);
 
@@ -367,21 +370,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose })
                               {(['dark', 'light', 'system'] as const).map(t => (
                                 <button
                                   key={t}
-                                  onClick={() => {
-                                    if (t === 'light') {
-                                      setShowBatmanEgg(true);
-                                      updateSetting('theme', 'light');
-                                      setTimeout(() => {
-                                        updateSetting('theme', 'dark');
-                                        setTimeout(() => {
-                                          setShowBatmanEgg(false);
-                                          setEggQuoteIndex(prev => (prev + 1) % eggQuotes.length);
-                                        }, 1000);
-                                      }, 4000);
-                                    } else {
-                                      updateSetting('theme', t);
-                                    }
-                                  }}
+                                  onClick={() => updateSetting('theme', t)}
                                   className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[12px] font-medium transition-all ${ settings.theme === t
                                     ? 'bg-white/10 text-[#E8E6E3] shadow-sm'
                                     : 'text-[#666] hover:text-[#A3A19E]'

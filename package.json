@@ -16,6 +16,8 @@
     "telegram-build": "npx tsc -p tsconfig.bot.json",
     "telegram-start": "npx tsx telegram-bot.ts",
     "telegram-dev": "npx tsx telegram-bot.ts",
+    "theme:audit": "node scripts/theme-colors.mjs audit",
+    "theme:generate-light": "node scripts/theme-colors.mjs generate-light",
     "eterx": "node eterx.js",
     "eterx:start": "node eterx.js start",
     "eterx:desktop": "node eterx.js desktop",

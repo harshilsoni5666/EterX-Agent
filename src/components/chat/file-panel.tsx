@@ -217,6 +217,13 @@ function withReloadKey(url: string, key: number) {
   return `${url}${url.includes('?') ? '&' : '?'}previewReload=${key}`;
 }
 
+type ResolvedUiTheme = 'dark' | 'light';
+
+function readResolvedUiTheme(): ResolvedUiTheme {
+  if (typeof document === 'undefined') return 'light';
+  return document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
+}
+
 type TabMode = 'code' | 'diff' | 'preview';
 
 export interface FilePanelProps {
@@ -634,7 +641,9 @@ const FileTreeNode = ({ node, depth, openFilePaths, activeFilePath, onFileClick 
   return (
     <div
       onClick={() => onFileClick(node.path, node.name)}
-      className={`flex items-center gap-1.5 py-[3px] hover:bg-[#2A2D2E] cursor-pointer rounded-sm mx-1 group ${
+      data-active={isActive ? 'true' : undefined}
+      data-open={isOpen ? 'true' : undefined}
+      className={`eterx-ide-tree-node flex items-center gap-1.5 py-[3px] hover:bg-[#2A2D2E] cursor-pointer rounded-sm mx-1 group ${
         isActive ? 'bg-[#37373D]' : isOpen ? 'bg-[#2D2D30]' : ''
       }`}
       style={{ paddingLeft: `${8 + depth * 14 + 12}px`, paddingRight: '8px' }}
@@ -672,6 +681,31 @@ export const IdePanel = () => {
   const fileReadAbortRef = useRef<AbortController | null>(null);
   const panelCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [dockPosition, setDockPosition] = useState<{ left: number; top: number } | null>(null);
+  const [resolvedTheme, setResolvedTheme] = useState<ResolvedUiTheme>('light');
+  const isLightTheme = resolvedTheme === 'light';
+  const editorBackground = isLightTheme ? '#FFFFFF' : '#0d0d0f';
+  const previewShellBackground = isLightTheme ? '#F7F6F3' : '#262628';
+  const previewToolbarStyle = isLightTheme
+    ? { background: 'linear-gradient(180deg,#FFFFFF 0%,#F0EFEB 100%)', borderBottom: '1px solid rgba(31,31,29,0.10)' }
+    : { background: 'linear-gradient(180deg,#343436 0%,#2D2D2F 100%)', borderBottom: '1px solid rgba(255,255,255,0.06)' };
+  const previewAddressStyle = isLightTheme
+    ? { background: 'rgba(255,255,255,0.82)', border: '1px solid rgba(31,31,29,0.12)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.78)' }
+    : { background: 'rgba(0,0,0,0.26)', border: '1px solid rgba(255,255,255,0.07)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.035)' };
+
+  useEffect(() => {
+    const syncTheme = () => setResolvedTheme(readResolvedUiTheme());
+    syncTheme();
+
+    const root = document.documentElement;
+    const observer = new MutationObserver(syncTheme);
+    observer.observe(root, { attributes: true, attributeFilter: ['data-theme', 'class'] });
+    window.addEventListener('eterx-settings-updated', syncTheme);
+
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('eterx-settings-updated', syncTheme);
+    };
+  }, []);
 
   useEffect(() => () => {
     if (panelCloseTimerRef.current) clearTimeout(panelCloseTimerRef.current);
@@ -1181,30 +1215,30 @@ export const IdePanel = () => {
   };
 
   const workspaceControlDock = (
-    <div className="relative flex h-[34px] items-center gap-1 rounded-full border border-white/[0.10] bg-[linear-gradient(180deg,#202020_0%,#161616_100%)] px-1.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.07)] backdrop-blur-xl">
+    <div className="eterx-ide-dock relative flex h-[34px] items-center gap-1 rounded-full border border-white/[0.10] bg-[linear-gradient(180deg,#202020_0%,#161616_100%)] px-1.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.07)] backdrop-blur-xl">
       {activeTabMode === 'code' && (
-        <button onClick={() => setSidebarOpen(s => !s)} className={`flex h-7 w-7 items-center justify-center rounded-full transition-all ${sidebarOpen ? 'bg-white/[0.13] text-white shadow-inner' : 'text-[#74716D] hover:bg-white/[0.07] hover:text-white'}`} title="Toggle Sidebar">
+        <button onClick={() => setSidebarOpen(s => !s)} data-active={sidebarOpen ? 'true' : undefined} className={`eterx-ide-dock-button flex h-7 w-7 items-center justify-center rounded-full transition-all ${sidebarOpen ? 'bg-white/[0.13] text-white shadow-inner' : 'text-[#74716D] hover:bg-white/[0.07] hover:text-white'}`} title="Toggle Sidebar">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="9" y1="3" x2="9" y2="21"></line></svg>
         </button>
       )}
       {!isFullscreen && (
-        <button onClick={() => setTerminalOpen(t => !t)} className={`relative flex h-7 w-7 items-center justify-center rounded-full transition-all ${terminalOpen ? 'bg-white/[0.13] text-white shadow-inner' : 'text-[#74716D] hover:bg-white/[0.07] hover:text-white'}`} title="Toggle Terminal">
+        <button onClick={() => setTerminalOpen(t => !t)} data-active={terminalOpen ? 'true' : undefined} className={`eterx-ide-dock-button relative flex h-7 w-7 items-center justify-center rounded-full transition-all ${terminalOpen ? 'bg-white/[0.13] text-white shadow-inner' : 'text-[#74716D] hover:bg-white/[0.07] hover:text-white'}`} title="Toggle Terminal">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>
           {consoleLogs.length > 0 && <span className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-[#FF5F57]" />}
         </button>
       )}
-      <button onClick={() => setIsFullscreen(f => !f)} className={`flex h-7 w-7 items-center justify-center rounded-full transition-all ${isFullscreen ? 'bg-white/[0.13] text-white shadow-inner' : 'text-[#74716D] hover:bg-white/[0.07] hover:text-white'}`} title="Fullscreen">
+      <button onClick={() => setIsFullscreen(f => !f)} data-active={isFullscreen ? 'true' : undefined} className={`eterx-ide-dock-button flex h-7 w-7 items-center justify-center rounded-full transition-all ${isFullscreen ? 'bg-white/[0.13] text-white shadow-inner' : 'text-[#74716D] hover:bg-white/[0.07] hover:text-white'}`} title="Fullscreen">
         {isFullscreen ?
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"/></svg>
           : <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
         }
       </button>
-      <button className="flex h-7 w-7 items-center justify-center rounded-full text-[#74716D] transition-all hover:bg-white/[0.07] hover:text-white" title="Settings">
+      <button className="eterx-ide-dock-button flex h-7 w-7 items-center justify-center rounded-full text-[#74716D] transition-all hover:bg-white/[0.07] hover:text-white" title="Settings">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
       </button>
       <button
         onClick={handleCloseAll}
-        className="flex h-7 w-7 items-center justify-center rounded-full border border-white/[0.075] bg-white/[0.035] text-[#777] shadow-[inset_0_1px_0_rgba(255,255,255,0.045)] transition-all duration-200 hover:border-white/[0.16] hover:bg-white/[0.085] hover:text-white active:scale-95"
+        className="eterx-ide-dock-button flex h-7 w-7 items-center justify-center rounded-full border border-white/[0.075] bg-white/[0.035] text-[#777] shadow-[inset_0_1px_0_rgba(255,255,255,0.045)] transition-all duration-200 hover:border-white/[0.16] hover:bg-white/[0.085] hover:text-white active:scale-95"
         title="Close file workspace"
         aria-label="Close file workspace"
       >
@@ -1218,7 +1252,7 @@ export const IdePanel = () => {
   );
 
   const panelContent = (
-    <div ref={panelShellRef} className={`flex-1 flex flex-col relative z-10 h-full overflow-hidden transition-opacity duration-150 ease-out ${isPanelClosing ? 'opacity-0' : 'opacity-100'} ${isFullscreen ? 'p-0' : 'pt-1.5 pb-1 pr-3 pl-1.5'}`} onContextMenu={e => e.preventDefault()}>
+    <div ref={panelShellRef} className={`eterx-ide-panel-shell flex-1 flex flex-col relative z-10 h-full overflow-hidden transition-opacity duration-150 ease-out ${isPanelClosing ? 'opacity-0' : 'opacity-100'} ${isFullscreen ? 'p-0' : 'pt-1.5 pb-1 pr-3 pl-1.5'}`} onContextMenu={e => e.preventDefault()}>
       {isFullscreen && activeTabMode !== 'review' && (
       <div className="pointer-events-none absolute inset-x-0 top-2 z-[90] flex justify-center">
         <div className="pointer-events-auto [-webkit-app-region:no-drag]">
@@ -1230,25 +1264,29 @@ export const IdePanel = () => {
       {/* Unified liquid glass container */}
       <div
         ref={fileContainerRef}
-        className={`${isFullscreen ? 'rounded-none' : 'rounded-[24px]'} flex-1 flex flex-col bg-[linear-gradient(180deg,#202020_0%,#161616_100%)] backdrop-blur-3xl overflow-hidden relative isolate border border-white/[0.10] shadow-[0_28px_70px_rgba(0,0,0,0.42),inset_0_1px_0_rgba(255,255,255,0.07)]`}
+        className={`eterx-ide-container ${isFullscreen ? 'rounded-none' : 'rounded-[24px]'} flex-1 flex flex-col bg-[linear-gradient(180deg,#202020_0%,#161616_100%)] backdrop-blur-3xl overflow-hidden relative isolate border border-white/[0.10] shadow-[0_28px_70px_rgba(0,0,0,0.42),inset_0_1px_0_rgba(255,255,255,0.07)]`}
       >
         <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/20 to-transparent" />
         
         {/* Unified header row */}
         {activeTabMode !== 'review' && (
-        <div className={`${isFullscreen ? '' : 'rounded-t-[24px]'} relative flex h-[56px] border-b border-white/[0.075] shrink-0 bg-[linear-gradient(180deg,rgba(255,255,255,0.055),rgba(255,255,255,0.018))] overflow-hidden`}>
+        <div className={`eterx-ide-header ${isFullscreen ? '' : 'rounded-t-[24px]'} relative flex h-[56px] border-b border-white/[0.075] shrink-0 bg-[linear-gradient(180deg,rgba(255,255,255,0.055),rgba(255,255,255,0.018))] overflow-hidden`}>
         {/* Left header mode toggle */}
         <div className="flex items-center px-2.5 shrink-0 justify-start w-[196px] max-w-[34%] border-r border-white/[0.06]">
-          <div className="flex h-[36px] items-center rounded-full border border-white/[0.085] bg-[#151515]/85 p-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.045),0_10px_24px_rgba(0,0,0,0.18)]">
+          <div className="eterx-ide-mode-toggle flex h-[36px] items-center rounded-full border border-white/[0.085] bg-[#151515]/85 p-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.045),0_10px_24px_rgba(0,0,0,0.18)]">
              <button
                onClick={() => setActiveTabMode('preview')}
-               className={`h-[28px] px-3.5 text-[10px] font-bold uppercase tracking-[0.13em] rounded-full transition-all duration-200 ${activeTabMode === 'preview' ? 'bg-[#F3F0EA] text-[#111] shadow-[0_6px_18px_rgba(255,255,255,0.12),inset_0_1px_0_rgba(255,255,255,0.8)]' : 'text-[#7D7A75] hover:text-[#E8E6E3] hover:bg-white/[0.045]'}`}
+               data-active={activeTabMode === 'preview' ? 'true' : undefined}
+               aria-pressed={activeTabMode === 'preview'}
+               className={`eterx-ide-mode-tab h-[28px] px-3.5 text-[10px] font-bold uppercase tracking-[0.13em] rounded-full transition-all duration-200 ${activeTabMode === 'preview' ? 'bg-[#F3F0EA] text-[#111] shadow-[0_6px_18px_rgba(255,255,255,0.12),inset_0_1px_0_rgba(255,255,255,0.8)]' : 'text-[#7D7A75] hover:text-[#E8E6E3] hover:bg-white/[0.045]'}`}
              >Preview</button>
              <button
                onClick={() => setActiveTabMode('code')}
-               className={`h-[28px] px-3.5 text-[10px] font-bold uppercase tracking-[0.13em] rounded-full transition-all duration-200 flex items-center gap-1.5 ${activeTabMode === 'code' ? 'bg-[#F3F0EA] text-[#111] shadow-[0_6px_18px_rgba(255,255,255,0.12),inset_0_1px_0_rgba(255,255,255,0.8)]' : 'text-[#7D7A75] hover:text-[#E8E6E3] hover:bg-white/[0.045]'}`}
+               data-active={activeTabMode === 'code' ? 'true' : undefined}
+               aria-pressed={activeTabMode === 'code'}
+               className={`eterx-ide-mode-tab h-[28px] px-3.5 text-[10px] font-bold uppercase tracking-[0.13em] rounded-full transition-all duration-200 flex items-center gap-1.5 ${activeTabMode === 'code' ? 'bg-[#F3F0EA] text-[#111] shadow-[0_6px_18px_rgba(255,255,255,0.12),inset_0_1px_0_rgba(255,255,255,0.8)]' : 'text-[#7D7A75] hover:text-[#E8E6E3] hover:bg-white/[0.045]'}`}
              >
-               {activeTabMode === 'code' && <div className="w-1.5 h-1.5 rounded-full bg-[#111]" />}
+               {activeTabMode === 'code' && <div className="eterx-ide-mode-dot w-1.5 h-1.5 rounded-full bg-[#111]" />}
                Code
              </button>
           </div>
@@ -1270,13 +1308,14 @@ export const IdePanel = () => {
                        key={`${f.filepath}-${i}`}
                        onClick={() => setActiveIndex(i)}
                        onContextMenu={(e) => { e.preventDefault(); setContextMenu({ x: e.clientX, y: e.clientY, index: i }); }}
-                       className={`group relative flex h-[30px] max-w-[210px] items-center gap-2 px-2.5 rounded-full text-[12px] cursor-pointer shrink-0 transition-all duration-200 border ${activeIndex === i ? 'bg-white/[0.105] text-white border-white/[0.18] shadow-[inset_0_1px_0_rgba(255,255,255,0.065)]' : 'text-[#74716D] hover:bg-white/[0.055] border-transparent hover:text-[#E8E6E3]'}`}
+                       data-active={activeIndex === i ? 'true' : undefined}
+                       className={`eterx-ide-open-tab group relative flex h-[30px] max-w-[210px] items-center gap-2 px-2.5 rounded-full text-[12px] cursor-pointer shrink-0 transition-all duration-200 border ${activeIndex === i ? 'bg-white/[0.105] text-white border-white/[0.18] shadow-[inset_0_1px_0_rgba(255,255,255,0.065)]' : 'text-[#74716D] hover:bg-white/[0.055] border-transparent hover:text-[#E8E6E3]'}`}
                      >
                       <div className={`min-w-[18px] text-center font-mono font-bold text-[9.5px] ${iconCol}`}>{iconChar}</div>
                       <span className="min-w-0 truncate">{f.filename}</span>
                       <button 
                         onClick={(e) => { e.stopPropagation(); closePanel(i); }} 
-                        className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-full hover:bg-white/[0.1] hover:text-white transition-all ${activeIndex === i ? 'opacity-100 text-[#888]' : 'opacity-0 group-hover:opacity-100 text-[#555]'}`}
+                        className={`eterx-ide-open-tab-close flex h-4 w-4 shrink-0 items-center justify-center rounded-full hover:bg-white/[0.1] hover:text-white transition-all ${activeIndex === i ? 'opacity-100 text-[#888]' : 'opacity-0 group-hover:opacity-100 text-[#555]'}`}
                       >
                         <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
                       </button>
@@ -1296,8 +1335,8 @@ export const IdePanel = () => {
         
         {/* Left sidebar, hidden in preview mode for full render space */}
         {sidebarOpen && activeTabMode === 'code' && (
-          <div className="w-[250px] bg-[#121212]/72 border-r border-white/[0.065] flex flex-col shrink-0 select-none">
-            <div className="px-3 py-2.5 flex items-center justify-between group border-b border-white/[0.055] bg-white/[0.018]">
+          <div className="eterx-ide-sidebar w-[250px] bg-[#121212]/72 border-r border-white/[0.065] flex flex-col shrink-0 select-none">
+            <div className="eterx-ide-sidebar-header px-3 py-2.5 flex items-center justify-between group border-b border-white/[0.055] bg-white/[0.018]">
               <div className="flex items-center gap-1.5 min-w-0">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#888" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="shrink-0"><polyline points="9 18 15 12 9 6"></polyline></svg>
                 <span className="text-[11.5px] font-semibold text-[#CCCCCC] tracking-wide truncate uppercase">{workspaceName || 'Explorer'}</span>
@@ -1338,7 +1377,7 @@ export const IdePanel = () => {
             </div>
 
             {/* Live status bar */}
-            <div className="px-3 py-2 border-t border-white/[0.055] bg-white/[0.015] flex items-center gap-2">
+            <div className="eterx-ide-sidebar-status px-3 py-2 border-t border-white/[0.055] bg-white/[0.015] flex items-center gap-2">
               <div className={`w-1.5 h-1.5 rounded-full transition-colors ${isTreeLoading ? 'bg-white/30 animate-pulse' : 'bg-white/60'}`} />
               <span className="text-[10px] text-white/20 font-mono uppercase tracking-widest">
                 {isTreeLoading ? 'Syncing…' : `${openFiles.length} open`}
@@ -1348,9 +1387,9 @@ export const IdePanel = () => {
         )}
 
         {/* Editor/Preview/Console Area */}
-        <div className={`${isFullscreen ? '' : 'rounded-b-[24px]'} flex-1 flex flex-col min-w-0 bg-transparent relative overflow-hidden`}>
+        <div className={`eterx-ide-content ${isFullscreen ? '' : 'rounded-b-[24px]'} flex-1 flex flex-col min-w-0 bg-transparent relative overflow-hidden`}>
           <div className="flex-1 flex flex-col min-w-0">
-            <div className={`${isFullscreen ? '' : 'rounded-b-[24px]'} flex-1 relative overflow-hidden`} style={{ background: '#0d0d0f' }}>
+            <div className={`eterx-ide-editor-shell ${isFullscreen ? '' : 'rounded-b-[24px]'} flex-1 relative overflow-hidden`} style={{ background: editorBackground }}>
               {activeTabMode === 'review' ? (
                 <WorkspaceReviewEditor
                   files={reviewSourceFiles}
@@ -1380,7 +1419,7 @@ export const IdePanel = () => {
                       const map: Record<string,string> = { ts:'typescript',tsx:'typescript',js:'javascript',jsx:'javascript',html:'html',css:'css',scss:'scss',json:'json',md:'markdown',py:'python',go:'go',rs:'rust',sh:'shell' };
                       return map[ext] || 'plaintext';
                     })()}
-                    theme="vs-dark"
+                    theme={isLightTheme ? 'vs-light' : 'vs-dark'}
                     options={{
                       readOnly: true,
                       minimap: { enabled: false },
@@ -1400,8 +1439,8 @@ export const IdePanel = () => {
                       scrollbar: { verticalScrollbarSize: 4, horizontalScrollbarSize: 4 },
                     }}
                     loading={
-                      <div className="flex flex-col items-center justify-center h-full" style={{ background: '#0d0d0f' }}>
-                        <div className="w-8 h-8 border-2 border-white/10 border-t-white/50 rounded-full animate-spin mb-3" />
+                      <div className="flex flex-col items-center justify-center h-full" style={{ background: editorBackground }}>
+                        <div className={`w-8 h-8 border-2 rounded-full animate-spin mb-3 ${isLightTheme ? 'border-black/10 border-t-black/55' : 'border-white/10 border-t-white/50'}`} />
                         <span className="text-[11px] text-white/30 uppercase tracking-widest">Loading editor…</span>
                       </div>
                     }
@@ -1414,25 +1453,29 @@ export const IdePanel = () => {
                   </div>
                 )
               ) : (
-                <div className={`${isFullscreen ? '' : 'rounded-b-[24px]'} h-full flex flex-col overflow-hidden`} style={{ background: '#262628' }}>
+                <div className={`eterx-ide-preview-shell ${isFullscreen ? '' : 'rounded-b-[24px]'} h-full flex flex-col overflow-hidden`} style={{ background: previewShellBackground }}>
                   {/* Premium Browser Chrome - Redesigned to match high-end concept */}
                   <div
                     className="h-[54px] shrink-0 flex items-center justify-between px-4"
-                    style={{ background: 'linear-gradient(180deg,#343436 0%,#2D2D2F 100%)', borderBottom: '1px solid rgba(255,255,255,0.06)' }}
+                    style={previewToolbarStyle}
                   >
                     {/* Left: Device Toggles & Nav */}
                     <div className="flex min-w-0 items-center gap-3">
-                      <div className="flex items-center p-1 rounded-[10px]" style={{ background: 'rgba(0,0,0,0.22)', border: '1px solid rgba(255,255,255,0.06)' }}>
+                      <div className="eterx-ide-device-toggle flex items-center p-1 rounded-[10px]" style={isLightTheme ? { background: 'rgba(31,31,29,0.06)', border: '1px solid rgba(31,31,29,0.10)' } : { background: 'rgba(0,0,0,0.22)', border: '1px solid rgba(255,255,255,0.06)' }}>
                         <button
                           onClick={() => setPreviewDevice('desktop')}
-                          className={`p-1.5 rounded-[7px] transition-all ${previewDevice === 'desktop' ? 'bg-[#F3F0EA] text-[#151515] shadow-[0_5px_14px_rgba(255,255,255,0.10)]' : 'text-white/35 hover:text-white/75 hover:bg-white/[0.06]'}`}
+                          data-active={previewDevice === 'desktop' ? 'true' : undefined}
+                          aria-pressed={previewDevice === 'desktop'}
+                          className={`eterx-ide-device-button p-1.5 rounded-[7px] transition-all ${previewDevice === 'desktop' ? 'bg-[#F3F0EA] text-[#151515] shadow-[0_5px_14px_rgba(255,255,255,0.10)]' : 'text-white/35 hover:text-white/75 hover:bg-white/[0.06]'}`}
                           title="Desktop view"
                         >
                           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg>
                         </button>
                         <button
                           onClick={() => setPreviewDevice('mobile')}
-                          className={`p-1.5 rounded-[7px] transition-all ${previewDevice === 'mobile' ? 'bg-[#F3F0EA] text-[#151515] shadow-[0_5px_14px_rgba(255,255,255,0.10)]' : 'text-white/35 hover:text-white/75 hover:bg-white/[0.06]'}`}
+                          data-active={previewDevice === 'mobile' ? 'true' : undefined}
+                          aria-pressed={previewDevice === 'mobile'}
+                          className={`eterx-ide-device-button p-1.5 rounded-[7px] transition-all ${previewDevice === 'mobile' ? 'bg-[#F3F0EA] text-[#151515] shadow-[0_5px_14px_rgba(255,255,255,0.10)]' : 'text-white/35 hover:text-white/75 hover:bg-white/[0.06]'}`}
                           title="Mobile view"
                         >
                           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"></rect><line x1="12" y1="18" x2="12.01" y2="18"></line></svg>
@@ -1441,10 +1484,10 @@ export const IdePanel = () => {
                       
                       {/* Nav Buttons integrated seamlessly */}
                       <div className="flex items-center gap-1">
-                        <button onClick={handleBack} disabled={!canGoBack} className={`w-7 h-7 rounded-full flex items-center justify-center transition-all ${canGoBack ? 'text-white/75 hover:text-white hover:bg-white/[0.06]' : 'text-white/18 cursor-default'}`}>
+                        <button onClick={handleBack} disabled={!canGoBack} data-disabled={!canGoBack ? 'true' : undefined} className={`eterx-ide-nav-button w-7 h-7 rounded-full flex items-center justify-center transition-all ${canGoBack ? 'text-white/75 hover:text-white hover:bg-white/[0.06]' : 'text-white/18 cursor-default'}`}>
                           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M15 18l-6-6 6-6"/></svg>
                         </button>
-                        <button onClick={handleForward} disabled={!canGoForward} className={`w-7 h-7 rounded-full flex items-center justify-center transition-all ${canGoForward ? 'text-white/75 hover:text-white hover:bg-white/[0.06]' : 'text-white/18 cursor-default'}`}>
+                        <button onClick={handleForward} disabled={!canGoForward} data-disabled={!canGoForward ? 'true' : undefined} className={`eterx-ide-nav-button w-7 h-7 rounded-full flex items-center justify-center transition-all ${canGoForward ? 'text-white/75 hover:text-white hover:bg-white/[0.06]' : 'text-white/18 cursor-default'}`}>
                           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M9 18l6-6-6-6"/></svg>
                         </button>
                       </div>
@@ -1454,25 +1497,25 @@ export const IdePanel = () => {
                     {/* Center: Address bar and preview controls */}
                     <div className="flex min-w-[220px] flex-1 justify-center max-w-[680px] mx-4">
                       <div
-                        className="w-full h-[34px] flex items-center justify-between gap-3 px-3 rounded-[10px] transition-all group focus-within:ring-1 focus-within:ring-white/22"
-                        style={{ background: 'rgba(0,0,0,0.26)', border: '1px solid rgba(255,255,255,0.07)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.035)' }}
+                        className="eterx-ide-address-bar w-full h-[34px] flex items-center justify-between gap-3 px-3 rounded-[10px] transition-all group focus-within:ring-1 focus-within:ring-white/22"
+                        style={previewAddressStyle}
                       >
                         <input
                           value={urlInput}
                           onChange={e => setUrlInput(e.target.value)}
                           onKeyDown={e => { if (e.key === 'Enter') handlePreviewAddressSubmit(); }}
                           aria-label="Preview address"
-                          className="min-w-0 flex-1 truncate bg-transparent font-mono text-[12px] tracking-wide text-white/68 outline-none placeholder:text-white/22"
+                          className="eterx-ide-address-input min-w-0 flex-1 truncate bg-transparent font-mono text-[12px] tracking-wide text-white/68 outline-none placeholder:text-white/22"
                           placeholder="Enter dev server URL (e.g. http://localhost:3000)"
                         />
                         <div className="flex shrink-0 items-center gap-2.5">
-                          <button onClick={handleCopyPreviewPath} className="text-white/35 hover:text-white/85 transition-colors" title="Copy path">
+                          <button onClick={handleCopyPreviewPath} className="eterx-ide-address-action text-white/35 hover:text-white/85 transition-colors" title="Copy path">
                             {copiedPreviewPath ? <Check className="h-[13px] w-[13px]" strokeWidth={2.5} /> : <Copy className="h-[13px] w-[13px]" strokeWidth={2.5} />}
                           </button>
-                          <button onClick={handleOpenPreviewFile} className="text-white/35 hover:text-white/85 transition-colors" title="Open in browser">
+                          <button onClick={handleOpenPreviewFile} className="eterx-ide-address-action text-white/35 hover:text-white/85 transition-colors" title="Open in browser">
                             <ExternalLink className="h-[13px] w-[13px]" strokeWidth={2.5} />
                           </button>
-                          <button onClick={handleRefresh} className="text-white/35 hover:text-white/85 transition-colors" title="Reload frame">
+                          <button onClick={handleRefresh} className="eterx-ide-address-action text-white/35 hover:text-white/85 transition-colors" title="Reload frame">
                             <RefreshCw className="h-[13px] w-[13px]" strokeWidth={2.5} />
                           </button>
                         </div>
@@ -1481,15 +1524,15 @@ export const IdePanel = () => {
 
                     {/* Right: Actions */}
                     <div className="flex items-center gap-2 shrink-0">
-                      <button onClick={() => setActiveTabMode('code')} className="flex items-center gap-2 px-3 py-1.5 rounded-[8px] text-white/78 hover:text-white transition-all text-[11.5px] font-medium" style={{ border: '1px solid rgba(255,255,255,0.09)', background: 'rgba(255,255,255,0.045)' }}>
+                      <button onClick={() => setActiveTabMode('code')} className="eterx-ide-preview-action flex items-center gap-2 px-3 py-1.5 rounded-[8px] text-white/78 hover:text-white transition-all text-[11.5px] font-medium" style={{ border: '1px solid rgba(255,255,255,0.09)', background: 'rgba(255,255,255,0.045)' }}>
                         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9"></path><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path></svg>
                         Edit
                       </button>
-                      <button onClick={() => setTerminalOpen(t => !t)} className="h-8 w-8 rounded-full flex items-center justify-center text-white/40 hover:text-white hover:bg-white/[0.06] transition-all relative" title="Toggle Console">
+                      <button onClick={() => setTerminalOpen(t => !t)} className="eterx-ide-preview-icon-button h-8 w-8 rounded-full flex items-center justify-center text-white/40 hover:text-white hover:bg-white/[0.06] transition-all relative" title="Toggle Console">
                         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>
                         {consoleLogs.length > 0 && <span className="absolute top-0 right-0 w-2 h-2 rounded-full bg-[#FF5F57] border border-[#323233]" />}
                       </button>
-                      <button onClick={() => setIsFullscreen(f => !f)} className="h-8 w-8 rounded-full flex items-center justify-center text-white/40 hover:text-white hover:bg-white/[0.06] transition-all" title="Fullscreen">
+                      <button onClick={() => setIsFullscreen(f => !f)} className="eterx-ide-preview-icon-button h-8 w-8 rounded-full flex items-center justify-center text-white/40 hover:text-white hover:bg-white/[0.06] transition-all" title="Fullscreen">
                         {isFullscreen ? 
                           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"/></svg>
                         : <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
@@ -1504,9 +1547,9 @@ export const IdePanel = () => {
                       {isPreviewLoading && (
                         <motion.div 
                           initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-                          className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-6 backdrop-blur-md" style={{ background: 'rgba(24,24,27,0.7)' }}
+                          className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-6 backdrop-blur-md" style={{ background: isLightTheme ? 'rgba(250,250,248,0.72)' : 'rgba(24,24,27,0.7)' }}
                         >
-                          <div className="relative w-[340px] h-[220px] rounded-xl overflow-hidden border border-white/10 bg-[#1e1e1e] shadow-[0_20px_50px_rgba(0,0,0,0.5)] flex flex-col">
+                          <div className={`relative w-[340px] h-[220px] rounded-xl overflow-hidden flex flex-col ${isLightTheme ? 'border border-black/10 bg-white shadow-[0_20px_50px_rgba(31,31,29,0.14)]' : 'border border-white/10 bg-[#1e1e1e] shadow-[0_20px_50px_rgba(0,0,0,0.5)]'}`}>
                             {/* Header */}
                             <div className="h-10 border-b border-white/5 flex items-center px-4 gap-2 bg-white/[0.02]">
                               <motion.div animate={{ opacity: [0.3, 1, 0.3] }} transition={{ duration: 1.5, repeat: Infinity, delay: 0 }} className="w-3 h-3 rounded-full bg-[#FF5F57]/80 shadow-[0_0_10px_rgba(255,95,87,0.5)]" />
@@ -1515,7 +1558,7 @@ export const IdePanel = () => {
                               <div className="flex-1 ml-4 h-5 rounded-md bg-white/[0.04]" />
                             </div>
                             {/* Body skeleton */}
-                            <div className="flex-1 p-6 flex flex-col gap-4 relative overflow-hidden bg-[#18181b]">
+                            <div className={`flex-1 p-6 flex flex-col gap-4 relative overflow-hidden ${isLightTheme ? 'bg-[#F7F6F3]' : 'bg-[#18181b]'}`}>
                                {/* Shimmer overlay */}
                                <motion.div 
                                  className="absolute inset-0 z-10"

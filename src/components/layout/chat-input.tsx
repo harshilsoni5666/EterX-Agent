@@ -1617,7 +1617,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                   )}
                 </AnimatePresence>
               </div>
-              <h1 className={`font-serif tracking-tight leading-[1.2] pb-1 font-medium text-transparent bg-clip-text bg-gradient-to-r from-[#A3A19E] via-[#E8E6E3] to-[#8C8A88] drop-shadow-[0_2px_12px_rgba(255,255,255,0.05)] ${ isCompressed ? 'max-w-[360px] truncate text-[30px]' : 'text-[44px] whitespace-nowrap' }`}>
+              <h1 className={`eterx-home-greeting font-serif tracking-tight leading-[1.2] pb-1 font-medium text-transparent bg-clip-text bg-gradient-to-r from-[#A3A19E] via-[#E8E6E3] to-[#8C8A88] drop-shadow-[0_2px_12px_rgba(255,255,255,0.05)] ${ isCompressed ? 'max-w-[360px] truncate text-[30px]' : 'text-[44px] whitespace-nowrap' }`}>
                 {greeting}
               </h1>
             </div>
@@ -1625,7 +1625,10 @@ export const ChatInput: React.FC<ChatInputProps> = ({
         )}
       </AnimatePresence>
 
-      <div className={`eterx-composer-shell w-full ${ shellMaxWidth } flex flex-col pointer-events-auto relative`}>
+      <div
+        className={`eterx-composer-shell w-full ${ shellMaxWidth } flex flex-col pointer-events-auto relative`}
+        data-compressed={isCompressed ? 'true' : undefined}
+      >
         <SubAgentDock onOpenTeamView={onOpenTeamView} agents={activeSubAgents} isCompressed={isCompressed} />
               <TaskTrackerDock
           tracker={taskTracker}
@@ -1792,7 +1795,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
         <motion.div
           animate={liveAnimateState}
           transition={liveTransition}
-          className={`w-full ${ composerRadius } flex flex-col ${ attachments.length > 0 ? 'pt-1' : isCompressed ? 'pt-3' : 'pt-4' } pb-2 transition-all duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)] overflow-visible relative ${ liveState !== 'idle'
+          className={`eterx-composer-surface w-full ${ composerRadius } flex flex-col ${ attachments.length > 0 ? 'pt-1' : isCompressed ? 'pt-2.5' : 'pt-3' } pb-1.5 transition-all duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)] overflow-visible relative ${ liveState !== 'idle'
             ? 'bg-[#1E1E1E] backdrop-blur-3xl border border-white/[0.10] ring-1 ring-white/[0.05]'
             : `bg-[#1E1E1E] backdrop-blur-[28px] ${ isRecording ? 'border border-white/[0.20]' : 'border border-white/[0.08] hover:border-white/[0.12] focus-within:border-white/[0.18]' }`
             }`}>
@@ -1879,7 +1882,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
             )}
           </AnimatePresence>
 
-          <div className={`${ isCompressed ? 'px-4' : 'px-5' } pb-2 min-h-[44px] flex items-center relative z-10`}>
+          <div className={`${ isCompressed ? 'px-4' : 'px-5' } pb-1.5 min-h-[40px] flex items-center relative z-10`}>
             <AnimatePresence mode="wait">
               {/* ═══ GEMINI LIVE — Modern Centered Visualization ═══ */}
               {liveState !== 'idle' && liveState !== 'error' ? (
@@ -2036,7 +2039,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                   acceptVoice={acceptVoice}
                 />
               ) : (
-                <div className="relative w-full">
+                <div className="eterx-composer-textarea-wrap relative w-full">
                   {planModeActive && (
                     <div className="group mb-2 flex min-h-[36px] select-none items-center justify-between gap-3 rounded-[14px] border border-white/[0.08] bg-white/[0.035] px-3 py-2 text-[#F2F0EC] shadow-[inset_0_1px_0_rgba(255,255,255,0.035)]">
                       <span className="flex min-w-0 items-center gap-2.5">
@@ -2064,7 +2067,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                     </div>
                   )}
                   {isOverflowing && !isAtTop && (
-                    <div className="absolute -top-1 left-0 right-3 h-10 bg-gradient-to-b from-[#1F1F1F] via-[#1F1F1F]/90 to-transparent pointer-events-none z-10 transition-opacity duration-200" />
+                    <div className="eterx-composer-overflow-fade-top absolute -top-1 left-0 right-3 h-10 bg-gradient-to-b from-[#1F1F1F] via-[#1F1F1F]/90 to-transparent pointer-events-none z-10 transition-opacity duration-200" />
                   )}
                   <motion.textarea
                     ref={textareaRef}
@@ -2090,7 +2093,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                     onDrop={handleDrop}
                     onScroll={handleTextareaScroll}
                     placeholder="Ask EterX to Work"
-                    className={`w-full appearance-none border-0 bg-transparent shadow-none outline-none ring-0 ${ isCompressed ? 'text-[15px]' : 'text-[16px]' } font-normal text-[#F0F0F0] placeholder:text-[#9C9A96] focus:border-0 focus:outline-none focus:ring-0 placeholder:font-normal min-h-[24px] max-h-[400px] resize-none leading-[1.55] selection:bg-white/15 transition-colors duration-200 relative z-0 py-1 ${ isOverflowing ? 'overflow-y-auto custom-scrollbar pr-2' : 'overflow-hidden' }`}
+                    className={`eterx-composer-textarea w-full appearance-none border-0 bg-transparent shadow-none outline-none ring-0 ${ isCompressed ? 'text-[15px]' : 'text-[16px]' } font-normal text-[#F0F0F0] placeholder:text-[#9C9A96] focus:border-0 focus:outline-none focus:ring-0 placeholder:font-normal min-h-[24px] max-h-[400px] resize-none leading-[1.55] selection:bg-white/15 transition-colors duration-200 relative z-0 py-1 ${ isOverflowing ? 'overflow-y-auto custom-scrollbar pr-2' : 'overflow-hidden' }`}
                     style={{
                       caretColor: '#F0F0F0',
                       height: '24px',
@@ -2101,14 +2104,14 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                     }}
                   />
                   {isOverflowing && !isAtBottom && (
-                    <div className="absolute -bottom-1 left-0 right-3 h-10 bg-gradient-to-t from-[#1F1F1F] via-[#1F1F1F]/90 to-transparent pointer-events-none z-10 transition-opacity duration-200" />
+                    <div className="eterx-composer-overflow-fade-bottom absolute -bottom-1 left-0 right-3 h-10 bg-gradient-to-t from-[#1F1F1F] via-[#1F1F1F]/90 to-transparent pointer-events-none z-10 transition-opacity duration-200" />
                   )}
                 </div>
               )}
             </AnimatePresence>
           </div>
 
-          <div className={`eterx-chat-controls ${ isCompressed ? 'px-2.5' : 'px-3.5' } mt-1.5 relative z-10 transition-all duration-300`}>
+          <div className={`eterx-chat-controls ${ isCompressed ? 'px-2.5' : 'px-3.5' } mt-1 relative z-10 transition-all duration-300`}>
             <div className="eterx-chat-controls-left">
               <Tooltip text="Attach files" side="top">
                 <button
@@ -2116,7 +2119,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                   className={inputControlButton}
                 >
                   <div className={inputControlSheen} />
-                    <PremiumPlus className="w-[22px] h-[22px] text-white transition-transform duration-200 ease-out group-hover:scale-[1.06]" strokeWidth={2.45} />
+                    <PremiumPlus className="eterx-composer-control-icon w-[20px] h-[20px] text-white transition-transform duration-200 ease-out group-hover:scale-[1.04]" strokeWidth={1.85} />
                 </button>
               </Tooltip>
               <ConnectorsButton
@@ -2147,7 +2150,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                     <img
                       src="/icons/agent-ui/pin.png"
                       alt="Pin"
-                      className={`h-[23px] w-[23px] object-contain opacity-100 invert brightness-200 transition-transform duration-200 ease-out group-hover:scale-[1.06] ${ showPinMenu ? '-rotate-12' : '' }`}
+                      className={`eterx-composer-control-icon h-[23px] w-[23px] object-contain opacity-100 invert brightness-200 transition-transform duration-200 ease-out group-hover:scale-[1.04] ${ showPinMenu ? '-rotate-12' : '' }`}
                     />
                   </button>
                 </Tooltip>
@@ -2338,11 +2341,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                     if (isThinking) return;
                     setShowAgentMenu(prev => !prev);
                   }}
-                  className={`flex h-[34px] min-w-0 items-center gap-1.5 rounded-full border px-3 transition-all duration-200 active:scale-[0.98] group ${
-                    selectedAgent
-                      ? activeAgentDisplay.activeClass
-                      : 'border-white/[0.12] bg-[#1A1A1A]/90 text-[#A3A19E] hover:bg-[#222]/90 hover:text-[#E8E6E3] hover:border-white/[0.20]'
-                  } ${ showAgentMenu ? '!border-white/[0.25] !text-white' : '' } ${ isThinking ? 'cursor-not-allowed opacity-60' : '' }`}
+                  className={`eterx-agent-button ${ isCompressed ? 'max-w-[160px] px-2.5' : 'max-w-[232px] px-3.5' } flex h-[38px] w-full min-w-0 items-center gap-1.5 rounded-full border border-white/[0.16] bg-[#202020]/95 text-[#F4F4F4] transition-all duration-200 hover:bg-[#2A2A2A] hover:text-white hover:border-white/[0.26] active:scale-[0.98] group ${ showAgentMenu ? '!bg-[#252525] !border-white/[0.30] !text-white' : '' } ${ isThinking ? 'cursor-not-allowed opacity-70 hover:bg-[#202020]/95 hover:text-[#F4F4F4] hover:border-white/[0.16] active:scale-100' : '' }`}
                   aria-haspopup="dialog"
                   aria-expanded={showAgentMenu}
                 >
@@ -2355,10 +2354,10 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       transition={{ duration: 0.18 }}
                       className="flex min-w-0 items-center gap-1.5"
                     >
-                      <span className="min-w-0 truncate text-[12px] font-semibold tracking-tight max-w-[112px]">
+                      <span className="min-w-0 truncate text-[14px] font-semibold tracking-normal transition-colors">
                         {activeAgentDisplay.label}
                       </span>
-                      <ChevronDown className={`h-3 w-3 shrink-0 text-white/58 transition-transform duration-200 ${ showAgentMenu ? 'rotate-180' : '' }`} strokeWidth={2.2} />
+                      <ChevronDown className={`h-3.5 w-3.5 shrink-0 text-[#F0F0F0] transition-all duration-200 group-hover:text-white ${ showAgentMenu ? 'rotate-180' : 'group-hover:translate-y-px' }`} strokeWidth={2.1} />
                     </motion.div>
                   </AnimatePresence>
                 </button>
@@ -2605,7 +2604,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
 
               <Tooltip text="Voice dictation" side="top">
                 <button onClick={toggleSpeech} className={`eterx-control-button w-[40px] h-[40px] shrink-0 flex items-center justify-center rounded-full border border-white/[0.18] bg-[#242424]/96 text-white transition-all duration-200 ease-out hover:text-white hover:bg-[#2D2D2D] hover:border-white/[0.30] active:scale-[0.96] relative group ${ isRecording ? '!text-[#E2765A] animate-pulse bg-[#E2765A]/10 border-[#E2765A]/25' : '' }`}>
-                  <PremiumMic className="w-[18px] h-[18px] group-hover:scale-[1.1] transition-transform duration-200 ease-out" strokeWidth={2} />
+                  <PremiumMic className="eterx-composer-control-icon w-[18px] h-[18px] group-hover:scale-[1.04] transition-transform duration-200 ease-out" strokeWidth={1.85} />
                 </button>
               </Tooltip>
 
@@ -2648,7 +2647,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                           className="eterx-control-button w-[40px] h-[40px] shrink-0 flex items-center justify-center rounded-full transition-all duration-200 bg-[#F2EFEA] text-black hover:bg-white shadow-[0_8px_22px_rgba(242,239,234,0.15),inset_0_1px_0_rgba(255,255,255,0.82)] active:scale-[0.96] group relative overflow-hidden"
                         >
                           <div className="absolute inset-0 bg-gradient-to-t from-black/0 to-black/5" />
-                          <PremiumSend className="w-[20px] h-[20px] text-black group-hover:-translate-y-0.5 group-hover:scale-110 transition-all duration-200 ease-out" strokeWidth={2.8} />
+                          <PremiumSend className="eterx-composer-control-icon w-[20px] h-[20px] text-black group-hover:-translate-y-0.5 group-hover:scale-[1.04] transition-all duration-200 ease-out" strokeWidth={2.05} />
                         </button>
                       </Tooltip>
                     </motion.div>
@@ -2700,7 +2699,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                           className={`eterx-control-button w-[40px] h-[40px] shrink-0 flex items-center justify-center rounded-full transition-all duration-200 bg-[#F2EFEA] text-black hover:bg-white shadow-[0_8px_22px_rgba(242,239,234,0.15),inset_0_1px_0_rgba(255,255,255,0.82)] active:scale-[0.96] group relative overflow-hidden ${ hasErroredAttachments ? 'opacity-60 cursor-not-allowed' : '' }`}
                         >
                           <div className="absolute inset-0 bg-gradient-to-t from-black/0 to-black/5" />
-                          <PremiumSend className="w-[20px] h-[20px] text-black group-hover:-translate-y-0.5 group-hover:scale-110 transition-all duration-200 ease-out" strokeWidth={2.8} />
+                          <PremiumSend className="eterx-composer-control-icon w-[20px] h-[20px] text-black group-hover:-translate-y-0.5 group-hover:scale-[1.04] transition-all duration-200 ease-out" strokeWidth={2.05} />
                         </button>
                       </Tooltip>
                     </motion.div>
@@ -2719,7 +2718,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                           className={`eterx-control-button w-[40px] h-[40px] shrink-0 flex items-center justify-center rounded-full border border-white/[0.18] bg-[#242424]/96 text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_5px_14px_rgba(0,0,0,0.24)] transition-all duration-200 active:scale-[0.96] active:bg-[#303030] cursor-pointer group relative overflow-hidden hover:bg-[#2D2D2D] hover:border-white/[0.30] hover:text-white ${ isRecording ? '!text-[#E2765A]' : '' }`}
                         >
                           <div className={inputControlSheen} />
-                          <PremiumAudioLines className={`w-[20px] h-[20px] text-white transition-all duration-200 ease-out group-hover:scale-110 ${ isRecording ? '!text-[#E2765A] animate-pulse scale-110' : '' }`} strokeWidth={2.2} />
+                          <PremiumAudioLines className={`eterx-composer-control-icon w-[20px] h-[20px] text-white transition-all duration-200 ease-out group-hover:scale-[1.04] ${ isRecording ? '!text-[#E2765A] animate-pulse scale-[1.04]' : '' }`} strokeWidth={1.85} />
                         </button>
                       </Tooltip>
                     </motion.div>

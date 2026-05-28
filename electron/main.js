@@ -40,6 +40,74 @@ const PET_WINDOW_SIZES = {
 let activeBootId = 0;
 let bootRetryTimer = null;
 
+const NATIVE_THEME_FILE = 'eterx-native-theme.json';
+
+function normalizeNativeTheme(theme) {
+  return theme === 'dark' ? 'dark' : 'light';
+}
+
+function nativeThemePath() {
+  return path.join(app.getPath('userData'), NATIVE_THEME_FILE);
+}
+
+function readNativeTheme() {
+  try {
+    const raw = fs.readFileSync(nativeThemePath(), 'utf8');
+    return normalizeNativeTheme(JSON.parse(raw)?.theme);
+  } catch {
+    return 'light';
+  }
+}
+
+function writeNativeTheme(theme) {
+  const safeTheme = normalizeNativeTheme(theme);
+  try {
+    fs.mkdirSync(app.getPath('userData'), { recursive: true });
+    fs.writeFileSync(nativeThemePath(), JSON.stringify({ theme: safeTheme }, null, 2), 'utf8');
+  } catch (error) {
+    console.warn('[EterX] Failed to persist native theme:', error);
+  }
+  return safeTheme;
+}
+
+function nativeThemeColors(theme) {
+  const safeTheme = normalizeNativeTheme(theme);
+  if (safeTheme === 'dark') {
+    return {
+      background: '#0F0F0F',
+      titleBar: '#0F0F0F',
+      titleSymbol: '#d1d1d1',
+    };
+  }
+  return {
+    background: '#FAFAF8',
+    titleBar: '#F5F5F7',
+    titleSymbol: '#111111',
+  };
+}
+
+function applyNativeWindowTheme(theme) {
+  const safeTheme = writeNativeTheme(theme);
+  const colors = nativeThemeColors(safeTheme);
+
+  if (!mainWindow || mainWindow.isDestroyed()) return safeTheme;
+
+  try {
+    mainWindow.setBackgroundColor(colors.background);
+    if (typeof mainWindow.setTitleBarOverlay === 'function') {
+      mainWindow.setTitleBarOverlay({
+        color: colors.titleBar,
+        symbolColor: colors.titleSymbol,
+        height: 38,
+      });
+    }
+  } catch (error) {
+    console.warn('[EterX] Failed to apply native theme:', error);
+  }
+
+  return safeTheme;
+}
+
 function getPetWindowHtml() {
   return `<!doctype html>
 <html>
@@ -379,6 +447,27 @@ function escapeHtml(value) {
 async function showStartupFailure(error, target) {
   if (!mainWindow) return;
 
+  const failureTheme = readNativeTheme();
+  const failureColors = failureTheme === 'dark'
+    ? {
+        page: '#101010',
+        text: '#f1f1f1',
+        panel: '#151515',
+        border: '#262626',
+        muted: '#b8b8b8',
+        code: '#e2e2e2',
+        shadow: '0 24px 70px rgba(0, 0, 0, 0.44)',
+      }
+    : {
+        page: '#FAFAF8',
+        text: '#1F1F1D',
+        panel: '#FFFFFF',
+        border: 'rgba(31, 31, 29, 0.12)',
+        muted: '#77736C',
+        code: '#516B8A',
+        shadow: '0 24px 70px rgba(31, 31, 29, 0.12)',
+      };
+
   const html = `<!doctype html>
 <html>
   <head>
@@ -390,21 +479,21 @@ async function showStartupFailure(error, target) {
         margin: 0;
         display: grid;
         place-items: center;
-        background: #101010;
-        color: #f1f1f1;
+        background: ${failureColors.page};
+        color: ${failureColors.text};
         font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       }
       main {
         width: min(440px, calc(100vw - 48px));
         padding: 28px;
-        border: 1px solid #262626;
+        border: 1px solid ${failureColors.border};
         border-radius: 22px;
-        background: #151515;
-        box-shadow: 0 24px 70px rgba(0, 0, 0, 0.44);
+        background: ${failureColors.panel};
+        box-shadow: ${failureColors.shadow};
       }
       h1 { margin: 0 0 10px; font-size: 22px; line-height: 1.15; }
-      p { margin: 0; color: #b8b8b8; line-height: 1.55; }
-      code { color: #e2e2e2; word-break: break-all; }
+      p { margin: 0; color: ${failureColors.muted}; line-height: 1.55; }
+      code { color: ${failureColors.code}; word-break: break-all; }
     </style>
   </head>
   <body>
@@ -428,7 +517,9 @@ function clearBootRetry() {
 async function showSplashScreen() {
   if (!mainWindow || mainWindow.isDestroyed()) return;
 
-  await mainWindow.loadFile(path.join(__dirname, 'splash.html'));
+  await mainWindow.loadFile(path.join(__dirname, 'splash.html'), {
+    query: { theme: readNativeTheme() },
+  });
   if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
     mainWindow.show();
   }
@@ -625,18 +716,21 @@ async function bootApp(options = {}) {
 }
 
 function createWindow() {
+  const initialNativeTheme = readNativeTheme();
+  const initialNativeColors = nativeThemeColors(initialNativeTheme);
+
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
     minWidth: 800,
     minHeight: 600,
-    backgroundColor: '#0F0F0F', // Match the EterX root black
+    backgroundColor: initialNativeColors.background,
     title: 'EterX', // Defines standard Task Manager/Taskbar labeling
     icon: path.join(__dirname, '../public/logo.png'), // Explicit application taskbar Favicon mapping
     titleBarStyle: 'hidden', // Provides the modern frame-less aesthetic while preserving OS buttons
     titleBarOverlay: {
-      color: '#0F0F0F',
-      symbolColor: '#d1d1d1',
+      color: initialNativeColors.titleBar,
+      symbolColor: initialNativeColors.titleSymbol,
       height: 38
     },
     show: false,
@@ -748,6 +842,12 @@ ipcMain.handle('show-notification', (event, title, body) => {
 // IPC: Open URL in system default browser
 ipcMain.handle('open-external', async (event, url) => {
   await shell.openExternal(url);
+});
+
+ipcMain.handle('native-theme-get', () => readNativeTheme());
+
+ipcMain.on('native-theme-set', (_event, theme) => {
+  applyNativeWindowTheme(theme);
 });
 
 ipcMain.handle('pet-window-open', async (_event, status) => {

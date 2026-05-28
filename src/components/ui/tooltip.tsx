@@ -98,7 +98,9 @@ export const Tooltip = ({
               transition={{ type: "spring", stiffness: 400, damping: 25 }}
             >
               <div
-                className={`relative w-full whitespace-nowrap rounded-[10px] px-2.5 py-1.5 text-center text-[12px] font-semibold tracking-[0.005em] shadow-[0_10px_22px_rgba(0,0,0,0.22)] ${
+                data-side={side}
+                data-variant={variant}
+                className={`eterx-tooltip-card relative w-full whitespace-nowrap rounded-[10px] px-2.5 py-1.5 text-center text-[12px] font-semibold tracking-[0.005em] shadow-[0_10px_22px_rgba(0,0,0,0.22)] ${
                   variant === 'dark'
                     ? 'border border-white/[0.08] bg-[#2C2C2C] text-[#D4D1CB] shadow-[0_14px_32px_rgba(0,0,0,0.38),inset_0_1px_0_rgba(255,255,255,0.05)]'
                     : 'border border-white bg-white text-[#1F2933] shadow-[0_10px_22px_rgba(0,0,0,0.22),inset_0_1px_0_rgba(255,255,255,1)]'
@@ -107,7 +109,7 @@ export const Tooltip = ({
               >
                 {text}
                 <div
-                  className={`absolute h-2.5 w-2.5 rotate-45 ${variant === 'dark' ? 'bg-[#2C2C2C]' : 'bg-white'} ${arrowClass[side]}`}
+                  className={`eterx-tooltip-arrow absolute h-2.5 w-2.5 rotate-45 ${variant === 'dark' ? 'bg-[#2C2C2C]' : 'bg-white'} ${arrowClass[side]}`}
                   style={arrowStyle}
                 />
               </div>

@@ -305,12 +305,12 @@ export const ProfessionalThought = ({ text, isLatest, isThinking, variant = 'tho
         initial={{ opacity: 0, y: 4 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
-        className="professional-thought w-full"
+        className="professional-thought eterx-thought-block w-full"
       >
-        <div className={`overflow-hidden rounded-[14px] border bg-[#161616]/82 shadow-[inset_0_1px_0_rgba(255,255,255,0.04),0_2px_12px_rgba(0,0,0,0.18)] transition-colors ${ open ? 'border-white/[0.14]' : 'border-white/[0.08] hover:border-white/[0.14]' }`}>
+        <div className={`eterx-thought-card overflow-hidden rounded-[14px] border bg-[#161616]/82 shadow-[inset_0_1px_0_rgba(255,255,255,0.04),0_2px_12px_rgba(0,0,0,0.18)] transition-colors ${ open ? 'border-white/[0.14]' : 'border-white/[0.08] hover:border-white/[0.14]' }`}>
           <button
             onClick={() => setOpen(!open)}
-            className="flex min-h-[42px] w-full items-center gap-2.5 px-3.5 py-1.5 text-left transition-colors hover:bg-white/[0.03] group"
+            className="eterx-thought-toggle flex min-h-[42px] w-full items-center gap-2.5 px-3.5 py-1.5 text-left transition-colors hover:bg-white/[0.03] group"
           >
             <span className={`flex-1 text-[14.5px] font-semibold ${ isLive ? 'text-[#A0A0A0] eterx-live-text' : 'text-[#6B6966]' }`}>
               {thinkLabel}
@@ -326,7 +326,7 @@ export const ProfessionalThought = ({ text, isLatest, isThinking, variant = 'tho
                 transition={{ duration: 0.18, ease: 'easeOut' }}
                 className="overflow-hidden"
               >
-                <div ref={thoughtScrollRef} onScroll={handleThoughtScroll} className={`${ thoughtCanScroll ? 'eterx-scrollbar overflow-y-auto' : 'overflow-y-hidden' } pl-[59px] pr-5 pb-5 pt-1 text-[14px] leading-[1.72] text-[#A8A5A0]`} style={{ maxHeight: 'min(52vh, 520px)' }}>
+                <div ref={thoughtScrollRef} onScroll={handleThoughtScroll} className={`eterx-thought-expanded ${ thoughtCanScroll ? 'eterx-scrollbar overflow-y-auto' : 'overflow-y-hidden' } pl-[59px] pr-5 pb-5 pt-1 text-[14px] leading-[1.72] text-[#A8A5A0]`} style={{ maxHeight: 'min(52vh, 520px)' }}>
                   <ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} components={{
                     ...markdownComponents,
                     p: ({ node, ...props }: any) => <p className="mb-3.5 last:mb-0 break-words leading-[1.72] text-[#A8A5A0]" {...props} />,
@@ -353,7 +353,7 @@ export const ProfessionalThought = ({ text, isLatest, isThinking, variant = 'tho
       initial={isNote ? { opacity: 0, y: 4 } : false}
       animate={isNote ? { opacity: 1, y: 0 } : undefined}
       transition={isNote ? { duration: 0.2, ease: [0.22, 1, 0.36, 1] } : undefined}
-      className={`professional-thought relative w-full max-w-full font-sans font-normal selection:bg-[#E2765A]/20 select-text tracking-normal ${ isNote ? 'py-1 text-[15.5px] leading-[1.62] text-[#B6B2AB]' : 'text-[15.5px] leading-[1.78] text-[#C4C1BC]' }`}
+      className={`professional-thought eterx-professional-thought relative w-full max-w-full font-sans font-normal selection:bg-[#E2765A]/20 select-text tracking-normal ${ isNote ? 'eterx-professional-note py-1 text-[15.5px] leading-[1.62] text-[#B6B2AB]' : 'eterx-professional-answer text-[15.5px] leading-[1.78] text-[#C4C1BC]' }`}
     >
       <ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} components={{
         ...markdownComponents,
@@ -459,8 +459,7 @@ const IconCopyButton = ({ content, label = 'Copy content' }: { content: string, 
       type="button"
       onClick={handle}
       aria-label={copied ? 'Copied' : label}
-      title={copied ? 'Copied' : label}
-      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[9px] border border-white/[0.065] bg-white/[0.035] text-[#9F9991] transition-colors hover:bg-white/[0.07] hover:text-white"
+      className="eterx-action-icon-button flex h-7 w-7 shrink-0 items-center justify-center rounded-[9px] border border-white/[0.065] bg-white/[0.035] text-[#9F9991] transition-colors hover:bg-white/[0.07] hover:text-white"
     >
       {copied ? <CheckCircle className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
     </button>
@@ -552,7 +551,6 @@ const InlineConsole = ({ command, content, exitCode, durationMs }: { command: st
           onClick={copyOutput}
           className="mt-[-2px] flex h-7 w-7 shrink-0 items-center justify-center rounded-[9px] border border-white/[0.065] bg-white/[0.035] text-[#9F9991] transition-colors hover:bg-white/[0.07] hover:text-white"
           aria-label={copiedOutput ? 'Copied shell output' : 'Copy shell output'}
-          title={copiedOutput ? 'Copied' : 'Copy output'}
         >
           {copiedOutput ? <CheckCircle className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
         </button>
@@ -618,7 +616,7 @@ const InlineDiffView = ({ filename, diffLines }: { filename: string, diffLines: 
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
           <IconCopyButton content={diffLines.filter(l => l.type !== 'removed').map(l => l.content).join('\n')} label="Copy diff output" />
-          {!full && <button onClick={(e) => { e.stopPropagation(); setFull(true); }} className="flex h-7 w-7 items-center justify-center rounded-[9px] border border-white/[0.06] bg-white/[0.03] text-[#918B83] transition-colors hover:bg-white/[0.07] hover:text-white" aria-label="Expand diff" title="Expand"><Maximize2 className="h-3.5 w-3.5" /></button>}
+          {!full && <button onClick={(e) => { e.stopPropagation(); setFull(true); }} className="eterx-action-icon-button flex h-7 w-7 items-center justify-center rounded-[9px] border border-white/[0.06] bg-white/[0.03] text-[#918B83] transition-colors hover:bg-white/[0.07] hover:text-white" aria-label="Expand diff"><Maximize2 className="h-3.5 w-3.5" /></button>}
         </div>
       </div>
       {/* Single unified scroll container — horizontal + vertical together */}
@@ -692,7 +690,7 @@ const InlineCodeView = ({ filename, content }: { filename: string, content: stri
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
           <IconCopyButton content={content} label="Copy file content" />
-          {!full && <button onClick={(e) => { e.stopPropagation(); setFull(true); }} className="flex h-7 w-7 items-center justify-center rounded-[9px] border border-white/[0.06] bg-white/[0.03] text-[#918B83] transition-colors hover:bg-white/[0.07] hover:text-white" aria-label="Expand file" title="Expand"><Maximize2 className="h-3.5 w-3.5" /></button>}
+          {!full && <button onClick={(e) => { e.stopPropagation(); setFull(true); }} className="eterx-action-icon-button flex h-7 w-7 items-center justify-center rounded-[9px] border border-white/[0.06] bg-white/[0.03] text-[#918B83] transition-colors hover:bg-white/[0.07] hover:text-white" aria-label="Expand file"><Maximize2 className="h-3.5 w-3.5" /></button>}
         </div>
       </div>
       {/* Single unified scroll container */}
@@ -771,8 +769,8 @@ const getLineContext = (subtitle: string, fileName: string) => {
   return text.length <= 42 ? text : '';
 };
 
-const ACTION_CARD_CLASS = "w-full overflow-hidden rounded-[14px] border border-white/[0.10] bg-[#111111]/76 shadow-[inset_0_1px_0_rgba(255,255,255,0.035),0_4px_16px_rgba(0,0,0,0.20)]";
-const ACTION_ROW_DIVIDER_CLASS = "border-t border-white/[0.07]";
+const ACTION_CARD_CLASS = "eterx-action-card w-full overflow-hidden rounded-[14px] border border-white/[0.10] bg-[#111111]/76 shadow-[inset_0_1px_0_rgba(255,255,255,0.035),0_4px_16px_rgba(0,0,0,0.20)]";
+const ACTION_ROW_DIVIDER_CLASS = "eterx-action-row-divider border-t border-white/[0.07]";
 
 const ActionChip = ({
   log, isLastChip, isActiveGroup, allLogs,
@@ -877,7 +875,7 @@ const ActionChip = ({
           e.stopPropagation();
           if (preview) setIsExpanded((open) => !open);
         }}
-        className={`flex min-h-[42px] items-center gap-2.5 px-2.5 py-1.5 transition-colors group ${ inCard ? 'rounded-none border-0 bg-transparent hover:bg-white/[0.035]' : preview ? `${ACTION_CARD_CLASS} cursor-pointer hover:bg-[#151515]/92 hover:border-white/[0.16]` : `${ACTION_CARD_CLASS} cursor-default hover:bg-[#151515]/72` } ${ preview ? 'cursor-pointer' : 'cursor-default' }`}
+        className={`eterx-action-chip flex min-h-[42px] items-center gap-2.5 px-2.5 py-1.5 transition-colors group ${ inCard ? 'rounded-none border-0 bg-transparent hover:bg-white/[0.035]' : preview ? `${ACTION_CARD_CLASS} cursor-pointer hover:bg-[#151515]/92 hover:border-white/[0.16]` : `${ACTION_CARD_CLASS} cursor-default hover:bg-[#151515]/72` } ${ preview ? 'cursor-pointer' : 'cursor-default' }`}
       >
         {inCard ? <div className="w-0 shrink-0" /> : <div className="w-1 shrink-0" />}
         {!isThinkChip && (() => {
@@ -885,17 +883,16 @@ const ActionChip = ({
           const iconCategory = shouldUseTerminalIcon(log, subtitle, preview) ? 'terminal' : log.iconCategory;
           const agentEntry = resolveAgentIcon(displayVerb, log.text, iconCategory);
           const { Icon: AI, color: ac } = agentEntry;
-          return <span className="flex h-7 w-7 items-center justify-center shrink-0"><AI isLive={isLiveChip} size={18} color={isLiveChip ? ac : '#DAD6CF'} /></span>;
+          return <span className="eterx-action-icon flex h-7 w-7 items-center justify-center shrink-0"><AI isLive={isLiveChip} size={18} color={isLiveChip ? ac : '#DAD6CF'} /></span>;
         })()}
         {isThinkChip && <div className="w-1 shrink-0" />}
-        <span className={`shrink-0 truncate text-[14px] font-semibold leading-tight tracking-normal ${isLiveChip ? 'eterx-live-text' : 'text-[#C9C5BE]'}`}>{displayVerb}</span>
+        <span className={`eterx-action-verb shrink-0 truncate text-[14px] font-semibold leading-tight tracking-normal ${isLiveChip ? 'eterx-live-text' : 'text-[#C9C5BE]'}`}>{displayVerb}</span>
         {hasFile && (
           <span className="flex min-w-0 items-center gap-1.5">
             <button
               type="button"
               onClick={(e) => openInIde(e, 'code')}
-              className="min-w-0 truncate text-left text-[14px] font-semibold leading-tight text-[#8BD3FF] transition-colors duration-150 hover:text-[#B9E7FF] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8BD3FF]/25"
-              title={fullPathLabel}
+              className="eterx-action-file-link min-w-0 truncate text-left text-[14px] font-semibold leading-tight text-[#8BD3FF] transition-colors duration-150 hover:text-[#B9E7FF] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8BD3FF]/25"
               aria-label={`Open file: ${fileName}`}
             >
               {fileName}
@@ -904,13 +901,12 @@ const ActionChip = ({
               <button
                 type="button"
                 onClick={(e) => openInIde(e, 'diff')}
-                className="group/diff relative -my-1 inline-flex h-7 shrink-0 items-center gap-1 rounded-full px-2 font-mono text-[12.5px] font-bold tabular-nums leading-none text-[#C9C5BE] transition-all duration-150 hover:bg-white/[0.075] hover:shadow-[inset_0_0_0_1px_rgba(255,255,255,0.12),0_8px_20px_rgba(0,0,0,0.20)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/20"
+                className="eterx-action-diff-chip group/diff relative -my-1 inline-flex h-7 shrink-0 items-center gap-1 rounded-full px-2 font-mono text-[12.5px] font-bold tabular-nums leading-none text-[#C9C5BE] transition-all duration-150 hover:bg-white/[0.075] hover:shadow-[inset_0_0_0_1px_rgba(255,255,255,0.12),0_8px_20px_rgba(0,0,0,0.20)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/20"
                 aria-label={`${fileActionLabel}: ${fileName}`}
-                title={`${fileActionLabel}: ${fullPathLabel}`}
               >
-                  <span className="text-[#3EE06F]">+{diffStats.added}</span>
-                  <span className="text-[#FF6D63]">-{diffStats.removed}</span>
-                  <span className="pointer-events-none absolute -top-8 left-1/2 z-30 -translate-x-1/2 whitespace-nowrap rounded-full border border-white/[0.10] bg-[#242424]/96 px-2.5 py-1 text-[11px] font-semibold text-[#E8E6E3] opacity-0 shadow-[0_10px_28px_rgba(0,0,0,0.35)] backdrop-blur-xl transition-all duration-150 group-hover/diff:-top-9 group-hover/diff:opacity-100">
+                  <span className="eterx-action-diff-added text-[#3EE06F]">+{diffStats.added}</span>
+                  <span className="eterx-action-diff-removed text-[#FF6D63]">-{diffStats.removed}</span>
+                  <span className="eterx-action-diff-tooltip pointer-events-none absolute -top-8 left-1/2 z-30 -translate-x-1/2 whitespace-nowrap rounded-full border border-white/[0.10] bg-[#242424]/96 px-2.5 py-1 text-[11px] font-semibold text-[#E8E6E3] opacity-0 shadow-[0_10px_28px_rgba(0,0,0,0.35)] backdrop-blur-xl transition-all duration-150 group-hover/diff:-top-9 group-hover/diff:opacity-100">
                     Open diff
                   </span>
               </button>
@@ -1444,7 +1440,7 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
     }
   }, [segs.length, isThinking]);
   return (
-    <div ref={containerRef} className="w-full flex flex-col gap-1 py-0">
+    <div ref={containerRef} className="eterx-thinking-process-stack w-full flex flex-col gap-1 py-0">
       {segs.map((seg, i) => {
         if (seg.kind === 'thought') return <ProfessionalThought key={`t-${ seg.idx }`} text={seg.log.text} isLatest={isLast && i === segs.length - 1 && !hasExternalLiveWork} isThinking={isThinking} startedAt={seg.log.startTime} updatedAt={seg.log.endTime} />;
         if (seg.kind === 'note') return <ProfessionalThought key={`n-${ seg.idx }`} text={seg.log.text} isLatest={false} isThinking={false} variant="note" />;

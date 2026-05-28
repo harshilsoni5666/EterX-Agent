@@ -58,7 +58,7 @@ export const LiveActionChip = ({ text, secondary, isActive, inCard = false }: { 
       initial={{ opacity: 0, y: -3, scale: 0.97 }}
       animate={{ opacity: 1, y: 0, scale: 1 }}
       exit={{ opacity: 0, scale: 0.96, transition: { duration: 0.15 } }}
-      className={`flex min-h-[46px] w-full items-center gap-3 px-3 py-2 text-[#8C8A88] transition-colors ${ inCard ? 'hover:bg-white/[0.035]' : 'rounded-[14px] hover:bg-white/[0.03]' }`}
+      className={`eterx-live-action-chip flex min-h-[46px] w-full items-center gap-3 px-3 py-2 text-[#8C8A88] transition-colors ${ inCard ? 'hover:bg-white/[0.035]' : 'rounded-[14px] hover:bg-white/[0.03]' }`}
     >
       <span className="flex h-8 w-8 items-center justify-center shrink-0">
         <Icon size={19} color={color} />
@@ -174,7 +174,7 @@ const SteeringFeedCard = ({ log, isCompressed = false }: { log: any; isCompresse
     transition={{ type: 'spring', stiffness: 450, damping: 24 }}
     className="flex justify-end w-full my-3.5 relative z-10 group/steer"
   >
-    <div className={`bg-[#242424] text-white px-5 py-3.5 rounded-[22px] rounded-tr-[6px] ml-auto text-[15.5px] shadow-[0_2px_12px_rgba(0,0,0,0.28)] leading-relaxed whitespace-pre-wrap relative border border-white/[0.07] select-text flex flex-row items-end gap-3.5 ${ isCompressed ? 'max-w-[92%]' : 'max-w-[84%]' }`}>
+    <div className={`eterx-steering-bubble bg-[#242424] text-white px-5 py-3.5 rounded-[22px] rounded-tr-[6px] ml-auto text-[15.5px] shadow-[0_2px_12px_rgba(0,0,0,0.28)] leading-relaxed whitespace-pre-wrap relative border border-white/[0.07] select-text flex flex-row items-end gap-3.5 ${ isCompressed ? 'max-w-[92%]' : 'max-w-[84%]' }`}>
       <span className="block w-full text-left break-words [word-break:break-word] [overflow-wrap:anywhere]">{log.text}</span>
       
       {/* CornerDownLeft arrow representing steering entry */}
@@ -456,11 +456,12 @@ const ThoughtSequence = ({
   const shouldShowFaceStatus = isLiveThinking && isLast;
   const actionLabel = stepCount > 0
     ? `${ stepCount } action${ stepCount !== 1 ? 's' : '' }`
-    : 'Saved thinking';
+    : 'Thinking';
   const hasCounter = stepCount > 0 || logs.length > 0;
   const isCollapsedWithAnswer = hasAnswer && !isOpen;
-  const isLiveWorkCounter = isLiveThinking && hasCounter && !isWaitingForFirstTrace;
-  const showWorkedSummary = !isLiveThinking && hasCounter;
+  const hasRealActions = stepCount > 0;
+  const isLiveWorkCounter = isLiveThinking && hasRealActions && !isWaitingForFirstTrace;
+  const showWorkedSummary = !isLiveThinking && hasRealActions;
   const shouldStickCounter = hasAnswer || isLiveWorkCounter;
   const counterColor = '#E8E6E3';
   const counterBackground = 'rgba(28,28,28,0.76)';
@@ -482,25 +483,25 @@ const ThoughtSequence = ({
   return (
     <div className="relative" ref={containerRef}>
       {showWorkedSummary && (
-        <div className="mb-2 flex w-full items-center gap-4 pt-1">
-          <div className="h-px flex-1 bg-white/[0.08]" />
-          <span className="shrink-0 py-[1px] text-center text-[14.5px] font-medium leading-[1.35] tracking-normal text-[#8F8B85]">
+        <div className="eterx-worked-summary mb-2 flex w-full items-center gap-4 pt-1">
+          <div className="eterx-worked-summary-line h-px flex-1 bg-white/[0.08]" />
+          <span className="eterx-worked-summary-label shrink-0 py-[1px] text-center text-[14.5px] font-medium leading-[1.35] tracking-normal text-[#8F8B85]">
             {`Worked for ${ workElapsedLabel }`}
           </span>
-          <div className="h-px flex-1 bg-white/[0.08]" />
+          <div className="eterx-worked-summary-line h-px flex-1 bg-white/[0.08]" />
         </div>
       )}
 
       {hasCounter && (
-        <div className={`${shouldStickCounter ? 'sticky top-3 z-20' : ''} ${isCollapsedWithAnswer ? 'mb-2' : 'mb-1'} flex w-full items-center overflow-visible py-1.5`}>
+        <div className={`eterx-process-summary-row ${shouldStickCounter ? 'sticky top-3 z-20' : ''} ${isCollapsedWithAnswer ? 'mb-2' : 'mb-1'} flex w-full items-center overflow-visible py-1.5`}>
           {isLiveWorkCounter ? (
             <button
               type="button"
               onClick={toggleOpen}
               aria-expanded={isOpen}
-              className="group inline-flex min-h-[36px] shrink-0 items-center gap-1.5 rounded-full bg-[#1C1C1C]/78 px-3 py-[6px] text-[13px] font-semibold leading-[1.35] tracking-normal text-[#C9C6C0] outline outline-1 outline-white/[0.12] backdrop-blur-xl transition-colors duration-150 hover:bg-[#262626]/92 hover:text-[#E8E6E3]"
+              className="eterx-process-summary-chip eterx-process-summary-chip-live group inline-flex min-h-[36px] shrink-0 items-center gap-1.5 rounded-full bg-[#1C1C1C]/78 px-3 py-[6px] text-[13px] font-semibold leading-[1.35] tracking-normal text-[#C9C6C0] outline outline-1 outline-white/[0.12] backdrop-blur-xl transition-colors duration-150 hover:bg-[#262626]/92 hover:text-[#E8E6E3]"
             >
-              <span className="eterx-live-text inline-flex items-center pb-[1px] leading-[1.35]">
+              <span className="eterx-process-summary-label eterx-live-text inline-flex items-center pb-[1px] leading-[1.35]">
                 {`Working for ${ workElapsedLabel }`}
               </span>
               {isOpen
@@ -513,7 +514,7 @@ const ThoughtSequence = ({
               type="button"
               onClick={toggleOpen}
               aria-expanded={isOpen}
-              className="inline-flex h-[30px] items-center gap-1.5 transition-all duration-200"
+              className="eterx-process-summary-chip inline-flex h-[30px] items-center gap-1.5 transition-all duration-200"
               style={{
                 ...compactCounterStyle,
                 cursor: 'pointer',
@@ -527,6 +528,7 @@ const ThoughtSequence = ({
               onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = counterColor; (e.currentTarget as HTMLElement).style.background = counterBackground; }}
             >
               <span
+                className="eterx-process-summary-icon"
                 style={{
                   display: 'inline-flex',
                   width: 20,
@@ -541,7 +543,7 @@ const ThoughtSequence = ({
               >
                 <StepCounterIcon live={isLiveThinking} />
               </span>
-              <span className={isLiveThinking ? 'eterx-live-text' : undefined} style={{ fontSize: 13, fontWeight: 650, letterSpacing: 0, lineHeight: 1 }}>{actionLabel}</span>
+              <span className={`eterx-process-summary-label${isLiveThinking ? ' eterx-live-text' : ''}`} style={{ fontSize: 13, fontWeight: 650, letterSpacing: 0, lineHeight: 1 }}>{actionLabel}</span>
               {isOpen
                 ? <ChevronDown style={{ width: 9, height: 9, flexShrink: 0, opacity: 0.6 }} />
                 : <ChevronRight style={{ width: 9, height: 9, flexShrink: 0, opacity: 0.6 }} />
@@ -685,9 +687,9 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
   return (
     <>
       <style>{liveMotionStyles}</style>
-      <div className="relative flex-1 min-h-0 w-full overflow-hidden">
+      <div className="eterx-chat-feed relative flex-1 min-h-0 w-full overflow-hidden">
       <div
-        className={`relative h-full w-full flex flex-col overflow-y-auto overflow-x-hidden pb-44 eterx-scrollbar ${ isCompressed ? 'pl-3 pr-3 sm:pl-4 sm:pr-4' : 'px-4 sm:px-12' }`}
+        className={`eterx-chat-feed-scroll relative h-full w-full flex flex-col overflow-y-auto overflow-x-hidden pb-44 eterx-scrollbar ${ isCompressed ? 'pl-3 pr-3 sm:pl-4 sm:pr-4' : 'px-4 sm:px-12' }`}
         id="chat-container"
         ref={scrollContainerRef}
         onScroll={handleScrollWrap}
@@ -706,7 +708,7 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
 
 
       {traceLogs.length > 0 && (
-        <div className={`w-full mx-auto pb-4 relative ${ isCompressed ? 'max-w-[520px] pt-16' : 'max-w-[800px] pt-20' }`}>
+        <div className={`eterx-chat-feed-content w-full mx-auto pb-4 relative ${ isCompressed ? 'max-w-[520px] pt-16' : 'max-w-[800px] pt-20' }`}>
           {hiddenGroupCount > 0 && (
             <div className="mb-8 flex justify-center">
               <button
@@ -726,7 +728,7 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
               const { isLong } = getUserQueryPreview(userText);
               return (
                 <div key={`group-${ groupIdx }`} id={`message-${ groupIdx }`} className="mt-9 mb-6 flex w-full scroll-m-20 flex-col items-end group/user">
-                  <div className={`ml-auto flex flex-col items-end rounded-[22px] border border-white/[0.055] bg-[#242424] px-[18px] py-3 text-[15.5px] leading-[1.56] text-[#E8E6E3] shadow-[0_10px_28px_rgba(0,0,0,0.22),inset_0_1px_0_rgba(255,255,255,0.035)] selection:bg-[#E2765A]/30 relative whitespace-pre-wrap select-text ${ isCompressed ? 'max-w-[92%]' : 'max-w-[560px]' }`}>
+                  <div className={`eterx-user-message-bubble eterx-chat-feed-user-bubble ml-auto flex flex-col items-end rounded-[22px] border border-white/[0.055] bg-[#242424] px-[18px] py-3 text-[15.5px] leading-[1.56] text-[#E8E6E3] shadow-[0_10px_28px_rgba(0,0,0,0.22),inset_0_1px_0_rgba(255,255,255,0.035)] selection:bg-[#E2765A]/30 relative whitespace-pre-wrap select-text ${ isCompressed ? 'max-w-[92%]' : 'max-w-[560px]' }`}>
                     {first.attachments && first.attachments.length > 0 && (
                       <div className="flex flex-wrap justify-end gap-2.5 mb-3 w-full">
                         {first.attachments.map((att: any, i: number) => {
@@ -760,7 +762,7 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
                         <button
                           type="button"
                           onClick={() => setPreviewUserMessage({ text: userText, index: groupIdx })}
-                          className="absolute inset-x-0 bottom-0 flex h-24 items-end justify-center bg-gradient-to-b from-[#242424]/0 via-[#242424]/82 to-[#242424] pb-1.5 text-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/20"
+                          className="eterx-chat-feed-user-fade absolute inset-x-0 bottom-0 flex h-24 items-end justify-center bg-gradient-to-b from-[#242424]/0 via-[#242424]/82 to-[#242424] pb-1.5 text-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/20"
                           aria-label="Show full prompt"
                         >
                           <span className="text-[13px] font-medium text-[#A4A19D] transition-colors hover:text-[#C4C1BC]">
@@ -958,10 +960,10 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
                           animate={{ opacity: 1, y: 0 }}
                           exit={{ opacity: 0, y: -3 }}
                           transition={{ duration: 0.18, ease: 'easeOut' }}
-                          className="mb-4 mt-1 overflow-hidden rounded-[14px] border border-white/[0.08] bg-[#1A1A1A]/80 shadow-[inset_0_1px_0_rgba(255,255,255,0.04),0_4px_16px_rgba(0,0,0,0.22)]"
+                          className="eterx-live-action-card mb-4 mt-1 overflow-hidden rounded-[14px] border border-white/[0.08] bg-[#1A1A1A]/80 shadow-[inset_0_1px_0_rgba(255,255,255,0.04),0_4px_16px_rgba(0,0,0,0.22)]"
                         >
                           {liveCommandLogs.map((cmd: any, cmdIdx: number) => (
-                            <div key={`live-cmd-wrap-${ groupIdx }-${ cmdIdx }`} className={cmdIdx > 0 ? 'border-t border-white/[0.055]' : ''}>
+                            <div key={`live-cmd-wrap-${ groupIdx }-${ cmdIdx }`} className={`eterx-live-action-row ${cmdIdx > 0 ? 'border-t border-white/[0.055]' : ''}`}>
                               <LiveActionChip key={`live-cmd-${ groupIdx }-${ cmdIdx }`} text={cmd.text} secondary={cmd.secondary} isActive={isThinkingTurn} inCard={true} />
                             </div>
                           ))}
@@ -972,11 +974,11 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
                 </AnimatePresence>
 
                 {displayFinalAnswer && (
-                  <div className="w-full group/assistant mt-0 [&_.professional-thought>*:first-child]:!mt-0">
+                  <div className="eterx-assistant-answer w-full group/assistant mt-0 [&_.professional-thought>*:first-child]:!mt-0">
                     <div className="relative group/thought">
                       {/* Live typing: karaoke dim-to-bright */}
                       {displayFinalAnswer.isLiveTyping ? (
-                        <div className="text-[15.5px] leading-[1.8] font-sans whitespace-pre-wrap text-[#C4C1BC]">
+                        <div className="eterx-assistant-live-text text-[15.5px] leading-[1.8] font-sans whitespace-pre-wrap text-[#C4C1BC]">
                           {(() => {
                             if (displayFinalAnswer.text.length > LIVE_KARAOKE_TEXT_LIMIT) {
                               return displayFinalAnswer.text;
@@ -1011,7 +1013,7 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
                           </span>
                         </div>
                       ) : (
-                        <div className="text-[15.5px] leading-[1.85] text-[#C4C1BC] font-sans relative">
+                        <div className="eterx-assistant-answer-body text-[15.5px] leading-[1.85] text-[#C4C1BC] font-sans relative">
                           <ProfessionalThought
                             text={displayFinalAnswer.text}
                             isLatest={groupIdx === groups.length - 1 && !isThinking}
@@ -1074,7 +1076,7 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
               role="dialog"
               aria-modal="true"
               aria-label="Full prompt preview"
-              className={`relative max-h-[82vh] w-[calc(100vw-32px)] overflow-hidden rounded-[24px] border border-white/[0.08] bg-[#1D1D1D] shadow-[0_28px_90px_rgba(0,0,0,0.55)] sm:w-[calc(100vw-96px)] ${ isCompressed ? 'max-w-[720px]' : 'max-w-[920px]' }`}
+              className={`eterx-prompt-preview-dialog relative max-h-[82vh] w-[calc(100vw-32px)] overflow-hidden rounded-[24px] border border-white/[0.08] bg-[#1D1D1D] shadow-[0_28px_90px_rgba(0,0,0,0.55)] sm:w-[calc(100vw-96px)] ${ isCompressed ? 'max-w-[720px]' : 'max-w-[920px]' }`}
               initial={{ opacity: 0, y: 14, scale: 0.98 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, y: 10, scale: 0.98 }}
@@ -1093,7 +1095,7 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
                 ref={previewScrollRef}
                 className="max-h-[82vh] overflow-y-auto eterx-scrollbar eterx-prompt-preview-scroll px-6 py-8 pr-8 sm:px-8 sm:py-9 sm:pr-10"
               >
-                <div className="whitespace-pre-wrap break-words text-[16px] leading-[1.75] text-[#C4C1BC] [overflow-wrap:anywhere]">
+                <div className="eterx-prompt-preview-text whitespace-pre-wrap break-words text-[16px] leading-[1.75] text-[#C4C1BC] [overflow-wrap:anywhere]">
                   {previewUserMessage.text}
                 </div>
               </div>

@@ -6,6 +6,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   listFolder: (path) => ipcRenderer.invoke('list-folder', path),
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
   showNotification: (title, body) => ipcRenderer.invoke('show-notification', title, body),
+  setNativeTheme: (theme) => ipcRenderer.send('native-theme-set', theme),
+  getNativeTheme: () => ipcRenderer.invoke('native-theme-get'),
   openPetWindow: (status) => ipcRenderer.invoke('pet-window-open', status),
   updatePetWindow: (status) => ipcRenderer.send('pet-window-status', status),
   closePetWindow: () => ipcRenderer.send('pet-window-close'),

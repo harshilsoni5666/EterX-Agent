@@ -35,8 +35,8 @@ export const markdownComponents = {
 
     if (!inline && (language === 'react-preview' || language === 'preview')) {
       return (
-        <div className="my-5 w-full rounded-[32px] border border-white/10 bg-[#050505] overflow-hidden shadow-2xl">
-          <div className="p-4 bg-white/5 border-b border-white/5 flex items-center justify-between">
+        <div className="eterx-markdown-preview my-5 w-full rounded-[32px] border border-white/10 bg-[#050505] overflow-hidden shadow-2xl">
+          <div className="eterx-markdown-preview-header p-4 bg-white/5 border-b border-white/5 flex items-center justify-between">
             <div className="flex gap-1.5 ml-2">
               <div className="w-2.5 h-2.5 rounded-full bg-[#FF5F56]" />
               <div className="w-2.5 h-2.5 rounded-full bg-[#FFBD2E]" />
@@ -44,7 +44,7 @@ export const markdownComponents = {
             </div>
             <span className="text-[11px] font-black text-white/40 uppercase tracking-widest px-4">Live Preview</span>
           </div>
-          <div className="p-8 min-h-[200px] flex items-center justify-center">
+          <div className="eterx-markdown-preview-body p-8 min-h-[200px] flex items-center justify-center">
             <div dangerouslySetInnerHTML={{ __html: content }} />
           </div>
         </div>
@@ -52,22 +52,22 @@ export const markdownComponents = {
     }
 
     return !inline && match ? (
-      <div className="my-5 shadow-lg border border-white/5 rounded-xl group/code relative flex flex-col bg-[#1C1B1A]">
+      <div className="eterx-markdown-code-block my-5 shadow-lg border border-white/5 rounded-xl group/code relative flex flex-col bg-[#1C1B1A]">
         <div className="sticky top-20 z-30 h-0 flex justify-end px-2 pointer-events-none">
           <div className="pointer-events-auto">
             <CopyButton
               text={content}
               side="left"
-              className="bg-[#1C1B1A]/80 backdrop-blur-md border border-white/10 opacity-40 group-hover/code:opacity-100 transition-all duration-200 shadow-lg"
+              className="eterx-markdown-copy-button bg-[#1C1B1A]/80 backdrop-blur-md border border-white/10 opacity-40 group-hover/code:opacity-100 transition-all duration-200 shadow-lg"
             />
           </div>
         </div>
-        <div className="overflow-x-auto overflow-y-hidden rounded-xl custom-scrollbar">
+        <div className="eterx-markdown-code-scroll overflow-x-auto overflow-y-hidden rounded-xl custom-scrollbar">
           <SyntaxHighlighter
             style={vscDarkPlus as any}
             language={language}
             PreTag="div"
-            className="text-[13.5px] leading-relaxed font-mono code-span w-full m-0! bg-[#1C1B1A]! pt-5 pb-4 px-4 min-w-full"
+            className="eterx-markdown-code-content text-[13.5px] leading-relaxed font-mono code-span w-full m-0! bg-[#1C1B1A]! pt-5 pb-4 px-4 min-w-full"
             customStyle={{ margin: 0, background: '#1C1B1A', padding: '1.25rem 1rem' }}
             {...props}
           >
@@ -76,7 +76,7 @@ export const markdownComponents = {
         </div>
       </div>
     ) : (
-      <code className="bg-[#363432] text-[#E2765A] px-1.5 py-0.5 rounded font-mono text-[13.5px]" {...props}>
+      <code className="eterx-markdown-inline-code bg-[#363432] text-[#E2765A] px-1.5 py-0.5 rounded font-mono text-[13.5px]" {...props}>
         {children}
       </code>
     );

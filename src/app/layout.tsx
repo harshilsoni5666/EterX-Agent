@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import { DM_Sans } from 'next/font/google';
 import './globals.css';
+import './light-theme.generated.css';
 import 'katex/dist/katex.min.css';
 
 const dmSans = DM_Sans({
@@ -17,14 +18,46 @@ export const metadata: Metadata = {
   },
 };
 
+const themeInitScript = `
+(function () {
+  try {
+    var saved = localStorage.getItem('eterx_settings');
+    var settings = saved ? JSON.parse(saved) : {};
+    var requested = settings.theme || 'light';
+    var resolved = requested === 'system'
+      ? (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+      : requested;
+    if (resolved !== 'dark') resolved = 'light';
+    var root = document.documentElement;
+    root.setAttribute('data-theme', resolved);
+    root.classList.toggle('dark', resolved === 'dark');
+    root.classList.toggle('light', resolved === 'light');
+    root.style.colorScheme = resolved;
+    if (window.electronAPI && window.electronAPI.setNativeTheme) {
+      window.electronAPI.setNativeTheme(resolved);
+    }
+  } catch (_) {
+    var root = document.documentElement;
+    root.setAttribute('data-theme', 'light');
+    root.classList.remove('dark');
+    root.classList.add('light');
+    root.style.colorScheme = 'light';
+    if (window.electronAPI && window.electronAPI.setNativeTheme) {
+      window.electronAPI.setNativeTheme('light');
+    }
+  }
+})();
+`;
+
 export default function RootLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en" className="dark">
+    <html lang="en" className="light" data-theme="light" suppressHydrationWarning>
       <body className={`${dmSans.variable} font-sans antialiased min-h-screen selection:bg-[#E2765A]/30 selection:text-white`}>
+        <script id="eterx-theme-init" dangerouslySetInnerHTML={{ __html: themeInitScript }} />
         {children}
       </body>
     </html>

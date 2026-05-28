@@ -410,7 +410,7 @@ function SubagentDetailPanel({
   const events = agent.events || [];
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div className="eterx-review-panel flex h-full min-h-0 flex-col">
       <div className="flex min-h-[58px] shrink-0 items-center gap-3 border-b border-white/[0.055] px-4">
         <button
           type="button"
@@ -691,7 +691,7 @@ function ReviewPanel({
         </div>
       </div>
 
-      <div className="eterx-review-scrollbar min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain p-3 pr-2 [scrollbar-gutter:stable]">
+      <div className="eterx-review-panel-scroll eterx-review-scrollbar min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain p-3 pr-2 [scrollbar-gutter:stable]">
         {changedFiles.length > 0 ? (
           <div className="space-y-2">
             {changedFiles.map(file => {
@@ -709,6 +709,7 @@ function ReviewPanel({
                 : compactRows;
               return (
                 <div key={key} className={cx(
+                  'eterx-review-file-card',
                   'overflow-hidden rounded-[16px] border bg-[#101010]/78 transition-colors',
                   open ? 'border-white/[0.11] shadow-[0_18px_50px_rgba(0,0,0,0.20)]' : 'border-white/[0.07] hover:border-white/[0.12]'
                 )}>
@@ -716,7 +717,7 @@ function ReviewPanel({
                     type="button"
                     onClick={() => setExpanded(prev => ({ ...prev, [key]: !open }))}
                     className={cx(
-                      'group flex min-h-[52px] w-full items-center gap-3 px-4 text-left transition-colors hover:bg-white/[0.04]',
+                      'eterx-review-file-card-head group flex min-h-[52px] w-full items-center gap-3 px-4 text-left transition-colors hover:bg-white/[0.04]',
                       open && 'border-b border-white/[0.055]'
                     )}
                   >
@@ -732,7 +733,7 @@ function ReviewPanel({
                   </button>
 
                   {open && (
-                    <div className="eterx-review-scrollbar max-h-[58vh] overflow-y-auto overflow-x-hidden overscroll-contain bg-[#0B0B0C] py-2 pr-1 font-mono text-[12px] leading-5 [scrollbar-gutter:stable]">
+                    <div className="eterx-review-diff-body eterx-review-scrollbar max-h-[58vh] overflow-y-auto overflow-x-hidden overscroll-contain bg-[#0B0B0C] py-2 pr-1 font-mono text-[12px] leading-5 [scrollbar-gutter:stable]">
                       {rows.length > 0 ? (
                         rows.map(row => {
                           if (row.kind === 'gap') {
@@ -770,7 +771,7 @@ function ReviewPanel({
                         <button
                           type="button"
                           onClick={() => onSelectFile(file, index)}
-                          className="mx-3 my-2 rounded-xl border border-white/[0.055] bg-white/[0.025] px-4 py-3 text-left text-[12px] text-white/48 transition-colors hover:bg-white/[0.045] hover:text-white/70"
+                          className="eterx-review-empty-diff mx-3 my-2 rounded-xl border border-white/[0.055] bg-white/[0.025] px-4 py-3 text-left text-[12px] text-white/48 transition-colors hover:bg-white/[0.045] hover:text-white/70"
                         >
                           No line-level diff was supplied for this file. Open the file to inspect the current artifact.
                         </button>
@@ -1077,8 +1078,8 @@ export function WorkspaceReviewEditor({
   }, [activeSubagentId, subagents]);
 
   return (
-    <aside ref={shellRef} className={cx('flex h-full min-h-0 w-full flex-col overflow-hidden border-l border-white/[0.07] bg-[#0B0B0C] text-[#D8D5CF]', className)}>
-      <div className="flex h-[48px] shrink-0 items-center gap-1.5 border-b border-white/[0.055] bg-[#0A0A0B]/96 px-2 shadow-[inset_0_-1px_0_rgba(255,255,255,0.025)]">
+    <aside ref={shellRef} className={cx('eterx-workspace-review flex h-full min-h-0 w-full flex-col overflow-hidden border-l border-white/[0.07] bg-[#0B0B0C] text-[#D8D5CF]', className)}>
+      <div className="eterx-workspace-review-topbar flex h-[48px] shrink-0 items-center gap-1.5 border-b border-white/[0.055] bg-[#0A0A0B]/96 px-2 shadow-[inset_0_-1px_0_rgba(255,255,255,0.025)]">
         <button
           type="button"
           onClick={() => chooseMode('overview')}
@@ -1206,7 +1207,7 @@ export function WorkspaceReviewEditor({
         </button>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-hidden">
+      <div className="eterx-workspace-review-body min-h-0 flex-1 overflow-hidden">
         {mode === 'overview' ? (
           <OverviewPanel
             files={files}
