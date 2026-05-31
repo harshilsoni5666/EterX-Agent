@@ -172,7 +172,7 @@ export const AgentFace = ({
     hoverDroveControllerRef.current = false;
   };
 
-  const shimmerDuration = active ? 4.8 : 7.2;
+  const shimmerDuration = active ? 6.2 : 8.4;
   const faceScale = sizeProfile.faceScale;
   const attention = syncWithController ? controllerSnapshot.attention : 'center';
   const attentionIntensity = syncWithController ? controllerSnapshot.attentionIntensity : 0;

@@ -11,8 +11,17 @@ import { resolveWorkspaceDirectoryForContext } from '../../workspace/path_resolv
  * Spin up local HTTP servers for serving files, testing APIs, or webhooks.
  */
 
-let activeServer: http.Server | null = null;
-let activePort = 0;
+interface HttpServerState {
+  activeServer: http.Server | null;
+  activePort: number;
+}
+
+// Bind state to globalThis to survive Next.js dev server reloads (HMR)
+const globalForHttpServer = globalThis as any;
+const serverState: HttpServerState = globalForHttpServer.__eterxHttpServerState || (globalForHttpServer.__eterxHttpServerState = {
+  activeServer: null,
+  activePort: 0
+});
 
 const MIME_TYPES: Record<string, string> = {
   '.html': 'text/html', '.css': 'text/css', '.js': 'application/javascript',
@@ -36,14 +45,14 @@ export const httpServerTool: ToolDefinition = {
     try {
       switch (input.action) {
         case 'start': {
-          if (activeServer) {
-            return { success: false, message: `Server already running on port ${activePort}. Stop it first.` };
+          if (serverState.activeServer) {
+            return { success: false, message: `Server already running on port ${serverState.activePort}. Stop it first.` };
           }
           const root = resolveWorkspaceDirectoryForContext(input.directory, context);
           await fs.ensureDir(root);
           const port = input.port || 8080;
 
-          activeServer = http.createServer(async (req, res) => {
+          serverState.activeServer = http.createServer(async (req, res) => {
             const urlPath = req.url === '/' ? '/index.html' : req.url || '/';
             const filePath = path.resolve(root, `.${decodeURIComponent(urlPath)}`);
             
@@ -75,25 +84,25 @@ export const httpServerTool: ToolDefinition = {
           });
 
           await new Promise<void>((resolve, reject) => {
-            activeServer!.listen(port, () => { activePort = port; resolve(); });
-            activeServer!.on('error', reject);
+            serverState.activeServer!.listen(port, () => { serverState.activePort = port; resolve(); });
+            serverState.activeServer!.on('error', reject);
           });
 
           return { success: true, message: `🌐 Server started at http://localhost:${port} serving: ${root}`, port, url: `http://localhost:${port}` };
         }
         case 'stop': {
-          if (!activeServer) return { success: true, message: 'No server running' };
-          activeServer.close();
-          activeServer = null;
-          const p = activePort;
-          activePort = 0;
+          if (!serverState.activeServer) return { success: true, message: 'No server running' };
+          serverState.activeServer.close();
+          serverState.activeServer = null;
+          const p = serverState.activePort;
+          serverState.activePort = 0;
           return { success: true, message: `🛑 Server on port ${p} stopped` };
         }
         case 'status': {
           return {
             success: true,
-            message: activeServer ? `Server running on port ${activePort}` : 'No server running',
-            running: !!activeServer, port: activePort
+            message: serverState.activeServer ? `Server running on port ${serverState.activePort}` : 'No server running',
+            running: !!serverState.activeServer, port: serverState.activePort
           };
         }
         default: return { success: false, message: 'Unknown action' };

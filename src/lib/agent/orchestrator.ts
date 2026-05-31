@@ -8,12 +8,7 @@ import { globalSessionManager } from './session';
 // Critic removed — was causing false rejections on user-stopped outputs and wasting execution time
 import fs from 'fs-extra';
 import path from 'path';
-import {
-  getMainAgentModelConfig,
-  normalizeMainAgentThinkingLevel,
-  type MainAgentMode,
-  type MainAgentThinkingLevel,
-} from './model-routing';
+import { getMainAgentModelConfig, type MainAgentMode, type MainAgentThinkingLevel } from './model-routing';
 
 /**
  * The Enhanced Orchestrator v2
@@ -54,6 +49,7 @@ type RuntimeProjectContext = ProjectContext & {
   disableWorkspaceInit?: boolean;
   forceFastMode?: boolean;
   agentRuntime?: string;
+  agentProfile?: string;
   agentId?: string;
   selectedModelMode?: MainAgentMode;
   selectedModelName?: string;
@@ -65,6 +61,7 @@ type RuntimeProjectContext = ProjectContext & {
   workspaceRoot?: string;
   allowedPaths?: string[];
   paths?: string[];
+  workspaceId?: string;
 };
 
 export class AgentOrchestrator {
@@ -74,39 +71,6 @@ export class AgentOrchestrator {
   // Cache for hydrateContext results — avoids 4 disk reads per message
   private _hydrateCache: Map<string, { context: any; ts: number }> = new Map();
   private static readonly HYDRATE_TTL_MS = 30_000; // 30 seconds
-  private static readonly MAX_HYDRATE_CACHE_ENTRIES = 40;
-
-  private pruneHydrateCache(): void {
-    const now = Date.now();
-    for (const [projectId, cached] of this._hydrateCache.entries()) {
-      if (now - cached.ts > AgentOrchestrator.HYDRATE_TTL_MS * 4) {
-        this._hydrateCache.delete(projectId);
-      }
-    }
-
-    while (this._hydrateCache.size > AgentOrchestrator.MAX_HYDRATE_CACHE_ENTRIES) {
-      let oldestProjectId: string | null = null;
-      let oldestTs = Number.POSITIVE_INFINITY;
-      for (const [projectId, cached] of this._hydrateCache.entries()) {
-        if (cached.ts < oldestTs) {
-          oldestTs = cached.ts;
-          oldestProjectId = projectId;
-        }
-      }
-      if (!oldestProjectId) break;
-      this._hydrateCache.delete(oldestProjectId);
-    }
-  }
-
-  private buildHydrateCachePayload(context: RuntimeProjectContext): Partial<RuntimeProjectContext> {
-    return {
-      userPreferences: context.userPreferences ? { ...context.userPreferences } : {},
-      errorHistory: Array.isArray(context.errorHistory) ? [...context.errorHistory] : [],
-      recentMemories: Array.isArray(context.recentMemories)
-        ? context.recentMemories.slice(0, 5).map((memory: any) => ({ ...memory }))
-        : [],
-    };
-  }
 
 
   /**
@@ -162,14 +126,10 @@ export class AgentOrchestrator {
    * This is the key fix: the agent now actually READS its own memory.
    */
   private async hydrateContext(context: any, projectId: string): Promise<void> {
-    this.pruneHydrateCache();
-
     // FAST PATH: Use cached hydration if it's fresh (< 30s old)
     const cached = this._hydrateCache.get(projectId);
     if (cached && (Date.now() - cached.ts) < AgentOrchestrator.HYDRATE_TTL_MS) {
       Object.assign(context, cached.context);
-      this._hydrateCache.delete(projectId);
-      this._hydrateCache.set(projectId, { ...cached, ts: Date.now() });
       return;
     }
 
@@ -244,10 +204,9 @@ export class AgentOrchestrator {
     }
     // Cache the result for this project
     this._hydrateCache.set(projectId, {
-      context: this.buildHydrateCachePayload(context),
+      context: { ...context },
       ts: Date.now()
     });
-    this.pruneHydrateCache();
   }
 
   /**
@@ -266,12 +225,27 @@ export class AgentOrchestrator {
     userName?: string,
     leasedApiKey?: string
   ): Promise<AgentResponse> {
+    const activeChatId = projectId;
     const shouldHydrateMemory = !pinnedContext?.disableMemoryHydration;
     const shouldPersistLongTermMemory = !pinnedContext?.disableLongTermMemory;
     const shouldPersistSession = pinnedContext?.persistSession !== false;
     const shouldExportTranscript = pinnedContext?.exportTranscript !== false;
     const shouldInitializeMemory = shouldHydrateMemory || shouldPersistLongTermMemory;
     const shouldInitializeWorkspace = shouldExportTranscript || !pinnedContext?.disableWorkspaceInit;
+
+    // Resolve workspaceRoot and workspaceId
+    let workspaceRoot = process.cwd();
+    if (Array.isArray(pinnedContext?.paths) && pinnedContext.paths.length > 0) {
+      const pinnedPaths = pinnedContext.paths.filter((p: unknown): p is string => typeof p === 'string' && p.trim().length > 0);
+      const firstDirectory = pinnedPaths.find((p: string) => {
+        try { return fs.existsSync(p) && fs.statSync(p).isDirectory(); } catch { return false; }
+      });
+      const firstPath = firstDirectory || pinnedPaths[0];
+      if (firstPath) {
+        workspaceRoot = firstDirectory || path.dirname(path.resolve(firstPath));
+      }
+    }
+    const workspaceId = pinnedContext?.projectId || path.basename(workspaceRoot);
     
     // Inject pinned context into standard prompt if it exists
     let effectiveRequest = userRequest;
@@ -281,58 +255,48 @@ export class AgentOrchestrator {
 
     console.log(`[Orchestrator] ▶ "${effectiveRequest.substring(0, 80)}" | User: ${userId}`);
     
-    resetCancelFlag(projectId);
-    const workspace = new WorkspaceManager(userId, projectId);
+    resetCancelFlag(activeChatId);
+    const workspace = new WorkspaceManager(userId, activeChatId);
 
     // PARALLEL INIT — all disk I/O runs concurrently instead of sequentially
     await Promise.all([
       shouldInitializeMemory ? globalMemoryManager.initialize() : Promise.resolve(),
       shouldInitializeMemory ? memoryV2.initialize() : Promise.resolve(),
-      shouldPersistSession ? globalSessionManager.loadForProject(projectId) : Promise.resolve(),
+      shouldPersistSession ? globalSessionManager.loadForProject(activeChatId) : Promise.resolve(),
       shouldInitializeWorkspace ? workspace.initialize() : Promise.resolve(),
     ]);
     
     if (shouldPersistLongTermMemory) {
       memoryV2.recordRawEvent({
         userId,
-        projectId,
-        chatId: projectId,
+        projectId: workspaceId,
+        chatId: activeChatId,
         eventType: 'user_message',
         text: effectiveRequest,
         metadata: { source: pinnedContext?.source || 'desktop' },
       }).catch(() => undefined);
       memoryV2.learnFromUserMessage({
         userId,
-        projectId,
-        chatId: projectId,
+        projectId: workspaceId,
+        chatId: activeChatId,
         message: effectiveRequest,
       }).catch(() => undefined);
     }
     const context: RuntimeProjectContext = shouldPersistLongTermMemory
-      ? globalMemoryManager.getProjectContext(projectId)
+      ? globalMemoryManager.getProjectContext(workspaceId)
       : {
-          projectId,
+          projectId: workspaceId,
           conversationSummary: 'Current request only.',
           uploadedFiles: [],
           recentMemories: [],
           userPreferences: {},
           errorHistory: []
         };
+
+    context.workspaceId = workspaceId;
+    context.projectId = activeChatId;
     if (userName) context.userName = userName;
     context.userId = userId;
-    if (Array.isArray(pinnedContext?.paths) && pinnedContext.paths.length > 0) {
-      const pinnedPaths = pinnedContext.paths.filter((p: unknown): p is string => typeof p === 'string' && p.trim().length > 0);
-      context.paths = pinnedPaths;
-      context.allowedPaths = pinnedPaths;
-      const firstDirectory = pinnedPaths.find((p: string) => {
-        try { return fs.existsSync(p) && fs.statSync(p).isDirectory(); } catch { return false; }
-      });
-      const firstPath = firstDirectory || pinnedPaths[0];
-      if (firstPath) {
-        context.workspaceRoot = firstDirectory || path.dirname(path.resolve(firstPath));
-        context.workspacePath = context.workspaceRoot;
-      }
-    }
     if (pinnedContext?.disableSubAgents) {
       context.disableSubAgents = true;
     }
@@ -349,22 +313,31 @@ export class AgentOrchestrator {
       context.disableWorkspaceInit = !!pinnedContext.disableWorkspaceInit;
       context.forceFastMode = !!pinnedContext.forceFastMode;
       context.agentRuntime = pinnedContext.agentRuntime;
+      context.agentProfile = pinnedContext.agentProfile;
       context.agentId = pinnedContext.agentId;
       context.source = pinnedContext.source;
       context.telegram = pinnedContext.telegram;
     }
     if (shouldHydrateMemory) {
-      await this.hydrateContext(context, projectId);
+      await this.hydrateContext(context, workspaceId);
+    }
+    if (pinnedContext) {
+      context.agentRuntime = pinnedContext.agentRuntime;
+      context.agentProfile = pinnedContext.agentProfile;
+      context.agentId = pinnedContext.agentId;
+      context.source = pinnedContext.source;
+      context.telegram = pinnedContext.telegram;
     }
 
     const startTime = Date.now();
     const complexity = pinnedContext?.forceFastMode ? 'standard' : this.classifyComplexity(userRequest);
     const effectiveMode = pinnedContext?.forceFastMode ? 'fast' : this.resolveOptimalMode(mode, complexity);
     const modelConfig = getMainAgentModelConfig(effectiveMode);
-    const selectedThinkingLevel = normalizeMainAgentThinkingLevel(pinnedContext?.thinkingLevel);
     context.selectedModelMode = effectiveMode;
     context.selectedModelName = modelConfig.modelName;
-    context.selectedThinkingLevel = selectedThinkingLevel;
+    if (pinnedContext?.agentProfile === 'eterx-code' || pinnedContext?.agentProfile === 'coding') {
+      context.selectedThinkingLevel = 'high';
+    }
     
     // Auto-route to optimal model based on complexity
     if (effectiveMode !== mode) {
@@ -434,16 +407,16 @@ export class AgentOrchestrator {
       if (errMsg === 'CANCELLED_BY_USER' || errMsg.toLowerCase().includes('cancelled_by_user')) {
         // Clean stop — not an error
         finalAnswer = 'Stopped by user.';
-        console.log(`[Orchestrator] 🛑 Agent cancelled by user for ${projectId.substring(0, 8)}...`);
+        console.log(`[Orchestrator] 🛑 Agent cancelled by user for ${activeChatId.substring(0, 8)}...`);
       } else {
         finalAnswer = `Agent Execution Failed: ${error.message}`;
         console.error(`[Orchestrator] 💥 Fatal error:`, error.message);
         if (shouldPersistLongTermMemory) {
-          globalMemoryManager.logError('orchestrator', error.message, `Task: ${userRequest}`);
+          globalMemoryManager.logError('orchestrator', error.message, `Task: ${userRequest} [project:${workspaceId}]`);
           memoryV2.remember({
             userId,
-            projectId,
-            chatId: projectId,
+            projectId: workspaceId,
+            chatId: activeChatId,
             scope: 'error',
             type: 'orchestrator_failure',
             content: `Task failed: ${userRequest}\nError: ${error.message}`,
@@ -482,7 +455,7 @@ export class AgentOrchestrator {
 
     if (shouldPersistLongTermMemory) {
       globalMemoryManager.saveEpisodicMemory(
-        projectId, 
+        workspaceId,
         `Executed task: ${userRequest}`, 
         'task_result',
         success ? 7 : 5,
@@ -497,8 +470,8 @@ export class AgentOrchestrator {
       }
       await memoryV2.saveSessionSnapshot({
         userId,
-        projectId,
-        chatId: projectId,
+        projectId: workspaceId,
+        chatId: activeChatId,
         userMessage: userRequest,
         agentOutput: finalAnswer,
         success,

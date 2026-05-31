@@ -139,6 +139,10 @@ export class ConversationLedger {
   // Deduplication cache: normalized key → entry id
   private dedupCache: Map<string, string> = new Map();
 
+  // Per-chat in-memory caches for concurrent chat support
+  private chatEntries: Map<string, LedgerEntry[]> = new Map();
+  private chatDedupCaches: Map<string, Map<string, string>> = new Map();
+
   // ── Initialization ──────────────────────────────────────────────────────────
 
   /**
@@ -149,6 +153,12 @@ export class ConversationLedger {
     try {
       if (this.initialized && this.currentChatId === chatId) return;
 
+      // Save current chat's entries and dedup cache before switching
+      if (this.currentChatId) {
+        this.chatEntries.set(this.currentChatId, this.entries);
+        this.chatDedupCaches.set(this.currentChatId, this.dedupCache);
+      }
+
       this.currentChatId = chatId;
       const sanitizedId = chatId.replace(/[^a-zA-Z0-9_-]/g, '_');
       const chatDir = path.join(SESSION_DIR, sanitizedId);
@@ -156,9 +166,19 @@ export class ConversationLedger {
 
       await fs.ensureDir(chatDir);
 
+      // Restore from in-memory cache if this chat was previously loaded
+      if (this.chatEntries.has(chatId)) {
+        this.entries = this.chatEntries.get(chatId)!;
+        this.dedupCache = this.chatDedupCaches.get(chatId) || new Map();
+        this.pendingWrites = [];
+        this.initialized = true;
+        console.log(`[ConversationLedger] 📒 Restored chat ${chatId.substring(0, 8)}… from memory — ${this.entries.length} entries`);
+        return;
+      }
+
       // Load existing entries from disk
       this.entries = [];
-      this.dedupCache.clear();
+      this.dedupCache = new Map();
       this.pendingWrites = [];
 
       if (await fs.pathExists(this.ledgerFilePath)) {
@@ -179,12 +199,16 @@ export class ConversationLedger {
         } catch { /* file unreadable — start fresh */ }
       }
 
+      // Store in the maps for future switches
+      this.chatEntries.set(chatId, this.entries);
+      this.chatDedupCaches.set(chatId, this.dedupCache);
+
       this.initialized = true;
       console.log(`[ConversationLedger] 📒 Initialized for chat ${chatId.substring(0, 8)}… — ${this.entries.length} entries loaded`);
     } catch (err: any) {
       console.warn(`[ConversationLedger] ⚠️ Init failed: ${err.message}. Starting fresh.`);
       this.entries = [];
-      this.dedupCache.clear();
+      this.dedupCache = new Map();
       this.initialized = true;
     }
   }
@@ -224,6 +248,27 @@ export class ConversationLedger {
       // Update dedup cache
       const dedupKey = this.getDeduplicationKey(entry.toolName, entry.argsDigest);
       if (dedupKey) this.dedupCache.set(dedupKey, entry.id);
+
+      // Keep per-chat maps in sync
+      const entryChatId = entry.chatId;
+      if (entryChatId) {
+        if (!this.chatEntries.has(entryChatId)) {
+          this.chatEntries.set(entryChatId, []);
+          this.chatDedupCaches.set(entryChatId, new Map());
+        }
+        const chatArr = this.chatEntries.get(entryChatId)!;
+        // Only push if this isn't the same reference as this.entries (avoid double-push)
+        if (chatArr !== this.entries) {
+          chatArr.push(entry);
+          if (chatArr.length > MAX_ENTRIES) {
+            this.chatEntries.set(entryChatId, chatArr.slice(-MAX_ENTRIES));
+          }
+        }
+        const chatDedup = this.chatDedupCaches.get(entryChatId)!;
+        if (chatDedup !== this.dedupCache && dedupKey) {
+          chatDedup.set(dedupKey, entry.id);
+        }
+      }
 
       // Queue for disk write
       this.pendingWrites.push(JSON.stringify(entry));
@@ -550,10 +595,17 @@ export class ConversationLedger {
 
       if (this.entries.length === 0) return '';
 
+      // Filter entries to current chat only
+      const chatFiltered = this.currentChatId
+        ? this.entries.filter(e => e.chatId === this.currentChatId)
+        : this.entries;
+
+      if (chatFiltered.length === 0) return '';
+
       // Filter entries — exclude the last N if requested
       const sourceEntries = excludeLastN > 0
-        ? this.entries.slice(0, -excludeLastN)
-        : this.entries;
+        ? chatFiltered.slice(0, -excludeLastN)
+        : chatFiltered;
 
       if (sourceEntries.length === 0) return '';
 

@@ -6,6 +6,8 @@ import { getMainAgentModelConfig, type MainAgentMode } from './model-routing';
 
 // Ensure tools are bootstrapped
 import './tools/index';
+import { cancelAgent, cancelAllSubAgents } from './roles/sub_agent';
+import { isCodingAgentProfile } from './coding-agent-profile';
 
 /**
  * AgentRegistry — Per-Chat Agent Execution with Full Independence
@@ -117,7 +119,7 @@ class AgentRegistry {
       };
     }
 
-    if ((data.type === 'thought_stream' || data.type === 'work_note') && typeof data.text === 'string' && data.text.length > 12000) {
+    if (data.type === 'thought_stream' && typeof data.text === 'string' && data.text.length > 12000) {
       return {
         ...data,
         text: `${ data.text.substring(0, 12000) }\n...[trace compacted]`,
@@ -248,9 +250,13 @@ class AgentRegistry {
       this.appendTrace(execution, traceEvent, !pinnedContext?.disableTaskStore);
     };
 
+    const connectionLabel = isCodingAgentProfile(pinnedContext?.agentProfile)
+      ? 'EterX-Code'
+      : modelConfig.label;
+
     onTrace({
-      type: 'work_note',
-      text: `${ modelConfig.label } is starting`,
+      type: 'progress',
+      text: `${ connectionLabel } is starting`,
       noteId: 'eterx-agent-connection',
       isDelta: false,
       isStreaming: false,
@@ -659,6 +665,12 @@ class AgentRegistry {
 
     apiKeyPool.releaseLeasesWithPrefix(`${ chatId }_sub_`);
 
+    try {
+      cancelAgent(chatId);
+    } catch (e) {
+      console.warn(`[AgentRegistry] Failed to cancel sub-agents:`, e);
+    }
+
     console.log(`[AgentRegistry] 🛑 Stopped agent for chat ${ chatId.substring(0, 8) }...`);
     return true;
   }
@@ -816,6 +828,11 @@ class AgentRegistry {
         apiKeyPool.releaseKey(chatId);
         apiKeyPool.releaseLeasesWithPrefix(`${ chatId }_sub_`);
       }
+    }
+    try {
+      cancelAllSubAgents();
+    } catch (e) {
+      console.warn(`[AgentRegistry] Failed to cancel all sub-agents:`, e);
     }
     console.log(`[AgentRegistry] 🛑 Emergency stop — all agents stopped`);
   }

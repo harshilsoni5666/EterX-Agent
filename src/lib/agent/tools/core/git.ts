@@ -3,6 +3,7 @@ import { ToolDefinition } from '../../schemas';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import path from 'path';
+import { resolveWorkspaceDirectoryForContext } from '../../workspace/path_resolver';
 
 const execAsync = promisify(exec);
 
@@ -23,9 +24,8 @@ export const gitTool: ToolDefinition = {
     stderr: z.string(),
     exitCode: z.number()
   }),
-  execute: async (input: { operation: string, args?: string, repoPath?: string }) => {
-    const workspaceRoot = path.resolve(process.cwd(), '.workspaces', 'temp');
-    const repoDir = input.repoPath ? path.resolve(workspaceRoot, input.repoPath) : workspaceRoot;
+  execute: async (input: { operation: string, args?: string, repoPath?: string }, context?: any) => {
+    const repoDir = resolveWorkspaceDirectoryForContext(input.repoPath, context);
 
     let command = '';
 

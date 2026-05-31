@@ -28,8 +28,10 @@ Use this to:
     projectId: z.string().optional().default('global').describe('Project context (default: global)')
   }),
   outputSchema: z.object({ success: z.boolean(), message: z.string(), data: z.any().optional() }),
-  execute: async (input: any) => {
-    const projectId = input.projectId || 'global';
+  execute: async (input: any, context?: any) => {
+    const projectId = input.projectId && input.projectId !== 'global' ? input.projectId : (context?.workspaceId || 'global');
+    const chatId = context?.projectId || context?.activeChatId || projectId;
+    const userId = context?.userId || 'user';
 
     try {
       switch (input.action) {
@@ -40,9 +42,9 @@ Use this to:
             ['learning', input.category || 'general']
           );
           await memoryV2.remember({
-            userId: 'user',
+            userId,
             projectId,
-            chatId: projectId,
+            chatId,
             scope: 'self_improvement',
             type: 'learning',
             content: input.content,
@@ -59,11 +61,11 @@ Use this to:
             projectId, `MISTAKE: ${input.content}`, 'error_log', 9,
             ['mistake', input.category || 'general']
           );
-          globalMemoryManager.logError('self_improve', input.content, projectId);
+          globalMemoryManager.logError('self_improve', input.content, `[project:${projectId}]`);
           await memoryV2.remember({
-            userId: 'user',
+            userId,
             projectId,
-            chatId: projectId,
+            chatId,
             scope: 'error',
             type: 'mistake_pattern',
             content: input.content,
@@ -76,11 +78,11 @@ Use this to:
         }
         case 'log_preference': {
           if (!input.content || !input.category) return { success: false, message: 'content and category required' };
-          globalMemoryManager.learnPreference('user', input.category, input.content, true);
+          globalMemoryManager.learnPreference(userId, input.category, input.content, true);
           await memoryV2.remember({
-            userId: 'user',
+            userId,
             projectId,
-            chatId: projectId,
+            chatId,
             scope: 'user',
             type: 'user_preference',
             content: input.content,
@@ -108,7 +110,7 @@ Use this to:
           };
         }
         case 'get_preferences': {
-          const prefs = globalMemoryManager.getAllPreferences('user');
+          const prefs = globalMemoryManager.getAllPreferences(userId);
           return {
             success: true,
             message: `${Object.keys(prefs).length} preferences stored`,

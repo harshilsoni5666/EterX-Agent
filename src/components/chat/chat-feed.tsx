@@ -63,7 +63,7 @@ export const LiveActionChip = ({ text, secondary, isActive, inCard = false }: { 
       <span className="flex h-8 w-8 items-center justify-center shrink-0">
         <Icon size={19} color={color} />
       </span>
-      <span className={`max-w-[46%] shrink-0 truncate text-[14px] font-semibold tracking-normal ${ isActive ? 'eterx-live-text' : 'text-[#A7A39E]' }`}>
+      <span className={`max-w-[46%] shrink-0 truncate text-[14px] font-semibold tracking-normal ${ isActive ? 'eterx-live-text eterx-live-text--medium' : 'text-[#A7A39E]' }`}>
         {text}
       </span>
       {secondary && <span className="h-4 w-px shrink-0 bg-white/[0.08]" />}
@@ -194,29 +194,46 @@ const liveMotionStyles = `
     38% { transform: translateY(-2px) scale(1.08); opacity: .95; box-shadow: 0 0 9px rgba(190,190,186,.34); }
   }
   @keyframes eterx-shimmer {
-    0%   { background-position: 185% center; }
-    100% { background-position: -185% center; }
+    0%   { background-position: 260% center, 0 0; }
+    22%  { background-position: 260% center, 0 0; }
+    70%  { background-position: -260% center, 0 0; }
+    100% { background-position: -260% center, 0 0; }
   }
   .eterx-live-text {
-    background: linear-gradient(
-      100deg,
-      #8A867F 0%,
-      #B9B3A8 26%,
-      #F3EFE7 42%,
-      #FFFFFF 49%,
-      #BFE7FF 54%,
-      #F1EDE5 62%,
-      #928E86 100%
-    );
-    background-size: 245% 100%;
+    --eterx-live-shimmer-duration: 5.8s;
+    --eterx-live-shimmer-ease: cubic-bezier(.4, 0, .12, 1);
+    --eterx-live-shimmer-a: #9A9A98;
+    --eterx-live-shimmer-d: #FFFFFF;
+    background:
+      linear-gradient(
+        102deg,
+        transparent 0%,
+        transparent 44%,
+        var(--eterx-live-shimmer-d) 50%,
+        var(--eterx-live-shimmer-d) 56%,
+        transparent 62%,
+        transparent 100%
+      ),
+      linear-gradient(var(--eterx-live-shimmer-a), var(--eterx-live-shimmer-a));
+    background-size: 245% 100%, 100% 100%;
+    background-position: 260% center, 0 0;
+    background-repeat: no-repeat, no-repeat;
     -webkit-background-clip: text;
     background-clip: text;
     -webkit-text-fill-color: transparent;
-    animation: eterx-shimmer 3.7s cubic-bezier(.45, 0, .2, 1) infinite;
-    text-shadow: 0 0 14px rgba(255,255,255,.08);
+    animation: eterx-shimmer var(--eterx-live-shimmer-duration) var(--eterx-live-shimmer-ease) infinite;
+    text-shadow: none;
     will-change: background-position;
   }
   .eterx-live-text * { -webkit-text-fill-color: inherit; }
+  .eterx-live-text--medium { --eterx-live-shimmer-duration: 5.8s; }
+  .eterx-live-text--slow { --eterx-live-shimmer-duration: 7.4s; }
+  :root[data-theme="light"] .eterx-live-text,
+  [data-theme="light"] .eterx-live-text {
+    --eterx-live-shimmer-a: #9A9A98;
+    --eterx-live-shimmer-d: #FFFFFF;
+    text-shadow: none;
+  }
   .eterx-live-dot { animation: eterx-live-dot 1.45s ease-in-out infinite; }
   @media (prefers-reduced-motion: reduce) {
     .eterx-live-text {
@@ -246,7 +263,6 @@ const HIDDEN_HELPER_TYPES = new Set(['answer', 'ask_user', 'file_preview', 'cons
 const USER_QUERY_PREVIEW_LIMIT = 520;
 const USER_QUERY_PREVIEW_LINES = 8;
 const INITIAL_VISIBLE_GROUPS = 40;
-const LIVE_KARAOKE_TEXT_LIMIT = 12000;
 
 const normalizeTraceText = (value: any) => String(value || '')
   .replace(/<\/?thought>/gi, '')
@@ -501,7 +517,7 @@ const ThoughtSequence = ({
               aria-expanded={isOpen}
               className="eterx-process-summary-chip eterx-process-summary-chip-live group inline-flex min-h-[36px] shrink-0 items-center gap-1.5 rounded-full bg-[#1C1C1C]/78 px-3 py-[6px] text-[13px] font-semibold leading-[1.35] tracking-normal text-[#C9C6C0] outline outline-1 outline-white/[0.12] backdrop-blur-xl transition-colors duration-150 hover:bg-[#262626]/92 hover:text-[#E8E6E3]"
             >
-              <span className="eterx-process-summary-label eterx-live-text inline-flex items-center pb-[1px] leading-[1.35]">
+              <span className="eterx-process-summary-label eterx-live-text eterx-live-text--slow inline-flex items-center pb-[1px] leading-[1.35]">
                 {`Working for ${ workElapsedLabel }`}
               </span>
               {isOpen
@@ -543,7 +559,7 @@ const ThoughtSequence = ({
               >
                 <StepCounterIcon live={isLiveThinking} />
               </span>
-              <span className={`eterx-process-summary-label${isLiveThinking ? ' eterx-live-text' : ''}`} style={{ fontSize: 13, fontWeight: 650, letterSpacing: 0, lineHeight: 1 }}>{actionLabel}</span>
+              <span className={`eterx-process-summary-label${isLiveThinking ? ' eterx-live-text eterx-live-text--medium' : ''}`} style={{ fontSize: 13, fontWeight: 650, letterSpacing: 0, lineHeight: 1 }}>{actionLabel}</span>
               {isOpen
                 ? <ChevronDown style={{ width: 9, height: 9, flexShrink: 0, opacity: 0.6 }} />
                 : <ChevronRight style={{ width: 9, height: 9, flexShrink: 0, opacity: 0.6 }} />
@@ -583,6 +599,8 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
   const shouldAutoFollowRef = useRef(true);
   const lastFaceTraceRef = useRef('');
   const lastFaceLiveNotifyAtRef = useRef(0);
+  const scrollUpdateFrameRef = useRef<number | null>(null);
+  const latestScrollContainerRef = useRef<HTMLDivElement | null>(null);
   const [previewUserMessage, setPreviewUserMessage] = useState<{ text: string; index: number } | null>(null);
   const [historyWindowSize, setHistoryWindowSize] = useState(INITIAL_VISIBLE_GROUPS);
   const AUTO_FOLLOW_THRESHOLD = 24;
@@ -624,6 +642,14 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
   }, [traceLogs.length, isThinking]);
 
   useEffect(() => {
+    return () => {
+      if (scrollUpdateFrameRef.current !== null) {
+        window.cancelAnimationFrame(scrollUpdateFrameRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     const latest = traceLogs[traceLogs.length - 1];
     if (!latest) return;
     const latestText = String(latest.text || '');
@@ -649,11 +675,18 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
   }, [traceLogs, isThinking]);
 
   const handleScrollWrap = (e: React.UIEvent<HTMLDivElement>) => {
-    externalHandleScroll(e);
-
     const container = e.currentTarget;
     const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
     shouldAutoFollowRef.current = distanceFromBottom <= AUTO_FOLLOW_THRESHOLD;
+    latestScrollContainerRef.current = container;
+
+    if (scrollUpdateFrameRef.current !== null) return;
+    scrollUpdateFrameRef.current = window.requestAnimationFrame(() => {
+      scrollUpdateFrameRef.current = null;
+      const latestContainer = latestScrollContainerRef.current;
+      if (!latestContainer) return;
+      externalHandleScroll({ currentTarget: latestContainer } as React.UIEvent<HTMLDivElement>);
+    });
   };
 
   const groups = useMemo(() => {
@@ -686,7 +719,7 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
 
   return (
     <>
-      <style>{liveMotionStyles}</style>
+      <style dangerouslySetInnerHTML={{ __html: liveMotionStyles }} />
       <div className="eterx-chat-feed relative flex-1 min-h-0 w-full overflow-hidden">
       <div
         className={`eterx-chat-feed-scroll relative h-full w-full flex flex-col overflow-y-auto overflow-x-hidden pb-44 eterx-scrollbar ${ isCompressed ? 'pl-3 pr-3 sm:pl-4 sm:pr-4' : 'px-4 sm:px-12' }`}
@@ -727,7 +760,7 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
               const userText = String(first.text || '');
               const { isLong } = getUserQueryPreview(userText);
               return (
-                <div key={`group-${ groupIdx }`} id={`message-${ groupIdx }`} className="mt-9 mb-6 flex w-full scroll-m-20 flex-col items-end group/user">
+                <div key={`group-${ groupIdx }`} id={`message-${ groupIdx }`} className="eterx-chat-message-group mt-9 mb-6 flex w-full scroll-m-20 flex-col items-end group/user">
                   <div className={`eterx-user-message-bubble eterx-chat-feed-user-bubble ml-auto flex flex-col items-end rounded-[22px] border border-white/[0.055] bg-[#242424] px-[18px] py-3 text-[15.5px] leading-[1.56] text-[#E8E6E3] shadow-[0_10px_28px_rgba(0,0,0,0.22),inset_0_1px_0_rgba(255,255,255,0.035)] selection:bg-[#E2765A]/30 relative whitespace-pre-wrap select-text ${ isCompressed ? 'max-w-[92%]' : 'max-w-[560px]' }`}>
                     {first.attachments && first.attachments.length > 0 && (
                       <div className="flex flex-wrap justify-end gap-2.5 mb-3 w-full">
@@ -900,7 +933,12 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
             }
 
             return (
-              <div key={`group-${ groupIdx }`} id={`message-${ groupIdx }`} className="w-full flex flex-col mb-8 scroll-m-20 relative">
+              <div
+                key={`group-${ groupIdx }`}
+                id={`message-${ groupIdx }`}
+                data-live={isThinkingTurn ? 'true' : undefined}
+                className="eterx-chat-message-group w-full flex flex-col mb-8 scroll-m-20 relative"
+              >
                 {segments.map((seg, segIdx) => {
                   if (seg.type === 'steering') {
                     return <SteeringFeedCard key={`steer-${groupIdx}-${segIdx}`} log={seg.log} />;
@@ -976,41 +1014,29 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
                 {displayFinalAnswer && (
                   <div className="eterx-assistant-answer w-full group/assistant mt-0 [&_.professional-thought>*:first-child]:!mt-0">
                     <div className="relative group/thought">
-                      {/* Live typing: karaoke dim-to-bright */}
+                      {/* Live typing uses the same renderer so Mermaid, math, and tables appear as soon as Markdown is complete. */}
                       {displayFinalAnswer.isLiveTyping ? (
-                        <div className="eterx-assistant-live-text text-[15.5px] leading-[1.8] font-sans whitespace-pre-wrap text-[#C4C1BC]">
-                          {(() => {
-                            if (displayFinalAnswer.text.length > LIVE_KARAOKE_TEXT_LIMIT) {
-                              return displayFinalAnswer.text;
+                        <div className="eterx-assistant-answer-body eterx-assistant-live-text text-[15.5px] leading-[1.85] text-[#C4C1BC] font-sans relative">
+                          <ProfessionalThought
+                            text={displayFinalAnswer.text}
+                            isLatest={groupIdx === groups.length - 1}
+                            isThinking={true}
+                            variant="answer"
+                            updatedAt={displayFinalAnswer.timestamp}
+                            suffix={
+                              <span className="inline-flex items-center gap-2 ml-2 align-middle mt-[-2px]">
+                                <span className="inline-block w-[2px] h-[16px] bg-[#8C8A88] align-middle animate-[blink_1s_step-end_infinite] opacity-80" />
+                                <AgentFace
+                                  size="work"
+                                  mode="speaking"
+                                  actionKey={displayFinalAnswer.text.slice(-80)}
+                                  interactive
+                                  syncWithController={false}
+                                  ariaLabel="EterX response face"
+                                />
+                              </span>
                             }
-                            const words = displayFinalAnswer.text.split(/(\s+)/);
-                            const spokenWordsCount = displayFinalAnswer.spokenText ? displayFinalAnswer.spokenText.split(/(\s+)/).length : 0;
-                            return words.map((word: string, i: number) => {
-                              if (!word) return null;
-                              const isSpoken = i < spokenWordsCount;
-                              return (
-                                <span
-                                  key={i}
-                                  className="transition-colors duration-150 ease-out"
-                                  style={{ color: isSpoken ? '#C4C1BC' : '#555350' }}
-                                >
-                                  {word}
-                                </span>
-                              );
-                            });
-                          })()}
-                          {/* Live blinking cursor and active agent face */}
-                          <span className="inline-block w-[2px] h-[16px] bg-[#8C8A88] ml-[2px] align-middle animate-[blink_1s_step-end_infinite] opacity-80" />
-                          <span className="inline-flex align-middle ml-2.5">
-                            <AgentFace
-                              size="work"
-                              mode="speaking"
-                              actionKey={displayFinalAnswer.text.slice(-80)}
-                              interactive
-                              syncWithController={false}
-                              ariaLabel="EterX response face"
-                            />
-                          </span>
+                          />
                         </div>
                       ) : (
                         <div className="eterx-assistant-answer-body text-[15.5px] leading-[1.85] text-[#C4C1BC] font-sans relative">

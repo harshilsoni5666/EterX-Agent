@@ -3,6 +3,7 @@ import { ToolDefinition } from '../../schemas';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import path from 'path';
+import { resolveWorkspaceDirectoryForContext } from '../../workspace/path_resolver';
 
 const execAsync = promisify(exec);
 
@@ -48,8 +49,8 @@ EXAMPLES:
     branch: z.string().optional().describe('Target branch (for conflict_check)')
   }),
   outputSchema: z.object({ success: z.boolean(), result: z.any(), message: z.string() }),
-  execute: async (input: { mode: string, message?: string, count?: number, branch?: string }) => {
-    const cwd = process.cwd();
+  execute: async (input: { mode: string, message?: string, count?: number, branch?: string }, context?: any) => {
+    const cwd = resolveWorkspaceDirectoryForContext(undefined, context);
 
     const run = async (cmd: string): Promise<string> => {
       try {
@@ -190,11 +191,11 @@ EXAMPLES:
           return { success: false, result: null, message: 'branch is required for conflict_check' };
         }
         const current = await run('git branch --show-current');
-        const mergeCheck = await run(`git merge --no-commit --    no-ff ${input.branch} 2>&1 || true`);
+        const mergeCheck = await run(`git merge --no-commit --no-ff ${input.branch} 2>&1 || true`);
         await run('git merge --abort 2>&1 || true');
 
-        const    cts = mergeCheck.toLowerCase().includes('conflict');
-        return	 {
+        const cts = mergeCheck.toLowerCase().includes('conflict');
+        return {
           success: true,
           result: { current, target: input.branch, hasConflicts: cts, output: mergeCheck },
           message: cts ? `⚠️ Conflicts detected with ${input.branch}` : `✅ No conflicts with ${input.branch}`

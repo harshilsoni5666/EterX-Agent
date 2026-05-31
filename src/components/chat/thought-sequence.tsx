@@ -8,7 +8,7 @@ import {
 } from 'lucide-react';
 // @ts-ignore
 import ReactMarkdown from 'react-markdown';
-import { markdownComponents, remarkPlugins, rehypePlugins } from './markdown-renderer';
+import { markdownComponents, normalizeMarkdownForRendering, remarkPlugins, rehypePlugins } from './markdown-renderer';
 import { getConnectorIcon } from '../layout/connectors-modal';
 import { AGENT_ICONS, resolveAgentIcon, AgentAssetIcon } from './agent-icons';
 import { AgentFace } from './agent-face';
@@ -245,7 +245,7 @@ export const ProfessionalThought = ({ text, isLatest, isThinking, variant = 'tho
     if (!text) return '';
     let f = text.replace(/!\[.*?\]\(\/absolute.*?\.png\)/gi, '').replace(/<\/?thought>/gi, '');
     f = f.replace(/([^\n])(#{1,6}\s)/g, '$1\n\n$2').replace(/([.!?:])(\s*\n)(#{1,6}\s)/g, '$1\n\n$3');
-    return f.trim();
+    return normalizeMarkdownForRendering(f.trim());
   }, [text]);
 
   const scrollThoughtToBottom = () => {
@@ -312,7 +312,7 @@ export const ProfessionalThought = ({ text, isLatest, isThinking, variant = 'tho
             onClick={() => setOpen(!open)}
             className="eterx-thought-toggle flex min-h-[42px] w-full items-center gap-2.5 px-3.5 py-1.5 text-left transition-colors hover:bg-white/[0.03] group"
           >
-            <span className={`flex-1 text-[14.5px] font-semibold ${ isLive ? 'text-[#A0A0A0] eterx-live-text' : 'text-[#6B6966]' }`}>
+            <span className={`flex-1 text-[14.5px] font-semibold ${ isLive ? 'text-[#A0A0A0] eterx-live-text eterx-live-text--medium' : 'text-[#6B6966]' }`}>
               {thinkLabel}
             </span>
             <ChevronRight className={`h-4 w-4 text-[#5E5A55] group-hover:text-[#A3A19E] transition-all ${ open ? 'rotate-90' : '' }`} />
@@ -601,12 +601,12 @@ const InlineDiffView = ({ filename, diffLines }: { filename: string, diffLines: 
     }
   };
   const diffPanel = (
-    <div className={`flex flex-col bg-[#1F1F1F] font-mono text-[#DCD7CE] shadow-[0_10px_26px_rgba(0,0,0,0.28),inset_0_1px_0_rgba(255,255,255,0.035)] ${ full ? 'h-full rounded-none border-0' : 'mx-3 mt-1.5 mb-2 overflow-hidden rounded-[13px] border border-white/[0.085]' }`}>
+    <div className={`eterx-inline-diff-panel flex flex-col bg-[#1F1F1F] font-mono text-[#DCD7CE] shadow-[0_10px_26px_rgba(0,0,0,0.28),inset_0_1px_0_rgba(255,255,255,0.035)] ${ full ? 'h-full rounded-none border-0' : 'mx-3 mt-1.5 mb-2 overflow-hidden rounded-[13px] border border-white/[0.085]' }`}>
       {/* Header */}
-      <div className="flex items-center justify-between gap-3 bg-[#232323] px-3 py-1.5">
+      <div className="eterx-inline-diff-header flex items-center justify-between gap-3 bg-[#232323] px-3 py-1.5">
         <div className="flex min-w-0 items-center gap-2.5">
-          <span className="min-w-0 truncate text-[12px] font-semibold text-[#D7D2C9]">{filename}</span>
-          <span className="shrink-0 text-[10.5px] font-semibold text-[#77716A]">Diff</span>
+          <span className="eterx-inline-diff-filename min-w-0 truncate text-[12px] font-semibold text-[#D7D2C9]">{filename}</span>
+          <span className="eterx-inline-diff-label shrink-0 text-[10.5px] font-semibold text-[#77716A]">Diff</span>
           {(added > 0 || removed > 0) && (
             <span className="flex shrink-0 items-center gap-1 font-mono text-[11px] font-semibold tabular-nums">
               <span className="text-[#3FB950]">+{added}</span>
@@ -624,7 +624,7 @@ const InlineDiffView = ({ filename, diffLines }: { filename: string, diffLines: 
         <div
           ref={scrollRef}
           onScroll={handleScroll}
-          className={`eterx-scrollbar overflow-auto text-[12px] leading-[1.55] ${ full ? 'h-full' : 'max-h-[300px] min-h-[74px]' }`}
+          className={`eterx-inline-diff-scroll eterx-scrollbar overflow-auto text-[12px] leading-[1.55] ${ full ? 'h-full' : 'max-h-[300px] min-h-[74px]' }`}
         >
           {/* Inner container expands to content width — all lines share same horizontal scroll */}
           <div style={{ minWidth: 'max-content' }}>
@@ -632,19 +632,19 @@ const InlineDiffView = ({ filename, diffLines }: { filename: string, diffLines: 
               const isAdd = l.type === 'added';
               const isDel = l.type === 'removed';
               return (
-                <div key={i} className={`flex items-stretch ${ isAdd ? 'bg-[#143118]/42' : isDel ? 'bg-[#361818]/42' : 'hover:bg-white/[0.025]'
+                <div key={i} className={`eterx-inline-diff-row flex items-stretch ${ isAdd ? 'eterx-inline-diff-row-added bg-[#143118]/42' : isDel ? 'eterx-inline-diff-row-removed bg-[#361818]/42' : 'eterx-inline-diff-row-context hover:bg-white/[0.025]'
                   }`}>
                   {/* Left colored bar */}
-                  <div className={`w-[3px] shrink-0 ${ isAdd ? 'bg-emerald-500' : isDel ? 'bg-red-500' : 'bg-transparent'
+                  <div className={`eterx-inline-diff-bar w-[3px] shrink-0 ${ isAdd ? 'bg-emerald-500' : isDel ? 'bg-red-500' : 'bg-transparent'
                     }`} />
                   {/* Line number */}
-                  <div className="w-[42px] shrink-0 select-none border-r border-white/[0.055] py-[3px] pr-3 text-right text-[10.5px] text-[#6F6962]">{l.newLine || (isDel ? l.oldLine : '')}</div>
+                  <div className="eterx-inline-diff-line-number w-[42px] shrink-0 select-none border-r border-white/[0.055] py-[3px] pr-3 text-right text-[10.5px] text-[#6F6962]">{l.newLine || (isDel ? l.oldLine : '')}</div>
                   {/* +/- glyph */}
-                  <div className={`w-[20px] shrink-0 text-center py-[3px] font-bold ${ isAdd ? 'text-emerald-400' : isDel ? 'text-red-400' : 'text-transparent'
+                  <div className={`eterx-inline-diff-glyph w-[20px] shrink-0 text-center py-[3px] font-bold ${ isAdd ? 'text-emerald-400' : isDel ? 'text-red-400' : 'text-transparent'
                     }`}>{isAdd ? '+' : isDel ? '-' : ' '}</div>
                   {/* Content — no overflow, parent scrolls */}
                   <div
-                    className={`px-3 py-[3px] whitespace-pre ${ isAdd ? 'text-[#B7EFC0]' : isDel ? 'text-[#F0B0AA]' : 'text-[#BDB7AE]'
+                    className={`eterx-inline-diff-content px-3 py-[3px] whitespace-pre ${ isAdd ? 'text-[#B7EFC0]' : isDel ? 'text-[#F0B0AA]' : 'text-[#BDB7AE]'
                       }`}
                     dangerouslySetInnerHTML={{ __html: highlightSyntax(l.content) }}
                   />
@@ -886,7 +886,7 @@ const ActionChip = ({
           return <span className="eterx-action-icon flex h-7 w-7 items-center justify-center shrink-0"><AI isLive={isLiveChip} size={18} color={isLiveChip ? ac : '#DAD6CF'} /></span>;
         })()}
         {isThinkChip && <div className="w-1 shrink-0" />}
-        <span className={`eterx-action-verb shrink-0 truncate text-[14px] font-semibold leading-tight tracking-normal ${isLiveChip ? 'eterx-live-text' : 'text-[#C9C5BE]'}`}>{displayVerb}</span>
+        <span className={`eterx-action-verb shrink-0 truncate text-[14px] font-semibold leading-tight tracking-normal ${isLiveChip ? 'eterx-live-text eterx-live-text--medium' : 'text-[#C9C5BE]'}`}>{displayVerb}</span>
         {hasFile && (
           <span className="flex min-w-0 items-center gap-1.5">
             <button
@@ -1337,7 +1337,7 @@ const LiveWorkingIndicator = ({ logs }: { logs: any[] }) => {
             animate={{ opacity: 1, x: 0 }}
             exit={{ opacity: 0, x: -7 }}
             transition={{ duration: 0.2, ease: 'easeOut' }}
-            className="eterx-live-text min-w-0 truncate pb-[2px] text-[14px] font-semibold leading-[1.35] tracking-normal"
+            className="eterx-live-text eterx-live-text--slow min-w-0 truncate pb-[2px] text-[14px] font-semibold leading-[1.35] tracking-normal"
           >
             {label}
           </motion.span>

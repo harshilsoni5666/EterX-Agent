@@ -190,6 +190,11 @@ const formatAttachmentSize = (bytes: number) => {
   return `${ (bytes / (1024 * 1024)).toFixed(bytes < 10 * 1024 * 1024 ? 1 : 0) } MB`;
 };
 
+const isComposerEditableTarget = (target: EventTarget | null) => {
+  if (!(target instanceof HTMLElement)) return false;
+  return Boolean(target.closest('textarea, input, [contenteditable="true"], [contenteditable=""], .monaco-editor, .cm-editor'));
+};
+
 const buildLocalFilePreviewUrl = (filePath?: string) => {
   if (!filePath) return '';
   return `/api/preview/${ filePath.replace(/\\/g, '/').split('/').filter(Boolean).map(encodeURIComponent).join('/') }`;
@@ -199,6 +204,13 @@ const revokeObjectPreview = (preview?: string) => {
   if (preview?.startsWith('blob:')) {
     try { URL.revokeObjectURL(preview); } catch { }
   }
+};
+
+const getCenteredPopoutOffset = (rect: DOMRect, menuWidth: number, margin = 16) => {
+  const desiredLeft = rect.left + rect.width / 2 - menuWidth / 2;
+  const maxLeft = Math.max(margin, window.innerWidth - margin - menuWidth);
+  const clampedLeft = Math.min(Math.max(desiredLeft, margin), maxLeft);
+  return Math.round(clampedLeft - desiredLeft);
 };
 
 const VoiceWaveform = ({ volume, isProcessing, cancelVoice, acceptVoice }: { volume: number, isProcessing: boolean, cancelVoice: () => void, acceptVoice: () => void }) => {
@@ -641,7 +653,7 @@ const SubAgentDock = ({
             <Users className="h-[15px] w-[15px] shrink-0 text-white/72" strokeWidth={2.35} />
           )}
           <span className="flex min-w-0 items-center">
-            <span className={`truncate text-[13px] font-semibold leading-5 tracking-normal ${ isLive ? 'bg-[linear-gradient(110deg,#A3A3A3_0%,#FFFFFF_42%,#737373_76%)] bg-[length:230%_100%] bg-clip-text text-transparent animate-[eterx-task-shimmer_3.2s_ease-in-out_infinite]' : 'text-white/78' }`}>
+            <span className={`truncate text-[13px] font-semibold leading-5 tracking-normal ${ isLive ? 'eterx-text-shimmer eterx-text-shimmer-medium' : 'text-white/78' }`}>
               {headerTitle}
             </span>
             {isLive && <GeneratingDots className="shrink-0 text-white/70" />}
@@ -691,7 +703,7 @@ const SubAgentDock = ({
                       {/* Agent info */}
                       <span className="flex min-w-0 flex-1 flex-col">
                         <span className="flex items-center gap-2">
-                          <span className={`text-[13px] font-semibold leading-5 ${ isWorking ? 'bg-[linear-gradient(110deg,#A3A3A3_0%,#F4F4F4_42%,#737373_76%)] bg-[length:230%_100%] bg-clip-text text-transparent animate-[eterx-task-shimmer_3.2s_ease-in-out_infinite]' : 'text-[#BFBFBF]' }`}>
+                          <span className={`text-[13px] font-semibold leading-5 ${ isWorking ? 'eterx-text-shimmer eterx-text-shimmer-slow' : 'text-[#BFBFBF]' }`}>
                             {agent.name}
                           </span>
                           {isWorking && <GeneratingDots className="shrink-0 text-white/70" />}
@@ -768,7 +780,7 @@ const TaskTrackerDock = ({
             <ListTodo className="h-[15px] w-[15px] shrink-0 text-[#F2EFEA]/88" strokeWidth={2.35} />
           )}
           <span className="flex min-w-0 items-center">
-            <span className={`truncate text-[13px] font-semibold leading-5 tracking-normal ${ liveHeader ? 'bg-[linear-gradient(110deg,#B9B9B9_0%,#FFFFFF_42%,#A7A7A7_76%)] bg-[length:230%_100%] bg-clip-text text-transparent animate-[eterx-task-shimmer_3.2s_ease-in-out_infinite]' : 'text-[#F4F1EA]' }`}>
+            <span className={`truncate text-[13px] font-semibold leading-5 tracking-normal ${ liveHeader ? 'eterx-text-shimmer eterx-text-shimmer-medium' : 'text-[#F4F1EA]' }`}>
               {headerTitle}
             </span>
             {liveHeader && <GeneratingDots className="shrink-0 text-[#D7D7D7]" />}
@@ -794,7 +806,7 @@ const TaskTrackerDock = ({
                     <div key={index} className="flex h-7 items-center gap-3 overflow-hidden rounded-[10px] px-2">
                       <span className="block h-[18px] w-[18px] shrink-0 rounded-full border-[2px] border-[#A9A9A9]/35" />
                       <div className={`h-[10px] overflow-hidden rounded-full bg-white/[0.04] ${ index === 1 ? 'w-[72%]' : 'w-[58%]' }`}>
-                        <div className="h-full w-full bg-[linear-gradient(110deg,transparent_0%,rgba(255,255,255,0.08)_42%,transparent_76%)] bg-[length:230%_100%] animate-[eterx-task-shimmer_3.2s_ease-in-out_infinite]" />
+                        <div className="h-full w-full eterx-surface-shimmer" />
                       </div>
                     </div>
                   ))}
@@ -816,7 +828,7 @@ const TaskTrackerDock = ({
                             <TaskStatusGlyph status={step.status} active={activeWorking} />
                           </span>
                           <span className="flex min-w-0 flex-1 items-center">
-                            <span className={`block truncate text-[13px] font-semibold leading-5 ${ activeWorking ? 'bg-[linear-gradient(110deg,#AFAFAF_0%,#F4F4F4_42%,#9E9E9E_76%)] bg-[length:230%_100%] bg-clip-text text-transparent animate-[eterx-task-shimmer_3.2s_ease-in-out_infinite]' : 'text-[#AFAFAF]' }`}>
+                            <span className={`block truncate text-[13px] font-semibold leading-5 ${ activeWorking ? 'eterx-text-shimmer eterx-text-shimmer-slow' : 'text-[#9A9A98]' }`}>
                               {step.name || `Task ${ step.step }`}
                             </span>
                             {activeWorking && <GeneratingDots className="shrink-0 text-[#CFCFCF]" />}
@@ -877,6 +889,9 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const [isStopping, setIsStopping] = useState(false); // Intermediate stop state
   const [showModelMenu, setShowModelMenu] = useState(false);
   const [showAgentMenu, setShowAgentMenu] = useState(false);
+  const [agentMenuXOffset, setAgentMenuXOffset] = useState(0);
+  const [modelMenuXOffset, setModelMenuXOffset] = useState(0);
+  const [thinkingMenuSide, setThinkingMenuSide] = useState<'left' | 'right'>('right');
   const [availableAgents, setAvailableAgents] = useState<Array<{agentId: string; name: string; status: string; mission: string}>>([]);
   const agentSelectorRef = useRef<HTMLDivElement>(null);
   const [showThinkingLevels, setShowThinkingLevels] = useState(false);
@@ -1019,6 +1034,65 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   }, [showModelMenu]);
   const [logoHoverText, setLogoHoverText] = useState('');
 
+  useEffect(() => {
+    if (!showAgentMenu || typeof window === 'undefined') {
+      setAgentMenuXOffset(0);
+      return;
+    }
+
+    const updatePosition = () => {
+      const rect = agentSelectorRef.current?.getBoundingClientRect();
+      if (!rect) return;
+
+      const margin = 16;
+      const menuWidth = Math.min(224, window.innerWidth - margin * 2);
+      setAgentMenuXOffset(getCenteredPopoutOffset(rect, menuWidth, margin));
+    };
+
+    updatePosition();
+    window.addEventListener('resize', updatePosition);
+    window.addEventListener('scroll', updatePosition, true);
+    return () => {
+      window.removeEventListener('resize', updatePosition);
+      window.removeEventListener('scroll', updatePosition, true);
+    };
+  }, [showAgentMenu]);
+
+  useEffect(() => {
+    if (!showModelMenu || typeof window === 'undefined') {
+      setModelMenuXOffset(0);
+      setThinkingMenuSide('right');
+      return;
+    }
+
+    const updatePosition = () => {
+      const rect = modelSelectorRef.current?.getBoundingClientRect();
+      if (!rect) return;
+
+      const margin = 16;
+      const gap = 8;
+      const menuWidth = Math.min(isCompressed ? 248 : 286, window.innerWidth - margin * 2);
+      const thinkingWidth = Math.min(188, window.innerWidth - margin * 2);
+      const xOffset = getCenteredPopoutOffset(rect, menuWidth, margin);
+      const menuLeft = rect.left + rect.width / 2 - menuWidth / 2 + xOffset;
+      const menuRight = menuLeft + menuWidth;
+
+      const roomRight = window.innerWidth - margin - menuRight;
+      const roomLeft = menuLeft - margin;
+
+      setModelMenuXOffset(xOffset);
+      setThinkingMenuSide(roomRight >= thinkingWidth + gap || roomRight >= roomLeft ? 'right' : 'left');
+    };
+
+    updatePosition();
+    window.addEventListener('resize', updatePosition);
+    window.addEventListener('scroll', updatePosition, true);
+    return () => {
+      window.removeEventListener('resize', updatePosition);
+      window.removeEventListener('scroll', updatePosition, true);
+    };
+  }, [isCompressed, showModelMenu]);
+
   const logoHoverPhrases = [
     "Awaiting your command.",
     "Ready to assist!",
@@ -1092,6 +1166,11 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     setSlashPanelOffset({ x: 0, y: 0 });
     setSlashPanel(panel);
   }, [activeChatId]);
+
+  const handleComposerDragStart = useCallback((event: React.DragEvent<HTMLDivElement>) => {
+    if (isComposerEditableTarget(event.target)) return;
+    event.preventDefault();
+  }, []);
 
   const startSlashPanelDrag = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
@@ -1559,19 +1638,22 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const safeThinkingLevel = normalizeMainAgentThinkingLevel(thinkingLevel);
   const selectedThinkingLevel = MAIN_AGENT_THINKING_LEVEL_OPTIONS.find(option => option.id === safeThinkingLevel) || MAIN_AGENT_THINKING_LEVEL_OPTIONS[0];
   const modelDisplayLabel = selectedModel.label;
-  const modelMenuOpensDown = isEmptyHome;
-  const modelMenuVerticalClass = modelMenuOpensDown ? 'top-[calc(100%+10px)]' : 'bottom-[calc(100%+10px)]';
-  const modelMenuOffset = modelMenuOpensDown ? -8 : 8;
-  const thinkingMenuHorizontalClass = modelMenuOpensDown ? 'left-[calc(100%+8px)]' : 'right-[calc(100%+8px)]';
-  const thinkingMenuVerticalClass = modelMenuOpensDown ? 'top-0' : 'bottom-0';
-  const thinkingMenuOffset = modelMenuOpensDown ? -8 : 8;
+  const controlPopoutVerticalClass = 'bottom-[calc(100%+10px)]';
+  const selectorPopoutVerticalClass = 'bottom-[calc(100%+10px)]';
+  const selectorMenuOffset = 8;
+  const agentMenuX = `calc(-50% + ${agentMenuXOffset}px)`;
+  const modelMenuX = `calc(-50% + ${modelMenuXOffset}px)`;
+  const thinkingMenuHorizontalClass = thinkingMenuSide === 'right' ? 'left-[calc(100%+8px)]' : 'right-[calc(100%+8px)]';
+  const thinkingMenuVerticalClass = 'bottom-0';
+  const thinkingMenuOffset = thinkingMenuSide === 'right' ? -8 : 8;
+  const pillPopoutVerticalClass = isEmptyHome ? 'bottom-full mb-2' : 'bottom-[calc(100%+72px)] mb-0';
   const slashMenuVisible = !!slashTrigger && !slashPanel && liveState === 'idle' && !isRecording && !isProcessingVoice;
 
   return (
-    <div className={`absolute left-0 flex flex-col items-center z-30 ${ isEmptyHome ? 'right-0 w-full' : 'right-[14px] w-auto' } ${ isEmptyHome
+    <div className={`eterx-chat-input-dock ${ !isEmptyHome ? 'eterx-chat-input-dock-active' : '' } absolute left-0 flex flex-col items-center z-30 ${ isEmptyHome ? 'right-0 w-full' : 'right-[14px] w-auto' } ${ isEmptyHome
       ? `top-[45%] -translate-y-1/2 ${ inputSidePadding }`
       : `top-auto bottom-0 ${ isCompressed ? 'pb-4 pt-10' : 'pb-6 pt-12' } ${ inputSidePadding } bg-gradient-to-t from-[#0F0F0F] via-[#0F0F0F]/95 to-transparent`
-      }`}>
+      }`} onDragStart={handleComposerDragStart}>
 
       <AnimatePresence>
         {traceLogsLength === 0 && !isThinking && liveState === 'idle' && (
@@ -1605,10 +1687,10 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       animate={{ opacity: 1, y: 0, x: -32, scale: 1, filter: "blur(0px)" }}
                       exit={{ opacity: 0, y: 8, x: -32, scale: 0.95, filter: "blur(2px)" }}
                       transition={{ type: "spring", stiffness: 300, damping: 25 }}
-                      className="absolute bottom-[120%] left-1/2 whitespace-nowrap bg-[#111111]/60 backdrop-blur-[24px] px-4 py-2.5 rounded-[14px] shadow-[0_20px_40px_rgba(0,0,0,0.6),inset_0_1px_1px_rgba(255,255,255,0.15),inset_0_-1px_1px_rgba(255,255,255,0.05)] border border-white/10 z-50 pointer-events-none origin-[32px_bottom] flex items-center justify-center"
+                      className="eterx-composer-popout absolute bottom-[120%] left-1/2 whitespace-nowrap bg-[#111111]/60 backdrop-blur-[24px] px-4 py-2.5 rounded-[14px] shadow-[0_20px_40px_rgba(0,0,0,0.6),inset_0_1px_1px_rgba(255,255,255,0.15),inset_0_-1px_1px_rgba(255,255,255,0.05)] border border-white/10 z-50 pointer-events-none origin-[32px_bottom] flex items-center justify-center"
                     >
                       {/* Glass tail using rotated square placed behind */}
-                      <div className="absolute -bottom-[5px] left-[26px] w-[12px] h-[12px] bg-[#111111]/60 backdrop-blur-[24px] border-b border-r border-white/10 rotate-45 rounded-[2px] shadow-[inset_-1px_-1px_1px_rgba(255,255,255,0.05)] -z-10"></div>
+                      <div className="eterx-composer-popout-caret absolute -bottom-[5px] left-[26px] w-[12px] h-[12px] bg-[#111111]/60 backdrop-blur-[24px] border-b border-r border-white/10 rotate-45 rounded-[2px] shadow-[inset_-1px_-1px_1px_rgba(255,255,255,0.05)] -z-10"></div>
 
                       <span className="text-[13px] font-medium tracking-wide text-transparent bg-clip-text bg-gradient-to-b from-white via-white/90 to-white/50 drop-shadow-sm">
                         {logoHoverText}
@@ -1628,6 +1710,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       <div
         className={`eterx-composer-shell w-full ${ shellMaxWidth } flex flex-col pointer-events-auto relative`}
         data-compressed={isCompressed ? 'true' : undefined}
+        onDragStart={handleComposerDragStart}
       >
         <SubAgentDock onOpenTeamView={onOpenTeamView} agents={activeSubAgents} isCompressed={isCompressed} />
               <TaskTrackerDock
@@ -1638,7 +1721,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
 
         {slashPanel === 'agents' && (
           <div
-              className="absolute bottom-[calc(100%+12px)] left-1/2 z-40 w-[min(320px,calc(100vw-64px))] select-none overflow-hidden rounded-[20px] border border-white/[0.10] bg-[#1C1C1C] p-1.5 text-[#F2F0EC] shadow-[0_18px_48px_rgba(0,0,0,0.28),inset_0_1px_0_rgba(255,255,255,0.045)]"
+              className="eterx-composer-popout absolute bottom-[calc(100%+12px)] left-1/2 z-40 w-[min(320px,calc(100vw-64px))] select-none overflow-hidden rounded-[20px] border border-white/[0.10] bg-[#1C1C1C] p-1.5 text-[#F2F0EC] shadow-[0_18px_48px_rgba(0,0,0,0.28),inset_0_1px_0_rgba(255,255,255,0.045)]"
             style={{ transform: `translate(calc(-50% + ${ slashPanelOffset.x }px), ${ slashPanelOffset.y }px)` }}
             onClick={(event) => event.stopPropagation()}
           >
@@ -1697,7 +1780,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
 
         {slashPanel === 'goal' && (
           <div
-            className="absolute bottom-[calc(100%+12px)] left-1/2 z-40 w-[min(420px,calc(100vw-64px))] select-none overflow-hidden rounded-[22px] border border-white/[0.10] bg-[#242424] p-2 text-[#F2F0EC] shadow-[0_18px_48px_rgba(0,0,0,0.28),inset_0_1px_0_rgba(255,255,255,0.045)]"
+            className="eterx-composer-popout absolute bottom-[calc(100%+12px)] left-1/2 z-40 w-[min(420px,calc(100vw-64px))] select-none overflow-hidden rounded-[22px] border border-white/[0.10] bg-[#242424] p-2 text-[#F2F0EC] shadow-[0_18px_48px_rgba(0,0,0,0.28),inset_0_1px_0_rgba(255,255,255,0.045)]"
             style={{ transform: `translate(calc(-50% + ${ slashPanelOffset.x }px), ${ slashPanelOffset.y }px)` }}
             onClick={(event) => event.stopPropagation()}
           >
@@ -1742,7 +1825,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
 
         {slashMenuVisible && (
           <div
-            className={`relative z-20 mx-auto -mb-px w-[calc(100%-32px)] ${ isCompressed ? 'max-w-[488px]' : 'max-w-[752px]' } select-none overflow-hidden rounded-b-none rounded-t-[20px] border border-b-0 border-white/[0.10] bg-[#242424] p-1.5 text-[#F2F0EC] shadow-[0_-5px_16px_rgba(0,0,0,0.14),inset_0_1px_0_rgba(255,255,255,0.04)]`}
+            className={`eterx-composer-popout relative z-20 mx-auto -mb-px w-[calc(100%-32px)] ${ isCompressed ? 'max-w-[488px]' : 'max-w-[752px]' } select-none overflow-hidden rounded-b-none rounded-t-[20px] border border-b-0 border-white/[0.10] bg-[#242424] p-1.5 text-[#F2F0EC] shadow-[0_-5px_16px_rgba(0,0,0,0.14),inset_0_1px_0_rgba(255,255,255,0.04)]`}
             role="listbox"
             aria-label="Slash commands"
           >
@@ -1828,7 +1911,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                         <div key={att.id || i} className={`relative group w-[62px] h-[62px] shrink-0 rounded-[18px] shadow-[0_5px_16px_rgba(0,0,0,0.24)] hover:shadow-[0_8px_24px_rgba(0,0,0,0.34)] transition-all cursor-pointer border ${ isErrored ? 'border-[#E2765A]/55' : 'border-white/[0.12] hover:border-white/[0.20]' } overflow-visible`}>
                           <img src={att.preview} alt={displayName} className={`w-full h-full object-cover rounded-[18px] transition-all ${ isErrored ? 'opacity-45 grayscale' : 'opacity-100' }`} />
                           {isPreparing && (
-                            <div className="pointer-events-none absolute inset-0 rounded-[18px] bg-[linear-gradient(110deg,transparent_0%,rgba(255,255,255,0.16)_45%,transparent_78%)] bg-[length:220%_100%] animate-[eterx-attachment-sheen_1.8s_ease-in-out_infinite]" />
+                            <div className="pointer-events-none absolute inset-0 rounded-[18px] eterx-surface-shimmer" />
                           )}
                           {isErrored && (
                             <div className="absolute inset-0 flex items-center justify-center rounded-[18px] bg-black/28">
@@ -1851,7 +1934,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                     return (
                       <div key={att.id || i} className={`relative group w-[200px] shrink-0 h-[58px] rounded-[16px] bg-[#202020]/82 border ${ isErrored ? 'border-[#E2765A]/45' : 'border-white/[0.095] hover:border-white/[0.17]' } shadow-[inset_0_1px_0_rgba(255,255,255,0.045),0_5px_16px_rgba(0,0,0,0.2)] hover:bg-[#272727]/90 transition-all flex items-center p-2 cursor-pointer overflow-hidden`}>
                         {isPreparing && (
-                          <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(110deg,transparent_0%,rgba(255,255,255,0.08)_44%,transparent_76%)] bg-[length:230%_100%] animate-[eterx-attachment-sheen_1.8s_ease-in-out_infinite]" />
+                          <div className="pointer-events-none absolute inset-0 eterx-surface-shimmer" />
                         )}
                         <div className={`w-[40px] h-[40px] rounded-[10px] flex items-center justify-center shrink-0 border border-white/5 ${ isPdf ? 'bg-[#EF4444]' : 'bg-[#007AFF]' }`}>
                           {isErrored ? (
@@ -2134,7 +2217,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                 onDisconnect={connectors.handleDisconnect}
               />
               <div className="relative">
-                <Tooltip text="Pin folder or files" side="top">
+                <Tooltip text="Pin folder or files" side="top" disabled={showPinMenu}>
                   <button
                     type="button"
                     onClick={(e) => {
@@ -2158,13 +2241,13 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                 <AnimatePresence>
                   {showPinMenu && (
                     <motion.div
-                      initial={{ opacity: 0, y: 8, scale: 0.96 }}
-                      animate={{ opacity: 1, y: 0, scale: 1 }}
-                      exit={{ opacity: 0, y: 8, scale: 0.96 }}
+                      initial={{ opacity: 0, x: '-50%', y: 8, scale: 0.96 }}
+                      animate={{ opacity: 1, x: '-50%', y: 0, scale: 1 }}
+                      exit={{ opacity: 0, x: '-50%', y: 8, scale: 0.96 }}
                       transition={{ duration: 0.18, ease: 'easeOut' }}
-                      className="absolute bottom-[calc(100%+10px)] left-1/2 z-[120] flex w-[150px] -translate-x-[27px] flex-col rounded-[15px] border border-white/[0.105] bg-[#1A1A1A]/95 backdrop-blur-2xl p-[3px] shadow-[0_16px_34px_rgba(0,0,0,0.58),inset_0_1px_0_rgba(255,255,255,0.055)]"
+                      className={`eterx-composer-popout absolute ${ controlPopoutVerticalClass } left-1/2 z-[120] flex w-[150px] flex-col rounded-[15px] border border-white/[0.105] bg-[#1A1A1A]/95 backdrop-blur-2xl p-[3px] shadow-[0_16px_34px_rgba(0,0,0,0.58),inset_0_1px_0_rgba(255,255,255,0.055)]`}
                     >
-                      <span className="pointer-events-none absolute -bottom-[5px] left-[8px] z-0 h-[10px] w-[10px] rotate-45 border-b border-r border-white/[0.105] bg-[#1A1A1A]/95" />
+                      <span className="eterx-composer-popout-caret pointer-events-none absolute -bottom-[5px] left-1/2 z-0 h-[10px] w-[10px] -translate-x-1/2 rotate-45 border-b border-r border-white/[0.105] bg-[#1A1A1A]/95" />
                       <button type="button" onClick={handlePinFolder} className="group/menu relative z-10 flex h-[40px] w-full items-center gap-[9px] rounded-[12px] px-[9px] text-left text-white transition-all duration-150 hover:bg-white/[0.095] hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] focus-visible:bg-white/[0.095] focus-visible:outline-none active:scale-[0.99]">
                         <span className="flex h-[25px] w-[25px] shrink-0 items-center justify-center text-white transition-colors">
                           <PinFolderIcon className="h-[24px] w-[24px]" />
@@ -2238,7 +2321,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                                 animate={{ opacity: 1, y: 0, scale: 1 }}
                                 exit={{ opacity: 0, y: 10, scale: 0.95 }}
                                 transition={{ duration: 0.2 }}
-                                className="absolute bottom-full left-0 mb-2 flex flex-col bg-[#1A1A1A]/95 backdrop-blur-2xl border border-white/10 rounded-[13px] shadow-[0_12px_30px_rgba(0,0,0,0.64),inset_0_1px_0_rgba(255,255,255,0.04)] z-50 p-1 w-max max-w-[220px] max-h-[300px] overflow-y-auto custom-scrollbar overflow-x-hidden"
+                                className={`eterx-composer-popout absolute ${ pillPopoutVerticalClass } left-0 flex flex-col bg-[#1A1A1A]/95 backdrop-blur-2xl border border-white/10 rounded-[13px] shadow-[0_12px_30px_rgba(0,0,0,0.64),inset_0_1px_0_rgba(255,255,255,0.04)] z-50 p-1 w-max max-w-[220px] max-h-[300px] overflow-y-auto custom-scrollbar overflow-x-hidden`}
                               >
                                 {folders.map(f => (
                                   <div key={f.id} className="flex items-center px-2 py-1.5 hover:bg-white/5 rounded-[8px] group/item transition-colors">
@@ -2304,7 +2387,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                                 animate={{ opacity: 1, y: 0, scale: 1 }}
                                 exit={{ opacity: 0, y: 10, scale: 0.95 }}
                                 transition={{ duration: 0.2 }}
-                                className="absolute bottom-full left-0 mb-2 flex flex-col bg-[#1A1A1A]/95 backdrop-blur-2xl border border-white/10 rounded-[13px] shadow-[0_12px_30px_rgba(0,0,0,0.64),inset_0_1px_0_rgba(255,255,255,0.04)] z-50 p-1 w-max max-w-[220px] max-h-[300px] overflow-y-auto custom-scrollbar overflow-x-hidden"
+                                className={`eterx-composer-popout absolute ${ pillPopoutVerticalClass } left-0 flex flex-col bg-[#1A1A1A]/95 backdrop-blur-2xl border border-white/10 rounded-[13px] shadow-[0_12px_30px_rgba(0,0,0,0.64),inset_0_1px_0_rgba(255,255,255,0.04)] z-50 p-1 w-max max-w-[220px] max-h-[300px] overflow-y-auto custom-scrollbar overflow-x-hidden`}
                               >
                                 {files.map(f => (
                                   <div key={f.id} className="flex items-center px-2 py-1.5 hover:bg-white/5 rounded-[8px] group/item transition-colors">
@@ -2342,6 +2425,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                     setShowAgentMenu(prev => !prev);
                   }}
                   className={`eterx-agent-button ${ isCompressed ? 'max-w-[160px] px-2.5' : 'max-w-[232px] px-3.5' } flex h-[38px] w-full min-w-0 items-center gap-1.5 rounded-full border border-white/[0.16] bg-[#202020]/95 text-[#F4F4F4] transition-all duration-200 hover:bg-[#2A2A2A] hover:text-white hover:border-white/[0.26] active:scale-[0.98] group ${ showAgentMenu ? '!bg-[#252525] !border-white/[0.30] !text-white' : '' } ${ isThinking ? 'cursor-not-allowed opacity-70 hover:bg-[#202020]/95 hover:text-[#F4F4F4] hover:border-white/[0.16] active:scale-100' : '' }`}
+                  aria-label={`Agent: ${ activeAgentDisplay.label }`}
                   aria-haspopup="dialog"
                   aria-expanded={showAgentMenu}
                 >
@@ -2354,10 +2438,16 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       transition={{ duration: 0.18 }}
                       className="flex min-w-0 items-center gap-1.5"
                     >
-                      <span className="min-w-0 truncate text-[14px] font-semibold tracking-normal transition-colors">
+                      <img
+                        src="/icons/agent-ui/agent.png"
+                        alt=""
+                        aria-hidden="true"
+                        className="eterx-selector-icon h-[18px] w-[18px] shrink-0 object-contain opacity-90 transition-opacity duration-200"
+                      />
+                      <span className="eterx-selector-label min-w-0 truncate text-[14px] font-semibold tracking-normal transition-colors">
                         {activeAgentDisplay.label}
                       </span>
-                      <ChevronDown className={`h-3.5 w-3.5 shrink-0 text-[#F0F0F0] transition-all duration-200 group-hover:text-white ${ showAgentMenu ? 'rotate-180' : 'group-hover:translate-y-px' }`} strokeWidth={2.1} />
+                      <ChevronDown className={`eterx-selector-chevron h-3.5 w-3.5 shrink-0 text-[#F0F0F0] transition-all duration-200 group-hover:text-white ${ showAgentMenu ? 'rotate-180' : 'group-hover:translate-y-px' }`} strokeWidth={2.1} />
                     </motion.div>
                   </AnimatePresence>
                 </button>
@@ -2365,11 +2455,11 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                 <AnimatePresence>
                   {showAgentMenu && (
                     <motion.div
-                      initial={{ opacity: 0, y: 8, scale: 0.97 }}
-                      animate={{ opacity: 1, y: 0, scale: 1 }}
-                      exit={{ opacity: 0, y: 8, scale: 0.97 }}
+                      initial={{ opacity: 0, x: agentMenuX, y: selectorMenuOffset, scale: 0.97 }}
+                      animate={{ opacity: 1, x: agentMenuX, y: 0, scale: 1 }}
+                      exit={{ opacity: 0, x: agentMenuX, y: selectorMenuOffset, scale: 0.97 }}
                       transition={{ duration: 0.18, ease: [0.2, 0.8, 0.2, 1] }}
-                      className="absolute bottom-[calc(100%+7px)] left-0 z-[130] flex w-[224px] max-w-[calc(100vw-32px)] flex-col rounded-[15px] border border-white/[0.08] bg-[#111111] p-1.5 text-[#F4F1EA] shadow-[0_16px_38px_rgba(0,0,0,0.58),inset_0_1px_0_rgba(255,255,255,0.04)]"
+                      className={`eterx-composer-popout absolute ${ selectorPopoutVerticalClass } left-1/2 z-[130] flex w-[224px] max-w-[calc(100vw-32px)] flex-col rounded-[15px] border border-white/[0.08] bg-[#111111] p-1.5 text-[#F4F1EA] shadow-[0_16px_38px_rgba(0,0,0,0.58),inset_0_1px_0_rgba(255,255,255,0.04)]`}
                       role="dialog"
                       aria-label="Agent selection"
                     >
@@ -2475,6 +2565,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                     setShowModelMenu(prev => !prev);
                   }}
                   className={`eterx-model-button ${ isCompressed ? 'mr-0 max-w-[160px] px-2.5' : 'mr-1 px-3.5' } flex h-[38px] w-full min-w-0 items-center gap-1.5 rounded-full border border-white/[0.16] bg-[#202020]/95 text-[#F4F4F4] transition-all duration-200 hover:bg-[#2A2A2A] hover:text-white hover:border-white/[0.26] active:scale-[0.98] group ${ showModelMenu ? '!bg-[#252525] !border-white/[0.30] !text-white' : '' } ${ isModelLocked ? 'cursor-not-allowed opacity-70 hover:bg-[#202020]/95 hover:text-[#F4F4F4] hover:border-white/[0.16] active:scale-100' : '' }`}
+                  aria-label={`Model: ${ modelDisplayLabel }`}
                   aria-haspopup="dialog"
                   aria-expanded={showModelMenu}
                   aria-disabled={isModelLocked}
@@ -2488,10 +2579,16 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       transition={{ duration: 0.2, ease: "easeOut" }}
                       className="flex min-w-0 items-center gap-1.5"
                     >
-                      <span className="min-w-0 truncate text-[14px] font-semibold tracking-normal transition-colors">
+                      <img
+                        src="/icons/agent-ui/commands/model.png"
+                        alt=""
+                        aria-hidden="true"
+                        className="eterx-selector-icon h-[18px] w-[18px] shrink-0 object-contain opacity-90 transition-opacity duration-200"
+                      />
+                      <span className="eterx-selector-label min-w-0 truncate text-[14px] font-semibold tracking-normal transition-colors">
                         {modelDisplayLabel}
                       </span>
-                      <ChevronDown className={`h-3.5 w-3.5 text-[#F0F0F0] transition-all duration-200 group-hover:text-white ${ showModelMenu ? 'rotate-180' : 'group-hover:translate-y-px' }`} strokeWidth={2.1} />
+                      <ChevronDown className={`eterx-selector-chevron h-3.5 w-3.5 text-[#F0F0F0] transition-all duration-200 group-hover:text-white ${ showModelMenu ? 'rotate-180' : 'group-hover:translate-y-px' }`} strokeWidth={2.1} />
                     </motion.div>
                   </AnimatePresence>
                 </button>
@@ -2499,11 +2596,11 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                 <AnimatePresence>
                   {showModelMenu && (
                     <motion.div
-                      initial={{ opacity: 0, y: modelMenuOffset, scale: 0.98 }}
-                      animate={{ opacity: 1, y: 0, scale: 1 }}
-                      exit={{ opacity: 0, y: modelMenuOffset, scale: 0.98 }}
+                      initial={{ opacity: 0, x: modelMenuX, y: selectorMenuOffset, scale: 0.98 }}
+                      animate={{ opacity: 1, x: modelMenuX, y: 0, scale: 1 }}
+                      exit={{ opacity: 0, x: modelMenuX, y: selectorMenuOffset, scale: 0.98 }}
                       transition={{ duration: 0.18, ease: [0.2, 0.8, 0.2, 1] }}
-                      className={`absolute ${ modelMenuVerticalClass } right-0 z-[130] flex ${ isCompressed ? 'w-[248px]' : 'w-[286px]' } max-w-[calc(100vw-32px)] flex-col rounded-[20px] border border-white/[0.08] bg-[#111111] p-1.5 text-[#F4F1EA] shadow-[0_18px_44px_rgba(0,0,0,0.62),inset_0_1px_0_rgba(255,255,255,0.04)]`}
+                      className={`eterx-composer-popout absolute ${ selectorPopoutVerticalClass } left-1/2 z-[130] flex ${ isCompressed ? 'w-[248px]' : 'w-[286px]' } max-w-[calc(100vw-32px)] flex-col rounded-[20px] border border-white/[0.08] bg-[#111111] p-1.5 text-[#F4F1EA] shadow-[0_18px_44px_rgba(0,0,0,0.62),inset_0_1px_0_rgba(255,255,255,0.04)]`}
                       role="dialog"
                       aria-label="Model and thinking settings"
                     >
@@ -2567,7 +2664,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                                 animate={{ opacity: 1, x: 0, scale: 1 }}
                                 exit={{ opacity: 0, x: thinkingMenuOffset, scale: 0.98 }}
                                 transition={{ duration: 0.16, ease: 'easeOut' }}
-                                className={`absolute ${ thinkingMenuVerticalClass } ${ thinkingMenuHorizontalClass } z-[140] w-[188px] max-w-[calc(100vw-44px)] overflow-hidden rounded-[18px] border border-white/[0.08] bg-[#111111] p-1.5 shadow-[0_18px_44px_rgba(0,0,0,0.62),inset_0_1px_0_rgba(255,255,255,0.04)]`}
+                                className={`eterx-composer-popout absolute ${ thinkingMenuVerticalClass } ${ thinkingMenuHorizontalClass } z-[140] w-[188px] max-w-[calc(100vw-44px)] overflow-hidden rounded-[18px] border border-white/[0.08] bg-[#111111] p-1.5 shadow-[0_18px_44px_rgba(0,0,0,0.62),inset_0_1px_0_rgba(255,255,255,0.04)]`}
                               >
                                 {MAIN_AGENT_THINKING_LEVEL_OPTIONS.map(option => {
                                   const selected = option.id === safeThinkingLevel;
@@ -2623,10 +2720,10 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       <Tooltip text="Waiting for network" side="top">
                         <button
                           onClick={onNetworkPausedAction}
-                          className="eterx-control-button w-[40px] h-[40px] shrink-0 flex items-center justify-center rounded-full bg-[#242424] border border-white/[0.13] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] transition-all duration-200 hover:bg-[#2D2D2D] hover:border-white/[0.24] active:scale-[0.96]"
+                          className="eterx-control-button eterx-composer-status-button w-[40px] h-[40px] shrink-0 flex items-center justify-center rounded-full bg-[#242424] border border-white/[0.13] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] transition-all duration-200 hover:bg-[#2D2D2D] hover:border-white/[0.24] active:scale-[0.96]"
                         >
                           <motion.div
-                            className="w-[18px] h-[18px] rounded-full border-[2px] border-white/20 border-t-white"
+                            className="eterx-composer-spinner w-[18px] h-[18px] rounded-full border-[2px] border-white/20 border-t-white"
                             animate={{ rotate: 360 }}
                             transition={{ duration: 0.82, repeat: Infinity, ease: 'linear' }}
                           />
@@ -2644,7 +2741,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       <Tooltip text="Send to running agent" side="top">
                         <button
                           onClick={submitPrompt}
-                          className="eterx-control-button w-[40px] h-[40px] shrink-0 flex items-center justify-center rounded-full transition-all duration-200 bg-[#F2EFEA] text-black hover:bg-white shadow-[0_8px_22px_rgba(242,239,234,0.15),inset_0_1px_0_rgba(255,255,255,0.82)] active:scale-[0.96] group relative overflow-hidden"
+                          className="eterx-control-button eterx-composer-send-button w-[40px] h-[40px] shrink-0 flex items-center justify-center rounded-full transition-all duration-200 bg-[#F2EFEA] text-black hover:bg-white shadow-[0_8px_22px_rgba(242,239,234,0.15),inset_0_1px_0_rgba(255,255,255,0.82)] active:scale-[0.96] group relative overflow-hidden"
                         >
                           <div className="absolute inset-0 bg-gradient-to-t from-black/0 to-black/5" />
                           <PremiumSend className="eterx-composer-control-icon w-[20px] h-[20px] text-black group-hover:-translate-y-0.5 group-hover:scale-[1.04] transition-all duration-200 ease-out" strokeWidth={2.05} />
@@ -2662,10 +2759,10 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       <Tooltip text="Stop Agent" side="top">
                         <button
                           onClick={() => { setIsStopping(true); handleStop(); }}
-                          className="eterx-control-button w-[40px] h-[40px] shrink-0 flex items-center justify-center rounded-full bg-[#F2EFEA] hover:bg-white transition-all duration-200 shadow-[0_8px_22px_rgba(242,239,234,0.15),inset_0_1px_0_rgba(255,255,255,0.82)] active:scale-[0.96] group cursor-pointer overflow-hidden relative"
+                          className="eterx-control-button eterx-composer-stop-button w-[40px] h-[40px] shrink-0 flex items-center justify-center rounded-full bg-[#F2EFEA] hover:bg-white transition-all duration-200 shadow-[0_8px_22px_rgba(242,239,234,0.15),inset_0_1px_0_rgba(255,255,255,0.82)] active:scale-[0.96] group cursor-pointer overflow-hidden relative"
                         >
                           <div className="absolute inset-0 bg-gradient-to-t from-black/0 to-black/5" />
-                          <div className="w-[12px] h-[12px] rounded-[3px] bg-[#161616] group-hover:scale-90 transition-transform duration-200" />
+                          <div className="eterx-composer-stop-icon w-[12px] h-[12px] rounded-[3px] bg-[#161616] group-hover:scale-90 transition-transform duration-200" />
                         </button>
                       </Tooltip>
                     </motion.div>
@@ -2677,9 +2774,9 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       exit={{ opacity: 0, scale: 0.8 }}
                       transition={{ duration: 0.18, ease: 'easeOut' }}
                     >
-                      <div className="eterx-control-button w-[40px] h-[40px] shrink-0 flex items-center justify-center rounded-full bg-[#242424] border border-white/[0.13] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] cursor-not-allowed">
+                      <div className="eterx-control-button eterx-composer-stopping-button w-[40px] h-[40px] shrink-0 flex items-center justify-center rounded-full bg-[#242424] border border-white/[0.13] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] cursor-not-allowed">
                         <motion.div
-                          className="w-[18px] h-[18px] rounded-full border-[2px] border-white/20 border-t-white"
+                          className="eterx-composer-spinner w-[18px] h-[18px] rounded-full border-[2px] border-white/20 border-t-white"
                           animate={{ rotate: 360 }}
                           transition={{ duration: 0.75, repeat: Infinity, ease: 'linear' }}
                         />
@@ -2696,7 +2793,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       <Tooltip text={hasErroredAttachments ? "Remove failed attachment" : hasPreparingAttachments ? "Preparing media" : "Send message"} side="top">
                         <button
                           onClick={submitPrompt}
-                          className={`eterx-control-button w-[40px] h-[40px] shrink-0 flex items-center justify-center rounded-full transition-all duration-200 bg-[#F2EFEA] text-black hover:bg-white shadow-[0_8px_22px_rgba(242,239,234,0.15),inset_0_1px_0_rgba(255,255,255,0.82)] active:scale-[0.96] group relative overflow-hidden ${ hasErroredAttachments ? 'opacity-60 cursor-not-allowed' : '' }`}
+                          className={`eterx-control-button eterx-composer-send-button w-[40px] h-[40px] shrink-0 flex items-center justify-center rounded-full transition-all duration-200 bg-[#F2EFEA] text-black hover:bg-white shadow-[0_8px_22px_rgba(242,239,234,0.15),inset_0_1px_0_rgba(255,255,255,0.82)] active:scale-[0.96] group relative overflow-hidden ${ hasErroredAttachments ? 'opacity-60 cursor-not-allowed' : '' }`}
                         >
                           <div className="absolute inset-0 bg-gradient-to-t from-black/0 to-black/5" />
                           <PremiumSend className="eterx-composer-control-icon w-[20px] h-[20px] text-black group-hover:-translate-y-0.5 group-hover:scale-[1.04] transition-all duration-200 ease-out" strokeWidth={2.05} />
@@ -2715,10 +2812,10 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                         <button
                           onClick={onLiveStart}
                           disabled={isNetworkPaused}
-                          className={`eterx-control-button w-[40px] h-[40px] shrink-0 flex items-center justify-center rounded-full border border-white/[0.18] bg-[#242424]/96 text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_5px_14px_rgba(0,0,0,0.24)] transition-all duration-200 active:scale-[0.96] active:bg-[#303030] cursor-pointer group relative overflow-hidden hover:bg-[#2D2D2D] hover:border-white/[0.30] hover:text-white ${ isRecording ? '!text-[#E2765A]' : '' }`}
+                          className={`eterx-control-button eterx-composer-live-button w-[40px] h-[40px] shrink-0 flex items-center justify-center rounded-full border border-white/[0.18] bg-[#242424]/96 text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_5px_14px_rgba(0,0,0,0.24)] transition-all duration-200 active:scale-[0.96] active:bg-[#303030] cursor-pointer group relative overflow-hidden hover:bg-[#2D2D2D] hover:border-white/[0.30] hover:text-white ${ isRecording ? '!text-[#E2765A]' : '' }`}
                         >
                           <div className={inputControlSheen} />
-                          <PremiumAudioLines className={`eterx-composer-control-icon w-[20px] h-[20px] text-white transition-all duration-200 ease-out group-hover:scale-[1.04] ${ isRecording ? '!text-[#E2765A] animate-pulse scale-[1.04]' : '' }`} strokeWidth={1.85} />
+                          <PremiumAudioLines className={`eterx-composer-control-icon eterx-composer-live-icon w-[20px] h-[20px] text-white transition-all duration-200 ease-out group-hover:scale-[1.04] ${ isRecording ? '!text-[#E2765A] animate-pulse scale-[1.04]' : '' }`} strokeWidth={1.85} />
                         </button>
                       </Tooltip>
                     </motion.div>

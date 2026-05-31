@@ -639,8 +639,26 @@ class AgentReflectionEngine {
 }
 
 // ── Exports ──
-export const dynamicSkillEngine = new DynamicSkillEngine();
-export const toolCompositionEngine = new ToolCompositionEngine();
-export const workspaceIntelligence = new WorkspaceIntelligence();
-export const agentReflection = new AgentReflectionEngine();
+const globalForEngines = globalThis as typeof globalThis & {
+  __eterxDynamicSkillEngine?: DynamicSkillEngine;
+  __eterxToolCompositionEngine?: ToolCompositionEngine;
+  __eterxWorkspaceIntelligence?: WorkspaceIntelligence;
+  __eterxAgentReflection?: AgentReflectionEngine;
+};
+
+export const dynamicSkillEngine =
+  globalForEngines.__eterxDynamicSkillEngine ||
+  (globalForEngines.__eterxDynamicSkillEngine = new DynamicSkillEngine());
+
+export const toolCompositionEngine =
+  globalForEngines.__eterxToolCompositionEngine ||
+  (globalForEngines.__eterxToolCompositionEngine = new ToolCompositionEngine());
+
+export const workspaceIntelligence =
+  globalForEngines.__eterxWorkspaceIntelligence ||
+  (globalForEngines.__eterxWorkspaceIntelligence = new WorkspaceIntelligence());
+
+export const agentReflection =
+  globalForEngines.__eterxAgentReflection ||
+  (globalForEngines.__eterxAgentReflection = new AgentReflectionEngine());
 

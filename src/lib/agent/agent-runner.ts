@@ -482,16 +482,23 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
     args: any,
     agentId: string
   ): Promise<unknown> {
+    const context = {
+      agentId,
+      agentRuntime: 'custom_agent' as const,
+      workspaceRoot: process.cwd(),
+      paths: [process.cwd()],
+    };
+
     // Priority 1: Resolved tool from agent profile
     const resolvedTool = this.resolvedTools.find(t => t.name === toolName);
     if (resolvedTool?.execute) {
-      return await resolvedTool.execute(args, { agentId, agentRuntime: 'custom_agent' });
+      return await resolvedTool.execute(args, context);
     }
 
     // Priority 2: Global tool registry
     const regTool = globalToolRegistry.getTool(toolName);
     if (regTool?.execute) {
-      return await regTool.execute(args, { agentId, agentRuntime: 'custom_agent' });
+      return await regTool.execute(args, context);
     }
 
     return { error: `Tool "${toolName}" not found. Available tools: ${this.resolvedTools.map(t => t.name).join(', ')}` };
@@ -635,4 +642,10 @@ function addUiTraceFieldsToSchema(schema: any): any {
 }
 
 /** Singleton for convenience */
-export const agentRunner = new AgentRunner();
+const globalForAgentRunner = globalThis as typeof globalThis & {
+  __eterxAgentRunner?: AgentRunner;
+};
+
+export const agentRunner =
+  globalForAgentRunner.__eterxAgentRunner ||
+  (globalForAgentRunner.__eterxAgentRunner = new AgentRunner());

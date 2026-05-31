@@ -131,7 +131,7 @@ export const chainExecutorTool: ToolDefinition = {
         allSuccess = false;
 
         // Log error for self-improvement
-        globalMemoryManager.logError('chain_executor', `Step ${i + 1} (${step.tool}) failed: ${err.message}`, 'autonomous_chain');
+        globalMemoryManager.logError('chain_executor', `Step ${i + 1} (${step.tool}) failed: ${err.message}`, `autonomous_chain [project:${context.workspaceId || context.projectId}]`);
 
         if (input.stopOnError) {
           console.log(`[ChainExecutor] Chain stopped at step ${i + 1} (stopOnError=true)`);

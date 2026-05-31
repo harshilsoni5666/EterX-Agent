@@ -40,8 +40,9 @@ interface BackgroundTask {
   pid?: number;
 }
 
-// In-memory task tracking
-const activeTasks: Map<string, BackgroundTask> = new Map();
+// In-memory task tracking preserved across Next.js HMR reloads
+const globalForBgTasks = globalThis as any;
+const activeTasks: Map<string, BackgroundTask> = globalForBgTasks.__eterxActiveTasks || (globalForBgTasks.__eterxActiveTasks = new Map());
 
 export const backgroundTaskTool: ToolDefinition = {
   name: 'background_task',
@@ -217,7 +218,12 @@ Use for: long installs, builds, data processing, file watching, anything that ta
         const task = activeTasks.get(input.taskId);
         if (task && task.pid && task.status === 'running') {
           try {
-            process.kill(task.pid, 'SIGTERM');
+            if (process.platform === 'win32') {
+              const { exec } = require('child_process');
+              exec(`taskkill /PID ${task.pid} /T /F`, { windowsHide: true }, () => {});
+            } else {
+              process.kill(task.pid, 'SIGTERM');
+            }
             task.status = 'failed';
             task.error = 'Killed by agent';
             task.completedAt = Date.now();

@@ -25,6 +25,7 @@ import {
   shouldShowCustomAgentStatus,
   type CustomToolActiveTrace,
 } from '../lib/agent/custom-agent-trace-adapter';
+import { formatVisibleWorkNote } from '../lib/agent/work-note';
 import { FilePanelProvider, useGlobalFilePanel } from '../contexts/FilePanelContext';
 
 const CommandPalette = dynamic(
@@ -44,6 +45,16 @@ const IdePanel = dynamic(
 
 const AgentsView = dynamic(
   () => import('../components/agents/agents-view').then(mod => mod.AgentsView),
+  { ssr: false },
+);
+
+const AgentChannelsView = dynamic(
+  () => import('../components/channels/agent-channels-view').then(mod => mod.AgentChannelsView),
+  { ssr: false },
+);
+
+const ProjectsView = dynamic(
+  () => import('../components/projects/projects-view').then(mod => mod.ProjectsView),
   { ssr: false },
 );
 
@@ -93,6 +104,7 @@ type TaskTrackerState = {
 };
 
 type NetworkBannerPhase = 'online' | 'offline' | 'restored';
+type ActiveView = 'chat' | 'code' | 'agents' | 'channels' | 'projects';
 
 const NETWORK_PROBE_URL = 'https://www.gstatic.com/generate_204';
 
@@ -162,6 +174,7 @@ const getPetLogText = (log: any) => {
 };
 
 const getLatestPetMonitorText = (logs: any[], isThinking: boolean) => {
+  if (isThinking) return 'Thinking';
   for (let i = logs.length - 1; i >= 0; i--) {
     const log = logs[i];
     if (!log || log.type === 'user_action' || log.type === 'task_plan') continue;
@@ -170,6 +183,17 @@ const getLatestPetMonitorText = (logs: any[], isThinking: boolean) => {
   }
   return isThinking ? 'Thinking' : '';
 };
+
+const PetThinkingLabel = ({ className = '' }: { className?: string }) => (
+  <span className={`eterx-pet-thinking-label inline-flex items-baseline gap-[3px] ${ className }`}>
+    <span>Thinking</span>
+    <span className="eterx-pet-thinking-dots inline-flex w-[22px] items-baseline justify-start gap-[2px]" aria-hidden="true">
+      <span />
+      <span />
+      <span />
+    </span>
+  </span>
+);
 
 const FloatingPetMonitor = ({
   open,
@@ -194,7 +218,7 @@ const FloatingPetMonitor = ({
   const latestText = useMemo(() => getLatestPetMonitorText(logs, isThinking), [isThinking, logs]);
 
   const displayTitle = title?.trim() || 'EterX agent';
-  const previewText = latestText || (isThinking ? 'Thinking' : '');
+  const previewText = isThinking ? 'Thinking' : latestText;
 
   const startDrag = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
@@ -252,7 +276,7 @@ const FloatingPetMonitor = ({
 
   return (
     <div
-      className={`group fixed z-[9998] w-[372px] max-w-[calc(100vw-24px)] select-none rounded-[22px] border border-white/[0.16] bg-[#171717]/96 text-[#F2F0EC] shadow-[0_18px_54px_rgba(0,0,0,0.36),inset_0_1px_0_rgba(255,255,255,0.055)] backdrop-blur-2xl ${replyOpen ? 'p-3' : 'px-4 py-3'}`}
+      className={`eterx-pet-monitor group fixed z-[9998] w-[326px] max-w-[calc(100vw-24px)] select-none rounded-[24px] border border-white/[0.16] bg-[#171717]/96 text-[#F2F0EC] shadow-[0_18px_54px_rgba(0,0,0,0.36),inset_0_1px_0_rgba(255,255,255,0.055)] backdrop-blur-2xl ${ replyOpen ? 'p-3' : 'px-4 py-3.5' }`}
       style={{ left: position.x, top: position.y }}
       onPointerDown={startDrag}
     >
@@ -260,47 +284,44 @@ const FloatingPetMonitor = ({
         type="button"
         onClick={onClose}
         aria-label="Close pet monitor"
-        className="absolute -left-2 -top-2 flex h-8 w-8 items-center justify-center rounded-full border border-white/[0.16] bg-[#1F1F1F] text-white/72 opacity-0 shadow-[0_10px_26px_rgba(0,0,0,0.28)] transition-all duration-100 hover:bg-[#2A2A2A] hover:text-white group-hover:opacity-100 focus:opacity-100"
+        className="eterx-pet-close absolute -left-2 -top-2 flex h-8 w-8 items-center justify-center rounded-full border border-white/[0.16] bg-[#1F1F1F] text-white/72 opacity-0 shadow-[0_10px_26px_rgba(0,0,0,0.28)] transition-all duration-100 hover:bg-[#2A2A2A] hover:text-white group-hover:opacity-100 focus:opacity-100"
       >
         <X className="h-4 w-4" strokeWidth={2.3} />
       </button>
 
       <div className="flex min-w-0 items-start gap-3">
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-[20px] font-semibold leading-6 tracking-normal text-white">
-            {displayTitle}
-          </div>
+        <div className="min-w-0 flex-1 pt-0.5">
           {replyOpen ? (
-            <div className="mt-2 line-clamp-2 text-[15px] font-medium leading-5 text-[#DAD7D1]">
-              {previewText}
+            <div>
+              <div className="eterx-pet-title truncate text-[13px] font-semibold leading-5 text-[#A8A39B]">
+                {displayTitle}
+              </div>
+              <div className="eterx-pet-status mt-1 line-clamp-2 text-[15px] font-semibold leading-5 text-[#F2F0EC]">
+                <PetThinkingLabel />
+              </div>
             </div>
           ) : (
-            <div className="mt-1 line-clamp-2 text-[18px] font-medium leading-6 text-[#F2F0EC] group-hover:hidden">
-              {previewText}
-            </div>
-          )}
-          {!replyOpen && (
-            <div className="mt-1 hidden text-[18px] font-medium leading-6 text-[#F2F0EC] group-hover:block">
-              Thinking
+            <div className="eterx-pet-status text-[20px] font-semibold leading-7 text-[#F2F0EC]">
+              <PetThinkingLabel />
             </div>
           )}
         </div>
 
-        <span className="mt-1 h-[15px] w-[15px] shrink-0 rounded-full border-2 border-white/35 border-t-white animate-spin" />
+        <span className="eterx-pet-spinner mt-1 h-[15px] w-[15px] shrink-0 rounded-full border-2 border-white/35 border-t-white animate-spin" />
       </div>
 
       {!replyOpen && (
         <button
           type="button"
           onClick={() => setReplyOpen(true)}
-          className="absolute bottom-3 right-4 hidden rounded-full border border-white/[0.10] bg-white/[0.055] px-4 py-1.5 text-[15px] font-medium text-[#E8E5DF] transition-colors hover:bg-white/[0.10] hover:text-white group-hover:block"
+          className="eterx-pet-reply-button absolute bottom-3 right-4 hidden rounded-full border border-white/[0.10] bg-white/[0.055] px-4 py-1.5 text-[15px] font-medium text-[#E8E5DF] transition-colors hover:bg-white/[0.10] hover:text-white group-hover:block"
         >
           Reply
         </button>
       )}
 
       {replyOpen && (
-        <div className="mt-3 border-t border-white/[0.08] pt-3">
+        <div className="eterx-pet-reply-area mt-3 border-t border-white/[0.08] pt-3">
           <div className="flex items-center gap-2">
             <input
               value={replyText}
@@ -317,13 +338,13 @@ const FloatingPetMonitor = ({
               }}
               autoFocus
               placeholder="Reply"
-              className="h-10 min-w-0 flex-1 select-text rounded-[10px] border border-[#6EA8FF]/70 bg-[#151515] px-3 text-[15px] font-medium text-white outline-none placeholder:text-[#8C8984] focus:border-[#8AB4FF]"
+              className="eterx-pet-reply-input h-10 min-w-0 flex-1 select-text rounded-[10px] border border-[#6EA8FF]/70 bg-[#151515] px-3 text-[15px] font-medium text-white outline-none placeholder:text-[#8C8984] focus:border-[#8AB4FF]"
             />
             <button
               type="button"
               onClick={submitReply}
               disabled={!replyText.trim()}
-              className="h-10 shrink-0 rounded-full bg-[#B8B4AC] px-4 text-[15px] font-semibold text-[#202020] transition-colors hover:bg-[#D8D4CC] disabled:cursor-default disabled:opacity-45"
+              className="eterx-pet-reply-submit h-10 shrink-0 rounded-full bg-[#B8B4AC] px-4 text-[15px] font-semibold text-[#202020] transition-colors hover:bg-[#D8D4CC] disabled:cursor-default disabled:opacity-45"
             >
               Reply
             </button>
@@ -519,7 +540,7 @@ function DeepWorkUI() {
   const [chatPanelWidth, setChatPanelWidth] = useState<number | null>(null);
   const [isResizingPanels, setIsResizingPanels] = useState(false);
   const [inputValue, setInputValue] = useState("");
-  const [pendingSteering, setPendingSteering] = useState<{id: string, text: string}[]>([]);
+  const [pendingSteering, setPendingSteering] = useState<{ id: string, text: string }[]>([]);
   // Per-chat thinking state: Set of chatIds that have running agents
   const [runningChats, setRunningChats] = useState<Set<string>>(new Set());
   const [traceLogs, setTraceLogs] = useState<any[]>([]);
@@ -539,7 +560,7 @@ function DeepWorkUI() {
   const [headerMenuOpen, setHeaderMenuOpen] = useState(false);
   const [headerSearchOpen, setHeaderSearchOpen] = useState(false);
   const [headerSearchQuery, setHeaderSearchQuery] = useState("");
-  const [activeView, setActiveView] = useState<'chat' | 'code' | 'agents'>('chat');
+  const [activeView, setActiveViewState] = useState<ActiveView>('chat');
   const [agentMode, setAgentMode] = useState<MainAgentMode>('think');
   const [thinkingLevel, setThinkingLevelState] = useState<MainAgentThinkingLevel>('low');
   const [selectedAgentState, setSelectedAgentState] = useState<SelectedAgentState>({
@@ -564,6 +585,13 @@ function DeepWorkUI() {
   const networkBannerVisibleRef = useRef(false);
   const runningChatsRef = useRef<Set<string>>(new Set());
   const isNetworkPaused = networkPhase === 'offline';
+
+  const setActiveView = useCallback((view: ActiveView) => {
+    if (view === 'agents' || view === 'channels' || view === 'projects') {
+      setBuildingAgentId(null);
+    }
+    setActiveViewState(view);
+  }, []);
 
   // ═══ Gemini Live Session State ═══
   const [liveState, setLiveState] = useState<LiveSessionState>('idle');
@@ -1272,12 +1300,12 @@ function DeepWorkUI() {
 
   const handleOpenAgentBuilder = (id: string) => {
     setBuildingAgentId(id);
-    const builderChatId = `agent_builder_${id}`;
+    const builderChatId = `agent_builder_${ id }`;
     let chat = chats.find(c => c.id === builderChatId);
     if (!chat) {
       chat = {
         id: builderChatId,
-        title: `Building Agent: ${id}`,
+        title: `Building Agent: ${ id }`,
         updatedAt: Date.now(),
         traceLogs: []
       };
@@ -1514,7 +1542,7 @@ function DeepWorkUI() {
       } else if (trace.type === 'work_note') {
         const subAgent = trace.subAgent || null;
         const noteId = trace.noteId || null;
-        const noteText = String(trace.text || '').trim();
+        const noteText = formatVisibleWorkNote(String(trace.text || ''));
         if (!noteText) continue;
         const incomingIsFinal = trace.isStreaming === false || trace.isDelta === false;
         let mergeIdx = -1;
@@ -1798,7 +1826,7 @@ function DeepWorkUI() {
               } else if (trace.type === 'work_note') {
                 const subAgent = trace.subAgent || null;
                 const noteId = trace.noteId || null;
-                const noteText = String(trace.text || '').trim();
+                const noteText = formatVisibleWorkNote(String(trace.text || ''));
                 if (!noteText) continue;
                 const incomingIsFinal = trace.isStreaming === false || trace.isDelta === false;
                 let mergeIdx = -1;
@@ -2128,7 +2156,7 @@ function DeepWorkUI() {
       const timeoutId = window.setTimeout(() => controller.abort(), 3200);
 
       try {
-        await fetch(`${NETWORK_PROBE_URL}?t=${Date.now()}`, {
+        await fetch(`${ NETWORK_PROBE_URL }?t=${ Date.now() }`, {
           method: 'GET',
           mode: 'no-cors',
           cache: 'no-store',
@@ -2268,7 +2296,7 @@ function DeepWorkUI() {
   // Remove pending steering messages when they appear in traceLogs
   useEffect(() => {
     if (pendingSteering.length === 0) return;
-    
+
     const lastUserIdx = traceLogs.reduceRight((found, l, i) => found === -1 && l.type === 'user_action' ? i : found, -1);
     const currentTurnLogs = lastUserIdx >= 0 ? traceLogs.slice(lastUserIdx) : traceLogs;
 
@@ -2537,13 +2565,13 @@ function DeepWorkUI() {
     startRecording();
   };
 
-    const handleOpenAgentTeam = useCallback((agentName?: string) => {
+  const handleOpenAgentTeam = useCallback((agentName?: string) => {
     setAgentTeamOpen(true);
     // If a specific agent name is passed, the AgentTeamView will focus on it
     // via its own internal state from the traceLogs
   }, []);
 
-const handleSend = async () => {
+  const handleSend = async () => {
     if (isRecording && mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
       mediaRecorderRef.current.stop();
       setIsRecording(false);
@@ -2649,7 +2677,7 @@ const handleSend = async () => {
     if (isCustomAgentRun) {
       const controller = new AbortController();
       abortControllerRef.current = controller;
-      const answerLogId = `custom_agent_answer_${runStartedAt}`;
+      const answerLogId = `custom_agent_answer_${ runStartedAt }`;
       let pendingCustomText = '';
       let customTraceSeq = 0;
       let customWorkNoteSeq = 0;
@@ -2699,7 +2727,7 @@ const handleSend = async () => {
         if (!shouldShowCustomAgentStatus(cleanText)) return;
         const at = Date.now();
         appendCustomAgentTrace({
-          id: `custom_status_${at}_${Math.random().toString(36).slice(2, 8)}`,
+          id: `custom_status_${ at }_${ Math.random().toString(36).slice(2, 8) }`,
           type: 'thought_stream',
           text: cleanText,
           subAgent: selectedAgentName,
@@ -2713,7 +2741,7 @@ const handleSend = async () => {
         const noteLog = createCustomWorkNoteLog(
           pendingCustomText,
           selectedAgentName,
-          `custom_work_${runStartedAt}_${customWorkNoteSeq++}`,
+          `custom_work_${ runStartedAt }_${ customWorkNoteSeq++ }`,
           Date.now(),
         );
         pendingCustomText = '';
@@ -2721,7 +2749,7 @@ const handleSend = async () => {
       };
 
       const attachmentContext = mediaAttachments.length > 0
-        ? `\n\n[Attached files]\n${mediaAttachments.map(att => `- ${att.name}${att.path ? ` (${att.path})` : ''}`).join('\n')}`
+        ? `\n\n[Attached files]\n${ mediaAttachments.map(att => `- ${ att.name }${ att.path ? ` (${ att.path })` : '' }`).join('\n') }`
         : '';
 
       const runnerMessages = [
@@ -2731,7 +2759,7 @@ const handleSend = async () => {
             role: log.type === 'user_action' ? 'user' : 'model',
             content: String(log.text || ''),
           })),
-        { role: 'user', content: `${promptText}${attachmentContext}` },
+        { role: 'user', content: `${ promptText }${ attachmentContext }` },
       ];
 
       try {
@@ -2746,14 +2774,14 @@ const handleSend = async () => {
         });
 
         if (!response.ok) {
-          let message = `Custom agent start failed (${response.status}).`;
+          let message = `Custom agent start failed (${ response.status }).`;
           try {
             const payload = await response.json();
             message = payload.error || message;
           } catch { }
           setChatLogsById(chatIdToUse!, logs => [
             ...stripAgentConnectionLogs(logs),
-            systemThoughtLog(`\n\n*${message}*`),
+            systemThoughtLog(`\n\n*${ message }*`),
           ], { touchUpdatedAt: true });
           return;
         }
@@ -2798,7 +2826,7 @@ const handleSend = async () => {
             const message = String(event.text || 'Custom agent failed.');
             setChatLogsById(chatIdToUse!, logs => [
               ...stripAgentConnectionLogs(logs),
-              systemThoughtLog(`\n\n*${message.slice(0, 240)}*`),
+              systemThoughtLog(`\n\n*${ message.slice(0, 240) }*`),
             ], { touchUpdatedAt: true });
           } else if (event.type === 'done') {
             if (pendingCustomText.trim()) {
@@ -2837,7 +2865,7 @@ const handleSend = async () => {
         if (error.name !== 'AbortError') {
           setChatLogsById(chatIdToUse!, logs => [
             ...stripAgentConnectionLogs(logs),
-            systemThoughtLog(`\n\n*Custom agent connection failed: ${String(error.message || error).slice(0, 180)}*`),
+            systemThoughtLog(`\n\n*Custom agent connection failed: ${ String(error.message || error).slice(0, 180) }*`),
           ], { touchUpdatedAt: true });
         }
       } finally {
@@ -2857,6 +2885,7 @@ const handleSend = async () => {
     const requestPinnedContext = {
       ...(pinnedItems.length > 0 ? { paths: pinnedItems.map(p => p.path) } : {}),
       ...(isBuilderChat ? { agentRuntime: 'agent_builder', agentId: builderAgentId } : {}),
+      ...(selectedAgent === 'coding' && !isBuilderChat ? { agentRuntime: 'main_coding_agent', agentProfile: 'eterx-code' } : {}),
     };
     const hasPinnedContext = Object.keys(requestPinnedContext).length > 0;
 
@@ -2887,7 +2916,7 @@ const handleSend = async () => {
       });
 
       if (!response.ok) {
-        let message = `Agent start failed (${response.status}).`;
+        let message = `Agent start failed (${ response.status }).`;
         try {
           const errorPayload = await response.json();
           message = errorPayload.error || errorPayload.details || message;
@@ -2897,7 +2926,7 @@ const handleSend = async () => {
         removeRunningChat(chatIdToUse!);
         setChatLogsById(chatIdToUse!, prev => [
           ...stripAgentConnectionLogs(prev),
-          systemThoughtLog(`\n\n*${message}*`)
+          systemThoughtLog(`\n\n*${ message }*`)
         ]);
         return;
       }
@@ -3149,7 +3178,7 @@ const handleSend = async () => {
   }, [sendSteeringMessage]);
 
   return (
-    <div className="eterx-app-shell flex h-screen font-sans overflow-hidden selection:bg-[#E2765A]/30 transition-colors relative">
+    <div data-active-view={activeView} className="eterx-app-shell flex h-screen font-sans overflow-hidden selection:bg-[#E2765A]/30 transition-colors relative">
       <NetworkStatusBanner
         phase={networkPhase}
         visible={networkBannerVisible}
@@ -3164,8 +3193,8 @@ const handleSend = async () => {
         onReply={sendSteeringMessage}
       />
       {/* Empty-state motion field: soft Gemini-style color waves behind the app shell. */}
-      <div className={`absolute bottom-0 left-0 right-0 h-[45vh] pointer-events-none overflow-hidden z-0 flex items-end justify-center ${ ((traceLogs.length === 0 && liveState === 'idle') || (activeView === 'agents' && !buildingAgentId)) ? 'opacity-100 transition-all duration-[1000ms] ease-out' : 'opacity-0 transition-all duration-[1000ms] ease-in' }`}>
-        <div key={`eterx-home-field-${activeChatId ?? 'new'}`} className="eterx-home-field">
+      <div className={`absolute bottom-0 left-0 right-0 h-[45vh] pointer-events-none overflow-hidden z-0 flex items-end justify-center ${ (activeView !== 'channels' && activeView !== 'projects' && ((traceLogs.length === 0 && liveState === 'idle') || (activeView === 'agents' && !buildingAgentId))) ? 'opacity-100 transition-all duration-[1000ms] ease-out' : 'opacity-0 transition-all duration-[1000ms] ease-in' }`}>
+        <div key={`eterx-home-field-${ activeChatId ?? 'new' }`} className="eterx-home-field">
           <div className="eterx-home-plasma">
             <div className="eterx-home-plasma-blob eterx-home-plasma-pink" />
             <div className="eterx-home-plasma-blob eterx-home-plasma-emerald" />
@@ -3207,213 +3236,215 @@ const handleSend = async () => {
       <SettingsPanel isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} />
 
       <div className="flex-1 flex flex-col relative bg-transparent overflow-hidden z-10 transition-all duration-300">
-        <div className="pointer-events-none absolute left-0 right-0 top-0 z-40 h-[92px] bg-[linear-gradient(180deg,#0F0F0F_0%,rgba(15,15,15,0.98)_46%,rgba(15,15,15,0.56)_78%,transparent_100%)]" />
+        <div className={`eterx-chat-top-fade pointer-events-none absolute left-0 right-0 top-0 z-40 h-[92px] ${activeView === 'channels' || activeView === 'projects' ? 'hidden' : 'bg-[linear-gradient(180deg,#0F0F0F_0%,rgba(15,15,15,0.98)_46%,rgba(15,15,15,0.56)_78%,transparent_100%)]'}`} />
         {/* Absolute Header (Draggable Region for Electron) */}
         <>
-            <div className="h-14 flex items-center justify-between pl-4 pr-[140px] z-50 pointer-events-none [-webkit-app-region:drag] shrink-0">
-              <div className="flex items-center gap-2 pointer-events-auto [-webkit-app-region:no-drag] h-full pt-3">
-                {!sidebarOpen && (
-                  <div className="flex md:hidden items-center gap-1 mr-2 mt-0">
-                    <Tooltip text="Open sidebar" side="bottom">
-                      <div onClick={() => setSidebarOpen(true)} className="p-1.5 rounded-full hover:bg-white/10 active:bg-white/20 active:scale-95 transition-all text-[#8C8A88] hover:text-white cursor-pointer">
-                        <PanelLeft className="w-[18px] h-[18px]" />
-                      </div>
-                    </Tooltip>
-                  </div>
-                )}
-                <div id="agent-builder-back-portal" className="flex items-center">
-                  {buildingAgentId && (
-                    <button 
-                      onClick={() => {
-                        setBuildingAgentId(null);
-                        setActiveChatId(null);
-                        setTraceLogs([]);
-                      }}
-                      className="flex items-center gap-2 px-3 py-1.5 bg-white/[0.05] border border-white/5 hover:border-white/10 hover:bg-white/[0.08] text-[#E8E6E3] hover:text-white transition-all rounded-lg group shadow-sm active:scale-95 mr-2"
-                    >
-                      <ArrowLeft className="w-4 h-4 group-hover:-translate-x-1 transition-transform" />
-                      <span className="text-[13px] font-medium tracking-wide">Back to Agent-Room</span>
-                    </button>
-                  )}
-                </div>
-                {(() => {
-                  if (activeView === 'agents' && !buildingAgentId) return null;
-                  const activeChat = activeChatId ? chats.find(c => c.id === activeChatId) : null;
-                  const titleText = activeChat ? activeChat.title : DEFAULT_CHAT_TITLE;
-
-                  return (
-                    <div className="relative [-webkit-app-region:no-drag]">
-                      <div
-                        onClick={() => {
-                          setHeaderMenuOpen(!headerMenuOpen);
-                        }}
-                        className={`flex items-center gap-2 text-[14px] font-medium px-3 py-1.5 rounded-lg transition-all duration-300 border backdrop-blur-md ${ headerMenuOpen ? 'cursor-pointer bg-white/[0.12] border-white/[0.15] text-white shadow-sm scale-[0.98]' : 'cursor-pointer bg-white/[0.05] border-white/[0.08] text-[#E8E6E3] hover:bg-white/[0.08] hover:border-white/[0.12] active:scale-[0.98] shadow-sm' }`}
-                      >
-                        <span className="truncate max-w-[400px]">{titleText}</span>
-                        <ChevronDown className={`w-4 h-4 text-[#555350] shrink-0 transition-transform duration-200 ${ headerMenuOpen ? 'rotate-180' : '' }`} />
-                      </div>
-                      <AnimatePresence>
-                        {headerMenuOpen && (
-                          <>
-                            <div className="fixed inset-0 z-40 cursor-default" onClick={(e) => { e.stopPropagation(); setHeaderMenuOpen(false); }}></div>
-                            <motion.div
-                              initial={{ opacity: 0, y: -5, scale: 0.98 }}
-                              animate={{ opacity: 1, y: 0, scale: 1 }}
-                              exit={{ opacity: 0, y: -5, scale: 0.98 }}
-                              transition={{ duration: 0.15, ease: "easeOut" }}
-                              className="absolute top-10 left-0 w-[300px] z-50 bg-[#1A1A1A]/95 backdrop-blur-xl border border-white/10 rounded-xl shadow-[0_8px_30px_rgba(0,0,0,0.4)] p-2 flex flex-col max-h-[400px]"
-                            >
-                              <div className="flex items-center justify-between px-2 mb-2 mt-1 h-6">
-                                {!headerSearchOpen ? (
-                                  <>
-                                    <div className="text-[11px] font-semibold text-[#555350] uppercase tracking-wider">Threads</div>
-                                    <Search
-                                      className="w-3.5 h-3.5 text-[#555350] hover:text-[#E8E6E3] cursor-pointer transition-colors"
-                                      onClick={(e) => { e.stopPropagation(); setHeaderSearchOpen(true); }}
-                                    />
-                                  </>
-                                ) : (
-                                  <motion.div
-                                    initial={{ width: 0, opacity: 0 }}
-                                    animate={{ width: "100%", opacity: 1 }}
-                                    className="flex items-center gap-2 w-full bg-white/5 rounded-md px-2 py-1 h-full"
-                                    onClick={(e) => e.stopPropagation()}
-                                  >
-                                    <Search className="w-3 h-3 text-[#A3A19E]" />
-                                    <input
-                                      type="text"
-                                      autoFocus
-                                      placeholder="Search threads..."
-                                      value={headerSearchQuery}
-                                      onChange={(e) => setHeaderSearchQuery(e.target.value)}
-                                      className="bg-transparent border-none outline-none text-[12px] text-[#E8E6E3] placeholder:text-[#555350] w-full"
-                                    />
-                                    <X
-                                      className="w-3 h-3 text-[#555350] hover:text-[#E8E6E3] cursor-pointer"
-                                      onClick={(e) => { e.stopPropagation(); setHeaderSearchOpen(false); setHeaderSearchQuery(""); }}
-                                    />
-                                  </motion.div>
-                                )}
-                              </div>
-                              <div className="overflow-y-auto custom-scrollbar flex-1 space-y-[2px]">
-                                {(() => {
-                                  const filteredChats = chats.filter(c =>
-                                    c.title &&
-                                    c.title.toLowerCase().includes(headerSearchQuery.toLowerCase())
-                                  );
-
-                                  if (filteredChats.length === 0) {
-                                    return <div className="px-2 py-2 text-[13px] text-[#555350] italic">No threads found</div>;
-                                  }
-
-                                  return filteredChats.map(chat => (
-                                    <div
-                                      key={chat.id}
-                                      onClick={() => {
-                                        loadChat(chat.id);
-                                        setHeaderMenuOpen(false);
-                                      }}
-                                      className={`w-full text-left px-3 py-2 text-[13px] rounded-lg truncate transition-all duration-150 flex items-center group cursor-pointer border border-transparent active:scale-[0.98] ${ activeChatId === chat.id ? 'bg-white/10 text-white font-medium shadow-sm' : 'text-[#A3A19E] hover:bg-white/5 active:bg-white/10 hover:text-[#E8E6E3]' }`}
-                                    >
-                                      {chat.title}
-                                    </div>
-                                  ));
-                                })()}
-                              </div>
-                            </motion.div>
-                          </>
-                        )}
-                      </AnimatePresence>
+          <div className="h-14 flex items-center justify-between pl-4 pr-[140px] z-50 pointer-events-none [-webkit-app-region:drag] shrink-0">
+            <div className="flex items-center gap-2 pointer-events-auto [-webkit-app-region:no-drag] h-full pt-3">
+              {!sidebarOpen && (
+                <div className="flex md:hidden items-center gap-1 mr-2 mt-0">
+                  <Tooltip text="Open sidebar" side="bottom">
+                    <div onClick={() => setSidebarOpen(true)} className="p-1.5 rounded-full hover:bg-white/10 active:bg-white/20 active:scale-95 transition-all text-[#8C8A88] hover:text-white cursor-pointer">
+                      <PanelLeft className="w-[18px] h-[18px]" />
                     </div>
-                  );
-                })()}
-              </div>
-            </div>
-
-            
-            {/* Agent Team Toggle Button */}
-            {(currentSubAgents.length > 0 || isThinking) && (
-              <div className="absolute top-3 right-[228px] z-50 pointer-events-auto [-webkit-app-region:no-drag]">
-                <button id="agent-team-toggle-btn"
-                  onClick={() => setAgentTeamOpen(o => !o)}
-                  className={`flex items-center gap-1.5 h-8 px-2.5 rounded-lg text-[11px] font-semibold transition-all border shadow-[0_10px_28px_rgba(0,0,0,0.18)] ${
-                    agentTeamOpen
-                      ? 'bg-violet-400/[0.12] border-violet-300/30 text-violet-200 shadow-[0_0_0_1px_rgba(139,92,246,0.08),0_14px_34px_rgba(139,92,246,0.14)]'
-                      : 'bg-white/[0.035] border-white/[0.085] text-white/45 hover:border-violet-300/22 hover:bg-violet-300/[0.06] hover:text-violet-100'
-                  }`}
-                >
-                  <svg className={`w-3.5 h-3.5 ${agentTeamOpen ? 'text-violet-300' : 'text-white/45'}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/>
-                    <path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>
-                  </svg>
-                  <span className="hidden sm:inline">Team</span>
-                  {currentSubAgents.filter((a: any) => a.status === 'working' || a.status === 'spawning').length > 0 && (
-                    <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse ml-0.5" />
-                  )}
-                </button>
-              </div>
-            )}
-
-{/* Computer Toggle Button */}
-            {canUseMonitor && (
-              <div className="absolute top-3 right-[152px] z-50 pointer-events-auto [-webkit-app-region:no-drag]">
-                <Tooltip text={monitorOpen ? 'Close Computer' : 'Open Computer'} side="bottom">
-                  <button id="computer-toggle-btn"
-                    onClick={() => setMonitorOpen(o => !o)}
-                    className={`flex items-center gap-1.5 h-8 px-2.5 rounded-lg text-[11px] font-semibold transition-all border shadow-[0_10px_28px_rgba(0,0,0,0.18)] ${
-                      monitorOpen
-                        ? 'bg-sky-400/[0.12] border-sky-300/30 text-sky-200 shadow-[0_0_0_1px_rgba(125,211,252,0.08),0_14px_34px_rgba(14,165,233,0.14)]'
-                        : 'bg-white/[0.035] border-white/[0.085] text-white/45 hover:border-sky-300/22 hover:bg-sky-300/[0.06] hover:text-sky-100'
-                    }`}
+                  </Tooltip>
+                </div>
+              )}
+              <div id="agent-builder-back-portal" className="flex items-center">
+                {buildingAgentId && (
+                  <button
+                    onClick={() => {
+                      setBuildingAgentId(null);
+                      setActiveChatId(null);
+                      setTraceLogs([]);
+                    }}
+                    className="flex items-center gap-2 px-3 py-1.5 bg-white/[0.05] border border-white/5 hover:border-white/10 hover:bg-white/[0.08] text-[#E8E6E3] hover:text-white transition-all rounded-lg group shadow-sm active:scale-95 mr-2"
                   >
-                    <Monitor className={`w-3.5 h-3.5 ${monitorOpen ? 'text-sky-300' : 'text-white/45'}`} />
-                    <span className="hidden sm:inline">Computer</span>
-                    {isThinking && <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse ml-0.5" />}
+                    <ArrowLeft className="w-4 h-4 group-hover:-translate-x-1 transition-transform" />
+                    <span className="text-[13px] font-medium tracking-wide">Back to Agent-Room</span>
                   </button>
-                </Tooltip>
+                )}
               </div>
-            )}
+              {(() => {
+                  if ((activeView === 'agents' && !buildingAgentId) || activeView === 'channels' || activeView === 'projects') return null;
+                const activeChat = activeChatId ? chats.find(c => c.id === activeChatId) : null;
+                const titleText = activeChat ? activeChat.title : DEFAULT_CHAT_TITLE;
 
-            {/* Split Content Area */}
-            <div
-              ref={splitContainerRef}
-              className={`flex-1 flex overflow-hidden w-full relative ${isResizingPanels ? 'cursor-col-resize select-none' : ''}`}
-            >
-              {activeView === 'agents' && !buildingAgentId ? (
-                <AgentsView
-                  onOpenBuilder={handleOpenAgentBuilder}
-                  onUseAgent={handleUseAgentInChat}
-                  selectedAgentId={selectedAgent}
-                />
-              ) : (
-                <>
-                  {/* Chat Container */}
-                  <div
-                    className={`flex flex-col relative h-full min-w-0 ${ hasOpenFiles ? `shrink-0 min-w-[320px] ${isResizingPanels ? 'transition-none' : 'transition-[width,flex-basis] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]'}` : 'w-full transition-all duration-300' }`}
-                    style={hasOpenFiles ? { width: chatPanelWidth ?? undefined, flexBasis: chatPanelWidth === null ? `${DEFAULT_CHAT_PANEL_RATIO * 100}%` : undefined } : undefined}
-                  >
-                    <ChatFeed
-                      key={activeChatId}
-                      traceLogs={displayTraceLogs}
-                      isThinking={isThinking}
-                      messagesEndRef={messagesEndRef}
-                      setSidebarOpen={setSidebarOpen}
-                      sidebarOpen={sidebarOpen}
-                      handleScroll={handleScroll}
-                      showScrollBottom={showScrollBottom}
-                      isCompressed={hasOpenFiles}
-                    />
+                return (
+                  <div className="relative [-webkit-app-region:no-drag]">
+                    <div
+                      onClick={() => {
+                        setHeaderMenuOpen(!headerMenuOpen);
+                      }}
+                      className={`flex items-center gap-2 text-[14px] font-medium px-3 py-1.5 rounded-lg transition-all duration-300 border backdrop-blur-md ${ headerMenuOpen ? 'cursor-pointer bg-white/[0.12] border-white/[0.15] text-white shadow-sm scale-[0.98]' : 'cursor-pointer bg-white/[0.05] border-white/[0.08] text-[#E8E6E3] hover:bg-white/[0.08] hover:border-white/[0.12] active:scale-[0.98] shadow-sm' }`}
+                    >
+                      <span className="truncate max-w-[400px]">{titleText}</span>
+                      <ChevronDown className={`w-4 h-4 text-[#555350] shrink-0 transition-transform duration-200 ${ headerMenuOpen ? 'rotate-180' : '' }`} />
+                    </div>
+                    <AnimatePresence>
+                      {headerMenuOpen && (
+                        <>
+                          <div className="fixed inset-0 z-40 cursor-default" onClick={(e) => { e.stopPropagation(); setHeaderMenuOpen(false); }}></div>
+                          <motion.div
+                            initial={{ opacity: 0, y: -5, scale: 0.98 }}
+                            animate={{ opacity: 1, y: 0, scale: 1 }}
+                            exit={{ opacity: 0, y: -5, scale: 0.98 }}
+                            transition={{ duration: 0.15, ease: "easeOut" }}
+                            className="absolute top-10 left-0 w-[300px] z-50 bg-[#1A1A1A]/95 backdrop-blur-xl border border-white/10 rounded-xl shadow-[0_8px_30px_rgba(0,0,0,0.4)] p-2 flex flex-col max-h-[400px]"
+                          >
+                            <div className="flex items-center justify-between px-2 mb-2 mt-1 h-6">
+                              {!headerSearchOpen ? (
+                                <>
+                                  <div className="text-[11px] font-semibold text-[#555350] uppercase tracking-wider">Threads</div>
+                                  <Search
+                                    className="w-3.5 h-3.5 text-[#555350] hover:text-[#E8E6E3] cursor-pointer transition-colors"
+                                    onClick={(e) => { e.stopPropagation(); setHeaderSearchOpen(true); }}
+                                  />
+                                </>
+                              ) : (
+                                <motion.div
+                                  initial={{ width: 0, opacity: 0 }}
+                                  animate={{ width: "100%", opacity: 1 }}
+                                  className="flex items-center gap-2 w-full bg-white/5 rounded-md px-2 py-1 h-full"
+                                  onClick={(e) => e.stopPropagation()}
+                                >
+                                  <Search className="w-3 h-3 text-[#A3A19E]" />
+                                  <input
+                                    type="text"
+                                    autoFocus
+                                    placeholder="Search threads..."
+                                    value={headerSearchQuery}
+                                    onChange={(e) => setHeaderSearchQuery(e.target.value)}
+                                    className="bg-transparent border-none outline-none text-[12px] text-[#E8E6E3] placeholder:text-[#555350] w-full"
+                                  />
+                                  <X
+                                    className="w-3 h-3 text-[#555350] hover:text-[#E8E6E3] cursor-pointer"
+                                    onClick={(e) => { e.stopPropagation(); setHeaderSearchOpen(false); setHeaderSearchQuery(""); }}
+                                  />
+                                </motion.div>
+                              )}
+                            </div>
+                            <div className="overflow-y-auto custom-scrollbar flex-1 space-y-[2px]">
+                              {(() => {
+                                const filteredChats = chats.filter(c =>
+                                  c.title &&
+                                  c.title.toLowerCase().includes(headerSearchQuery.toLowerCase())
+                                );
+
+                                if (filteredChats.length === 0) {
+                                  return <div className="px-2 py-2 text-[13px] text-[#555350] italic">No threads found</div>;
+                                }
+
+                                return filteredChats.map(chat => (
+                                  <div
+                                    key={chat.id}
+                                    onClick={() => {
+                                      loadChat(chat.id);
+                                      setHeaderMenuOpen(false);
+                                    }}
+                                    className={`w-full text-left px-3 py-2 text-[13px] rounded-lg truncate transition-all duration-150 flex items-center group cursor-pointer border border-transparent active:scale-[0.98] ${ activeChatId === chat.id ? 'bg-white/10 text-white font-medium shadow-sm' : 'text-[#A3A19E] hover:bg-white/5 active:bg-white/10 hover:text-[#E8E6E3]' }`}
+                                  >
+                                    {chat.title}
+                                  </div>
+                                ));
+                              })()}
+                            </div>
+                          </motion.div>
+                        </>
+                      )}
+                    </AnimatePresence>
+                  </div>
+                );
+              })()}
+            </div>
+          </div>
+
+
+          {/* Agent Team Toggle Button */}
+          {(currentSubAgents.length > 0 || isThinking) && (
+            <div className="absolute top-3 right-[228px] z-50 pointer-events-auto [-webkit-app-region:no-drag]">
+              <button id="agent-team-toggle-btn"
+                onClick={() => setAgentTeamOpen(o => !o)}
+                className={`flex items-center gap-1.5 h-8 px-2.5 rounded-lg text-[11px] font-semibold transition-all border shadow-[0_10px_28px_rgba(0,0,0,0.18)] ${ agentTeamOpen
+                    ? 'bg-violet-400/[0.12] border-violet-300/30 text-violet-200 shadow-[0_0_0_1px_rgba(139,92,246,0.08),0_14px_34px_rgba(139,92,246,0.14)]'
+                    : 'bg-white/[0.035] border-white/[0.085] text-white/45 hover:border-violet-300/22 hover:bg-violet-300/[0.06] hover:text-violet-100'
+                  }`}
+              >
+                <svg className={`w-3.5 h-3.5 ${ agentTeamOpen ? 'text-violet-300' : 'text-white/45' }`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" />
+                  <path d="M22 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" />
+                </svg>
+                <span className="hidden sm:inline">Team</span>
+                {currentSubAgents.filter((a: any) => a.status === 'working' || a.status === 'spawning').length > 0 && (
+                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse ml-0.5" />
+                )}
+              </button>
+            </div>
+          )}
+
+          {/* Computer Toggle Button */}
+          {canUseMonitor && (
+            <div className="absolute top-3 right-[152px] z-50 pointer-events-auto [-webkit-app-region:no-drag]">
+              <Tooltip text={monitorOpen ? 'Close Computer' : 'Open Computer'} side="bottom">
+                <button id="computer-toggle-btn"
+                  onClick={() => setMonitorOpen(o => !o)}
+                  className={`flex items-center gap-1.5 h-8 px-2.5 rounded-lg text-[11px] font-semibold transition-all border shadow-[0_10px_28px_rgba(0,0,0,0.18)] ${ monitorOpen
+                      ? 'bg-sky-400/[0.12] border-sky-300/30 text-sky-200 shadow-[0_0_0_1px_rgba(125,211,252,0.08),0_14px_34px_rgba(14,165,233,0.14)]'
+                      : 'bg-white/[0.035] border-white/[0.085] text-white/45 hover:border-sky-300/22 hover:bg-sky-300/[0.06] hover:text-sky-100'
+                    }`}
+                >
+                  <Monitor className={`w-3.5 h-3.5 ${ monitorOpen ? 'text-sky-300' : 'text-white/45' }`} />
+                  <span className="hidden sm:inline">Computer</span>
+                  {isThinking && <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse ml-0.5" />}
+                </button>
+              </Tooltip>
+            </div>
+          )}
+
+          {/* Split Content Area */}
+          <div
+            ref={splitContainerRef}
+            className={`flex-1 flex overflow-hidden w-full relative ${ isResizingPanels ? 'cursor-col-resize select-none' : '' }`}
+          >
+            {activeView === 'agents' && !buildingAgentId ? (
+              <AgentsView
+                onOpenBuilder={handleOpenAgentBuilder}
+                onUseAgent={handleUseAgentInChat}
+                selectedAgentId={selectedAgent}
+              />
+            ) : activeView === 'channels' ? (
+              <AgentChannelsView />
+            ) : activeView === 'projects' ? (
+              <ProjectsView />
+            ) : (
+              <>
+                {/* Chat Container */}
+                <div
+                  className={`flex flex-col relative h-full min-w-0 ${ hasOpenFiles ? `shrink-0 min-w-[320px] ${ isResizingPanels ? 'transition-none' : 'transition-[width,flex-basis] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]' }` : 'w-full transition-all duration-300' }`}
+                  style={hasOpenFiles ? { width: chatPanelWidth ?? undefined, flexBasis: chatPanelWidth === null ? `${ DEFAULT_CHAT_PANEL_RATIO * 100 }%` : undefined } : undefined}
+                >
+                  <ChatFeed
+                    key={activeChatId}
+                    traceLogs={displayTraceLogs}
+                    isThinking={isThinking}
+                    messagesEndRef={messagesEndRef}
+                    setSidebarOpen={setSidebarOpen}
+                    sidebarOpen={sidebarOpen}
+                    handleScroll={handleScroll}
+                    showScrollBottom={showScrollBottom}
+                    isCompressed={hasOpenFiles}
+                  />
 
                   {/* Pending Steering Queue */}
                   {pendingSteering.length > 0 && (
-                    <div className={`px-4 ${hasOpenFiles ? 'sm:px-4' : 'sm:px-12'} w-full max-w-[800px] mx-auto flex flex-col gap-2 pb-2`}>
+                    <div className={`px-4 ${ hasOpenFiles ? 'sm:px-4' : 'sm:px-12' } w-full max-w-[800px] mx-auto flex flex-col gap-2 pb-2`}>
                       <div className="text-xs text-neutral-500 font-medium px-1 flex items-center gap-1.5">
                         Pending messages <span className="w-4 h-4 inline-flex items-center justify-center rounded-full bg-neutral-800 text-[10px] text-neutral-400">i</span>
                       </div>
                       {pendingSteering.map(msg => (
                         <div key={msg.id} className="bg-[#242424] rounded-xl py-2.5 px-3.5 flex items-center justify-between gap-3 text-sm text-neutral-200 shadow-sm border border-white/[0.04]">
                           <span className="truncate">{msg.text}</span>
-                          <button 
+                          <button
                             onClick={() => setPendingSteering(prev => prev.filter(p => p.id !== msg.id))}
                             className="text-neutral-500 hover:text-red-400 transition-colors p-1 -mr-1"
                           >
@@ -3424,113 +3455,113 @@ const handleSend = async () => {
                     </div>
                   )}
 
-                <ChatInput
-                  inputValue={inputValue}
-                  setInputValue={setInputValue}
-                  isThinking={isThinking}
-                  isRecording={isRecording}
-                  handleSend={handleSend}
-                  handleStop={handleStop}
-                  handleSteer={handleSteer}
-                  toggleSpeech={toggleSpeech}
-                  attachments={attachments}
-                  setAttachments={setAttachments}
-                  greeting={greeting}
-                  traceLogsLength={traceLogs.length}
-                  isProcessingVoice={isProcessingVoice}
-                  audioVolume={audioVolume}
-                  cancelVoice={cancelVoice}
-                  acceptVoice={acceptVoice}
-                  agentMode={agentMode}
-                  onModeChange={setAgentMode}
-                  thinkingLevel={thinkingLevel}
-                  onThinkingLevelChange={setThinkingLevel}
-                  pinnedItems={pinnedItems}
-                  setPinnedItems={setPinnedItems}
-                  liveState={liveState}
-                  liveError={liveError}
-                  onLiveStart={startLiveSession}
-                  onLiveStop={stopLiveSession}
-                  liveOutputText={liveOutputText}
-                  liveInputText={liveInputText}
-                  liveMicVolume={liveMicVolume}
-                  liveModelVolume={liveModelVolume}
-                  liveActiveTool={liveActiveTool}
-                  isMicMuted={liveMicMuted}
-                  onToggleMicMute={toggleLiveMicMute}
-                  isSpeakerMuted={liveSpeakerMuted}
-                  onToggleSpeakerMute={toggleLiveSpeakerMute}
-                  isNetworkPaused={isNetworkPaused}
-                  onNetworkPausedAction={revealNetworkBanner}
-                  isCompressed={hasOpenFiles}
-                  taskTracker={currentTaskTracker}
-                  activeSubAgents={currentSubAgents}
-                  onOpenTeamView={() => setAgentTeamOpen(true)}
-                  activeChatId={activeChatId}
-                  onOpenAgentBuilder={handleOpenAgentBuilder}
-                  selectedAgent={selectedAgent}
-                  selectedAgentName={selectedAgentName}
-                  onAgentChange={handleAgentChange}
-                  onOpenPet={openPetWidget}
-                  onOpenAgents={() => {
-                    setBuildingAgentId(null);
-                    setActiveView('agents');
-                  }}
-                />
-
-                {/* Disclaimer Text */}
-                {traceLogs.length === 0 && !isThinking && liveState === 'idle' && (
-                  <div className="absolute bottom-6 left-0 right-0 flex flex-col items-center pointer-events-none z-40">
-                    <div className="text-center text-[12px] text-black/60 font-medium tracking-wide mix-blend-overlay">
-                      EterX is an AI Agent and can make Mistakes ; Please Double-Check Its Work.
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              {hasOpenFiles && (
-                <button
-                  type="button"
-                  role="separator"
-                  aria-label="Resize chat and file panels"
-                  aria-orientation="vertical"
-                  title="Drag to resize panels. Double-click to reset."
-                  onPointerDown={handlePanelResizeStart}
-                  onDoubleClick={resetPanelSplit}
-                  onKeyDown={handlePanelResizeKeyDown}
-                  className={`group relative z-30 flex h-full w-[16px] shrink-0 cursor-col-resize items-center justify-center outline-none transition-opacity duration-200 ${isResizingPanels ? 'opacity-100' : 'opacity-60 hover:opacity-100 focus-visible:opacity-100'}`}
-                >
-                  <span className="absolute inset-y-4 left-1/2 w-px -translate-x-1/2 rounded-full bg-white/[0.055] transition-colors duration-200 group-hover:bg-white/[0.14] group-focus-visible:bg-white/[0.18]" />
-                  <span className={`relative flex h-16 w-[9px] items-center justify-center rounded-full border shadow-[0_14px_30px_rgba(0,0,0,0.34)] transition-all duration-200 ${isResizingPanels ? 'border-white/25 bg-[#303030]' : 'border-white/[0.08] bg-[#1D1D1D]/90 group-hover:border-white/[0.18] group-hover:bg-[#272727]'}`}>
-                    <span className={`h-8 w-[2px] rounded-full transition-colors duration-200 ${isResizingPanels ? 'bg-white/90' : 'bg-[#777] group-hover:bg-white/80 group-focus-visible:bg-white/90'}`} />
-                  </span>
-                </button>
-              )}
-
-              {/* Right Panel Container */}
-              {hasOpenFiles && (
-                <IdePanel />
-              )}
-              
-              {/* Agent Team Panel */}
-              <AnimatePresence>
-                {agentTeamOpen && (
-                  <AgentTeamView
-                    traceLogs={displayTraceLogs}
+                  <ChatInput
+                    inputValue={inputValue}
+                    setInputValue={setInputValue}
                     isThinking={isThinking}
-                    onClose={() => setAgentTeamOpen(false)}
+                    isRecording={isRecording}
+                    handleSend={handleSend}
+                    handleStop={handleStop}
+                    handleSteer={handleSteer}
+                    toggleSpeech={toggleSpeech}
+                    attachments={attachments}
+                    setAttachments={setAttachments}
+                    greeting={greeting}
+                    traceLogsLength={traceLogs.length}
+                    isProcessingVoice={isProcessingVoice}
+                    audioVolume={audioVolume}
+                    cancelVoice={cancelVoice}
+                    acceptVoice={acceptVoice}
+                    agentMode={agentMode}
+                    onModeChange={setAgentMode}
+                    thinkingLevel={thinkingLevel}
+                    onThinkingLevelChange={setThinkingLevel}
+                    pinnedItems={pinnedItems}
+                    setPinnedItems={setPinnedItems}
+                    liveState={liveState}
+                    liveError={liveError}
+                    onLiveStart={startLiveSession}
+                    onLiveStop={stopLiveSession}
+                    liveOutputText={liveOutputText}
+                    liveInputText={liveInputText}
+                    liveMicVolume={liveMicVolume}
+                    liveModelVolume={liveModelVolume}
+                    liveActiveTool={liveActiveTool}
+                    isMicMuted={liveMicMuted}
+                    onToggleMicMute={toggleLiveMicMute}
+                    isSpeakerMuted={liveSpeakerMuted}
+                    onToggleSpeakerMute={toggleLiveSpeakerMute}
+                    isNetworkPaused={isNetworkPaused}
+                    onNetworkPausedAction={revealNetworkBanner}
+                    isCompressed={hasOpenFiles}
+                    taskTracker={currentTaskTracker}
+                    activeSubAgents={currentSubAgents}
+                    onOpenTeamView={() => setAgentTeamOpen(true)}
+                    activeChatId={activeChatId}
+                    onOpenAgentBuilder={handleOpenAgentBuilder}
+                    selectedAgent={selectedAgent}
+                    selectedAgentName={selectedAgentName}
+                    onAgentChange={handleAgentChange}
+                    onOpenPet={openPetWidget}
+                    onOpenAgents={() => {
+                      setBuildingAgentId(null);
+                      setActiveView('agents');
+                    }}
                   />
+
+                  {/* Disclaimer Text */}
+                  {traceLogs.length === 0 && !isThinking && liveState === 'idle' && (
+                    <div className="absolute bottom-6 left-0 right-0 flex flex-col items-center pointer-events-none z-40">
+                      <div className="text-center text-[12px] text-black/60 font-medium tracking-wide mix-blend-overlay">
+                        EterX is an AI Agent and can make Mistakes ; Please Double-Check Its Work.
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {hasOpenFiles && (
+                  <button
+                    type="button"
+                    role="separator"
+                    aria-label="Resize chat and file panels"
+                    aria-orientation="vertical"
+                    title="Drag to resize panels. Double-click to reset."
+                    onPointerDown={handlePanelResizeStart}
+                    onDoubleClick={resetPanelSplit}
+                    onKeyDown={handlePanelResizeKeyDown}
+                    className={`group relative z-30 flex h-full w-[16px] shrink-0 cursor-col-resize items-center justify-center outline-none transition-opacity duration-200 ${ isResizingPanels ? 'opacity-100' : 'opacity-60 hover:opacity-100 focus-visible:opacity-100' }`}
+                  >
+                    <span className="absolute inset-y-4 left-1/2 w-px -translate-x-1/2 rounded-full bg-white/[0.055] transition-colors duration-200 group-hover:bg-white/[0.14] group-focus-visible:bg-white/[0.18]" />
+                    <span className={`relative flex h-16 w-[9px] items-center justify-center rounded-full border shadow-[0_14px_30px_rgba(0,0,0,0.34)] transition-all duration-200 ${ isResizingPanels ? 'border-white/25 bg-[#303030]' : 'border-white/[0.08] bg-[#1D1D1D]/90 group-hover:border-white/[0.18] group-hover:bg-[#272727]' }`}>
+                      <span className={`h-8 w-[2px] rounded-full transition-colors duration-200 ${ isResizingPanels ? 'bg-white/90' : 'bg-[#777] group-hover:bg-white/80 group-focus-visible:bg-white/90' }`} />
+                    </span>
+                  </button>
                 )}
-              </AnimatePresence>
-{/* Computer Panel */}
-              <AnimatePresence>
-                {canUseMonitor && monitorOpen && (
-                  <MonitorPanel isOpen={monitorOpen} onClose={() => setMonitorOpen(false)} chatId={activeChatId} defaultWidth={640} />
+
+                {/* Right Panel Container */}
+                {hasOpenFiles && (
+                  <IdePanel />
                 )}
-              </AnimatePresence>
-                </>
-              )}
-            </div>
+
+                {/* Agent Team Panel */}
+                <AnimatePresence>
+                  {agentTeamOpen && (
+                    <AgentTeamView
+                      traceLogs={displayTraceLogs}
+                      isThinking={isThinking}
+                      onClose={() => setAgentTeamOpen(false)}
+                    />
+                  )}
+                </AnimatePresence>
+                {/* Computer Panel */}
+                <AnimatePresence>
+                  {canUseMonitor && monitorOpen && (
+                    <MonitorPanel isOpen={monitorOpen} onClose={() => setMonitorOpen(false)} chatId={activeChatId} defaultWidth={640} />
+                  )}
+                </AnimatePresence>
+              </>
+            )}
+          </div>
         </>
       </div>
 

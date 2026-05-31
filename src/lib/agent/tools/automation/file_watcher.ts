@@ -11,8 +11,10 @@ interface WatchedEntry {
   changes: Array<{ timestamp: number, type: string, detail: string }>;
 }
 
-const watchedEntries: Map<string, WatchedEntry> = new Map();
-const watchers: Map<string, fs.FSWatcher> = new Map();
+// In-memory file watcher tracking preserved across Next.js HMR reloads
+const globalForFileWatcher = globalThis as any;
+const watchedEntries: Map<string, WatchedEntry> = globalForFileWatcher.__eterxWatchedEntries || (globalForFileWatcher.__eterxWatchedEntries = new Map());
+const watchers: Map<string, fs.FSWatcher> = globalForFileWatcher.__eterxWatchers || (globalForFileWatcher.__eterxWatchers = new Map());
 
 export const fileWatcherTool: ToolDefinition = {
   name: 'file_watcher',

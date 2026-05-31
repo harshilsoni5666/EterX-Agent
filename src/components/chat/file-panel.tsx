@@ -1561,10 +1561,7 @@ export const IdePanel = () => {
                             <div className={`flex-1 p-6 flex flex-col gap-4 relative overflow-hidden ${isLightTheme ? 'bg-[#F7F6F3]' : 'bg-[#18181b]'}`}>
                                {/* Shimmer overlay */}
                                <motion.div 
-                                 className="absolute inset-0 z-10"
-                                 style={{ background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.06), transparent)' }}
-                                 animate={{ x: ['-100%', '100%'] }}
-                                 transition={{ duration: 1.5, ease: 'easeInOut', repeat: Infinity }}
+                                 className="absolute inset-0 z-10 eterx-surface-shimmer"
                                />
                                <div className="w-3/4 h-5 rounded-md bg-white/5" />
                                <div className="w-1/2 h-4 rounded-md bg-white/5" />

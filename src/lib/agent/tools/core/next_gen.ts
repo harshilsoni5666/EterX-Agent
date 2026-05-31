@@ -127,7 +127,7 @@ EXAMPLE: Research then write
     })).describe('Ordered list of tool execution steps')
   }),
   outputSchema: z.object({ success: z.boolean(), results: z.any() }),
-  execute: async (input: { steps: Array<{ tool: string, args: any, outputKey: string }> }) => {
+  execute: async (input: { steps: Array<{ tool: string, args: any, outputKey: string }> }, runContext?: any) => {
     const { globalToolRegistry: reg } = require('../../tools/registry');
     const context: Record<string, any> = {};
 
@@ -155,7 +155,7 @@ EXAMPLE: Research then write
 
       console.log(`[MacroRunner] Step ${ i + 1 }/${ input.steps.length }: ${ step.tool }`);
       try {
-        const result = await tool.execute(resolvedArgs, {});
+        const result = await tool.execute(resolvedArgs, runContext || {});
         context[step.outputKey] = result;
       } catch (error: any) {
         return { success: false, results: context, error: `Step ${ i + 1 } (${ step.tool }) failed: ${ error.message }` };

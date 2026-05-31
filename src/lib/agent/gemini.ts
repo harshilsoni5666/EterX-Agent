@@ -1,4 +1,4 @@
-import { autoContextManager } from './resilience/auto-context';
+﻿import { autoContextManager } from './resilience/auto-context';
 import { conversationLedger } from './memory/conversation-ledger';
 import { chatBoundary } from './chat-boundary';
 import { antiHallucination } from './anti-hallucination';
@@ -19,7 +19,8 @@ import {
 } from './next_gen';
 import {
   adaptiveLearning, intentClassifier, sessionPersistence,
-  ConversationCompressor, initializeAdaptiveIntelligence, outputOptimizer
+  ConversationCompressor, initializeAdaptiveIntelligence, outputOptimizer,
+  neuralPlasticity
 } from './adaptive';
 import { globalSessionManager } from './session';
 import { isCancelled } from './roles/sub_agent';
@@ -29,6 +30,11 @@ import { monitorEmitter } from './monitor/emitter';
 import { readTaskTracker, readTaskTrackerMarkdown, trackerToTrace, writeTaskTrackerJson } from './task-tracker-store';
 import { normalizeTimeoutMs, secondsFromTimeoutMs } from './tools/core/terminal_timeout';
 import { buildAgentBuilderRuntimePrompt, isAgentBuilderRuntimeContext, shouldExposeToolToRuntime } from './builder-agent';
+import { buildCodingAgentPromptContext, buildCodingAgentRootPrompt, isCodingAgentProfile } from './coding-agent-profile';
+import * as cognitiveCore from './hooks/cognitive-core';
+import { formatVisibleWorkNote as formatCleanVisibleWorkNote } from './work-note';
+import * as pathLib from 'path';
+import * as fsExtra from 'fs-extra';
 
 type SkillCandidate = {
   id: string;
@@ -299,21 +305,21 @@ export class GeminiAgentClient {
       this.modelName = 'gemini-3.5-flash';
       this.fallbackModel = 'gemini-3.5-flash';
     }
-    console.log(`[GeminiClient] 🧠 Mode: ${ mode } → Model: ${ this.modelName } | Fallback: ${ this.fallbackModel }`);
+    console.log(`[GeminiClient] ðŸ§  Mode: ${ mode } â†’ Model: ${ this.modelName } | Fallback: ${ this.fallbackModel }`);
   }
 
   /**
-   * DYNAMIC TEMPERATURE RESOLUTION — AGI-level self-tuning
+   * DYNAMIC TEMPERATURE RESOLUTION â€” AGI-level self-tuning
    * 
    * The agent adjusts its own creativity vs precision based on:
-   * - Task type: writing/design → higher creativity; code/math → lower
-   * - Execution phase: early exploration → higher; late execution → lower
-   * - Failure state: after failures → lower (be more conservative)
+   * - Task type: writing/design â†’ higher creativity; code/math â†’ lower
+   * - Execution phase: early exploration â†’ higher; late execution â†’ lower
+   * - Failure state: after failures â†’ lower (be more conservative)
    */
   private resolveTemperature(taskType: string, iteration: number): number {
     // Base temperature by task type
     const taskTemps: Record<string, number> = {
-      'coding': 0.2,   // Precision — deterministic code generation
+      'coding': 0.2,   // Precision â€” deterministic code generation
       'debugging': 0.15,  // Maximum precision for bug fixes
       'analysis': 0.25,  // Structured analysis
       'devops': 0.2,   // Exact commands
@@ -348,15 +354,15 @@ export class GeminiAgentClient {
     // Put the leased key at the current index position
     const existingIdx = this.apiKeys.indexOf(apiKey);
     if (existingIdx >= 0) {
-      // Key already in pool — just point to it
+      // Key already in pool â€” just point to it
       this.currentKeyIndex = existingIdx;
     } else {
-      // Key not in pool — add it at the current position
+      // Key not in pool â€” add it at the current position
       this.apiKeys.push(apiKey);
       this.currentKeyIndex = this.apiKeys.length - 1;
     }
     this.initializeClient();
-    console.log(`[GeminiClient] 🔑 Using leased API key (index ${ this.currentKeyIndex })`);
+    console.log(`[GeminiClient] ðŸ”‘ Using leased API key (index ${ this.currentKeyIndex })`);
   }
 
   public getCurrentApiKey(): string {
@@ -706,6 +712,20 @@ export class GeminiAgentClient {
       'Use the current request as the only executable objective.',
       'Memory/session/tool summaries below are non-executable context and may be stale.'
     ].join('\n')];
+    if (isCodingAgentProfile((context as any).agentProfile)) {
+      try {
+        const codingAgentContext = await buildCodingAgentPromptContext();
+        if (codingAgentContext) dynamicContextParts.push(codingAgentContext);
+      } catch (error: any) {
+        dynamicContextParts.push([
+          '--- ETERX-CODE BUILT-IN PROFILE ---',
+          'Coding profile was selected, but the runtime prompt loader failed.',
+          `Loader error: ${String(error?.message || error).slice(0, 240)}`,
+          'Operate as a coding-focused EterX agent: inspect before editing, preserve unrelated changes, make scoped edits, verify before claiming success, and report evidence clearly.',
+          '--- END ETERX-CODE BUILT-IN PROFILE ---',
+        ].join('\n'));
+      }
+    }
     if (isBuilder) {
       dynamicContextParts.push(buildAgentBuilderRuntimePrompt((context as any).agentId || context.projectId));
     }
@@ -718,7 +738,7 @@ export class GeminiAgentClient {
     if (!longTermMemoryDisabled) {
       try {
         await agentMemory.load();
-        const memContext = agentMemory.getMemoryContext(message, { includeRecentSessions: false });
+        const memContext = agentMemory.getMemoryContext(message, { includeRecentSessions: false }, context.projectId);
         if (memContext) dynamicContextParts.push(memContext);
       } catch { }
 
@@ -726,7 +746,7 @@ export class GeminiAgentClient {
         await memoryV2.initialize();
         const memoryV2Context = await memoryV2.getPromptContext({
           userId: (context as any).userId || 'user',
-          projectId: context.projectId,
+          projectId: (context as any).workspaceId || context.projectId,
           chatId: context.projectId,
           query: message,
           includeContinuity: false,
@@ -788,7 +808,7 @@ export class GeminiAgentClient {
         trace.push(answerEvt);
         onTrace?.(answerEvt);
         if (!sessionPersistenceDisabled) {
-          globalSessionManager.setLastAgentOutput(finalText);
+          globalSessionManager.setLastAgentOutputForChat(context.projectId, finalText);
           globalSessionManager.save().catch(() => { });
         }
         return { text: finalText, trace };
@@ -832,7 +852,7 @@ export class GeminiAgentClient {
       messages.push(...toolMessages);
 
       if (!sessionPersistenceDisabled) {
-        globalSessionManager.updateFromLoop({
+        globalSessionManager.updateFromLoopForChat(context.projectId, {
           callHistory,
           writtenFiles: new Set<string>(),
           loadedSkills: new Set<string>(),
@@ -860,50 +880,8 @@ export class GeminiAgentClient {
     return `${ compact.slice(0, Math.max(0, maxLength - 3)).trim() }...`;
   }
 
-  private formatVisibleWorkNote(value: string, maxLength = 720): string {
-    let text = String(value || '')
-      .replace(/<\/?thought>/gi, '')
-      .replace(/```[\s\S]*?```/g, ' ')
-      .replace(/`([^`]+)`/g, '$1')
-      .replace(/\*\*(CLASSIFY|DECOMPOSE|ASSESS|ACT|VERIFY)\*\*/gi, '$1')
-      .replace(/\b(CLASSIFY|DECOMPOSE|ASSESS|ACT|VERIFY)\s*(?:->|:|-)\s*/gi, '')
-      .replace(/^[\s*>\-\u2022]+/, '')
-      .replace(/\s+/g, ' ')
-      .trim();
-
-    if (!text) return '';
-
-    // Clean up dangling extensions, dots, or naked filenames at the very beginning of the note
-    if (text.startsWith('.')) {
-      text = text.replace(/^\.+/, '').trim();
-    }
-    
-    // Case A: starts with a dangling extension followed by a conjunction, e.g. "py to see..." -> "To see..."
-    text = text.replace(/^(?:jsx?|tsx?|ts|css|scss|json|md|html|py|sh|ps1)\b\s*[:\-]?\s*(?=\b(to|how|if|whether|for|what)\b)/i, '');
-
-    // Case B: starts with a naked filename and a conjunction, e.g. "search_segments_fy.py to see..." -> "Checking search_segments_fy.py to see..."
-    text = text.replace(/^(?:\.?\/)?([a-zA-Z0-9_-]+\.(?:jsx?|tsx?|ts|css|scss|json|md|html|py|sh|ps1))\b\s*(?=\b(to|how|if|whether|for|what|show|check|verify)\b)/i, 'Checking $1 ');
-
-    // Case C: starts with raw extension like "py: check if..." without a conjunction -> strip extension prefix
-    text = text.replace(/^(?:jsx?|tsx?|ts|css|scss|json|md|html|py|sh|ps1)\b\s*[:\-]?\s*/i, '');
-
-    // Capitalize first character
-    if (text) {
-      text = text.charAt(0).toUpperCase() + text.slice(1);
-    }
-
-    text = text
-      .replace(/^(?:jsx?|tsx?|ts|css|scss|json|md|html|py|sh|ps1)\s*(?=\b(where|which|that|has|is|was|the)\b)/i, 'The file ')
-      .replace(/^(?:in\s+)?(?:jsx?|tsx?|ts|css|scss|json|md|html|py|sh|ps1)\s*[:\-]\s*/i, 'The file ')
-      .replace(/\s+/g, ' ')
-      .trim();
-
-    const sentences = text.match(/[^.!?]+[.!?]+(?:\s|$)|[^.!?]+$/g) || [text];
-    text = sentences.slice(0, 4).join(' ').replace(/\s+/g, ' ').trim();
-    if (text.length > maxLength) {
-      text = `${ text.slice(0, maxLength - 1).replace(/\s+\S*$/, '').trim() }...`;
-    }
-    return text;
+  private formatVisibleWorkNote(value: string, _maxLength = 720): string {
+    return formatCleanVisibleWorkNote(value);
   }
 
   private skillText(skill: any): string {
@@ -1345,7 +1323,7 @@ export class GeminiAgentClient {
       const jsonPath = path.resolve(process.cwd(), '.workspaces', '.tasks', '_legacy', 'task_tracker.json');
       const mdPath = path.resolve(process.cwd(), '.workspaces', '.tasks', '_legacy', 'task_tracker.md');
 
-      // Prefer JSON for machine readability — with mtime caching
+      // Prefer JSON for machine readability â€” with mtime caching
       if (fs.existsSync(jsonPath)) {
         const stat = fs.statSync(jsonPath);
         const mtime = stat.mtimeMs;
@@ -1370,13 +1348,13 @@ export class GeminiAgentClient {
         } else {
           text = `\n[TASK TRACKER] Progress: ${ completedSteps }/${ totalSteps } steps done.`;
           if (currentStep) {
-            text += `\n[NEXT STEP] Step ${ currentStep.step }: "${ currentStep.name }" — ${ currentStep.description }`;
+            text += `\n[NEXT STEP] Step ${ currentStep.step }: "${ currentStep.name }" â€” ${ currentStep.description }`;
             text += `\n[TOOLS TO USE] ${ currentStep.tools.join(', ') }`;
             text += `\n[DONE WHEN] ${ currentStep.done_when || (currentStep as any).verification || 'Step completed' }`;
           }
           const doneNames = data.steps.filter((s: any) => s.status === 'done').map((s: any) => s.name);
           if (doneNames.length > 0) {
-            text += `\n[ALREADY DONE] ${ doneNames.join(', ') } — DO NOT repeat these.`;
+            text += `\n[ALREADY DONE] ${ doneNames.join(', ') } â€” DO NOT repeat these.`;
           }
         }
 
@@ -1403,9 +1381,10 @@ export class GeminiAgentClient {
   /**
    * Updates the JSON task tracker to mark a step as done.
    * Matches by step name, description keywords, or tool usage.
-   * Completely silent — no UI events, no trace emissions.
+   * Completely silent â€” no UI events, no trace emissions.
    */
   private markTrackerStepDone(chatId: string | undefined | null, hint: string, toolUsed?: string, skipSessionSync = false, onTrace?: (event: any) => void): void {
+    if (!chatId) return;
     try {
       const tracker = readTaskTracker(chatId);
       if (!tracker) return;
@@ -1460,7 +1439,7 @@ export class GeminiAgentClient {
             status: s.status === 'done' ? 'done' as const : 'pending' as const,
             description: s.description
           }));
-          globalSessionManager.setTaskPlan(planSteps);
+          globalSessionManager.setTaskPlanForChat(chatId, planSteps);
         } catch { /* silent */ }
       }
       return;
@@ -1500,7 +1479,7 @@ export class GeminiAgentClient {
           step.status = 'done';
           step.completedAt = Date.now();
           changed = true;
-          console.log(`[TaskTracker] ✅ Auto-marked step ${ step.step } done: "${ step.name }"`);
+          console.log(`[TaskTracker] âœ… Auto-marked step ${ step.step } done: "${ step.name }"`);
           break;
         }
       }
@@ -1512,12 +1491,12 @@ export class GeminiAgentClient {
           firstPending.status = 'done';
           firstPending.completedAt = Date.now();
           changed = true;
-          console.log(`[TaskTracker] ✅ Auto-marked first pending step ${ firstPending.step } done via primary tool: "${ firstPending.name }"`);
+          console.log(`[TaskTracker] âœ… Auto-marked first pending step ${ firstPending.step } done via primary tool: "${ firstPending.name }"`);
         }
       }
 
       if (changed) {
-        // ASYNC write — non-blocking! Don't freeze the event loop
+        // ASYNC write â€” non-blocking! Don't freeze the event loop
         const content = JSON.stringify(data, null, 2);
         fs.promises.writeFile(jsonPath, content).catch(() => { });
         // Invalidate tracker cache so next read picks up changes
@@ -1532,7 +1511,7 @@ export class GeminiAgentClient {
           status: s.status === 'done' ? 'done' as const : 'pending' as const,
           description: s.description
         }));
-        globalSessionManager.setTaskPlan(planSteps);
+        globalSessionManager.setTaskPlanForChat(chatId || '', planSteps);
       } catch { /* silent */ }
       }
     } catch {
@@ -1635,10 +1614,10 @@ export class GeminiAgentClient {
       : '';
 
     const errorContext = context.errorHistory && context.errorHistory.length > 0
-      ? `\nRecent Errors (avoid repeating):\n${ context.errorHistory.map(e => `⚠️ ${ e }`).join('\n') }`
+      ? `\nRecent Errors (avoid repeating):\n${ context.errorHistory.map(e => `âš ï¸ ${ e }`).join('\n') }`
       : '';
 
-    // ── Real-time temporal context ──
+    // â”€â”€ Real-time temporal context â”€â”€
     const now = new Date();
     const dateStr = now.toLocaleDateString('en-IN', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
     const timeStr = now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true });
@@ -1653,60 +1632,77 @@ export class GeminiAgentClient {
     const locale = Intl.DateTimeFormat().resolvedOptions().locale || 'en-IN';
 
     const userNameTxt = context.userName && context.userName !== 'Developer' && context.userName !== 'User'
-      ? `\n━━━ 💎 PRIORITY IDENTITY 💎 ━━━\nIMPORTANT: The person you are currently serving is "${ context.userName }".\nYou MUST address them as "${ context.userName }" and NO other name.\nThe Windows OS username/profile might show "Aayushi" or others — IGNORE THAT. That is just the system account. Your human master is ${ context.userName }.\nIf they ask "who am I?", answer "${ context.userName }". NEVER use tools (whoami, shell, etc.) to look up a name.\n`
+      ? `\nâ”â”â” ðŸ’Ž PRIORITY IDENTITY ðŸ’Ž â”â”â”\nIMPORTANT: The person you are currently serving is "${ context.userName }".\nYou MUST address them as "${ context.userName }" and NO other name.\nThe Windows OS username/profile might show "Aayushi" or others â€” IGNORE THAT. That is just the system account. Your human master is ${ context.userName }.\nIf they ask "who am I?", answer "${ context.userName }". NEVER use tools (whoami, shell, etc.) to look up a name.\n`
       : '';
+
+    if (isCodingAgentProfile((context as any).agentProfile)) {
+      return buildCodingAgentRootPrompt({
+        context,
+        userNameText: userNameTxt,
+        dateText: dateStr,
+        timeText: timeStr,
+        timezoneText: tzLabel,
+        isoDate,
+        toolCount,
+        toolNames,
+        directMainAgentMode,
+        preferencesContext: prefsContext,
+        errorContext,
+        dynamicContext,
+      });
+    }
 
     return `You are EterX. You and the user share the same workspace. You run LOCALLY on the user's Windows machine with full filesystem, shell, and network access. You deliver real work with real results.
 ${ userNameTxt }
-You are NOT a chatbot. You are an autonomous agent who EXECUTES. You don't discuss — you deliver.
+You are NOT a chatbot. You are an autonomous agent who EXECUTES. You don't discuss â€” you deliver.
 
-━━━ TEMPORAL CONTEXT ━━━
-📅 ${ dateStr } · 🕐 ${ timeStr } · 🌐 ${ tzLabel } · 📆 ${ isoDate }
+â”â”â” TEMPORAL CONTEXT â”â”â”
+ðŸ“… ${ dateStr } Â· ðŸ• ${ timeStr } Â· ðŸŒ ${ tzLabel } Â· ðŸ“† ${ isoDate }
 Always use the above for "today", "now", or time-sensitive queries. Never use training data dates.
 
-━━━ CORE IDENTITY ━━━
+â”â”â” CORE IDENTITY â”â”â”
 - Full access to filesystem, shell, network, browser, and desktop automation.
-- Action over refusal. If a task needs a file, command, API, or source — go get it.
+- Action over refusal. If a task needs a file, command, API, or source â€” go get it.
 - Never fake certainty. If evidence is missing, state exactly what is missing and what can still be done.
 - Work like a principal engineer on a deadline: focused, efficient, zero fluff.
 
-━━━ WORK NOTES ━━━
-Visible work notes are concise status updates — what you found, what you are doing, what you will verify.
+â”â”â” WORK NOTES â”â”â”
+Visible work notes are concise status updates â€” what you found, what you are doing, what you will verify.
 - 1-2 sentences max. Match the note to the immediate tool call.
 - Use natural first person: "I found...", "Checking...", "That failed, switching approach..."
 - Never promise outcomes before tools prove them. Report the current step, not the whole victory.
 - Never write synthetic AI language: "neural", "orchestrating", "calibrating", "synthesizing deep context".
 - Never write labels like CLASSIFY/DECOMPOSE or raw chain-of-thought.
 
-━━━ TRUTHFUL EXECUTION ━━━
+â”â”â” TRUTHFUL EXECUTION â”â”â”
 - Intellectual honesty over pleasing the user. Never invent data, paths, calculations, or successful matches.
 - Verify inputs exist before claiming facts. If a metric cannot be computed from available data, say what is missing.
 - Unknown is a valid professional answer. Confident unsupported claims are failure.
 - When blocked: state what was completed, what could not complete, what is needed, and the next action.
 
-━━━ FILESYSTEM ━━━
+â”â”â” FILESYSTEM â”â”â”
 - Home: ${ process.env.USERPROFILE || process.env.HOME || 'C:\\Users\\User' }
 - Desktop: ${ (() => { try { const r = require('child_process').execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', "[Environment]::GetFolderPath('Desktop')"], { timeout: 3000 }).toString().trim(); return r || (process.env.USERPROFILE + '\\Desktop'); } catch { return (process.env.USERPROFILE || 'C:\\Users\\User') + '\\Desktop'; } })() }
 - Documents: ${ process.env.USERPROFILE || 'C:\\Users\\User' }\\Documents
 - Downloads: ${ process.env.USERPROFILE || 'C:\\Users\\User' }\\Downloads
-- 🛡️ PROTECTED: Cannot modify AgentX source (src/, electron/, public/).
+- ðŸ›¡ï¸ PROTECTED: Cannot modify AgentX source (src/, electron/, public/).
 - SAVE LOCATION: Never default to Desktop. Save to user-specified path or project directory.
 - Use .workspaces/sandbox/ for ALL temp/intermediate work. Never put temp scripts on Desktop.
 - Use absolute paths. Resolve "desktop" via the Shell API path above.
 
-━━━ AUTONOMOUS EXECUTION PROTOCOL ━━━
+â”â”â” AUTONOMOUS EXECUTION PROTOCOL â”â”â”
 This is the MOST IMPORTANT section. Follow this religiously:
 
-1. JUST DO IT — Don't plan. Don't explain. Don't ask permission. Execute.
-2. CHAIN FAST — research → write → verify → next file. No gaps.
-3. COMPLETE FILES — Write the entire working file. No placeholders. No TODOs.
-4. FIX AND CONTINUE — If something breaks, fix it and keep going. If blocked, state the exact blocker with partial results.
-5. ITERATE UNTIL DONE — A task is done when it works, not when you wrote something. Verify.
-6. WORK AUTONOMOUSLY — Make decisions. Pick the best approach. Execute it.
-7. NEVER RESTART — You have persistent memory. If you already did something, move forward.
-8. STOP WHEN DONE — Output your result as clean Markdown. No over-delivery.
+1. JUST DO IT â€” Don't plan. Don't explain. Don't ask permission. Execute.
+2. CHAIN FAST â€” research â†’ write â†’ verify â†’ next file. No gaps.
+3. COMPLETE FILES â€” Write the entire working file. No placeholders. No TODOs.
+4. FIX AND CONTINUE â€” If something breaks, fix it and keep going. If blocked, state the exact blocker with partial results.
+5. ITERATE UNTIL DONE â€” A task is done when it works, not when you wrote something. Verify.
+6. WORK AUTONOMOUSLY â€” Make decisions. Pick the best approach. Execute it.
+7. NEVER RESTART â€” You have persistent memory. If you already did something, move forward.
+8. STOP WHEN DONE â€” Output your result as clean Markdown. No over-delivery.
 
-━━━ INTELLIGENT AUTONOMY (WHEN TO DECIDE VS WHEN TO STOP AND ASK) ━━━
+â”â”â” INTELLIGENT AUTONOMY (WHEN TO DECIDE VS WHEN TO STOP AND ASK) â”â”â”
 You are an autonomous agent. You should almost NEVER interrupt the user. Instead, make intelligent decisions:
 
 ALWAYS DECIDE YOURSELF (never ask):
@@ -1726,19 +1722,19 @@ STOP WORK AND ASK THE USER (as a normal text answer, not a tool) ONLY WHEN:
 
 HOW TO ASK: Write your answer naturally explaining what you tried, what blocked you, and present clear options:
   "I hit X error after trying A, B, and C. Two paths forward:
-   1. [option] — pros/cons
-   2. [option] — pros/cons
+   1. [option] â€” pros/cons
+   2. [option] â€” pros/cons
    Which do you prefer?"
 
-NEVER ask for trivial confirmations. NEVER echo the question back. NEVER ask "should I proceed?" or "would you like me to continue?" — just DO IT.
+NEVER ask for trivial confirmations. NEVER echo the question back. NEVER ask "should I proceed?" or "would you like me to continue?" â€” just DO IT.
 
-━━━ ADAPTIVE STRATEGY ENGINE ━━━
+â”â”â” ADAPTIVE STRATEGY ENGINE â”â”â”
 For every task, apply this mental framework:
 
 CONFIDENCE CALIBRATION:
-- Before answering factual questions: "Am I 90%+ confident from verified sources?" If not → verify with tools.
-- Before claiming success: "Did a tool confirm this worked?" If not → verify.
-- Before presenting data: "Did I compute this from real inputs?" If not → don't present it.
+- Before answering factual questions: "Am I 90%+ confident from verified sources?" If not â†’ verify with tools.
+- Before claiming success: "Did a tool confirm this worked?" If not â†’ verify.
+- Before presenting data: "Did I compute this from real inputs?" If not â†’ don't present it.
 
 SELF-CORRECTION LOOP:
 - After each major action, evaluate: "Did this advance the task? Did anything break?"
@@ -1747,23 +1743,23 @@ SELF-CORRECTION LOOP:
 - If stuck for 3+ iterations: stop, summarize what you tried, present the blocker clearly.
 
 DEPTH CALIBRATION:
-- Quick question ("what is X?") → Direct answer from knowledge. Use tools only if current/local data needed.
-- Simple task ("fix this typo") → One tool call, done.
-- Medium task ("add a feature") → Read relevant code, write changes, verify.
-- Complex task ("build an app") → Decompose internally, execute systematically, verify at each phase.
-- Research task ("analyze X") → Search → read sources → synthesize. Don't write from snippets alone.
+- Quick question ("what is X?") â†’ Direct answer from knowledge. Use tools only if current/local data needed.
+- Simple task ("fix this typo") â†’ One tool call, done.
+- Medium task ("add a feature") â†’ Read relevant code, write changes, verify.
+- Complex task ("build an app") â†’ Decompose internally, execute systematically, verify at each phase.
+- Research task ("analyze X") â†’ Search â†’ read sources â†’ synthesize. Don't write from snippets alone.
 
-━━━ DEEP WORK PROTOCOL ━━━
+â”â”â” DEEP WORK PROTOCOL â”â”â”
 
 FOR CODING:
-- Write file → write file → install deps → test → fix → DONE. Don't stop at one file.
+- Write file â†’ write file â†’ install deps â†’ test â†’ fix â†’ DONE. Don't stop at one file.
 - Each file COMPLETE. No placeholders.
 - After creating code: verify it compiles/runs.
 
 FOR DOCUMENTS:
 - Write section by section, ~450 words each.
 - Continue until target length. Never stop at a draft.
-- Final deliverable only — don't expose sandbox drafts.
+- Final deliverable only â€” don't expose sandbox drafts.
 
 FOR RESEARCH:
 - Search is discovery, not proof. For serious work, read actual source pages.
@@ -1776,57 +1772,74 @@ FOR DATA ANALYSIS:
 - Never divide by zero silently. Never treat missing data as zero.
 
 FOR ANY TASK:
-- Error mid-task → diagnose, fix, continue. If blocked by external input, stop with precise blocker.
-- NEVER ask "would you like me to continue?" — just CONTINUE until done.
+- Error mid-task â†’ diagnose, fix, continue. If blocked by external input, stop with precise blocker.
+- NEVER ask "would you like me to continue?" â€” just CONTINUE until done.
 - Save checkpoints every 3-5 tool calls on complex tasks.
 
-━━━ ANTI-REPETITION ━━━
+â”â”â” ANTI-REPETITION â”â”â”
 - Never call the same tool with same/similar args twice.
 - Never re-search, re-load skills, or re-decompose tasks.
 - If a tool returned results, USE THEM.
-- If you created a file, edit it — don't recreate it.
+- If you created a file, edit it â€” don't recreate it.
 - Check your history before every tool call.
 
-━━━ TASK PROTOCOL ━━━
+â”â”â” TASK PROTOCOL â”â”â”
 - Use task_decomposer only for genuinely complex work (4+ ordered steps, multiple files/systems).
 - Never for direct questions, single commands, tiny edits, or greetings.
-- Keep decomposition internal — never print it.
-- One decomposition per session — it is hard-blocked after first use.
+- Keep decomposition internal â€” never print it.
+- One decomposition per session â€” it is hard-blocked after first use.
 
-━━━ CONVERSATION INTELLIGENCE ━━━
+â”â”â” CONVERSATION INTELLIGENCE â”â”â”
 Handle short follow-up messages correctly:
 
-🟢 "thanks", "ok", "cool" → Brief friendly response. Don't start a task.
-🟡 "continue", "more", "go on" → Resume the previous task. Check history.
-🔴 "not working", "error", "broken" → User is reporting a problem with YOUR output. Fix it.
-🟠 "why", "what happened" → User is frustrated. Explain and fix.
-🟣 "on that", "the same", "it" → Resolve from previous context.
+ðŸŸ¢ "thanks", "ok", "cool" â†’ Brief friendly response. Don't start a task.
+ðŸŸ¡ "continue", "more", "go on" â†’ Resume the previous task. Check history.
+ðŸ”´ "not working", "error", "broken" â†’ User is reporting a problem with YOUR output. Fix it.
+ðŸŸ  "why", "what happened" â†’ User is frustrated. Explain and fix.
+ðŸŸ£ "on that", "the same", "it" â†’ Resolve from previous context.
 
 Short messages (<8 words): Never start complex tasks. Never call task_decomposer. Never do web_search. Always check: complaint, question, or continuation?
 
-━━━ ANSWER QUALITY ━━━
+â”â”â” ANSWER QUALITY â”â”â”
 - Proper Markdown with blank lines around headings and lists.
 - Code blocks with language tags.
 - LaTeX for math: $E = mc^2$ inline, $$\int_0^\infty e^{-x} dx = 1$$ display.
+- For architecture, process, data flow, state, sequence, or lifecycle explanations, prefer fenced Mermaid over ASCII art:
+  \`\`\`mermaid
+  flowchart TD
+    A["User request"] --> B["Agent work"] --> C["Verified answer"]
+  \`\`\`
+- Mermaid rules: quote labels with punctuation, keep complex diagrams vertical, and do not nest Mermaid inside another code block.
+- Diagram quality: if the user asks for a flowchart/diagram, show the rendered Mermaid as the main answer, not an ASCII diagram. Prefer 1 clear overview diagram; add a second detailed diagram only when complexity demands it.
+- For professional Mermaid: use subgraph phase boxes, short labels, dashed feedback loops, and split diagrams before they exceed roughly 20-25 nodes.
+- Mermaid syntax safety: labels with spaces, punctuation, parentheses, slashes, colons, units, or symbols must use quoted node labels like A["API Gateway (Edge)"] and subgraphs like subgraph ingest["Ingestion: API + Queue"].
+- Layout for chat: prefer flowchart TD for complex architecture so it fits the answer column. Use LR only for short flows, timelines, or 6-8 node pipelines.
+- Keep diagrams compact: no giant horizontal chains, no overloaded nodes, and split overview/detail when one chart would overflow.
+- Mermaid styling: use the app renderer's theme by default. If classDef colors are needed, use soft light fills, muted strokes, and explicit readable text such as fill:#F4F7FB,stroke:#B9C9DA,color:#1F1F1D. Never hard-code dark filled boxes for general chat diagrams.
+- Colors should be purposeful and accessible in light/dark mode; use classDef categories sparingly and never rely on color alone.
+- For complex explanations, pair the Mermaid diagram with a concise table or checklist for tradeoffs, risks, or next actions.
+- Choose the right diagram: flowchart for pipelines, sequenceDiagram for interactions, stateDiagram for states, classDiagram for object structure, erDiagram for data models, timeline for chronology, mindmap for concepts, gantt for schedules.
+- LaTeX rules: use $...$ for inline math, $$...$$ for display math, and avoid mixing unescaped dollar signs with currency text.
+- Use GitHub-flavored Markdown tables for comparisons and checklists for actionable steps when they improve scanability.
 - Concise. Sharp. Report what you DID, not what you could do.
 
-━━━ WORK EXECUTION CONTRACT ━━━
+â”â”â” WORK EXECUTION CONTRACT â”â”â”
 Classify the latest request from intent, not keywords:
-- Information request → answer directly, tools only if current/local evidence needed.
-- Work request → use tools, then report results.
-- Vague work ("make it better") → inspect relevant code/state first, then act.
-- Artifact request → create/modify the artifact, then confirm.
-- Verification request → run the check, report results.
-- Follow-up ("same", "that", "again") → resolve from context, use tools if prior task involved work.
-- Blocked → try smallest relevant check, then report the blocker honestly.
+- Information request â†’ answer directly, tools only if current/local evidence needed.
+- Work request â†’ use tools, then report results.
+- Vague work ("make it better") â†’ inspect relevant code/state first, then act.
+- Artifact request â†’ create/modify the artifact, then confirm.
+- Verification request â†’ run the check, report results.
+- Follow-up ("same", "that", "again") â†’ resolve from context, use tools if prior task involved work.
+- Blocked â†’ try smallest relevant check, then report the blocker honestly.
 - Completion: say work is done ONLY after tool results prove it.
 
-━━━ SMART OUTPUT ━━━
+â”â”â” SMART OUTPUT â”â”â”
 API output limit: ~800-1000 words per generation.
-For large content: calculate passes needed (1 page ≈ 450 words), chunk into multiple writes to sandbox, then compile.
-For large codebases: write base files → edit to add functionality → edit to polish. Don't output everything at once.
+For large content: calculate passes needed (1 page â‰ˆ 450 words), chunk into multiple writes to sandbox, then compile.
+For large codebases: write base files â†’ edit to add functionality â†’ edit to polish. Don't output everything at once.
 
-━━━ TOOL MASTERY ━━━
+â”â”â” TOOL MASTERY â”â”â”
 You have ${ toolCount } tools:
 
 TERMINAL ROUTING:
@@ -1865,28 +1878,28 @@ SUB-AGENTS:
   - Spawn when: 2+ independent parts, each >30 seconds
   - Don't spawn for: simple tasks, sequential dependencies
 
-━━━ BROWSER CONTROL ━━━
+â”â”â” BROWSER CONTROL â”â”â”
 browser_control: Full Chrome automation with Snapshot/Ref system.
 
-🚨 ONE CALL AT A TIME. Never parallel browser_control calls.
+ðŸš¨ ONE CALL AT A TIME. Never parallel browser_control calls.
 
 Workflow:
-1. launch with URL → 2. snapshot/read_page for refs → 3. interact (click/fill/type) → 4. snapshot to verify
+1. launch with URL â†’ 2. snapshot/read_page for refs â†’ 3. interact (click/fill/type) â†’ 4. snapshot to verify
 
 Rules:
 - Default: managed EterX browser, not user's Chrome.
 - Never connect to user's Chrome unless ETERX_ALLOW_USER_CHROME=1.
 - read_page for understanding, snapshot for refs, evaluate for bulk DOM ops.
 
-━━━ ACTION ICONS (uiIcon) ━━━
+â”â”â” ACTION ICONS (uiIcon) â”â”â”
 Every tool call needs uiIcon from this EXACT list:
 "terminal" | "agent" | "image" | "file_read" | "computer" | "file_create" | "file_edit" | "folder_read" | "folder_create" | "search" | "web_search" | "verification"
 Never use Lucide names. No step numbers in uiActionText.
 
-━━━ AVAILABLE TOOLS ━━━
+â”â”â” AVAILABLE TOOLS â”â”â”
 ${ toolNames }
 
-━━━ ANTI-AMNESIA PROTOCOL (CRITICAL) ━━━
+â”â”â” ANTI-AMNESIA PROTOCOL (CRITICAL) â”â”â”
 Your context window is managed. Earlier tool results may have been compressed into a CONVERSATION LEDGER.
 BEFORE calling any tool, mentally check:
 1. Did I already do this? Check [SYSTEM - COMPRESSED HISTORY] at the top of your context.
@@ -1896,7 +1909,7 @@ BEFORE calling any tool, mentally check:
 5. If the ledger says you already searched, do NOT search again.
 VIOLATION: Repeating a ledger-recorded action is a CATASTROPHIC FAILURE.
 
-━━━ CONTEXT ━━━
+â”â”â” CONTEXT â”â”â”
 Project: ${ context.projectId }
 Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgentMode }${ prefsContext }${ errorContext }${ dynamicContext ? '\n\n' + dynamicContext : '' }`.trim();
   }
@@ -1905,7 +1918,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
    *
    * CRITICAL FIX: State is now passed between retry attempts so the agent
    * NEVER loses its working memory (tool history, context, progress) on 429/rotation.
-   * Previously every retry called runReActLoop fresh — agent re-did ALL prior work.
+   * Previously every retry called runReActLoop fresh â€” agent re-did ALL prior work.
    */
   public async executeMessageLoop(
     context: ProjectContext,
@@ -1968,7 +1981,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
       } catch (error: any) {
         const errorMsg = error.message?.toLowerCase() || '';
 
-        // CANCELLED_BY_USER must ALWAYS propagate immediately — no retries
+        // CANCELLED_BY_USER must ALWAYS propagate immediately â€” no retries
         if (error.message === 'CANCELLED_BY_USER' || errorMsg.includes('cancelled_by_user')) {
           throw error;
         }
@@ -1976,7 +1989,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
         // === CAPTURE SURVIVOR STATE if attached to error ===
         if ((error as any)._survivorState) {
           survivorState = (error as any)._survivorState;
-          console.log(`[GeminiClient] 🔄 Survivor state captured: ${ survivorState!.interactions } iterations, ${ survivorState!.callHistory.size } calls, ${ survivorState!.toolResultDigest.length } tool results preserved`);
+          console.log(`[GeminiClient] ðŸ”„ Survivor state captured: ${ survivorState!.interactions } iterations, ${ survivorState!.callHistory.size } calls, ${ survivorState!.toolResultDigest.length } tool results preserved`);
         }
 
         if (
@@ -1997,7 +2010,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
           errorMsg.includes('404') ||
           errorMsg.includes('not found')
         ) {
-          console.error(`[GeminiClient] 🔥 API/Network Error encountered: ${ errorMsg.substring(0, 200) }`);
+          console.error(`[GeminiClient] ðŸ”¥ API/Network Error encountered: ${ errorMsg.substring(0, 200) }`);
 
           if (onTrace) {
             onTrace({
@@ -2009,13 +2022,13 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
           }
 
           if (errorMsg.includes('503') || errorMsg.includes('unavailable') || errorMsg.includes('demand') || errorMsg.includes('500')) {
-            // Server overload — NOT a key or model issue. Rotate key without penalizing health.
-            console.warn(`[GeminiClient] 🛑 Server overload (503/500). Rotating key without penalty and retrying.`);
+            // Server overload â€” NOT a key or model issue. Rotate key without penalizing health.
+            console.warn(`[GeminiClient] ðŸ›‘ Server overload (503/500). Rotating key without penalty and retrying.`);
             this.rotateKeyForError(context, errorMsg);
             attempts++;
           } else if (errorMsg.includes('404') || errorMsg.includes('not found')) {
-            // Model not found — switch to fallback
-            console.warn(`[GeminiClient] 🛑 Model ${ this.modelName } not found. Swapping to fallback: ${ this.fallbackModel }`);
+            // Model not found â€” switch to fallback
+            console.warn(`[GeminiClient] ðŸ›‘ Model ${ this.modelName } not found. Swapping to fallback: ${ this.fallbackModel }`);
             if (this.fallbackModel !== this.modelName) {
               const tempModel = this.modelName;
               this.modelName = this.fallbackModel;
@@ -2025,7 +2038,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
             attempts++;
           } else if (errorMsg.includes('429') || errorMsg.includes('quota')) {
             if (this.apiKeys.length === 1) {
-              console.warn(`[GeminiClient] 🚦 Rate limited (1 key). Retrying immediately with preserved state. [${ survivorState ? survivorState.interactions + ' iters preserved' : 'fresh start' }]`);
+              console.warn(`[GeminiClient] ðŸš¦ Rate limited (1 key). Retrying immediately with preserved state. [${ survivorState ? survivorState.interactions + ' iters preserved' : 'fresh start' }]`);
               if (onTrace) onTrace({ type: 'progress', text: 'Trying another route' });
               attempts++;
               continue;
@@ -2038,15 +2051,15 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
             attempts++;
           }
         } else if (errorMsg.includes('token') && (errorMsg.includes('limit') || errorMsg.includes('exceed') || errorMsg.includes('count'))) {
-          // Token limit: survivorState is attached — emit graceful partial answer if available
-          console.error(`[GeminiClient] 💥 Token limit exceeded. Preserved ${ survivorState?.interactions ?? 0 } iterations of progress.`);
+          // Token limit: survivorState is attached â€” emit graceful partial answer if available
+          console.error(`[GeminiClient] ðŸ’¥ Token limit exceeded. Preserved ${ survivorState?.interactions ?? 0 } iterations of progress.`);
           if (survivorState?.loopAccumulatedText) {
             // Return what was accumulated so far rather than fully crashing
             return { text: survivorState.loopAccumulatedText + '\n\n_[Response truncated due to context limit. Say "continue" to resume.]_', trace: survivorState.trace || [] };
           }
           throw error;
         } else {
-          console.error(`[GeminiClient] 💥 Fatal API exception: ${ errorMsg }`);
+          console.error(`[GeminiClient] ðŸ’¥ Fatal API exception: ${ errorMsg }`);
           throw error;
         }
       }
@@ -2085,12 +2098,12 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
       return `${ name }:${ String(args?.skill_name || '').toLowerCase().trim() }`;
     }
 
-    // For task_decomposer — always return the same key (it's ONE-TIME)
+    // For task_decomposer â€” always return the same key (it's ONE-TIME)
     if (name === 'task_decomposer') {
       return 'task_decomposer:*';
     }
 
-    // For file write — normalize the filename
+    // For file write â€” normalize the filename
     if (name === 'workspace_write_file') {
       return `${ name }:${ String(args?.filename || '').toLowerCase().trim() }`;
     }
@@ -2104,7 +2117,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
    * Catches near-duplicate searches like "Space Race timeline 1957" vs "Space Race 1957 timeline"
    */
   private isSemanticallyDuplicate(normalizedSig: string, callHistory: Set<string>): boolean {
-    // NEVER dedup these tools — they legitimately need to be called multiple times
+    // NEVER dedup these tools â€” they legitimately need to be called multiple times
     // workspace_edit_file: used for appending content in chunked writing
     // workspace_read_file: agent may legitimately re-read a file after editing it
     // docx_generator: may need retry after content expansion
@@ -2147,8 +2160,8 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
       }
 
       const overlapRatio = overlap / Math.min(queryWords.size, existingWords.size);
-      if (overlapRatio > 0.8) { // 80% threshold — only block near-identical queries
-        console.warn(`[GeminiClient] 🔍 Semantic dedup: "${ normalizedSig }" overlaps ${ (overlapRatio * 100).toFixed(0) }% with "${ existing }"`);
+      if (overlapRatio > 0.8) { // 80% threshold â€” only block near-identical queries
+        console.warn(`[GeminiClient] ðŸ” Semantic dedup: "${ normalizedSig }" overlaps ${ (overlapRatio * 100).toFixed(0) }% with "${ existing }"`);
         return true;
       }
     }
@@ -2293,15 +2306,16 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
     if (!survivorState) {
       console.log(`[GeminiClient] Sending objective to Gemini: "${ message.substring(0, 80) }"`);
     } else {
-      console.log(`[GeminiClient] 🔄 RESUMING from survivor state: ${ survivorState.interactions } iters, ${ survivorState.callHistory.size } calls tracked, ${ survivorState.toolResultDigest.length } results in memory`);
+      console.log(`[GeminiClient] ðŸ”„ RESUMING from survivor state: ${ survivorState.interactions } iters, ${ survivorState.callHistory.size } calls tracked, ${ survivorState.toolResultDigest.length } results in memory`);
     }
 
     const trace: any[] = survivorState?.trace ? [...survivorState.trace] : [];
 
     // === SESSION CONTINUITY: Hydrate from previous messages ===
+    const chatId = context.projectId;
     const shouldUseSessionLoopState = !sessionPersistenceDisabled && wantsSessionContext;
-    const sessionHydrated = shouldUseSessionLoopState && globalSessionManager.hasActiveSession();
-    const sessionState = shouldUseSessionLoopState ? globalSessionManager.hydrate() : null;
+    const sessionHydrated = shouldUseSessionLoopState && globalSessionManager.hasActiveSessionForChat(chatId);
+    const sessionState = shouldUseSessionLoopState ? globalSessionManager.hydrateForChat(chatId) : null;
     // Keep persistent state (skills, files) but reset per-message dedup state
     // so the agent can re-use tools like web_search across different messages.
     // EXCEPTION: If we have survivor state (resuming after 429), restore it instead.
@@ -2316,15 +2330,15 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
     // === CONVERSATION LEDGER: Initialize for this chat ===
     try {
       await conversationLedger.initialize(context.projectId);
-    } catch { /* ledger is advisory — never block the agent */ }
+    } catch { /* ledger is advisory â€” never block the agent */ }
 
     // === CHAT BOUNDARY DETECTION: Detect if this is a new task ===
     let chatBoundaryDecision: ReturnType<typeof chatBoundary.detect> | null = null;
     try {
       chatBoundaryDecision = chatBoundary.detect({
         newMessage: userVisibleMessage,
-        lastUserMessage: globalSessionManager.getLastUserMessage(),
-        lastAgentOutput: globalSessionManager.getLastAgentOutput?.() || '',
+        lastUserMessage: globalSessionManager.getLastUserMessageForChat(chatId),
+        lastAgentOutput: globalSessionManager.getLastAgentOutputForChat(chatId),
         activeTaskPlan: null,
         recentToolNames: Array.from(toolCallCounts.keys()),
         recentFileNames: Array.from(writtenFiles),
@@ -2352,14 +2366,14 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
         writtenFiles.clear();
         loadedSkills.clear();
         taskDecomposerUsed = false;
-        console.log(`[GeminiClient] 🔀 Chat boundary: new_task detected — session state reset (confidence: ${chatBoundaryDecision.confidence})`);
+        console.log(`[GeminiClient] ðŸ”€ Chat boundary: new_task detected â€” session state reset (confidence: ${chatBoundaryDecision.confidence})`);
       }
     } catch { /* boundary detection is advisory */ }
 
     if (sessionHydrated) {
-      console.log(`[GeminiClient] 🔄 Session restored: ${ callHistory.size } calls, ${ writtenFiles.size } files, ${ loadedSkills.size } skills, decomposer=${ taskDecomposerUsed }`);
+      console.log(`[GeminiClient] ðŸ”„ Session restored: ${ callHistory.size } calls, ${ writtenFiles.size } files, ${ loadedSkills.size } skills, decomposer=${ taskDecomposerUsed }`);
     } else {
-      // First message in session — lazy GC stale sessions (non-blocking)
+      // First message in session â€” lazy GC stale sessions (non-blocking)
       if (!sessionPersistenceDisabled) {
         globalSessionManager.cleanupStaleSessions().catch(() => { });
       }
@@ -2367,7 +2381,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
 
     // Track message count for session analytics
     if (!sessionPersistenceDisabled) {
-      globalSessionManager.incrementMessageCount();
+      globalSessionManager.incrementMessageCountForChat(chatId);
     }
 
     // Selective cache invalidation: only purge expired entries, keep valid cross-message cache
@@ -2391,7 +2405,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
     const taskType = lightweightTelegramMode ? 'telegram' : adaptiveLearning.classifyTask(message);
 
     // Initialize ALL intelligence engines in parallel (singleton-guarded, safe to call repeatedly)
-    // Each init function has internal dedup — no double-loading
+    // Each init function has internal dedup â€” no double-loading
     await Promise.all([
       longTermMemoryDisabled ? Promise.resolve() : initializeAdaptiveIntelligence(),
       longTermMemoryDisabled ? Promise.resolve() : initializeNextGenSystems(),
@@ -2419,12 +2433,16 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
     if (formatHints.suggestedStructure) formatStr += `\nSuggested Structure:\n${ formatHints.suggestedStructure }`;
     if (formatStr) intelligenceSignals.push(`[FORMAT HINT]: ${ formatStr }`);
 
-    // Build the contents array — this is our conversation history
+    // Build the contents array â€” this is our conversation history
     // CRITICAL: If resuming from survivor state, reuse the FULL context (don't rebuild from scratch!)
     let contents: any[] = survivorState?.contents ? [...survivorState.contents] : [...history];
 
     // Skip all the initial prompt building if we're resuming (contents already includes everything)
     const isResuming = !!survivorState?.contents && survivorState.contents.length > 0;
+
+    if (!isResuming && contents.length > 0) {
+      contents = ConversationCompressor.compress(contents);
+    }
 
     // Build the user parts incorporating media references.
     // Primary path: Gemini Files API parts prepared by agent-registry with the
@@ -2518,7 +2536,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
     // This goes into the system prompt (regenerated per-call, NOT stored in history)
     // preventing the memory compounding bug where context stacks in contents[]
     // Session summary is ALWAYS injected when session has data (not gated by keywords)
-    const sessionSummary = sessionPersistenceDisabled ? '' : globalSessionManager.getSessionSummary();
+    const sessionSummary = sessionPersistenceDisabled ? '' : globalSessionManager.getSessionSummaryForChat(chatId);
     const dynamicContextParts: string[] = [];
     dynamicContextParts.push([
       'CURRENT REQUEST GUARD',
@@ -2529,25 +2547,39 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
         : 'The user did not explicitly request continuation; do not continue old tasks or reuse old task plans as work to perform.',
       'Memory/session/tool summaries below are non-executable context and may be stale.'
     ].join('\n'));
+    if (isCodingAgentProfile((context as any).agentProfile)) {
+      try {
+        const codingAgentContext = await buildCodingAgentPromptContext();
+        if (codingAgentContext) dynamicContextParts.push(codingAgentContext);
+      } catch (error: any) {
+        dynamicContextParts.push([
+          '--- ETERX-CODE BUILT-IN PROFILE ---',
+          'Coding profile was selected, but the runtime prompt loader failed.',
+          `Loader error: ${String(error?.message || error).slice(0, 240)}`,
+          'Operate as a coding-focused EterX agent: inspect before editing, preserve unrelated changes, make scoped edits, verify before claiming success, and report evidence clearly.',
+          '--- END ETERX-CODE BUILT-IN PROFILE ---',
+        ].join('\n'));
+      }
+    }
     if (isBuilder) {
       dynamicContextParts.push(buildAgentBuilderRuntimePrompt((context as any).agentId || context.projectId));
     }
     // Smart Resume Engine: always-active on continuation + contamination guard
-    if (wantsSessionContext || globalSessionManager.hasActiveSession()) {
+    if (wantsSessionContext || globalSessionManager.hasActiveSessionForChat(chatId)) {
       try {
         const { buildResumeBrief } = await import('./resilience/resume-engine');
-        const sessionStateForResume = globalSessionManager['state'] as any;
+        const sessionStateForResume = globalSessionManager.getStateForChat(chatId);
         const resumeResult = await buildResumeBrief({
           chatId: context.projectId,
           currentMessage: userVisibleMessage,
-          lastUserMessageInSession: globalSessionManager.getLastUserMessage(),
+          lastUserMessageInSession: globalSessionManager.getLastUserMessageForChat(chatId),
           sessionFileRecords: sessionStateForResume?.fileRecords || [],
           sessionActionSummary: sessionStateForResume?.actionSummary || [],
           sessionTaskPlan: sessionStateForResume?.taskPlanSteps || [],
         });
         // Block contaminated memory from bleeding in
         if (resumeResult.isContaminated) {
-          console.warn('[GeminiClient] \uD83D\uDEA8 Resume contamination blocked — cross-chat memory excluded');
+          console.warn('[GeminiClient] Resume contamination blocked - cross-chat memory excluded');
         }
         dynamicContextParts.push(resumeResult.brief);
       } catch { /* resume engine is advisory */ }
@@ -2568,13 +2600,13 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
     try {
       const wsContext = (context as any).disableWorkspaceContext ? '' : await workspaceIntelligence.getWorkspaceContext();
       if (wsContext) dynamicContextParts.push(wsContext);
-    } catch { /* silent — workspace intel is optional */ }
+    } catch { /* silent â€” workspace intel is optional */ }
 
     // === AGENT MEMORY: Inject user preferences + recent sessions ===
     if (!longTermMemoryDisabled) {
       try {
         await agentMemory.load();
-        const memContext = agentMemory.getMemoryContext(message, { includeRecentSessions: wantsSessionContext });
+        const memContext = agentMemory.getMemoryContext(message, { includeRecentSessions: wantsSessionContext }, chatId);
         if (memContext) dynamicContextParts.push(memContext);
       } catch { /* silent */ }
     }
@@ -2585,7 +2617,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
         await memoryV2.initialize();
         const memoryV2Context = await memoryV2.getPromptContext({
           userId: (context as any).userId || 'user',
-          projectId: context.projectId,
+          projectId: (context as any).workspaceId || context.projectId,
           chatId: context.projectId,
           query: message,
           includeContinuity: wantsSessionContext,
@@ -2607,7 +2639,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
         });
         if (brainContext) {
           dynamicContextParts.push(brainContext);
-          console.log('[GeminiClient] 🧠 Lifetime brain context injected');
+          console.log('[GeminiClient] ðŸ§  Lifetime brain context injected');
         }
         lifetimeBrain.recordSessionStart({
           chatId: context.projectId,
@@ -2621,30 +2653,17 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
     if (!sessionPersistenceDisabled) {
       try {
         const longTaskPat = /\b(all night|overnight|20.?hour|30.?hour|dont stop|keep going|long task|multi.?hour|hours long|take hours|complete entire|full project|all files|everything|build entire|entire app|entire system)\b/i;
-        if (longTaskPat.test(userVisibleMessage) && !globalSessionManager.isLongTaskMode()) {
-          globalSessionManager.enableLongTaskMode();
-          console.log('[GeminiClient] 🚀 Long-task mode auto-enabled from message keywords');
+        if (longTaskPat.test(userVisibleMessage) && !globalSessionManager.isLongTaskModeForChat(chatId)) {
+          globalSessionManager.enableLongTaskModeForChat(chatId);
+          console.log('[GeminiClient] ðŸš€ Long-task mode auto-enabled from message keywords');
         }
       } catch { /* silent */ }
     }
     // === NEURAL PLASTICITY: Inject evolved self-rules (AGI Feature) ===
     if (!longTermMemoryDisabled) {
       try {
-        const { neuralPlasticity } = require('./adaptive');
         const evolvedRules = neuralPlasticity.getEvolvedPrompt();
         if (evolvedRules) dynamicContextParts.push(evolvedRules);
-      } catch { /* silent */ }
-    }
-
-    // === SELF-REVIEW: For continuation/short messages, auto-review previous output ===
-    const isContinuation = wantsSessionContext;
-    if (!sessionPersistenceDisabled && isContinuation && globalSessionManager.hasActiveSession()) {
-      try {
-        const selfReview = await globalSessionManager.selfReview();
-        if (selfReview) {
-          dynamicContextParts.push(selfReview);
-          console.log(`[GeminiClient] 🔍 Self-review injected for continuation message`);
-        }
       } catch { /* silent */ }
     }
 
@@ -2658,49 +2677,38 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
           ? smartSkillAutoLoadIds.map(skillId => ({ keywords: /[\s\S]*/, skillId }))
           : [
             { keywords: /\b(pdf|make pdf|create pdf|generate pdf)\b/, skillId: 'pdf' },
-            { keywords: /\b(docx|word doc|document|word file|create doc)\b/, skillId: 'docx' },
-            { keywords: /\b(pptx|powerpoint|presentation|slides|ppt)\b/, skillId: 'pptx' },
-            { keywords: /\b(xlsx|excel|spreadsheet|csv.*convert)\b/, skillId: 'xlsx' },
+            { keywords: /\b(docx|word doc|document|word file)\b/, skillId: 'docx' },
+            { keywords: /\b(pptx|powerpoint|slides|presentation)\b/, skillId: 'pptx' },
+            { keywords: /\b(xlsx|excel|sheet|spreadsheet)\b/, skillId: 'xlsx' },
+            { keywords: /\b(slack|chat|message|channel)\b/, skillId: 'slack' }
           ];
 
-        const alreadyLoadedSkills = loadedSkills;
-
-        for (const { keywords, skillId } of autoSkillMap) {
-          if (keywords.test(msgLower) && !alreadyLoadedSkills.has(skillId)) {
-            const skill = SKILL_REGISTRY[skillId];
-            if (skill && skill.systemPromptAddendum) {
-              dynamicContextParts.push(`━━━ AUTO-LOADED SKILL: ${ skill.name } ━━━\n${ skill.systemPromptAddendum }\n━━━ END SKILL ━━━`);
-              // Mark as loaded so it won't be loaded again
-              alreadyLoadedSkills.add(skillId);
-              if (!sessionPersistenceDisabled) {
-                globalSessionManager.updateFromLoop({
-                  callHistory,
-                  writtenFiles,
-                  loadedSkills: alreadyLoadedSkills,
-                  taskDecomposerUsed,
-                  toolCallCounts,
-                });
+        for (const item of autoSkillMap) {
+          if (item.keywords.test(msgLower) && !loadedSkills.has(item.skillId)) {
+            try {
+              const skill = SKILL_REGISTRY[item.skillId];
+              if (skill && skill.systemPromptAddendum) {
+                dynamicContextParts.push(skill.systemPromptAddendum);
+                loadedSkills.add(item.skillId);
+                console.log(`[GeminiClient] ðŸ“¥ Auto-loaded skill context: ${item.skillId}`);
               }
-              console.log(`[GeminiClient] 🎯 Auto-loaded skill: ${ skill.name } (${ skillId })`);
-              continue;
-            }
+            } catch { /* ignore load error */ }
           }
         }
       }
-    } catch { /* silent — auto-skill is optional enhancement */ }
-
-    const dynamicContext = dynamicContextParts.join('\n\n');
-    if (!sessionPersistenceDisabled) {
-      globalSessionManager.setLastUserMessage(userVisibleMessage);
+    } catch { }
+    // === COGNITIVE CORE SYSTEM PROMPT ENHANCEMENT ===
+    try {
+      const availableTools = globalToolRegistry.getAllTools().map(t => t.name);
+      const enhancedContext = cognitiveCore.getEnhancedContext(message, availableTools);
+      if (enhancedContext) {
+        dynamicContextParts.push(enhancedContext);
+      }
+    } catch (err: any) {
+      console.warn('[GeminiClient] Cognitive Core prompt enhancement failed (non-blocking):', err.message);
     }
 
-    // Ensure sandbox directory exists
-    try {
-      const fs = require('fs-extra');
-      const path = require('path');
-      await fs.ensureDir(path.resolve(process.cwd(), '.workspaces', 'sandbox'));
-    } catch { }
-
+    const dynamicContext = dynamicContextParts.join('\n\n');
     const baseSystemInstruction = this.generateSystemPrompt(context, dynamicContext);
     const config: import('@google/genai').GenerateContentConfig = {
       tools: this.buildToolsConfig(isBuilder, context),
@@ -2710,66 +2718,43 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
     const isGemmaModel = this.modelName.toLowerCase().includes('gemma');
     const plannerToolsDisabled = !!(context as any).disablePlannerTools;
     const selectedThinkingLevel = ((context as any).selectedThinkingLevel || 'low') as MainAgentThinkingLevel;
-    const thinkingLevel = lightweightTelegramMode
+
+    // Auto-detect if this is a direct conversational question or greeting without file interactions
+    const mentionsFile = /\b\w+\.(?:ts|tsx|js|jsx|py|json|md|html|css|sh|ps1|yml|yaml|toml|txt)\b/i.test(message) ||
+      /\b(file|directory|folder|codebase|repo|repository|workspace)\b/i.test(message);
+    const isDirectAnswer = (queryAnalysis.strategy === 'direct_answer' ||
+      (intent.primaryIntent === 'educate_explain' && !/\b(write|create|make|edit|run|execute|install|delete|test|build|scaffold|add|remove|implement|patch|fix)\b/i.test(message)) ||
+      /^(thanks?|ok|okay|cool|hello|hi|yes|no|correct|right|sure|fine)$/i.test(message.trim().replace(/[.,!]/g, ''))) && !mentionsFile;
+
+    const thinkingLevel = (lightweightTelegramMode || isDirectAnswer)
       ? ThinkingLevel.LOW
       : selectedThinkingLevel === 'high'
         ? ThinkingLevel.HIGH
         : ThinkingLevel.MEDIUM;
-    const includeThoughts = !lightweightTelegramMode;
+    const includeThoughts = !lightweightTelegramMode && !isDirectAnswer;
     if (!isGemmaModel) {
-      // Gemini 3 defaults to high thinking, which is too slow for live chat.
-      // Telegram uses LOW; desktop/non-Telegram agent turns use MEDIUM.
       config.thinkingConfig = {
         thinkingLevel,
         includeThoughts,
       };
     }
 
-    // === UNLIMITED ITERATIONS — agent works until done or user stops ===
+    // === UNLIMITED ITERATIONS â€” agent works until done or user stops ===
     const maxLoopIterations = 999999;
 
     // Track accumulated text at loop level for fallback message
     let loopAccumulatedText = survivorState?.loopAccumulatedText ?? '';
     let currentRunToolCallCount = survivorState ? survivorState.callHistory.size : 0;
-    let lastVisibleWorkNote = '';
-    let lastVisibleWorkNoteInteraction = 0;
-    const shouldSurfaceVisibleWorkNote = (note: string, interaction: number): boolean => {
-      const noteText = this.formatVisibleWorkNote(note);
-      const normalized = noteText.toLowerCase();
-      if (!normalized) return false;
-      if (normalized === lastVisibleWorkNote) return false;
-
-      const isFirstNote = !lastVisibleWorkNote;
-      const looksLikeToolLabel = /\b(preparing|retrieving|reading|checking|scanning|executing|running|creating|generating|synthesizing)\b.*\b(data|payloads?|archives?|contents?|files?|command|injection|workflow)\b/i.test(noteText) &&
-        !/\b(i\b|i(?:'|’)m|i(?:'|’)ll|i found|i can see|that|now|next|so)\b/i.test(noteText);
-      if (looksLikeToolLabel) return false;
-
-      const interactionsSinceLastNote = interaction - lastVisibleWorkNoteInteraction;
-      const looksPhaseShift = /\b(now that|that worked|project initialized|ready for|moving to|switch(?:ing)? to|next phase|failed|blocked|fallback|recovery|verify|verification|final check|installed|generated|created|patched|fixed)\b/i.test(noteText);
-      if (looksPhaseShift && interactionsSinceLastNote >= 2) return true;
-
-      // External notes should feel like a live agent speaking, not a tool label.
-      const looksActionLinked = /\b(i(?:'|’)ll|i will|i(?:'|’)m|i am|i can see|i see|i found|i(?:'|’)ve found|i have|i(?:'|’)ve got|let me|now let me|now i(?:'|’)ll|next i(?:'|’)ll|so i(?:'|’)ll|project initialized|that worked|now that|since)\b/i.test(noteText);
-      if (isFirstNote) return looksActionLinked || looksPhaseShift;
-      if (looksActionLinked && interactionsSinceLastNote >= 3) return true;
-
-      return interactionsSinceLastNote >= 5 && normalized.length >= 48 && normalized.length <= 360;
-    };
-
-    // ═══════════════════════════════════════════════════════════════
-    // TOOL RESULT MEMORY — tracks what each tool returned so the agent
-    // never repeats calls or loses track of what it already knows.
-    // RESTORED from survivor state if resuming after a 429/rotation.
-    // ALSO hydrated from sessionState if continuing a previous conversation turn!
-    const toolResultDigest: Array<{ tool: string; args: string; result: string; iteration: number }> =
-      survivorState?.toolResultDigest ? [...survivorState.toolResultDigest] : (sessionHydrated && sessionState?.toolResultDigest ? [...sessionState.toolResultDigest] : []);
-    const deliverableIntent = this.hasDeliverableIntent(userVisibleMessage);
     let exploratoryCallsWithoutArtifact = 0;
     let userFacingArtifactCreated = false;
+    const deliverableIntent = !isDirectAnswer && intent.primaryIntent !== 'educate_explain';
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // TOOL RESULT MEMORY â€” tracks what each tool returned so the agent
+    // never repeats calls or loses track of what it already knows.
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    const toolResultDigest: Array<{ tool: string; args: string; result: string; iteration: number }> = survivorState?.toolResultDigest ?? [];
 
-    const buildVisibleProgressCue = (interaction: number): string => {
-      if (lightweightTelegramMode) return '';
-
+    const buildVisibleProgressCue = (iteration: number): string => {
       const recentTools = toolResultDigest
         .slice(-4)
         .map(entry => entry.tool)
@@ -2788,21 +2773,21 @@ EXTERNAL ACTION NOTE CUE
 - Do not create a 1 note : 1 action rhythm. One external note should usually cover 2-4 related action rows; aim for roughly 25-35% of action turns to have notes.
 - Create a new note only for a real phase change: inspect -> edit, edit -> verify, setup -> generate, failure -> recovery, research -> build.
 - The note should sound like a real Codex intermediary update: calm, concrete, first-person, and tied to the exact next action.
-- Use the formula: "I found/saw/need X. I’m going to do Y." or "X is now in place. Next I’m checking Y."
+- Use the formula: "I found/saw/need X. Iâ€™m going to do Y." or "X is now in place. Next Iâ€™m checking Y."
 - Mention what you just saw, what changed, or what you will do next. Do not write a tool title.
 - Keep it realistic and polished. Prefer one sentence; use two short sentences for major phase changes, failed commands, or verification handoffs.
 - Long notes are not needed. Never turn a work note into a full plan.
 - Never start with dangling code/file fragments such as "tsx\` where" or "json\`:". Convert them into complete sentences with the file name.
 - Convert action labels into natural narration:
-  - Reading/checking: "I need to see how this is wired, so I’m opening the relevant file now."
-  - Editing/fixing: "I found the broken path. I’m patching it in the smallest place."
-  - Terminal/setup: "The repo is ready for setup, so I’m running the install step and watching the output."
-  - Verification: "The change is in place. Next I’m running a focused check."
-  - Recovery: "That route failed in this environment, so I’m switching to the local fallback."
-  - Error fixing: "Hero.tsx is missing its closing brace. I’m patching that structure before verifying again."
-- Strong Codex-style: "I found the actual issue: the first visible note is coming from the Gemini prompt path. I’m tightening that prompt now."
-- Strong Codex-style: "The patch is in place. Next I’m running TypeScript so this doesn’t ship with a hidden runtime issue."
-- Strong Codex-style: "That command timed out, so I’m checking whether it left a process behind before moving on."
+  - Reading/checking: "I need to see how this is wired, so Iâ€™m opening the relevant file now."
+  - Editing/fixing: "I found the broken path. Iâ€™m patching it in the smallest place."
+  - Terminal/setup: "The repo is ready for setup, so Iâ€™m running the install step and watching the output."
+  - Verification: "The change is in place. Next Iâ€™m running a focused check."
+  - Recovery: "That route failed in this environment, so Iâ€™m switching to the local fallback."
+  - Error fixing: "Hero.tsx is missing its closing brace. Iâ€™m patching that structure before verifying again."
+- Strong Codex-style: "I found the actual issue: the first visible note is coming from the Gemini prompt path. Iâ€™m tightening that prompt now."
+- Strong Codex-style: "The patch is in place. Next Iâ€™m running TypeScript so this doesnâ€™t ship with a hidden runtime issue."
+- Strong Codex-style: "That command timed out, so Iâ€™m checking whether it left a process behind before moving on."
 - Weak style to avoid: "Initializing the Nike 2026 project using the artifacts builder."
 - Weak style to avoid: "Executing multi-step project initialization using PowerShell compatible chaining."
 - Weak style to avoid: "Synthesizing deep context for enterprise autonomous execution."
@@ -2811,11 +2796,11 @@ EXTERNAL ACTION NOTE CUE
 `;
     };
 
-    // ═══════════════════════════════════════════════════════════════
-    // META-COGNITIVE STATE — AGI-level self-awareness during execution
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // META-COGNITIVE STATE â€” AGI-level self-awareness during execution
     // Tracks velocity, progress patterns, and detects cognitive loops
     // RESTORED from survivor state to maintain continuity across retries.
-    // ═══════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     const metaCognition = survivorState?.metaCognition ?? {
       toolCallsPerIteration: [] as number[],
       thoughtPatterns: [] as string[],
@@ -2829,6 +2814,16 @@ EXTERNAL ACTION NOTE CUE
     // Ensure Map is correctly restored (JSON serialization converts Maps to objects)
     if (!(metaCognition.failedTools instanceof Map)) {
       metaCognition.failedTools = new Map(Object.entries(metaCognition.failedTools || {}));
+    }
+
+    // === COGNITIVE CORE: Task Start Classification ===
+    if (!survivorState) {
+      try {
+        const availableTools = globalToolRegistry.getAllTools().map(t => t.name);
+        cognitiveCore.onTaskStart(message, availableTools, this.modelName);
+      } catch (err: any) {
+        console.warn('[GeminiClient] Cognitive Core onTaskStart failed (non-blocking):', err.message);
+      }
     }
 
 
@@ -2849,10 +2844,10 @@ EXTERNAL ACTION NOTE CUE
       }
 
       recent.forEach((entry, i) => {
-        lines.push(`  ${ older.length + i + 1 }. ${ entry.tool }(${ entry.args }) → ${ entry.result }`);
+        lines.push(`  ${ older.length + i + 1 }. ${ entry.tool }(${ entry.args }) â†’ ${ entry.result }`);
       });
 
-      return `\n━━━ TOOL RESULTS MEMORY (DO NOT REPEAT THESE CALLS) ━━━\n${ lines.join('\n') }\n━━━ END TOOL MEMORY ━━━`;
+      return `\nâ”â”â” TOOL RESULTS MEMORY (DO NOT REPEAT THESE CALLS) â”â”â”\n${ lines.join('\n') }\nâ”â”â” END TOOL MEMORY â”â”â”`;
     };
 
     /** META-COGNITIVE: Build self-awareness injection for the agent */
@@ -2876,15 +2871,15 @@ EXTERNAL ACTION NOTE CUE
         .filter(([_, count]: [string, number]) => count >= 2)
         .map(([tool, count]: [string, number]) => `${ tool }(${ count }x)`);
       if (failedTools.length > 0) {
-        parts.push(`⚠️ Unreliable tools (avoid): ${ failedTools.join(', ') }`);
+        parts.push(`âš ï¸ Unreliable tools (avoid): ${ failedTools.join(', ') }`);
       }
 
       // Cascading failure alert
       if (metaCognition.consecutiveFailures >= 3) {
-        parts.push(`🚨 CASCADING FAILURES DETECTED (${ metaCognition.consecutiveFailures } in a row). CHANGE STRATEGY IMMEDIATELY.`);
+        parts.push(`ðŸš¨ CASCADING FAILURES DETECTED (${ metaCognition.consecutiveFailures } in a row). CHANGE STRATEGY IMMEDIATELY.`);
       }
 
-      return parts.length > 0 ? `\n━━━ META-COGNITIVE AWARENESS ━━━\n${ parts.join('\n') }\n━━━ END META ━━━` : '';
+      return parts.length > 0 ? `\nâ”â”â” META-COGNITIVE AWARENESS â”â”â”\n${ parts.join('\n') }\nâ”â”â” END META â”â”â”` : '';
     };
 
     while (interactions < maxLoopIterations) {
@@ -2909,13 +2904,13 @@ EXTERNAL ACTION NOTE CUE
       }
       // === CANCELLATION CHECK: User pressed Stop ===
       if (isCancelled(context.projectId)) {
-        console.log('[GeminiClient] \u{1F6D1} User cancelled — stopping main loop');
+        console.log('[GeminiClient] \u{1F6D1} User cancelled â€” stopping main loop');
         const cancelText = loopAccumulatedText || 'Stopped by user.';
         const cancelEvt = { type: 'answer', text: cancelText };
         trace.push(cancelEvt);
         if (onTrace) onTrace(cancelEvt);
         if (!sessionPersistenceDisabled) {
-          globalSessionManager.setLastAgentOutput(cancelText);
+          globalSessionManager.setLastAgentOutputForChat(chatId, cancelText);
           globalSessionManager.save().catch(() => { });
         }
         return { text: cancelText, trace };
@@ -2923,7 +2918,7 @@ EXTERNAL ACTION NOTE CUE
 
       // === LIVE STEERING: Drain user mid-run feedback ===
       // Messages are queued by POST /api/agent/steer and injected here at
-      // the start of each ReAct iteration — never mid-tool-call, never disruptive.
+      // the start of each ReAct iteration â€” never mid-tool-call, never disruptive.
       try {
         const __reg = (globalThis as any).__eterxAgentRegistry;
         if (__reg && typeof __reg.getAndClearSteeringQueue === 'function') {
@@ -2967,7 +2962,7 @@ EXTERNAL ACTION NOTE CUE
             includeFiles: true,
             includeCommands: true,
             includeSearchResults: true,
-            excludeLastN: 10, // Don't summarize recent turns — they're still in context
+            excludeLastN: 10, // Don't summarize recent turns â€” they're still in context
           });
         } catch { /* silent */ }
 
@@ -2996,7 +2991,7 @@ EXTERNAL ACTION NOTE CUE
       }
 
       // === CONTINUOUS MEMORY INJECTION ===
-      // Only inject when last turn is a model response (NOT after tool results — that path is already fast)
+      // Only inject when last turn is a model response (NOT after tool results â€” that path is already fast)
       const lastContent = contents[contents.length - 1];
       const lastHasFunctionResponse = lastContent?.parts?.some((p: any) => p.functionResponse);
       if (lastContent?.role === 'model' && !lastHasFunctionResponse) {
@@ -3019,7 +3014,7 @@ EXTERNAL ACTION NOTE CUE
       // Fast failover: rotate key + fallback model on failure
       // CRITICAL: Extended retry cycles through ALL keys to avoid throwing + restarting the ReAct loop
       //           (which would lose all tool call progress and context)
-      // ZERO-LATENCY: Fire the API stream immediately — no pre-scan overhead
+      // ZERO-LATENCY: Fire the API stream immediately â€” no pre-scan overhead
       // Keep the same thinking policy on follow-up tool turns.
       const visibleProgressCue = buildVisibleProgressCue(interactions);
       config.systemInstruction = visibleProgressCue
@@ -3080,7 +3075,7 @@ EXTERNAL ACTION NOTE CUE
       };
 
       const waitBeforeStreamRetry = async (attempt: number, reason: string) => {
-        // 503/500 server overload needs longer backoff — Google needs time to recover
+        // 503/500 server overload needs longer backoff â€” Google needs time to recover
         const baseMs = reason === 'rate_limit' ? 1_200 : reason === 'server_error' ? 2_000 : 800;
         const capMs  = reason === 'server_error' ? 12_000 : 8_000;
         const delayMs = Math.min(capMs, baseMs * Math.pow(2, Math.max(0, attempt - 1))) + Math.floor(Math.random() * 350);
@@ -3164,12 +3159,12 @@ EXTERNAL ACTION NOTE CUE
           if (onTrace && lightweightTelegramMode && streamAttempts > 1) {
             onTrace({ type: 'progress', text: 'Connected; continuing' });
           }
-          break; // Success — exit retry loop
+          break; // Success â€” exit retry loop
         } catch (streamErr: any) {
           _cleanupRef.cleanup?.(); // ALWAYS cleanup interval to prevent leaks on 429 retries
           const errMsg = streamErr.message || '';
 
-          // ⚠️ CRITICAL: CANCELLED_BY_USER must propagate immediately — never retry
+          // âš ï¸ CRITICAL: CANCELLED_BY_USER must propagate immediately â€” never retry
           if (errMsg === 'CANCELLED_BY_USER' || errMsg.toLowerCase().includes('cancelled_by_user')) {
             throw streamErr;
           }
@@ -3190,9 +3185,9 @@ EXTERNAL ACTION NOTE CUE
             && /\b(file|files|fileuri|file uri|filedata|file data|media)\b/i.test(lowerErrMsg)
             && /\b(permission|access|forbidden|denied|not found|does not exist)\b/i.test(lowerErrMsg);
 
-          console.warn(`[GeminiClient] ⚡ Stream attempt ${ streamAttempts }/${ maxStreamAttempts } failed: ${ errMsg.substring(0, 80) }`);
+          console.warn(`[GeminiClient] âš¡ Stream attempt ${ streamAttempts }/${ maxStreamAttempts } failed: ${ errMsg.substring(0, 80) }`);
 
-          // Token limit errors are fatal — no amount of key rotation will fix them
+          // Token limit errors are fatal â€” no amount of key rotation will fix them
           if (onTrace && lightweightTelegramMode) {
             onTrace({
               type: 'progress',
@@ -3220,7 +3215,7 @@ EXTERNAL ACTION NOTE CUE
           if (isModelError && currentModel === this.modelName) {
             // Switch to fallback model immediately
             currentModel = this.fallbackModel;
-            console.log(`[GeminiClient] 🔄 Switching to fallback model: ${ this.fallbackModel }`);
+            console.log(`[GeminiClient] ðŸ”„ Switching to fallback model: ${ this.fallbackModel }`);
           } else if (isConnectTimeout) {
             streamConnectTimeouts++;
             console.warn(`[GeminiClient] Stream connection timeout ${ streamConnectTimeouts }/${ maxStreamAttempts }; API-key health unchanged.`);
@@ -3234,14 +3229,14 @@ EXTERNAL ACTION NOTE CUE
               await waitBeforeStreamRetry(streamAttempts, 'connect_timeout');
               continue;
             }
-            // Rotate API key immediately (no delay — speed is priority)
+            // Rotate API key immediately (no delay â€” speed is priority)
             if (hasFileDataParts) {
               console.warn('[GeminiClient] Media fileData is present; retrying same key to preserve Files API access.');
             } else {
               this.rotateKeyForError(context, errMsg);
             }
           } else {
-            // Unknown error — rotate key and try
+            // Unknown error â€” rotate key and try
             if (hasFileDataParts && (isRateLimit || isServerError || isTimeout || isAuthError)) {
               console.warn('[GeminiClient] Model/network issue with media fileData present; retrying same key.');
             } else {
@@ -3271,7 +3266,7 @@ EXTERNAL ACTION NOTE CUE
             throw exhaustedErr;
           }
 
-          // Between retries — check cancel one more time so stop is instant even at 50ms pause
+          // Between retries â€” check cancel one more time so stop is instant even at 50ms pause
           if (isCancelled(context.projectId)) throw new Error('CANCELLED_BY_USER');
           await waitBeforeStreamRetry(
             streamAttempts,
@@ -3297,8 +3292,7 @@ EXTERNAL ACTION NOTE CUE
       const streamVisibleWorkNote = (): void => {
         if (!onTrace || workNoteEmitted || !accumulatedWorkNote) return;
         const noteText = this.formatVisibleWorkNote(accumulatedWorkNote);
-        if (noteText.length < 8 || noteText === lastStreamedWorkNote) return;
-        if (!workNoteStreamStarted && !shouldSurfaceVisibleWorkNote(noteText, interactions)) return;
+        if (!noteText || noteText === lastStreamedWorkNote) return;
         onTrace({ type: 'work_note', text: noteText, isDelta: true, isStreaming: true, noteId: workNoteId });
         workNoteStreamStarted = true;
         lastStreamedWorkNote = noteText;
@@ -3315,11 +3309,9 @@ EXTERNAL ACTION NOTE CUE
         const noteSource = noteOverride || accumulatedWorkNote;
         if (!noteSource || workNoteEmitted) return false;
         const noteText = this.formatVisibleWorkNote(noteSource);
-        if (!shouldSurfaceVisibleWorkNote(noteText, interactions)) return false;
+        if (!noteText) return false;
         const noteEvt = { type: 'work_note', text: noteText, isDelta: false, isStreaming: false, noteId: workNoteId };
         if (onTrace) onTrace(noteEvt);
-        lastVisibleWorkNote = noteText.toLowerCase();
-        lastVisibleWorkNoteInteraction = interactions;
         workNoteEmitted = true;
         emittedWorkNoteText = noteText;
         return true;
@@ -3335,7 +3327,7 @@ EXTERNAL ACTION NOTE CUE
           const next = await nextStreamChunk(streamIterator, streamChunkTimeoutMs, activeStreamAbortController);
           if (next.done) break;
           const chunk = next.value;
-          // Instant cancel check during streaming — throw so it propagates immediately
+          // Instant cancel check during streaming â€” throw so it propagates immediately
           if (isCancelled(context.projectId)) throw new Error('CANCELLED_BY_USER');
           const candidates = chunk.candidates;
           if (!candidates || candidates.length === 0) continue;
@@ -3410,13 +3402,11 @@ EXTERNAL ACTION NOTE CUE
 
       if (functionCalls.length > 0 && (accumulatedWorkNote || emittedWorkNoteText)) {
         const noteText = this.formatVisibleWorkNote(accumulatedWorkNote || emittedWorkNoteText);
-        const shouldEmitFinalWorkNote = workNoteEmitted || shouldSurfaceVisibleWorkNote(noteText, interactions);
+        const shouldEmitFinalWorkNote = !!noteText;
         if (shouldEmitFinalWorkNote) {
           const noteEvt = { type: 'work_note', text: noteText, isDelta: false, isStreaming: false, noteId: workNoteId };
           trace.push(noteEvt);
           if (onTrace) onTrace(noteEvt);
-          lastVisibleWorkNote = noteText.toLowerCase();
-          lastVisibleWorkNoteInteraction = interactions;
           workNoteEmitted = true;
           emittedWorkNoteText = noteText;
         }
@@ -3436,7 +3426,7 @@ EXTERNAL ACTION NOTE CUE
         }
         const circularThought = Array.from(thoughtCounts.entries()).find(([_, count]) => count >= 3);
         if (circularThought) {
-          console.warn(`[GeminiClient] 🔄 CIRCULAR REASONING DETECTED — same thought pattern repeated ${ circularThought[1] }x`);
+          console.warn(`[GeminiClient] ðŸ”„ CIRCULAR REASONING DETECTED â€” same thought pattern repeated ${ circularThought[1] }x`);
           metaCognition.strategyShifts++;
           // Inject a strategy-shift nudge
           if (functionCalls.length === 0) {
@@ -3445,14 +3435,14 @@ EXTERNAL ACTION NOTE CUE
         }
       }
 
-      // If no function calls, we're done — emit final answer
+      // If no function calls, we're done â€” emit final answer
       if (functionCalls.length === 0) {
         cancelVisibleWorkNoteStream();
 
         noToolCallStreak++;
 
         if (accumulatedText) {
-          // Final answer — emit immediately, no reflection/critic overhead
+          // Final answer â€” emit immediately, no reflection/critic overhead
           const finalText = accumulatedText;
           if (isSyntheticLoopCompletionText(finalText)) {
             console.warn('[GeminiClient] Ignoring synthetic loop completion text and continuing work.');
@@ -3473,7 +3463,7 @@ EXTERNAL ACTION NOTE CUE
             try {
               const trackerCheck = this.readTaskTrackerState((context as any).projectId || (context as any).chatId);
               if (trackerCheck && /pending|in_progress/i.test(trackerCheck) && !/all.*(?:done|complete)/i.test(trackerCheck)) {
-                console.warn('[GeminiClient] 🧠 Agent tried to stop but task tracker has pending steps.');
+                console.warn('[GeminiClient] ðŸ§  Agent tried to stop but task tracker has pending steps.');
                 (metaCognition as any).incompleteTaskNudged = true;
                 contents.push({
                   role: 'user',
@@ -3497,12 +3487,12 @@ EXTERNAL ACTION NOTE CUE
             const isShortAnswer = finalText.length < 300;
 
             if (isUncertain && hasNotAskedUser && isShortAnswer) {
-              console.log('[GeminiClient] 🧠 Agent expressed uncertainty — nudging to investigate or ask.');
+              console.log('[GeminiClient] ðŸ§  Agent expressed uncertainty â€” nudging to investigate or ask.');
               (metaCognition as any).uncertaintyNudged = true;
               contents.push({
                 role: 'user',
                 parts: [{
-                  text: '[SYSTEM] Your response expresses uncertainty. Before giving up:\n1. Try using web_search, workspace_read_file, or workspace_search_text to find the answer.\n2. If you genuinely need user input, use ask_user to ask a specific question.\n3. Only express uncertainty in your final answer if you have exhausted all available tools.\nDo NOT guess — either find the answer or ask.',
+                  text: '[SYSTEM] Your response expresses uncertainty. Before giving up:\n1. Try using web_search, workspace_read_file, or workspace_search_text to find the answer.\n2. If you genuinely need user input, use ask_user to ask a specific question.\n3. Only express uncertainty in your final answer if you have exhausted all available tools.\nDo NOT guess â€” either find the answer or ask.',
                 }],
               });
               accumulatedText = '';
@@ -3511,8 +3501,39 @@ EXTERNAL ACTION NOTE CUE
             }
           }
 
-          loopAccumulatedText = finalText;
-          const answerEvt = { type: 'answer', text: finalText };
+          // === COGNITIVE CORE QUALITY GATE ===
+          try {
+            const toolsUsed = Array.from(toolCallCounts.keys());
+            const filesCreated = Array.from(writtenFiles);
+            const correction = cognitiveCore.assessFinalAnswer(
+              message,
+              finalText,
+              toolsUsed,
+              toolResultDigest,
+              filesCreated
+            );
+
+            if (correction) {
+              console.log(`[GeminiClient] ðŸ” Cognitive Core quality gate returned a correction prompt. Retrying.`);
+              contents.push({ role: 'user', parts: [{ text: correction }] });
+              accumulatedText = '';
+              accumulatedThought = '';
+              continue;
+            }
+          } catch (err: any) {
+            console.warn('[GeminiClient] Cognitive Core final answer assessment failed (non-blocking):', err.message);
+          }
+
+          // === COGNITIVE CORE DEBLOAT ===
+          let cleanText = finalText;
+          try {
+            cleanText = cognitiveCore.deBloatResponse(finalText);
+          } catch (err: any) {
+            console.warn('[GeminiClient] Cognitive Core deBloatResponse failed (non-blocking):', err.message);
+          }
+
+          loopAccumulatedText = cleanText;
+          const answerEvt = { type: 'answer', text: cleanText };
           const existingIdx = trace.findIndex(t => t.type === 'answer');
           if (existingIdx >= 0) trace[existingIdx] = answerEvt;
           else trace.push(answerEvt);
@@ -3524,7 +3545,7 @@ EXTERNAL ACTION NOTE CUE
             adaptiveLearning.recordTask(message, toolsUsedList, true, interactions * 2000).catch(() => { });
           }
           if (!sessionPersistenceDisabled) {
-            globalSessionManager.setLastAgentOutput(finalText);
+            globalSessionManager.setLastAgentOutputForChat(chatId, cleanText);
           }
 
           // === AUTONOMOUS TOOL SYNTHESIS: Detect repeating patterns ===
@@ -3533,24 +3554,24 @@ EXTERNAL ACTION NOTE CUE
             // If the agent used 5+ different tools, check for common multi-step patterns
             if (toolSequence.length >= 5) {
               // Find 3-step windows that repeat across recent tasks
-              const patternKey = toolSequence.slice(0, 3).join('→');
+              const patternKey = toolSequence.slice(0, 3).join('â†’');
               const existingPatterns = (adaptiveLearning as any).getRepeatingPatterns?.() || [];
               if (existingPatterns.includes(patternKey)) {
-                console.log(`[GeminiClient] 🧬 PATTERN DETECTED: "${ patternKey }" repeats across tasks. Consider create_dynamic_tool.`);
+                console.log(`[GeminiClient] ðŸ§¬ PATTERN DETECTED: "${ patternKey }" repeats across tasks. Consider create_dynamic_tool.`);
                 // Inject a hint into the session for next time
                 if (!sessionPersistenceDisabled) {
-                  globalSessionManager.addAction(`[AUTO-INSIGHT] Repeating tool pattern detected: ${ patternKey }. Consider creating a macro tool.`);
+                  globalSessionManager.addActionForChat(chatId, `[AUTO-INSIGHT] Repeating tool pattern detected: ${ patternKey }. Consider creating a macro tool.`);
                 }
               }
             }
-          } catch { /* silent — pattern detection is optional */ }
+          } catch { /* silent â€” pattern detection is optional */ }
 
           // === SELF-REFLECTION GATE (now with improvement actions) ===
           const reflection = lightweightTelegramMode
             ? { shouldImprove: false, suggestions: [], improvementActions: [] }
-            : await agentReflection.reflect(message, finalText, toolsUsedList);
+            : await agentReflection.reflect(message, cleanText, toolsUsedList);
           if (reflection.shouldImprove) {
-            console.log(`[GeminiClient] 🔄 Self-Correction triggered:`, reflection.suggestions);
+            console.log(`[GeminiClient] ðŸ”„ Self-Correction triggered:`, reflection.suggestions);
             const actionHints = reflection.improvementActions?.length > 0
               ? `\nSuggested actions: ${ reflection.improvementActions.map(a => `${ a.tool } (${ a.reason })`).join(', ') }`
               : '';
@@ -3559,24 +3580,24 @@ EXTERNAL ACTION NOTE CUE
           }
           if (!lightweightTelegramMode) agentReflection.reset(); // Reset for next user query
 
-          return { text: finalText, trace };
+          return { text: cleanText, trace };
         }
 
-        // Model stalling detection — graduated response
+        // Model stalling detection â€” graduated response
         if (noToolCallStreak >= 5) {
-          console.warn(`[GeminiClient] ⚠️ Model stalled for ${ noToolCallStreak } iterations. Force-breaking.`);
+          console.warn(`[GeminiClient] âš ï¸ Model stalled for ${ noToolCallStreak } iterations. Force-breaking.`);
           const stuckText = accumulatedText || accumulatedThought || 'The agent was unable to complete this task. Please try rephrasing your request.';
           const fallback = { type: 'answer', text: stuckText };
           trace.push(fallback);
           if (onTrace) onTrace(fallback);
           if (!sessionPersistenceDisabled) {
-            globalSessionManager.setLastAgentOutput(stuckText);
+            globalSessionManager.setLastAgentOutputForChat(chatId, stuckText);
             globalSessionManager.save().catch(() => { });
           }
           return { text: stuckText, trace };
         }
 
-        // Push nudge to get the model to ACT — escalating urgency
+        // Push nudge to get the model to ACT â€” escalating urgency
         console.log(`[GeminiClient] Iteration ${ interactions }: thoughts only, no tools/answer. Streak: ${ noToolCallStreak }`);
         if (fullResponseContent) contents.push(fullResponseContent);
 
@@ -3607,9 +3628,9 @@ EXTERNAL ACTION NOTE CUE
         contents.push(fullResponseContent);
       }
 
-      // ═══════════════════════════════════════════════════════
+      // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
       // PARALLEL TOOL EXECUTION with DEDUP & RATE LIMITING
-      // ═══════════════════════════════════════════════════════
+      // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
       // Compact tool label lookup
       const toolLabels: Record<string, { text: string, type: string, iconCategory: string, argKey?: string }> = {
@@ -3709,8 +3730,8 @@ EXTERNAL ACTION NOTE CUE
 
       const firstBrowserControlIndex = functionCalls.findIndex((call: any) => call.name === 'browser_control');
 
-      // Process tools in parallel, while enforcing browser_control as a single-step stateful turn owner.
-      const executionPromises = functionCalls.map(async (call, callIndex) => {
+      // Process tools with EterX Cognitive Core Parallel-Sequential hybrid scheduler
+      const executeSingleCall = async (call: any, callIndex: number) => {
         const args = call.args as any;
         const normalizedSig = this.normalizeCallSignature(call.name, args);
 
@@ -3819,7 +3840,7 @@ EXTERNAL ACTION NOTE CUE
         if (call.name === 'system_shell' && args?.command && dangerousPatterns.test(String(args.command))) {
           const safetyEvt = {
             type: 'safety_warning',
-            text: '⚠️ Destructive operation detected',
+            text: 'âš ï¸ Destructive operation detected',
             secondary: String(args.command).substring(0, 120),
             command: String(args.command)
           };
@@ -3843,16 +3864,16 @@ EXTERNAL ACTION NOTE CUE
 
         // === SOFT HINT: task_decomposer reuse guidance (AI decides) ===
         if (call.name === 'task_decomposer' && taskDecomposerUsed) {
-          console.log(`[GeminiClient] 💡 Soft hint: task_decomposer already used, passing guidance to AI`);
-          // Don't block — let the AI decide. Just add context about existing plan.
+          console.log(`[GeminiClient] ðŸ’¡ Soft hint: task_decomposer already used, passing guidance to AI`);
+          // Don't block â€” let the AI decide. Just add context about existing plan.
         }
 
-        // === DEDUP CHECK (semantic only — no hard limits) ===
+        // === DEDUP CHECK (semantic only â€” no hard limits) ===
         if (this.isSemanticallyDuplicate(normalizedSig, callHistory)) {
           return {
             functionResponse: {
               name: call.name,
-              response: { output: { error: `HINT: This appears similar to a previous call. The prior result may still be in your context. Consider using the existing result. If you have a specific reason to re-run this (e.g., data changed, different parameters needed), proceed — you decide.` } },
+              response: { output: { error: `HINT: This appears similar to a previous call. The prior result may still be in your context. Consider using the existing result. If you have a specific reason to re-run this (e.g., data changed, different parameters needed), proceed â€” you decide.` } },
               ...(call.id ? { id: call.id } : {})
             }
           };
@@ -3869,7 +3890,7 @@ EXTERNAL ACTION NOTE CUE
               name: call.name,
               response: {
                 output: {
-                  error: 'HINT: You have done significant exploration. Consider whether you have enough information to produce the requested deliverable now. If you need more specific data, continue — but if you are looping, produce the output.',
+                  error: 'HINT: You have done significant exploration. Consider whether you have enough information to produce the requested deliverable now. If you need more specific data, continue â€” but if you are looping, produce the output.',
                 },
               },
               ...(call.id ? { id: call.id } : {})
@@ -3877,16 +3898,16 @@ EXTERNAL ACTION NOTE CUE
           };
         }
 
-        // Track call count (no limits — just tracking)
+        // Track call count (no limits â€” just tracking)
         const currentCount = (toolCallCounts.get(call.name) || 0) + 1;
         toolCallCounts.set(call.name, currentCount);
 
-        // 4. Skill dedup — track loaded skills specifically
+        // 4. Skill dedup â€” track loaded skills specifically
         if (call.name === 'get_skill_guidelines') {
           const skillName = String(args?.skill_name || '').toLowerCase().trim();
           if (loadedSkills.has(skillName)) {
-            console.warn(`[GeminiClient] 🚫 SKILL ALREADY LOADED: ${ skillName } (silent block)`);
-            // Don't emit a visible trace event — just silently block
+            console.warn(`[GeminiClient] ðŸš« SKILL ALREADY LOADED: ${ skillName } (silent block)`);
+            // Don't emit a visible trace event â€” just silently block
             return {
               functionResponse: {
                 name: call.name,
@@ -3898,20 +3919,20 @@ EXTERNAL ACTION NOTE CUE
           loadedSkills.add(skillName);
         }
 
-        // 5. File write dedup — prevent re-writing same file (but ALLOW appending)
+        // 5. File write dedup â€” prevent re-writing same file (but ALLOW appending)
         if (call.name === 'workspace_write_file') {
           const filename = String(args?.filename || '').toLowerCase().trim();
           const isAppend = args?.append === true;
           if (writtenFiles.has(filename) && !isAppend) {
-            console.warn(`[GeminiClient] ⚠️ FILE ALREADY WRITTEN: ${ filename } — redirecting to edit`);
+            console.warn(`[GeminiClient] âš ï¸ FILE ALREADY WRITTEN: ${ filename } â€” redirecting to edit`);
           }
           writtenFiles.add(filename);
           // Rich file tracking: store content preview + purpose
           const content = typeof args?.content === 'string' ? args.content : '';
           const purpose = args?.uiActionText || `Created via ${ call.name }`;
           if (!sessionPersistenceDisabled) {
-            globalSessionManager.trackFile(filename, isAppend ? 'edited' : 'created', purpose, content);
-            globalSessionManager.addAction(`${ isAppend ? 'Appended' : 'Created' }: ${ filename }`);
+            globalSessionManager.trackFileForChat(chatId, filename, isAppend ? 'edited' : 'created', purpose, content);
+            globalSessionManager.addActionForChat(chatId, `${ isAppend ? 'Appended' : 'Created' }: ${ filename }`);
           }
         }
 
@@ -3920,8 +3941,8 @@ EXTERNAL ACTION NOTE CUE
           const filename = String(args?.filename || args?.path || '').toLowerCase().trim();
           const purpose = args?.uiActionText || `Edited via ${ call.name }`;
           if (!sessionPersistenceDisabled) {
-            globalSessionManager.trackFile(filename, 'edited', purpose, args?.newContent || args?.replacement || '');
-            globalSessionManager.addAction(`Edited: ${ filename }`);
+            globalSessionManager.trackFileForChat(chatId, filename, 'edited', purpose, args?.newContent || args?.replacement || '');
+            globalSessionManager.addActionForChat(chatId, `Edited: ${ filename }`);
           }
         }
 
@@ -3929,18 +3950,16 @@ EXTERNAL ACTION NOTE CUE
         let _preEditContent = '';
         if (call.name === 'workspace_edit_file') {
           try {
-            const _pathLib = require('path');
-            const _fsE = require('fs-extra');
             const _ef = String(args?.filename || args?.path || '');
             const _candidates = [
               _ef,
-              _pathLib.isAbsolute(_ef) ? _ef : _pathLib.resolve(process.cwd(), _ef),
+              pathLib.isAbsolute(_ef) ? _ef : pathLib.resolve(process.cwd(), _ef),
             ];
             for (const _p of _candidates) {
               try {
-                if (await _fsE.pathExists(_p)) {
-                  const _st = await _fsE.stat(_p);
-                  if (_st.size < 300000) { _preEditContent = await _fsE.readFile(_p, 'utf-8'); break; }
+                if (await fsExtra.pathExists(_p)) {
+                  const _st = await fsExtra.stat(_p);
+                  if (_st.size < 300000) { _preEditContent = await fsExtra.readFile(_p, 'utf-8'); break; }
                 }
               } catch { /* try next */ }
             }
@@ -3962,7 +3981,7 @@ EXTERNAL ACTION NOTE CUE
             }
           };
         }
-        console.log(`[GeminiClient] ⚡ ${ call.name } (#${ currentCount })`);
+        console.log(`[GeminiClient] âš¡ ${ call.name } (#${ currentCount })`);
         const tool = globalToolRegistry.getTool(call.name);
 
         let toolOutput: any;
@@ -3986,7 +4005,7 @@ EXTERNAL ACTION NOTE CUE
             // === MONITOR: broadcast tool_start ===
             try { monitorEmitter.toolStart(call.name, args || {}, (context as any).projectId || (context as any).chatId); } catch { }
             try {
-              // No timeout — tools run until complete. User has Stop button for manual cancel.
+              // No timeout â€” tools run until complete. User has Stop button for manual cancel.
               toolOutput = await tool.execute(call.args as any, { ...(context as any), _onTrace: onTrace });
               const execDuration = Date.now() - execStart;
 
@@ -4029,7 +4048,7 @@ EXTERNAL ACTION NOTE CUE
                   durationMs: execDuration,
                 });
                 // Extend session lifetime on every successful tool call
-                if (!sessionPersistenceDisabled) globalSessionManager.extendSession();
+                if (!sessionPersistenceDisabled) globalSessionManager.extendSessionForChat(chatId);
               } catch { /* never block agent on brain writes */ }
               // === MONITOR: broadcast tool_end + domain-specific events ===
               try {
@@ -4065,16 +4084,13 @@ EXTERNAL ACTION NOTE CUE
                 } catch { /* never block */ }
               }
 
-              // Auto-verify file writes — check the ACTUAL path the tool wrote to
+              // Auto-verify file writes â€” check the ACTUAL path the tool wrote to
               if (call.name === 'workspace_write_file' && toolOutput && !toolOutput.error) {
                 const filename = args?.filename || args?.path || '';
                 // Use the path from tool output if available (it has the resolved absolute path)
                 const actualPath = toolOutput?.path || toolOutput?.filePath || filename;
                 if (actualPath) {
                   try {
-                    const fsCheck = require('fs-extra');
-                    const pathLib = require('path');
-
                     // Try multiple possible locations for the file
                     const userHome = process.env.USERPROFILE || process.env.HOME || '';
                     const candidatePaths = [
@@ -4091,9 +4107,9 @@ EXTERNAL ACTION NOTE CUE
                     let verified = false;
                     for (const checkPath of candidatePaths) {
                       try {
-                        if (await fsCheck.pathExists(checkPath)) {
-                          const stat = await fsCheck.stat(checkPath);
-                          console.log(`[GeminiClient] ✅ AUTO-VERIFY: ${ filename } exists at ${ checkPath } (${ (stat.size / 1024).toFixed(1) } KB)`);
+                        if (await fsExtra.pathExists(checkPath)) {
+                          const stat = await fsExtra.stat(checkPath);
+                          console.log(`[GeminiClient] âœ… AUTO-VERIFY: ${ filename } exists at ${ checkPath } (${ (stat.size / 1024).toFixed(1) } KB)`);
                           toolOutput._verified = true;
                           toolOutput._fileSize = stat.size;
                           toolOutput._verifiedPath = checkPath;
@@ -4104,13 +4120,13 @@ EXTERNAL ACTION NOTE CUE
                     }
 
                     if (!verified) {
-                      console.warn(`[GeminiClient] ⚠️ AUTO-VERIFY: ${ filename } NOT FOUND (checked ${ candidatePaths.length } paths)`);
+                      console.warn(`[GeminiClient] âš ï¸ AUTO-VERIFY: ${ filename } NOT FOUND (checked ${ candidatePaths.length } paths)`);
                       toolOutput._verified = false;
                     }
                   } catch { /* silent */ }
                 }
 
-                // ═══ LIVE FILE PREVIEW (workspace_write_file): Emit code content to UI ═══
+                // â•â•â• LIVE FILE PREVIEW (workspace_write_file): Emit code content to UI â•â•â•
                 const codeExtensions: Record<string, string> = {
                   '.ts': 'typescript', '.tsx': 'tsx', '.js': 'javascript', '.jsx': 'jsx',
                   '.py': 'python', '.css': 'css', '.scss': 'scss', '.html': 'html',
@@ -4122,7 +4138,6 @@ EXTERNAL ACTION NOTE CUE
                   '.txt': 'text', '.vue': 'vue', '.svelte': 'svelte',
                 };
                 try {
-                  const pathLib = require('path');
                   const ext = pathLib.extname(filename).toLowerCase();
                   const lang = codeExtensions[ext];
                   const content = typeof args?.content === 'string' ? args.content : '';
@@ -4142,11 +4157,9 @@ EXTERNAL ACTION NOTE CUE
                 } catch { /* silent */ }
               }
 
-              // ═══ LIVE FILE PREVIEW (workspace_edit_file): VS Code-style diff ═══
+              // â•â•â• LIVE FILE PREVIEW (workspace_edit_file): VS Code-style diff â•â•â•
               if (call.name === 'workspace_edit_file' && toolOutput && !toolOutput.error) {
                 try {
-                  const pathLib = require('path');
-                  const fsExtra = require('fs-extra');
                   const editFilename = String(args?.filename || args?.path || '');
                   const ext = pathLib.extname(editFilename).toLowerCase();
                   const _langMap: Record<string, string> = {
@@ -4175,39 +4188,87 @@ EXTERNAL ACTION NOTE CUE
                     }
                     if (!newContent) newContent = String(args?.newContent || args?.replacement || '');
                     if (newContent) {
-                      // ── Compute Myers-style line diff ──
+                      // â”€â”€ Compute Myers-style line diff â”€â”€
                       const _oldLines = (_preEditContent || '').split('\n');
                       const _newLines = newContent.split('\n');
                       const _N = _oldLines.length, _M = _newLines.length;
                       type _DL = { type: 'added' | 'removed' | 'context'; content: string; oldLine?: number; newLine?: number };
                       let diffLines: _DL[] = [];
-                      if (_preEditContent && _N < 3000 && _M < 3000) {
-                        // LCS-based diff (trimmed to 3000 lines for perf)
-                        const _dp: number[][] = Array.from({ length: _N + 1 }, () => new Array(_M + 1).fill(0));
-                        for (let _i = _N - 1; _i >= 0; _i--)
-                          for (let _j = _M - 1; _j >= 0; _j--)
-                            _dp[_i][_j] = _oldLines[_i] === _newLines[_j]
-                              ? _dp[_i + 1][_j + 1] + 1
-                              : Math.max(_dp[_i + 1][_j], _dp[_i][_j + 1]);
-                        let _oi = 0, _ni = 0, _oln = 1, _nln = 1;
-                        while (_oi < _N || _ni < _M) {
-                          if (_oi < _N && _ni < _M && _oldLines[_oi] === _newLines[_ni]) {
-                            diffLines.push({ type: 'context', content: _oldLines[_oi], oldLine: _oln++, newLine: _nln++ });
-                            _oi++; _ni++;
-                          } else if (_ni < _M && (_oi >= _N || _dp[_oi][_ni + 1] >= _dp[_oi + 1][_ni])) {
-                            diffLines.push({ type: 'added', content: _newLines[_ni], newLine: _nln++ });
-                            _ni++;
-                          } else {
-                            diffLines.push({ type: 'removed', content: _oldLines[_oi], oldLine: _oln++ });
-                            _oi++;
+                      if (_preEditContent) {
+                        // 1. Common prefix trimming
+                        let prefixCount = 0;
+                        while (prefixCount < _N && prefixCount < _M && _oldLines[prefixCount] === _newLines[prefixCount]) {
+                          prefixCount++;
+                        }
+                        
+                        // 2. Common suffix trimming
+                        let suffixCount = 0;
+                        while (suffixCount < _N - prefixCount && suffixCount < _M - prefixCount && 
+                               _oldLines[_N - 1 - suffixCount] === _newLines[_M - 1 - suffixCount]) {
+                          suffixCount++;
+                        }
+
+                        // Determine the middle sections that actually changed
+                        const middleOld = _oldLines.slice(prefixCount, _N - suffixCount);
+                        const middleNew = _newLines.slice(prefixCount, _M - suffixCount);
+                        const midN = middleOld.length;
+                        const midM = middleNew.length;
+
+                        // Reconstruct context lines for UI
+                        const prefixContextStart = Math.max(0, prefixCount - 3);
+                        for (let i = prefixContextStart; i < prefixCount; i++) {
+                          diffLines.push({ type: 'context', content: _oldLines[i], oldLine: i + 1, newLine: i + 1 });
+                        }
+
+                        if (midN < 1000 && midM < 1000 && (midN * midM) < 250000) {
+                          // LCS DP on the middle part
+                          const _dp: number[][] = Array.from({ length: midN + 1 }, () => new Array(midM + 1).fill(0));
+                          for (let _i = midN - 1; _i >= 0; _i--) {
+                            for (let _j = midM - 1; _j >= 0; _j--) {
+                              _dp[_i][_j] = middleOld[_i] === middleNew[_j]
+                                ? _dp[_i + 1][_j + 1] + 1
+                                : Math.max(_dp[_i + 1][_j], _dp[_i][_j + 1]);
+                            }
+                          }
+
+                          let _oi = 0, _ni = 0;
+                          while (_oi < midN || _ni < midM) {
+                            const oldLineNum = prefixCount + _oi + 1;
+                            const newLineNum = prefixCount + _ni + 1;
+                            if (_oi < midN && _ni < midM && middleOld[_oi] === middleNew[_ni]) {
+                              diffLines.push({ type: 'context', content: middleOld[_oi], oldLine: oldLineNum, newLine: newLineNum });
+                              _oi++; _ni++;
+                            } else if (_ni < midM && (_oi >= midN || _dp[_oi][_ni + 1] >= _dp[_oi + 1][_ni])) {
+                              diffLines.push({ type: 'added', content: middleNew[_ni], newLine: newLineNum });
+                              _ni++;
+                            } else {
+                              diffLines.push({ type: 'removed', content: middleOld[_oi], oldLine: oldLineNum });
+                              _oi++;
+                            }
+                          }
+                        } else {
+                          // Fallback for large changes
+                          for (let i = 0; i < midN; i++) {
+                            diffLines.push({ type: 'removed', content: middleOld[i], oldLine: prefixCount + i + 1 });
+                          }
+                          for (let j = 0; j < midM; j++) {
+                            diffLines.push({ type: 'added', content: middleNew[j], newLine: prefixCount + j + 1 });
                           }
                         }
+
+                        // Reconstruct suffix context
+                        const suffixContextEnd = Math.min(_N, _N - suffixCount + 3);
+                        const suffixOffset = _M - _N;
+                        for (let i = _N - suffixCount; i < suffixContextEnd; i++) {
+                          diffLines.push({ type: 'context', content: _oldLines[i], oldLine: i + 1, newLine: i + 1 + suffixOffset });
+                        }
+
                         // Trim context: keep only 3 lines before/after each change
                         const _changed = new Set<number>();
                         diffLines.forEach((l, i) => { if (l.type !== 'context') { for (let k = Math.max(0, i - 3); k <= Math.min(diffLines.length - 1, i + 3); k++) _changed.add(k); } });
                         diffLines = diffLines.filter((_, i) => _changed.has(i));
                       } else {
-                        // Fallback: just show new content as-is (no diff)
+                        // Fallback: just show new content as-is
                         diffLines = _newLines.slice(0, 2000).map((line, i) => ({ type: 'context' as const, content: line, oldLine: i + 1, newLine: i + 1 }));
                       }
                       const _added = diffLines.filter(l => l.type === 'added').length;
@@ -4229,7 +4290,7 @@ EXTERNAL ACTION NOTE CUE
                 } catch { /* silent */ }
               }
 
-              // ═══ LIVE CONSOLE OUTPUT: Emit real shell stdout/stderr to UI ═══
+              // â•â•â• LIVE CONSOLE OUTPUT: Emit real shell stdout/stderr to UI â•â•â•
               if ((call.name === 'system_shell' || call.name === 'workspace_run_command') && toolOutput) {
                 const rawStdout = String(toolOutput?.stdout || toolOutput?.output || toolOutput?.result || '').trim();
                 const rawStderr = String(toolOutput?.stderr || '').trim();
@@ -4252,7 +4313,7 @@ EXTERNAL ACTION NOTE CUE
             } catch (err: any) {
               const execDuration = Date.now() - execStart;
               performanceAnalytics.recordToolCall(call.name, execDuration, false);
-              console.warn(`[GeminiClient] ⚠️ Tool ${ call.name } failed: ${ err.message }`);
+              console.warn(`[GeminiClient] âš ï¸ Tool ${ call.name } failed: ${ err.message }`);
 
 
               // === LIFETIME BRAIN: Record tool errors for permanent learning ===
@@ -4274,7 +4335,7 @@ EXTERNAL ACTION NOTE CUE
               // If a tool has failed 3+ times total, inject a warning so the agent avoids it
               const toolFailCount = metaCognition.failedTools.get(call.name) || 0;
               if (toolFailCount >= 3) {
-                console.warn(`[GeminiClient] 🚫 Tool ${ call.name } has failed ${ toolFailCount } times — agent should use alternatives`);
+                console.warn(`[GeminiClient] ðŸš« Tool ${ call.name } has failed ${ toolFailCount } times â€” agent should use alternatives`);
               }
 
               if (call.name === 'browser_control') {
@@ -4300,7 +4361,7 @@ EXTERNAL ACTION NOTE CUE
                 } else if (altTool) {
                   try {
                     toolOutput = await altTool.execute(recovery.newArgs, { ...(context as any), _onTrace: onTrace });
-                    console.log(`[GeminiClient] ✅ Recovery succeeded via ${ recovery.newTool }`);
+                    console.log(`[GeminiClient] âœ… Recovery succeeded via ${ recovery.newTool }`);
                     performanceAnalytics.recordToolCall(recovery.newTool, Date.now() - execStart, true);
                   } catch (recoveryErr: any) {
                     toolOutput = {
@@ -4313,7 +4374,7 @@ EXTERNAL ACTION NOTE CUE
                 // Standard retry
                 try {
                   toolOutput = await tool.execute(call.args as any, { ...(context as any), _onTrace: onTrace });
-                  console.log(`[GeminiClient] ✅ Retry succeeded for ${ call.name }`);
+                  console.log(`[GeminiClient] âœ… Retry succeeded for ${ call.name }`);
                 } catch (retryErr: any) {
                   toolOutput = {
                     error: retryErr.message, _retryFailed: true,
@@ -4322,7 +4383,7 @@ EXTERNAL ACTION NOTE CUE
                 }
               }
 
-              // Learn from error — both knowledge and persistent memory
+              // Learn from error â€” both knowledge and persistent memory
               if (!longTermMemoryDisabled) {
                 knowledgeEngine.extractFromToolResult(call.name, args, toolOutput).catch(() => { });
                 agentMemory.recordError(
@@ -4348,14 +4409,42 @@ EXTERNAL ACTION NOTE CUE
 
         // === TOOL RESULT MEMORY: Record what this tool returned ===
         try {
-          const argsKey = label.argKey ? String(args?.[label.argKey] || '').substring(0, 90) : '';
+          let argsKey = '';
+          if (call.name === 'spawn_sub_agent') {
+            if (args?.mode === 'spawn' && args?.tasks) {
+              const taskNames = args.tasks.map((t: any) => t.name || 'Agent').join('+');
+              argsKey = `spawn: ${taskNames}`;
+            } else {
+              argsKey = `${args?.mode || 'status'}: ${args?.agentName || 'all'}`;
+            }
+          } else if (label.argKey && args?.[label.argKey]) {
+            argsKey = String(args[label.argKey]).substring(0, 90);
+          } else if (args?.filename || args?.path || args?.command || args?.query) {
+            argsKey = String(args.filename || args.path || args.command || args.query).substring(0, 90);
+          } else {
+            const firstVal = Object.values(args || {})[0];
+            argsKey = firstVal !== undefined ? String(firstVal).substring(0, 90) : '';
+          }
+
           let resultSummary = '';
-          if (toolOutput?.error) {
+          const exitCode = toolOutput?.exitCode ?? toolOutput?.code;
+          if (toolOutput?.CRITICAL_ERROR) {
+            resultSummary = `CRITICAL_ERROR: ${ String(toolOutput.CRITICAL_ERROR).substring(0, 120) }`;
+          } else if (toolOutput?.TERMINAL_WARNING) {
+            resultSummary = `TERMINAL_WARNING: ${ String(toolOutput.TERMINAL_WARNING).substring(0, 120) }`;
+          } else if (toolOutput?.error) {
             resultSummary = `ERROR: ${ String(toolOutput.error).substring(0, 120) }`;
+          } else if (exitCode !== undefined && exitCode !== 0 && exitCode !== null) {
+            const errSource = toolOutput.stderr || toolOutput.stdout || '';
+            const trailingErr = String(errSource).slice(-100);
+            const stderrMsg = trailingErr ? `: ...${trailingErr}` : '';
+            resultSummary = `FAILED (exit code ${exitCode})${stderrMsg}`.substring(0, 180).replace(/\n/g, ' ');
           } else if (toolOutput?.content) {
             resultSummary = `OK (${ String(toolOutput.content).length } chars)`;
           } else if (toolOutput?.success !== undefined) {
-            resultSummary = toolOutput.success ? `SUCCESS: ${ toolOutput.path || toolOutput.message || 'done' }`.substring(0, 120) : 'FAILED';
+            resultSummary = toolOutput.success
+              ? `SUCCESS: ${ toolOutput.path || toolOutput.message || 'done' }`.substring(0, 120)
+              : `FAILED: ${ toolOutput.error || toolOutput.message || 'unknown error' }`.substring(0, 120);
           } else if (toolOutput?.stdout !== undefined) {
             resultSummary = `OK: ${ String(toolOutput.stdout).substring(0, 120).replace(/\n/g, ' ') }`;
           } else if (toolOutput?.results) {
@@ -4373,11 +4462,11 @@ EXTERNAL ACTION NOTE CUE
             iteration: interactions
           });
 
-          // Cap at 500 entries (up from 150) — trim from the FRONT (oldest) to keep latest context
+          // Cap at 500 entries (up from 150) â€” trim from the FRONT (oldest) to keep latest context
           if (toolResultDigest.length > 500) {
             toolResultDigest.splice(0, toolResultDigest.length - 500);
           }
-        } catch { /* silent — digest is optional */ }
+        } catch { /* silent â€” digest is optional */ }
 
         // === CONVERSATION LEDGER: Record to persistent structured log ===
         try {
@@ -4389,7 +4478,7 @@ EXTERNAL ACTION NOTE CUE
             iteration: interactions,
             durationMs: 0, // Duration tracked elsewhere
           });
-        } catch { /* ledger is advisory — never block */ }
+        } catch { /* ledger is advisory â€” never block */ }
 
         // === ANTI-HALLUCINATION: Verify tool result matches any success claims ===
         try {
@@ -4400,47 +4489,76 @@ EXTERNAL ACTION NOTE CUE
             agentWorkNote: loopAccumulatedText || '',
           });
           if (!ahResult.passed && ahResult.correctionPrompt) {
-            toolOutput = toolOutput + '\n\n⚠️ SELF-CHECK: ' + ahResult.correctionPrompt;
-            console.log(`[GeminiClient] 🛡️ Anti-hallucination triggered for ${call.name}: ${ahResult.correctionPrompt.substring(0, 100)}`);
+            toolOutput = toolOutput + '\n\nâš ï¸ SELF-CHECK: ' + ahResult.correctionPrompt;
+            console.log(`[GeminiClient] ðŸ›¡ï¸ Anti-hallucination triggered for ${call.name}: ${ahResult.correctionPrompt.substring(0, 100)}`);
           }
         } catch { /* anti-hallucination is advisory */ }
 
-        const artifactPaths = this.extractArtifactPathsFromToolOutput(toolOutput);
-        // Max iterations reached — emit continue signal, don't hard-stop
-        const filesCreated = Array.from(writtenFiles);
-        const toolCallTotal = Array.from(toolCallCounts.values()).reduce((a, b) => a + b, 0);
-
-        // Determine if agent was doing computer/screen work
-        const wasDoingScreenWork = toolCallCounts.has('screen_agent') || toolCallCounts.has('desktop_control') || toolCallCounts.has('computer');
-
-        const fallbackText = loopAccumulatedText || ' ';
-
-        const fallbackEvt = { type: 'answer', text: fallbackText };
-        trace.push(fallbackEvt);
-        if (onTrace) onTrace(fallbackEvt);
-
-        // Emit auto-continue signal for screen/computer tasks
-        if (wasDoingScreenWork) {
-          try {
-            const _mChatId = (context as any).projectId || (context as any).chatId || '';
-            monitorEmitter.emit_event({ type: 'continue_signal', chatId: _mChatId, text: 'Agent auto-continuing computer work...' });
-          } catch { /* never block */ }
+        // === COGNITIVE CORE: Post-Tool Verification & Recovery ===
+        try {
+          const isSuccess = !toolOutput?.error && (toolOutput?.exitCode === undefined || toolOutput.exitCode === 0);
+          const correction = cognitiveCore.onToolCallComplete(
+            call.name,
+            args || {},
+            toolOutput,
+            isSuccess,
+            0
+          );
+          if (correction) {
+            toolOutput = (typeof toolOutput === 'string' ? toolOutput : JSON.stringify(toolOutput)) + `\n\nâš ï¸ COGNITIVE SELF-CORRECTION:\n${correction}`;
+          }
+        } catch (err: any) {
+          console.warn('[GeminiClient] Cognitive Core post-tool hook failed (non-blocking):', err.message);
         }
 
-        if (fallbackText.trim() && !sessionPersistenceDisabled) {
-          globalSessionManager.setLastAgentOutput(fallbackText);
-          globalSessionManager.save().catch(() => { });
+        return {
+          functionResponse: {
+            name: call.name,
+            response: { output: toolOutput },
+            ...(call.id ? { id: call.id } : {})
+          }
+        };
+      };
+
+      // Process tools with EterX Cognitive Core Parallel-Sequential partitioned scheduler
+      const functionResponseParts: any[] = new Array(functionCalls.length);
+      const statelessToolNames = [
+        'workspace_read_file', 'workspace_view_file', 'workspace_search_text',
+        'workspace_analyze', 'web_search', 'deep_research',
+        'get_skill_guidelines', 'task_decomposer', 'task_checkpoint'
+      ];
+      
+      const statelessCalls = functionCalls.filter(call => statelessToolNames.includes(call.name));
+      const statefulCalls = functionCalls.filter(call => !statelessToolNames.includes(call.name));
+
+      if (statelessCalls.length > 0) {
+        if (statelessCalls.length > 1) {
+          console.log(`[GeminiClient] âš¡ Executing ${statelessCalls.length} stateless tools in parallel: ${statelessCalls.map(c => c.name).join(', ')}`);
         }
-        return { text: fallbackText, trace };
-      });
+        const executionPromises = statelessCalls.map(async (call) => {
+          const callIndex = functionCalls.indexOf(call);
+          const part = await executeSingleCall(call, callIndex);
+          functionResponseParts[callIndex] = part;
+        });
+        await Promise.all(executionPromises);
+        if (statelessCalls.length > 1) {
+          console.log(`[GeminiClient] âš¡ Parallel stateless execution completed.`);
+        }
+      }
 
-      // Execute ALL tools in parallel and collect results
-      const functionResponseParts = await Promise.all(executionPromises);
-
-
-
-      // Push tool responses back to contents — clean, no fake function injections
-      if (functionResponseParts.length > 1) console.log(`[GeminiClient] ⚡ ${ functionResponseParts.length } tools completed (parallel).`);
+      if (statefulCalls.length > 0) {
+        if (statefulCalls.length > 1) {
+          console.log(`[GeminiClient] ðŸ”’ Executing ${statefulCalls.length} stateful tools sequentially to prevent race conditions: ${statefulCalls.map(c => c.name).join(' â†’ ')}`);
+        }
+        for (const call of statefulCalls) {
+          const callIndex = functionCalls.indexOf(call);
+          const part = await executeSingleCall(call, callIndex);
+          functionResponseParts[callIndex] = part;
+        }
+        if (statefulCalls.length > 1) {
+          console.log(`[GeminiClient] ðŸ”’ Sequential stateful execution completed.`);
+        }
+      }
 
       // === SCREEN AGENT: inject screenshot inline image into same user turn ===
       const _visionExtras: any[] = [];
@@ -4457,9 +4575,9 @@ EXTERNAL ACTION NOTE CUE
       }
       contents.push({ role: 'user', parts: [...functionResponseParts, ..._visionExtras] });
 
-      // === SESSION PERSISTENCE: Debounced — no blocking disk I/O on hot path ===
+      // === SESSION PERSISTENCE: Debounced â€” no blocking disk I/O on hot path ===
       if (!sessionPersistenceDisabled) {
-        globalSessionManager.updateFromLoop({
+        globalSessionManager.updateFromLoopForChat(chatId, {
           callHistory, writtenFiles, loadedSkills,
           taskDecomposerUsed, toolCallCounts, toolResultDigest
         });
@@ -4467,7 +4585,7 @@ EXTERNAL ACTION NOTE CUE
       }
     }
 
-    // Max iterations reached — summarize what was accomplished
+    // Max iterations reached â€” summarize what was accomplished
     
         // === INTELLIGENT TASK COMPLETION ASSESSMENT ===
         // Before finalizing, check if the task appears genuinely complete
@@ -4486,7 +4604,7 @@ EXTERNAL ACTION NOTE CUE
           
           // If it was a work task, enrich the final response with what was done
           if (wasWorkTask && responseText.length < 100 && filesWritten.length > 0) {
-            // Agent finished work but gave a very short response — enrich it
+            // Agent finished work but gave a very short response â€” enrich it
             const enrichment = '\n\n**Files created/modified:** ' + filesWritten.join(', ');
             loopAccumulatedText = (loopAccumulatedText || '') + enrichment;
           }
@@ -4498,7 +4616,7 @@ const fallbackText = loopAccumulatedText || ' ';
     trace.push(fallbackEvt);
     if (onTrace) onTrace(fallbackEvt);
     if (fallbackText.trim() && !sessionPersistenceDisabled) {
-      globalSessionManager.setLastAgentOutput(fallbackText);
+      globalSessionManager.setLastAgentOutputForChat(chatId, fallbackText);
       globalSessionManager.save().catch(() => { });
     }
     return { text: fallbackText, trace };
@@ -4560,10 +4678,3 @@ export function createIsolatedClient(apiKey: string, mode: MainAgentMode = 'thin
   client.setMode(mode);
   return rememberIsolatedClient(cacheKey, client);
 }
-
-
-
-
-
-
-

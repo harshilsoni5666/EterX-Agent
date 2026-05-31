@@ -159,54 +159,7 @@ function inferFaceMood(mode: LiveIndicatorMode, reaction: AgentFaceReaction, act
   return 'working';
 }
 
-function gradientForMood(mood: AgentFaceMood): string {
-  switch (mood) {
-    case 'angry':
-    case 'frustrated':
-      return 'radial-gradient(circle at 35% 22%, #F4ECFF 0%, #A871FF 24%, #6797FF 58%, #153D78 100%)';
-    case 'settling':
-    case 'calm':
-    case 'waiting':
-      return 'radial-gradient(circle at 35% 21%, #FCEBFF 0%, #A76FFF 20%, #7895FF 56%, #153D78 100%)';
-    case 'error':
-    case 'sad':
-      return 'radial-gradient(circle at 34% 22%, #FFD6EE 0%, #B85AE8 26%, #5777FF 58%, #17336D 100%)';
-    case 'writing':
-      return 'radial-gradient(circle at 34% 23%, #F7E5FF 0%, #B66AFF 24%, #6798FF 58%, #143870 100%)';
-    case 'searching':
-      return 'radial-gradient(circle at 36% 22%, #E6FCFF 0%, #7DE6FF 26%, #6183FF 58%, #13366E 100%)';
-    case 'coding':
-      return 'radial-gradient(circle at 35% 23%, #E8F0FF 0%, #8D9CFF 25%, #5B8CFF 58%, #16356D 100%)';
-    case 'memory':
-      return 'radial-gradient(circle at 34% 22%, #F5E8FF 0%, #A76FFF 25%, #5D95FF 60%, #123A73 100%)';
-    case 'running':
-    case 'working':
-    case 'loading':
-      return 'radial-gradient(circle at 35% 23%, #DDF4FF 0%, #71C9FF 28%, #426BFF 58%, #112F67 100%)';
-    case 'success':
-    case 'proud':
-      return 'radial-gradient(circle at 35% 22%, #E8FFF8 0%, #62E7CE 26%, #5A91FF 58%, #123D75 100%)';
-    case 'curious':
-    case 'surprised':
-    case 'skeptical':
-      return 'radial-gradient(circle at 34% 22%, #F1F6FF 0%, #8DD6FF 25%, #6592FF 60%, #123D75 100%)';
-    case 'laugh':
-    case 'happy':
-    case 'excited':
-    case 'celebrating':
-      return 'radial-gradient(circle at 35% 22%, #F4FBFF 0%, #95E3FF 25%, #6F93FF 58%, #153D78 100%)';
-    case 'listening':
-      return 'radial-gradient(circle at 35% 22%, #F7E9FF 0%, #A979FF 25%, #5E93FF 60%, #133D75 100%)';
-    case 'speaking':
-      return 'radial-gradient(circle at 35% 22%, #EAF8FF 0%, #84D9FF 25%, #6594FF 58%, #143B72 100%)';
-    case 'sleeping':
-      return 'radial-gradient(circle at 35% 24%, #E7F0FF 0%, #86A6D8 28%, #5B7AC9 58%, #172E5C 100%)';
-    case 'thinking':
-      return 'radial-gradient(circle at 35% 23%, #D8F7FF 0%, #6DD3FF 28%, #4F7CFF 58%, #15376F 100%)';
-    default:
-      return 'radial-gradient(circle at 35% 22%, #F3E3FF 0%, #A35CFF 24%, #5B9DFF 58%, #123D75 100%)';
-  }
-}
+const AGENT_FACE_GRADIENT = 'radial-gradient(circle at 35% 22%, #F3E3FF 0%, #A35CFF 24%, #5B9DFF 58%, #123D75 100%)';
 
 export function resolveAgentFaceExpression({
   mode,
@@ -389,8 +342,8 @@ export function resolveAgentFaceExpression({
     mouthStroke,
     smilePath,
     frownPath,
-    faceGradient: gradientForMood(mood),
-    glowColor: isSettling ? 'rgba(176,112,255,0.12)' : 'rgba(91,157,255,0.10)',
+    faceGradient: AGENT_FACE_GRADIENT,
+    glowColor: 'rgba(91,157,255,0.10)',
     cheekLeftOpacity,
     cheekRightOpacity,
   };

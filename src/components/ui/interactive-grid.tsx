@@ -70,6 +70,8 @@ export const InteractiveGrid = () => {
       }
     }
 
+    let rect = { left: 0, top: 0, width: 0, height: 0 } as DOMRect;
+
     const init = () => {
       // Match exactly to the parent container to account for Sidebar offets
       const width = canvas.parentElement?.clientWidth || window.innerWidth;
@@ -91,6 +93,9 @@ export const InteractiveGrid = () => {
           particles.push(new Particle(c * SPACING, r * SPACING));
         }
       }
+
+      // Update cached bounding rect
+      rect = canvas.getBoundingClientRect();
     };
 
     const drawStatic = () => {
@@ -134,10 +139,14 @@ export const InteractiveGrid = () => {
       init();
       drawStatic();
     };
+
+    const onScroll = () => {
+      rect = canvas.getBoundingClientRect();
+    };
     
     // IMPORTANT: Calculate mouse relative to canvas layout box, not window screen
+    // HIGH PERFORMANCE: Uses the cached bounding rect to prevent synchronous layout reflows!
     const onMouseMove = (e: MouseEvent) => {
-      const rect = canvas.getBoundingClientRect();
       mx = e.clientX - rect.left;
       my = e.clientY - rect.top;
       requestDraw();
@@ -158,14 +167,16 @@ export const InteractiveGrid = () => {
       }
     };
 
-    window.addEventListener('resize', onResize);
-    window.addEventListener('mousemove', onMouseMove);
-    window.addEventListener('mouseleave', onMouseLeave);
+    window.addEventListener('resize', onResize, { passive: true });
+    window.addEventListener('scroll', onScroll, { capture: true, passive: true });
+    window.addEventListener('mousemove', onMouseMove, { passive: true });
+    window.addEventListener('mouseleave', onMouseLeave, { passive: true });
     document.addEventListener('visibilitychange', onVisibilityChange);
 
     return () => {
       if (animationFrameId !== null) cancelAnimationFrame(animationFrameId);
       window.removeEventListener('resize', onResize);
+      window.removeEventListener('scroll', onScroll, { capture: true });
       window.removeEventListener('mousemove', onMouseMove);
       window.removeEventListener('mouseleave', onMouseLeave);
       document.removeEventListener('visibilitychange', onVisibilityChange);

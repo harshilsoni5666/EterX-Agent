@@ -110,10 +110,10 @@ Security rules:
     metadataJson: z.string().optional().describe('Optional metadata as a JSON object string'),
   }),
   outputSchema: z.object({ success: z.boolean(), message: z.string(), data: z.any().optional() }),
-  execute: async (input: any) => {
-    const userId = input.userId || 'user';
-    const projectId = input.projectId || 'global';
-    const chatId = input.chatId || projectId;
+  execute: async (input: any, context?: any) => {
+    const userId = input.userId || context?.userId || 'user';
+    const projectId = input.projectId || context?.workspaceId || (context?.projectId && context.projectId !== context?.workspaceId ? 'global' : context?.projectId) || 'global';
+    const chatId = input.chatId || context?.projectId || context?.activeChatId || projectId;
     const metadata = parseJsonObject(input.metadataJson ?? input.metadata);
 
     try {

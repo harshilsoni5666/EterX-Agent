@@ -1,5 +1,6 @@
 import fs from 'fs-extra';
 import path from 'path';
+import { formatVisibleWorkNote } from './work-note';
 
 /**
  * TaskStore — Persistent Server-Side Task State
@@ -33,11 +34,21 @@ export interface PersistedTask {
 }
 
 // Debounce timers per chat to prevent I/O spam
-const writeTimers: Map<string, NodeJS.Timeout> = new Map();
+const globalForTaskStore = globalThis as typeof globalThis & {
+  __eterxTaskCache?: Map<string, PersistedTask>;
+  __eterxWriteTimers?: Map<string, NodeJS.Timeout>;
+};
+
+const writeTimers: Map<string, NodeJS.Timeout> =
+  globalForTaskStore.__eterxWriteTimers ||
+  (globalForTaskStore.__eterxWriteTimers = new Map());
+
 const DEBOUNCE_MS = 500;
 
 // In-memory cache for fast reads
-const taskCache: Map<string, PersistedTask> = new Map();
+const taskCache: Map<string, PersistedTask> =
+  globalForTaskStore.__eterxTaskCache ||
+  (globalForTaskStore.__eterxTaskCache = new Map());
 
 async function ensureDir() {
   await fs.ensureDir(TASKS_DIR);
@@ -76,7 +87,7 @@ function compactTraceEvent(traceEvent: any): any {
     };
   }
 
-  if ((traceEvent.type === 'thought_stream' || traceEvent.type === 'work_note') && typeof traceEvent.text === 'string' && traceEvent.text.length > 12000) {
+  if (traceEvent.type === 'thought_stream' && typeof traceEvent.text === 'string' && traceEvent.text.length > 12000) {
     return {
       ...traceEvent,
       text: `${traceEvent.text.substring(0, 12000)}\n...[trace compacted]`,
@@ -200,7 +211,7 @@ export const taskStore = {
         }
       }
     } else if (timedEvent?.type === 'work_note') {
-      const noteText = String(timedEvent.text || '').trim();
+      const noteText = formatVisibleWorkNote(String(timedEvent.text || ''));
       if (!noteText) return;
       const noteId = timedEvent.noteId || null;
       const subAgent = timedEvent.subAgent || null;

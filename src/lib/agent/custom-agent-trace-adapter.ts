@@ -1,3 +1,5 @@
+import { formatVisibleWorkNote } from './work-note';
+
 type CustomToolLogType = 'command' | 'exploration' | 'file_edit' | 'communication' | 'browser';
 
 type CustomToolUi = {
@@ -168,35 +170,8 @@ const languageFromFilename = (filename: string) => {
   return map[ext] || 'text';
 };
 
-export const formatVisibleCustomWorkNote = (value: string, maxLength = 720): string => {
-  let text = String(value || '')
-    .replace(/<\/?thought>/gi, '')
-    .replace(/```[\s\S]*?```/g, ' ')
-    .replace(/`([^`]+)`/g, '$1')
-    .replace(/\*\*(CLASSIFY|DECOMPOSE|ASSESS|ACT|VERIFY)\*\*/gi, '$1')
-    .replace(/\b(CLASSIFY|DECOMPOSE|ASSESS|ACT|VERIFY)\s*(?:->|:|-)\s*/gi, '')
-    .replace(/^[\s*>\-\u2022]+/, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-
-  if (!text) return '';
-  if (text.startsWith('.')) text = text.replace(/^\.+/, '').trim();
-  text = text.replace(/^(?:jsx?|tsx?|ts|css|scss|json|md|html|py|sh|ps1)\b\s*[:\-]?\s*(?=\b(to|how|if|whether|for|what)\b)/i, '');
-  text = text.replace(/^(?:\.?\/)?([a-zA-Z0-9_-]+\.(?:jsx?|tsx?|ts|css|scss|json|md|html|py|sh|ps1))\b\s*(?=\b(to|how|if|whether|for|what|show|check|verify)\b)/i, 'Checking $1 ');
-  text = text.replace(/^(?:jsx?|tsx?|ts|css|scss|json|md|html|py|sh|ps1)\b\s*[:\-]?\s*/i, '');
-  if (text) text = text.charAt(0).toUpperCase() + text.slice(1);
-  text = text
-    .replace(/^(?:jsx?|tsx?|ts|css|scss|json|md|html|py|sh|ps1)\s*(?=\b(where|which|that|has|is|was|the)\b)/i, 'The file ')
-    .replace(/^(?:in\s+)?(?:jsx?|tsx?|ts|css|scss|json|md|html|py|sh|ps1)\s*[:\-]\s*/i, 'The file ')
-    .replace(/\s+/g, ' ')
-    .trim();
-
-  const sentences = text.match(/[^.!?]+[.!?]+(?:\s|$)|[^.!?]+$/g) || [text];
-  text = sentences.slice(0, 4).join(' ').replace(/\s+/g, ' ').trim();
-  if (text.length > maxLength) {
-    text = `${text.slice(0, maxLength - 1).replace(/\s+\S*$/, '').trim()}...`;
-  }
-  return text;
+export const formatVisibleCustomWorkNote = (value: string, _maxLength = 720): string => {
+  return formatVisibleWorkNote(value);
 };
 
 export const createCustomWorkNoteLog = (
@@ -206,7 +181,7 @@ export const createCustomWorkNoteLog = (
   at = Date.now(),
 ) => {
   const noteText = formatVisibleCustomWorkNote(text);
-  if (noteText.length < 8) return null;
+  if (!noteText) return null;
   return {
     id: `custom_work_note_${at}_${randomSuffix()}`,
     type: 'work_note',

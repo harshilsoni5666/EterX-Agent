@@ -108,6 +108,27 @@ function applyNativeWindowTheme(theme) {
   return safeTheme;
 }
 
+function applySplashWindowTheme(theme = readNativeTheme()) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+
+  const isDark = normalizeNativeTheme(theme) === 'dark';
+  const background = isDark ? '#0F0F0F' : '#FAFAF8';
+  const symbolColor = isDark ? '#d1d1d1' : '#1F1F1D';
+
+  try {
+    mainWindow.setBackgroundColor(background);
+    if (typeof mainWindow.setTitleBarOverlay === 'function') {
+      mainWindow.setTitleBarOverlay({
+        color: background,
+        symbolColor,
+        height: 38,
+      });
+    }
+  } catch (error) {
+    console.warn('[EterX] Failed to apply splash theme:', error);
+  }
+}
+
 function getPetWindowHtml() {
   return `<!doctype html>
 <html>
@@ -217,13 +238,17 @@ function getPetWindowHtml() {
         font-weight: 700;
       }
       .preview, .hover-status {
-        background: linear-gradient(110deg, #b9b9b9 0%, #ffffff 42%, #a7a7a7 76%);
-        background-size: 230% 100%;
+        background:
+          linear-gradient(102deg, transparent 0%, transparent 44%, #FFFFFF 50%, #FFFFFF 56%, transparent 62%, transparent 100%),
+          linear-gradient(#9A9A98, #9A9A98);
+        background-size: 245% 100%, 100% 100%;
+        background-position: 260% 50%, 0 0;
+        background-repeat: no-repeat, no-repeat;
         -webkit-background-clip: text;
         background-clip: text;
         color: transparent;
         -webkit-text-fill-color: transparent;
-        animation: petShimmer 3.2s ease-in-out infinite;
+        animation: petShimmer 5.8s cubic-bezier(.4, 0, .12, 1) infinite;
       }
       .card:hover:not(.replying) .preview,
       body.hovering .card:not(.replying) .preview { display: none; }
@@ -246,10 +271,10 @@ function getPetWindowHtml() {
       .idle .spinner { display: none; }
       @keyframes spin { to { transform: rotate(360deg); } }
       @keyframes petShimmer {
-        0% { background-position: 180% 50%; }
-        18% { background-position: 180% 50%; }
-        58% { background-position: -20% 50%; }
-        100% { background-position: -180% 50%; }
+        0% { background-position: 260% 50%, 0 0; }
+        22% { background-position: 260% 50%, 0 0; }
+        70% { background-position: -260% 50%, 0 0; }
+        100% { background-position: -260% 50%, 0 0; }
       }
       .reply-area {
         display: none;
@@ -516,9 +541,11 @@ function clearBootRetry() {
 
 async function showSplashScreen() {
   if (!mainWindow || mainWindow.isDestroyed()) return;
+  const theme = readNativeTheme();
 
+  applySplashWindowTheme(theme);
   await mainWindow.loadFile(path.join(__dirname, 'splash.html'), {
-    query: { theme: readNativeTheme() },
+    query: { theme },
   });
   if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
     mainWindow.show();
@@ -702,6 +729,7 @@ async function bootApp(options = {}) {
 
     if (bootId === activeBootId && mainWindow && !mainWindow.isDestroyed()) {
       await playSplashExit();
+      applyNativeWindowTheme(readNativeTheme());
       await mainWindow.loadURL(target);
     }
   } catch (error) {

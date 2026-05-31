@@ -35,6 +35,7 @@ interface FileRecord {
   contentPreview: string; // First 150 chars of content
   sizeBytes: number;
   timestamp: number;
+  absolutePath?: string; // Explicit absolute path on disk
 }
 
 export interface SessionState {
@@ -463,85 +464,335 @@ export class SessionStateManager {
     return this.state.lastAgentOutput;
   }
 
-  /**
-   * Enable LONG-TASK MODE for this session.
-   * Session becomes immortal (30-day max instead of 72h idle).
-   */
-  public enableLongTaskMode(): void {
-    this.state.longTaskMode = true;
-    this.state.lastExtendedAt = Date.now();
-    this.state.extensionCount = (this.state.extensionCount ?? 0) + 1;
-    console.log(`[Session] 🚀 Long-task mode ENABLED — session immortal until task completion.`);
+  // ═══════════════════════════════════════════════════════════════
+  // CHAT-SCOPED API — Isolated Per-Chat Session Management
+  // ═══════════════════════════════════════════════════════════════
+
+  /** Resolve state for a specific chat — checks active cache, falls back to this.state if it matches */
+  public getStateForChat(chatId: string): SessionState {
+    if (this.currentProjectId === chatId) return this.state;
+    const cached = this.activeChatSessions.get(chatId);
+    if (cached) return cached;
+    return { ...EMPTY_STATE, createdAt: Date.now(), lastActivityAt: Date.now(), boundChatId: chatId, messageCount: 0 };
+  }
+
+  /** Resolve or initialize state for a specific chat and ensure it's in the cache */
+  private getOrCreateStateForChat(chatId: string): SessionState {
+    if (this.currentProjectId === chatId) return this.state;
+    let cached = this.activeChatSessions.get(chatId);
+    if (!cached) {
+      cached = {
+        callHistory: [],
+        writtenFiles: [],
+        fileRecords: [],
+        loadedSkills: [],
+        taskDecomposerUsed: false,
+        toolCallCounts: {},
+        lastUserMessage: '',
+        actionSummary: [],
+        lastAgentOutput: '',
+        taskPlanSteps: [],
+        lastActivityAt: Date.now(),
+        createdAt: Date.now(),
+        messageCount: 0,
+        boundChatId: chatId,
+        toolResultDigest: [],
+      };
+      this.activeChatSessions.set(chatId, cached);
+    }
+    return cached;
+  }
+
+  /** Get the last user message for a SPECIFIC chat */
+  public getLastUserMessageForChat(chatId: string): string {
+    return this.getStateForChat(chatId).lastUserMessage;
+  }
+
+  /** Get the agent's last output for a SPECIFIC chat */
+  public getLastAgentOutputForChat(chatId: string): string {
+    return this.getStateForChat(chatId).lastAgentOutput;
+  }
+
+  /** Set the last user message for a SPECIFIC chat */
+  public setLastUserMessageForChat(chatId: string, message: string): void {
+    const state = this.getOrCreateStateForChat(chatId);
+    state.lastUserMessage = message;
+    this.rememberActiveSession(chatId, state);
+  }
+
+  /** Set the agent's last output for a SPECIFIC chat */
+  public setLastAgentOutputForChat(chatId: string, output: string): void {
+    const state = this.getOrCreateStateForChat(chatId);
+    state.lastAgentOutput = output.substring(0, 1500);
+    this.rememberActiveSession(chatId, state);
+  }
+
+  /** Get session summary for a SPECIFIC chat — NEVER leaks other chats' data */
+  public getSessionSummaryForChat(chatId: string): string {
+    const state = this.getStateForChat(chatId);
+    return this.buildSummaryFromState(state);
+  }
+
+  /** Check if a SPECIFIC chat has an active session */
+  public hasActiveSessionForChat(chatId: string): boolean {
+    const state = this.getStateForChat(chatId);
+    return state.callHistory.length > 0 ||
+      state.fileRecords.length > 0 ||
+      state.actionSummary.length > 0 ||
+      state.toolResultDigest.length > 0 ||
+      !!state.lastAgentOutput ||
+      state.taskPlanSteps.length > 0;
+  }
+
+  /** Hydrate ReAct loop state for a SPECIFIC chat */
+  public hydrateForChat(chatId: string): ReturnType<SessionStateManager['hydrate']> {
+    const state = this.getStateForChat(chatId);
+    return {
+      callHistory: new Set(state.callHistory),
+      writtenFiles: new Set(state.writtenFiles),
+      loadedSkills: new Set(state.loadedSkills),
+      taskDecomposerUsed: state.taskDecomposerUsed,
+      toolCallCounts: new Map(Object.entries(state.toolCallCounts)),
+      toolResultDigest: [...state.toolResultDigest],
+    };
+  }
+
+  /** Update loop state for a SPECIFIC chat */
+  public updateFromLoopForChat(chatId: string, partial: {
+    callHistory: Set<string>;
+    writtenFiles: Set<string>;
+    loadedSkills: Set<string>;
+    taskDecomposerUsed: boolean;
+    toolCallCounts: Map<string, number>;
+    toolResultDigest?: Array<{ tool: string; args: string; result: string; iteration: number }>;
+  }): void {
+    const state = this.getOrCreateStateForChat(chatId);
+    if (partial.callHistory) state.callHistory = Array.from(partial.callHistory);
+    if (partial.writtenFiles) state.writtenFiles = Array.from(partial.writtenFiles);
+    if (partial.loadedSkills) state.loadedSkills = Array.from(partial.loadedSkills);
+    if (partial.taskDecomposerUsed !== undefined) state.taskDecomposerUsed = partial.taskDecomposerUsed;
+    if (partial.toolCallCounts) state.toolCallCounts = Object.fromEntries(partial.toolCallCounts);
+    if (partial.toolResultDigest) state.toolResultDigest = [...partial.toolResultDigest];
+    
+    // Trim
+    state.callHistory = state.callHistory.slice(-MAX_CALL_HISTORY);
+    state.writtenFiles = state.writtenFiles.slice(-MAX_WRITTEN_FILES);
+    state.loadedSkills = state.loadedSkills.slice(-MAX_LOADED_SKILLS);
+    state.toolResultDigest = state.toolResultDigest.slice(-MAX_TOOL_RESULT_DIGEST);
+    
+    this.rememberActiveSession(chatId, state);
+  }
+
+  /** Self-review for a SPECIFIC chat */
+  public async selfReviewForChat(chatId: string): Promise<string> {
+    const state = this.getStateForChat(chatId);
+    if (state.fileRecords.length === 0) return '';
+    // Temporarily swap state for selfReview, then restore
+    const originalState = this.state;
+    this.state = state;
+    const result = await this.selfReview();
+    this.state = originalState;
+    return result;
+  }
+
+  /** Enable LONG-TASK MODE for a specific chat */
+  public enableLongTaskModeForChat(chatId: string): void {
+    const state = this.getOrCreateStateForChat(chatId);
+    state.longTaskMode = true;
+    state.lastExtendedAt = Date.now();
+    state.extensionCount = (state.extensionCount ?? 0) + 1;
+    console.log(`[Session] 🚀 Long-task mode ENABLED for chat ${chatId.substring(0, 8)} — session immortal until task completion.`);
     this.debouncedSave();
   }
 
-  /** Disable long-task mode, return to 72h idle timeout. */
-  public disableLongTaskMode(): void {
-    this.state.longTaskMode = false;
-    console.log(`[Session] ⏱ Long-task mode disabled. Normal timeout restored.`);
+  /** Disable long-task mode for a specific chat */
+  public disableLongTaskModeForChat(chatId: string): void {
+    const state = this.getOrCreateStateForChat(chatId);
+    state.longTaskMode = false;
+    console.log(`[Session] ⏱ Long-task mode disabled for chat ${chatId.substring(0, 8)}. Normal timeout restored.`);
     this.debouncedSave();
   }
 
-  /** Returns true if this session is in long-task mode (never auto-expires). */
-  public isLongTaskMode(): boolean {
-    return !!this.state.longTaskMode;
+  /** Returns true if a specific chat is in long-task mode */
+  public isLongTaskModeForChat(chatId: string): boolean {
+    return !!this.getOrCreateStateForChat(chatId).longTaskMode;
   }
 
-  /**
-   * Extend session lifetime. Call on every tool execution.
-   * Resets idle timer. In long-task mode session never expires anyway.
-   * Saves every 10 extensions to avoid excessive disk writes.
-   */
-  public extendSession(): void {
-    this.state.lastActivityAt = Date.now();
-    this.state.lastExtendedAt = Date.now();
-    this.state.extensionCount = (this.state.extensionCount ?? 0) + 1;
-    if ((this.state.extensionCount % 10) === 0) {
+  /** Extend session lifetime for a specific chat */
+  public extendSessionForChat(chatId: string): void {
+    const state = this.getOrCreateStateForChat(chatId);
+    state.lastActivityAt = Date.now();
+    state.lastExtendedAt = Date.now();
+    state.extensionCount = (state.extensionCount ?? 0) + 1;
+    if ((state.extensionCount % 10) === 0) {
       this.debouncedSave();
     }
   }
 
-  /**
-   * Track a file with rich metadata — what was done and why.
-   * Called from the ReAct loop when workspace_write_file or workspace_edit_file succeeds.
-   */
-  public trackFile(filename: string, action: 'created' | 'edited' | 'deleted', purpose: string, content?: string): void {
-    // Remove existing record for this file (update in place)
-    this.state.fileRecords = this.state.fileRecords.filter(r => r.filename !== filename);
+  /** Track a file with rich metadata for a specific chat */
+  public trackFileForChat(chatId: string, filename: string, action: 'created' | 'edited' | 'deleted', purpose: string, content?: string): void {
+    const absolutePath = path.isAbsolute(filename) ? path.normalize(filename) : path.resolve(process.cwd(), filename);
+    const normalizedAbs = absolutePath.replace(/\\/g, '/');
+    const relativeFilename = path.relative(process.cwd(), absolutePath).replace(/\\/g, '/');
 
-    this.state.fileRecords.push({
-      filename,
+    const state = this.getOrCreateStateForChat(chatId);
+    state.fileRecords = state.fileRecords.filter(r => r.filename !== filename && r.filename !== normalizedAbs && r.filename !== relativeFilename);
+    state.fileRecords.push({
+      filename: relativeFilename,
       action,
       purpose: purpose.substring(0, 100),
       contentPreview: (content || '').substring(0, 150).replace(/\n/g, ' '),
       sizeBytes: content ? content.length : 0,
       timestamp: Date.now(),
+      absolutePath: normalizedAbs
     });
-
-    // Cap at 15 most recent file records
-    if (this.state.fileRecords.length > 15) {
-      this.state.fileRecords = this.state.fileRecords.slice(-15);
+    if (state.fileRecords.length > 15) {
+      state.fileRecords = state.fileRecords.slice(-15);
     }
   }
 
-  /**
-   * Store the current task plan steps for progress tracking.
-   */
+  /** Store the current task plan steps for progress tracking in a specific chat */
+  public setTaskPlanForChat(chatId: string, steps: Array<{ name: string; status: 'pending' | 'done'; description?: string }>): void {
+    const state = this.getOrCreateStateForChat(chatId);
+    state.taskPlanSteps = steps.slice(0, 20); // Cap at 20 steps
+  }
+
+  /** Add a human-readable action summary entry for a specific chat */
+  public addActionForChat(chatId: string, action: string): void {
+    const state = this.getOrCreateStateForChat(chatId);
+    state.actionSummary.push(action);
+    if (state.actionSummary.length > 15) {
+      state.actionSummary = state.actionSummary.slice(-15);
+    }
+  }
+
+  /** Increment message count for a specific chat */
+  public incrementMessageCountForChat(chatId: string): void {
+    const state = this.getOrCreateStateForChat(chatId);
+    state.messageCount = (state.messageCount || 0) + 1;
+  }
+
+  /** Get the current message count for a specific chat */
+  public getMessageCountForChat(chatId: string): number {
+    return this.getStateForChat(chatId).messageCount || 0;
+  }
+
+  /** Get the human-readable action summary for a specific chat */
+  public getActionsForChat(chatId: string): string[] {
+    return this.getStateForChat(chatId).actionSummary || [];
+  }
+
+  /** Build summary from any state object (shared logic for both global and per-chat) */
+  private buildSummaryFromState(state: SessionState): string {
+    if (
+      state.actionSummary.length === 0 &&
+      state.fileRecords.length === 0 &&
+      state.toolResultDigest.length === 0 &&
+      state.taskPlanSteps.length === 0 &&
+      !state.lastAgentOutput &&
+      !state.lastUserMessage
+    ) {
+      return '';
+    }
+
+    const parts: string[] = [];
+
+    if (state.lastUserMessage) {
+      parts.push(`Previous task: "${ state.lastUserMessage.substring(0, 120) }"`);
+    }
+
+    if (state.fileRecords.length > 0) {
+      const fileSummary = state.fileRecords.slice(-8).map(r =>
+        `  • ${ r.filename } (${ r.action }) — Location: ${ r.absolutePath || r.filename } — Purpose: ${ r.purpose || r.contentPreview || 'no description' }`
+      ).join('\n');
+      parts.push(`Files in this session:\n${ fileSummary }`);
+    }
+
+    if (state.loadedSkills.length > 0) {
+      parts.push(`Skills loaded: ${ state.loadedSkills.join(', ') } (DO NOT reload)`);
+    }
+
+    if (state.taskDecomposerUsed) {
+      parts.push(`Task decomposer already used (DO NOT call again)`);
+    }
+
+    if (state.taskPlanSteps.length > 0) {
+      const done = state.taskPlanSteps.filter(s => s.status === 'done').length;
+      const total = state.taskPlanSteps.length;
+      const pending = state.taskPlanSteps.filter(s => s.status === 'pending');
+      parts.push(`Task plan: ${ done }/${ total } steps done${ pending.length > 0 ? `. Next: "${ pending[0].name }"` : ' — ALL COMPLETE' }`);
+    }
+
+    if (state.actionSummary.length > 0) {
+      const recent = state.actionSummary.slice(-6);
+      parts.push(`Recent actions:\n${ recent.map((a, i) => `  ${ i + 1 }. ${ a }`).join('\n') }`);
+    }
+
+    const digest = (state.toolResultDigest || []).slice(-10);
+    if (digest.length > 0) {
+      const toolDigestSummary = digest.map((entry, index) => {
+        const args = String(entry.args || '').replace(/\s+/g, ' ').substring(0, 90);
+        const result = String(entry.result || '').replace(/\s+/g, ' ').substring(0, 220);
+        return `  ${ index + 1 }. ${ entry.tool }(${ args }) -> ${ result }`;
+      }).join('\n');
+      parts.push(`Recent tool evidence already gathered:\n${ toolDigestSummary }`);
+    }
+
+    if (state.lastAgentOutput) {
+      parts.push(`Last agent output: "${ state.lastAgentOutput.substring(0, 150) }"`);
+    }
+
+    if (parts.length === 0) return '';
+
+    return [
+      '',
+      '\u2501\u2501\u2501 AGENT SELF-AWARENESS (ALWAYS ACTIVE — EVERY SINGLE MESSAGE) \u2501\u2501\u2501',
+      ...parts,
+      '',
+      '\u26a1 IRON RULES — NON-NEGOTIABLE, EVERY MESSAGE:',
+      '  \u2022 NEVER re-create, re-download, re-profile, or re-inspect anything listed above.',
+      '  \u2022 File listed above = it EXISTS. Do NOT create it again. Do NOT check if it needs creation.',
+      '  \u2022 Tool evidence above = those commands ALREADY RAN. Do NOT re-run them.',
+      '  \u2022 Your ONLY valid job is the NEXT MISSING step — not redoing completed work.',
+      '  \u2022 Final deliverable (Excel/PDF/report) NOT in files list? \u2192 CREATE IT NOW as first action.',
+      '  \u2022 Any message (continue/cont/next/go/more) \u2192 resume from LAST PENDING STEP, not from scratch.',
+      '  \u2022 NEVER start an unrelated task when active work context exists above.',
+      '\u2501\u2501\u2501 END SELF-AWARENESS \u2501\u2501\u2501',
+    ].join('\n');
+  }
+
+  // ── Backward Compatible Fallbacks (Delegating to Active/Bound Chat) ──
+
+  public enableLongTaskMode(): void {
+    this.enableLongTaskModeForChat(this.currentProjectId || this.state.boundChatId || '');
+  }
+
+  public disableLongTaskMode(): void {
+    this.disableLongTaskModeForChat(this.currentProjectId || this.state.boundChatId || '');
+  }
+
+  public isLongTaskMode(): boolean {
+    return this.isLongTaskModeForChat(this.currentProjectId || this.state.boundChatId || '');
+  }
+
+  public extendSession(): void {
+    this.extendSessionForChat(this.currentProjectId || this.state.boundChatId || '');
+  }
+
+  public trackFile(filename: string, action: 'created' | 'edited' | 'deleted', purpose: string, content?: string): void {
+    this.trackFileForChat(this.currentProjectId || this.state.boundChatId || '', filename, action, purpose, content);
+  }
+
   public setTaskPlan(steps: Array<{ name: string; status: 'pending' | 'done'; description?: string }>): void {
-    this.state.taskPlanSteps = steps.slice(0, 20); // Cap at 20 steps
+    this.setTaskPlanForChat(this.currentProjectId || this.state.boundChatId || '', steps);
   }
 
-  /** Add a human-readable action summary entry. */
   public addAction(action: string): void {
-    this.state.actionSummary.push(action);
-    if (this.state.actionSummary.length > 15) {
-      this.state.actionSummary = this.state.actionSummary.slice(-15);
-    }
+    this.addActionForChat(this.currentProjectId || this.state.boundChatId || '', action);
   }
 
-  /** Get the human-readable action summary. */
   public getActions(): string[] {
-    return this.state.actionSummary || [];
+    return this.getActionsForChat(this.currentProjectId || this.state.boundChatId || '');
   }
 
   /**

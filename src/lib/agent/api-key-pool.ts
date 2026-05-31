@@ -7,6 +7,15 @@
  * 3. LEASE SYSTEM: Keys are "leased" to a chatId. When the chat finishes, the key is returned to the pool
  * 4. FAIR ROTATION: Keys with fewer total uses get priority (load balancing)
  * 5. HEALTH TRACKING: Failed keys are skipped immediately without timer-based waiting
+/**
+ * Smart API Key Pool — Collision-Free Key Assignment with Auto-Failover
+ * 
+ * This is the brain of parallel agent execution. It solves:
+ * 1. NO COLLISIONS: Each chat/agent gets a key that nobody else is currently using
+ * 2. AUTO-FAILOVER: If a key fails (429, 403, etc.), the system auto-swaps to an unused key
+ * 3. LEASE SYSTEM: Keys are "leased" to a chatId. When the chat finishes, the key is returned to the pool
+ * 4. FAIR ROTATION: Keys with fewer total uses get priority (load balancing)
+ * 5. HEALTH TRACKING: Failed keys are skipped immediately without timer-based waiting
  * 6. PARALLEL CAPACITY: With 27 keys, easily supports 4-8+ simultaneous agents
  * 
  * Architecture:
@@ -579,6 +588,12 @@ class APIKeyPool {
 }
 
 // ═══════════════════════════════════════════
-// GLOBAL SINGLETON — One pool for the entire app
+// PROCESS-GLOBAL SINGLETON — One pool for the entire app
 // ═══════════════════════════════════════════
-export const apiKeyPool = new APIKeyPool();
+const globalForAPIKeyPool = globalThis as typeof globalThis & {
+  __eterxAPIKeyPool?: APIKeyPool;
+};
+
+export const apiKeyPool =
+  globalForAPIKeyPool.__eterxAPIKeyPool ||
+  (globalForAPIKeyPool.__eterxAPIKeyPool = new APIKeyPool());

@@ -158,7 +158,7 @@ export function useCustomAgent() {
                 setState(prev => ({ ...prev, agentName: event.agentName || prev.agentName }));
                 setTraceLogs(prev => [...prev, {
                   id: `ca-st-${Date.now()}`,
-                  type: 'work_note',
+                  type: 'thought_stream',
                   text: event.text || '',
                   agentName: event.agentName,
                   timestamp: event.timestamp,

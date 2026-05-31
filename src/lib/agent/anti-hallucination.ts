@@ -60,6 +60,8 @@ const FILE_PATH_PATTERNS: RegExp[] = [
   /([A-Za-z]:[\\\/](?:[\w .@-]+[\\\/])*[\w .@-]+\.\w{1,10})/g,
   // Quoted filenames with common extensions: "something.ts", 'report.xlsx'
   /["'`]([\w./@\\-]+\.(?:ts|tsx|js|jsx|py|rs|go|java|c|cpp|h|hpp|css|scss|html|json|yaml|yml|toml|md|txt|csv|xlsx|pdf|sql|sh|bat|ps1|vue|svelte))["'`]/gi,
+  // Plain filenames with common extensions: app.js, index.ts
+  /\b([\w-]+\.(?:ts|tsx|js|jsx|py|rs|go|java|c|cpp|h|hpp|css|scss|html|json|yaml|yml|toml|md|txt|csv|xlsx|pdf|sql|sh|bat|ps1|vue|svelte))\b/gi,
 ];
 
 /** Words that indicate hedging / guessing */
@@ -119,9 +121,11 @@ function extractErrorFromResult(result: any): string | null {
     }
     return null;
   }
-  if (result.error) return String(result.error).substring(0, 300);
-  if (result._retryFailed) return String(result._retryFailed).substring(0, 300);
-  if (result.stderr && !result.stdout && (result.exitCode !== 0 && result.exitCode !== null)) {
+  const exitCode = extractExitCode(result);
+  if (exitCode !== null && exitCode !== 0) {
+    return String(result.stderr || result.stdout || `Command failed with exit code ${exitCode}`).substring(0, 300);
+  }
+  if (result.stderr && !result.stdout) {
     return String(result.stderr).substring(0, 300);
   }
   return null;
@@ -137,7 +141,17 @@ function extractExitCode(result: any): number | null {
 
 function workNoteLooksLikeSuccess(note: string): boolean {
   const lower = note.toLowerCase();
-  return SUCCESS_CLAIM_PATTERNS.some(p => p.test(lower));
+  for (const pattern of SUCCESS_CLAIM_PATTERNS) {
+    pattern.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(lower)) !== null) {
+      const matchIdx = match.index;
+      const context = lower.substring(Math.max(0, matchIdx - 25), matchIdx);
+      const isNeg = /\b(not|never|no|failed|unable|cannot|can't|didn't|haven't|hasn't|hadn't|couldn't|without|stop|stopped)\b/.test(context);
+      if (!isNeg) return true;
+    }
+  }
+  return false;
 }
 
 function workNoteLooksLikeAction(note: string, actionVerb: string): boolean {
@@ -181,10 +195,19 @@ function filePathsMatch(mentioned: string, actual: string): boolean {
 
 function extractActionClaims(text: string): string[] {
   const claims: string[] = [];
-  ACTION_CLAIM_REGEX.lastIndex = 0;
-  let match: RegExpExecArray | null;
-  while ((match = ACTION_CLAIM_REGEX.exec(text)) !== null) {
-    claims.push(match[1].toLowerCase().replace(/\s+/g, '_'));
+  const lines = text.split('\n');
+  for (const line of lines) {
+    ACTION_CLAIM_REGEX.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = ACTION_CLAIM_REGEX.exec(line)) !== null) {
+      const verb = match[1].toLowerCase().replace(/\s+/g, '_');
+      const matchIdx = match.index;
+      const context = line.substring(Math.max(0, matchIdx - 30), matchIdx).toLowerCase();
+      const isNeg = /\b(not|never|no|failed|unable|cannot|can't|didn't|haven't|hasn't|hadn't|couldn't|without)\b/.test(context);
+      if (!isNeg) {
+        claims.push(verb);
+      }
+    }
   }
   return claims;
 }
@@ -318,7 +341,18 @@ class AntiHallucinationGuard {
 
         // Get surrounding context (200 chars before the path mention)
         const contextBefore = answer.substring(Math.max(0, mentionedIdx - 200), mentionedIdx).toLowerCase();
-        const claimsCreation = /\b(created|wrote|generated|saved|built|produced|output)\b/.test(contextBefore);
+        let claimsCreation = false;
+        const creationRegex = /\b(created|wrote|generated|saved|built|produced|output)\b/gi;
+        let cMatch: RegExpExecArray | null;
+        while ((cMatch = creationRegex.exec(contextBefore)) !== null) {
+          const matchIdx = cMatch.index;
+          const preContext = contextBefore.substring(Math.max(0, matchIdx - 25), matchIdx);
+          const isNeg = /\b(not|never|no|failed|unable|cannot|can't|didn't|haven't|hasn't|hadn't|couldn't|without)\b/.test(preContext);
+          if (!isNeg) {
+            claimsCreation = true;
+            break;
+          }
+        }
 
         if (!claimsCreation) continue; // Not claiming creation — skip
 
@@ -334,7 +368,7 @@ class AntiHallucinationGuard {
 
       // ── Check B: Action claims without supporting tool evidence ──
       const actionClaims = extractActionClaims(answer);
-      const digestStr = toolResultDigest.map(d => `${d.tool}:${d.result}`).join(' ').toLowerCase();
+      const digestStr = toolResultDigest.map(d => `${d.tool}:${(d.result || '').substring(0, 2000)}`).join(' ').toLowerCase();
       const commandsStr = commandsRun.join(' ').toLowerCase();
       const evidenceStr = `${digestStr} ${commandsStr}`;
 
@@ -371,8 +405,8 @@ class AntiHallucinationGuard {
                           evidenceStr.includes('kill') || evidenceStr.includes('server');
             break;
           default:
-            // For created/wrote/edited/updated/etc — check file ledger
-            hasEvidence = filesCreated.size > 0 || evidenceStr.includes(claim);
+            // For created/wrote/edited/updated/etc — check file ledger or file write tool calls
+            hasEvidence = filesCreated.size > 0 || toolResultDigest.some(d => FILE_WRITE_TOOLS.has(d.tool)) || evidenceStr.includes(claim);
             break;
         }
 
