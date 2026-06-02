@@ -14,6 +14,288 @@ import { AGENT_ICONS, resolveAgentIcon, AgentAssetIcon } from './agent-icons';
 import { AgentFace } from './agent-face';
 
 
+type RevealSpeed = {
+  baseDelayMs: number;
+  lineDelayMs: number;
+  tableDelayMs: number;
+  punctuationDelayMs: number;
+  burst: number;
+  maxDurationMs: number;
+};
+
+const TEXT_REVEAL_SPEEDS = {
+  workNote: {
+    baseDelayMs: 15,
+    lineDelayMs: 22,
+    tableDelayMs: 28,
+    punctuationDelayMs: 24,
+    burst: 2,
+    maxDurationMs: 620,
+  },
+  answer: {
+    baseDelayMs: 12,
+    lineDelayMs: 18,
+    tableDelayMs: 24,
+    punctuationDelayMs: 22,
+    burst: 3,
+    maxDurationMs: 2400,
+  },
+} satisfies Record<'workNote' | 'answer', RevealSpeed>;
+
+const markdownRevealChunkPattern = /(```[\s\S]*?```|~~~[\s\S]*?~~~)/g;
+const fenceStartPattern = /^ {0,3}(`{3,}|~{3,})/;
+
+const splitWordsWithSpacing = (value: string) => {
+  const matches = value.match(/\S+\s*/g);
+  return matches && matches.length > 0 ? matches : value ? [value] : [];
+};
+
+const hasOpenInlineMarkdown = (value: string) => {
+  const sanitized = value.replace(/\\./g, '');
+  const backticks = sanitized.match(/`/g)?.length || 0;
+  if (backticks % 2 === 1) return true;
+
+  const boldA = sanitized.match(/\*\*/g)?.length || 0;
+  const boldB = sanitized.match(/__/g)?.length || 0;
+  if (boldA % 2 === 1 || boldB % 2 === 1) return true;
+
+  const lastOpenBracket = Math.max(sanitized.lastIndexOf('['), sanitized.lastIndexOf('!['));
+  const lastCloseBracket = sanitized.lastIndexOf(']');
+  if (lastOpenBracket > lastCloseBracket) return true;
+
+  const lastLinkOpen = sanitized.lastIndexOf('](');
+  const lastParenClose = sanitized.lastIndexOf(')');
+  return lastLinkOpen > lastParenClose;
+};
+
+const pushProseRevealChunks = (line: string, chunks: string[], completeLine: boolean) => {
+  let buffered = '';
+
+  splitWordsWithSpacing(line).forEach((word) => {
+    if (buffered) {
+      buffered += word;
+      if (!hasOpenInlineMarkdown(buffered)) {
+        chunks.push(buffered);
+        buffered = '';
+      }
+      return;
+    }
+
+    if (hasOpenInlineMarkdown(word)) {
+      buffered = word;
+      return;
+    }
+
+    chunks.push(word);
+  });
+
+  if (buffered && completeLine) {
+    chunks.push(buffered);
+  }
+};
+
+const isTableLine = (line: string) => {
+  const trimmed = line.trim();
+  if (!trimmed.includes('|')) return false;
+  if (/^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$/.test(trimmed)) return true;
+  return /^\|.+\|$/.test(trimmed) || trimmed.split('|').length >= 3;
+};
+
+const isTableSeparatorLine = (line: string) =>
+  /^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$/.test(line.trim());
+
+const isFenceCloseLine = (line: string, openingFence: string) => {
+  const char = openingFence[0];
+  const escaped = char === '`' ? '`' : '~';
+  const pattern = new RegExp(`^ {0,3}${escaped}{${openingFence.length},}\\s*$`);
+  return pattern.test(line.trimEnd());
+};
+
+const isHeadingLine = (line: string) => /^ {0,3}#{1,6}\s+\S/.test(line);
+const isListLine = (line: string) => /^ {0,3}(?:[-+*]|\d{1,2}[.)])\s+\S/.test(line);
+const isBlockquoteLine = (line: string) => /^ {0,3}>\s?/.test(line);
+const isRuleLine = (line: string) => /^ {0,3}(?:-{3,}|\*{3,}|_{3,})\s*$/.test(line.trimEnd());
+const isDisplayMathBoundary = (line: string) => line.trim() === '$$';
+
+const tokenizeMarkdownForReveal = (value: string) => {
+  if (!value) return [];
+  const chunks: string[] = [];
+  const parts = value.split(markdownRevealChunkPattern).filter(Boolean);
+
+  parts.forEach((part) => {
+    if (/^(```|~~~)/.test(part)) {
+      chunks.push(part);
+      return;
+    }
+
+    const lines = part.split(/(?<=\n)/);
+    for (let i = 0; i < lines.length; i += 1) {
+      const line = lines[i];
+      if (!line) continue;
+      const nextLine = lines[i + 1] || '';
+      const isCompleteLine = line.endsWith('\n');
+      const fenceMatch = line.match(fenceStartPattern);
+
+      if (fenceMatch) {
+        let block = line;
+        let closed = false;
+        for (let j = i + 1; j < lines.length; j += 1) {
+          block += lines[j];
+          if (isFenceCloseLine(lines[j], fenceMatch[1])) {
+            closed = true;
+            i = j;
+            break;
+          }
+        }
+        if (closed) chunks.push(block);
+        else break;
+        continue;
+      }
+
+      if (isDisplayMathBoundary(line)) {
+        let block = line;
+        let closed = false;
+        for (let j = i + 1; j < lines.length; j += 1) {
+          block += lines[j];
+          if (isDisplayMathBoundary(lines[j])) {
+            closed = true;
+            i = j;
+            break;
+          }
+        }
+        if (closed) chunks.push(block);
+        else break;
+        continue;
+      }
+
+      if (isTableLine(line) && isTableSeparatorLine(nextLine)) {
+        chunks.push(line + nextLine);
+        i += 1;
+        continue;
+      }
+
+      if (isTableLine(line) && (isTableSeparatorLine(line) || isTableLine(lines[i - 1] || ''))) {
+        chunks.push(line);
+        continue;
+      }
+
+      if (isTableLine(line)) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith('|') || trimmed.endsWith('|')) continue;
+      }
+
+      if (isHeadingLine(line) || isListLine(line) || isBlockquoteLine(line) || isRuleLine(line)) {
+        if (!isCompleteLine) break;
+        chunks.push(line);
+        continue;
+      }
+
+      pushProseRevealChunks(line, chunks, isCompleteLine);
+    }
+  });
+
+  return chunks;
+};
+
+const getRevealDelay = (chunk: string, speed: RevealSpeed) => {
+  if (isTableLine(chunk)) return speed.tableDelayMs;
+  if (chunk.includes('\n')) return speed.lineDelayMs;
+  if (/[.!?;:]\s*$/.test(chunk.trim())) return speed.punctuationDelayMs;
+  return speed.baseDelayMs;
+};
+
+const usePrefersReducedMotion = (active: boolean) => {
+  const [reduced, setReduced] = useState(false);
+
+  useEffect(() => {
+    if (!active) {
+      setReduced(false);
+      return;
+    }
+    if (typeof window === 'undefined' || !window.matchMedia) return;
+    const media = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const sync = () => setReduced(media.matches);
+    sync();
+    media.addEventListener?.('change', sync);
+    return () => media.removeEventListener?.('change', sync);
+  }, [active]);
+
+  return reduced;
+};
+
+const useProgressiveMarkdown = (value: string, enabled: boolean, speed: RevealSpeed) => {
+  const reducedMotion = usePrefersReducedMotion(enabled);
+  const chunks = useMemo(() => tokenizeMarkdownForReveal(value), [value]);
+  const previousValueRef = useRef(value);
+  const [visibleCount, setVisibleCount] = useState(() => enabled && !reducedMotion ? 0 : chunks.length);
+
+  useEffect(() => {
+    if (!enabled || reducedMotion) {
+      previousValueRef.current = value;
+      setVisibleCount(chunks.length);
+      return;
+    }
+
+    setVisibleCount((current) => {
+      const previousValue = previousValueRef.current;
+      previousValueRef.current = value;
+      if (!previousValue || value.startsWith(previousValue)) return Math.min(current, chunks.length);
+      return Math.min(current, chunks.length);
+    });
+  }, [chunks.length, enabled, reducedMotion, value]);
+
+  useEffect(() => {
+    if (!enabled || reducedMotion || visibleCount >= chunks.length) return;
+
+    const chunk = chunks[visibleCount] || '';
+    const durationBurst = Math.ceil((chunks.length * speed.baseDelayMs) / Math.max(speed.maxDurationMs, 1));
+    const isStructuralChunk = isTableLine(chunk) || chunk.includes('\n');
+    const burst = isStructuralChunk ? 1 : Math.max(speed.burst, durationBurst);
+    const timeout = window.setTimeout(() => {
+      setVisibleCount(current => Math.min(chunks.length, current + burst));
+    }, getRevealDelay(chunk, speed));
+
+    return () => window.clearTimeout(timeout);
+  }, [chunks, enabled, reducedMotion, speed, visibleCount]);
+
+  const visibleText = useMemo(() => chunks.slice(0, visibleCount).join(''), [chunks, visibleCount]);
+
+  return {
+    text: enabled && !reducedMotion ? visibleText : value,
+    isRevealing: enabled && !reducedMotion && visibleCount < chunks.length,
+  };
+};
+
+const AnswerWriterCursor = () => (
+  <span className="eterx-answer-writer-cursor" aria-hidden="true" />
+);
+
+const GhostCodeBlock = ({ inline, className, children, ...props }: any) => {
+  if (inline) {
+    return <code className="eterx-progressive-ghost-inline-code" {...props}>{children}</code>;
+  }
+
+  const content = String(children).replace(/\n$/, '');
+  const lineCount = Math.max(1, content.split(/\r?\n/).length);
+  const language = /language-([^\s]+)/.exec(className || '')?.[1]?.toLowerCase() || '';
+  const diagramLike = language === 'mermaid' || language === 'mmd' || /^(graph|flowchart|sequenceDiagram|classDiagram|stateDiagram|erDiagram|journey|gantt|pie|timeline|mindmap)\b/i.test(content.trim());
+  const minHeight = diagramLike
+    ? Math.max(20, lineCount * 1.45 + 6)
+    : lineCount * 1.7 + 2.6;
+  return (
+    <pre
+      className="eterx-progressive-ghost-code"
+      style={{ minHeight: `${minHeight}em` }}
+    >
+      <code>{content}</code>
+    </pre>
+  );
+};
+
+const GhostImage = () => (
+  <span className="eterx-progressive-ghost-image" aria-hidden="true" />
+);
+
 // Brand connector icons — compact SVGs
 const C = ({ d, fill, vb = '0 0 24 24', className }: { d: string, fill: string, vb?: string, className?: string }) => <svg className={className} viewBox={vb} fill={fill}><path d={d} /></svg>;
 const SlackIcon = ({ className }: any) => <svg className={className} viewBox="0 0 24 24" fill="#E01E5A"><path d="M5.042 15.165a2.528 2.528 0 0 1-2.52 2.523A2.528 2.528 0 0 1 0 15.165a2.527 2.527 0 0 1 2.522-2.52h2.52v2.52zM6.313 15.165a2.527 2.527 0 0 1 2.521-2.52 2.527 2.527 0 0 1 2.521 2.52v6.313A2.528 2.528 0 0 1 8.834 24a2.528 2.528 0 0 1-2.521-2.522v-6.313zM8.834 5.042a2.528 2.528 0 0 1-2.521-2.52A2.528 2.528 0 0 1 8.834 0a2.528 2.528 0 0 1 2.521 2.522v2.52H8.834zM8.834 6.313a2.528 2.528 0 0 1 2.521 2.521 2.528 2.528 0 0 1-2.521 2.521H2.522A2.528 2.528 0 0 1 0 8.834a2.528 2.528 0 0 1 2.522-2.521h6.312zM18.956 8.834a2.528 2.528 0 0 1 2.522-2.521A2.528 2.528 0 0 1 24 8.834a2.528 2.528 0 0 1-2.522 2.521h-2.522V8.834zM17.688 8.834a2.528 2.528 0 0 1-2.523 2.521 2.527 2.527 0 0 1-2.52-2.521V2.522A2.527 2.527 0 0 1 15.165 0a2.528 2.528 0 0 1 2.523 2.522v6.312zM15.165 18.956a2.528 2.528 0 0 1 2.523 2.522A2.528 2.528 0 0 1 15.165 24a2.527 2.527 0 0 1-2.52-2.522v-2.522h2.52zM15.165 17.688a2.527 2.527 0 0 1-2.52-2.523 2.526 2.526 0 0 1 2.52-2.52h6.313A2.527 2.527 0 0 1 24 15.165a2.528 2.528 0 0 1-2.522 2.523h-6.313z" /></svg>;
@@ -297,6 +579,44 @@ export const ProfessionalThought = ({ text, isLatest, isThinking, variant = 'tho
     : secs > 0
       ? `Thought for ${secs}s`
       : 'Thought';
+  const isNote = variant === 'note';
+  const revealEnabled = variant === 'answer'
+    ? isLatest && isThinking
+    : isNote && isLatest && isThinking;
+  const revealSpeed = isNote ? TEXT_REVEAL_SPEEDS.workNote : TEXT_REVEAL_SPEEDS.answer;
+  const progressive = useProgressiveMarkdown(renderText, revealEnabled, revealSpeed);
+  const markdownText = revealEnabled ? progressive.text : renderText;
+  const showAnswerWriter = variant === 'answer' && (progressive.isRevealing || (isLatest && isThinking));
+  const professionalMarkdownComponents = useMemo(() => ({
+    ...markdownComponents,
+    p: ({ node, ...props }: any) => <p className={`mb-1.5 last:mb-0 break-words tracking-normal ${ isNote ? 'leading-[1.62] text-[#B6B2AB]' : 'leading-[1.78] text-[#C4C1BC]' }`} {...props} />,
+    h1: ({ node, ...props }: any) => <h1 className="mt-0 mb-4 text-[24px] font-bold leading-tight text-[#C4C1BC]" {...props} />,
+    h2: ({ node, ...props }: any) => <h2 className="mt-0 mb-3 text-[20px] font-bold leading-tight text-[#C4C1BC]" {...props} />,
+    h3: ({ node, ...props }: any) => <h3 className="mt-0 mb-3 text-[17px] font-bold leading-tight text-[#C4C1BC]" {...props} />,
+    h4: ({ node, ...props }: any) => <h4 className="mt-0 mb-2 text-[15px] font-semibold leading-tight text-[#C4C1BC]" {...props} />,
+    h5: ({ node, ...props }: any) => <h5 className="mt-0 mb-2 text-[14px] font-semibold leading-tight text-[#B0ADA9]" {...props} />,
+    h6: ({ node, ...props }: any) => <h6 className="mt-0 mb-2 text-[13px] font-semibold leading-tight text-[#9C9893]" {...props} />,
+    strong: ({ node, ...props }: any) => <strong className="font-semibold text-[#D0CDC7]" {...props} />,
+    a: ({ node, ...props }: any) => <a className="text-[#E2765A] hover:underline" target="_blank" rel="noopener" {...props} />,
+  }), [isNote]);
+  const professionalGhostMarkdownComponents = useMemo(() => ({
+    ...professionalMarkdownComponents,
+    code: GhostCodeBlock,
+    img: GhostImage,
+  }), [professionalMarkdownComponents]);
+
+  const renderProfessionalMarkdown = (value: string, withWriter = false, ghost = false) => (
+    <>
+      <ReactMarkdown
+        remarkPlugins={remarkPlugins}
+        rehypePlugins={rehypePlugins}
+        components={ghost ? professionalGhostMarkdownComponents : professionalMarkdownComponents}
+      >
+        {value}
+      </ReactMarkdown>
+      {withWriter && <AnswerWriterCursor />}
+    </>
+  );
 
   if (variant === 'thought') {
     return (
@@ -345,26 +665,26 @@ export const ProfessionalThought = ({ text, isLatest, isThinking, variant = 'tho
     );
   }
 
-  const isNote = variant === 'note';
-
   return (
     <motion.div
-      layout
+      layout={isNote ? 'position' : false}
       initial={isNote ? { opacity: 0, y: 4 } : false}
       animate={isNote ? { opacity: 1, y: 0 } : undefined}
       transition={isNote ? { duration: 0.2, ease: [0.22, 1, 0.36, 1] } : undefined}
-      className={`professional-thought eterx-professional-thought relative w-full max-w-full font-sans font-normal selection:bg-[#E2765A]/20 select-text tracking-normal ${ isNote ? 'eterx-professional-note py-1 text-[15.5px] leading-[1.62] text-[#B6B2AB]' : 'eterx-professional-answer text-[15.5px] leading-[1.78] text-[#C4C1BC]' }`}
+      className={`professional-thought eterx-professional-thought relative w-full max-w-full font-sans font-normal selection:bg-[#E2765A]/20 select-text tracking-normal ${ progressive.isRevealing ? 'eterx-reveal-active' : '' } ${ isNote ? 'eterx-professional-note py-1 text-[15.5px] leading-[1.62] text-[#B6B2AB]' : 'eterx-professional-answer text-[15.5px] leading-[1.78] text-[#C4C1BC]' }`}
     >
-      <ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} components={{
-        ...markdownComponents,
-        p: ({ node, ...props }: any) => <p className={`mb-1.5 last:mb-0 break-words tracking-normal ${ isNote ? 'leading-[1.62] text-[#B6B2AB]' : 'leading-[1.78] text-[#C4C1BC]' }`} {...props} />,
-        h1: ({ node, ...props }: any) => <h1 className="mt-0 mb-4 text-[24px] font-bold leading-tight text-[#C4C1BC]" {...props} />,
-        h2: ({ node, ...props }: any) => <h2 className="mt-0 mb-3 text-[20px] font-bold leading-tight text-[#C4C1BC]" {...props} />,
-        h3: ({ node, ...props }: any) => <h3 className="mt-0 mb-3 text-[17px] font-bold leading-tight text-[#C4C1BC]" {...props} />,
-        h4: ({ node, ...props }: any) => <h4 className="mt-0 mb-2 text-[15px] font-semibold leading-tight text-[#C4C1BC]" {...props} />,
-        strong: ({ node, ...props }: any) => <strong className="font-semibold text-[#D0CDC7]" {...props} />,
-        a: ({ node, ...props }: any) => <a className="text-[#E2765A] hover:underline" target="_blank" rel="noopener" {...props} />,
-      }}>{renderText}</ReactMarkdown>
+      {revealEnabled ? (
+        <div className="eterx-progressive-markdown">
+          <div className="eterx-progressive-markdown-ghost" aria-hidden="true">
+            {renderProfessionalMarkdown(renderText, false, true)}
+          </div>
+          <div className="eterx-progressive-markdown-live">
+            {renderProfessionalMarkdown(markdownText, showAnswerWriter)}
+          </div>
+        </div>
+      ) : (
+        renderProfessionalMarkdown(markdownText, showAnswerWriter)
+      )}
       {suffix}
       <style>{`
         .professional-thought > :first-child { margin-top: 0 !important; }
@@ -1443,7 +1763,7 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
     <div ref={containerRef} className="eterx-thinking-process-stack w-full flex flex-col gap-1 py-0">
       {segs.map((seg, i) => {
         if (seg.kind === 'thought') return <ProfessionalThought key={`t-${ seg.idx }`} text={seg.log.text} isLatest={isLast && i === segs.length - 1 && !hasExternalLiveWork} isThinking={isThinking} startedAt={seg.log.startTime} updatedAt={seg.log.endTime} />;
-        if (seg.kind === 'note') return <ProfessionalThought key={`n-${ seg.idx }`} text={seg.log.text} isLatest={false} isThinking={false} variant="note" />;
+        if (seg.kind === 'note') return <ProfessionalThought key={`n-${ seg.idx }`} text={seg.log.text} isLatest={isLast && i === segs.length - 1 && !hasExternalLiveWork} isThinking={isThinking} variant="note" />;
         if (seg.kind === 'safety') return <SafetyBanner key={`sf-${ seg.idx }`} log={seg.log} />;
         if (seg.kind === 'steering') return <SteeringCard key={`steer-${ seg.idx }`} log={seg.log} />;
         if (seg.kind === 'subagent') return <SubAgentCard key={`sa-${ seg.idx }`} log={seg.log} onOpenAgentTeam={onOpenAgentTeam} />;

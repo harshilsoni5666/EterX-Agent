@@ -3,6 +3,7 @@ import { DM_Sans } from 'next/font/google';
 import './globals.css';
 import './light-theme.generated.css';
 import 'katex/dist/katex.min.css';
+import { ThemeBridge } from '../components/theme/theme-bridge';
 
 const dmSans = DM_Sans({
   subsets: ['latin'],
@@ -56,8 +57,9 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" className="light" data-theme="light" suppressHydrationWarning>
-      <body className={`${dmSans.variable} font-sans antialiased min-h-screen selection:bg-[#E2765A]/30 selection:text-white`}>
+      <body className={`${dmSans.variable} font-sans antialiased min-h-screen selection:bg-white/20 selection:text-white`}>
         <script id="eterx-theme-init" dangerouslySetInnerHTML={{ __html: themeInitScript }} />
+        <ThemeBridge />
         {children}
       </body>
     </html>

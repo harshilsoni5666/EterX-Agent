@@ -14,6 +14,7 @@
  */
 import { NextRequest } from 'next/server';
 import { AgentRunner } from '../../../../lib/agent/agent-runner';
+import { applyRuntimeApiKeys, applyRuntimeModelOverrides } from '../../../../lib/agent/runtime-api-keys';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -21,7 +22,9 @@ export const runtime = 'nodejs';
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { agentId, messages, model, temperature } = body;
+    const { agentId, messages, model, temperature, apiKeys, modelOverrides } = body;
+    const runtimeKeyResult = applyRuntimeApiKeys(apiKeys);
+    applyRuntimeModelOverrides(modelOverrides);
 
     if (!agentId || typeof agentId !== 'string') {
       return new Response(JSON.stringify({ error: 'agentId is required' }), { status: 400 });
@@ -48,6 +51,7 @@ export async function POST(req: NextRequest) {
             agentId,
             model: model || undefined,
             temperature: temperature || undefined,
+            preferredGeminiApiKey: runtimeKeyResult.preferredGeminiApiKey,
           })) {
             const line = JSON.stringify(event) + '\n';
             controller.enqueue(encoder.encode(line));

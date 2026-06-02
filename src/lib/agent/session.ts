@@ -38,6 +38,13 @@ interface FileRecord {
   absolutePath?: string; // Explicit absolute path on disk
 }
 
+export interface SessionHealth {
+  score: number;       // 0-100
+  staleness: number;   // how old the session is (hours)
+  complexity: number;  // tool calls / files ratio
+  warnings: string[];  // e.g., "high failure rate", "circular patterns"
+}
+
 export interface SessionState {
   /** Normalized tool call signatures that have been executed */
   callHistory: string[];
@@ -1035,6 +1042,160 @@ export class SessionStateManager {
     
     // Not cached — load from disk
     return this.loadForProject(chatId);
+  }
+
+  /**
+   * Intelligently merges the previous session state into the current session state
+   * when continuing/resuming across chats.
+   */
+  public intelligentMergeForChat(chatId: string, previousState: SessionState): void {
+    const currentState = this.getOrCreateStateForChat(chatId);
+    
+    // 1. Preserve file records and loaded skills (always valid)
+    const combinedFileRecords = [...previousState.fileRecords];
+    for (const cur of currentState.fileRecords) {
+      if (!combinedFileRecords.some(f => f.filename === cur.filename && f.timestamp === cur.timestamp)) {
+        combinedFileRecords.push(cur);
+      }
+    }
+    currentState.fileRecords = combinedFileRecords;
+
+    const skillsSet = new Set([...previousState.loadedSkills, ...currentState.loadedSkills]);
+    currentState.loadedSkills = Array.from(skillsSet);
+
+    const writtenSet = new Set([...previousState.writtenFiles, ...currentState.writtenFiles]);
+    currentState.writtenFiles = Array.from(writtenSet);
+
+    // 2. Filter tool results from previousState.toolResultDigest
+    // Keep file reads if they exist, and keep web searches if they are fresh (< 5 mins old)
+    const mergedDigest = [...currentState.toolResultDigest];
+    const fiveMinutesAgo = Date.now() - 5 * 60 * 1000;
+
+    for (const prev of previousState.toolResultDigest) {
+      if (mergedDigest.some(d => d.tool === prev.tool && d.args === prev.args && d.iteration === prev.iteration)) {
+        continue;
+      }
+
+      let keep = false;
+      const toolLower = prev.tool.toLowerCase();
+
+      if (toolLower.includes('read') || toolLower.includes('view') || toolLower.includes('search_text') || toolLower.includes('list_dir')) {
+        try {
+          const argsObj = JSON.parse(prev.args);
+          const filePath = argsObj.filename || argsObj.path || argsObj.pathKey;
+          if (filePath && fs.existsSync(path.resolve(filePath))) {
+            keep = true;
+          }
+        } catch {
+          // Silent catch
+        }
+      } else if (toolLower.includes('search') && !toolLower.includes('workspace')) {
+        if (previousState.lastActivityAt && previousState.lastActivityAt > fiveMinutesAgo) {
+          keep = true;
+        }
+      }
+
+      if (keep) {
+        mergedDigest.push(prev);
+      }
+    }
+
+    currentState.toolResultDigest = mergedDigest.slice(-MAX_TOOL_RESULT_DIGEST);
+
+    // 3. Merge toolCallCounts
+    const mergedCounts = { ...previousState.toolCallCounts };
+    for (const [tool, count] of Object.entries(currentState.toolCallCounts)) {
+      mergedCounts[tool] = (mergedCounts[tool] || 0) + count;
+    }
+    currentState.toolCallCounts = mergedCounts;
+
+    // 4. Merge call history
+    const historySet = new Set([...previousState.callHistory, ...currentState.callHistory]);
+    currentState.callHistory = Array.from(historySet).slice(-MAX_CALL_HISTORY);
+
+    // 5. Merge task plan steps
+    if (currentState.taskPlanSteps.length === 0 && previousState.taskPlanSteps.length > 0) {
+      currentState.taskPlanSteps = [...previousState.taskPlanSteps];
+    }
+    currentState.taskDecomposerUsed = previousState.taskDecomposerUsed || currentState.taskDecomposerUsed;
+
+    currentState.lastActivityAt = Date.now();
+  }
+
+  /**
+   * Evaluates the health of a session based on staleness, repetition patterns,
+   * tool execution success/failure rate, and efficiency.
+   */
+  public getSessionHealthForChat(chatId: string): SessionHealth {
+    const state = this.getStateForChat(chatId);
+    const stalenessHours = (Date.now() - state.lastActivityAt) / (3600 * 1000);
+
+    const toolCounts = state.toolCallCounts || {};
+    const totalToolCalls = Object.values(toolCounts).reduce((a, b) => a + b, 0);
+    const filesModified = state.writtenFiles.length || state.fileRecords.length;
+
+    // Complexity ratio: tool calls per file modification
+    const complexity = totalToolCalls / (filesModified + 1);
+
+    const warnings: string[] = [];
+    let score = 100;
+
+    // Check 1: Tool loop/high count warning
+    let highestCount = 0;
+    let highestTool = '';
+    for (const [tool, count] of Object.entries(toolCounts)) {
+      if (count > highestCount) {
+        highestCount = count;
+        highestTool = tool;
+      }
+    }
+    if (highestCount >= 8) {
+      warnings.push(`High repetition: tool "${highestTool}" used ${highestCount} times (potential loop).`);
+      score -= 20;
+    }
+
+    // Check 2: High tool use with low file modification (except purely research)
+    const isResearchTask = toolCounts['web_search'] || toolCounts['deep_research'];
+    if (totalToolCalls > 18 && filesModified === 0 && !isResearchTask) {
+      warnings.push(`High tool usage (${totalToolCalls} calls) without modifying any files.`);
+      score -= 15;
+    }
+
+    // Check 3: Stale session
+    if (stalenessHours > 24) {
+      warnings.push(`Session is stale (idle for ${stalenessHours.toFixed(1)} hours).`);
+      score -= Math.min(25, Math.floor(stalenessHours));
+    }
+
+    // Check 4: Failed tool executions in result digest
+    const failedCalls = state.toolResultDigest.filter(d => 
+      d.result.toLowerCase().includes('failed') || 
+      d.result.toLowerCase().includes('error:') || 
+      d.result.toLowerCase().includes('error ') ||
+      d.result.toLowerCase().includes('not found')
+    ).length;
+    
+    if (failedCalls > 3) {
+      warnings.push(`High failure rate: ${failedCalls} tool calls returned errors/warnings.`);
+      score -= Math.min(30, failedCalls * 5);
+    }
+
+    // Ensure score bounds
+    score = Math.max(0, Math.min(100, score));
+
+    return {
+      score,
+      staleness: parseFloat(stalenessHours.toFixed(1)),
+      complexity: parseFloat(complexity.toFixed(1)),
+      warnings,
+    };
+  }
+
+  public getSessionHealth(): SessionHealth {
+    if (!this.loaded || !this.state.boundChatId) {
+      return { score: 100, staleness: 0, complexity: 0, warnings: [] };
+    }
+    return this.getSessionHealthForChat(this.state.boundChatId);
   }
 
   /**

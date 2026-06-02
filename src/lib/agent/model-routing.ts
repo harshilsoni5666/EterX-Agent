@@ -15,8 +15,10 @@
  * 404 / 501 / "model not found" / "model deprecated" errors.
  */
 
-export type MainAgentProvider = 'gemini' | 'mistral' | 'openrouter';
-export type MainAgentMode = 'think' | 'fast' | 'mistral';
+import { getRuntimeModelOverrides } from './runtime-api-keys';
+
+export type MainAgentProvider = 'gemini' | 'mistral' | 'openai' | 'openrouter' | 'anthropic';
+export type MainAgentMode = 'think' | 'fast' | 'mistral' | 'openai' | 'openrouter' | 'anthropic';
 export type MainAgentThinkingLevel = 'low' | 'high';
 
 export type MainAgentModelConfig = {
@@ -31,28 +33,55 @@ export type MainAgentModelConfig = {
 // ─── Static fallback chains (newest → oldest stable) ─────────────────────────
 // These are tried IN ORDER when the primary model fails with a model-not-found error.
 export const GEMINI_THINK_FALLBACK_CHAIN: readonly string[] = [
-  'gemini-2.5-flash-preview-05-20',
+  'gemini-3.5-flash',
+  'gemini-3-flash-preview',
+  'gemini-3-pro-preview',
+  'gemini-3.1-pro-preview',
+  'gemini-3.1-flash-lite',
   'gemini-2.5-flash',
+  'gemini-2.5-pro',
+  'gemini-2.5-flash-lite',
   'gemini-2.0-flash',
-  'gemini-2.0-flash-lite',
-  'gemini-1.5-pro',
-  'gemini-1.5-flash',
 ];
 
 export const GEMINI_FAST_FALLBACK_CHAIN: readonly string[] = [
-  'gemini-2.5-flash-preview-05-20',
+  'gemini-3.5-flash',
+  'gemini-3-flash-preview',
+  'gemini-3.1-flash-lite',
   'gemini-2.5-flash',
-  'gemini-2.0-flash',
-  'gemini-2.0-flash-lite',
-  'gemini-1.5-flash',
-  'gemini-1.5-flash-8b',
+  'gemini-2.5-flash-lite',
 ];
 
 export const MISTRAL_FALLBACK_CHAIN: readonly string[] = [
-  'devstral-2512',
-  'devstral-latest',
-  'mistral-large-latest',
-  'open-mistral-7b',
+  'mistral-medium-3-5',
+  'mistral-small-2603',
+  'mistral-large-2512',
+  'ministral-14b-2512',
+  'ministral-8b-2512',
+];
+
+export const OPENAI_FALLBACK_CHAIN: readonly string[] = [
+  'gpt-5.5',
+  'gpt-5.4',
+  'gpt-5.4-mini',
+  'gpt-5.4-nano',
+];
+
+export const OPENROUTER_FALLBACK_CHAIN: readonly string[] = [
+  'openai/gpt-5.5',
+  'openai/gpt-5.4',
+  'anthropic/claude-opus-4.8',
+  'anthropic/claude-sonnet-4.6',
+  'google/gemini-3.5-flash',
+  'google/gemini-3-flash-preview',
+  'mistralai/mistral-medium-3-5',
+];
+
+export const ANTHROPIC_FALLBACK_CHAIN: readonly string[] = [
+  'claude-opus-4-8',
+  'claude-sonnet-4-6',
+  'claude-haiku-4-5-20251001',
+  'claude-opus-4-7',
 ];
 
 // ─── Proven model cache — survives the entire process lifetime ────────────────
@@ -78,21 +107,31 @@ export function clearProvenModel(mode: MainAgentMode): void {
  * Reads env vars first, then proven cache, then first chain entry.
  */
 export function resolveModelName(mode: MainAgentMode): string {
+  const overrides = getRuntimeModelOverrides();
   switch (mode) {
     case 'think': {
-      const envOverride = process.env.ETERX_THINK_MODEL || process.env.GEMINI_THINK_MODEL;
-      if (envOverride) return envOverride.trim();
+      if (overrides.gemini) return overrides.gemini;
       return getProvenModel('think') || GEMINI_THINK_FALLBACK_CHAIN[0];
     }
     case 'fast': {
-      const envOverride = process.env.ETERX_FAST_MODEL || process.env.GEMINI_FAST_MODEL;
-      if (envOverride) return envOverride.trim();
+      if (overrides.gemini) return overrides.gemini;
       return getProvenModel('fast') || GEMINI_FAST_FALLBACK_CHAIN[0];
     }
     case 'mistral': {
-      const envOverride = process.env.MISTRAL_MODEL || process.env.MISTRAL_MODEL_NAME;
-      if (envOverride) return envOverride.trim();
+      if (overrides.mistral) return overrides.mistral;
       return getProvenModel('mistral') || MISTRAL_FALLBACK_CHAIN[0];
+    }
+    case 'openai': {
+      if (overrides.openai) return overrides.openai;
+      return getProvenModel('openai') || OPENAI_FALLBACK_CHAIN[0];
+    }
+    case 'openrouter': {
+      if (overrides.openrouter) return overrides.openrouter;
+      return getProvenModel('openrouter') || OPENROUTER_FALLBACK_CHAIN[0];
+    }
+    case 'anthropic': {
+      if (overrides.anthropic) return overrides.anthropic;
+      return getProvenModel('anthropic') || ANTHROPIC_FALLBACK_CHAIN[0];
     }
     default:
       return GEMINI_THINK_FALLBACK_CHAIN[0];
@@ -116,6 +155,18 @@ export function getFallbackChain(mode: MainAgentMode): string[] {
     }
     case 'mistral': {
       const chain = MISTRAL_FALLBACK_CHAIN.filter(m => m !== primary);
+      return [primary, ...chain];
+    }
+    case 'openai': {
+      const chain = OPENAI_FALLBACK_CHAIN.filter(m => m !== primary);
+      return [primary, ...chain];
+    }
+    case 'openrouter': {
+      const chain = OPENROUTER_FALLBACK_CHAIN.filter(m => m !== primary);
+      return [primary, ...chain];
+    }
+    case 'anthropic': {
+      const chain = ANTHROPIC_FALLBACK_CHAIN.filter(m => m !== primary);
       return [primary, ...chain];
     }
     default:
@@ -167,9 +218,33 @@ export const MAIN_AGENT_MODE_CONFIG: Record<MainAgentMode, MainAgentModelConfig>
   mistral: {
     id: 'mistral',
     provider: 'mistral',
-    label: 'Mistral Devstral',
+    label: 'Mistral Medium 3.5',
     compactLabel: 'Mistral',
     get modelName() { return resolveModelName('mistral'); },
+    selectable: true,
+  },
+  openai: {
+    id: 'openai',
+    provider: 'openai',
+    label: 'GPT-5.5',
+    compactLabel: 'OpenAI',
+    get modelName() { return resolveModelName('openai'); },
+    selectable: true,
+  },
+  openrouter: {
+    id: 'openrouter',
+    provider: 'openrouter',
+    label: 'OpenRouter',
+    compactLabel: 'Router',
+    get modelName() { return resolveModelName('openrouter'); },
+    selectable: true,
+  },
+  anthropic: {
+    id: 'anthropic',
+    provider: 'anthropic',
+    label: 'Claude Opus 4.8',
+    compactLabel: 'Claude',
+    get modelName() { return resolveModelName('anthropic'); },
     selectable: true,
   },
 };

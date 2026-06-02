@@ -3,6 +3,7 @@ import { ToolDefinition } from '../../schemas';
 import axios, { AxiosRequestConfig } from 'axios';
 import path from 'path';
 import fs from 'fs-extra';
+import { getRuntimeApiKey } from '../../runtime-api-keys';
 
 /**
  * Smart API Hub — Pre-configured connectors for popular APIs
@@ -55,7 +56,7 @@ export const apiHubTool: ToolDefinition = {
 
       switch (input.connector) {
         case 'github': {
-          const token = process.env.GITHUB_TOKEN || '';
+          const token = getRuntimeApiKey('github');
           const base = 'https://api.github.com';
           const headers: any = { 'Accept': 'application/vnd.github.v3+json', 'User-Agent': 'EterX-Agent' };
           if (token) headers['Authorization'] = `token ${token}`;

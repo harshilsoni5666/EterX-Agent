@@ -1,7 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { GoogleGenAI } from '@google/genai';
+import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
 import { getMainAgentModelConfig, normalizeMainAgentMode } from '../../../../lib/agent/model-routing';
+import {
+  applyRuntimeApiKeys,
+  applyRuntimeModelOverrides,
+  getRuntimeApiKey,
+} from '../../../../lib/agent/runtime-api-keys';
 
 export const runtime = 'nodejs';
 
@@ -77,7 +83,9 @@ const cleanTitle = (rawTitle: unknown, history: any[] = []) => {
 
 export async function POST(req: NextRequest) {
   try {
-    const { history, currentTitle, mode } = await req.json();
+    const { history, currentTitle, mode, apiKeys, modelOverrides } = await req.json();
+    const runtimeKeyResult = applyRuntimeApiKeys(apiKeys);
+    applyRuntimeModelOverrides(modelOverrides);
     const safeHistory = Array.isArray(history) ? history : [];
     const latestUserText = getLatestUserText(safeHistory);
     const safeMode = normalizeMainAgentMode(mode);
@@ -105,16 +113,52 @@ export async function POST(req: NextRequest) {
       ${ JSON.stringify(safeHistory.slice(-10)) }
     `.trim();
 
-    if (modelConfig.provider === 'mistral') {
-      const apiKey = process.env.MISTRAL_API_KEY || process.env.MISTRAL_AI_API_KEY || process.env.MISTRALAI_API_KEY || '';
-      if (!apiKey) return NextResponse.json({ error: 'Missing MISTRAL_API_KEY' }, { status: 500 });
+    if (modelConfig.provider === 'anthropic') {
+      const apiKey = getRuntimeApiKey('anthropic');
+      if (!apiKey) return NextResponse.json({ error: 'Missing Anthropic API key. Add it in Settings > Connections.' }, { status: 500 });
+
+      const client = new Anthropic({ apiKey });
+      const result = await client.messages.create({
+        model: modelConfig.modelName,
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.2,
+        max_tokens: 24,
+      } as any);
+      const titleText = Array.isArray((result as any).content)
+        ? (result as any).content
+          .map((part: any) => part?.type === 'text' ? String(part.text || '') : '')
+          .filter(Boolean)
+          .join('')
+        : '';
+      const title = cleanTitle(titleText, safeHistory);
+      return NextResponse.json({ title });
+    }
+
+    if (modelConfig.provider !== 'gemini') {
+      const provider = modelConfig.provider;
+      const apiKey = provider === 'openai'
+        ? getRuntimeApiKey('openai')
+        : provider === 'openrouter'
+          ? getRuntimeApiKey('openrouter')
+          : getRuntimeApiKey('mistral');
+      if (!apiKey) return NextResponse.json({ error: `Missing ${ provider } API key. Add it in Settings > Connections.` }, { status: 500 });
 
       const client = new OpenAI({
         apiKey,
-        baseURL: process.env.MISTRAL_BASE_URL || process.env.MISTRAL_API_BASE_URL || 'https://api.mistral.ai/v1',
+        baseURL: provider === 'openai'
+          ? (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1')
+          : provider === 'openrouter'
+            ? (process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1')
+            : (process.env.MISTRAL_BASE_URL || process.env.MISTRAL_API_BASE_URL || 'https://api.mistral.ai/v1'),
+        defaultHeaders: provider === 'openrouter'
+          ? {
+            'HTTP-Referer': process.env.OPENROUTER_HTTP_REFERER || 'http://localhost:3000',
+            'X-Title': 'EterX Agent',
+          }
+          : undefined,
       });
       const result = await client.chat.completions.create({
-        model: process.env.MISTRAL_MODEL || process.env.MISTRAL_MODEL_NAME || modelConfig.modelName,
+        model: modelConfig.modelName,
         messages: [{ role: 'user', content: prompt }],
         temperature: 0.2,
         max_tokens: 24,
@@ -123,18 +167,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ title });
     }
 
-    // Auto-discover valid Google API key from the environment
-    let apiKey = '';
-    for (const [key, value] of Object.entries(process.env)) {
-      if (typeof value === 'string' && value.startsWith('AIza')) {
-        apiKey = value;
-        break;
-      }
-    }
-    if (!apiKey) apiKey = process.env.GEMINI_API_KEY || '';
+    const apiKey = runtimeKeyResult.preferredGeminiApiKey || getRuntimeApiKey('gemini');
 
     if (!apiKey) {
-      return NextResponse.json({ error: 'Missing API Key' }, { status: 500 });
+      return NextResponse.json({ error: 'Missing Gemini API key. Add it in Settings > Connections.' }, { status: 500 });
     }
 
     const genAI = new GoogleGenAI({ apiKey });

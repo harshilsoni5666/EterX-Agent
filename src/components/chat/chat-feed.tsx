@@ -4,7 +4,6 @@ import { Copy, RefreshCw, ChevronDown, FileText, Check, Clock, ChevronRight, Mes
 import { ThinkingProcess, ProfessionalThought } from '../chat/thought-sequence';
 import { AskUserPrompt } from '../chat/ask-user-prompt';
 import { Tooltip } from '../ui/tooltip';
-import { AgentFace } from './agent-face';
 import { notifyAgentFaceTraceLog } from './agent-face-controller';
 import { resolveAgentIcon } from './agent-icons';
 
@@ -877,6 +876,7 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
 
             const displayProcessLogs = processLogs;
             const displayFinalAnswer = finalAnswer;
+            const isAnswerActivelyTyping = !!displayFinalAnswer?.isLiveTyping && isThinkingTurn;
 
             // Extract ask_user events from process logs for inline rendering
             const askUserLogs = standardLogs.filter((l: any) => l.type === 'ask_user');
@@ -1015,48 +1015,25 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
                   <div className="eterx-assistant-answer w-full group/assistant mt-0 [&_.professional-thought>*:first-child]:!mt-0">
                     <div className="relative group/thought">
                       {/* Live typing uses the same renderer so Mermaid, math, and tables appear as soon as Markdown is complete. */}
-                      {displayFinalAnswer.isLiveTyping ? (
+                      {isAnswerActivelyTyping ? (
                         <div className="eterx-assistant-answer-body eterx-assistant-live-text text-[15.5px] leading-[1.85] text-[#C4C1BC] font-sans relative">
                           <ProfessionalThought
                             text={displayFinalAnswer.text}
                             isLatest={groupIdx === groups.length - 1}
-                            isThinking={true}
+                            isThinking={isAnswerActivelyTyping}
                             variant="answer"
                             updatedAt={displayFinalAnswer.timestamp}
-                            suffix={
-                              <span className="inline-flex items-center gap-2 ml-2 align-middle mt-[-2px]">
-                                <span className="inline-block w-[2px] h-[16px] bg-[#8C8A88] align-middle animate-[blink_1s_step-end_infinite] opacity-80" />
-                                <AgentFace
-                                  size="work"
-                                  mode="speaking"
-                                  actionKey={displayFinalAnswer.text.slice(-80)}
-                                  interactive
-                                  syncWithController={false}
-                                  ariaLabel="EterX response face"
-                                />
-                              </span>
-                            }
                           />
                         </div>
                       ) : (
                         <div className="eterx-assistant-answer-body text-[15.5px] leading-[1.85] text-[#C4C1BC] font-sans relative">
                           <ProfessionalThought
                             text={displayFinalAnswer.text}
-                            isLatest={groupIdx === groups.length - 1 && !isThinking}
-                            isThinking={false}
+                            isLatest={groupIdx === groups.length - 1}
+                            isThinking={isThinkingTurn}
                             variant="answer"
                             suffix={
                               <div className="inline-flex items-center gap-2 ml-2 align-middle mt-[-2px]">
-                                {groupIdx === groups.length - 1 && (
-                                  <AgentFace
-                                    size="work"
-                                    mode={isThinkingTurn ? 'thinking' : 'idle'}
-                                    actionKey={displayFinalAnswer.text.slice(-80)}
-                                    interactive
-                                    syncWithController={false}
-                                    ariaLabel="EterX answer face"
-                                  />
-                                )}
                                 <div className="flex items-center gap-0 opacity-0 group-hover/thought:opacity-100 transition-opacity duration-200">
                                   <NakedCopyButton content={displayFinalAnswer.text} />
                                   <Tooltip text="Import to chat">
@@ -1068,10 +1045,6 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
                               </div>
                             }
                           />
-                          {/* Streaming cursor while agent still thinking */}
-                          {isThinkingTurn && groupIdx === groups.length - 1 && (
-                            <span className="inline-block w-[2px] h-[16px] bg-[#8C8A88] ml-[2px] align-middle animate-[blink_1s_step-end_infinite] opacity-70" />
-                          )}
                         </div>
                       )}
 

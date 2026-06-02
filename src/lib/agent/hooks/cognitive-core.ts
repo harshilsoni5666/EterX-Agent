@@ -24,8 +24,11 @@ import {
 import { workingMemory } from '../memory/working-memory';
 import { errorRecovery } from '../resilience/error-recovery';
 import { executionMonitor } from '../monitor/execution-monitor';
+import { velocityMonitor } from './velocity-monitor';
 
 // ─── State ────────────────────────────────────────────────────────────────────
+
+const _failurePatternMemory = new Map<string, { error: string; count: number }>();
 
 let _currentCogState: CognitiveState | null = null;
 let _recentVerifications: import('../reasoning/verification-pipeline').VerificationResult[] = [];
@@ -57,6 +60,9 @@ export function onTaskStart(message: string, availableToolNames: string[], model
 
     // Reset verifications
     _recentVerifications = [];
+    _failurePatternMemory.clear();
+    velocityMonitor.reset();
+    velocityMonitor.profileTask(message);
     _taskStarted = true;
 
     console.log(`[CognitiveCore] ⚡ Task classified: ${_currentCogState.problemClass} (confidence: ${(_currentCogState.confidence * 100).toFixed(0)}%)`);
@@ -98,6 +104,12 @@ export function getEnhancedContext(message: string, availableToolNames: string[]
     // Execution monitor warnings
     const monitorCtx = executionMonitor.buildMetricsContext();
     if (monitorCtx) parts.push(monitorCtx);
+
+    // Velocity monitor warnings and nudges
+    const nudge = velocityMonitor.generateNudge();
+    if (nudge) {
+      parts.push(nudge);
+    }
 
     // Verification alerts from recent tool calls
     const verCtx = verificationPipeline.buildVerificationContext(_recentVerifications);
@@ -146,8 +158,14 @@ export function onToolCallComplete(
     executionMonitor.recordToolCall(toolName, success, args);
     executionMonitor.recordIteration();
 
+    velocityMonitor.recordToolCall(toolName, args || {}, success, durationMs);
+    velocityMonitor.recordIteration();
+
     // 5. Working Memory — record significant events as episodic memory
     if (!success) {
+      if (result?.error) {
+        recordToolFailure(toolName, args, String(result.error));
+      }
       workingMemory.recordEpisode({
         type: 'error',
         summary: `${toolName} failed: ${String(result?.error || 'unknown').substring(0, 80)}`,
@@ -289,4 +307,26 @@ export function getCognitiveState(): CognitiveState | null {
 
 export function getExecutionMetrics() {
   return executionMonitor.getMetrics();
+}
+
+// ─── Hook 8: Failure Pattern Memory ──────────────────────────────────────────
+
+export function recordToolFailure(toolName: string, args: any, error: string): void {
+  const key = `${toolName}:${JSON.stringify(args || {})}`;
+  const existing = _failurePatternMemory.get(key);
+  if (existing) {
+    existing.count++;
+    existing.error = error;
+  } else {
+    _failurePatternMemory.set(key, { error, count: 1 });
+  }
+}
+
+export function checkToolFailureWarning(toolName: string, args: any): string | null {
+  const key = `${toolName}:${JSON.stringify(args || {})}`;
+  const record = _failurePatternMemory.get(key);
+  if (record && record.count >= 2) {
+    return `Warning: This tool call previously failed ${record.count} times. Last error: "${record.error}". Please correct parameters before trying again.`;
+  }
+  return null;
 }

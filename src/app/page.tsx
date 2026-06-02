@@ -12,6 +12,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { InteractiveGrid } from '../components/ui/interactive-grid';
 import { GeminiLiveSession, LiveSessionState } from '../lib/live/gemini-live';
 import {
+  MAIN_AGENT_MODEL_OPTIONS,
   MAIN_AGENT_THINKING_LEVEL_STORAGE_KEY,
   normalizeMainAgentThinkingLevel,
   type MainAgentMode,
@@ -377,6 +378,54 @@ const serializeComposerAttachment = (att: ComposerAttachment) => {
 
 const DEFAULT_CHAT_TITLE = 'New chat';
 const SELECTED_AGENT_STORAGE_KEY = 'eterx_selected_agent';
+const SETTINGS_STORAGE_KEY = 'eterx_settings';
+const SETTINGS_CHANNEL = 'eterx-settings';
+const API_KEY_STORAGE_KEY = 'eterx_api_keys';
+const MODEL_OVERRIDE_STORAGE_KEY = 'eterx_model_overrides';
+
+const readStoredMainAgentMode = (): MainAgentMode | null => {
+  if (typeof window === 'undefined') return null;
+  try {
+    const saved = window.localStorage.getItem(SETTINGS_STORAGE_KEY);
+    const settings = saved ? JSON.parse(saved) : {};
+    const mode = typeof settings?.agentMode === 'string' ? settings.agentMode.trim() : '';
+    return MAIN_AGENT_MODEL_OPTIONS.some(option => option.id === mode) ? mode as MainAgentMode : null;
+  } catch {
+    return null;
+  }
+};
+
+const readRuntimeApiKeys = (): Record<string, string> => {
+  if (typeof window === 'undefined') return {};
+  try {
+    const saved = window.localStorage.getItem(API_KEY_STORAGE_KEY);
+    const parsed = saved ? JSON.parse(saved) : {};
+    if (!parsed || typeof parsed !== 'object') return {};
+    return Object.fromEntries(
+      Object.entries(parsed as Record<string, unknown>)
+        .map(([key, value]) => [key, typeof value === 'string' ? value.trim() : ''])
+        .filter(([, value]) => Boolean(value)),
+    );
+  } catch {
+    return {};
+  }
+};
+
+const readRuntimeModelOverrides = (): Record<string, string> => {
+  if (typeof window === 'undefined') return {};
+  try {
+    const saved = window.localStorage.getItem(MODEL_OVERRIDE_STORAGE_KEY);
+    const parsed = saved ? JSON.parse(saved) : {};
+    if (!parsed || typeof parsed !== 'object') return {};
+    return Object.fromEntries(
+      Object.entries(parsed as Record<string, unknown>)
+        .map(([key, value]) => [key, typeof value === 'string' ? value.trim() : ''])
+        .filter(([, value]) => Boolean(value)),
+    );
+  } catch {
+    return {};
+  }
+};
 
 type SelectedAgentState = {
   agentId: string | null;
@@ -405,6 +454,33 @@ const readSelectedAgentState = (): SelectedAgentState => {
 
 const isDefaultChatTitle = (title?: string | null) =>
   !title?.trim() || title.trim().toLowerCase() === DEFAULT_CHAT_TITLE.toLowerCase();
+
+const titleCaseWords = (value: string) =>
+  value.toLowerCase().replace(/\b[a-z0-9]/g, letter => letter.toUpperCase());
+
+const fallbackTitleFromPrompt = (prompt: string) => {
+  const stopWords = new Set([
+    'the', 'and', 'for', 'with', 'this', 'that', 'from', 'have', 'make', 'making',
+    'fix', 'issue', 'please', 'proper', 'fast', 'best', 'okay', 'just', 'want',
+    'need', 'can', 'you', 'your', 'there', 'their', 'then', 'than', 'into',
+  ]);
+  const seen = new Set<string>();
+  const words = String(prompt || '')
+    .replace(/[^A-Za-z0-9\s-]/g, ' ')
+    .split(/\s+/)
+    .map(word => word.trim())
+    .filter(word => {
+      const key = word.toLowerCase();
+      if (word.length <= 2 || stopWords.has(key) || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, 4);
+
+  if (words.length >= 2) return titleCaseWords(words.join(' '));
+  if (words.length === 1) return titleCaseWords(`${ words[0] } Task`);
+  return DEFAULT_CHAT_TITLE;
+};
 
 const sortChats = (chats: ChatSession[]) => {
   return [...chats].sort((a, b) => {
@@ -561,7 +637,7 @@ function DeepWorkUI() {
   const [headerSearchOpen, setHeaderSearchOpen] = useState(false);
   const [headerSearchQuery, setHeaderSearchQuery] = useState("");
   const [activeView, setActiveViewState] = useState<ActiveView>('chat');
-  const [agentMode, setAgentMode] = useState<MainAgentMode>('think');
+  const [agentMode, setAgentMode] = useState<MainAgentMode>(() => readStoredMainAgentMode() || 'think');
   const [thinkingLevel, setThinkingLevelState] = useState<MainAgentThinkingLevel>('low');
   const [selectedAgentState, setSelectedAgentState] = useState<SelectedAgentState>({
     agentId: null,
@@ -591,6 +667,59 @@ function DeepWorkUI() {
       setBuildingAgentId(null);
     }
     setActiveViewState(view);
+  }, []);
+
+  const openSettingsWindow = useCallback(() => {
+    try {
+      const saved = window.localStorage.getItem(SETTINGS_STORAGE_KEY);
+      const settings = saved ? JSON.parse(saved) : {};
+      const requested = settings.theme === 'dark' || settings.theme === 'system' ? settings.theme : 'light';
+      const resolved = requested === 'system'
+        ? (window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+        : requested;
+      (window as any).electronAPI?.setNativeTheme?.(resolved);
+    } catch {
+      // Native theme sync is only needed for Electron popout polish.
+    }
+    const opened = window.open(
+      '/settings?tab=models',
+      'eterx-settings',
+      'width=1440,height=960,resizable=yes,scrollbars=yes',
+    );
+    if (!opened) setIsSettingsOpen(true);
+  }, []);
+
+  useEffect(() => {
+    const applyStoredAgentMode = () => {
+      const storedMode = readStoredMainAgentMode();
+      if (storedMode) {
+        setAgentMode(currentMode => currentMode === storedMode ? currentMode : storedMode);
+      }
+    };
+
+    const onStorage = (event: StorageEvent) => {
+      if (!event.key || event.key === SETTINGS_STORAGE_KEY) applyStoredAgentMode();
+    };
+
+    applyStoredAgentMode();
+    window.addEventListener('storage', onStorage);
+    window.addEventListener('focus', applyStoredAgentMode);
+    window.addEventListener('eterx-settings-updated', applyStoredAgentMode);
+
+    let channel: BroadcastChannel | null = null;
+    try {
+      channel = new BroadcastChannel(SETTINGS_CHANNEL);
+      channel.onmessage = applyStoredAgentMode;
+    } catch {
+      channel = null;
+    }
+
+    return () => {
+      window.removeEventListener('storage', onStorage);
+      window.removeEventListener('focus', applyStoredAgentMode);
+      window.removeEventListener('eterx-settings-updated', applyStoredAgentMode);
+      channel?.close();
+    };
   }, []);
 
   // ═══ Gemini Live Session State ═══
@@ -915,7 +1044,7 @@ function DeepWorkUI() {
       const res = await fetch('/api/live/key', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chatId: activeChatId || `live_${ Date.now() }` })
+        body: JSON.stringify({ chatId: activeChatId || `live_${ Date.now() }`, apiKeys: readRuntimeApiKeys(), modelOverrides: readRuntimeModelOverrides() })
       });
 
       if (!res.ok) {
@@ -1425,32 +1554,41 @@ function DeepWorkUI() {
     });
   };
 
+  const fetchGeneratedTitle = async (history: any[], currentTitle?: string, mode: MainAgentMode = agentMode): Promise<string | null> => {
+    const res = await fetch('/api/chat/title', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        history,
+        currentTitle: currentTitle || DEFAULT_CHAT_TITLE,
+        mode,
+        apiKeys: readRuntimeApiKeys(),
+        modelOverrides: readRuntimeModelOverrides()
+      })
+    });
+
+    if (!res.ok) return null;
+
+    const data = await res.json();
+    const title = String(data.title || '').trim();
+    return title && !isDefaultChatTitle(title) ? title : null;
+  };
+
   const generateTitle = async (chatId: string, history: any[], currentTitle?: string, mode: MainAgentMode = agentMode) => {
     try {
       // Use passed title or fall back to finding in current state (for background updates)
       const existingTitle = currentTitle || chats.find(c => c.id === chatId)?.title || DEFAULT_CHAT_TITLE;
 
-      const res = await fetch('/api/chat/title', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          history,
-          currentTitle: existingTitle,
-          mode
-        })
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.title && !isDefaultChatTitle(data.title) && data.title !== existingTitle) {
-          setChats(prev => {
-            const updated = prev.map(c =>
-              c.id === chatId ? { ...c, title: data.title, updatedAt: Date.now() } : c
-            );
-            const sorted = sortChats(updated);
-            localStorage.setItem('eterx_chats', JSON.stringify(sorted));
-            return sorted;
-          });
-        }
+      const title = await fetchGeneratedTitle(history, existingTitle, mode);
+      if (title && title !== existingTitle) {
+        setChats(prev => {
+          const updated = prev.map(c =>
+            c.id === chatId ? { ...c, title, updatedAt: Date.now() } : c
+          );
+          const sorted = sortChats(updated);
+          localStorage.setItem('eterx_chats', JSON.stringify(sorted));
+          return sorted;
+        });
       }
     } catch (e) {
       console.warn('[Naming] Background naming failed:', e);
@@ -2624,9 +2762,10 @@ function DeepWorkUI() {
       activeChatIdRef.current = chatIdToUse;
       setActiveChatId(chatIdToUse);
 
+      const initialTitle = fallbackTitleFromPrompt(promptText);
       const newChat: ChatSession = {
         id: chatIdToUse,
-        title: DEFAULT_CHAT_TITLE,
+        title: initialTitle,
         updatedAt: Date.now(),
         traceLogs: [userLog]
       };
@@ -2638,8 +2777,20 @@ function DeepWorkUI() {
       });
       setTraceLogs([userLog]);
 
-      // Initial parallel naming
-      generateTitle(chatIdToUse, [{ role: 'user', parts: [{ text: promptText }] }], DEFAULT_CHAT_TITLE, runAgentMode);
+      const titleChatId = chatIdToUse;
+      const initialTitleHistory = [{ role: 'user', parts: [{ text: promptText }] }];
+      void fetchGeneratedTitle(initialTitleHistory, DEFAULT_CHAT_TITLE, runAgentMode)
+        .then(generatedTitle => {
+          if (!generatedTitle || generatedTitle === initialTitle) return;
+          setChats(prev => {
+            const updated = prev.map(chat => chat.id === titleChatId ? { ...chat, title: generatedTitle } : chat);
+            localStorage.setItem('eterx_chats', JSON.stringify(updated));
+            return updated;
+          });
+        })
+        .catch(error => {
+          console.warn('[Naming] Initial naming failed:', error);
+        });
     } else {
       const updatedLogs = [...stripAgentConnectionLogs(traceLogs), userLog];
       setChatLogsById(chatIdToUse, updatedLogs, { touchUpdatedAt: true });
@@ -2769,6 +2920,8 @@ function DeepWorkUI() {
           body: JSON.stringify({
             agentId: selectedAgent,
             messages: runnerMessages,
+            apiKeys: readRuntimeApiKeys(),
+            modelOverrides: readRuntimeModelOverrides(),
           }),
           signal: controller.signal,
         });
@@ -2910,7 +3063,9 @@ function DeepWorkUI() {
           projectId: chatIdToUse,
           mode: runAgentMode,
           thinkingLevel: runThinkingLevel,
-          pinnedContext: hasPinnedContext ? requestPinnedContext : null
+          pinnedContext: hasPinnedContext ? requestPinnedContext : null,
+          apiKeys: readRuntimeApiKeys(),
+          modelOverrides: readRuntimeModelOverrides()
         }),
         signal: controller.signal
       });
@@ -3230,10 +3385,10 @@ function DeepWorkUI() {
         activeView={activeView}
         setActiveView={setActiveView}
         runningChats={runningChats}
-        onSettingsClick={() => setIsSettingsOpen(true)}
+        onSettingsClick={openSettingsWindow}
       />
 
-      <SettingsPanel isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} />
+      <SettingsPanel isOpen={isSettingsOpen} initialTab="models" onClose={() => setIsSettingsOpen(false)} />
 
       <div className="flex-1 flex flex-col relative bg-transparent overflow-hidden z-10 transition-all duration-300">
         <div className={`eterx-chat-top-fade pointer-events-none absolute left-0 right-0 top-0 z-40 h-[92px] ${activeView === 'channels' || activeView === 'projects' ? 'hidden' : 'bg-[linear-gradient(180deg,#0F0F0F_0%,rgba(15,15,15,0.98)_46%,rgba(15,15,15,0.56)_78%,transparent_100%)]'}`} />

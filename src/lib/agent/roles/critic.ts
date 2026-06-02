@@ -1,5 +1,7 @@
 import { GoogleGenAI, ThinkingLevel } from '@google/genai';
 import { ProjectContext } from '../schemas';
+import { getRuntimeApiKey } from '../runtime-api-keys';
+import { resolveModelName } from '../model-routing';
 
 /**
  * The Critic Role (Layer 6: Verification Layer)
@@ -12,17 +14,11 @@ export class Critic {
   private ai: GoogleGenAI | null = null;
 
   constructor() {
-    // Find an API key
-    let apiKey = '';
-    for (const [key, value] of Object.entries(process.env)) {
-      if (typeof value === 'string' && value.startsWith('AIza')) {
-        apiKey = value;
-        break;
-      }
-    }
-    if (!apiKey) {
-      apiKey = process.env.GEMINI_API_KEY || process.env.VITE_OPENROUTER_API_KEY || '';
-    }
+    this.refreshClient();
+  }
+
+  private refreshClient(): void {
+    const apiKey = getRuntimeApiKey('gemini');
     if (apiKey) {
       this.ai = new GoogleGenAI({ apiKey });
     }
@@ -40,6 +36,7 @@ export class Critic {
   ): Promise<{ passed: boolean, feedback: string }> {
     console.log(`[Critic] Evaluating output for goal: "${ userGoal }"`);
 
+    if (!this.ai) this.refreshClient();
     if (!this.ai) {
       console.warn(`[Critic] No API client. Bypassing.`);
       return { passed: true, feedback: 'No API key for critic. Bypassed.' };
@@ -105,7 +102,7 @@ export class Critic {
 
     try {
       // Use the same model family as the main agent for consistency
-      const modelCandidates = ['gemini-3.5-flash', 'gemini-3.5-flash', 'gemini-2.0-flash'];
+      const modelCandidates = Array.from(new Set([resolveModelName('think'), 'gemini-3.5-flash', 'gemini-2.0-flash']));
       let response: any = null;
       let lastError: any = null;
 

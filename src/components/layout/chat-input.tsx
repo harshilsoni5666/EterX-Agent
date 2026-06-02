@@ -11,9 +11,108 @@ import {
   MAIN_AGENT_THINKING_LEVEL_OPTIONS,
   getMainAgentModelConfig,
   normalizeMainAgentThinkingLevel,
+  type MainAgentProvider,
   type MainAgentMode,
   type MainAgentThinkingLevel,
 } from '../../lib/agent/model-routing';
+
+const MODEL_API_KEY_STORAGE_KEY = 'eterx_api_keys';
+const MODEL_OVERRIDE_STORAGE_KEY = 'eterx_model_overrides';
+const MODEL_CATALOG_STORAGE_KEY = 'eterx_model_catalog';
+const SETTINGS_CHANNEL = 'eterx-settings';
+
+type StoredModelSettings = {
+  apiKeys: Partial<Record<MainAgentProvider, string>>;
+  modelOverrides: Partial<Record<MainAgentProvider, string>>;
+  modelCatalog: Partial<Record<MainAgentProvider, string[]>>;
+};
+
+type ChatModelOption = {
+  optionKey: string;
+  id: MainAgentMode;
+  provider: MainAgentProvider;
+  label: string;
+  compactLabel: string;
+  modelName: string;
+  modelId?: string;
+};
+
+const MODEL_PROVIDER_LABEL: Record<MainAgentProvider, string> = {
+  gemini: 'Google Gemini',
+  mistral: 'Mistral',
+  openai: 'OpenAI',
+  openrouter: 'OpenRouter',
+  anthropic: 'Anthropic',
+};
+
+const readStringRecord = (storageKey: string): Record<string, string> => {
+  if (typeof window === 'undefined') return {};
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(storageKey) || '{}');
+    if (!parsed || typeof parsed !== 'object') return {};
+    return Object.fromEntries(
+      Object.entries(parsed as Record<string, unknown>)
+        .map(([key, value]) => [key, typeof value === 'string' ? value.trim() : ''])
+        .filter(([, value]) => Boolean(value)),
+    );
+  } catch {
+    return {};
+  }
+};
+
+const readStringArrayRecord = (storageKey: string): Record<string, string[]> => {
+  if (typeof window === 'undefined') return {};
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(storageKey) || '{}');
+    if (!parsed || typeof parsed !== 'object') return {};
+    return Object.fromEntries(
+      Object.entries(parsed as Record<string, unknown>)
+        .map(([key, value]) => {
+          const values = Array.isArray(value)
+            ? value
+            : typeof value === 'string'
+              ? value.split(/[\n,]/)
+              : [];
+          return [
+            key,
+            Array.from(new Set(
+              values
+                .map(item => String(item || '').trim())
+                .filter(Boolean),
+            )),
+          ];
+        })
+        .filter(([, value]) => value.length > 0),
+    );
+  } catch {
+    return {};
+  }
+};
+
+const readStoredModelSettings = (): StoredModelSettings => ({
+  apiKeys: readStringRecord(MODEL_API_KEY_STORAGE_KEY) as Partial<Record<MainAgentProvider, string>>,
+  modelOverrides: readStringRecord(MODEL_OVERRIDE_STORAGE_KEY) as Partial<Record<MainAgentProvider, string>>,
+  modelCatalog: readStringArrayRecord(MODEL_CATALOG_STORAGE_KEY) as Partial<Record<MainAgentProvider, string[]>>,
+});
+
+const emitModelSettingsUpdate = (detail: unknown) => {
+  if (typeof window === 'undefined') return;
+  window.dispatchEvent(new CustomEvent('eterx-settings-updated', { detail }));
+  try {
+    const channel = new BroadcastChannel(SETTINGS_CHANNEL);
+    channel.postMessage({ type: 'settings-updated', settings: detail });
+    channel.close();
+  } catch { }
+};
+
+const writeStoredAgentMode = (mode: MainAgentMode) => {
+  if (typeof window === 'undefined') return;
+  try {
+    const saved = window.localStorage.getItem('eterx_settings');
+    const settings = saved ? JSON.parse(saved) : {};
+    window.localStorage.setItem('eterx_settings', JSON.stringify({ ...settings, agentMode: mode }));
+  } catch { }
+};
 
 // ─── Connector State Hook ────────────────────────────────
 const useConnectors = () => {
@@ -902,7 +1001,15 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const [goalDraft, setGoalDraft] = useState('');
   const [slashPanelOffset, setSlashPanelOffset] = useState({ x: 0, y: 0 });
   const [planModeActive, setPlanModeActive] = useState(false);
+  const [storedModelSettings, setStoredModelSettings] = useState<StoredModelSettings>(() => ({
+    apiKeys: {},
+    modelOverrides: {},
+    modelCatalog: {},
+  }));
   const connectors = useConnectors();
+  const refreshStoredModelSettings = useCallback(() => {
+    setStoredModelSettings(readStoredModelSettings());
+  }, []);
   const textareaMaxHeight = isCompressed ? 260 : 400;
   const isModelLocked = isThinking;
   const activeAgentDisplay = useMemo(() => {
@@ -941,6 +1048,41 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   useEffect(() => {
     if (showAgentMenu) refreshAvailableAgents();
   }, [refreshAvailableAgents, showAgentMenu]);
+
+  useEffect(() => {
+    refreshStoredModelSettings();
+
+    const onStorage = (event: StorageEvent) => {
+      if (
+        !event.key ||
+        event.key === MODEL_API_KEY_STORAGE_KEY ||
+        event.key === MODEL_OVERRIDE_STORAGE_KEY ||
+        event.key === MODEL_CATALOG_STORAGE_KEY
+      ) {
+        refreshStoredModelSettings();
+      }
+    };
+    const onSettingsUpdated = () => refreshStoredModelSettings();
+
+    window.addEventListener('storage', onStorage);
+    window.addEventListener('focus', onSettingsUpdated);
+    window.addEventListener('eterx-settings-updated', onSettingsUpdated);
+
+    let channel: BroadcastChannel | null = null;
+    try {
+      channel = new BroadcastChannel(SETTINGS_CHANNEL);
+      channel.onmessage = onSettingsUpdated;
+    } catch {
+      channel = null;
+    }
+
+    return () => {
+      window.removeEventListener('storage', onStorage);
+      window.removeEventListener('focus', onSettingsUpdated);
+      window.removeEventListener('eterx-settings-updated', onSettingsUpdated);
+      channel?.close();
+    };
+  }, [refreshStoredModelSettings]);
 
   useEffect(() => {
     const handleAgentsUpdated = (event?: Event) => {
@@ -1633,11 +1775,102 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const shellMaxWidth = isCompressed ? 'max-w-[520px]' : 'max-w-[800px]';
   const inputSidePadding = isCompressed ? 'px-4' : 'px-4 sm:px-12';
   const composerRadius = isCompressed ? 'rounded-[28px]' : 'rounded-[32px]';
-  const modelOptions = MAIN_AGENT_MODEL_OPTIONS;
-  const selectedModel = getMainAgentModelConfig(agentMode);
+  const modelOptions = useMemo<ChatModelOption[]>(() => {
+    const options: ChatModelOption[] = [];
+    MAIN_AGENT_MODEL_OPTIONS.forEach(baseOption => {
+      if (!storedModelSettings.apiKeys[baseOption.provider]?.trim()) return;
+
+      const activeExactModel = storedModelSettings.modelOverrides[baseOption.provider]?.trim();
+      const savedModels = storedModelSettings.modelCatalog[baseOption.provider] || [];
+      const exactModels = Array.from(new Set(
+        [activeExactModel, ...savedModels]
+          .map(modelId => String(modelId || '').trim())
+          .filter(Boolean),
+      ));
+
+      options.push({
+        optionKey: `${baseOption.provider}:default`,
+        id: baseOption.id,
+        provider: baseOption.provider,
+        label: baseOption.label,
+        compactLabel: baseOption.compactLabel,
+        modelName: baseOption.modelName,
+      });
+
+      exactModels.forEach(modelId => {
+        options.push({
+          optionKey: `${baseOption.provider}:${modelId}`,
+          id: baseOption.id,
+          provider: baseOption.provider,
+          label: modelId,
+          compactLabel: baseOption.compactLabel,
+          modelName: modelId,
+          modelId,
+        });
+      });
+    });
+    return options;
+  }, [storedModelSettings.apiKeys, storedModelSettings.modelCatalog, storedModelSettings.modelOverrides]);
+  const getModelOptionLabel = useCallback((option: ChatModelOption) => option.label, []);
+  const fallbackModelConfig = getMainAgentModelConfig(agentMode);
+  const fallbackSelectedModel: ChatModelOption = {
+    optionKey: `fallback:${fallbackModelConfig.provider}`,
+    id: fallbackModelConfig.id,
+    provider: fallbackModelConfig.provider,
+    label: fallbackModelConfig.label,
+    compactLabel: fallbackModelConfig.compactLabel,
+    modelName: fallbackModelConfig.modelName,
+  };
+  const selectedModel = modelOptions.find(option => {
+    if (option.id !== agentMode) return false;
+    const activeExactModel = storedModelSettings.modelOverrides[option.provider]?.trim();
+    return option.modelId ? option.modelId === activeExactModel : !activeExactModel;
+  }) || modelOptions.find(option => option.id === agentMode) || modelOptions[0] || fallbackSelectedModel;
+  const hasConfiguredModels = modelOptions.length > 0;
   const safeThinkingLevel = normalizeMainAgentThinkingLevel(thinkingLevel);
   const selectedThinkingLevel = MAIN_AGENT_THINKING_LEVEL_OPTIONS.find(option => option.id === safeThinkingLevel) || MAIN_AGENT_THINKING_LEVEL_OPTIONS[0];
-  const modelDisplayLabel = selectedModel.label;
+  const modelDisplayLabel = hasConfiguredModels ? getModelOptionLabel(selectedModel as ChatModelOption) : 'Configure model';
+  const selectChatModelOption = useCallback((option: ChatModelOption) => {
+    const nextOverrides = { ...storedModelSettings.modelOverrides };
+    if (option.modelId) {
+      nextOverrides[option.provider] = option.modelId;
+    } else {
+      delete nextOverrides[option.provider];
+    }
+
+    let nextCatalog = storedModelSettings.modelCatalog;
+    if (option.modelId) {
+      const savedModels = nextCatalog[option.provider] || [];
+      if (!savedModels.includes(option.modelId)) {
+        nextCatalog = {
+          ...nextCatalog,
+          [option.provider]: [...savedModels, option.modelId],
+        };
+        window.localStorage.setItem(MODEL_CATALOG_STORAGE_KEY, JSON.stringify(nextCatalog));
+      }
+    }
+
+    window.localStorage.setItem(MODEL_OVERRIDE_STORAGE_KEY, JSON.stringify(nextOverrides));
+    writeStoredAgentMode(option.id);
+    setStoredModelSettings(prev => ({
+      ...prev,
+      modelOverrides: nextOverrides,
+      modelCatalog: nextCatalog,
+    }));
+    emitModelSettingsUpdate({
+      type: 'model-selection-updated',
+      modelOverrides: nextOverrides,
+      modelCatalog: nextCatalog,
+    });
+    onModeChange(option.id);
+    setShowModelMenu(false);
+    setShowThinkingLevels(false);
+  }, [onModeChange, storedModelSettings.modelCatalog, storedModelSettings.modelOverrides]);
+  useEffect(() => {
+    if (isModelLocked || modelOptions.length === 0) return;
+    if (modelOptions.some(option => option.id === agentMode)) return;
+    onModeChange(modelOptions[0].id);
+  }, [agentMode, isModelLocked, modelOptions, onModeChange]);
   const controlPopoutVerticalClass = 'bottom-[calc(100%+10px)]';
   const selectorPopoutVerticalClass = 'bottom-[calc(100%+10px)]';
   const selectorMenuOffset = 8;
@@ -2604,31 +2837,37 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       role="dialog"
                       aria-label="Model and thinking settings"
                     >
-                      {modelOptions.map((option) => {
-                        const selected = option.id === selectedModel.id;
-                        return (
-                          <React.Fragment key={option.id}>
-                            <button
-                              onClick={() => {
-                                onModeChange(option.id);
-                                setShowModelMenu(false);
-                                setShowThinkingLevels(false);
-                              }}
-                              className={`group flex min-h-[44px] w-full items-center gap-2.5 rounded-[15px] px-2.5 py-1.5 text-left transition-colors duration-150 ${ selected ? 'text-white hover:bg-[#202020]' : 'text-[#F4F4F4] hover:bg-[#202020] hover:text-white' }`}
-                              aria-pressed={selected}
-                            >
-                              <span className="flex h-5 w-5 shrink-0 items-center justify-center text-white/95">
-                                {selected && <Check className="h-4 w-4" strokeWidth={2.35} />}
-                              </span>
-                              <span className="flex min-w-0 flex-1 items-center">
-                                <span className="truncate text-[13px] font-semibold leading-5 tracking-normal">
-                                  {option.label}
+                      <div className={modelOptions.length > 3 ? 'max-h-[168px] overflow-y-auto pr-1 eterx-scrollbar' : ''}>
+                        {modelOptions.length === 0 ? (
+                          <div className="px-3 py-3 text-[12.5px] leading-5 text-[#A7A7A7]">
+                            Add a provider key in Settings / Connections to enable model selection.
+                          </div>
+                        ) : modelOptions.map((option) => {
+                          const selected = option.optionKey === selectedModel.optionKey;
+                          const optionLabel = getModelOptionLabel(option);
+                          return (
+                            <React.Fragment key={option.optionKey}>
+                              <button
+                                onClick={() => selectChatModelOption(option)}
+                                className={`group flex min-h-[52px] w-full items-center gap-2.5 rounded-[15px] px-2.5 py-2 text-left transition-colors duration-150 ${ selected ? 'text-white hover:bg-[#202020]' : 'text-[#F4F4F4] hover:bg-[#202020] hover:text-white' }`}
+                                aria-pressed={selected}
+                              >
+                                <span className="flex h-5 w-5 shrink-0 items-center justify-center text-white/95">
+                                  {selected && <Check className="h-4 w-4" strokeWidth={2.35} />}
                                 </span>
-                              </span>
-                            </button>
-                          </React.Fragment>
-                        );
-                      })}
+                                <span className="flex min-w-0 flex-1 flex-col">
+                                  <span className="truncate text-[13px] font-semibold leading-5 tracking-normal">
+                                    {optionLabel}
+                                  </span>
+                                  <span className="truncate text-[11.5px] font-medium leading-4 text-[#A7A7A7]">
+                                    {MODEL_PROVIDER_LABEL[option.provider]}
+                                  </span>
+                                </span>
+                              </button>
+                            </React.Fragment>
+                          );
+                        })}
+                      </div>
 
                       <div className="mx-2 my-1.5 h-px bg-white/[0.09]" />
 

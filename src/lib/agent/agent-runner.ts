@@ -36,6 +36,7 @@ export interface AgentRunnerConfig {
   maxIterations?: number;
   temperature?: number;
   model?: string;
+  preferredGeminiApiKey?: string;
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -239,7 +240,9 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
     // Lease an API key
     apiKeyPool.initialize();
     const sessionId = `custom_agent_${config.agentId}_${Date.now()}`;
-    const lease = apiKeyPool.leaseKey(sessionId, 'main_agent');
+    const lease = config.preferredGeminiApiKey
+      ? apiKeyPool.leaseSpecificKey(sessionId, config.preferredGeminiApiKey, 'main_agent') || apiKeyPool.leaseKey(sessionId, 'main_agent')
+      : apiKeyPool.leaseKey(sessionId, 'main_agent');
     if (!lease) {
       yield { type: 'error', text: 'No API keys available. Please check your API key configuration.', timestamp: Date.now() };
       return;

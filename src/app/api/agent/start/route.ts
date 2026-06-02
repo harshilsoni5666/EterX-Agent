@@ -8,6 +8,7 @@ import {
   getAgentIdFromBuilderChatId,
   isAgentBuilderChatId,
 } from '../../../../lib/agent/builder-agent';
+import { applyRuntimeApiKeys, applyRuntimeModelOverrides } from '../../../../lib/agent/runtime-api-keys';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -33,7 +34,9 @@ export async function POST(req: NextRequest) {
       userId = 'default_user', 
       pinnedContext = null, 
       mediaAttachments = [], 
-      userName = 'Developer' 
+      userName = 'Developer',
+      apiKeys = null,
+      modelOverrides = null,
     } = await req.json();
 
     if (!chatId || !prompt) {
@@ -45,6 +48,8 @@ export async function POST(req: NextRequest) {
 
     const safeMode = normalizeMainAgentMode(mode);
     const safeThinkingLevel = normalizeMainAgentThinkingLevel(thinkingLevel);
+    const runtimeKeyResult = applyRuntimeApiKeys(apiKeys);
+    applyRuntimeModelOverrides(modelOverrides);
     const isBuilderChat = isAgentBuilderChatId(chatId);
     const builderAgentId = isBuilderChat ? getAgentIdFromBuilderChatId(chatId) : '';
     const effectivePinnedContext = {
@@ -62,7 +67,8 @@ export async function POST(req: NextRequest) {
       userId,
       effectivePinnedContext,
       mediaAttachments,
-      userName
+      userName,
+      runtimeKeyResult.preferredGeminiApiKey
     );
 
     return NextResponse.json(result);

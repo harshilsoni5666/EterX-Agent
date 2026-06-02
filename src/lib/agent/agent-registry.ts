@@ -200,7 +200,8 @@ class AgentRegistry {
     userId: string = 'default',
     pinnedContext: any = null,
     mediaAttachments: any[] = [],
-    userName: string = 'Developer'
+    userName: string = 'Developer',
+    preferredGeminiApiKey?: string
   ): { status: 'started' | 'already_running' | 'no_keys'; chatId: string; message: string } {
 
     // Check if this chat already has a running agent
@@ -210,12 +211,16 @@ class AgentRegistry {
     }
 
     const modelConfig = getMainAgentModelConfig(mode);
-    const isMistralMode = modelConfig.provider === 'mistral';
+    const usesGeminiPool = modelConfig.provider === 'gemini';
 
-    // Try to lease a Gemini API key only for Gemini runs. Mistral uses its own
-    // MISTRAL_API_KEY and should not be blocked by the Gemini key pool.
-    const lease: KeyLease | null = isMistralMode ? null : apiKeyPool.leaseKey(chatId, 'main_agent');
-    if (!isMistralMode && !lease) {
+    // Try to lease a Gemini API key only for Gemini runs. Other providers use
+    // their own runtime keys and should not be blocked by the Gemini key pool.
+    const lease: KeyLease | null = !usesGeminiPool
+      ? null
+      : (preferredGeminiApiKey
+        ? apiKeyPool.leaseSpecificKey(chatId, preferredGeminiApiKey, 'main_agent') || apiKeyPool.leaseKey(chatId, 'main_agent')
+        : apiKeyPool.leaseKey(chatId, 'main_agent'));
+    if (usesGeminiPool && !lease) {
       return { status: 'no_keys', chatId, message: 'All API keys are currently in use. Try again in a moment.' };
     }
 
@@ -229,7 +234,7 @@ class AgentRegistry {
       traceCounter: 0,
       finalAnswer: '',
       cancelled: false,
-      keyLeaseId: isMistralMode ? 'mistral' : chatId,
+      keyLeaseId: usesGeminiPool ? chatId : modelConfig.provider,
       mode,
       promise: Promise.resolve(), // Placeholder, replaced below
       steeringQueue: [],
@@ -400,7 +405,7 @@ class AgentRegistry {
         const uploadedImageParts: { fileData: { fileUri: string, mimeType: string } }[] = [];
         let hasNewImages = false;
 
-        if (!isMistralMode) {
+        if (usesGeminiPool) {
           const geminiAI = new (require('@google/genai').GoogleGenAI)({ apiKey: lease!.apiKey });
         for (const file of geminiNativeFiles) {
           try {
@@ -445,13 +450,13 @@ class AgentRegistry {
         let enrichedPrompt = '';
         if (geminiNativeFiles.length > 0) {
           const fileList = geminiNativeFiles.map(f => `  • ${ f.name } (${ f.mimeType })${ f.fileUri ? ' [UPLOADED ✓]' : '' }`).join('\n');
-          enrichedPrompt += isMistralMode
-            ? `[USER ATTACHED FILES]\nThe following files are saved locally for this run:\n${ fileList }\n\nIMPORTANT: These files are available at their local paths in .workspaces/temp/. Use workspace tools to inspect/read them when needed. Do not claim direct visual access unless a tool result proves it.\n\n`
-            : `[USER ATTACHED FILES]\nThe following files are loaded into your visual context:\n${ fileList }\n\nIMPORTANT: These files (especially images) are directly visible to you in this message. You can see and analyze them. Describe what you see when the user asks about them. Files also persist at .workspaces/temp/ for re-reading.\n\n`;
+          enrichedPrompt += usesGeminiPool
+            ? `[USER ATTACHED FILES]\nThe following files are loaded into your visual context:\n${ fileList }\n\nIMPORTANT: These files (especially images) are directly visible to you in this message. You can see and analyze them. Describe what you see when the user asks about them. Files also persist at .workspaces/temp/ for re-reading.\n\n`
+            : `[USER ATTACHED FILES]\nThe following files are saved locally for this run:\n${ fileList }\n\nIMPORTANT: These files are available at their local paths in .workspaces/temp/. Use workspace tools to inspect/read them when needed. Do not claim direct visual access unless a tool result proves it.\n\n`;
         }
         // If images are present, add explicit analysis instruction
         const attachedImageCount = geminiNativeFiles.filter(f => String(f.mimeType || '').startsWith('image/')).length;
-        if (!isMistralMode && (uploadedImageParts.length > 0 || attachedImageCount > 0)) {
+        if (usesGeminiPool && (uploadedImageParts.length > 0 || attachedImageCount > 0)) {
           const imageCount = attachedImageCount || uploadedImageParts.length;
           enrichedPrompt += `[MULTIMODAL CONTEXT] ${ imageCount } image(s) are attached to this message. You CAN see them. When the user asks about an image, analyze it thoroughly — describe content, colors, text, layout, objects, people, code, UI elements, or anything visible. Do NOT say you cannot see images. You are a multimodal model with full vision capability.\n\n`;
         }
@@ -515,7 +520,7 @@ class AgentRegistry {
           geminiNativeFiles,
           uploadedImageParts, // Files API parts instead of base64
           userName,
-          isMistralMode ? undefined : lease!.apiKey
+          usesGeminiPool ? lease!.apiKey : undefined
         );
 
         const responseText = response.finalAnswer || '';
@@ -538,7 +543,7 @@ class AgentRegistry {
         }
 
         // Report success to key pool
-        if (!isMistralMode && execution.status === 'completed') {
+        if (usesGeminiPool && execution.status === 'completed') {
           apiKeyPool.reportSuccess(chatId, (response as any).effectiveApiKey);
         }
 
@@ -554,7 +559,7 @@ class AgentRegistry {
 
         if (!wasCancelled) {
           // Check if it's an API key error — auto-failover
-          const errorType = isMistralMode ? 'unknown' : apiKeyPool.classifyError(error.message);
+          const errorType = usesGeminiPool ? apiKeyPool.classifyError(error.message) : 'unknown';
           if (errorType !== 'unknown') {
             console.warn(`[AgentRegistry] 🔄 API key failure (${ errorType }) for chat ${ chatId.substring(0, 8) }...`);
             apiKeyPool.reportFailure(chatId, errorType, error.message);
@@ -581,7 +586,7 @@ class AgentRegistry {
       } finally {
         // ALWAYS release ALL keys associated with this chat (main agent + ANY dynamically named sub-agents)
         // apiKeyPool tracks leases by id, so we release the main chat ID
-        if (!isMistralMode) apiKeyPool.releaseKey(chatId);
+        if (usesGeminiPool) apiKeyPool.releaseKey(chatId);
 
         apiKeyPool.releaseLeasesWithPrefix(`${ chatId }_sub_`);
       }
@@ -589,7 +594,7 @@ class AgentRegistry {
 
     this.executions.set(chatId, execution);
 
-    const poolStatus = isMistralMode ? null : apiKeyPool.getPoolStatus();
+    const poolStatus = usesGeminiPool ? apiKeyPool.getPoolStatus() : null;
     console.log(`[AgentRegistry] Agent started for chat ${ chatId.substring(0, 8) }... | Model: ${ modelConfig.modelName }${ lease ? ` | Key: #${ lease.keyIndex } | Pool: ${ poolStatus?.healthySummary }` : '' }`);
 
     return { status: 'started', chatId, message: lease ? `Agent started with key #${ lease.keyIndex }` : `Agent started with ${ modelConfig.label }` };

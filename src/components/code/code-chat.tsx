@@ -51,6 +51,22 @@ interface CodeChatProps {
   onClose: () => void;
 }
 
+const readRuntimeApiKeys = (): Record<string, string> => {
+  if (typeof window === 'undefined') return {};
+  try {
+    const saved = window.localStorage.getItem('eterx_api_keys');
+    const parsed = saved ? JSON.parse(saved) : {};
+    if (!parsed || typeof parsed !== 'object') return {};
+    return Object.fromEntries(
+      Object.entries(parsed as Record<string, unknown>)
+        .map(([key, value]) => [key, typeof value === 'string' ? value.trim() : ''])
+        .filter(([, value]) => Boolean(value)),
+    );
+  } catch {
+    return {};
+  }
+};
+
 const TOOL_ICONS: Record<string, string> = {
   workspace_read_file: '📖',
   workspace_write_file: '📝',
@@ -140,6 +156,7 @@ export const CodeChat: React.FC<CodeChatProps> = ({ workspacePath, activeFile, o
           history: chatHistory,
           workspacePath,
           activeFile: activeFile ? { path: activeFile.path, name: activeFile.name, language: activeFile.language } : undefined,
+          apiKeys: readRuntimeApiKeys(),
         }),
       });
 

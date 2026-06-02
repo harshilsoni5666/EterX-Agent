@@ -140,18 +140,21 @@ export const PremiumLayers = ({ className, strokeWidth = 1.8 }: any) => (
   </svg>
 );
 
-export const PremiumChannels = ({ className, strokeWidth = 1.8 }: any) => (
-  <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
-    <path d="M12 11.25v2.5" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" />
-    <path d="M8.1 15.45l-2.2 1.3" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" />
-    <path d="M15.9 15.45l2.2 1.3" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" />
-    <rect x="7.2" y="4" width="9.6" height="7.2" rx="2.6" fill="currentColor" fillOpacity="0.1" stroke="currentColor" strokeWidth={strokeWidth} />
-    <path d="M10.3 11.2L8.2 13.1c-.42.38-.14 1.08.43 1.08h2.03" fill="currentColor" fillOpacity="0.1" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
-    <circle cx="5.1" cy="18.25" r="2.55" fill="currentColor" fillOpacity="0.12" stroke="currentColor" strokeWidth={strokeWidth} />
-    <circle cx="12" cy="18.25" r="2.55" fill="currentColor" fillOpacity="0.12" stroke="currentColor" strokeWidth={strokeWidth} />
-    <circle cx="18.9" cy="18.25" r="2.55" fill="currentColor" fillOpacity="0.12" stroke="currentColor" strokeWidth={strokeWidth} />
-    <path d="M10.2 7.6h3.6" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" opacity="0.55" />
-  </svg>
+export const PremiumChannels = ({ className }: any) => (
+  <span
+    aria-hidden="true"
+    className={`inline-block shrink-0 bg-current ${className || ''}`}
+    style={{
+      WebkitMaskImage: 'url(/icons/ui/channel-chain-icons8.png)',
+      maskImage: 'url(/icons/ui/channel-chain-icons8.png)',
+      WebkitMaskRepeat: 'no-repeat',
+      maskRepeat: 'no-repeat',
+      WebkitMaskPosition: 'center',
+      maskPosition: 'center',
+      WebkitMaskSize: 'contain',
+      maskSize: 'contain',
+    }}
+  />
 );
 
 export const PremiumFolderOpen = ({ className, strokeWidth = 1.8 }: any) => (

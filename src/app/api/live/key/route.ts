@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { apiKeyPool } from '../../../../lib/agent/api-key-pool';
+import { applyRuntimeApiKeys, applyRuntimeModelOverrides } from '../../../../lib/agent/runtime-api-keys';
 
 export const dynamic = 'force-dynamic';
 
@@ -13,8 +14,12 @@ export async function POST(req: Request) {
   try {
     const body = await req.json().catch(() => ({}));
     const chatId = body.chatId || `live_${Date.now()}`;
+    const runtimeKeyResult = applyRuntimeApiKeys(body.apiKeys);
+    applyRuntimeModelOverrides(body.modelOverrides);
     
-    const lease = apiKeyPool.leaseKey(chatId, 'main_agent');
+    const lease = runtimeKeyResult.preferredGeminiApiKey
+      ? apiKeyPool.leaseSpecificKey(chatId, runtimeKeyResult.preferredGeminiApiKey, 'main_agent') || apiKeyPool.leaseKey(chatId, 'main_agent')
+      : apiKeyPool.leaseKey(chatId, 'main_agent');
     
     if (!lease) {
       return NextResponse.json(

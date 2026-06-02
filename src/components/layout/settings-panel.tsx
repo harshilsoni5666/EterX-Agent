@@ -3,20 +3,33 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  X, Settings, Bot, Key, Zap, User, Shield, Palette,
-  ChevronRight, ToggleLeft, ToggleRight, Monitor, Moon, Sun,
-  Database, Brain, Cpu, Activity, Gauge, Sliders, Eye, EyeOff,
-  Copy, Check, Info, AlertTriangle, Sparkles, Volume2, Globe,
-  FileCode, FolderOpen, Terminal, Layers, RefreshCw, Lock
+  Key, Zap, Shield, ChevronRight, Monitor,
+  Cpu, Eye, EyeOff,
+  Copy, Check, Globe,
+  FolderOpen, RefreshCw, Lock,
+  Search, PlugZap, Plus, Trash2, GripVertical
 } from 'lucide-react';
 import { MAIN_AGENT_MODEL_OPTIONS, type MainAgentMode } from '../../lib/agent/model-routing';
+import { applyEterxTheme, broadcastEterxSettingsUpdate } from '../theme/theme-bridge';
 
 // ─── Settings Shape ────────────────────────────────────
 export interface AppSettings {
   // General
   theme: 'dark' | 'light' | 'system';
   userName: string;
+  customInstructions: string;
   fontSize: 'compact' | 'default' | 'comfortable';
+  workMode: 'specialist' | 'everyday';
+  openDestination: 'eterx' | 'workspace' | 'last';
+  terminalShell: 'powershell' | 'cmd' | 'git-bash' | 'wsl';
+  requireCtrlEnter: boolean;
+  followUpBehavior: 'queue' | 'steer';
+  codeReviewMode: 'inline' | 'detached';
+  defaultProjectlessChat: boolean;
+  completionNotifications: 'always' | 'important' | 'never';
+  reduceMotion: 'system' | 'on' | 'off';
+  pointerCursors: boolean;
+  diffMarkers: 'color' | 'symbols';
   animationsEnabled: boolean;
   soundEnabled: boolean;
   autoSave: boolean;
@@ -31,17 +44,46 @@ export interface AppSettings {
   groundingSearch: boolean;
   streamResponses: boolean;
   maxRetries: number;
+  defaultPermissions: boolean;
+  autoReview: boolean;
+  fullAccess: boolean;
+  shellIntegration: boolean;
+  autoOpenEditedFiles: boolean;
 
   // Advanced
   debugMode: boolean;
   telemetry: boolean;
   experimentalFeatures: boolean;
+  keyboardShortcuts: boolean;
+  mcpServersEnabled: boolean;
+  hooksEnabled: boolean;
+  gitIntegration: boolean;
+  gitAutoDetect: boolean;
+  gitMergeMethod: 'merge' | 'squash';
+  showPrStatus: boolean;
+  isolatedEnvironments: boolean;
+  worktreesEnabled: boolean;
+  browserAccess: boolean;
+  computerUse: boolean;
+  archiveRetention: '30' | '90' | 'forever';
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
   theme: 'light',
   userName: 'Developer',
+  customInstructions: '',
   fontSize: 'default',
+  workMode: 'everyday',
+  openDestination: 'eterx',
+  terminalShell: 'powershell',
+  requireCtrlEnter: false,
+  followUpBehavior: 'steer',
+  codeReviewMode: 'inline',
+  defaultProjectlessChat: false,
+  completionNotifications: 'always',
+  reduceMotion: 'system',
+  pointerCursors: false,
+  diffMarkers: 'color',
   animationsEnabled: true,
   soundEnabled: false,
   autoSave: true,
@@ -54,24 +96,256 @@ const DEFAULT_SETTINGS: AppSettings = {
   groundingSearch: true,
   streamResponses: true,
   maxRetries: 2,
+  defaultPermissions: true,
+  autoReview: true,
+  fullAccess: false,
+  shellIntegration: true,
+  autoOpenEditedFiles: true,
   debugMode: false,
   telemetry: false,
   experimentalFeatures: false,
+  keyboardShortcuts: true,
+  mcpServersEnabled: true,
+  hooksEnabled: false,
+  gitIntegration: true,
+  gitAutoDetect: true,
+  gitMergeMethod: 'merge',
+  showPrStatus: false,
+  isolatedEnvironments: true,
+  worktreesEnabled: false,
+  browserAccess: true,
+  computerUse: false,
+  archiveRetention: '90',
 };
 
-type Tab = 'general' | 'agent' | 'api' | 'advanced' | 'account';
+type Tab =
+  | 'general'
+  | 'profile'
+  | 'appearance'
+  | 'configuration'
+  | 'personalization'
+  | 'shortcuts'
+  | 'mcp'
+  | 'hooks'
+  | 'models'
+  | 'api'
+  | 'git'
+  | 'environments'
+  | 'worktrees'
+  | 'browser'
+  | 'computer'
+  | 'archives';
+
+type LegacyTab = 'agent' | 'advanced' | 'account' | 'connections';
+
+type ApiProviderStatus = {
+  provider: string;
+  accepted: boolean;
+  count: number;
+  reason?: string;
+};
+
+type ModelDirectoryProvider = {
+  provider: string;
+  connected: boolean;
+  source: 'live' | 'unavailable';
+  models: Array<{
+    id: string;
+    name: string;
+    description?: string;
+    contextLength?: number;
+    inputTokenLimit?: number;
+    outputTokenLimit?: number;
+    capabilities?: string[];
+  }>;
+  error?: string;
+};
+
+type ModelDirectory = Record<string, ModelDirectoryProvider>;
+type ModelOverrides = Record<string, string>;
+type ModelCatalog = Record<string, string[]>;
+type ProviderModelOption = { id: string; label: string; source: 'selected' | 'saved' | 'official' | 'live' };
+
+const splitApiKeyPool = (value: string | undefined) =>
+  String(value || '')
+    .split(/[\n,]/)
+    .map(key => key.trim())
+    .filter(Boolean);
+
+const serializeApiKeyPool = (keys: string[]) =>
+  keys.map(key => key.trim()).filter(Boolean).join('\n');
+
+const maskApiKey = (key: string) => {
+  const trimmed = key.trim();
+  if (!trimmed) return '';
+  if (trimmed.length <= 12) return '•'.repeat(Math.max(8, trimmed.length));
+  return `${trimmed.slice(0, 6)}${'•'.repeat(12)}${trimmed.slice(-4)}`;
+};
+
+const providerKeyLooksValid = (provider: string, key: string) => {
+  const value = key.trim();
+  if (!value) return false;
+  if (provider === 'gemini') return value.startsWith('AIza') && value.length > 20;
+  if (provider === 'openai') return value.length >= 20 && (value.startsWith('sk-') || value.startsWith('sess-'));
+  if (provider === 'anthropic') return value.length >= 20 && value.startsWith('sk-ant-');
+  if (provider === 'openrouter') return value.length >= 20 && (value.startsWith('sk-or-') || value.startsWith('sk-'));
+  if (provider === 'mistral') return value.length >= 16;
+  if (provider === 'tavily') return value.length >= 12;
+  if (provider === 'github') return value.length >= 20;
+  return value.length >= 12;
+};
+
+const MODEL_OVERRIDE_STORAGE_KEY = 'eterx_model_overrides';
+const MODEL_CATALOG_STORAGE_KEY = 'eterx_model_catalog';
+const MODEL_PROVIDER_ORDER = ['gemini', 'mistral', 'openai', 'openrouter', 'anthropic'];
+const PROVIDER_LABEL: Record<string, string> = {
+  gemini: 'Google Gemini',
+  mistral: 'Mistral',
+  openai: 'OpenAI',
+  openrouter: 'OpenRouter',
+  anthropic: 'Anthropic',
+};
+const PROVIDER_MODE: Record<string, MainAgentMode> = {
+  gemini: 'think',
+  mistral: 'mistral',
+  openai: 'openai',
+  openrouter: 'openrouter',
+  anthropic: 'anthropic',
+};
+const PROVIDER_ACCENT: Record<string, string> = {
+  gemini: 'text-zinc-200 border-white/[0.10] bg-white/[0.045]',
+  mistral: 'text-zinc-200 border-white/[0.10] bg-white/[0.045]',
+  openai: 'text-zinc-200 border-white/[0.10] bg-white/[0.045]',
+  openrouter: 'text-zinc-200 border-white/[0.10] bg-white/[0.045]',
+  anthropic: 'text-zinc-200 border-white/[0.10] bg-white/[0.045]',
+};
+
+const PROVIDER_ICON_PATH: Record<string, string> = {
+  gemini: '/icons/providers/gemini.svg',
+  mistral: '/icons/providers/mistral.svg',
+  openai: '/icons/providers/openai.svg',
+  openrouter: '/icons/providers/openrouter.svg',
+  anthropic: '/icons/providers/anthropic.svg',
+};
+
+const PROVIDER_ICON_COLOR: Record<string, string> = {
+  gemini: '#8AB4F8',
+  mistral: '#FFAF00',
+};
+
+const PROVIDER_ICON_MASK_SIZE: Record<string, string> = {
+  gemini: '76%',
+  mistral: '82%',
+  openai: '86%',
+  openrouter: '84%',
+  anthropic: '82%',
+};
+
+const OFFICIAL_PROVIDER_GUIDE: Record<string, {
+  source: string;
+  keySource: string;
+  endpoint: string;
+  docsUrl: string;
+  families: Array<{ name: string; id?: string; note: string }>;
+}> = {
+  gemini: {
+    source: 'Google AI Studio / Gemini API',
+    keySource: 'Google AI Studio API key',
+    endpoint: 'GET /v1beta/models',
+    docsUrl: 'ai.google.dev/api/models',
+    families: [
+      { name: 'Gemini 3.5 Flash', id: 'gemini-3.5-flash', note: 'Stable frontier model for sustained agent and coding work' },
+      { name: 'Gemini 3.1 Pro Preview', id: 'gemini-3.1-pro-preview', note: 'Advanced reasoning, multimodal work, and high-autonomy tasks' },
+      { name: 'Gemini 3 Flash Preview', id: 'gemini-3-flash-preview', note: 'Preview 3-series model for fast, capable agent runs' },
+      { name: 'Gemini 3.1 Flash-Lite', id: 'gemini-3.1-flash-lite', note: 'Fast low-cost 3-series option for routine tasks' },
+      { name: 'Gemini 2.5 Pro', id: 'gemini-2.5-pro', note: 'Stable complex reasoning, coding, and multimodal understanding' },
+      { name: 'Gemini 2.5 Flash', id: 'gemini-2.5-flash', note: 'Stable price-performance fallback with thinking support' },
+      { name: 'Gemini 3.1 Flash Live', id: 'gemini-3.1-flash-live-preview', note: 'Low-latency Live API model for voice-first flows' },
+    ],
+  },
+  mistral: {
+    source: 'Mistral AI Platform',
+    keySource: 'Mistral API key',
+    endpoint: 'GET /v1/models',
+    docsUrl: 'docs.mistral.ai/models',
+    families: [
+      { name: 'Mistral Medium 3.5', id: 'mistral-medium-3-5', note: 'Frontier multimodal model optimized for agentic and coding use cases' },
+      { name: 'Mistral Small 4', id: 'mistral-small-2603', note: 'Efficient hybrid instruct, reasoning, and coding model' },
+      { name: 'Mistral Large 3', id: 'mistral-large-2512', note: 'High-capability open-weight multimodal model' },
+      { name: 'Ministral 3 14B', id: 'ministral-14b-2512', note: 'Vision-capable efficient generalist model' },
+      { name: 'Codestral', id: 'codestral-2508', note: 'Code completion and developer workflow model' },
+    ],
+  },
+  anthropic: {
+    source: 'Anthropic Console / Claude API',
+    keySource: 'Anthropic Console workspace key',
+    endpoint: 'GET /v1/models',
+    docsUrl: 'docs.anthropic.com',
+    families: [
+      { name: 'Claude Opus 4.8', id: 'claude-opus-4-8', note: 'Most capable Claude model for complex reasoning and agentic coding' },
+      { name: 'Claude Sonnet 4.6', id: 'claude-sonnet-4-6', note: 'Balanced speed, intelligence, and extended thinking' },
+      { name: 'Claude Haiku 4.5', id: 'claude-haiku-4-5-20251001', note: 'Fastest near-frontier Claude model' },
+      { name: 'Claude Opus 4.7', id: 'claude-opus-4-7', note: 'Previous Opus fallback for high autonomy work' },
+    ],
+  },
+  openai: {
+    source: 'OpenAI Platform',
+    keySource: 'OpenAI project API key',
+    endpoint: 'GET /v1/models',
+    docsUrl: 'platform.openai.com/docs/models',
+    families: [
+      { name: 'GPT-5.5', id: 'gpt-5.5', note: 'Flagship model for complex reasoning, coding, and professional workflows' },
+      { name: 'GPT-5.4', id: 'gpt-5.4', note: 'More affordable model for coding and professional work' },
+      { name: 'GPT-5.4 mini', id: 'gpt-5.4-mini', note: 'Fast option for coding, computer use, and sub-agents' },
+      { name: 'GPT-5.4 nano', id: 'gpt-5.4-nano', note: 'Lowest latency and cost' },
+      { name: 'GPT Image / Realtime / Transcribe', note: 'Specialized image, speech, and realtime model families' },
+    ],
+  },
+  openrouter: {
+    source: 'OpenRouter',
+    keySource: 'OpenRouter API key',
+    endpoint: 'GET /api/v1/models',
+    docsUrl: 'openrouter.ai/docs',
+    families: [
+      { name: 'GPT-5.5', id: 'openai/gpt-5.5', note: 'OpenAI flagship through OpenRouter' },
+      { name: 'Claude Opus 4.8', id: 'anthropic/claude-opus-4.8', note: 'Anthropic flagship through OpenRouter' },
+      { name: 'Gemini 3.5 Flash', id: 'google/gemini-3.5-flash', note: 'Google Gemini routed through OpenRouter' },
+      { name: 'Mistral Medium 3.5', id: 'mistralai/mistral-medium-3-5', note: 'Mistral frontier model through OpenRouter' },
+      { name: 'Full OpenRouter catalog', note: 'Live endpoint loads hundreds of provider models automatically' },
+    ],
+  },
+};
 
 interface SettingsPanelProps {
   isOpen: boolean;
   onClose: () => void;
+  initialTab?: Tab | LegacyTab;
+  standalone?: boolean;
 }
+
+const normalizeSettingsTab = (tab: Tab | LegacyTab | undefined): Tab => {
+  switch (tab) {
+    case 'account':
+      return 'profile';
+    case 'agent':
+      return 'configuration';
+    case 'api':
+      return 'api';
+    case 'connections':
+      return 'models';
+    case 'advanced':
+      return 'environments';
+    default:
+      return tab || 'general';
+  }
+};
 
 // ─── Custom Toggle ─────────────────────────────────────
 const Toggle: React.FC<{ enabled: boolean; onChange: (v: boolean) => void; disabled?: boolean }> = ({ enabled, onChange, disabled }) => (
   <button
     onClick={() => !disabled && onChange(!enabled)}
     className={`relative w-[42px] h-[24px] rounded-full transition-all duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)] shrink-0 ${ disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'
-      } ${ enabled ? 'bg-[#E2765A] shadow-[0_0_12px_rgba(226,118,90,0.3)]' : 'bg-white/10 hover:bg-white/15' }`}
+      } ${ enabled ? 'bg-[#2F8BEF] shadow-[0_0_10px_rgba(47,139,239,0.22)]' : 'bg-white/10 hover:bg-white/15' }`}
   >
     <motion.div
       animate={{ x: enabled ? 20 : 2 }}
@@ -90,9 +364,9 @@ const SettingSlider: React.FC<{ value: number; min: number; max: number; onChang
       max={max}
       value={value}
       onChange={(e) => onChange(parseInt(e.target.value))}
-      className="flex-1 h-1 bg-white/10 rounded-full appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-[#E2765A] [&::-webkit-slider-thumb]:shadow-[0_0_8px_rgba(226,118,90,0.4)] [&::-webkit-slider-thumb]:transition-transform [&::-webkit-slider-thumb]:hover:scale-125"
+      className="flex-1 h-1 bg-white/10 rounded-full appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white/85 [&::-webkit-slider-thumb]:shadow-[0_0_8px_rgba(255,255,255,0.18)] [&::-webkit-slider-thumb]:transition-transform [&::-webkit-slider-thumb]:hover:scale-125"
     />
-    <span className="text-[13px] font-mono text-[#E2765A] min-w-[28px] text-right">{value}</span>
+    <span className="text-[13px] font-mono text-[#DCD8D2] min-w-[28px] text-right">{value}</span>
   </div>
 );
 
@@ -104,14 +378,14 @@ const SettingRow: React.FC<{
   children: React.ReactNode;
   danger?: boolean;
 }> = ({ icon, title, description, children, danger }) => (
-  <div className={`flex items-center justify-between py-4 px-1 group ${ danger ? '' : 'border-b border-white/[0.04]' }`}>
+  <div className={`mb-2 flex items-center justify-between rounded-lg border px-5 py-4 group ${ danger ? 'border-red-500/20 bg-red-500/10' : 'border-white/[0.08] bg-[#202020]' }`}>
     <div className="flex items-start gap-3 flex-1 min-w-0 mr-4">
-      <div className={`mt-0.5 p-1.5 rounded-lg shrink-0 ${ danger ? 'bg-red-500/10 text-red-400' : 'bg-white/[0.04] text-[#8C8A88] group-hover:text-[#E8E6E3]' } transition-colors`}>
+      <div className={`hidden sm:flex mt-0.5 p-1.5 rounded-md shrink-0 ${ danger ? 'bg-red-500/10 text-red-400' : 'text-[#A8A8A8] group-hover:text-[#F1F1F1]' } transition-colors`}>
         {icon}
       </div>
       <div className="min-w-0">
-        <div className={`text-[13.5px] font-medium ${ danger ? 'text-red-400' : 'text-[#E8E6E3]' }`}>{title}</div>
-        <div className="text-[12px] text-[#666] mt-0.5 leading-relaxed">{description}</div>
+        <div className={`text-[13.5px] font-medium ${ danger ? 'text-red-300' : 'text-[#F1F1F1]' }`}>{title}</div>
+        <div className="text-[13px] text-[#A5A5A5] mt-1 leading-relaxed">{description}</div>
       </div>
     </div>
     <div className="shrink-0">{children}</div>
@@ -120,36 +394,512 @@ const SettingRow: React.FC<{
 
 // ─── Section Header ────────────────────────────────────
 const SectionHeader: React.FC<{ title: string; badge?: string }> = ({ title, badge }) => (
-  <div className="flex items-center gap-2 mb-1 mt-6 first:mt-0">
-    <span className="text-[10px] font-bold text-[#555350] uppercase tracking-[0.2em]">{title}</span>
+  <div className="flex items-center gap-2 mb-4 mt-10 first:mt-0">
+    <span className="text-[14px] font-semibold text-[#F1F1F1] tracking-tight">{title}</span>
     {badge && (
-      <span className="text-[9px] font-bold bg-[#E2765A]/15 text-[#E2765A] px-1.5 py-0.5 rounded-full tracking-wider uppercase">{badge}</span>
+      <span className="text-[10px] font-bold bg-white/[0.075] text-[#D7D7D7] px-2 py-0.5 rounded-full tracking-wider uppercase">{badge}</span>
     )}
-    <div className="flex-1 h-px bg-white/[0.04]" />
   </div>
 );
 
 // ─── API Key Row ───────────────────────────────────────
-const ApiKeyRow: React.FC<{ name: string; icon: React.ReactNode; keyValue: string; onUpdate: (v: string) => void }> = ({ name, icon, keyValue, onUpdate }) => {
+const SettingsStack: React.FC<{ children: React.ReactNode }> = ({ children }) => (
+  <div className="overflow-hidden rounded-xl border border-white/[0.09] bg-[#202020]">
+    {children}
+  </div>
+);
+
+const SettingsStackRow: React.FC<{
+  title: string;
+  description?: string;
+  children?: React.ReactNode;
+  tall?: boolean;
+}> = ({ title, description, children, tall }) => (
+  <div className={`flex items-center justify-between gap-6 border-b border-white/[0.07] px-5 last:border-b-0 ${tall ? 'py-5' : 'py-4'}`}>
+    <div className="min-w-0 flex-1">
+      <div className="text-[13.5px] font-medium leading-tight text-[#F1F1F1]">{title}</div>
+      {description && <div className="mt-1.5 max-w-[520px] text-[13px] leading-relaxed text-[#A7A7A7]">{description}</div>}
+    </div>
+    {children && <div className="flex shrink-0 items-center justify-end gap-2">{children}</div>}
+  </div>
+);
+
+const SelectControl: React.FC<{
+  value: string;
+  onChange: (value: string) => void;
+  options: Array<{ value: string; label: string }>;
+  width?: string;
+}> = ({ value, onChange, options, width = 'w-[240px]' }) => (
+  <div className={`relative ${width} shrink-0`}>
+    <ModernSelect value={value} onChange={onChange} options={options} />
+  </div>
+);
+
+const SegmentedControl = <T extends string,>({
+  value,
+  onChange,
+  options,
+}: {
+  value: T;
+  onChange: (value: T) => void;
+  options: Array<{ value: T; label: string }>;
+}) => (
+  <div className="inline-flex items-center gap-1">
+    {options.map(option => (
+      <button
+        key={option.value}
+        onClick={() => onChange(option.value)}
+        className={`rounded-full px-2.5 py-1 text-[12.5px] font-medium transition-colors ${
+          value === option.value ? 'bg-[#303030] text-[#F2F2F2]' : 'text-[#A7A7A7] hover:bg-white/[0.045] hover:text-[#F2F2F2]'
+        }`}
+      >
+        {option.label}
+      </button>
+    ))}
+  </div>
+);
+
+const SoftButton: React.FC<{ children: React.ReactNode; onClick?: () => void }> = ({ children, onClick }) => (
+  <button
+    onClick={onClick}
+    className="rounded-lg bg-[#303030] px-3 py-1.5 text-[12.5px] font-medium text-[#F2F2F2] transition-colors hover:bg-[#393939]"
+  >
+    {children}
+  </button>
+);
+
+const ApiKeyPoolEditor: React.FC<{
+  provider: string;
+  providerLabel: string;
+  value: string;
+  sync?: ApiProviderStatus;
+  onChange: (value: string) => void;
+  minRows?: number;
+}> = ({ provider, providerLabel, value, sync, onChange, minRows = 1 }) => {
+  const buildRows = useCallback((rawValue: string) => {
+    const parsed = splitApiKeyPool(rawValue);
+    const rowCount = Math.max(minRows, parsed.length || 1);
+    return Array.from({ length: rowCount }, (_, index) => parsed[index] || '');
+  }, [minRows]);
+
+  const [rows, setRows] = useState<string[]>(() => {
+    const parsed = splitApiKeyPool(value);
+    const rowCount = Math.max(minRows, parsed.length || 1);
+    return Array.from({ length: rowCount }, (_, index) => parsed[index] || '');
+  });
+  const [visibleRows, setVisibleRows] = useState<Record<number, boolean>>({});
+  const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
+  const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
+
+  useEffect(() => {
+    setRows(buildRows(value));
+  }, [buildRows, provider, value]);
+
+  useEffect(() => {
+    setVisibleRows({});
+    setCopiedIndex(null);
+    setDraggedIndex(null);
+  }, [provider]);
+
+  const commitRows = useCallback((nextRows: string[]) => {
+    onChange(serializeApiKeyPool(nextRows));
+  }, [onChange]);
+
+  const updateRow = (index: number, rawValue: string) => {
+    const pastedKeys = splitApiKeyPool(rawValue);
+    setRows(prev => {
+      const next = [...prev];
+      if (pastedKeys.length > 1) {
+        next.splice(index, 1, ...pastedKeys);
+      } else {
+        next[index] = rawValue;
+      }
+      commitRows(next);
+      return next.length ? next : buildRows('');
+    });
+  };
+
+  const addRow = () => {
+    setRows(prev => [...prev, '']);
+  };
+
+  const moveRow = (fromIndex: number, toIndex: number) => {
+    if (fromIndex === toIndex || fromIndex < 0 || toIndex < 0) return;
+    setRows(prev => {
+      if (fromIndex >= prev.length || toIndex >= prev.length) return prev;
+      const next = [...prev];
+      const [moved] = next.splice(fromIndex, 1);
+      next.splice(toIndex, 0, moved);
+      commitRows(next);
+      return next;
+    });
+  };
+
+  const removeRow = (index: number) => {
+    setRows(prev => {
+      const next = prev.filter((_, rowIndex) => rowIndex !== index);
+      const safeNext = next.length >= minRows
+        ? next
+        : [...next, ...Array.from({ length: minRows - next.length }, () => '')];
+      commitRows(safeNext);
+      return safeNext;
+    });
+  };
+
+  const clearPool = () => {
+    setRows(buildRows(''));
+    commitRows([]);
+  };
+
+  const copyRow = async (index: number, key: string) => {
+    if (!key.trim()) return;
+    try {
+      await navigator.clipboard?.writeText(key.trim());
+      setCopiedIndex(index);
+      window.setTimeout(() => setCopiedIndex(null), 900);
+    } catch {
+      setCopiedIndex(null);
+    }
+  };
+
+  const cleanRows = rows.map(row => row.trim());
+  const configuredCount = splitApiKeyPool(value).length;
+  const acceptedCount = sync?.accepted ? sync.count : 0;
+  const invalidCount = Math.max(0, configuredCount - acceptedCount);
+  const hasScroll = rows.length > 3;
+
+  return (
+    <div className="w-[520px] max-w-[52vw] space-y-3">
+      <div className="flex items-center justify-between gap-3 rounded-xl border border-white/[0.08] bg-[#171717] px-3 py-2">
+        <div className="min-w-0">
+          <div className="text-[12px] font-semibold text-[#F1F1F1]">
+            <span className="truncate">{providerLabel} pool</span>
+          </div>
+          <div className="mt-1 text-[11px] text-[#8F8F8F]">
+            Drag rows to set priority. Valid keys sync to the local gateway in real time.
+          </div>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <span className="rounded-full border border-white/[0.08] bg-white/[0.045] px-2 py-1 text-[11px] font-medium text-[#D8D8D8]">
+            {acceptedCount || configuredCount} active
+          </span>
+          <button
+            type="button"
+            onClick={addRow}
+            className="inline-flex h-8 items-center gap-1 rounded-lg bg-[#303030] px-2.5 text-[12px] font-medium text-[#F2F2F2] transition-colors hover:bg-[#393939]"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            Add
+          </button>
+        </div>
+      </div>
+
+      <div className={`${hasScroll ? 'max-h-[360px] overflow-y-auto pr-1 eterx-scrollbar' : ''} space-y-2`}>
+        {rows.map((row, index) => {
+          const keyValue = row.trim();
+          const duplicate = Boolean(keyValue) && cleanRows.findIndex(key => key === keyValue) !== index;
+          const valid = providerKeyLooksValid(provider, keyValue);
+          const rowStatus = !keyValue
+            ? 'Empty'
+            : duplicate
+              ? 'Duplicate'
+              : valid
+                ? 'Ready'
+                : 'Check';
+          const isVisible = visibleRows[index] === true;
+
+          return (
+            <div
+              key={`${provider}-${index}`}
+              onDragOver={(event) => {
+                if (draggedIndex !== null) event.preventDefault();
+              }}
+              onDrop={(event) => {
+                event.preventDefault();
+                if (draggedIndex !== null) moveRow(draggedIndex, index);
+                setDraggedIndex(null);
+              }}
+              className={`rounded-xl border border-white/[0.08] bg-[#202020] p-2.5 transition-colors ${draggedIndex === index ? 'border-white/25 bg-[#292929]' : ''}`}
+            >
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    draggable
+                    onDragStart={(event) => {
+                      setDraggedIndex(index);
+                      event.dataTransfer.effectAllowed = 'move';
+                    }}
+                    onDragEnd={() => setDraggedIndex(null)}
+                    className="grid h-6 w-6 cursor-grab place-items-center rounded-md text-[#777] transition-colors hover:bg-white/[0.06] hover:text-[#D8D8D8] active:cursor-grabbing"
+                    title="Drag to reorder key priority"
+                    aria-label={`Drag API key slot ${index + 1}`}
+                  >
+                    <GripVertical className="h-3.5 w-3.5" />
+                  </button>
+                  <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#8E8E8E]">
+                    Slot {String(index + 1).padStart(2, '0')}
+                  </span>
+                </div>
+                <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] ${
+                  rowStatus === 'Ready'
+                    ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-300'
+                    : rowStatus === 'Check' || rowStatus === 'Duplicate'
+                      ? 'border-amber-500/20 bg-amber-500/10 text-amber-300'
+                      : 'border-white/[0.08] bg-white/[0.035] text-[#777]'
+                }`}>
+                  {rowStatus}
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <input
+                  value={row}
+                  onChange={(event) => updateRow(index, event.target.value)}
+                  type={isVisible ? 'text' : 'password'}
+                  spellCheck={false}
+                  placeholder={index === 0 ? 'Paste provider API key' : 'Paste another key'}
+                  className="h-9 min-w-0 flex-1 rounded-xl border border-white/[0.08] bg-[#141414] px-3 text-[12px] font-mono text-[#F1F1F1] outline-none transition-colors placeholder:text-[#666] focus:border-white/[0.20]"
+                />
+                <button
+                  type="button"
+                  onClick={() => setVisibleRows(prev => ({ ...prev, [index]: !prev[index] }))}
+                  className="grid h-9 w-9 place-items-center rounded-lg bg-white/[0.045] text-[#A7A7A7] transition-colors hover:bg-white/[0.08] hover:text-[#F1F1F1]"
+                  title={isVisible ? 'Hide key' : 'Show key'}
+                >
+                  {isVisible ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => copyRow(index, row)}
+                  disabled={!keyValue}
+                  className="grid h-9 w-9 place-items-center rounded-lg bg-white/[0.045] text-[#A7A7A7] transition-colors hover:bg-white/[0.08] hover:text-[#F1F1F1] disabled:cursor-not-allowed disabled:opacity-35"
+                  title="Copy key"
+                >
+                  {copiedIndex === index ? <Check className="h-3.5 w-3.5 text-emerald-300" /> : <Copy className="h-3.5 w-3.5" />}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => removeRow(index)}
+                  disabled={rows.length === 1 && !keyValue}
+                  className="grid h-9 w-9 place-items-center rounded-lg bg-white/[0.045] text-[#A7A7A7] transition-colors hover:bg-red-500/10 hover:text-red-300 disabled:cursor-not-allowed disabled:opacity-35"
+                  title="Remove key"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              </div>
+              {keyValue && !isVisible && (
+                <div className="mt-2 truncate px-1 text-[11px] font-mono text-[#777]">
+                  {maskApiKey(keyValue)}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="flex items-center justify-between gap-3 text-[11px] text-[#8F8F8F]">
+        <span>
+          {invalidCount > 0 ? `${invalidCount} key${invalidCount === 1 ? '' : 's'} need review.` : 'Valid keys are synced into the local gateway only.'}
+        </span>
+        {configuredCount > 0 && (
+          <button type="button" onClick={clearPool} className="text-[#BDBDBD] transition-colors hover:text-red-300">
+            Clear pool
+          </button>
+        )}
+      </div>
+    </div>
+  );
+};
+
+const SettingsIconAsset: React.FC<{ name: string; className?: string }> = ({ name, className = 'h-4 w-4' }) => (
+  <span
+    aria-hidden="true"
+    className={`inline-block shrink-0 bg-current ${className}`}
+    style={{
+      WebkitMask: `url(/icons/settings/${name}.svg) center / contain no-repeat`,
+      mask: `url(/icons/settings/${name}.svg) center / contain no-repeat`,
+    }}
+  />
+);
+
+const ProviderIconAsset: React.FC<{ provider: string; className?: string }> = ({ provider, className = 'h-4 w-4' }) => {
+  const iconPath = PROVIDER_ICON_PATH[provider];
+  if (!iconPath) return <Key className={className} />;
+  return (
+    <span
+      aria-hidden="true"
+      className={`inline-block shrink-0 bg-current ${className}`}
+      style={{
+        color: PROVIDER_ICON_COLOR[provider],
+        WebkitMask: `url(${iconPath}) center / ${PROVIDER_ICON_MASK_SIZE[provider] || '84%'} no-repeat`,
+        mask: `url(${iconPath}) center / ${PROVIDER_ICON_MASK_SIZE[provider] || '84%'} no-repeat`,
+      }}
+    />
+  );
+};
+
+const ProviderMark: React.FC<{ provider: string; className?: string }> = ({ provider, className = '' }) => (
+  <span className={`grid h-6 w-6 shrink-0 place-items-center rounded-lg border border-white/[0.08] bg-white/[0.045] ${className}`}>
+    <ProviderIconAsset provider={provider} className="h-4 w-4" />
+  </span>
+);
+
+const ModernSelect: React.FC<{
+  value: string;
+  onChange: (value: string) => void;
+  options: Array<{ value: string; label: string; description?: string }>;
+  placeholder?: string;
+  className?: string;
+}> = ({ value, onChange, options, placeholder = 'Select', className = '' }) => {
+  const [open, setOpen] = useState(false);
+  const selected = options.find(option => option.value === value);
+
+  return (
+    <div className={`relative ${className}`}>
+      <button
+        type="button"
+        onClick={() => setOpen(prev => !prev)}
+        onBlur={() => window.setTimeout(() => setOpen(false), 120)}
+        className="flex h-9 w-full items-center justify-between gap-3 rounded-xl border border-white/[0.08] bg-[#2D2D2D] px-3 text-left text-[13px] font-medium text-[#F2F2F2] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] outline-none transition-colors hover:bg-[#363636] focus:border-white/[0.20]"
+      >
+        <span className="truncate">{selected?.label || placeholder}</span>
+        <ChevronRight className={`h-4 w-4 shrink-0 text-[#A7A7A7] transition-transform ${open ? '-rotate-90' : 'rotate-90'}`} />
+      </button>
+      {open && (
+        <div className="absolute right-0 z-50 mt-2 max-h-72 w-full min-w-[240px] overflow-y-auto rounded-xl border border-white/[0.10] bg-[#242424] p-1 shadow-[0_18px_48px_rgba(0,0,0,0.45)] eterx-scrollbar">
+          {options.map(option => (
+            <button
+              key={option.value}
+              type="button"
+              onMouseDown={(event) => {
+                event.preventDefault();
+                onChange(option.value);
+                setOpen(false);
+              }}
+              className={`flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-[12.5px] transition-colors ${
+                value === option.value ? 'bg-white/[0.08] text-[#F4F4F4]' : 'text-[#CFCFCF] hover:bg-white/[0.055] hover:text-[#F4F4F4]'
+              }`}
+            >
+              <span className="min-w-0 flex-1">
+                <span className="block truncate">{option.label}</span>
+                {option.description && (
+                  <span className="mt-0.5 block truncate text-[11px] font-normal text-[#8F8F8F]">
+                    {option.description}
+                  </span>
+                )}
+              </span>
+              {value === option.value && <Check className="ml-2 h-3.5 w-3.5 shrink-0" />}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
+const ProviderSelect: React.FC<{
+  value: string;
+  onChange: (value: string) => void;
+  providers: string[];
+  className?: string;
+}> = ({ value, onChange, providers, className = '' }) => {
+  const [open, setOpen] = useState(false);
+  const label = PROVIDER_LABEL[value] || value || 'Select provider';
+
+  return (
+    <div className={`relative ${className}`}>
+      <button
+        type="button"
+        onClick={() => setOpen(prev => !prev)}
+        onBlur={() => window.setTimeout(() => setOpen(false), 120)}
+        className="flex h-9 w-full items-center justify-between gap-3 rounded-xl border border-white/[0.08] bg-[#2D2D2D] px-3 text-left text-[13px] font-medium text-[#F2F2F2] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] outline-none transition-colors hover:bg-[#363636] focus:border-white/[0.20]"
+      >
+        <span className="flex min-w-0 items-center gap-2">
+          <ProviderMark provider={value} />
+          <span className="truncate">{label}</span>
+        </span>
+        <ChevronRight className={`h-4 w-4 shrink-0 text-[#A7A7A7] transition-transform ${open ? '-rotate-90' : 'rotate-90'}`} />
+      </button>
+      {open && (
+        <div className="absolute right-0 z-50 mt-2 max-h-72 w-full min-w-[240px] overflow-y-auto rounded-xl border border-white/[0.10] bg-[#242424] p-1 shadow-[0_18px_48px_rgba(0,0,0,0.45)] eterx-scrollbar">
+          {providers.map(provider => (
+            <button
+              key={provider}
+              type="button"
+              onMouseDown={(event) => {
+                event.preventDefault();
+                onChange(provider);
+                setOpen(false);
+              }}
+              className={`flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2 text-left text-[12.5px] transition-colors ${
+                value === provider ? 'bg-white/[0.08] text-[#F4F4F4]' : 'text-[#CFCFCF] hover:bg-white/[0.055] hover:text-[#F4F4F4]'
+              }`}
+            >
+              <span className="flex min-w-0 items-center gap-2">
+                <ProviderMark provider={provider} />
+                <span className="truncate">{PROVIDER_LABEL[provider] || provider}</span>
+              </span>
+              {value === provider && <Check className="h-3.5 w-3.5 shrink-0" />}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
+const ApiKeyRow: React.FC<{
+  name: string;
+  description?: string;
+  icon: React.ReactNode;
+  keyValue: string;
+  onUpdate: (v: string) => void;
+  status?: 'ready' | 'missing' | 'error';
+}> = ({ name, description, keyValue, onUpdate, status }) => {
   const [visible, setVisible] = useState(false);
   const [copied, setCopied] = useState(false);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(keyValue);
+  const hasKey = Boolean(keyValue?.trim());
+  const rowStatus = status || (hasKey ? 'ready' : 'missing');
+
+  useEffect(() => {
+    setDraft(keyValue);
+  }, [keyValue]);
 
   const handleCopy = () => {
+    if (!keyValue) return;
     navigator.clipboard.writeText(keyValue);
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   };
 
   return (
-    <div className="py-3.5 px-1 border-b border-white/[0.04]">
-      <div className="flex items-center justify-between mb-2">
-        <div className="flex items-center gap-2.5">
-          <div className="p-1.5 rounded-lg bg-white/[0.04] text-[#8C8A88]">{icon}</div>
-          <span className="text-[13.5px] font-medium text-[#E8E6E3]">{name}</span>
+    <div className="mb-2 rounded-lg border border-white/[0.08] bg-[#202020] px-5 py-4">
+      <div className="flex items-center justify-between gap-3 mb-2">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <span className={`h-2.5 w-2.5 rounded-full shrink-0 ${
+            rowStatus === 'ready'
+              ? 'bg-emerald-300 shadow-[0_0_12px_rgba(110,231,183,0.28)]'
+              : rowStatus === 'error'
+                ? 'bg-red-400'
+                : 'bg-white/18'
+          }`} />
+          <div className="min-w-0">
+            <span className="block truncate text-[15px] font-medium text-[#F1F1F1]">{name}</span>
+            {description && <span className="mt-1 block truncate text-[13px] text-[#A5A5A5]">{description}</span>}
+          </div>
         </div>
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1 shrink-0">
+          <span className={`hidden sm:inline-flex rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] ${
+            rowStatus === 'ready'
+              ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-300'
+              : rowStatus === 'error'
+                ? 'border-red-500/20 bg-red-500/10 text-red-300'
+                : 'border-white/[0.08] bg-white/[0.03] text-[#777]'
+          }`}>
+            {rowStatus === 'ready' ? 'Ready' : rowStatus === 'error' ? 'Check' : 'Missing'}
+          </span>
           <button onClick={() => setVisible(!visible)} className="p-1.5 rounded-md hover:bg-white/5 text-[#555] hover:text-[#E8E6E3] transition-colors" title={visible ? 'Hide' : 'Show'}>
             {visible ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
           </button>
@@ -168,17 +918,17 @@ const ApiKeyRow: React.FC<{ name: string; icon: React.ReactNode; keyValue: strin
               if (e.key === 'Enter') { onUpdate(draft); setEditing(false); }
               if (e.key === 'Escape') setEditing(false);
             }}
-            className="flex-1 bg-white/[0.04] border border-white/10 rounded-lg px-3 py-2 text-[12px] font-mono text-[#E8E6E3] outline-none focus:border-[#E2765A]/40 transition-colors"
+            className="flex-1 bg-[#141414] border border-white/[0.10] rounded-lg px-3 py-2 text-[12px] font-mono text-[#E8E6E3] outline-none focus:border-white/25 transition-colors"
             placeholder="Enter API key..."
           />
-          <button onClick={() => { onUpdate(draft); setEditing(false); }} className="px-3 py-2 bg-[#E2765A]/20 text-[#E2765A] rounded-lg text-[12px] font-medium hover:bg-[#E2765A]/30 transition-colors">Save</button>
+          <button onClick={() => { onUpdate(draft); setEditing(false); }} className="px-3 py-2 bg-white/[0.08] text-[#E8E6E3] rounded-lg text-[12px] font-medium hover:bg-white/[0.12] transition-colors">Save</button>
         </div>
       ) : (
         <div
           onClick={() => setEditing(true)}
-          className="bg-white/[0.03] border border-white/[0.06] rounded-lg px-3 py-2 text-[12px] font-mono text-[#555] cursor-pointer hover:border-white/10 transition-colors"
+          className="bg-[#141414] border border-white/[0.08] rounded-lg px-3 py-2 text-[12px] font-mono text-[#666] cursor-pointer hover:border-white/15 transition-colors"
         >
-          {keyValue ? (visible ? keyValue : '•'.repeat(Math.min(keyValue.length, 40))) : <span className="text-[#444] italic">Click to add key...</span>}
+          {keyValue ? (visible ? keyValue : '*'.repeat(Math.min(keyValue.length, 40))) : <span className="text-[#444] italic">Click to add key...</span>}
         </div>
       )}
     </div>
@@ -189,10 +939,21 @@ const ApiKeyRow: React.FC<{ name: string; icon: React.ReactNode; keyValue: strin
 // ═══════════════════════════════════════════════════════
 // MAIN SETTINGS PANEL
 // ═══════════════════════════════════════════════════════
-export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose }) => {
-  const [activeTab, setActiveTab] = useState<Tab>('general');
+export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, initialTab = 'general', standalone = false }) => {
+  const [activeTab, setActiveTab] = useState<Tab>(normalizeSettingsTab(initialTab));
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [apiKeys, setApiKeys] = useState<Record<string, string>>({});
+  const [apiSyncStatus, setApiSyncStatus] = useState<'idle' | 'syncing' | 'synced' | 'error'>('idle');
+  const [apiSyncMessage, setApiSyncMessage] = useState('Runtime keys are local until synced.');
+  const [apiProviderStatus, setApiProviderStatus] = useState<ApiProviderStatus[]>([]);
+  const [modelDirectory, setModelDirectory] = useState<ModelDirectory>({});
+  const [modelDirectoryStatus, setModelDirectoryStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
+  const [modelDirectoryUpdatedAt, setModelDirectoryUpdatedAt] = useState<number | null>(null);
+  const [modelOverrides, setModelOverrides] = useState<ModelOverrides>({});
+  const [modelCatalog, setModelCatalog] = useState<ModelCatalog>({});
+  const [selectedConnectionProvider, setSelectedConnectionProvider] = useState<string>('gemini');
+  const [selectedApiModelValue, setSelectedApiModelValue] = useState('');
+  const [exactModelDraft, setExactModelDraft] = useState('');
   const [hasChanges, setHasChanges] = useState(false);
   const [showBatmanEgg] = useState(false);
   const [eggQuoteIndex] = useState(0);
@@ -205,22 +966,116 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose })
     { line1: "LIGHT IS", line2: "FOR THE WEAK." }
   ];
 
+  useEffect(() => {
+    if (isOpen) setActiveTab(normalizeSettingsTab(initialTab));
+  }, [initialTab, isOpen]);
+
+  const hasAnyApiKey = useCallback((keys: Record<string, string>) =>
+    Object.values(keys).some(value => Boolean(String(value || '').trim())), []);
+
+  const syncApiKeys = useCallback(async (keys: Record<string, string>, silent = false, overrides: ModelOverrides = {}) => {
+    const cleanKeys = Object.fromEntries(
+      Object.entries(keys)
+        .map(([key, value]) => [key, String(value || '').trim()])
+        .filter(([, value]) => Boolean(value)),
+    );
+    const cleanModelOverrides = Object.fromEntries(
+      Object.entries(overrides)
+        .map(([provider, model]) => [provider, String(model || '').trim()])
+        .filter(([provider, model]) => MODEL_PROVIDER_ORDER.includes(provider) && Boolean(model)),
+    );
+
+    if (!hasAnyApiKey(cleanKeys) && Object.keys(cleanModelOverrides).length === 0) {
+      setApiSyncStatus('idle');
+      setApiSyncMessage('Add a provider key to activate the local runtime gateway.');
+      setApiProviderStatus([]);
+      return;
+    }
+
+    if (!silent) {
+      setApiSyncStatus('syncing');
+      setApiSyncMessage('Syncing keys with the local EterX runtime...');
+    }
+
+    try {
+      const res = await fetch('/api/settings/keys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ apiKeys: cleanKeys, modelOverrides: cleanModelOverrides }),
+      });
+      const payload = await res.json();
+      if (!res.ok || !payload?.ok) throw new Error(payload?.error || 'Key sync failed');
+
+      setApiProviderStatus(Array.isArray(payload.providers) ? payload.providers : []);
+      setApiSyncStatus('synced');
+      const modelCount = Array.isArray(payload.modelOverrides)
+        ? payload.modelOverrides.filter((item: any) => item?.accepted).length
+        : 0;
+      setApiSyncMessage(`${ payload.acceptedCount || 0 } key${ payload.acceptedCount === 1 ? '' : 's' } and ${ modelCount } model override${ modelCount === 1 ? '' : 's' } active.`);
+    } catch (error: any) {
+      setApiSyncStatus('error');
+      setApiSyncMessage(error?.message || 'Could not sync API keys.');
+    }
+  }, [hasAnyApiKey]);
+
+  const refreshModelDirectory = useCallback(async (keys: Record<string, string> = apiKeys, overrides: ModelOverrides = modelOverrides) => {
+    setModelDirectoryStatus('loading');
+    try {
+      const res = await fetch('/api/settings/models', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ apiKeys: keys, modelOverrides: overrides }),
+      });
+      const payload = await res.json();
+      if (!res.ok || !payload?.ok) throw new Error(payload?.error || 'Model discovery failed');
+      setModelDirectory(payload.providers || {});
+      setModelDirectoryUpdatedAt(payload.updatedAt || Date.now());
+      setModelDirectoryStatus('ready');
+    } catch (error) {
+      setModelDirectoryStatus('error');
+    }
+  }, [apiKeys, modelOverrides]);
+
   // Load settings from localStorage
   useEffect(() => {
     try {
       const saved = localStorage.getItem('eterx_settings');
       if (saved) setSettings({ ...DEFAULT_SETTINGS, ...JSON.parse(saved) });
       const savedKeys = localStorage.getItem('eterx_api_keys');
-      if (savedKeys) setApiKeys(JSON.parse(savedKeys));
+      const savedModelOverrides = localStorage.getItem(MODEL_OVERRIDE_STORAGE_KEY);
+      const savedModelCatalog = localStorage.getItem(MODEL_CATALOG_STORAGE_KEY);
+      const parsedModelOverrides = savedModelOverrides ? JSON.parse(savedModelOverrides) : {};
+      const parsedModelCatalog = savedModelCatalog ? JSON.parse(savedModelCatalog) : {};
+      setModelOverrides(parsedModelOverrides);
+      setModelCatalog(
+        Object.fromEntries(
+          Object.entries(parsedModelCatalog as Record<string, unknown>)
+            .filter(([provider, models]) => MODEL_PROVIDER_ORDER.includes(provider) && Array.isArray(models))
+            .map(([provider, models]) => [
+              provider,
+              Array.from(new Set(
+                (models as unknown[])
+                  .map(model => String(model || '').trim())
+                  .filter(Boolean),
+              )),
+            ])
+            .filter(([, models]) => (models as string[]).length > 0),
+        ),
+      );
+      if (savedKeys) {
+        const parsedKeys = JSON.parse(savedKeys);
+        setApiKeys(parsedKeys);
+        void syncApiKeys(parsedKeys, true, parsedModelOverrides);
+      }
     } catch { }
-  }, [isOpen]);
+  }, [isOpen, syncApiKeys]);
 
   const updateSetting = useCallback(<K extends keyof AppSettings>(key: K, value: AppSettings[K]) => {
     setSettings(prev => {
       const next = { ...prev, [key]: value };
       localStorage.setItem('eterx_settings', JSON.stringify(next));
-      // Notify other components (e.g., page.tsx userName sync)
-      window.dispatchEvent(new Event('eterx-settings-updated'));
+      if (key === 'theme') applyEterxTheme(value as AppSettings['theme']);
+      broadcastEterxSettingsUpdate(next);
       return next;
     });
     setHasChanges(true);
@@ -239,7 +1094,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose })
       document.documentElement.style.colorScheme = safeTheme;
       (window as any).electronAPI?.setNativeTheme?.(safeTheme);
     };
-    applyTheme(settings.theme);
+    const themeForPanel = settings.theme;
+    applyTheme(themeForPanel);
 
     // Listen for OS theme changes when set to 'system'
     if (settings.theme === 'system') {
@@ -252,12 +1108,14 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose })
 
   const updateApiKey = useCallback((name: string, value: string) => {
     setApiKeys(prev => {
-      const next = { ...prev, [name]: value };
+      const next = { ...prev, [name]: value.trim() };
       localStorage.setItem('eterx_api_keys', JSON.stringify(next));
+      broadcastEterxSettingsUpdate({ type: 'api-keys-updated', apiKeys: next });
+      void syncApiKeys(next, false, modelOverrides);
       return next;
     });
     setHasChanges(true);
-  }, []);
+  }, [modelOverrides, syncApiKeys]);
 
   // Close on escape
   useEffect(() => {
@@ -266,13 +1124,176 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose })
     return () => window.removeEventListener('keydown', onKey);
   }, [isOpen, onClose]);
 
-  const tabs: { id: Tab; label: string; icon: React.ReactNode }[] = [
-    { id: 'general', label: 'General', icon: <Settings className="w-[16px] h-[16px]" /> },
-    { id: 'agent', label: 'Agent', icon: <Bot className="w-[16px] h-[16px]" /> },
-    { id: 'api', label: 'API Keys', icon: <Key className="w-[16px] h-[16px]" /> },
-    { id: 'advanced', label: 'Advanced', icon: <Zap className="w-[16px] h-[16px]" /> },
-    { id: 'account', label: 'Account', icon: <User className="w-[16px] h-[16px]" /> },
+  const tabs: { id: Tab; label: string; icon: string }[] = [
+    { id: 'general', label: 'General', icon: 'general' },
+    { id: 'profile', label: 'Profile', icon: 'profile' },
+    { id: 'appearance', label: 'Appearance', icon: 'appearance' },
+    { id: 'configuration', label: 'Configuration', icon: 'configuration' },
+    { id: 'personalization', label: 'Personalization', icon: 'personalization' },
+    { id: 'shortcuts', label: 'Keyboard shortcuts', icon: 'shortcuts' },
+    { id: 'mcp', label: 'MCP servers', icon: 'mcp' },
+    { id: 'hooks', label: 'Hooks', icon: 'hooks' },
+    { id: 'models', label: 'Models', icon: 'models' },
+    { id: 'api', label: 'API', icon: 'api' },
+    { id: 'git', label: 'Git', icon: 'git' },
+    { id: 'environments', label: 'Environments', icon: 'environments' },
+    { id: 'worktrees', label: 'Worktrees', icon: 'worktrees' },
+    { id: 'browser', label: 'Browser', icon: 'browser' },
+    { id: 'computer', label: 'Computer use', icon: 'computer' },
+    { id: 'archives', label: 'Archived chats', icon: 'archives' },
   ];
+
+  const providerKeyCount = (provider: string) => splitApiKeyPool(apiKeys[provider]).length;
+  const providerReady = (provider: string) => providerKeyCount(provider) > 0;
+  const providerSync = (provider: string) => apiProviderStatus.find(status => status.provider === provider);
+  const selectedModelOption = MAIN_AGENT_MODEL_OPTIONS.find(option => option.id === settings.agentMode) || MAIN_AGENT_MODEL_OPTIONS[0];
+  const activeProvider = selectedModelOption?.provider || 'gemini';
+  const activeModelOverride = modelOverrides[activeProvider];
+
+  useEffect(() => {
+    if (isOpen && activeProvider !== selectedConnectionProvider) {
+      setSelectedConnectionProvider(activeProvider);
+    }
+  }, [activeProvider, isOpen, selectedConnectionProvider]);
+
+  const getProviderModelOptions = useCallback((provider: string) => {
+    const seen = new Set<string>();
+    const options: ProviderModelOption[] = [];
+    const push = (id: unknown, label: unknown, source: ProviderModelOption['source']) => {
+      const modelId = String(id || '').trim();
+      if (!modelId || seen.has(modelId)) return;
+      seen.add(modelId);
+      options.push({
+        id: modelId,
+        label: String(label || modelId),
+        source,
+      });
+    };
+
+    push(modelOverrides[provider], modelOverrides[provider], 'selected');
+    modelCatalog[provider]?.forEach(modelId => push(modelId, modelId, 'saved'));
+    OFFICIAL_PROVIDER_GUIDE[provider]?.families.forEach(family => {
+      if (family.id) push(family.id, family.name, 'official');
+    });
+    modelDirectory[provider]?.models?.forEach(model => {
+      push(model.id, model.name || model.id, 'live');
+    });
+
+    return options;
+  }, [modelCatalog, modelDirectory, modelOverrides]);
+
+  const selectedProviderGuide = OFFICIAL_PROVIDER_GUIDE[selectedConnectionProvider];
+  const selectedProviderDirectory = modelDirectory[selectedConnectionProvider];
+  const selectedProviderMode = PROVIDER_MODE[selectedConnectionProvider];
+  const selectedProviderFallbackModel = MAIN_AGENT_MODEL_OPTIONS.find(option => option.id === selectedProviderMode)?.modelName || '';
+  const selectedProviderModel = modelOverrides[selectedConnectionProvider] || '';
+  const selectedProviderSavedModels = modelCatalog[selectedConnectionProvider] || [];
+  const selectedProviderModelOptions = getProviderModelOptions(selectedConnectionProvider);
+  const selectedProviderKeyCount = providerKeyCount(selectedConnectionProvider);
+  const selectedProviderStatusText = selectedProviderDirectory
+    ? (selectedProviderDirectory.connected ? `${ selectedProviderDirectory.models.length } live models loaded` : selectedProviderDirectory.error || 'Not connected')
+    : 'Refresh to load live models';
+  const selectedProviderCapabilities = [
+    selectedProviderKeyCount > 0 ? `${ selectedProviderKeyCount } key${ selectedProviderKeyCount === 1 ? '' : 's' } in pool` : 'Key not connected',
+    selectedProviderDirectory?.connected ? 'Live catalog' : 'Catalog pending',
+    selectedProviderSavedModels.length > 0 ? `${ selectedProviderSavedModels.length } selector model${ selectedProviderSavedModels.length === 1 ? '' : 's' }` : 'Selector empty',
+  ];
+  const apiModelEntries = MODEL_PROVIDER_ORDER.flatMap(provider => {
+    const providerName = PROVIDER_LABEL[provider] || provider;
+    const modelIds = Array.from(new Set([
+      modelOverrides[provider],
+      ...(modelCatalog[provider] || []),
+    ].map(modelId => String(modelId || '').trim()).filter(Boolean)));
+    const fallbackMode = PROVIDER_MODE[provider];
+    const fallbackModel = MAIN_AGENT_MODEL_OPTIONS.find(option => option.id === fallbackMode)?.modelName || 'Provider default';
+    const visibleModelIds = modelIds.length ? modelIds : [fallbackModel];
+
+    return visibleModelIds.map(modelId => ({
+      value: `${provider}:${encodeURIComponent(modelId)}`,
+      label: modelId,
+      description: providerName,
+      provider,
+      providerLabel: providerName,
+    }));
+  });
+  const selectedApiModelEntry =
+    apiModelEntries.find(entry => entry.value === selectedApiModelValue) ||
+    apiModelEntries.find(entry => entry.provider === activeProvider) ||
+    apiModelEntries[0];
+  const selectedApiProvider = selectedApiModelEntry?.provider || activeProvider;
+  const selectedApiProviderLabel = selectedApiModelEntry?.providerLabel || PROVIDER_LABEL[selectedApiProvider] || selectedApiProvider;
+  const selectedApiProviderSync = providerSync(selectedApiProvider);
+  const selectedApiProviderKeyCount = providerKeyCount(selectedApiProvider);
+
+  useEffect(() => {
+    setExactModelDraft(selectedProviderModel);
+  }, [selectedConnectionProvider, selectedProviderModel]);
+
+  useEffect(() => {
+    if (!isOpen || activeTab !== 'models' || modelDirectoryStatus !== 'idle') return;
+    void refreshModelDirectory(apiKeys, modelOverrides);
+  }, [activeTab, apiKeys, isOpen, modelDirectoryStatus, modelOverrides, refreshModelDirectory]);
+
+  const selectCatalogModel = useCallback((provider: string, modelId: string) => {
+    if (!MODEL_PROVIDER_ORDER.includes(provider)) return;
+    const next = { ...modelOverrides };
+    if (modelId) {
+      next[provider] = modelId;
+    } else {
+      delete next[provider];
+    }
+    setModelOverrides(next);
+    localStorage.setItem(MODEL_OVERRIDE_STORAGE_KEY, JSON.stringify(next));
+    broadcastEterxSettingsUpdate({ type: 'model-overrides-updated', modelOverrides: next });
+    const nextMode = PROVIDER_MODE[provider];
+    if (nextMode) updateSetting('agentMode', nextMode);
+    void syncApiKeys(apiKeys, false, next);
+    setHasChanges(true);
+  }, [apiKeys, modelOverrides, syncApiKeys, updateSetting]);
+
+  const saveModelCatalog = useCallback((next: ModelCatalog) => {
+    setModelCatalog(next);
+    localStorage.setItem(MODEL_CATALOG_STORAGE_KEY, JSON.stringify(next));
+    broadcastEterxSettingsUpdate({ type: 'model-catalog-updated', modelCatalog: next });
+  }, []);
+
+  const addModelToSelector = useCallback((provider: string, modelId: string, activate = true) => {
+    const cleanProvider = String(provider || '').trim();
+    const cleanModelId = String(modelId || '').trim();
+    if (!MODEL_PROVIDER_ORDER.includes(cleanProvider) || !cleanModelId) return;
+
+    const existingModels = modelCatalog[cleanProvider] || [];
+    const nextModels = existingModels.includes(cleanModelId)
+      ? existingModels
+      : [...existingModels, cleanModelId];
+    const nextCatalog = {
+      ...modelCatalog,
+      [cleanProvider]: nextModels,
+    };
+    saveModelCatalog(nextCatalog);
+    if (activate) selectCatalogModel(cleanProvider, cleanModelId);
+    setHasChanges(true);
+  }, [modelCatalog, saveModelCatalog, selectCatalogModel]);
+
+  const removeModelFromSelector = useCallback((provider: string, modelId: string) => {
+    const cleanProvider = String(provider || '').trim();
+    const cleanModelId = String(modelId || '').trim();
+    if (!MODEL_PROVIDER_ORDER.includes(cleanProvider) || !cleanModelId) return;
+
+    const nextModels = (modelCatalog[cleanProvider] || []).filter(model => model !== cleanModelId);
+    const nextCatalog = { ...modelCatalog };
+    if (nextModels.length > 0) {
+      nextCatalog[cleanProvider] = nextModels;
+    } else {
+      delete nextCatalog[cleanProvider];
+    }
+    saveModelCatalog(nextCatalog);
+    if (modelOverrides[cleanProvider] === cleanModelId) {
+      selectCatalogModel(cleanProvider, '');
+      setExactModelDraft('');
+    }
+    setHasChanges(true);
+  }, [modelCatalog, modelOverrides, saveModelCatalog, selectCatalogModel]);
 
   if ((!isOpen && !showBatmanEgg) || typeof document === 'undefined') return null;
 
@@ -285,73 +1306,60 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose })
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             transition={{ duration: 0.2 }}
-            className="fixed inset-0 z-[99999] flex items-center justify-center"
+            className="eterx-settings-panel fixed inset-0 z-[99999] flex items-center justify-center bg-[#151515]"
           >
             {/* Backdrop */}
-            <div className="absolute inset-0 bg-black/60 backdrop-blur-md" onClick={onClose} />
+            {!standalone && <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />}
 
             {/* Panel */}
             <motion.div
-              initial={{ opacity: 0, y: 20, scale: 0.96 }}
+              initial={{ opacity: 0, y: standalone ? 0 : 16, scale: standalone ? 1 : 0.98 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: 10, scale: 0.98 }}
+              exit={{ opacity: 0, y: standalone ? 0 : 10, scale: standalone ? 1 : 0.98 }}
               transition={{ duration: 0.3, ease: [0.2, 0.8, 0.2, 1] }}
-              className="relative w-[820px] max-w-[92vw] h-[600px] max-h-[85vh] rounded-2xl overflow-hidden flex flex-col sm:flex-row shadow-[0_25px_80px_rgba(0,0,0,0.7)] border border-white/[0.08]"
+              className={`${ standalone ? 'h-screen w-screen rounded-none border-0' : 'h-[min(980px,calc(100vh-24px))] w-[min(1760px,calc(100vw-24px))] rounded-md border border-white/[0.08]' } relative overflow-hidden flex flex-col bg-[#151515] shadow-[0_25px_80px_rgba(0,0,0,0.7)]`}
             >
               {/* Glass Background */}
-              <div className="absolute inset-0 bg-[#0E0E0E]/95 backdrop-blur-3xl" />
-              {/* Subtle accent glow top-left */}
-              <div className="absolute -top-20 -left-20 w-60 h-60 bg-[#E2765A]/[0.04] rounded-full blur-[80px] pointer-events-none" />
+              <div className="absolute inset-0 bg-[#151515]" />
+
+              <div className="relative flex min-h-0 flex-1 flex-col sm:flex-row">
 
               {/* ─── Sidebar Tabs ─── */}
-              <div className="relative w-full sm:w-[200px] shrink-0 border-b sm:border-b-0 sm:border-r border-white/[0.06] flex flex-col bg-white/[0.01]">
-                <div className="p-4 pb-2 sm:p-5 sm:pb-3">
-                  <h2 className="text-[15px] font-semibold text-[#E8E6E3] tracking-tight">Settings</h2>
-                  <p className="text-[11px] text-[#555] mt-0.5">Configure EterX</p>
+              <div className="relative z-10 w-full sm:w-[300px] shrink-0 overflow-hidden border-b border-white/[0.08] bg-[#1D1D1D] sm:border-b-0 sm:border-t flex flex-col">
+                <div className="flex h-11 shrink-0 items-center px-3">
+                  <button onClick={onClose} className="inline-flex h-9 items-center gap-2 rounded-md px-2 text-[#A7A7A7] transition-colors hover:bg-white/[0.05] hover:text-[#F1F1F1]">
+                    <span className="grid h-5 w-5 shrink-0 place-items-center">
+                      <ChevronRight className="h-4 w-4 rotate-180" />
+                    </span>
+                    <span className="text-[13.5px] font-medium leading-5">Back to app</span>
+                  </button>
                 </div>
-                <nav className="flex gap-1 overflow-x-auto px-2 pb-2 sm:block sm:flex-1 sm:space-y-[2px] sm:overflow-visible sm:pb-0">
+                <nav className="flex gap-1 overflow-x-auto px-2 pb-2 sm:block sm:flex-1 sm:space-y-1 sm:overflow-y-auto sm:overflow-x-hidden sm:pb-2 eterx-scrollbar">
                   {tabs.map(tab => (
                     <button
                       key={tab.id}
                       onClick={() => setActiveTab(tab.id)}
-                      className={`shrink-0 sm:w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-[13px] font-medium transition-all duration-300 ${ activeTab === tab.id
-                        ? 'bg-white/[0.08] text-[#E8E6E3] shadow-sm border border-white/[0.08]'
-                        : 'text-[#8C8A88] hover:text-[#E8E6E3] hover:bg-white/[0.03] border border-transparent'
+                      className={`flex h-10 shrink-0 items-center gap-3 rounded-lg px-3 text-left text-[14.5px] font-medium leading-none transition-colors sm:w-full ${ activeTab === tab.id
+                        ? 'bg-[#313131] text-[#F5F5F5]'
+                        : 'text-[#F0F0F0] hover:bg-white/[0.045]'
                         }`}
                     >
-                      <span className={`transition-colors ${ activeTab === tab.id ? 'text-[#E2765A]' : '' }`}>{tab.icon}</span>
-                      {tab.label}
+                      <span className="grid h-5 w-5 shrink-0 place-items-center text-current">
+                        <SettingsIconAsset name={tab.icon} className="h-4 w-4" />
+                      </span>
+                      <span className="min-w-0 truncate leading-5">{tab.label}</span>
                     </button>
                   ))}
                 </nav>
-                {/* Version footer */}
-                <div className="hidden sm:block p-4 pt-2 border-t border-white/[0.04]">
-                  <div className="text-[10px] text-[#444] font-mono">EterX Agent v2.4.0</div>
-                  <div className="text-[10px] text-[#333] font-mono mt-0.5">Build 2026.04.11</div>
-                </div>
               </div>
 
               {/* ─── Content ─── */}
-              <div className="relative flex-1 flex flex-col min-w-0">
+              <div className="relative z-20 flex-1 flex flex-col min-w-0 overflow-hidden border-l border-t border-white/[0.08] bg-[#151515] sm:-ml-[1px] sm:rounded-l-[26px]">
                 {/* Header */}
-                <div className="flex items-center justify-between px-6 py-4 border-b border-white/[0.06] shrink-0">
-                  <div>
-                    <h3 className="text-[14px] font-semibold text-[#E8E6E3]">{tabs.find(t => t.id === activeTab)?.label}</h3>
-                    <p className="text-[11px] text-[#555] mt-0.5">
-                      {activeTab === 'general' && 'Appearance, behavior, and preferences'}
-                      {activeTab === 'agent' && 'Agent reasoning, memory, and execution'}
-                      {activeTab === 'api' && 'Manage your API keys and integrations'}
-                      {activeTab === 'advanced' && 'Developer tools and experimental features'}
-                      {activeTab === 'account' && 'Profile, usage, and subscription'}
-                    </p>
-                  </div>
-                  <button onClick={onClose} className="p-2 rounded-lg hover:bg-white/5 text-[#555] hover:text-[#E8E6E3] transition-colors">
-                    <X className="w-4 h-4" />
-                  </button>
-                </div>
+                <div className="h-11 shrink-0 border-b border-white/[0.075] bg-[#151515]" />
 
                 {/* Scrollable Body */}
-                <div className="flex-1 overflow-y-auto eterx-scrollbar px-6 py-2">
+                <div className="flex-1 overflow-y-auto eterx-scrollbar px-4 py-16">
                   <AnimatePresence mode="wait">
                     <motion.div
                       key={activeTab}
@@ -359,255 +1367,904 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose })
                       animate={{ opacity: 1, x: 0 }}
                       exit={{ opacity: 0, x: -10 }}
                       transition={{ duration: 0.2 }}
+                      className="mx-auto w-full max-w-[672px] pb-16"
                     >
+                      <h3 className="mb-14 text-[26px] font-semibold leading-tight tracking-[-0.01em] text-[#F4F4F4]">{tabs.find(t => t.id === activeTab)?.label}</h3>
 
                       {/* ═══ GENERAL TAB ═══ */}
                       {activeTab === 'general' && (
                         <div>
+                          <SectionHeader title="Work mode" />
+                          <p className="-mt-2 mb-5 text-[14px] text-[#A5A5A5]">Choose how EterX-Agent should shape responses for your work.</p>
+                          <div className="mb-12 grid gap-4 md:grid-cols-2">
+                            {[
+                              { id: 'everyday' as const, title: 'For everyday work', description: 'Clear answers for planning, writing, and routine tasks', icon: 'everyday' },
+                              { id: 'specialist' as const, title: 'For specialist work', description: 'Deeper reasoning, tool control, and implementation detail', icon: 'specialist' },
+                            ].map(mode => {
+                              const selected = settings.workMode === mode.id;
+                              return (
+                                <button
+                                  key={mode.id}
+                                  onClick={() => updateSetting('workMode', mode.id)}
+                                  className={`flex min-h-[82px] items-center justify-between gap-5 rounded-lg border px-5 py-4 text-left transition-colors ${
+                                    selected ? 'border-white/[0.12] bg-[#2B2B2B]' : 'border-white/[0.08] bg-[#171717] hover:bg-[#202020]'
+                                  }`}
+                                >
+                                  <div className="flex min-w-0 items-center gap-5">
+                                    <span className="grid h-6 w-6 shrink-0 place-items-center text-[#D7D7D7]">
+                                      <SettingsIconAsset name={mode.icon} className="h-5 w-5" />
+                                    </span>
+                                    <div className="min-w-0">
+                                      <div className="text-[14.5px] font-semibold text-[#F1F1F1]">{mode.title}</div>
+                                      <div className="mt-1.5 text-[14px] leading-relaxed text-[#A5A5A5]">{mode.description}</div>
+                                    </div>
+                                  </div>
+                                  <span className={`grid h-5 w-5 shrink-0 place-items-center rounded-full border ${
+                                    selected ? 'border-[#3D9BFF] bg-[#3D9BFF]' : 'border-white/[0.16]'
+                                  }`}>
+                                    {selected && <span className="h-1.5 w-1.5 rounded-full bg-white" />}
+                                  </span>
+                                </button>
+                              );
+                            })}
+                          </div>
+
+                          <SectionHeader title="Permissions" />
+                          <SettingsStack>
+                            <SettingsStackRow title="Default permissions" description="By default, EterX can read and edit files in its workspace. It can ask for additional access when needed." tall>
+                              <Toggle enabled={settings.defaultPermissions} onChange={v => updateSetting('defaultPermissions', v)} />
+                            </SettingsStackRow>
+                            <SettingsStackRow title="Auto-review" description="EterX can automatically review requests for additional access. Auto-review can make mistakes. Learn more about elevated risks." tall>
+                              <Toggle enabled={settings.autoReview} onChange={v => updateSetting('autoReview', v)} />
+                            </SettingsStackRow>
+                            <SettingsStackRow title="Full access" description="When EterX runs with full access, it can edit any file on your computer and run commands with network access." tall>
+                              <Toggle enabled={settings.fullAccess} onChange={v => updateSetting('fullAccess', v)} />
+                            </SettingsStackRow>
+                          </SettingsStack>
+
+                          <SectionHeader title="General" />
+                          <SettingsStack>
+                            <SettingsStackRow title="Default open destination" description="Where files and folders open by default">
+                              <SelectControl
+                                value={settings.openDestination}
+                                onChange={(value) => updateSetting('openDestination', value as AppSettings['openDestination'])}
+                                options={[
+                                  { value: 'eterx', label: 'EterX-Agent' },
+                                  { value: 'workspace', label: 'Workspace' },
+                                  { value: 'last', label: 'Last used' },
+                                ]}
+                              />
+                            </SettingsStackRow>
+                            <SettingsStackRow title="Integrated terminal shell" description="Choose which shell opens in the integrated terminal.">
+                              <SelectControl
+                                value={settings.terminalShell}
+                                onChange={(value) => updateSetting('terminalShell', value as AppSettings['terminalShell'])}
+                                options={[
+                                  { value: 'powershell', label: 'PowerShell' },
+                                  { value: 'cmd', label: 'Command Prompt' },
+                                  { value: 'git-bash', label: 'Git Bash' },
+                                  { value: 'wsl', label: 'WSL' },
+                                ]}
+                              />
+                            </SettingsStackRow>
+                            <SettingsStackRow title="Language" description="Language for the app UI">
+                              <SelectControl
+                                value={settings.language}
+                                onChange={(value) => updateSetting('language', value)}
+                                options={[
+                                  { value: 'en', label: 'Auto Detect' },
+                                  { value: 'hi', label: 'Hindi' },
+                                  { value: 'es', label: 'Spanish' },
+                                  { value: 'fr', label: 'French' },
+                                  { value: 'de', label: 'German' },
+                                  { value: 'ja', label: 'Japanese' },
+                                  { value: 'zh', label: 'Chinese' },
+                                ]}
+                              />
+                            </SettingsStackRow>
+                            <SettingsStackRow title="Require Ctrl + Enter to send long prompts" description="When enabled, multiline prompts require Ctrl + Enter to send.">
+                              <Toggle enabled={settings.requireCtrlEnter} onChange={v => updateSetting('requireCtrlEnter', v)} />
+                            </SettingsStackRow>
+                            <SettingsStackRow title="Follow-up behavior" description="Queue follow-ups while EterX runs or steer the current run.">
+                              <SegmentedControl
+                                value={settings.followUpBehavior}
+                                onChange={(value) => updateSetting('followUpBehavior', value)}
+                                options={[
+                                  { value: 'queue', label: 'Queue' },
+                                  { value: 'steer', label: 'Steer' },
+                                ]}
+                              />
+                            </SettingsStackRow>
+                            <SettingsStackRow title="Code review" description="Start review in the current chat when possible or launch a separate review chat.">
+                              <SegmentedControl
+                                value={settings.codeReviewMode}
+                                onChange={(value) => updateSetting('codeReviewMode', value)}
+                                options={[
+                                  { value: 'inline', label: 'Inline' },
+                                  { value: 'detached', label: 'Detached' },
+                                ]}
+                              />
+                            </SettingsStackRow>
+                            <SettingsStackRow title="Open source licenses" description="Third-party notices for bundled dependencies">
+                              <SoftButton>View</SoftButton>
+                            </SettingsStackRow>
+                          </SettingsStack>
+
+                          <SectionHeader title="Popout Window" />
+                          <SettingsStack>
+                            <SettingsStackRow title="Popout Window hotkey" description="Set a global shortcut for Popout Window. Leave unset to keep it off.">
+                              <span className="text-[18px] text-[#A7A7A7]">Off</span>
+                              <SoftButton>Set</SoftButton>
+                            </SettingsStackRow>
+                            <SettingsStackRow title="Default to projectless chat" description="Start new chats without a project">
+                              <Toggle enabled={settings.defaultProjectlessChat} onChange={v => updateSetting('defaultProjectlessChat', v)} />
+                            </SettingsStackRow>
+                          </SettingsStack>
+
+                          <SectionHeader title="Dictation" />
+                          <SettingsStack>
+                            <SettingsStackRow title="Hold-to-dictate hotkey" description="Hold anywhere on desktop to dictate where your cursor is">
+                              <span className="text-[18px] text-[#A7A7A7]">Off</span>
+                              <SoftButton>Set</SoftButton>
+                            </SettingsStackRow>
+                            <SettingsStackRow title="Toggle dictation hotkey" description="Press once anywhere on desktop to dictate, then press again to stop">
+                              <span className="text-[18px] text-[#A7A7A7]">Off</span>
+                              <SoftButton>Set</SoftButton>
+                            </SettingsStackRow>
+                            <SettingsStackRow title="Dictation dictionary" description="Words or phrases dictation should recognize">
+                              <ChevronRight className="h-4 w-4 rotate-90 text-[#A7A7A7]" />
+                            </SettingsStackRow>
+                            <SettingsStackRow title="Recent dictations" description="Your recent dictations will appear here so you can recover text if it does not land where you expected" />
+                          </SettingsStack>
+
+                          <SectionHeader title="Notifications" />
+                          <SettingsStack>
+                            <SettingsStackRow title="Turn completion notifications" description="Get notified when long-running agent work completes.">
+                              <SelectControl
+                                value={settings.completionNotifications}
+                                onChange={(value) => updateSetting('completionNotifications', value as AppSettings['completionNotifications'])}
+                                options={[
+                                  { value: 'always', label: 'Always' },
+                                  { value: 'important', label: 'Important only' },
+                                  { value: 'never', label: 'Never' },
+                                ]}
+                              />
+                            </SettingsStackRow>
+                          </SettingsStack>
+                        </div>
+                      )}
+
+                      {activeTab === 'appearance' && (
+                        <div>
                           <SectionHeader title="Appearance" />
-                          <SettingRow icon={<Palette className="w-4 h-4" />} title="Theme" description="Choose your preferred color mode">
-                            <div className="flex bg-white/[0.04] rounded-lg p-0.5 border border-white/[0.06]">
-                              {(['dark', 'light', 'system'] as const).map(t => (
-                                <button
-                                  key={t}
-                                  onClick={() => updateSetting('theme', t)}
-                                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[12px] font-medium transition-all ${ settings.theme === t
-                                    ? 'bg-white/10 text-[#E8E6E3] shadow-sm'
-                                    : 'text-[#666] hover:text-[#A3A19E]'
-                                    }`}
-                                >
-                                  {t === 'dark' && <Moon className="w-3 h-3" />}
-                                  {t === 'light' && <Sun className="w-3 h-3" />}
-                                  {t === 'system' && <Monitor className="w-3 h-3" />}
-                                  {t.charAt(0).toUpperCase() + t.slice(1)}
-                                </button>
-                              ))}
+                          <SettingsStack>
+                            <SettingsStackRow title="Theme" description="Use light, dark, or match your system">
+                              <SegmentedControl
+                                value={settings.theme}
+                                onChange={(value) => updateSetting('theme', value)}
+                                options={[
+                                  { value: 'light', label: 'Light' },
+                                  { value: 'dark', label: 'Dark' },
+                                  { value: 'system', label: 'System' },
+                                ]}
+                              />
+                            </SettingsStackRow>
+                            <div className="border-b border-white/[0.07] px-2 pb-2">
+                              <div className="overflow-hidden rounded-xl border border-white/[0.08] bg-[#141414] font-mono text-[12px] leading-7">
+                                <div className="grid grid-cols-2">
+                                  <div className="border-r border-white/[0.08]">
+                                    {[
+                                      ['1', 'const eterxTheme = {', 'text-[#C084FC]'],
+                                      ['2', '  surface: "sidebar",', 'bg-red-500/18 text-[#FF8A7A]'],
+                                      ['3', '  accent: "#2F8BEF",', 'bg-red-500/18 text-[#FFB86C]'],
+                                      ['4', '  contrast: 42,', 'bg-red-500/18 text-[#FFB86C]'],
+                                      ['5', '};', 'text-[#A7A7A7]'],
+                                    ].map(([line, code, tone]) => (
+                                      <div key={line} className={`grid grid-cols-[44px_1fr] px-2 ${tone}`}>
+                                        <span className="text-right text-[#777]">{line}</span>
+                                        <span className="pl-4">{code}</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                  <div>
+                                    {[
+                                      ['1', 'const eterxTheme = {', 'text-[#C084FC]'],
+                                      ['2', '  surface: "panel",', 'bg-emerald-500/18 text-emerald-300'],
+                                      ['3', '  accent: "#2F8BEF",', 'bg-emerald-500/18 text-[#8BE38B]'],
+                                      ['4', '  contrast: 68,', 'bg-emerald-500/18 text-[#75C7FF]'],
+                                      ['5', '};', 'text-[#A7A7A7]'],
+                                    ].map(([line, code, tone]) => (
+                                      <div key={line} className={`grid grid-cols-[44px_1fr] px-2 ${tone}`}>
+                                        <span className="text-right text-[#777]">{line}</span>
+                                        <span className="pl-4">{code}</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              </div>
                             </div>
-                          </SettingRow>
-
-                          <SettingRow icon={<Sliders className="w-4 h-4" />} title="Display Density" description="Adjust spacing and text size">
-                            <div className="flex bg-white/[0.04] rounded-lg p-0.5 border border-white/[0.06]">
-                              {(['compact', 'default', 'comfortable'] as const).map(s => (
-                                <button
-                                  key={s}
-                                  onClick={() => updateSetting('fontSize', s)}
-                                  className={`px-3 py-1.5 rounded-md text-[12px] font-medium transition-all ${ settings.fontSize === s
-                                    ? 'bg-white/10 text-[#E8E6E3] shadow-sm'
-                                    : 'text-[#666] hover:text-[#A3A19E]'
-                                    }`}
-                                >
-                                  {s.charAt(0).toUpperCase() + s.slice(1)}
-                                </button>
-                              ))}
-                            </div>
-                          </SettingRow>
-
-                          <SectionHeader title="Behavior" />
-                          <SettingRow icon={<Sparkles className="w-4 h-4" />} title="Animations" description="Enable smooth UI transitions and effects">
-                            <Toggle enabled={settings.animationsEnabled} onChange={v => updateSetting('animationsEnabled', v)} />
-                          </SettingRow>
-
-                          <SettingRow icon={<Volume2 className="w-4 h-4" />} title="Sound Effects" description="Play audio cues for agent events">
-                            <Toggle enabled={settings.soundEnabled} onChange={v => updateSetting('soundEnabled', v)} />
-                          </SettingRow>
-
-                          <SettingRow icon={<Database className="w-4 h-4" />} title="Auto-save Conversations" description="Persist chat sessions automatically to local storage">
-                            <Toggle enabled={settings.autoSave} onChange={v => updateSetting('autoSave', v)} />
-                          </SettingRow>
-
-                          <SettingRow icon={<Globe className="w-4 h-4" />} title="Language" description="Interface language preference">
-                            <select
-                              value={settings.language}
-                              onChange={(e) => updateSetting('language', e.target.value)}
-                              className="bg-white/[0.04] border border-white/[0.08] rounded-lg px-3 py-1.5 text-[12px] text-[#E8E6E3] outline-none cursor-pointer hover:border-white/15 transition-colors appearance-none pr-6"
-                            >
-                              <option value="en">English</option>
-                              <option value="hi">Hindi</option>
-                              <option value="es">Spanish</option>
-                              <option value="fr">French</option>
-                              <option value="de">German</option>
-                              <option value="ja">Japanese</option>
-                              <option value="zh">Chinese</option>
-                            </select>
-                          </SettingRow>
+                            <SettingsStackRow title="EterX theme" description="Modern enterprise interface preset">
+                              <SoftButton>Import</SoftButton>
+                              <SoftButton>Copy theme</SoftButton>
+                              <ModernSelect
+                                value="eterx"
+                                onChange={() => undefined}
+                                className="w-[170px]"
+                                options={[{ value: 'eterx', label: 'EterX' }]}
+                              />
+                            </SettingsStackRow>
+                            <SettingsStackRow title="Accent" description="Primary action and active-control color">
+                              <span className="inline-flex h-9 min-w-[130px] items-center gap-2 rounded-xl bg-[#2F8BEF] px-3 text-[13px] font-medium text-white">
+                                <span className="h-4 w-4 rounded-full border border-white/30" />
+                                #2F8BEF
+                              </span>
+                            </SettingsStackRow>
+                            <SettingsStackRow title="Background" description="Main app surface">
+                              <span className="inline-flex h-9 min-w-[130px] items-center gap-2 rounded-xl border border-white/[0.08] bg-[#141414] px-3 font-mono text-[12px] text-[#F1F1F1]">
+                                <span className="h-4 w-4 rounded-full border border-white/[0.12] bg-[#151515]" />
+                                #151515
+                              </span>
+                            </SettingsStackRow>
+                            <SettingsStackRow title="Foreground" description="Primary readable text">
+                              <span className="inline-flex h-9 min-w-[130px] items-center gap-2 rounded-xl border border-white/[0.08] bg-white px-3 font-mono text-[12px] text-[#1f1f1d]">
+                                <span className="h-4 w-4 rounded-full border border-black/10 bg-white" />
+                                #FFFFFF
+                              </span>
+                            </SettingsStackRow>
+                            <SettingsStackRow title="UI density" description="Adjust spacing and base text rhythm">
+                              <SelectControl
+                                value={settings.fontSize}
+                                onChange={(value) => updateSetting('fontSize', value as AppSettings['fontSize'])}
+                                options={[
+                                  { value: 'compact', label: 'Compact' },
+                                  { value: 'default', label: 'Default' },
+                                  { value: 'comfortable', label: 'Comfortable' },
+                                ]}
+                              />
+                            </SettingsStackRow>
+                            <SettingsStackRow title="Use pointer cursors" description="Change the cursor when hovering over interactive elements">
+                              <Toggle enabled={settings.pointerCursors} onChange={v => updateSetting('pointerCursors', v)} />
+                            </SettingsStackRow>
+                            <SettingsStackRow title="Reduce motion" description="Reduce animations or match your system">
+                              <SegmentedControl
+                                value={settings.reduceMotion}
+                                onChange={(value) => updateSetting('reduceMotion', value)}
+                                options={[
+                                  { value: 'system', label: 'System' },
+                                  { value: 'on', label: 'On' },
+                                  { value: 'off', label: 'Off' },
+                                ]}
+                              />
+                            </SettingsStackRow>
+                            <SettingsStackRow title="UI font size" description="Adjust the base size used for the EterX UI">
+                              <span className="inline-flex h-9 items-center gap-2 rounded-xl border border-white/[0.08] bg-[#2D2D2D] px-4 text-[13px] font-medium text-[#F2F2F2]">
+                                {settings.fontSize === 'compact' ? '13' : settings.fontSize === 'comfortable' ? '15' : '14'} <span className="text-[#A7A7A7]">px</span>
+                              </span>
+                            </SettingsStackRow>
+                            <SettingsStackRow title="Diff markers" description="Use colored bars and backgrounds or show + and - symbols">
+                              <SegmentedControl
+                                value={settings.diffMarkers}
+                                onChange={(value) => updateSetting('diffMarkers', value)}
+                                options={[
+                                  { value: 'color', label: 'Color' },
+                                  { value: 'symbols', label: '+/-' },
+                                ]}
+                              />
+                            </SettingsStackRow>
+                            <SettingsStackRow title="Auto-save conversations" description="Persist chat sessions automatically to local storage">
+                              <Toggle enabled={settings.autoSave} onChange={v => updateSetting('autoSave', v)} />
+                            </SettingsStackRow>
+                            <SettingsStackRow title="Sound effects" description="Play audio cues for important EterX events">
+                              <Toggle enabled={settings.soundEnabled} onChange={v => updateSetting('soundEnabled', v)} />
+                            </SettingsStackRow>
+                          </SettingsStack>
                         </div>
                       )}
 
                       {/* ═══ AGENT TAB ═══ */}
-                      {activeTab === 'agent' && (
+                      {activeTab === 'configuration' && (
                         <div>
-                          <SectionHeader title="Reasoning Engine" />
-                          <SettingRow icon={<Brain className="w-4 h-4" />} title="Agent Model" description="Selected model is used for the next main-agent run and helper planning calls.">
-                            <div className="flex bg-white/[0.04] rounded-lg p-0.5 border border-white/[0.06]">
-                              {MAIN_AGENT_MODEL_OPTIONS.map(option => (
-                                <button
-                                  key={option.id}
-                                  onClick={() => updateSetting('agentMode', option.id)}
-                                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[12px] font-medium transition-all ${ settings.agentMode === option.id
-                                    ? 'bg-white/10 text-[#E8E6E3] shadow-sm'
-                                    : 'text-[#666] hover:text-[#A3A19E]'
-                                    }`}
-                                >
-                                  {option.provider === 'mistral' ? <Cpu className="w-3 h-3" /> : <Brain className="w-3 h-3" />}
-                                  {option.label}
-                                </button>
-                              ))}
-                            </div>
-                          </SettingRow>
+                          <SectionHeader title="Model routing" />
+                          <SettingsStack>
+                            <SettingsStackRow title="Agent model" description="Active model is used for the next main-agent run and helper planning calls.">
+                              <ModernSelect
+                                value={settings.agentMode}
+                                onChange={(value) => updateSetting('agentMode', value as MainAgentMode)}
+                                className="w-[280px]"
+                                options={MAIN_AGENT_MODEL_OPTIONS.map(option => ({
+                                  value: option.id,
+                                  label: option.label,
+                                }))}
+                              />
+                            </SettingsStackRow>
+                            <SettingsStackRow title="Active provider" description="Provider used by the active routing profile.">
+                              <span className={`rounded-full border px-3 py-1.5 text-[11px] font-semibold uppercase ${
+                                providerReady(activeProvider)
+                                  ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-300'
+                                  : 'border-white/[0.08] bg-white/[0.035] text-[#A7A7A7]'
+                              }`}>
+                                {PROVIDER_LABEL[activeProvider] || activeProvider} / {providerReady(activeProvider) ? 'Ready' : 'Key needed'}
+                              </span>
+                            </SettingsStackRow>
+                            <SettingsStackRow title="Active model" description="Resolved model ID from the provider hub.">
+                              <span className="max-w-[280px] truncate rounded-lg border border-white/[0.08] bg-[#141414] px-3 py-2 font-mono text-[12px] text-[#CFCFCF]">
+                                {activeModelOverride || selectedModelOption?.modelName || 'Provider default'}
+                              </span>
+                            </SettingsStackRow>
+                          </SettingsStack>
 
-                          <SettingRow icon={<Shield className="w-4 h-4" />} title="Critic Verification" description="Runs a hostile auditor to verify agent output quality before delivery">
-                            <Toggle enabled={settings.criticEnabled} onChange={v => updateSetting('criticEnabled', v)} />
-                          </SettingRow>
+                          <SectionHeader title="Runtime checks" />
+                          <SettingsStack>
+                            <SettingsStackRow title="Critic verification" description="Run a verification pass before delivery for higher-risk work.">
+                              <Toggle enabled={settings.criticEnabled} onChange={v => updateSetting('criticEnabled', v)} />
+                            </SettingsStackRow>
+                            <SettingsStackRow title="Stream responses" description="Show agent output as it is generated.">
+                              <Toggle enabled={settings.streamResponses} onChange={v => updateSetting('streamResponses', v)} />
+                            </SettingsStackRow>
+                            <SettingsStackRow title="Grounding search" description="Allow current web search when the task needs up-to-date facts.">
+                              <Toggle enabled={settings.groundingSearch} onChange={v => updateSetting('groundingSearch', v)} />
+                            </SettingsStackRow>
+                          </SettingsStack>
 
-                          <SettingRow icon={<Activity className="w-4 h-4" />} title="Stream Responses" description="Stream agent output in real-time as it generates">
-                            <Toggle enabled={settings.streamResponses} onChange={v => updateSetting('streamResponses', v)} />
-                          </SettingRow>
+                          <SectionHeader title="Sub-agents" />
+                          <SettingsStack>
+                            <SettingsStackRow title="Auto sub-agent spawning" description="Allow EterX to run parallel helper agents when a task benefits from it.">
+                              <Toggle enabled={settings.autoSubAgents} onChange={v => updateSetting('autoSubAgents', v)} />
+                            </SettingsStackRow>
+                            <SettingsStackRow title="Max concurrent sub-agents" description="Upper limit for parallel helper agents.">
+                              <div className="w-[240px]">
+                                <SettingSlider value={settings.maxSubAgents} min={1} max={10} onChange={v => updateSetting('maxSubAgents', v)} label="" />
+                              </div>
+                            </SettingsStackRow>
+                            <SettingsStackRow title="Max retry attempts" description="How many times the runtime retries after a failed action.">
+                              <div className="w-[240px]">
+                                <SettingSlider value={settings.maxRetries} min={0} max={5} onChange={v => updateSetting('maxRetries', v)} label="" />
+                              </div>
+                            </SettingsStackRow>
+                          </SettingsStack>
 
-                          <SectionHeader title="Sub-Agents" />
-                          <SettingRow icon={<Layers className="w-4 h-4" />} title="Auto Sub-Agent Spawning" description="Allow the orchestrator to spin up parallel agents automatically">
-                            <Toggle enabled={settings.autoSubAgents} onChange={v => updateSetting('autoSubAgents', v)} />
-                          </SettingRow>
-
-                          <SettingRow icon={<Cpu className="w-4 h-4" />} title="Max Concurrent Sub-Agents" description="Maximum number of parallel agents that can run simultaneously">
-                            <SettingSlider value={settings.maxSubAgents} min={1} max={10} onChange={v => updateSetting('maxSubAgents', v)} label="" />
-                          </SettingRow>
-
-                          <SettingRow icon={<RefreshCw className="w-4 h-4" />} title="Max Retry Attempts" description="How many times the agent will retry on failure before giving up">
-                            <SettingSlider value={settings.maxRetries} min={0} max={5} onChange={v => updateSetting('maxRetries', v)} label="" />
-                          </SettingRow>
-
-                          <SectionHeader title="Memory & Context" />
-                          <SettingRow icon={<Database className="w-4 h-4" />} title="Memory Hydration" description="Load past memories, preferences, and error patterns from disk on startup">
-                            <Toggle enabled={settings.memoryHydration} onChange={v => updateSetting('memoryHydration', v)} />
-                          </SettingRow>
-
-                          <SettingRow icon={<Globe className="w-4 h-4" />} title="Google Search Grounding" description="Enable real-time web search to ground agent responses in facts">
-                            <Toggle enabled={settings.groundingSearch} onChange={v => updateSetting('groundingSearch', v)} />
-                          </SettingRow>
+                          <SectionHeader title="Memory & context" />
+                          <SettingsStack>
+                            <SettingsStackRow title="Memory hydration" description="Load saved preferences and useful context at startup.">
+                              <Toggle enabled={settings.memoryHydration} onChange={v => updateSetting('memoryHydration', v)} />
+                            </SettingsStackRow>
+                          </SettingsStack>
                         </div>
                       )}
 
                       {/* ═══ API KEYS TAB ═══ */}
-                      {activeTab === 'api' && (
+                      {activeTab === 'models' && (
                         <div>
-                          <SectionHeader title="Model Providers" />
-                          <div className="bg-white/[0.02] rounded-xl border border-white/[0.04] p-4 mb-4">
-                            <div className="flex items-start gap-2.5 mb-3">
-                              <Info className="w-4 h-4 text-[#E2765A] mt-0.5 shrink-0" />
-                              <p className="text-[12px] text-[#666] leading-relaxed">
-                                API keys are stored <span className="text-[#A3A19E] font-medium">locally</span> in your browser and never sent to external servers.
-                                The agent auto-discovers keys from your <span className="font-mono text-[#E2765A]/80">.env.local</span> file on the server side.
-                              </p>
-                            </div>
+                          <SectionHeader title="Model connection" badge={apiSyncStatus === 'synced' ? 'LIVE' : undefined} />
+                          <SettingsStack>
+                            <SettingsStackRow title="Provider" description="Choose the model provider used by the main agent runtime.">
+                              <ProviderSelect
+                                value={selectedConnectionProvider}
+                                onChange={(value) => {
+                                  setSelectedConnectionProvider(value);
+                                  const nextMode = PROVIDER_MODE[value];
+                                  if (nextMode) updateSetting('agentMode', nextMode);
+                                }}
+                                className="w-[240px]"
+                                providers={MODEL_PROVIDER_ORDER}
+                              />
+                            </SettingsStackRow>
+                            <SettingsStackRow title="Model" description={selectedProviderModel ? 'Exact provider model id active for the next run.' : `Auto fallback: ${ selectedProviderFallbackModel || 'provider default' }`}>
+                              <ModernSelect
+                                value={selectedProviderModel}
+                                onChange={(modelId) => {
+                                  setExactModelDraft(modelId);
+                                  if (modelId) {
+                                    addModelToSelector(selectedConnectionProvider, modelId, true);
+                                  } else {
+                                    selectCatalogModel(selectedConnectionProvider, '');
+                                  }
+                                }}
+                                placeholder="Auto runtime default"
+                                className="w-[360px]"
+                                options={[
+                                  { value: '', label: 'Auto runtime default', description: PROVIDER_LABEL[selectedConnectionProvider] || selectedConnectionProvider },
+                                  ...selectedProviderModelOptions.map(option => ({
+                                    value: option.id,
+                                    label: option.id,
+                                    description: PROVIDER_LABEL[selectedConnectionProvider] || selectedConnectionProvider,
+                                  })),
+                                ]}
+                              />
+                            </SettingsStackRow>
+                            <SettingsStackRow
+                              title={selectedConnectionProvider === 'openrouter' ? 'Exact OpenRouter model' : 'Exact model ID'}
+                              description={selectedConnectionProvider === 'openrouter'
+                                ? 'Paste any OpenRouter slug, for example openai/gpt-5.5 or anthropic/claude-opus-4.8.'
+                                : 'Use a provider-specific model ID when it is not listed yet in live discovery.'}
+                            >
+                              <div className="flex w-[280px] items-center gap-2">
+                                <input
+                                  value={exactModelDraft}
+                                  onChange={(event) => setExactModelDraft(event.target.value)}
+                                  onKeyDown={(event) => {
+                                    if (event.key === 'Enter') {
+                                      event.preventDefault();
+                                      addModelToSelector(selectedConnectionProvider, exactModelDraft.trim(), true);
+                                    }
+                                    if (event.key === 'Escape') setExactModelDraft(selectedProviderModel);
+                                  }}
+                                  placeholder={selectedConnectionProvider === 'openrouter' ? 'provider/model-id' : 'model-id'}
+                                  className="h-9 min-w-0 flex-1 rounded-xl border border-white/[0.08] bg-[#141414] px-3 text-[12px] font-mono text-[#F1F1F1] outline-none transition-colors placeholder:text-[#666] focus:border-white/[0.20]"
+                                />
+                                <SoftButton onClick={() => addModelToSelector(selectedConnectionProvider, exactModelDraft.trim(), true)}>Add</SoftButton>
+                                {selectedProviderModel && (
+                                  <SoftButton onClick={() => {
+                                    setExactModelDraft('');
+                                    selectCatalogModel(selectedConnectionProvider, '');
+                                  }}>
+                                    Auto
+                                  </SoftButton>
+                                )}
+                              </div>
+                            </SettingsStackRow>
+                            <SettingsStackRow
+                              title="Model selector entries"
+                              description="Only these model IDs appear in the chat model selector for this provider."
+                              tall
+                            >
+                              <div className="w-[360px] rounded-xl border border-white/[0.08] bg-[#141414] p-1.5">
+                                {selectedProviderSavedModels.length === 0 ? (
+                                  <div className="px-3 py-3 text-[12px] leading-5 text-[#8C8C8C]">
+                                    Add a model ID or choose one from discovery to make it available in chat.
+                                  </div>
+                                ) : (
+                                  <div className={selectedProviderSavedModels.length > 3 ? 'max-h-[172px] overflow-y-auto pr-1 eterx-scrollbar' : ''}>
+                                    {selectedProviderSavedModels.map(modelId => {
+                                      const selected = selectedProviderModel === modelId;
+                                      return (
+                                        <div key={`${selectedConnectionProvider}-${modelId}`} className="flex items-center gap-2 rounded-lg px-2 py-2 hover:bg-white/[0.04]">
+                                          <div className="min-w-0 flex-1">
+                                            <div className="truncate font-mono text-[11.5px] font-semibold text-[#F1F1F1]">{modelId}</div>
+                                            <div className="mt-0.5 text-[11px] text-[#777]">{selected ? 'Runtime target' : 'Chat selector entry'}</div>
+                                          </div>
+                                          <SoftButton onClick={() => selectCatalogModel(selectedConnectionProvider, modelId)}>
+                                            {selected ? 'Current' : 'Apply'}
+                                          </SoftButton>
+                                          <button
+                                            type="button"
+                                            onClick={() => removeModelFromSelector(selectedConnectionProvider, modelId)}
+                                            className="grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-white/[0.08] bg-white/[0.03] text-[#A7A7A7] transition-colors hover:border-red-400/30 hover:bg-red-500/10 hover:text-red-300"
+                                            aria-label={`Remove ${modelId}`}
+                                          >
+                                            <Trash2 className="h-3.5 w-3.5" />
+                                          </button>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                )}
+                              </div>
+                            </SettingsStackRow>
+                            <SettingsStackRow title="Live model discovery" description={selectedProviderStatusText}>
+                              <SoftButton onClick={() => refreshModelDirectory(apiKeys, modelOverrides)}>
+                                <span className="inline-flex items-center gap-2">
+                                  <RefreshCw className={`h-3.5 w-3.5 ${ modelDirectoryStatus === 'loading' ? 'animate-spin' : '' }`} />
+                                  Refresh
+                                </span>
+                              </SoftButton>
+                            </SettingsStackRow>
+                          </SettingsStack>
+
+                          <div className="mt-4 grid gap-3 md:grid-cols-3">
+                            {selectedProviderCapabilities.map(capability => (
+                              <div key={capability} className="rounded-xl border border-white/[0.08] bg-[#202020] px-4 py-3">
+                                <div className="text-[12px] font-medium text-[#F1F1F1]">{capability}</div>
+                              </div>
+                            ))}
                           </div>
 
-                          <ApiKeyRow
-                            name="Google Gemini"
-                            icon={<Sparkles className="w-4 h-4" />}
-                            keyValue={apiKeys['gemini'] || ''}
-                            onUpdate={(v) => updateApiKey('gemini', v)}
-                          />
-                          <ApiKeyRow
-                            name="OpenRouter"
-                            icon={<Globe className="w-4 h-4" />}
-                            keyValue={apiKeys['openrouter'] || ''}
-                            onUpdate={(v) => updateApiKey('openrouter', v)}
-                          />
-                          <ApiKeyRow
-                            name="Anthropic Claude"
-                            icon={<Brain className="w-4 h-4" />}
-                            keyValue={apiKeys['anthropic'] || ''}
-                            onUpdate={(v) => updateApiKey('anthropic', v)}
-                          />
-                          <ApiKeyRow
-                            name="OpenAI"
-                            icon={<Cpu className="w-4 h-4" />}
-                            keyValue={apiKeys['openai'] || ''}
-                            onUpdate={(v) => updateApiKey('openai', v)}
-                          />
+                          <SectionHeader title="Provider details" />
+                          <SettingsStack>
+                            <SettingsStackRow title={selectedProviderGuide?.source || PROVIDER_LABEL[selectedConnectionProvider] || selectedConnectionProvider} description={selectedProviderGuide?.keySource || 'Provider account key'} />
+                            <SettingsStackRow title="Discovery endpoint" description={selectedProviderGuide?.endpoint || 'Live model endpoint'}>
+                              <span className="rounded-lg border border-white/[0.08] bg-[#141414] px-3 py-1.5 font-mono text-[11px] text-[#CFCFCF]">
+                                {selectedProviderGuide?.docsUrl || 'Provider docs'}
+                              </span>
+                            </SettingsStackRow>
+                            {(selectedProviderGuide?.families || []).slice(0, 5).map(family => (
+                              <SettingsStackRow key={`${selectedConnectionProvider}-${family.name}`} title={family.name} description={family.note}>
+                                {family.id && <SoftButton onClick={() => addModelToSelector(selectedConnectionProvider, family.id!, true)}>Add</SoftButton>}
+                              </SettingsStackRow>
+                            ))}
+                          </SettingsStack>
 
-                          <SectionHeader title="Services" />
-                          <ApiKeyRow
-                            name="Tavily Search"
-                            icon={<Globe className="w-4 h-4" />}
-                            keyValue={apiKeys['tavily'] || ''}
-                            onUpdate={(v) => updateApiKey('tavily', v)}
-                          />
-                          <ApiKeyRow
-                            name="GitHub Token"
-                            icon={<FileCode className="w-4 h-4" />}
-                            keyValue={apiKeys['github'] || ''}
-                            onUpdate={(v) => updateApiKey('github', v)}
-                          />
                         </div>
                       )}
 
                       {/* ═══ ADVANCED TAB ═══ */}
-                      {activeTab === 'advanced' && (
+                      {activeTab === 'api' && (
                         <div>
-                          <SectionHeader title="Developer" />
-                          <SettingRow icon={<Terminal className="w-4 h-4" />} title="Debug Mode" description="Show detailed internal logs, tool calls, and reasoning traces in console">
-                            <Toggle enabled={settings.debugMode} onChange={v => updateSetting('debugMode', v)} />
-                          </SettingRow>
-
-                          <SettingRow icon={<Activity className="w-4 h-4" />} title="Performance Telemetry" description="Collect anonymous performance metrics to improve agent speed">
-                            <Toggle enabled={settings.telemetry} onChange={v => updateSetting('telemetry', v)} />
-                          </SettingRow>
-
-                          <SectionHeader title="Experimental" badge="BETA" />
-                          <SettingRow icon={<Sparkles className="w-4 h-4" />} title="Experimental Features" description="Enable cutting-edge capabilities that may be unstable">
-                            <Toggle enabled={settings.experimentalFeatures} onChange={v => updateSetting('experimentalFeatures', v)} />
-                          </SettingRow>
-
-                          <SectionHeader title="Data" />
-                          <SettingRow icon={<Database className="w-4 h-4" />} title="Clear Agent Memory" description="Wipe all stored memories, preferences, and error patterns from disk">
-                            <button
-                              onClick={() => {
-                                if (confirm('This will permanently delete all agent memory. Continue?')) {
-                                  localStorage.removeItem('eterx_settings');
-                                  localStorage.removeItem('eterx_api_keys');
-                                  setSettings(DEFAULT_SETTINGS);
-                                  setApiKeys({});
-                                }
-                              }}
-                              className="px-3 py-1.5 bg-red-500/10 text-red-400 rounded-lg text-[12px] font-medium hover:bg-red-500/20 border border-red-500/20 transition-colors"
+                          <SectionHeader title="API gateway" badge={apiSyncStatus === 'synced' ? 'LIVE' : undefined} />
+                          <SettingsStack>
+                            <SettingsStackRow
+                              title="Model target"
+                              description="Choose a model from the Models list. The key pool below applies to that model's provider."
                             >
-                              Clear Data
-                            </button>
-                          </SettingRow>
-                          <SettingRow icon={<FolderOpen className="w-4 h-4" />} title="Export All Settings" description="Download your complete configuration as a JSON file" danger={false}>
-                            <button
-                              onClick={() => {
-                                const data = JSON.stringify({ settings, apiKeys }, null, 2);
-                                const blob = new Blob([data], { type: 'application/json' });
-                                const url = URL.createObjectURL(blob);
-                                const a = document.createElement('a');
-                                a.href = url; a.download = 'eterx-settings.json'; a.click();
-                                URL.revokeObjectURL(url);
-                              }}
-                              className="px-3 py-1.5 bg-white/[0.04] text-[#A3A19E] rounded-lg text-[12px] font-medium hover:bg-white/[0.08] border border-white/[0.08] transition-colors"
+                              <ModernSelect
+                                value={selectedApiModelEntry?.value || ''}
+                                onChange={(value) => setSelectedApiModelValue(value)}
+                                placeholder="Choose model"
+                                className="w-[360px]"
+                                options={apiModelEntries.map(entry => ({
+                                  value: entry.value,
+                                  label: entry.label,
+                                  description: entry.description,
+                                }))}
+                              />
+                            </SettingsStackRow>
+                            <SettingsStackRow title="Provider" description="Detected from the selected model target.">
+                              <div className="inline-flex h-9 min-w-[220px] items-center gap-2 rounded-xl border border-white/[0.08] bg-[#2D2D2D] px-3 text-[13px] font-semibold text-[#F2F2F2]">
+                                <ProviderMark provider={selectedApiProvider} />
+                                <span>{selectedApiProviderLabel}</span>
+                              </div>
+                            </SettingsStackRow>
+                            <SettingsStackRow
+                              title="Provider API key pool"
+                              description="Ten priority slots are always available. Drag a key to reorder failover and rotation priority."
+                              tall
                             >
-                              Export
-                            </button>
+                              <ApiKeyPoolEditor
+                                provider={selectedApiProvider}
+                                providerLabel={selectedApiProviderLabel}
+                                value={apiKeys[selectedApiProvider] || ''}
+                                sync={selectedApiProviderSync}
+                                minRows={10}
+                                onChange={(nextValue) => updateApiKey(selectedApiProvider, nextValue)}
+                              />
+                            </SettingsStackRow>
+                          </SettingsStack>
+
+                          <div className="mt-4 grid gap-3 md:grid-cols-3">
+                            <div className="rounded-xl border border-white/[0.08] bg-[#202020] px-4 py-3">
+                              <div className="text-[12px] font-medium text-[#F1F1F1]">
+                                {selectedApiProviderKeyCount} configured key{selectedApiProviderKeyCount === 1 ? '' : 's'}
+                              </div>
+                            </div>
+                            <div className="rounded-xl border border-white/[0.08] bg-[#202020] px-4 py-3">
+                              <div className="text-[12px] font-medium text-[#F1F1F1]">{apiSyncMessage}</div>
+                            </div>
+                            <div className="rounded-xl border border-white/[0.08] bg-[#202020] px-4 py-3">
+                              <div className="text-[12px] font-medium text-[#F1F1F1]">Settings is the runtime key source</div>
+                            </div>
+                          </div>
+
+                          <SectionHeader title="Service APIs" />
+                          <SettingsStack>
+                            <SettingsStackRow title="External search" description="Tavily enables current web search for facts, docs, and research." tall>
+                              <ApiKeyPoolEditor
+                                provider="tavily"
+                                providerLabel="Tavily search"
+                                value={apiKeys.tavily || ''}
+                                sync={providerSync('tavily')}
+                                minRows={10}
+                                onChange={(nextValue) => updateApiKey('tavily', nextValue)}
+                              />
+                            </SettingsStackRow>
+                            <SettingsStackRow title="Code platform" description="GitHub token enables repository-aware actions when needed." tall>
+                              <ApiKeyPoolEditor
+                                provider="github"
+                                providerLabel="GitHub"
+                                value={apiKeys.github || ''}
+                                sync={providerSync('github')}
+                                minRows={10}
+                                onChange={(nextValue) => updateApiKey('github', nextValue)}
+                              />
+                            </SettingsStackRow>
+                          </SettingsStack>
+                        </div>
+                      )}
+
+                      {activeTab === 'personalization' && (
+                        <div>
+                          <SectionHeader title="Personalization" />
+                          <SettingsStack>
+                            <SettingsStackRow title="User name" description="Used in local prompts, workspace labels, and generated titles.">
+                              <input
+                                value={settings.userName || ''}
+                                onChange={(e) => updateSetting('userName', e.target.value)}
+                                className="h-9 w-[240px] rounded-xl border border-white/[0.08] bg-[#141414] px-3 text-[13px] text-[#F1F1F1] outline-none transition-colors placeholder:text-[#666] focus:border-white/[0.20]"
+                              />
+                            </SettingsStackRow>
+                            <SettingsStackRow title="Language" description="Interface language preference for the local app shell.">
+                              <ModernSelect
+                                value={settings.language}
+                                onChange={(value) => updateSetting('language', value)}
+                                className="w-[200px]"
+                                options={[
+                                  { value: 'en', label: 'English' },
+                                  { value: 'hi', label: 'Hindi' },
+                                  { value: 'es', label: 'Spanish' },
+                                  { value: 'fr', label: 'French' },
+                                  { value: 'de', label: 'German' },
+                                  { value: 'ja', label: 'Japanese' },
+                                  { value: 'zh', label: 'Chinese' },
+                                ]}
+                              />
+                            </SettingsStackRow>
+                            <SettingsStackRow title="Personality" description="Default response tone for EterX.">
+                              <ModernSelect
+                                value={settings.workMode}
+                                onChange={(value) => updateSetting('workMode', value as AppSettings['workMode'])}
+                                className="w-[200px]"
+                                options={[
+                                  { value: 'everyday', label: 'Everyday' },
+                                  { value: 'specialist', label: 'Specialist' },
+                                ]}
+                              />
+                            </SettingsStackRow>
+                          </SettingsStack>
+
+                          <SectionHeader title="Custom instructions" />
+                          <p className="-mt-2 mb-4 text-[14px] leading-relaxed text-[#A5A5A5]">Give EterX extra instructions and project context.</p>
+                          <textarea
+                            value={settings.customInstructions || ''}
+                            onChange={(event) => updateSetting('customInstructions', event.target.value)}
+                            placeholder="Add your custom instructions..."
+                            className="min-h-[260px] w-full resize-y rounded-xl border border-white/[0.09] bg-[#202020] px-4 py-3 font-mono text-[13px] leading-6 text-[#F1F1F1] outline-none transition-colors placeholder:text-[#777] focus:border-white/[0.20]"
+                          />
+
+                          <SectionHeader title="Memory" />
+                          <SettingsStack>
+                            <SettingsStackRow title="Memory hydration" description="Load past memories, preferences, and useful project context on startup.">
+                              <Toggle enabled={settings.memoryHydration} onChange={v => updateSetting('memoryHydration', v)} />
+                            </SettingsStackRow>
+                            <SettingsStackRow title="Sound effects" description="Play audio cues for important EterX events.">
+                              <Toggle enabled={settings.soundEnabled} onChange={v => updateSetting('soundEnabled', v)} />
+                            </SettingsStackRow>
+                          </SettingsStack>
+                        </div>
+                      )}
+
+                      {activeTab === 'shortcuts' && (
+                        <div>
+                          <SectionHeader title="Keyboard shortcuts" />
+                          <SettingRow icon={<Key className="w-4 h-4" />} title="Enable shortcuts" description="Allow global and in-app keyboard shortcuts for frequent actions.">
+                            <Toggle enabled={settings.keyboardShortcuts} onChange={v => updateSetting('keyboardShortcuts', v)} />
+                          </SettingRow>
+                          <div className="rounded-xl border border-white/[0.08] bg-[#202020] overflow-hidden">
+                            {[
+                              ['New chat', 'Ctrl + N'],
+                              ['Open settings', 'Ctrl + ,'],
+                              ['Search chats', 'Ctrl + K'],
+                              ['Toggle sidebar', 'Ctrl + B'],
+                              ['Stop generation', 'Esc'],
+                            ].map(([label, shortcut]) => (
+                              <div key={label} className="flex items-center justify-between border-b border-white/[0.06] px-5 py-4 last:border-b-0">
+                                <span className="text-[15px] text-[#F1F1F1]">{label}</span>
+                                <span className="rounded-md border border-white/[0.10] bg-[#141414] px-2.5 py-1 font-mono text-[12px] text-[#CFCFCF]">{shortcut}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {activeTab === 'mcp' && (
+                        <div>
+                          <SectionHeader title="MCP servers" />
+                          <SettingRow icon={<PlugZap className="w-4 h-4" />} title="Enable MCP tools" description="Allow configured MCP servers to expose tools and resources to the local agent runtime.">
+                            <Toggle enabled={settings.mcpServersEnabled} onChange={v => updateSetting('mcpServersEnabled', v)} />
+                          </SettingRow>
+                          <div className="grid gap-3 md:grid-cols-2">
+                            {[
+                              ['Filesystem', 'Local workspace file tools', 'Built in'],
+                              ['Browser', 'Local browser inspection and screenshots', 'Available'],
+                              ['Canva', 'Design generation and editing connector', 'Connector'],
+                              ['Linear', 'Issue and project workflow connector', 'Connector'],
+                            ].map(([name, description, status]) => (
+                              <div key={name} className="rounded-xl border border-white/[0.08] bg-[#202020] p-5">
+                                <div className="flex items-center justify-between gap-3">
+                                  <div className="text-[16px] font-medium text-[#F1F1F1]">{name}</div>
+                                  <span className="rounded-full border border-white/[0.10] bg-white/[0.045] px-2 py-0.5 text-[10px] uppercase text-[#AFAFAF]">{status}</span>
+                                </div>
+                                <p className="mt-2 text-[14px] text-[#A5A5A5]">{description}</p>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {activeTab === 'hooks' && (
+                        <div>
+                          <SectionHeader title="Hooks" />
+                          <SettingRow icon={<Zap className="w-4 h-4" />} title="Enable hooks" description="Run configured local hooks around agent tasks, file edits, and completion events.">
+                            <Toggle enabled={settings.hooksEnabled} onChange={v => updateSetting('hooksEnabled', v)} />
+                          </SettingRow>
+                          <SettingRow icon={<Shield className="w-4 h-4" />} title="Require review for hooks" description="Keep hook execution reviewable when commands or network calls are involved.">
+                            <Toggle enabled={settings.autoReview} onChange={v => updateSetting('autoReview', v)} />
+                          </SettingRow>
+                          <div className="rounded-xl border border-dashed border-white/[0.10] bg-[#171717] px-5 py-6 text-[14px] text-[#A5A5A5]">
+                            Hook definitions can be added from the workspace configuration when the project exposes them.
+                          </div>
+                        </div>
+                      )}
+
+                      {activeTab === 'git' && (
+                        <div>
+                          <SectionHeader title="Git" />
+                          <SettingsStack>
+                            <SettingsStackRow title="Git integration" description="Detect repository status and expose branch-aware actions inside the agent workflow.">
+                              <Toggle enabled={settings.gitIntegration} onChange={v => updateSetting('gitIntegration', v)} />
+                            </SettingsStackRow>
+                            <SettingsStackRow title="Auto-detect changes" description="Refresh changed files and branch status while the agent edits the workspace.">
+                              <Toggle enabled={settings.gitAutoDetect} onChange={v => updateSetting('gitAutoDetect', v)} />
+                            </SettingsStackRow>
+                            <SettingsStackRow title="Branch prefix" description="Default prefix for new EterX-created branches.">
+                              <span className="rounded-lg border border-white/[0.08] bg-[#141414] px-3 py-2 font-mono text-[13px] text-[#CFCFCF]">eterx/</span>
+                            </SettingsStackRow>
+                            <SettingsStackRow title="Pull request merge method" description="Default merge strategy for repository workflows.">
+                              <SegmentedControl
+                                value={settings.gitMergeMethod}
+                                onChange={(value) => updateSetting('gitMergeMethod', value)}
+                                options={[
+                                  { value: 'merge', label: 'Merge' },
+                                  { value: 'squash', label: 'Squash' },
+                                ]}
+                              />
+                            </SettingsStackRow>
+                            <SettingsStackRow title="Show PR status in sidebar" description="Display repository status beside active project chats.">
+                              <Toggle enabled={settings.showPrStatus} onChange={v => updateSetting('showPrStatus', v)} />
+                            </SettingsStackRow>
+                          </SettingsStack>
+                        </div>
+                      )}
+
+                      {activeTab === 'worktrees' && (
+                        <div>
+                          <SectionHeader title="Worktrees" />
+                          <SettingRow icon={<FolderOpen className="w-4 h-4" />} title="Enable worktrees" description="Allow separate task worktrees for isolated agent changes when supported by the repository.">
+                            <Toggle enabled={settings.worktreesEnabled} onChange={v => updateSetting('worktreesEnabled', v)} />
+                          </SettingRow>
+                          <SettingRow icon={<Shield className="w-4 h-4" />} title="Keep current workspace protected" description="Prefer isolated working copies before editing high-risk branches.">
+                            <Toggle enabled={settings.isolatedEnvironments} onChange={v => updateSetting('isolatedEnvironments', v)} />
+                          </SettingRow>
+                          <div className="rounded-xl border border-white/[0.08] bg-[#202020] p-5">
+                            <div className="text-[16px] font-medium text-[#F1F1F1]">Current workspace</div>
+                            <div className="mt-2 font-mono text-[13px] text-[#A5A5A5]">C:\Harshil projects\EterX-Agent</div>
+                          </div>
+                        </div>
+                      )}
+
+                      {activeTab === 'browser' && (
+                        <div>
+                          <SectionHeader title="Browser" />
+                          <SettingRow icon={<Globe className="w-4 h-4" />} title="Browser access" description="Allow the agent to inspect local app pages, capture screenshots, and verify UI behavior.">
+                            <Toggle enabled={settings.browserAccess} onChange={v => updateSetting('browserAccess', v)} />
+                          </SettingRow>
+                          <SettingRow icon={<Search className="w-4 h-4" />} title="External web search" description="Enable real-time web search to ground agent responses in current facts.">
+                            <Toggle enabled={settings.groundingSearch} onChange={v => updateSetting('groundingSearch', v)} />
+                          </SettingRow>
+                          <SettingRow icon={<Monitor className="w-4 h-4" />} title="Preview target" description="Default local app URL used by browser verification.">
+                            <span className="rounded-lg border border-white/[0.10] bg-[#141414] px-3 py-2 font-mono text-[13px] text-[#CFCFCF]">http://localhost:3000</span>
                           </SettingRow>
                         </div>
                       )}
 
+                      {activeTab === 'computer' && (
+                        <div>
+                          <SectionHeader title="Computer use" />
+                          <SettingRow icon={<Cpu className="w-4 h-4" />} title="Enable computer use" description="Allow direct screen-level computer actions for workflows that cannot be handled through APIs.">
+                            <Toggle enabled={settings.computerUse} onChange={v => updateSetting('computerUse', v)} />
+                          </SettingRow>
+                          <SettingRow icon={<Shield className="w-4 h-4" />} title="Require permission review" description="Review sensitive computer actions before they run.">
+                            <Toggle enabled={settings.autoReview} onChange={v => updateSetting('autoReview', v)} />
+                          </SettingRow>
+                          <div className="rounded-xl border border-white/[0.08] bg-[#202020] p-5">
+                            <div className="text-[16px] font-medium text-[#F1F1F1]">Safety boundary</div>
+                            <p className="mt-2 text-[14px] leading-relaxed text-[#A5A5A5]">Computer-use actions remain disabled unless this setting is enabled and the runtime has an available tool.</p>
+                          </div>
+                        </div>
+                      )}
+
+                      {activeTab === 'archives' && (
+                        <div>
+                          <SectionHeader title="Archived chats" />
+                          <SettingsStack>
+                            <SettingsStackRow title="Archive retention" description="Choose how long archived local chats remain in storage.">
+                              <ModernSelect
+                                value={settings.archiveRetention}
+                                onChange={(value) => updateSetting('archiveRetention', value as AppSettings['archiveRetention'])}
+                                className="w-[180px]"
+                                options={[
+                                  { value: '30', label: '30 days' },
+                                  { value: '90', label: '90 days' },
+                                  { value: 'forever', label: 'Forever' },
+                                ]}
+                              />
+                            </SettingsStackRow>
+                            <SettingsStackRow title="Archived chat count" description="Number of archived conversations stored locally.">
+                              <span className="text-[18px] font-semibold text-[#F1F1F1]">
+                                {(() => { try { const c = localStorage.getItem('eterx_archived_chats'); return c ? JSON.parse(c).length : 0; } catch { return 0; } })()}
+                              </span>
+                            </SettingsStackRow>
+                          </SettingsStack>
+                        </div>
+                      )}
+
+                      {activeTab === 'environments' && (
+                        <div>
+                          <SectionHeader title="Developer" />
+                          <SettingsStack>
+                            <SettingsStackRow title="Debug mode" description="Show detailed internal logs, tool calls, and runtime traces in console.">
+                              <Toggle enabled={settings.debugMode} onChange={v => updateSetting('debugMode', v)} />
+                            </SettingsStackRow>
+                            <SettingsStackRow title="Performance telemetry" description="Collect anonymous performance metrics to improve agent speed.">
+                              <Toggle enabled={settings.telemetry} onChange={v => updateSetting('telemetry', v)} />
+                            </SettingsStackRow>
+                          </SettingsStack>
+
+                          <SectionHeader title="Experimental" badge="BETA" />
+                          <SettingsStack>
+                            <SettingsStackRow title="Experimental features" description="Enable new capabilities that may still change.">
+                              <Toggle enabled={settings.experimentalFeatures} onChange={v => updateSetting('experimentalFeatures', v)} />
+                            </SettingsStackRow>
+                          </SettingsStack>
+
+                          <SectionHeader title="Data" />
+                          <SettingsStack>
+                            <SettingsStackRow title="Clear agent memory" description="Wipe stored memories, API keys, model overrides, and local preferences.">
+                              <button
+                                onClick={() => {
+                                  if (confirm('This will permanently delete all agent memory. Continue?')) {
+                                    localStorage.removeItem('eterx_settings');
+                                    localStorage.removeItem('eterx_api_keys');
+                                    localStorage.removeItem(MODEL_OVERRIDE_STORAGE_KEY);
+                                    localStorage.removeItem(MODEL_CATALOG_STORAGE_KEY);
+                                    setSettings(DEFAULT_SETTINGS);
+                                    setApiKeys({});
+                                    setModelOverrides({});
+                                    setModelCatalog({});
+                                    setApiSyncStatus('idle');
+                                    setApiSyncMessage('Add a provider key to activate the local runtime gateway.');
+                                    setApiProviderStatus([]);
+                                    setModelDirectory({});
+                                    setModelDirectoryStatus('idle');
+                                    setModelDirectoryUpdatedAt(null);
+                                  }
+                                }}
+                                className="rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-1.5 text-[12px] font-medium text-red-400 transition-colors hover:bg-red-500/20"
+                              >
+                                Clear Data
+                              </button>
+                            </SettingsStackRow>
+                            <SettingsStackRow title="Export all settings" description="Download the complete local configuration as a JSON file.">
+                              <SoftButton
+                                onClick={() => {
+                                  const data = JSON.stringify({ settings, apiKeys, modelOverrides, modelCatalog }, null, 2);
+                                  const blob = new Blob([data], { type: 'application/json' });
+                                  const url = URL.createObjectURL(blob);
+                                  const a = document.createElement('a');
+                                  a.href = url; a.download = 'eterx-settings.json'; a.click();
+                                  URL.revokeObjectURL(url);
+                                }}
+                              >
+                                Export
+                              </SoftButton>
+                            </SettingsStackRow>
+                          </SettingsStack>
+                        </div>
+                      )}
+
                       {/* ═══ ACCOUNT TAB ═══ */}
-                      {activeTab === 'account' && (
+                      {activeTab === 'profile' && (
                         <div>
                           <SectionHeader title="Profile" />
                           <div className="bg-white/[0.02] rounded-xl border border-white/[0.05] p-5 flex items-center gap-4 mb-4">
-                            <div className="w-14 h-14 rounded-full bg-gradient-to-br from-[#32312F] to-[#1C1B1A] flex items-center justify-center text-[#E8E6E3] font-bold text-xl border border-white/10 shadow-inner shrink-0">
+                            <div className="w-14 h-14 rounded-full bg-[#2B2B2B] flex items-center justify-center text-[#E8E6E3] font-bold text-xl border border-white/10 shadow-inner shrink-0">
                               {settings.userName?.charAt(0).toUpperCase() || 'U'}
                             </div>
                             <div className="flex-1 min-w-0">
                               <input
                                 value={settings.userName || ''}
                                 onChange={(e) => updateSetting('userName', e.target.value)}
-                                className="bg-transparent border-b border-white/[0.1] focus:border-[#E2765A] outline-none text-[15px] font-semibold text-[#E8E6E3] w-full pb-0.5 mb-1 transition-colors"
+                                className="bg-transparent border-b border-white/[0.1] focus:border-white/25 outline-none text-[15px] font-semibold text-[#E8E6E3] w-full pb-0.5 mb-1 transition-colors"
                               />
-                              <div className="text-[12px] text-[#666] mt-0.5">Local workspace · Desktop Agent</div>
+                              <div className="text-[12px] text-[#666] mt-0.5">Local workspace / Desktop Agent</div>
                             </div>
                             <div className="flex items-center gap-2">
                               <span className="px-2.5 py-1 bg-emerald-500/10 text-emerald-400 rounded-full text-[11px] font-medium border border-emerald-500/20">
@@ -667,6 +2324,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose })
                     </motion.div>
                   )}
                 </AnimatePresence>
+              </div>
               </div>
             </motion.div>
           </motion.div>

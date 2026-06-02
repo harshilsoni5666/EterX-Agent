@@ -2,6 +2,8 @@ import { NextRequest } from 'next/server';
 import { GoogleGenAI } from '@google/genai';
 import { apiKeyPool } from '../../../../lib/agent/api-key-pool';
 import { buildAgentBuilderStandaloneSystemInstruction } from '../../../../lib/agent/builder-agent';
+import { resolveModelName } from '../../../../lib/agent/model-routing';
+import { applyRuntimeApiKeys, applyRuntimeModelOverrides } from '../../../../lib/agent/runtime-api-keys';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -41,7 +43,9 @@ function getAvailableSkills() {
 
 export async function POST(req: NextRequest) {
   try {
-    const { messages, agentId = 'standalone-builder' } = await req.json();
+    const { messages, agentId = 'standalone-builder', apiKeys = null, modelOverrides = null } = await req.json();
+    const runtimeKeyResult = applyRuntimeApiKeys(apiKeys);
+    applyRuntimeModelOverrides(modelOverrides);
 
     if (!messages || !Array.isArray(messages)) {
       return new Response(JSON.stringify({ error: 'Messages array is required' }), { status: 400 });
@@ -50,7 +54,9 @@ export async function POST(req: NextRequest) {
     // Use our global API key pool to perfectly load balance without hitting 429s!
     apiKeyPool.initialize();
     const sessionId = `builder-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
-    const lease = apiKeyPool.leaseKey(sessionId, 'main_agent');
+    const lease = runtimeKeyResult.preferredGeminiApiKey
+      ? apiKeyPool.leaseSpecificKey(sessionId, runtimeKeyResult.preferredGeminiApiKey, 'main_agent') || apiKeyPool.leaseKey(sessionId, 'main_agent')
+      : apiKeyPool.leaseKey(sessionId, 'main_agent');
     
     if (!lease) {
       return new Response(JSON.stringify({ error: 'No API keys available right now.' }), { status: 503 });
@@ -80,7 +86,7 @@ export async function POST(req: NextRequest) {
           while (retries < 3) {
             try {
               responseStream = await aiInstance.models.generateContentStream({
-                model: 'gemini-2.5-flash',
+                model: resolveModelName('think'),
                 contents: formattedMessages,
                 config: {
                   systemInstruction: buildAgentBuilderStandaloneSystemInstruction(agentId) + getAvailableSkills(),

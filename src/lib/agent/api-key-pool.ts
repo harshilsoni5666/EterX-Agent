@@ -58,15 +58,7 @@ class APIKeyPool {
   public initialize(): void {
     if (this.initialized) return;
 
-    const discovered: Set<string> = new Set();
-
-    for (const [key, value] of Object.entries(process.env)) {
-      if (typeof value === 'string' && value.startsWith('AIza') && value.length > 20) {
-        discovered.add(value);
-      }
-    }
-
-    this.allKeys = Array.from(discovered);
+    this.allKeys = [];
 
     // Initialize health tracking for each key
     this.allKeys.forEach((_, idx) => {
@@ -80,6 +72,56 @@ class APIKeyPool {
 
     this.initialized = true;
     console.log(`[APIKeyPool] 🔑 Initialized with ${this.allKeys.length} unique keys. Max parallel agents: ${this.allKeys.length}`);
+  }
+
+  /**
+   * Replace the pool with the exact Gemini keys currently configured in Settings.
+   * Removed UI keys are evicted so stale .env values cannot remain in rotation.
+   */
+  public setRuntimeKeys(apiKeys: string[]): void {
+    this.initialize();
+
+    const uniqueKeys = Array.from(new Set(
+      apiKeys
+        .map(key => String(key || '').trim())
+        .filter(key => key.startsWith('AIza') && key.length > 20),
+    ));
+    const allowedKeys = new Set(uniqueKeys);
+
+    for (const [chatId, lease] of Array.from(this.activeLeases.entries())) {
+      if (!allowedKeys.has(lease.apiKey)) {
+        this.activeLeases.delete(chatId);
+      }
+    }
+
+    const previousHealth = new Map<string, KeyHealth>();
+    this.allKeys.forEach((key, index) => {
+      const health = this.keyHealth.get(index);
+      if (health) previousHealth.set(key, health);
+    });
+
+    this.allKeys = uniqueKeys;
+    this.keyHealth.clear();
+    this.retiredKeyIndices.clear();
+
+    this.allKeys.forEach((key, index) => {
+      this.keyHealth.set(index, previousHealth.get(key) || {
+        failures: 0,
+        totalUses: 0,
+        lastUsed: 0,
+        lastError: '',
+      });
+    });
+
+    this.lastProvenKeyIndex = this.lastProvenKeyIndex != null && this.lastProvenKeyIndex < this.allKeys.length
+      ? this.lastProvenKeyIndex
+      : null;
+
+    for (const [ownerId, keyIndex] of Array.from(this.preferredKeyByOwner.entries())) {
+      if (keyIndex >= this.allKeys.length) this.preferredKeyByOwner.delete(ownerId);
+    }
+
+    console.log(`[APIKeyPool] Runtime pool synced from Settings: ${this.allKeys.length} Gemini key(s).`);
   }
 
   /**
@@ -230,6 +272,51 @@ class APIKeyPool {
 
     console.log(`[APIKeyPool] ✅ Leased key #${picked.index} to ${purpose} [${chatId.substring(0, 8)}...] (${this.activeLeases.size}/${this.allKeys.length} in use, ${candidates.length - 1} available)`);
 
+    return lease;
+  }
+
+  /**
+   * Lease a user-provided key when settings explicitly supplied one.
+   * This keeps the same no-collision lease semantics as the general pool:
+   * if another active chat is using this key, the caller must wait/fallback.
+   */
+  public leaseSpecificKey(chatId: string, apiKey: string, purpose: 'main_agent' | 'sub_agent' = 'main_agent'): KeyLease | null {
+    this.initialize();
+    this.startAutoRefresh();
+
+    const key = String(apiKey || '').trim();
+    if (!key || !key.startsWith('AIza') || key.length <= 20) return null;
+
+    this.addKey(key);
+    const keyIndex = this.allKeys.indexOf(key);
+    if (keyIndex < 0 || this.retiredKeyIndices.has(keyIndex)) return null;
+
+    const existing = this.activeLeases.get(chatId);
+    if (existing) {
+      return existing.keyIndex === keyIndex ? existing : null;
+    }
+
+    for (const lease of this.activeLeases.values()) {
+      if (lease.keyIndex === keyIndex) return null;
+    }
+
+    const health = this.keyHealth.get(keyIndex);
+    if (!health) return null;
+
+    const now = Date.now();
+    const lease: KeyLease = {
+      keyIndex,
+      apiKey: key,
+      chatId,
+      leasedAt: now,
+      purpose,
+    };
+
+    this.activeLeases.set(chatId, lease);
+    health.totalUses++;
+    health.lastUsed = now;
+    this.preferredKeyByOwner.set(this.ownerIdFor(chatId), keyIndex);
+    console.log(`[APIKeyPool] Leased runtime settings key #${keyIndex} to ${purpose} [${chatId.substring(0, 8)}...]`);
     return lease;
   }
 
@@ -446,25 +533,7 @@ class APIKeyPool {
    */
   public hotReload(): number {
     this.initialize();
-    let newCount = 0;
-    const existingKeys = new Set(this.allKeys);
-
-    for (const [, value] of Object.entries(process.env)) {
-      if (typeof value === 'string' && value.startsWith('AIza') && value.length > 20) {
-        if (!existingKeys.has(value)) {
-          const newIdx = this.allKeys.length;
-          this.allKeys.push(value);
-          this.keyHealth.set(newIdx, { failures: 0, totalUses: 0, lastUsed: 0, lastError: '' });
-          newCount++;
-          console.log(`[APIKeyPool] 🔑 Hot-reload: discovered new key #${newIdx}`);
-        }
-      }
-    }
-
-    if (newCount > 0) {
-      console.log(`[APIKeyPool] ✅ Hot-reload complete: +${newCount} keys → ${this.allKeys.length} total`);
-    }
-    return newCount;
+    return 0;
   }
 
   /**
@@ -562,12 +631,10 @@ class APIKeyPool {
       this.unretireStaleKeys();
     }, 65_000).unref?.();
 
-    // Hot-reload env every 5 minutes
-    setInterval(() => {
-      this.hotReload();
-    }, 5 * 60 * 1000).unref?.();
+    // Environment scans are disabled. Settings is the source of truth.
 
-    console.log('[APIKeyPool] 🔄 Auto-refresh started (key un-retire: 65s, env scan: 5min)');
+
+    console.log('[APIKeyPool] Auto-refresh started (key un-retire: 65s, Settings-controlled key pool)');
   }
 
   /**

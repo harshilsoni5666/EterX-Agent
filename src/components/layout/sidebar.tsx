@@ -2,7 +2,7 @@ import React from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Plus, X, ChevronRight, Check } from 'lucide-react';
-import { PremiumShare, PremiumEdit, PremiumStar, PremiumFolder, PremiumTrash, PremiumSearch, PremiumDashboard, PremiumAgent, PremiumChannels, PremiumFolderOpen, PremiumPanelLeft, PremiumDownload, PremiumMoreHorizontal, PremiumCheckSquare, PremiumSettings } from '../ui/premium-icons';
+import { PremiumShare, PremiumEdit, PremiumStar, PremiumFolder, PremiumTrash, PremiumSearch, PremiumDashboard, PremiumAgent, PremiumChannels, PremiumPanelLeft, PremiumDownload, PremiumMoreHorizontal, PremiumCheckSquare, PremiumSettings } from '../ui/premium-icons';
 import { Tooltip } from '../ui/tooltip';
 
 const SidebarToggleIcon = ({ isOpen, isHovered, sizeClass = "w-[18px] h-[18px]" }: { isOpen: boolean, isHovered: boolean, sizeClass?: string }) => {
@@ -451,10 +451,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
             <div className={isOpen ? "space-y-1 mt-0" : "space-y-2 mt-0"}>
               {[
                 { id: 'search', label: 'Search', icon: PremiumSearch, tooltip: 'Search conversations', onClick: onSearchClick },
-                { id: 'workspace', label: 'Workspace', icon: PremiumDashboard, tooltip: 'Workspace overview' },
+                { id: 'workspace', label: 'Workspace', icon: PremiumDashboard, tooltip: 'Open project workspace', onClick: () => setActiveView('projects'), active: activeView === 'projects' },
                 { id: 'agents', label: 'Agents', icon: PremiumAgent, tooltip: 'Manage agents', onClick: () => setActiveView('agents'), active: activeView === 'agents' },
                 { id: 'channels', label: 'Channels', icon: PremiumChannels, tooltip: 'Deploy agents to channels', onClick: () => setActiveView('channels'), active: activeView === 'channels' },
-                { id: 'file-manager', label: 'Projects', icon: PremiumFolderOpen, tooltip: 'Open or create projects', onClick: () => setActiveView('projects'), active: activeView === 'projects' },
               ].map(item => {
                 const Icon = item.icon;
                 const isActive = item.active;

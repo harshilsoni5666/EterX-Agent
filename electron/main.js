@@ -20,11 +20,12 @@ try {
 const http = require('http');
 const https = require('https');
 const { pathToFileURL } = require('url');
-const { app, BrowserWindow, ipcMain, dialog, shell, screen } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, screen, Menu } = require('electron');
 // Disable HTTP Cache globally in development to prevent aggressive cache storage of stylesheets and scripts
 app.commandLine.appendSwitch('disable-http-cache');
 app.setName('EterX');
 app.setAppUserModelId('EterX');
+Menu.setApplicationMenu(null);
 
 let mainWindow;
 let petWindow;
@@ -40,7 +41,10 @@ const PET_WINDOW_SIZES = {
 let activeBootId = 0;
 let bootRetryTimer = null;
 
+const APP_ICON_PATH = path.join(__dirname, '../public/logo.png');
 const NATIVE_THEME_FILE = 'eterx-native-theme.json';
+const NATIVE_FRAME_HEIGHT = 38;
+const nativeThemedWindows = new Set();
 
 function normalizeNativeTheme(theme) {
   return theme === 'dark' ? 'dark' : 'light';
@@ -74,36 +78,52 @@ function nativeThemeColors(theme) {
   const safeTheme = normalizeNativeTheme(theme);
   if (safeTheme === 'dark') {
     return {
-      background: '#0F0F0F',
-      titleBar: '#0F0F0F',
+      background: '#151515',
+      titleBar: '#151515',
       titleSymbol: '#d1d1d1',
     };
   }
   return {
     background: '#FAFAF8',
-    titleBar: '#F5F5F7',
+    titleBar: '#FAFAF8',
     titleSymbol: '#111111',
   };
+}
+
+function applyNativeThemeToWindow(targetWindow, colors) {
+  if (!targetWindow || targetWindow.isDestroyed()) return;
+
+  try {
+    targetWindow.setBackgroundColor(colors.background);
+    if (typeof targetWindow.setIcon === 'function') {
+      targetWindow.setIcon(APP_ICON_PATH);
+    }
+    if (typeof targetWindow.setTitleBarOverlay === 'function') {
+      targetWindow.setTitleBarOverlay({
+        color: colors.titleBar,
+        symbolColor: colors.titleSymbol,
+        height: NATIVE_FRAME_HEIGHT,
+      });
+    }
+  } catch (error) {
+    console.warn('[EterX] Failed to apply native window theme:', error);
+  }
+}
+
+function registerNativeThemedWindow(targetWindow) {
+  if (!targetWindow || targetWindow.isDestroyed()) return;
+  nativeThemedWindows.add(targetWindow);
+  targetWindow.on('closed', () => nativeThemedWindows.delete(targetWindow));
+  applyNativeThemeToWindow(targetWindow, nativeThemeColors(readNativeTheme()));
 }
 
 function applyNativeWindowTheme(theme) {
   const safeTheme = writeNativeTheme(theme);
   const colors = nativeThemeColors(safeTheme);
 
-  if (!mainWindow || mainWindow.isDestroyed()) return safeTheme;
-
-  try {
-    mainWindow.setBackgroundColor(colors.background);
-    if (typeof mainWindow.setTitleBarOverlay === 'function') {
-      mainWindow.setTitleBarOverlay({
-        color: colors.titleBar,
-        symbolColor: colors.titleSymbol,
-        height: 38,
-      });
-    }
-  } catch (error) {
-    console.warn('[EterX] Failed to apply native theme:', error);
-  }
+  const windows = new Set(nativeThemedWindows);
+  if (mainWindow && !mainWindow.isDestroyed()) windows.add(mainWindow);
+  windows.forEach((targetWindow) => applyNativeThemeToWindow(targetWindow, colors));
 
   return safeTheme;
 }
@@ -111,17 +131,15 @@ function applyNativeWindowTheme(theme) {
 function applySplashWindowTheme(theme = readNativeTheme()) {
   if (!mainWindow || mainWindow.isDestroyed()) return;
 
-  const isDark = normalizeNativeTheme(theme) === 'dark';
-  const background = isDark ? '#0F0F0F' : '#FAFAF8';
-  const symbolColor = isDark ? '#d1d1d1' : '#1F1F1D';
+  const colors = nativeThemeColors(theme);
 
   try {
-    mainWindow.setBackgroundColor(background);
+    mainWindow.setBackgroundColor(colors.background);
     if (typeof mainWindow.setTitleBarOverlay === 'function') {
       mainWindow.setTitleBarOverlay({
-        color: background,
-        symbolColor,
-        height: 38,
+        color: colors.titleBar,
+        symbolColor: colors.titleSymbol,
+        height: NATIVE_FRAME_HEIGHT,
       });
     }
   } catch (error) {
@@ -575,6 +593,10 @@ function scheduleBootRetry(delayMs = 900) {
   }, delayMs);
 }
 
+function isSettingsUrl(url = '') {
+  return /\/settings(?:[?#/]|$)/.test(url);
+}
+
 function sendPetStatus(status) {
   latestPetStatus = {
     title: String(status?.title || 'EterX agent').slice(0, 160),
@@ -753,19 +775,59 @@ function createWindow() {
     minWidth: 800,
     minHeight: 600,
     backgroundColor: initialNativeColors.background,
-    title: 'EterX', // Defines standard Task Manager/Taskbar labeling
-    icon: path.join(__dirname, '../public/logo.png'), // Explicit application taskbar Favicon mapping
+    title: 'EterX',
+    icon: APP_ICON_PATH,
     titleBarStyle: 'hidden', // Provides the modern frame-less aesthetic while preserving OS buttons
     titleBarOverlay: {
       color: initialNativeColors.titleBar,
       symbolColor: initialNativeColors.titleSymbol,
-      height: 38
+      height: NATIVE_FRAME_HEIGHT
     },
     show: false,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
       preload: path.join(__dirname, 'preload.js')
+    }
+  });
+  registerNativeThemedWindow(mainWindow);
+  mainWindow.setMenuBarVisibility(false);
+  mainWindow.setAutoHideMenuBar(true);
+
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    const colors = nativeThemeColors(readNativeTheme());
+    const settingsWindow = isSettingsUrl(url);
+
+    return {
+      action: 'allow',
+      overrideBrowserWindowOptions: {
+        minWidth: settingsWindow ? 900 : 800,
+        minHeight: settingsWindow ? 620 : 600,
+        backgroundColor: colors.background,
+        title: settingsWindow ? 'Settings' : 'EterX',
+        icon: APP_ICON_PATH,
+        titleBarStyle: 'hidden',
+        titleBarOverlay: {
+          color: colors.titleBar,
+          symbolColor: colors.titleSymbol,
+          height: NATIVE_FRAME_HEIGHT,
+        },
+        autoHideMenuBar: true,
+        webPreferences: {
+          nodeIntegration: false,
+          contextIsolation: true,
+          preload: path.join(__dirname, 'preload.js'),
+        },
+      },
+    };
+  });
+
+  mainWindow.webContents.on('did-create-window', (childWindow, details) => {
+    registerNativeThemedWindow(childWindow);
+    childWindow.setMenuBarVisibility(false);
+    childWindow.setAutoHideMenuBar(true);
+    if (isSettingsUrl(details?.url || '')) {
+      childWindow.setTitle('Settings');
     }
   });
 
@@ -902,6 +964,7 @@ ipcMain.on('pet-reply', (_event, message) => {
 
 app.on('ready', () => {
   const { session } = require('electron');
+  Menu.setApplicationMenu(null);
   
   session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
     const allowedPermissions = ['media', 'microphone', 'audioCapture', 'notifications'];

@@ -1,6 +1,8 @@
 import { GoogleGenAI, ThinkingLevel } from '@google/genai';
+import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
 import { getMainAgentModelConfig, normalizeMainAgentMode, type MainAgentMode } from './model-routing';
+import { getRuntimeApiKey } from './runtime-api-keys';
 
 /**
  * Task Planner — selected-model client for deep task decomposition
@@ -95,21 +97,27 @@ RESPOND WITH ONLY THE JSON. NO OTHER TEXT.`;
 export class TaskPlannerClient {
   private ai: GoogleGenAI | null = null;
   private mistral: OpenAI | null = null;
+  private mistralApiKey = '';
+  private anthropic: Anthropic | null = null;
+  private anthropicApiKey = '';
 
   constructor() {
-    // Discover API keys (same as main client)
-    let apiKey = '';
-    for (const [key, value] of Object.entries(process.env)) {
-      if (typeof value === 'string' && value.startsWith('AIza')) {
-        apiKey = value;
-        break;
-      }
-    }
-    if (!apiKey) {
-      apiKey = process.env.GEMINI_API_KEY || process.env.VITE_OPENROUTER_API_KEY || '';
-    }
+    const apiKey = getRuntimeApiKey('gemini');
     if (!apiKey) {
       console.warn('[TaskPlanner] ⚠️ No API key found. Will use fallback decomposition.');
+      return;
+    }
+    this.ai = new GoogleGenAI({ apiKey });
+  }
+
+  private discoverGeminiApiKey(): string {
+    return getRuntimeApiKey('gemini');
+  }
+
+  private refreshGeminiClient(): void {
+    const apiKey = this.discoverGeminiApiKey();
+    if (!apiKey) {
+      this.ai = null;
       return;
     }
     this.ai = new GoogleGenAI({ apiKey });
@@ -159,18 +167,32 @@ export class TaskPlannerClient {
   }
 
   private getMistralClient(): OpenAI | null {
-    const apiKey = process.env.MISTRAL_API_KEY || process.env.MISTRAL_AI_API_KEY || process.env.MISTRALAI_API_KEY || '';
+    const apiKey = getRuntimeApiKey('mistral');
     if (!apiKey) {
       console.warn('[TaskPlanner] No Mistral API key found. Will use fallback decomposition.');
       return null;
     }
-    if (!this.mistral) {
+    if (!this.mistral || this.mistralApiKey !== apiKey) {
       this.mistral = new OpenAI({
         apiKey,
         baseURL: process.env.MISTRAL_BASE_URL || process.env.MISTRAL_API_BASE_URL || 'https://api.mistral.ai/v1',
       });
+      this.mistralApiKey = apiKey;
     }
     return this.mistral;
+  }
+
+  private getAnthropicClient(): Anthropic | null {
+    const apiKey = getRuntimeApiKey('anthropic');
+    if (!apiKey) {
+      console.warn('[TaskPlanner] No Anthropic API key found. Will use fallback decomposition.');
+      return null;
+    }
+    if (!this.anthropic || this.anthropicApiKey !== apiKey) {
+      this.anthropic = new Anthropic({ apiKey });
+      this.anthropicApiKey = apiKey;
+    }
+    return this.anthropic;
   }
 
   /**
@@ -199,13 +221,63 @@ export class TaskPlannerClient {
       ? `Task: ${ task }\n\nAdditional context: ${ context }`
       : `Task: ${ task }`;
 
-    if (modelConfig.provider === 'mistral') {
-      const client = this.getMistralClient();
+    if (modelConfig.provider !== 'gemini') {
+      const provider = modelConfig.provider;
+      if (provider === 'anthropic') {
+        const client = this.getAnthropicClient();
+        if (!client) return this.fallbackDecompose(task);
+        try {
+          const response = await this.withTimeout(
+            client.messages.create({
+              model: modelConfig.modelName,
+              max_tokens: 4096,
+              system: PLANNER_SYSTEM_PROMPT,
+              messages: [{ role: 'user', content: prompt }],
+              temperature: 0.2,
+            } as any),
+            15000
+          );
+          const rawText = Array.isArray((response as any).content)
+            ? (response as any).content
+              .map((part: any) => part?.type === 'text' ? String(part.text || '') : '')
+              .filter(Boolean)
+              .join('')
+            : '';
+          return this.parsePlannerResponse(rawText, startTime, modelConfig.modelName);
+        } catch (error: any) {
+          console.warn(`[TaskPlanner] Selected model ${ modelConfig.modelName } failed: ${ error.message }. Using fallback decomposition.`);
+          return this.fallbackDecompose(task);
+        }
+      }
+
+      const apiKey = provider === 'openai'
+        ? getRuntimeApiKey('openai')
+        : provider === 'openrouter'
+          ? getRuntimeApiKey('openrouter')
+          : getRuntimeApiKey('mistral');
+      if (!apiKey) {
+        console.warn(`[TaskPlanner] No ${ provider } API key found. Will use fallback decomposition.`);
+        return this.fallbackDecompose(task);
+      }
+      const client = provider === 'mistral'
+        ? this.getMistralClient()
+        : new OpenAI({
+          apiKey,
+          baseURL: provider === 'openrouter'
+            ? (process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1')
+            : (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1'),
+          defaultHeaders: provider === 'openrouter'
+            ? {
+              'HTTP-Referer': process.env.OPENROUTER_HTTP_REFERER || 'http://localhost:3000',
+              'X-Title': 'EterX Agent',
+            }
+            : undefined,
+        });
       if (!client) return this.fallbackDecompose(task);
       try {
         const response = await this.withTimeout(
           client.chat.completions.create({
-            model: process.env.MISTRAL_MODEL || process.env.MISTRAL_MODEL_NAME || modelConfig.modelName,
+            model: modelConfig.modelName,
             messages: [
               { role: 'system', content: PLANNER_SYSTEM_PROMPT },
               { role: 'user', content: prompt },
@@ -222,6 +294,7 @@ export class TaskPlannerClient {
       }
     }
 
+    if (!this.ai) this.refreshGeminiClient();
     if (!this.ai) {
       console.warn('[TaskPlanner] No API client available. Using fallback.');
       return this.fallbackDecompose(task);

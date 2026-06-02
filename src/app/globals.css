@@ -1261,6 +1261,28 @@
   50% { opacity: 0; }
 }
 
+@keyframes eterx-writer-pulse {
+  0%, 100% {
+    transform: translateY(3px) scale(0.96);
+    box-shadow: 0 7px 18px rgba(0, 0, 0, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+  }
+  48% {
+    transform: translateY(3px) scale(1.04);
+    box-shadow: 0 10px 26px rgba(0, 0, 0, 0.36), inset 0 1px 0 rgba(255, 255, 255, 0.28);
+  }
+}
+
+@keyframes eterx-table-row-write {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 /* Rich answer rendering: Markdown, Mermaid, KaTeX, code, tables. */
 :root {
   --eterx-md-text: #C4C1BC;
@@ -1319,6 +1341,92 @@
 .eterx-professional-thought,
 .eterx-assistant-answer-body {
   color: var(--eterx-md-text);
+}
+
+.eterx-answer-writer-cursor {
+  position: relative;
+  display: inline-flex;
+  width: 18px;
+  height: 18px;
+  margin-left: 6px;
+  vertical-align: baseline;
+  transform: translateY(3px);
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: #050505;
+  animation: eterx-writer-pulse 920ms cubic-bezier(0.22, 1, 0.36, 1) infinite;
+}
+
+.eterx-answer-writer-cursor::before {
+  content: "";
+  width: 8px;
+  height: 2px;
+  border-radius: 999px;
+  background: #F4F0E8;
+  transform: rotate(-30deg);
+  box-shadow: 0 0 5px rgba(244, 240, 232, 0.22);
+}
+
+.eterx-answer-writer-cursor::after {
+  content: "";
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  width: 3px;
+  height: 3px;
+  border-radius: 999px;
+  background: #F4F0E8;
+  opacity: 0.88;
+}
+
+.eterx-reveal-active .eterx-markdown-tr {
+  animation: eterx-table-row-write 180ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.eterx-progressive-markdown {
+  position: relative;
+  display: block;
+  width: 100%;
+  min-width: 0;
+}
+
+.eterx-progressive-markdown-ghost {
+  visibility: hidden;
+  pointer-events: none;
+  user-select: none;
+}
+
+.eterx-progressive-markdown-live {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  min-width: 0;
+}
+
+.eterx-progressive-markdown-live > p:last-child,
+.eterx-progressive-markdown-ghost > p:last-child {
+  display: inline;
+}
+
+.eterx-progressive-ghost-code {
+  display: block;
+  margin: 1.25rem 0;
+  border-radius: 0.75rem;
+}
+
+.eterx-progressive-ghost-inline-code {
+  display: inline-block;
+  min-width: 2ch;
+}
+
+.eterx-progressive-ghost-image {
+  display: block;
+  width: 100%;
+  min-height: min(42vw, 240px);
+  margin: 1.25rem 0;
+  border-radius: 0.75rem;
 }
 
 .eterx-md-heading {
@@ -2225,61 +2333,266 @@
   }
 }
 
-/* Light standalone surface for the Projects sidebar page only. */
-.eterx-projects-view {
-  background: #ffffff !important;
-  color: #2f2f2f !important;
+/* Theme-aware Projects workspace. */
+.eterx-projects-view,
+.eterx-project-code-shell {
+  --eterx-project-bg: #FAFAFA;
+  --eterx-project-panel: rgba(255, 255, 255, 0.98);
+  --eterx-project-panel-solid: #FFFFFF;
+  --eterx-project-card: #FFFFFF;
+  --eterx-project-card-soft: #F3F3F3;
+  --eterx-project-card-hover: #EBEBEB;
+  --eterx-project-border: rgba(0, 0, 0, 0.11);
+  --eterx-project-border-strong: rgba(0, 0, 0, 0.2);
+  --eterx-project-text: #111111;
+  --eterx-project-muted: #707070;
+  --eterx-project-subtle: #AAAAAA;
+  --eterx-project-icon: #111111;
+  --eterx-project-icon-soft: rgba(0, 0, 0, 0.055);
+  --eterx-project-button: #111111;
+  --eterx-project-button-text: #FFFFFF;
+  --eterx-project-field: #FFFFFF;
+  --eterx-project-shadow: none;
+  --eterx-project-shadow-soft: none;
+  --eterx-project-success-bg: rgba(0, 0, 0, 0.055);
+  --eterx-project-success-border: rgba(0, 0, 0, 0.12);
+  --eterx-project-success-text: #262626;
+  --eterx-project-danger-bg: rgba(0, 0, 0, 0.055);
+  --eterx-project-danger-border: rgba(0, 0, 0, 0.12);
+  --eterx-project-danger-text: #262626;
+  background: var(--eterx-project-bg);
+  color: var(--eterx-project-text);
 }
 
-.eterx-projects-view [class*="radial-gradient"] {
-  display: none !important;
+:root[data-theme="dark"] .eterx-projects-view,
+:root[data-theme="dark"] .eterx-project-code-shell {
+  --eterx-project-bg: #000000;
+  --eterx-project-panel: #000000;
+  --eterx-project-panel-solid: #000000;
+  --eterx-project-card: #030303;
+  --eterx-project-card-soft: rgba(255, 255, 255, 0.045);
+  --eterx-project-card-hover: rgba(255, 255, 255, 0.085);
+  --eterx-project-border: rgba(255, 255, 255, 0.09);
+  --eterx-project-border-strong: rgba(255, 255, 255, 0.18);
+  --eterx-project-text: #FFFFFF;
+  --eterx-project-muted: #9B9B9B;
+  --eterx-project-subtle: #555555;
+  --eterx-project-icon: #F2F2F2;
+  --eterx-project-icon-soft: rgba(255, 255, 255, 0.075);
+  --eterx-project-button: #F2F2F2;
+  --eterx-project-button-text: #050505;
+  --eterx-project-field: rgba(255, 255, 255, 0.045);
+  --eterx-project-shadow: none;
+  --eterx-project-shadow-soft: none;
+  --eterx-project-success-bg: rgba(255, 255, 255, 0.055);
+  --eterx-project-success-border: rgba(255, 255, 255, 0.12);
+  --eterx-project-success-text: #D8D8D8;
+  --eterx-project-danger-bg: rgba(255, 255, 255, 0.055);
+  --eterx-project-danger-border: rgba(255, 255, 255, 0.12);
+  --eterx-project-danger-text: #D8D8D8;
 }
 
-.eterx-projects-view section,
-.eterx-projects-view aside,
-.eterx-projects-view [class*="bg-[#0B0B0B]"],
-.eterx-projects-view [class*="bg-[#101010]"],
-.eterx-projects-view [class*="bg-[#111111]"],
-.eterx-projects-view [class*="bg-[#141414]"] {
-  background: #ffffff !important;
-  border-color: #e6e1da !important;
-  box-shadow: none !important;
+.eterx-project-rail,
+.eterx-project-code-header {
+  background: var(--eterx-project-panel);
+  border-color: var(--eterx-project-border);
 }
 
-.eterx-projects-view [class*="bg-white/"] {
-  background: #f7f5f2 !important;
+.eterx-project-card,
+.eterx-project-panel,
+.eterx-project-browser,
+.eterx-project-composer,
+.eterx-project-code-header {
+  background: var(--eterx-project-card);
+  border-color: var(--eterx-project-border);
+  box-shadow: var(--eterx-project-shadow);
 }
 
-.eterx-projects-view [class*="border-white"] {
-  border-color: #e6e1da !important;
+.eterx-project-card-header,
+.eterx-project-panel-header {
+  background: var(--eterx-project-card);
+  border-color: var(--eterx-project-border);
 }
 
-.eterx-projects-view h1,
-.eterx-projects-view h2,
-.eterx-projects-view h3,
-.eterx-projects-view [class*="text-white"] {
-  color: #2f2f2f !important;
+.eterx-project-soft-panel,
+.eterx-project-field,
+.eterx-project-textarea,
+.eterx-project-path,
+.eterx-project-tabs,
+.eterx-project-empty-box {
+  background: var(--eterx-project-field);
+  border-color: var(--eterx-project-border);
 }
 
-.eterx-projects-view p,
-.eterx-projects-view [class*="text-[#8C8A88]"],
-.eterx-projects-view [class*="text-[#9B9690]"],
-.eterx-projects-view [class*="text-[#706D68]"],
-.eterx-projects-view [class*="text-[#A3A19E]"],
-.eterx-projects-view [class*="text-[#C9C5BF]"],
-.eterx-projects-view [class*="text-[#CFCBC5]"] {
-  color: #74706b !important;
+.eterx-project-panel,
+.eterx-project-menu,
+.eterx-project-conversation-empty {
+  border-color: var(--eterx-project-border);
 }
 
+.eterx-project-menu {
+  background: color-mix(in srgb, var(--eterx-project-card) 92%, var(--eterx-project-card-soft));
+  color: var(--eterx-project-text);
+}
+
+.eterx-project-menu-item {
+  color: var(--eterx-project-text);
+}
+
+.eterx-project-menu-item:hover,
+.eterx-project-header-button:hover,
+.eterx-project-conversation-row:hover,
+.eterx-project-speed-button:hover {
+  background: var(--eterx-project-card-hover);
+}
+
+.eterx-project-menu-danger {
+  color: var(--eterx-project-danger-text);
+}
+
+.eterx-project-rail-header {
+  color: var(--eterx-project-text);
+}
+
+.eterx-project-instructions {
+  background: transparent;
+  color: var(--eterx-project-muted);
+  caret-color: var(--eterx-project-text);
+}
+
+.eterx-project-instructions::placeholder {
+  color: var(--eterx-project-muted);
+  opacity: 1;
+}
+
+.eterx-project-section-rule {
+  background: var(--eterx-project-border);
+}
+
+.eterx-project-conversation-empty,
+.eterx-project-conversation-row {
+  background: transparent;
+  border-color: var(--eterx-project-border);
+}
+
+.eterx-project-field:focus-within,
+.eterx-project-textarea:focus,
+.eterx-project-composer:focus-within {
+  border-color: var(--eterx-project-border-strong);
+  box-shadow: 0 0 0 3px var(--eterx-project-icon-soft);
+}
+
+.eterx-project-textarea,
 .eterx-projects-view input,
-.eterx-projects-view select {
-  background: #ffffff !important;
-  border-color: #ddd7cf !important;
-  color: #2f2f2f !important;
+.eterx-project-code-shell input {
+  color: var(--eterx-project-text);
+  caret-color: var(--eterx-project-icon);
 }
 
-.eterx-projects-view input::placeholder {
-  color: #aaa39b !important;
+.eterx-project-textarea::placeholder,
+.eterx-projects-view input::placeholder,
+.eterx-project-code-shell input::placeholder {
+  color: var(--eterx-project-subtle);
+  opacity: 1;
+}
+
+.eterx-project-title-icon,
+.eterx-project-hero-icon,
+.eterx-project-recent-icon {
+  color: var(--eterx-project-icon);
+  background: var(--eterx-project-icon-soft);
+  border-color: color-mix(in srgb, var(--eterx-project-icon) 28%, transparent);
+}
+
+.eterx-project-primary-button,
+.eterx-project-composer-send,
+.eterx-project-send-button {
+  background: var(--eterx-project-button);
+  color: var(--eterx-project-button-text);
+  border-color: transparent;
+}
+
+.eterx-project-primary-button:hover,
+.eterx-project-composer-send:hover:not(:disabled),
+.eterx-project-send-button:hover {
+  filter: brightness(1.05);
+}
+
+.eterx-project-accent-button,
+.eterx-project-pill {
+  background: var(--eterx-project-icon-soft);
+  border-color: color-mix(in srgb, var(--eterx-project-icon) 24%, transparent);
+  color: var(--eterx-project-icon);
+}
+
+.eterx-project-secondary-button,
+.eterx-project-outline-button,
+.eterx-project-ghost-button,
+.eterx-project-back-button,
+.eterx-project-header-button,
+.eterx-project-icon-button,
+.eterx-project-mini-button,
+.eterx-project-composer-mode,
+.eterx-project-composer-plus,
+.eterx-project-composer-icon,
+.eterx-project-speed-button,
+.eterx-project-suggestion {
+  background: var(--eterx-project-card-soft);
+  border-color: var(--eterx-project-border);
+  color: var(--eterx-project-text);
+}
+
+.eterx-project-secondary-button:hover:not(:disabled),
+.eterx-project-outline-button:hover,
+.eterx-project-ghost-button:hover,
+.eterx-project-back-button:hover,
+.eterx-project-header-button:hover,
+.eterx-project-icon-button:hover,
+.eterx-project-mini-button:hover,
+.eterx-project-composer-mode:hover,
+.eterx-project-composer-plus:hover,
+.eterx-project-composer-icon:hover,
+.eterx-project-suggestion:hover,
+.eterx-project-source-row:hover,
+.eterx-project-list-row:hover,
+.eterx-project-recent:hover {
+  background: var(--eterx-project-card-hover);
+  border-color: var(--eterx-project-border-strong);
+}
+
+.eterx-project-tab {
+  color: var(--eterx-project-muted);
+}
+
+.eterx-project-tab[data-active="true"] {
+  background: var(--eterx-project-button);
+  color: var(--eterx-project-button-text);
+}
+
+.eterx-project-recent {
+  background: var(--eterx-project-card-soft);
+  border-color: var(--eterx-project-border);
+}
+
+.eterx-project-canvas {
+  background: var(--eterx-project-bg);
+}
+
+.eterx-project-canvas-grid {
+  opacity: 0.55;
+  background:
+    radial-gradient(circle at 52% 38%, var(--eterx-project-icon-soft), transparent 34%),
+    linear-gradient(var(--eterx-project-border) 1px, transparent 1px),
+    linear-gradient(90deg, var(--eterx-project-border) 1px, transparent 1px);
+  background-size: auto, 56px 56px, 56px 56px;
+  mask-image: radial-gradient(circle at 50% 44%, black 0%, transparent 72%);
+  -webkit-mask-image: radial-gradient(circle at 50% 44%, black 0%, transparent 72%);
+}
+
+@media (max-width: 1023px) {
+  .eterx-project-rail {
+    max-height: 58dvh;
+  }
 }
 
 .eterx-channels-view {
@@ -2480,4 +2793,59 @@
     opacity: 0;
     transform: translate(calc(-50% + 238px), calc(-50% + 28px)) scale(0.56);
   }
+}
+
+:root[data-theme="light"] .eterx-settings-panel {
+  color: #1f1f1d;
+}
+
+:root[data-theme="light"] .eterx-settings-panel [class*="bg-[#151515]"],
+:root[data-theme="light"] .eterx-settings-panel [class*="bg-[#171717]"],
+:root[data-theme="light"] .eterx-settings-panel [class*="bg-[#1D1D1D]"] {
+  background-color: #f7f7f4 !important;
+}
+
+:root[data-theme="light"] .eterx-settings-panel [class*="bg-[#202020]"],
+:root[data-theme="light"] .eterx-settings-panel [class*="bg-[#242424]"],
+:root[data-theme="light"] .eterx-settings-panel [class*="bg-[#2B2B2B]"],
+:root[data-theme="light"] .eterx-settings-panel [class*="bg-[#2D2D2D]"],
+:root[data-theme="light"] .eterx-settings-panel [class*="bg-[#303030]"],
+:root[data-theme="light"] .eterx-settings-panel [class*="bg-[#313131]"],
+:root[data-theme="light"] .eterx-settings-panel [class*="bg-[#141414]"],
+:root[data-theme="light"] .eterx-settings-panel [class*="bg-black"] {
+  background-color: #ffffff !important;
+}
+
+:root[data-theme="light"] .eterx-settings-panel [class*="bg-[#313131]"],
+:root[data-theme="light"] .eterx-settings-panel [class*="bg-[#2B2B2B]"] {
+  background-color: #ecebea !important;
+}
+
+:root[data-theme="light"] .eterx-settings-panel [class*="border-white"] {
+  border-color: rgba(31, 31, 29, 0.12) !important;
+}
+
+:root[data-theme="light"] .eterx-settings-panel [class*="text-[#F"],
+:root[data-theme="light"] .eterx-settings-panel [class*="text-[#E"],
+:root[data-theme="light"] .eterx-settings-panel [class*="text-[#D"],
+:root[data-theme="light"] .eterx-settings-panel [class*="text-zinc-200"] {
+  color: #1f1f1d !important;
+}
+
+:root[data-theme="light"] .eterx-settings-panel [class*="text-[#A"],
+:root[data-theme="light"] .eterx-settings-panel [class*="text-[#8"],
+:root[data-theme="light"] .eterx-settings-panel [class*="text-[#7"],
+:root[data-theme="light"] .eterx-settings-panel [class*="text-[#6"],
+:root[data-theme="light"] .eterx-settings-panel [class*="text-[#5"],
+:root[data-theme="light"] .eterx-settings-panel [class*="text-[#4"] {
+  color: #6f6c66 !important;
+}
+
+:root[data-theme="light"] .eterx-settings-panel input,
+:root[data-theme="light"] .eterx-settings-panel button {
+  color-scheme: light;
+}
+
+:root[data-theme="light"] .eterx-settings-panel input::placeholder {
+  color: #9a968e !important;
 }

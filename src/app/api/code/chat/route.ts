@@ -5,6 +5,12 @@ import '@/lib/agent/tools/index';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { getCodeAgentSystemPrompt, getToolEnhancements } from '@/lib/code/code-prompts';
 import { getPathResolverInfo } from '@/lib/agent/workspace/path_resolver';
+import { resolveModelName } from '@/lib/agent/model-routing';
+import {
+  applyRuntimeApiKeys,
+  applyRuntimeModelOverrides,
+  getRuntimeApiKeyValues,
+} from '@/lib/agent/runtime-api-keys';
 import fs from 'fs';
 import path from 'path';
 import { execSync } from 'child_process';
@@ -22,17 +28,14 @@ import os from 'os';
  */
 
 // Create fresh client per request (matches gemini.ts key rotation pattern)
-function createAIClient(): GoogleGenAI {
-  // Auto-discover ALL valid Google API keys from environment (same as gemini.ts lines 29-33)
-  const keys: string[] = [];
-  for (const [, value] of Object.entries(process.env)) {
-    if (typeof value === 'string' && value.startsWith('AIza')) {
-      keys.push(value);
-    }
+function createAIClient(preferredGeminiApiKey?: string): GoogleGenAI {
+  if (preferredGeminiApiKey) {
+    return new GoogleGenAI({ apiKey: preferredGeminiApiKey });
   }
+
+  const keys = getRuntimeApiKeyValues('gemini');
   if (keys.length === 0) {
-    const fallback = process.env.GEMINI_API_KEY || process.env.VITE_OPENROUTER_API_KEY;
-    if (fallback) keys.push(fallback);
+    throw new Error('Missing Gemini API key. Add one in Settings > Connections.');
   }
 
   // Pick a random key for load balancing (same as gemini.ts lines 43-46)
@@ -185,7 +188,9 @@ async function executeRegistryTool(toolName: string, args: any, workspacePath: s
 
 // ─── Main POST handler ───
 export async function POST(req: NextRequest) {
-  const { prompt, history, workspacePath } = await req.json();
+  const { prompt, history, workspacePath, apiKeys, modelOverrides } = await req.json();
+  const runtimeKeyResult = applyRuntimeApiKeys(apiKeys);
+  applyRuntimeModelOverrides(modelOverrides);
 
   const systemPrompt = buildSystemPrompt(workspacePath || '');
   const toolDeclarations = buildToolDeclarations();
@@ -215,14 +220,15 @@ export async function POST(req: NextRequest) {
 
         // Pick exactly ONE API key to use for this entire interaction
         // If we randomize inside the loop, we might hit an invalid key mid-turn!
-        const requestAiClient = createAIClient();
+        const requestAiClient = createAIClient(runtimeKeyResult.preferredGeminiApiKey);
+        const requestModelName = resolveModelName('think');
 
         while (iterations < MAX_ITERATIONS) {
           iterations++;
 
           // Call Gemini with tools
           const response = await requestAiClient.models.generateContent({
-            model: 'gemini-3.5-flash',
+            model: requestModelName,
             contents: messages,
             config: {
               systemInstruction: systemPrompt,

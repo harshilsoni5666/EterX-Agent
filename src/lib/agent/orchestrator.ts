@@ -111,7 +111,7 @@ export class AgentOrchestrator {
    * Trivial tasks always use fast mode; critical tasks always use think mode.
    */
   private resolveOptimalMode(userMode: MainAgentMode, complexity: 'trivial' | 'standard' | 'complex' | 'critical'): MainAgentMode {
-    if (userMode === 'mistral') return 'mistral';
+    if (getMainAgentModelConfig(userMode).provider !== 'gemini') return userMode;
     switch (complexity) {
       case 'trivial':  return 'fast';   // Never waste big model on greetings
       case 'standard': return userMode; // Respect user preference
@@ -367,7 +367,7 @@ export class AgentOrchestrator {
       // PHASE 1: PRIMARY EXECUTION (using isolated or global client)
       // Smart model routing applies the effective mode
       // ═══════════════════════════════════════════════════════
-      if (effectiveMode === 'mistral') {
+      if (getMainAgentModelConfig(effectiveMode).provider !== 'gemini') {
         const routedClient = createIsolatedClient(projectId, effectiveMode);
         finalAnswer = (await routedClient.executeMessageLoop(
           context,
