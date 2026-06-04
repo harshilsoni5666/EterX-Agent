@@ -156,6 +156,7 @@ export class PromptLayerArchitecture {
     const content = [
       `━━━ TOOLS (${toolCount}) ━━━`,
       'TERMINAL: workspace_run_command (project), system_shell (OS), process_manager (long-running).',
+      'TERMINAL HANDOFF: if a command returns stillRunning/backgroundTaskId, do not rerun it; use wait_timer, then background_task mode="check" with that taskId until final output arrives.',
       'FILES: workspace_read_file, workspace_write_file, workspace_edit_file, smart_refactor.',
       'VERIFY: workspace_verify_code (lint/build/test), realtime_verify (file/syntax/json).',
       'RESEARCH: web_search (discovery), deep_research (multi-angle).',

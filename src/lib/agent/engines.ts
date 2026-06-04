@@ -40,6 +40,42 @@ class DynamicSkillEngine {
   private dynamicTools: Map<string, DynamicToolSpec> = new Map();
   private initialized = false;
 
+  private buildToolDefinition(spec: DynamicToolSpec): ToolDefinition {
+    const schemaFields: Record<string, any> = {};
+    for (const field of spec.inputFields) {
+      let zodType: any;
+      switch (field.type) {
+        case 'string': zodType = z.string(); break;
+        case 'number': zodType = z.number(); break;
+        case 'boolean': zodType = z.boolean(); break;
+        case 'array': zodType = z.array(z.any()); break;
+        default: zodType = z.string();
+      }
+      if (field.description) zodType = zodType.describe(field.description);
+      schemaFields[field.name] = field.required ? zodType : zodType.optional();
+    }
+
+    return {
+      name: spec.name,
+      description: `[DYNAMIC] ${spec.description}`,
+      category: 'core' as const,
+      inputSchema: z.object(schemaFields),
+      outputSchema: z.object({ result: z.any(), success: z.boolean() }),
+      execute: async (input: any) => {
+        console.log(`[DynamicTool: ${spec.name}] Executing...`);
+        try {
+          const AsyncFunction = Object.getPrototypeOf(async function () { }).constructor;
+          const _req = typeof window === 'undefined' ? eval('require') : null;
+          const fn = new AsyncFunction('input', 'require', 'path', 'fs', spec.executionCode);
+          const result = await fn(input, _req, _req ? _req('path') : path, _req ? _req('fs-extra') : fs);
+          return { result, success: true };
+        } catch (error: any) {
+          return { result: null, success: false, error: error.message };
+        }
+      }
+    };
+  }
+
   /** Load all dynamic tools from disk and register them */
   async initialize(): Promise<void> {
     if (this.initialized) return;
@@ -52,6 +88,11 @@ class DynamicSkillEngine {
         try {
           const spec: DynamicToolSpec = await fs.readJson(path.join(DYNAMIC_TOOLS_DIR, file));
           this.registerDynamicTool(spec);
+          if (!globalToolRegistry.getTool(spec.name)) {
+            globalToolRegistry.registerTool(this.buildToolDefinition(spec));
+          } else {
+            console.warn(`[DynamicSkills] Skipped "${spec.name}" because a registered tool already exists`);
+          }
         } catch (e) {
           console.warn(`[DynamicSkills] Could not load ${file}`);
         }
@@ -82,47 +123,9 @@ class DynamicSkillEngine {
       }
     }
 
-    // Build Zod schema from input fields
-    const schemaFields: Record<string, any> = {};
-    for (const field of spec.inputFields) {
-      let zodType: any;
-      switch (field.type) {
-        case 'string': zodType = z.string(); break;
-        case 'number': zodType = z.number(); break;
-        case 'boolean': zodType = z.boolean(); break;
-        case 'array': zodType = z.array(z.any()); break;
-        default: zodType = z.string();
-      }
-      if (field.description) zodType = zodType.describe(field.description);
-      schemaFields[field.name] = field.required ? zodType : zodType.optional();
-    }
-
-    // Create the tool definition
-    const toolDef: ToolDefinition = {
-      name: spec.name,
-      description: `[DYNAMIC] ${spec.description}`,
-      category: 'core' as const,
-      inputSchema: z.object(schemaFields),
-      outputSchema: z.object({ result: z.any(), success: z.boolean() }),
-      execute: async (input: any) => {
-        console.log(`[DynamicTool: ${spec.name}] Executing...`);
-        try {
-          // Create a sandboxed execution context. 
-          // Abstract require via eval to prevent Next.js from throwing static extraction warnings.
-          const AsyncFunction = Object.getPrototypeOf(async function () { }).constructor;
-          const _req = typeof window === 'undefined' ? eval('require') : null;
-          const fn = new AsyncFunction('input', 'require', 'path', 'fs', spec.executionCode);
-          const result = await fn(input, _req, _req ? _req('path') : path, _req ? _req('fs-extra') : fs);
-          return { result, success: true };
-        } catch (error: any) {
-          return { result: null, success: false, error: error.message };
-        }
-      }
-    };
-
     // Register in the global registry
     this.registerDynamicTool(spec);
-    globalToolRegistry.registerTools([toolDef]);
+    globalToolRegistry.registerTool(this.buildToolDefinition(spec));
 
     // Persist to disk
     await this.saveTool(spec);
@@ -191,7 +194,7 @@ class ToolCompositionEngine {
   private macros: Map<string, MacroDefinition> = new Map();
 
   /** Execute a macro — run steps in sequence, piping outputs */
-  async executeMacro(macro: MacroDefinition, input: any): Promise<any> {
+  async executeMacro(macro: MacroDefinition, input: any, runContext?: any): Promise<any> {
     console.log(`[MacroEngine] Executing macro: ${macro.name} (${macro.steps.length} steps)`);
 
     const context: Record<string, any> = { ...input };
@@ -213,7 +216,7 @@ class ToolCompositionEngine {
       console.log(`[MacroEngine] Step ${i + 1}/${macro.steps.length}: ${step.tool}`);
 
       try {
-        const result = await tool.execute(stepInput, {});
+        const result = await tool.execute(stepInput, runContext || {});
         context[step.outputKey] = result;
       } catch (error: any) {
         return { error: `Step ${i + 1} (${step.tool}) failed: ${error.message}`, step: i + 1, context };
@@ -568,10 +571,10 @@ class AgentReflectionEngine {
     const isUITask = /\\b(ui|frontend|html|css|design|layout|dashboard|landing|page|component|react|vue|svelte)\\b/i.test(goalLower);
     const wroteUICode = toolsUsed.some(t => t === 'workspace_write_file') && 
                         (outputLower.includes('.html') || outputLower.includes('.css') || outputLower.includes('.tsx') || outputLower.includes('.jsx'));
-    const didVisualVerify = toolsUsed.some(t => t === 'browser_control' || t === 'screenshot_capture' || t === 'ui_live_preview');
+    const didVisualVerify = toolsUsed.some(t => t === 'browser_control' || t === 'screenshot_capture' || t === 'screen_agent');
     if (isUITask && wroteUICode && !didVisualVerify) {
-      suggestions.push('UI code written but never visually verified — consider browser preview');
-      improvementActions.push({ tool: 'ui_live_preview', reason: 'Visual verification of UI output' });
+      suggestions.push('UI code written but never visually verified — use browser or screenshot verification');
+      improvementActions.push({ tool: 'browser_control', reason: 'Visual verification of UI output' });
     }
 
     // 12. File created but never verified

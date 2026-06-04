@@ -5,6 +5,11 @@ import { promisify } from 'util';
 import path from 'path';
 import fs from 'fs-extra';
 import { resolveWorkspaceDirectoryForContext } from '../../workspace/path_resolver';
+import {
+  getTerminalBackgroundTaskStatus,
+  killTerminalBackgroundTask,
+  listTerminalBackgroundTasks
+} from './terminal_background';
 
 const execAsync = promisify(exec);
 
@@ -50,9 +55,9 @@ export const backgroundTaskTool: ToolDefinition = {
 
 MODES:
 - "launch": Start a command in the background. Returns immediately with a task ID.
-- "check": Check status/output of a background task by ID.
-- "list": List all active and completed background tasks.
-- "kill": Terminate a running background task.
+- "check": Check status/output of a background task or handed-off terminal command by ID.
+- "list": List all active and completed background/terminal tasks.
+- "kill": Terminate a running background/terminal task.
 
 EXAMPLES:
 - Launch: { mode: "launch", command: "npm run build", description: "Building project" }
@@ -147,6 +152,9 @@ Use for: long installs, builds, data processing, file watching, anything that ta
           return { success: false, message: 'taskId is required for check mode' };
         }
 
+        const terminalTask = await getTerminalBackgroundTaskStatus(input.taskId);
+        if (terminalTask) return terminalTask;
+
         // Check in-memory first
         const task = activeTasks.get(input.taskId);
         if (task) {
@@ -175,6 +183,8 @@ Use for: long installs, builds, data processing, file watching, anything that ta
 
       case 'list': {
         const tasks: any[] = [];
+        const terminalTasks = await listTerminalBackgroundTasks();
+        tasks.push(...terminalTasks);
 
         // In-memory tasks
         for (const [id, task] of activeTasks) {
@@ -213,6 +223,16 @@ Use for: long installs, builds, data processing, file watching, anything that ta
       case 'kill': {
         if (!input.taskId) {
           return { success: false, message: 'taskId is required for kill mode' };
+        }
+
+        const terminalTask = await killTerminalBackgroundTask(input.taskId);
+        if (terminalTask) {
+          return {
+            success: true,
+            taskId: input.taskId,
+            message: `Terminal task ${input.taskId} stopped or already finished.`,
+            output: terminalTask.output || terminalTask.stdout || ''
+          };
         }
 
         const task = activeTasks.get(input.taskId);

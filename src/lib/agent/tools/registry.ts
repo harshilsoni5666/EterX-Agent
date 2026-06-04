@@ -14,9 +14,17 @@ class ToolRegistry {
   }
 
   /**
-   * Register multiple tools at once.
+   * Register multiple tools without removing existing entries.
    */
   public registerTools(tools: ToolDefinition[]) {
+    tools.forEach(t => this.registerTool(t));
+  }
+
+  /**
+   * Replace the registry contents with an explicit tool set.
+   * Use this only during bootstrap; runtime-created tools should append.
+   */
+  public replaceAllTools(tools: ToolDefinition[]) {
     this.tools.clear();
     tools.forEach(t => this.registerTool(t));
   }

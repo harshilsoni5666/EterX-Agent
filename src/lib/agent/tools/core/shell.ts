@@ -1,18 +1,14 @@
 import { z } from 'zod';
 import { ToolDefinition } from '../../schemas';
-import { exec } from 'child_process';
-import { promisify } from 'util';
 import path from 'path';
 import fs from 'fs-extra';
 import { getPathResolverInfo, resolveWorkspaceDirectoryForContext } from '../../workspace/path_resolver';
 import {
-  emitRuntimeTrace,
-  isExecTimeoutError,
-  normalizeTimeoutMs,
-  terminalTimeoutNote
+  normalizeCheckInMs,
+  normalizeHardTimeoutMs
 } from './terminal_timeout';
+import { runTerminalCommandWithCheckIn } from './terminal_background';
 
-const execAsync = promisify(exec);
 const HELPER_SCRIPT_PATTERN = /\.(py|ps1|js|mjs|cjs|bat|cmd|vbs|ahk)(['"\s]|$)/i;
 
 function referencesDesktopHelperScript(command: string, cwd: string): boolean {
@@ -70,28 +66,30 @@ function isPathInsideOrEqual(parentPath: string, candidatePath: string): boolean
  * Major upgrades over v1:
  * - Configurable timeout (default 30s, max 120s); long-running commands belong in process_manager
  * - Custom working directory support (still sandboxed)
- * - Captured output with truncation for large results
+ * - Captured output with live UI traces
  * - Multi-command chaining (&&, ;)
  * - PowerShell AND cmd support
- * - Output truncation for massive outputs (keeps first + last lines)
+ * - Full stdout/stderr returned to the runner; model-facing compaction happens later
  * - Execution timing
  * - Environment variable injection
  */
 export const shellTool: ToolDefinition = {
   name: 'system_shell',
-  description: `Execute finite one-shot shell commands on the host OS with a configurable timeout (default 30s, max 2 minutes). Supports custom working directories, environment variables, multi-command chaining, output truncation for large outputs, and execution timing. Runs in PowerShell by default. Use process_manager/background_task plus wait_timer for long-running servers, watchers, or interactive processes.
+  description: `Execute shell commands on the host OS with streamed output and automatic background handoff. If a command is still running after the check-in timer (default 15s; timeoutSeconds/checkInSeconds override it), the process stays alive and this returns backgroundTaskId. Do not rerun handed-off commands; call wait_timer, then background_task mode="check". Runs in PowerShell by default.
   
   Pro tips:
   - Chain commands: "npm install && npm run build"
   - Custom directory: set workingDir to run in a specific folder
-  - Long-running commands: use process_manager/background_task and wait_timer instead of system_shell
+  - Long-running command returned stillRunning: wait_timer, then background_task check with the returned taskId
   - Use shellType "cmd" for native Windows commands`,
   category: 'core',
   inputSchema: z.object({
     command: z.string().describe('The shell command to execute'),
     workingDir: z.string().optional().describe('Working directory (relative to workspace). Default: workspace root'),
     shellType: z.enum(['powershell', 'cmd']).optional().default('powershell').describe('Shell type to use'),
-    timeoutSeconds: z.number().optional().describe('Optional command timeout in seconds. Default: 30 seconds. Max: 120 seconds.'),
+    timeoutSeconds: z.number().optional().describe('Alias for the first check-in timer in seconds. Default is about 15 seconds.'),
+    checkInSeconds: z.number().optional().describe('Seconds to wait before handing a still-running command to the background. Default is about 15 seconds.'),
+    hardTimeoutSeconds: z.number().optional().describe('Hard safety timeout in seconds for stuck commands after handoff. Default is 30 minutes.'),
     env: z.string().optional().describe('Optional JSON object string of environment variables, e.g. {"NODE_ENV":"production"}')
   }),
   outputSchema: z.object({
@@ -101,11 +99,12 @@ export const shellTool: ToolDefinition = {
     executionTimeMs: z.number(),
     timedOut: z.boolean().optional(),
     timeoutMs: z.number().optional(),
+    stillRunning: z.boolean().optional(),
+    backgroundTaskId: z.string().optional(),
     nextActionNote: z.string().optional()
   }),
-  execute: async (input: { command: string, workingDir?: string, shellType?: string, env?: Record<string, string> | string, timeoutSeconds?: number, timeoutMs?: number }, context?: any) => {
+  execute: async (input: { command: string, workingDir?: string, shellType?: string, env?: Record<string, string> | string, timeoutSeconds?: number, timeoutMs?: number, checkInSeconds?: number, checkInMs?: number, hardTimeoutSeconds?: number, hardTimeoutMs?: number }, context?: any) => {
     const startTime = Date.now();
-    const timeoutMs = normalizeTimeoutMs(input.timeoutSeconds ?? input.timeoutMs);
 
     try {
       // Resolve working directory against the selected/pinned workspace.
@@ -170,65 +169,75 @@ export const shellTool: ToolDefinition = {
       // Build environment
       const parsedEnv = parseStringRecord(input.env);
       const execEnv = { ...process.env, ...parsedEnv };
+      const checkInMs = normalizeCheckInMs(input.checkInSeconds ?? input.checkInMs ?? input.timeoutSeconds ?? input.timeoutMs, command);
+      const hardTimeoutMs = normalizeHardTimeoutMs(input.hardTimeoutSeconds ?? input.hardTimeoutMs, checkInMs);
 
-      const { stdout, stderr } = await execAsync(command, {
-        shell: shellExe,
+      const result = await runTerminalCommandWithCheckIn({
+        command,
         cwd,
-        maxBuffer: 10 * 1024 * 1024, // 10MB buffer (up from default 1MB)
-        timeout: timeoutMs,
-        env: execEnv
+        source: 'system_shell',
+        context,
+        shell: shellExe,
+        env: execEnv,
+        checkInMs,
+        hardTimeoutMs,
+        maxOutputChars: 10 * 1024 * 1024,
+        traceThrottleMs: 150
       });
 
-      const executionTime = Date.now() - startTime;
+      const executionTime = result.executionTimeMs ?? (Date.now() - startTime);
 
-      // Truncate large outputs (keep first 200 + last 50 lines)
-      const truncatedStdout = truncateOutput(stdout, 200, 50);
-      const truncatedStderr = truncateOutput(stderr, 50, 20);
+      if (result.stillRunning) return result;
 
-      if (stderr && stderr.trim().length > 0) {
+      const stdoutText = result.stdout || '';
+      const stderrText = result.stderr || '';
+      if (result.exitCode !== 0) {
         return {
-          stdout: truncatedStdout,
-          stderr: truncatedStderr,
+          CRITICAL_ERROR: result.timedOut
+            ? 'TERMINAL_HARD_TIMEOUT. Read the partial output, keep completed work, and continue from the latest visible state.'
+            : 'YOUR COMMAND CRASHED. Read the error, fix your code/command, and try again.',
+          stdout: stdoutText,
+          stderr: stderrText,
+          exitCode: result.exitCode || 1,
+          executionTimeMs: executionTime,
+          timedOut: Boolean(result.timedOut),
+          timeoutMs: checkInMs,
+          hardTimeoutMs,
+          _consoleTraceEmitted: true,
+          nextActionNote: result.nextActionNote
+        };
+      }
+
+      if (stderrText.trim().length > 0) {
+        return {
+          stdout: stdoutText,
+          stderr: stderrText,
           exitCode: 0,
           executionTimeMs: executionTime,
-          timeoutMs,
+          timeoutMs: checkInMs,
+          hardTimeoutMs,
+          _consoleTraceEmitted: true,
           TERMINAL_WARNING: "Command produced stderr output. This may be informational (e.g., npm warnings) or could indicate issues."
         };
       }
 
-      return { stdout: truncatedStdout, stderr: '', exitCode: 0, executionTimeMs: executionTime, timeoutMs };
+      return { stdout: stdoutText, stderr: '', exitCode: 0, executionTimeMs: executionTime, timeoutMs: checkInMs, hardTimeoutMs, _consoleTraceEmitted: true };
     } catch (error: any) {
       const executionTime = Date.now() - startTime;
-      if (isExecTimeoutError(error)) {
-        const note = terminalTimeoutNote(input.command, timeoutMs);
-        emitRuntimeTrace(context, {
-          type: 'timer_expired',
-          text: 'Shell command: Timer has expired',
-          title: 'Shell command',
-          note,
-          durationMs: timeoutMs,
-          command: input.command,
-          iconCategory: 'terminal'
-        });
-        return {
-          CRITICAL_ERROR: 'TERMINAL_TIMEOUT. Read the partial output, keep completed work, and continue from the latest visible state.',
-          stdout: truncateOutput(error.stdout || '', 100, 30),
-          stderr: truncateOutput(`${error.stderr || error.message || ''}\n\n${note}`, 100, 30),
-          exitCode: 124,
-          executionTimeMs: executionTime,
-          timedOut: true,
-          timeoutMs,
-          nextActionNote: note
-        };
-      }
-
+      const failedStdout = String(error.stdout || '');
+      const failedStderr = String(error.stderr || error.message);
+      const failedExitCode = error.code || 1;
+      emitShellOutputTrace(context, input.command, [failedStdout, failedStderr].filter(Boolean).join('\n'), {
+        exitCode: failedExitCode,
+        durationMs: executionTime
+      });
       return {
         CRITICAL_ERROR: "YOUR COMMAND CRASHED. Read the error, fix your code/command, and try again.",
-        stdout: truncateOutput(error.stdout || '', 100, 30),
-        stderr: truncateOutput(error.stderr || error.message, 100, 30),
-        exitCode: error.code || 1,
+        stdout: failedStdout,
+        stderr: failedStderr,
+        exitCode: failedExitCode,
         executionTimeMs: executionTime,
-        timeoutMs
+        _consoleTraceEmitted: true
       };
     }
   }
@@ -250,17 +259,29 @@ function parseStringRecord(value: Record<string, string> | string | undefined): 
   }
 }
 
-/**
- * Truncate output that's too long, keeping first N lines and last M lines.
- */
-function truncateOutput(text: string, keepFirst: number, keepLast: number): string {
-  if (!text) return '';
-  const lines = text.split('\n');
-  if (lines.length <= keepFirst + keepLast) return text;
+function emitShellOutputTrace(context: any, command: string, output: string, metadata: Record<string, any> = {}) {
+  const content = output.trim();
+  if (!content) return;
 
-  const first = lines.slice(0, keepFirst).join('\n');
-  const last = lines.slice(-keepLast).join('\n');
-  const skipped = lines.length - keepFirst - keepLast;
+  const event = {
+    type: 'console_output',
+    command,
+    output: content,
+    content,
+    source: 'system_shell',
+    ...metadata
+  };
 
-  return `${ first }\n\n... [${ skipped } lines truncated] ...\n\n${ last }`;
+  if (typeof context?._onTrace === 'function') {
+    context._onTrace(event);
+  }
+
+  if (context?.chatId) {
+    try {
+      const { taskStore } = require('../../task-store');
+      taskStore.addTrace(context.chatId, event);
+    } catch {
+      // Trace persistence is best-effort; command output still returns to the caller.
+    }
+  }
 }

@@ -78,11 +78,15 @@ function compactTraceEvent(traceEvent: any): any {
   }
 
   if (traceEvent.type === 'console_output') {
-    const { output, ...rest } = traceEvent;
-    const outputText = String(output || '');
+    const { output, content, ...rest } = traceEvent;
+    const outputText = String(output ?? content ?? '');
+    const compactedOutput = outputText.length > 2500
+      ? `${outputText.substring(0, 2500)}\n...[output compacted]`
+      : outputText;
     return {
       ...rest,
-      output: outputText.length > 2500 ? `${outputText.substring(0, 2500)}\n...[output compacted]` : outputText,
+      output: compactedOutput,
+      content: compactedOutput,
       _contentStripped: outputText.length > 2500,
     };
   }

@@ -14,6 +14,9 @@ export async function POST(req: NextRequest) {
     if (!filePath || content === undefined) {
       return NextResponse.json({ error: 'filePath and content are required' }, { status: 400 });
     }
+    if (typeof content !== 'string') {
+      return NextResponse.json({ error: 'content must be a string' }, { status: 400 });
+    }
 
     const normalizedPath = path.resolve(path.normalize(filePath));
     const protection = checkEterXProtection(normalizedPath);
@@ -46,7 +49,7 @@ export async function POST(req: NextRequest) {
       filePath: normalizedPath,
       isNew,
       size: Buffer.byteLength(content, 'utf-8'),
-      lines: content.split('\n').length,
+      lines: content.length === 0 ? 0 : content.split(/\r?\n/).length,
     });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });

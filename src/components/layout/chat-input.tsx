@@ -15,16 +15,31 @@ import {
   type MainAgentMode,
   type MainAgentThinkingLevel,
 } from '../../lib/agent/model-routing';
+import {
+  AUTO_MODEL_SELECTION,
+  CHAT_MODEL_SELECTION_STORAGE_KEY,
+  MODEL_API_KEYS_STORAGE_KEY,
+  MODEL_CATALOG_STORAGE_KEY,
+  MODEL_OVERRIDE_STORAGE_KEY,
+  MODEL_PROVIDER_MODE,
+  MODEL_SELECTOR_STORAGE_KEY,
+  entriesToModelCatalog,
+  ensureModelSelectorEntry,
+  modelEntryKey,
+  normalizeModelSelectorEntries,
+  type ModelSelectorEntry,
+} from '../../lib/agent/model-selector-store';
 
 const MODEL_API_KEY_STORAGE_KEY = 'eterx_api_keys';
-const MODEL_OVERRIDE_STORAGE_KEY = 'eterx_model_overrides';
-const MODEL_CATALOG_STORAGE_KEY = 'eterx_model_catalog';
 const SETTINGS_CHANNEL = 'eterx-settings';
 
 type StoredModelSettings = {
   apiKeys: Partial<Record<MainAgentProvider, string>>;
   modelOverrides: Partial<Record<MainAgentProvider, string>>;
   modelCatalog: Partial<Record<MainAgentProvider, string[]>>;
+  modelEntries: ModelSelectorEntry[];
+  modelApiKeys: Record<string, string>;
+  chatModelSelection: string;
 };
 
 type ChatModelOption = {
@@ -35,6 +50,7 @@ type ChatModelOption = {
   compactLabel: string;
   modelName: string;
   modelId?: string;
+  isAuto?: boolean;
 };
 
 const MODEL_PROVIDER_LABEL: Record<MainAgentProvider, string> = {
@@ -89,11 +105,37 @@ const readStringArrayRecord = (storageKey: string): Record<string, string[]> => 
   }
 };
 
-const readStoredModelSettings = (): StoredModelSettings => ({
-  apiKeys: readStringRecord(MODEL_API_KEY_STORAGE_KEY) as Partial<Record<MainAgentProvider, string>>,
-  modelOverrides: readStringRecord(MODEL_OVERRIDE_STORAGE_KEY) as Partial<Record<MainAgentProvider, string>>,
-  modelCatalog: readStringArrayRecord(MODEL_CATALOG_STORAGE_KEY) as Partial<Record<MainAgentProvider, string[]>>,
-});
+const readStoredModelSettings = (): StoredModelSettings => {
+  const apiKeys = readStringRecord(MODEL_API_KEY_STORAGE_KEY) as Partial<Record<MainAgentProvider, string>>;
+  const modelOverrides = readStringRecord(MODEL_OVERRIDE_STORAGE_KEY) as Partial<Record<MainAgentProvider, string>>;
+  const modelCatalog = readStringArrayRecord(MODEL_CATALOG_STORAGE_KEY) as Partial<Record<MainAgentProvider, string[]>>;
+  const savedEntries = typeof window !== 'undefined'
+    ? (() => {
+      try {
+        return JSON.parse(window.localStorage.getItem(MODEL_SELECTOR_STORAGE_KEY) || '[]');
+      } catch {
+        return [];
+      }
+    })()
+    : [];
+  const overrideEntries = Object.entries(modelOverrides)
+    .map(([provider, modelId]) => ({ provider: provider as MainAgentProvider, modelId: String(modelId || '').trim() }))
+    .filter(entry => entry.modelId);
+  const modelEntries = normalizeModelSelectorEntries([...normalizeModelSelectorEntries(savedEntries, modelCatalog), ...overrideEntries], modelCatalog);
+  const modelApiKeys = readStringRecord(MODEL_API_KEYS_STORAGE_KEY);
+  const chatModelSelection = typeof window !== 'undefined'
+    ? (window.localStorage.getItem(CHAT_MODEL_SELECTION_STORAGE_KEY) || AUTO_MODEL_SELECTION)
+    : AUTO_MODEL_SELECTION;
+
+  return {
+    apiKeys,
+    modelOverrides,
+    modelCatalog,
+    modelEntries,
+    modelApiKeys,
+    chatModelSelection,
+  };
+};
 
 const emitModelSettingsUpdate = (detail: unknown) => {
   if (typeof window === 'undefined') return;
@@ -752,7 +794,7 @@ const SubAgentDock = ({
             <Users className="h-[15px] w-[15px] shrink-0 text-white/72" strokeWidth={2.35} />
           )}
           <span className="flex min-w-0 items-center">
-            <span className={`truncate text-[13px] font-semibold leading-5 tracking-normal ${ isLive ? 'eterx-text-shimmer eterx-text-shimmer-medium' : 'text-white/78' }`}>
+            <span className={`truncate text-[13px] font-semibold leading-5 tracking-normal ${ isLive ? 'eterx-text-shimmer eterx-text-shimmer-active' : 'text-white/78' }`}>
               {headerTitle}
             </span>
             {isLive && <GeneratingDots className="shrink-0 text-white/70" />}
@@ -802,7 +844,7 @@ const SubAgentDock = ({
                       {/* Agent info */}
                       <span className="flex min-w-0 flex-1 flex-col">
                         <span className="flex items-center gap-2">
-                          <span className={`text-[13px] font-semibold leading-5 ${ isWorking ? 'eterx-text-shimmer eterx-text-shimmer-slow' : 'text-[#BFBFBF]' }`}>
+                          <span className={`text-[13px] font-semibold leading-5 ${ isWorking ? 'eterx-text-shimmer eterx-text-shimmer-working' : 'text-[#BFBFBF]' }`}>
                             {agent.name}
                           </span>
                           {isWorking && <GeneratingDots className="shrink-0 text-white/70" />}
@@ -879,7 +921,7 @@ const TaskTrackerDock = ({
             <ListTodo className="h-[15px] w-[15px] shrink-0 text-[#F2EFEA]/88" strokeWidth={2.35} />
           )}
           <span className="flex min-w-0 items-center">
-            <span className={`truncate text-[13px] font-semibold leading-5 tracking-normal ${ liveHeader ? 'eterx-text-shimmer eterx-text-shimmer-medium' : 'text-[#F4F1EA]' }`}>
+            <span className={`truncate text-[13px] font-semibold leading-5 tracking-normal ${ liveHeader ? 'eterx-text-shimmer eterx-text-shimmer-active' : 'text-[#F4F1EA]' }`}>
               {headerTitle}
             </span>
             {liveHeader && <GeneratingDots className="shrink-0 text-[#D7D7D7]" />}
@@ -905,7 +947,7 @@ const TaskTrackerDock = ({
                     <div key={index} className="flex h-7 items-center gap-3 overflow-hidden rounded-[10px] px-2">
                       <span className="block h-[18px] w-[18px] shrink-0 rounded-full border-[2px] border-[#A9A9A9]/35" />
                       <div className={`h-[10px] overflow-hidden rounded-full bg-white/[0.04] ${ index === 1 ? 'w-[72%]' : 'w-[58%]' }`}>
-                        <div className="h-full w-full eterx-surface-shimmer" />
+                        <div className="h-full w-full eterx-surface-shimmer eterx-surface-shimmer-progress" />
                       </div>
                     </div>
                   ))}
@@ -927,7 +969,7 @@ const TaskTrackerDock = ({
                             <TaskStatusGlyph status={step.status} active={activeWorking} />
                           </span>
                           <span className="flex min-w-0 flex-1 items-center">
-                            <span className={`block truncate text-[13px] font-semibold leading-5 ${ activeWorking ? 'eterx-text-shimmer eterx-text-shimmer-slow' : 'text-[#9A9A98]' }`}>
+                            <span className={`block truncate text-[13px] font-semibold leading-5 ${ activeWorking ? 'eterx-text-shimmer eterx-text-shimmer-working' : 'text-[#9A9A98]' }`}>
                               {step.name || `Task ${ step.step }`}
                             </span>
                             {activeWorking && <GeneratingDots className="shrink-0 text-[#CFCFCF]" />}
@@ -1005,6 +1047,9 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     apiKeys: {},
     modelOverrides: {},
     modelCatalog: {},
+    modelEntries: [],
+    modelApiKeys: {},
+    chatModelSelection: AUTO_MODEL_SELECTION,
   }));
   const connectors = useConnectors();
   const refreshStoredModelSettings = useCallback(() => {
@@ -1057,7 +1102,10 @@ export const ChatInput: React.FC<ChatInputProps> = ({
         !event.key ||
         event.key === MODEL_API_KEY_STORAGE_KEY ||
         event.key === MODEL_OVERRIDE_STORAGE_KEY ||
-        event.key === MODEL_CATALOG_STORAGE_KEY
+        event.key === MODEL_CATALOG_STORAGE_KEY ||
+        event.key === MODEL_SELECTOR_STORAGE_KEY ||
+        event.key === MODEL_API_KEYS_STORAGE_KEY ||
+        event.key === CHAT_MODEL_SELECTION_STORAGE_KEY
       ) {
         refreshStoredModelSettings();
       }
@@ -1776,101 +1824,98 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const inputSidePadding = isCompressed ? 'px-4' : 'px-4 sm:px-12';
   const composerRadius = isCompressed ? 'rounded-[28px]' : 'rounded-[32px]';
   const modelOptions = useMemo<ChatModelOption[]>(() => {
-    const options: ChatModelOption[] = [];
-    MAIN_AGENT_MODEL_OPTIONS.forEach(baseOption => {
-      if (!storedModelSettings.apiKeys[baseOption.provider]?.trim()) return;
-
-      const activeExactModel = storedModelSettings.modelOverrides[baseOption.provider]?.trim();
-      const savedModels = storedModelSettings.modelCatalog[baseOption.provider] || [];
-      const exactModels = Array.from(new Set(
-        [activeExactModel, ...savedModels]
-          .map(modelId => String(modelId || '').trim())
-          .filter(Boolean),
-      ));
-
-      options.push({
-        optionKey: `${baseOption.provider}:default`,
-        id: baseOption.id,
-        provider: baseOption.provider,
-        label: baseOption.label,
+    return storedModelSettings.modelEntries.map(entry => {
+      const mode = MODEL_PROVIDER_MODE[entry.provider];
+      const baseOption = MAIN_AGENT_MODEL_OPTIONS.find(option => option.id === mode) || getMainAgentModelConfig(mode);
+      return {
+        optionKey: modelEntryKey(entry.provider, entry.modelId),
+        id: mode,
+        provider: entry.provider,
+        label: entry.modelId,
         compactLabel: baseOption.compactLabel,
-        modelName: baseOption.modelName,
-      });
-
-      exactModels.forEach(modelId => {
-        options.push({
-          optionKey: `${baseOption.provider}:${modelId}`,
-          id: baseOption.id,
-          provider: baseOption.provider,
-          label: modelId,
-          compactLabel: baseOption.compactLabel,
-          modelName: modelId,
-          modelId,
-        });
-      });
+        modelName: entry.modelId,
+        modelId: entry.modelId,
+      };
     });
-    return options;
-  }, [storedModelSettings.apiKeys, storedModelSettings.modelCatalog, storedModelSettings.modelOverrides]);
+  }, [storedModelSettings.modelEntries]);
   const getModelOptionLabel = useCallback((option: ChatModelOption) => option.label, []);
   const fallbackModelConfig = getMainAgentModelConfig(agentMode);
-  const fallbackSelectedModel: ChatModelOption = {
-    optionKey: `fallback:${fallbackModelConfig.provider}`,
+  const autoModelOption: ChatModelOption = {
+    optionKey: AUTO_MODEL_SELECTION,
     id: fallbackModelConfig.id,
     provider: fallbackModelConfig.provider,
-    label: fallbackModelConfig.label,
-    compactLabel: fallbackModelConfig.compactLabel,
-    modelName: fallbackModelConfig.modelName,
+    label: 'Auto',
+    compactLabel: 'Auto',
+    modelName: 'Auto',
+    isAuto: true,
   };
-  const selectedModel = modelOptions.find(option => {
-    if (option.id !== agentMode) return false;
-    const activeExactModel = storedModelSettings.modelOverrides[option.provider]?.trim();
-    return option.modelId ? option.modelId === activeExactModel : !activeExactModel;
-  }) || modelOptions.find(option => option.id === agentMode) || modelOptions[0] || fallbackSelectedModel;
-  const hasConfiguredModels = modelOptions.length > 0;
+  const selectedModel = storedModelSettings.chatModelSelection === AUTO_MODEL_SELECTION
+    ? autoModelOption
+    : modelOptions.find(option => option.optionKey === storedModelSettings.chatModelSelection) || autoModelOption;
+  const allModelOptions = useMemo(() => [autoModelOption, ...modelOptions], [autoModelOption, modelOptions]);
   const safeThinkingLevel = normalizeMainAgentThinkingLevel(thinkingLevel);
   const selectedThinkingLevel = MAIN_AGENT_THINKING_LEVEL_OPTIONS.find(option => option.id === safeThinkingLevel) || MAIN_AGENT_THINKING_LEVEL_OPTIONS[0];
-  const modelDisplayLabel = hasConfiguredModels ? getModelOptionLabel(selectedModel as ChatModelOption) : 'Configure model';
+  const modelDisplayLabel = getModelOptionLabel(selectedModel as ChatModelOption);
   const selectChatModelOption = useCallback((option: ChatModelOption) => {
-    const nextOverrides = { ...storedModelSettings.modelOverrides };
-    if (option.modelId) {
-      nextOverrides[option.provider] = option.modelId;
-    } else {
-      delete nextOverrides[option.provider];
+    if (option.isAuto) {
+      window.localStorage.setItem(CHAT_MODEL_SELECTION_STORAGE_KEY, AUTO_MODEL_SELECTION);
+      window.localStorage.setItem(MODEL_OVERRIDE_STORAGE_KEY, JSON.stringify({}));
+      writeStoredAgentMode(agentMode);
+      setStoredModelSettings(prev => ({
+        ...prev,
+        modelOverrides: {},
+        chatModelSelection: AUTO_MODEL_SELECTION,
+      }));
+      emitModelSettingsUpdate({
+        type: 'model-selection-updated',
+        modelOverrides: {},
+        chatModelSelection: AUTO_MODEL_SELECTION,
+      });
+      setShowModelMenu(false);
+      setShowThinkingLevels(false);
+      return;
     }
 
-    let nextCatalog = storedModelSettings.modelCatalog;
-    if (option.modelId) {
-      const savedModels = nextCatalog[option.provider] || [];
-      if (!savedModels.includes(option.modelId)) {
-        nextCatalog = {
-          ...nextCatalog,
-          [option.provider]: [...savedModels, option.modelId],
-        };
-        window.localStorage.setItem(MODEL_CATALOG_STORAGE_KEY, JSON.stringify(nextCatalog));
-      }
-    }
+    const nextOverrides = { ...storedModelSettings.modelOverrides, [option.provider]: option.modelId || option.modelName };
+    const nextEntries = ensureModelSelectorEntry(storedModelSettings.modelEntries, option.provider, option.modelId || option.modelName);
+    const nextCatalog = entriesToModelCatalog(nextEntries);
 
+    window.localStorage.setItem(CHAT_MODEL_SELECTION_STORAGE_KEY, option.optionKey);
+    window.localStorage.setItem(MODEL_SELECTOR_STORAGE_KEY, JSON.stringify(nextEntries));
+    window.localStorage.setItem(MODEL_CATALOG_STORAGE_KEY, JSON.stringify(nextCatalog));
     window.localStorage.setItem(MODEL_OVERRIDE_STORAGE_KEY, JSON.stringify(nextOverrides));
     writeStoredAgentMode(option.id);
     setStoredModelSettings(prev => ({
       ...prev,
       modelOverrides: nextOverrides,
       modelCatalog: nextCatalog,
+      modelEntries: nextEntries,
+      chatModelSelection: option.optionKey,
     }));
     emitModelSettingsUpdate({
       type: 'model-selection-updated',
       modelOverrides: nextOverrides,
       modelCatalog: nextCatalog,
+      modelEntries: nextEntries,
+      chatModelSelection: option.optionKey,
     });
     onModeChange(option.id);
     setShowModelMenu(false);
     setShowThinkingLevels(false);
-  }, [onModeChange, storedModelSettings.modelCatalog, storedModelSettings.modelOverrides]);
+  }, [agentMode, onModeChange, storedModelSettings.modelEntries, storedModelSettings.modelOverrides]);
   useEffect(() => {
-    if (isModelLocked || modelOptions.length === 0) return;
-    if (modelOptions.some(option => option.id === agentMode)) return;
-    onModeChange(modelOptions[0].id);
-  }, [agentMode, isModelLocked, modelOptions, onModeChange]);
+    if (isModelLocked) return;
+    if (storedModelSettings.chatModelSelection === AUTO_MODEL_SELECTION) return;
+    if (modelOptions.some(option => option.optionKey === storedModelSettings.chatModelSelection)) return;
+    window.localStorage.setItem(CHAT_MODEL_SELECTION_STORAGE_KEY, AUTO_MODEL_SELECTION);
+    window.localStorage.setItem(MODEL_OVERRIDE_STORAGE_KEY, JSON.stringify({}));
+    setStoredModelSettings(prev => ({
+      ...prev,
+      modelOverrides: {},
+      chatModelSelection: AUTO_MODEL_SELECTION,
+    }));
+    emitModelSettingsUpdate({ type: 'model-selection-updated', modelOverrides: {}, chatModelSelection: AUTO_MODEL_SELECTION });
+  }, [isModelLocked, modelOptions, storedModelSettings.chatModelSelection]);
   const controlPopoutVerticalClass = 'bottom-[calc(100%+10px)]';
   const selectorPopoutVerticalClass = 'bottom-[calc(100%+10px)]';
   const selectorMenuOffset = 8;
@@ -2144,7 +2189,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                         <div key={att.id || i} className={`relative group w-[62px] h-[62px] shrink-0 rounded-[18px] shadow-[0_5px_16px_rgba(0,0,0,0.24)] hover:shadow-[0_8px_24px_rgba(0,0,0,0.34)] transition-all cursor-pointer border ${ isErrored ? 'border-[#E2765A]/55' : 'border-white/[0.12] hover:border-white/[0.20]' } overflow-visible`}>
                           <img src={att.preview} alt={displayName} className={`w-full h-full object-cover rounded-[18px] transition-all ${ isErrored ? 'opacity-45 grayscale' : 'opacity-100' }`} />
                           {isPreparing && (
-                            <div className="pointer-events-none absolute inset-0 rounded-[18px] eterx-surface-shimmer" />
+                            <div className="pointer-events-none absolute inset-0 rounded-[18px] eterx-surface-shimmer eterx-surface-shimmer-upload" />
                           )}
                           {isErrored && (
                             <div className="absolute inset-0 flex items-center justify-center rounded-[18px] bg-black/28">
@@ -2167,7 +2212,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                     return (
                       <div key={att.id || i} className={`relative group w-[200px] shrink-0 h-[58px] rounded-[16px] bg-[#202020]/82 border ${ isErrored ? 'border-[#E2765A]/45' : 'border-white/[0.095] hover:border-white/[0.17]' } shadow-[inset_0_1px_0_rgba(255,255,255,0.045),0_5px_16px_rgba(0,0,0,0.2)] hover:bg-[#272727]/90 transition-all flex items-center p-2 cursor-pointer overflow-hidden`}>
                         {isPreparing && (
-                          <div className="pointer-events-none absolute inset-0 eterx-surface-shimmer" />
+                          <div className="pointer-events-none absolute inset-0 eterx-surface-shimmer eterx-surface-shimmer-upload" />
                         )}
                         <div className={`w-[40px] h-[40px] rounded-[10px] flex items-center justify-center shrink-0 border border-white/5 ${ isPdf ? 'bg-[#EF4444]' : 'bg-[#007AFF]' }`}>
                           {isErrored ? (
@@ -2838,11 +2883,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       aria-label="Model and thinking settings"
                     >
                       <div className={modelOptions.length > 3 ? 'max-h-[168px] overflow-y-auto pr-1 eterx-scrollbar' : ''}>
-                        {modelOptions.length === 0 ? (
-                          <div className="px-3 py-3 text-[12.5px] leading-5 text-[#A7A7A7]">
-                            Add a provider key in Settings / Connections to enable model selection.
-                          </div>
-                        ) : modelOptions.map((option) => {
+                        {allModelOptions.map((option) => {
                           const selected = option.optionKey === selectedModel.optionKey;
                           const optionLabel = getModelOptionLabel(option);
                           return (
@@ -2860,13 +2901,18 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                                     {optionLabel}
                                   </span>
                                   <span className="truncate text-[11.5px] font-medium leading-4 text-[#A7A7A7]">
-                                    {MODEL_PROVIDER_LABEL[option.provider]}
+                                    {option.isAuto ? 'Use the Settings model priority list' : MODEL_PROVIDER_LABEL[option.provider]}
                                   </span>
                                 </span>
                               </button>
                             </React.Fragment>
                           );
                         })}
+                        {modelOptions.length === 0 && (
+                          <div className="px-3 pb-3 pt-1 text-[12px] leading-5 text-[#8E8E8E]">
+                            Add models in Settings to make exact choices available here.
+                          </div>
+                        )}
                       </div>
 
                       <div className="mx-2 my-1.5 h-px bg-white/[0.09]" />

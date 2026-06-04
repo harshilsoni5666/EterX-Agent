@@ -4,12 +4,12 @@ import { createPortal } from 'react-dom';
 import { useFilePanelActions } from '../../contexts/FilePanelContext';
 // Only the Lucide icons actually rendered in JSX (not icon-map/TOOL_META)
 import {
-  ChevronRight, ChevronDown, Monitor, ShieldHalf, Copy, CheckCircle, Maximize2, CornerDownLeft
+  ChevronRight, ChevronDown, Monitor, ShieldHalf, Copy, CheckCircle, Maximize2, CornerDownLeft,
+  RefreshCw, ExternalLink, Check, Globe, Smartphone, Tablet, Terminal
 } from 'lucide-react';
 // @ts-ignore
 import ReactMarkdown from 'react-markdown';
 import { markdownComponents, normalizeMarkdownForRendering, remarkPlugins, rehypePlugins } from './markdown-renderer';
-import { getConnectorIcon } from '../layout/connectors-modal';
 import { AGENT_ICONS, resolveAgentIcon, AgentAssetIcon } from './agent-icons';
 import { AgentFace } from './agent-face';
 
@@ -404,7 +404,10 @@ const VERB_MAP: Record<string, string> = {
 
 // getToolMeta — verb extraction only; icon is always resolved by resolveAgentIcon
 const getToolMeta = (text: string, type: string, _iconName?: string) => {
-  const verb = VERB_MAP[text] || text || 'Action';
+  const normalizedText = /\bsync/i.test(text || '') && /\bnetwork\b/i.test(text || '')
+    ? 'Network operation'
+    : text;
+  const verb = VERB_MAP[normalizedText] || normalizedText || 'Action';
   return { icon: null, verb, color: '#E8E6E3' };
 };
 
@@ -632,7 +635,7 @@ export const ProfessionalThought = ({ text, isLatest, isThinking, variant = 'tho
             onClick={() => setOpen(!open)}
             className="eterx-thought-toggle flex min-h-[42px] w-full items-center gap-2.5 px-3.5 py-1.5 text-left transition-colors hover:bg-white/[0.03] group"
           >
-            <span className={`flex-1 text-[14.5px] font-semibold ${ isLive ? 'text-[#A0A0A0] eterx-live-text eterx-live-text--medium' : 'text-[#6B6966]' }`}>
+            <span className={`flex-1 text-[14.5px] font-semibold ${ isLive ? 'text-[#A0A0A0] eterx-live-text eterx-live-text--thought' : 'text-[#6B6966]' }`}>
               {thinkLabel}
             </span>
             <ChevronRight className={`h-4 w-4 text-[#5E5A55] group-hover:text-[#A3A19E] transition-all ${ open ? 'rotate-90' : '' }`} />
@@ -863,6 +866,20 @@ const InlineConsole = ({ command, content, exitCode, durationMs }: { command: st
           {lineCount > 0 && <span className="hidden sm:inline text-[10.5px] text-[#77716A]">{lineCount} lines</span>}
           {durationLabel && <span className="hidden sm:inline text-[10.5px] text-[#6D6861]">{durationLabel}</span>}
         </div>
+        {!full && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              e.preventDefault();
+              setFull(true);
+            }}
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[9px] border border-white/[0.065] bg-white/[0.035] text-[#9F9991] transition-colors hover:bg-white/[0.07] hover:text-white"
+            aria-label="Open shell output full screen"
+          >
+            <Maximize2 className="h-3.5 w-3.5" />
+          </button>
+        )}
       </div>
       <div className="flex items-start gap-2.5 border-y border-white/[0.055] bg-[#202020] px-3 py-2">
         <span className="select-none text-[16px] leading-5 font-semibold text-[#D8D4CC]">$</span>
@@ -1092,6 +1109,17 @@ const getLineContext = (subtitle: string, fileName: string) => {
 const ACTION_CARD_CLASS = "eterx-action-card w-full overflow-hidden rounded-[14px] border border-white/[0.10] bg-[#111111]/76 shadow-[inset_0_1px_0_rgba(255,255,255,0.035),0_4px_16px_rgba(0,0,0,0.20)]";
 const ACTION_ROW_DIVIDER_CLASS = "eterx-action-row-divider border-t border-white/[0.07]";
 
+const findLatestConsoleOutput = (logs: any[], commandSnippet: string) => {
+  if (!commandSnippet) return null;
+  for (let i = logs.length - 1; i >= 0; i -= 1) {
+    const candidate = logs[i];
+    if (candidate?.type === 'console_output' && String(candidate.command || '').includes(commandSnippet)) {
+      return candidate;
+    }
+  }
+  return null;
+};
+
 const ActionChip = ({
   log, isLastChip, isActiveGroup, allLogs,
   isNested = false, inCard = false
@@ -1113,7 +1141,7 @@ const ActionChip = ({
     const searchLogs = myIdx !== -1 ? allLogs.slice(myIdx) : allLogs;
     if (log.type === 'command') {
       const cmd = String(log.secondary || '').trim();
-      return searchLogs.find((l: any) => l.type === 'console_output' && String(l.command || '').includes(cmd.substring(0, 20))) || null;
+      return findLatestConsoleOutput(searchLogs, cmd.substring(0, 20));
     }
     if (isEdit) {
       return searchLogs.find((l: any) => l.type === 'file_preview' && String(l.filename || '').includes(fileName))
@@ -1178,9 +1206,20 @@ const ActionChip = ({
     openPanel({
       filename: fileName,
       filepath: fullPath,
-      content: preview?.content || '',
+      content: typeof preview?.content === 'string' ? preview.content : undefined,
       diffLines: preview?.diffLines,
       isEdit: preview?.isEdit || isEdit,
+      linesAdded: preview?.linesAdded ?? preview?.added ?? log.linesAdded ?? log.added,
+      linesRemoved: preview?.linesRemoved ?? preview?.removed ?? log.linesRemoved ?? log.removed,
+      added: preview?.added ?? preview?.linesAdded ?? log.added ?? log.linesAdded,
+      removed: preview?.removed ?? preview?.linesRemoved ?? log.removed ?? log.linesRemoved,
+      lineCount: preview?.lineCount,
+      totalLines: preview?.totalLines ?? preview?.lineCount,
+      loadedLines: preview?.loadedLines,
+      startLine: preview?.startLine,
+      endLine: preview?.endLine,
+      truncated: preview?.truncated,
+      size: preview?.size,
       activeTabMode: preferredMode,
     });
   };
@@ -1206,7 +1245,7 @@ const ActionChip = ({
           return <span className="eterx-action-icon flex h-7 w-7 items-center justify-center shrink-0"><AI isLive={isLiveChip} size={18} color={isLiveChip ? ac : '#DAD6CF'} /></span>;
         })()}
         {isThinkChip && <div className="w-1 shrink-0" />}
-        <span className={`eterx-action-verb shrink-0 truncate text-[14px] font-semibold leading-tight tracking-normal ${isLiveChip ? 'eterx-live-text eterx-live-text--medium' : 'text-[#C9C5BE]'}`}>{displayVerb}</span>
+        <span className={`eterx-action-verb shrink-0 truncate text-[14px] font-semibold leading-tight tracking-normal ${isLiveChip ? 'eterx-live-text eterx-live-text--chip' : 'text-[#C9C5BE]'}`}>{displayVerb}</span>
         {hasFile && (
           <span className="flex min-w-0 items-center gap-1.5">
             <button
@@ -1247,7 +1286,7 @@ const ActionChip = ({
           )}
           {hasFile && fullPath.toLowerCase().match(/\.(html|htm)$/) && (
             <button
-              onClick={(e) => { e.stopPropagation(); openPanel({ filename: fileName, filepath: fullPath, content: preview?.content || '', activeTabMode: 'preview' }); }}
+              onClick={(e) => { e.stopPropagation(); openPanel({ filename: fileName, filepath: fullPath, content: typeof preview?.content === 'string' ? preview.content : undefined, lineCount: preview?.lineCount, totalLines: preview?.totalLines ?? preview?.lineCount, truncated: preview?.truncated, activeTabMode: 'preview' }); }}
               className="flex items-center gap-1 rounded-md border border-white/[0.08] bg-white/[0.045] px-2 py-0.5 text-[10px] font-bold uppercase text-[#C8C6C3] transition-all hover:border-[#4FC1FF]/25 hover:bg-[#4FC1FF]/10 hover:text-[#4FC1FF] shrink-0"
             ><Monitor className="w-2.5 h-2.5" /> Preview</button>
           )}
@@ -1417,6 +1456,72 @@ const SafetyBanner = ({ log }: { log: any }) => (
 );
 
 // ─── Card containing one or more tool rows ────────────────────────────────────
+const AskUserTimelineCard = ({ log, isLive }: { log: any; isLive: boolean }) => {
+  const [open, setOpen] = useState(false);
+  const answered = Boolean(log.answeredWith);
+  const questions = Array.isArray(log.questions) ? log.questions.filter((item: any) => String(item?.question || '').trim()) : [];
+  const question = String(log.question || log.secondary || log.text || 'Waiting for user input');
+  const questionLabel = questions.length > 1 ? `${questions.length} questions` : question;
+  const answer = String(log.answeredWith || '');
+
+  return (
+    <div className="my-1.5 overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setOpen(value => !value)}
+        className={`${ACTION_CARD_CLASS} flex min-h-[46px] items-center gap-3 px-3 py-2.5 text-left transition-colors hover:bg-white/[0.035]`}
+      >
+        <span className="eterx-action-icon flex h-7 w-7 shrink-0 items-center justify-center">
+          {answered ? (
+            <Check className="h-4 w-4 text-[#DAD6CF]" />
+          ) : (
+            <AgentAssetIcon size={18} color="#DAD6CF" />
+          )}
+        </span>
+        <span className={`shrink-0 truncate text-[14px] font-semibold leading-tight tracking-normal ${!answered && isLive ? 'eterx-live-text eterx-live-text--chip' : 'text-[#C9C5BE]'}`}>
+          {answered ? 'Asked user' : `Asking user${isLive ? '...' : ''}`}
+        </span>
+        <span className="min-w-0 flex-1 truncate text-[13px] text-[#8D887F]">
+          {questionLabel}
+        </span>
+        <ChevronRight className={`h-4 w-4 shrink-0 text-[#8F897F] transition-transform ${open ? 'rotate-90 text-[#C9C5BE]' : ''}`} />
+      </button>
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.18 }}
+            className="overflow-hidden"
+          >
+            <div className="mx-3 mb-2 mt-1.5 rounded-[12px] border border-white/[0.08] bg-white/[0.025] p-3 text-[12.5px] leading-relaxed text-[#BDB8B0]">
+              <div className="font-semibold text-[#E2DED7]">Question</div>
+              <div className="mt-1 whitespace-pre-wrap">{question}</div>
+              {questions.length > 1 && (
+                <div className="mt-2 space-y-1.5">
+                  {questions.map((item: any, index: number) => (
+                    <div key={item.id || index} className="rounded-[8px] border border-white/[0.06] bg-white/[0.02] px-2.5 py-2">
+                      <span className="text-[#8D887F]">{index + 1}.</span>{' '}
+                      <span>{String(item.question || '')}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {answered && (
+                <>
+                  <div className="mt-3 font-semibold text-[#E2DED7]">Answer</div>
+                  <div className="mt-1 whitespace-pre-wrap">{answer}</div>
+                </>
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+};
+
 const CollapsibleActionGroup = ({
   logs, isActiveGroup, isLast, allLogs
 }: {
@@ -1657,7 +1762,7 @@ const LiveWorkingIndicator = ({ logs }: { logs: any[] }) => {
             animate={{ opacity: 1, x: 0 }}
             exit={{ opacity: 0, x: -7 }}
             transition={{ duration: 0.2, ease: 'easeOut' }}
-            className="eterx-live-text eterx-live-text--slow min-w-0 truncate pb-[2px] text-[14px] font-semibold leading-[1.35] tracking-normal"
+            className="eterx-live-text eterx-live-text--ambient min-w-0 truncate pb-[2px] text-[14px] font-semibold leading-[1.35] tracking-normal"
           >
             {label}
           </motion.span>
@@ -1709,13 +1814,286 @@ const SteeringCard = ({ log }: { log: any }) => {
 };
 
 
+// ═══════════════════════════════════════════════════════════════════
+// HtmlPreviewCard — Renders visual UI previews with browser chrome,
+// device frames, copy/open buttons, refresh, and inline console logging.
+// ═══════════════════════════════════════════════════════════════════
+const HtmlPreviewCard = ({ log }: { log: any }) => {
+  const [device, setDevice] = useState<'desktop' | 'tablet' | 'mobile'>('desktop');
+  const [consoleLogs, setConsoleLogs] = useState<{ type: 'info' | 'warn' | 'error'; text: string }[]>([]);
+  const [showConsole, setShowConsole] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [collapsed, setCollapsed] = useState(false);
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+
+  const title = log.title || 'Live UI Preview';
+  const rawHtml = log.content || '';
+
+  // Intercept logs inside the iframe srcdoc
+  const wrappedHtml = useMemo(() => {
+    let content = rawHtml;
+
+    // Inject tailwind if not present
+    if (!content.includes('tailwindcss') && !content.includes('tailwind.css') && content.includes('<head>')) {
+      content = content.replace(
+        '<head>',
+        `<head>\n  <script src="https://cdn.tailwindcss.com"></script>`
+      );
+    }
+
+    const interceptor = `
+<script>
+  (function() {
+    const _log = console.log;
+    const _error = console.error;
+    const _warn = console.warn;
+
+    function send(level, args) {
+      window.parent.postMessage({
+        type: 'iframe-console-log',
+        level: level,
+        args: Array.from(args).map(x => {
+          try {
+            return typeof x === 'object' ? JSON.stringify(x) : String(x);
+          } catch(e) {
+            return String(x);
+          }
+        })
+      }, '*');
+    }
+
+    console.log = function() { send('info', arguments); _log.apply(console, arguments); };
+    console.error = function() { send('error', arguments); _error.apply(console, arguments); };
+    console.warn = function() { send('warn', arguments); _warn.apply(console, arguments); };
+
+    window.onerror = function(message, source, lineno, colno, error) {
+      send('error', [message + ' (at ' + lineno + ':' + colno + ')']);
+    };
+  })();
+</script>
+`;
+    // Inject interceptor at the top of head
+    if (content.includes('<head>')) {
+      content = content.replace('<head>', `<head>${interceptor}`);
+    } else {
+      content = interceptor + content;
+    }
+    return content;
+  }, [rawHtml]);
+
+  useEffect(() => {
+    const handleMessage = (e: MessageEvent) => {
+      if (e.data?.type === 'iframe-console-log') {
+        const level = e.data.level;
+        const text = e.data.args.join(' ');
+        setConsoleLogs(prev => [...prev.slice(-49), { type: level, text }]);
+      }
+    };
+    window.addEventListener('message', handleMessage);
+    return () => window.removeEventListener('message', handleMessage);
+  }, []);
+
+  const handleRefresh = () => {
+    if (iframeRef.current) {
+      iframeRef.current.srcdoc = wrappedHtml;
+    }
+  };
+
+  const handleOpenExternal = () => {
+    try {
+      const blob = new Blob([rawHtml], { type: 'text/html' });
+      const url = URL.createObjectURL(blob);
+      window.open(url, '_blank');
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(rawHtml);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const deviceWidths = {
+    desktop: '100%',
+    tablet: '768px',
+    mobile: '395px'
+  };
+
+  return (
+    <motion.div
+      layout
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="w-full my-2.5 overflow-hidden rounded-[16px] border border-white/[0.08] bg-[#121212]/90 shadow-[0_12px_40px_rgba(0,0,0,0.3)] backdrop-blur-md"
+    >
+      <div className="flex h-[44px] items-center justify-between px-4 border-b border-white/[0.06] bg-white/[0.02]">
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="flex gap-1.5 shrink-0">
+            <div className="w-2.5 h-2.5 rounded-full bg-[#FF5F57] opacity-80" />
+            <div className="w-2.5 h-2.5 rounded-full bg-[#FEBC2E] opacity-80" />
+            <div className="w-2.5 h-2.5 rounded-full bg-[#28C840] opacity-80" />
+          </div>
+          <span className="text-[12px] font-semibold text-[#D4D0CB] truncate max-w-[180px] sm:max-w-[280px]">
+            {title}
+          </span>
+        </div>
+
+        <div className="hidden md:flex items-center p-0.5 rounded-lg bg-black/40 border border-white/[0.05]">
+          <button
+            onClick={() => setDevice('desktop')}
+            className={`p-1.5 rounded-md transition-all ${device === 'desktop' ? 'bg-[#F3F0EA] text-[#111]' : 'text-white/40 hover:text-white/80'}`}
+            title="Desktop"
+          >
+            <Monitor className="w-3.5 h-3.5" />
+          </button>
+          <button
+            onClick={() => setDevice('tablet')}
+            className={`p-1.5 rounded-md transition-all ${device === 'tablet' ? 'bg-[#F3F0EA] text-[#111]' : 'text-white/40 hover:text-white/80'}`}
+            title="Tablet"
+          >
+            <Tablet className="w-3.5 h-3.5" />
+          </button>
+          <button
+            onClick={() => setDevice('mobile')}
+            className={`p-1.5 rounded-md transition-all ${device === 'mobile' ? 'bg-[#F3F0EA] text-[#111]' : 'text-white/40 hover:text-white/80'}`}
+            title="Mobile"
+          >
+            <Smartphone className="w-3.5 h-3.5" />
+          </button>
+        </div>
+
+        <div className="flex items-center gap-1.5">
+          <button
+            onClick={handleCopy}
+            className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-[10.5px] font-bold transition-all ${copied ? 'text-emerald-400 bg-emerald-500/10' : 'text-[#8E8A84] hover:text-white hover:bg-white/[0.04]'}`}
+            title="Copy HTML"
+          >
+            {copied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+            <span className="hidden sm:inline">{copied ? 'COPIED' : 'COPY'}</span>
+          </button>
+          <button
+            onClick={handleRefresh}
+            className="p-1.5 rounded-md text-[#8E8A84] hover:text-white hover:bg-white/[0.04] transition-all"
+            title="Refresh Preview"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+          </button>
+          <button
+            onClick={handleOpenExternal}
+            className="p-1.5 rounded-md text-[#8E8A84] hover:text-white hover:bg-white/[0.04] transition-all"
+            title="Open in new window"
+          >
+            <ExternalLink className="w-3.5 h-3.5" />
+          </button>
+          <button
+            onClick={() => setShowConsole(!showConsole)}
+            className={`p-1.5 rounded-md transition-all relative ${showConsole ? 'text-emerald-400 bg-emerald-500/10' : 'text-[#8E8A84] hover:text-white hover:bg-white/[0.04]'}`}
+            title="Toggle Iframe Console"
+          >
+            <Terminal className="w-3.5 h-3.5" />
+            {consoleLogs.length > 0 && !showConsole && (
+              <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-rose-500" />
+            )}
+          </button>
+          <button
+            onClick={() => setCollapsed(!collapsed)}
+            className="p-1.5 rounded-md text-[#8E8A84] hover:text-white hover:bg-white/[0.04] transition-all"
+            title={collapsed ? 'Expand' : 'Collapse'}
+          >
+            <ChevronDown className={`w-4 h-4 transition-transform duration-200 ${collapsed ? '-rotate-90' : ''}`} />
+          </button>
+        </div>
+      </div>
+
+      <AnimatePresence initial={false}>
+        {!collapsed && (
+          <motion.div
+            initial={{ height: 0 }}
+            animate={{ height: 'auto' }}
+            exit={{ height: 0 }}
+            className="flex flex-col bg-[#161616]"
+          >
+            <div className="flex h-[32px] items-center px-4 bg-black/20 border-b border-white/[0.04]">
+              <div className="flex items-center gap-2 px-3 py-1 rounded-md bg-black/30 border border-white/[0.04] w-full max-w-[320px] mx-auto text-[11px] font-mono text-white/40">
+                <Globe className="w-3 h-3 shrink-0" />
+                <span className="truncate">eterx://live-preview</span>
+              </div>
+            </div>
+
+            <div className="p-4 flex justify-center bg-zinc-950 overflow-hidden">
+              <motion.div
+                animate={{ width: deviceWidths[device] }}
+                transition={{ type: 'spring', damping: 28, stiffness: 220 }}
+                className="overflow-hidden rounded-lg bg-white shadow-2xl border border-white/5 relative"
+                style={{
+                  height: device === 'mobile' ? '640px' : device === 'tablet' ? '540px' : '480px',
+                  maxHeight: '70vh'
+                }}
+              >
+                <iframe
+                  ref={iframeRef}
+                  srcDoc={wrappedHtml}
+                  className="w-full h-full border-0 bg-white"
+                  sandbox="allow-scripts allow-same-origin allow-modals allow-forms"
+                  title={title}
+                />
+              </motion.div>
+            </div>
+
+            <AnimatePresence>
+              {showConsole && (
+                <motion.div
+                  initial={{ height: 0 }}
+                  animate={{ height: 160 }}
+                  exit={{ height: 0 }}
+                  className="flex flex-col border-t border-white/[0.08] bg-[#0c0c0d] font-mono text-[11.5px] overflow-hidden"
+                >
+                  <div className="flex h-8 shrink-0 items-center justify-between px-4 bg-white/[0.02] border-b border-white/[0.04]">
+                    <div className="flex items-center gap-1.5 font-bold text-white/50">
+                      <Terminal className="w-3.5 h-3.5 text-white/40" />
+                      Console Output ({consoleLogs.length})
+                    </div>
+                    <button
+                      onClick={() => setConsoleLogs([])}
+                      className="text-[10px] text-white/40 hover:text-white transition-colors"
+                    >
+                      Clear
+                    </button>
+                  </div>
+                  <div className="flex-1 overflow-y-auto p-3 space-y-1 eterx-scrollbar">
+                    {consoleLogs.map((log, index) => (
+                      <div
+                        key={index}
+                        className={`flex gap-2 px-2 py-0.5 rounded ${log.type === 'error' ? 'bg-red-500/5 text-red-400' : log.type === 'warn' ? 'bg-amber-500/5 text-amber-400' : 'text-zinc-300'}`}
+                      >
+                        <span className="text-white/20">[{log.type.toUpperCase()}]</span>
+                        <span className="whitespace-pre-wrap break-all">{log.text}</span>
+                      </div>
+                    ))}
+                    {consoleLogs.length === 0 && (
+                      <div className="text-white/20 italic text-center py-8">
+                        No console logs captured
+                      </div>
+                    )}
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </motion.div>
+  );
+};
+
+
 export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showLiveIndicator = false, onOpenAgentTeam }: { logs: any[], liveLogs?: any[], isThinking: boolean, isLast: boolean, showLiveIndicator?: boolean, onOpenAgentTeam?: (agentName?: string) => void }) => {
   const containerRef = useRef<HTMLDivElement>(null);
-  // NOTE: 'ask_user' is intentionally excluded here — it's rendered as a full AskUserPrompt
-  // card in chat-feed.tsx. Including it here causes a duplicate ActionChip to appear.
   const NOISE_PATTERN = /reconnect|retrying|stalled|stream interrupted|model error|fallback|cancelled/i;
   const isFlowLog = (l: any) =>
-    ['thought_stream', 'work_note', 'command', 'exploration', 'file_edit', 'progress', 'browser', 'safety_warning', 'communication', 'sub_agent_answer', 'sub_agent_result', 'sub_agent_spawn', 'sub_agent_action', 'sub_agent_complete', 'sub_agent_error', 'inter_agent_comm', 'file_preview', 'console_output'].includes(l.type) &&
+    ['thought_stream', 'work_note', 'command', 'exploration', 'file_edit', 'progress', 'browser', 'safety_warning', 'communication', 'sub_agent_answer', 'sub_agent_result', 'sub_agent_spawn', 'sub_agent_action', 'sub_agent_complete', 'sub_agent_error', 'inter_agent_comm', 'file_preview', 'console_output', 'html_preview', 'ask_user'].includes(l.type) &&
     !(['progress', 'command', 'exploration'].includes(l.type) && /analyz(?:e|ing) task complexity/i.test(String(l.text || ''))) &&
     !(l.type === 'progress' && NOISE_PATTERN.test(String(l.text || '')));
   const flowLogs = logs.filter(isFlowLog);
@@ -1749,6 +2127,8 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
     else if (log.type === 'sub_agent_spawn') { flush(idx - 1); segs.push({ kind: 'subagent_spawn', log, idx }); }
     else if (log.type === 'sub_agent_error') { flush(idx - 1); segs.push({ kind: 'subagent_error', log, idx }); }
     else if (log.type === 'sub_agent_action') { aBuf.push({ ...log, type: 'command' }); }
+    else if (log.type === 'html_preview') { flush(idx - 1); segs.push({ kind: 'html_preview', log, idx }); }
+    else if (log.type === 'ask_user') { flush(idx - 1); segs.push({ kind: 'ask_user', log, idx }); }
     else if (SPEC.has(log.type)) { flush(idx - 1); }
     else { aBuf.push(log); }
   });
@@ -1770,6 +2150,8 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
         if (seg.kind === 'comm') return <InterAgentCommCard key={`comm-${ seg.idx }`} log={seg.log} onOpenAgentTeam={onOpenAgentTeam} />;
         if (seg.kind === 'subagent_spawn') return <SubAgentSpawnCard key={`ss-${ seg.idx }`} log={seg.log} />;
         if (seg.kind === 'subagent_error') return <SubAgentErrorCard key={`se-${ seg.idx }`} log={seg.log} />;
+        if (seg.kind === 'html_preview') return <HtmlPreviewCard key={`hp-${ seg.idx }`} log={seg.log} />;
+        if (seg.kind === 'ask_user') return <AskUserTimelineCard key={`ask-tl-${ seg.idx }`} log={seg.log} isLive={isThinking && isLast && i === segs.length - 1 && !seg.log.answeredWith} />;
         
         // Unpack single action chip — wrap in card so it sits inside the container
         if (seg.logs.length === 1) {
@@ -1794,4 +2176,3 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
     </div>
   );
 };
-

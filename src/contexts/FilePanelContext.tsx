@@ -24,6 +24,17 @@ const FilePanelStateContext = createContext<FilePanelStateContextType | null>(nu
 const FilePanelActionsContext = createContext<FilePanelActionsContextType | null>(null);
 const FilePanelPresenceContext = createContext<boolean>(false);
 
+function mergeDefinedPanelProps(current: FilePanelProps, next: FilePanelProps): FilePanelProps {
+  const merged = { ...current };
+  (Object.keys(next) as Array<keyof FilePanelProps>).forEach(key => {
+    const value = next[key];
+    if (value !== undefined) {
+      (merged as any)[key] = value;
+    }
+  });
+  return merged;
+}
+
 export function FilePanelProvider({ children }: { children: ReactNode }) {
   const [openFiles, setOpenFiles] = useState<FilePanelProps[]>([]);
   const [reviewFilesByChat, setReviewFilesByChat] = useState<Record<string, FilePanelProps[]>>({});
@@ -38,7 +49,7 @@ export function FilePanelProvider({ children }: { children: ReactNode }) {
       if (existingIdx !== -1) {
         setActiveIndex(existingIdx);
         const newFiles = [...prev];
-        newFiles[existingIdx] = { ...newFiles[existingIdx], ...nextProps };
+        newFiles[existingIdx] = mergeDefinedPanelProps(newFiles[existingIdx], nextProps);
         return newFiles;
       }
       setActiveIndex(prev.length);

@@ -15,6 +15,7 @@ import { apiKeyPool } from './api-key-pool';
 import { readAgentBuilderProfile, type AgentBuilderProfile } from './builder-agent';
 import { resolveAgentTools, type ResolvedTool } from './tool-injector';
 import { globalToolRegistry } from './tools/registry';
+import { getPathResolverInfo } from './workspace/path_resolver';
 
 // ═══════════════════════════════════════════════════════════════
 // Types
@@ -154,7 +155,7 @@ These rules are enforced at runtime and cannot be overridden:
 Current date/time: ${now.toLocaleString()}
 Timezone: ${Intl.DateTimeFormat().resolvedOptions().timeZone}
 Operating System: ${process.platform === 'win32' ? 'Windows' : process.platform === 'darwin' ? 'macOS' : 'Linux'}
-Workspace: ${process.cwd()}
+Workspace: ${getPathResolverInfo().desktopPath}
 Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.name).join(', ')})`);
 
     return parts.join('\n');
@@ -235,7 +236,7 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
     this.cancelled = false;
     const maxIter = config.maxIterations || 20;
     const agentName = this.profile?.name || config.agentId;
-    const TOOL_TIMEOUT_MS = 45_000; // 45s per tool call
+    const TOOL_TIMEOUT_MS = 45_000; // Default non-terminal tool guard
 
     // Lease an API key
     apiKeyPool.initialize();
@@ -378,8 +379,9 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
               let result: unknown;
               try {
                 const execPromise = this.executeToolSafe(name || '', args || {}, config.agentId);
+                const toolTimeoutMs = this.resolveToolTimeoutMs(name || '', args || {}, TOOL_TIMEOUT_MS);
                 const timeoutPromise = new Promise<{ error: string }>((_, reject) =>
-                  setTimeout(() => reject(new Error(`Tool "${name}" timed out after ${TOOL_TIMEOUT_MS / 1000}s`)), TOOL_TIMEOUT_MS)
+                  setTimeout(() => reject(new Error(`Tool "${name}" timed out after ${toolTimeoutMs / 1000}s`)), toolTimeoutMs)
                 );
                 result = await Promise.race([execPromise, timeoutPromise]);
               } catch (err: any) {
@@ -480,6 +482,26 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
    * Execute a tool safely — resolves from local tools first, then global registry.
    * Catches all errors and returns structured results.
    */
+  private resolveToolTimeoutMs(toolName: string, args: any, defaultMs: number): number {
+    const terminalTools = new Set([
+      'system_shell',
+      'workspace_run_command',
+      'workspace_verify_code',
+      'background_task',
+      'process_manager',
+      'wait_timer'
+    ]);
+
+    if (!terminalTools.has(toolName)) return defaultMs;
+
+    const requested = Number(args?.checkInSeconds ?? args?.timeoutSeconds ?? args?.seconds ?? 15);
+    const requestedMs = Number.isFinite(requested) && requested > 0
+      ? (requested <= 120 ? requested * 1000 : requested)
+      : 15_000;
+
+    return Math.min(Math.max(requestedMs + 30_000, 90_000), 5 * 60_000);
+  }
+
   private async executeToolSafe(
     toolName: string,
     args: any,
@@ -488,8 +510,8 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
     const context = {
       agentId,
       agentRuntime: 'custom_agent' as const,
-      workspaceRoot: process.cwd(),
-      paths: [process.cwd()],
+      workspaceRoot: getPathResolverInfo().desktopPath,
+      paths: [getPathResolverInfo().desktopPath],
     };
 
     // Priority 1: Resolved tool from agent profile

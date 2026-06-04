@@ -191,7 +191,7 @@ export const AGENT_ICONS: Record<string, { Icon: React.FC<IconProps>; color: str
   'Recalling context':       { Icon: Folder01Icon,         color: W },
   'Automating UI':           { Icon: ComputerIcon,         color: W },
   'Controlling desktop':     { Icon: ComputerIcon,         color: W },
-  'Syncing network':         { Icon: ComputerIcon,         color: W },
+  'Network operation':       { Icon: ComputerIcon,         color: W },
   'Generating chart':        { Icon: FileAddIcon,          color: W },
   'Analyzing data':          { Icon: SearchList01Icon,     color: W },
   'Running safety check':    { Icon: CheckmarkBadge03Icon, color: W },

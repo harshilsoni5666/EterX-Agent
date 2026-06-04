@@ -634,12 +634,17 @@ export class GeminiAgentClient {
       system_shell: { text: 'Running command', type: 'command', iconCategory: 'terminal', argKey: 'command' },
       terminal_access: { text: 'Checking terminal access', type: 'exploration', iconCategory: 'terminal', argKey: 'action' },
       workspace_run_command: { text: 'Running project command', type: 'command', iconCategory: 'terminal', argKey: 'command' },
+      wait_timer: { text: 'Waiting for check-in', type: 'command', iconCategory: 'terminal', argKey: 'title' },
+      background_task: { text: 'Checking background task', type: 'command', iconCategory: 'terminal', argKey: 'taskId' },
       web_search: { text: 'Researching', type: 'exploration', iconCategory: 'web_search', argKey: 'query' },
       web_scraper: { text: 'Reading source', type: 'exploration', iconCategory: 'web_search', argKey: 'url' },
+      workspace_find_files: { text: 'Finding files', type: 'exploration', iconCategory: 'search', argKey: 'glob' },
       workspace_read_file: { text: 'Reading file', type: 'exploration', iconCategory: 'file_read', argKey: 'filename' },
+      workspace_read_many_files: { text: 'Reading files', type: 'exploration', iconCategory: 'file_read', argKey: 'files' },
       workspace_search_text: { text: 'Searching codebase', type: 'exploration', iconCategory: 'search', argKey: 'pattern' },
       workspace_write_file: { text: 'Writing artifact', type: 'file_edit', iconCategory: 'file_create', argKey: 'filename' },
       workspace_edit_file: { text: 'Editing file', type: 'file_edit', iconCategory: 'file_edit', argKey: 'filename' },
+      workspace_edit_many_files: { text: 'Editing files', type: 'file_edit', iconCategory: 'file_edit', argKey: 'files' },
       workspace_verify_code: { text: 'Verifying code', type: 'command', iconCategory: 'verification', argKey: 'checkType' },
       browser_control: { text: 'Using browser', type: 'browser', iconCategory: 'computer', argKey: 'action' },
       deep_research: { text: 'Deep researching', type: 'exploration', iconCategory: 'web_search', argKey: 'topic' },
@@ -1779,13 +1784,27 @@ export class GeminiAgentClient {
       });
     }
 
-    return `You are EterX. You and the user share the same workspace. You run LOCALLY on the user's Windows machine with full filesystem, shell, and network access. You deliver real work with real results.
+    return `You are EterX. You run locally on the user's Windows machine and deliver real work with real results.
 ${ userNameTxt }
 You are NOT a chatbot. You are an autonomous agent who EXECUTES. You don't discuss â€” you deliver.
 
 â”â”â” TEMPORAL CONTEXT â”â”â”
 ðŸ“… ${ dateStr } Â· ðŸ• ${ timeStr } Â· ðŸŒ ${ tzLabel } Â· ðŸ“† ${ isoDate }
 Always use the above for "today", "now", or time-sensitive queries. Never use training data dates.
+
+PRODUCT / WORKSPACE BOUNDARY:
+- EterX app/source internals are product infrastructure, not the user's project.
+- Do not inspect or modify EterX source, app config, build output, dependencies, or repository metadata unless the user explicitly asks to develop EterX itself.
+- Use pinned/user-selected project paths first. If none are pinned, use explicit user paths or normal user folders for artifacts.
+- Normal workspace tools reject protected EterX source paths.
+
+ASK_USER TOOL RULES:
+- Use ask_user only when progress genuinely requires the user's preference, missing path, credential, confirmation, or decision.
+- ask_user is blocking and exclusive. Do not call any other tool in the same model step as ask_user.
+- Prefer one clear question per ask_user call. When several related answers are required before work can continue, use the questions[] form to ask them together in one pause.
+- Use choice for one selected option, multi_select for multiple selections, short_answer for paths/URLs/names/small values, text only for longer explanations, and confirm only for yes/no.
+- After the user answers, do not repeat the same question. Treat the answer as authoritative, briefly acknowledge the selected answer only if useful, and continue the task immediately.
+- If the user explicitly asks to test the ask_user tool, call ask_user once with a real useful question and then continue after the answer.
 
 â”â”â” CORE IDENTITY â”â”â”
 - Full access to filesystem, shell, network, browser, and desktop automation.
@@ -1845,7 +1864,7 @@ ALWAYS DECIDE YOURSELF (never ask):
 - Code formatting, structure, organization
 - Research strategy and source selection
 
-STOP WORK AND ASK THE USER (as a normal text answer, not a tool) ONLY WHEN:
+STOP WORK AND ASK THE USER (use ask_user when available; plain text only if the tool is unavailable) ONLY WHEN:
 - You need a secret/credential that only the user has (API key, password, token)
 - A genuinely destructive action needs consent (deleting production data, force-pushing to main)
 - The task has 2+ fundamentally different interpretations AND picking wrong wastes significant work
@@ -1974,14 +1993,16 @@ For large codebases: write base files â†’ edit to add functionality â†�
 You have ${ toolCount } tools:
 
 TERMINAL ROUTING:
-- workspace_run_command: finite project commands (npm, tsc, pytest). Not for servers.
-- system_shell: one-shot OS commands. Not for servers or UI.
+- workspace_run_command: project commands (npm, tsc, pytest). If result has stillRunning/backgroundTaskId, the command is already alive in the background.
+- system_shell: OS commands. If result has stillRunning/backgroundTaskId, the command is already alive in the background.
 - process_manager: anything long-running (dev servers, watchers, databases).
 - terminal_access: read-only terminal capability check.
+- Terminal handoff protocol: never rerun a handed-off command. Read stdout/stderr, call wait_timer for the suggested interval, then call background_task with mode="check" and the returned taskId. If the check still says running and no independent work remains, wait again instead of stopping or guessing. Continue work only after final output/exitCode arrives.
 
 FILE OPERATIONS:
-- workspace_read_file / workspace_list_directory / workspace_search_text: inspection
-- workspace_write_file / workspace_edit_file / smart_refactor: changes
+- workspace_find_files / workspace_search_text: fast discovery before reading
+- workspace_read_file with startLine/endLine / workspace_read_many_files: targeted inspection
+- workspace_write_file / workspace_edit_file / workspace_edit_many_files / smart_refactor: changes
 - code_intelligence: analyze structure without reading full files
 
 VERIFICATION:
@@ -2257,7 +2278,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
     // workspace_read_file: agent may legitimately re-read a file after editing it
     // docx_generator: may need retry after content expansion
     // ask_user: always needs fresh interaction
-    const neverDedupTools = ['workspace_write_file', 'workspace_edit_file', 'workspace_read_file', 'docx_generator', 'ask_user', 'task_checkpoint', 'realtime_verify', 'browser_control', 'spawn_sub_agent', 'api_caller'];
+    const neverDedupTools = ['workspace_write_file', 'workspace_edit_file', 'workspace_edit_many_files', 'workspace_read_file', 'workspace_read_many_files', 'docx_generator', 'ask_user', 'task_checkpoint', 'realtime_verify', 'browser_control', 'spawn_sub_agent', 'api_caller'];
     const dedupToolName = normalizedSig.split(':')[0];
     if (neverDedupTools.includes(dedupToolName)) return false;
 
@@ -2346,7 +2367,9 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
 
     // Default list of stateless tool names
     const knownStateless = new Set([
+      'workspace_find_files',
       'workspace_read_file',
+      'workspace_read_many_files',
       'workspace_view_file',
       'workspace_search_text',
       'workspace_list_directory',
@@ -2418,8 +2441,8 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
   }
 
   private isExploratoryToolCall(name: string, args: any): boolean {
-    if (['web_search', 'web_scraper', 'deep_research', 'workspace_search_text', 'workspace_analyze', 'csv_data_analyzer'].includes(name)) return true;
-    if (name === 'workspace_read_file') return true;
+    if (['web_search', 'web_scraper', 'deep_research', 'workspace_find_files', 'workspace_search_text', 'workspace_analyze', 'csv_data_analyzer'].includes(name)) return true;
+    if (name === 'workspace_read_file' || name === 'workspace_read_many_files') return true;
     if (name === 'system_shell' || name === 'workspace_run_command') {
       const command = String(args?.command || '').toLowerCase();
       return /\b(kagglehub|dataset_download|read_csv|head\(|tail\(|info\(|describe\(|isnull|isna|missing|null|unique|nunique|value_counts|profile|profiling|inspect|explore|analy[sz]e|distribution|columns?|shape)\b/.test(command);
@@ -3882,9 +3905,12 @@ EXTERNAL ACTION NOTE CUE
         web_search: { text: 'Researching', type: 'exploration', iconCategory: 'web_search', argKey: 'query' },
         web_scraper: { text: 'Reading source', type: 'exploration', iconCategory: 'web_search', argKey: 'url' },
         workspace_list_directory: { text: 'Scanning directory', type: 'exploration', iconCategory: 'folder_read', argKey: 'directory' },
+        workspace_find_files: { text: 'Finding files', type: 'exploration', iconCategory: 'search', argKey: 'glob' },
         workspace_read_file: { text: 'Reading file', type: 'exploration', iconCategory: 'file_read', argKey: 'filename' },
+        workspace_read_many_files: { text: 'Reading files', type: 'exploration', iconCategory: 'file_read', argKey: 'files' },
         workspace_write_file: { text: 'Writing artifact', type: 'file_edit', iconCategory: 'file_create', argKey: 'filename' },
         workspace_edit_file: { text: 'Editing file', type: 'file_edit', iconCategory: 'file_edit', argKey: 'filename' },
+        workspace_edit_many_files: { text: 'Editing files', type: 'file_edit', iconCategory: 'file_edit', argKey: 'files' },
         workspace_run_command: { text: 'Running project command', type: 'command', iconCategory: 'terminal', argKey: 'command' },
         workspace_verify_code: { text: 'Verifying code', type: 'command', iconCategory: 'verification', argKey: 'checkType' },
         workspace_search_text: { text: 'Searching codebase', type: 'exploration', iconCategory: 'search', argKey: 'pattern' },
@@ -3942,7 +3968,8 @@ EXTERNAL ACTION NOTE CUE
         git_intelligence: { text: 'Git operation', type: 'command', iconCategory: 'terminal', argKey: 'mode' },
         chart_generator: { text: 'Generating chart', type: 'file_edit', iconCategory: 'file_create', argKey: 'title' },
         smart_file_analyzer: { text: 'Analyzing files', type: 'exploration', iconCategory: 'search', argKey: 'path' },
-        background_task: { text: 'Background task', type: 'command', iconCategory: 'terminal', argKey: 'command' },
+        background_task: { text: 'Checking background task', type: 'command', iconCategory: 'terminal', argKey: 'taskId' },
+        wait_timer: { text: 'Waiting for check-in', type: 'command', iconCategory: 'terminal', argKey: 'title' },
         realtime_verify: { text: 'Verifying output', type: 'command', iconCategory: 'verification', argKey: 'target' },
         create_dynamic_tool: { text: 'Creating tool', type: 'command', iconCategory: 'computer', argKey: 'toolName' },
         workspace_analyze: { text: 'Analyzing workspace', type: 'exploration', iconCategory: 'search', argKey: 'directory' },
@@ -3950,7 +3977,6 @@ EXTERNAL ACTION NOTE CUE
         ask_user: { text: 'Asking user', type: 'ask_user', iconCategory: 'computer', argKey: 'question' },
         task_checkpoint: { text: 'Saving progress', type: 'command', iconCategory: 'computer', argKey: 'action' },
         image_asset_search: { text: 'Searching images', type: 'exploration', iconCategory: 'image', argKey: 'query' },
-        ui_live_preview: { text: 'Previewing UI', type: 'command', iconCategory: 'computer' },
         desktop_control: { text: 'Controlling desktop', type: 'command', iconCategory: 'computer', argKey: 'action' },
         agent_cron_scheduler: { text: 'Scheduling agent cron', type: 'command', iconCategory: 'computer', argKey: 'cronExpression' },
         agent_connector_trigger: { text: 'Triggering connector', type: 'command', iconCategory: 'computer', argKey: 'connectorId' },
@@ -4386,14 +4412,16 @@ EXTERNAL ACTION NOTE CUE
                   const lang = codeExtensions[ext];
                   const content = typeof args?.content === 'string' ? args.content : '';
                   if (lang && content.length > 0 && content.length < 80000) {
+                    const lineCount = content.length === 0 ? 0 : content.split(/\r?\n/).length;
                     const previewEvt = {
                       type: 'file_preview',
                       filename: pathLib.basename(filename),
                       filepath: filename,
                       language: lang,
                       content: content,
-                      lineCount: content.split('\n').length,
-                      linesAdded: content.split('\n').length,
+                      lineCount,
+                      totalLines: lineCount,
+                      linesAdded: lineCount,
                       linesRemoved: 0,
                     };
                     if (onTrace) onTrace(previewEvt);
@@ -4524,6 +4552,8 @@ EXTERNAL ACTION NOTE CUE
                         language: lang2,
                         content: newContent.substring(0, 80000),
                         lineCount: _M,
+                        totalLines: _M,
+                        truncated: newContent.length > 80000,
                         linesAdded: _added,
                         linesRemoved: _removed,
                         diffLines,
@@ -4535,7 +4565,7 @@ EXTERNAL ACTION NOTE CUE
               }
 
               // â•â•â• LIVE CONSOLE OUTPUT: Emit real shell stdout/stderr to UI â•â•â•
-              if ((call.name === 'system_shell' || call.name === 'workspace_run_command') && toolOutput) {
+              if ((call.name === 'system_shell' || call.name === 'workspace_run_command') && toolOutput && !toolOutput?._consoleTraceEmitted) {
                 const rawStdout = String(toolOutput?.stdout || toolOutput?.output || toolOutput?.result || '').trim();
                 const rawStderr = String(toolOutput?.stderr || '').trim();
                 const combinedOut = [rawStdout, rawStderr].filter(Boolean).join('\n');
@@ -4546,7 +4576,8 @@ EXTERNAL ACTION NOTE CUE
                   const consoleEvt = {
                     type: 'console_output',
                     command: String(args?.command || args?.script || '').substring(0, 300),
-                    output: combinedOut.substring(0, 10000),
+                    output: combinedOut,
+                    content: combinedOut,
                     exitCode,
                   };
                   trace.push(consoleEvt);
@@ -4649,7 +4680,7 @@ EXTERNAL ACTION NOTE CUE
           exploratoryCallsWithoutArtifact = 0;
         } else if (this.isExploratoryToolCall(call.name, args)) {
           exploratoryCallsWithoutArtifact++;
-        } else if (call.name === 'workspace_write_file' || call.name === 'workspace_edit_file' || call.name === 'office_artifact_builder') {
+        } else if (call.name === 'workspace_write_file' || call.name === 'workspace_edit_file' || call.name === 'workspace_edit_many_files' || call.name === 'office_artifact_builder') {
           exploratoryCallsWithoutArtifact = 0;
         }
 
@@ -4768,6 +4799,31 @@ EXTERNAL ACTION NOTE CUE
 
       // Process tools with EterX Cognitive Core Parallel-Sequential partitioned scheduler
       const functionResponseParts: any[] = new Array(functionCalls.length);
+      const askUserCallIndex = functionCalls.findIndex((call: any) => call.name === 'ask_user');
+      if (askUserCallIndex >= 0) {
+        for (let i = 0; i < functionCalls.length; i++) {
+          if (i === askUserCallIndex) continue;
+          const call = functionCalls[i];
+          functionResponseParts[i] = {
+            functionResponse: {
+              name: call.name,
+              response: {
+                output: {
+                  success: false,
+                  deferred: true,
+                  error: 'Deferred because ask_user is a blocking user question. Use the user answer before deciding the next tool call.',
+                },
+              },
+              ...(call.id ? { id: call.id } : {}),
+            },
+          };
+        }
+
+        functionResponseParts[askUserCallIndex] = await executeSingleCall(functionCalls[askUserCallIndex], askUserCallIndex);
+        contents.push({ role: 'user', parts: functionResponseParts });
+        continue;
+      }
+
       const statelessCalls = functionCalls.filter(call => this.isStatelessTool(call.name));
       const statefulCalls = functionCalls.filter(call => !this.isStatelessTool(call.name));
 
@@ -4837,7 +4893,7 @@ EXTERNAL ACTION NOTE CUE
 
       // Detect if this was a work task vs a question
       const wasWorkTask = toolsUsed.some(t =>
-        ['workspace_write_file', 'workspace_edit_file', 'system_shell', 'workspace_run_command',
+        ['workspace_write_file', 'workspace_edit_file', 'workspace_edit_many_files', 'system_shell', 'workspace_run_command',
           'process_manager', 'browser_control', 'docx_generator', 'office_artifact_builder',
           'chart_generator', 'image_generator', 'project_scaffolder'].includes(t)
       );

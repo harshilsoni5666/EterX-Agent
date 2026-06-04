@@ -19,6 +19,19 @@ import {
   type MainAgentThinkingLevel,
 } from '../lib/agent/model-routing';
 import {
+  AUTO_MODEL_SELECTION,
+  CHAT_MODEL_SELECTION_STORAGE_KEY,
+  MODEL_API_KEYS_STORAGE_KEY,
+  MODEL_CATALOG_STORAGE_KEY,
+  MODEL_OVERRIDE_STORAGE_KEY,
+  MODEL_PROVIDER_MODE,
+  MODEL_SELECTOR_STORAGE_KEY,
+  composeApiKeysForSelection,
+  normalizeModelSelectorEntries,
+  parseModelEntryKey,
+  pickAutoModelEntry,
+} from '../lib/agent/model-selector-store';
+import {
   createCustomToolActionLog,
   createCustomToolResultLogs,
   createCustomWorkNoteLog,
@@ -381,7 +394,6 @@ const SELECTED_AGENT_STORAGE_KEY = 'eterx_selected_agent';
 const SETTINGS_STORAGE_KEY = 'eterx_settings';
 const SETTINGS_CHANNEL = 'eterx-settings';
 const API_KEY_STORAGE_KEY = 'eterx_api_keys';
-const MODEL_OVERRIDE_STORAGE_KEY = 'eterx_model_overrides';
 
 const readStoredMainAgentMode = (): MainAgentMode | null => {
   if (typeof window === 'undefined') return null;
@@ -395,10 +407,10 @@ const readStoredMainAgentMode = (): MainAgentMode | null => {
   }
 };
 
-const readRuntimeApiKeys = (): Record<string, string> => {
+const readStringRecord = (storageKey: string): Record<string, string> => {
   if (typeof window === 'undefined') return {};
   try {
-    const saved = window.localStorage.getItem(API_KEY_STORAGE_KEY);
+    const saved = window.localStorage.getItem(storageKey);
     const parsed = saved ? JSON.parse(saved) : {};
     if (!parsed || typeof parsed !== 'object') return {};
     return Object.fromEntries(
@@ -411,8 +423,44 @@ const readRuntimeApiKeys = (): Record<string, string> => {
   }
 };
 
+const readRuntimeBaseApiKeys = (): Record<string, string> => readStringRecord(API_KEY_STORAGE_KEY);
+
+const readRuntimeModelApiKeys = (): Record<string, string> => readStringRecord(MODEL_API_KEYS_STORAGE_KEY);
+
+const readRuntimeModelEntries = () => {
+  if (typeof window === 'undefined') return [];
+  try {
+    const savedEntries = JSON.parse(window.localStorage.getItem(MODEL_SELECTOR_STORAGE_KEY) || '[]');
+    const savedCatalog = JSON.parse(window.localStorage.getItem(MODEL_CATALOG_STORAGE_KEY) || '{}');
+    return normalizeModelSelectorEntries(savedEntries, savedCatalog);
+  } catch {
+    return [];
+  }
+};
+
+const readRuntimeChatModelSelection = () => {
+  if (typeof window === 'undefined') return AUTO_MODEL_SELECTION;
+  return window.localStorage.getItem(CHAT_MODEL_SELECTION_STORAGE_KEY) || AUTO_MODEL_SELECTION;
+};
+
+const readRuntimeApiKeys = (): Record<string, string> => {
+  const baseKeys = readRuntimeBaseApiKeys();
+  return composeApiKeysForSelection(
+    baseKeys,
+    readRuntimeModelApiKeys(),
+    readRuntimeModelEntries(),
+    readRuntimeChatModelSelection(),
+  );
+};
+
 const readRuntimeModelOverrides = (): Record<string, string> => {
   if (typeof window === 'undefined') return {};
+  const selection = readRuntimeChatModelSelection();
+  const exactEntry = parseModelEntryKey(selection);
+  if (exactEntry) return { [exactEntry.provider]: exactEntry.modelId };
+  const autoEntry = pickAutoModelEntry(readRuntimeModelEntries(), readRuntimeBaseApiKeys(), readRuntimeModelApiKeys());
+  if (autoEntry) return { [autoEntry.provider]: autoEntry.modelId };
+
   try {
     const saved = window.localStorage.getItem(MODEL_OVERRIDE_STORAGE_KEY);
     const parsed = saved ? JSON.parse(saved) : {};
@@ -425,6 +473,14 @@ const readRuntimeModelOverrides = (): Record<string, string> => {
   } catch {
     return {};
   }
+};
+
+const readRuntimeAgentMode = (fallbackMode: MainAgentMode): MainAgentMode => {
+  const selection = readRuntimeChatModelSelection();
+  const exactEntry = parseModelEntryKey(selection);
+  if (exactEntry) return MODEL_PROVIDER_MODE[exactEntry.provider];
+  const autoEntry = pickAutoModelEntry(readRuntimeModelEntries(), readRuntimeBaseApiKeys(), readRuntimeModelApiKeys());
+  return autoEntry ? MODEL_PROVIDER_MODE[autoEntry.provider] : fallbackMode;
 };
 
 type SelectedAgentState = {
@@ -1031,7 +1087,7 @@ function DeepWorkUI() {
       };
       setChats(prev => {
         const updated = [newChat, ...prev];
-        localStorage.setItem('eterx_chats', JSON.stringify(updated));
+        localStorage.setItem('eterx_chats', JSON.stringify(stripChatsForStorage(updated)));
         return updated;
       });
       setActiveChatId(currentChatId);
@@ -1107,7 +1163,7 @@ function DeepWorkUI() {
                   }
                   return c;
                 });
-                localStorage.setItem('eterx_chats', JSON.stringify(updated));
+                localStorage.setItem('eterx_chats', JSON.stringify(stripChatsForStorage(updated)));
                 return updated;
               });
               return merged;
@@ -1281,7 +1337,7 @@ function DeepWorkUI() {
             c.id === activeChatId ? { ...c, traceLogs: finalLogs, updatedAt: Date.now() } : c
           );
           const sorted = sortChats(updated);
-          localStorage.setItem('eterx_chats', JSON.stringify(sorted));
+          localStorage.setItem('eterx_chats', JSON.stringify(stripChatsForStorage(sorted)));
           return sorted;
         });
       }
@@ -1294,6 +1350,48 @@ function DeepWorkUI() {
   const isAgentConnectionLog = (log: any) =>
     !!log && (log._connection === true || (log.type === 'work_note' && log.noteId === AGENT_CONNECTION_NOTE_ID));
   const stripAgentConnectionLogs = (logs: any[] = []) => logs.filter(log => !isAgentConnectionLog(log));
+  const getConsoleOutputText = (log: any) => String(log?.output ?? log?.content ?? '');
+  const findMergeableConsoleOutputIndex = (logs: any[], trace: any) => {
+    const streamId = String(trace?.streamId || '');
+    if (!streamId) return -1;
+    for (let i = logs.length - 1; i >= 0; i -= 1) {
+      const log = logs[i];
+      if (log?.type === 'user_action') break;
+      if (log?.type === 'console_output' && String(log.streamId || '') === streamId) return i;
+    }
+    return -1;
+  };
+  const isDuplicateConsoleOutput = (logs: any[], trace: any) => {
+    const traceText = getConsoleOutputText(trace);
+    return logs.some((log: any) =>
+      log?.type === 'console_output' &&
+      log.command === trace.command &&
+      getConsoleOutputText(log) === traceText
+    );
+  };
+  const stripTraceLogForStorage = (log: any) => {
+    if (log?.type === 'file_preview' && typeof log.content === 'string' && log.content.length > 500) {
+      const { content: _content, ...rest } = log;
+      return { ...rest, _contentStripped: true };
+    }
+    if (log?.type === 'console_output') {
+      const outputText = getConsoleOutputText(log);
+      if (outputText.length > 500) {
+        const { output: _output, content: _content, ...rest } = log;
+        return {
+          ...rest,
+          outputPreview: outputText.substring(0, 500),
+          _contentStripped: true
+        };
+      }
+    }
+    return log;
+  };
+  const stripChatsForStorage = (chatList: ChatSession[]) =>
+    chatList.map(chat => ({
+      ...chat,
+      traceLogs: (chat.traceLogs || []).map(stripTraceLogForStorage)
+    }));
   const isTerminalAgentStatus = (status: any) => status === 'completed' || status === 'failed' || status === 'stopped';
   const normalizeClientTraceTime = (value: unknown, fallback = Date.now()) => {
     const raw = Number(value);
@@ -1353,7 +1451,7 @@ function DeepWorkUI() {
         };
       });
       const sorted = options.touchUpdatedAt ? sortChats(updated) : updated;
-      try { localStorage.setItem('eterx_chats', JSON.stringify(sorted)); } catch { }
+      try { localStorage.setItem('eterx_chats', JSON.stringify(stripChatsForStorage(sorted))); } catch { }
       return sorted;
     });
   };
@@ -1409,7 +1507,7 @@ function DeepWorkUI() {
                 setTraceLogs(mergedLogs);
                 setChats(prev => {
                   const updated = prev.map(c => c.id === id ? { ...c, traceLogs: mergedLogs } : c);
-                  try { localStorage.setItem('eterx_chats', JSON.stringify(updated)); } catch { }
+                  try { localStorage.setItem('eterx_chats', JSON.stringify(stripChatsForStorage(updated))); } catch { }
                   return updated;
                 });
               }
@@ -1440,7 +1538,7 @@ function DeepWorkUI() {
       };
       setChats(prev => {
         const updated = [chat!, ...prev];
-        localStorage.setItem('eterx_chats', JSON.stringify(updated));
+        localStorage.setItem('eterx_chats', JSON.stringify(stripChatsForStorage(updated)));
         return updated;
       });
       activeChatIdRef.current = builderChatId;
@@ -1516,7 +1614,7 @@ function DeepWorkUI() {
 
     setChats(prev => {
       const updatedChats = prev.filter(c => !deleteSet.has(c.id));
-      try { localStorage.setItem('eterx_chats', JSON.stringify(updatedChats)); } catch { }
+      try { localStorage.setItem('eterx_chats', JSON.stringify(stripChatsForStorage(updatedChats))); } catch { }
       return updatedChats;
     });
 
@@ -1538,7 +1636,7 @@ function DeepWorkUI() {
         c.id === id ? { ...c, title: newTitle, updatedAt: Date.now() } : c
       );
       const sorted = sortChats(updated);
-      localStorage.setItem('eterx_chats', JSON.stringify(sorted));
+      localStorage.setItem('eterx_chats', JSON.stringify(stripChatsForStorage(sorted)));
       return sorted;
     });
   };
@@ -1549,7 +1647,7 @@ function DeepWorkUI() {
         c.id === id ? { ...c, isFavorite: !c.isFavorite } : c
       );
       const sorted = sortChats(updated);
-      localStorage.setItem('eterx_chats', JSON.stringify(sorted));
+      localStorage.setItem('eterx_chats', JSON.stringify(stripChatsForStorage(sorted)));
       return sorted;
     });
   };
@@ -1586,7 +1684,7 @@ function DeepWorkUI() {
             c.id === chatId ? { ...c, title, updatedAt: Date.now() } : c
           );
           const sorted = sortChats(updated);
-          localStorage.setItem('eterx_chats', JSON.stringify(sorted));
+          localStorage.setItem('eterx_chats', JSON.stringify(stripChatsForStorage(sorted)));
           return sorted;
         });
       }
@@ -1600,6 +1698,37 @@ function DeepWorkUI() {
     const next = scrollHeight - scrollTop - clientHeight > 100;
     setShowScrollBottom(prev => prev === next ? prev : next);
   }, []);
+
+  const handleAnswerAskUser = useCallback((timestamp: number, answer: string, responseKey?: string) => {
+    const answeredWith = String(answer || '').trim();
+    const normalizedResponseKey = String(responseKey || '').trim();
+    if ((!timestamp && !normalizedResponseKey) || !answeredWith) return;
+
+    const answeredAt = Date.now();
+    const markAnswered = (logs: any[] = []) => logs.map((log: any) => {
+      if (log?.type !== 'ask_user') return log;
+      const sameResponseKey = normalizedResponseKey && String(log.responseKey || '') === normalizedResponseKey;
+      const sameTimestamp = timestamp && Number(log.timestamp) === Number(timestamp);
+      if (!sameResponseKey && !sameTimestamp) return log;
+      return { ...log, answeredWith, answeredAt };
+    });
+
+    setTraceLogs(prev => markAnswered(prev));
+
+    if (!activeChatId) return;
+    setChats(prev => {
+      const updated = prev.map(chat =>
+        chat.id === activeChatId
+          ? { ...chat, traceLogs: markAnswered(chat.traceLogs || []), updatedAt: answeredAt }
+          : chat
+      );
+      const sorted = sortChats(updated);
+      try {
+        window.localStorage.setItem('eterx_chats', JSON.stringify(stripChatsForStorage(sorted)));
+      } catch { }
+      return sorted;
+    });
+  }, [activeChatId]);
 
   const fetchAgentPoll = async (chatId: string, after: number, timeoutMs = 8000) => {
     const controller = new AbortController();
@@ -1724,6 +1853,46 @@ function DeepWorkUI() {
         } else {
           logs.push({ ...processedLog, type: 'work_note', text: noteText, subAgent, noteId, _traceIdx: trace._traceIdx, startTime: processedLog.startTime, endTime: traceAt });
         }
+      } else if (trace.type === 'ask_user') {
+        const question = String(trace.question || '').trim();
+        if (!question) {
+          continue;
+        }
+
+        const responseKey = String(trace.responseKey || (trace.timestamp ? `ask_user_${trace.timestamp}` : '')).trim();
+        let askIdx = -1;
+        for (let i = logs.length - 1; i >= 0; i--) {
+          if (logs[i].type === 'user_action') break;
+          if (logs[i].type !== 'ask_user') continue;
+          const sameResponseKey = responseKey && logs[i].responseKey === responseKey;
+          const sameQuestion = String(logs[i].question || '').trim() === question;
+          if (sameResponseKey || sameQuestion) {
+            askIdx = i;
+            break;
+          }
+        }
+
+        const nextAskLog = {
+          ...processedLog,
+          ...trace,
+          type: 'ask_user',
+          question,
+          responseKey: responseKey || processedLog.responseKey,
+          timestamp: Number(trace.timestamp || processedLog.timestamp || traceAt),
+          startTime: processedLog.startTime,
+          endTime: traceAt,
+        };
+
+        if (askIdx >= 0) {
+          logs[askIdx] = {
+            ...logs[askIdx],
+            ...nextAskLog,
+            answeredWith: logs[askIdx].answeredWith,
+            answeredAt: logs[askIdx].answeredAt,
+          };
+        } else {
+          logs.push(nextAskLog);
+        }
       } else if (trace.type === 'answer' && !trace.subAgent) {
         let answerIdx = -1;
         for (let i = logs.length - 1; i >= 0; i--) {
@@ -1744,8 +1913,17 @@ function DeepWorkUI() {
           logs.push(processedLog);
         }
       } else if (trace.type === 'console_output') {
-        const isDup = logs.some((l: any) => l.type === 'console_output' && l.command === trace.command && l.output === trace.output);
-        if (!isDup) {
+        const mergeIdx = findMergeableConsoleOutputIndex(logs, trace);
+        if (mergeIdx >= 0) {
+          logs[mergeIdx] = {
+            ...logs[mergeIdx],
+            ...processedLog,
+            _traceIdx: trace._traceIdx ?? logs[mergeIdx]._traceIdx,
+            startTime: logs[mergeIdx].startTime || processedLog.startTime,
+            endTime: traceAt,
+            timestamp: traceAt,
+          };
+        } else if (!isDuplicateConsoleOutput(logs, trace)) {
           logs.push(processedLog);
         }
       } else if (trace.type === 'done') {
@@ -1786,7 +1964,7 @@ function DeepWorkUI() {
         pendingLocalStorageWrite.current = false;
         // Read current chats state and write to localStorage
         setChats(currentChats => {
-          try { localStorage.setItem('eterx_chats', JSON.stringify(currentChats)); } catch { }
+          try { localStorage.setItem('eterx_chats', JSON.stringify(stripChatsForStorage(currentChats))); } catch { }
           return currentChats; // Don't modify state
         });
       }
@@ -2008,6 +2186,46 @@ function DeepWorkUI() {
                 } else {
                   logs.push({ ...timedTrace, type: 'work_note', text: noteText, subAgent, noteId, _traceIdx: trace._traceIdx, startTime: timedTrace.startTime, endTime: traceAt });
                 }
+              } else if (trace.type === 'ask_user') {
+                const question = String(trace.question || '').trim();
+                if (!question) {
+                  continue;
+                }
+
+                const responseKey = String(trace.responseKey || (trace.timestamp ? `ask_user_${trace.timestamp}` : '')).trim();
+                let askIdx = -1;
+                for (let i = logs.length - 1; i >= 0; i--) {
+                  if (logs[i].type === 'user_action') break;
+                  if (logs[i].type !== 'ask_user') continue;
+                  const sameResponseKey = responseKey && logs[i].responseKey === responseKey;
+                  const sameQuestion = String(logs[i].question || '').trim() === question;
+                  if (sameResponseKey || sameQuestion) {
+                    askIdx = i;
+                    break;
+                  }
+                }
+
+                const nextAskLog = {
+                  ...timedTrace,
+                  ...trace,
+                  type: 'ask_user',
+                  question,
+                  responseKey: responseKey || timedTrace.responseKey,
+                  timestamp: Number(trace.timestamp || timedTrace.timestamp || traceAt),
+                  startTime: timedTrace.startTime,
+                  endTime: traceAt,
+                };
+
+                if (askIdx >= 0) {
+                  logs[askIdx] = {
+                    ...logs[askIdx],
+                    ...nextAskLog,
+                    answeredWith: logs[askIdx].answeredWith,
+                    answeredAt: logs[askIdx].answeredAt,
+                  };
+                } else {
+                  logs.push(nextAskLog);
+                }
               } else if (trace.type === 'answer' && !trace.subAgent) {
                 let answerIdx = -1;
                 for (let i = logs.length - 1; i >= 0; i--) {
@@ -2030,8 +2248,17 @@ function DeepWorkUI() {
               } else if (trace.type === 'console_output') {
                 // Always push new console output — each shell execution is a unique event
                 // Dedup only exact same command+output combo
-                const isDup = logs.some((l: any) => l.type === 'console_output' && l.command === trace.command && l.output === trace.output);
-                if (!isDup) {
+                const mergeIdx = findMergeableConsoleOutputIndex(logs, trace);
+                if (mergeIdx >= 0) {
+                  logs[mergeIdx] = {
+                    ...logs[mergeIdx],
+                    ...timedTrace,
+                    _traceIdx: trace._traceIdx ?? logs[mergeIdx]._traceIdx,
+                    startTime: logs[mergeIdx].startTime || timedTrace.startTime,
+                    endTime: traceAt,
+                    timestamp: traceAt,
+                  };
+                } else if (!isDuplicateConsoleOutput(logs, trace)) {
                   logs.push(timedTrace);
                 }
               } else if (trace.type === 'done' || trace.type === 'error') {
@@ -2153,25 +2380,10 @@ function DeepWorkUI() {
             }
           }
 
-          // Final save to localStorage (immediate, not debounced)
-          // Strip large content fields (file_preview.content, console_output.output) before saving
-          // to prevent localStorage quota exceeded errors
+          // Final save to localStorage (immediate, not debounced).
+          // Strip large content fields before saving to prevent quota errors.
           setChats(currentChats => {
-            const stripped = currentChats.map(chat => ({
-              ...chat,
-              traceLogs: (chat.traceLogs || []).map((log: any) => {
-                if (log.type === 'file_preview' && log.content && log.content.length > 500) {
-                  // Keep all metadata, just strip the large content blob
-                  const { content: _c, ...rest } = log;
-                  return { ...rest, _contentStripped: true };
-                }
-                if (log.type === 'console_output' && log.output && log.output.length > 500) {
-                  const { output: _o, ...rest } = log;
-                  return { ...rest, _contentStripped: true };
-                }
-                return log;
-              })
-            }));
+            const stripped = stripChatsForStorage(currentChats);
             try { localStorage.setItem('eterx_chats', JSON.stringify(stripped)); } catch { }
             return currentChats; // Don't update React state with stripped version
           });
@@ -2731,7 +2943,7 @@ function DeepWorkUI() {
     } catch { }
 
     const promptText = inputValue;
-    const runAgentMode = agentMode;
+    const runAgentMode = readRuntimeAgentMode(agentMode);
     const runThinkingLevel = thinkingLevel;
     const currentAttachments = [...attachments];
     const userLogAttachments = currentAttachments.map(serializeComposerAttachment);
@@ -2772,7 +2984,7 @@ function DeepWorkUI() {
 
       setChats(prev => {
         const updated = [newChat, ...prev];
-        localStorage.setItem('eterx_chats', JSON.stringify(updated));
+        localStorage.setItem('eterx_chats', JSON.stringify(stripChatsForStorage(updated)));
         return updated;
       });
       setTraceLogs([userLog]);
@@ -2784,7 +2996,7 @@ function DeepWorkUI() {
           if (!generatedTitle || generatedTitle === initialTitle) return;
           setChats(prev => {
             const updated = prev.map(chat => chat.id === titleChatId ? { ...chat, title: generatedTitle } : chat);
-            localStorage.setItem('eterx_chats', JSON.stringify(updated));
+            localStorage.setItem('eterx_chats', JSON.stringify(stripChatsForStorage(updated)));
             return updated;
           });
         })
@@ -3168,7 +3380,7 @@ function DeepWorkUI() {
                   const updated = prev.map(c =>
                     c.id === chat.id ? { ...c, traceLogs: mergedLogs } : c
                   );
-                  try { localStorage.setItem('eterx_chats', JSON.stringify(updated)); } catch { }
+                  try { localStorage.setItem('eterx_chats', JSON.stringify(stripChatsForStorage(updated))); } catch { }
                   return updated;
                 });
               }
@@ -3588,6 +3800,7 @@ function DeepWorkUI() {
                     handleScroll={handleScroll}
                     showScrollBottom={showScrollBottom}
                     isCompressed={hasOpenFiles}
+                    onAnswerAskUser={handleAnswerAskUser}
                   />
 
                   {/* Pending Steering Queue */}

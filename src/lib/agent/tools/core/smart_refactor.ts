@@ -150,17 +150,32 @@ EXAMPLES:
         if (!funcMatch) {
           return { success: false, message: `Function "${input.functionName}" not found`, linesChanged: 0 };
         }
-        // Simple approach: add try { after opening brace and } catch before closing
         const funcStart = content.indexOf(funcMatch[0]);
         const afterBrace = funcStart + funcMatch[0].length;
-        content = content.substring(0, afterBrace) +
-          '\n    try {' +
-          content.substring(afterBrace);
-        // Find the matching closing brace (simplified — works for most cases)
-        const lastBrace = content.lastIndexOf('}');
-        content = content.substring(0, lastBrace) +
-          '    } catch (error: any) {\n      console.error(`[${input.functionName}] Error:`, error.message);\n      throw error;\n    }\n' +
-          content.substring(lastBrace);
+        const openBrace = afterBrace - 1;
+        const closeBrace = findMatchingBrace(content, openBrace);
+        if (closeBrace === -1) {
+          return { success: false, message: `Could not find matching closing brace for "${input.functionName}"`, linesChanged: 0 };
+        }
+
+        const innerBody = content.slice(afterBrace, closeBrace);
+        if (/^\s*try\s*\{/.test(innerBody)) {
+          return { success: true, message: `"${input.functionName}" already starts with a try block`, linesChanged: 0 };
+        }
+
+        const functionLineStart = content.lastIndexOf('\n', funcStart) + 1;
+        const functionIndent = content.slice(functionLineStart, funcStart).match(/^\s*/)?.[0] || '';
+        const firstBodyLine = innerBody.split(/\r?\n/).find(line => line.trim().length > 0);
+        const bodyIndent = firstBodyLine?.match(/^\s*/)?.[0] || `${functionIndent}  `;
+        const indentedBody = indentNonEmptyLines(innerBody.trimEnd(), '  ');
+        const wrappedBody =
+          `\n${bodyIndent}try {${indentedBody}` +
+          `\n${bodyIndent}} catch (error: any) {` +
+          `\n${bodyIndent}  console.error(\`[${input.functionName}] Error:\`, error);` +
+          `\n${bodyIndent}  throw error;` +
+          `\n${bodyIndent}}\n${functionIndent}`;
+
+        content = content.slice(0, afterBrace) + wrappedBody + content.slice(closeBrace);
         await fs.writeFile(filePath, content, 'utf-8');
         return { success: true, message: `Wrapped "${input.functionName}" in try-catch`, linesChanged: 4 };
       }
@@ -282,4 +297,82 @@ EXAMPLES:
 
 function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function indentNonEmptyLines(source: string, prefix: string): string {
+  return source.replace(/^([^\r\n]*\S[^\r\n]*)/gm, `${prefix}$1`);
+}
+
+function findMatchingBrace(source: string, openBraceIndex: number): number {
+  if (source[openBraceIndex] !== '{') return -1;
+
+  let depth = 0;
+  let state: 'code' | 'single' | 'double' | 'template' | 'line_comment' | 'block_comment' = 'code';
+  let escaped = false;
+
+  for (let i = openBraceIndex; i < source.length; i++) {
+    const ch = source[i];
+    const next = source[i + 1];
+
+    if (state === 'line_comment') {
+      if (ch === '\n') state = 'code';
+      continue;
+    }
+
+    if (state === 'block_comment') {
+      if (ch === '*' && next === '/') {
+        state = 'code';
+        i++;
+      }
+      continue;
+    }
+
+    if (state === 'single' || state === 'double' || state === 'template') {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (ch === '\\') {
+        escaped = true;
+        continue;
+      }
+      if ((state === 'single' && ch === "'") || (state === 'double' && ch === '"') || (state === 'template' && ch === '`')) {
+        state = 'code';
+      }
+      continue;
+    }
+
+    if (ch === '/' && next === '/') {
+      state = 'line_comment';
+      i++;
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      state = 'block_comment';
+      i++;
+      continue;
+    }
+    if (ch === "'") {
+      state = 'single';
+      continue;
+    }
+    if (ch === '"') {
+      state = 'double';
+      continue;
+    }
+    if (ch === '`') {
+      state = 'template';
+      continue;
+    }
+    if (ch === '{') {
+      depth++;
+      continue;
+    }
+    if (ch === '}') {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+
+  return -1;
 }

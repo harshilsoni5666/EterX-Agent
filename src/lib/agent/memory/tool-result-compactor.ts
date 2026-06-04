@@ -39,6 +39,9 @@ export class ToolResultCompactor {
         case 'workspace_read_file':
         case 'workspace_view_file':
           return this.compactFileRead(args, result);
+
+        case 'workspace_read_many_files':
+          return this.compactReadManyFiles(args, result);
         
         case 'web_search':
         case 'deep_research':
@@ -52,6 +55,7 @@ export class ToolResultCompactor {
           return this.compactSearchText(args, result);
         
         case 'workspace_list_directory':
+        case 'workspace_find_files':
         case 'workspace_analyze':
           return this.compactDirectoryListing(args, result);
         
@@ -123,6 +127,28 @@ export class ToolResultCompactor {
   }
 
   /** Compact search results — keep top results, remove boilerplate */
+  private compactReadManyFiles(args: Record<string, any>, result: any): any {
+    if (!result?.files || !Array.isArray(result.files)) return this.compactFileRead(args, result);
+
+    return {
+      ...result,
+      files: result.files.map((file: any) => {
+        if (!file || typeof file.content !== 'string') return file;
+        if (file.content.length < COMPACT_THRESHOLD) return file;
+        const lines = file.content.split('\n');
+        const head = lines.slice(0, 120).join('\n');
+        const tail = lines.slice(-60).join('\n');
+        return {
+          ...file,
+          content: `${head}\n\n// ... [${Math.max(0, lines.length - 180)} lines compacted from ${file.filename || file.path || 'file'}] ...\n\n${tail}`,
+          _compacted: true,
+          _originalLines: lines.length,
+        };
+      }),
+      _compacted: true,
+    };
+  }
+
   private compactSearchResults(args: Record<string, any>, result: any): any {
     if (typeof result === 'string') {
       if (result.length < COMPACT_THRESHOLD) return result;

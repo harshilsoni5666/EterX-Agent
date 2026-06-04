@@ -26,6 +26,7 @@ const MAX_TREE_DEPTH = 4;
 const MAX_TREE_ENTRIES = 1400;
 const MAX_CHILDREN_PER_DIR = 180;
 const MAX_FILE_SIZE = 2 * 1024 * 1024;
+const MAX_READ_LINES = 20000;
 
 const SKIP_NAMES = new Set([
   'node_modules',
@@ -54,6 +55,16 @@ const SKIP_NAMES = new Set([
 const isSkippedName = (name: string) => {
   if (SKIP_NAMES.has(name)) return true;
   return name.startsWith('.') && name !== '.vscode';
+};
+
+const parsePositiveInt = (value: unknown, fallback?: number) => {
+  const parsed = Number.parseInt(String(value ?? ''), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+
+const splitLines = (content: string) => {
+  if (content.length === 0) return [];
+  return content.split(/\r?\n/);
 };
 
 async function getFileTree(dirPath: string, depth: number, maxDepth: number, state: TreeBuildState): Promise<FileEntry[]> {
@@ -119,7 +130,7 @@ async function getFileTree(dirPath: string, depth: number, maxDepth: number, sta
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
-    const dirPath = searchParams.get('path') || getPathResolverInfo().desktopPath;
+    const dirPath = path.resolve(path.normalize(searchParams.get('path') || getPathResolverInfo().desktopPath));
     const requestedDepth = Number.parseInt(searchParams.get('depth') || '3', 10);
     const maxDepth = Number.isFinite(requestedDepth)
       ? Math.min(Math.max(requestedDepth, 0), MAX_TREE_DEPTH)
@@ -158,13 +169,15 @@ export async function POST(req: NextRequest) {
   try {
     const { filePath, offset, limit } = await req.json();
 
-    if (!filePath) {
+    if (typeof filePath !== 'string' || !filePath.trim()) {
       return NextResponse.json({ error: 'filePath is required' }, { status: 400 });
     }
 
+    const normalizedPath = path.resolve(path.normalize(filePath));
+
     let stats;
     try {
-      stats = await fs.stat(filePath);
+      stats = await fs.stat(normalizedPath);
     } catch {
       return NextResponse.json({ error: 'File does not exist' }, { status: 404 });
     }
@@ -181,22 +194,30 @@ export async function POST(req: NextRequest) {
       }, { status: 413 });
     }
 
-    const content = await fs.readFile(filePath, 'utf-8');
-    const lines = content.split('\n');
+    const content = await fs.readFile(normalizedPath, 'utf-8');
+    const lines = splitLines(content);
     const totalLines = lines.length;
 
-    const startLine = Math.max(0, (offset || 1) - 1);
-    const endLine = limit ? Math.min(startLine + limit, totalLines) : totalLines;
-    const slicedContent = lines.slice(startLine, endLine).join('\n');
+    const requestedOffset = parsePositiveInt(offset, 1) || 1;
+    const requestedLimit = parsePositiveInt(limit);
+    const effectiveLimit = requestedLimit ? Math.min(requestedLimit, MAX_READ_LINES) : undefined;
+    const startIndex = totalLines === 0 ? 0 : Math.min(Math.max(0, requestedOffset - 1), totalLines);
+    const endIndex = effectiveLimit ? Math.min(startIndex + effectiveLimit, totalLines) : totalLines;
+    const slicedContent = lines.slice(startIndex, endIndex).join('\n');
+    const startLine = totalLines === 0 ? 0 : startIndex + 1;
+    const endLine = endIndex;
 
     return NextResponse.json({
-      filePath,
+      filePath: normalizedPath,
       content: slicedContent,
       totalLines,
-      startLine: startLine + 1,
+      loadedLines: Math.max(0, endIndex - startIndex),
+      startLine,
       endLine,
-      truncated: endLine < totalLines,
-      language: getLanguageFromExt(path.extname(filePath).slice(1).toLowerCase()),
+      truncated: startIndex > 0 || endIndex < totalLines,
+      requestedLimit: requestedLimit || null,
+      effectiveLimit: effectiveLimit || null,
+      language: getLanguageFromExt(path.extname(normalizedPath).slice(1).toLowerCase()),
       size: stats.size,
     });
   } catch (error: any) {

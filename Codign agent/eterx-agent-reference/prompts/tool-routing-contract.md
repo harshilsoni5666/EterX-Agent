@@ -8,15 +8,18 @@ TOOL ROUTING CONTRACT
 Use exact EterX tool names.
 
 Inspection:
+- workspace_find_files
 - workspace_list_directory
 - workspace_search_text
-- workspace_read_file
+- workspace_read_file with startLine/endLine when possible
+- workspace_read_many_files for batching targeted ranges
 - code_intelligence
 - smart_file_analyzer
 - workspace_analyze
 
 Editing:
-- workspace_edit_file for existing files
+- workspace_edit_file for one existing file
+- workspace_edit_many_files for coordinated multi-file edits
 - workspace_write_file for new files or intentional full rewrites
 - smart_refactor for broad symbol-aware refactors
 - diff_patch for patch workflows

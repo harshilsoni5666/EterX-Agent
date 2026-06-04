@@ -17,6 +17,7 @@ interface ChatFeedProps {
   showScrollBottom: boolean;
   isCompressed?: boolean;
   onOpenAgentTeam?: (agentName?: string) => void;
+  onAnswerAskUser?: (timestamp: number, answer: string, responseKey?: string) => void;
 }
 
 const NakedCopyButton = ({ content }: { content: string }) => {
@@ -62,7 +63,7 @@ export const LiveActionChip = ({ text, secondary, isActive, inCard = false }: { 
       <span className="flex h-8 w-8 items-center justify-center shrink-0">
         <Icon size={19} color={color} />
       </span>
-      <span className={`max-w-[46%] shrink-0 truncate text-[14px] font-semibold tracking-normal ${ isActive ? 'eterx-live-text eterx-live-text--medium' : 'text-[#A7A39E]' }`}>
+      <span className={`max-w-[46%] shrink-0 truncate text-[14px] font-semibold tracking-normal ${ isActive ? 'eterx-live-text eterx-live-text--chip' : 'text-[#A7A39E]' }`}>
         {text}
       </span>
       {secondary && <span className="h-4 w-px shrink-0 bg-white/[0.08]" />}
@@ -199,7 +200,7 @@ const liveMotionStyles = `
     100% { background-position: -260% center, 0 0; }
   }
   .eterx-live-text {
-    --eterx-live-shimmer-duration: 5.8s;
+    --eterx-live-shimmer-duration: 4.8s;
     --eterx-live-shimmer-ease: cubic-bezier(.4, 0, .12, 1);
     --eterx-live-shimmer-a: #9A9A98;
     --eterx-live-shimmer-d: #FFFFFF;
@@ -225,8 +226,12 @@ const liveMotionStyles = `
     will-change: background-position;
   }
   .eterx-live-text * { -webkit-text-fill-color: inherit; }
-  .eterx-live-text--medium { --eterx-live-shimmer-duration: 5.8s; }
-  .eterx-live-text--slow { --eterx-live-shimmer-duration: 7.4s; }
+  .eterx-live-text--medium { --eterx-live-shimmer-duration: 4.8s; }
+  .eterx-live-text--slow { --eterx-live-shimmer-duration: 5.8s; }
+  .eterx-live-text--chip { --eterx-live-shimmer-duration: 4.4s; }
+  .eterx-live-text--thought { --eterx-live-shimmer-duration: 5.0s; }
+  .eterx-live-text--process { --eterx-live-shimmer-duration: 5.6s; }
+  .eterx-live-text--ambient { --eterx-live-shimmer-duration: 6.2s; }
   :root[data-theme="light"] .eterx-live-text,
   [data-theme="light"] .eterx-live-text {
     --eterx-live-shimmer-a: #9A9A98;
@@ -516,7 +521,7 @@ const ThoughtSequence = ({
               aria-expanded={isOpen}
               className="eterx-process-summary-chip eterx-process-summary-chip-live group inline-flex min-h-[36px] shrink-0 items-center gap-1.5 rounded-full bg-[#1C1C1C]/78 px-3 py-[6px] text-[13px] font-semibold leading-[1.35] tracking-normal text-[#C9C6C0] outline outline-1 outline-white/[0.12] backdrop-blur-xl transition-colors duration-150 hover:bg-[#262626]/92 hover:text-[#E8E6E3]"
             >
-              <span className="eterx-process-summary-label eterx-live-text eterx-live-text--slow inline-flex items-center pb-[1px] leading-[1.35]">
+              <span className="eterx-process-summary-label eterx-live-text eterx-live-text--process inline-flex items-center pb-[1px] leading-[1.35]">
                 {`Working for ${ workElapsedLabel }`}
               </span>
               {isOpen
@@ -558,7 +563,7 @@ const ThoughtSequence = ({
               >
                 <StepCounterIcon live={isLiveThinking} />
               </span>
-              <span className={`eterx-process-summary-label${isLiveThinking ? ' eterx-live-text eterx-live-text--medium' : ''}`} style={{ fontSize: 13, fontWeight: 650, letterSpacing: 0, lineHeight: 1 }}>{actionLabel}</span>
+              <span className={`eterx-process-summary-label${isLiveThinking ? ' eterx-live-text eterx-live-text--chip' : ''}`} style={{ fontSize: 13, fontWeight: 650, letterSpacing: 0, lineHeight: 1 }}>{actionLabel}</span>
               {isOpen
                 ? <ChevronDown style={{ width: 9, height: 9, flexShrink: 0, opacity: 0.6 }} />
                 : <ChevronRight style={{ width: 9, height: 9, flexShrink: 0, opacity: 0.6 }} />
@@ -590,7 +595,7 @@ const ThoughtSequence = ({
 };
 
 export const ChatFeed: React.FC<ChatFeedProps> = ({
-  traceLogs, isThinking, messagesEndRef, setSidebarOpen, sidebarOpen, handleScroll: externalHandleScroll, showScrollBottom, isCompressed = false
+  traceLogs, isThinking, messagesEndRef, setSidebarOpen, sidebarOpen, handleScroll: externalHandleScroll, showScrollBottom, isCompressed = false, onAnswerAskUser
 }) => {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const previewScrollRef = useRef<HTMLDivElement>(null);
@@ -878,11 +883,39 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
             const displayFinalAnswer = finalAnswer;
             const isAnswerActivelyTyping = !!displayFinalAnswer?.isLiveTyping && isThinkingTurn;
 
-            // Extract ask_user events from process logs for inline rendering
-            const askUserLogs = standardLogs.filter((l: any) => l.type === 'ask_user');
-
             const seenWorkNotes = new Set<string>();
             const rawWorkLogs = [...displayProcessLogs, ...tailLogs];
+            const isAskUserInteractionLog = (log: any) =>
+              log?.type === 'ask_user' &&
+              typeof log.question === 'string' &&
+              log.question.trim().length > 0 &&
+              Number.isFinite(Number(log.timestamp));
+            const askUserKey = (log: any) => {
+              const responseKey = String(log?.responseKey || '').trim();
+              if (responseKey) return responseKey;
+              return `question:${String(log?.question || '').trim().toLowerCase()}`;
+            };
+            const hasAskUserInteractionLog = rawWorkLogs.some(isAskUserInteractionLog);
+            const preferredAskUserLogs = new Map<string, any>();
+            rawWorkLogs.forEach((log: any) => {
+              if (!isAskUserInteractionLog(log)) return;
+              const key = askUserKey(log);
+              const existing = preferredAskUserLogs.get(key);
+              const existingAnswered = Boolean(existing?.answeredWith);
+              const nextAnswered = Boolean(log?.answeredWith);
+              const existingTime = Number(existing?.answeredAt || existing?.timestamp || 0);
+              const nextTime = Number(log?.answeredAt || log?.timestamp || 0);
+              if (!existing || (nextAnswered && !existingAnswered) || (nextAnswered === existingAnswered && nextTime >= existingTime)) {
+                preferredAskUserLogs.set(key, log);
+              }
+            });
+            const visibleWorkLogs = hasAskUserInteractionLog
+              ? rawWorkLogs.filter((log: any) => {
+                  if (log.type !== 'ask_user') return true;
+                  if (!isAskUserInteractionLog(log)) return false;
+                  return preferredAskUserLogs.get(askUserKey(log)) === log;
+                })
+              : rawWorkLogs;
             const hasStructuredWork = rawWorkLogs.some((l: any) =>
               WORKFLOW_COUNT_TYPES.has(l.type) && !HIDDEN_HELPER_TYPES.has(l.type)
             );
@@ -890,14 +923,14 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
             const segments: { type: 'thoughts' | 'steering' | 'ask_user'; logs?: any[]; log?: any }[] = [];
             let currentThoughts: any[] = [];
 
-            rawWorkLogs.forEach(log => {
+            visibleWorkLogs.forEach(log => {
               if (log.type === 'steering_received') {
                 if (currentThoughts.length > 0) {
                   segments.push({ type: 'thoughts', logs: currentThoughts });
                   currentThoughts = [];
                 }
                 segments.push({ type: 'steering', log });
-              } else if (log.type === 'ask_user') {
+              } else if (isAskUserInteractionLog(log)) {
                 if (currentThoughts.length > 0) {
                   segments.push({ type: 'thoughts', logs: currentThoughts });
                   currentThoughts = [];
@@ -950,12 +983,16 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
                         question={seg.log.question}
                         mode={seg.log.mode || 'text'}
                         options={seg.log.options || []}
+                        questions={Array.isArray(seg.log.questions) ? seg.log.questions : undefined}
                         context={seg.log.context}
                         defaultValue={seg.log.defaultValue}
                         urgent={seg.log.urgent}
                         timestamp={seg.log.timestamp}
+                        responseKey={seg.log.responseKey}
+                        answeredWith={seg.log.answeredWith}
                         onAnswer={(answer) => {
                           console.log('[ChatFeed] User answered ask_user:', answer);
+                          onAnswerAskUser?.(seg.log.timestamp, answer, seg.log.responseKey);
                         }}
                       />
                     );

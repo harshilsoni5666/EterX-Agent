@@ -612,7 +612,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                           </div>
                           {isWorking ? (
                             <motion.span
-                              className="truncate pr-2 relative z-10 eterx-text-shimmer eterx-text-shimmer-slow font-medium leading-normal"
+                              className="truncate pr-2 relative z-10 eterx-text-shimmer eterx-text-shimmer-ambient font-medium leading-normal"
                             >
                               {chat.title}
                             </motion.span>
@@ -681,17 +681,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
           {/* Bottom Profile Area */}
           {isOpen ? (
             <div className="eterx-sidebar-profile relative z-10 p-3 pt-2 border-t border-white/[0.065] bg-[#0E0E0E]/90 backdrop-blur-md">
-              <Tooltip text="User settings & plan" side="right">
+              <Tooltip text="Settings" side="right">
                 <div onClick={onSettingsClick} className="eterx-sidebar-profile-card flex items-center justify-between cursor-pointer group px-2.5 py-2.5 hover:bg-white/[0.055] rounded-[16px] w-full transition-all duration-200 border border-transparent hover:border-white/[0.055] active:scale-[0.988]">
-                  <div className="flex items-center gap-3">
-                    <div className="eterx-sidebar-avatar w-8 h-8 rounded-full bg-gradient-to-br from-[#343230] to-[#1A1918] flex items-center justify-center text-[#E8E6E3] font-semibold text-xs shrink-0 border border-white/[0.12] shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_4px_12px_rgba(0,0,0,0.22)]">
-                      H
-                    </div>
-                    <div className="flex flex-col">
-                      <span className="text-[13px] font-medium text-[#E8E6E3] group-hover:text-white leading-tight">Harshil Soni</span>
-                      <span className="text-[11px] text-[#8E918F] leading-none"></span>
-                    </div>
-                  </div>
+                  <span className="min-w-0 flex-1 pr-2 flex justify-center">
+                    <span className="max-w-full overflow-hidden text-ellipsis whitespace-nowrap rounded-[10px] border border-white/[0.09] bg-white/[0.055] px-3 py-1.5 text-center text-[12.5px] font-medium leading-tight text-[#E8E6E3] shadow-[inset_0_1px_0_rgba(255,255,255,0.10),0_6px_18px_rgba(0,0,0,0.18)] backdrop-blur-xl transition-all duration-200 group-hover:border-white/[0.14] group-hover:bg-white/[0.075] group-hover:text-white">
+                      Made by Harshil Soni
+                    </span>
+                  </span>
                   <div className="flex items-center justify-center w-7 h-7 rounded-[8px] transition-colors group-hover:bg-white/[0.06]">
                     <PremiumSettings className="w-[18px] h-[18px] text-[#8E918F] group-hover:text-white transition-all duration-300 group-hover:rotate-45" strokeWidth={2.2} />
                   </div>

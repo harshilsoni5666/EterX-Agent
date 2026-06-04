@@ -39,6 +39,14 @@ export type WorkspaceReviewFile = {
   linesRemoved?: number;
   added?: number;
   removed?: number;
+  lineCount?: number;
+  totalLines?: number;
+  loadedLines?: number;
+  startLine?: number;
+  endLine?: number;
+  truncated?: boolean;
+  size?: number;
+  loadError?: string;
   artifactKind?: 'code' | 'document' | 'media' | 'preview' | 'terminal' | 'task' | 'other';
   updatedAt?: string | number | Date;
 };
@@ -248,12 +256,17 @@ function compactDiff(lines: WorkspaceDiffLine[], context = 2): CompactDiffRow[] 
 function getDisplayDiffLines(file: WorkspaceReviewFile): WorkspaceDiffLine[] {
   if (file.diffLines?.length) return file.diffLines;
   const stats = getStats(file);
-  if (!file.content || stats.added === 0 || stats.removed > 0) return [];
-  return file.content.split(/\r?\n/).map((content, index) => ({
-    type: 'added',
-    content,
-    newLine: index + 1,
-  }));
+  if (!file.content || (stats.added === 0 && stats.removed === 0)) return [];
+  const startLine = file.startLine && file.startLine > 0 ? file.startLine : 1;
+  return file.content.split(/\r?\n/).slice(0, MAX_CODE_LINES).map((content, index) => {
+    const lineNumber = startLine + index;
+    return {
+      type: stats.removed > 0 ? 'context' : 'added',
+      content,
+      oldLine: stats.removed > 0 ? lineNumber : undefined,
+      newLine: lineNumber,
+    };
+  });
 }
 
 function iconForKind(kind?: WorkspaceReviewArtifact['kind']) {
@@ -365,10 +378,12 @@ function StatsButton({
   onClick?: () => void;
 }) {
   if (!stats.changed || (stats.added === 0 && stats.removed === 0)) return null;
+  const label = `Review changes: +${stats.added} -${stats.removed}`;
   return (
     <button
       type="button"
-      title="Open diff"
+      title={label}
+      aria-label={label}
       onClick={event => {
         event.stopPropagation();
         onClick?.();
@@ -645,12 +660,16 @@ function ReviewPanel({
   files,
   changedFiles,
   activeKey,
+  loadingKey,
+  loadErrorsByKey,
   onSelectFile,
   onOpenDiff,
 }: {
   files: WorkspaceReviewFile[];
   changedFiles: WorkspaceReviewFile[];
   activeKey: string;
+  loadingKey?: string | null;
+  loadErrorsByKey?: Record<string, string>;
   onSelectFile: (file: WorkspaceReviewFile, index: number) => void;
   onOpenDiff: (file: WorkspaceReviewFile, index: number) => void;
 }) {
@@ -673,7 +692,7 @@ function ReviewPanel({
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex h-12 shrink-0 items-center gap-3 border-b border-white/[0.055] px-5">
-        <div className="text-[14px] font-semibold text-white/76">Review Changes</div>
+        <div className="text-[14px] font-semibold text-white/76">Review changes</div>
         <div className="rounded-full bg-white/[0.045] px-2 py-0.5 text-[11px] font-semibold text-white/38">{changedFiles.length}</div>
         {changedFiles.length > 0 && (
           <div className="hidden items-center gap-1.5 rounded-full border border-white/[0.055] bg-white/[0.025] px-2 py-1 font-mono text-[11px] font-bold tabular-nums text-white/42 sm:flex">
@@ -700,6 +719,8 @@ function ReviewPanel({
               const open = expanded[key] ?? false;
               const stats = getStats(file);
               const compactRows = compactDiff(getDisplayDiffLines(file));
+              const isLoadingFile = loadingKey === key;
+              const loadError = loadErrorsByKey?.[key] || file.loadError;
               const hiddenRows = Math.max(0, compactRows.length - MAX_REVIEW_ROWS_PER_FILE);
               const rows = hiddenRows > 0
                 ? [
@@ -767,13 +788,21 @@ function ReviewPanel({
                             </div>
                           );
                         })
+                      ) : isLoadingFile ? (
+                        <div className="mx-3 my-2">
+                          <EmptyState title="Preparing review" body="Reading the file so count-only changes can be inspected with current content and line numbers." />
+                        </div>
+                      ) : loadError ? (
+                        <div className="mx-3 my-2">
+                          <EmptyState title="Could not prepare review" body={loadError} />
+                        </div>
                       ) : (
                         <button
                           type="button"
                           onClick={() => onSelectFile(file, index)}
                           className="eterx-review-empty-diff mx-3 my-2 rounded-xl border border-white/[0.055] bg-white/[0.025] px-4 py-3 text-left text-[12px] text-white/48 transition-colors hover:bg-white/[0.045] hover:text-white/70"
                         >
-                          No line-level diff was supplied for this file. Open the file to inspect the current artifact.
+                          Only change counts were supplied for this file. Open the file to inspect the current artifact.
                         </button>
                       )}
                     </div>
@@ -783,7 +812,7 @@ function ReviewPanel({
             })}
           </div>
         ) : (
-          <EmptyState title="No reviewable changes" body="When a file card includes real diff lines, this review view will render the exact additions and removals." />
+          <EmptyState title="No reviewable changes" body="Files with additions, removals, or hydrated change metadata will appear here." />
         )}
       </div>
     </div>
@@ -814,7 +843,15 @@ function CodePanel({
   const lines = (file.content || '').split(/\r?\n/);
   const shownLines = lines.length === 1 && lines[0] === '' ? [] : lines;
   const visibleLines = shownLines.slice(0, MAX_CODE_LINES);
-  const hiddenLineCount = Math.max(0, shownLines.length - visibleLines.length);
+  const totalLines = file.totalLines ?? file.lineCount ?? shownLines.length;
+  const startLine = file.startLine && file.startLine > 0 ? file.startLine : 1;
+  const loadedEndLine = file.endLine ?? (shownLines.length > 0 ? startLine + shownLines.length - 1 : 0);
+  const hiddenLineCount = file.truncated
+    ? Math.max(0, totalLines - loadedEndLine)
+    : Math.max(0, shownLines.length - visibleLines.length);
+  const rangeLabel = file.truncated
+    ? `Lines ${startLine}-${loadedEndLine} of ${totalLines}`
+    : `${totalLines} lines`;
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -822,7 +859,15 @@ function CodePanel({
         <FileBadge file={file} />
         <div className="min-w-0 flex-1">
           <div className="truncate text-[15px] font-semibold text-[#DCEFFF]">{basename(file.filename || file.filepath)}</div>
-          <div className="truncate text-[11px] text-white/34">{file.filepath}</div>
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="truncate text-[11px] text-white/34">{file.filepath}</span>
+            <span className={cx(
+              'shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold tabular-nums',
+              file.truncated ? 'bg-amber-500/10 text-amber-200/78' : 'bg-white/[0.045] text-white/34'
+            )}>
+              {rangeLabel}
+            </span>
+          </div>
         </div>
         <button
           type="button"
@@ -842,22 +887,22 @@ function CodePanel({
         {shownLines.length > 0 ? (
           visibleLines.map((line, index) => (
             <div key={`${index}-${line.slice(0, 20)}`} className="grid grid-cols-[48px_minmax(0,1fr)] gap-4">
-              <span className="select-none text-right text-[#6F7890]">{index + 1}</span>
+              <span className="select-none text-right text-[#6F7890]">{startLine + index}</span>
               <span className="min-w-0 whitespace-pre-wrap break-words text-[#D6D3CC]">{line || ' '}</span>
             </div>
           ))
         ) : isLoading ? (
-          <EmptyState title="Loading file" body="Reading this file from the workspace." />
+          <EmptyState title="Preparing file" body="Reading this file from the workspace." />
         ) : loadError ? (
           <EmptyState title="Could not load content" body={loadError} />
         ) : (
-          <EmptyState title="No content loaded" body="This file is indexed for the run. Content loads on demand to keep the review panel fast." />
+          <EmptyState title="No content loaded" body="This file is indexed for the run. Open it again to request the latest readable content." />
         )}
         {hiddenLineCount > 0 && (
           <div className="mt-4 flex items-center justify-center gap-3 text-[11px] text-white/34">
             <div className="h-px flex-1 bg-white/[0.08]" />
             <span className="rounded-lg border border-white/[0.07] bg-white/[0.04] px-2.5 py-1">
-              +{hiddenLineCount} more lines kept out of view for performance
+              +{hiddenLineCount} additional lines hidden for performance
             </span>
             <div className="h-px flex-1 bg-white/[0.08]" />
           </div>
@@ -885,7 +930,16 @@ export function WorkspaceReviewEditor({
   const [lastReviewMode, setLastReviewMode] = useState<WorkspaceReviewMode>(initialMode);
   const [activeSubagentId, setActiveSubagentId] = useState<string>('');
   const [hiddenTabKeys, setHiddenTabKeys] = useState<Set<string>>(() => new Set());
-  const [loadedContentByKey, setLoadedContentByKey] = useState<Record<string, { content: string; language?: string }>>({});
+  const [loadedContentByKey, setLoadedContentByKey] = useState<Record<string, {
+    content: string;
+    language?: string;
+    totalLines?: number;
+    loadedLines?: number;
+    startLine?: number;
+    endLine?: number;
+    truncated?: boolean;
+    size?: number;
+  }>>({});
   const [loadingContentKey, setLoadingContentKey] = useState<string | null>(null);
   const [loadErrorsByKey, setLoadErrorsByKey] = useState<Record<string, string>>({});
   const [isCompactTabs, setIsCompactTabs] = useState(false);
@@ -897,10 +951,16 @@ export function WorkspaceReviewEditor({
     return files[initialIndex] ? fileKey(files[initialIndex], initialIndex) : '';
   });
 
-  const changedFiles = useMemo(() => files.filter(file => getStats(file).changed), [files]);
+  const hydratedFiles = useMemo(() => files.map((file, index) => {
+    const loaded = loadedContentByKey[fileKey(file, index)];
+    return loaded
+      ? { ...file, ...loaded, language: file.language || loaded.language }
+      : file;
+  }), [files, loadedContentByKey]);
+  const changedFiles = useMemo(() => hydratedFiles.filter(file => getStats(file).changed), [hydratedFiles]);
   const fileEntries = useMemo(
-    () => files.map((file, index) => ({ file, index, key: fileKey(file, index) })),
-    [files]
+    () => hydratedFiles.map((file, index) => ({ file, index, key: fileKey(file, index) })),
+    [hydratedFiles]
   );
   const tabEntries = useMemo(
     () => fileEntries.filter(entry => !hiddenTabKeys.has(entry.key)),
@@ -912,24 +972,24 @@ export function WorkspaceReviewEditor({
   }, [artifacts]);
 
   const activeIndex = useMemo(() => {
-    if (!files.length) return -1;
-    const keyMatch = files.findIndex((file, index) => fileKey(file, index) === activeKey);
-    if (keyMatch >= 0 && !hiddenTabKeys.has(fileKey(files[keyMatch], keyMatch))) return keyMatch;
+    if (!hydratedFiles.length) return -1;
+    const keyMatch = hydratedFiles.findIndex((file, index) => fileKey(file, index) === activeKey);
+    if (keyMatch >= 0 && !hiddenTabKeys.has(fileKey(hydratedFiles[keyMatch], keyMatch))) return keyMatch;
     if (activeFileId) {
-      const activeMatch = files.findIndex((file, index) => {
+      const activeMatch = hydratedFiles.findIndex((file, index) => {
         const key = fileKey(file, index);
         return !hiddenTabKeys.has(key) && (file.id === activeFileId || file.filepath === activeFileId);
       });
       if (activeMatch >= 0) return activeMatch;
     }
     return tabEntries[0]?.index ?? 0;
-  }, [activeFileId, activeKey, files, hiddenTabKeys, tabEntries]);
+  }, [activeFileId, activeKey, hydratedFiles, hiddenTabKeys, tabEntries]);
 
-  const activeFileBase = activeIndex >= 0 ? files[activeIndex] : null;
+  const activeFileBase = activeIndex >= 0 ? hydratedFiles[activeIndex] : null;
   const activeFileKey = activeFileBase ? fileKey(activeFileBase, activeIndex) : '';
   const activeLoadedContent = activeFileKey ? loadedContentByKey[activeFileKey] : undefined;
   const activeFile = activeFileBase && activeLoadedContent
-    ? { ...activeFileBase, content: activeLoadedContent.content, language: activeFileBase.language || activeLoadedContent.language }
+    ? { ...activeFileBase, ...activeLoadedContent, language: activeFileBase.language || activeLoadedContent.language }
     : activeFileBase;
   const visibleTabs = useMemo(() => {
     if (!isCompactTabs) return tabEntries;
@@ -1020,7 +1080,8 @@ export function WorkspaceReviewEditor({
   };
 
   useEffect(() => {
-    if (mode !== 'code' || !activeFileBase || !activeFileKey) return;
+    const shouldLoadForMode = mode === 'code' || (mode === 'review' && !activeFileBase?.diffLines?.length);
+    if (!shouldLoadForMode || !activeFileBase || !activeFileKey) return;
     if (typeof activeFileBase.content === 'string' || loadedContentByKey[activeFileKey] || loadingContentKey === activeFileKey) return;
 
     const controller = new AbortController();
@@ -1046,6 +1107,12 @@ export function WorkspaceReviewEditor({
           [activeFileKey]: {
             content: String(data.content || ''),
             language: typeof data.language === 'string' ? data.language : undefined,
+            totalLines: typeof data.totalLines === 'number' ? data.totalLines : undefined,
+            loadedLines: typeof data.loadedLines === 'number' ? data.loadedLines : undefined,
+            startLine: typeof data.startLine === 'number' ? data.startLine : undefined,
+            endLine: typeof data.endLine === 'number' ? data.endLine : undefined,
+            truncated: Boolean(data.truncated),
+            size: typeof data.size === 'number' ? data.size : undefined,
           },
         }));
       })
@@ -1210,7 +1277,7 @@ export function WorkspaceReviewEditor({
       <div className="eterx-workspace-review-body min-h-0 flex-1 overflow-hidden">
         {mode === 'overview' ? (
           <OverviewPanel
-            files={files}
+            files={hydratedFiles}
             changedFiles={changedFiles}
             artifacts={reviewArtifacts}
             subagents={subagents}
@@ -1221,9 +1288,11 @@ export function WorkspaceReviewEditor({
           />
         ) : mode === 'review' ? (
           <ReviewPanel
-            files={files}
+            files={hydratedFiles}
             changedFiles={changedFiles}
             activeKey={activeKey}
+            loadingKey={loadingContentKey}
+            loadErrorsByKey={loadErrorsByKey}
             onSelectFile={selectFile}
             onOpenDiff={openDiff}
           />

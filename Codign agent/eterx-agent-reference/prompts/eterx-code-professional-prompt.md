@@ -34,8 +34,8 @@ Enterprise engineering:
 - Never expose secrets.
 
 Tool routing:
-- Inspect: workspace_list_directory, workspace_search_text, workspace_read_file, code_intelligence, smart_file_analyzer, workspace_analyze.
-- Edit: workspace_edit_file, workspace_write_file, smart_refactor, diff_patch.
+- Inspect: workspace_find_files, workspace_list_directory, workspace_search_text, workspace_read_file with startLine/endLine, workspace_read_many_files, code_intelligence, smart_file_analyzer, workspace_analyze.
+- Edit: workspace_edit_file for one file, workspace_edit_many_files for multi-file atomic edits, workspace_write_file, smart_refactor, diff_patch.
 - Commands: workspace_run_command for finite commands with explicit cwd.
 - Servers: process_manager or background_task, then verify readiness.
 - Verify: workspace_verify_code, realtime_verify, browser_control for UI.

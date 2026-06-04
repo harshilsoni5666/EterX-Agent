@@ -152,10 +152,33 @@ function getPreviewAddress(file?: PreviewFile | null, fallback = 'http://localho
   return `file:///${normalizeWorkspacePath(file.filepath)}`;
 }
 
+function normalizeLocalhostPreviewAddress(input: string) {
+  const trimmed = input.trim();
+  const hostMatch = trimmed.match(/^(localhost|127\.0\.0\.1|\[::1\]|::1)(?::(\d+))?(\/.*)?$/i);
+  if (hostMatch) {
+    const host = hostMatch[1];
+    const port = hostMatch[2] || '3000';
+    const rest = hostMatch[3] || '/';
+    return `http://${host}:${port}${rest}`;
+  }
+
+  const portOnlyMatch = trimmed.match(/^:?(3000|[1-9]\d{1,4})(\/.*)?$/);
+  if (portOnlyMatch) {
+    return `http://localhost:${portOnlyMatch[1]}${portOnlyMatch[2] || '/'}`;
+  }
+
+  return '';
+}
+
 function resolvePreviewAddress(input: string) {
   const trimmed = input.trim();
   if (!trimmed) return 'http://localhost:3000';
-  if (/^https?:\/\//i.test(trimmed) || trimmed.startsWith('/api/preview/')) return trimmed;
+  if (trimmed.startsWith('/api/preview/')) return trimmed;
+
+  const localAddress = normalizeLocalhostPreviewAddress(trimmed);
+  if (localAddress) return localAddress;
+
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
 
   const filePath = trimmed.replace(/^file:\/\/\//i, '').replace(/^file:\/\//i, '');
   if (/^[A-Za-z]:[\\/]/.test(filePath) || filePath.startsWith('/')) {
@@ -237,13 +260,21 @@ export interface FilePanelProps {
   linesRemoved?: number;
   added?: number;
   removed?: number;
+  lineCount?: number;
+  totalLines?: number;
+  loadedLines?: number;
+  startLine?: number;
+  endLine?: number;
+  truncated?: boolean;
+  size?: number;
+  loadError?: string;
   artifactKind?: 'code' | 'document' | 'media' | 'preview' | 'terminal' | 'task' | 'other';
   updatedAt?: string | number | Date;
   onClose?: () => void;
   activeTabMode?: 'preview' | 'code' | 'diff';
 }
 
-export const FilePanelModal = ({ filename, filepath, content: initialContent, diffLines, isEdit, onClose, activeTabMode }: FilePanelProps) => {
+export const FilePanelModal = ({ filename, filepath, content: initialContent, diffLines, isEdit, linesAdded, linesRemoved, added: addedProp, removed: removedProp, onClose, activeTabMode }: FilePanelProps) => {
   const isHtml = /\.(html|htm|svg)$/i.test(filename);
   const [localContent, setLocalContent] = useState<string>(initialContent || '');
   const [tab, setTab] = useState<TabMode>(activeTabMode || (isEdit && diffLines?.length ? 'diff' : 'code'));
@@ -301,8 +332,8 @@ export const FilePanelModal = ({ filename, filepath, content: initialContent, di
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const added   = diffLines?.filter(l => l.type === 'added').length   ?? 0;
-  const removed = diffLines?.filter(l => l.type === 'removed').length ?? 0;
+  const added   = diffLines?.filter(l => l.type === 'added').length   || addedProp || linesAdded || 0;
+  const removed = diffLines?.filter(l => l.type === 'removed').length || removedProp || linesRemoved || 0;
   const lineCount = countLines(localContent || '');
   const lang = getLanguage(filename);
   const fileColor = getFileColor(filename);
@@ -341,7 +372,7 @@ export const FilePanelModal = ({ filename, filepath, content: initialContent, di
             padding: { top: 16, bottom: 16 },
             scrollBeyondLastLine: false,
             smoothScrolling: false,
-            cursorBlinking: 'blink',
+            cursorBlinking: 'solid',
             cursorSmoothCaretAnimation: 'off',
             formatOnPaste: true,
             wordWrap: 'on',
@@ -351,7 +382,7 @@ export const FilePanelModal = ({ filename, filepath, content: initialContent, di
           }}
           loading={
             <div className="flex items-center justify-center h-full text-[#555350] text-[12px] font-mono">
-               Loading Monaco Editor...
+               Preparing editor...
             </div>
           }
         />
@@ -390,7 +421,7 @@ export const FilePanelModal = ({ filename, filepath, content: initialContent, di
             smoothScrolling: false,
             wordWrap: 'off'
           }}
-          loading={<div className="flex items-center justify-center h-full text-[#555350] text-[12px] font-mono">Loading Diff...</div>}
+          loading={<div className="flex items-center justify-center h-full text-[#555350] text-[12px] font-mono">Preparing comparison...</div>}
         />
       </div>
     );
@@ -558,26 +589,17 @@ export const FilePanelModal = ({ filename, filepath, content: initialContent, di
   );
 };
 
-/* ─── IDE Multi-Tab Panel ─── */
+/* --- IDE Multi-Tab Panel --- */
 import { useGlobalFilePanel } from '../../contexts/FilePanelContext';
 import { LayoutList } from 'lucide-react';
 import WorkspaceReviewEditor from './workspace-review-editor';
+import { LiveBrowserPanel } from './live-browser-panel';
 
-type IdeTabMode = 'preview' | 'code' | 'review';
+type IdeTabMode = 'preview' | 'code' | 'review' | 'browser';
 
 // File icon for real filesystem nodes
 const FileNodeIcon = ({ name, isDir, isOpen }: { name: string, isDir: boolean, isOpen?: boolean }) => {
   if (isDir) return isOpen ? <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-[#C09553]"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg> : <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-[#C09553]"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/></svg>;
-  const ext = name.split('.').pop()?.toLowerCase() || '';
-  if (ext === 'tsx' || ext === 'jsx') return <div className="text-[#61DAFB] font-bold text-[10px] w-4 text-center">⚛</div>;
-  if (ext === 'ts') return <div className="text-[#3178C6] font-bold text-[10px] w-4 text-center">TS</div>;
-  if (ext === 'js') return <div className="text-[#F0DB4F] font-bold text-[10px] w-4 text-center">JS</div>;
-  if (ext === 'html' || ext === 'htm') return <div className="text-[#E34F26] font-bold text-[10px] w-4 text-center">&lt;/&gt;</div>;
-  if (ext === 'css' || ext === 'scss') return <div className="text-[#264de4] font-bold text-[10px] w-4 text-center">🎨</div>;
-  if (ext === 'json') return <div className="text-[#CBCB41] font-bold text-[10px] w-4 text-center">{"{}"}</div>;
-  if (ext === 'py') return <div className="text-[#3572A5] font-bold text-[10px] w-4 text-center">Py</div>;
-  if (ext === 'md') return <div className="text-[#888] font-bold text-[10px] w-4 text-center">MD</div>;
-  return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-[#8C8A88]"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>;
 };
 
 const PreviewFileNodeIcon = ({ name, isDir, isOpen }: { name: string, isDir: boolean, isOpen?: boolean }) => {
@@ -679,6 +701,8 @@ export const IdePanel = () => {
   const treeSignatureRef = useRef('');
   const treeFetchInFlightRef = useRef(false);
   const fileReadAbortRef = useRef<AbortController | null>(null);
+  const fileReadPathRef = useRef('');
+  const autoFileReadAbortRef = useRef<AbortController | null>(null);
   const panelCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [dockPosition, setDockPosition] = useState<{ left: number; top: number } | null>(null);
   const [resolvedTheme, setResolvedTheme] = useState<ResolvedUiTheme>('light');
@@ -710,6 +734,7 @@ export const IdePanel = () => {
   useEffect(() => () => {
     if (panelCloseTimerRef.current) clearTimeout(panelCloseTimerRef.current);
     fileReadAbortRef.current?.abort();
+    autoFileReadAbortRef.current?.abort();
   }, []);
 
   useEffect(() => {
@@ -830,7 +855,17 @@ export const IdePanel = () => {
     const absorb = (file: FilePanelProps) => {
       const key = (file.filepath || file.filename || '').replace(/\\/g, '/').toLowerCase();
       if (!key) return;
-      byPath.set(key, { ...byPath.get(key), ...file });
+      const existing = byPath.get(key);
+      if (!existing) {
+        byPath.set(key, file);
+        return;
+      }
+      const merged = { ...existing };
+      (Object.keys(file) as Array<keyof FilePanelProps>).forEach(prop => {
+        const value = file[prop];
+        if (value !== undefined) (merged as any)[prop] = value;
+      });
+      byPath.set(key, merged);
     };
     if (reviewFiles.length > 0) {
       reviewFiles.forEach(absorb);
@@ -915,18 +950,79 @@ export const IdePanel = () => {
     [openFiles]
   );
   const activeFilePath = useMemo(() => activeFile?.filepath.replace(/\\/g, '/') || '', [activeFile?.filepath]);
+  const activeFileKind = activeFile ? getPreviewKind(activeFile.filename) : 'unknown';
+  const activeFileIsTextReadable = ['text', 'markdown', 'data', 'code'].includes(activeFileKind);
+  const activeFileIsLoading = !!activeFile && activeFileIsTextReadable && activeFile.content === undefined && !activeFile.loadError;
+  const activeFileDisplayLineCount = activeFile
+    ? (activeFile.totalLines ?? activeFile.lineCount ?? countLines(activeFile.content || ''))
+    : 0;
+  const activeFileLoadedRange = activeFile?.truncated && activeFile.startLine !== undefined && activeFile.endLine !== undefined
+    ? `Lines ${activeFile.startLine}-${activeFile.endLine} of ${activeFile.totalLines ?? activeFileDisplayLineCount}`
+    : `${activeFileDisplayLineCount} lines`;
+
+  useEffect(() => {
+    if (activeTabMode !== 'code' || !activeFile || !activeFileIsTextReadable) return;
+    if (activeFile.content !== undefined || activeFile.loadError) return;
+    if (fileReadPathRef.current && normalizeWorkspacePath(fileReadPathRef.current) === normalizeWorkspacePath(activeFile.filepath)) return;
+
+    autoFileReadAbortRef.current?.abort();
+    const controller = new AbortController();
+    autoFileReadAbortRef.current = controller;
+
+    fetch('/api/code/files', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filePath: activeFile.filepath, limit: FILE_READ_LINE_LIMIT }),
+      signal: controller.signal,
+    }).then(async r => {
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data?.error || 'File could not be read.');
+      openPanel({
+        filename: activeFile.filename,
+        filepath: activeFile.filepath,
+        content: data.content || '',
+        language: data.language,
+        lineCount: data.totalLines,
+        totalLines: data.totalLines,
+        loadedLines: data.loadedLines,
+        startLine: data.startLine,
+        endLine: data.endLine,
+        truncated: data.truncated,
+        size: data.size,
+        loadError: '',
+        activeTabMode: 'code',
+      });
+    }).catch(error => {
+      if (controller.signal.aborted) return;
+      openPanel({
+        filename: activeFile.filename,
+        filepath: activeFile.filepath,
+        content: '',
+        loadError: error?.message || 'File could not be read.',
+        activeTabMode: 'code',
+      });
+    }).finally(() => {
+      if (autoFileReadAbortRef.current === controller) autoFileReadAbortRef.current = null;
+    });
+
+    return () => controller.abort();
+  }, [activeFile?.filepath, activeFile?.content, activeFile?.loadError, activeFile?.filename, activeFileIsTextReadable, activeTabMode, openPanel]);
 
   const handleTreeFileClick = (filePath: string, fileName: string) => {
     fileReadAbortRef.current?.abort();
     const controller = new AbortController();
     fileReadAbortRef.current = controller;
-    setActiveTabMode('code');
+    fileReadPathRef.current = filePath;
+    const kind = getPreviewKind(fileName);
+    const isReadableInEditor = ['text', 'markdown', 'data', 'code'].includes(kind);
+    setActiveTabMode(isReadableInEditor ? 'code' : 'preview');
 
     // Open the tab immediately, then hydrate content in the background.
-    openPanel({ filename: fileName, filepath: filePath, content: undefined, activeTabMode: 'code' });
+    openPanel({ filename: fileName, filepath: filePath, content: undefined, loadError: '', activeTabMode: isReadableInEditor ? 'code' : 'preview' });
 
-    if (!['text', 'markdown', 'data', 'code'].includes(getPreviewKind(fileName))) {
+    if (!isReadableInEditor) {
       fileReadAbortRef.current = null;
+      fileReadPathRef.current = '';
       return;
     }
 
@@ -935,16 +1031,38 @@ export const IdePanel = () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ filePath, limit: FILE_READ_LINE_LIMIT }),
       signal: controller.signal,
-    }).then(r => r.json()).then(data => {
-      const content = data.truncated
-        ? `${data.content || ''}\n\n[Preview truncated to ${FILE_READ_LINE_LIMIT} lines for editor performance.]`
-        : data.content || '';
-      openPanel({ filename: fileName, filepath: filePath, content, activeTabMode: 'code' });
-    }).catch(() => {
+    }).then(async r => {
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data?.error || 'File could not be read.');
+      openPanel({
+        filename: fileName,
+        filepath: filePath,
+        content: data.content || '',
+        language: data.language,
+        lineCount: data.totalLines,
+        totalLines: data.totalLines,
+        loadedLines: data.loadedLines,
+        startLine: data.startLine,
+        endLine: data.endLine,
+        truncated: data.truncated,
+        size: data.size,
+        loadError: '',
+        activeTabMode: 'code',
+      });
+    }).catch((error) => {
       if (controller.signal.aborted) return;
-      openPanel({ filename: fileName, filepath: filePath, content: '', activeTabMode: 'code' });
+      openPanel({
+        filename: fileName,
+        filepath: filePath,
+        content: '',
+        loadError: error?.message || 'File could not be read.',
+        activeTabMode: 'code',
+      });
     }).finally(() => {
-      if (fileReadAbortRef.current === controller) fileReadAbortRef.current = null;
+      if (fileReadAbortRef.current === controller) {
+        fileReadAbortRef.current = null;
+        fileReadPathRef.current = '';
+      }
     });
   };
 
@@ -1289,6 +1407,15 @@ export const IdePanel = () => {
                {activeTabMode === 'code' && <div className="eterx-ide-mode-dot w-1.5 h-1.5 rounded-full bg-[#111]" />}
                Code
              </button>
+             <button
+               onClick={() => setActiveTabMode('browser')}
+               data-active={activeTabMode === 'browser' ? 'true' : undefined}
+               aria-pressed={activeTabMode === 'browser'}
+               className={`eterx-ide-mode-tab h-[28px] px-3.5 text-[10px] font-bold uppercase tracking-[0.13em] rounded-full transition-all duration-200 flex items-center gap-1.5 ${activeTabMode === 'browser' ? 'bg-[#F3F0EA] text-[#111] shadow-[0_6px_18px_rgba(255,255,255,0.12),inset_0_1px_0_rgba(255,255,255,0.8)]' : 'text-[#7D7A75] hover:text-[#E8E6E3] hover:bg-white/[0.045]'}`}
+             >
+               {activeTabMode === 'browser' && <div className="eterx-ide-mode-dot w-1.5 h-1.5 rounded-full bg-emerald-500" />}
+               Live
+             </button>
           </div>
         </div>
 
@@ -1380,7 +1507,7 @@ export const IdePanel = () => {
             <div className="eterx-ide-sidebar-status px-3 py-2 border-t border-white/[0.055] bg-white/[0.015] flex items-center gap-2">
               <div className={`w-1.5 h-1.5 rounded-full transition-colors ${isTreeLoading ? 'bg-white/30 animate-pulse' : 'bg-white/60'}`} />
               <span className="text-[10px] text-white/20 font-mono uppercase tracking-widest">
-                {isTreeLoading ? 'Syncing…' : `${openFiles.length} open`}
+                {isTreeLoading ? 'Refreshing' : `${openFiles.length} open`}
               </span>
             </div>
           </div>
@@ -1410,6 +1537,20 @@ export const IdePanel = () => {
                 />
               ) : activeTabMode === 'code' ? (
                 activeFile ? (
+                  activeFileIsLoading ? (
+                    <div className="flex h-full flex-col items-center justify-center gap-3 text-center" style={{ background: editorBackground }}>
+                      <div className={`h-8 w-8 animate-spin rounded-full border-2 ${isLightTheme ? 'border-black/10 border-t-black/55' : 'border-white/10 border-t-white/50'}`} />
+                      <span className={`text-[11px] font-semibold uppercase tracking-[0.18em] ${isLightTheme ? 'text-black/38' : 'text-white/30'}`}>Reading file</span>
+                      <span className={`max-w-[360px] truncate font-mono text-[11px] ${isLightTheme ? 'text-black/34' : 'text-white/24'}`}>{activeFile.filepath}</span>
+                    </div>
+                  ) : activeFile.loadError && !activeFile.content ? (
+                    <div className="flex h-full flex-col items-center justify-center gap-3 p-12 text-center" style={{ background: editorBackground }}>
+                      <ShieldAlert className={`h-9 w-9 ${isLightTheme ? 'text-black/22' : 'text-white/16'}`} strokeWidth={1.4} />
+                      <h3 className={`text-[13px] font-semibold uppercase tracking-[0.16em] ${isLightTheme ? 'text-black/52' : 'text-white/50'}`}>Could not load file</h3>
+                      <p className={`max-w-[420px] text-[12px] leading-5 ${isLightTheme ? 'text-black/42' : 'text-white/32'}`}>{activeFile.loadError}</p>
+                    </div>
+                  ) : (
+                  <>
                   <Editor
                     height="100%"
                     path={activeFile.filepath}
@@ -1429,7 +1570,7 @@ export const IdePanel = () => {
                       fontLigatures: false,
                       scrollBeyondLastLine: false,
                       renderLineHighlight: 'none',
-                      cursorBlinking: 'blink',
+                      cursorBlinking: 'solid',
                       cursorSmoothCaretAnimation: 'off',
                       smoothScrolling: false,
                       padding: { top: 18, bottom: 18 },
@@ -1441,10 +1582,15 @@ export const IdePanel = () => {
                     loading={
                       <div className="flex flex-col items-center justify-center h-full" style={{ background: editorBackground }}>
                         <div className={`w-8 h-8 border-2 rounded-full animate-spin mb-3 ${isLightTheme ? 'border-black/10 border-t-black/55' : 'border-white/10 border-t-white/50'}`} />
-                        <span className="text-[11px] text-white/30 uppercase tracking-widest">Loading editor…</span>
+                        <span className="text-[11px] text-white/30 uppercase tracking-widest">Preparing editor...</span>
                       </div>
                     }
                   />
+                  <div className={`pointer-events-none absolute bottom-3 right-3 rounded-full border px-3 py-1 text-[10.5px] font-semibold tabular-nums shadow-lg backdrop-blur ${activeFile.truncated ? 'border-amber-500/25 bg-amber-500/12 text-amber-200' : isLightTheme ? 'border-black/10 bg-white/82 text-black/42' : 'border-white/10 bg-black/42 text-white/42'}`}>
+                    {activeFileLoadedRange}
+                  </div>
+                  </>
+                  )
                 ) : (
                   <div className="flex flex-col items-center justify-center h-full text-center p-12">
                     <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="0.75" strokeLinecap="round" strokeLinejoin="round" className="mb-4 text-white opacity-10"><polyline points="16 18 22 12 16 6"></polyline><polyline points="8 6 2 12 8 18"></polyline></svg>
@@ -1452,6 +1598,13 @@ export const IdePanel = () => {
                     <p className="text-white/20 text-[11px] max-w-[200px] uppercase tracking-widest">Open a file from the explorer</p>
                   </div>
                 )
+              ) : activeTabMode === 'browser' ? (
+                <div className={`${isFullscreen ? '' : 'rounded-b-[24px]'} h-full flex flex-col overflow-hidden`}>
+                  <LiveBrowserPanel
+                    isFullscreen={isFullscreen}
+                    onToggleFullscreen={() => setIsFullscreen(f => !f)}
+                  />
+                </div>
               ) : (
                 <div className={`eterx-ide-preview-shell ${isFullscreen ? '' : 'rounded-b-[24px]'} h-full flex flex-col overflow-hidden`} style={{ background: previewShellBackground }}>
                   {/* Premium Browser Chrome - Redesigned to match high-end concept */}
@@ -1561,7 +1714,7 @@ export const IdePanel = () => {
                             <div className={`flex-1 p-6 flex flex-col gap-4 relative overflow-hidden ${isLightTheme ? 'bg-[#F7F6F3]' : 'bg-[#18181b]'}`}>
                                {/* Shimmer overlay */}
                                <motion.div 
-                                 className="absolute inset-0 z-10 eterx-surface-shimmer"
+                                 className="absolute inset-0 z-10 eterx-surface-shimmer eterx-surface-shimmer-panel"
                                />
                                <div className="w-3/4 h-5 rounded-md bg-white/5" />
                                <div className="w-1/2 h-4 rounded-md bg-white/5" />
@@ -1574,7 +1727,7 @@ export const IdePanel = () => {
                             transition={{ duration: 1.5, repeat: Infinity }}
                             className="text-[12px] text-[#A3A19E] tracking-[0.2em] font-medium font-mono uppercase"
                           >
-                            Loading preview...
+                            Rendering preview...
                           </motion.span>
                         </motion.div>
                       )}

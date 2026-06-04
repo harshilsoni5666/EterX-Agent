@@ -7,9 +7,28 @@ import {
   Cpu, Eye, EyeOff,
   Copy, Check, Globe,
   FolderOpen, RefreshCw, Lock,
-  Search, PlugZap, Plus, Trash2, GripVertical
+  Search, PlugZap, Plus, Trash2, GripVertical, Info
 } from 'lucide-react';
-import { MAIN_AGENT_MODEL_OPTIONS, type MainAgentMode } from '../../lib/agent/model-routing';
+import { MAIN_AGENT_MODEL_OPTIONS, type MainAgentMode, type MainAgentProvider } from '../../lib/agent/model-routing';
+import {
+  AUTO_MODEL_SELECTION,
+  CHAT_MODEL_SELECTION_STORAGE_KEY,
+  MODEL_API_KEYS_STORAGE_KEY,
+  MODEL_CATALOG_STORAGE_KEY,
+  MODEL_OVERRIDE_STORAGE_KEY,
+  MODEL_PROVIDER_MODE,
+  MODEL_PROVIDER_ORDER,
+  MODEL_SELECTOR_STORAGE_KEY,
+  composeApiKeysForSelection,
+  entriesToModelCatalog,
+  ensureModelSelectorEntry,
+  isModelProvider,
+  modelEntryKey,
+  normalizeModelSelectorEntries,
+  parseModelEntryKey,
+  removeModelSelectorEntry,
+  type ModelSelectorEntry,
+} from '../../lib/agent/model-selector-store';
 import { applyEterxTheme, broadcastEterxSettingsUpdate } from '../theme/theme-bridge';
 
 // ─── Settings Shape ────────────────────────────────────
@@ -195,9 +214,6 @@ const providerKeyLooksValid = (provider: string, key: string) => {
   return value.length >= 12;
 };
 
-const MODEL_OVERRIDE_STORAGE_KEY = 'eterx_model_overrides';
-const MODEL_CATALOG_STORAGE_KEY = 'eterx_model_catalog';
-const MODEL_PROVIDER_ORDER = ['gemini', 'mistral', 'openai', 'openrouter', 'anthropic'];
 const PROVIDER_LABEL: Record<string, string> = {
   gemini: 'Google Gemini',
   mistral: 'Mistral',
@@ -205,13 +221,7 @@ const PROVIDER_LABEL: Record<string, string> = {
   openrouter: 'OpenRouter',
   anthropic: 'Anthropic',
 };
-const PROVIDER_MODE: Record<string, MainAgentMode> = {
-  gemini: 'think',
-  mistral: 'mistral',
-  openai: 'openai',
-  openrouter: 'openrouter',
-  anthropic: 'anthropic',
-};
+const PROVIDER_MODE: Record<MainAgentProvider, MainAgentMode> = MODEL_PROVIDER_MODE;
 const PROVIDER_ACCENT: Record<string, string> = {
   gemini: 'text-zinc-200 border-white/[0.10] bg-white/[0.045]',
   mistral: 'text-zinc-200 border-white/[0.10] bg-white/[0.045]',
@@ -393,9 +403,21 @@ const SettingRow: React.FC<{
 );
 
 // ─── Section Header ────────────────────────────────────
-const SectionHeader: React.FC<{ title: string; badge?: string }> = ({ title, badge }) => (
+const InfoHint: React.FC<{ text: string; className?: string }> = ({ text, className = '' }) => (
+  <span className={`group/info relative inline-flex shrink-0 items-center ${className}`}>
+    <span className="grid h-5 w-5 place-items-center rounded-full border border-white/[0.08] bg-white/[0.045] text-[#A7A7A7] transition-colors hover:border-white/[0.16] hover:bg-white/[0.08] hover:text-[#F1F1F1]">
+      <Info className="h-3 w-3" strokeWidth={2.2} />
+    </span>
+    <span className="pointer-events-none absolute left-1/2 top-[calc(100%+8px)] z-[80] w-[260px] -translate-x-1/2 rounded-xl border border-white/[0.10] bg-[#111111] px-3 py-2 text-[11.5px] font-medium leading-5 text-[#D6D6D6] opacity-0 shadow-[0_16px_42px_rgba(0,0,0,0.48)] transition-opacity duration-150 group-hover/info:opacity-100">
+      {text}
+    </span>
+  </span>
+);
+
+const SectionHeader: React.FC<{ title: string; badge?: string; info?: string }> = ({ title, badge, info }) => (
   <div className="flex items-center gap-2 mb-4 mt-10 first:mt-0">
     <span className="text-[14px] font-semibold text-[#F1F1F1] tracking-tight">{title}</span>
+    {info && <InfoHint text={info} />}
     {badge && (
       <span className="text-[10px] font-bold bg-white/[0.075] text-[#D7D7D7] px-2 py-0.5 rounded-full tracking-wider uppercase">{badge}</span>
     )}
@@ -404,7 +426,7 @@ const SectionHeader: React.FC<{ title: string; badge?: string }> = ({ title, bad
 
 // ─── API Key Row ───────────────────────────────────────
 const SettingsStack: React.FC<{ children: React.ReactNode }> = ({ children }) => (
-  <div className="overflow-hidden rounded-xl border border-white/[0.09] bg-[#202020]">
+  <div className="overflow-visible rounded-xl border border-white/[0.09] bg-[#202020]">
     {children}
   </div>
 );
@@ -414,10 +436,14 @@ const SettingsStackRow: React.FC<{
   description?: string;
   children?: React.ReactNode;
   tall?: boolean;
-}> = ({ title, description, children, tall }) => (
+  info?: string;
+}> = ({ title, description, children, tall, info }) => (
   <div className={`flex items-center justify-between gap-6 border-b border-white/[0.07] px-5 last:border-b-0 ${tall ? 'py-5' : 'py-4'}`}>
     <div className="min-w-0 flex-1">
-      <div className="text-[13.5px] font-medium leading-tight text-[#F1F1F1]">{title}</div>
+      <div className="flex items-center gap-2 text-[13.5px] font-medium leading-tight text-[#F1F1F1]">
+        <span>{title}</span>
+        {info && <InfoHint text={info} />}
+      </div>
       {description && <div className="mt-1.5 max-w-[520px] text-[13px] leading-relaxed text-[#A7A7A7]">{description}</div>}
     </div>
     {children && <div className="flex shrink-0 items-center justify-end gap-2">{children}</div>}
@@ -475,7 +501,8 @@ const ApiKeyPoolEditor: React.FC<{
   sync?: ApiProviderStatus;
   onChange: (value: string) => void;
   minRows?: number;
-}> = ({ provider, providerLabel, value, sync, onChange, minRows = 1 }) => {
+  scopeControl?: React.ReactNode;
+}> = ({ provider, providerLabel, value, sync, onChange, minRows = 1, scopeControl }) => {
   const buildRows = useCallback((rawValue: string) => {
     const parsed = splitApiKeyPool(rawValue);
     const rowCount = Math.max(minRows, parsed.length || 1);
@@ -580,6 +607,7 @@ const ApiKeyPoolEditor: React.FC<{
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-2">
+          {scopeControl}
           <span className="rounded-full border border-white/[0.08] bg-white/[0.045] px-2 py-1 text-[11px] font-medium text-[#D8D8D8]">
             {acceptedCount || configuredCount} active
           </span>
@@ -951,7 +979,10 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
   const [modelDirectoryUpdatedAt, setModelDirectoryUpdatedAt] = useState<number | null>(null);
   const [modelOverrides, setModelOverrides] = useState<ModelOverrides>({});
   const [modelCatalog, setModelCatalog] = useState<ModelCatalog>({});
-  const [selectedConnectionProvider, setSelectedConnectionProvider] = useState<string>('gemini');
+  const [modelEntries, setModelEntries] = useState<ModelSelectorEntry[]>([]);
+  const [modelApiKeys, setModelApiKeys] = useState<Record<string, string>>({});
+  const [selectedConnectionProvider, setSelectedConnectionProvider] = useState<MainAgentProvider>('gemini');
+  const [selectedApiProviderValue, setSelectedApiProviderValue] = useState<MainAgentProvider>('gemini');
   const [selectedApiModelValue, setSelectedApiModelValue] = useState('');
   const [exactModelDraft, setExactModelDraft] = useState('');
   const [hasChanges, setHasChanges] = useState(false);
@@ -982,7 +1013,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
     const cleanModelOverrides = Object.fromEntries(
       Object.entries(overrides)
         .map(([provider, model]) => [provider, String(model || '').trim()])
-        .filter(([provider, model]) => MODEL_PROVIDER_ORDER.includes(provider) && Boolean(model)),
+        .filter(([provider, model]) => isModelProvider(provider) && Boolean(model)),
     );
 
     if (!hasAnyApiKey(cleanKeys) && Object.keys(cleanModelOverrides).length === 0) {
@@ -1018,7 +1049,10 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
     }
   }, [hasAnyApiKey]);
 
-  const refreshModelDirectory = useCallback(async (keys: Record<string, string> = apiKeys, overrides: ModelOverrides = modelOverrides) => {
+  const refreshModelDirectory = useCallback(async (
+    keys: Record<string, string> = composeApiKeysForSelection(apiKeys, modelApiKeys, modelEntries, AUTO_MODEL_SELECTION),
+    overrides: ModelOverrides = modelOverrides,
+  ) => {
     setModelDirectoryStatus('loading');
     try {
       const res = await fetch('/api/settings/models', {
@@ -1034,7 +1068,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
     } catch (error) {
       setModelDirectoryStatus('error');
     }
-  }, [apiKeys, modelOverrides]);
+  }, [apiKeys, modelApiKeys, modelEntries, modelOverrides]);
 
   // Load settings from localStorage
   useEffect(() => {
@@ -1044,28 +1078,44 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
       const savedKeys = localStorage.getItem('eterx_api_keys');
       const savedModelOverrides = localStorage.getItem(MODEL_OVERRIDE_STORAGE_KEY);
       const savedModelCatalog = localStorage.getItem(MODEL_CATALOG_STORAGE_KEY);
+      const savedModelEntries = localStorage.getItem(MODEL_SELECTOR_STORAGE_KEY);
+      const savedModelApiKeys = localStorage.getItem(MODEL_API_KEYS_STORAGE_KEY);
       const parsedModelOverrides = savedModelOverrides ? JSON.parse(savedModelOverrides) : {};
       const parsedModelCatalog = savedModelCatalog ? JSON.parse(savedModelCatalog) : {};
-      setModelOverrides(parsedModelOverrides);
-      setModelCatalog(
-        Object.fromEntries(
-          Object.entries(parsedModelCatalog as Record<string, unknown>)
-            .filter(([provider, models]) => MODEL_PROVIDER_ORDER.includes(provider) && Array.isArray(models))
-            .map(([provider, models]) => [
-              provider,
-              Array.from(new Set(
-                (models as unknown[])
-                  .map(model => String(model || '').trim())
-                  .filter(Boolean),
-              )),
-            ])
-            .filter(([, models]) => (models as string[]).length > 0),
-        ),
+      const parsedModelApiKeys = savedModelApiKeys ? JSON.parse(savedModelApiKeys) : {};
+      const migratedEntries = normalizeModelSelectorEntries(
+        savedModelEntries ? JSON.parse(savedModelEntries) : [],
+        parsedModelCatalog,
       );
+      Object.entries(parsedModelOverrides as Record<string, unknown>).forEach(([provider, modelId]) => {
+        if (isModelProvider(provider) && String(modelId || '').trim()) {
+          migratedEntries.push({ provider, modelId: String(modelId).trim() });
+        }
+      });
+      const normalizedEntries = normalizeModelSelectorEntries(migratedEntries, parsedModelCatalog);
+      const normalizedCatalog = entriesToModelCatalog(normalizedEntries) as ModelCatalog;
+      setModelOverrides(parsedModelOverrides);
+      setModelEntries(normalizedEntries);
+      setModelCatalog(normalizedCatalog);
+      setModelApiKeys(
+        parsedModelApiKeys && typeof parsedModelApiKeys === 'object'
+          ? Object.fromEntries(
+            Object.entries(parsedModelApiKeys as Record<string, unknown>)
+              .map(([key, value]) => [key, typeof value === 'string' ? value.trim() : ''])
+              .filter(([, value]) => Boolean(value)),
+          )
+          : {},
+      );
+      localStorage.setItem(MODEL_SELECTOR_STORAGE_KEY, JSON.stringify(normalizedEntries));
+      localStorage.setItem(MODEL_CATALOG_STORAGE_KEY, JSON.stringify(normalizedCatalog));
       if (savedKeys) {
         const parsedKeys = JSON.parse(savedKeys);
         setApiKeys(parsedKeys);
-        void syncApiKeys(parsedKeys, true, parsedModelOverrides);
+        void syncApiKeys(
+          composeApiKeysForSelection(parsedKeys, parsedModelApiKeys, normalizedEntries, localStorage.getItem(CHAT_MODEL_SELECTION_STORAGE_KEY) || AUTO_MODEL_SELECTION),
+          true,
+          parsedModelOverrides,
+        );
       }
     } catch { }
   }, [isOpen, syncApiKeys]);
@@ -1111,11 +1161,15 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
       const next = { ...prev, [name]: value.trim() };
       localStorage.setItem('eterx_api_keys', JSON.stringify(next));
       broadcastEterxSettingsUpdate({ type: 'api-keys-updated', apiKeys: next });
-      void syncApiKeys(next, false, modelOverrides);
+      void syncApiKeys(
+        composeApiKeysForSelection(next, modelApiKeys, modelEntries, localStorage.getItem(CHAT_MODEL_SELECTION_STORAGE_KEY) || AUTO_MODEL_SELECTION),
+        false,
+        modelOverrides,
+      );
       return next;
     });
     setHasChanges(true);
-  }, [modelOverrides, syncApiKeys]);
+  }, [modelApiKeys, modelEntries, modelOverrides, syncApiKeys]);
 
   // Close on escape
   useEffect(() => {
@@ -1143,11 +1197,17 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
     { id: 'archives', label: 'Archived chats', icon: 'archives' },
   ];
 
-  const providerKeyCount = (provider: string) => splitApiKeyPool(apiKeys[provider]).length;
+  const providerKeyCount = (provider: string) => {
+    const providerKeys = splitApiKeyPool(apiKeys[provider]);
+    const modelKeys = modelEntries
+      .filter(entry => entry.provider === provider)
+      .flatMap(entry => splitApiKeyPool(modelApiKeys[modelEntryKey(entry.provider, entry.modelId)]));
+    return Array.from(new Set([...providerKeys, ...modelKeys])).length;
+  };
   const providerReady = (provider: string) => providerKeyCount(provider) > 0;
   const providerSync = (provider: string) => apiProviderStatus.find(status => status.provider === provider);
   const selectedModelOption = MAIN_AGENT_MODEL_OPTIONS.find(option => option.id === settings.agentMode) || MAIN_AGENT_MODEL_OPTIONS[0];
-  const activeProvider = selectedModelOption?.provider || 'gemini';
+  const activeProvider = (selectedModelOption?.provider || 'gemini') as MainAgentProvider;
   const activeModelOverride = modelOverrides[activeProvider];
 
   useEffect(() => {
@@ -1187,43 +1247,55 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
   const selectedProviderMode = PROVIDER_MODE[selectedConnectionProvider];
   const selectedProviderFallbackModel = MAIN_AGENT_MODEL_OPTIONS.find(option => option.id === selectedProviderMode)?.modelName || '';
   const selectedProviderModel = modelOverrides[selectedConnectionProvider] || '';
-  const selectedProviderSavedModels = modelCatalog[selectedConnectionProvider] || [];
   const selectedProviderModelOptions = getProviderModelOptions(selectedConnectionProvider);
   const selectedProviderKeyCount = providerKeyCount(selectedConnectionProvider);
+  const globalSelectorCount = modelEntries.length;
   const selectedProviderStatusText = selectedProviderDirectory
     ? (selectedProviderDirectory.connected ? `${ selectedProviderDirectory.models.length } live models loaded` : selectedProviderDirectory.error || 'Not connected')
     : 'Refresh to load live models';
   const selectedProviderCapabilities = [
     selectedProviderKeyCount > 0 ? `${ selectedProviderKeyCount } key${ selectedProviderKeyCount === 1 ? '' : 's' } in pool` : 'Key not connected',
     selectedProviderDirectory?.connected ? 'Live catalog' : 'Catalog pending',
-    selectedProviderSavedModels.length > 0 ? `${ selectedProviderSavedModels.length } selector model${ selectedProviderSavedModels.length === 1 ? '' : 's' }` : 'Selector empty',
+    globalSelectorCount > 0 ? `${ globalSelectorCount } chat model${ globalSelectorCount === 1 ? '' : 's' }` : 'Chat list empty',
   ];
-  const apiModelEntries = MODEL_PROVIDER_ORDER.flatMap(provider => {
-    const providerName = PROVIDER_LABEL[provider] || provider;
-    const modelIds = Array.from(new Set([
-      modelOverrides[provider],
-      ...(modelCatalog[provider] || []),
-    ].map(modelId => String(modelId || '').trim()).filter(Boolean)));
-    const fallbackMode = PROVIDER_MODE[provider];
-    const fallbackModel = MAIN_AGENT_MODEL_OPTIONS.find(option => option.id === fallbackMode)?.modelName || 'Provider default';
-    const visibleModelIds = modelIds.length ? modelIds : [fallbackModel];
-
-    return visibleModelIds.map(modelId => ({
-      value: `${provider}:${encodeURIComponent(modelId)}`,
-      label: modelId,
-      description: providerName,
-      provider,
-      providerLabel: providerName,
-    }));
-  });
-  const selectedApiModelEntry =
-    apiModelEntries.find(entry => entry.value === selectedApiModelValue) ||
-    apiModelEntries.find(entry => entry.provider === activeProvider) ||
-    apiModelEntries[0];
-  const selectedApiProvider = selectedApiModelEntry?.provider || activeProvider;
-  const selectedApiProviderLabel = selectedApiModelEntry?.providerLabel || PROVIDER_LABEL[selectedApiProvider] || selectedApiProvider;
+  const selectedApiProvider = selectedApiProviderValue || activeProvider;
+  const selectedApiProviderLabel = PROVIDER_LABEL[selectedApiProvider] || selectedApiProvider;
   const selectedApiProviderSync = providerSync(selectedApiProvider);
-  const selectedApiProviderKeyCount = providerKeyCount(selectedApiProvider);
+  const selectedApiProviderPoolValue = `provider:${selectedApiProvider}`;
+  const selectedApiProviderModelEntries = modelEntries.filter(entry => entry.provider === selectedApiProvider);
+  const apiPoolEntries = [
+    {
+      value: selectedApiProviderPoolValue,
+      label: 'Provider pool',
+      description: `Any ${selectedApiProviderLabel} model`,
+      provider: selectedApiProvider,
+      providerLabel: selectedApiProviderLabel,
+      modelId: '',
+      isProviderPool: true,
+    },
+    ...selectedApiProviderModelEntries.map(entry => ({
+      value: modelEntryKey(entry.provider, entry.modelId),
+      label: entry.modelId,
+      description: 'Custom model pool',
+      provider: entry.provider,
+      providerLabel: selectedApiProviderLabel,
+      modelId: entry.modelId,
+      isProviderPool: false,
+    })),
+  ];
+  const selectedApiPoolEntry =
+    apiPoolEntries.find(entry => entry.value === selectedApiModelValue) ||
+    apiPoolEntries[0];
+  const selectedApiPoolValue = selectedApiPoolEntry?.isProviderPool
+    ? apiKeys[selectedApiProvider] || ''
+    : modelApiKeys[selectedApiPoolEntry?.value || ''] || '';
+  const selectedApiProviderKeyCount = splitApiKeyPool(selectedApiPoolValue).length;
+
+  useEffect(() => {
+    if (!apiPoolEntries.some(entry => entry.value === selectedApiModelValue)) {
+      setSelectedApiModelValue(selectedApiProviderPoolValue);
+    }
+  }, [apiPoolEntries, selectedApiProviderPoolValue, selectedApiModelValue]);
 
   useEffect(() => {
     setExactModelDraft(selectedProviderModel);
@@ -1231,11 +1303,51 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
 
   useEffect(() => {
     if (!isOpen || activeTab !== 'models' || modelDirectoryStatus !== 'idle') return;
-    void refreshModelDirectory(apiKeys, modelOverrides);
-  }, [activeTab, apiKeys, isOpen, modelDirectoryStatus, modelOverrides, refreshModelDirectory]);
+    void refreshModelDirectory();
+  }, [activeTab, isOpen, modelDirectoryStatus, refreshModelDirectory]);
+
+  const saveModelEntries = useCallback((nextEntries: ModelSelectorEntry[]) => {
+    const normalizedEntries = normalizeModelSelectorEntries(nextEntries, {});
+    const nextCatalog = entriesToModelCatalog(normalizedEntries) as ModelCatalog;
+    setModelEntries(normalizedEntries);
+    setModelCatalog(nextCatalog);
+    localStorage.setItem(MODEL_SELECTOR_STORAGE_KEY, JSON.stringify(normalizedEntries));
+    localStorage.setItem(MODEL_CATALOG_STORAGE_KEY, JSON.stringify(nextCatalog));
+    broadcastEterxSettingsUpdate({
+      type: 'model-selector-updated',
+      modelEntries: normalizedEntries,
+      modelCatalog: nextCatalog,
+    });
+  }, []);
+
+  const syncComposedKeys = useCallback((
+    nextBaseKeys: Record<string, string> = apiKeys,
+    nextModelKeys: Record<string, string> = modelApiKeys,
+    nextEntries: ModelSelectorEntry[] = modelEntries,
+    nextOverrides: ModelOverrides = modelOverrides,
+  ) => {
+    const selection = localStorage.getItem(CHAT_MODEL_SELECTION_STORAGE_KEY) || AUTO_MODEL_SELECTION;
+    const composed = composeApiKeysForSelection(nextBaseKeys, nextModelKeys, nextEntries, selection);
+    void syncApiKeys(composed, false, nextOverrides);
+  }, [apiKeys, modelApiKeys, modelEntries, modelOverrides, syncApiKeys]);
+
+  const updateModelApiKey = useCallback((modelKey: string, value: string) => {
+    if (!parseModelEntryKey(modelKey)) return;
+    setModelApiKeys(prev => {
+      const next = { ...prev };
+      const cleanValue = value.trim();
+      if (cleanValue) next[modelKey] = cleanValue;
+      else delete next[modelKey];
+      localStorage.setItem(MODEL_API_KEYS_STORAGE_KEY, JSON.stringify(next));
+      broadcastEterxSettingsUpdate({ type: 'model-api-keys-updated', modelApiKeys: next });
+      syncComposedKeys(apiKeys, next, modelEntries, modelOverrides);
+      return next;
+    });
+    setHasChanges(true);
+  }, [apiKeys, modelEntries, modelOverrides, syncComposedKeys]);
 
   const selectCatalogModel = useCallback((provider: string, modelId: string) => {
-    if (!MODEL_PROVIDER_ORDER.includes(provider)) return;
+    if (!isModelProvider(provider)) return;
     const next = { ...modelOverrides };
     if (modelId) {
       next[provider] = modelId;
@@ -1247,53 +1359,44 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
     broadcastEterxSettingsUpdate({ type: 'model-overrides-updated', modelOverrides: next });
     const nextMode = PROVIDER_MODE[provider];
     if (nextMode) updateSetting('agentMode', nextMode);
-    void syncApiKeys(apiKeys, false, next);
+    syncComposedKeys(apiKeys, modelApiKeys, modelEntries, next);
     setHasChanges(true);
-  }, [apiKeys, modelOverrides, syncApiKeys, updateSetting]);
-
-  const saveModelCatalog = useCallback((next: ModelCatalog) => {
-    setModelCatalog(next);
-    localStorage.setItem(MODEL_CATALOG_STORAGE_KEY, JSON.stringify(next));
-    broadcastEterxSettingsUpdate({ type: 'model-catalog-updated', modelCatalog: next });
-  }, []);
+  }, [apiKeys, modelApiKeys, modelEntries, modelOverrides, syncComposedKeys, updateSetting]);
 
   const addModelToSelector = useCallback((provider: string, modelId: string, activate = true) => {
     const cleanProvider = String(provider || '').trim();
     const cleanModelId = String(modelId || '').trim();
-    if (!MODEL_PROVIDER_ORDER.includes(cleanProvider) || !cleanModelId) return;
+    if (!isModelProvider(cleanProvider) || !cleanModelId) return;
 
-    const existingModels = modelCatalog[cleanProvider] || [];
-    const nextModels = existingModels.includes(cleanModelId)
-      ? existingModels
-      : [...existingModels, cleanModelId];
-    const nextCatalog = {
-      ...modelCatalog,
-      [cleanProvider]: nextModels,
-    };
-    saveModelCatalog(nextCatalog);
+    const nextEntries = ensureModelSelectorEntry(modelEntries, cleanProvider, cleanModelId);
+    saveModelEntries(nextEntries);
+    syncComposedKeys(apiKeys, modelApiKeys, nextEntries, modelOverrides);
     if (activate) selectCatalogModel(cleanProvider, cleanModelId);
     setHasChanges(true);
-  }, [modelCatalog, saveModelCatalog, selectCatalogModel]);
+  }, [apiKeys, modelApiKeys, modelEntries, modelOverrides, saveModelEntries, selectCatalogModel, syncComposedKeys]);
 
   const removeModelFromSelector = useCallback((provider: string, modelId: string) => {
     const cleanProvider = String(provider || '').trim();
     const cleanModelId = String(modelId || '').trim();
-    if (!MODEL_PROVIDER_ORDER.includes(cleanProvider) || !cleanModelId) return;
+    if (!isModelProvider(cleanProvider) || !cleanModelId) return;
 
-    const nextModels = (modelCatalog[cleanProvider] || []).filter(model => model !== cleanModelId);
-    const nextCatalog = { ...modelCatalog };
-    if (nextModels.length > 0) {
-      nextCatalog[cleanProvider] = nextModels;
-    } else {
-      delete nextCatalog[cleanProvider];
+    const removedKey = modelEntryKey(cleanProvider, cleanModelId);
+    const nextEntries = removeModelSelectorEntry(modelEntries, cleanProvider, cleanModelId);
+    saveModelEntries(nextEntries);
+    const nextModelKeys = { ...modelApiKeys };
+    delete nextModelKeys[removedKey];
+    setModelApiKeys(nextModelKeys);
+    localStorage.setItem(MODEL_API_KEYS_STORAGE_KEY, JSON.stringify(nextModelKeys));
+    if (localStorage.getItem(CHAT_MODEL_SELECTION_STORAGE_KEY) === removedKey) {
+      localStorage.setItem(CHAT_MODEL_SELECTION_STORAGE_KEY, AUTO_MODEL_SELECTION);
     }
-    saveModelCatalog(nextCatalog);
     if (modelOverrides[cleanProvider] === cleanModelId) {
       selectCatalogModel(cleanProvider, '');
       setExactModelDraft('');
     }
+    syncComposedKeys(apiKeys, nextModelKeys, nextEntries, modelOverrides);
     setHasChanges(true);
-  }, [modelCatalog, modelOverrides, saveModelCatalog, selectCatalogModel]);
+  }, [apiKeys, modelApiKeys, modelEntries, modelOverrides, saveModelEntries, selectCatalogModel, syncComposedKeys]);
 
   if ((!isOpen && !showBatmanEgg) || typeof document === 'undefined') return null;
 
@@ -1735,12 +1838,17 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
                       {/* ═══ API KEYS TAB ═══ */}
                       {activeTab === 'models' && (
                         <div>
-                          <SectionHeader title="Model connection" badge={apiSyncStatus === 'synced' ? 'LIVE' : undefined} />
+                          <SectionHeader
+                            title="Model connection"
+                            badge={apiSyncStatus === 'synced' ? 'LIVE' : undefined}
+                            info="Models saved here become the exact choices shown in the chat model selector. API keys are configured separately in the API tab."
+                          />
                           <SettingsStack>
                             <SettingsStackRow title="Provider" description="Choose the model provider used by the main agent runtime.">
                               <ProviderSelect
                                 value={selectedConnectionProvider}
                                 onChange={(value) => {
+                                  if (!isModelProvider(value)) return;
                                   setSelectedConnectionProvider(value);
                                   const nextMode = PROVIDER_MODE[value];
                                   if (nextMode) updateSetting('agentMode', nextMode);
@@ -1749,7 +1857,11 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
                                 providers={MODEL_PROVIDER_ORDER}
                               />
                             </SettingsStackRow>
-                            <SettingsStackRow title="Model" description={selectedProviderModel ? 'Exact provider model id active for the next run.' : `Auto fallback: ${ selectedProviderFallbackModel || 'provider default' }`}>
+                            <SettingsStackRow
+                              title="Model"
+                              description={selectedProviderModel ? 'Exact provider model id active for the next run.' : `Auto fallback: ${ selectedProviderFallbackModel || 'provider default' }`}
+                              info="Choosing a model pins the runtime to that exact provider model and adds it to the global chat model list."
+                            >
                               <ModernSelect
                                 value={selectedProviderModel}
                                 onChange={(modelId) => {
@@ -1777,6 +1889,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
                               description={selectedConnectionProvider === 'openrouter'
                                 ? 'Paste any OpenRouter slug, for example openai/gpt-5.5 or anthropic/claude-opus-4.8.'
                                 : 'Use a provider-specific model ID when it is not listed yet in live discovery.'}
+                              info="Use this for models that are new, custom, or not returned by live discovery yet."
                             >
                               <div className="flex w-[280px] items-center gap-2">
                                 <input
@@ -1804,33 +1917,37 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
                               </div>
                             </SettingsStackRow>
                             <SettingsStackRow
-                              title="Model selector entries"
-                              description="Only these model IDs appear in the chat model selector for this provider."
+                              title="Chat model list"
+                              description="This ordered list appears in the chat selector. Auto uses it as the runtime priority list."
+                              info="Auto chooses from this list. A manually selected chat model always sends with that exact model id."
                               tall
                             >
                               <div className="w-[360px] rounded-xl border border-white/[0.08] bg-[#141414] p-1.5">
-                                {selectedProviderSavedModels.length === 0 ? (
+                                {modelEntries.length === 0 ? (
                                   <div className="px-3 py-3 text-[12px] leading-5 text-[#8C8C8C]">
-                                    Add a model ID or choose one from discovery to make it available in chat.
+                                    Add a model ID or choose one from provider discovery to make it available in chat.
                                   </div>
                                 ) : (
-                                  <div className={selectedProviderSavedModels.length > 3 ? 'max-h-[172px] overflow-y-auto pr-1 eterx-scrollbar' : ''}>
-                                    {selectedProviderSavedModels.map(modelId => {
-                                      const selected = selectedProviderModel === modelId;
+                                  <div className={modelEntries.length > 3 ? 'max-h-[172px] overflow-y-auto pr-1 eterx-scrollbar' : ''}>
+                                    {modelEntries.map(entry => {
+                                      const selected = modelOverrides[entry.provider] === entry.modelId;
+                                      const entryProviderLabel = PROVIDER_LABEL[entry.provider] || entry.provider;
                                       return (
-                                        <div key={`${selectedConnectionProvider}-${modelId}`} className="flex items-center gap-2 rounded-lg px-2 py-2 hover:bg-white/[0.04]">
+                                        <div key={modelEntryKey(entry.provider, entry.modelId)} className="flex items-center gap-2 rounded-lg px-2 py-2 hover:bg-white/[0.04]">
                                           <div className="min-w-0 flex-1">
-                                            <div className="truncate font-mono text-[11.5px] font-semibold text-[#F1F1F1]">{modelId}</div>
-                                            <div className="mt-0.5 text-[11px] text-[#777]">{selected ? 'Runtime target' : 'Chat selector entry'}</div>
+                                            <div className="truncate font-mono text-[11.5px] font-semibold text-[#F1F1F1]">{entry.modelId}</div>
+                                            <div className="mt-0.5 truncate text-[11px] text-[#777]">
+                                              {selected ? 'Active runtime target' : entryProviderLabel}
+                                            </div>
                                           </div>
-                                          <SoftButton onClick={() => selectCatalogModel(selectedConnectionProvider, modelId)}>
+                                          <SoftButton onClick={() => selectCatalogModel(entry.provider, entry.modelId)}>
                                             {selected ? 'Current' : 'Apply'}
                                           </SoftButton>
                                           <button
                                             type="button"
-                                            onClick={() => removeModelFromSelector(selectedConnectionProvider, modelId)}
+                                            onClick={() => removeModelFromSelector(entry.provider, entry.modelId)}
                                             className="grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-white/[0.08] bg-white/[0.03] text-[#A7A7A7] transition-colors hover:border-red-400/30 hover:bg-red-500/10 hover:text-red-300"
-                                            aria-label={`Remove ${modelId}`}
+                                            aria-label={`Remove ${entry.modelId}`}
                                           >
                                             <Trash2 className="h-3.5 w-3.5" />
                                           </button>
@@ -1842,7 +1959,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
                               </div>
                             </SettingsStackRow>
                             <SettingsStackRow title="Live model discovery" description={selectedProviderStatusText}>
-                              <SoftButton onClick={() => refreshModelDirectory(apiKeys, modelOverrides)}>
+                              <SoftButton onClick={() => refreshModelDirectory()}>
                                 <span className="inline-flex items-center gap-2">
                                   <RefreshCw className={`h-3.5 w-3.5 ${ modelDirectoryStatus === 'loading' ? 'animate-spin' : '' }`} />
                                   Refresh
@@ -1880,42 +1997,64 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
                       {/* ═══ ADVANCED TAB ═══ */}
                       {activeTab === 'api' && (
                         <div>
-                          <SectionHeader title="API gateway" badge={apiSyncStatus === 'synced' ? 'LIVE' : undefined} />
+                          <SectionHeader
+                            title="API gateway"
+                            badge={apiSyncStatus === 'synced' ? 'LIVE' : undefined}
+                            info="Provider pools are used by every model from that provider. Custom model pools override the provider pool only for one exact saved model."
+                          />
                           <SettingsStack>
                             <SettingsStackRow
-                              title="Model target"
-                              description="Choose a model from the Models list. The key pool below applies to that model's provider."
+                              title="Provider"
+                              description="Choose the API provider this key pool connects to."
+                              info="This controls which provider-wide pool you are editing. For example, every Gemini model can use the Gemini provider pool."
                             >
-                              <ModernSelect
-                                value={selectedApiModelEntry?.value || ''}
-                                onChange={(value) => setSelectedApiModelValue(value)}
-                                placeholder="Choose model"
-                                className="w-[360px]"
-                                options={apiModelEntries.map(entry => ({
-                                  value: entry.value,
-                                  label: entry.label,
-                                  description: entry.description,
-                                }))}
+                              <ProviderSelect
+                                value={selectedApiProvider}
+                                onChange={(value) => {
+                                  if (!isModelProvider(value)) return;
+                                  setSelectedApiProviderValue(value);
+                                  setSelectedApiModelValue(`provider:${value}`);
+                                }}
+                                className="w-[240px]"
+                                providers={MODEL_PROVIDER_ORDER}
                               />
                             </SettingsStackRow>
-                            <SettingsStackRow title="Provider" description="Detected from the selected model target.">
-                              <div className="inline-flex h-9 min-w-[220px] items-center gap-2 rounded-xl border border-white/[0.08] bg-[#2D2D2D] px-3 text-[13px] font-semibold text-[#F2F2F2]">
-                                <ProviderMark provider={selectedApiProvider} />
-                                <span>{selectedApiProviderLabel}</span>
-                              </div>
-                            </SettingsStackRow>
                             <SettingsStackRow
-                              title="Provider API key pool"
-                              description="Ten priority slots are always available. Drag a key to reorder failover and rotation priority."
+                              title="API key pool"
+                              description="Use Provider pool for all models from this provider, or choose an exact saved model for a custom model pool."
+                              info="When a selected model has its own custom pool, that pool is used first. If not, EterX falls back to the provider pool."
                               tall
                             >
                               <ApiKeyPoolEditor
+                                key={`${selectedApiProvider}-${selectedApiPoolEntry.value}`}
                                 provider={selectedApiProvider}
-                                providerLabel={selectedApiProviderLabel}
-                                value={apiKeys[selectedApiProvider] || ''}
-                                sync={selectedApiProviderSync}
+                                providerLabel={selectedApiPoolEntry.isProviderPool ? `${selectedApiProviderLabel} provider pool` : selectedApiPoolEntry.label}
+                                value={selectedApiPoolValue}
+                                sync={selectedApiPoolEntry.isProviderPool ? selectedApiProviderSync : undefined}
                                 minRows={10}
-                                onChange={(nextValue) => updateApiKey(selectedApiProvider, nextValue)}
+                                onChange={(nextValue) => {
+                                  if (selectedApiPoolEntry.isProviderPool) {
+                                    updateApiKey(selectedApiProvider, nextValue);
+                                  } else {
+                                    updateModelApiKey(selectedApiPoolEntry.value, nextValue);
+                                  }
+                                }}
+                                scopeControl={
+                                  <div className="flex items-center gap-2">
+                                    <InfoHint text="Provider pool works for every model under this provider. Choosing a saved model creates an exact-model pool that overrides only that model." />
+                                    <ModernSelect
+                                      value={selectedApiPoolEntry.value}
+                                      onChange={(value) => setSelectedApiModelValue(value)}
+                                      placeholder="Provider pool"
+                                      className="w-[230px]"
+                                      options={apiPoolEntries.map(entry => ({
+                                        value: entry.value,
+                                        label: entry.label,
+                                        description: entry.description,
+                                      }))}
+                                    />
+                                  </div>
+                                }
                               />
                             </SettingsStackRow>
                           </SettingsStack>
@@ -2215,10 +2354,17 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
                                     localStorage.removeItem('eterx_api_keys');
                                     localStorage.removeItem(MODEL_OVERRIDE_STORAGE_KEY);
                                     localStorage.removeItem(MODEL_CATALOG_STORAGE_KEY);
+                                    localStorage.removeItem(MODEL_SELECTOR_STORAGE_KEY);
+                                    localStorage.removeItem(MODEL_API_KEYS_STORAGE_KEY);
+                                    localStorage.removeItem(CHAT_MODEL_SELECTION_STORAGE_KEY);
                                     setSettings(DEFAULT_SETTINGS);
                                     setApiKeys({});
                                     setModelOverrides({});
                                     setModelCatalog({});
+                                    setModelEntries([]);
+                                    setModelApiKeys({});
+                                    setSelectedApiProviderValue('gemini');
+                                    setSelectedApiModelValue('');
                                     setApiSyncStatus('idle');
                                     setApiSyncMessage('Add a provider key to activate the local runtime gateway.');
                                     setApiProviderStatus([]);
@@ -2235,7 +2381,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
                             <SettingsStackRow title="Export all settings" description="Download the complete local configuration as a JSON file.">
                               <SoftButton
                                 onClick={() => {
-                                  const data = JSON.stringify({ settings, apiKeys, modelOverrides, modelCatalog }, null, 2);
+                                  const data = JSON.stringify({ settings, apiKeys, modelOverrides, modelCatalog, modelEntries, modelApiKeys }, null, 2);
                                   const blob = new Blob([data], { type: 'application/json' });
                                   const url = URL.createObjectURL(blob);
                                   const a = document.createElement('a');

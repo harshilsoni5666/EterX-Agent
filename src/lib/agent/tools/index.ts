@@ -1,7 +1,7 @@
 import { globalToolRegistry } from './registry';
 
 // ==========================================
-// CORE TOOLS (27 tools)
+// CORE TOOLS
 // ==========================================
 import { shellTool } from './core/shell';
 import { terminalAccessTool } from './core/terminal_access';
@@ -49,18 +49,17 @@ import { desktopControlTool } from './core/desktop_control';
 import { browserControlTool } from './core/browser_control';
 import { askUserTool } from './core/ask_user';
 import { checkpointTool } from './core/checkpoint';
-import { uiLivePreviewTool } from './core/ui_preview';
 import { computerTool } from './core/computer';
 import { screenAgentTool } from './core/screen_agent';
 import { waitTimerTool } from './core/wait_timer';
 import { agentCommTool } from './core/agent_comm';
 
 // ==========================================
-// WORKSPACE & DATA TOOLS (13 tools)
+// WORKSPACE & DATA TOOLS
 // ==========================================
 import {
-  workspaceReadTool, workspaceWriteTool, workspaceListDirectoryTool,
-  workspaceSearchTextTool, workspaceEditFileTool
+  workspaceReadTool, workspaceReadManyTool, workspaceWriteTool, workspaceListDirectoryTool,
+  workspaceSearchTextTool, workspaceFindFilesTool, workspaceEditFileTool, workspaceEditManyFilesTool
 } from './workspace/fileops';
 import { workspaceRunCommandTool, workspaceVerifyCodeTool } from './workspace/execution';
 import { csvAnalyzerTool } from './workspace/data';
@@ -72,7 +71,7 @@ import { diffTool } from './workspace/diff';
 import { markdownTool } from './workspace/markdown';
 
 // ==========================================
-// RESEARCH TOOLS (4 tools)
+// RESEARCH TOOLS
 // ==========================================
 import { webScraperTool } from './research/scraper';
 import { pdfParserTool } from './research/pdf';
@@ -80,7 +79,7 @@ import { youtubeTranscriptTool } from './research/youtube';
 import { rssFeedTool } from './research/rss';
 
 // ==========================================
-// AUTOMATION TOOLS (5 tools)
+// AUTOMATION TOOLS
 // ==========================================
 import { schedulerTool } from './automation/scheduler';
 import { processManagerTool } from './automation/process_manager';
@@ -92,7 +91,7 @@ import { agentConnectorTriggerTool } from './automation/agent_connector_trigger'
 import { agentBuilderTools } from './automation/agent_builder';
 
 // ==========================================
-// COMMUNICATION TOOLS (2 tools)
+// COMMUNICATION TOOLS
 // ==========================================
 import { whatsappControllerTool } from './communication/whatsapp';
 import { telegramUserControllerTool } from './communication/telegram';
@@ -103,22 +102,22 @@ import { slackControllerTool } from './communication/slack';
  * Total: 56 tools — EterX Next-Gen Agent OS v5
  */
 export function bootstrapTools() {
-  globalToolRegistry.registerTools([
+  globalToolRegistry.replaceAllTools([
     shellTool, terminalAccessTool, webSearchTool, calculatorTool, apiCallerTool,
     jsRunnerTool, skillLoaderTool, systemMonitorTool, gitTool,
-    clipboardTool, desktopNotifyTool, jsonTransformTool,
+    clipboardTool, desktopNotifyTool, jsonTransformTool, screenshotTool,
     emailTool, ttsTool, imageGenTool, imageAssetSearchTool, taskDecomposerTool, networkTool,
     databaseTool, cryptoTool, regexTool, sysAutomationTool, selfImproveTool, memoryV2Tool,
     apiHubTool, apiKeyVaultTool, contextManagerTool, safetyGuardTool,
-    realTimeVerifierTool, spawnSubAgentTool, uiLivePreviewTool,
+    realTimeVerifierTool, spawnSubAgentTool,
     dynamicToolCreatorTool, workspaceAnalyzerTool, macroRunnerTool,
     backgroundTaskTool, smartFileAnalyzerTool, chartGeneratorTool, codeIntelTool,
     deepResearchTool, smartRefactorTool, projectScaffolderTool,
     envManagerTool, autoDocsTool, gitIntelTool,
-    browserControlTool, askUserTool, checkpointTool, computerTool, screenAgentTool,
+    desktopControlTool, browserControlTool, askUserTool, checkpointTool, computerTool, screenAgentTool,
     waitTimerTool, agentCommTool,
-    workspaceReadTool, workspaceWriteTool, workspaceListDirectoryTool,
-    workspaceSearchTextTool, workspaceEditFileTool,
+    workspaceReadTool, workspaceReadManyTool, workspaceWriteTool, workspaceListDirectoryTool,
+    workspaceSearchTextTool, workspaceFindFilesTool, workspaceEditFileTool, workspaceEditManyFilesTool,
     workspaceRunCommandTool, workspaceVerifyCodeTool,
     csvAnalyzerTool, docxGeneratorTool, officeArtifactBuilderTool, compressionTool,
     codeGeneratorTool, diffTool, markdownTool,

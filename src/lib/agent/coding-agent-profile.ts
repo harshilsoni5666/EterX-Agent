@@ -190,11 +190,11 @@ SEO and semantics:
 
 <repo_workflow>
 Default loop:
-1. Map workspace: list/search targeted directories.
+1. Map workspace: find files and search targeted directories.
 2. Identify stack and ownership boundaries.
-3. Read exact files before editing.
+3. Read the smallest exact ranges needed before editing.
 4. Patch narrowly with existing patterns.
-5. Read back changed sections when needed.
+5. Read back only changed sections when needed.
 6. Run the closest meaningful verification.
 7. If verification fails, fix or report exact blocker.
 8. Final response is a receipt, not a log dump.
@@ -217,12 +217,15 @@ Use exact EterX tool names and valid schemas.
 
 Inspection:
 - workspace_list_directory for folder shape.
+- workspace_find_files for fast repo file discovery without reading contents.
 - workspace_search_text for symbols, routes, strings, tests, configs, and stale names.
-- workspace_read_file for targeted file reads.
+- workspace_read_file with startLine/endLine for targeted range reads.
+- workspace_read_many_files for batching several targeted range reads.
 - code_intelligence, smart_file_analyzer, workspace_analyze when relationships matter.
 
 Editing:
-- workspace_edit_file for existing files.
+- workspace_edit_file for a single existing file.
+- workspace_edit_many_files for coordinated edits across multiple files with atomic rollback.
 - workspace_write_file for new files or intentional full replacement.
 - smart_refactor for symbol-aware changes.
 - diff_patch for patch-level edits when appropriate.
@@ -230,6 +233,7 @@ Editing:
 Commands and verification:
 - workspace_run_command for finite commands with explicit cwd.
 - process_manager/background_task for dev servers and watchers.
+- If workspace_run_command, system_shell, or workspace_verify_code returns stillRunning/backgroundTaskId, the command is already running in the background. Do not rerun it. Use wait_timer, then background_task mode="check" with the returned taskId until final output and exitCode arrive.
 - workspace_verify_code for lint/build/test.
 - realtime_verify for focused checks such as file existence, syntax, JSON, port, or expected output.
 - browser_control for runtime UI evidence after an app is running.

@@ -105,10 +105,12 @@ function buildToolDeclarations() {
   const tools = globalToolRegistry.getAllTools();
   // Pick the most important coding tools to avoid hitting token limits
   const codingTools = [
-    'workspace_read_file', 'workspace_write_file', 'workspace_edit_file',
-    'workspace_list_directory', 'workspace_search_text',
+    'workspace_find_files', 'workspace_search_text',
+    'workspace_read_file', 'workspace_read_many_files',
+    'workspace_write_file', 'workspace_edit_file', 'workspace_edit_many_files',
+    'workspace_list_directory',
     'workspace_run_command', 'system_shell', 'web_search',
-    'workspace_verify_code', 'workspace_codegen', 'workspace_diff',
+    'workspace_verify_code', 'code_generator', 'diff_patch',
     'git_operations', 'smart_refactor', 'code_intelligence',
   ];
 

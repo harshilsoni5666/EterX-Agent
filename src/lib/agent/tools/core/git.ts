@@ -9,7 +9,7 @@ const execAsync = promisify(exec);
 
 export const gitTool: ToolDefinition = {
   name: 'git_operations',
-  description: 'Execute Git operations: clone, init, add, commit, push, pull, branch, checkout, diff, log, status, merge, stash. Use this for version control, code management, and DevOps workflows.',
+  description: 'Execute Git operations only when the user explicitly asks for source-control work. Prefer read-only operations such as status, diff, log, branch, and remote unless the user clearly requested a write operation.',
   category: 'core',
   inputSchema: z.object({
     operation: z.enum([
@@ -17,14 +17,15 @@ export const gitTool: ToolDefinition = {
       'branch', 'checkout', 'diff', 'log', 'merge', 'stash', 'remote', 'reset', 'tag'
     ]).describe('The git operation to perform'),
     args: z.string().optional().describe('Arguments for the git command (e.g., repo URL for clone, branch name for checkout, commit message for commit)'),
-    repoPath: z.string().optional().describe('Relative path to the repo inside workspace. Defaults to workspace root.')
+    repoPath: z.string().optional().describe('Relative path to the repo inside workspace. Defaults to workspace root.'),
+    confirmDestructive: z.boolean().optional().describe('Required for destructive reset operations such as --hard.')
   }),
   outputSchema: z.object({
     stdout: z.string(),
     stderr: z.string(),
     exitCode: z.number()
   }),
-  execute: async (input: { operation: string, args?: string, repoPath?: string }, context?: any) => {
+  execute: async (input: { operation: string, args?: string, repoPath?: string, confirmDestructive?: boolean }, context?: any) => {
     const repoDir = resolveWorkspaceDirectoryForContext(input.repoPath, context);
 
     let command = '';
@@ -73,7 +74,21 @@ export const gitTool: ToolDefinition = {
         command = `git remote -v ${input.args || ''}`;
         break;
       case 'reset':
-        command = `git reset ${input.args || '--hard HEAD'}`;
+        if (!input.args?.trim()) {
+          return {
+            stdout: '',
+            stderr: 'Refusing git reset without explicit arguments. Provide the exact reset mode and target.',
+            exitCode: 1
+          };
+        }
+        if (/\b--hard\b/i.test(input.args) && !input.confirmDestructive) {
+          return {
+            stdout: '',
+            stderr: 'Refusing destructive git reset --hard without confirmDestructive=true and an explicit user request.',
+            exitCode: 1
+          };
+        }
+        command = `git reset ${input.args}`;
         break;
       case 'tag':
         command = `git tag ${input.args || '-l'}`;

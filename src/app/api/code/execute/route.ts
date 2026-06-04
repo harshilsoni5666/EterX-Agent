@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { exec } from 'child_process';
 import * as path from 'path';
 import { getPathResolverInfo } from '@/lib/agent/workspace/path_resolver';
+import { runTerminalCommandWithCheckIn } from '@/lib/agent/tools/core/terminal_background';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -10,7 +10,7 @@ export const maxDuration = 60;
 // POST: Execute a command in the workspace
 export async function POST(req: NextRequest) {
   try {
-    const { command, cwd } = await req.json();
+    const { command, cwd, timeoutSeconds, timeoutMs, checkInSeconds, checkInMs, hardTimeoutSeconds, hardTimeoutMs } = await req.json();
 
     if (!command) {
       return NextResponse.json({ error: 'command is required' }, { status: 400 });
@@ -21,29 +21,30 @@ export async function POST(req: NextRequest) {
       ? (path.isAbsolute(cwd) ? cwd : path.resolve(defaultDir, cwd))
       : defaultDir;
 
-    const result = await new Promise<{ stdout: string; stderr: string; exitCode: number }>((resolve) => {
-      const child = exec(command, {
-        cwd: workingDir,
-        timeout: 30000, // 30 second timeout
-        maxBuffer: 1024 * 1024, // 1MB max output
-        env: { ...process.env, FORCE_COLOR: '0' }, // No ANSI colors for clean output
-        shell: process.platform === 'win32' ? 'powershell.exe' : '/bin/bash',
-      }, (error, stdout, stderr) => {
-        resolve({
-          stdout: stdout || '',
-          stderr: stderr || '',
-          exitCode: error ? (error as any).code || 1 : 0,
-        });
-      });
+    const result = await runTerminalCommandWithCheckIn({
+      command,
+      cwd: workingDir,
+      source: 'code_terminal',
+      shell: process.platform === 'win32' ? 'powershell.exe' : '/bin/bash',
+      env: { ...process.env, FORCE_COLOR: '0' },
+      checkInMs: checkInSeconds ?? checkInMs ?? timeoutSeconds ?? timeoutMs,
+      hardTimeoutMs: hardTimeoutSeconds ?? hardTimeoutMs,
+      maxOutputChars: 10 * 1024 * 1024,
+      traceThrottleMs: 150
     });
 
     return NextResponse.json({
       command,
       cwd: workingDir,
-      stdout: result.stdout,
+      stdout: result.output || result.stdout,
       stderr: result.stderr,
       exitCode: result.exitCode,
-      success: result.exitCode === 0,
+      success: result.exitCode === 0 || Boolean(result.stillRunning),
+      stillRunning: Boolean(result.stillRunning),
+      backgroundTaskId: result.backgroundTaskId,
+      taskId: result.taskId,
+      pid: result.pid,
+      nextActionNote: result.nextActionNote,
     });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });

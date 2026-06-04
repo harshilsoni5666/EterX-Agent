@@ -9,6 +9,7 @@ import { globalSessionManager } from './session';
 import fs from 'fs-extra';
 import path from 'path';
 import { getMainAgentModelConfig, type MainAgentMode, type MainAgentThinkingLevel } from './model-routing';
+import { getPathResolverInfo } from './workspace/path_resolver';
 
 /**
  * The Enhanced Orchestrator v2
@@ -234,7 +235,7 @@ export class AgentOrchestrator {
     const shouldInitializeWorkspace = shouldExportTranscript || !pinnedContext?.disableWorkspaceInit;
 
     // Resolve workspaceRoot and workspaceId
-    let workspaceRoot = process.cwd();
+    let workspaceRoot = getPathResolverInfo().desktopPath;
     if (Array.isArray(pinnedContext?.paths) && pinnedContext.paths.length > 0) {
       const pinnedPaths = pinnedContext.paths.filter((p: unknown): p is string => typeof p === 'string' && p.trim().length > 0);
       const firstDirectory = pinnedPaths.find((p: string) => {
@@ -295,6 +296,12 @@ export class AgentOrchestrator {
 
     context.workspaceId = workspaceId;
     context.projectId = activeChatId;
+    context.workspaceRoot = workspaceRoot;
+    context.workspacePath = workspaceRoot;
+    if (Array.isArray(pinnedContext?.paths) && pinnedContext.paths.length > 0) {
+      context.paths = pinnedContext.paths;
+      context.allowedPaths = pinnedContext.paths;
+    }
     if (userName) context.userName = userName;
     context.userId = userId;
     if (pinnedContext?.disableSubAgents) {
