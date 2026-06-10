@@ -78,14 +78,14 @@ function nativeThemeColors(theme) {
   const safeTheme = normalizeNativeTheme(theme);
   if (safeTheme === 'dark') {
     return {
-      background: '#151515',
-      titleBar: '#151515',
+      background: '#0F0F0F',
+      titleBar: '#00000000',
       titleSymbol: '#d1d1d1',
     };
   }
   return {
     background: '#FAFAF8',
-    titleBar: '#FAFAF8',
+    titleBar: '#00000000',
     titleSymbol: '#111111',
   };
 }

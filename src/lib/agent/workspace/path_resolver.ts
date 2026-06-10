@@ -49,66 +49,19 @@ function relativeStartsWithPath(relativePath: string, prefix: string): boolean {
 }
 
 function detectEterXRoot(): string {
+  // process.cwd() is the EterX root when running in dev
   const cwd = process.cwd();
-  let current = path.resolve(cwd);
 
-  while (true) {
-    const hasPackageJson = fs.existsSync(path.join(current, 'package.json'));
-    const hasAgentSource = fs.existsSync(path.join(current, 'src', 'lib', 'agent'));
-    if (hasPackageJson && hasAgentSource) {
-      return current;
-    }
+  // Verify by checking for our signature files
+  const hasPackageJson = fs.existsSync(path.join(cwd, 'package.json'));
+  const hasSrc = fs.existsSync(path.join(cwd, 'src'));
 
-    const parent = path.dirname(current);
-    if (parent === current) break;
-    current = parent;
+  if (hasPackageJson && hasSrc) {
+    return path.resolve(cwd);
   }
 
-  return path.resolve(cwd);
-}
-
-function contextAllowsEterXSource(context?: any): boolean {
-  return (
-    context?.allowEterXSource === true ||
-    context?.allowInternalEterXSource === true ||
-    context?.agentRuntime === 'eterx_internal_dev' ||
-    context?.source === 'eterx_internal_dev'
-  );
-}
-
-function isProtectedEterXPath(targetPath: string): boolean {
-  if (!isPathInsideOrEqual(EterX_ROOT, targetPath)) return false;
-  const relativePath = path.relative(EterX_ROOT, path.resolve(targetPath));
-  const relLower = relativePath.toLowerCase();
-
-  for (const prefix of ['.workspaces', '.temp', 'data', 'p_block_ppt_assets']) {
-    if (relativeStartsWithPath(relLower, prefix)) return false;
-  }
-
-  for (const dir of PROTECTED_SUBDIRS) {
-    if (relativeStartsWithPath(relLower, dir)) return true;
-  }
-
-  return PROTECTED_ROOT_FILES.some(file => relLower === file.toLowerCase());
-}
-
-function isUsableRuntimeWorkspace(candidatePath: string, context?: any): boolean {
-  const resolved = path.resolve(candidatePath);
-  if (contextAllowsEterXSource(context)) return true;
-  if (!isPathInsideOrEqual(EterX_ROOT, resolved)) return true;
-  return isInternalWorkspacePath(resolved);
-}
-
-export function checkEterXReadProtection(targetPath: string, context?: any): { blocked: boolean; reason: string } {
-  if (contextAllowsEterXSource(context) || !isProtectedEterXPath(targetPath)) {
-    return { blocked: false, reason: '' };
-  }
-
-  const relativePath = path.relative(EterX_ROOT, path.resolve(targetPath));
-  return {
-    blocked: true,
-    reason: `BLOCKED: Cannot read EterX internal source file "${relativePath}" from the user-facing agent workspace. Select a user project, provide an explicit non-EterX path, or enable internal EterX development mode.`,
-  };
+  // Fallback: hardcoded known path
+  return path.resolve('c:\\Harshil projects\\EterX');
 }
 
 /**
@@ -162,7 +115,7 @@ export function checkEterXProtection(targetPath: string): { blocked: boolean; re
     if (relativeStartsWithPath(relLower, dir)) {
       return {
         blocked: true,
-        reason: `🛡️ BLOCKED: Cannot modify EterX source file "${relativePath}". The "${dir}/" directory is protected. Save to your workspace folder or an absolute path. Do NOT attempt to edit EterX's own source code.`
+        reason: `🛡️ BLOCKED: Cannot modify EterX source file "${ relativePath }". The "${ dir }/" directory is protected. Save your files to the Desktop or a different location instead.`
       };
     }
   }
@@ -172,7 +125,7 @@ export function checkEterXProtection(targetPath: string): { blocked: boolean; re
     if (relLower === file.toLowerCase()) {
       return {
         blocked: true,
-        reason: `🛡️ BLOCKED: Cannot modify EterX config file "${file}". This is a protected project configuration file. Save user files to your workspace folder or an absolute path.`
+        reason: `🛡️ BLOCKED: Cannot modify EterX config file "${ file }". This is a protected project configuration file.`
       };
     }
   }
@@ -312,7 +265,7 @@ export function hasRuntimeWorkspaceContext(context?: any): boolean {
     context?.workspaceRoot,
     ...(Array.isArray(context?.allowedPaths) ? context.allowedPaths : []),
     ...(Array.isArray(context?.paths) ? context.paths : []),
-  ].some(candidate => typeof candidate === 'string' && candidate.trim().length > 0 && isUsableRuntimeWorkspace(candidate, context));
+  ].some(candidate => typeof candidate === 'string' && candidate.trim().length > 0);
 }
 
 export function getRuntimeWorkspaceRoot(context?: any): string {
@@ -325,7 +278,6 @@ export function getRuntimeWorkspaceRoot(context?: any): string {
 
   for (const candidate of rawCandidates) {
     const resolved = path.resolve(candidate);
-    if (!isUsableRuntimeWorkspace(resolved, context)) continue;
     try {
       if (fs.existsSync(resolved)) {
         const stat = fs.statSync(resolved);
@@ -336,18 +288,15 @@ export function getRuntimeWorkspaceRoot(context?: any): string {
     }
   }
 
-  return getRealDesktopPath();
+  // IMPORTANT: Fall back to process.cwd() (EterX project root), NOT the Desktop.
+  // Relative paths like ".workspaces/sandbox/file.py" must resolve to the same
+  // location where workspace_write_file writes them (EterX root/.workspaces/sandbox/).
+  // Using the Desktop as fallback causes "python: can't open file '...Desktop\.workspaces\...'" errors.
+  return path.resolve(process.cwd());
 }
 
 export function resolveWorkspacePathForContext(filename: string, context?: any): string {
-  if (isExplicitUserPath(filename)) {
-    const resolved = path.isAbsolute(filename)
-      ? path.resolve(filename)
-      : (resolveSpecialUserPath(filename) || resolveWorkspacePath(filename));
-    const protection = checkEterXProtection(resolved);
-    if (protection.blocked && !contextAllowsEterXSource(context)) throw new Error(protection.reason);
-    return resolved;
-  }
+  if (isExplicitUserPath(filename)) return resolveWorkspacePath(filename);
 
   const root = getRuntimeWorkspaceRoot(context);
   const filePath = path.resolve(root, filename);
@@ -359,32 +308,17 @@ export function resolveWorkspacePathForContext(filename: string, context?: any):
 }
 
 export function resolveReadableWorkspacePathForContext(filename: string, context?: any): string {
-  if (isExplicitUserPath(filename)) {
-    const resolved = resolveReadableWorkspacePath(filename);
-    const protection = checkEterXReadProtection(resolved, context);
-    if (protection.blocked) throw new Error(protection.reason);
-    return resolved;
-  }
+  if (isExplicitUserPath(filename)) return resolveReadableWorkspacePath(filename);
 
   const root = getRuntimeWorkspaceRoot(context);
   const scopedPath = path.resolve(root, filename);
-  const protection = checkEterXReadProtection(scopedPath, context);
-  if (protection.blocked) throw new Error(protection.reason);
   if (fs.existsSync(scopedPath)) return scopedPath;
   return scopedPath;
 }
 
 export function resolveWorkspaceDirectoryForContext(directory: string | undefined, context?: any): string {
   if (!directory || !directory.trim()) return getRuntimeWorkspaceRoot(context);
-  if (isExplicitUserPath(directory)) {
-    const resolved = path.isAbsolute(directory)
-      ? path.resolve(directory)
-      : (resolveSpecialUserPath(directory) || resolveWorkspacePath(directory));
-    const protection = checkEterXProtection(resolved);
-    if (protection.blocked && !contextAllowsEterXSource(context)) throw new Error(protection.reason);
-    if (!isUsableRuntimeWorkspace(resolved, context)) return getRuntimeWorkspaceRoot(context);
-    return resolved;
-  }
+  if (isExplicitUserPath(directory)) return resolveWorkspacePath(directory);
 
   const dirPath = path.resolve(getRuntimeWorkspaceRoot(context), directory);
   const protection = checkEterXProtection(dirPath);

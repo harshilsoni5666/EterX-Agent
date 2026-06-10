@@ -4,7 +4,7 @@ This file captures current coding-agent design lessons and converts them into or
 
 ## Sources Reviewed
 
-- OpenAI Codex docs: local CLI, `AGENTS.md`, skills, sub-agents, best practices, approvals, and sandboxing.
+- OpenAI EterX docs: local CLI, `AGENTS.md`, skills, sub-agents, best practices, approvals, and sandboxing.
 - Cursor docs: modes, project rules, memories, and background agents.
 - Google Antigravity docs: task artifacts, browser artifacts, and planning/review modes.
 - Windsurf docs: Code/Chat modes, todo plans, rules, memories, workflows, checkpoints, and linter integration.

@@ -1,5 +1,3 @@
-import { formatVisibleWorkNote } from './work-note';
-
 type CustomToolLogType = 'command' | 'exploration' | 'file_edit' | 'communication' | 'browser';
 
 type CustomToolUi = {
@@ -23,15 +21,10 @@ const formatCustomToolLabel = (toolName: string) => {
   const known: Record<string, string> = {
     system_shell: 'Running command',
     workspace_run_command: 'Running project command',
-    background_task: 'Checking background task',
-    wait_timer: 'Waiting for check-in',
     workspace_list_directory: 'Scanning directory',
-    workspace_find_files: 'Finding files',
     workspace_read_file: 'Reading file',
-    workspace_read_many_files: 'Reading files',
     workspace_write_file: 'Writing artifact',
     workspace_edit_file: 'Editing file',
-    workspace_edit_many_files: 'Editing files',
     workspace_search_text: 'Searching codebase',
     smart_file_analyzer: 'Analyzing files',
     workspace_analyze: 'Analyzing workspace',
@@ -86,15 +79,17 @@ const getCustomToolUi = (toolName: string): CustomToolUi => {
   const known: Record<string, CustomToolUi> = {
     system_shell: { text: 'Running command', type: 'command', iconCategory: 'terminal', argKeys: ['command'] },
     workspace_run_command: { text: 'Running project command', type: 'command', iconCategory: 'terminal', argKeys: ['command'] },
-    background_task: { text: 'Checking background task', type: 'command', iconCategory: 'terminal', argKeys: ['taskId', 'mode'] },
-    wait_timer: { text: 'Waiting for check-in', type: 'command', iconCategory: 'terminal', argKeys: ['title', 'seconds'] },
     workspace_list_directory: { text: 'Scanning directory', type: 'exploration', iconCategory: 'folder_read', argKeys: ['directory', 'dir', 'path'] },
+    workspace_semantic_search: { text: 'Searching codebase', type: 'exploration', iconCategory: 'search', argKeys: ['query', 'question'] },
+    workspace_symbol_lookup: { text: 'Finding symbol', type: 'exploration', iconCategory: 'search', argKeys: ['symbol', 'name'] },
+    workspace_file_outline: { text: 'Outlining file', type: 'exploration', iconCategory: 'file_read', argKeys: ['filename', 'path', 'file'] },
+    workspace_str_replace: { text: 'Editing file', type: 'file_edit', iconCategory: 'file_edit', argKeys: ['filename', 'filePath', 'file_path', 'path', 'file'] },
     workspace_find_files: { text: 'Finding files', type: 'exploration', iconCategory: 'search', argKeys: ['glob', 'directory'] },
     workspace_read_file: { text: 'Reading file', type: 'exploration', iconCategory: 'file_read', argKeys: ['filename', 'filePath', 'file_path', 'path'] },
     workspace_read_many_files: { text: 'Reading files', type: 'exploration', iconCategory: 'file_read', argKeys: ['files'] },
     workspace_write_file: { text: 'Writing artifact', type: 'file_edit', iconCategory: 'file_create', argKeys: ['filename', 'filePath', 'file_path', 'path'] },
     workspace_edit_file: { text: 'Editing file', type: 'file_edit', iconCategory: 'file_edit', argKeys: ['filename', 'filePath', 'file_path', 'path'] },
-    workspace_edit_many_files: { text: 'Editing files', type: 'file_edit', iconCategory: 'file_edit', argKeys: ['files'] },
+    workspace_edit_many_files: { text: 'Editing files', type: 'file_edit', iconCategory: 'file_edit', argKeys: ['edits', 'files'] },
     workspace_search_text: { text: 'Searching codebase', type: 'exploration', iconCategory: 'search', argKeys: ['pattern', 'query', 'directory'] },
     smart_file_analyzer: { text: 'Analyzing files', type: 'exploration', iconCategory: 'search', argKeys: ['path', 'filename', 'directory'] },
     workspace_analyze: { text: 'Analyzing workspace', type: 'exploration', iconCategory: 'search', argKeys: ['directory', 'path'] },
@@ -180,8 +175,35 @@ const languageFromFilename = (filename: string) => {
   return map[ext] || 'text';
 };
 
-export const formatVisibleCustomWorkNote = (value: string, _maxLength = 720): string => {
-  return formatVisibleWorkNote(value);
+export const formatVisibleCustomWorkNote = (value: string, maxLength = 720): string => {
+  let text = String(value || '')
+    .replace(/<\/?thought>/gi, '')
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/\*\*(CLASSIFY|DECOMPOSE|ASSESS|ACT|VERIFY)\*\*/gi, '$1')
+    .replace(/\b(CLASSIFY|DECOMPOSE|ASSESS|ACT|VERIFY)\s*(?:->|:|-)\s*/gi, '')
+    .replace(/^[\s*>\-\u2022]+/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!text) return '';
+  if (text.startsWith('.')) text = text.replace(/^\.+/, '').trim();
+  text = text.replace(/^(?:jsx?|tsx?|ts|css|scss|json|md|html|py|sh|ps1)\b\s*[:\-]?\s*(?=\b(to|how|if|whether|for|what)\b)/i, '');
+  text = text.replace(/^(?:\.?\/)?([a-zA-Z0-9_-]+\.(?:jsx?|tsx?|ts|css|scss|json|md|html|py|sh|ps1))\b\s*(?=\b(to|how|if|whether|for|what|show|check|verify)\b)/i, 'Checking $1 ');
+  text = text.replace(/^(?:jsx?|tsx?|ts|css|scss|json|md|html|py|sh|ps1)\b\s*[:\-]?\s*/i, '');
+  if (text) text = text.charAt(0).toUpperCase() + text.slice(1);
+  text = text
+    .replace(/^(?:jsx?|tsx?|ts|css|scss|json|md|html|py|sh|ps1)\s*(?=\b(where|which|that|has|is|was|the)\b)/i, 'The file ')
+    .replace(/^(?:in\s+)?(?:jsx?|tsx?|ts|css|scss|json|md|html|py|sh|ps1)\s*[:\-]\s*/i, 'The file ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const sentences = text.match(/[^.!?]+[.!?]+(?:\s|$)|[^.!?]+$/g) || [text];
+  text = sentences.slice(0, 4).join(' ').replace(/\s+/g, ' ').trim();
+  if (text.length > maxLength) {
+    text = `${text.slice(0, maxLength - 1).replace(/\s+\S*$/, '').trim()}...`;
+  }
+  return text;
 };
 
 export const createCustomWorkNoteLog = (
@@ -191,7 +213,7 @@ export const createCustomWorkNoteLog = (
   at = Date.now(),
 ) => {
   const noteText = formatVisibleCustomWorkNote(text);
-  if (!noteText) return null;
+  if (noteText.length < 8) return null;
   return {
     id: `custom_work_note_${at}_${randomSuffix()}`,
     type: 'work_note',
@@ -241,7 +263,7 @@ export const createCustomToolActionLog = (
   ]);
   const query = getCustomToolArg(args, ['query', 'pattern', 'search', 'goal', 'request']);
   const secondary = preferredSecondary || command || primaryPath || query;
-  const type = ui.type;
+  const type = ui.type === 'ask_user' ? 'exploration' : ui.type;
   const shouldLinkFile = ['file_read', 'file_edit', 'file_create'].includes(ui.iconCategory)
     || /workspace_(?:read|write|edit)_file|docx|pdf|csv|markdown|chart|image/i.test(toolName);
   const linkedFile = shouldLinkFile ? (filePath || primaryPath) : '';
@@ -286,16 +308,10 @@ export const normalizeCustomAgentStatus = (text: string) =>
     .replace(/\.\.\./g, '...')
     .trim();
 
-const MAX_CUSTOM_TOOL_RESULT_UI_CHARS = 250_000;
-const limitCustomToolResultForUi = (value: string) =>
-  value.length > MAX_CUSTOM_TOOL_RESULT_UI_CHARS
-    ? `${value.slice(0, MAX_CUSTOM_TOOL_RESULT_UI_CHARS)}\n...[output truncated for UI]`
-    : value;
-
 const summarizeCustomToolResult = (result: any) => {
   if (result === null || result === undefined) return '';
-  if (typeof result === 'string') return limitCustomToolResultForUi(result);
-  if (typeof result !== 'object') return limitCustomToolResultForUi(String(result));
+  if (typeof result === 'string') return result.slice(0, 12000);
+  if (typeof result !== 'object') return String(result).slice(0, 12000);
 
   const fields = ['output', 'stdout', 'stderr', 'message', 'error', 'result', 'status'];
   const parts = fields
@@ -303,11 +319,11 @@ const summarizeCustomToolResult = (result: any) => {
     .filter(value => value !== null && value !== undefined && String(value).trim())
     .map(value => typeof value === 'string' ? value : JSON.stringify(value, null, 2));
 
-  if (parts.length > 0) return limitCustomToolResultForUi(parts.join('\n'));
+  if (parts.length > 0) return parts.join('\n').slice(0, 12000);
   try {
-    return limitCustomToolResultForUi(JSON.stringify(result, null, 2));
+    return JSON.stringify(result, null, 2).slice(0, 12000);
   } catch {
-    return limitCustomToolResultForUi(String(result));
+    return String(result).slice(0, 12000);
   }
 };
 
@@ -343,9 +359,6 @@ export const createCustomToolResultLogs = (
       filepath: result.path || active.filename,
       content: result.content,
       language: languageFromFilename(active.filename),
-      lineCount: result.content.length === 0 ? 0 : result.content.split(/\r?\n/).length,
-      totalLines: result.content.length === 0 ? 0 : result.content.split(/\r?\n/).length,
-      truncated: Boolean(result.truncated),
       isEdit: false,
       startTime: at,
       endTime: at,
@@ -361,9 +374,8 @@ export const createCustomToolResultLogs = (
       filepath: result?.path || active.filename,
       content: active.toolArgs.content,
       language: languageFromFilename(active.filename),
-      lineCount: active.toolArgs.content.length === 0 ? 0 : active.toolArgs.content.split(/\r?\n/).length,
-      totalLines: active.toolArgs.content.length === 0 ? 0 : active.toolArgs.content.split(/\r?\n/).length,
-      linesAdded: active.toolArgs.content.length === 0 ? 0 : active.toolArgs.content.split(/\r?\n/).length,
+      lineCount: active.toolArgs.content.split('\n').length,
+      linesAdded: active.toolArgs.content.split('\n').length,
       linesRemoved: 0,
       isEdit: false,
       startTime: at,

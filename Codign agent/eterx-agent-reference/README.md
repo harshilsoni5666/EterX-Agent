@@ -30,8 +30,8 @@ The design is based on patterns used by strong modern coding agents:
 - `docs/safety-model.md`: Trust boundaries and risk controls.
 - `docs/implementation-roadmap.md`: Phased plan to wire this into the actual EterX runtime.
 - `docs/original-design-principles.md`: EterX-specific principles for a better-than-copy agent.
-- `docs/ui-trace-contract.md`: Coding-agent work notes, action labels, icons, file previews, console cards, browser evidence, and sub-agent timeline rules.
-- `docs/work-note-style.md`: Main-agent-style work note guidance adapted for coding work.
+- `docs/ui-trace-contract.md`: Coding-agent timeline notes, action labels, icons, file previews, console cards, browser evidence, and sub-agent timeline rules.
+- `docs/timeline-note-style.md`: Main-agent-style timeline-note guidance adapted for coding work.
 - `prompts/`: Injection-ready prompt blocks for the main EterX runtime.
 - `evals/`: Starter behavioral evals for improving the agent.
 

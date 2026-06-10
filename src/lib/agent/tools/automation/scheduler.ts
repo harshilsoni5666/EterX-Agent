@@ -25,15 +25,15 @@ interface ScheduledTask {
   timerId?: ReturnType<typeof setInterval>;
 }
 
-// Global task store preserved across Next.js HMR reloads
-const globalForScheduler = globalThis as any;
-const scheduledTasks: Map<string, ScheduledTask> = globalForScheduler.__eterxScheduledTasks || (globalForScheduler.__eterxScheduledTasks = new Map());
+// Global task store
+const scheduledTasks: Map<string, ScheduledTask> = new Map();
 
 // Callbacks for task execution
 type TaskCallback = (task: ScheduledTask) => Promise<void>;
+let globalTaskCallback: TaskCallback | null = null;
 
 export function setSchedulerCallback(cb: TaskCallback) {
-  globalForScheduler.__eterxGlobalTaskCallback = cb;
+  globalTaskCallback = cb;
 }
 
 export const schedulerTool: ToolDefinition = {
@@ -94,9 +94,8 @@ export const schedulerTool: ToolDefinition = {
             task.nextRun = Date.now() + task.intervalMs;
             console.log(`[Scheduler] Heartbeat: Running "${task.name}" (run #${task.runCount})`);
             
-            const cb = globalForScheduler.__eterxGlobalTaskCallback;
-            if (cb) {
-              await cb(task);
+            if (globalTaskCallback) {
+              await globalTaskCallback(task);
             }
           }, intervalMs);
           task.timerId.unref?.();
@@ -160,8 +159,7 @@ export const schedulerTool: ToolDefinition = {
           task.lastRun = Date.now();
           task.runCount++;
           console.log(`[Scheduler] Manual run: "${task.name}"`);
-          const cb = globalForScheduler.__eterxGlobalTaskCallback;
-          if (cb) await cb(task);
+          if (globalTaskCallback) await globalTaskCallback(task);
           return { success: true, message: `🚀 Task "${task.name}" executed manually (run #${task.runCount}).` };
         }
 

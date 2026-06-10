@@ -1,14 +1,7 @@
 'use client';
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import {
-  Key, Zap, Shield, ChevronRight, Monitor,
-  Cpu, Eye, EyeOff,
-  Copy, Check, Globe,
-  FolderOpen, RefreshCw, Lock,
-  Search, PlugZap, Plus, Trash2, GripVertical, Info
-} from 'lucide-react';
 import { MAIN_AGENT_MODEL_OPTIONS, type MainAgentMode, type MainAgentProvider } from '../../lib/agent/model-routing';
 import {
   AUTO_MODEL_SELECTION,
@@ -30,6 +23,191 @@ import {
   type ModelSelectorEntry,
 } from '../../lib/agent/model-selector-store';
 import { applyEterxTheme, broadcastEterxSettingsUpdate } from '../theme/theme-bridge';
+
+type SettingsGlyphProps = React.SVGProps<SVGSVGElement> & { strokeWidth?: number };
+
+const SettingsGlyph = ({
+  children,
+  className,
+  strokeWidth = 1.9,
+  ...props
+}: SettingsGlyphProps & { children: React.ReactNode }) => (
+  <svg viewBox="0 0 24 24" className={className} fill="none" aria-hidden="true" {...props}>
+    <g stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round">
+      {children}
+    </g>
+  </svg>
+);
+
+const Key = (props: SettingsGlyphProps) => (
+  <SettingsGlyph {...props}>
+    <circle cx="8.2" cy="12" r="3.2" />
+    <path d="M11.4 12h7.4M15.6 12v2.2M18.8 12v-2.2" />
+  </SettingsGlyph>
+);
+
+const Zap = (props: SettingsGlyphProps) => (
+  <SettingsGlyph {...props}>
+    <path d="m13.4 2.9-7.1 10h5.05l-.75 8.2 7.1-10h-5.05l.75-8.2Z" />
+  </SettingsGlyph>
+);
+
+const Shield = (props: SettingsGlyphProps) => (
+  <SettingsGlyph {...props}>
+    <path d="M12 3.2c2.25 1.65 4.45 2.42 6.6 2.32v5.7c0 4.25-2.2 7.18-6.6 8.78-4.4-1.6-6.6-4.53-6.6-8.78v-5.7c2.15.1 4.35-.67 6.6-2.32Z" />
+    <path d="m9.05 12.1 2.05 2 3.95-4.25" />
+  </SettingsGlyph>
+);
+
+const ChevronRight = (props: SettingsGlyphProps) => (
+  <SettingsGlyph {...props}>
+    <path d="m9.2 5.2 6.1 6.8-6.1 6.8" />
+  </SettingsGlyph>
+);
+
+const Monitor = (props: SettingsGlyphProps) => (
+  <SettingsGlyph {...props}>
+    <rect x="3.8" y="4.7" width="16.4" height="11.1" rx="2.2" />
+    <path d="M9.2 20h5.6M12 15.8V20" />
+  </SettingsGlyph>
+);
+
+const Cpu = (props: SettingsGlyphProps) => (
+  <SettingsGlyph {...props}>
+    <rect x="6" y="6" width="12" height="12" rx="2.2" />
+    <rect x="9.2" y="9.2" width="5.6" height="5.6" rx="1.1" />
+    <path d="M9 3.5v2.1M15 3.5v2.1M9 18.4v2.1M15 18.4v2.1M3.5 9h2.1M3.5 15h2.1M18.4 9h2.1M18.4 15h2.1" />
+  </SettingsGlyph>
+);
+
+const Eye = (props: SettingsGlyphProps) => (
+  <SettingsGlyph {...props}>
+    <path d="M3.8 12s2.8-5.1 8.2-5.1 8.2 5.1 8.2 5.1-2.8 5.1-8.2 5.1S3.8 12 3.8 12Z" />
+    <circle cx="12" cy="12" r="2.35" />
+  </SettingsGlyph>
+);
+
+const EyeOff = (props: SettingsGlyphProps) => (
+  <SettingsGlyph {...props}>
+    <path d="M4.2 4.2 19.8 19.8M9.2 6.95A8.5 8.5 0 0 1 12 6.5c5.35 0 8.2 5.5 8.2 5.5a13.2 13.2 0 0 1-2.25 3.02M14.65 14.75A3.25 3.25 0 0 1 9.25 9.35M6.6 8.2A13.2 13.2 0 0 0 3.8 12s2.85 5.5 8.2 5.5c.9 0 1.72-.15 2.48-.42" />
+  </SettingsGlyph>
+);
+
+const Copy = (props: SettingsGlyphProps) => (
+  <SettingsGlyph {...props}>
+    <rect x="8" y="8" width="11" height="11" rx="2" />
+    <path d="M5 15.6V6.8c0-1 .8-1.8 1.8-1.8h8.8" />
+  </SettingsGlyph>
+);
+
+const Check = (props: SettingsGlyphProps) => (
+  <SettingsGlyph {...props}>
+    <path d="m5.3 12.4 4.1 4 9.3-9.1" />
+  </SettingsGlyph>
+);
+
+const Globe = (props: SettingsGlyphProps) => (
+  <SettingsGlyph {...props}>
+    <circle cx="12" cy="12" r="8.4" />
+    <path d="M3.8 12h16.4M12 3.6c2.2 2.25 3.3 5.05 3.3 8.4s-1.1 6.15-3.3 8.4M12 3.6C9.8 5.85 8.7 8.65 8.7 12s1.1 6.15 3.3 8.4" />
+  </SettingsGlyph>
+);
+
+const FolderOpen = (props: SettingsGlyphProps) => (
+  <SettingsGlyph {...props}>
+    <path d="M3.9 8.2c0-1.25 1-2.25 2.25-2.25h4l1.75 1.9h5.95c1.25 0 2.25 1 2.25 2.25v1.3H3.9V8.2Z" />
+    <path d="M4.95 11.4h14.1c1 0 1.75.92 1.55 1.9l-.88 4.35a2.3 2.3 0 0 1-2.25 1.85H6.53a2.3 2.3 0 0 1-2.25-1.85L3.4 13.3c-.2-.98.55-1.9 1.55-1.9Z" />
+  </SettingsGlyph>
+);
+
+const RefreshCw = (props: SettingsGlyphProps) => (
+  <SettingsGlyph {...props}>
+    <path d="M19.2 7.3a7.7 7.7 0 0 0-13.05-1.2L4.4 8.1M4.8 16.7a7.7 7.7 0 0 0 13.05 1.2l1.75-2" />
+    <path d="M4.1 4.7v3.7h3.7M19.9 19.3v-3.7h-3.7" />
+  </SettingsGlyph>
+);
+
+const Lock = (props: SettingsGlyphProps) => (
+  <SettingsGlyph {...props}>
+    <rect x="5" y="10.2" width="14" height="9.2" rx="2.2" />
+    <path d="M8.3 10.2V7.9a3.7 3.7 0 0 1 7.4 0v2.3M12 14.1v1.6" />
+  </SettingsGlyph>
+);
+
+const Search = (props: SettingsGlyphProps) => (
+  <SettingsGlyph {...props}>
+    <circle cx="10.7" cy="10.7" r="5.6" />
+    <path d="m15 15 4.1 4.1" />
+  </SettingsGlyph>
+);
+
+const PlugZap = (props: SettingsGlyphProps) => (
+  <SettingsGlyph {...props}>
+    <path d="M7.4 14.2 4.8 16.8a2.55 2.55 0 0 0 3.6 3.6l2.6-2.6M8.4 11.1 12.9 15.6M10.8 8.7l4.5 4.5" />
+    <path d="M14.2 3.4 11.5 7h4.2l-2.4 3.6" />
+    <path d="m14.1 13.2 3.1-3.1M10.8 9.9l3.1-3.1" />
+  </SettingsGlyph>
+);
+
+const Plus = (props: SettingsGlyphProps) => (
+  <SettingsGlyph {...props}>
+    <path d="M12 5v14M5 12h14" />
+  </SettingsGlyph>
+);
+
+const Trash2 = (props: SettingsGlyphProps) => (
+  <SettingsGlyph {...props}>
+    <path d="M5 7h14M9.1 7V5.1h5.8V7M7.1 7.2l.7 12.1h8.4l.7-12.1M10.2 10.8v5M13.8 10.8v5" />
+  </SettingsGlyph>
+);
+
+const GripVertical = (props: SettingsGlyphProps) => (
+  <svg viewBox="0 0 24 24" className={props.className} fill="none" aria-hidden="true">
+    <circle cx="9" cy="6.5" r="1.25" fill="currentColor" />
+    <circle cx="15" cy="6.5" r="1.25" fill="currentColor" />
+    <circle cx="9" cy="12" r="1.25" fill="currentColor" />
+    <circle cx="15" cy="12" r="1.25" fill="currentColor" />
+    <circle cx="9" cy="17.5" r="1.25" fill="currentColor" />
+    <circle cx="15" cy="17.5" r="1.25" fill="currentColor" />
+  </svg>
+);
+
+const Info = (props: SettingsGlyphProps) => (
+  <SettingsGlyph {...props}>
+    <circle cx="12" cy="12" r="8.2" />
+    <path d="M12 10.8v5M12 7.8h.01" />
+  </SettingsGlyph>
+);
+
+const X = (props: SettingsGlyphProps) => (
+  <SettingsGlyph {...props}>
+    <path d="M18 6 6 18M6 6l12 12" />
+  </SettingsGlyph>
+);
+
+const Spinner = ({ className, ...props }: React.SVGProps<SVGSVGElement>) => (
+  <svg
+    className={`animate-spin ${className || ''}`}
+    viewBox="0 0 24 24"
+    fill="none"
+    xmlns="http://www.w3.org/2000/svg"
+    {...props}
+  >
+    <circle
+      className="opacity-25"
+      cx="12"
+      cy="12"
+      r="10"
+      stroke="currentColor"
+      strokeWidth="4"
+    />
+    <path
+      className="opacity-75"
+      fill="currentColor"
+      d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+    />
+  </svg>
+);
 
 // ─── Settings Shape ────────────────────────────────────
 export interface AppSettings {
@@ -208,6 +386,7 @@ const providerKeyLooksValid = (provider: string, key: string) => {
   if (provider === 'openai') return value.length >= 20 && (value.startsWith('sk-') || value.startsWith('sess-'));
   if (provider === 'anthropic') return value.length >= 20 && value.startsWith('sk-ant-');
   if (provider === 'openrouter') return value.length >= 20 && (value.startsWith('sk-or-') || value.startsWith('sk-'));
+  if (provider === 'groq') return value.length >= 20;
   if (provider === 'mistral') return value.length >= 16;
   if (provider === 'tavily') return value.length >= 12;
   if (provider === 'github') return value.length >= 20;
@@ -219,6 +398,7 @@ const PROVIDER_LABEL: Record<string, string> = {
   mistral: 'Mistral',
   openai: 'OpenAI',
   openrouter: 'OpenRouter',
+  groq: 'Groq',
   anthropic: 'Anthropic',
 };
 const PROVIDER_MODE: Record<MainAgentProvider, MainAgentMode> = MODEL_PROVIDER_MODE;
@@ -227,6 +407,7 @@ const PROVIDER_ACCENT: Record<string, string> = {
   mistral: 'text-zinc-200 border-white/[0.10] bg-white/[0.045]',
   openai: 'text-zinc-200 border-white/[0.10] bg-white/[0.045]',
   openrouter: 'text-zinc-200 border-white/[0.10] bg-white/[0.045]',
+  groq: 'text-zinc-200 border-white/[0.10] bg-white/[0.045]',
   anthropic: 'text-zinc-200 border-white/[0.10] bg-white/[0.045]',
 };
 
@@ -235,12 +416,14 @@ const PROVIDER_ICON_PATH: Record<string, string> = {
   mistral: '/icons/providers/mistral.svg',
   openai: '/icons/providers/openai.svg',
   openrouter: '/icons/providers/openrouter.svg',
+  groq: '/icons/providers/groq.svg',
   anthropic: '/icons/providers/anthropic.svg',
 };
 
 const PROVIDER_ICON_COLOR: Record<string, string> = {
   gemini: '#8AB4F8',
   mistral: '#FFAF00',
+  groq: '#F55036',
 };
 
 const PROVIDER_ICON_MASK_SIZE: Record<string, string> = {
@@ -248,6 +431,7 @@ const PROVIDER_ICON_MASK_SIZE: Record<string, string> = {
   mistral: '82%',
   openai: '86%',
   openrouter: '84%',
+  groq: '86%',
   anthropic: '82%',
 };
 
@@ -322,6 +506,19 @@ const OFFICIAL_PROVIDER_GUIDE: Record<string, {
       { name: 'Gemini 3.5 Flash', id: 'google/gemini-3.5-flash', note: 'Google Gemini routed through OpenRouter' },
       { name: 'Mistral Medium 3.5', id: 'mistralai/mistral-medium-3-5', note: 'Mistral frontier model through OpenRouter' },
       { name: 'Full OpenRouter catalog', note: 'Live endpoint loads hundreds of provider models automatically' },
+    ],
+  },
+  groq: {
+    source: 'GroqCloud',
+    keySource: 'Groq API key',
+    endpoint: 'GET /openai/v1/models',
+    docsUrl: 'console.groq.com/docs/models',
+    families: [
+      { name: 'GPT OSS 120B', id: 'openai/gpt-oss-120b', note: 'Production open-weight reasoning model with Groq low-latency inference' },
+      { name: 'GPT OSS 20B', id: 'openai/gpt-oss-20b', note: 'Production fast model for lower-cost agent and chat work' },
+      { name: 'Llama 3.3 70B Versatile', id: 'llama-3.3-70b-versatile', note: 'Production Llama model with a large context window' },
+      { name: 'Llama 3.1 8B Instant', id: 'llama-3.1-8b-instant', note: 'Production ultra-fast small model for quick tasks' },
+      { name: 'Compound Mini', id: 'groq/compound-mini', note: 'Groq system model for fast agentic answers' },
     ],
   },
 };
@@ -517,6 +714,7 @@ const ApiKeyPoolEditor: React.FC<{
   const [visibleRows, setVisibleRows] = useState<Record<number, boolean>>({});
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
+  const [testingStatus, setTestingStatus] = useState<Record<number, 'idle' | 'testing' | 'success' | 'failed'>>({});
 
   useEffect(() => {
     setRows(buildRows(value));
@@ -526,13 +724,38 @@ const ApiKeyPoolEditor: React.FC<{
     setVisibleRows({});
     setCopiedIndex(null);
     setDraggedIndex(null);
+    setTestingStatus({});
   }, [provider]);
 
   const commitRows = useCallback((nextRows: string[]) => {
     onChange(serializeApiKeyPool(nextRows));
   }, [onChange]);
 
+  const testKeyConnection = async (index: number, key: string) => {
+    if (!key.trim()) return;
+    setTestingStatus(prev => ({ ...prev, [index]: 'testing' }));
+    try {
+      const res = await fetch('/api/settings/models', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          apiKeys: { [provider]: key.trim() },
+          providers: [provider]
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data?.ok && data?.providers?.[provider]?.connected) {
+        setTestingStatus(prev => ({ ...prev, [index]: 'success' }));
+      } else {
+        setTestingStatus(prev => ({ ...prev, [index]: 'failed' }));
+      }
+    } catch {
+      setTestingStatus(prev => ({ ...prev, [index]: 'failed' }));
+    }
+  };
+
   const updateRow = (index: number, rawValue: string) => {
+    setTestingStatus(prev => ({ ...prev, [index]: 'idle' }));
     const pastedKeys = splitApiKeyPool(rawValue);
     setRows(prev => {
       const next = [...prev];
@@ -695,6 +918,31 @@ const ApiKeyPoolEditor: React.FC<{
                   title={isVisible ? 'Hide key' : 'Show key'}
                 >
                   {isVisible ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => testKeyConnection(index, row)}
+                  disabled={!keyValue || testingStatus[index] === 'testing'}
+                  className={`inline-flex h-9 items-center justify-center gap-1 rounded-lg px-2 text-[11px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-35 ${
+                    testingStatus[index] === 'testing'
+                      ? 'bg-white/[0.045] text-[#A7A7A7]'
+                      : testingStatus[index] === 'success'
+                        ? 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/20'
+                        : testingStatus[index] === 'failed'
+                          ? 'bg-red-500/10 text-red-300 border border-red-500/20'
+                          : 'bg-white/[0.045] text-[#A7A7A7] hover:bg-white/[0.08] hover:text-[#F1F1F1]'
+                  }`}
+                  title="Test key connection"
+                >
+                  {testingStatus[index] === 'testing' ? (
+                    <Spinner className="h-3.5 w-3.5" />
+                  ) : testingStatus[index] === 'success' ? (
+                    <Check className="h-3.5 w-3.5" />
+                  ) : testingStatus[index] === 'failed' ? (
+                    <X className="h-3.5 w-3.5" />
+                  ) : (
+                    <span>Test</span>
+                  )}
                 </button>
                 <button
                   type="button"
@@ -988,6 +1236,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
   const [hasChanges, setHasChanges] = useState(false);
   const [showBatmanEgg] = useState(false);
   const [eggQuoteIndex] = useState(0);
+  const keysChangedRef = useRef(false);
 
   const eggQuotes = [
     { line1: "BE A MAN.", line2: "FACE DARKNESS" },
@@ -1003,6 +1252,27 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
 
   const hasAnyApiKey = useCallback((keys: Record<string, string>) =>
     Object.values(keys).some(value => Boolean(String(value || '').trim())), []);
+
+  const refreshModelDirectory = useCallback(async (
+    keys: Record<string, string> = composeApiKeysForSelection(apiKeys, modelApiKeys, modelEntries, AUTO_MODEL_SELECTION),
+    overrides: ModelOverrides = modelOverrides,
+  ) => {
+    setModelDirectoryStatus('loading');
+    try {
+      const res = await fetch('/api/settings/models', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ apiKeys: keys, modelOverrides: overrides }),
+      });
+      const payload = await res.json();
+      if (!res.ok || !payload?.ok) throw new Error(payload?.error || 'Model discovery failed');
+      setModelDirectory(payload.providers || {});
+      setModelDirectoryUpdatedAt(payload.updatedAt || Date.now());
+      setModelDirectoryStatus('ready');
+    } catch (error) {
+      setModelDirectoryStatus('error');
+    }
+  }, [apiKeys, modelApiKeys, modelEntries, modelOverrides]);
 
   const syncApiKeys = useCallback(async (keys: Record<string, string>, silent = false, overrides: ModelOverrides = {}) => {
     const cleanKeys = Object.fromEntries(
@@ -1043,32 +1313,74 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
         ? payload.modelOverrides.filter((item: any) => item?.accepted).length
         : 0;
       setApiSyncMessage(`${ payload.acceptedCount || 0 } key${ payload.acceptedCount === 1 ? '' : 's' } and ${ modelCount } model override${ modelCount === 1 ? '' : 's' } active.`);
+
+      // Auto-refresh model catalog directory to reflect the newly synced keys!
+      refreshModelDirectory(
+        composeApiKeysForSelection(cleanKeys, modelApiKeys, modelEntries, AUTO_MODEL_SELECTION),
+        cleanModelOverrides
+      );
     } catch (error: any) {
       setApiSyncStatus('error');
       setApiSyncMessage(error?.message || 'Could not sync API keys.');
     }
-  }, [hasAnyApiKey]);
+  }, [hasAnyApiKey, refreshModelDirectory, modelApiKeys, modelEntries, modelOverrides]);
 
-  const refreshModelDirectory = useCallback(async (
-    keys: Record<string, string> = composeApiKeysForSelection(apiKeys, modelApiKeys, modelEntries, AUTO_MODEL_SELECTION),
-    overrides: ModelOverrides = modelOverrides,
-  ) => {
-    setModelDirectoryStatus('loading');
-    try {
-      const res = await fetch('/api/settings/models', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ apiKeys: keys, modelOverrides: overrides }),
-      });
-      const payload = await res.json();
-      if (!res.ok || !payload?.ok) throw new Error(payload?.error || 'Model discovery failed');
-      setModelDirectory(payload.providers || {});
-      setModelDirectoryUpdatedAt(payload.updatedAt || Date.now());
-      setModelDirectoryStatus('ready');
-    } catch (error) {
-      setModelDirectoryStatus('error');
-    }
-  }, [apiKeys, modelApiKeys, modelEntries, modelOverrides]);
+  const performSync = useCallback(async () => {
+    if (!keysChangedRef.current) return;
+    keysChangedRef.current = false;
+    const selection = localStorage.getItem(CHAT_MODEL_SELECTION_STORAGE_KEY) || AUTO_MODEL_SELECTION;
+    const composed = composeApiKeysForSelection(apiKeys, modelApiKeys, modelEntries, selection);
+    await syncApiKeys(composed, false, modelOverrides);
+  }, [apiKeys, modelApiKeys, modelEntries, modelOverrides, syncApiKeys]);
+
+  useEffect(() => {
+    return () => {
+      if (keysChangedRef.current) {
+        keysChangedRef.current = false;
+        try {
+          const savedKeys = localStorage.getItem('eterx_api_keys');
+          const savedModelApiKeys = localStorage.getItem(MODEL_API_KEYS_STORAGE_KEY);
+          const savedModelEntries = localStorage.getItem(MODEL_SELECTOR_STORAGE_KEY);
+          const savedModelOverrides = localStorage.getItem(MODEL_OVERRIDE_STORAGE_KEY);
+
+          const parsedKeys = savedKeys ? JSON.parse(savedKeys) : {};
+          const parsedModelApiKeys = savedModelApiKeys ? JSON.parse(savedModelApiKeys) : {};
+          const parsedModelEntries = savedModelEntries ? JSON.parse(savedModelEntries) : [];
+          const parsedModelOverrides = savedModelOverrides ? JSON.parse(savedModelOverrides) : {};
+
+          const selection = localStorage.getItem(CHAT_MODEL_SELECTION_STORAGE_KEY) || AUTO_MODEL_SELECTION;
+          const composed = composeApiKeysForSelection(parsedKeys, parsedModelApiKeys, parsedModelEntries, selection);
+
+          const cleanKeys = Object.fromEntries(
+            Object.entries(composed)
+              .map(([k, v]) => [k, String(v || '').trim()])
+              .filter(([, v]) => Boolean(v)),
+          );
+          const cleanOverrides = Object.fromEntries(
+            Object.entries(parsedModelOverrides)
+              .map(([provider, model]) => [provider, String(model || '').trim()])
+              .filter(([provider, model]) => isModelProvider(provider) && Boolean(model)),
+          );
+          if (Object.keys(cleanKeys).length > 0 || Object.keys(cleanOverrides).length > 0) {
+            const body = JSON.stringify({ apiKeys: cleanKeys, modelOverrides: cleanOverrides });
+            if (navigator.sendBeacon) {
+              navigator.sendBeacon('/api/settings/keys', body);
+            } else {
+              fetch('/api/settings/keys', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body,
+                keepalive: true
+              }).catch(() => {});
+            }
+          }
+        } catch (e) {
+          console.error('Failed to sync settings on unmount:', e);
+        }
+      }
+    };
+  }, []);
+
 
   // Load settings from localStorage
   useEffect(() => {
@@ -1111,14 +1423,31 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
       if (savedKeys) {
         const parsedKeys = JSON.parse(savedKeys);
         setApiKeys(parsedKeys);
-        void syncApiKeys(
-          composeApiKeysForSelection(parsedKeys, parsedModelApiKeys, normalizedEntries, localStorage.getItem(CHAT_MODEL_SELECTION_STORAGE_KEY) || AUTO_MODEL_SELECTION),
-          true,
-          parsedModelOverrides,
-        );
       }
     } catch { }
-  }, [isOpen, syncApiKeys]);
+  }, [isOpen]);
+
+  // Fetch active provider key connection status when panel opens
+  useEffect(() => {
+    if (!isOpen) return;
+    const fetchStatus = async () => {
+      try {
+        const res = await fetch('/api/settings/keys');
+        const payload = await res.json();
+        if (res.ok && payload.ok) {
+          setApiProviderStatus(Array.isArray(payload.providers) ? payload.providers : []);
+          setApiSyncStatus('synced');
+          const modelCount = Array.isArray(payload.modelOverrides)
+            ? payload.modelOverrides.filter((item: any) => item?.accepted).length
+            : 0;
+          setApiSyncMessage(`${ payload.acceptedCount || 0 } key${ payload.acceptedCount === 1 ? '' : 's' } and ${ modelCount } model override${ modelCount === 1 ? '' : 's' } active.`);
+        }
+      } catch (e) {
+        console.error('Failed to load key status on open:', e);
+      }
+    };
+    void fetchStatus();
+  }, [isOpen]);
 
   const updateSetting = useCallback(<K extends keyof AppSettings>(key: K, value: AppSettings[K]) => {
     setSettings(prev => {
@@ -1156,27 +1485,29 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
     }
   }, [settings.theme]);
 
+  const handleClose = useCallback(() => {
+    void performSync();
+    onClose();
+  }, [performSync, onClose]);
+
   const updateApiKey = useCallback((name: string, value: string) => {
+    const trimmed = value.trim();
     setApiKeys(prev => {
-      const next = { ...prev, [name]: value.trim() };
+      const next = { ...prev, [name]: trimmed };
       localStorage.setItem('eterx_api_keys', JSON.stringify(next));
       broadcastEterxSettingsUpdate({ type: 'api-keys-updated', apiKeys: next });
-      void syncApiKeys(
-        composeApiKeysForSelection(next, modelApiKeys, modelEntries, localStorage.getItem(CHAT_MODEL_SELECTION_STORAGE_KEY) || AUTO_MODEL_SELECTION),
-        false,
-        modelOverrides,
-      );
       return next;
     });
     setHasChanges(true);
-  }, [modelApiKeys, modelEntries, modelOverrides, syncApiKeys]);
+    keysChangedRef.current = true;
+  }, [performSync]);
 
   // Close on escape
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') handleClose(); };
     if (isOpen) window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [isOpen, onClose]);
+  }, [isOpen, handleClose]);
 
   const tabs: { id: Tab; label: string; icon: string }[] = [
     { id: 'general', label: 'General', icon: 'general' },
@@ -1320,17 +1651,6 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
     });
   }, []);
 
-  const syncComposedKeys = useCallback((
-    nextBaseKeys: Record<string, string> = apiKeys,
-    nextModelKeys: Record<string, string> = modelApiKeys,
-    nextEntries: ModelSelectorEntry[] = modelEntries,
-    nextOverrides: ModelOverrides = modelOverrides,
-  ) => {
-    const selection = localStorage.getItem(CHAT_MODEL_SELECTION_STORAGE_KEY) || AUTO_MODEL_SELECTION;
-    const composed = composeApiKeysForSelection(nextBaseKeys, nextModelKeys, nextEntries, selection);
-    void syncApiKeys(composed, false, nextOverrides);
-  }, [apiKeys, modelApiKeys, modelEntries, modelOverrides, syncApiKeys]);
-
   const updateModelApiKey = useCallback((modelKey: string, value: string) => {
     if (!parseModelEntryKey(modelKey)) return;
     setModelApiKeys(prev => {
@@ -1340,11 +1660,11 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
       else delete next[modelKey];
       localStorage.setItem(MODEL_API_KEYS_STORAGE_KEY, JSON.stringify(next));
       broadcastEterxSettingsUpdate({ type: 'model-api-keys-updated', modelApiKeys: next });
-      syncComposedKeys(apiKeys, next, modelEntries, modelOverrides);
       return next;
     });
     setHasChanges(true);
-  }, [apiKeys, modelEntries, modelOverrides, syncComposedKeys]);
+    keysChangedRef.current = true;
+  }, []);
 
   const selectCatalogModel = useCallback((provider: string, modelId: string) => {
     if (!isModelProvider(provider)) return;
@@ -1359,9 +1679,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
     broadcastEterxSettingsUpdate({ type: 'model-overrides-updated', modelOverrides: next });
     const nextMode = PROVIDER_MODE[provider];
     if (nextMode) updateSetting('agentMode', nextMode);
-    syncComposedKeys(apiKeys, modelApiKeys, modelEntries, next);
     setHasChanges(true);
-  }, [apiKeys, modelApiKeys, modelEntries, modelOverrides, syncComposedKeys, updateSetting]);
+    keysChangedRef.current = true;
+  }, [modelOverrides, updateSetting]);
 
   const addModelToSelector = useCallback((provider: string, modelId: string, activate = true) => {
     const cleanProvider = String(provider || '').trim();
@@ -1370,10 +1690,10 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
 
     const nextEntries = ensureModelSelectorEntry(modelEntries, cleanProvider, cleanModelId);
     saveModelEntries(nextEntries);
-    syncComposedKeys(apiKeys, modelApiKeys, nextEntries, modelOverrides);
     if (activate) selectCatalogModel(cleanProvider, cleanModelId);
     setHasChanges(true);
-  }, [apiKeys, modelApiKeys, modelEntries, modelOverrides, saveModelEntries, selectCatalogModel, syncComposedKeys]);
+    keysChangedRef.current = true;
+  }, [modelEntries, saveModelEntries, selectCatalogModel]);
 
   const removeModelFromSelector = useCallback((provider: string, modelId: string) => {
     const cleanProvider = String(provider || '').trim();
@@ -1394,9 +1714,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
       selectCatalogModel(cleanProvider, '');
       setExactModelDraft('');
     }
-    syncComposedKeys(apiKeys, nextModelKeys, nextEntries, modelOverrides);
     setHasChanges(true);
-  }, [apiKeys, modelApiKeys, modelEntries, modelOverrides, saveModelEntries, selectCatalogModel, syncComposedKeys]);
+    keysChangedRef.current = true;
+  }, [modelApiKeys, modelEntries, modelOverrides, saveModelEntries, selectCatalogModel]);
 
   if ((!isOpen && !showBatmanEgg) || typeof document === 'undefined') return null;
 
@@ -1412,7 +1732,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
             className="eterx-settings-panel fixed inset-0 z-[99999] flex items-center justify-center bg-[#151515]"
           >
             {/* Backdrop */}
-            {!standalone && <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />}
+            {!standalone && <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={handleClose} />}
 
             {/* Panel */}
             <motion.div
@@ -1430,7 +1750,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
               {/* ─── Sidebar Tabs ─── */}
               <div className="relative z-10 w-full sm:w-[300px] shrink-0 overflow-hidden border-b border-white/[0.08] bg-[#1D1D1D] sm:border-b-0 sm:border-t flex flex-col">
                 <div className="flex h-11 shrink-0 items-center px-3">
-                  <button onClick={onClose} className="inline-flex h-9 items-center gap-2 rounded-md px-2 text-[#A7A7A7] transition-colors hover:bg-white/[0.05] hover:text-[#F1F1F1]">
+                  <button onClick={handleClose} className="inline-flex h-9 items-center gap-2 rounded-md px-2 text-[#A7A7A7] transition-colors hover:bg-white/[0.05] hover:text-[#F1F1F1]">
                     <span className="grid h-5 w-5 shrink-0 place-items-center">
                       <ChevronRight className="h-4 w-4 rotate-180" />
                     </span>
@@ -1885,9 +2205,11 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
                               />
                             </SettingsStackRow>
                             <SettingsStackRow
-                              title={selectedConnectionProvider === 'openrouter' ? 'Exact OpenRouter model' : 'Exact model ID'}
+                              title={selectedConnectionProvider === 'openrouter' ? 'Exact OpenRouter model' : selectedConnectionProvider === 'groq' ? 'Exact Groq model' : 'Exact model ID'}
                               description={selectedConnectionProvider === 'openrouter'
                                 ? 'Paste any OpenRouter slug, for example openai/gpt-5.5 or anthropic/claude-opus-4.8.'
+                                : selectedConnectionProvider === 'groq'
+                                  ? 'Paste any Groq model id, for example openai/gpt-oss-120b or llama-3.3-70b-versatile.'
                                 : 'Use a provider-specific model ID when it is not listed yet in live discovery.'}
                               info="Use this for models that are new, custom, or not returned by live discovery yet."
                             >

@@ -12,13 +12,14 @@ export const MODEL_API_KEYS_STORAGE_KEY = 'eterx_model_api_keys';
 export const CHAT_MODEL_SELECTION_STORAGE_KEY = 'eterx_chat_model_selection';
 export const AUTO_MODEL_SELECTION = 'auto';
 
-export const MODEL_PROVIDER_ORDER: MainAgentProvider[] = ['gemini', 'mistral', 'openai', 'openrouter', 'anthropic'];
+export const MODEL_PROVIDER_ORDER: MainAgentProvider[] = ['gemini', 'mistral', 'openai', 'openrouter', 'groq', 'anthropic'];
 
 export const MODEL_PROVIDER_MODE: Record<MainAgentProvider, MainAgentMode> = {
   gemini: 'think',
   mistral: 'mistral',
   openai: 'openai',
   openrouter: 'openrouter',
+  groq: 'groq',
   anthropic: 'anthropic',
 };
 

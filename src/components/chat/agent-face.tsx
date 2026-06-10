@@ -297,13 +297,13 @@ export const AgentFace = ({
         };
       default:
         return {
-          outerY: active ? [0, -0.35, 0.12, 0] : [0, -0.16, 0.06, -0.08, 0],
-          outerRotate: active ? [0, -0.08, 0.06, 0] : [-0.04, 0.06, -0.02, 0.04, -0.04],
-          outerScale: [1, 1.003, 1],
-          faceRotate: [-0.08, 0.1, -0.04, 0.06, -0.08],
+          outerY: active ? [0, -0.18, 0.06, 0] : [0, -0.12, 0.04, -0.06, 0],
+          outerRotate: active ? [0, -0.025, 0.02, 0] : [-0.025, 0.035, -0.015, 0.025, -0.025],
+          outerScale: [1, 1.0015, 1],
+          faceRotate: active ? [-0.025, 0.035, -0.015, 0.02, -0.025] : [-0.05, 0.06, -0.025, 0.035, -0.05],
           irisLift: 0,
           lidPressure: 0.64,
-          duration: active ? pace + 1.2 : 7.6,
+          duration: active ? pace + 2.4 : 8.4,
         };
     }
   })();
@@ -462,24 +462,11 @@ export const AgentFace = ({
                   className="pointer-events-none absolute inset-x-[-1px] top-[-1px] h-[2.4px] rounded-t-full bg-[#CFE6FF]/70 blur-[0.25px]"
                 />
                 <motion.span
-                  animate={{
-                    opacity: isInputAttention ? [0.9, 1, 0.92] : [0.72, 0.9, 0.76],
-                    y: isInputAttention ? [0.45, 0.7, 0.5] : isListenAttention ? [-0.24, -0.42, -0.28] : [0, -0.12 + motionProfile.irisLift, motionProfile.irisLift * 0.35],
-                  }}
-                  transition={{ duration: isInputAttention ? 1.1 : pace + 0.7, repeat: Infinity, ease: 'easeInOut' }}
-                  className="absolute left-[0.65px] top-[0.7px] h-[1.8px] w-[1.35px] rounded-full bg-white/90"
-                />
-                <motion.span
                   animate={{ opacity: isScanAttention ? [0.28, 0.62, 0.32] : [0.18, 0.3, 0.2] }}
                   transition={{ duration: isScanAttention ? 0.9 : pace + 0.9, repeat: Infinity, ease: 'easeInOut' }}
                   className="absolute inset-x-[0.6px] top-[2.3px] h-px rounded-full bg-[#EAF6FF]/45"
                 />
                 <span className="absolute inset-x-[0.7px] bottom-[0.75px] h-[1.4px] rounded-full bg-[#BFDFFF]/25 blur-[0.3px]" />
-                <motion.span
-                  animate={{ opacity: [0.1, 0.22, 0.12], x: isScanAttention ? [-1, 1.2, -0.6] : [0, 0.35, 0] }}
-                  transition={{ duration: isScanAttention ? 1.2 : 5.4, repeat: Infinity, ease: 'easeInOut', delay: eye * 0.18 }}
-                  className="pointer-events-none absolute bottom-[1px] left-[1px] h-[1.2px] w-[2.6px] rounded-full bg-[#8FC8FF]/45 blur-[0.35px]"
-                />
               </motion.span>
             ))}
           </motion.div>

@@ -1,5 +1,7 @@
 import { z } from 'zod';
 import { ToolDefinition } from '../../schemas';
+import { exec } from 'child_process';
+import { promisify } from 'util';
 import path from 'path';
 import fs from 'fs-extra';
 import { createReadStream } from 'fs';
@@ -7,67 +9,23 @@ import { open as openFile } from 'fs/promises';
 import * as readline from 'readline';
 import { getPathResolverInfo, resolveWorkspaceDirectoryForContext } from '../../workspace/path_resolver';
 import {
-  normalizeCheckInMs,
-  normalizeHardTimeoutMs
+  emitRuntimeTrace,
+  isExecTimeoutError,
+  normalizeTimeoutMs,
+  terminalTimeoutNote
 } from '../core/terminal_timeout';
-import { runTerminalCommandWithCheckIn } from '../core/terminal_background';
 
-const HELPER_SCRIPT_PATTERN = /\.(py|ps1|js|mjs|cjs|bat|cmd|vbs|ahk)(['"\s]|$)/i;
-const MAX_TERMINAL_OUTPUT_BUFFER_CHARS = 10 * 1024 * 1024;
+const execAsync = promisify(exec);
 
-function referencesDesktopHelperScript(command: string, cwd: string): boolean {
-  // Only block scripts that are DIRECTLY on the Desktop (not in subdirectories/projects)
-  // and appear to be UI automation helpers (not legitimate project scripts)
-  if (!HELPER_SCRIPT_PATTERN.test(command)) return false;
-
-  const normalizedCommand = command.replace(/\\/g, '/').toLowerCase();
-  const desktopPath = path.resolve(getPathResolverInfo().desktopPath);
-  const normalizedDesktop = desktopPath.replace(/\\/g, '/').toLowerCase();
-
-  // ALLOW: Scripts inside project directories, .workspaces, sandbox, node_modules, etc.
-  // These are legitimate project scripts, not UI automation helpers.
-  const allowedPatterns = [
-    '.workspaces', '/sandbox/', '/node_modules/', '/src/', '/lib/', '/dist/',
-    '/build/', '/scripts/', '/test/', '/tests/', '/__tests__/', '/spec/',
-    '/temp/', '/tmp/', '/draft/', '/.cache/', '/.git/'
-  ];
-  for (const pattern of allowedPatterns) {
-    if (normalizedCommand.includes(pattern)) return false;
-  }
-
-  // ALLOW: If the CWD is inside a project (has package.json, .git, etc.) — it's project work
-  const normalizedCwd = path.resolve(cwd).replace(/\\/g, '/').toLowerCase();
-  const cwdInsideDesktop = normalizedCwd === normalizedDesktop || normalizedCwd.startsWith(`${normalizedDesktop}/`);
-
-  // Only block if the script is DIRECTLY on Desktop (not in a project subfolder on Desktop)
-  if (cwdInsideDesktop) {
-    // If CWD is deeper than Desktop by 2+ levels, it's a project — allow it
-    const relativeDepth = normalizedCwd.substring(normalizedDesktop.length).split('/').filter(Boolean).length;
-    if (relativeDepth >= 2) return false; // e.g., Desktop/my-project/scripts/ → allowed
-  }
-
-  // Only block if command references a script directly on Desktop root
-  if (normalizedCommand.includes(normalizedDesktop + '/')) {
-    // Extract the script path after Desktop
-    const afterDesktop = normalizedCommand.substring(normalizedCommand.indexOf(normalizedDesktop) + normalizedDesktop.length + 1);
-    // If the script is in a subdirectory (project), allow it
-    if (afterDesktop.includes('/')) return false;
-    // Script is directly on Desktop root — this is likely a helper script, block it
-    return true;
-  }
-
-  return false;
-}
+import { referencesDesktopHelperScript } from '../shared/desktop_guard';
 
 export const workspaceRunCommandTool: ToolDefinition = {
   name: 'workspace_run_command',
-  description: 'Execute a project command with streamed output. If it is still running after the check-in timer (default 15s; timeoutSeconds/checkInSeconds override it), the process is kept alive in the background and this returns backgroundTaskId. Do not rerun handed-off commands; call wait_timer, then background_task mode="check". Supports absolute paths and relative workspace paths.',
+  description: 'Execute a finite shell command inside any directory with streamed output and a configurable timeout (default 30s, max 2 minutes). Supports absolute paths and relative workspace paths. Use process_manager/background_task plus wait_timer for long-running servers, watchers, or builds.',
   category: 'workspace',
   inputSchema: z.object({
     command: z.string().describe('The command to execute (e.g., "npm test", "ls -la")'),
-    timeoutSeconds: z.number().optional().describe('Alias for the first check-in timer in seconds. Default is about 15 seconds.'),
-    checkInSeconds: z.number().optional().describe('Seconds to wait before handing a still-running command to the background. Default is about 15 seconds.'),
-    hardTimeoutSeconds: z.number().optional().describe('Hard safety timeout in seconds for stuck commands after handoff. Default is 30 minutes.'),
+    timeoutSeconds: z.number().optional().describe('Optional command timeout in seconds. Default: 30 seconds. Max: 120 seconds.'),
     cwd: z.string().optional().describe('Working directory — absolute path or relative to workspace root. Default: workspace root')
   }),
   outputSchema: z.object({
@@ -76,14 +34,11 @@ export const workspaceRunCommandTool: ToolDefinition = {
     exitCode: z.number(),
     timedOut: z.boolean().optional(),
     timeoutMs: z.number().optional(),
-    stillRunning: z.boolean().optional(),
-    backgroundTaskId: z.string().optional(),
     nextActionNote: z.string().optional()
   }),
-  execute: async (input: { command: string, cwd?: string, timeoutSeconds?: number, timeoutMs?: number, checkInSeconds?: number, checkInMs?: number, hardTimeoutSeconds?: number, hardTimeoutMs?: number }, context: any) => {
+  execute: async (input: { command: string, cwd?: string, timeoutSeconds?: number, timeoutMs?: number }, context: any) => {
     const runDir = resolveWorkspaceDirectoryForContext(input.cwd, context);
-    const checkInMs = normalizeCheckInMs(input.checkInSeconds ?? input.checkInMs ?? input.timeoutSeconds ?? input.timeoutMs, input.command);
-    const hardTimeoutMs = normalizeHardTimeoutMs(input.hardTimeoutSeconds ?? input.hardTimeoutMs, checkInMs);
+    const timeoutMs = normalizeTimeoutMs(input.timeoutSeconds ?? input.timeoutMs);
 
     const portableSampling = getPortableSamplingRequest(input.command);
     if (portableSampling) {
@@ -113,19 +68,162 @@ export const workspaceRunCommandTool: ToolDefinition = {
     console.log(`[Tool: workspace_run_command] Executing: ${input.command} in ${runDir}`);
     
     try {
-      const result = await runTerminalCommandWithCheckIn({
-        command: input.command,
-        cwd: runDir,
-        source: 'workspace_run_command',
-        context,
-        shell: true,
-        env: { ...process.env, FORCE_COLOR: '0' },
-        checkInMs,
-        hardTimeoutMs,
-        maxOutputChars: MAX_TERMINAL_OUTPUT_BUFFER_CHARS,
-        traceThrottleMs: 150
+      const { taskStore } = require('../../task-store');
+      let combinedOutput = '';
+
+      return new Promise((resolve) => {
+        const { spawn } = require('child_process');
+        // Run via shell to get exact command execution semantics
+        const child = spawn(input.command, { 
+          cwd: runDir, 
+          shell: true
+        });
+        let didTimeout = false;
+        let settled = false;
+
+        const timeoutNote = () => terminalTimeoutNote(input.command, timeoutMs);
+
+        // Throttle updates to UI — buffer text and flush every 150ms
+        // Send FULL accumulated output each time so the terminal panel always shows everything
+        let UIThrottleBuffer = '';
+        let lastUITick = Date.now();
+
+        const flushToUI = () => {
+          if (UIThrottleBuffer.length > 0) {
+            const consoleEvt = {
+              type: 'console_output',
+              command: input.command,
+              // Full output so terminal never shows partial content (old code sliced to -3000)
+              content: combinedOutput,
+            };
+            // Primary: emit through onTrace callback (reaches UI in real-time)
+            if (context?._onTrace) {
+              context._onTrace(consoleEvt);
+            }
+            // Secondary: also persist to taskStore if chatId is available
+            if (context?.chatId) {
+              taskStore.addTrace(context.chatId, consoleEvt);
+            }
+            UIThrottleBuffer = '';
+            lastUITick = Date.now();
+          }
+        };
+
+        const stopChildTree = () => {
+          if (!child.pid) {
+            child.kill('SIGTERM');
+            return;
+          }
+
+          if (process.platform === 'win32') {
+            const { exec } = require('child_process');
+            exec(`taskkill /PID ${child.pid} /T /F`, { windowsHide: true }, () => {});
+            return;
+          }
+
+          child.kill('SIGTERM');
+          const killTimer = setTimeout(() => {
+            try { child.kill('SIGKILL'); } catch {}
+          }, 2000);
+          killTimer.unref?.();
+        };
+
+        const timeoutTimer = setTimeout(() => {
+          didTimeout = true;
+          emitRuntimeTrace(context, {
+            type: 'timer_expired',
+            text: 'Terminal command: Timer has expired',
+            title: 'Terminal command',
+            note: timeoutNote(),
+            durationMs: timeoutMs,
+            command: input.command,
+            iconCategory: 'terminal'
+          });
+          stopChildTree();
+        }, timeoutMs);
+        timeoutTimer.unref?.();
+
+        const finish = (result: any) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeoutTimer);
+          resolve(result);
+        };
+
+        const handleData = (chunk: Buffer) => {
+          const text = chunk.toString();
+          combinedOutput += text;
+          UIThrottleBuffer += text;
+
+          // Cap the internal output length to prevent memory blowouts
+          if (combinedOutput.length > 5 * 1024 * 1024) {
+            combinedOutput = combinedOutput.substring(combinedOutput.length - 2 * 1024 * 1024);
+          }
+
+          if (Date.now() - lastUITick > 150) {
+            flushToUI();
+          }
+        };
+
+        child.stdout.on('data', handleData);
+        child.stderr.on('data', handleData);
+
+        child.on('close', (code: number) => {
+          flushToUI(); // Final flush
+          
+          // Cap output sent back to API to prevent massive 50s API latencies
+          // We keep the LAST 30,000 chars because terminal output usually has the important errors/results at the end.
+          let finalOutput = combinedOutput;
+          if (finalOutput.length > 30000) {
+            finalOutput = `...[TRUNCATED ${finalOutput.length - 30000} chars]...\n` + finalOutput.substring(finalOutput.length - 30000);
+          }
+          
+          if (didTimeout) {
+            const note = timeoutNote();
+            finish({
+              stdout: finalOutput,
+              stderr: note,
+              exitCode: 124,
+              timedOut: true,
+              timeoutMs,
+              nextActionNote: note
+            });
+            return;
+          }
+
+          finish({
+            stdout: finalOutput,
+            stderr: '',
+            exitCode: code ?? 0,
+            timeoutMs,
+            // Absolute CWD so agent knows exactly where .workspaces/sandbox/file.py lives
+            cwd: runDir,
+          });
+        });
+
+        child.on('error', (err: any) => {
+          flushToUI();
+          if (didTimeout) {
+            const note = timeoutNote();
+            finish({
+              stdout: combinedOutput,
+              stderr: note,
+              exitCode: 124,
+              timedOut: true,
+              timeoutMs,
+              nextActionNote: note
+            });
+            return;
+          }
+
+          finish({
+            stdout: combinedOutput,
+            stderr: err.message,
+            exitCode: 1,
+            timeoutMs
+          });
+        });
       });
-      return { ...result, stdout: result.output || result.stdout || '' };
     } catch (error: any) {
       return { 
         stdout: '', 
@@ -214,15 +312,82 @@ async function readTailLines(filePath: string, maxLines: number): Promise<string
   return lines.slice(Math.max(0, lines.length - maxLines)).join('\n');
 }
 
+export const workspaceExecuteScriptTool: ToolDefinition = {
+  name: 'workspace_execute_script',
+  description: 'Run a one-shot analysis/transform script without writing persistent project files. Use for inspections, migrations, smoke checks, or generated transforms.',
+  category: 'workspace',
+  inputSchema: z.object({
+    language: z.enum(['powershell', 'node', 'python']).describe('Script runtime'),
+    script: z.string().describe('Script source to execute once'),
+    cwd: z.string().optional().describe('Working directory. Default: workspace root'),
+    timeoutSeconds: z.number().optional().describe('Timeout in seconds (default: 60, max: 120)'),
+  }),
+  outputSchema: z.object({
+    stdout: z.string(),
+    stderr: z.string(),
+    exitCode: z.number(),
+    timedOut: z.boolean().optional(),
+  }),
+  execute: async (input: { language: 'powershell' | 'node' | 'python'; script: string; cwd?: string; timeoutSeconds?: number }, context: any) => {
+    const runDir = resolveWorkspaceDirectoryForContext(input.cwd, context);
+    const timeoutMs = normalizeTimeoutMs(input.timeoutSeconds ?? 60);
+
+    if (!await fs.pathExists(runDir)) {
+      return { stdout: '', stderr: `Working directory not found: ${runDir}`, exitCode: 1 };
+    }
+
+    const ext = input.language === 'powershell' ? '.ps1' : input.language === 'python' ? '.py' : '.mjs';
+    const scriptPath = path.join(runDir, `.eterx-temp-${Date.now()}${ext}`);
+
+    try {
+      await fs.writeFile(scriptPath, input.script, 'utf-8');
+      const command =
+        input.language === 'powershell' ? `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${scriptPath}"` :
+        input.language === 'python' ? `python "${scriptPath}"` :
+        `node "${scriptPath}"`;
+
+      const { stdout, stderr } = await execAsync(command, {
+        cwd: runDir,
+        maxBuffer: 8 * 1024 * 1024,
+        timeout: timeoutMs,
+      });
+
+      return {
+        stdout: String(stdout || '').slice(0, 30000),
+        stderr: String(stderr || '').slice(0, 8000),
+        exitCode: 0,
+        timeoutMs,
+      };
+    } catch (error: any) {
+      if (isExecTimeoutError(error)) {
+        const note = terminalTimeoutNote('workspace_execute_script', timeoutMs);
+        return {
+          stdout: String(error.stdout || '').slice(0, 30000),
+          stderr: `${String(error.stderr || error.message || '').slice(0, 8000)}\n${note}`,
+          exitCode: 1,
+          timedOut: true,
+          timeoutMs,
+        };
+      }
+      return {
+        stdout: String(error.stdout || '').slice(0, 30000),
+        stderr: String(error.stderr || error.message || '').slice(0, 8000),
+        exitCode: typeof error.code === 'number' ? error.code : 1,
+        timeoutMs,
+      };
+    } finally {
+      try { await fs.remove(scriptPath); } catch { /* temp cleanup */ }
+    }
+  },
+};
+
 export const workspaceVerifyCodeTool: ToolDefinition = {
   name: 'workspace_verify_code',
-  description: 'Automatically run verification checks (lint/build/test) in any directory and report error/warning counts. Uses the terminal check-in protocol: if still running after about 15s, the process stays alive in the background and returns backgroundTaskId. Call wait_timer, then background_task mode="check"; do not rerun the same verification blindly.',
+  description: 'Automatically run finite verification checks (lint/build/test) in any directory and report error/warning counts. Has a configurable timeout (default 30s, max 2 minutes). Supports absolute and relative paths. Automatically detects framework (Python, Rust, Java, standard Node/Yarn/PNPM).',
   category: 'workspace',
   inputSchema: z.object({
     checkType: z.enum(['lint', 'build', 'test']).describe('The type of verification to perform'),
-    timeoutSeconds: z.number().optional().describe('Alias for the first check-in timer in seconds. Default is about 15 seconds.'),
-    checkInSeconds: z.number().optional().describe('Seconds to wait before handing a still-running verification command to the background.'),
-    hardTimeoutSeconds: z.number().optional().describe('Hard safety timeout in seconds for stuck verification commands after handoff. Default is 30 minutes.'),
+    timeoutSeconds: z.number().optional().describe('Optional verification timeout in seconds. Default: 30 seconds. Max: 120 seconds.'),
     cwd: z.string().optional().describe('Working directory — absolute or relative. Default: workspace root')
   }),
   outputSchema: z.object({
@@ -233,12 +398,11 @@ export const workspaceVerifyCodeTool: ToolDefinition = {
     commandUsed: z.string(),
     timedOut: z.boolean().optional(),
     timeoutMs: z.number().optional(),
-    stillRunning: z.boolean().optional(),
-    backgroundTaskId: z.string().optional(),
     nextActionNote: z.string().optional()
   }),
-  execute: async (input: { checkType: 'lint' | 'build' | 'test', cwd?: string, timeoutSeconds?: number, timeoutMs?: number, checkInSeconds?: number, checkInMs?: number, hardTimeoutSeconds?: number, hardTimeoutMs?: number }, context: any) => {
+  execute: async (input: { checkType: 'lint' | 'build' | 'test', cwd?: string, timeoutSeconds?: number, timeoutMs?: number }, context: any) => {
     const workDir = resolveWorkspaceDirectoryForContext(input.cwd, context);
+    const timeoutMs = normalizeTimeoutMs(input.timeoutSeconds ?? input.timeoutMs);
 
     // Dynamic resolution based on Project Intelligence
     const { workspaceIntelligence } = require('../../engines');
@@ -272,60 +436,57 @@ export const workspaceVerifyCodeTool: ToolDefinition = {
     console.log(`[Tool: workspace_verify_code] Verifying with: ${command} in ${workDir}`);
     
     try {
-      const checkInMs = normalizeCheckInMs(input.checkInSeconds ?? input.checkInMs ?? input.timeoutSeconds ?? input.timeoutMs, command);
-      const hardTimeoutMs = normalizeHardTimeoutMs(input.hardTimeoutSeconds ?? input.hardTimeoutMs, checkInMs);
-      const result = await runTerminalCommandWithCheckIn({
-        command,
+      const { stdout, stderr } = await execAsync(command, { 
         cwd: workDir,
-        source: 'workspace_verify_code',
-        context,
-        shell: true,
-        env: { ...process.env, FORCE_COLOR: '0' },
-        checkInMs,
-        hardTimeoutMs,
-        maxOutputChars: MAX_TERMINAL_OUTPUT_BUFFER_CHARS,
-        traceThrottleMs: 150
+        maxBuffer: 10 * 1024 * 1024,
+        timeout: timeoutMs
       });
-      const output = result.output || `${result.stdout || ''}${result.stderr ? `\n${result.stderr}` : ''}`;
+      const output = stdout + stderr;
       
       const errorMatch = output.match(/(\d+)\s+errors?/i);
       const warnMatch = output.match(/(\d+)\s+warnings?/i);
-
-      if (result.stillRunning) {
-        return {
-          passed: false,
-          errors: 0,
-          warnings: warnMatch ? parseInt(warnMatch[1]) : 0,
-          output: output.substring(0, 5000),
-          commandUsed: command,
-          timedOut: false,
-          timeoutMs: checkInMs,
-          stillRunning: true,
-          backgroundTaskId: result.backgroundTaskId,
-          nextActionNote: result.nextActionNote
-        };
-      }
       
       return {
-        passed: result.exitCode === 0,
-        errors: result.exitCode === 0 ? (errorMatch ? parseInt(errorMatch[1]) : 0) : (errorMatch ? parseInt(errorMatch[1]) : 1),
+        passed: true,
+        errors: errorMatch ? parseInt(errorMatch[1]) : 0,
         warnings: warnMatch ? parseInt(warnMatch[1]) : 0,
         output: output.substring(0, 5000),
         commandUsed: command,
-        timedOut: Boolean(result.timedOut),
-        timeoutMs: checkInMs,
-        backgroundTaskId: result.backgroundTaskId,
-        nextActionNote: result.nextActionNote
+        timeoutMs
       };
     } catch (error: any) {
       const output = (error.stdout || '') + (error.stderr || error.message);
       const errorMatch = output.match(/(\d+)\s+errors?/i);
+      if (isExecTimeoutError(error)) {
+        const note = terminalTimeoutNote(command, timeoutMs);
+        emitRuntimeTrace(context, {
+          type: 'timer_expired',
+          text: 'Verification check: Timer has expired',
+          title: 'Verification check',
+          note,
+          durationMs: timeoutMs,
+          command,
+          iconCategory: 'terminal'
+        });
+        return {
+          passed: false,
+          errors: errorMatch ? parseInt(errorMatch[1]) : 1,
+          warnings: 0,
+          output: `${output.substring(0, 4500)}\n\n${note}`.substring(0, 5000),
+          commandUsed: command,
+          timedOut: true,
+          timeoutMs,
+          nextActionNote: note
+        };
+      }
+      
       return {
         passed: false,
         errors: errorMatch ? parseInt(errorMatch[1]) : 1,
         warnings: 0,
         output: output.substring(0, 5000),
-        commandUsed: command
+        commandUsed: command,
+        timeoutMs
       };
     }
   }

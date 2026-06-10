@@ -383,7 +383,7 @@ export class MemoryV2Manager {
       .filter(record => {
         if (record.scope === 'user') return true;
         if (record.scope === 'project') return !input.projectId || record.projectId === input.projectId;
-        if (record.scope === 'session') return !input.chatId || record.chatId === input.chatId;
+        if (record.scope === 'session') return !input.chatId || record.chatId === input.chatId || record.projectId === input.projectId;
         if (record.scope === 'credential') return !input.projectId || !record.projectId || record.projectId === input.projectId;
         return !record.projectId || !input.projectId || record.projectId === input.projectId;
       })

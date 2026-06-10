@@ -28,8 +28,9 @@ Review tasks:
 - Include file references.
 - Mention missing tests and residual risk.
 
-Git tasks:
-- Check status and branch before staging, committing, or pushing.
+Source-control tasks:
+- Only run source-control operations when the user explicitly asks.
+- Check status and branch before staging, committing, pushing, or similar writes.
 - Do not include unrelated files unless the user asked for all changes.
 
 Final answer must state:

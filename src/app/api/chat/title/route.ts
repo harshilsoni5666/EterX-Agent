@@ -140,7 +140,9 @@ export async function POST(req: NextRequest) {
         ? getRuntimeApiKey('openai')
         : provider === 'openrouter'
           ? getRuntimeApiKey('openrouter')
-          : getRuntimeApiKey('mistral');
+          : provider === 'groq'
+            ? getRuntimeApiKey('groq')
+            : getRuntimeApiKey('mistral');
       if (!apiKey) return NextResponse.json({ error: `Missing ${ provider } API key. Add it in Settings > Connections.` }, { status: 500 });
 
       const client = new OpenAI({
@@ -149,7 +151,9 @@ export async function POST(req: NextRequest) {
           ? (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1')
           : provider === 'openrouter'
             ? (process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1')
-            : (process.env.MISTRAL_BASE_URL || process.env.MISTRAL_API_BASE_URL || 'https://api.mistral.ai/v1'),
+            : provider === 'groq'
+              ? (process.env.GROQ_BASE_URL || 'https://api.groq.com/openai/v1')
+              : (process.env.MISTRAL_BASE_URL || process.env.MISTRAL_API_BASE_URL || 'https://api.mistral.ai/v1'),
         defaultHeaders: provider === 'openrouter'
           ? {
             'HTTP-Referer': process.env.OPENROUTER_HTTP_REFERER || 'http://localhost:3000',

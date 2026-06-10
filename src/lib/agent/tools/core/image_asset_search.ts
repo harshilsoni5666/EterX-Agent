@@ -12,7 +12,6 @@ import {
   hasRuntimeWorkspaceContext,
   resolveWorkspaceDirectoryForContext,
 } from '../../workspace/path_resolver';
-import { getRuntimeApiKeyValues } from '../../runtime-api-keys';
 
 type RawImageCandidate = {
   url: string;
@@ -78,26 +77,27 @@ const ROLE_MIN_SIZE: Record<string, { width: number; height: number }> = {
 };
 
 const getTavilyKeys = (): string[] => {
-  return getRuntimeApiKeyValues('tavily');
+  const keys: string[] = [];
+  for (let i = 1; i <= 20; i++) {
+    const key = process.env[`TAVILY_API_KEY_${i}`] || process.env[`VITE_TAVILY_API_KEY_${i}`];
+    if (key?.trim()) keys.push(key.trim());
+  }
+
+  if (keys.length === 0) {
+    const fallback = process.env.VITE_TAVILY_API_KEY || process.env.TAVILY_API_KEY;
+    if (fallback?.trim()) keys.push(fallback.trim());
+  }
+
+  return keys;
 };
 
-let tavilyKeys = getTavilyKeys();
+const tavilyKeys = getTavilyKeys();
 let currentKeyIndex = 0;
-let tavilyClients = tavilyKeys.map(apiKey => tavily({ apiKey }));
-
-const refreshTavilyClients = () => {
-  const latestKeys = getTavilyKeys();
-  if (latestKeys.join('\n') === tavilyKeys.join('\n')) return;
-  tavilyKeys = latestKeys;
-  currentKeyIndex = 0;
-  tavilyClients = latestKeys.map(apiKey => tavily({ apiKey }));
-  console.log(`[Tool: image_asset_search] Runtime Tavily refresh: ${tavilyKeys.length} key(s) from Settings`);
-};
+const tavilyClients = tavilyKeys.map(apiKey => tavily({ apiKey }));
 
 const getNextTavilyClient = () => {
-  refreshTavilyClients();
   if (tavilyClients.length === 0) {
-    throw new Error('No Tavily API key found. Add one in Settings > Connections to enable image asset search.');
+    throw new Error('No Tavily API key found. Add TAVILY_API_KEY to enable image asset search.');
   }
 
   const client = tavilyClients[currentKeyIndex];

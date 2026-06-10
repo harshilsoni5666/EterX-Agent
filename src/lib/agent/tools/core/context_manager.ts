@@ -52,7 +52,7 @@ export const contextManagerTool: ToolDefinition = {
           return { success: true, message: `Context saved (${input.content.length} chars)` };
         }
         case 'get_context': {
-          const sessionSummary = globalSessionManager.getSessionSummaryForChat(sid);
+          const sessionSummary = globalSessionManager.getSessionSummary();
           return {
             success: true,
             message: 'Current context (local + session)',

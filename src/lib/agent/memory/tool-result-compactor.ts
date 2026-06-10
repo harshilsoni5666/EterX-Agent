@@ -52,6 +52,7 @@ export class ToolResultCompactor {
           return this.compactShellOutput(args, result);
         
         case 'workspace_search_text':
+        case 'workspace_semantic_search':
           return this.compactSearchText(args, result);
         
         case 'workspace_list_directory':

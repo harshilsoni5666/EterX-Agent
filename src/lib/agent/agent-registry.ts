@@ -6,8 +6,6 @@ import { getMainAgentModelConfig, type MainAgentMode } from './model-routing';
 
 // Ensure tools are bootstrapped
 import './tools/index';
-import { cancelAgent, cancelAllSubAgents } from './roles/sub_agent';
-import { isCodingAgentProfile } from './coding-agent-profile';
 
 /**
  * AgentRegistry — Per-Chat Agent Execution with Full Independence
@@ -110,20 +108,16 @@ class AgentRegistry {
     }
 
     if (data.type === 'console_output') {
-      const { output, content, ...rest } = data;
-      const outputText = String(output ?? content ?? '');
-      const compactedOutput = outputText.length > 2500
-        ? `${ outputText.substring(0, 2500) }\n...[output compacted]`
-        : outputText;
+      const { output, ...rest } = data;
+      const outputText = String(output || '');
       return {
         ...rest,
-        output: compactedOutput,
-        content: compactedOutput,
+        output: outputText.length > 2500 ? `${ outputText.substring(0, 2500) }\n...[output compacted]` : outputText,
         _contentStripped: outputText.length > 2500,
       };
     }
 
-    if (data.type === 'thought_stream' && typeof data.text === 'string' && data.text.length > 12000) {
+    if ((data.type === 'thought_stream' || data.type === 'work_note') && typeof data.text === 'string' && data.text.length > 12000) {
       return {
         ...data,
         text: `${ data.text.substring(0, 12000) }\n...[trace compacted]`,
@@ -205,7 +199,7 @@ class AgentRegistry {
     pinnedContext: any = null,
     mediaAttachments: any[] = [],
     userName: string = 'Developer',
-    preferredGeminiApiKey?: string
+    _preferredGeminiApiKey?: string
   ): { status: 'started' | 'already_running' | 'no_keys'; chatId: string; message: string } {
 
     // Check if this chat already has a running agent
@@ -215,16 +209,16 @@ class AgentRegistry {
     }
 
     const modelConfig = getMainAgentModelConfig(mode);
-    const usesGeminiPool = modelConfig.provider === 'gemini';
+    const isExternalProvider = modelConfig.provider !== 'gemini';
 
-    // Try to lease a Gemini API key only for Gemini runs. Other providers use
-    // their own runtime keys and should not be blocked by the Gemini key pool.
-    const lease: KeyLease | null = !usesGeminiPool
+    // Try to lease a Gemini API key only for Gemini runs. External providers use their own
+    // keys and should not be blocked by the Gemini key pool.
+    const lease: KeyLease | null = isExternalProvider
       ? null
-      : (preferredGeminiApiKey
-        ? apiKeyPool.leaseSpecificKey(chatId, preferredGeminiApiKey, 'main_agent') || apiKeyPool.leaseKey(chatId, 'main_agent')
-        : apiKeyPool.leaseKey(chatId, 'main_agent'));
-    if (usesGeminiPool && !lease) {
+      : (_preferredGeminiApiKey
+          ? apiKeyPool.leaseSpecificKey(chatId, _preferredGeminiApiKey, 'main_agent') || apiKeyPool.leaseKey(chatId, 'main_agent')
+          : apiKeyPool.leaseKey(chatId, 'main_agent'));
+    if (!isExternalProvider && !lease) {
       return { status: 'no_keys', chatId, message: 'All API keys are currently in use. Try again in a moment.' };
     }
 
@@ -238,7 +232,7 @@ class AgentRegistry {
       traceCounter: 0,
       finalAnswer: '',
       cancelled: false,
-      keyLeaseId: usesGeminiPool ? chatId : modelConfig.provider,
+      keyLeaseId: isExternalProvider ? modelConfig.provider : chatId,
       mode,
       promise: Promise.resolve(), // Placeholder, replaced below
       steeringQueue: [],
@@ -259,13 +253,9 @@ class AgentRegistry {
       this.appendTrace(execution, traceEvent, !pinnedContext?.disableTaskStore);
     };
 
-    const connectionLabel = isCodingAgentProfile(pinnedContext?.agentProfile)
-      ? 'EterX-Code'
-      : modelConfig.label;
-
     onTrace({
-      type: 'progress',
-      text: `${ connectionLabel } is starting`,
+      type: 'work_note',
+      text: `${ modelConfig.label } is starting`,
       noteId: 'eterx-agent-connection',
       isDelta: false,
       isStreaming: false,
@@ -409,7 +399,7 @@ class AgentRegistry {
         const uploadedImageParts: { fileData: { fileUri: string, mimeType: string } }[] = [];
         let hasNewImages = false;
 
-        if (usesGeminiPool) {
+        if (!isExternalProvider) {
           const geminiAI = new (require('@google/genai').GoogleGenAI)({ apiKey: lease!.apiKey });
         for (const file of geminiNativeFiles) {
           try {
@@ -454,13 +444,13 @@ class AgentRegistry {
         let enrichedPrompt = '';
         if (geminiNativeFiles.length > 0) {
           const fileList = geminiNativeFiles.map(f => `  • ${ f.name } (${ f.mimeType })${ f.fileUri ? ' [UPLOADED ✓]' : '' }`).join('\n');
-          enrichedPrompt += usesGeminiPool
-            ? `[USER ATTACHED FILES]\nThe following files are loaded into your visual context:\n${ fileList }\n\nIMPORTANT: These files (especially images) are directly visible to you in this message. You can see and analyze them. Describe what you see when the user asks about them. Files also persist at .workspaces/temp/ for re-reading.\n\n`
-            : `[USER ATTACHED FILES]\nThe following files are saved locally for this run:\n${ fileList }\n\nIMPORTANT: These files are available at their local paths in .workspaces/temp/. Use workspace tools to inspect/read them when needed. Do not claim direct visual access unless a tool result proves it.\n\n`;
+          enrichedPrompt += isExternalProvider
+            ? `[USER ATTACHED FILES]\nThe following files are saved locally for this run:\n${ fileList }\n\nIMPORTANT: These files are available at their local paths in .workspaces/temp/. Use workspace tools to inspect/read them when needed. Do not claim direct visual access unless a tool result proves it.\n\n`
+            : `[USER ATTACHED FILES]\nThe following files are loaded into your visual context:\n${ fileList }\n\nIMPORTANT: These files (especially images) are directly visible to you in this message. You can see and analyze them. Describe what you see when the user asks about them. Files also persist at .workspaces/temp/ for re-reading.\n\n`;
         }
         // If images are present, add explicit analysis instruction
         const attachedImageCount = geminiNativeFiles.filter(f => String(f.mimeType || '').startsWith('image/')).length;
-        if (usesGeminiPool && (uploadedImageParts.length > 0 || attachedImageCount > 0)) {
+        if (!isExternalProvider && (uploadedImageParts.length > 0 || attachedImageCount > 0)) {
           const imageCount = attachedImageCount || uploadedImageParts.length;
           enrichedPrompt += `[MULTIMODAL CONTEXT] ${ imageCount } image(s) are attached to this message. You CAN see them. When the user asks about an image, analyze it thoroughly — describe content, colors, text, layout, objects, people, code, UI elements, or anything visible. Do NOT say you cannot see images. You are a multimodal model with full vision capability.\n\n`;
         }
@@ -524,7 +514,7 @@ class AgentRegistry {
           geminiNativeFiles,
           uploadedImageParts, // Files API parts instead of base64
           userName,
-          usesGeminiPool ? lease!.apiKey : undefined
+          isExternalProvider ? undefined : lease!.apiKey
         );
 
         const responseText = response.finalAnswer || '';
@@ -535,6 +525,10 @@ class AgentRegistry {
         execution.completedAt = Date.now();
         execution.finalAnswer = responseText;
         if (responseFailed) execution.error = responseText;
+
+        // Update effective model with the model mode resolved by the orchestrator!
+        const actualModelConfig = getMainAgentModelConfig(response.modelMode);
+        execution.effectiveModel = actualModelConfig.modelName;
 
         // Emit done event to trace buffer
         if (!execution.cancelled) {
@@ -547,7 +541,7 @@ class AgentRegistry {
         }
 
         // Report success to key pool
-        if (usesGeminiPool && execution.status === 'completed') {
+        if (!isExternalProvider && execution.status === 'completed') {
           apiKeyPool.reportSuccess(chatId, (response as any).effectiveApiKey);
         }
 
@@ -563,7 +557,7 @@ class AgentRegistry {
 
         if (!wasCancelled) {
           // Check if it's an API key error — auto-failover
-          const errorType = usesGeminiPool ? apiKeyPool.classifyError(error.message) : 'unknown';
+          const errorType = isExternalProvider ? 'unknown' : apiKeyPool.classifyError(error.message);
           if (errorType !== 'unknown') {
             console.warn(`[AgentRegistry] 🔄 API key failure (${ errorType }) for chat ${ chatId.substring(0, 8) }...`);
             apiKeyPool.reportFailure(chatId, errorType, error.message);
@@ -590,7 +584,7 @@ class AgentRegistry {
       } finally {
         // ALWAYS release ALL keys associated with this chat (main agent + ANY dynamically named sub-agents)
         // apiKeyPool tracks leases by id, so we release the main chat ID
-        if (usesGeminiPool) apiKeyPool.releaseKey(chatId);
+        if (!isExternalProvider) apiKeyPool.releaseKey(chatId);
 
         apiKeyPool.releaseLeasesWithPrefix(`${ chatId }_sub_`);
       }
@@ -598,7 +592,7 @@ class AgentRegistry {
 
     this.executions.set(chatId, execution);
 
-    const poolStatus = usesGeminiPool ? apiKeyPool.getPoolStatus() : null;
+    const poolStatus = isExternalProvider ? null : apiKeyPool.getPoolStatus();
     console.log(`[AgentRegistry] Agent started for chat ${ chatId.substring(0, 8) }... | Model: ${ modelConfig.modelName }${ lease ? ` | Key: #${ lease.keyIndex } | Pool: ${ poolStatus?.healthySummary }` : '' }`);
 
     return { status: 'started', chatId, message: lease ? `Agent started with key #${ lease.keyIndex }` : `Agent started with ${ modelConfig.label }` };
@@ -673,12 +667,6 @@ class AgentRegistry {
     apiKeyPool.releaseKey(chatId);
 
     apiKeyPool.releaseLeasesWithPrefix(`${ chatId }_sub_`);
-
-    try {
-      cancelAgent(chatId);
-    } catch (e) {
-      console.warn(`[AgentRegistry] Failed to cancel sub-agents:`, e);
-    }
 
     console.log(`[AgentRegistry] 🛑 Stopped agent for chat ${ chatId.substring(0, 8) }...`);
     return true;
@@ -837,11 +825,6 @@ class AgentRegistry {
         apiKeyPool.releaseKey(chatId);
         apiKeyPool.releaseLeasesWithPrefix(`${ chatId }_sub_`);
       }
-    }
-    try {
-      cancelAllSubAgents();
-    } catch (e) {
-      console.warn(`[AgentRegistry] Failed to cancel all sub-agents:`, e);
     }
     console.log(`[AgentRegistry] 🛑 Emergency stop — all agents stopped`);
   }

@@ -1,15 +1,5 @@
-<!-- @license lucide-static v0.468.0 - ISC -->
-<svg
-  class="lucide lucide-folder-open"
-  xmlns="http://www.w3.org/2000/svg"
-  width="24"
-  height="24"
-  viewBox="0 0 24 24"
-  fill="none"
-  stroke="currentColor"
-  stroke-width="2"
-  stroke-linecap="round"
-  stroke-linejoin="round"
->
-  <path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2" />
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none">
+  <path d="M4.7 7.2c0-1.1.9-2 2-2h3.3l1.55 1.65H17.3c1.1 0 2 .9 2 2v2.2H4.7V7.2Z" stroke="#000" stroke-width="1.85" stroke-linejoin="round"/>
+  <path d="M5.7 11.05h12.6c1.1 0 2 .9 2 2v3.75c0 1.1-.9 2-2 2H5.7c-1.1 0-2-.9-2-2v-3.75c0-1.1.9-2 2-2Z" stroke="#000" stroke-width="1.85"/>
+  <path d="M9.4 14.9h5.2M12 14.9v-2.4" stroke="#000" stroke-width="1.75" stroke-linecap="round"/>
 </svg>

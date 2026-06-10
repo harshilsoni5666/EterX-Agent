@@ -1,7 +1,7 @@
 import { globalToolRegistry } from './registry';
 
 // ==========================================
-// CORE TOOLS
+// CORE TOOLS (27 tools)
 // ==========================================
 import { shellTool } from './core/shell';
 import { terminalAccessTool } from './core/terminal_access';
@@ -55,13 +55,22 @@ import { waitTimerTool } from './core/wait_timer';
 import { agentCommTool } from './core/agent_comm';
 
 // ==========================================
-// WORKSPACE & DATA TOOLS
+// WORKSPACE & DATA TOOLS (14 tools)
 // ==========================================
 import {
-  workspaceReadTool, workspaceReadManyTool, workspaceWriteTool, workspaceListDirectoryTool,
-  workspaceSearchTextTool, workspaceFindFilesTool, workspaceEditFileTool, workspaceEditManyFilesTool
+  workspaceReadTool, workspaceWriteTool, workspaceListDirectoryTool,
+  workspaceSearchTextTool, workspaceEditFileTool
 } from './workspace/fileops';
-import { workspaceRunCommandTool, workspaceVerifyCodeTool } from './workspace/execution';
+import { workspaceRunCommandTool, workspaceVerifyCodeTool, workspaceExecuteScriptTool } from './workspace/execution';
+import {
+  workspaceFindFilesTool,
+  workspaceReadManyFilesTool,
+  workspaceEditManyFilesTool,
+} from './workspace/fast_ops';
+import { workspaceSemanticSearchTool } from './workspace/semantic_search';
+import { workspaceStrReplaceTool } from './workspace/str_replace';
+import { workspaceSymbolLookupTool, workspaceFileOutlineTool } from './workspace/coding_intel';
+import { toolFinderTool } from './core/tool_finder';
 import { csvAnalyzerTool } from './workspace/data';
 import { docxGeneratorTool } from './workspace/docx';
 import { officeArtifactBuilderTool } from './workspace/office_artifacts';
@@ -69,9 +78,11 @@ import { compressionTool } from './workspace/compression';
 import { codeGeneratorTool } from './workspace/codegen';
 import { diffTool } from './workspace/diff';
 import { markdownTool } from './workspace/markdown';
+import { workspaceApplyPatchTool } from './workspace/apply_patch';
+import { workspaceEditSessionTool } from './workspace/edit_session';
 
 // ==========================================
-// RESEARCH TOOLS
+// RESEARCH TOOLS (4 tools)
 // ==========================================
 import { webScraperTool } from './research/scraper';
 import { pdfParserTool } from './research/pdf';
@@ -79,7 +90,7 @@ import { youtubeTranscriptTool } from './research/youtube';
 import { rssFeedTool } from './research/rss';
 
 // ==========================================
-// AUTOMATION TOOLS
+// AUTOMATION TOOLS (5 tools)
 // ==========================================
 import { schedulerTool } from './automation/scheduler';
 import { processManagerTool } from './automation/process_manager';
@@ -91,7 +102,7 @@ import { agentConnectorTriggerTool } from './automation/agent_connector_trigger'
 import { agentBuilderTools } from './automation/agent_builder';
 
 // ==========================================
-// COMMUNICATION TOOLS
+// COMMUNICATION TOOLS (2 tools)
 // ==========================================
 import { whatsappControllerTool } from './communication/whatsapp';
 import { telegramUserControllerTool } from './communication/telegram';
@@ -99,13 +110,13 @@ import { slackControllerTool } from './communication/slack';
 
 /**
  * Bootstraps ALL tools into the global registry.
- * Total: 56 tools — EterX Next-Gen Agent OS v5
+ * Total: 57+ tools — EterX Next-Gen Agent OS v5
  */
 export function bootstrapTools() {
-  globalToolRegistry.replaceAllTools([
+  globalToolRegistry.registerTools([
     shellTool, terminalAccessTool, webSearchTool, calculatorTool, apiCallerTool,
     jsRunnerTool, skillLoaderTool, systemMonitorTool, gitTool,
-    clipboardTool, desktopNotifyTool, jsonTransformTool, screenshotTool,
+    clipboardTool, desktopNotifyTool, jsonTransformTool,
     emailTool, ttsTool, imageGenTool, imageAssetSearchTool, taskDecomposerTool, networkTool,
     databaseTool, cryptoTool, regexTool, sysAutomationTool, selfImproveTool, memoryV2Tool,
     apiHubTool, apiKeyVaultTool, contextManagerTool, safetyGuardTool,
@@ -114,11 +125,14 @@ export function bootstrapTools() {
     backgroundTaskTool, smartFileAnalyzerTool, chartGeneratorTool, codeIntelTool,
     deepResearchTool, smartRefactorTool, projectScaffolderTool,
     envManagerTool, autoDocsTool, gitIntelTool,
-    desktopControlTool, browserControlTool, askUserTool, checkpointTool, computerTool, screenAgentTool,
+    browserControlTool, askUserTool, checkpointTool, computerTool, screenAgentTool,
     waitTimerTool, agentCommTool,
-    workspaceReadTool, workspaceReadManyTool, workspaceWriteTool, workspaceListDirectoryTool,
-    workspaceSearchTextTool, workspaceFindFilesTool, workspaceEditFileTool, workspaceEditManyFilesTool,
-    workspaceRunCommandTool, workspaceVerifyCodeTool,
+    toolFinderTool,
+    workspaceReadTool, workspaceWriteTool, workspaceListDirectoryTool,
+    workspaceSemanticSearchTool, workspaceSymbolLookupTool, workspaceFileOutlineTool,
+    workspaceFindFilesTool, workspaceSearchTextTool, workspaceReadManyFilesTool, workspaceStrReplaceTool,
+    workspaceEditFileTool, workspaceEditManyFilesTool, workspaceApplyPatchTool, workspaceEditSessionTool,
+    workspaceRunCommandTool, workspaceExecuteScriptTool, workspaceVerifyCodeTool,
     csvAnalyzerTool, docxGeneratorTool, officeArtifactBuilderTool, compressionTool,
     codeGeneratorTool, diffTool, markdownTool,
     webScraperTool, pdfParserTool, youtubeTranscriptTool, rssFeedTool,

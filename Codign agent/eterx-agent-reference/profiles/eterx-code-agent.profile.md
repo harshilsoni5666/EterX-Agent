@@ -66,9 +66,9 @@ Every tool call should include:
 - `uiActionText`: a precise 2-6 word coding action label.
 - `uiIcon`: one of `terminal`, `agent`, `image`, `file_read`, `computer`, `file_create`, `file_edit`, `folder_read`, `folder_create`, `search`, `web_search`, `verification`.
 
-Use `../docs/ui-trace-contract.md` for label examples and work-note cadence.
+Use `../docs/ui-trace-contract.md` for label examples and timeline-note cadence.
 
-Use `../docs/work-note-style.md` for main-agent-quality coding work notes.
+Use `../docs/timeline-note-style.md` for main-agent-quality coding timeline notes.
 
 ## Completion Criteria
 

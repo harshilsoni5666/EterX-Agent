@@ -27,9 +27,7 @@ interface ManagedProcess {
   process?: ChildProcess;
 }
 
-// In-memory process tracking preserved across Next.js HMR reloads
-const globalForProcesses = globalThis as any;
-const managedProcesses: Map<string, ManagedProcess> = globalForProcesses.__eterxManagedProcesses || (globalForProcesses.__eterxManagedProcesses = new Map());
+const managedProcesses: Map<string, ManagedProcess> = new Map();
 
 export const processManagerTool: ToolDefinition = {
   name: 'process_manager',
@@ -137,22 +135,17 @@ export const processManagerTool: ToolDefinition = {
           const proc = findProcess(input.processId || input.name);
           if (!proc) return { success: false, message: `Process not found: ${input.processId || input.name}` };
 
-          if (proc.pid && proc.status === 'running') {
-            try {
-              if (process.platform === 'win32') {
-                const { exec } = require('child_process');
-                await new Promise<void>((resolve) => {
-                  exec(`taskkill /PID ${proc.pid} /T /F`, { windowsHide: true }, () => {
-                    resolve();
-                  });
-                });
-              } else {
-                proc.process?.kill('SIGTERM');
-              }
-              proc.status = 'stopped';
-            } catch (e: any) {
+          try {
+            if (proc.process && proc.status === 'running') {
+              proc.process.kill('SIGTERM');
               proc.status = 'stopped';
             }
+          } catch (e) {
+            // Force kill via shell
+            if (proc.pid) {
+              await execAsync(`taskkill /PID ${proc.pid} /F`, { shell: 'powershell.exe' }).catch(() => {});
+            }
+            proc.status = 'stopped';
           }
           return { success: true, message: `🛑 Process "${proc.id}" (PID: ${proc.pid}) stopped.` };
         }
@@ -204,17 +197,10 @@ export const processManagerTool: ToolDefinition = {
         case 'kill_all': {
           let killed = 0;
           for (const proc of Array.from(managedProcesses.values())) {
-            if (proc.status === 'running') {
-              try {
-                if (process.platform === 'win32' && proc.pid) {
-                  const { exec } = require('child_process');
-                  exec(`taskkill /PID ${proc.pid} /T /F`, { windowsHide: true }, () => {});
-                } else {
-                  proc.process?.kill('SIGTERM');
-                }
-                proc.status = 'stopped';
-                killed++;
-              } catch { }
+            if (proc.status === 'running' && proc.process) {
+              try { proc.process.kill('SIGTERM'); } catch { }
+              proc.status = 'stopped';
+              killed++;
             }
           }
           return { success: true, message: `🛑 Killed ${killed} running processes.` };

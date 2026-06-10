@@ -45,10 +45,10 @@
     - EterX-specific principles that go beyond imitation.
 
 15. `docs/ui-trace-contract.md`
-    - Work notes, action rows, icons, file previews, console cards, browser evidence, and sub-agent timeline behavior.
+    - Timeline notes, action rows, icons, file previews, console cards, browser evidence, and sub-agent timeline behavior.
 
-16. `docs/work-note-style.md`
-    - Main-agent-style work note rules adapted for professional coding tasks.
+16. `docs/timeline-note-style.md`
+    - Main-agent-style timeline-note rules adapted for professional coding tasks.
 
 ## Prompt Blocks
 
@@ -76,8 +76,8 @@
 - `prompts/ui-trace-kernel.md`
   - Runtime block for clean EterX action timeline rendering.
 
-- `prompts/work-note-kernel.md`
-  - Runtime block for sparse, professional coding work notes.
+- `prompts/progress-timeline-kernel.md`
+  - Runtime block for sparse, professional coding timeline notes.
 
 ## Eval Files
 

@@ -1,4 +1,5 @@
 import { autoContextManager } from './resilience/auto-context';
+import { getOrCreateGeminiCache, handleGeminiCacheNotFound, invalidateGeminiCacheForKey } from './gemini-cache';
 import { conversationLedger } from './memory/conversation-ledger';
 import { chatBoundary } from './chat-boundary';
 import { antiHallucination } from './anti-hallucination';
@@ -34,6 +35,9 @@ import { readTaskTracker, readTaskTrackerMarkdown, trackerToTrace, writeTaskTrac
 import { normalizeTimeoutMs, secondsFromTimeoutMs } from './tools/core/terminal_timeout';
 import { buildAgentBuilderRuntimePrompt, isAgentBuilderRuntimeContext, shouldExposeToolToRuntime } from './builder-agent';
 import { buildCodingAgentPromptContext, buildCodingAgentRootPrompt, isCodingAgentProfile } from './coding-agent-profile';
+import { CODE_AGENT_TOOLS } from '../code/code-agent-tools';
+import { ensureCodeIndex } from './workspace/code-index';
+import { getCodingAgentToolSummary } from '../code/code-agent-runtime';
 import * as cognitiveCore from './hooks/cognitive-core';
 import { formatVisibleWorkNote as formatCleanVisibleWorkNote } from './work-note';
 import * as pathLib from 'path';
@@ -67,6 +71,70 @@ function isSyntheticLoopCompletionText(value: unknown): boolean {
   const text = String(value || '').trim();
   if (!text) return false;
   return /^Completed\s+\d+\s+steps?\.\s*(?:Files:\s*.*?\.\s*)?Say\s+["']continue["']\s+if\s+more\s+work\s+needed\.?$/i.test(text);
+}
+
+let cachedMainAgentPromptContext: { key: string; value: string } | null = null;
+
+const MAIN_AGENT_PROMPT_FILES = [
+  { label: 'Current request guard', filename: 'current-request-guard.md' },
+  { label: 'Tool routing contract', filename: 'tool-routing-contract.md' },
+  { label: 'UI trace kernel', filename: 'ui-trace-kernel.md' },
+  { label: 'Progress timeline kernel', filename: 'progress-timeline-kernel.md' },
+  { label: 'Review and verification gates', filename: 'review-and-verification-gates.md' },
+  { label: 'Evidence graph kernel', filename: 'evidence-graph-kernel.md' },
+  { label: 'Frontier autonomy kernel', filename: 'frontier-autonomy-kernel.md' },
+  { label: 'Specialist swarm kernel', filename: 'specialist-swarm-kernel.md' },
+];
+
+async function buildMainAgentPromptContext(): Promise<string> {
+  const referenceRoot = pathLib.resolve(process.cwd(), 'Codign agent', 'eterx-agent-reference');
+  
+  const statsParts: string[] = [];
+  for (const file of MAIN_AGENT_PROMPT_FILES) {
+    const filePath = pathLib.join(referenceRoot, 'prompts', file.filename);
+    try {
+      const stat = await fsExtra.stat(filePath);
+      statsParts.push(`${file.filename}:${stat.size}:${stat.mtimeMs}`);
+    } catch {
+      statsParts.push(`${file.filename}:missing`);
+    }
+  }
+  const cacheKey = statsParts.join('|');
+  if (cachedMainAgentPromptContext?.key === cacheKey) {
+    return cachedMainAgentPromptContext.value;
+  }
+
+  const chunks: string[] = [];
+  for (const file of MAIN_AGENT_PROMPT_FILES) {
+    const filePath = pathLib.join(referenceRoot, 'prompts', file.filename);
+    if (!(await fsExtra.pathExists(filePath))) continue;
+
+    try {
+      let content = await fsExtra.readFile(filePath, 'utf-8');
+      content = content.replace(/\r\n/g, '\n').trim();
+      if (content) {
+        chunks.push([
+          `## ${file.label}`,
+          `Source: prompts/${file.filename}`,
+          content,
+        ].join('\n'));
+      }
+    } catch {
+      // Ignore
+    }
+  }
+
+  const value = chunks.length > 0
+    ? [
+        '--- ETERX GENERAL MAIN-AGENT CONTEXT & KERNELS ---',
+        'The following instruction kernels and rules apply to your execution. They define tool routing, UI tracing, review gates, autonomy parameters, and evidence requirements. Always prioritize safety rules and the latest user request.',
+        chunks.join('\n\n'),
+        '--- END ETERX GENERAL MAIN-AGENT CONTEXT & KERNELS ---',
+      ].join('\n\n')
+    : '';
+
+  cachedMainAgentPromptContext = { key: cacheKey, value };
+  return value;
 }
 
 function buildWaitTimerTraceFields(args: any) {
@@ -257,6 +325,14 @@ export class GeminiAgentClient {
           }),
           new Promise<never>((_, reject) => setTimeout(() => reject(new Error('TELEGRAM_FAST_TIMEOUT')), timeoutMs)),
         ]);
+
+        if ((response as any)?.usageMetadata) {
+          const u = (response as any).usageMetadata;
+          const promptTokens = u.promptTokenCount ?? u.inputTokenCount ?? 0;
+          const completionTokens = u.candidatesTokenCount ?? u.outputTokenCount ?? 0;
+          const totalTokens = u.totalTokenCount ?? (promptTokens + completionTokens);
+          console.log(`[GeminiClient] 📊 Fast Response Token Usage: Input: ${promptTokens} | Output: ${completionTokens} | Total: ${totalTokens}`);
+        }
 
         const text = String((response as any).text || '').trim() || 'Done.';
         const answerTrace = { type: 'answer', text };
@@ -492,6 +568,8 @@ export class GeminiAgentClient {
       apiKey = getRuntimeApiKey('openai');
     } else if (this.activeProvider === 'openrouter') {
       apiKey = getRuntimeApiKey('openrouter');
+    } else if (this.activeProvider === 'groq') {
+      apiKey = getRuntimeApiKey('groq');
     } else {
       apiKey = getRuntimeApiKey('mistral');
     }
@@ -506,7 +584,9 @@ export class GeminiAgentClient {
       ? (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1')
       : this.activeProvider === 'openrouter'
         ? (process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1')
-        : (process.env.MISTRAL_BASE_URL || process.env.MISTRAL_API_BASE_URL || 'https://api.mistral.ai/v1');
+        : this.activeProvider === 'groq'
+          ? (process.env.GROQ_BASE_URL || 'https://api.groq.com/openai/v1')
+          : (process.env.MISTRAL_BASE_URL || process.env.MISTRAL_API_BASE_URL || 'https://api.mistral.ai/v1');
 
     return new OpenAI({
       apiKey: this.getMistralApiKey(),
@@ -638,10 +718,14 @@ export class GeminiAgentClient {
       background_task: { text: 'Checking background task', type: 'command', iconCategory: 'terminal', argKey: 'taskId' },
       web_search: { text: 'Researching', type: 'exploration', iconCategory: 'web_search', argKey: 'query' },
       web_scraper: { text: 'Reading source', type: 'exploration', iconCategory: 'web_search', argKey: 'url' },
+      workspace_semantic_search: { text: 'Searching codebase', type: 'exploration', iconCategory: 'search', argKey: 'query' },
+      workspace_symbol_lookup: { text: 'Finding symbol', type: 'exploration', iconCategory: 'search', argKey: 'symbol' },
+      workspace_file_outline: { text: 'Outlining file', type: 'exploration', iconCategory: 'file_read', argKey: 'filename' },
       workspace_find_files: { text: 'Finding files', type: 'exploration', iconCategory: 'search', argKey: 'glob' },
       workspace_read_file: { text: 'Reading file', type: 'exploration', iconCategory: 'file_read', argKey: 'filename' },
       workspace_read_many_files: { text: 'Reading files', type: 'exploration', iconCategory: 'file_read', argKey: 'files' },
       workspace_search_text: { text: 'Searching codebase', type: 'exploration', iconCategory: 'search', argKey: 'pattern' },
+      workspace_str_replace: { text: 'Editing file', type: 'file_edit', iconCategory: 'file_edit', argKey: 'filename' },
       workspace_write_file: { text: 'Writing artifact', type: 'file_edit', iconCategory: 'file_create', argKey: 'filename' },
       workspace_edit_file: { text: 'Editing file', type: 'file_edit', iconCategory: 'file_edit', argKey: 'filename' },
       workspace_edit_many_files: { text: 'Editing files', type: 'file_edit', iconCategory: 'file_edit', argKey: 'files' },
@@ -1476,9 +1560,14 @@ export class GeminiAgentClient {
       'screenshot_capture',
     ]);
     const telegramMode = context?.source === 'telegram';
+    const codingMode = isCodingAgentProfile(context?.agentProfile);
+    const codingToolSet = new Set<string>(CODE_AGENT_TOOLS);
 
     return globalToolRegistry.getAllTools()
       .filter(tool => {
+        if (codingMode && !codingToolSet.has(tool.name)) {
+          return false;
+        }
         if (telegramMode && !telegramFastTools.has(tool.name)) {
           return false;
         }
@@ -1714,6 +1803,113 @@ export class GeminiAgentClient {
     }
   }
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // Context-caching helpers
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Generates the STATIC (cacheable) portion of the system prompt.
+   *
+   * Uses a blank project context so no volatile data (date, userName, preferences,
+   * project ID) ends up in the cache.  The two volatile sections are replaced with
+   * stable placeholder text; the real values are injected per-request via
+   * buildDynamicSystemSuffix().
+   */
+  public generateCacheableSystemPrompt(): string {
+    const blankCtx: any = {
+      projectId: '__cached__',
+      uploadedFiles: [],
+      userPreferences: {},
+      errorHistory: [],
+      // No userName, no disableSubAgents, no agentProfile → desktop defaults
+    };
+    let prompt = this.generateSystemPrompt(blankCtx as any, '');
+
+    // ── Strip volatile date/time line (changes every second) ──
+    prompt = prompt.replace(
+      /━━━ TEMPORAL CONTEXT ━━━\n📅[^\n]+\nAlways use the above[^\n]+/,
+      '━━━ TEMPORAL CONTEXT ━━━\n' +
+      '[Current date and time are injected per-request in DYNAMIC CONTEXT. ' +
+      'Always use those values for "today", "now", or any time-sensitive queries. ' +
+      'Never use training-data dates.]'
+    );
+
+    // ── Strip placeholder CONTEXT block (real values supplied per-request) ──
+    prompt = prompt.replace(
+      /━━━ CONTEXT ━━━\nProject: __cached__\nFiles: None[\s\S]*$/,
+      '━━━ CONTEXT ━━━\n' +
+      '[Project ID, uploaded files, user preferences, error history, ' +
+      'and full dynamic context (workspace intel, memory, session, skills) ' +
+      'are injected per-request.]'
+    );
+
+    return prompt.trim();
+  }
+
+  /**
+   * Generates the small DYNAMIC (per-request) system instruction suffix.
+   *
+   * This is used when a context cache is active.  It contains only the volatile
+   * data that changes between requests: date/time, userName override,
+   * directMainAgentMode, preferences, errors, projectId, and the full
+   * dynamicContext string built in runReActLoop().
+   */
+  public buildDynamicSystemSuffix(context: ProjectContext, dynamicContext: string): string {
+    const now = new Date();
+    const dateStr = now.toLocaleDateString('en-IN', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+    const timeStr = now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true });
+    const tzOffset = now.getTimezoneOffset();
+    const tzHours = Math.abs(Math.floor(tzOffset / 60));
+    const tzMinutes = Math.abs(tzOffset % 60);
+    const tzSign = tzOffset <= 0 ? '+' : '-';
+    const tzName = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Unknown';
+    const tzLabel = `UTC${tzSign}${String(tzHours).padStart(2, '0')}:${String(tzMinutes).padStart(2, '0')} (${tzName})`;
+    const isoDate = now.toISOString();
+
+    const userNameTxt = (context as any).userName &&
+      (context as any).userName !== 'Developer' &&
+      (context as any).userName !== 'User'
+      ? `\n━━━ 💎 PRIORITY IDENTITY 💎 ━━━\n` +
+        `IMPORTANT: The person you are currently serving is "${(context as any).userName}".\n` +
+        `You MUST address them as "${(context as any).userName}" and NO other name.\n` +
+        `If they ask "who am I?", answer "${(context as any).userName}". NEVER use tools to look up a name.\n`
+      : '';
+
+    const directMainAgentMode = (context as any).disableSubAgents
+      ? `\nDIRECT MAIN AGENT MODE\n` +
+        `- Do not spawn sub-agents, background workers, consensus panels, or parallel agents.\n` +
+        `- Complete the current request yourself in this main execution thread.\n` +
+        `- Scope discipline is mandatory: do exactly what the user asked, no more.\n` +
+        `- Stop as soon as the exact requested result is complete.\n`
+      : '';
+
+    const prefsContext = context.userPreferences && Object.keys(context.userPreferences).length > 0
+      ? `\nLearned Preferences:\n${Object.entries(context.userPreferences).map(([k, v]) => `- ${k}: ${JSON.stringify(v)}`).join('\n')}`
+      : '';
+
+    const errorContext = context.errorHistory && context.errorHistory.length > 0
+      ? `\nRecent Errors (avoid repeating):\n${context.errorHistory.map(e => `⚠️ ${e}`).join('\n')}`
+      : '';
+
+    const parts: string[] = [
+      `━━━ TEMPORAL CONTEXT ━━━`,
+      `📅 ${dateStr} · 🕐 ${timeStr} · 🌍 ${tzLabel} · 📆 ${isoDate}`,
+      `Always use the above for "today", "now", or time-sensitive queries. Never use training data dates.`,
+    ];
+    if (userNameTxt) parts.push(userNameTxt);
+    if (directMainAgentMode) parts.push(directMainAgentMode);
+    parts.push(
+      `━━━ CONTEXT ━━━`,
+      `Project: ${context.projectId}`,
+      `Files: ${(context.uploadedFiles || []).join(', ') || 'None'}`,
+    );
+    if (prefsContext) parts.push(prefsContext);
+    if (errorContext) parts.push(errorContext);
+    if (dynamicContext) parts.push(dynamicContext);
+
+    return parts.join('\n');
+  }
+
   /**
    * Generates the dynamic system instruction prompt.
    */
@@ -1768,6 +1964,7 @@ export class GeminiAgentClient {
       : '';
 
     if (isCodingAgentProfile((context as any).agentProfile)) {
+      const codingTools = getCodingAgentToolSummary();
       return buildCodingAgentRootPrompt({
         context,
         userNameText: userNameTxt,
@@ -1775,8 +1972,8 @@ export class GeminiAgentClient {
         timeText: timeStr,
         timezoneText: tzLabel,
         isoDate,
-        toolCount,
-        toolNames,
+        toolCount: codingTools.count,
+        toolNames: codingTools.names,
         directMainAgentMode,
         preferencesContext: prefsContext,
         errorContext,
@@ -1815,13 +2012,13 @@ ASK_USER TOOL RULES:
 â”â”â” WORK NOTES â”â”â”
 Visible work notes are concise status updates â€” what you found, what you are doing, what you will verify.
 - 1-4 sentences max. Match the note to the immediate tool call.
-- Use natural first person: "I found...", "Checking...", "That failed, Most importantly use expllict terms strong for somehtign happbned like in strritgn "Good! " Excelcellent "Ohh" and etc sometimes for acion syou have doen and or like anythign 
+- Use natural first person: "I found...", "Checking...", "That failed, so I am..."
 - Never promise outcomes before tools prove them. Report the current step, not the whole victory.
 - Never write synthetic AI language: "neural", "orchestrating", "calibrating", "synthesizing deep context".
-- Examples 
-"The branch push succeeded and now tracks origin/ui-updates-and-agent. I’m doing a normal non-force push of the same commit to origin/main next, as requested.
-"I’ll inspect the current branch, remotes, and full status first. Since you asked for all uncommitted changes, I’ll stage the whole working tree after confirming where it will be pushed.
-"Everything is staged. I’m committing the full staged tree now, then I’ll push the current branch. After that I’ll attempt a normal non-force push of this same commit to main because you mentioned main" <-- make sure nto alys first excellnt and studd soemtiem like this tto uderstnd 
+- Examples:
+"The branch push succeeded and now tracks origin/ui-updates-and-agent. I’m doing a normal non-force push of the same commit to origin/main next, as requested."
+"I’ll inspect the current branch, remotes, and full status first. Since you asked for all uncommitted changes, I’ll stage the whole working tree after confirming where it will be pushed."
+"Everything is staged. I’m committing the full staged tree now, then I’ll push the current branch. After that I’ll attempt a normal non-force push of this same commit to main because you mentioned main."
 
 
 â”â”â” TRUTHFUL EXECUTION â”â”â”
@@ -1839,18 +2036,19 @@ Visible work notes are concise status updates â€” what you found, what you 
 - SAVE LOCATION: Never default to Desktop. Save to user-specified path or project directory.
 - Use .workspaces/sandbox/ for ALL temp/intermediate work. Never put temp scripts on Desktop.
 - Use absolute paths. Resolve "desktop" via the Shell API path above.
+- CRITICAL PATH RULE: When you create a file with workspace_write_file, the tool returns the absolute path in its result (e.g. "C:\\Harshil projects\\EterX-Agent\\.workspaces\\sandbox\\download_dataset.py"). ALWAYS use that ABSOLUTE path in any subsequent workspace_run_command/system_shell that runs it. NEVER use a relative path like "python .workspaces/sandbox/script.py" — the shell CWD may be a different directory and the file won't be found. Example: python "C:\\Harshil projects\\EterX-Agent\\.workspaces\\sandbox\\download_dataset.py"
 
 â”â”â” AUTONOMOUS EXECUTION PROTOCOL â”â”â”
 This is the MOST IMPORTANT section. Follow this religiously:
 
-1. JUST DO IT â€” Don't plan. Don't explain. Don't ask permission. Execute.
-2. CHAIN FAST â€” research â†’ write â†’ verify â†’ next file. No gaps.
-3. COMPLETE FILES â€” Write the entire working file. No placeholders. No TODOs.
-4. FIX AND CONTINUE â€” If something breaks, fix it and keep going. If blocked, state the exact blocker with partial results.
-5. ITERATE UNTIL DONE â€” A task is done when it works, not when you wrote something. Verify.
-6. WORK AUTONOMOUSLY â€” Make decisions. Pick the best approach. Execute it.
-7. NEVER RESTART â€” You have persistent memory. If you already did something, move forward.
-8. STOP WHEN DONE â€” Output your result as clean Markdown. No over-delivery.
+1. JUST DO IT — Don't plan. Don't explain. Don't ask permission. Execute.
+2. CHAIN FAST — research → write → verify → next file. No gaps.
+3. SCOPED PATCHES — For editing existing files, use workspace_apply_patch with context matching to make precise, modular edits. Do NOT rewrite the entire file. For new files, write them completely without placeholders or TODOs.
+4. FIX AND CONTINUE — If something breaks, analyze the error/stderr carefully, patch the root cause, and verify again. Never repeat the exact same failed command or action without making a correction.
+5. ITERATE UNTIL DONE — A task is done when it is verified to work (e.g. by running compiling/tests or reading back the file), not when you just wrote something. Verify outcomes.
+6. WORK AUTONOMOUSLY — Make decisions. Pick the best approach. Execute it.
+7. NEVER RESTART — You have persistent memory. If you already did something, move forward.
+8. STOP WHEN DONE — Output your result as clean Markdown. No over-delivery.
 
 â”â”â” INTELLIGENT AUTONOMY (WHEN TO DECIDE VS WHEN TO STOP AND ASK) â”â”â”
 You are an autonomous agent. You should almost NEVER interrupt the user. Instead, make intelligent decisions:
@@ -1973,7 +2171,7 @@ Short messages (<8 words): Never start complex tasks. Never call task_decomposer
 - Use GitHub-flavored Markdown tables for comparisons and checklists for actionable steps when they improve scanability.
 - Concise. Sharp. Report what you DID, not what you could do.
 
-â”â”â” WORK EXECUTION CONTRACT â”â”â”
+â” â” â”  WORK EXECUTION CONTRACT â” â” â” 
 Classify the latest request from intent, not keywords:
 - Information request â†’ answer directly, tools only if current/local evidence needed.
 - Work request â†’ use tools, then report results.
@@ -1984,25 +2182,48 @@ Classify the latest request from intent, not keywords:
 - Blocked â†’ try smallest relevant check, then report the blocker honestly.
 - Completion: say work is done ONLY after tool results prove it.
 
-â”â”â” SMART OUTPUT â”â”â”
+â” â” â”  SMART OUTPUT â” â” â” 
 API output limit: ~800-1000 words per generation.
 For large content: calculate passes needed (1 page â‰ˆ 450 words), chunk into multiple writes to sandbox, then compile.
 For large codebases: write base files â†’ edit to add functionality â†’ edit to polish. Don't output everything at once.
 
-â”â”â” TOOL MASTERY â”â”â”
+â” â” â”  TOOL MASTERY â” â” â” 
 You have ${ toolCount } tools:
 
-TERMINAL ROUTING:
-- workspace_run_command: project commands (npm, tsc, pytest). If result has stillRunning/backgroundTaskId, the command is already alive in the background.
-- system_shell: OS commands. If result has stillRunning/backgroundTaskId, the command is already alive in the background.
+TERMINAL:
+- system_shell / workspace_run_command: Run ANY shell command (PowerShell). Use for npm, tsc, pytest, git, Get-Content, rg, etc.
+  - File reading: "Get-Content file.ts" or "Get-Content file.ts | Select-Object -First 50 -Last 50"
+  - Code search: "rg 'pattern' -n --type ts" or "rg 'pattern' --json" (ripgrep — fastest code search)
+  - If result has stillRunning/backgroundTaskId, the command is already alive in the background.
 - process_manager: anything long-running (dev servers, watchers, databases).
 - terminal_access: read-only terminal capability check.
 - Terminal handoff protocol: never rerun a handed-off command. Read stdout/stderr, call wait_timer for the suggested interval, then call background_task with mode="check" and the returned taskId. If the check still says running and no independent work remains, wait again instead of stopping or guessing. Continue work only after final output/exitCode arrives.
 
-FILE OPERATIONS:
-- workspace_find_files / workspace_search_text: fast discovery before reading
-- workspace_read_file with startLine/endLine / workspace_read_many_files: targeted inspection
-- workspace_write_file / workspace_edit_file / workspace_edit_many_files / smart_refactor: changes
+FILE EDITING (use workspace_apply_patch for all code edits):
+- workspace_apply_patch: THE primary tool for editing existing files. Uses context-line matching for precision.
+  Format:
+  *** Begin Patch
+  *** Update File: path/to/file.ts
+   context line (space prefix = unchanged)
+  -removed line (dash prefix)
+  +added line (plus prefix)
+   more context
+  *** Add File: path/to/new-file.ts
+  +new file content
+  *** Delete File: path/to/remove.ts
+  *** End Patch
+  RULES: Always read the file FIRST. Include 2-3 unchanged context lines before/after each change.
+  For new files use *** Add File (lines start with +). For deletion use *** Delete File.
+- workspace_str_replace: Primary edit tool. Exact old_string -> new_string after reading the file.
+- workspace_edit_file: Simple search/replace or line-range edits on one file.
+- workspace_write_file: Create entirely new files or full replacements.
+- workspace_edit_many_files / smart_refactor: Coordinated multi-file changes.
+
+FILE INSPECTION:
+- workspace_semantic_search: meaning-based codebase search for architecture/behavior questions
+- workspace_find_files / workspace_search_text: fast discovery (search_text uses ripgrep internally)
+- workspace_read_file with startLine/endLine: targeted inspection — returns numbered lines for reference
+- workspace_read_many_files: batch reads
 - code_intelligence: analyze structure without reading full files
 
 VERIFICATION:
@@ -2278,7 +2499,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
     // workspace_read_file: agent may legitimately re-read a file after editing it
     // docx_generator: may need retry after content expansion
     // ask_user: always needs fresh interaction
-    const neverDedupTools = ['workspace_write_file', 'workspace_edit_file', 'workspace_edit_many_files', 'workspace_read_file', 'workspace_read_many_files', 'docx_generator', 'ask_user', 'task_checkpoint', 'realtime_verify', 'browser_control', 'spawn_sub_agent', 'api_caller'];
+    const neverDedupTools = ['workspace_write_file', 'workspace_edit_file', 'workspace_edit_many_files', 'workspace_apply_patch', 'workspace_read_file', 'workspace_read_many_files', 'docx_generator', 'ask_user', 'task_checkpoint', 'realtime_verify', 'browser_control', 'spawn_sub_agent', 'api_caller'];
     const dedupToolName = normalizedSig.split(':')[0];
     if (neverDedupTools.includes(dedupToolName)) return false;
 
@@ -2367,6 +2588,9 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
 
     // Default list of stateless tool names
     const knownStateless = new Set([
+      'workspace_semantic_search',
+      'workspace_symbol_lookup',
+      'workspace_file_outline',
       'workspace_find_files',
       'workspace_read_file',
       'workspace_read_many_files',
@@ -2441,7 +2665,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
   }
 
   private isExploratoryToolCall(name: string, args: any): boolean {
-    if (['web_search', 'web_scraper', 'deep_research', 'workspace_find_files', 'workspace_search_text', 'workspace_analyze', 'csv_data_analyzer'].includes(name)) return true;
+    if (['web_search', 'web_scraper', 'deep_research', 'workspace_semantic_search', 'workspace_symbol_lookup', 'workspace_file_outline', 'workspace_find_files', 'workspace_search_text', 'workspace_analyze', 'csv_data_analyzer'].includes(name)) return true;
     if (name === 'workspace_read_file' || name === 'workspace_read_many_files') return true;
     if (name === 'system_shell' || name === 'workspace_run_command') {
       const command = String(args?.command || '').toLowerCase();
@@ -2655,6 +2879,13 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
       skillAutoLoadDisabled ? Promise.resolve() : dynamicSkillEngine.initialize(),
     ]);
 
+    if (isCodingAgentProfile((context as any).agentProfile)) {
+      const workspaceRoot = String((context as any).workspacePath || (context as any).workspaceRoot || '').trim();
+      if (workspaceRoot) {
+        ensureCodeIndex(workspaceRoot).catch(() => { /* non-blocking */ });
+      }
+    }
+
     const learningContext = longTermMemoryDisabled ? '' : adaptiveLearning.getLearningContext(message);
     const knowledgeContext = longTermMemoryDisabled ? '' : knowledgeEngine.getRelevantContext(message);
 
@@ -2801,6 +3032,18 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
           `Loader error: ${ String(error?.message || error).slice(0, 240) }`,
           'Operate as a coding-focused EterX agent: inspect before editing, preserve unrelated changes, make scoped edits, verify before claiming success, and report evidence clearly.',
           '--- END ETERX-CODE BUILT-IN PROFILE ---',
+        ].join('\n'));
+      }
+    } else {
+      try {
+        const mainAgentContext = await buildMainAgentPromptContext();
+        if (mainAgentContext) dynamicContextParts.push(mainAgentContext);
+      } catch (error: any) {
+        dynamicContextParts.push([
+          '--- ETERX GENERAL MAIN-AGENT CONTEXT & KERNELS ---',
+          'General kernels loader failed.',
+          `Loader error: ${ String(error?.message || error).slice(0, 240) }`,
+          '--- END ETERX GENERAL MAIN-AGENT CONTEXT & KERNELS ---',
         ].join('\n'));
       }
     }
@@ -2952,9 +3195,48 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
     }
 
     const dynamicContext = dynamicContextParts.join('\n\n');
-    const baseSystemInstruction = this.generateSystemPrompt(context, dynamicContext);
+
+    // ── CONTEXT CACHING: skip for telegram / builder / Gemma ──
+    // Desktop Gemini chats: cache the static ~53K-token system prompt + tools once
+    // per API key, then only send the ~9K dynamic suffix on every subsequent turn.
+    const _canUseContextCache =
+      this.activeProvider === 'gemini' &&
+      !lightweightTelegramMode &&
+      !isBuilder &&
+      process.env.ETERX_DISABLE_CONTEXT_CACHE !== '1';
+
+    let _cachedContentName: string | null = null;
+    let _cacheableStaticPrompt: string | null = null;
+
+    if (_canUseContextCache) {
+      try {
+        _cacheableStaticPrompt = this.generateCacheableSystemPrompt();
+        // Use the full tool set (no context-based filtering) for the cache so it
+        // stays stable across all desktop-mode requests.
+        const _cacheToolDecls = this.buildFunctionDeclarations(false, null);
+        _cachedContentName = await getOrCreateGeminiCache(
+          this.ai,
+          this.getCurrentApiKey(),
+          this.modelName,
+          _cacheableStaticPrompt,
+          _cacheToolDecls
+        );
+      } catch (_cacheErr: any) {
+        console.warn('[GeminiClient] Context cache setup failed (non-fatal):', String(_cacheErr?.message || _cacheErr).slice(0, 80));
+      }
+    }
+
+    // When a cache is active: system instruction = small dynamic suffix only.
+    // When no cache:          system instruction = full prompt (current behaviour).
+    const baseSystemInstruction = _cachedContentName
+      ? this.buildDynamicSystemSuffix(context, dynamicContext)
+      : this.generateSystemPrompt(context, dynamicContext);
+
     const config: import('@google/genai').GenerateContentConfig = {
-      tools: this.buildToolsConfig(isBuilder, context),
+      ...(_cachedContentName
+        ? { cachedContent: _cachedContentName }   // tools already inside the cache
+        : { tools: this.buildToolsConfig(isBuilder, context) }
+      ),
       systemInstruction: baseSystemInstruction,
     };
 
@@ -3277,9 +3559,23 @@ EXTERNAL ACTION NOTE CUE
       // ZERO-LATENCY: Fire the API stream immediately â€” no pre-scan overhead
       // Keep the same thinking policy on follow-up tool turns.
       const visibleProgressCue = buildVisibleProgressCue(interactions);
-      config.systemInstruction = visibleProgressCue
-        ? `${ baseSystemInstruction }${ visibleProgressCue }`
-        : baseSystemInstruction;
+      // When cache is active, baseSystemInstruction is already the dynamic suffix;
+      // the cached content holds the static rules + tools so we must NOT override
+      // config.tools (it would conflict with the cache contract).
+      if (_cachedContentName) {
+        // Rebuild dynamic suffix fresh every iteration (date/time stays accurate)
+        const freshSuffix = this.buildDynamicSystemSuffix(context, dynamicContext);
+        config.systemInstruction = visibleProgressCue
+          ? `${freshSuffix}${visibleProgressCue}`
+          : freshSuffix;
+        // Ensure tools NOT in config (they live in the cache)
+        delete (config as any).tools;
+        config.cachedContent = _cachedContentName;
+      } else {
+        config.systemInstruction = visibleProgressCue
+          ? `${ baseSystemInstruction }${ visibleProgressCue }`
+          : baseSystemInstruction;
+      }
       if (!isGemmaModel) {
         // ADAPTIVE THINKING: Escalate reasoning depth as task complexity reveals itself
       const dynamicThinkingLevel = interactions > 20
@@ -3303,10 +3599,10 @@ EXTERNAL ACTION NOTE CUE
       let lastStreamError = '';
       let streamConnectTimeouts = 0;
       let activeStreamAbortController: AbortController | null = null;
-      const streamConnectTimeoutMs = lightweightTelegramMode
+      const streamConnectTimeoutMs = (context as any).source === 'telegram'
         ? (lastHasFunctionResponse ? 12_000 : 6_000)
         : positiveIntEnv('GEMINI_STREAM_CONNECT_TIMEOUT_MS', 60_000);
-      const streamChunkTimeoutMs = lightweightTelegramMode
+      const streamChunkTimeoutMs = (context as any).source === 'telegram'
         ? (lastHasFunctionResponse ? 12_000 : 8_000)
         : positiveIntEnv('GEMINI_STREAM_CHUNK_TIMEOUT_MS', 60_000);
       const streamRequestTimeoutMs = positiveIntEnv(
@@ -3421,6 +3717,7 @@ EXTERNAL ACTION NOTE CUE
             _connectionGuard,
           ]);
           _cleanupRef.cleanup?.(); // cleanup on success
+          console.log(`[GeminiClient] 🟢 Live connection working! Streaming started successfully for model: ${currentModel}`);
           activeStreamAbortController = attemptAbortController;
           if (onTrace && lightweightTelegramMode && streamAttempts > 1) {
             onTrace({ type: 'progress', text: 'Connected; continuing' });
@@ -3451,9 +3748,45 @@ EXTERNAL ACTION NOTE CUE
             && /\b(file|files|fileuri|file uri|filedata|file data|media)\b/i.test(lowerErrMsg)
             && /\b(permission|access|forbidden|denied|not found|does not exist)\b/i.test(lowerErrMsg);
 
-          console.warn(`[GeminiClient] âš¡ Stream attempt ${ streamAttempts }/${ maxStreamAttempts } failed: ${ errMsg.substring(0, 80) }`);
+          // ── Cache NOT_FOUND: rebuild cache then retry ──
+          const isCacheExpiredError =
+            _cachedContentName &&
+            (errMsg.toLowerCase().includes('cachedcontent') || errMsg.toLowerCase().includes('cached_content')) &&
+            (errMsg.includes('NOT_FOUND') || errMsg.toLowerCase().includes('not found') || errMsg.includes('404'));
 
-          // Token limit errors are fatal â€” no amount of key rotation will fix them
+          if (isCacheExpiredError && _cacheableStaticPrompt && _canUseContextCache) {
+            console.warn('[GeminiClient] ⚠️ Cached content expired mid-session — rebuilding cache...');
+            try {
+              const _rebuildDecls = this.buildFunctionDeclarations(false, null);
+              _cachedContentName = await handleGeminiCacheNotFound(
+                this.ai,
+                this.getCurrentApiKey(),
+                this.modelName,
+                _cacheableStaticPrompt,
+                _rebuildDecls
+              );
+              if (_cachedContentName) {
+                config.cachedContent = _cachedContentName;
+                delete (config as any).tools;
+                console.log('[GeminiClient] ✅ Cache rebuilt — retrying stream...');
+              } else {
+                // Rebuild failed — fall back to uncached for this iteration
+                delete (config as any).cachedContent;
+                _cachedContentName = null;
+                config.tools = this.buildToolsConfig(isBuilder, context);
+              }
+            } catch (_rebuildErr: any) {
+              console.warn('[GeminiClient] Cache rebuild failed; falling back to uncached.');
+              delete (config as any).cachedContent;
+              _cachedContentName = null;
+              config.tools = this.buildToolsConfig(isBuilder, context);
+            }
+            continue; // Retry stream with rebuilt/fallback config
+          }
+
+          console.warn(`[GeminiClient] ⚡ Stream attempt ${ streamAttempts }/${ maxStreamAttempts } failed: ${ errMsg.substring(0, 80) }`);
+
+          // Token limit errors are fatal — no amount of key rotation will fix them
           if (onTrace && lightweightTelegramMode) {
             onTrace({
               type: 'progress',
@@ -3586,6 +3919,7 @@ EXTERNAL ACTION NOTE CUE
       // Process stream chunks LIVE. Manual iterator reads prevent a silent
       // hanging stream from leaving Telegram stuck on "Thinking".
       const allResponseParts: any[] = [];
+      let lastUsageMetadata: any = null;
 
       const streamIterator = stream[Symbol.asyncIterator]();
       try {
@@ -3593,6 +3927,9 @@ EXTERNAL ACTION NOTE CUE
           const next = await nextStreamChunk(streamIterator, streamChunkTimeoutMs, activeStreamAbortController);
           if (next.done) break;
           const chunk = next.value;
+          if (chunk?.usageMetadata) {
+            lastUsageMetadata = chunk.usageMetadata;
+          }
           // Instant cancel check during streaming â€” throw so it propagates immediately
           if (isCancelled(context.projectId)) throw new Error('CANCELLED_BY_USER');
           const candidates = chunk.candidates;
@@ -3655,6 +3992,13 @@ EXTERNAL ACTION NOTE CUE
         throw retryErr;
       }
       activeStreamAbortController = null;
+
+      if (lastUsageMetadata) {
+        const promptTokens = lastUsageMetadata.promptTokenCount ?? lastUsageMetadata.inputTokenCount ?? 0;
+        const completionTokens = lastUsageMetadata.candidatesTokenCount ?? lastUsageMetadata.outputTokenCount ?? 0;
+        const totalTokens = lastUsageMetadata.totalTokenCount ?? (promptTokens + completionTokens);
+        console.log(`[GeminiClient] 📊 Token Usage: Input: ${promptTokens} | Output: ${completionTokens} | Total: ${totalTokens}`);
+      }
 
       // Build the full response content for history
       fullResponseContent = { role: 'model', parts: allResponseParts };
@@ -3905,15 +4249,21 @@ EXTERNAL ACTION NOTE CUE
         web_search: { text: 'Researching', type: 'exploration', iconCategory: 'web_search', argKey: 'query' },
         web_scraper: { text: 'Reading source', type: 'exploration', iconCategory: 'web_search', argKey: 'url' },
         workspace_list_directory: { text: 'Scanning directory', type: 'exploration', iconCategory: 'folder_read', argKey: 'directory' },
+        workspace_semantic_search: { text: 'Searching codebase', type: 'exploration', iconCategory: 'search', argKey: 'query' },
+        workspace_symbol_lookup: { text: 'Finding symbol', type: 'exploration', iconCategory: 'search', argKey: 'symbol' },
+        workspace_file_outline: { text: 'Outlining file', type: 'exploration', iconCategory: 'file_read', argKey: 'filename' },
         workspace_find_files: { text: 'Finding files', type: 'exploration', iconCategory: 'search', argKey: 'glob' },
         workspace_read_file: { text: 'Reading file', type: 'exploration', iconCategory: 'file_read', argKey: 'filename' },
         workspace_read_many_files: { text: 'Reading files', type: 'exploration', iconCategory: 'file_read', argKey: 'files' },
+        workspace_search_text: { text: 'Searching codebase', type: 'exploration', iconCategory: 'search', argKey: 'pattern' },
+        workspace_str_replace: { text: 'Editing file', type: 'file_edit', iconCategory: 'file_edit', argKey: 'filename' },
         workspace_write_file: { text: 'Writing artifact', type: 'file_edit', iconCategory: 'file_create', argKey: 'filename' },
         workspace_edit_file: { text: 'Editing file', type: 'file_edit', iconCategory: 'file_edit', argKey: 'filename' },
         workspace_edit_many_files: { text: 'Editing files', type: 'file_edit', iconCategory: 'file_edit', argKey: 'files' },
         workspace_run_command: { text: 'Running project command', type: 'command', iconCategory: 'terminal', argKey: 'command' },
         workspace_verify_code: { text: 'Verifying code', type: 'command', iconCategory: 'verification', argKey: 'checkType' },
-        workspace_search_text: { text: 'Searching codebase', type: 'exploration', iconCategory: 'search', argKey: 'pattern' },
+        workspace_apply_patch: { text: 'Patching files', type: 'file_edit', iconCategory: 'file_edit', argKey: 'patch' },
+        workspace_edit_session: { text: 'Reviewing session', type: 'exploration', iconCategory: 'file_read', argKey: 'action' },
         get_skill_guidelines: { text: 'Loading skill', type: 'exploration', iconCategory: 'folder_read', argKey: 'skill_name' },
         git_operations: { text: 'Git operation', type: 'command', iconCategory: 'terminal', argKey: 'operation' },
         screenshot_capture: { text: 'Capturing screen', type: 'exploration', iconCategory: 'computer', argKey: 'target' },
@@ -3947,6 +4297,7 @@ EXTERNAL ACTION NOTE CUE
         self_improve: { text: 'Self-improving', type: 'command', iconCategory: 'computer', argKey: 'action' },
         memory_v2: { text: 'Updating memory', type: 'command', iconCategory: 'file_create', argKey: 'action' },
         diff_patch: { text: 'Comparing files', type: 'exploration', iconCategory: 'search' },
+        workspace_execute_script: { text: 'Running script', type: 'command', iconCategory: 'terminal', argKey: 'script' },
         markdown_to_html: { text: 'Converting markdown', type: 'file_edit', iconCategory: 'file_create', argKey: 'title' },
         json_yaml_transform: { text: 'Transforming data', type: 'command', iconCategory: 'computer', argKey: 'operation' },
         regex_text_processor: { text: 'Processing text', type: 'command', iconCategory: 'computer', argKey: 'operation' },

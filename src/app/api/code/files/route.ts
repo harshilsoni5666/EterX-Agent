@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { promises as fs } from 'fs';
 import * as path from 'path';
 import { createHash } from 'crypto';
-import { getPathResolverInfo } from '@/lib/agent/workspace/path_resolver';
+import { getPathResolverInfo, resolveReadableWorkspacePath } from '@/lib/agent/workspace/path_resolver';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -173,7 +173,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'filePath is required' }, { status: 400 });
     }
 
-    const normalizedPath = path.resolve(path.normalize(filePath));
+    const normalizedPath = resolveReadableWorkspacePath(filePath.trim());
 
     let stats;
     try {

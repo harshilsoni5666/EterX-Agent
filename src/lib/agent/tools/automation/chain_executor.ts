@@ -15,7 +15,7 @@ interface ChainStep {
   tool: string;
   args: Record<string, any> | string;
   outputVar?: string; // Store result in variable for later steps
-  condition?: string; // Only run if this restricted condition evaluates to true
+  condition?: string; // Only run if this JS expression evaluates to true
 }
 
 interface ChainResult {
@@ -90,19 +90,13 @@ export const chainExecutorTool: ToolDefinition = {
       // Check condition
       if (step.condition) {
         try {
-          const conditionResult = evaluateCondition(step.condition, results, chainVars);
+          const conditionResult = new Function('steps', 'vars', `return ${step.condition}`)(results, Object.fromEntries(chainVars));
           if (!conditionResult) {
             console.log(`[ChainExecutor] Step ${i + 1} skipped (condition false)`);
             results.push({ step: i + 1, tool: step.tool, success: true, duration: 0, output: 'SKIPPED (condition)' });
             continue;
           }
-        } catch (err: any) {
-          const message = `Invalid condition on step ${i + 1}: ${err.message}`;
-          results.push({ step: i + 1, tool: step.tool, success: false, duration: 0, output: message });
-          allSuccess = false;
-          if (input.stopOnError) break;
-          continue;
-        }
+        } catch { /* If condition eval fails, run the step anyway */ }
       }
 
       // Resolve variable references in args
@@ -121,7 +115,7 @@ export const chainExecutorTool: ToolDefinition = {
           throw new Error(`Tool "${step.tool}" not found in registry`);
         }
 
-        const output = await tool.execute(resolvedArgs, context || {});
+        const output = await tool.execute(resolvedArgs, {});
         const duration = Date.now() - stepStart;
 
         // Store output in variable if requested
@@ -137,8 +131,7 @@ export const chainExecutorTool: ToolDefinition = {
         allSuccess = false;
 
         // Log error for self-improvement
-        const projectId = context?.workspaceId || context?.projectId || 'unknown';
-        globalMemoryManager.logError('chain_executor', `Step ${i + 1} (${step.tool}) failed: ${err.message}`, `autonomous_chain [project:${projectId}]`);
+        globalMemoryManager.logError('chain_executor', `Step ${i + 1} (${step.tool}) failed: ${err.message}`, 'autonomous_chain');
 
         if (input.stopOnError) {
           console.log(`[ChainExecutor] Chain stopped at step ${i + 1} (stopOnError=true)`);
@@ -160,126 +153,19 @@ export const chainExecutorTool: ToolDefinition = {
 };
 
 function resolveVars(args: Record<string, any>, vars: Map<string, any>): Record<string, any> {
-  return resolveValue(args, vars);
-}
-
-function resolveValue(value: any, vars: Map<string, any>): any {
-  if (typeof value === 'string') {
-    const exact = value.match(/^\{\{\s*(\w+)\s*\}\}$/);
-    if (exact) {
-      const resolved = vars.get(exact[1]);
-      return resolved === undefined ? value : resolved;
+  const resolved: Record<string, any> = {};
+  for (const [key, value] of Object.entries(args)) {
+    if (typeof value === 'string') {
+      resolved[key] = value.replace(/\{\{(\w+)\}\}/g, (_, varName) => {
+        const v = vars.get(varName);
+        if (v === undefined) return `{{${varName}}}`;
+        return typeof v === 'string' ? v : JSON.stringify(v);
+      });
+    } else {
+      resolved[key] = value;
     }
-
-    return value.replace(/\{\{\s*(\w+)\s*\}\}/g, (_, varName) => {
-      const v = vars.get(varName);
-      if (v === undefined) return `{{${varName}}}`;
-      return typeof v === 'string' ? v : JSON.stringify(v);
-    });
   }
-
-  if (Array.isArray(value)) {
-    return value.map(item => resolveValue(item, vars));
-  }
-
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(
-      Object.entries(value).map(([key, nestedValue]) => [key, resolveValue(nestedValue, vars)])
-    );
-  }
-
-  return value;
-}
-
-function evaluateCondition(condition: string, results: ChainResult[], vars: Map<string, any>): boolean {
-  const expression = condition.trim();
-  if (!expression) return true;
-
-  if (expression.includes('&&')) {
-    return expression.split('&&').every(part => evaluateCondition(part, results, vars));
-  }
-  if (expression.includes('||')) {
-    return expression.split('||').some(part => evaluateCondition(part, results, vars));
-  }
-
-  let negated = false;
-  let atom = expression;
-  if (atom.startsWith('!')) {
-    negated = true;
-    atom = atom.slice(1).trim();
-  }
-
-  const comparison = atom.match(/^(.*?)\s*(===|!==|==|!=|>=|<=|>|<)\s*(.*?)$/);
-  const leftExpr = comparison ? comparison[1].trim() : atom;
-  const left = readConditionValue(leftExpr, results, vars);
-
-  let value = comparison
-    ? compareValues(left, parseConditionLiteral(comparison[3].trim()), comparison[2])
-    : Boolean(left);
-
-  return negated ? !value : value;
-}
-
-function readConditionValue(expr: string, results: ChainResult[], vars: Map<string, any>): any {
-  const stepMatch = expr.match(/^steps\[(\d+)\]((?:\.[A-Za-z_$][\w$]*)*)$/);
-  if (stepMatch) {
-    const step = results[Number(stepMatch[1])];
-    return readPropertyPath(step, stepMatch[2]);
-  }
-
-  const varsMatch = expr.match(/^vars(?:\.([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*))?$/);
-  if (varsMatch) {
-    if (!varsMatch[1]) return Object.fromEntries(vars);
-    const [varName, ...rest] = varsMatch[1].split('.');
-    return readPropertyPath(vars.get(varName), rest.length ? `.${rest.join('.')}` : '');
-  }
-
-  const directVarMatch = expr.match(/^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/);
-  if (directVarMatch) {
-    const [varName, ...rest] = expr.split('.');
-    return readPropertyPath(vars.get(varName), rest.length ? `.${rest.join('.')}` : '');
-  }
-
-  throw new Error(`Unsupported condition expression "${expr}". Use steps[n].field or vars.name comparisons.`);
-}
-
-function readPropertyPath(value: any, pathExpr: string): any {
-  if (!pathExpr) return value;
-  const parts = pathExpr.split('.').filter(Boolean);
-  return parts.reduce((current, part) => current == null ? undefined : current[part], value);
-}
-
-function parseConditionLiteral(raw: string): any {
-  if (raw === 'true') return true;
-  if (raw === 'false') return false;
-  if (raw === 'null') return null;
-  if (raw === 'undefined') return undefined;
-  if (/^-?\d+(?:\.\d+)?$/.test(raw)) return Number(raw);
-  if ((raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'"))) {
-    return raw.slice(1, -1);
-  }
-  throw new Error(`Unsupported comparison literal "${raw}". Use booleans, numbers, null, undefined, or quoted strings.`);
-}
-
-function compareValues(left: any, right: any, operator: string): boolean {
-  switch (operator) {
-    case '===':
-    case '==':
-      return left === right;
-    case '!==':
-    case '!=':
-      return left !== right;
-    case '>=':
-      return left >= right;
-    case '<=':
-      return left <= right;
-    case '>':
-      return left > right;
-    case '<':
-      return left < right;
-    default:
-      throw new Error(`Unsupported operator "${operator}"`);
-  }
+  return resolved;
 }
 
 function summarizeOutput(output: any): any {

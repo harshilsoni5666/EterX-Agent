@@ -23,8 +23,8 @@ const PROVIDERS = [
     envKeys: ['OPENAI_API_KEY'],
     npm: ['openai'],
     getUrl: 'https://platform.openai.com/api-keys',
-    models: ['gpt-4.1', 'gpt-4.1-mini', 'gpt-4.1-nano', 'o3', 'o4-mini', 'codex-mini'],
-    description: 'GPT & Codex models. Paid API.',
+    models: ['gpt-4.1', 'gpt-4.1-mini', 'gpt-4.1-nano', 'o3', 'o4-mini'],
+    description: 'OpenAI models. Paid API.',
   },
   {
     id: 'anthropic',
@@ -50,7 +50,7 @@ const PROVIDERS = [
     envKeys: ['GROQ_API_KEY'],
     npm: ['groq-sdk'],
     getUrl: 'https://console.groq.com/keys',
-    models: ['llama-3.3-70b-versatile', 'mixtral-8x7b-32768', 'gemma2-9b-it'],
+    models: ['openai/gpt-oss-120b', 'openai/gpt-oss-20b', 'llama-3.3-70b-versatile', 'llama-3.1-8b-instant'],
     description: 'Ultra-fast Llama/Mixtral inference. Free tier available.',
   },
   {

@@ -3,7 +3,6 @@ import { ToolDefinition } from '../../schemas';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import path from 'path';
-import { resolveWorkspaceDirectoryForContext } from '../../workspace/path_resolver';
 
 const execAsync = promisify(exec);
 
@@ -20,16 +19,16 @@ const execAsync = promisify(exec);
  */
 export const gitIntelTool: ToolDefinition = {
   name: 'git_intelligence',
-  description: `Smart git operations. Use only when the user explicitly asks for source-control work.
+  description: `Smart git operations with AI-powered intelligence.
 
 MODES:
 - "status": Enhanced status with file categories and change summary
-- "smart_commit": Auto-generate commit message from staged changes, then commit. Requires confirmWrite=true.
+- "smart_commit": Auto-generate commit message from staged changes, then commit
 - "diff_summary": Analyze changes and provide a human-readable summary
 - "branch_info": Show branch info with ahead/behind counts
 - "changelog": Generate changelog from recent commits
-- "stash_smart": Smart stash with auto-generated name. Requires confirmWrite=true.
-- "unstash": Pop the most recent stash. Requires confirmWrite=true.
+- "stash_smart": Smart stash with auto-generated name
+- "unstash": Pop or apply most recent stash
 - "log": Pretty git log with formatting
 - "conflict_check": Check if current branch has conflicts with a target branch
 
@@ -46,19 +45,11 @@ EXAMPLES:
     ]).describe('Operation mode'),
     message: z.string().optional().describe('Commit message override (for smart_commit)'),
     count: z.number().optional().default(10).describe('Number of log entries (for log, changelog)'),
-    branch: z.string().optional().describe('Target branch (for conflict_check)'),
-    confirmWrite: z.boolean().optional().describe('Required for smart_commit, stash_smart, and unstash. Set only when the user explicitly requested the write action.')
+    branch: z.string().optional().describe('Target branch (for conflict_check)')
   }),
   outputSchema: z.object({ success: z.boolean(), result: z.any(), message: z.string() }),
-  execute: async (input: { mode: string, message?: string, count?: number, branch?: string, confirmWrite?: boolean }, context?: any) => {
-    const cwd = resolveWorkspaceDirectoryForContext(undefined, context);
-    if (['smart_commit', 'stash_smart', 'unstash'].includes(input.mode) && !input.confirmWrite) {
-      return {
-        success: false,
-        result: null,
-        message: `${input.mode} changes repository state. Retry only if the user explicitly requested it and set confirmWrite=true.`,
-      };
-    }
+  execute: async (input: { mode: string, message?: string, count?: number, branch?: string }) => {
+    const cwd = process.cwd();
 
     const run = async (cmd: string): Promise<string> => {
       try {
@@ -199,11 +190,11 @@ EXAMPLES:
           return { success: false, result: null, message: 'branch is required for conflict_check' };
         }
         const current = await run('git branch --show-current');
-        const mergeCheck = await run(`git merge --no-commit --no-ff ${input.branch} 2>&1 || true`);
+        const mergeCheck = await run(`git merge --no-commit --    no-ff ${input.branch} 2>&1 || true`);
         await run('git merge --abort 2>&1 || true');
 
-        const cts = mergeCheck.toLowerCase().includes('conflict');
-        return {
+        const    cts = mergeCheck.toLowerCase().includes('conflict');
+        return	 {
           success: true,
           result: { current, target: input.branch, hasConflicts: cts, output: mergeCheck },
           message: cts ? `⚠️ Conflicts detected with ${input.branch}` : `✅ No conflicts with ${input.branch}`

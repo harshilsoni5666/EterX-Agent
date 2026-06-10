@@ -74,11 +74,11 @@ Every tool call should carry:
 - `uiActionText`: 2-6 words describing the action.
 - `uiIcon`: one of `terminal`, `agent`, `image`, `file_read`, `computer`, `file_create`, `file_edit`, `folder_read`, `folder_create`, `search`, `web_search`, `verification`.
 
-Use work notes only for phase changes. Do not write one note before every tool call. A good coding timeline should show clear grouped actions such as `Reading auth handler`, `Patching modal layout`, `Running targeted tests`, and `Checking mobile layout`.
+Use timeline notes only for phase changes. Do not write one note before every tool call. A good coding timeline should show clear grouped actions such as `Reading auth handler`, `Patching modal layout`, `Running targeted tests`, and `Checking mobile layout`.
 
-Work note style:
+Timeline note style:
 
-- first person,
+- natural narration,
 - concrete,
 - one sentence when possible,
 - explains a phase change,

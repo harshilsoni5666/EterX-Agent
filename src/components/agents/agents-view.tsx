@@ -1,10 +1,19 @@
 import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Plus, Loader2, ShieldCheck, Settings2, UserCog, ArrowLeft, ArrowUp } from 'lucide-react';
+import { Plus, Loader2, ShieldCheck, Settings2, ArrowLeft, ArrowUp } from 'lucide-react';
 import { PremiumEdit, PremiumSettings, PremiumActivity } from '../ui/premium-icons';
 import { Tooltip } from '../ui/tooltip';
 import { ProfessionalThought } from '../chat/thought-sequence';
+
+const AgentPeopleIcon = (props: React.SVGProps<SVGSVGElement>) => (
+  <svg {...props} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <g stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="8.25" r="3.15" />
+      <path d="M5.35 19.25c1.12-2.95 3.33-4.42 6.65-4.42s5.53 1.47 6.65 4.42" />
+    </g>
+  </svg>
+);
 
 interface Agent {
   id: string;
@@ -193,8 +202,8 @@ export const AgentsView = ({
   return (
     <div className="eterx-agents-view flex-1 w-full h-full flex flex-col px-5 py-5 md:px-8 md:pt-6 md:pb-6 overflow-hidden relative z-20 bg-transparent">
       {/* Header Area */}
-      <div className="flex items-center justify-between mb-4 shrink-0">
-        <div className="flex flex-col">
+      <div className="flex items-center justify-between gap-3 mb-4 shrink-0">
+        <div className="flex min-w-0 flex-col">
           <motion.h1 
             initial={{ opacity: 0, y: -10 }}
             animate={{ opacity: 1, y: 0 }}
@@ -217,7 +226,7 @@ export const AgentsView = ({
           initial={{ opacity: 0, scale: 0.9 }}
           animate={{ opacity: 1, scale: 1 }}
           transition={{ delay: 0.2 }}
-          className="eterx-agents-primary-button flex h-9 items-center gap-2 px-4 bg-white text-black font-semibold text-[12px] rounded-full hover:bg-[#E8E6E3] transition-all duration-300 active:scale-95 group"
+          className="eterx-agents-primary-button flex h-9 shrink-0 items-center gap-2 px-4 bg-white text-black font-semibold text-[12px] rounded-full hover:bg-[#E8E6E3] transition-all duration-300 active:scale-95 group"
         >
           <Plus className="w-3.5 h-3.5 text-black" strokeWidth={2.5} />
           New agent
@@ -250,19 +259,30 @@ export const AgentsView = ({
             <div 
               key={agent.id} 
               onClick={() => onOpenBuilder(agent.id)}
-              className="eterx-agent-card group relative bg-[#111111] border border-white/[0.06] rounded-[14px] p-3 hover:border-white/[0.12] hover:bg-[#151515] transition-all duration-200 cursor-pointer overflow-hidden flex items-center justify-between shrink-0 shadow-sm"
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => {
+                const target = e.target as HTMLElement;
+                if (target.closest('button,input,textarea')) return;
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  onOpenBuilder(agent.id);
+                }
+              }}
+              className="eterx-agent-card group relative bg-[#111111] border border-white/[0.06] rounded-[14px] p-3 hover:border-white/[0.12] hover:bg-[#151515] transition-all duration-200 cursor-pointer overflow-hidden flex items-stretch justify-between shrink-0 shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/20"
             >
               <div className="absolute inset-0 bg-white/[0.02] opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none" />
               
-              <div className="flex items-center gap-3 relative z-10 w-full px-1">
+              <div className="relative z-10 flex w-full min-w-0 flex-col gap-3 px-1 sm:flex-row sm:items-center">
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-0.5">
+                  <div className="flex min-w-0 items-center gap-2 mb-0.5">
                     {editingAgentId === agent.id ? (
                       <input 
                         autoFocus
                         type="text" 
                         value={editingName}
                         onChange={(e) => setEditingName(e.target.value)}
+                        onClick={(e) => e.stopPropagation()}
                         onBlur={() => {
                           setAgents(agents.map(a => a.id === agent.id ? { ...a, name: editingName || a.name } : a));
                           setEditingAgentId(null);
@@ -277,9 +297,10 @@ export const AgentsView = ({
                       />
                     ) : (
                       <>
-                        <h3 className="text-[14px] md:text-[15px] font-semibold text-[#E8E6E3] group-hover:text-white transition-colors truncate">{agent.name}</h3>
+                        <h3 className="min-w-0 text-[14px] md:text-[15px] font-semibold text-[#E8E6E3] group-hover:text-white transition-colors truncate">{agent.name}</h3>
                         <Tooltip text="Edit agent name" side="top">
                           <button
+                            type="button"
                             onClick={(e) => { 
                               e.stopPropagation(); 
                               setEditingName(agent.name);
@@ -303,8 +324,8 @@ export const AgentsView = ({
                       </>
                     )}
                   </div>
-                  <div className="flex items-center gap-3 mt-1">
-                    <p className="text-[12px] md:text-[13px] text-[#8C8A88] truncate max-w-[400px]">
+                  <div className="mt-1 flex min-w-0 flex-wrap items-center gap-2">
+                    <p className="min-w-0 flex-1 text-[12px] md:text-[13px] text-[#8C8A88] truncate max-w-[400px]">
                       {agent.description}
                     </p>
                     <div className="hidden md:flex items-center gap-1.5 px-2 py-0.5 rounded-[4px] bg-white/[0.03] border border-white/[0.05]">
@@ -318,8 +339,9 @@ export const AgentsView = ({
                   </div>
                 </div>
 
-                <div className="flex items-center gap-2 shrink-0">
+                <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 sm:flex-nowrap">
                   <button
+                    type="button"
                     onClick={(e) => {
                       e.stopPropagation();
                       if (!isReady) {
@@ -328,7 +350,7 @@ export const AgentsView = ({
                       }
                       onUseAgent?.(isDefaultAgent ? null : agent.id, isDefaultAgent ? 'General' : agent.name);
                     }}
-                    className={`eterx-agent-use-button flex items-center px-3.5 py-1.5 font-semibold text-[12px] rounded-full border transition-all duration-200 active:scale-95 ${
+                    className={`eterx-agent-use-button flex items-center whitespace-nowrap px-3.5 py-1.5 font-semibold text-[12px] rounded-full border transition-all duration-200 active:scale-95 ${
                       isReady
                         ? 'bg-white/[0.065] text-white border-white/[0.12] hover:bg-white/[0.10]'
                         : 'bg-white/[0.025] text-white/58 border-white/[0.08] hover:bg-white/[0.05]'
@@ -337,23 +359,27 @@ export const AgentsView = ({
                     {isReady ? useLabel : 'Setup'}
                   </button>
                   <button 
+                    type="button"
                     onClick={(e) => { e.stopPropagation(); onOpenBuilder(agent.id); }}
-                    className="eterx-agent-open-button px-3.5 py-1.5 bg-white text-black font-semibold text-[12px] rounded-full hover:bg-[#E8E6E3] transition-all duration-200 active:scale-95 mr-2"
+                    className="eterx-agent-open-button whitespace-nowrap px-3.5 py-1.5 bg-white text-black font-semibold text-[12px] rounded-full hover:bg-[#E8E6E3] transition-all duration-200 active:scale-95"
                   >
                     {agent.isSetup === false ? 'Setup' : 'Open'}
                   </button>
 
-                  <Tooltip text="View Statistics" side="top">
+                  <Tooltip text="Statistics coming soon" side="top">
                     <button 
+                      type="button"
+                      aria-disabled="true"
                       onClick={(e) => e.stopPropagation()}
-                      className="eterx-agent-icon-button text-[#555350] hover:text-white transition-colors p-2 rounded-xl hover:bg-white/10 active:scale-95 group/btn"
+                      className="eterx-agent-icon-button cursor-not-allowed text-[#555350]/70 transition-colors p-2 rounded-xl opacity-55 active:scale-100 group/btn"
                     >
-                      <PremiumActivity className="w-[18px] h-[18px] group-hover/btn:scale-110 transition-transform" />
+                      <PremiumActivity className="w-[18px] h-[18px] transition-transform" />
                     </button>
                   </Tooltip>
-                  <div className="w-[1px] h-5 bg-white/[0.08] mx-1"></div>
+                  <div className="hidden w-[1px] h-5 bg-white/[0.08] mx-1 sm:block"></div>
                   <Tooltip text="Agent Settings" side="top">
                     <button 
+                      type="button"
                       onClick={(e) => {
                         e.stopPropagation();
                         setSettingsAgent(agent);
@@ -419,7 +445,7 @@ export const AgentsView = ({
                     {[
                       { id: 'Full Access', icon: ShieldCheck, desc: 'Complete access to all workspace files and tools.' },
                       { id: 'Selected Access', icon: Settings2, desc: 'Restricted to explicitly selected scopes.' },
-                      { id: 'Agent Decides', icon: UserCog, desc: 'Agent autonomously requests access as needed.' }
+                      { id: 'Agent Decides', icon: AgentPeopleIcon, desc: 'Agent autonomously requests access as needed.' }
                     ].map(opt => (
                       <button 
                         key={opt.id}

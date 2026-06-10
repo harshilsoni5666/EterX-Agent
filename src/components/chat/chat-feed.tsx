@@ -5,7 +5,6 @@ import { ThinkingProcess, ProfessionalThought } from '../chat/thought-sequence';
 import { AskUserPrompt } from '../chat/ask-user-prompt';
 import { Tooltip } from '../ui/tooltip';
 import { notifyAgentFaceTraceLog } from './agent-face-controller';
-import { resolveAgentIcon } from './agent-icons';
 
 interface ChatFeedProps {
   traceLogs: any[];
@@ -18,58 +17,55 @@ interface ChatFeedProps {
   isCompressed?: boolean;
   onOpenAgentTeam?: (agentName?: string) => void;
   onAnswerAskUser?: (timestamp: number, answer: string, responseKey?: string) => void;
+  onEditUserMessage?: (text: string) => void;
 }
+
+const copyTextToClipboard = async (text: string) => {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    // Fall back below when Clipboard API permission is denied.
+  }
+
+  try {
+    const textArea = document.createElement('textarea');
+    textArea.value = text;
+    textArea.setAttribute('readonly', '');
+    textArea.style.position = 'fixed';
+    textArea.style.left = '-9999px';
+    textArea.style.top = '0';
+    document.body.appendChild(textArea);
+    textArea.focus();
+    textArea.select();
+    const copied = document.execCommand('copy');
+    document.body.removeChild(textArea);
+    return copied;
+  } catch (err) {
+    console.error('Failed to copy:', err);
+    return false;
+  }
+};
 
 const NakedCopyButton = ({ content }: { content: string }) => {
   const [copied, setCopied] = useState(false);
   const handle = async (e: React.MouseEvent) => {
     e.stopPropagation();
     e.preventDefault();
-    try {
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        await navigator.clipboard.writeText(content);
-      } else {
-        const textArea = document.createElement("textarea");
-        textArea.value = content;
-        document.body.appendChild(textArea);
-        textArea.select();
-        document.execCommand("copy");
-        document.body.removeChild(textArea);
-      }
+    const didCopy = await copyTextToClipboard(content);
+    if (didCopy) {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
-    } catch (err) {
-      console.error('Failed to copy:', err);
     }
   };
   return (
     <Tooltip text={copied ? "Copied!" : "Copy"}>
-      <button onClick={handle} className="p-[6px] text-[#555350] hover:text-[#E8E6E3] transition-colors rounded-md hover:bg-white/[0.06]">
-        {copied ? <Check className="w-[15px] h-[15px] text-[#56D364]" /> : <Copy className="w-[15px] h-[15px]" />}
+      <button type="button" onClick={handle} className="rounded-[8px] p-[6px] text-[#746F67] transition-colors hover:bg-white/[0.045] hover:text-[#DAD4CA]">
+        {copied ? <Check className="w-[15px] h-[15px] text-[#74D39A]" /> : <Copy className="w-[15px] h-[15px]" />}
       </button>
     </Tooltip>
-  );
-};
-
-export const LiveActionChip = ({ text, secondary, isActive, inCard = false }: { text: string, secondary?: string, isActive?: boolean, inCard?: boolean }) => {
-  const { Icon, color } = resolveAgentIcon(text, secondary);
-  return (
-    <motion.div
-      initial={{ opacity: 0, y: -3, scale: 0.97 }}
-      animate={{ opacity: 1, y: 0, scale: 1 }}
-      exit={{ opacity: 0, scale: 0.96, transition: { duration: 0.15 } }}
-      className={`eterx-live-action-chip flex min-h-[46px] w-full items-center gap-3 px-3 py-2 text-[#8C8A88] transition-colors ${ inCard ? 'hover:bg-white/[0.035]' : 'rounded-[14px] hover:bg-white/[0.03]' }`}
-    >
-      <span className="flex h-8 w-8 items-center justify-center shrink-0">
-        <Icon size={19} color={color} />
-      </span>
-      <span className={`max-w-[46%] shrink-0 truncate text-[14px] font-semibold tracking-normal ${ isActive ? 'eterx-live-text eterx-live-text--chip' : 'text-[#A7A39E]' }`}>
-        {text}
-      </span>
-      {secondary && <span className="h-4 w-px shrink-0 bg-white/[0.08]" />}
-      {secondary && <span className="min-w-0 truncate font-mono text-[13px] text-[#605D59]">{secondary}</span>}
-      <ChevronRight className="ml-auto h-4 w-4 shrink-0 text-[#45423E]" />
-    </motion.div>
   );
 };
 
@@ -143,15 +139,16 @@ const StepCounterIcon = ({ live = false }: { live?: boolean }) => (
 const CopyButton = ({ text }: { text: string }) => {
   const [copied, setCopied] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout>>();
-  const copy = () => {
-    navigator.clipboard.writeText(text);
-    setCopied(true);
+  const copy = async () => {
+    const didCopy = await copyTextToClipboard(text);
+    if (!didCopy) return;
     clearTimeout(timerRef.current);
+    setCopied(true);
     timerRef.current = setTimeout(() => setCopied(false), 2000);
   };
   useEffect(() => () => clearTimeout(timerRef.current), []);
   return (
-    <button onClick={copy} className="p-1.5 text-[#555350] hover:text-[#8C8A88] hover:bg-white/[0.05] rounded-md transition-all">
+    <button type="button" onClick={copy} className="rounded-[8px] p-1.5 text-[#746F67] transition-colors hover:bg-white/[0.045] hover:text-[#DAD4CA]">
       <AnimatePresence mode="wait">
         {copied
           ? <motion.div key="check" initial={{ scale: 0.7 }} animate={{ scale: 1 }} exit={{ scale: 0.7 }}><Check className="w-3.5 h-3.5 text-emerald-500" /></motion.div>
@@ -159,6 +156,71 @@ const CopyButton = ({ text }: { text: string }) => {
         }
       </AnimatePresence>
     </button>
+  );
+};
+
+const EditMessageIcon = ({ className = '' }: { className?: string }) => (
+  <svg viewBox="0 0 24 24" className={className} fill="none" aria-hidden="true">
+    <path
+      d="M5 18.7 6.05 14.8 15.7 5.15a2.1 2.1 0 0 1 2.98 0l.17.17a2.1 2.1 0 0 1 0 2.98L9.2 17.95 5 18.7Z"
+      stroke="currentColor"
+      strokeWidth="1.9"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+    <path d="M14.2 6.65 17.35 9.8" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+  </svg>
+);
+
+const UserMessageActionButton = ({
+  label,
+  onClick,
+  children,
+}: {
+  label: string;
+  onClick: (event: React.MouseEvent<HTMLButtonElement>) => void;
+  children: React.ReactNode;
+}) => {
+  return (
+    <button
+      type="button"
+      onClick={(event) => {
+        onClick(event);
+      }}
+      aria-label={label}
+      className="eterx-user-message-action-button relative isolate grid h-8 w-8 place-items-center rounded-full text-[#736E67] outline-none focus-visible:ring-2 focus-visible:ring-white/18"
+    >
+      <span className="pointer-events-none relative z-10 grid h-6 w-6 place-items-center rounded-full">
+        {children}
+      </span>
+    </button>
+  );
+};
+
+const UserMessageActions = ({ text, onEdit }: { text: string; onEdit?: (text: string) => void }) => {
+  const handleCopy = async (event: React.MouseEvent) => {
+    event.stopPropagation();
+    const didCopy = await copyTextToClipboard(text);
+    if (!didCopy) return;
+  };
+
+  return (
+    <div className="eterx-user-message-actions absolute right-full top-1/2 mr-2 flex -translate-y-1/2 shrink-0 items-center gap-0.5 opacity-0 pointer-events-none transition-opacity duration-150 group-hover/user:opacity-100 group-hover/user:pointer-events-auto focus-within:opacity-100 focus-within:pointer-events-auto">
+      <UserMessageActionButton label="Copy message" onClick={handleCopy}>
+        <Copy className="h-[18px] w-[18px]" strokeWidth={2.15} />
+      </UserMessageActionButton>
+      {onEdit && (
+        <UserMessageActionButton
+          label="Edit message"
+          onClick={(event) => {
+            event.stopPropagation();
+            onEdit(text);
+          }}
+        >
+          <EditMessageIcon className="h-[18px] w-[18px]" />
+        </UserMessageActionButton>
+      )}
+    </div>
   );
 };
 
@@ -172,14 +234,14 @@ const SteeringFeedCard = ({ log, isCompressed = false }: { log: any; isCompresse
     initial={{ opacity: 0, x: 20, y: 10, scale: 0.95 }}
     animate={{ opacity: 1, x: 0, y: 0, scale: 1 }}
     transition={{ type: 'spring', stiffness: 450, damping: 24 }}
-    className="flex justify-end w-full my-3.5 relative z-10 group/steer"
+    className="flex justify-end w-full my-3 relative z-10 group/steer"
   >
-    <div className={`eterx-steering-bubble bg-[#242424] text-white px-5 py-3.5 rounded-[22px] rounded-tr-[6px] ml-auto text-[15.5px] shadow-[0_2px_12px_rgba(0,0,0,0.28)] leading-relaxed whitespace-pre-wrap relative border border-white/[0.07] select-text flex flex-row items-end gap-3.5 ${ isCompressed ? 'max-w-[92%]' : 'max-w-[84%]' }`}>
+    <div className={`eterx-steering-bubble bg-[#20201F] px-4 py-3 rounded-[18px] rounded-tr-[6px] ml-auto text-[15px] text-[#E7E1D8] shadow-[0_4px_16px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(255,255,255,0.025)] leading-[1.56] whitespace-pre-wrap relative border border-white/[0.06] select-text flex flex-row items-end gap-3 ${ isCompressed ? 'max-w-[92%]' : 'max-w-[84%]' }`}>
       <span className="block w-full text-left break-words [word-break:break-word] [overflow-wrap:anywhere]">{log.text}</span>
       
       {/* CornerDownLeft arrow representing steering entry */}
-      <div className="shrink-0 mb-1 select-none text-[#8C8A88]">
-        <CornerDownLeft className="w-[18px] h-[18px]" strokeWidth={2.5} />
+      <div className="shrink-0 mb-1 select-none text-[#8F887E]">
+        <CornerDownLeft className="w-[17px] h-[17px]" strokeWidth={2.25} />
       </div>
     </div>
   </motion.div>
@@ -194,29 +256,28 @@ const liveMotionStyles = `
     38% { transform: translateY(-2px) scale(1.08); opacity: .95; box-shadow: 0 0 9px rgba(190,190,186,.34); }
   }
   @keyframes eterx-shimmer {
-    0%   { background-position: 260% center, 0 0; }
-    22%  { background-position: 260% center, 0 0; }
-    70%  { background-position: -260% center, 0 0; }
-    100% { background-position: -260% center, 0 0; }
+    0%   { background-position: 170% center, 0 0; }
+    100% { background-position: -170% center, 0 0; }
   }
   .eterx-live-text {
-    --eterx-live-shimmer-duration: 4.8s;
-    --eterx-live-shimmer-ease: cubic-bezier(.4, 0, .12, 1);
-    --eterx-live-shimmer-a: #9A9A98;
-    --eterx-live-shimmer-d: #FFFFFF;
+    --eterx-live-shimmer-duration: 5.9s;
+    --eterx-live-shimmer-ease: linear;
+    --eterx-live-shimmer-a: #BDB7AE;
+    --eterx-live-shimmer-d: #E3DDD4;
     background:
       linear-gradient(
-        102deg,
+        104deg,
         transparent 0%,
-        transparent 44%,
-        var(--eterx-live-shimmer-d) 50%,
-        var(--eterx-live-shimmer-d) 56%,
-        transparent 62%,
+        transparent 38%,
+        color-mix(in srgb, var(--eterx-live-shimmer-d) 8%, transparent) 45%,
+        color-mix(in srgb, var(--eterx-live-shimmer-d) 72%, transparent) 50%,
+        color-mix(in srgb, var(--eterx-live-shimmer-d) 16%, transparent) 56%,
+        transparent 64%,
         transparent 100%
       ),
       linear-gradient(var(--eterx-live-shimmer-a), var(--eterx-live-shimmer-a));
-    background-size: 245% 100%, 100% 100%;
-    background-position: 260% center, 0 0;
+    background-size: 180% 100%, 100% 100%;
+    background-position: 170% center, 0 0;
     background-repeat: no-repeat, no-repeat;
     -webkit-background-clip: text;
     background-clip: text;
@@ -226,15 +287,15 @@ const liveMotionStyles = `
     will-change: background-position;
   }
   .eterx-live-text * { -webkit-text-fill-color: inherit; }
-  .eterx-live-text--medium { --eterx-live-shimmer-duration: 4.8s; }
-  .eterx-live-text--slow { --eterx-live-shimmer-duration: 5.8s; }
-  .eterx-live-text--chip { --eterx-live-shimmer-duration: 4.4s; }
-  .eterx-live-text--thought { --eterx-live-shimmer-duration: 5.0s; }
-  .eterx-live-text--process { --eterx-live-shimmer-duration: 5.6s; }
-  .eterx-live-text--ambient { --eterx-live-shimmer-duration: 6.2s; }
+  .eterx-live-text--medium { --eterx-live-shimmer-duration: 5.9s; }
+  .eterx-live-text--slow { --eterx-live-shimmer-duration: 7.0s; }
+  .eterx-live-text--chip { --eterx-live-shimmer-duration: 5.4s; --eterx-live-shimmer-a: #CFC8BE; --eterx-live-shimmer-d: #E7E0D7; }
+  .eterx-live-text--thought { --eterx-live-shimmer-duration: 6.2s; }
+  .eterx-live-text--process { --eterx-live-shimmer-duration: 6.5s; --eterx-live-shimmer-a: #C4BDB4; --eterx-live-shimmer-d: #DED7CE; }
+  .eterx-live-text--ambient { --eterx-live-shimmer-duration: 7.6s; --eterx-live-shimmer-a: #AAA49C; --eterx-live-shimmer-d: #D2CCC3; }
   :root[data-theme="light"] .eterx-live-text,
   [data-theme="light"] .eterx-live-text {
-    --eterx-live-shimmer-a: #9A9A98;
+    --eterx-live-shimmer-a: #34312D;
     --eterx-live-shimmer-d: #FFFFFF;
     text-shadow: none;
   }
@@ -249,21 +310,80 @@ const liveMotionStyles = `
   }
 `;
 
+const chatFeedSurfaceStyles = `
+  .eterx-chat-feed {
+    --eterx-chat-feed-bg: #0F0F0F;
+    background: var(--eterx-chat-feed-bg);
+  }
+  :root[data-theme="light"] .eterx-chat-feed {
+    --eterx-chat-feed-bg: #F8F9FB;
+    color: #252A31;
+  }
+  :root[data-theme="dark"] .eterx-chat-feed {
+    --eterx-chat-feed-bg: #0F0F0F;
+    color: #E3E3E3;
+  }
+  .eterx-chat-feed-scroll,
+  .eterx-chat-feed-content {
+    background: var(--eterx-chat-feed-bg);
+  }
+  .eterx-chat-feed-empty {
+    --eterx-chat-feed-bg: transparent;
+    background: transparent;
+  }
+  .eterx-chat-feed-empty .eterx-chat-feed-scroll,
+  .eterx-chat-feed-empty .eterx-chat-feed-content {
+    background: transparent;
+  }
+  .eterx-chat-feed-scroll::-webkit-scrollbar,
+  .eterx-chat-feed-scroll::-webkit-scrollbar-track,
+  .eterx-chat-feed-scroll::-webkit-scrollbar-track-piece,
+  .eterx-chat-feed-scroll::-webkit-scrollbar-corner {
+    background: var(--eterx-chat-feed-bg) !important;
+    background-color: var(--eterx-chat-feed-bg) !important;
+    background-image: none !important;
+    border: 0 !important;
+    box-shadow: none !important;
+  }
+  .eterx-chat-feed-scroll::-webkit-scrollbar-thumb {
+    background-color: rgba(255, 255, 255, 0.16) !important;
+    border-color: var(--eterx-chat-feed-bg) !important;
+  }
+  :root[data-theme="light"] .eterx-chat-feed-scroll::-webkit-scrollbar-thumb {
+    background-color: rgba(58, 72, 91, 0.18) !important;
+  }
+  .eterx-user-message-action-fade {
+    filter: none;
+    background:
+      linear-gradient(90deg, rgba(32, 32, 31, 0) 0%, rgba(32, 32, 31, 0.54) 58%, #20201F 100%),
+      linear-gradient(180deg, rgba(32, 32, 31, 0) 0%, rgba(32, 32, 31, 0.46) 64%, #20201F 100%);
+  }
+  :root[data-theme="light"] .eterx-user-message-action-fade {
+    background:
+      linear-gradient(90deg, rgba(247, 250, 253, 0) 0%, rgba(247, 250, 253, 0.70) 58%, #F7FAFD 100%),
+      linear-gradient(180deg, rgba(247, 250, 253, 0) 0%, rgba(247, 250, 253, 0.64) 64%, #F7FAFD 100%);
+  }
+`;
+
 const WORKFLOW_COUNT_TYPES = new Set([
   'command',
   'exploration',
   'file_edit',
   'communication',
   'safety_warning',
+  'inter_agent_comm',
   'sub_agent_answer',
   'sub_agent_result',
+  'sub_agent_spawn',
+  'sub_agent_action',
+  'sub_agent_complete',
+  'sub_agent_error',
   'progress',
   'browser',
-  'html_preview',
   'tool_result',
   'tool_error',
 ]);
-const HIDDEN_HELPER_TYPES = new Set(['answer', 'ask_user', 'file_preview', 'console_output']);
+const HIDDEN_HELPER_TYPES = new Set(['answer', 'ask_user', 'file_preview', 'console_output', 'html_preview']);
 const USER_QUERY_PREVIEW_LIMIT = 520;
 const USER_QUERY_PREVIEW_LINES = 8;
 const INITIAL_VISIBLE_GROUPS = 40;
@@ -281,9 +401,12 @@ const isNarrationThought = (value: any) => {
 
 const isExternalWorkNoteNoise = (value: any) => {
   const text = String(value || '').trim();
-  if (!text) return true;
-  if (isNarrationThought(text)) return true;
-  return /^(?:i will|i['â€™]?ll|i need|i am|i['â€™]?m|let me|to (?:find|see|check|verify|inspect|understand|locate|confirm)\b|checking|searching|reading|analyzing|this will\b|now i\b)/i.test(text);
+  if (!text || text.length < 4) return true;
+  // Only filter very short pure-narration sentences (no real content, under 60 chars)
+  if (text.length < 60 && /^(?:i will|i'll|let me|now i will|now let me|i am going to)\s+(?:now\s+)?(?:check|look|see|find|read|run|search|analyze|inspect|verify|open|edit|write|create|update|fix|use|get|list|scan|review|explore)\b[^.!?]*$/i.test(text)) return true;
+  // Filter meta-commentary about the work note style itself
+  if (/\b(?:work note|timeline note|status line)\b/i.test(text) && /\b(?:workspace|external|prompt|rule|communication style|phase change|highly professional)\b/i.test(text)) return true;
+  return false;
 };
 
 const isInternalStatusThought = (log: any) => {
@@ -313,6 +436,23 @@ const getUserQueryPreview = (value: any) => {
   return { isLong };
 };
 
+const getTraceActivitySignature = (logs: any[]) => logs
+  .map((log, index) => {
+    const text = String(log?.text ?? log?.output ?? log?.content ?? log?.secondary ?? '');
+    return [
+      index,
+      log?._traceIdx ?? '',
+      log?.type ?? '',
+      log?.answerId ?? '',
+      log?.noteId ?? '',
+      log?.thoughtId ?? '',
+      log?.endTime ?? log?.timestamp ?? '',
+      text.length,
+      text.slice(-32),
+    ].join(':');
+  })
+  .join('|');
+
 /**
  * CollapsibleThinking — wraps ThinkingProcess.
  * While thinking: always open (live).
@@ -332,15 +472,6 @@ const isHiddenStatusOnlyLog = (log: any) => {
     HIDDEN_MODEL_STATUS_PATTERN.test(value) ||
     DASH_ONLY_STATUS_PATTERN.test(value)
   );
-};
-
-const isWorkNoteDisplayNoise = (value: any) => {
-  const text = String(value || '').trim();
-  if (!text) return true;
-  if (HIDDEN_MODEL_STATUS_PATTERN.test(text) || DASH_ONLY_STATUS_PATTERN.test(text)) return true;
-  if (/^(?:generation stopped by user|agent stopped|agent connection failed|agent start failed)\.?$/i.test(text)) return true;
-  if (/^(?:checking|searching|reading|analyzing|running|executing|creating|generating|processing|loading)(?:\s+[\w.-]+){0,4}$/i.test(text)) return true;
-  return false;
 };
 
 const formatWorkElapsed = (seconds: number) => {
@@ -423,8 +554,8 @@ const useWorkElapsedSeconds = (active: boolean, logs: any[], startedAt?: number 
 };
 
 const ThoughtSequence = ({
-  logs, liveLogs = [], isThinking, isLast, hasAnswer, stepCount, turnStartedAt, turnEndedAt
-}: { logs: any[], liveLogs?: any[], isThinking: boolean, isLast: boolean, hasAnswer: boolean, stepCount: number, turnStartedAt?: number | null, turnEndedAt?: number | null }) => {
+  logs, liveLogs = [], isThinking, isLast, hasAnswer, stepCount, turnStartedAt, turnEndedAt, onOpenAgentTeam
+}: { logs: any[], liveLogs?: any[], isThinking: boolean, isLast: boolean, hasAnswer: boolean, stepCount: number, turnStartedAt?: number | null, turnEndedAt?: number | null, onOpenAgentTeam?: (agentName?: string) => void }) => {
   const [open, setOpen] = React.useState(() => isThinking || !hasAnswer);
   const containerRef = React.useRef<HTMLDivElement>(null);
   const prevHasAnswer = React.useRef(false);
@@ -473,7 +604,6 @@ const ThoughtSequence = ({
   if (stepCount === 0 && logs.length === 0 && !isLiveThinking) return null;
 
   const isWaitingForFirstTrace = isLiveThinking && stepCount === 0 && logs.length === 0 && liveLogs.length === 0;
-  const shouldShowFaceStatus = isLiveThinking && isLast;
   const actionLabel = stepCount > 0
     ? `${ stepCount } action${ stepCount !== 1 ? 's' : '' }`
     : 'Thinking';
@@ -582,11 +712,16 @@ const ThoughtSequence = ({
             exit={{ height: 0, opacity: 0, transition: { duration: 0 } }}
             style={{ overflow: 'hidden' }}
             transition={{ duration: 0.18, ease: 'easeOut' }}
-            className={shouldShowFaceStatus
-              ? 'mb-2 flex items-center'
-              : 'mb-1'}
+            className="mb-1"
           >
-            <ThinkingProcess logs={logs} liveLogs={liveLogs} isThinking={isLiveThinking} isLast={isLast} showLiveIndicator={shouldShowFaceStatus} />
+            <ThinkingProcess
+              logs={logs}
+              liveLogs={liveLogs}
+              isThinking={isLiveThinking}
+              isLast={isLast}
+              showLiveIndicator={isLiveThinking && isLast && liveLogs.length === 0}
+              onOpenAgentTeam={onOpenAgentTeam}
+            />
           </motion.div>
         )}
       </AnimatePresence>
@@ -595,11 +730,11 @@ const ThoughtSequence = ({
 };
 
 export const ChatFeed: React.FC<ChatFeedProps> = ({
-  traceLogs, isThinking, messagesEndRef, setSidebarOpen, sidebarOpen, handleScroll: externalHandleScroll, showScrollBottom, isCompressed = false, onAnswerAskUser
+  traceLogs, isThinking, messagesEndRef, setSidebarOpen, sidebarOpen, handleScroll: externalHandleScroll, showScrollBottom, isCompressed = false, onOpenAgentTeam, onAnswerAskUser, onEditUserMessage
 }) => {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const previewScrollRef = useRef<HTMLDivElement>(null);
-  const prevTraceCountRef = useRef(traceLogs.length);
+  const prevTraceActivityRef = useRef('');
   const shouldAutoFollowRef = useRef(true);
   const lastFaceTraceRef = useRef('');
   const lastFaceLiveNotifyAtRef = useRef(0);
@@ -608,6 +743,7 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
   const [previewUserMessage, setPreviewUserMessage] = useState<{ text: string; index: number } | null>(null);
   const [historyWindowSize, setHistoryWindowSize] = useState(INITIAL_VISIBLE_GROUPS);
   const AUTO_FOLLOW_THRESHOLD = 24;
+  const traceActivitySignature = useMemo(() => getTraceActivitySignature(traceLogs), [traceLogs]);
 
   useEffect(() => {
     if (!previewUserMessage) return;
@@ -618,23 +754,28 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [previewUserMessage]);
 
+ 
+
   useEffect(() => {
     const container = scrollContainerRef.current;
     if (!container) return;
 
     const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
     if (showScrollBottom) {
-      shouldAutoFollowRef.current = false;
+      // Only suppress auto-follow when user is meaningfully far from bottom
+      if (distanceFromBottom > AUTO_FOLLOW_THRESHOLD * 3) {
+        shouldAutoFollowRef.current = false;
+      }
     } else if (distanceFromBottom <= AUTO_FOLLOW_THRESHOLD) {
       shouldAutoFollowRef.current = true;
     }
   }, [showScrollBottom]);
 
   useEffect(() => {
-    const hasNewLog = traceLogs.length !== prevTraceCountRef.current;
-    prevTraceCountRef.current = traceLogs.length;
+    const hasTraceActivity = traceActivitySignature !== prevTraceActivityRef.current;
+    prevTraceActivityRef.current = traceActivitySignature;
 
-    if (!hasNewLog && !isThinking) return;
+    if (!hasTraceActivity && !isThinking) return;
 
     if (!shouldAutoFollowRef.current) return;
 
@@ -643,7 +784,7 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
       if (!container || !shouldAutoFollowRef.current) return;
       container.scrollTop = container.scrollHeight;
     });
-  }, [traceLogs.length, isThinking]);
+  }, [traceActivitySignature, isThinking]);
 
   useEffect(() => {
     return () => {
@@ -720,13 +861,14 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
 
   const hiddenGroupCount = Math.max(0, groups.length - historyWindowSize);
   const visibleGroups = hiddenGroupCount > 0 ? groups.slice(hiddenGroupCount) : groups;
+  const isEmptyNewChatFeed = traceLogs.length === 0 && !isThinking;
 
   return (
     <>
-      <style dangerouslySetInnerHTML={{ __html: liveMotionStyles }} />
-      <div className="eterx-chat-feed relative flex-1 min-h-0 w-full overflow-hidden">
+      <style dangerouslySetInnerHTML={{ __html: `${ liveMotionStyles }\n${ chatFeedSurfaceStyles }` }} />
+      <div className={`eterx-chat-feed relative flex-1 min-h-0 w-full overflow-hidden ${ isEmptyNewChatFeed ? 'eterx-chat-feed-empty' : '' }`}>
       <div
-        className={`eterx-chat-feed-scroll relative h-full w-full flex flex-col overflow-y-auto overflow-x-hidden pb-44 eterx-scrollbar ${ isCompressed ? 'pl-3 pr-3 sm:pl-4 sm:pr-4' : 'px-4 sm:px-12' }`}
+        className={`eterx-chat-feed-scroll relative h-full w-full flex flex-col overflow-y-auto overflow-x-hidden pb-40 eterx-scrollbar ${ isCompressed ? 'pl-3 pr-3 sm:pl-4 sm:pr-4' : 'px-4 sm:px-10' }`}
         id="chat-container"
         ref={scrollContainerRef}
         onScroll={handleScrollWrap}
@@ -745,13 +887,13 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
 
 
       {traceLogs.length > 0 && (
-        <div className={`eterx-chat-feed-content w-full mx-auto pb-4 relative ${ isCompressed ? 'max-w-[520px] pt-16' : 'max-w-[800px] pt-20' }`}>
+        <div className={`eterx-chat-feed-content w-full mx-auto pb-4 relative ${ isCompressed ? 'max-w-[500px] pt-14' : 'max-w-[760px] pt-16' }`}>
           {hiddenGroupCount > 0 && (
-            <div className="mb-8 flex justify-center">
+            <div className="mb-7 flex justify-center">
               <button
                 type="button"
                 onClick={() => setHistoryWindowSize(size => size + INITIAL_VISIBLE_GROUPS)}
-                className="rounded-full border border-white/[0.08] bg-white/[0.04] px-3 py-1.5 text-[12px] font-medium text-[#A3A19E] transition-colors hover:border-white/[0.16] hover:bg-white/[0.07] hover:text-[#E8E6E3]"
+                className="rounded-full border border-white/[0.07] bg-white/[0.028] px-3 py-1.5 text-[12px] font-medium text-[#A8A198] transition-colors hover:border-white/[0.12] hover:bg-white/[0.045] hover:text-[#DAD4CA]"
               >
                 Show previous {hiddenGroupCount} messages
               </button>
@@ -764,57 +906,53 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
               const userText = String(first.text || '');
               const { isLong } = getUserQueryPreview(userText);
               return (
-                <div key={`group-${ groupIdx }`} id={`message-${ groupIdx }`} className="eterx-chat-message-group mt-9 mb-6 flex w-full scroll-m-20 flex-col items-end group/user">
-                  <div className={`eterx-user-message-bubble eterx-chat-feed-user-bubble ml-auto flex flex-col items-end rounded-[22px] border border-white/[0.055] bg-[#242424] px-[18px] py-3 text-[15.5px] leading-[1.56] text-[#E8E6E3] shadow-[0_10px_28px_rgba(0,0,0,0.22),inset_0_1px_0_rgba(255,255,255,0.035)] selection:bg-[#E2765A]/30 relative whitespace-pre-wrap select-text ${ isCompressed ? 'max-w-[92%]' : 'max-w-[560px]' }`}>
-                    {first.attachments && first.attachments.length > 0 && (
-                      <div className="flex flex-wrap justify-end gap-2.5 mb-3 w-full">
-                        {first.attachments.map((att: any, i: number) => {
-                          const isImage = !!att.preview;
-                           const fileName = att.name || att.file?.name || 'file';
-                           const extension = fileName.split('.').pop()?.toUpperCase() || 'FILE';
-                           const isPdf = extension === 'PDF';
- 
-                           if (isImage) {
-                             return (
-                               <a key={att.id || i} href={att.preview} target="_blank" rel="noopener noreferrer" className="relative group w-[72px] h-[72px] rounded-[16px] shadow-sm hover:shadow-md transition-all cursor-pointer border border-white/[0.06] shrink-0">
-                                 <img src={att.preview} alt="attached" className="w-full h-full object-cover rounded-[16px] hover:opacity-80 transition-opacity" />
-                               </a>
-                             );
-                           }
- 
-                           return (
-                             <div key={att.id || i} className="flex flex-col items-center justify-center gap-1.5 w-[72px] h-[72px] rounded-[16px] bg-white/[0.025] border border-white/[0.05] shadow-sm shrink-0">
-                               <div className={`w-[26px] h-[26px] rounded-md flex items-center justify-center shrink-0 shadow-sm ${ isPdf ? 'bg-[#EF4444]' : 'bg-[#007AFF]' }`}>
-                                 <FileText className="w-3.5 h-3.5 text-white" strokeWidth={2.5} />
-                               </div>
-                               <span className="text-[10px] font-medium text-[#C4C1BC] truncate max-w-[90%] px-1">{att.name || fileName}</span>
-                             </div>
-                           );
-                         })}
-                       </div>
-                     )}
+                <div key={`group-${ groupIdx }`} id={`message-${ groupIdx }`} className="eterx-chat-message-group mt-8 mb-6 flex w-full scroll-m-20 justify-end group/user">
+                  <div className="flex w-full justify-end">
+                    <div className={`eterx-user-message-bubble eterx-chat-feed-user-bubble flex min-w-0 flex-col items-end rounded-[18px] border border-white/[0.06] bg-[#20201F] px-4 py-2.5 text-[15px] leading-[1.56] text-[#E7E1D8] shadow-[0_4px_18px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(255,255,255,0.025)] selection:bg-[#D98B6A]/25 relative whitespace-pre-wrap select-text ${ isCompressed ? 'max-w-[92%]' : 'max-w-[520px]' }`}>
+                      <UserMessageActions text={userText} onEdit={onEditUserMessage} />
+                      {first.attachments && first.attachments.length > 0 && (
+                        <div className="flex flex-wrap justify-end gap-2.5 mb-3 w-full">
+                          {first.attachments.map((att: any, i: number) => {
+                            const isImage = !!att.preview;
+                            const fileName = att.name || att.file?.name || 'file';
+                            const extension = fileName.split('.').pop()?.toUpperCase() || 'FILE';
+                            const isPdf = extension === 'PDF';
+
+                            if (isImage) {
+                              return (
+                                <a key={att.id || i} href={att.preview} target="_blank" rel="noopener noreferrer" className="relative group w-[72px] h-[72px] rounded-[14px] shadow-[0_3px_12px_rgba(0,0,0,0.16)] transition-colors cursor-pointer border border-white/[0.06] shrink-0 hover:border-white/[0.10]">
+                                  <img src={att.preview} alt="attached" className="w-full h-full object-cover rounded-[14px] transition-opacity hover:opacity-90" />
+                                </a>
+                              );
+                            }
+
+                            return (
+                              <div key={att.id || i} className="flex flex-col items-center justify-center gap-1.5 w-[72px] h-[72px] rounded-[14px] bg-white/[0.024] border border-white/[0.055] shadow-[0_3px_12px_rgba(0,0,0,0.12)] shrink-0">
+                                <div className={`w-[26px] h-[26px] rounded-[7px] flex items-center justify-center shrink-0 ${ isPdf ? 'bg-[#C65D58]' : 'bg-[#596B7B]' }`}>
+                                  <FileText className="w-3.5 h-3.5 text-white" strokeWidth={2.5} />
+                                </div>
+                                <span className="text-[10px] font-medium text-[#C8C1B8] truncate max-w-[90%] px-1">{att.name || fileName}</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
                     <div className={`relative w-full text-left ${ isLong ? 'max-h-[230px] overflow-hidden pb-8' : '' }`}>
                       <span className="block w-full text-left break-words [word-break:break-word] [overflow-wrap:anywhere]">{userText}</span>
                       {isLong && (
                         <button
                           type="button"
                           onClick={() => setPreviewUserMessage({ text: userText, index: groupIdx })}
-                          className="eterx-chat-feed-user-fade absolute inset-x-0 bottom-0 flex h-24 items-end justify-center bg-gradient-to-b from-[#242424]/0 via-[#242424]/82 to-[#242424] pb-1.5 text-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/20"
+                          className="eterx-chat-feed-user-fade absolute inset-x-0 bottom-0 flex h-24 items-end justify-center bg-gradient-to-b from-[#20201F]/0 via-[#20201F]/82 to-[#20201F] pb-1.5 text-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/18"
                           aria-label="Show full prompt"
                         >
-                          <span className="text-[13px] font-medium text-[#A4A19D] transition-colors hover:text-[#C4C1BC]">
+                          <span className="text-[12.5px] font-medium text-[#A9A197] transition-colors hover:text-[#D2CBC1]">
                             Show more
                           </span>
                         </button>
                       )}
                     </div>
-                    <div className="absolute -bottom-8 right-0 flex items-center gap-1 opacity-0 group-hover/user:opacity-100 transition-opacity duration-200 pointer-events-none group-hover/user:pointer-events-auto">
-                      <Tooltip text="Copy message">
-                        <button onClick={() => navigator.clipboard.writeText(userText)} className="p-1.5 text-[#555350] hover:text-[#8C8A88] hover:bg-white/[0.05] rounded-md transition-all">
-                          <Copy className="w-3.5 h-3.5" />
-                        </button>
-                      </Tooltip>
-                    </div>
+                  </div>
                   </div>
                 </div>
               );
@@ -828,7 +966,7 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
             const turnStartedAtRaw = previousUserLog?.startTime ?? previousUserLog?.timestamp ?? previousUserLog?.endTime;
             const turnStartedAt = Number.isFinite(Number(turnStartedAtRaw)) ? Number(turnStartedAtRaw) : null;
 
-            // 1. Separate logs into those rendered as LiveActionChips and those rendered via ThoughtSequence
+            // Keep live command rows inside ThoughtSequence so each action renders once in order.
             const liveCommandLogs = group.filter((l: any) => l.type === 'command' && l.isLive && !isHiddenStatusOnlyLog(l));
             const standardLogs = group.filter((l: any) => !(l.type === 'command' && l.isLive) && !isHiddenStatusOnlyLog(l));
 
@@ -857,6 +995,9 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
                 type: 'answer',
                 text: answerText,
                 isLiveTyping: lastAnswerLog?.isLiveTyping || false,
+                isStreaming: lastAnswerLog?.isStreaming || false,
+                wasStreaming: lastAnswerLog?.wasStreaming || false,
+                answerId: lastAnswerLog?.answerId,
                 spokenText: lastAnswerLog?.spokenText || '',
                 timestamp: lastAnswerLog?.timestamp,
                 startTime: lastAnswerLog?.startTime,
@@ -881,9 +1022,14 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
 
             const displayProcessLogs = processLogs;
             const displayFinalAnswer = finalAnswer;
-            const isAnswerActivelyTyping = !!displayFinalAnswer?.isLiveTyping && isThinkingTurn;
+            const answerUpdatedAt = Number(displayFinalAnswer?.endTime ?? displayFinalAnswer?.timestamp ?? 0);
+            const answerRecentlyStreamed = !!displayFinalAnswer?.wasStreaming &&
+              Number.isFinite(answerUpdatedAt) &&
+              answerUpdatedAt > 0 &&
+              Date.now() - answerUpdatedAt < 5000;
+            const isAnswerActivelyTyping = !!(displayFinalAnswer?.isLiveTyping || displayFinalAnswer?.isStreaming) && isThinkingTurn;
 
-            const seenWorkNotes = new Set<string>();
+            let lastWorkNoteKey = '';
             const rawWorkLogs = [...displayProcessLogs, ...tailLogs];
             const isAskUserInteractionLog = (log: any) =>
               log?.type === 'ask_user' &&
@@ -916,7 +1062,7 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
                   return preferredAskUserLogs.get(askUserKey(log)) === log;
                 })
               : rawWorkLogs;
-            const hasStructuredWork = rawWorkLogs.some((l: any) =>
+            const hasStructuredWork = [...rawWorkLogs, ...liveCommandLogs].some((l: any) =>
               WORKFLOW_COUNT_TYPES.has(l.type) && !HIDDEN_HELPER_TYPES.has(l.type)
             );
 
@@ -947,12 +1093,14 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
                 if (log.type === 'work_note') {
                   const text = String(log.text || '').trim().toLowerCase();
                   if (!text) isValid = false;
-                  else if (isWorkNoteDisplayNoise(log.text)) isValid = false;
+                  else if (hasStructuredWork && isExternalWorkNoteNoise(log.text)) isValid = false;
                   else {
                     const key = `${ log.subAgent || '' }::${ text }`;
-                    if (seenWorkNotes.has(key)) isValid = false;
-                    seenWorkNotes.add(key);
+                    if (key === lastWorkNoteKey) isValid = false;
+                    lastWorkNoteKey = key;
                   }
+                } else {
+                  lastWorkNoteKey = '';
                 }
                 
                 if (isValid) {
@@ -974,7 +1122,7 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
               >
                 {segments.map((seg, segIdx) => {
                   if (seg.type === 'steering') {
-                    return <SteeringFeedCard key={`steer-${groupIdx}-${segIdx}`} log={seg.log} />;
+                    return <SteeringFeedCard key={`steer-${groupIdx}-${segIdx}`} log={seg.log} isCompressed={isCompressed} />;
                   }
                   if (seg.type === 'ask_user') {
                     return (
@@ -991,7 +1139,6 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
                         responseKey={seg.log.responseKey}
                         answeredWith={seg.log.answeredWith}
                         onAnswer={(answer) => {
-                          console.log('[ChatFeed] User answered ask_user:', answer);
                           onAnswerAskUser?.(seg.log.timestamp, answer, seg.log.responseKey);
                         }}
                       />
@@ -1017,67 +1164,53 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
                       stepCount={stepCount}
                       turnStartedAt={turnStartedAt}
                       turnEndedAt={displayFinalAnswer?.endTime ?? displayFinalAnswer?.timestamp ?? null}
+                      onOpenAgentTeam={onOpenAgentTeam}
                     />
                   );
                 })}
-
-                {/* Render Live Action Chips */}
-                <AnimatePresence>
-                  {liveCommandLogs.length > 0 && (
-                    <>
-                      {liveCommandLogs.length === 1 ? (
-                        <LiveActionChip key={`live-cmd-${ groupIdx }-0`} text={liveCommandLogs[0].text} secondary={liveCommandLogs[0].secondary} isActive={isThinkingTurn} inCard={false} />
-                      ) : (
-                        <motion.div
-                          key={`live-actions-${ groupIdx }`}
-                          layout
-                          initial={{ opacity: 0, y: 4 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          exit={{ opacity: 0, y: -3 }}
-                          transition={{ duration: 0.18, ease: 'easeOut' }}
-                          className="eterx-live-action-card mb-4 mt-1 overflow-hidden rounded-[14px] border border-white/[0.08] bg-[#1A1A1A]/80 shadow-[inset_0_1px_0_rgba(255,255,255,0.04),0_4px_16px_rgba(0,0,0,0.22)]"
-                        >
-                          {liveCommandLogs.map((cmd: any, cmdIdx: number) => (
-                            <div key={`live-cmd-wrap-${ groupIdx }-${ cmdIdx }`} className={`eterx-live-action-row ${cmdIdx > 0 ? 'border-t border-white/[0.055]' : ''}`}>
-                              <LiveActionChip key={`live-cmd-${ groupIdx }-${ cmdIdx }`} text={cmd.text} secondary={cmd.secondary} isActive={isThinkingTurn} inCard={true} />
-                            </div>
-                          ))}
-                        </motion.div>
-                      )}
-                    </>
-                  )}
-                </AnimatePresence>
 
                 {displayFinalAnswer && (
                   <div className="eterx-assistant-answer w-full group/assistant mt-0 [&_.professional-thought>*:first-child]:!mt-0">
                     <div className="relative group/thought">
                       {/* Live typing uses the same renderer so Mermaid, math, and tables appear as soon as Markdown is complete. */}
                       {isAnswerActivelyTyping ? (
-                        <div className="eterx-assistant-answer-body eterx-assistant-live-text text-[15.5px] leading-[1.85] text-[#C4C1BC] font-sans relative">
+                        <div className="eterx-assistant-answer-body eterx-assistant-live-text text-[15.25px] leading-[1.78] text-[#C9C3BA] font-sans relative">
                           <ProfessionalThought
                             text={displayFinalAnswer.text}
                             isLatest={groupIdx === groups.length - 1}
                             isThinking={isAnswerActivelyTyping}
                             variant="answer"
                             updatedAt={displayFinalAnswer.timestamp}
+                            reveal={answerRecentlyStreamed}
                           />
                         </div>
                       ) : (
-                        <div className="eterx-assistant-answer-body text-[15.5px] leading-[1.85] text-[#C4C1BC] font-sans relative">
+                        <div className="eterx-assistant-answer-body text-[15.25px] leading-[1.78] text-[#C9C3BA] font-sans relative">
                           <ProfessionalThought
                             text={displayFinalAnswer.text}
                             isLatest={groupIdx === groups.length - 1}
                             isThinking={isThinkingTurn}
                             variant="answer"
+                            reveal={answerRecentlyStreamed}
                             suffix={
-                              <div className="inline-flex items-center gap-2 ml-2 align-middle mt-[-2px]">
+                              <div className="inline-flex items-center gap-1.5 ml-2 align-middle mt-[-2px]">
                                 <div className="flex items-center gap-0 opacity-0 group-hover/thought:opacity-100 transition-opacity duration-200">
                                   <NakedCopyButton content={displayFinalAnswer.text} />
-                                  <Tooltip text="Import to chat">
-                                    <button className="p-[6px] text-[#555350] hover:text-[#E8E6E3] transition-colors rounded-md hover:bg-white/[0.06]">
-                                      <MessageSquarePlus className="w-[15px] h-[15px]" />
-                                    </button>
-                                  </Tooltip>
+                                  {onEditUserMessage && (
+                                    <Tooltip text="Import to chat">
+                                      <button
+                                        type="button"
+                                        onClick={(event) => {
+                                          event.stopPropagation();
+                                          onEditUserMessage(displayFinalAnswer.text);
+                                        }}
+                                        className="rounded-[8px] p-[6px] text-[#746F67] transition-colors hover:bg-white/[0.045] hover:text-[#DAD4CA]"
+                                        aria-label="Import answer to chat"
+                                      >
+                                        <MessageSquarePlus className="w-[15px] h-[15px]" />
+                                      </button>
+                                    </Tooltip>
+                                  )}
                                 </div>
                               </div>
                             }
@@ -1101,7 +1234,7 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
       <AnimatePresence>
         {previewUserMessage && (
           <motion.div
-            className={`fixed bottom-0 right-0 top-0 z-[80] flex items-center justify-center bg-black/45 px-4 py-6 backdrop-blur-[2px] ${ sidebarOpen ? 'left-0 md:left-[280px]' : 'left-0 md:left-[68px]' }`}
+            className={`fixed bottom-0 right-0 top-0 z-[80] flex items-center justify-center bg-black/40 px-4 py-6 backdrop-blur-[2px] ${ sidebarOpen ? 'left-0 md:left-[280px]' : 'left-0 md:left-[68px]' }`}
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
@@ -1112,7 +1245,7 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
               role="dialog"
               aria-modal="true"
               aria-label="Full prompt preview"
-              className={`eterx-prompt-preview-dialog relative max-h-[82vh] w-[calc(100vw-32px)] overflow-hidden rounded-[24px] border border-white/[0.08] bg-[#1D1D1D] shadow-[0_28px_90px_rgba(0,0,0,0.55)] sm:w-[calc(100vw-96px)] ${ isCompressed ? 'max-w-[720px]' : 'max-w-[920px]' }`}
+              className={`eterx-prompt-preview-dialog relative max-h-[82vh] w-[calc(100vw-32px)] overflow-hidden rounded-[20px] border border-white/[0.07] bg-[#1A1A19] shadow-[0_20px_70px_rgba(0,0,0,0.42)] sm:w-[calc(100vw-96px)] ${ isCompressed ? 'max-w-[720px]' : 'max-w-[920px]' }`}
               initial={{ opacity: 0, y: 14, scale: 0.98 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, y: 10, scale: 0.98 }}
@@ -1122,16 +1255,16 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
               <button
                 type="button"
                 onClick={() => setPreviewUserMessage(null)}
-                className="absolute right-3 top-3 z-10 flex h-9 w-9 items-center justify-center rounded-full border border-white/[0.09] bg-[#2A2A2A]/95 text-[#B9B6B0] shadow-[0_12px_30px_rgba(0,0,0,0.42)] transition-all duration-200 hover:bg-[#343434] hover:text-white active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/25"
+                className="absolute right-3 top-3 z-10 flex h-9 w-9 items-center justify-center rounded-full border border-white/[0.08] bg-[#242423]/90 text-[#B9B2A8] shadow-[0_8px_24px_rgba(0,0,0,0.30)] transition-colors duration-150 hover:bg-[#2C2C2A] hover:text-[#EFE9DF] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/20"
                 aria-label="Close prompt preview"
               >
                 <Minimize2 className="h-4 w-4" strokeWidth={2.2} />
               </button>
               <div
                 ref={previewScrollRef}
-                className="max-h-[82vh] overflow-y-auto eterx-scrollbar eterx-prompt-preview-scroll px-6 py-8 pr-8 sm:px-8 sm:py-9 sm:pr-10"
+                className="max-h-[82vh] overflow-y-auto eterx-scrollbar eterx-prompt-preview-scroll px-6 py-7 pr-8 sm:px-8 sm:py-8 sm:pr-10"
               >
-                <div className="eterx-prompt-preview-text whitespace-pre-wrap break-words text-[16px] leading-[1.75] text-[#C4C1BC] [overflow-wrap:anywhere]">
+                <div className="eterx-prompt-preview-text whitespace-pre-wrap break-words text-[15.5px] leading-[1.7] text-[#C9C3BA] [overflow-wrap:anywhere]">
                   {previewUserMessage.text}
                 </div>
               </div>

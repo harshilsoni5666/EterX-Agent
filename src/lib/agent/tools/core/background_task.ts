@@ -5,11 +5,6 @@ import { promisify } from 'util';
 import path from 'path';
 import fs from 'fs-extra';
 import { resolveWorkspaceDirectoryForContext } from '../../workspace/path_resolver';
-import {
-  getTerminalBackgroundTaskStatus,
-  killTerminalBackgroundTask,
-  listTerminalBackgroundTasks
-} from './terminal_background';
 
 const execAsync = promisify(exec);
 
@@ -45,9 +40,8 @@ interface BackgroundTask {
   pid?: number;
 }
 
-// In-memory task tracking preserved across Next.js HMR reloads
-const globalForBgTasks = globalThis as any;
-const activeTasks: Map<string, BackgroundTask> = globalForBgTasks.__eterxActiveTasks || (globalForBgTasks.__eterxActiveTasks = new Map());
+// In-memory task tracking
+const activeTasks: Map<string, BackgroundTask> = new Map();
 
 export const backgroundTaskTool: ToolDefinition = {
   name: 'background_task',
@@ -55,9 +49,9 @@ export const backgroundTaskTool: ToolDefinition = {
 
 MODES:
 - "launch": Start a command in the background. Returns immediately with a task ID.
-- "check": Check status/output of a background task or handed-off terminal command by ID.
-- "list": List all active and completed background/terminal tasks.
-- "kill": Terminate a running background/terminal task.
+- "check": Check status/output of a background task by ID.
+- "list": List all active and completed background tasks.
+- "kill": Terminate a running background task.
 
 EXAMPLES:
 - Launch: { mode: "launch", command: "npm run build", description: "Building project" }
@@ -152,9 +146,6 @@ Use for: long installs, builds, data processing, file watching, anything that ta
           return { success: false, message: 'taskId is required for check mode' };
         }
 
-        const terminalTask = await getTerminalBackgroundTaskStatus(input.taskId);
-        if (terminalTask) return terminalTask;
-
         // Check in-memory first
         const task = activeTasks.get(input.taskId);
         if (task) {
@@ -183,8 +174,6 @@ Use for: long installs, builds, data processing, file watching, anything that ta
 
       case 'list': {
         const tasks: any[] = [];
-        const terminalTasks = await listTerminalBackgroundTasks();
-        tasks.push(...terminalTasks);
 
         // In-memory tasks
         for (const [id, task] of activeTasks) {
@@ -225,25 +214,10 @@ Use for: long installs, builds, data processing, file watching, anything that ta
           return { success: false, message: 'taskId is required for kill mode' };
         }
 
-        const terminalTask = await killTerminalBackgroundTask(input.taskId);
-        if (terminalTask) {
-          return {
-            success: true,
-            taskId: input.taskId,
-            message: `Terminal task ${input.taskId} stopped or already finished.`,
-            output: terminalTask.output || terminalTask.stdout || ''
-          };
-        }
-
         const task = activeTasks.get(input.taskId);
         if (task && task.pid && task.status === 'running') {
           try {
-            if (process.platform === 'win32') {
-              const { exec } = require('child_process');
-              exec(`taskkill /PID ${task.pid} /T /F`, { windowsHide: true }, () => {});
-            } else {
-              process.kill(task.pid, 'SIGTERM');
-            }
+            process.kill(task.pid, 'SIGTERM');
             task.status = 'failed';
             task.error = 'Killed by agent';
             task.completedAt = Date.now();

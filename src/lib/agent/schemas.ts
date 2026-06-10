@@ -92,7 +92,10 @@ export const AgentResponseSchema = z.object({
   sourcesCited: z.array(z.string()).optional(),
   executionTimeMs: z.number(),
   warnings: z.array(z.string()).optional(),
-  trace: z.array(z.any()).optional()
+  trace: z.array(z.any()).optional(),
+  complexity: z.string().optional(),
+  modelMode: z.string().optional(),
+  effectiveApiKey: z.string().optional()
 });
 export type AgentResponse = z.infer<typeof AgentResponseSchema>;
 

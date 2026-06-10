@@ -127,7 +127,7 @@ EXAMPLE: Research then write
     })).describe('Ordered list of tool execution steps')
   }),
   outputSchema: z.object({ success: z.boolean(), results: z.any() }),
-  execute: async (input: { steps: Array<{ tool: string, args: any, outputKey: string }> }, runContext?: any) => {
+  execute: async (input: { steps: Array<{ tool: string, args: any, outputKey: string }> }) => {
     const { globalToolRegistry: reg } = require('../../tools/registry');
     const context: Record<string, any> = {};
 
@@ -143,11 +143,19 @@ EXAMPLE: Research then write
       if (!rawArgs) {
         return { success: false, results: context, error: `Step ${ i + 1 }: args must be a JSON object string` };
       }
-      const resolvedArgs = resolveMacroValue(rawArgs, context);
+      const resolvedArgs: any = {};
+      for (const [key, value] of Object.entries(rawArgs)) {
+        if (typeof value === 'string' && value.startsWith('{{') && value.endsWith('}}')) {
+          const contextKey = value.slice(2, -2);
+          resolvedArgs[key] = context[contextKey];
+        } else {
+          resolvedArgs[key] = value;
+        }
+      }
 
       console.log(`[MacroRunner] Step ${ i + 1 }/${ input.steps.length }: ${ step.tool }`);
       try {
-        const result = await tool.execute(resolvedArgs, runContext || {});
+        const result = await tool.execute(resolvedArgs, {});
         context[step.outputKey] = result;
       } catch (error: any) {
         return { success: false, results: context, error: `Step ${ i + 1 } (${ step.tool }) failed: ${ error.message }` };
@@ -169,38 +177,4 @@ function parseJsonObject(value: any): Record<string, any> | null {
   } catch {
     return null;
   }
-}
-
-function resolveMacroValue(value: any, context: Record<string, any>): any {
-  if (typeof value === 'string') {
-    const exact = value.match(/^\{\{\s*([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?)\s*\}\}$/);
-    if (exact) {
-      const resolved = readContextPath(context, exact[1]);
-      return resolved === undefined ? value : resolved;
-    }
-
-    return value.replace(/\{\{\s*([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?)\s*\}\}/g, (_match, key) => {
-      const resolved = readContextPath(context, key);
-      if (resolved === undefined) return `{{${key}}}`;
-      return typeof resolved === 'string' ? resolved : JSON.stringify(resolved);
-    });
-  }
-
-  if (Array.isArray(value)) {
-    return value.map(item => resolveMacroValue(item, context));
-  }
-
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(
-      Object.entries(value).map(([key, nestedValue]) => [key, resolveMacroValue(nestedValue, context)])
-    );
-  }
-
-  return value;
-}
-
-function readContextPath(context: Record<string, any>, pathExpr: string): any {
-  return pathExpr
-    .split('.')
-    .reduce((current, part) => current == null ? undefined : current[part], context);
 }

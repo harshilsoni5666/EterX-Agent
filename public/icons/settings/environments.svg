@@ -1,16 +1,4 @@
-<!-- @license lucide-static v0.468.0 - ISC -->
-<svg
-  class="lucide lucide-terminal"
-  xmlns="http://www.w3.org/2000/svg"
-  width="24"
-  height="24"
-  viewBox="0 0 24 24"
-  fill="none"
-  stroke="currentColor"
-  stroke-width="2"
-  stroke-linecap="round"
-  stroke-linejoin="round"
->
-  <polyline points="4 17 10 11 4 5" />
-  <line x1="12" x2="20" y1="19" y2="19" />
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none">
+  <rect x="3.7" y="5" width="16.6" height="13.8" rx="2.4" stroke="#000" stroke-width="1.9"/>
+  <path d="M3.7 9h16.6M7.1 7h.05M10 7h.05M7.4 13.8l2.1-2.05-2.1-2.05M11.4 13.9h4.8" stroke="#000" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>

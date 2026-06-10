@@ -1,6 +1,28 @@
 import React from 'react';
 
-const ICONS8_AGENT_URL = '/icons/agent-ui/agent.png';
+const SIDEBAR_ICON_URLS = {
+  search: '/icons/sidebar/search.svg',
+  workspace: '/icons/sidebar/workspace.svg',
+  agents: '/icons/sidebar/agents.svg',
+  channels: '/icons/sidebar/channels.svg',
+} as const;
+
+const PremiumSidebarIcon = ({ className, src }: { className?: string; src: string }) => (
+  <span
+    aria-hidden="true"
+    className={`inline-block shrink-0 bg-current ${className || ''}`}
+    style={{
+      WebkitMaskImage: `url(${src})`,
+      maskImage: `url(${src})`,
+      WebkitMaskRepeat: 'no-repeat',
+      maskRepeat: 'no-repeat',
+      WebkitMaskPosition: 'center',
+      maskPosition: 'center',
+      WebkitMaskSize: 'contain',
+      maskSize: 'contain',
+    }}
+  />
+);
 
 // A premium microphone with a subtle inner glass fill and thick clean strokes
 export const PremiumMic = ({ className, strokeWidth = 2 }: any) => (
@@ -99,21 +121,12 @@ export const PremiumTrash = ({ className, strokeWidth = 2 }: any) => (
 );
 
 // Main Navigation & UI Icons
-export const PremiumSearch = ({ className, strokeWidth = 1.8 }: any) => (
-  <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
-    <circle cx="10.5" cy="10.5" r="6.5" fill="currentColor" fillOpacity="0.08" stroke="currentColor" strokeWidth={strokeWidth} />
-    <path d="M16 16l5.5 5.5" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
-    <path d="M10.5 7a3.5 3.5 0 0 1 3.5 3.5" stroke="currentColor" strokeWidth={1.2} strokeLinecap="round" opacity="0.4" />
-  </svg>
+export const PremiumSearch = ({ className }: any) => (
+  <PremiumSidebarIcon className={className} src={SIDEBAR_ICON_URLS.search} />
 );
 
-export const PremiumDashboard = ({ className, strokeWidth = 1.8 }: any) => (
-  <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
-    <rect x="3.5" y="3.5" width="6.5" height="6.5" rx="1.75" fill="currentColor" fillOpacity="0.08" stroke="currentColor" strokeWidth={strokeWidth} />
-    <rect x="14" y="3.5" width="6.5" height="6.5" rx="1.75" fill="currentColor" fillOpacity="0.08" stroke="currentColor" strokeWidth={strokeWidth} />
-    <rect x="3.5" y="14" width="6.5" height="6.5" rx="1.75" fill="currentColor" fillOpacity="0.08" stroke="currentColor" strokeWidth={strokeWidth} />
-    <rect x="14" y="14" width="6.5" height="6.5" rx="1.75" fill="currentColor" fillOpacity="0.08" stroke="currentColor" strokeWidth={strokeWidth} />
-  </svg>
+export const PremiumDashboard = ({ className }: any) => (
+  <PremiumSidebarIcon className={className} src={SIDEBAR_ICON_URLS.workspace} />
 );
 
 export const PremiumBot = ({ className, strokeWidth = 1.8 }: any) => (
@@ -129,7 +142,7 @@ export const PremiumBot = ({ className, strokeWidth = 1.8 }: any) => (
 );
 
 export const PremiumAgent = ({ className }: any) => (
-  <img src={ICONS8_AGENT_URL} alt="" className={`object-contain opacity-95 ${className || ''}`} draggable={false} />
+  <PremiumSidebarIcon className={className} src={SIDEBAR_ICON_URLS.agents} />
 );
 
 export const PremiumLayers = ({ className, strokeWidth = 1.8 }: any) => (
@@ -141,20 +154,7 @@ export const PremiumLayers = ({ className, strokeWidth = 1.8 }: any) => (
 );
 
 export const PremiumChannels = ({ className }: any) => (
-  <span
-    aria-hidden="true"
-    className={`inline-block shrink-0 bg-current ${className || ''}`}
-    style={{
-      WebkitMaskImage: 'url(/icons/ui/channel-chain-icons8.png)',
-      maskImage: 'url(/icons/ui/channel-chain-icons8.png)',
-      WebkitMaskRepeat: 'no-repeat',
-      maskRepeat: 'no-repeat',
-      WebkitMaskPosition: 'center',
-      maskPosition: 'center',
-      WebkitMaskSize: 'contain',
-      maskSize: 'contain',
-    }}
-  />
+  <PremiumSidebarIcon className={className} src={SIDEBAR_ICON_URLS.channels} />
 );
 
 export const PremiumFolderOpen = ({ className, strokeWidth = 1.8 }: any) => (

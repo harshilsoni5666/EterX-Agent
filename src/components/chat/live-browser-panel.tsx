@@ -305,7 +305,7 @@ export const LiveBrowserPanel: React.FC<LiveBrowserPanelProps> = ({
                 src={iframeUrl!}
                 className="w-full h-full border-0"
                 sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
-                title="Live preview"
+                title="Preview"
               />
             </div>
           )}

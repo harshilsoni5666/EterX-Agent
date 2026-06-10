@@ -1,12 +1,12 @@
 # EterX-Code UI Trace Contract
 
-EterX renders agent work through a professional timeline. The coding agent should make that timeline readable by using clear work notes, action labels, icon categories, file previews, console outputs, browser evidence, and sub-agent events.
+EterX renders agent work through a professional timeline. The coding agent should make that timeline readable by using clear timeline notes, action labels, icon categories, file previews, console outputs, browser evidence, and sub-agent events.
 
 ## UI Event Surfaces
 
 EterX currently shows these surfaces:
 
-- Work notes: natural-language phase updates.
+- Timeline notes: natural-language phase updates.
 - Thought blocks: collapsible reasoning summaries.
 - Action rows: grouped tool calls with icon, verb, secondary target, and optional file link.
 - File preview cards: created or edited files, with diff stats when available.
@@ -46,9 +46,9 @@ Allowed `uiIcon` values:
 
 Do not use Lucide icon names. Do not use step numbers. Do not write punctuation-heavy labels.
 
-## Work Note Rules
+## Timeline Note Rules
 
-Work notes should be sparse and useful.
+Timeline notes should be sparse and useful.
 
 Good cadence:
 
@@ -60,11 +60,11 @@ Good cadence:
 Good notes:
 
 ```text
-I found the settings modal path. I am opening the component and its styles before patching the layout.
+The settings modal path is identified; the component and styles come before the layout patch.
 ```
 
 ```text
-The edit is in place. Next I am running the targeted UI checks and opening the page in the browser.
+The edit is in place; targeted UI checks and the browser route come next.
 ```
 
 Bad notes:
@@ -78,10 +78,10 @@ Step 3: Execute workspace_read_file.
 ```
 
 ```text
-I am orchestrating a deep autonomous coding operation.
+Executing a deep autonomous coding operation.
 ```
 
-For the full coding-agent work note style, use `docs/work-note-style.md` and `prompts/work-note-kernel.md`.
+For the full coding-agent timeline-note style, use `docs/timeline-note-style.md` and `prompts/progress-timeline-kernel.md`.
 
 ## Coding Action Labels
 
@@ -112,10 +112,10 @@ Use labels that read well in the action chip. Keep them 2-6 words.
 
 ### Inspect Mode
 
-Work note:
+Timeline note:
 
 ```text
-I need to map this feature before making claims, so I am searching for the owning files first.
+The feature needs a quick map before claims, so the owning files come first.
 ```
 
 Actions:
@@ -127,10 +127,10 @@ Actions:
 
 ### Agent Edit Mode
 
-Work note:
+Timeline note:
 
 ```text
-I found the implementation path. I am applying the smallest patch and then I will verify the affected checks.
+The implementation path is clear; the smallest patch comes before affected checks.
 ```
 
 Actions:
@@ -142,10 +142,10 @@ Actions:
 
 ### Debug Repair Mode
 
-Work note:
+Timeline note:
 
 ```text
-The failure is reproducible. I am tracing the failing path before changing code.
+The failure is reproducible; the failing path comes before code changes.
 ```
 
 Actions:
@@ -157,10 +157,10 @@ Actions:
 
 ### UI Build Mode
 
-Work note:
+Timeline note:
 
 ```text
-The UI change is implemented. I am starting the app and checking the route in the browser.
+The UI change is implemented; the app and browser route check come next.
 ```
 
 Actions:
@@ -173,10 +173,10 @@ Actions:
 
 ### Review Mode
 
-Work note:
+Timeline note:
 
 ```text
-I am reading the changed files first so the review is grounded in the actual diff.
+Changed files come first so the review stays grounded in the actual diff.
 ```
 
 Actions:

@@ -84,10 +84,10 @@ The interactive setup wizard walks through:
 | Provider | Models | Key |
 |----------|--------|-----|
 | **Google Gemini** | gemini-2.5-flash, gemini-2.5-pro | `GEMINI_API_KEY` with multi-key load balancing |
-| **OpenAI** | gpt-4.1, o3, o4-mini, codex-mini | `OPENAI_API_KEY` |
+| **OpenAI** | gpt-4.1, o3, o4-mini | `OPENAI_API_KEY` |
 | **Anthropic** | claude-sonnet-4, claude-opus-4 | `ANTHROPIC_API_KEY` |
 | **OpenRouter** | 200+ models via one key | `OPENROUTER_API_KEY` |
-| **Groq** | llama-3.3-70b, mixtral-8x7b | `GROQ_API_KEY` |
+| **Groq** | GPT-OSS, Llama 3.3/3.1, Compound | `GROQ_API_KEY` |
 | **DeepSeek** | deepseek-chat, deepseek-reasoner | `DEEPSEEK_API_KEY` |
 | **Hugging Face** | Llama, Mistral, open-source models | `HF_TOKEN` |
 | **Alibaba DashScope** | qwen-max, qwen-plus | `DASHSCOPE_API_KEY` |

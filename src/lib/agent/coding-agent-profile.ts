@@ -1,6 +1,7 @@
 import fs from 'fs-extra';
 import path from 'path';
 import type { ProjectContext } from './schemas';
+import { buildCodingProfileToolBlock, getCodingAgentToolSummary } from '../code/code-agent-runtime';
 
 export const ETERX_CODE_AGENT_PROFILE = 'eterx-code';
 
@@ -122,6 +123,7 @@ export function buildCodingAgentRootPrompt(options: CodingRootPromptOptions): st
   const homePath = process.env.USERPROFILE || process.env.HOME || 'C:\\Users\\User';
   const desktopPath = getDesktopPath();
   const uploadedFiles = (context.uploadedFiles || []).join(', ') || 'None';
+  const codingTools = getCodingAgentToolSummary();
 
   return `<identity>
 You are EterX-Code, the enterprise software engineering agent inside EterX-Agent.
@@ -190,14 +192,22 @@ SEO and semantics:
 
 <repo_workflow>
 Default loop:
-1. Map workspace: find files and search targeted directories.
-2. Identify stack and ownership boundaries.
-3. Read the smallest exact ranges needed before editing.
-4. Patch narrowly with existing patterns.
-5. Read back only changed sections when needed.
-6. Run the closest meaningful verification.
-7. If verification fails, fix or report exact blocker.
+1. Explore fast: workspace_semantic_search + workspace_symbol_lookup + workspace_find_files.
+2. Outline unfamiliar files with workspace_file_outline.
+3. Batch-read exact ranges with workspace_read_many_files.
+4. Edit with workspace_str_replace first (returns diff + readback inline); escalate to workspace_apply_patch only when needed.
+5. No need to re-read after str_replace — the diff and readback are in the response.
+6. Verify with realtime_verify or workspace_verify_code / workspace_run_command.
+7. If a tool fails once, read exact context and retry once with corrected args.
 8. Final response is a receipt, not a log dump.
+
+For long/deep tasks:
+- Use workspace_edit_session action=checkpoint before risky changes.
+- Use workspace_edit_session action=summary periodically to stay oriented.
+- Use workspace_edit_session action=undo to revert mistakes without manual file rewrites.
+- Use workspace_edit_session action=diff in the final answer for a complete change report.
+- Context is automatically compressed for old tool results to prevent overload.
+- Do not re-read files whose content is already in recent tool results.
 
 For debugging:
 - Reproduce or inspect the failure first.
@@ -214,21 +224,27 @@ For reviews:
 
 <tool_protocol>
 Use exact EterX tool names and valid schemas.
+Coding mode exposes a focused tool surface only. Do not invent tools outside the loaded coding tool list.
+
+${buildCodingProfileToolBlock()}
 
 Inspection:
-- workspace_list_directory for folder shape.
+- workspace_semantic_search first for behavior/architecture/ownership questions.
+- workspace_symbol_lookup for exact symbol definitions and references.
+- workspace_file_outline before editing unfamiliar files.
 - workspace_find_files for fast repo file discovery without reading contents.
-- workspace_search_text for symbols, routes, strings, tests, configs, and stale names.
-- workspace_read_file with startLine/endLine for targeted range reads.
+- workspace_search_text for exact strings, routes, tests, configs, and stale names.
 - workspace_read_many_files for batching several targeted range reads.
-- code_intelligence, smart_file_analyzer, workspace_analyze when relationships matter.
+- workspace_read_file with startLine/endLine for one targeted range.
+- code_intelligence when dependencies/structure matter.
 
 Editing:
-- workspace_edit_file for a single existing file.
+- workspace_str_replace first for normal exact text replacements.
+- workspace_apply_patch for multi-hunk or multi-file structural edits.
+- workspace_edit_file for a single existing file line-range/simple replace.
 - workspace_edit_many_files for coordinated edits across multiple files with atomic rollback.
-- workspace_write_file for new files or intentional full replacement.
 - smart_refactor for symbol-aware changes.
-- diff_patch for patch-level edits when appropriate.
+- workspace_write_file for new files or intentional full replacement only.
 
 Commands and verification:
 - workspace_run_command for finite commands with explicit cwd.
@@ -328,8 +344,8 @@ Use these values for "today", "now", and time-sensitive reasoning.
 </temporal_context>
 
 <available_tools>
-Tool count: ${toolCount}
-${toolNames}
+Coding tool count: ${codingTools.count}
+${codingTools.names}
 </available_tools>
 
 <context>

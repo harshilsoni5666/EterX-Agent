@@ -927,7 +927,7 @@ export const markdownComponents = {
               <div className="h-2.5 w-2.5 rounded-full bg-[#FFBD2E]" />
               <div className="h-2.5 w-2.5 rounded-full bg-[#27C93F]" />
             </div>
-            <span className="px-4 text-[11px] font-black uppercase tracking-widest text-white/40">Live Preview</span>
+            <span className="px-4 text-[11px] font-black uppercase tracking-widest text-white/40">Preview</span>
           </div>
           <div className="eterx-markdown-preview-body flex min-h-[200px] items-center justify-center p-8">
             <div dangerouslySetInnerHTML={{ __html: content }} />

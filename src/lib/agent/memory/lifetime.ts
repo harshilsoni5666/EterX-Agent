@@ -88,7 +88,7 @@ interface LifetimeIndex {
   recentCmds: Array<{ cmd: string; output: string; exitCode: number | null; ts: number; chatId: string }>;
   recentTasks: Array<{ title: string; status: string; ts: number; chatId: string; durationMs?: number }>;
   recentErrors: Array<{ tool: string; error: string; fixed: boolean; ts: number; chatId: string }>;
-  learnedFacts: Array<{ fact: string; ts: number; confidence: number; tags: string[]; chatId?: string }>;
+  learnedFacts: Array<{ fact: string; ts: number; confidence: number; tags: string[] }>;
   lastChatId: string;
   lastProjectId: string;
   modelProven: Record<string, string>; // mode → proven model name
@@ -362,7 +362,6 @@ class LifetimeBrain {
           ts: event.ts,
           confidence: event.metadata?.confidence ?? 0.7,
           tags: event.tags,
-          chatId: event.chatId,
         });
         this.index.learnedFacts = this.index.learnedFacts.slice(0, 50);
         break;
@@ -609,16 +608,13 @@ class LifetimeBrain {
         if (lastTask) {
           const agoMin = Math.round((now - lastTask.ts) / 60000);
           const agoStr = agoMin < 60 ? `${agoMin}m ago` : agoMin < 1440 ? `${Math.round(agoMin/60)}h ago` : `${Math.round(agoMin/1440)}d ago`;
-          parts.push(`🔄 Other session context (read-only, do not continue this task) (${agoStr}): ${lastTask.title}`);
+          parts.push(`🔄 Last session (${agoStr}): ${lastTask.title}`);
         }
       }
     }
 
     // ── Recent Files ──
-    const recentFiles = (opts?.chatId
-      ? this.index.recentFiles.filter(f => f.chatId === opts.chatId)
-      : this.index.recentFiles
-    ).slice(0, MAX_BOOT_FILES);
+    const recentFiles = this.index.recentFiles.slice(0, MAX_BOOT_FILES);
     if (recentFiles.length > 0) {
       const fileLines = recentFiles.map(f => {
         const agoMin = Math.round((now - f.ts) / 60000);
@@ -630,10 +626,7 @@ class LifetimeBrain {
     }
 
     // ── Recent Terminal Commands ──
-    const recentCmds = (opts?.chatId
-      ? this.index.recentCmds.filter(c => c.chatId === opts.chatId)
-      : this.index.recentCmds
-    ).slice(0, MAX_BOOT_CMDS);
+    const recentCmds = this.index.recentCmds.slice(0, MAX_BOOT_CMDS);
     if (recentCmds.length > 0) {
       const cmdLines = recentCmds.map(c => {
         const agoMin = Math.round((now - c.ts) / 60000);
@@ -656,7 +649,7 @@ class LifetimeBrain {
     }
 
     // ── Recent Errors ──
-    const unresolvedErrors = this.index.recentErrors.filter(e => !e.fixed && (!opts?.chatId || e.chatId === opts.chatId)).slice(0, MAX_BOOT_ERRORS);
+    const unresolvedErrors = this.index.recentErrors.filter(e => !e.fixed).slice(0, MAX_BOOT_ERRORS);
     if (unresolvedErrors.length > 0) {
       const errLines = unresolvedErrors.map(e => {
         const agoMin = Math.round((now - e.ts) / 60000);
@@ -675,7 +668,7 @@ class LifetimeBrain {
 
     // ── Learned Facts ──
     const topFacts = this.index.learnedFacts
-      .filter(f => f.confidence >= 0.7 && (!opts?.chatId || !f.chatId || f.chatId === opts.chatId))
+      .filter(f => f.confidence >= 0.7)
       .slice(0, MAX_BOOT_FACTS);
     if (topFacts.length > 0) {
       const factLines = topFacts.map(f => `  • ${f.fact.substring(0, 100)}`);

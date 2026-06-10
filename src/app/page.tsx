@@ -4,9 +4,8 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import dynamic from 'next/dynamic';
 import { Sidebar } from '../components/layout/sidebar';
 import { ChatInput } from '../components/layout/chat-input';
-import { AgentTeamView } from '../components/chat/agent-team-view';
 import { ChatFeed } from '../components/chat/chat-feed';
-import { AlertTriangle, CheckCircle2, ChevronDown, Clock3, Code2, GraduationCap, MessageSquare, Monitor, Pencil, PenTool, PanelLeft, SendHorizontal, SquarePen, Search, X, ArrowLeft, Trash } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, ChevronDown, Clock3, Code2, GraduationCap, MessageSquare, Pencil, PenTool, SendHorizontal, SquarePen, Search, X, ArrowLeft, Trash } from 'lucide-react';
 import { Tooltip } from '../components/ui/tooltip';
 import { motion, AnimatePresence } from 'framer-motion';
 import { InteractiveGrid } from '../components/ui/interactive-grid';
@@ -75,6 +74,14 @@ const ProjectsView = dynamic(
 const MonitorPanel = dynamic(
   () => import('../components/monitor/ModernMonitorPanel').then(mod => mod.MonitorPanel),
   { ssr: false },
+);
+
+const HeaderSidebarOpenIcon = ({ className = "w-[18px] h-[18px]" }: { className?: string }) => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className={`${className} transition-colors duration-150`}>
+    <rect x="3" y="3" width="18" height="18" rx="5" />
+    <path d="M9 3v18" />
+    <path className="opacity-0 transition-opacity duration-150 group-hover:opacity-100" d="M13 9l3 3-3 3" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
 );
 
 interface ChatSession {
@@ -667,6 +674,7 @@ export default function DeepWorkUIWrapper() {
 function DeepWorkUI() {
   const { openFiles } = useGlobalFilePanel();
   const hasOpenFiles = openFiles.length > 0;
+  const isRightPanelVisible = hasOpenFiles;
   const splitContainerRef = useRef<HTMLDivElement>(null);
   const latestChatPanelWidthRef = useRef<number | null>(null);
   const [chatPanelWidth, setChatPanelWidth] = useState<number | null>(null);
@@ -708,6 +716,8 @@ function DeepWorkUI() {
   const canUseMonitor = activeView === 'chat' && !!activeChatId;
   const [networkPhase, setNetworkPhase] = useState<NetworkBannerPhase>('online');
   const [networkBannerVisible, setNetworkBannerVisible] = useState(false);
+  const closedSidebarDragStartRef = useRef<number | null>(null);
+  const closedSidebarDragOpenedRef = useRef(false);
   const selectedAgent = selectedAgentState.agentId;
   const selectedAgentName = selectedAgentState.agentName;
   const networkPausedRef = useRef(false);
@@ -3544,8 +3554,46 @@ function DeepWorkUI() {
     };
   }, [sendSteeringMessage]);
 
+  const showNewChatMotionField =
+    activeView === 'chat' &&
+    !activeChatId &&
+    traceLogs.length === 0 &&
+    liveState === 'idle';
+
+  const handleClosedSidebarHandlePointerDown = useCallback((event: React.PointerEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    closedSidebarDragStartRef.current = event.clientX;
+    closedSidebarDragOpenedRef.current = false;
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  }, []);
+
+  const handleClosedSidebarHandlePointerMove = useCallback((event: React.PointerEvent<HTMLButtonElement>) => {
+    const startX = closedSidebarDragStartRef.current;
+    if (startX === null) return;
+    if (event.clientX - startX >= 12) {
+      closedSidebarDragStartRef.current = null;
+      closedSidebarDragOpenedRef.current = true;
+      setSidebarOpen(true);
+    }
+  }, []);
+
+  const handleClosedSidebarHandlePointerEnd = useCallback((event: React.PointerEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+    closedSidebarDragStartRef.current = null;
+  }, []);
+
+  const handleClosedSidebarHandleClick = useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+    if (closedSidebarDragOpenedRef.current) {
+      closedSidebarDragOpenedRef.current = false;
+      return;
+    }
+    setSidebarOpen(true);
+  }, []);
+
   return (
-    <div data-active-view={activeView} className="eterx-app-shell flex h-screen font-sans overflow-hidden selection:bg-[#E2765A]/30 transition-colors relative">
+    <div data-active-view={activeView} data-sidebar-open={sidebarOpen ? 'true' : 'false'} className="eterx-app-shell flex h-screen font-sans overflow-hidden selection:bg-[#E2765A]/30 transition-colors relative">
       <NetworkStatusBanner
         phase={networkPhase}
         visible={networkBannerVisible}
@@ -3559,64 +3607,64 @@ function DeepWorkUI() {
         onClose={() => setPetWidgetOpen(false)}
         onReply={sendSteeringMessage}
       />
-      {/* Empty-state motion field: soft Gemini-style color waves behind the app shell. */}
-      <div className={`absolute bottom-0 left-0 right-0 h-[45vh] pointer-events-none overflow-hidden z-0 flex items-end justify-center ${ (activeView !== 'channels' && activeView !== 'projects' && ((traceLogs.length === 0 && liveState === 'idle') || (activeView === 'agents' && !buildingAgentId))) ? 'opacity-100 transition-all duration-[1000ms] ease-out' : 'opacity-0 transition-all duration-[1000ms] ease-in' }`}>
-        <div key={`eterx-home-field-${ activeChatId ?? 'new' }`} className="eterx-home-field">
-          <div className="eterx-home-plasma">
-            <div className="eterx-home-plasma-blob eterx-home-plasma-pink" />
-            <div className="eterx-home-plasma-blob eterx-home-plasma-emerald" />
-            <div className="eterx-home-plasma-blob eterx-home-plasma-blue" />
-            <div className="eterx-home-plasma-blob eterx-home-plasma-lime" />
-          </div>
-          <div className="eterx-home-wave-stage">
-            <div className="eterx-home-wave-depth eterx-home-wave-depth-back" />
-            <div className="eterx-home-wave-volume eterx-home-wave-volume-back" />
-            <div className="eterx-home-lobe eterx-home-lobe-left" />
-            <div className="eterx-home-lobe eterx-home-lobe-center" />
-            <div className="eterx-home-wave-volume eterx-home-wave-volume-mid" />
-            <div className="eterx-home-lobe eterx-home-lobe-right" />
-            <div className="eterx-home-wave-depth eterx-home-wave-depth-front" />
-            <div className="eterx-home-wave-volume eterx-home-wave-volume-front" />
-          </div>
-        </div>
-        <div className="eterx-home-vignette" />
-      </div>
 
-      <Sidebar
-        isOpen={sidebarOpen}
-        setIsOpen={setSidebarOpen}
-        createNewChat={createNewChat}
-        chats={chats.filter(c => !c.id.startsWith('agent_builder_'))}
-        activeChatId={activeChatId}
-        loadChat={loadChat}
-        deleteChat={deleteChat}
-        deleteChats={deleteChats}
-        renameChat={renameChat}
-        toggleFavorite={toggleFavorite}
-        onSearchClick={() => setCmdPaletteOpen(true)}
-        activeView={activeView}
-        setActiveView={setActiveView}
-        runningChats={runningChats}
-        onSettingsClick={openSettingsWindow}
-      />
+      {sidebarOpen && (
+        <Sidebar
+          isOpen={sidebarOpen}
+          setIsOpen={setSidebarOpen}
+          createNewChat={createNewChat}
+          chats={chats.filter(c => !c.id.startsWith('agent_builder_'))}
+          activeChatId={activeChatId}
+          loadChat={loadChat}
+          deleteChat={deleteChat}
+          deleteChats={deleteChats}
+          renameChat={renameChat}
+          toggleFavorite={toggleFavorite}
+          onSearchClick={() => setCmdPaletteOpen(true)}
+          activeView={activeView}
+          setActiveView={setActiveView}
+          runningChats={runningChats}
+          onSettingsClick={openSettingsWindow}
+          isThinking={isThinking}
+        />
+      )}
 
       <SettingsPanel isOpen={isSettingsOpen} initialTab="models" onClose={() => setIsSettingsOpen(false)} />
+      {!sidebarOpen && (
+        <>
+          <div className="eterx-sidebar-closed-toggle-shell">
+            <Tooltip text="Open sidebar" side="right">
+              <button
+                type="button"
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={() => setSidebarOpen(true)}
+                aria-label="Open sidebar"
+                className="eterx-sidebar-closed-toggle group flex h-8 w-8 items-center justify-center rounded-[8px] border border-transparent bg-transparent text-[var(--sidebar-muted-text)] transition-colors duration-150 hover:bg-[var(--sidebar-toggle-hover-bg)] hover:text-[var(--sidebar-hover-text)] active:bg-[var(--sidebar-toggle-active-bg)] cursor-pointer [-webkit-app-region:no-drag]"
+              >
+                <HeaderSidebarOpenIcon />
+              </button>
+            </Tooltip>
+          </div>
+          <button
+            type="button"
+            aria-label="Open sidebar"
+            title="Open sidebar"
+            onClick={handleClosedSidebarHandleClick}
+            onPointerDown={handleClosedSidebarHandlePointerDown}
+            onPointerMove={handleClosedSidebarHandlePointerMove}
+            onPointerUp={handleClosedSidebarHandlePointerEnd}
+            onPointerCancel={handleClosedSidebarHandlePointerEnd}
+            className="eterx-sidebar-closed-edge-handle"
+          />
+        </>
+      )}
 
-      <div className="flex-1 flex flex-col relative bg-transparent overflow-hidden z-10 transition-all duration-300">
-        <div className={`eterx-chat-top-fade pointer-events-none absolute left-0 right-0 top-0 z-40 h-[92px] ${activeView === 'channels' || activeView === 'projects' ? 'hidden' : 'bg-[linear-gradient(180deg,#0F0F0F_0%,rgba(15,15,15,0.98)_46%,rgba(15,15,15,0.56)_78%,transparent_100%)]'}`} />
+      <div className="eterx-workspace-shell flex-1 flex flex-col relative overflow-hidden z-10 transition-colors duration-300">
         {/* Absolute Header (Draggable Region for Electron) */}
         <>
-          <div className="h-14 flex items-center justify-between pl-4 pr-[140px] z-50 pointer-events-none [-webkit-app-region:drag] shrink-0">
-            <div className="flex items-center gap-2 pointer-events-auto [-webkit-app-region:no-drag] h-full pt-3">
-              {!sidebarOpen && (
-                <div className="flex md:hidden items-center gap-1 mr-2 mt-0">
-                  <Tooltip text="Open sidebar" side="bottom">
-                    <div onClick={() => setSidebarOpen(true)} className="p-1.5 rounded-full hover:bg-white/10 active:bg-white/20 active:scale-95 transition-all text-[#8C8A88] hover:text-white cursor-pointer">
-                      <PanelLeft className="w-[18px] h-[18px]" />
-                    </div>
-                  </Tooltip>
-                </div>
-              )}
+          <div className={`eterx-main-panel ${!sidebarOpen ? 'eterx-main-panel-sidebar-closed' : ''} flex-1 flex flex-col relative overflow-hidden`}>
+          <div className="eterx-main-header relative z-50 flex h-[var(--eterx-main-header-height)] shrink-0 items-center justify-between gap-4 border-b border-[var(--border)] pl-8 pr-6 [-webkit-app-region:drag]">
+            <div className="flex min-w-0 items-center gap-2 pointer-events-auto [-webkit-app-region:no-drag]">
               <div id="agent-builder-back-portal" className="flex items-center">
                 {buildingAgentId && (
                   <button
@@ -3638,12 +3686,13 @@ function DeepWorkUI() {
                 const titleText = activeChat ? activeChat.title : DEFAULT_CHAT_TITLE;
 
                 return (
-                  <div className="relative [-webkit-app-region:no-drag]">
+                  <div className="relative min-w-0 [-webkit-app-region:no-drag]">
                     <div
+                      data-open={headerMenuOpen ? 'true' : 'false'}
                       onClick={() => {
                         setHeaderMenuOpen(!headerMenuOpen);
                       }}
-                      className={`flex items-center gap-2 text-[14px] font-medium px-3 py-1.5 rounded-lg transition-all duration-300 border backdrop-blur-md ${ headerMenuOpen ? 'cursor-pointer bg-white/[0.12] border-white/[0.15] text-white shadow-sm scale-[0.98]' : 'cursor-pointer bg-white/[0.05] border-white/[0.08] text-[#E8E6E3] hover:bg-white/[0.08] hover:border-white/[0.12] active:scale-[0.98] shadow-sm' }`}
+                      className="eterx-thread-tab group flex min-w-0 cursor-pointer items-center gap-2.5 px-3 py-1.5 text-[14px] font-medium transition-all duration-200"
                     >
                       <span className="truncate max-w-[400px]">{titleText}</span>
                       <ChevronDown className={`w-4 h-4 text-[#555350] shrink-0 transition-transform duration-200 ${ headerMenuOpen ? 'rotate-180' : '' }`} />
@@ -3724,54 +3773,37 @@ function DeepWorkUI() {
                 );
               })()}
             </div>
+            <div className="flex shrink-0 items-center gap-2 pointer-events-auto [-webkit-app-region:no-drag]" />
           </div>
 
 
-          {/* Agent Team Toggle Button */}
-          {(currentSubAgents.length > 0 || isThinking) && (
-            <div className="absolute top-3 right-[228px] z-50 pointer-events-auto [-webkit-app-region:no-drag]">
-              <button id="agent-team-toggle-btn"
-                onClick={() => setAgentTeamOpen(o => !o)}
-                className={`flex items-center gap-1.5 h-8 px-2.5 rounded-lg text-[11px] font-semibold transition-all border shadow-[0_10px_28px_rgba(0,0,0,0.18)] ${ agentTeamOpen
-                    ? 'bg-violet-400/[0.12] border-violet-300/30 text-violet-200 shadow-[0_0_0_1px_rgba(139,92,246,0.08),0_14px_34px_rgba(139,92,246,0.14)]'
-                    : 'bg-white/[0.035] border-white/[0.085] text-white/45 hover:border-violet-300/22 hover:bg-violet-300/[0.06] hover:text-violet-100'
-                  }`}
-              >
-                <svg className={`w-3.5 h-3.5 ${ agentTeamOpen ? 'text-violet-300' : 'text-white/45' }`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" />
-                  <path d="M22 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" />
-                </svg>
-                <span className="hidden sm:inline">Team</span>
-                {currentSubAgents.filter((a: any) => a.status === 'working' || a.status === 'spawning').length > 0 && (
-                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse ml-0.5" />
-                )}
-              </button>
+          <div className={`eterx-new-chat-motion-field absolute bottom-0 left-0 right-0 h-[38vh] pointer-events-none overflow-hidden z-0 flex items-end justify-center ${ showNewChatMotionField ? 'opacity-100 transition-opacity duration-[1000ms] ease-out' : 'opacity-0 transition-opacity duration-[1000ms] ease-in' }`}>
+            <div key="eterx-home-field-new-chat" className="eterx-home-field">
+              <div className="eterx-home-plasma">
+                <div className="eterx-home-plasma-blob eterx-home-plasma-pink" />
+                <div className="eterx-home-plasma-blob eterx-home-plasma-emerald" />
+                <div className="eterx-home-plasma-blob eterx-home-plasma-blue" />
+                <div className="eterx-home-plasma-blob eterx-home-plasma-lime" />
+              </div>
+              <div className="eterx-home-wave-stage">
+                <div className="eterx-home-wave-depth eterx-home-wave-depth-back" />
+                <div className="eterx-home-wave-volume eterx-home-wave-volume-back" />
+                <div className="eterx-home-lobe eterx-home-lobe-left" />
+                <div className="eterx-home-lobe eterx-home-lobe-center" />
+                <div className="eterx-home-wave-volume eterx-home-wave-volume-mid" />
+                <div className="eterx-home-lobe eterx-home-lobe-right" />
+                <div className="eterx-home-wave-depth eterx-home-wave-depth-front" />
+                <div className="eterx-home-wave-volume eterx-home-wave-volume-front" />
+              </div>
             </div>
-          )}
-
-          {/* Computer Toggle Button */}
-          {canUseMonitor && (
-            <div className="absolute top-3 right-[152px] z-50 pointer-events-auto [-webkit-app-region:no-drag]">
-              <Tooltip text={monitorOpen ? 'Close Computer' : 'Open Computer'} side="bottom">
-                <button id="computer-toggle-btn"
-                  onClick={() => setMonitorOpen(o => !o)}
-                  className={`flex items-center gap-1.5 h-8 px-2.5 rounded-lg text-[11px] font-semibold transition-all border shadow-[0_10px_28px_rgba(0,0,0,0.18)] ${ monitorOpen
-                      ? 'bg-sky-400/[0.12] border-sky-300/30 text-sky-200 shadow-[0_0_0_1px_rgba(125,211,252,0.08),0_14px_34px_rgba(14,165,233,0.14)]'
-                      : 'bg-white/[0.035] border-white/[0.085] text-white/45 hover:border-sky-300/22 hover:bg-sky-300/[0.06] hover:text-sky-100'
-                    }`}
-                >
-                  <Monitor className={`w-3.5 h-3.5 ${ monitorOpen ? 'text-sky-300' : 'text-white/45' }`} />
-                  <span className="hidden sm:inline">Computer</span>
-                  {isThinking && <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse ml-0.5" />}
-                </button>
-              </Tooltip>
-            </div>
-          )}
+            <div className="eterx-home-vignette" />
+          </div>
+          <div className={`eterx-chat-top-fade pointer-events-none absolute left-0 right-0 top-[var(--eterx-main-header-height)] z-40 h-[48px] ${activeView === 'channels' || activeView === 'projects' ? 'hidden' : ''}`} />
 
           {/* Split Content Area */}
           <div
             ref={splitContainerRef}
-            className={`flex-1 flex overflow-hidden w-full relative ${ isResizingPanels ? 'cursor-col-resize select-none' : '' }`}
+            className={`flex-1 flex overflow-hidden w-full relative z-10 ${ isResizingPanels ? 'cursor-col-resize select-none' : '' }`}
           >
             {activeView === 'agents' && !buildingAgentId ? (
               <AgentsView
@@ -3799,13 +3831,14 @@ function DeepWorkUI() {
                     sidebarOpen={sidebarOpen}
                     handleScroll={handleScroll}
                     showScrollBottom={showScrollBottom}
-                    isCompressed={hasOpenFiles}
+                    isCompressed={isRightPanelVisible}
                     onAnswerAskUser={handleAnswerAskUser}
+                    onEditUserMessage={setInputValue}
                   />
 
                   {/* Pending Steering Queue */}
                   {pendingSteering.length > 0 && (
-                    <div className={`px-4 ${ hasOpenFiles ? 'sm:px-4' : 'sm:px-12' } w-full max-w-[800px] mx-auto flex flex-col gap-2 pb-2`}>
+                    <div className={`px-4 ${ isRightPanelVisible ? 'sm:px-4' : 'sm:px-12' } w-full max-w-[760px] mx-auto flex flex-col gap-2 pb-2`}>
                       <div className="text-xs text-neutral-500 font-medium px-1 flex items-center gap-1.5">
                         Pending messages <span className="w-4 h-4 inline-flex items-center justify-center rounded-full bg-neutral-800 text-[10px] text-neutral-400">i</span>
                       </div>
@@ -3861,10 +3894,8 @@ function DeepWorkUI() {
                     onToggleSpeakerMute={toggleLiveSpeakerMute}
                     isNetworkPaused={isNetworkPaused}
                     onNetworkPausedAction={revealNetworkBanner}
-                    isCompressed={hasOpenFiles}
+                    isCompressed={isRightPanelVisible}
                     taskTracker={currentTaskTracker}
-                    activeSubAgents={currentSubAgents}
-                    onOpenTeamView={() => setAgentTeamOpen(true)}
                     activeChatId={activeChatId}
                     onOpenAgentBuilder={handleOpenAgentBuilder}
                     selectedAgent={selectedAgent}
@@ -3887,7 +3918,7 @@ function DeepWorkUI() {
                   )}
                 </div>
 
-                {hasOpenFiles && (
+                {isRightPanelVisible && (
                   <button
                     type="button"
                     role="separator"
@@ -3907,18 +3938,71 @@ function DeepWorkUI() {
                 )}
 
                 {/* Right Panel Container */}
-                {hasOpenFiles && (
+                {isRightPanelVisible && (
                   <IdePanel />
                 )}
 
                 {/* Agent Team Panel */}
                 <AnimatePresence>
                   {agentTeamOpen && (
-                    <AgentTeamView
-                      traceLogs={displayTraceLogs}
-                      isThinking={isThinking}
-                      onClose={() => setAgentTeamOpen(false)}
-                    />
+                    <motion.aside
+                      initial={{ opacity: 0, y: -8, scale: 0.98 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      exit={{ opacity: 0, y: -8, scale: 0.98 }}
+                      transition={{ duration: 0.16 }}
+                      className="absolute top-[42px] right-4 z-50 w-[320px] max-w-[calc(100vw-2rem)] overflow-hidden rounded-xl border border-white/[0.09] bg-[#151515]/95 shadow-[0_24px_80px_rgba(0,0,0,0.55)] backdrop-blur-xl pointer-events-auto"
+                    >
+                      <div className="flex items-center justify-between border-b border-white/[0.07] px-3 py-2.5">
+                        <div className="min-w-0">
+                          <div className="text-[12px] font-semibold text-white/90">Agent Team</div>
+                          <div className="text-[11px] text-white/42">
+                            {isThinking ? 'Coordinating current work' : 'Latest agent activity'}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setAgentTeamOpen(false)}
+                          className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-white/45 transition-colors hover:bg-white/[0.06] hover:text-white/80"
+                          aria-label="Close agent team"
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                      <div className="max-h-[360px] overflow-y-auto p-2">
+                        {currentSubAgents.length === 0 ? (
+                          <div className="rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-3 text-[12px] text-white/48">
+                            No delegated agents are active yet.
+                          </div>
+                        ) : (
+                          <div className="space-y-1.5">
+                            {currentSubAgents.map((agent: any) => {
+                              const status = String(agent.status || 'pending');
+                              const statusColor = status === 'completed'
+                                ? 'bg-emerald-400'
+                                : status === 'error'
+                                  ? 'bg-rose-400'
+                                  : status === 'working' || status === 'spawning'
+                                    ? 'bg-amber-400 animate-pulse'
+                                    : 'bg-white/35';
+                              return (
+                                <div key={agent.name} className="flex items-start gap-2.5 rounded-lg border border-white/[0.055] bg-white/[0.025] px-3 py-2.5">
+                                  <span className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${statusColor}`} />
+                                  <div className="min-w-0 flex-1">
+                                    <div className="flex items-center justify-between gap-2">
+                                      <div className="truncate text-[12px] font-semibold text-white/86">{agent.name}</div>
+                                      <div className="shrink-0 text-[10px] uppercase tracking-wide text-white/34">{status}</div>
+                                    </div>
+                                    <div className="mt-0.5 line-clamp-2 text-[11px] leading-4 text-white/46">
+                                      {agent.currentAction || agent.task || 'Waiting for next action'}
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    </motion.aside>
                   )}
                 </AnimatePresence>
                 {/* Computer Panel */}
@@ -3929,6 +4013,7 @@ function DeepWorkUI() {
                 </AnimatePresence>
               </>
             )}
+          </div>
           </div>
         </>
       </div>
@@ -4167,6 +4252,29 @@ function DeepWorkUI() {
             linear-gradient(180deg, #0F0F0F 0%, rgba(15, 15, 15, 0.78) 14%, rgba(15, 15, 15, 0.20) 42%, transparent 100%),
             radial-gradient(122% 104% at 50% 100%, transparent 0%, transparent 58%, rgba(15, 15, 15, 0.42) 83%, #0F0F0F 100%),
             linear-gradient(90deg, #0F0F0F 0%, rgba(15, 15, 15, 0.30) 10%, transparent 23%, transparent 78%, rgba(15, 15, 15, 0.34) 90%, #0F0F0F 100%);
+        }
+
+        .eterx-new-chat-motion-field {
+          transform: translateZ(0);
+          will-change: opacity;
+          filter: saturate(0.42) brightness(0.76);
+          clip-path: inset(0 0 0 0 round 0 0 0 var(--eterx-shell-radius));
+          -webkit-mask-image: linear-gradient(180deg, transparent 0%, rgba(0, 0, 0, 0.12) 14%, rgba(0, 0, 0, 0.82) 32%, #000 100%);
+          mask-image: linear-gradient(180deg, transparent 0%, rgba(0, 0, 0, 0.12) 14%, rgba(0, 0, 0, 0.82) 32%, #000 100%);
+          background:
+            radial-gradient(ellipse at 0% 100%, rgba(34, 34, 34, 0.48) 0%, rgba(34, 34, 34, 0.30) 34%, transparent 68%),
+            linear-gradient(180deg, transparent 0%, transparent 44%, rgba(34, 34, 34, 0.10) 74%, rgba(34, 34, 34, 0.22) 100%);
+        }
+
+        .eterx-new-chat-motion-field .eterx-home-field {
+          animation: none;
+          opacity: 1 !important;
+          transform: none !important;
+        }
+
+        .eterx-new-chat-motion-field .eterx-home-vignette {
+          background:
+            radial-gradient(122% 100% at 58% 100%, transparent 0%, transparent 66%, rgba(15, 15, 15, 0.18) 88%, rgba(15, 15, 15, 0.48) 100%);
         }
 
         @keyframes eterx-home-field-enter {

@@ -241,9 +241,8 @@ class AgentMemory {
     this.debouncedSave();
   }
 
-  getRecentSessions(count: number = 5, chatId?: string): string[] {
+  getRecentSessions(count: number = 5): string[] {
     return this.store.sessionSummaries
-      .filter(s => !chatId || (s as any).chatId === chatId || !(s as any).chatId)
       .slice(-count)
       .map(s => `[${new Date(s.timestamp).toLocaleDateString()}] ${s.summary}`);
   }
@@ -251,9 +250,8 @@ class AgentMemory {
   /**
    * Generate a memory context string for injection into system prompt.
    * Returns relevant preferences and patterns the agent should know about.
-   * @param chatId — When provided, session summaries are filtered to this chat only.
    */
-  getMemoryContext(currentQuery?: string, options: { includeRecentSessions?: boolean } = {}, chatId?: string): string {
+  getMemoryContext(currentQuery?: string, options: { includeRecentSessions?: boolean } = {}, _chatId?: string): string {
     const parts: string[] = [];
 
     const prefs = this.getAllPreferences();
@@ -268,7 +266,7 @@ class AgentMemory {
       }
     }
 
-    const sessions = options.includeRecentSessions ? this.getRecentSessions(3, chatId) : [];
+    const sessions = options.includeRecentSessions ? this.getRecentSessions(3) : [];
     if (sessions.length > 0) {
       parts.push(`Recent Sessions:\n${sessions.join('\n')}`);
     }
@@ -301,7 +299,7 @@ class AgentMemory {
 
 /**
  * Context Window Manager — Smart Conversation Trimming
- *
+ * 
  * Manages the conversation history to prevent context window overflow.
  * Strategies:
  * - Summarize old tool results (replace with brief summaries)

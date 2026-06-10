@@ -71,8 +71,17 @@ const TOOL_ICONS: Record<string, string> = {
   workspace_read_file: '📖',
   workspace_write_file: '📝',
   workspace_edit_file: '✏️',
+  workspace_str_replace: '✏️',
+  workspace_apply_patch: '🩹',
+  workspace_edit_many_files: '📝',
+  workspace_edit_session: '📋',
   workspace_list_directory: '📁',
   workspace_search_text: '🔍',
+  workspace_semantic_search: '🔍',
+  workspace_symbol_lookup: '🔎',
+  workspace_file_outline: '📑',
+  workspace_find_files: '📂',
+  workspace_read_many_files: '📖',
   system_shell: '💻',
   workspace_run_command: '▶️',
   workspace_verify_code: '✅',
@@ -83,6 +92,7 @@ const TOOL_ICONS: Record<string, string> = {
   web_search: '🌐',
   web_scraper: '🕸️',
   auto_docs: '📚',
+  tool_finder: '🧭',
 };
 
 const SUGGESTIONS = [
@@ -94,12 +104,17 @@ const SUGGESTIONS = [
   { text: 'Review code for security issues', icon: '🔐' },
 ];
 
+// ═══════════════════════════════════════════════════════════════
+// MAIN COMPONENT
+// ═══════════════════════════════════════════════════════════════
+
 export const CodeChat: React.FC<CodeChatProps> = ({ workspacePath, activeFile, onClose }) => {
   const [messages, setMessages] = useState<CodeChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   // Auto-scroll
   useEffect(() => {
@@ -130,6 +145,15 @@ export const CodeChat: React.FC<CodeChatProps> = ({ workspacePath, activeFile, o
     }
   }, [input]);
 
+  // ─── Stop handler ───
+  const handleStop = () => {
+    if (abortRef.current) {
+      abortRef.current.abort();
+      abortRef.current = null;
+    }
+  };
+
+  // ─── Send handler ───
   const handleSend = async () => {
     if (!input.trim() || isStreaming) return;
 
@@ -138,7 +162,7 @@ export const CodeChat: React.FC<CodeChatProps> = ({ workspacePath, activeFile, o
     setMessages(prev => [...prev, { role: 'user', content: userMessage, timestamp: Date.now() }]);
     setIsStreaming(true);
 
-    // Build history
+    // Build history from current messages (before adding this one)
     const chatHistory = messages.map(m => ({
       role: m.role === 'user' ? 'user' : 'model',
       parts: [{ text: m.content }],
@@ -148,6 +172,9 @@ export const CodeChat: React.FC<CodeChatProps> = ({ workspacePath, activeFile, o
     setMessages(prev => [...prev, { role: 'assistant', content: '', thinking: '', toolExecutions: [], timestamp: Date.now() }]);
 
     try {
+      const controller = new AbortController();
+      abortRef.current = controller;
+
       const response = await fetch('/api/code/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -158,24 +185,44 @@ export const CodeChat: React.FC<CodeChatProps> = ({ workspacePath, activeFile, o
           activeFile: activeFile ? { path: activeFile.path, name: activeFile.name, language: activeFile.language } : undefined,
           apiKeys: readRuntimeApiKeys(),
         }),
+        signal: controller.signal,
       });
 
-      if (!response.body) throw new Error('No stream');
+      // Handle HTTP errors
+      if (!response.ok) {
+        let errorMsg = `Server error (${response.status})`;
+        try {
+          const errBody = await response.json();
+          errorMsg = errBody.error || errBody.details || errorMsg;
+        } catch { /* not JSON */ }
+        setMessages(prev => {
+          const updated = [...prev];
+          updated[updated.length - 1] = { role: 'assistant', content: `Error: ${errorMsg}`, timestamp: Date.now() };
+          return updated;
+        });
+        return;
+      }
+
+      if (!response.body) throw new Error('No stream body');
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
+      let sseBuffer = '';
 
       while (true) {
         const { value, done } = await reader.read();
         if (done) break;
 
-        const text = decoder.decode(value);
-        const lines = text.split('\n\n').filter(Boolean);
+        // ─── Proper SSE buffering ───
+        sseBuffer += decoder.decode(value, { stream: true });
+        const chunks = sseBuffer.split('\n\n');
+        sseBuffer = chunks.pop() || '';
 
-        for (const line of lines) {
-          if (!line.startsWith('data:')) continue;
+        for (const chunk of chunks) {
+          const trimmed = chunk.trim();
+          if (!trimmed || !trimmed.startsWith('data:')) continue;
           try {
-            const parsed = JSON.parse(line.replace(/^data:\s*/, ''));
+            const parsed = JSON.parse(trimmed.replace(/^data:\s*/, ''));
 
             if (parsed.type === 'trace' && parsed.data) {
               const { type: evtType } = parsed.data;
@@ -242,19 +289,57 @@ export const CodeChat: React.FC<CodeChatProps> = ({ workspacePath, activeFile, o
                   }
                   return updated;
                 });
+              } else if (evtType === 'context_compressed') {
+                console.log(`[CodeChat] Context compressed: ${parsed.data.savings}% savings at iteration ${parsed.data.iteration}`);
               }
             }
-          } catch { }
+          } catch { /* malformed SSE chunk — skip */ }
         }
       }
-    } catch (error) {
-      setMessages(prev => {
-        const updated = [...prev];
-        updated[updated.length - 1] = { role: 'assistant', content: 'Connection error. Please try again.' };
-        return updated;
-      });
+
+      // Flush remaining buffer
+      if (sseBuffer.trim()) {
+        try {
+          const lastChunk = sseBuffer.trim();
+          if (lastChunk.startsWith('data:')) {
+            const parsed = JSON.parse(lastChunk.replace(/^data:\s*/, ''));
+            if (parsed.type === 'trace' && parsed.data?.type === 'answer') {
+              setMessages(prev => {
+                const updated = [...prev];
+                const last = updated[updated.length - 1];
+                if (last?.role === 'assistant') {
+                  updated[updated.length - 1] = { ...last, content: parsed.data.text };
+                }
+                return updated;
+              });
+            }
+          }
+        } catch { /* ignore trailing */ }
+      }
+    } catch (error: any) {
+      if (error.name === 'AbortError') {
+        setMessages(prev => {
+          const updated = [...prev];
+          const last = updated[updated.length - 1];
+          if (last?.role === 'assistant' && !last.content) {
+            updated[updated.length - 1] = { ...last, content: '*Stopped by user.*' };
+          }
+          return updated;
+        });
+      } else {
+        setMessages(prev => {
+          const updated = [...prev];
+          updated[updated.length - 1] = {
+            role: 'assistant',
+            content: `Connection error: ${error.message || 'Unknown error'}. Please try again.`,
+            timestamp: Date.now(),
+          };
+          return updated;
+        });
+      }
     } finally {
       setIsStreaming(false);
+      abortRef.current = null;
     }
   };
 
@@ -304,17 +389,29 @@ export const CodeChat: React.FC<CodeChatProps> = ({ workspacePath, activeFile, o
               placeholder={`Ask about code, or use /commands...`}
               style={{ minHeight: '24px' }}
             />
-            <button
-              onClick={handleSend}
-              disabled={isStreaming || !input.trim()}
-              className={`p-2 rounded-xl transition-all shrink-0 ${
-                input.trim() && !isStreaming
-                  ? 'bg-[#E2765A] text-white hover:bg-[#D2664A] active:scale-90 shadow-lg shadow-[#E2765A]/20'
-                  : 'bg-white/5 text-[#555350]'
-              }`}
-            >
-              <Send className="w-4 h-4" />
-            </button>
+            {isStreaming ? (
+              <button
+                onClick={handleStop}
+                className="p-2 rounded-xl transition-all shrink-0 bg-red-500/20 text-red-400 hover:bg-red-500/30 active:scale-90 border border-red-500/20"
+                title="Stop generation"
+              >
+                <div className="w-4 h-4 flex items-center justify-center">
+                  <div className="w-2.5 h-2.5 bg-red-400 rounded-sm" />
+                </div>
+              </button>
+            ) : (
+              <button
+                onClick={handleSend}
+                disabled={!input.trim()}
+                className={`p-2 rounded-xl transition-all shrink-0 ${
+                  input.trim()
+                    ? 'bg-[#E2765A] text-white hover:bg-[#D2664A] active:scale-90 shadow-lg shadow-[#E2765A]/20'
+                    : 'bg-white/5 text-[#555350]'
+                }`}
+              >
+                <Send className="w-4 h-4" />
+              </button>
+            )}
           </div>
           <div className="mt-1.5 flex items-center justify-between px-1">
             <span className="text-[10px] text-[#333]">Shift+Enter for new line · /commands available</span>
@@ -325,6 +422,10 @@ export const CodeChat: React.FC<CodeChatProps> = ({ workspacePath, activeFile, o
     </div>
   );
 };
+
+// ═══════════════════════════════════════════════════════════════
+// SUBCOMPONENTS
+// ═══════════════════════════════════════════════════════════════
 
 // ─── Empty State ───
 const EmptyState: React.FC<{ workspacePath: string; onSelect: (text: string) => void }> = ({ workspacePath, onSelect }) => {
@@ -358,7 +459,7 @@ const EmptyState: React.FC<{ workspacePath: string; onSelect: (text: string) => 
 
         <div className="mt-6 flex items-center gap-2 text-[10px] text-[#333]">
           <Sparkles className="w-3 h-3" />
-          <span>Powered by Claude Code architecture · Full tool access</span>
+          <span>Powered by EterX coding agent · Full tool access</span>
         </div>
       </div>
     </div>
@@ -486,11 +587,76 @@ const ThinkingBlock: React.FC<{ text: string }> = ({ text }) => {
   );
 };
 
+// ─── Diff Line Renderer ───
+const DiffLineRenderer: React.FC<{ diff: string }> = ({ diff }) => {
+  const lines = diff.split('\n');
+  return (
+    <div className="font-mono text-[10px] leading-[16px] rounded-lg overflow-hidden border border-white/[0.04] bg-[#0A0A0A]">
+      {lines.map((line, i) => {
+        let bgClass = '';
+        let textClass = 'text-[#555350]';
+
+        if (line.startsWith('@@')) {
+          bgClass = 'bg-blue-500/[0.06]';
+          textClass = 'text-blue-400/70';
+        } else if (line.startsWith('+')) {
+          bgClass = 'bg-emerald-500/[0.08]';
+          textClass = 'text-emerald-400';
+        } else if (line.startsWith('-')) {
+          bgClass = 'bg-red-500/[0.08]';
+          textClass = 'text-red-400';
+        } else if (line.startsWith(' ')) {
+          textClass = 'text-[#666]';
+        }
+
+        return (
+          <div key={i} className={`px-2.5 py-[1px] ${bgClass} border-l-2 ${
+            line.startsWith('+') ? 'border-l-emerald-500/40' :
+            line.startsWith('-') ? 'border-l-red-500/40' :
+            'border-l-transparent'
+          }`}>
+            <span className={textClass}>{line}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+};
+
 // ─── Tool Execution Block ───
 const ToolExecutionBlock: React.FC<{ execution: ToolExecution }> = ({ execution }) => {
   const [expanded, setExpanded] = useState(false);
   const icon = TOOL_ICONS[execution.tool] || '🔧';
   const label = execution.uiActionText || execution.tool.replace(/_/g, ' ');
+
+  // Try to parse structured result for edit tools
+  const parsedResult = React.useMemo(() => {
+    if (!execution.result) return null;
+    try {
+      const parsed = JSON.parse(execution.result);
+      return parsed;
+    } catch {
+      return null;
+    }
+  }, [execution.result]);
+
+  const hasDiff = parsedResult?.diff && typeof parsedResult.diff === 'string';
+  const hasReadback = parsedResult?.readback && typeof parsedResult.readback === 'string';
+  const hasReadbacks = parsedResult?.readbacks && typeof parsedResult.readbacks === 'object';
+  const isEditTool = ['workspace_str_replace', 'workspace_apply_patch', 'workspace_edit_file', 'workspace_edit_many_files'].includes(execution.tool);
+
+  // Build compact status line for edit results
+  const editSummary = React.useMemo(() => {
+    if (!parsedResult || !isEditTool) return null;
+    const parts: string[] = [];
+    if (parsedResult.path) parts.push(parsedResult.path.split(/[/\\]/).pop() || '');
+    if (parsedResult.replacements) parts.push(`${parsedResult.replacements} replacement${parsedResult.replacements > 1 ? 's' : ''}`);
+    if (parsedResult.editLine) parts.push(`line ${parsedResult.editLine}`);
+    if (parsedResult.totalLines) parts.push(`${parsedResult.totalLines} total`);
+    if (parsedResult.filesModified?.length) parts.push(`${parsedResult.filesModified.length} file${parsedResult.filesModified.length > 1 ? 's' : ''} modified`);
+    if (parsedResult.filesCreated?.length) parts.push(`${parsedResult.filesCreated.length} created`);
+    return parts.length > 0 ? parts.join(' · ') : null;
+  }, [parsedResult, isEditTool]);
 
   const statusEl = execution.status === 'running'
     ? <div className="w-3.5 h-3.5 border-2 border-blue-400/30 border-t-blue-400 rounded-full animate-spin shrink-0" />
@@ -511,20 +677,59 @@ const ToolExecutionBlock: React.FC<{ execution: ToolExecution }> = ({ execution 
         {statusEl}
         <span className="text-[12px] shrink-0">{icon}</span>
         <span className="text-[11px] text-[#A3A19E] font-medium truncate flex-1">{label}</span>
+        {editSummary && execution.status === 'done' && (
+          <span className="text-[10px] text-[#555350] font-mono truncate max-w-[200px] shrink-0">{editSummary}</span>
+        )}
         {(execution.result || execution.error) && (
           expanded
             ? <ChevronDown className="w-3 h-3 text-[#555350] shrink-0" />
             : <ChevronRight className="w-3 h-3 text-[#555350] shrink-0" />
         )}
       </div>
-      {expanded && execution.result && (
-        <pre className="mt-2 text-[10px] text-[#555350] leading-[15px] max-h-[120px] overflow-y-auto custom-scrollbar whitespace-pre-wrap font-mono bg-black/30 rounded-lg p-2.5 border border-white/[0.03]">
-          {execution.result.substring(0, 1500)}
-        </pre>
-      )}
-      {expanded && execution.error && (
-        <div className="mt-2 text-[10px] text-red-400/80 leading-relaxed pl-5">
-          {execution.error}
+
+      {expanded && (
+        <div className="mt-2 space-y-2">
+          {/* Diff view for edit tools — RED removed, GREEN added */}
+          {hasDiff && (
+            <div>
+              <div className="text-[9px] text-[#555350] uppercase tracking-wider mb-1 font-medium">Changes</div>
+              <DiffLineRenderer diff={parsedResult.diff} />
+            </div>
+          )}
+
+          {/* Readback for str_replace */}
+          {hasReadback && (
+            <div>
+              <div className="text-[9px] text-[#555350] uppercase tracking-wider mb-1 font-medium">Verified Result</div>
+              <pre className="text-[10px] text-[#777] leading-[15px] max-h-[100px] overflow-y-auto custom-scrollbar whitespace-pre-wrap font-mono bg-black/30 rounded-lg p-2 border border-white/[0.03]">
+                {parsedResult.readback}
+              </pre>
+            </div>
+          )}
+
+          {/* Per-file readbacks for apply_patch */}
+          {hasReadbacks && Object.entries(parsedResult.readbacks).map(([fileName, content]) => (
+            <div key={fileName}>
+              <div className="text-[9px] text-[#555350] uppercase tracking-wider mb-1 font-medium">{fileName}</div>
+              <pre className="text-[10px] text-[#777] leading-[15px] max-h-[80px] overflow-y-auto custom-scrollbar whitespace-pre-wrap font-mono bg-black/30 rounded-lg p-2 border border-white/[0.03]">
+                {String(content)}
+              </pre>
+            </div>
+          ))}
+
+          {/* Raw result for non-edit tools */}
+          {!hasDiff && !hasReadback && !hasReadbacks && execution.result && (
+            <pre className="text-[10px] text-[#555350] leading-[15px] max-h-[120px] overflow-y-auto custom-scrollbar whitespace-pre-wrap font-mono bg-black/30 rounded-lg p-2.5 border border-white/[0.03]">
+              {execution.result.substring(0, 1500)}
+            </pre>
+          )}
+
+          {/* Error display */}
+          {execution.error && (
+            <div className="text-[10px] text-red-400/80 leading-relaxed pl-5">
+              {execution.error}
+            </div>
+          )}
         </div>
       )}
     </div>

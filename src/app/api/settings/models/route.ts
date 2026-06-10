@@ -138,6 +138,34 @@ async function fetchOpenRouterModels(): Promise<ProviderModelResult> {
   }
 }
 
+async function fetchGroqModels(): Promise<ProviderModelResult> {
+  const apiKey = getRuntimeApiKey('groq');
+  if (!apiKey) return { provider: 'groq', connected: false, source: 'unavailable', models: [], error: 'Missing Groq API key' };
+
+  try {
+    const res = await withTimeout(fetch('https://api.groq.com/openai/v1/models', {
+      cache: 'no-store',
+      headers: {
+        Authorization: `Bearer ${ apiKey }`,
+        'Content-Type': 'application/json',
+      },
+    }));
+    if (!res.ok) throw new Error(`Groq models request failed (${ res.status })`);
+    const data = await res.json();
+    const models = trimModels((data.data || [])
+      .map((model: any) => ({
+        id: String(model.id || ''),
+        name: String(model.id || ''),
+        description: model.owned_by ? `Owned by ${ model.owned_by }` : undefined,
+        contextLength: model.context_window,
+      }))
+      .sort((a: ProviderModel, b: ProviderModel) => a.id.localeCompare(b.id)));
+    return { provider: 'groq', connected: true, source: 'live', models };
+  } catch (error) {
+    return providerError('groq', error);
+  }
+}
+
 async function fetchMistralModels(): Promise<ProviderModelResult> {
   const apiKey = getRuntimeApiKey('mistral');
   if (!apiKey) return { provider: 'mistral', connected: false, source: 'unavailable', models: [], error: 'Missing Mistral API key' };
@@ -205,6 +233,7 @@ export async function POST(req: NextRequest) {
   if (!requested || requested.has('mistral')) jobs.push(fetchMistralModels());
   if (!requested || requested.has('openai')) jobs.push(fetchOpenAIModels());
   if (!requested || requested.has('openrouter')) jobs.push(fetchOpenRouterModels());
+  if (!requested || requested.has('groq')) jobs.push(fetchGroqModels());
   if (!requested || requested.has('anthropic')) jobs.push(fetchAnthropicModels());
 
   const results = await Promise.all(jobs);
@@ -217,3 +246,30 @@ export async function POST(req: NextRequest) {
     }, {}),
   });
 }
+
+export async function GET(req: NextRequest) {
+  const url = new URL(req.url);
+  const providersParam = url.searchParams.get('providers');
+  const requested = providersParam
+    ? new Set(providersParam.split(','))
+    : null;
+
+  const jobs: Array<Promise<ProviderModelResult>> = [];
+  if (!requested || requested.has('gemini')) jobs.push(fetchGeminiModels());
+  if (!requested || requested.has('mistral')) jobs.push(fetchMistralModels());
+  if (!requested || requested.has('openai')) jobs.push(fetchOpenAIModels());
+  if (!requested || requested.has('openrouter')) jobs.push(fetchOpenRouterModels());
+  if (!requested || requested.has('groq')) jobs.push(fetchGroqModels());
+  if (!requested || requested.has('anthropic')) jobs.push(fetchAnthropicModels());
+
+  const results = await Promise.all(jobs);
+  return NextResponse.json({
+    ok: true,
+    updatedAt: Date.now(),
+    providers: results.reduce<Record<string, ProviderModelResult>>((acc, result) => {
+      acc[result.provider] = result;
+      return acc;
+    }, {}),
+  });
+}
+

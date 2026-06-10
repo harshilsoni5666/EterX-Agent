@@ -111,10 +111,20 @@ export async function POST(req: NextRequest) {
           }
 
           if (responseStream) {
+            let lastUsageMetadata: any = null;
             for await (const chunk of responseStream) {
+              if (chunk.usageMetadata) {
+                lastUsageMetadata = chunk.usageMetadata;
+              }
               if (chunk.text) {
                 controller.enqueue(encoder.encode(chunk.text));
               }
+            }
+            if (lastUsageMetadata) {
+              const promptTokens = lastUsageMetadata.promptTokenCount ?? lastUsageMetadata.inputTokenCount ?? 0;
+              const completionTokens = lastUsageMetadata.candidatesTokenCount ?? lastUsageMetadata.outputTokenCount ?? 0;
+              const totalTokens = lastUsageMetadata.totalTokenCount ?? (promptTokens + completionTokens);
+              console.log(`[AgentBuilder] 📊 Token Usage: Input: ${promptTokens} | Output: ${completionTokens} | Total: ${totalTokens}`);
             }
           }
           

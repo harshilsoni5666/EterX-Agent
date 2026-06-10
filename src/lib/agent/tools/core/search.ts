@@ -1,27 +1,32 @@
 import { z } from 'zod';
 import { ToolDefinition } from '../../schemas';
 import { tavily } from "@tavily/core";
-import { getRuntimeApiKeyValues } from '../../runtime-api-keys';
 
+// Load all Tavily keys from environment
 const getTavilyKeys = (): string[] => {
-  return getRuntimeApiKeyValues('tavily');
+  const keys: string[] = [];
+  // Try TAVILY_API_KEY_1, TAVILY_API_KEY_2, etc.
+  for (let i = 1; i <= 20; i++) {
+    const key = process.env[`TAVILY_API_KEY_${i}`] || process.env[`VITE_TAVILY_API_KEY_${i}`];
+    if (key && key.trim() !== '') {
+      keys.push(key.trim());
+    }
+  }
+  // Fallback to single key if no array keys found
+  if (keys.length === 0) {
+    const fallback = process.env.VITE_TAVILY_API_KEY || process.env.TAVILY_API_KEY;
+    if (fallback && fallback.trim() !== '') {
+      keys.push(fallback.trim());
+    }
+  }
+  return keys;
 };
 
-let tavilyKeys = getTavilyKeys();
+const tavilyKeys = getTavilyKeys();
 let currentKeyIndex = 0;
 
-// Keep clients hot, but refresh from runtime settings when the user adds keys.
-let tavilyClients = tavilyKeys.map(apiKey => tavily({ apiKey }));
-
-const refreshTavilyClients = () => {
-  const latestKeys = getTavilyKeys();
-  if (latestKeys.join('\n') === tavilyKeys.join('\n')) return;
-
-  tavilyKeys = latestKeys;
-  currentKeyIndex = 0;
-  tavilyClients = latestKeys.map(apiKey => tavily({ apiKey }));
-  console.log(`[Tool: web_search] Runtime Tavily refresh: ${tavilyKeys.length} key(s) from Settings`);
-};
+// PRE-INITIALIZE the clients to completely remove "loading/indexing" overhead
+const tavilyClients = tavilyKeys.map(apiKey => tavily({ apiKey }));
 
 const normalizeImages = (images: any): Array<{ url: string; description?: string }> => {
   if (!Array.isArray(images)) return [];
@@ -39,7 +44,6 @@ const normalizeImages = (images: any): Array<{ url: string; description?: string
 
 // Function to get the next client in a round-robin fashion
 const getNextTavilyClient = () => {
-  refreshTavilyClients();
   if (tavilyClients.length === 0) {
     throw new Error("Tavily client is not properly initialized: No valid API keys found.");
   }

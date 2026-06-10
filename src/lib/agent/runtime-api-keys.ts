@@ -6,6 +6,7 @@ export type RuntimeApiKeyProvider =
   | 'openrouter'
   | 'anthropic'
   | 'openai'
+  | 'groq'
   | 'tavily'
   | 'github';
 
@@ -40,6 +41,7 @@ const PROVIDERS: RuntimeApiKeyProvider[] = [
   'openrouter',
   'anthropic',
   'openai',
+  'groq',
   'tavily',
   'github',
 ];
@@ -50,6 +52,7 @@ const ENV_KEYS: Record<RuntimeApiKeyProvider, string[]> = {
   openrouter: ['OPENROUTER_API_KEY', 'VITE_OPENROUTER_API_KEY'],
   anthropic: ['ANTHROPIC_API_KEY'],
   openai: ['OPENAI_API_KEY'],
+  groq: ['GROQ_API_KEY'],
   tavily: ['TAVILY_API_KEY', 'VITE_TAVILY_API_KEY'],
   github: ['GITHUB_TOKEN'],
 };
@@ -57,6 +60,7 @@ const ENV_KEYS: Record<RuntimeApiKeyProvider, string[]> = {
 const globalForRuntimeKeys = globalThis as typeof globalThis & {
   __eterxRuntimeApiKeys?: Record<RuntimeApiKeyProvider, string[]>;
   __eterxRuntimeApiKeyCursor?: Record<RuntimeApiKeyProvider, number>;
+  __eterxOriginalEnvKeys?: Record<RuntimeApiKeyProvider, string[]>;
 };
 
 const runtimeApiKeys: Record<RuntimeApiKeyProvider, string[]> =
@@ -73,7 +77,7 @@ const runtimeApiKeyCursor: Record<RuntimeApiKeyProvider, number> =
     return acc;
   }, {} as Record<RuntimeApiKeyProvider, number>));
 
-const MODEL_PROVIDERS: RuntimeModelProvider[] = ['gemini', 'mistral', 'openai', 'openrouter', 'anthropic'];
+const MODEL_PROVIDERS: RuntimeModelProvider[] = ['gemini', 'mistral', 'openai', 'openrouter', 'anthropic', 'groq'];
 
 const MODEL_ENV_KEYS: Record<RuntimeModelProvider, string[]> = {
   gemini: ['ETERX_THINK_MODEL', 'GEMINI_THINK_MODEL'],
@@ -81,6 +85,7 @@ const MODEL_ENV_KEYS: Record<RuntimeModelProvider, string[]> = {
   openai: ['OPENAI_MODEL', 'OPENAI_MODEL_NAME'],
   openrouter: ['OPENROUTER_MODEL', 'OPENROUTER_MODEL_NAME'],
   anthropic: ['ANTHROPIC_MODEL', 'ANTHROPIC_MODEL_NAME', 'CLAUDE_MODEL'],
+  groq: ['GROQ_MODEL', 'GROQ_MODEL_NAME'],
 };
 
 const runtimeModelOverrides: Record<RuntimeModelProvider, string> =
@@ -136,6 +141,8 @@ const isValidProviderKey = (provider: RuntimeApiKeyProvider, key: string): boole
       return key.length >= 20 && key.startsWith('sk-ant-');
     case 'openrouter':
       return key.length >= 20 && (key.startsWith('sk-or-') || key.startsWith('sk-'));
+    case 'groq':
+      return key.length >= 20;
     case 'mistral':
       return key.length >= 16;
     case 'tavily':
@@ -178,6 +185,7 @@ const clearKnownRuntimeModelEnvKeys = () => {
 
 export function getRuntimeModelOverrides(): Record<RuntimeModelProvider, string> {
   return { ...runtimeModelOverrides };
+
 }
 
 export function getRuntimeApiKeyValues(provider: RuntimeApiKeyProvider): string[] {
@@ -262,7 +270,38 @@ export function applyRuntimeModelOverrides(raw: unknown): RuntimeModelOverrideSt
   return statuses;
 }
 
+const discoverEnvKeys = (provider: RuntimeApiKeyProvider): string[] => {
+  const keys: string[] = [];
+  const envKeys = ENV_KEYS[provider] || [];
+
+  for (const envKey of envKeys) {
+    // 1. Check primary environment variable
+    const primaryValue = process.env[envKey];
+    if (primaryValue) {
+      keys.push(...normalizeKeyValues(primaryValue));
+    }
+
+    // 2. Check indexed environment variables (e.g. GEMINI_API_KEY_1 to GEMINI_API_KEY_100)
+    for (let i = 1; i <= 100; i++) {
+      const indexedValue = process.env[`${envKey}_${i}`];
+      if (indexedValue) {
+        keys.push(...normalizeKeyValues(indexedValue));
+      }
+    }
+  }
+
+  return Array.from(new Set(keys.filter(key => isValidProviderKey(provider, key))));
+};
+
 export function applyRuntimeApiKeys(raw: unknown): RuntimeApiKeyApplyResult {
+  // Lazy-initialize and cache original environment keys before we clear process.env
+  if (!globalForRuntimeKeys.__eterxOriginalEnvKeys) {
+    globalForRuntimeKeys.__eterxOriginalEnvKeys = PROVIDERS.reduce((acc, provider) => {
+      acc[provider] = discoverEnvKeys(provider);
+      return acc;
+    }, {} as Record<RuntimeApiKeyProvider, string[]>);
+  }
+
   const payload = normalizeRuntimeApiKeyPayload(raw);
   const providers: RuntimeApiKeyProviderStatus[] = [];
   let acceptedCount = 0;
@@ -278,11 +317,12 @@ export function applyRuntimeApiKeys(raw: unknown): RuntimeApiKeyApplyResult {
 
   for (const provider of PROVIDERS) {
     const values = normalizeKeyValues(payload[provider]);
-    if (values.length === 0) continue;
-
-    const validValues = Array.from(new Set(values.filter(value => isValidProviderKey(provider, value))));
-    const invalidCount = values.length - validValues.length;
+    const userKeys = Array.from(new Set(values.filter(value => isValidProviderKey(provider, value))));
+    const invalidCount = values.length - userKeys.length;
     rejectedCount += invalidCount;
+
+    const envKeys = globalForRuntimeKeys.__eterxOriginalEnvKeys[provider] || [];
+    const validValues = Array.from(new Set([...userKeys, ...envKeys]));
 
     if (validValues.length === 0) {
       providers.push({
@@ -298,7 +338,7 @@ export function applyRuntimeApiKeys(raw: unknown): RuntimeApiKeyApplyResult {
       runtimeApiKeys.gemini = validValues;
       apiKeyPool.setRuntimeKeys(validValues);
       setRuntimeEnv(ENV_KEYS.gemini, validValues);
-      preferredGeminiApiKey = validValues[0];
+      preferredGeminiApiKey = userKeys[0] || envKeys[0] || '';
     } else {
       runtimeApiKeys[provider] = validValues;
       setRuntimeEnv(ENV_KEYS[provider], validValues);

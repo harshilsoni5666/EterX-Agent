@@ -128,7 +128,7 @@ function isConnectedWebAsset(fn?: string) {
 }
 
 function getPreviewLabel(fn?: string) {
-  if (!fn) return 'Live preview';
+  if (!fn) return 'Preview';
   const ext = getFileExtension(fn);
   const labels: Record<string, string> = {
     html: 'Web page', htm: 'Web page', pdf: 'PDF document',

@@ -1,268 +1,501 @@
 import React from 'react';
 
-// Each icon: size + color props. All default to white (#E8E6E3).
 export interface IconProps {
   isLive?: boolean;
   size?: number;
   color?: string;
 }
 
-const W = '#E8E6E3'; // universal white
-const ICONS8_FILE_URL = '/icons/agent-ui/file.png';
-const ICONS8_IMAGE_URL = '/icons/agent-ui/image.png';
-const ICONS8_AGENT_URL = '/icons/agent-ui/agent.png';
+const W = '#E8E6E3';
 
-const Icons8AssetIcon = ({ size = 16, src, alt }: IconProps & { src: string; alt: string }) => (
-  <img src={src} alt={alt} width={size} height={size} className="object-contain opacity-95" draggable={false} />
+const LineIcon = ({
+  size = 16,
+  color = W,
+  children,
+}: IconProps & { children: React.ReactNode }) => (
+  <svg
+    width={size}
+    height={size}
+    viewBox="0 0 24 24"
+    fill="none"
+    aria-hidden="true"
+  >
+    <g
+      stroke={color}
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      vectorEffect="non-scaling-stroke"
+    >
+      {children}
+    </g>
+  </svg>
 );
 
-// 1. Computer / browser / desktop control
 export const ComputerIcon = ({ size = 16, color = W }: IconProps) => (
-  <svg width={size} height={size} viewBox="0 0 16 16" fill="none">
-    <rect x="1.25" y="2.25" width="13.5" height="9.5" rx="1.75" stroke={color} strokeWidth="1.15" fill="none" />
-    <line x1="1.25" y1="8.75" x2="14.75" y2="8.75" stroke={color} strokeWidth="0.9" opacity="0.25" />
-    <circle cx="3.25" cy="4" r="0.65" fill={color} opacity="0.75" />
-    <circle cx="5" cy="4" r="0.65" fill={color} opacity="0.75" />
-    <circle cx="6.75" cy="4" r="0.65" fill={color} opacity="0.75" />
-    <path d="M5.5 11.75 L10.5 11.75" stroke={color} strokeWidth="1.15" strokeLinecap="round" />
-    <path d="M8 11.75 L8 13.75" stroke={color} strokeWidth="1.15" strokeLinecap="round" />
-    <path d="M6 13.75 L10 13.75" stroke={color} strokeWidth="1.15" strokeLinecap="round" />
-  </svg>
+  <LineIcon size={size} color={color}>
+    <rect x="4" y="5" width="16" height="11" rx="2.2" />
+    <path d="M8.5 20h7M12 16v4" />
+    <path d="M7.2 8.2h.01M10.2 8.2h.01" />
+  </LineIcon>
 );
 
-// 1b. Terminal / command / git / shell
 export const TerminalIcon = ({ size = 16, color = W }: IconProps) => (
-  <svg width={size} height={size} viewBox="0 0 16 16" fill="none">
-    <rect x="1.25" y="2.25" width="13.5" height="11.5" rx="1.75" stroke={color} strokeWidth="1.15" fill="none" />
-    <path d="M1.25 5.25 L14.75 5.25" stroke={color} strokeWidth="0.9" opacity="0.3" />
-    <circle cx="3.5" cy="3.75" r="0.6" fill={color} opacity="0.5" />
-    <circle cx="5.5" cy="3.75" r="0.6" fill={color} opacity="0.5" />
-    <circle cx="7.5" cy="3.75" r="0.6" fill={color} opacity="0.5" />
-    <path d="M3.5 8.25 L5.5 10 L3.5 11.75" stroke={color} strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" fill="none" />
-    <path d="M7 11.75 L11 11.75" stroke={color} strokeWidth="1.2" strokeLinecap="round" />
-  </svg>
+  <LineIcon size={size} color={color}>
+    <rect x="4" y="5" width="16" height="14" rx="2.3" />
+    <path d="M7.4 9.2l2.6 2.6-2.6 2.6M12.2 15h4.2" />
+  </LineIcon>
 );
 
-// 2. File creation: new files, documents, images, artifacts
+export const FileReadIcon = ({ size = 16, color = W }: IconProps) => (
+  <LineIcon size={size} color={color}>
+    <path d="M7 3.8h7.2L18 7.6v12.1c0 .8-.6 1.5-1.5 1.5h-9c-.8 0-1.5-.7-1.5-1.5V5.3c0-.8.7-1.5 1.5-1.5Z" />
+    <path d="M14 4v4h4" />
+    <path d="M8.2 14.3c1-1.6 2.3-2.4 3.8-2.4s2.8.8 3.8 2.4c-1 1.6-2.3 2.4-3.8 2.4s-2.8-.8-3.8-2.4Z" />
+    <path d="M12 14.3h.01" />
+  </LineIcon>
+);
+
 export const FileAddIcon = ({ size = 16, color = W }: IconProps) => (
-  <svg width={size} height={size} viewBox="0 0 16 16" fill="none">
-    <path d="M2.75 1.75h6.5l3 3v9.5a1 1 0 0 1-1 1h-9.5a1 1 0 0 1-1-1v-11.5a1 1 0 0 1 1-1z" stroke={color} strokeWidth="1.15" strokeLinecap="round" strokeLinejoin="round" />
-    <path d="M9.25 1.75v3h3" stroke={color} strokeWidth="1.15" strokeLinecap="round" strokeLinejoin="round" />
-    <path d="M5.5 10.5h4M7.5 8.5v4" stroke={color} strokeWidth="1.25" strokeLinecap="round" />
-  </svg>
+  <LineIcon size={size} color={color}>
+    <path d="M7 3.8h7.2L18 7.6v12.1c0 .8-.6 1.5-1.5 1.5h-9c-.8 0-1.5-.7-1.5-1.5V5.3c0-.8.7-1.5 1.5-1.5Z" />
+    <path d="M14 4v4h4M9 15h6M12 12v6" />
+  </LineIcon>
 );
 
-// 3. File editing: editing/patching/refactoring existing files
 export const FileEditIcon = ({ size = 16, color = W }: IconProps) => (
-  <svg width={size} height={size} viewBox="0 0 16 16" fill="none">
-    <path d="M8.25 1.75h-5.5a1 1 0 0 0-1 1v11.5a1 1 0 0 0 1 1h9.5a1 1 0 0 0 1-1V5.75" stroke={color} strokeWidth="1.15" strokeLinecap="round" strokeLinejoin="round" />
-    <path d="M8.25 1.75v4h4" stroke={color} strokeWidth="1.15" strokeLinecap="round" strokeLinejoin="round" />
-    <path d="M5.5 11.5l3.5-3.5 1.5 1.5-3.5 3.5-1.5.5.5-2z" stroke={color} strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" />
-  </svg>
+  <LineIcon size={size} color={color}>
+    <path d="M7 3.8h7.2L18 7.6v4.2" />
+    <path d="M14 4v4h4" />
+    <path d="M6 19.4v-14c0-.9.7-1.6 1.6-1.6" />
+    <path d="M9 19.2l6.8-6.8 2.1 2.1-6.8 6.8-3 .8.9-2.9Z" />
+  </LineIcon>
 );
 
-// 1c. Agent / sub-agent coordination
-export const AgentAssetIcon = ({ size = 16 }: IconProps) => (
-  <Icons8AssetIcon src={ICONS8_AGENT_URL} alt="Agent" size={size} />
+export const FileDeleteIcon = ({ size = 16, color = W }: IconProps) => (
+  <LineIcon size={size} color={color}>
+    <path d="M7.5 4h8.2L18 6.3v13.2c0 .8-.7 1.5-1.5 1.5h-9c-.8 0-1.5-.7-1.5-1.5v-14C6 4.7 6.7 4 7.5 4Z" />
+    <path d="M9.2 13.2h5.6" />
+  </LineIcon>
 );
 
-// 4. File reading: opening or inspecting a specific file
-export const FileReadIcon = ({ size = 16 }: IconProps) => (
-  <Icons8AssetIcon src={ICONS8_FILE_URL} alt="File" size={size} />
+export const AgentAssetIcon = ({ size = 16, color = W }: IconProps) => (
+  <LineIcon size={size} color={color}>
+    <circle cx="12" cy="8.25" r="3.15" />
+    <path d="M5.35 19.25c1.12-2.95 3.33-4.42 6.65-4.42s5.53 1.47 6.65 4.42" />
+  </LineIcon>
 );
 
-// 4b. Image generation / image asset search
-export const ImageAssetIcon = ({ size = 16 }: IconProps) => (
-  <Icons8AssetIcon src={ICONS8_IMAGE_URL} alt="Image" size={size} />
+export const ImageAssetIcon = ({ size = 16, color = W }: IconProps) => (
+  <LineIcon size={size} color={color}>
+    <rect x="4" y="5" width="16" height="14" rx="2.4" />
+    <path d="M8 14.6l2.2-2.5 2.2 2.5 1.4-1.5 2.9 3.4" />
+    <path d="M15.6 8.8h.01" />
+  </LineIcon>
 );
 
-// 5. Folder reading: scanning dirs, loading skills, viewing folders
 export const Folder01Icon = ({ size = 16, color = W }: IconProps) => (
-  <svg width={size} height={size} viewBox="0 0 16 16" fill="none">
-    <path d="M1.75 3.75h3.5l1.5 1.5H14.25v7a1 1 0 0 1-1 1H2.75a1 1 0 0 1-1-1v-8.5z" stroke={color} strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
-    <path d="M1.75 6.75h12.5" stroke={color} strokeWidth="1.1" strokeLinecap="round" opacity="0.3" />
-  </svg>
+  <LineIcon size={size} color={color}>
+    <path d="M3.8 7.4c0-.9.7-1.6 1.6-1.6h4l2 2h7.2c.9 0 1.6.7 1.6 1.6v8.2c0 .9-.7 1.6-1.6 1.6H5.4c-.9 0-1.6-.7-1.6-1.6V7.4Z" />
+    <path d="M4.2 10.1h15.6" />
+  </LineIcon>
 );
 
-// 6. Folder creation: scaffolding dirs, project structure
 export const FolderAddIcon = ({ size = 16, color = W }: IconProps) => (
-  <svg width={size} height={size} viewBox="0 0 16 16" fill="none">
-    <path d="M1.75 3.75h3.5l1.5 1.5H14.25v7a1 1 0 0 1-1 1H2.75a1 1 0 0 1-1-1v-8.5z" stroke={color} strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
-    <path d="M5.5 9.5h4M7.5 7.5v4" stroke={color} strokeWidth="1.2" strokeLinecap="round" />
-  </svg>
+  <LineIcon size={size} color={color}>
+    <path d="M3.8 7.4c0-.9.7-1.6 1.6-1.6h4l2 2h7.2c.9 0 1.6.7 1.6 1.6v8.2c0 .9-.7 1.6-1.6 1.6H5.4c-.9 0-1.6-.7-1.6-1.6V7.4Z" />
+    <path d="M9 14.4h6M12 11.4v6" />
+  </LineIcon>
 );
 
-// 7. Search: codebase search, listing, analyzing, finding patterns
 export const SearchList01Icon = ({ size = 16, color = W }: IconProps) => (
-  <svg width={size} height={size} viewBox="0 0 16 16" fill="none">
-    <path d="M2.25 4.75h5.5M2.25 8.25h3.5M2.25 11.75h5.5" stroke={color} strokeWidth="1.2" strokeLinecap="round" />
-    <circle cx="11.25" cy="7.25" r="2.25" stroke={color} strokeWidth="1.2" />
-    <path d="M12.75 8.75l2 2" stroke={color} strokeWidth="1.3" strokeLinecap="round" />
-  </svg>
+  <LineIcon size={size} color={color}>
+    <path d="M4 6.6h7M4 11h4.4M4 15.4h5.4" />
+    <circle cx="15" cy="11.2" r="3.4" />
+    <path d="M17.5 13.7l2.8 2.8" />
+  </LineIcon>
 );
 
-// 8. Web search: searching the web, scraping URLs, deep research
+export const CodeInspectIcon = ({ size = 16, color = W }: IconProps) => (
+  <LineIcon size={size} color={color}>
+    <path d="M8.2 8.2 4.8 12l3.4 3.8M15.8 8.2 19.2 12l-3.4 3.8" />
+    <circle cx="12" cy="12" r="2.4" />
+    <path d="M13.8 13.8l2.8 2.8" />
+  </LineIcon>
+);
+
+export const RefactorIcon = ({ size = 16, color = W }: IconProps) => (
+  <LineIcon size={size} color={color}>
+    <path d="M5 7h7.5c2 0 3.6 1.6 3.6 3.6V17" />
+    <path d="M13.7 14.8 16.1 17l2.4-2.2" />
+    <path d="M19 7h-7.5c-2 0-3.6 1.6-3.6 3.6V17" />
+    <path d="M10.3 9.2 7.9 7 5.5 9.2" />
+  </LineIcon>
+);
+
+export const GitBranchIcon = ({ size = 16, color = W }: IconProps) => (
+  <LineIcon size={size} color={color}>
+    <circle cx="6.5" cy="5.8" r="2.2" />
+    <circle cx="17.5" cy="6.8" r="2.2" />
+    <circle cx="6.5" cy="18.2" r="2.2" />
+    <path d="M6.5 8v8M8.7 18.2h3.7c2.8 0 5.1-2.3 5.1-5.1V9" />
+  </LineIcon>
+);
+
+export const CompareFilesIcon = ({ size = 16, color = W }: IconProps) => (
+  <LineIcon size={size} color={color}>
+    <rect x="4" y="5" width="6.6" height="14" rx="1.8" />
+    <rect x="13.4" y="5" width="6.6" height="14" rx="1.8" />
+    <path d="M6.4 9h1.8M15.8 9h1.8M6.4 12h1.8M15.8 15h1.8" />
+  </LineIcon>
+);
+
+export const ArtifactIcon = ({ size = 16, color = W }: IconProps) => (
+  <LineIcon size={size} color={color}>
+    <path d="M12 3.8 19.2 8v8L12 20.2 4.8 16V8L12 3.8Z" />
+    <path d="M8.8 8.8h6.4M8.8 12h6.4M8.8 15.2h3.6" />
+    <path d="M18.2 4.2v2.4M17 5.4h2.4" />
+  </LineIcon>
+);
+
 export const WebSearchIcon = ({ size = 16, color = W }: IconProps) => (
-  <svg width={size} height={size} viewBox="0 0 16 16" fill="none">
-    <circle cx="8" cy="8" r="6.1" stroke={color} strokeWidth="1.15" />
-    <path d="M8 1.9c-1.75 1.8-2.65 3.85-2.65 6.1s.9 4.3 2.65 6.1M8 1.9c1.75 1.8 2.65 3.85 2.65 6.1s-.9 4.3-2.65 6.1" stroke={color} strokeWidth="0.9" strokeLinecap="round" opacity="0.72" />
-    <path d="M2.25 8h11.5M3.65 4.75h8.7M3.65 11.25h8.7" stroke={color} strokeWidth="0.85" strokeLinecap="round" opacity="0.5" />
-  </svg>
+  <LineIcon size={size} color={color}>
+    <circle cx="12" cy="12" r="8.2" />
+    <path d="M4.3 12h15.4M12 3.8c-2 2.1-3.1 4.9-3.1 8.2s1.1 6.1 3.1 8.2M12 3.8c2 2.1 3.1 4.9 3.1 8.2s-1.1 6.1-3.1 8.2" />
+  </LineIcon>
 );
 
-// 9. Verification: tests, checks, audits, type-checks, safety
 export const CheckmarkBadge03Icon = ({ size = 16, color = W }: IconProps) => (
-  <svg width={size} height={size} viewBox="0 0 16 16" fill="none">
-    <path d="M8 1.5l1.75 1 2-.25.75 1.85 1.85.75-.25 2 1 1.75-1 1.75.25 2-1.85.75-.75 1.85-2-.25-1.75 1-1.75-1-2 .25-.75-1.85-1.85-.75.25-2-1-1.75 1-1.75-.25-2 1.85-.75.75-1.85 2 .25z" stroke={color} strokeWidth="1.15" strokeLinecap="round" strokeLinejoin="round" />
-    <path d="M5.5 8l1.75 1.75 3.25-3.5" stroke={color} strokeWidth="1.35" strokeLinecap="round" strokeLinejoin="round" />
-  </svg>
+  <LineIcon size={size} color={color}>
+    <path d="M12 3.5l7 3v5.6c0 4.2-3 6.7-7 8.4-4-1.7-7-4.2-7-8.4V6.5l7-3Z" />
+    <path d="M8.8 12.2l2 2 4.4-4.7" />
+  </LineIcon>
 );
 
-// ── All legacy aliases → same 8 icons (all white) ──────────────────────────
-export const ReadIcon            = FileReadIcon;
-export const WriteIcon           = FileAddIcon;
-export const EditIcon            = FileEditIcon;
-export const SearchIcon          = SearchList01Icon;
-export const GlobeIcon           = WebSearchIcon;
-export const FolderIcon          = Folder01Icon;
-export const CodeIcon            = TerminalIcon;
-export const GitIcon             = TerminalIcon;
-export const ApiIcon             = ComputerIcon;
-export const ThinkIcon           = ComputerIcon;
-export const ImageIcon           = ImageAssetIcon;
-export const DatabaseIcon        = ComputerIcon;
-export const BotIcon             = AgentAssetIcon;
-export const SpinnerIcon         = ComputerIcon;
-export const SlackIconPremium    = ComputerIcon;
-export const VerifyIcon          = CheckmarkBadge03Icon;
-export const PackageIcon         = FolderAddIcon;
-export const LightbulbIcon       = SearchList01Icon;
-export const MemoryIcon          = Folder01Icon;
-export const DesktopIcon         = ComputerIcon;
-export const NetworkIcon         = ComputerIcon;
-export const ChartIcon           = FileAddIcon;
-export const SecurityIcon        = CheckmarkBadge03Icon;
+export const DatabaseStackIcon = ({ size = 16, color = W }: IconProps) => (
+  <LineIcon size={size} color={color}>
+    <ellipse cx="12" cy="6.2" rx="6.8" ry="2.7" />
+    <path d="M5.2 6.2v5.4c0 1.5 3 2.7 6.8 2.7s6.8-1.2 6.8-2.7V6.2" />
+    <path d="M5.2 11.6V17c0 1.5 3 2.7 6.8 2.7s6.8-1.2 6.8-2.7v-5.4" />
+  </LineIcon>
+);
 
-// ── Category → icon map (all white) ────────────────────────────────────────
+export const NetworkNodeIcon = ({ size = 16, color = W }: IconProps) => (
+  <LineIcon size={size} color={color}>
+    <circle cx="6.4" cy="12" r="2.8" />
+    <circle cx="17.6" cy="6.5" r="2.8" />
+    <circle cx="17.6" cy="17.5" r="2.8" />
+    <path d="M9 10.7l6-3M9 13.3l6 3" />
+  </LineIcon>
+);
+
+export const ChartLineIcon = ({ size = 16, color = W }: IconProps) => (
+  <LineIcon size={size} color={color}>
+    <path d="M5 19V5M5 19h14" />
+    <path d="M8 15l3.1-3.2 2.7 2.1L18.5 8" />
+  </LineIcon>
+);
+
+export const MemoryChipIcon = ({ size = 16, color = W }: IconProps) => (
+  <LineIcon size={size} color={color}>
+    <rect x="6" y="6" width="12" height="12" rx="2.5" />
+    <path d="M9.4 10.2h5.2M9.4 13.8h3.6M9 3.8v2.2M12 3.8v2.2M15 3.8v2.2M9 18v2.2M12 18v2.2M15 18v2.2M3.8 9h2.2M3.8 12h2.2M3.8 15h2.2M18 9h2.2M18 12h2.2M18 15h2.2" />
+  </LineIcon>
+);
+
+export const ApiNodeIcon = ({ size = 16, color = W }: IconProps) => (
+  <LineIcon size={size} color={color}>
+    <rect x="4" y="7" width="6" height="6" rx="1.7" />
+    <rect x="14" y="11" width="6" height="6" rx="1.7" />
+    <path d="M10 10h2.3c1 0 1.7.7 1.7 1.7V14" />
+  </LineIcon>
+);
+
+export const PackageBoxIcon = ({ size = 16, color = W }: IconProps) => (
+  <LineIcon size={size} color={color}>
+    <path d="M12 3.8l7.2 4.1v8.2L12 20.2l-7.2-4.1V7.9L12 3.8Z" />
+    <path d="M4.8 7.9l7.2 4.1 7.2-4.1M12 12v8.2" />
+  </LineIcon>
+);
+
+export const LightbulbLineIcon = ({ size = 16, color = W }: IconProps) => (
+  <LineIcon size={size} color={color}>
+    <path d="M8.3 13.6c-1.2-1-2-2.5-2-4.2A5.7 5.7 0 0 1 12 3.8a5.7 5.7 0 0 1 5.7 5.6c0 1.7-.8 3.2-2 4.2-.8.7-1.2 1.2-1.2 2.2h-5c0-1-.4-1.5-1.2-2.2Z" />
+    <path d="M9.5 19h5M10.2 16h3.6" />
+  </LineIcon>
+);
+
+export const ActivityPulseIcon = ({ size = 16, color = W }: IconProps) => (
+  <LineIcon size={size} color={color}>
+    <path d="M4 12h3.1l1.8-5.2 4 10.4 1.8-5.2H20" />
+  </LineIcon>
+);
+
+export const ReadIcon = FileReadIcon;
+export const WriteIcon = ArtifactIcon;
+export const EditIcon = FileEditIcon;
+export const SearchIcon = SearchList01Icon;
+export const GlobeIcon = WebSearchIcon;
+export const FolderIcon = Folder01Icon;
+export const CodeIcon = CodeInspectIcon;
+export const GitIcon = GitBranchIcon;
+export const ApiIcon = ApiNodeIcon;
+export const ThinkIcon = LightbulbLineIcon;
+export const ImageIcon = ImageAssetIcon;
+export const DatabaseIcon = DatabaseStackIcon;
+export const BotIcon = AgentAssetIcon;
+export const SpinnerIcon = ActivityPulseIcon;
+export const SlackIconPremium = NetworkNodeIcon;
+export const VerifyIcon = CheckmarkBadge03Icon;
+export const PackageIcon = PackageBoxIcon;
+export const LightbulbIcon = LightbulbLineIcon;
+export const MemoryIcon = MemoryChipIcon;
+export const DesktopIcon = ComputerIcon;
+export const NetworkIcon = NetworkNodeIcon;
+export const ChartIcon = ChartLineIcon;
+export const SecurityIcon = CheckmarkBadge03Icon;
+
+type SubAgentIdentityStatus = 'spawning' | 'working' | 'completed' | 'error' | 'idle' | string;
+
+const SUB_AGENT_PALETTES = [
+  { a: '#58A6FF', b: '#2F81F7', glow: 'rgba(88,166,255,0.30)' },
+  { a: '#FF6B7A', b: '#F43F5E', glow: 'rgba(244,63,94,0.28)' },
+  { a: '#A78BFA', b: '#8B5CF6', glow: 'rgba(167,139,250,0.28)' },
+  { a: '#FB7A32', b: '#F97316', glow: 'rgba(251,122,50,0.28)' },
+  { a: '#34D399', b: '#10B981', glow: 'rgba(52,211,153,0.26)' },
+  { a: '#FBBF24', b: '#F59E0B', glow: 'rgba(251,191,36,0.25)' },
+  { a: '#22D3EE', b: '#06B6D4', glow: 'rgba(34,211,238,0.25)' },
+  { a: '#F472B6', b: '#EC4899', glow: 'rgba(244,114,182,0.25)' },
+];
+
+const hashSubAgentName = (value: string) => {
+  let hash = 2166136261;
+  for (let i = 0; i < value.length; i += 1) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+};
+
+export const getSubAgentIdentity = (name?: string) => {
+  const cleanName = String(name || 'Subagent').trim() || 'Subagent';
+  const hash = hashSubAgentName(cleanName.toLowerCase());
+  const palette = SUB_AGENT_PALETTES[hash % SUB_AGENT_PALETTES.length];
+  const shortName = cleanName
+    .split(/[\s._-]+/)
+    .filter(Boolean)
+    .map(part => part[0])
+    .join('')
+    .slice(0, 2)
+    .toUpperCase() || cleanName.slice(0, 2).toUpperCase();
+
+  return { hash, palette, shortName };
+};
+
+export const SubAgentIdentityIcon = ({
+  name,
+  status = 'idle',
+  size = 32,
+  className = '',
+  title,
+}: {
+  name?: string;
+  status?: SubAgentIdentityStatus;
+  size?: number;
+  className?: string;
+  title?: string;
+}) => {
+  const identity = getSubAgentIdentity(name);
+  const normalizedStatus = ['spawning', 'working', 'completed', 'error'].includes(String(status))
+    ? String(status)
+    : 'idle';
+  const cells = Array.from({ length: 16 }, (_, index) => {
+    const row = Math.floor(index / 4);
+    const col = index % 4;
+    const mirroredCol = col < 2 ? col : 3 - col;
+    const bit = (identity.hash >> ((row * 2 + mirroredCol) % 24)) & 1;
+    return bit === 1 || (row === 1 && (col === 1 || col === 2)) || (row === 3 && col === 0);
+  });
+
+  return (
+    <span
+      className={`eterx-subagent-identity eterx-subagent-identity-${normalizedStatus} ${className}`}
+      style={{
+        width: size,
+        height: size,
+        ['--eterx-subagent-a' as any]: identity.palette.a,
+        ['--eterx-subagent-b' as any]: identity.palette.b,
+        ['--eterx-subagent-glow' as any]: identity.palette.glow,
+      }}
+      role={title ? 'img' : undefined}
+      aria-label={title}
+      aria-hidden={title ? undefined : true}
+      title={title}
+    >
+      <span className="eterx-subagent-grid" aria-hidden="true">
+        {cells.map((active, index) => (
+          <span
+            key={index}
+            className={`eterx-subagent-pixel ${active ? 'eterx-subagent-pixel-on' : ''}`}
+            style={{ ['--eterx-subagent-delay' as any]: `${index * 42}ms` }}
+          />
+        ))}
+      </span>
+      <span className="eterx-subagent-scan" aria-hidden="true" />
+      <span className="eterx-subagent-rail" aria-hidden="true" />
+    </span>
+  );
+};
+
 const CAT_MAP: Record<string, React.FC<IconProps>> = {
-  computer:      ComputerIcon,
-  agent:         AgentAssetIcon,
-  terminal:      TerminalIcon,
-  image:         ImageAssetIcon,
-  file_read:     FileReadIcon,
-  file_create:   FileAddIcon,
-  file_edit:     FileEditIcon,
-  folder_read:   Folder01Icon,
+  computer: ComputerIcon,
+  desktop: ComputerIcon,
+  browser: ComputerIcon,
+  ui: ComputerIcon,
+  agent: AgentAssetIcon,
+  terminal: TerminalIcon,
+  command: TerminalIcon,
+  image: ImageAssetIcon,
+  file_read: FileReadIcon,
+  file_create: FileAddIcon,
+  file_edit: FileEditIcon,
+  file_delete: FileDeleteIcon,
+  folder_read: Folder01Icon,
   folder_create: FolderAddIcon,
-  search:        SearchList01Icon,
-  web_search:    WebSearchIcon,
-  verification:  CheckmarkBadge03Icon,
+  search: SearchList01Icon,
+  web_search: WebSearchIcon,
+  verification: CheckmarkBadge03Icon,
+  safety: CheckmarkBadge03Icon,
+  database: DatabaseStackIcon,
+  data: DatabaseStackIcon,
+  network: NetworkNodeIcon,
+  api: ApiNodeIcon,
+  chart: ChartLineIcon,
+  memory: MemoryChipIcon,
+  package: PackageBoxIcon,
+  skill: PackageBoxIcon,
+  code: CodeInspectIcon,
+  git: GitBranchIcon,
+  refactor: RefactorIcon,
+  compare: CompareFilesIcon,
+  artifact: ArtifactIcon,
 };
 
-// ── Exact tool-label → icon (all white) ────────────────────────────────────
 export const AGENT_ICONS: Record<string, { Icon: React.FC<IconProps>; color: string }> = {
-  'Running command':         { Icon: TerminalIcon,         color: W },
-  'Running project command': { Icon: TerminalIcon,         color: W },
-  'Reading file':            { Icon: FileReadIcon,         color: W },
-  'Reading PDF':             { Icon: FileReadIcon,         color: W },
-  'Scanning directory':      { Icon: Folder01Icon,         color: W },
-  'Editing file':            { Icon: FileEditIcon,         color: W },
-  'Writing artifact':        { Icon: FileAddIcon,          color: W },
-  'Searching codebase':      { Icon: SearchList01Icon,     color: W },
-  'Researching':             { Icon: WebSearchIcon,        color: W },
-  'Reading source':          { Icon: WebSearchIcon,        color: W },
-  'Deep researching':        { Icon: WebSearchIcon,        color: W },
-  'Analyzing code':          { Icon: SearchList01Icon,     color: W },
-  'Refactoring code':        { Icon: FileEditIcon,         color: W },
-  'Verifying code':          { Icon: CheckmarkBadge03Icon, color: W },
-  'Verifying output':        { Icon: CheckmarkBadge03Icon, color: W },
-  'Git operation':           { Icon: TerminalIcon,         color: W },
-  'Spawning sub-agents':     { Icon: AgentAssetIcon,       color: W },
-  'API request':             { Icon: ComputerIcon,         color: W },
-  'API call':                { Icon: ComputerIcon,         color: W },
-  'Database query':          { Icon: TerminalIcon,         color: W },
-  'Generating image':        { Icon: ImageAssetIcon,       color: W },
-  'Loading skill':           { Icon: Folder01Icon,         color: W },
-  'Scaffolding project':     { Icon: FolderAddIcon,        color: W },
-  'Slack':                   { Icon: ComputerIcon,         color: W },
-  'Sending Slack':           { Icon: ComputerIcon,         color: W },
-  'Saving memory':           { Icon: FileAddIcon,          color: W },
-  'Reading memory':          { Icon: Folder01Icon,         color: W },
-  'Recalling context':       { Icon: Folder01Icon,         color: W },
-  'Automating UI':           { Icon: ComputerIcon,         color: W },
-  'Controlling desktop':     { Icon: ComputerIcon,         color: W },
-  'Network operation':       { Icon: ComputerIcon,         color: W },
-  'Generating chart':        { Icon: FileAddIcon,          color: W },
-  'Analyzing data':          { Icon: SearchList01Icon,     color: W },
-  'Running safety check':    { Icon: CheckmarkBadge03Icon, color: W },
-  'Auditing code':           { Icon: CheckmarkBadge03Icon, color: W },
-  'Searching images':        { Icon: ImageAssetIcon,       color: W },
-  'Previewing UI':           { Icon: ComputerIcon,         color: W },
-  'Comparing files':         { Icon: SearchList01Icon,     color: W },
+  'Running command': { Icon: TerminalIcon, color: W },
+  'Running project command': { Icon: TerminalIcon, color: W },
+  'Reading file': { Icon: FileReadIcon, color: W },
+  'Reading PDF': { Icon: FileReadIcon, color: W },
+  'Scanning directory': { Icon: Folder01Icon, color: W },
+  'Editing file': { Icon: FileEditIcon, color: W },
+  'Writing artifact': { Icon: ArtifactIcon, color: W },
+  'Searching codebase': { Icon: SearchList01Icon, color: W },
+  Researching: { Icon: WebSearchIcon, color: W },
+  'Reading source': { Icon: WebSearchIcon, color: W },
+  'Deep researching': { Icon: WebSearchIcon, color: W },
+  'Analyzing code': { Icon: CodeInspectIcon, color: W },
+  'Refactoring code': { Icon: RefactorIcon, color: W },
+  'Verifying code': { Icon: CheckmarkBadge03Icon, color: W },
+  'Verifying output': { Icon: CheckmarkBadge03Icon, color: W },
+  'Git operation': { Icon: GitBranchIcon, color: W },
+  'Spawning sub-agents': { Icon: AgentAssetIcon, color: W },
+  'API request': { Icon: ApiNodeIcon, color: W },
+  'API call': { Icon: ApiNodeIcon, color: W },
+  'Database query': { Icon: DatabaseStackIcon, color: W },
+  'Generating image': { Icon: ImageAssetIcon, color: W },
+  'Loading skill': { Icon: PackageBoxIcon, color: W },
+  'Scaffolding project': { Icon: FolderAddIcon, color: W },
+  Slack: { Icon: NetworkNodeIcon, color: W },
+  'Sending Slack': { Icon: NetworkNodeIcon, color: W },
+  'Saving memory': { Icon: MemoryChipIcon, color: W },
+  'Reading memory': { Icon: MemoryChipIcon, color: W },
+  'Recalling context': { Icon: MemoryChipIcon, color: W },
+  'Automating UI': { Icon: ComputerIcon, color: W },
+  'Controlling desktop': { Icon: ComputerIcon, color: W },
+  'Network operation': { Icon: NetworkNodeIcon, color: W },
+  'Generating chart': { Icon: ChartLineIcon, color: W },
+  'Analyzing data': { Icon: DatabaseStackIcon, color: W },
+  'Running safety check': { Icon: CheckmarkBadge03Icon, color: W },
+  'Auditing code': { Icon: CheckmarkBadge03Icon, color: W },
+  'Searching images': { Icon: ImageAssetIcon, color: W },
+  'Previewing UI': { Icon: ComputerIcon, color: W },
+  'Comparing files': { Icon: CompareFilesIcon, color: W },
+  Deleted: { Icon: FileDeleteIcon, color: W },
+  Deleting: { Icon: FileDeleteIcon, color: W },
 };
 
-// ── Skill name → category ──────────────────────────────────────────────────
 const SKILL_CATEGORIES: Record<string, string> = {
   web_artifacts_builder: 'file_create',
-  senior_frontend:       'file_edit',
-  component_architecture:'file_edit',
-  responsive_layout:     'file_edit',
-  motion_animations:     'file_edit',
-  epic_design:           'file_edit',
-  deep_research:         'web_search',
-  code_intelligence:     'search',
-  smart_refactor:        'file_edit',
-  project_scaffolder:    'folder_create',
-  auto_docs:             'file_create',
-  performance_profiler:  'verification',
-  security_auditor:      'verification',
-  database_designer:     'computer',
-  rag_architect:         'computer',
+  senior_frontend: 'file_edit',
+  component_architecture: 'file_edit',
+  responsive_layout: 'file_edit',
+  motion_animations: 'file_edit',
+  epic_design: 'file_edit',
+  deep_research: 'web_search',
+  code_intelligence: 'search',
+  smart_refactor: 'refactor',
+  project_scaffolder: 'folder_create',
+  auto_docs: 'file_create',
+  performance_profiler: 'verification',
+  security_auditor: 'verification',
+  database_designer: 'database',
+  rag_architect: 'memory',
+  api_design_reviewer: 'api',
+  data_analyst: 'database',
 };
 
-// ── resolveAgentIcon: always returns one of the 8 white icons ──────────────
 export const resolveAgentIcon = (
   verb: string,
   rawText?: string,
   iconCategory?: string,
 ): { Icon: React.FC<IconProps>; color: string } => {
+  const checkText = `${verb || ''} ${rawText || ''}`.toLowerCase();
 
-  // 1. Skill-name override
-  const checkText = ((verb || '') + ' ' + (rawText || '')).toLowerCase();
   for (const [skill, cat] of Object.entries(SKILL_CATEGORIES)) {
-    if (checkText.includes(skill)) { iconCategory = cat; break; }
+    if (checkText.includes(skill)) {
+      iconCategory = cat;
+      break;
+    }
   }
 
-  // 2. Category direct map (8 exact values)
+  if (/delete|remove|unlink|trash/.test(checkText)) return { Icon: FileDeleteIcon, color: W };
+
+  const exact = AGENT_ICONS[verb] || (rawText && AGENT_ICONS[rawText]);
+  if (exact) return { ...exact, color: W };
+
   if (iconCategory && CAT_MAP[iconCategory]) {
     return { Icon: CAT_MAP[iconCategory], color: W };
   }
 
-  // 3. Exact AGENT_ICONS label match
-  const exact = AGENT_ICONS[verb] || (rawText && AGENT_ICONS[rawText]);
-  if (exact) return { ...exact, color: W };
-
-  // 4. Fuzzy keyword matching — strip step prefixes first
-  let t = checkText.replace(
-    /^(?:step\s+\d+[:\s.]*|\[\s*step\s*\d+\s*\]\s*|\(\s*\d+\s*\)\s*|\[\s*\d+(?:\/\d+)?\s*\]\s*|\d+[.:]\s*)/i,
+  const t = checkText.replace(
+    /^(?:step\s+\d+[:\s.]*|\[\s*step\s*\d+\s*\]\s*|\(\s*\d+\s*\)|\[\s*\d+(?:\/\d+)?\s*\]|\d+[.:]\s*)/i,
     '',
   );
   const hasFileReference = /\b[\w@./\\-]+\.(?:tsx?|jsx?|html?|css|scss|sass|json|mdx?|ya?ml|py|rb|go|rs|java|kt|c|cpp|h|hpp|cs|php|sql|csv|tsv|xlsx?|docx?|pptx?|pdf|txt|env|lock|toml|ini|xml|svg|png|jpe?g|webp|gif)\b/i.test(t);
   const hasFileReadVerb = /\b(read(?:ing)?|view(?:ing)?|open(?:ing)?|inspect(?:ing)?|parse|parsing|locat(?:e|ing)|review(?:ing)?)\b/i.test(t);
 
-  if (/verif|test|check|audit|safet|lint/.test(t))                              return { Icon: CheckmarkBadge03Icon, color: W };
-  if (/sub.?agent|\bagent\b/.test(t))                                           return { Icon: AgentAssetIcon,      color: W };
-  if (/image|photo|picture|visual asset|mockup|poster|sprite/.test(t))          return { Icon: ImageAssetIcon,      color: W };
-  if (/web|brows|scrap|research|http|fetch|url/.test(t))                        return { Icon: WebSearchIcon,       color: W };
+  if (/verif|test|check|audit|safet|lint|policy|guard/.test(t)) return { Icon: CheckmarkBadge03Icon, color: W };
+  if (/sub.?agent|\bagent\b|worker|delegate|swarm|team/.test(t)) return { Icon: AgentAssetIcon, color: W };
+  if (/image|photo|picture|visual asset|mockup|poster|sprite|screenshot/.test(t)) return { Icon: ImageAssetIcon, color: W };
+  if (/git|commit|branch|merge|pull|push|rebase|checkout/.test(t)) return { Icon: GitBranchIcon, color: W };
+  if (/compare|diff|delta/.test(t)) return { Icon: CompareFilesIcon, color: W };
+  if (/refactor|restructure|rework|cleanup|dedupe|extract/.test(t)) return { Icon: RefactorIcon, color: W };
+  if (/code|symbol|typescript|javascript|tsx|jsx/.test(t) && /analyz|inspect|review|scan|understand/.test(t)) return { Icon: CodeInspectIcon, color: W };
+  if (/database|sql|query|table|schema|dataset|data\b|csv|xlsx|spreadsheet/.test(t)) return { Icon: DatabaseStackIcon, color: W };
+  if (/memory|remember|recall|context|knowledge|rag/.test(t)) return { Icon: MemoryChipIcon, color: W };
+  if (/api|endpoint|request|response|webhook|connector|integration/.test(t)) return { Icon: ApiNodeIcon, color: W };
+  if (/network|slack|telegram|email|channel|socket|http/.test(t)) return { Icon: NetworkNodeIcon, color: W };
+  if (/chart|plot|graph|metric|analytics|report/.test(t)) return { Icon: ChartLineIcon, color: W };
+  if (/web|brows|scrap|research|fetch|url|source/.test(t)) return { Icon: WebSearchIcon, color: W };
   if ((hasFileReadVerb && hasFileReference) || /\b(read|view|open|inspect|parse)\b.*\b(file|pdf|docx?|xlsx?|csv|json|markdown|md|content)\b|\b(file|pdf|docx?|xlsx?|csv|json|markdown|md)\b.*\b(read|view|open|inspect|parse)\b/.test(t)) return { Icon: FileReadIcon, color: W };
-  if (/scaffold|folder.*(creat|write)/.test(t))                                 return { Icon: FolderAddIcon,        color: W };
-  if (/folder|director|memory|remember|context|load|skill/.test(t))             return { Icon: Folder01Icon,         color: W };
-  if (/search|scan|analyz|find|list|query|index/.test(t))                       return { Icon: SearchList01Icon,     color: W };
-  if (/edit|modif|updat|refactor|patch|fix|rewrite/.test(t))                    return { Icon: FileEditIcon,         color: W };
-  if (/creat|generat|save|chart|plot|write|build|output|artifact/.test(t))      return { Icon: FileAddIcon,         color: W };
-  if (/terminal|command|shell|exec|run|git|npm|pip|bash|zsh|sh|script|deploy/.test(t)) return { Icon: TerminalIcon, color: W };
-  if (/desktop|control|automat|browser|ui/.test(t))                             return { Icon: ComputerIcon,         color: W };
+  if (/scaffold|folder.*(creat|write)|project structure/.test(t)) return { Icon: FolderAddIcon, color: W };
+  if (/folder|director|load|skill|package|dependency|install/.test(t)) return { Icon: PackageBoxIcon, color: W };
+  if (/search|scan|analyz|find|list|index/.test(t)) return { Icon: SearchList01Icon, color: W };
+  if (/edit|modif|updat|refactor|patch|fix|rewrite|rename|move/.test(t)) return { Icon: FileEditIcon, color: W };
+  if (/artifact|compose|draft|generate document|generating document/.test(t)) return { Icon: ArtifactIcon, color: W };
+  if (/creat|generat|save|write|build|output/.test(t)) return { Icon: FileAddIcon, color: W };
+  if (/terminal|command|shell|exec|run|npm|pip|bash|zsh|sh|script|deploy/.test(t)) return { Icon: TerminalIcon, color: W };
+  if (/desktop|control|automat|browser|ui|preview/.test(t)) return { Icon: ComputerIcon, color: W };
 
-  // 5. Final fallback: terminal (most agent work is command-based)
   return { Icon: TerminalIcon, color: W };
 };

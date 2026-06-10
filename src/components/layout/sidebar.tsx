@@ -1,48 +1,271 @@
 import React from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Plus, X, ChevronRight, Check } from 'lucide-react';
-import { PremiumShare, PremiumEdit, PremiumStar, PremiumFolder, PremiumTrash, PremiumSearch, PremiumDashboard, PremiumAgent, PremiumChannels, PremiumPanelLeft, PremiumDownload, PremiumMoreHorizontal, PremiumCheckSquare, PremiumSettings } from '../ui/premium-icons';
+import { X, ChevronRight, Check } from 'lucide-react';
+import { PremiumShare, PremiumEdit, PremiumStar, PremiumFolder, PremiumTrash, PremiumSearch, PremiumDashboard, PremiumAgent, PremiumChannels, PremiumMoreHorizontal, PremiumCheckSquare, PremiumSettings } from '../ui/premium-icons';
 import { Tooltip } from '../ui/tooltip';
+
+const SIDEBAR_DEFAULT_WIDTH = 256;
+const SIDEBAR_MIN_WIDTH = 220;
+const SIDEBAR_MAX_WIDTH = 420;
+const SIDEBAR_AUTO_CLOSE_EDGE = 28;
+const SIDEBAR_WIDTH_STORAGE_KEY = 'eterx.sidebar.width';
+
+const clampSidebarWidth = (width: number) => Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, Math.round(width)));
 
 const SidebarToggleIcon = ({ isOpen, isHovered, sizeClass = "w-[18px] h-[18px]" }: { isOpen: boolean, isHovered: boolean, sizeClass?: string }) => {
   if (isOpen) {
     if (isHovered) {
       return (
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className={`${ sizeClass } text-[#E8E6E3] transition-all duration-200`}>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className={`${ sizeClass } text-[var(--sidebar-hover-text)] transition-colors duration-150`}>
           <rect x="3" y="3" width="18" height="18" rx="5" />
           <path d="M9 3v18" />
           <path d="M16 15l-3-3 3-3" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
       );
-    } else {
-      return (
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className={`${ sizeClass } text-[#8C8A88] transition-all duration-200`}>
-          <rect x="3" y="3" width="18" height="18" rx="5" />
-          <path d="M9 3v18" />
-        </svg>
-      );
     }
-  } else {
-    if (isHovered) {
-      return (
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className={`${ sizeClass } text-[#E8E6E3] transition-all duration-200`}>
-          <rect x="3" y="3" width="18" height="18" rx="5" />
-          <path d="M9 3v18" />
-          <path d="M13 9l3 3-3 3" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
-      );
-    } else {
-      return (
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className={`${ sizeClass } text-[#8C8A88] transition-all duration-200`}>
-          <rect x="3" y="3" width="18" height="18" rx="5" />
-          <path d="M9 3v18" />
-        </svg>
-      );
-    }
+
+    return (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className={`${ sizeClass } text-[var(--sidebar-muted-text)] transition-colors duration-150`}>
+        <rect x="3" y="3" width="18" height="18" rx="5" />
+        <path d="M9 3v18" />
+      </svg>
+    );
   }
+
+  if (isHovered) {
+    return (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className={`${ sizeClass } text-[var(--sidebar-hover-text)] transition-colors duration-150`}>
+        <rect x="3" y="3" width="18" height="18" rx="5" />
+        <path d="M9 3v18" />
+        <path d="M13 9l3 3-3 3" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    );
+  }
+
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className={`${ sizeClass } text-[var(--sidebar-muted-text)] transition-colors duration-150`}>
+      <rect x="3" y="3" width="18" height="18" rx="5" />
+      <path d="M9 3v18" />
+    </svg>
+  );
 };
 
+const lightweightSidebarVars = {
+  width: 'var(--eterx-shell-sidebar-width)',
+} as React.CSSProperties;
+
+const lightweightSidebarCss = `
+  :root[data-theme="dark"] .eterx-sidebar-shell {
+    --sidebar-hover-bg: rgba(255, 255, 255, 0.07);
+    --sidebar-toggle-hover-bg: rgba(255, 255, 255, 0.07);
+    --sidebar-active-bg: rgba(255, 255, 255, 0.105);
+    --sidebar-toggle-active-bg: rgba(255, 255, 255, 0.105);
+    --sidebar-active-fade: rgba(26, 32, 36, 0.96);
+    --sidebar-menu-bg: #1D2428;
+    --sidebar-menu-border: transparent;
+    --sidebar-active-shadow: none;
+    background: var(--sidebar-bg) !important;
+  }
+
+  :root[data-theme="light"] .eterx-sidebar-shell {
+    --sidebar-hover-bg: #F1F1EE;
+    --sidebar-toggle-hover-bg: #F1F1EE;
+    --sidebar-active-bg: #E8E7E2;
+    --sidebar-toggle-active-bg: #E8E7E2;
+    --sidebar-active-fade: #E8E7E2;
+    --sidebar-menu-bg: #F7F7F4;
+    --sidebar-menu-border: transparent;
+    --sidebar-active-shadow: none;
+    background: var(--sidebar-bg) !important;
+  }
+
+  .eterx-sidebar-shell .eterx-sidebar-sheen,
+  .eterx-sidebar-shell .eterx-sidebar-recents,
+  .eterx-sidebar-shell .eterx-sidebar-profile,
+  .eterx-sidebar-shell .eterx-sidebar-profile-card,
+  .eterx-sidebar-shell .eterx-sidebar-profile-avatar,
+  .eterx-sidebar-shell .eterx-sidebar-avatar,
+  .eterx-sidebar-menu {
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+    box-shadow: none !important;
+  }
+
+  :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-sheen,
+  .eterx-sidebar-shell .eterx-sidebar-sheen {
+    background: transparent !important;
+    top: var(--sidebar-glow-start) !important;
+    bottom: 0 !important;
+    height: auto !important;
+    opacity: 1;
+    animation: none;
+  }
+
+  :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-sheen {
+    background: var(--sidebar-shell-sheen) !important;
+    background-size: 180% 100% !important;
+    opacity: 0.58;
+    animation: none;
+  }
+
+  :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-recents,
+  :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-recents,
+  .eterx-sidebar-shell .eterx-sidebar-recents {
+    -webkit-backdrop-filter: blur(18px) saturate(1.08) !important;
+    backdrop-filter: blur(18px) saturate(1.08) !important;
+    border-color: rgba(255, 255, 255, 0.065) !important;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045) !important;
+  }
+
+  :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-recents,
+  .eterx-sidebar-shell .eterx-sidebar-recents {
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.018)) !important;
+  }
+
+  :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-recents {
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.74), rgba(255, 255, 255, 0.52)) !important;
+    border-color: rgba(31, 31, 29, 0.07) !important;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9) !important;
+  }
+
+  :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-profile,
+  :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-profile,
+  .eterx-sidebar-shell .eterx-sidebar-profile {
+    background: var(--sidebar-bg) !important;
+  }
+
+  .eterx-sidebar-resize-handle {
+    position: absolute;
+    top: calc(var(--eterx-shell-topbar-height) + 6px);
+    right: 0;
+    bottom: 8px;
+    z-index: 60;
+    width: 18px;
+    cursor: col-resize;
+    touch-action: none;
+    -webkit-app-region: no-drag;
+  }
+
+  .eterx-sidebar-resize-handle::before {
+    content: "";
+    position: absolute;
+    top: 14px;
+    bottom: 14px;
+    right: 1px;
+    width: 1px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.16);
+    opacity: 0.12;
+    transition: opacity 160ms ease, background 160ms ease, width 160ms ease;
+  }
+
+  .eterx-sidebar-resize-handle:hover::before,
+  .eterx-sidebar-resize-handle-active::before {
+    width: 2px;
+    background: rgba(255, 255, 255, 0.42);
+    opacity: 0.72;
+  }
+
+  :root[data-theme="light"] .eterx-sidebar-resize-handle::before {
+    background: rgba(31, 31, 29, 0.18);
+  }
+
+  :root[data-theme="light"] .eterx-sidebar-resize-handle:hover::before,
+  :root[data-theme="light"] .eterx-sidebar-resize-handle-active::before {
+    background: rgba(31, 31, 29, 0.34);
+  }
+
+  :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-profile-card,
+  :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-profile-card,
+  .eterx-sidebar-shell .eterx-sidebar-profile-card {
+    background: transparent !important;
+    border-color: transparent !important;
+  }
+
+  :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-profile-avatar,
+  :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-avatar,
+  :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-profile-avatar,
+  :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-avatar,
+  .eterx-sidebar-shell .eterx-sidebar-profile-avatar,
+  .eterx-sidebar-shell .eterx-sidebar-avatar {
+    background: var(--sidebar-active-bg) !important;
+    border-color: transparent !important;
+    color: var(--sidebar-active-text) !important;
+  }
+
+  :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-nav-active,
+  :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-chat-active,
+  :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-chat-selected,
+  :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-nav-active,
+  :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-chat-active,
+  :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-chat-selected,
+  .eterx-sidebar-shell .eterx-sidebar-nav-active,
+  .eterx-sidebar-shell .eterx-sidebar-chat-active,
+  .eterx-sidebar-shell .eterx-sidebar-chat-selected {
+    background: var(--sidebar-active-bg) !important;
+    border-color: transparent !important;
+    box-shadow: none !important;
+  }
+
+  :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-chat-active::after,
+  :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-chat-active::before,
+  :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-nav-active::before,
+  :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-chat-active::after,
+  :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-chat-active::before,
+  :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-nav-active::before,
+  .eterx-sidebar-shell .eterx-sidebar-chat-active::after,
+  .eterx-sidebar-shell .eterx-sidebar-chat-active::before,
+  .eterx-sidebar-shell .eterx-sidebar-nav-active::before {
+    content: none !important;
+    display: none !important;
+  }
+
+  :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-toggle:hover,
+  :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-nav-item:hover,
+  :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-chat-row:hover,
+  :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-profile-icon-button:hover,
+  :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-chat-menu-button:hover,
+  :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-toggle:hover,
+  :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-nav-item:hover,
+  :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-chat-row:hover,
+  :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-profile-icon-button:hover,
+  :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-chat-menu-button:hover,
+  .eterx-sidebar-shell .eterx-sidebar-toggle:hover,
+  .eterx-sidebar-shell .eterx-sidebar-nav-item:hover,
+  .eterx-sidebar-shell .eterx-sidebar-chat-row:hover,
+  .eterx-sidebar-shell .eterx-sidebar-profile-icon-button:hover,
+  .eterx-sidebar-shell .eterx-sidebar-chat-menu-button:hover,
+  .eterx-sidebar-menu button:hover {
+    background: var(--sidebar-hover-bg) !important;
+    border-color: transparent !important;
+    box-shadow: none !important;
+    transform: none !important;
+    filter: none !important;
+  }
+
+  :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-nav-active:hover,
+  :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-chat-active:hover,
+  :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-chat-selected:hover,
+  :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-nav-active:hover,
+  :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-chat-active:hover,
+  :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-chat-selected:hover,
+  .eterx-sidebar-shell .eterx-sidebar-nav-active:hover,
+  .eterx-sidebar-shell .eterx-sidebar-chat-active:hover,
+  .eterx-sidebar-shell .eterx-sidebar-chat-selected:hover {
+    background: var(--sidebar-active-bg) !important;
+    color: var(--sidebar-active-text) !important;
+  }
+
+  .eterx-sidebar-shell svg,
+  .eterx-sidebar-shell svg:hover,
+  .eterx-sidebar-shell .group:hover svg,
+  .eterx-sidebar-menu button:hover svg,
+  .eterx-sidebar-menu .eterx-sidebar-menu-chevron {
+    transform: none !important;
+    filter: none !important;
+  }
+`;
 
 interface ChatSession {
   id: string;
@@ -68,20 +291,94 @@ interface SidebarProps {
   setActiveView: (view: 'chat' | 'code' | 'agents' | 'channels' | 'projects') => void;
   runningChats?: Set<string>;
   onSettingsClick?: () => void;
+  isThinking?: boolean;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
-  isOpen, setIsOpen, createNewChat, chats, activeChatId, loadChat, deleteChat, deleteChats, renameChat, toggleFavorite, onSearchClick, activeView, setActiveView, runningChats, onSettingsClick
+  isOpen, setIsOpen, createNewChat, chats, activeChatId, loadChat, deleteChat, deleteChats, renameChat, toggleFavorite, onSearchClick, activeView, setActiveView, runningChats, onSettingsClick, isThinking
 }) => {
   const [menuState, setMenuState] = React.useState<{ id: string, x: number, y: number, dropUp: boolean } | null>(null);
   const [toggleHovered, setToggleHovered] = React.useState(false);
   const [isMobile, setIsMobile] = React.useState(false);
+  const [sidebarWidth, setSidebarWidth] = React.useState(SIDEBAR_DEFAULT_WIDTH);
+  const [isResizingSidebar, setIsResizingSidebar] = React.useState(false);
+  const resizeStartRef = React.useRef({ x: 0, width: SIDEBAR_DEFAULT_WIDTH });
+  const resizeCurrentWidthRef = React.useRef(SIDEBAR_DEFAULT_WIDTH);
+  const resizeLastClientXRef = React.useRef<number | null>(null);
+
   React.useEffect(() => {
     const handleResize = () => setIsMobile(window.innerWidth < 768);
     handleResize();
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
   }, []);
+
+  React.useEffect(() => {
+    const storedWidth = Number(window.localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY));
+    if (Number.isFinite(storedWidth) && storedWidth >= SIDEBAR_MIN_WIDTH && storedWidth <= SIDEBAR_MAX_WIDTH) {
+      const nextWidth = clampSidebarWidth(storedWidth);
+      resizeCurrentWidthRef.current = nextWidth;
+      setSidebarWidth(nextWidth);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    if (!isResizingSidebar) return;
+
+    const previousCursor = document.body.style.cursor;
+    const previousUserSelect = document.body.style.userSelect;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+
+    const handlePointerMove = (event: PointerEvent) => {
+      resizeLastClientXRef.current = event.clientX;
+      const nextWidth = resizeStartRef.current.width + event.clientX - resizeStartRef.current.x;
+      const clampedWidth = clampSidebarWidth(nextWidth);
+      resizeCurrentWidthRef.current = clampedWidth;
+      setSidebarWidth(clampedWidth);
+    };
+
+    const stopResize = () => {
+      if (resizeLastClientXRef.current !== null && resizeLastClientXRef.current <= SIDEBAR_AUTO_CLOSE_EDGE) {
+        resizeCurrentWidthRef.current = SIDEBAR_DEFAULT_WIDTH;
+        setSidebarWidth(SIDEBAR_DEFAULT_WIDTH);
+        setIsResizingSidebar(false);
+        setIsOpen(false);
+        return;
+      }
+
+      setIsResizingSidebar(false);
+      window.localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(resizeCurrentWidthRef.current));
+    };
+
+    const cancelResize = () => {
+      resizeLastClientXRef.current = null;
+      resizeCurrentWidthRef.current = resizeStartRef.current.width;
+      setSidebarWidth(resizeStartRef.current.width);
+      setIsResizingSidebar(false);
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') cancelResize();
+    };
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', stopResize);
+    window.addEventListener('pointercancel', cancelResize);
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('blur', cancelResize);
+
+    return () => {
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousUserSelect;
+      resizeLastClientXRef.current = null;
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', stopResize);
+      window.removeEventListener('pointercancel', cancelResize);
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('blur', cancelResize);
+    };
+  }, [isResizingSidebar, setIsOpen]);
 
   const scrollContainerRef = React.useRef<HTMLDivElement>(null);
   const dragPointerXRef = React.useRef<number | null>(null);
@@ -105,6 +402,51 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const [dragSelectState, setDragSelectState] = React.useState<boolean>(true);
 
   const isNewChatActive = activeView === 'chat' && !activeChatId;
+  const [glassClick, setGlassClick] = React.useState<{ key: string; x: number; y: number; tick: number } | null>(null);
+  const glassClickTimeoutRef = React.useRef<number | null>(null);
+
+  const handleSidebarResizePointerDown = React.useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (isMobile) return;
+    event.preventDefault();
+    event.stopPropagation();
+    resizeStartRef.current = { x: event.clientX, width: sidebarWidth };
+    resizeCurrentWidthRef.current = sidebarWidth;
+    resizeLastClientXRef.current = event.clientX;
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    setIsResizingSidebar(true);
+  }, [isMobile, sidebarWidth]);
+
+  const triggerGlassClick = React.useCallback((event: React.MouseEvent<HTMLElement> | React.PointerEvent<HTMLElement>, key: string) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    const tick = Date.now();
+    setGlassClick({
+      key,
+      x: event.clientX - rect.left,
+      y: event.clientY - rect.top,
+      tick,
+    });
+
+    if (glassClickTimeoutRef.current !== null) window.clearTimeout(glassClickTimeoutRef.current);
+    glassClickTimeoutRef.current = window.setTimeout(() => {
+      setGlassClick(current => (current?.tick === tick ? null : current));
+    }, 1000);
+  }, []);
+
+  const glassClickClass = React.useCallback((key: string) => (
+    glassClick?.key === key ? 'eterx-sidebar-glass-clicked' : ''
+  ), [glassClick]);
+
+  const glassClickStyle = React.useCallback((key: string): React.CSSProperties | undefined => {
+    if (glassClick?.key !== key) return undefined;
+    return {
+      '--eterx-click-x': `${ glassClick.x }px`,
+      '--eterx-click-y': `${ glassClick.y }px`,
+    } as React.CSSProperties;
+  }, [glassClick]);
+
+  React.useEffect(() => () => {
+    if (glassClickTimeoutRef.current !== null) window.clearTimeout(glassClickTimeoutRef.current);
+  }, []);
 
   React.useEffect(() => {
     selectedChatIdsRef.current = selectedChatIds;
@@ -277,11 +619,20 @@ export const Sidebar: React.FC<SidebarProps> = ({
     dragPointerXRef.current = null;
     dragPointerYRef.current = null;
     lastDragTouchedChatRef.current = null;
+    dragEdgeStateRef.current = { direction: null, enteredAt: 0 };
     setIsDragSelecting(false);
     setShowDeleteConfirm(false);
     setIsSelectMode(false);
     commitSelectedChatIds(new Set());
   }, [commitSelectedChatIds]);
+
+  const enterSelectMode = React.useCallback(() => {
+    if (chats.length === 0) return;
+    setMenuState(null);
+    setShowDeleteConfirm(false);
+    setIsSelectMode(true);
+    commitSelectedChatIds(new Set());
+  }, [chats.length, commitSelectedChatIds]);
 
   const handleSelectAllToggle = React.useCallback(() => {
     if (chatIds.length === 0) return;
@@ -349,82 +700,66 @@ export const Sidebar: React.FC<SidebarProps> = ({
     return () => document.removeEventListener('click', handleClickOutside);
   }, [menuState]);
 
+  const sidebarStyle = React.useMemo(() => ({
+    ...lightweightSidebarVars,
+    '--eterx-shell-sidebar-width': `${ sidebarWidth }px`,
+  } as React.CSSProperties), [sidebarWidth]);
+
+  if (!isOpen) return null;
+
   return (
     <>
+      <style suppressHydrationWarning dangerouslySetInnerHTML={{ __html: lightweightSidebarCss }} />
       <motion.div
         animate={{
-          width: isOpen ? 280 : (isMobile ? 0 : 68),
-          opacity: (isOpen || !isMobile) ? 1 : 0
+          opacity: 1
         }}
-        transition={{ duration: 0.35, ease: [0.2, 0.8, 0.2, 1] }}
-        className="eterx-sidebar-shell relative border-r border-white/[0.06] bg-[linear-gradient(180deg,#181818_0%,#111111_46%,#0A0A0A_100%)] shadow-[inset_-1px_0_0_rgba(255,255,255,0.04),10px_0_36px_rgba(0,0,0,0.32)] flex flex-col flex-shrink-0 z-[60] h-full rounded-r-[32px] overflow-hidden"
+        transition={{ duration: 0.28, ease: [0.2, 0.8, 0.2, 1] }}
+        style={sidebarStyle}
+        className="eterx-sidebar-shell relative bg-[var(--sidebar-bg)] shadow-none flex flex-col flex-shrink-0 z-[100] h-full overflow-hidden [-webkit-app-region:no-drag]"
       >
-        <div className="eterx-sidebar-sheen pointer-events-none absolute inset-0 rounded-r-[32px] bg-[linear-gradient(90deg,rgba(255,255,255,0.026),transparent_18%,transparent_100%)]" />
+        <div className="eterx-sidebar-sheen pointer-events-none absolute inset-0 bg-transparent overflow-hidden">
+          <div className="ambient-glow-layer ambient-glow-idle absolute inset-0" />
+          <div className={`ambient-glow-layer ambient-glow-thinking absolute inset-0 transition-opacity duration-[3000ms] ease-in-out ${isThinking ? 'opacity-100' : 'opacity-0'}`} />
+        </div>
 
         <div className="relative z-10 flex flex-col h-full w-full overflow-hidden">
           {/* Header containing Branding + Toggle */}
-          <div className={`px-3 cursor-pointer tracking-tight ${ isOpen ? 'pt-4 pb-2.5 flex items-center justify-between' : 'pt-4 pb-2 flex justify-center' }`}>
-            {isOpen ? (
-              <motion.div
-                initial={{ opacity: 0, x: -10 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: -10 }}
-                transition={{ duration: 0.2 }}
-                className="eterx-sidebar-brand flex items-center select-none pl-3"
-              >
-                <span className="font-serif text-[24px] text-[#E8E6E3] font-medium leading-none hover:opacity-85 transition-opacity whitespace-nowrap">
-                  EterX
-                </span>
-              </motion.div>
-            ) : null}
+          <div className="h-[var(--eterx-shell-topbar-height)] px-3 tracking-tight flex items-center justify-start [-webkit-app-region:drag]">
             <Tooltip text={isOpen ? "Close sidebar" : "Open sidebar"} side="right">
-              <div
-                onClick={(e) => { e.stopPropagation(); setIsOpen(!isOpen); }}
+              <button
+                type="button"
+                onMouseDown={(e) => { e.stopPropagation(); triggerGlassClick(e, 'sidebar-toggle'); }}
                 onMouseEnter={() => setToggleHovered(true)}
                 onMouseLeave={() => setToggleHovered(false)}
-                className={`eterx-sidebar-toggle h-8 w-8 ${ isOpen ? "rounded-[10px]" : "rounded-full mx-auto" } hover:bg-white/[0.075] active:bg-white/[0.12] active:scale-95 transition-all duration-200 ease-out text-[#8C8A88] hover:text-[#E8E6E3] flex items-center justify-center cursor-pointer border border-transparent hover:border-white/[0.06]`}
+                onFocus={() => setToggleHovered(true)}
+                onBlur={() => setToggleHovered(false)}
+                onClick={(e) => { e.stopPropagation(); setIsOpen(!isOpen); }}
+                aria-label={isOpen ? "Close sidebar" : "Open sidebar"}
+                style={glassClickStyle('sidebar-toggle')}
+                className={`eterx-sidebar-click-surface eterx-sidebar-toggle ${ glassClickClass('sidebar-toggle') } h-8 w-8 rounded-[8px] bg-transparent transition-colors duration-150 ease-out text-[var(--sidebar-muted-text)] flex items-center justify-center cursor-pointer border border-transparent hover:bg-[var(--sidebar-toggle-hover-bg)] hover:border-transparent hover:text-[var(--sidebar-hover-text)] active:bg-[var(--sidebar-toggle-active-bg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--sidebar-focus-ring)] [-webkit-app-region:no-drag]`}
               >
-                {!isOpen && !toggleHovered ? (
-                  <motion.img
-                    key="logo"
-                    initial={{ opacity: 0, scale: 0.8 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    exit={{ opacity: 0, scale: 0.8 }}
-                    transition={{ duration: 0.15 }}
-                    src="/logo.png"
-                    alt="EterX logo"
-                    className="w-[24px] h-[24px] object-contain"
-                  />
-                ) : (
-                  <motion.div
-                    key="toggle"
-                    initial={{ opacity: 0, scale: 0.8 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    exit={{ opacity: 0, scale: 0.8 }}
-                    transition={{ duration: 0.15 }}
-                  >
-                    <SidebarToggleIcon isOpen={isOpen} isHovered={toggleHovered} sizeClass="w-[18px] h-[18px]" />
-                  </motion.div>
-                )}
-              </div>
+                <SidebarToggleIcon isOpen={isOpen} isHovered={toggleHovered} sizeClass="w-[18px] h-[18px]" />
+              </button>
             </Tooltip>
           </div>
 
           {/* Navigation Actions */}
-          <div className={`px-3 pb-1.5 ${ isOpen ? 'pt-2' : 'pt-0' }`}>
+          <div className={`px-3 pb-1.5 ${ isOpen ? 'pt-1.5' : 'pt-0' }`}>
             {isOpen ? (
               // Expanded "New Chat" Button
               <Tooltip text="Start a fresh conversation" side="right">
                 <button
+                  onMouseDown={(e) => triggerGlassClick(e, 'new-chat-expanded')}
                   onClick={() => { createNewChat(); setActiveView('chat'); }}
-                  className={`eterx-sidebar-nav-item eterx-sidebar-new-chat ${ isNewChatActive ? 'eterx-sidebar-nav-active' : '' } w-full h-[40px] flex items-center justify-between px-3 text-[14px] font-semibold transition-all duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)] active:scale-[0.985] group border relative overflow-hidden ${ isNewChatActive
-                      ? 'text-[#E8E6E3] bg-white/[0.035] border-white/[0.07] rounded-[13px] shadow-[0_8px_22px_rgba(0,0,0,0.24),inset_0_1px_0_rgba(255,255,255,0.045)] hover:bg-white/[0.075] hover:border-white/[0.14] hover:shadow-[0_10px_26px_rgba(0,0,0,0.32),inset_0_1px_0_rgba(255,255,255,0.08)]'
-                      : 'text-[#A7A39D] bg-transparent border-transparent hover:bg-white/[0.055] hover:text-[#E8E6E3] rounded-[13px]'
+                  style={glassClickStyle('new-chat-expanded')}
+                  className={`eterx-sidebar-click-surface eterx-sidebar-nav-item eterx-sidebar-new-chat ${ glassClickClass('new-chat-expanded') } ${ isNewChatActive ? 'eterx-sidebar-nav-active' : '' } w-full h-[38px] flex items-center justify-between px-3 text-[13.5px] font-medium transition-colors duration-150 ease-out group border relative overflow-hidden ${ isNewChatActive
+                      ? 'text-[var(--sidebar-active-text)] bg-[var(--sidebar-active-bg)] border-transparent rounded-[13px]'
+                      : 'text-[var(--sidebar-text)] bg-transparent border-transparent rounded-[13px]'
                     }`}
                 >
-                  <div className="absolute inset-0 bg-gradient-to-t from-white/0 to-white/[0.055] opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none" />
                   <div className="flex items-center gap-3 relative z-10">
-                    <PremiumEdit className={`w-[18px] h-[18px] transition-all duration-200 ease-out group-hover:scale-[1.06] ${ isNewChatActive ? 'text-[#E8E6E3]' : 'text-[#8C8A88] group-hover:text-[#E8E6E3]' }`} strokeWidth={2.2} />
+                    <PremiumEdit className={`w-[17px] h-[17px] transition-colors duration-150 ease-out ${ isNewChatActive ? 'text-[var(--sidebar-active-text)]' : 'text-[var(--sidebar-icon)]' }`} strokeWidth={2.15} />
                     New chat
                   </div>
                 </button>
@@ -433,22 +768,23 @@ export const Sidebar: React.FC<SidebarProps> = ({
               // Collapsed Circular "New Chat" Button
               <Tooltip text="New chat" side="right">
                 <button
+                  onMouseDown={(e) => triggerGlassClick(e, 'new-chat-collapsed')}
                   onClick={() => { createNewChat(); setActiveView('chat'); }}
-                  className={`eterx-sidebar-nav-item eterx-sidebar-new-chat ${ isNewChatActive ? 'eterx-sidebar-nav-active' : '' } w-10 h-10 flex items-center justify-center transition-all duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)] active:scale-[0.95] group relative mx-auto border ${ isNewChatActive
-                      ? 'text-[#E8E6E3] bg-white/[0.035] border-white/[0.07] rounded-full shadow-[0_8px_22px_rgba(0,0,0,0.24),inset_0_1px_0_rgba(255,255,255,0.045)] hover:bg-white/[0.075] hover:border-white/[0.14] hover:shadow-[0_10px_26px_rgba(0,0,0,0.32),inset_0_1px_0_rgba(255,255,255,0.08)]'
-                      : 'text-[#A7A39D] bg-transparent border-transparent hover:bg-white/[0.055] hover:text-[#E8E6E3] rounded-full'
+                  style={glassClickStyle('new-chat-collapsed')}
+                  className={`eterx-sidebar-click-surface eterx-sidebar-nav-item eterx-sidebar-new-chat ${ glassClickClass('new-chat-collapsed') } ${ isNewChatActive ? 'eterx-sidebar-nav-active' : '' } w-[38px] h-[38px] flex items-center justify-center transition-colors duration-150 ease-out group relative mx-auto border ${ isNewChatActive
+                      ? 'text-[var(--sidebar-active-text)] bg-[var(--sidebar-active-bg)] border-transparent rounded-full'
+                      : 'text-[var(--sidebar-text)] bg-transparent border-transparent rounded-full'
                     }`}
                 >
-                  <div className="absolute inset-0 bg-gradient-to-t from-white/0 to-white/[0.055] opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none rounded-full" />
-                  <PremiumEdit className={`w-[18px] h-[18px] transition-all duration-300 relative z-10 ${ isNewChatActive ? 'text-[#E8E6E3] scale-100' : 'text-[#8C8A88] group-hover:text-[#E8E6E3] group-hover:scale-110' }`} strokeWidth={2.2} />
+                  <PremiumEdit className={`w-[17px] h-[17px] transition-colors duration-150 relative z-10 ${ isNewChatActive ? 'text-[var(--sidebar-active-text)]' : 'text-[var(--sidebar-icon)]' }`} strokeWidth={2.15} />
                 </button>
               </Tooltip>
             )}
 
-            <div className={isOpen ? "h-1" : "h-2"}></div>
+            <div className={isOpen ? "h-1" : "h-1.5"}></div>
 
             {/* Menu Items */}
-            <div className={isOpen ? "space-y-1 mt-0" : "space-y-2 mt-0"}>
+            <div className={isOpen ? "space-y-0.5 mt-0" : "space-y-1.5 mt-0"}>
               {[
                 { id: 'search', label: 'Search', icon: PremiumSearch, tooltip: 'Search conversations', onClick: onSearchClick },
                 { id: 'workspace', label: 'Workspace', icon: PremiumDashboard, tooltip: 'Open project workspace', onClick: () => setActiveView('projects'), active: activeView === 'projects' },
@@ -462,16 +798,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   return (
                     <Tooltip key={item.id} text={item.tooltip} side="right">
                       <button
+                        onMouseDown={(e) => triggerGlassClick(e, `nav-${ item.id }`)}
                         onClick={item.onClick}
-                        className={`eterx-sidebar-nav-item ${ isActive ? 'eterx-sidebar-nav-active' : '' } w-full h-[40px] flex items-center gap-3 px-3 text-[14px] font-medium rounded-[13px] transition-all duration-200 ease-[cubic-bezier(0.2,0.8,0.2,1)] active:scale-[0.985] group border relative overflow-hidden ${ isActive
-                            ? 'text-[#E8E6E3] border-white/[0.07] bg-white/[0.035] shadow-[0_8px_22px_rgba(0,0,0,0.24),inset_0_1px_0_rgba(255,255,255,0.045)] hover:bg-white/[0.075]'
-                            : 'text-[#C4C7C5] hover:text-[#E8E6E3] hover:bg-white/[0.055] active:bg-white/[0.085] border-transparent hover:border-white/[0.045]'
+                        style={glassClickStyle(`nav-${ item.id }`)}
+                        className={`eterx-sidebar-click-surface eterx-sidebar-nav-item ${ glassClickClass(`nav-${ item.id }`) } ${ isActive ? 'eterx-sidebar-nav-active' : '' } w-full h-[38px] flex items-center gap-3 px-3 text-[13.5px] font-medium rounded-[12px] transition-colors duration-150 ease-out group border relative overflow-hidden ${ isActive
+                            ? 'text-[var(--sidebar-active-text)] border-transparent bg-[var(--sidebar-active-bg)]'
+                            : 'text-[var(--sidebar-text)] border-transparent'
                           }`}
                       >
                         <Icon
-                          className={`w-[18px] h-[18px] transition-all duration-200 ease-out relative z-10 ${ isActive ? 'text-[#E8E6E3] scale-[1.05]' : 'text-[#A7A39D] group-hover:text-[#E8E6E3] group-hover:scale-[1.06]'
+                          className={`w-[18px] h-[18px] transition-colors duration-150 ease-out relative z-10 ${ isActive ? 'text-[var(--sidebar-active-text)]' : 'text-[var(--sidebar-icon)]'
                             }`}
-                          strokeWidth={2.2}
+                          strokeWidth={2.15}
                         />
                         <span className="relative z-10 whitespace-nowrap">{item.label}</span>
                       </button>
@@ -481,16 +819,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   return (
                     <Tooltip key={item.id} text={item.tooltip} side="right">
                       <button
+                        onMouseDown={(e) => triggerGlassClick(e, `nav-${ item.id }`)}
                         onClick={item.onClick}
-                        className={`eterx-sidebar-nav-item ${ isActive ? 'eterx-sidebar-nav-active' : '' } w-10 h-10 flex items-center justify-center rounded-full transition-all duration-200 ease-[cubic-bezier(0.2,0.8,0.2,1)] active:scale-[0.95] group border relative mx-auto ${ isActive
-                            ? 'text-[#E8E6E3] border-white/[0.07] bg-white/[0.035] shadow-[0_8px_22px_rgba(0,0,0,0.24),inset_0_1px_0_rgba(255,255,255,0.045)] hover:bg-white/[0.075]'
-                            : 'text-[#C4C7C5] hover:text-[#E8E6E3] hover:bg-white/[0.055] active:bg-white/[0.085] border-transparent hover:border-white/[0.045]'
+                        style={glassClickStyle(`nav-${ item.id }`)}
+                        className={`eterx-sidebar-click-surface eterx-sidebar-nav-item ${ glassClickClass(`nav-${ item.id }`) } ${ isActive ? 'eterx-sidebar-nav-active' : '' } w-[38px] h-[38px] flex items-center justify-center rounded-full transition-colors duration-150 ease-out group border relative mx-auto ${ isActive
+                            ? 'text-[var(--sidebar-active-text)] border-transparent bg-[var(--sidebar-active-bg)]'
+                            : 'text-[var(--sidebar-text)] border-transparent'
                           }`}
                       >
                         <Icon
-                          className={`w-[18px] h-[18px] transition-all duration-200 ease-out relative z-10 ${ isActive ? 'text-[#E8E6E3] scale-[1.05]' : 'text-[#A7A39D] group-hover:text-[#E8E6E3] group-hover:scale-[1.1]'
+                          className={`w-[18px] h-[18px] transition-colors duration-150 ease-out relative z-10 ${ isActive ? 'text-[var(--sidebar-active-text)]' : 'text-[var(--sidebar-icon)]'
                             }`}
-                          strokeWidth={2.2}
+                          strokeWidth={2.15}
                         />
                       </button>
                     </Tooltip>
@@ -502,12 +842,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
           {/* Expanded Recents List */}
           {isOpen ? (
-            <div className="eterx-sidebar-recents flex-1 mt-2 mx-[6px] mb-[6px] bg-[#0C0C0C]/80 backdrop-blur-2xl rounded-[22px] border border-white/[0.055] shadow-[0_12px_34px_rgba(0,0,0,0.28),inset_0_1px_0_rgba(255,255,255,0.03)] flex flex-col py-3 overflow-hidden relative">
-              <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-white/[0.055]" />
-              <div className="flex items-center justify-between px-4 mb-2 min-h-[26px] relative z-30">
+            <div className="eterx-sidebar-recents flex-1 mt-2 mx-2 mb-1 bg-transparent rounded-[14px] border border-transparent flex flex-col py-2.5 overflow-hidden relative">
+              <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-[var(--sidebar-surface-border)]" />
+              <div className="flex items-center justify-between px-3.5 mb-1.5 min-h-[26px] relative z-30">
                 <div className="flex min-w-0 items-baseline gap-2">
-                  <span className="text-[13px] font-medium text-[#8E918F] tracking-wide shrink-0 transition-colors duration-300">
-                    {isSelectMode ? `${ selectedCount } selected` : 'Recent'}
+                  <span className="eterx-sidebar-section-title text-[12px] font-medium text-[var(--sidebar-muted-text)] tracking-normal shrink-0 transition-colors duration-150">
+                    {isSelectMode ? `${ selectedCount } selected` : 'Recents'}
                   </span>
                 </div>
                 <div className="flex items-center gap-1">
@@ -524,7 +864,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                           <button
                             onClick={(e) => { e.stopPropagation(); handleSelectAllToggle(); }}
                             disabled={chats.length === 0}
-                            className={`h-7 w-7 inline-flex items-center justify-center rounded-[9px] hover:bg-white/[0.07] disabled:text-[#4A4743] disabled:hover:bg-transparent transition-colors ${ allChatsSelected ? 'text-[#E8E6E3] bg-white/[0.08]' : 'text-[#A3A19E]' }`}
+                            className={`h-7 w-7 inline-flex items-center justify-center rounded-[8px] hover:bg-[var(--sidebar-hover-bg)] disabled:text-[var(--sidebar-muted-text)] disabled:hover:bg-transparent transition-colors ${ allChatsSelected ? 'text-[var(--sidebar-active-text)] bg-[var(--sidebar-active-bg)]' : 'text-[var(--sidebar-muted-text)]' }`}
                           >
                             <Check className="w-[13px] h-[13px]" strokeWidth={2.6} />
                           </button>
@@ -532,7 +872,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         <Tooltip text="Delete selected" side="right">
                           <button
                             onClick={(e) => { e.stopPropagation(); selectedCount > 0 && setShowDeleteConfirm(true); }}
-                            className={`h-7 w-7 inline-flex items-center justify-center rounded-[9px] transition-colors ${ selectedCount > 0 ? 'text-[#EF4444] hover:bg-red-500/10' : 'text-[#555350] cursor-not-allowed' }`}
+                            className={`h-7 w-7 inline-flex items-center justify-center rounded-[8px] transition-colors ${ selectedCount > 0 ? 'text-[#EF4444] hover:bg-red-500/10' : 'text-[#555350] cursor-not-allowed' }`}
                           >
                             <PremiumTrash className="w-[14px] h-[14px]" />
                           </button>
@@ -540,7 +880,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         <Tooltip text="Cancel selection" side="right">
                           <button
                             onClick={(e) => { e.stopPropagation(); exitSelectMode(); }}
-                            className="h-7 w-7 inline-flex items-center justify-center rounded-[9px] text-[#A3A19E] hover:bg-white/10 hover:text-white transition-colors"
+                            className="h-7 w-7 inline-flex items-center justify-center rounded-[8px] text-[var(--sidebar-muted-text)] hover:bg-[var(--sidebar-hover-bg)] hover:text-[var(--sidebar-hover-text)] transition-colors"
                           >
                             <X className="w-[14px] h-[14px]" strokeWidth={2.5} />
                           </button>
@@ -548,17 +888,23 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       </motion.div>
                     ) : (
                       <motion.div
-                        key="select-trigger"
+                        key="select-entry"
                         initial={{ opacity: 0, scale: 0.8 }}
                         animate={{ opacity: 1, scale: 1 }}
                         exit={{ opacity: 0, scale: 0.8 }}
+                        className="flex items-center gap-1"
                       >
-                        <Tooltip text="Select multiple chats" side="right">
+                        <Tooltip text="Select chats" side="right">
                           <button
-                            onClick={(e) => { e.stopPropagation(); setIsSelectMode(true); }}
-                            className="h-7 w-7 inline-flex items-center justify-center rounded-[9px] text-[#555350] hover:text-[#A3A19E] hover:bg-white/5 transition-colors"
+                            type="button"
+                            aria-label="Select chats"
+                            disabled={chats.length === 0}
+                            onMouseDown={(e) => triggerGlassClick(e, 'select-chats')}
+                            onClick={(e) => { e.stopPropagation(); enterSelectMode(); }}
+                            style={glassClickStyle('select-chats')}
+                            className={`eterx-sidebar-click-surface ${ glassClickClass('select-chats') } h-7 w-7 inline-flex items-center justify-center rounded-[8px] border border-transparent text-[var(--sidebar-muted-text)] transition-colors hover:bg-[var(--sidebar-hover-bg)] hover:text-[var(--sidebar-hover-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--sidebar-focus-ring)] disabled:pointer-events-none disabled:text-[var(--sidebar-muted-text)] disabled:opacity-45`}
                           >
-                            <PremiumCheckSquare className="w-[14px] h-[14px]" />
+                            <PremiumCheckSquare className="w-[14px] h-[14px]" strokeWidth={2.1} />
                           </button>
                         </Tooltip>
                       </motion.div>
@@ -569,21 +915,23 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
               <div
                 ref={scrollContainerRef}
-                className="flex-1 overflow-y-auto eterx-scrollbar pl-2.5 pr-1.5 mr-1 space-y-[3px] relative z-10"
+                className="flex-1 overflow-y-auto eterx-scrollbar pl-2 pr-1.5 mr-1 space-y-0.5 relative z-10"
                 style={{ scrollBehavior: isDragSelecting ? 'auto' : undefined, overscrollBehavior: 'contain' }}
               >
                 {chats.length === 0 ? (
-                  <div className="px-3 py-2 text-[13px] text-[#555350] italic">No active projects</div>
+                  <div className="eterx-sidebar-empty px-3 py-2 text-[12.5px] text-[var(--sidebar-muted-text)]">No recent chats</div>
                 ) : (
                   chats.map((chat, index) => {
                     const isActive = activeChatId === chat.id && activeView === 'chat';
                     const isWorking = runningChats?.has(chat.id) ?? false;
                     const isMenuOpen = menuState?.id === chat.id;
+                    const isSelected = selectedChatIds.has(chat.id);
 
                     return (
                       <div
                         key={chat.id}
                         onPointerDown={(e) => {
+                          triggerGlassClick(e, `chat-${ chat.id }`);
                           if (isSelectMode) {
                             e.preventDefault();
                             try { e.currentTarget.setPointerCapture(e.pointerId); } catch { }
@@ -604,15 +952,22 @@ export const Sidebar: React.FC<SidebarProps> = ({
                             loadChat(chat.id); setActiveView('chat');
                           }
                         }}
-                        className={`eterx-sidebar-chat-row ${ isActive && !isSelectMode ? 'eterx-sidebar-chat-active' : '' } ${ isWorking && !isSelectMode ? 'eterx-sidebar-chat-working' : '' } w-full h-[36px] text-left px-3 transition-all duration-200 ease-[cubic-bezier(0.2,0.8,0.2,1)] flex items-center justify-between group cursor-pointer active:scale-[0.988] text-[13px] leading-normal rounded-[10px] border relative z-0 ${ isActive && !isSelectMode ? 'bg-white/[0.035] text-[#E8E6E3] border-white/[0.07] font-medium shadow-[inset_0_1px_0_rgba(255,255,255,0.045),0_8px_20px_rgba(0,0,0,0.24)]' : isWorking && !isSelectMode ? 'bg-white/[0.04] text-[#E8E6E3] border-white/[0.04]' : 'text-[#C4C7C5] border-transparent hover:bg-white/[0.045] active:bg-white/[0.07] hover:text-[#E8E6E3]' } ${ isSelectMode && selectedChatIds.has(chat.id) ? 'bg-white/[0.065] text-[#E8E6E3] border-white/[0.065]' : '' } ${ isSelectMode ? 'select-none touch-none' : '' }`}
+                        style={glassClickStyle(`chat-${ chat.id }`)}
+                        className={`eterx-sidebar-click-surface eterx-sidebar-chat-row ${ glassClickClass(`chat-${ chat.id }`) } ${ isActive && !isSelectMode ? 'eterx-sidebar-chat-active' : '' } ${ isWorking && !isSelectMode ? 'eterx-sidebar-chat-working' : '' } ${ isSelectMode && isSelected ? 'eterx-sidebar-chat-selected' : '' } w-full min-h-[38px] text-left px-3 transition-colors duration-150 ease-out flex items-center justify-between group cursor-pointer text-[13px] leading-normal rounded-[10px] border relative z-0 overflow-hidden ${ isActive && !isSelectMode ? 'bg-[var(--sidebar-active-bg)] text-[var(--sidebar-active-text)] border-transparent font-medium' : isWorking && !isSelectMode ? 'bg-transparent text-[var(--sidebar-text)] border-transparent' : 'text-[var(--sidebar-text)] border-transparent' } ${ isSelectMode && isSelected ? 'bg-[var(--sidebar-active-bg)] text-[var(--sidebar-active-text)] border-transparent' : '' } ${ isSelectMode ? 'select-none touch-none' : '' }`}
                       >
-                        <div className="flex items-center overflow-hidden flex-1 relative z-10 w-full pl-0">
-                          <div className={`transition-all duration-200 ease-[cubic-bezier(0.2,0.8,0.2,1)] overflow-hidden flex items-center justify-center shrink-0 ${ isSelectMode ? 'w-[15px] h-[15px] mr-2.5 rounded-[5px] border opacity-100' : 'w-0 h-[15px] mr-0 border-0 opacity-0' } ${ selectedChatIds.has(chat.id) ? 'bg-[#E8E6E3] border-[#E8E6E3] text-[#0A0A0A]' : 'border-white/20 bg-transparent text-transparent group-hover:border-white/40' }`}>
-                            <Check className="w-[10px] h-[10px] shrink-0" strokeWidth={3} />
-                          </div>
+                        {isSelectMode && (
+                          <span
+                            className={`eterx-sidebar-select-check mr-2 flex h-[17px] w-[17px] shrink-0 items-center justify-center rounded-[5px] border text-transparent transition-colors duration-150 ${ isSelected ? 'text-[#181714]' : '' }`}
+                            aria-hidden="true"
+                          >
+                            {isSelected && <Check className="h-[11px] w-[11px]" strokeWidth={3} />}
+                          </span>
+                        )}
+
+                        <div className="eterx-sidebar-chat-content flex min-w-0 items-center overflow-hidden flex-1 relative z-10 w-full pl-0">
                           {isWorking ? (
                             <motion.span
-                              className="truncate pr-2 relative z-10 eterx-text-shimmer eterx-text-shimmer-ambient font-medium leading-normal"
+                              className="eterx-sidebar-chat-title truncate pr-2 relative z-10 eterx-text-shimmer eterx-text-shimmer-ambient font-medium leading-normal"
                             >
                               {chat.title}
                             </motion.span>
@@ -633,26 +988,30 @@ export const Sidebar: React.FC<SidebarProps> = ({
                                   setEditingChatId(null);
                                 }
                               }}
-                              className="bg-transparent border-none outline-none text-[#E8E6E3] font-medium w-full text-[13px] leading-normal relative z-10 p-0 m-0"
+                              className="bg-transparent border-none outline-none text-[var(--sidebar-strong-text)] font-medium w-full text-[13px] leading-normal relative z-10 p-0 m-0"
                               onClick={(e) => e.stopPropagation()}
                             />
                           ) : (
-                            <div className="flex items-center truncate pr-2 relative z-10 w-full min-w-0">
-                              {chat.isFavorite && <PremiumStar className="w-3.5 h-3.5 text-yellow-500/90 mr-1.5 shrink-0 drop-shadow-[0_0_6px_rgba(234,179,8,0.4)]" />}
-                              <span className="truncate text-current leading-normal">{chat.title}</span>
+                            <div className="eterx-sidebar-chat-title-wrap flex items-center truncate pr-2 relative z-10 w-full min-w-0">
+                              {chat.isFavorite && <PremiumStar className="eterx-sidebar-favorite-icon w-3.5 h-3.5 text-yellow-500/90 mr-1.5 shrink-0" />}
+                              <span className="eterx-sidebar-chat-title truncate text-current leading-normal">{chat.title}</span>
                             </div>
                           )}
                         </div>
 
                         {isWorking && (
-                          <div className={`eterx-sidebar-working-fade absolute right-0 top-0 bottom-0 w-[4.5rem] pointer-events-none z-20 flex items-center justify-end pr-3 ${ isActive ? 'bg-gradient-to-l from-[#181818] via-[#181818]/95 to-transparent rounded-r-[10px]' : 'bg-gradient-to-l from-[#111111] via-[#111111]/95 to-transparent rounded-r-[10px]' }`}>
-                            <div className="eterx-sidebar-loading-spinner w-[14px] h-[14px] rounded-full border-[2px] border-[#1e3a8a] border-r-[#3b82f6] animate-[spin_0.8s_linear_infinite]" />
+                          <div className="eterx-sidebar-working-fade absolute right-0 top-0 bottom-0 w-[4.5rem] pointer-events-none z-20 flex items-center justify-end rounded-r-[10px] pr-3">
+                            <div className="eterx-sidebar-loading-spinner w-[14px] h-[14px] rounded-full border-[2px] border-[#8E918F]/30 border-r-[#3A3835] animate-[spin_0.8s_linear_infinite]" />
                           </div>
                         )}
 
                         <div className="relative ml-1 flex h-7 w-7 shrink-0 items-center justify-center">
-                          <div
-                            className={`flex h-7 w-7 items-center justify-center rounded-[10px] transition-all duration-200 ease-[cubic-bezier(0.2,0.8,0.2,1)] ${ isMenuOpen ? 'opacity-100 bg-white/[0.11] text-[#E8E6E3] shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] border border-white/[0.085]' : (isWorking || isSelectMode ? 'opacity-0 pointer-events-none hidden' : 'opacity-0 group-hover:opacity-100 text-[#8C8A88] hover:bg-white/[0.075] hover:text-[#E8E6E3] border border-transparent hover:border-white/[0.055] active:scale-95') } relative z-40`}
+                          <button
+                            type="button"
+                            aria-label="Chat options"
+                            onMouseDown={(e) => triggerGlassClick(e, `chat-menu-${ chat.id }`)}
+                            style={glassClickStyle(`chat-menu-${ chat.id }`)}
+                            className={`eterx-sidebar-click-surface eterx-sidebar-chat-menu-button ${ glassClickClass(`chat-menu-${ chat.id }`) } flex h-7 w-7 items-center justify-center rounded-[8px] bg-transparent transition-colors duration-150 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--sidebar-focus-ring)] ${ isMenuOpen ? 'opacity-100 bg-[var(--sidebar-active-bg)] text-[var(--sidebar-active-text)] border border-transparent' : (isWorking || isSelectMode ? 'opacity-0 pointer-events-none hidden' : 'opacity-0 group-hover:opacity-100 text-[var(--sidebar-muted-text)] hover:bg-[var(--sidebar-hover-bg)] hover:text-[var(--sidebar-hover-text)] border border-transparent') } relative z-40`}
                             onClick={(e) => {
                               e.stopPropagation();
                               if (isWorking) return;
@@ -665,8 +1024,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
                               }
                             }}
                           >
-                            <PremiumMoreHorizontal className={`w-4 h-4 transition-transform duration-300 ${ isMenuOpen ? 'scale-110 drop-shadow-[0_2px_4px_rgba(0,0,0,0.5)]' : '' }`} />
-                          </div>
+                            <PremiumMoreHorizontal className="w-4 h-4 transition-colors duration-150" />
+                          </button>
                         </div>
                       </div>
                     );
@@ -680,42 +1039,53 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
           {/* Bottom Profile Area */}
           {isOpen ? (
-            <div className="eterx-sidebar-profile relative z-10 p-3 pt-2 border-t border-white/[0.065] bg-[#0E0E0E]/90 backdrop-blur-md">
-              <Tooltip text="Settings" side="right">
-                <div onClick={onSettingsClick} className="eterx-sidebar-profile-card flex items-center justify-between cursor-pointer group px-2.5 py-2.5 hover:bg-white/[0.055] rounded-[16px] w-full transition-all duration-200 border border-transparent hover:border-white/[0.055] active:scale-[0.988]">
-                  <span className="min-w-0 flex-1 pr-2 flex justify-center">
-                    <span className="max-w-full overflow-hidden text-ellipsis whitespace-nowrap rounded-[10px] border border-white/[0.09] bg-white/[0.055] px-3 py-1.5 text-center text-[12.5px] font-medium leading-tight text-[#E8E6E3] shadow-[inset_0_1px_0_rgba(255,255,255,0.10),0_6px_18px_rgba(0,0,0,0.18)] backdrop-blur-xl transition-all duration-200 group-hover:border-white/[0.14] group-hover:bg-white/[0.075] group-hover:text-white">
-                      Made by Harshil Soni
-                    </span>
+            <div className="eterx-sidebar-profile relative z-10 px-3 py-2 border-t border-[var(--sidebar-shell-border)] bg-[var(--sidebar-profile-bg)]">
+              <Tooltip text="Open settings" side="right">
+                <button
+                  type="button"
+                  onMouseDown={(e) => triggerGlassClick(e, 'profile-card')}
+                  onClick={onSettingsClick}
+                  aria-label="Open settings"
+                  style={glassClickStyle('profile-card')}
+                className={`eterx-sidebar-click-surface eterx-sidebar-profile-card eterx-sidebar-settings-button ${ glassClickClass('profile-card') } flex h-10 w-[174px] max-w-full cursor-pointer items-center gap-2.5 rounded-[12px] border px-3 text-left transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--sidebar-focus-ring)] group`}
+                >
+                  <span className="eterx-sidebar-profile-action flex h-6 w-6 shrink-0 items-center justify-center rounded-[8px] border border-transparent text-current transition-colors">
+                    <PremiumSettings className="w-4 h-4 transition-colors duration-150" strokeWidth={2.15} />
                   </span>
-                  <div className="flex items-center justify-center w-7 h-7 rounded-[8px] transition-colors group-hover:bg-white/[0.06]">
-                    <PremiumSettings className="w-[18px] h-[18px] text-[#8E918F] group-hover:text-white transition-all duration-300 group-hover:rotate-45" strokeWidth={2.2} />
-                  </div>
-                </div>
+                  <span className="min-w-0 flex-1 truncate text-[13.5px] font-medium text-current transition-colors">
+                    Settings
+                  </span>
+                </button>
               </Tooltip>
             </div>
           ) : (
-            <div className="eterx-sidebar-profile relative z-10 p-3 pt-2 border-t border-white/[0.065] bg-[#0E0E0E]/90 backdrop-blur-md flex flex-col items-center gap-3">
+            <div className="eterx-sidebar-profile relative z-10 px-2 py-2 border-t border-[var(--sidebar-shell-border)] bg-[var(--sidebar-profile-bg)] flex flex-col items-center">
               <Tooltip text="Settings" side="right">
                 <button
                   onClick={onSettingsClick}
-                  className="w-10 h-10 flex items-center justify-center rounded-full hover:bg-white/[0.055] text-[#8C8A88] hover:text-[#E8E6E3] border border-transparent hover:border-white/[0.045] transition-all active:scale-95 group"
+                  aria-label="Open settings"
+                  onMouseDown={(e) => triggerGlassClick(e, 'profile-settings-collapsed')}
+                  style={glassClickStyle('profile-settings-collapsed')}
+                  className={`eterx-sidebar-click-surface eterx-sidebar-profile-icon-button ${ glassClickClass('profile-settings-collapsed') } w-[38px] h-[38px] flex items-center justify-center rounded-[12px] text-[var(--sidebar-muted-text)] border border-transparent hover:bg-[var(--sidebar-hover-bg)] hover:text-[var(--sidebar-hover-text)] transition-colors duration-150 group`}
                 >
-                  <PremiumSettings className="w-5 h-5 group-hover:scale-[1.08] transition-transform" strokeWidth={2.2} />
+                  <PremiumSettings className="w-[18px] h-[18px] transition-colors duration-150" strokeWidth={2.15} />
                 </button>
-              </Tooltip>
-
-              <Tooltip text="User plan" side="right">
-                <div
-                  onClick={onSettingsClick}
-                  className="eterx-sidebar-avatar w-8 h-8 rounded-full bg-gradient-to-br from-[#343230] to-[#1A1918] flex items-center justify-center text-[#E8E6E3] font-semibold text-xs shrink-0 border border-white/[0.12] shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_4px_12px_rgba(0,0,0,0.22)] cursor-pointer hover:border-white/20 hover:scale-[1.04] transition-all active:scale-[0.96]"
-                >
-                  H
-                </div>
               </Tooltip>
             </div>
           )}
         </div>
+        {!isMobile && (
+          <div
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize sidebar"
+            aria-valuemin={SIDEBAR_MIN_WIDTH}
+            aria-valuemax={SIDEBAR_MAX_WIDTH}
+            aria-valuenow={sidebarWidth}
+            onPointerDown={handleSidebarResizePointerDown}
+            className={`eterx-sidebar-resize-handle ${ isResizingSidebar ? 'eterx-sidebar-resize-handle-active' : '' }`}
+          />
+        )}
       </motion.div>
 
       {menuState && typeof document !== 'undefined' && createPortal(
@@ -736,13 +1106,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 left: menuState.x - 16,
                 ...(menuState.dropUp ? { bottom: window.innerHeight - menuState.y - 4 } : { top: menuState.y - 32 }),
               }}
-              className="eterx-sidebar-menu w-52 bg-[#191919]/92 backdrop-blur-3xl border border-white/[0.075] rounded-[18px] shadow-[0_22px_58px_rgba(0,0,0,0.56),inset_0_1px_0_rgba(255,255,255,0.08)] p-1.5 flex flex-col gap-0.5"
+              className="eterx-sidebar-menu w-52 bg-[var(--sidebar-menu-bg)] border border-transparent rounded-[12px] p-1.5 flex flex-col gap-0.5"
             >
               <button
                 onClick={(e) => { e.stopPropagation(); handleShare(menuState.id); }}
-                className="w-full px-3 py-2 text-[13.5px] font-medium text-[#A7A39D] hover:text-[#E8E6E3] hover:bg-white/[0.065] rounded-[12px] flex items-center gap-3 transition-all duration-200 ease-[cubic-bezier(0.2,0.8,0.2,1)] text-left group/btn active:scale-[0.985]"
+                className="eterx-sidebar-menu-item w-full px-3 py-2 text-[13px] font-medium text-[var(--sidebar-muted-text)] hover:text-[var(--sidebar-hover-text)] hover:bg-[var(--sidebar-hover-bg)] rounded-[10px] flex items-center gap-3 transition-colors duration-150 ease-out text-left group/btn"
               >
-                <PremiumShare className="w-4 h-4 text-[#8C8A88] group-hover/btn:text-[#E8E6E3] transition-transform duration-200 group-hover/btn:scale-[1.06]" />
+                <PremiumShare className="w-4 h-4 text-[var(--sidebar-icon)] group-hover/btn:text-[var(--sidebar-hover-text)] transition-colors duration-150" />
                 {shareCopiedId === menuState.id ? <span className="text-[#34D399]">Link copied!</span> : "Share"}
               </button>
               <button
@@ -752,9 +1122,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   setEditTitle(chats.find(c => c.id === menuState.id)?.title || "");
                   setMenuState(null);
                 }}
-                className="w-full px-3 py-2 text-[13.5px] font-medium text-[#A7A39D] hover:text-[#E8E6E3] hover:bg-white/[0.065] rounded-[12px] flex items-center gap-3 transition-all duration-200 ease-[cubic-bezier(0.2,0.8,0.2,1)] text-left group/btn active:scale-[0.985]"
+                className="eterx-sidebar-menu-item w-full px-3 py-2 text-[13px] font-medium text-[var(--sidebar-muted-text)] hover:text-[var(--sidebar-hover-text)] hover:bg-[var(--sidebar-hover-bg)] rounded-[10px] flex items-center gap-3 transition-colors duration-150 ease-out text-left group/btn"
               >
-                <PremiumEdit className="w-4 h-4 text-[#8C8A88] group-hover/btn:text-[#E8E6E3] transition-transform duration-200 group-hover/btn:scale-[1.06]" /> Rename
+                <PremiumEdit className="w-4 h-4 text-[var(--sidebar-icon)] group-hover/btn:text-[var(--sidebar-hover-text)] transition-colors duration-150" /> Rename
               </button>
               <button
                 onClick={(e) => {
@@ -762,29 +1132,29 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   toggleFavorite(menuState.id);
                   setMenuState(null);
                 }}
-                className="w-full px-3 py-2 text-[13.5px] font-medium text-[#A7A39D] hover:text-[#E8E6E3] hover:bg-white/[0.065] rounded-[12px] flex items-center gap-3 transition-all duration-200 ease-[cubic-bezier(0.2,0.8,0.2,1)] text-left group/btn active:scale-[0.985]"
+                className="eterx-sidebar-menu-item w-full px-3 py-2 text-[13px] font-medium text-[var(--sidebar-muted-text)] hover:text-[var(--sidebar-hover-text)] hover:bg-[var(--sidebar-hover-bg)] rounded-[10px] flex items-center gap-3 transition-colors duration-150 ease-out text-left group/btn"
               >
-                <PremiumStar className="w-4 h-4 text-[#8C8A88] group-hover/btn:text-[#E8E6E3] transition-transform duration-200 group-hover/btn:scale-[1.06]" />
+                <PremiumStar className="w-4 h-4 text-[var(--sidebar-icon)] group-hover/btn:text-[var(--sidebar-hover-text)] transition-colors duration-150" />
                 {chats.find(c => c.id === menuState.id)?.isFavorite ? 'Remove from favorites' : 'Add to favorites'}
               </button>
-              <button className="w-full px-3 py-2 text-[13.5px] font-medium text-[#A7A39D] hover:text-[#E8E6E3] hover:bg-white/[0.065] rounded-[12px] flex items-center gap-3 transition-all duration-200 ease-[cubic-bezier(0.2,0.8,0.2,1)] text-left justify-between group/btn cursor-not-allowed opacity-70 active:scale-[0.985]" title="Coming soon">
+              <button type="button" disabled aria-disabled="true" className="eterx-sidebar-menu-item w-full px-3 py-2 text-[13px] font-medium text-[var(--sidebar-muted-text)] rounded-[10px] flex items-center gap-3 transition-colors duration-150 ease-out text-left justify-between group/btn cursor-not-allowed opacity-60 disabled:hover:bg-transparent disabled:hover:text-[var(--sidebar-muted-text)]" title="Coming soon">
                 <div className="flex items-center gap-3">
-                  <PremiumFolder className="w-4 h-4 text-[#8C8A88] group-hover/btn:text-[#E8E6E3] transition-transform duration-200 group-hover/btn:scale-[1.06]" /> Move to Project
+                  <PremiumFolder className="w-4 h-4 text-[var(--sidebar-icon)] group-hover/btn:text-[var(--sidebar-hover-text)] transition-colors duration-150" /> Move to Project
                 </div>
-                <ChevronRight className="w-4 h-4 text-[#555350] transition-transform duration-200 group-hover/btn:translate-x-0.5" />
+                <ChevronRight className="eterx-sidebar-menu-chevron w-4 h-4 text-[var(--sidebar-muted-text)] transition-colors duration-150" />
               </button>
 
-              <div className="h-[1px] w-full bg-white/10 my-1 rounded-full shadow-[0_1px_0_rgba(0,0,0,0.3)]" />
+              <div className="h-[1px] w-full bg-[var(--sidebar-menu-border)] my-1 rounded-full" />
 
               <button
-                className="w-full px-3 py-2 text-[13.5px] font-medium text-[#EF4444]/90 hover:text-[#FF5A5A] hover:bg-[#EF4444]/[0.14] rounded-[12px] flex items-center gap-3 transition-all duration-200 ease-[cubic-bezier(0.2,0.8,0.2,1)] text-left group/btn active:scale-[0.985]"
+                className="eterx-sidebar-menu-danger w-full px-3 py-2 text-[13px] font-medium text-[var(--sidebar-danger-text)] hover:text-[var(--sidebar-danger-text)] hover:bg-[var(--sidebar-danger-bg)] rounded-[10px] flex items-center gap-3 transition-colors duration-150 ease-out text-left group/btn"
                 onClick={(e) => {
                   e.stopPropagation();
                   deleteChat(menuState.id);
                   setMenuState(null);
                 }}
               >
-                <PremiumTrash className="w-4 h-4 transition-transform duration-200 group-hover/btn:scale-[1.06]" /> Delete
+                <PremiumTrash className="w-4 h-4 transition-colors duration-150" /> Delete
               </button>
             </motion.div>
           </AnimatePresence>
@@ -797,7 +1167,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         <AnimatePresence>
           {showDeleteConfirm && (
             <motion.div
-              className="fixed inset-0 z-[1000] flex items-center justify-center transition-all duration-500 ease-[cubic-bezier(0.2,0.8,0.2,1)] bg-black/60 backdrop-blur-sm"
+              className="fixed inset-0 z-[1000] flex items-center justify-center transition-colors duration-200 ease-out bg-black/60 backdrop-blur-sm"
               onClick={(e) => { e.stopPropagation(); !isDeleting && setShowDeleteConfirm(false); }}
             >
               <motion.div
@@ -824,7 +1194,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   <button
                     onClick={handleBulkDelete}
                     disabled={isDeleting}
-                    className={`relative flex items-center justify-center gap-2 py-2 rounded-[12px] bg-[#EF4444] text-white transition-all duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)] active:scale-95 text-[14px] font-medium overflow-hidden ${ isDeleting ? 'w-[150px] cursor-not-allowed hover:bg-[#EF4444]' : 'w-[130px] hover:bg-[#DC2626]' }`}
+                    className={`relative flex items-center justify-center gap-2 py-2 rounded-[12px] bg-[#EF4444] text-white transition-[width,background-color,color] duration-200 ease-out text-[14px] font-medium overflow-hidden ${ isDeleting ? 'w-[150px] cursor-not-allowed hover:bg-[#EF4444]' : 'w-[130px] hover:bg-[#DC2626]' }`}
                   >
                     <span className={`transition-transform duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)] whitespace-nowrap ${ isDeleting ? '-translate-x-3' : 'translate-x-0' }`}>
                       {isDeleting ? 'Deleting' : 'Delete Forever'}

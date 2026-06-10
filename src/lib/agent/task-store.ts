@@ -1,6 +1,5 @@
 import fs from 'fs-extra';
 import path from 'path';
-import { formatVisibleWorkNote } from './work-note';
 
 /**
  * TaskStore — Persistent Server-Side Task State
@@ -34,21 +33,11 @@ export interface PersistedTask {
 }
 
 // Debounce timers per chat to prevent I/O spam
-const globalForTaskStore = globalThis as typeof globalThis & {
-  __eterxTaskCache?: Map<string, PersistedTask>;
-  __eterxWriteTimers?: Map<string, NodeJS.Timeout>;
-};
-
-const writeTimers: Map<string, NodeJS.Timeout> =
-  globalForTaskStore.__eterxWriteTimers ||
-  (globalForTaskStore.__eterxWriteTimers = new Map());
-
+const writeTimers: Map<string, NodeJS.Timeout> = new Map();
 const DEBOUNCE_MS = 500;
 
 // In-memory cache for fast reads
-const taskCache: Map<string, PersistedTask> =
-  globalForTaskStore.__eterxTaskCache ||
-  (globalForTaskStore.__eterxTaskCache = new Map());
+const taskCache: Map<string, PersistedTask> = new Map();
 
 async function ensureDir() {
   await fs.ensureDir(TASKS_DIR);
@@ -78,20 +67,16 @@ function compactTraceEvent(traceEvent: any): any {
   }
 
   if (traceEvent.type === 'console_output') {
-    const { output, content, ...rest } = traceEvent;
-    const outputText = String(output ?? content ?? '');
-    const compactedOutput = outputText.length > 2500
-      ? `${outputText.substring(0, 2500)}\n...[output compacted]`
-      : outputText;
+    const { output, ...rest } = traceEvent;
+    const outputText = String(output || '');
     return {
       ...rest,
-      output: compactedOutput,
-      content: compactedOutput,
+      output: outputText.length > 2500 ? `${outputText.substring(0, 2500)}\n...[output compacted]` : outputText,
       _contentStripped: outputText.length > 2500,
     };
   }
 
-  if (traceEvent.type === 'thought_stream' && typeof traceEvent.text === 'string' && traceEvent.text.length > 12000) {
+  if ((traceEvent.type === 'thought_stream' || traceEvent.type === 'work_note') && typeof traceEvent.text === 'string' && traceEvent.text.length > 12000) {
     return {
       ...traceEvent,
       text: `${traceEvent.text.substring(0, 12000)}\n...[trace compacted]`,
@@ -215,7 +200,7 @@ export const taskStore = {
         }
       }
     } else if (timedEvent?.type === 'work_note') {
-      const noteText = formatVisibleWorkNote(String(timedEvent.text || ''));
+      const noteText = String(timedEvent.text || '').trim();
       if (!noteText) return;
       const noteId = timedEvent.noteId || null;
       const subAgent = timedEvent.subAgent || null;

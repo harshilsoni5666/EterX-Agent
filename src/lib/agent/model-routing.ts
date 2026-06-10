@@ -17,8 +17,8 @@
 
 import { getRuntimeModelOverrides } from './runtime-api-keys';
 
-export type MainAgentProvider = 'gemini' | 'mistral' | 'openai' | 'openrouter' | 'anthropic';
-export type MainAgentMode = 'think' | 'fast' | 'mistral' | 'openai' | 'openrouter' | 'anthropic';
+export type MainAgentProvider = 'gemini' | 'mistral' | 'openai' | 'openrouter' | 'anthropic' | 'groq';
+export type MainAgentMode = 'think' | 'fast' | 'mistral' | 'openai' | 'openrouter' | 'anthropic' | 'groq';
 export type MainAgentThinkingLevel = 'low' | 'high';
 
 export type MainAgentModelConfig = {
@@ -84,6 +84,13 @@ export const ANTHROPIC_FALLBACK_CHAIN: readonly string[] = [
   'claude-opus-4-7',
 ];
 
+export const GROQ_FALLBACK_CHAIN: readonly string[] = [
+  'openai/gpt-oss-120b',
+  'llama-3.3-70b-versatile',
+  'groq/compound',
+  'groq/compound-mini',
+];
+
 // ─── Proven model cache — survives the entire process lifetime ────────────────
 // When a model call succeeds, we record it here so the next call uses the proven name.
 const _provenModels: Map<string, string> = new Map();
@@ -133,6 +140,10 @@ export function resolveModelName(mode: MainAgentMode): string {
       if (overrides.anthropic) return overrides.anthropic;
       return getProvenModel('anthropic') || ANTHROPIC_FALLBACK_CHAIN[0];
     }
+    case 'groq': {
+      if (overrides.groq) return overrides.groq;
+      return getProvenModel('groq') || GROQ_FALLBACK_CHAIN[0];
+    }
     default:
       return GEMINI_THINK_FALLBACK_CHAIN[0];
   }
@@ -167,6 +178,10 @@ export function getFallbackChain(mode: MainAgentMode): string[] {
     }
     case 'anthropic': {
       const chain = ANTHROPIC_FALLBACK_CHAIN.filter(m => m !== primary);
+      return [primary, ...chain];
+    }
+    case 'groq': {
+      const chain = GROQ_FALLBACK_CHAIN.filter(m => m !== primary);
       return [primary, ...chain];
     }
     default:
@@ -245,6 +260,14 @@ export const MAIN_AGENT_MODE_CONFIG: Record<MainAgentMode, MainAgentModelConfig>
     label: 'Claude Opus 4.8',
     compactLabel: 'Claude',
     get modelName() { return resolveModelName('anthropic'); },
+    selectable: true,
+  },
+  groq: {
+    id: 'groq',
+    provider: 'groq',
+    label: 'Groq',
+    compactLabel: 'Groq',
+    get modelName() { return resolveModelName('groq'); },
     selectable: true,
   },
 };
