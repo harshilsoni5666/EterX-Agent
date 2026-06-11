@@ -3680,6 +3680,22 @@ function DeepWorkUI() {
                   </button>
                 )}
               </div>
+              {!sidebarOpen && activeView === 'chat' && !buildingAgentId && (
+                <Tooltip text="New chat" side="bottom">
+                  <button
+                    type="button"
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onClick={() => {
+                      createNewChat();
+                      setActiveView('chat');
+                    }}
+                    aria-label="New chat"
+                    className="group flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-transparent bg-transparent text-[var(--sidebar-muted-text)] transition-colors duration-150 hover:bg-[var(--sidebar-toggle-hover-bg)] hover:text-[var(--sidebar-hover-text)] active:bg-[var(--sidebar-toggle-active-bg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--sidebar-focus-ring)]"
+                  >
+                    <SquarePen className="h-[17px] w-[17px]" strokeWidth={2.15} />
+                  </button>
+                </Tooltip>
+              )}
               {(() => {
                   if ((activeView === 'agents' && !buildingAgentId) || activeView === 'channels' || activeView === 'projects') return null;
                 const activeChat = activeChatId ? chats.find(c => c.id === activeChatId) : null;
@@ -4258,7 +4274,7 @@ function DeepWorkUI() {
           transform: translateZ(0);
           will-change: opacity;
           filter: saturate(0.42) brightness(0.76);
-          clip-path: inset(0 0 0 0 round 0 0 0 var(--eterx-shell-radius));
+          clip-path: inset(0 0 0 0 round 0 0 0 var(--eterx-main-panel-left-radius, var(--eterx-shell-radius)));
           -webkit-mask-image: linear-gradient(180deg, transparent 0%, rgba(0, 0, 0, 0.12) 14%, rgba(0, 0, 0, 0.82) 32%, #000 100%);
           mask-image: linear-gradient(180deg, transparent 0%, rgba(0, 0, 0, 0.12) 14%, rgba(0, 0, 0, 0.82) 32%, #000 100%);
           background:

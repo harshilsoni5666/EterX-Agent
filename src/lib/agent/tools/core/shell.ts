@@ -22,6 +22,90 @@ function isPathInsideOrEqual(parentPath: string, candidatePath: string): boolean
 }
 
 /**
+ * Auto-detect if a command starts with 'cd "path"; actual_command' or 'cd path && actual_command'
+ * and extract the directory and the real command.
+ * This prevents the most common agent mistake: using cd in a shell command string
+ * instead of the workingDir parameter.
+ */
+function extractCdPrefix(command: string): { directory: string; command: string } | null {
+  const cdPatterns = [
+    /^cd\s+"([^"]+)"\s*[;&]+\s*(.+)$/is,
+    /^cd\s+'([^']+)'\s*[;&]+\s*(.+)$/is,
+    /^cd\s+"([^"]+)"\s*&&\s*(.+)$/is,
+    /^cd\s+'([^']+)'\s*&&\s*(.+)$/is,
+    /^cd\s+(\S+)\s*[;&]+\s*(.+)$/is,
+    /^cd\s+(\S+)\s*&&\s*(.+)$/is,
+  ];
+  for (const pattern of cdPatterns) {
+    const match = pattern.exec(command.trim());
+    if (match) {
+      return { directory: match[1].trim(), command: match[2].trim() };
+    }
+  }
+  return null;
+}
+
+/**
+ * Translate common Unix shell commands to PowerShell equivalents.
+ * This prevents failures when the agent generates Unix syntax on Windows.
+ */
+function translateUnixToWindows(command: string): string {
+  let cmd = command;
+
+  // mkdir -p path1 path2 ... -> New-Item -ItemType Directory -Force -Path "path1","path2",...
+  const mkdirMatch = /^mkdir\s+-p\s+(.+)$/i.exec(cmd.trim());
+  if (mkdirMatch) {
+    const rawPaths = mkdirMatch[1];
+    // Split on spaces or commas, respecting quotes
+    const paths = rawPaths.match(/"[^"]+"|'[^']+'|\S+/g) || [];
+    const cleaned = paths.map(p => p.replace(/^["']|["']$/g, ''));
+    const quoted = cleaned.map(p => `"${p}"`).join(', ');
+    return `New-Item -ItemType Directory -Force -Path ${quoted}`;
+  }
+
+  // rm -rf path -> Remove-Item -Recurse -Force "path"
+  const rmrfMatch = /^rm\s+(-rf|-r\s+-f|-f\s+-r)\s+(.+)$/i.exec(cmd.trim());
+  if (rmrfMatch) {
+    const target = rmrfMatch[2].trim().replace(/^["']|["']$/g, '');
+    return `Remove-Item -Recurse -Force "${target}"`;
+  }
+
+  // touch path -> New-Item -ItemType File -Force -Path "path"
+  const touchMatch = /^touch\s+(.+)$/i.exec(cmd.trim());
+  if (touchMatch) {
+    const target = touchMatch[1].trim().replace(/^["']|["']$/g, '');
+    return `New-Item -ItemType File -Force -Path "${target}"`;
+  }
+
+  // cat file -> Get-Content file
+  const catMatch = /^cat\s+(.+)$/i.exec(cmd.trim());
+  if (catMatch) {
+    return `Get-Content ${catMatch[1]}`;
+  }
+
+  return cmd;
+}
+
+/**
+ * Detect if a command is a long-running install/build that needs a longer timeout.
+ * Returns the recommended timeout in seconds, or 0 if default is fine.
+ */
+function detectLongRunningTimeout(command: string): number {
+  const lower = command.toLowerCase().trim();
+  // Package installs — almost always take >30s
+  if (/\b(npm\s+(install|ci|i)\b|yarn\s*(install)?\b|pnpm\s+(install|i)\b|bun\s+install\b)/i.test(lower)) return 120;
+  if (/\b(pip\s+install|pip3\s+install|poetry\s+install|pipenv\s+install)/i.test(lower)) return 120;
+  if (/\b(cargo\s+(build|install)|rustup)/i.test(lower)) return 120;
+  if (/\b(dotnet\s+(build|restore|publish))/i.test(lower)) return 120;
+  if (/\b(mvn\s+(install|package|compile)|gradle\s+(build|assemble))/i.test(lower)) return 120;
+  // Full project builds
+  if (/\b(npm\s+run\s+build|yarn\s+build|pnpm\s+build|next\s+build|vite\s+build|tsc\b)/i.test(lower)) return 120;
+  // npm create / npx scaffolding
+  if (/\b(npm\s+create|npx\s)/i.test(lower)) return 120;
+  return 0;
+}
+
+/**
  * Enhanced System Shell — v2.0
  * 
  * Major upgrades over v1:
@@ -36,13 +120,19 @@ function isPathInsideOrEqual(parentPath: string, candidatePath: string): boolean
  */
 export const shellTool: ToolDefinition = {
   name: 'system_shell',
-  description: `Execute finite one-shot shell commands on the host OS with a configurable timeout (default 30s, max 2 minutes). Supports custom working directories, environment variables, multi-command chaining, output truncation for large outputs, and execution timing. Runs in PowerShell by default. Use process_manager/background_task plus wait_timer for long-running servers, watchers, or interactive processes.
+  description: `Execute finite one-shot shell commands on the host OS (Windows/PowerShell). Supports custom working directories, environment variables, multi-command chaining, output truncation, and execution timing.
+
+  CRITICAL RULES:
+  - NEVER prefix commands with "cd path;". Use the workingDir parameter instead. cd prefixes are auto-stripped but waste cycles.
+  - This is PowerShell on Windows. Common Unix commands (mkdir -p, rm -rf, touch, cat) are auto-translated, but prefer native PowerShell for complex cases.
+  - Install commands (npm install, pip install, cargo build, etc.) auto-get 120s timeout — no need to set timeoutSeconds.
+  - For dev servers, watchers, or anything that runs forever: use process_manager/background_task + wait_timer.
+  - For installs that STILL time out at 120s: use background_task mode="launch" with the same command.
   
   Pro tips:
   - Chain commands: "npm install && npm run build"
-  - Custom directory: set workingDir to run in a specific folder
-  - Long-running commands: use process_manager/background_task and wait_timer instead of system_shell
-  - Use shellType "cmd" for native Windows commands`,
+  - Custom directory: set workingDir to the ABSOLUTE PATH of the target folder
+  - Use shellType "cmd" for native Windows batch commands`,
   category: 'core',
   inputSchema: z.object({
     command: z.string().describe('The shell command to execute'),
@@ -62,11 +152,39 @@ export const shellTool: ToolDefinition = {
   }),
   execute: async (input: { command: string, workingDir?: string, shellType?: string, env?: Record<string, string> | string, timeoutSeconds?: number, timeoutMs?: number }, context?: any) => {
     const startTime = Date.now();
-    const timeoutMs = normalizeTimeoutMs(input.timeoutSeconds ?? input.timeoutMs);
+
+    // === AUTO-CWD EXTRACTION ===
+    // Detect "cd path; command" pattern and extract workingDir automatically
+    let effectiveCommand = input.command;
+    let effectiveWorkingDir = input.workingDir;
+    const cdExtraction = extractCdPrefix(effectiveCommand);
+    if (cdExtraction) {
+      console.log(`[Tool: system_shell] Auto-extracted cd prefix: dir="${cdExtraction.directory}", cmd="${cdExtraction.command.substring(0, 80)}"`);
+      effectiveCommand = cdExtraction.command;
+      if (!effectiveWorkingDir) {
+        effectiveWorkingDir = cdExtraction.directory;
+      }
+    }
+
+    // === CROSS-PLATFORM TRANSLATION ===
+    if (process.platform === 'win32' && input.shellType !== 'cmd') {
+      const translated = translateUnixToWindows(effectiveCommand);
+      if (translated !== effectiveCommand) {
+        console.log(`[Tool: system_shell] Auto-translated Unix->Windows: "${effectiveCommand.substring(0, 60)}" -> "${translated.substring(0, 60)}"`);
+        effectiveCommand = translated;
+      }
+    }
+
+    // === SMART TIMEOUT ===
+    const autoTimeout = detectLongRunningTimeout(effectiveCommand);
+    const explicitTimeout = input.timeoutSeconds ?? input.timeoutMs;
+    const timeoutMs = autoTimeout > 0 && !explicitTimeout
+      ? normalizeTimeoutMs(autoTimeout)
+      : normalizeTimeoutMs(explicitTimeout);
 
     try {
       // Resolve working directory against the selected/pinned workspace.
-      const cwd = resolveWorkspaceDirectoryForContext(input.workingDir, context);
+      const cwd = resolveWorkspaceDirectoryForContext(effectiveWorkingDir, context);
       // === EterX SOURCE PROTECTION ===
       // Block shell commands from running inside protected EterX directories
       const eterxRootPath = process.cwd();
@@ -87,7 +205,7 @@ export const shellTool: ToolDefinition = {
       }
 
       // Block commands that target EterX source files via redirection
-      const cmd = input.command;
+      const cmd = effectiveCommand;
       const cmdLower = cmd.toLowerCase().replace(/\\/g, '/');
       const EterXSrcPath = `${ EterXRoot }/src`.toLowerCase();
 
@@ -109,8 +227,8 @@ export const shellTool: ToolDefinition = {
 
       const shellExe = input.shellType === 'cmd' ? 'cmd.exe' : 'powershell.exe';
       const command = shellExe === 'powershell.exe'
-        ? input.command.replace(/\[Environment\]::GetFolderPath\(\s*Desktop\s*\)/g, "[Environment]::GetFolderPath('Desktop')")
-        : input.command;
+        ? effectiveCommand.replace(/\[Environment\]::GetFolderPath\(\s*Desktop\s*\)/g, "[Environment]::GetFolderPath('Desktop')")
+        : effectiveCommand;
 
       if (referencesDesktopHelperScript(command, cwd)) {
         return {

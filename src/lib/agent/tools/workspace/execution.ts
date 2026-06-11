@@ -19,14 +19,30 @@ const execAsync = promisify(exec);
 
 import { referencesDesktopHelperScript } from '../shared/desktop_guard';
 
+/**
+ * Detect if a command is a long-running install/build that needs a longer timeout.
+ * Returns recommended timeout in seconds, or 0 if default is fine.
+ */
+function detectInstallTimeout(command: string): number {
+  const lower = command.toLowerCase().trim();
+  if (/\b(npm\s+(install|ci|i)\b|yarn\s*(install)?\b|pnpm\s+(install|i)\b|bun\s+install\b)/i.test(lower)) return 120;
+  if (/\b(pip\s+install|pip3\s+install|poetry\s+install|pipenv\s+install)/i.test(lower)) return 120;
+  if (/\b(cargo\s+(build|install)|rustup)/i.test(lower)) return 120;
+  if (/\b(dotnet\s+(build|restore|publish))/i.test(lower)) return 120;
+  if (/\b(mvn\s+(install|package|compile)|gradle\s+(build|assemble))/i.test(lower)) return 120;
+  if (/\b(npm\s+run\s+build|yarn\s+build|pnpm\s+build|next\s+build|vite\s+build|tsc\b)/i.test(lower)) return 120;
+  if (/\b(npm\s+create|npx\s)/i.test(lower)) return 120;
+  return 0;
+}
+
 export const workspaceRunCommandTool: ToolDefinition = {
   name: 'workspace_run_command',
-  description: 'Execute a finite shell command inside any directory with streamed output and a configurable timeout (default 30s, max 2 minutes). Supports absolute paths and relative workspace paths. Use process_manager/background_task plus wait_timer for long-running servers, watchers, or builds.',
+  description: 'Execute a finite shell command inside any directory with streamed output and a configurable timeout (default 30s, max 2 min). Install/build commands (npm install, pip install, cargo build, etc.) auto-get 120s timeout. Supports absolute paths and relative workspace paths. NEVER use "cd path;" prefix — use the cwd parameter instead. Use process_manager/background_task plus wait_timer for long-running servers, watchers, or builds that exceed 2 minutes.',
   category: 'workspace',
   inputSchema: z.object({
-    command: z.string().describe('The command to execute (e.g., "npm test", "ls -la")'),
-    timeoutSeconds: z.number().optional().describe('Optional command timeout in seconds. Default: 30 seconds. Max: 120 seconds.'),
-    cwd: z.string().optional().describe('Working directory — absolute path or relative to workspace root. Default: workspace root')
+    command: z.string().describe('The command to execute (e.g., "npm test", "ls -la"). Do NOT prefix with "cd path;"'),
+    timeoutSeconds: z.number().optional().describe('Optional command timeout in seconds. Default: 30 seconds. Max: 120 seconds. Auto-set to 120s for install/build commands.'),
+    cwd: z.string().optional().describe('Working directory — ABSOLUTE PATH preferred, or relative to workspace root. Default: workspace root')
   }),
   outputSchema: z.object({
     stdout: z.string(),
@@ -38,7 +54,13 @@ export const workspaceRunCommandTool: ToolDefinition = {
   }),
   execute: async (input: { command: string, cwd?: string, timeoutSeconds?: number, timeoutMs?: number }, context: any) => {
     const runDir = resolveWorkspaceDirectoryForContext(input.cwd, context);
-    const timeoutMs = normalizeTimeoutMs(input.timeoutSeconds ?? input.timeoutMs);
+
+    // Smart timeout: auto-detect install/build commands
+    const autoTimeout = detectInstallTimeout(input.command);
+    const explicitTimeout = input.timeoutSeconds ?? input.timeoutMs;
+    const timeoutMs = autoTimeout > 0 && !explicitTimeout
+      ? normalizeTimeoutMs(autoTimeout)
+      : normalizeTimeoutMs(explicitTimeout);
 
     const portableSampling = getPortableSamplingRequest(input.command);
     if (portableSampling) {

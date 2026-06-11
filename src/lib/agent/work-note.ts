@@ -16,7 +16,7 @@ const PROMPT_TAGS = [
   'core_identity',
 ];
 
-const PROMPT_TAG_PATTERN = new RegExp(`<\\/?(?:${PROMPT_TAGS.join('|')})[^>]*>`, 'gi');
+const PROMPT_TAG_PATTERN = new RegExp(`<\\/?(?:${ PROMPT_TAGS.join('|') })[^>]*>`, 'gi');
 
 const PROMPT_MARKER_PATTERN =
   /\[(?:CURRENT USER REQUEST(?:\s*-\s*EXECUTE ONLY THIS)?|END CURRENT USER REQUEST|SYSTEM\s*-\s*(?:WORKING MEMORY|COMPRESSED HISTORY|SELF-REFLECTION)|END COMPRESSED HISTORY|META-COGNITIVE ALERT)[^\]]*\]/gi;
@@ -28,7 +28,7 @@ const PROMPT_HEADING_PATTERN =
   /^(?:#+\s*)?(?:CURRENT REQUEST GUARD|EXTERNAL ACTION NOTE CUE|UI TRACE PROTOCOL|WORK NOTES|VISIBLE WORK NOTES|RUNTIME SAFETY GUARDRAILS|EFFICIENCY GUIDELINES|ENVIRONMENT CONTEXT|OPERATING RULES|SAFETY RULES|COMPLETION CRITERIA|TOOL PROTOCOL|REQUEST CONTRACT|CORE IDENTITY|TEMPORAL CONTEXT|TRUTHFUL EXECUTION|FILESYSTEM|AUTONOMOUS EXECUTION PROTOCOL|INTELLIGENT AUTONOMY)\b/i;
 
 const PROMPT_LINE_PATTERN =
-  /^(?:instruction priority|current user request|memory\/session\/tool summaries|memory, session summaries|conversation history|tool history|review the tool memory|continue to the next pending step|every tool call must include|use exact eterx tool names|before a tool call|visible work notes are|work notes are|the latest user request|use the current request|these rules are enforced|your tool calls are rendered|decide intelligently whether|if a new action phase|if this is a continuation|if you are ready to answer|this is guidance|create a new note only|the note should sound|use the formula|mention what you just saw|keep it realistic|long notes are not needed|convert action labels|strong codex-style|weak style to avoid|do not expose chain-of-thought|do not create a 1 note|never start with dangling|never turn a work note)\b/i;
+  /^(?:instruction priority|current user request|memory\/session\/tool summaries|memory, session summaries|conversation history|tool history|review the tool memory|continue to the next pending step|every tool call must include|use exact eterx tool names|before a tool call|visible work notes are|work notes are|the latest user request|use the current request|these rules are enforced|your tool calls are rendered|decide intelligently whether|if a new action phase|if this is a continuation|if you are ready to answer|this is guidance|create a new note only|the note should sound|use the formula|mention what you just saw|keep it realistic|long notes are not needed|convert action labels|strong |weak style to avoid|do not expose chain-of-thought|do not create a 1 note|never start with dangling|never turn a work note)\b/i;
 
 const DIRECTIVE_LINE_PATTERN =
   /^(?:you are|your behavior|you execute|you run|the task may require|classify each request|ask only for|read before editing|prefer the repository|keep changes scoped|preserve unrelated|treat all external|no placeholders|for shared behavior|when a command fails|maintain a compact|for debugging|for reviews|inspection:|editing:|commands and verification:|research:|use file_read|use file_create|use file_edit|use dev servers|build the actual|avoid generic|for ui changes|current date\/time|timezone:|operating system:|workspace:|available tools:)\b/i;

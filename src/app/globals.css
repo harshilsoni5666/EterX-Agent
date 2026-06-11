@@ -101,12 +101,12 @@
     --accent-foreground: #ffffff;
 
     --input-bg: #1A1A1A;
-    --sidebar-bg: #1A2024;
-    --sidebar-shell-bg: #1A2024;
+    --sidebar-bg: #101010;
+    --sidebar-shell-bg: #101010;
     --sidebar-shell-border: rgba(255, 255, 255, 0.06);
     --sidebar-shell-shadow: none;
-    --sidebar-shell-sheen: linear-gradient(90deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.014) 34%, transparent 100%);
-    --sidebar-glow-start: clamp(320px, 36vh, 430px);
+    --sidebar-shell-sheen: linear-gradient(90deg, rgba(255, 255, 255, 0.036), rgba(255, 255, 255, 0.012) 34%, transparent 100%);
+    --sidebar-glow-start: 0px;
     --eterx-main-panel-border: rgba(255, 255, 255, 0.085);
     --sidebar-shell-radius: 24px;
     --eterx-shell-sidebar-width: 256px;
@@ -119,8 +119,8 @@
     --sidebar-surface-bg: rgba(255, 255, 255, 0.035);
     --sidebar-surface-border: rgba(255, 255, 255, 0.07);
     --sidebar-surface-shadow: 0 8px 24px rgba(0, 0, 0, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.045);
-    --sidebar-profile-bg: rgba(26, 32, 36, 0.92);
-    --sidebar-menu-bg: rgba(29, 36, 40, 0.96);
+    --sidebar-profile-bg: rgba(15, 15, 15, 0.96);
+    --sidebar-menu-bg: rgba(18, 18, 18, 0.96);
     --sidebar-menu-border: rgba(255, 255, 255, 0.08);
     --sidebar-menu-shadow: 0 18px 44px rgba(0, 0, 0, 0.40), inset 0 1px 0 rgba(255, 255, 255, 0.07);
     --sidebar-text: #D2CEC5;
@@ -136,7 +136,7 @@
     --sidebar-active-text: #F1ECE4;
     --sidebar-active-shadow: 0 8px 20px rgba(0, 0, 0, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.09);
     --sidebar-active-accent: linear-gradient(180deg, #E5DED4 0%, #AFA79B 100%);
-    --sidebar-active-fade: rgba(26, 32, 36, 0.96);
+    --sidebar-active-fade: rgba(15, 15, 15, 0.96);
     --sidebar-hover-bg: rgba(255, 255, 255, 0.078);
     --sidebar-hover-border: rgba(255, 255, 255, 0.075);
     --sidebar-hover-text: #F1ECE4;
@@ -170,13 +170,40 @@
   }
 
   .eterx-app-shell {
-    background: var(--background);
+    background: var(--sidebar-bg);
     color: var(--foreground);
   }
 
   .eterx-workspace-shell {
+    --eterx-main-panel-left-radius: 18px;
+    position: relative;
     background: var(--sidebar-bg) !important;
     padding-top: var(--eterx-shell-topbar-height);
+  }
+
+  .eterx-app-shell[data-sidebar-open="true"] .eterx-workspace-shell {
+    margin-left: -8px;
+  }
+
+  .eterx-app-shell[data-sidebar-open="true"] .eterx-workspace-shell::before {
+    content: "";
+    position: absolute;
+    left: -10px;
+    top: var(--eterx-shell-topbar-height);
+    bottom: 0;
+    z-index: 0;
+    width: calc(var(--eterx-main-panel-left-radius) + 10px);
+    pointer-events: none;
+    background:
+      var(--sidebar-shell-sheen),
+      var(--sidebar-bg);
+    background-size: 180% 100%, 100% 100%;
+    border-top-right-radius: var(--eterx-main-panel-left-radius);
+    border-bottom-right-radius: var(--eterx-main-panel-left-radius);
+  }
+
+  .eterx-app-shell[data-sidebar-open="false"] .eterx-workspace-shell::before {
+    display: none;
   }
 
   .eterx-sidebar-closed-toggle-shell {
@@ -271,10 +298,11 @@
   .eterx-main-panel {
     isolation: isolate;
     position: relative;
+    z-index: 1;
     background: var(--background);
     border: 1px solid var(--eterx-main-panel-border);
-    border-top-left-radius: var(--eterx-shell-radius);
-    border-bottom-left-radius: var(--eterx-shell-radius);
+    border-top-left-radius: var(--eterx-main-panel-left-radius);
+    border-bottom-left-radius: var(--eterx-main-panel-left-radius);
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035), 0 0 0 1px rgba(0, 0, 0, 0.10);
     transition: background 900ms ease, border-color 900ms ease, box-shadow 900ms ease;
   }
@@ -3387,6 +3415,7 @@
   .eterx-sidebar-shell {
     border-top-right-radius: 0 !important;
     border-bottom-right-radius: 0 !important;
+    margin-right: -8px;
   }
 
   .eterx-sidebar-sheen {
@@ -3395,8 +3424,8 @@
   }
 
   .eterx-main-panel {
-    border-top-left-radius: var(--eterx-shell-radius);
-    border-bottom-left-radius: var(--eterx-shell-radius);
+    border-top-left-radius: var(--eterx-main-panel-left-radius);
+    border-bottom-left-radius: var(--eterx-main-panel-left-radius);
   }
 
   .eterx-app-shell[data-sidebar-open="false"] .eterx-main-panel {
@@ -3531,6 +3560,33 @@
   padding-left: 0;
 }
 
+.eterx-sidebar-chat-content {
+  -webkit-mask-image: linear-gradient(90deg, #000 0%, #000 100%);
+  mask-image: linear-gradient(90deg, #000 0%, #000 100%);
+  transition: -webkit-mask-image 150ms ease, mask-image 150ms ease;
+}
+
+.eterx-sidebar-chat-content-working {
+  padding-right: 2.75rem;
+}
+
+.eterx-sidebar-chat-content-working .eterx-sidebar-chat-title {
+  max-width: 100%;
+}
+
+.eterx-sidebar-chat-row:hover .eterx-sidebar-chat-content,
+.eterx-sidebar-chat-content-menu-visible {
+  -webkit-mask-image: linear-gradient(90deg, #000 0%, #000 calc(100% - 4.5rem), rgba(0, 0, 0, 0.18) calc(100% - 2.7rem), transparent calc(100% - 1.35rem));
+  mask-image: linear-gradient(90deg, #000 0%, #000 calc(100% - 4.5rem), rgba(0, 0, 0, 0.18) calc(100% - 2.7rem), transparent calc(100% - 1.35rem));
+}
+
+.eterx-sidebar-shell .eterx-sidebar-chat-menu-button,
+.eterx-sidebar-shell .eterx-sidebar-chat-menu-button:hover,
+.eterx-sidebar-shell .eterx-sidebar-chat-menu-button:active {
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
 .eterx-sidebar-chat-active .eterx-sidebar-chat-title {
   background: none !important;
   color: var(--sidebar-active-text) !important;
@@ -3580,7 +3636,7 @@
 }
 
 .eterx-sidebar-chat-working .eterx-sidebar-working-fade {
-  background: transparent !important;
+  background: linear-gradient(to left, var(--sidebar-bg) 0%, color-mix(in srgb, var(--sidebar-bg) 92%, transparent) 54%, transparent 100%) !important;
 }
 
 :root[data-theme="dark"] .eterx-sidebar-chat-working .eterx-sidebar-chat-title {
@@ -4781,26 +4837,43 @@
 /* ── Ambient Glow Sheen Styles ── */
 .ambient-glow-layer {
   pointer-events: none;
-  mix-blend-mode: plus-lighter;
+  mix-blend-mode: screen;
   transition: opacity 3000ms cubic-bezier(0.4, 0, 0.2, 1);
+  -webkit-mask-image: linear-gradient(180deg, transparent 0%, rgba(0, 0, 0, 0.045) 12%, rgba(0, 0, 0, 0.30) 30%, rgba(0, 0, 0, 0.80) 58%, #000 100%);
+  mask-image: linear-gradient(180deg, transparent 0%, rgba(0, 0, 0, 0.045) 12%, rgba(0, 0, 0, 0.30) 30%, rgba(0, 0, 0, 0.80) 58%, #000 100%);
 }
 
 :root[data-theme="dark"] .ambient-glow-idle {
-  background: radial-gradient(ellipse at 100% 46%, rgba(14, 165, 233, 0.16) 0%, rgba(16, 185, 129, 0.08) 38%, transparent 72%);
-  animation: ambientPulse 8s ease-in-out infinite alternate;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.020) 0%, rgba(255, 255, 255, 0.012) 42%, rgba(255, 255, 255, 0.016) 100%),
+    radial-gradient(ellipse at 104% 34%, rgba(255, 255, 255, 0.020) 0%, rgba(255, 255, 255, 0.009) 34%, transparent 64%),
+    radial-gradient(ellipse at 112% 52%, rgba(21, 58, 178, 0.064) 0%, rgba(21, 58, 178, 0.026) 36%, transparent 70%),
+    radial-gradient(ellipse at 104% 68%, rgba(16, 92, 210, 0.078) 0%, rgba(16, 92, 210, 0.032) 38%, transparent 72%),
+    radial-gradient(ellipse at 96% 84%, rgba(18, 130, 92, 0.070) 0%, rgba(18, 130, 92, 0.028) 38%, transparent 74%),
+    radial-gradient(ellipse at 112% 104%, rgba(84, 255, 190, 0.038) 0%, rgba(84, 255, 190, 0.014) 34%, transparent 70%);
+  background-size: 100% 100%, 100% 100%, 126% 100%, 138% 100%, 132% 100%, 124% 100%;
+  animation: ambientSidebarCycle 16s ease-in-out infinite;
 }
 
 :root[data-theme="dark"] .ambient-glow-thinking {
-  background: radial-gradient(ellipse at 100% 46%, rgba(14, 165, 233, 0.20) 0%, rgba(16, 185, 129, 0.10) 42%, transparent 74%);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.028) 0%, rgba(255, 255, 255, 0.016) 42%, rgba(255, 255, 255, 0.022) 100%),
+    radial-gradient(ellipse at 104% 34%, rgba(255, 255, 255, 0.026) 0%, rgba(255, 255, 255, 0.011) 34%, transparent 64%),
+    radial-gradient(ellipse at 112% 52%, rgba(22, 62, 196, 0.086) 0%, rgba(22, 62, 196, 0.032) 36%, transparent 70%),
+    radial-gradient(ellipse at 104% 68%, rgba(28, 84, 220, 0.108) 0%, rgba(28, 84, 220, 0.040) 38%, transparent 72%),
+    radial-gradient(ellipse at 96% 84%, rgba(18, 148, 104, 0.088) 0%, rgba(18, 148, 104, 0.032) 38%, transparent 74%),
+    radial-gradient(ellipse at 112% 104%, rgba(84, 255, 190, 0.050) 0%, rgba(84, 255, 190, 0.017) 34%, transparent 70%);
+  background-size: 100% 100%, 100% 100%, 126% 100%, 138% 100%, 132% 100%, 124% 100%;
+  animation: ambientSidebarCycle 13s ease-in-out infinite;
 }
 
 :root[data-theme="light"] .ambient-glow-idle {
-  background: radial-gradient(ellipse at 100% 46%, rgba(14, 165, 233, 0.09) 0%, rgba(16, 185, 129, 0.045) 42%, transparent 74%);
+  background: radial-gradient(ellipse at 100% 46%, rgba(92, 92, 86, 0.06) 0%, rgba(126, 126, 118, 0.034) 42%, transparent 76%);
   animation: ambientPulse 8s ease-in-out infinite alternate;
 }
 
 :root[data-theme="light"] .ambient-glow-thinking {
-  background: radial-gradient(ellipse at 100% 46%, rgba(14, 165, 233, 0.12) 0%, rgba(16, 185, 129, 0.055) 42%, transparent 74%);
+  background: radial-gradient(ellipse at 100% 46%, rgba(92, 92, 86, 0.08) 0%, rgba(126, 126, 118, 0.044) 42%, transparent 76%);
 }
 
 @keyframes ambientPulse {
@@ -4809,5 +4882,28 @@
   }
   100% {
     opacity: 1;
+  }
+}
+
+@keyframes ambientSidebarCycle {
+  0%, 100% {
+    opacity: 0.72;
+    background-position: 0 0, 0 0, 42% 0, 34% 0, 100% 0, 78% 0;
+    filter: hue-rotate(0deg) saturate(0.9);
+  }
+  26% {
+    opacity: 0.86;
+    background-position: 0 0, 0 0, 12% 0, 0% 0, 70% 0, 46% 0;
+    filter: hue-rotate(18deg) saturate(1.02);
+  }
+  52% {
+    opacity: 0.80;
+    background-position: 0 0, 0 0, 0% 0, 18% 0, 34% 0, 18% 0;
+    filter: hue-rotate(70deg) saturate(1);
+  }
+  78% {
+    opacity: 0.80;
+    background-position: 0 0, 0 0, 28% 0, 52% 0, 12% 0, 0% 0;
+    filter: hue-rotate(128deg) saturate(0.98);
   }
 }

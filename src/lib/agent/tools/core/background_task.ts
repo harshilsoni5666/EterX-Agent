@@ -132,6 +132,16 @@ Use for: long installs, builds, data processing, file watching, anything that ta
           console.log(`[BackgroundTask] ${task.status === 'completed' ? '✅' : '❌'} ${taskId}: ${task.status}`);
         });
 
+        // Stream partial output so check mode can see progress
+        child.stdout?.on('data', (data: Buffer) => {
+          const text = data.toString();
+          task.output = ((task.output || '') + text).slice(-10000); // Keep last 10KB
+        });
+        child.stderr?.on('data', (data: Buffer) => {
+          const text = data.toString();
+          task.output = ((task.output || '') + '\nSTDERR: ' + text).slice(-10000);
+        });
+
         task.pid = child.pid;
 
         return {
@@ -149,11 +159,19 @@ Use for: long installs, builds, data processing, file watching, anything that ta
         // Check in-memory first
         const task = activeTasks.get(input.taskId);
         if (task) {
+          const elapsed = ((Date.now() - task.startedAt) / 1000).toFixed(1);
+          const partialOutput = task.output || '(no output yet)';
+          const statusHint = task.status === 'running'
+            ? `Still running (${elapsed}s elapsed). Use wait_timer seconds=30 then check again.`
+            : `${task.status}`;
+
           return {
             success: true,
             taskId: input.taskId,
-            output: task.output || 'Still running...',
-            message: `Task ${input.taskId}: ${task.status} | "${task.description}" | Started: ${new Date(task.startedAt).toLocaleTimeString()}${task.completedAt ? ` | Duration: ${((task.completedAt - task.startedAt) / 1000).toFixed(1)}s` : ''}`
+            output: partialOutput,
+            status: task.status,
+            elapsedSeconds: parseFloat(elapsed),
+            message: `Task ${input.taskId}: ${statusHint} | "${task.description}" | Started: ${new Date(task.startedAt).toLocaleTimeString()}${task.completedAt ? ` | Duration: ${((task.completedAt - task.startedAt) / 1000).toFixed(1)}s` : ''}`
           };
         }
 
@@ -165,11 +183,12 @@ Use for: long installs, builds, data processing, file watching, anything that ta
             success: true,
             taskId: input.taskId,
             output: status.output || '',
+            status: status.status,
             message: `Task ${input.taskId}: ${status.status} | "${status.description}"`
           };
         }
 
-        return { success: false, taskId: input.taskId, message: `Task ${input.taskId} not found` };
+        return { success: false, taskId: input.taskId, message: `Task ${input.taskId} not found. Use mode="list" to see all tasks.` };
       }
 
       case 'list': {

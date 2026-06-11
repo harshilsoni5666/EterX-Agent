@@ -1,0 +1,270 @@
+import crypto from 'crypto';
+import os from 'os';
+import path from 'path';
+import fs from 'fs-extra';
+import {
+  SandboxAuditEvent,
+  SandboxCreateInput,
+  SandboxDecision,
+  SandboxNetworkPolicy,
+  SandboxOperation,
+  SandboxSession,
+} from './types';
+
+const DEFAULT_TIMEOUT_MS = 30_000;
+const DEFAULT_MAX_OUTPUT_CHARS = 2 * 1024 * 1024;
+const MAX_SEGMENT_LENGTH = 80;
+
+const SECRET_ENV_PATTERNS = [
+  /api[_-]?key/i,
+  /token/i,
+  /secret/i,
+  /password/i,
+  /credential/i,
+  /private[_-]?key/i,
+  /connection[_-]?string/i,
+];
+
+const DEFAULT_DENY_NAMES = [
+  '.git',
+  '.next',
+  'node_modules',
+  '.env',
+  '.env.local',
+  '.env.production',
+  '.ssh',
+  '.aws',
+  '.azure',
+  '.config',
+];
+
+export function createSandboxSession(input: SandboxCreateInput = {}): SandboxSession {
+  const tenantId = sanitizeSegment(input.tenantId || 'local');
+  const userId = sanitizeSegment(input.userId || 'user');
+  const projectId = sanitizeSegment(input.projectId || 'default');
+  const sessionId = sanitizeSegment(input.sessionId || crypto.randomUUID());
+  const workspaceRoot = path.resolve(input.workspaceRoot || process.cwd());
+  const root = path.resolve(process.cwd(), '.workspaces', 'sandboxes', tenantId, userId, projectId, sessionId);
+  const tempRoot = path.join(root, 'tmp');
+  const auditLogPath = path.join(root, 'audit.jsonl');
+
+  return {
+    id: stableId(tenantId, userId, projectId, sessionId, workspaceRoot),
+    tenantId,
+    userId,
+    projectId,
+    sessionId,
+    mode: input.mode || 'workspace-write',
+    network: input.network || 'deny',
+    workspaceRoot,
+    root,
+    tempRoot,
+    auditLogPath,
+    allowPaths: uniqueResolvedPaths([workspaceRoot, root, tempRoot, ...(input.allowPaths || [])]),
+    denyPaths: uniqueResolvedPaths([...defaultDenyPaths(workspaceRoot), ...(input.denyPaths || [])]),
+    env: sanitizeEnvironment(input.env || {}),
+    maxOutputChars: input.maxOutputChars || DEFAULT_MAX_OUTPUT_CHARS,
+    timeoutMs: input.timeoutMs || DEFAULT_TIMEOUT_MS,
+    createdAt: new Date().toISOString(),
+  };
+}
+
+export async function initializeSandbox(session: SandboxSession): Promise<SandboxSession> {
+  await fs.ensureDir(session.root);
+  await fs.ensureDir(session.tempRoot);
+  await appendSandboxAudit(session, {
+    type: 'sandbox.initialized',
+    mode: session.mode,
+    network: session.network,
+    workspaceRoot: session.workspaceRoot,
+    allowPaths: session.allowPaths,
+  });
+  return session;
+}
+
+export function checkSandboxPath(
+  session: SandboxSession,
+  targetPath: string,
+  operation: SandboxOperation,
+): SandboxDecision {
+  const resolvedPath = path.resolve(targetPath);
+
+  for (const denied of session.denyPaths) {
+    if (isPathInsideOrEqual(denied, resolvedPath)) {
+      return {
+        allowed: false,
+        reason: `Sandbox blocked ${operation}: path is inside denied location ${denied}`,
+        resolvedPath,
+      };
+    }
+  }
+
+  const inAllowedRoot = session.allowPaths.some(root => isPathInsideOrEqual(root, resolvedPath));
+  if (!inAllowedRoot) {
+    return {
+      allowed: false,
+      reason: `Sandbox blocked ${operation}: path is outside allowed roots`,
+      resolvedPath,
+    };
+  }
+
+  if (operation === 'write' && session.mode === 'read-only') {
+    return {
+      allowed: false,
+      reason: 'Sandbox is read-only; write operations are disabled',
+      resolvedPath,
+    };
+  }
+
+  if (operation !== 'read' && session.mode === 'ephemeral' && !isPathInsideOrEqual(session.root, resolvedPath)) {
+    return {
+      allowed: false,
+      reason: 'Ephemeral sandbox can only write or execute inside its session root',
+      resolvedPath,
+    };
+  }
+
+  return { allowed: true, reason: 'allowed', resolvedPath };
+}
+
+export function checkSandboxCommand(session: SandboxSession, command: string, cwd: string): SandboxDecision {
+  const cwdDecision = checkSandboxPath(session, cwd, 'execute');
+  if (!cwdDecision.allowed) return cwdDecision;
+
+  const normalized = command.trim().toLowerCase();
+  const riskyPatterns = [
+    /\brm\s+-rf\b/,
+    /\bdel\s+\/[fsq]/,
+    /\brmdir\s+\/s\b/,
+    /\bformat\b/,
+    /\bdiskpart\b/,
+    /\breg\s+(add|delete|import)\b/,
+    /\bshutdown\b/,
+    /\btaskkill\b/,
+    /\bchmod\s+-r\b/,
+    /\bchown\s+-r\b/,
+  ];
+
+  if (riskyPatterns.some(pattern => pattern.test(normalized))) {
+    return {
+      allowed: false,
+      reason: 'Sandbox blocked command: destructive system-level command pattern',
+      resolvedPath: cwdDecision.resolvedPath,
+    };
+  }
+
+  if (session.network === 'deny' && commandLooksLikeNetworkAccess(command)) {
+    return {
+      allowed: false,
+      reason: 'Sandbox blocked command: network access is disabled',
+      resolvedPath: cwdDecision.resolvedPath,
+    };
+  }
+
+  return { allowed: true, reason: 'allowed', resolvedPath: cwdDecision.resolvedPath };
+}
+
+export function buildSandboxEnv(
+  session: SandboxSession,
+  extraEnv: Record<string, string | undefined> = {},
+  baseEnv: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  const cleanBase = sanitizeEnvironment(baseEnv);
+  const cleanExtra = sanitizeEnvironment(extraEnv);
+  return {
+    ...cleanBase,
+    ...session.env,
+    ...cleanExtra,
+    NODE_ENV: baseEnv.NODE_ENV || 'development',
+    ETERX_SANDBOX_ID: session.id,
+    ETERX_SANDBOX_ROOT: session.root,
+    ETERX_SANDBOX_TEMP: session.tempRoot,
+    ETERX_SANDBOX_MODE: session.mode,
+    ETERX_SANDBOX_NETWORK: session.network,
+    HOME: session.tempRoot,
+    USERPROFILE: session.tempRoot,
+    TMP: session.tempRoot,
+    TEMP: session.tempRoot,
+  };
+}
+
+export async function appendSandboxAudit(session: SandboxSession, event: SandboxAuditEvent): Promise<void> {
+  await fs.ensureDir(path.dirname(session.auditLogPath));
+  await fs.appendFile(
+    session.auditLogPath,
+    `${JSON.stringify({
+      at: new Date().toISOString(),
+      sandboxId: session.id,
+      tenantId: session.tenantId,
+      userId: session.userId,
+      projectId: session.projectId,
+      sessionId: session.sessionId,
+      ...event,
+    })}\n`,
+    'utf8',
+  );
+}
+
+export function isPathInsideOrEqual(parentPath: string, candidatePath: string): boolean {
+  const relative = path.relative(path.resolve(parentPath), path.resolve(candidatePath));
+  return relative === '' || (Boolean(relative) && !relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function commandLooksLikeNetworkAccess(command: string): boolean {
+  const networkTools = /\b(curl|wget|ssh|scp|ftp)\b/i;
+  const networkPackageOps = /\b(npm\s+(install|add|publish)|pnpm\s+(install|add)|yarn\s+(add|install)|pip\s+install|python\s+-m\s+pip\s+install|git\s+(clone|fetch|pull|push)|docker\s+(pull|push|run))\b/i;
+  const powershellNetwork = /\b(invoke-webrequest|iwr|invoke-restmethod|irm)\b/i;
+  return networkTools.test(command) || networkPackageOps.test(command) || powershellNetwork.test(command);
+}
+
+function defaultDenyPaths(workspaceRoot: string): string[] {
+  const home = os.homedir();
+  return [
+    ...DEFAULT_DENY_NAMES.map(name => path.join(workspaceRoot, name)),
+    path.join(home, '.ssh'),
+    path.join(home, '.aws'),
+    path.join(home, '.azure'),
+    path.join(home, '.config'),
+  ];
+}
+
+function sanitizeEnvironment(source: Record<string, string | undefined>): Record<string, string> {
+  const clean: Record<string, string> = {};
+  for (const [key, value] of Object.entries(source)) {
+    if (value === undefined) continue;
+    if (SECRET_ENV_PATTERNS.some(pattern => pattern.test(key))) continue;
+    clean[key] = value;
+  }
+  return clean;
+}
+
+function sanitizeSegment(value: string): string {
+  const sanitized = value
+    .replace(/[^a-zA-Z0-9._-]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^[-.]+|[-.]+$/g, '')
+    .slice(0, MAX_SEGMENT_LENGTH);
+  return sanitized || 'default';
+}
+
+function stableId(tenantId: string, userId: string, projectId: string, sessionId: string, workspaceRoot: string): string {
+  const hash = crypto
+    .createHash('sha256')
+    .update([tenantId, userId, projectId, sessionId, workspaceRoot].join('\0'))
+    .digest('hex')
+    .slice(0, 12);
+  return `sbx_${hash}`;
+}
+
+function uniqueResolvedPaths(paths: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const item of paths) {
+    const resolved = path.resolve(item);
+    const key = process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(resolved);
+  }
+  return result;
+}

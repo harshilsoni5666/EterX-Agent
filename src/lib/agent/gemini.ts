@@ -1,4 +1,4 @@
-import { autoContextManager } from './resilience/auto-context';
+﻿import { autoContextManager } from './resilience/auto-context';
 import { getOrCreateGeminiCache, handleGeminiCacheNotFound, invalidateGeminiCacheForKey } from './gemini-cache';
 import { conversationLedger } from './memory/conversation-ledger';
 import { chatBoundary } from './chat-boundary';
@@ -88,15 +88,15 @@ const MAIN_AGENT_PROMPT_FILES = [
 
 async function buildMainAgentPromptContext(): Promise<string> {
   const referenceRoot = pathLib.resolve(process.cwd(), 'Codign agent', 'eterx-agent-reference');
-  
+
   const statsParts: string[] = [];
   for (const file of MAIN_AGENT_PROMPT_FILES) {
     const filePath = pathLib.join(referenceRoot, 'prompts', file.filename);
     try {
       const stat = await fsExtra.stat(filePath);
-      statsParts.push(`${file.filename}:${stat.size}:${stat.mtimeMs}`);
+      statsParts.push(`${ file.filename }:${ stat.size }:${ stat.mtimeMs }`);
     } catch {
-      statsParts.push(`${file.filename}:missing`);
+      statsParts.push(`${ file.filename }:missing`);
     }
   }
   const cacheKey = statsParts.join('|');
@@ -114,8 +114,8 @@ async function buildMainAgentPromptContext(): Promise<string> {
       content = content.replace(/\r\n/g, '\n').trim();
       if (content) {
         chunks.push([
-          `## ${file.label}`,
-          `Source: prompts/${file.filename}`,
+          `## ${ file.label }`,
+          `Source: prompts/${ file.filename }`,
           content,
         ].join('\n'));
       }
@@ -126,11 +126,11 @@ async function buildMainAgentPromptContext(): Promise<string> {
 
   const value = chunks.length > 0
     ? [
-        '--- ETERX GENERAL MAIN-AGENT CONTEXT & KERNELS ---',
-        'The following instruction kernels and rules apply to your execution. They define tool routing, UI tracing, review gates, autonomy parameters, and evidence requirements. Always prioritize safety rules and the latest user request.',
-        chunks.join('\n\n'),
-        '--- END ETERX GENERAL MAIN-AGENT CONTEXT & KERNELS ---',
-      ].join('\n\n')
+      '--- ETERX GENERAL MAIN-AGENT CONTEXT & KERNELS ---',
+      'The following instruction kernels and rules apply to your execution. They define tool routing, UI tracing, review gates, autonomy parameters, and evidence requirements. Always prioritize safety rules and the latest user request.',
+      chunks.join('\n\n'),
+      '--- END ETERX GENERAL MAIN-AGENT CONTEXT & KERNELS ---',
+    ].join('\n\n')
     : '';
 
   cachedMainAgentPromptContext = { key: cacheKey, value };
@@ -331,7 +331,7 @@ export class GeminiAgentClient {
           const promptTokens = u.promptTokenCount ?? u.inputTokenCount ?? 0;
           const completionTokens = u.candidatesTokenCount ?? u.outputTokenCount ?? 0;
           const totalTokens = u.totalTokenCount ?? (promptTokens + completionTokens);
-          console.log(`[GeminiClient] 📊 Fast Response Token Usage: Input: ${promptTokens} | Output: ${completionTokens} | Total: ${totalTokens}`);
+          console.log(`[GeminiClient] 📊 Fast Response Token Usage: Input: ${ promptTokens } | Output: ${ completionTokens } | Total: ${ totalTokens }`);
         }
 
         const text = String((response as any).text || '').trim() || 'Done.';
@@ -1863,45 +1863,45 @@ export class GeminiAgentClient {
     const tzMinutes = Math.abs(tzOffset % 60);
     const tzSign = tzOffset <= 0 ? '+' : '-';
     const tzName = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Unknown';
-    const tzLabel = `UTC${tzSign}${String(tzHours).padStart(2, '0')}:${String(tzMinutes).padStart(2, '0')} (${tzName})`;
+    const tzLabel = `UTC${ tzSign }${ String(tzHours).padStart(2, '0') }:${ String(tzMinutes).padStart(2, '0') } (${ tzName })`;
     const isoDate = now.toISOString();
 
     const userNameTxt = (context as any).userName &&
       (context as any).userName !== 'Developer' &&
       (context as any).userName !== 'User'
       ? `\n━━━ 💎 PRIORITY IDENTITY 💎 ━━━\n` +
-        `IMPORTANT: The person you are currently serving is "${(context as any).userName}".\n` +
-        `You MUST address them as "${(context as any).userName}" and NO other name.\n` +
-        `If they ask "who am I?", answer "${(context as any).userName}". NEVER use tools to look up a name.\n`
+      `IMPORTANT: The person you are currently serving is "${ (context as any).userName }".\n` +
+      `You MUST address them as "${ (context as any).userName }" and NO other name.\n` +
+      `If they ask "who am I?", answer "${ (context as any).userName }". NEVER use tools to look up a name.\n`
       : '';
 
     const directMainAgentMode = (context as any).disableSubAgents
       ? `\nDIRECT MAIN AGENT MODE\n` +
-        `- Do not spawn sub-agents, background workers, consensus panels, or parallel agents.\n` +
-        `- Complete the current request yourself in this main execution thread.\n` +
-        `- Scope discipline is mandatory: do exactly what the user asked, no more.\n` +
-        `- Stop as soon as the exact requested result is complete.\n`
+      `- Do not spawn sub-agents, background workers, consensus panels, or parallel agents.\n` +
+      `- Complete the current request yourself in this main execution thread.\n` +
+      `- Scope discipline is mandatory: do exactly what the user asked, no more.\n` +
+      `- Stop as soon as the exact requested result is complete.\n`
       : '';
 
     const prefsContext = context.userPreferences && Object.keys(context.userPreferences).length > 0
-      ? `\nLearned Preferences:\n${Object.entries(context.userPreferences).map(([k, v]) => `- ${k}: ${JSON.stringify(v)}`).join('\n')}`
+      ? `\nLearned Preferences:\n${ Object.entries(context.userPreferences).map(([k, v]) => `- ${ k }: ${ JSON.stringify(v) }`).join('\n') }`
       : '';
 
     const errorContext = context.errorHistory && context.errorHistory.length > 0
-      ? `\nRecent Errors (avoid repeating):\n${context.errorHistory.map(e => `⚠️ ${e}`).join('\n')}`
+      ? `\nRecent Errors (avoid repeating):\n${ context.errorHistory.map(e => `⚠️ ${ e }`).join('\n') }`
       : '';
 
     const parts: string[] = [
       `━━━ TEMPORAL CONTEXT ━━━`,
-      `📅 ${dateStr} · 🕐 ${timeStr} · 🌍 ${tzLabel} · 📆 ${isoDate}`,
+      `📅 ${ dateStr } · 🕐 ${ timeStr } · 🌍 ${ tzLabel } · 📆 ${ isoDate }`,
       `Always use the above for "today", "now", or time-sensitive queries. Never use training data dates.`,
     ];
     if (userNameTxt) parts.push(userNameTxt);
     if (directMainAgentMode) parts.push(directMainAgentMode);
     parts.push(
       `━━━ CONTEXT ━━━`,
-      `Project: ${context.projectId}`,
-      `Files: ${(context.uploadedFiles || []).join(', ') || 'None'}`,
+      `Project: ${ context.projectId }`,
+      `Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }`,
     );
     if (prefsContext) parts.push(prefsContext);
     if (errorContext) parts.push(errorContext);
@@ -2099,10 +2099,40 @@ DEPTH CALIBRATION:
 
 â”â”â” DEEP WORK PROTOCOL â”â”â”
 
-FOR CODING:
-- Write file â†’ write file â†’ install deps â†’ test â†’ fix â†’ DONE. Don't stop at one file.
-- Each file COMPLETE. No placeholders.
-- After creating code: verify it compiles/runs.
+FOR CODING (CRITICAL - this is your primary workflow):
+
+SPEED PROTOCOL - Write -> Verify -> Fix-from-stderr -> Continue:
+1. Write ALL files first. Don't stop to read between writes. Chain workspace_write_file calls.
+2. After writing all files: run ONE verification command (npm run build, tsc --noEmit, python -c "import X", etc.)
+3. Read the error output (stderr/stdout). It contains EXACT file paths, line numbers, and error messages.
+4. Fix ALL errors directly from the error output using workspace_str_replace. Do NOT re-read the file first.
+   The error tells you: file path, line number, what's wrong. That's enough to write the fix.
+5. Run verification again. Repeat 3-4 until clean.
+
+NEVER-RE-READ RULE (CRITICAL):
+- workspace_str_replace returns a diff + readback. You already see the result. Do NOT re-read the file.
+- workspace_write_file creates the file. You wrote the content. You KNOW what's in it. Do NOT re-read it.
+- workspace_apply_patch returns a diff. Do NOT re-read the file after patching.
+- The ONLY time to read a file is when you did NOT write it and need to understand its structure.
+- If you created 5 files and got a build error in file 3, fix file 3 from the error message. Do NOT read files 1-5 again.
+
+MULTI-ERROR FIX PATTERN:
+- When tsc/eslint/pytest outputs 5 errors across 3 files, fix ALL of them in one pass:
+  - Use workspace_str_replace for single-file fixes (one call per file)
+  - Use workspace_edit_many_files for coordinated multi-file fixes (one call for all)
+  - Do NOT fix error 1, re-verify, fix error 2, re-verify. Fix ALL then verify ONCE.
+
+ERROR-DRIVEN EDITING (fix from stderr, not from re-reading):
+  Error: "src/App.tsx(15,7): error TS2322: Type 'string' not assignable to type 'number'"
+  -> You know: file=src/App.tsx, line=15, issue=type mismatch. Fix it directly with workspace_str_replace.
+  -> Do NOT: workspace_read_file src/App.tsx then think about it then fix it.
+
+  Error: "Module not found: Can't resolve './components/Header'"
+  -> You know: the import path is wrong or the file doesn't exist. Fix the import OR create the file.
+  -> Do NOT: read the importing file, then read the directory, then figure out what's missing.
+
+COMPLETE FILES - No placeholders, TODOs, or "// Add more here". Every file production-ready.
+After creating ALL code files: verify it compiles/runs before reporting done.
 
 FOR DOCUMENTS:
 - Write section by section, ~450 words each.
@@ -2124,11 +2154,13 @@ FOR ANY TASK:
 - NEVER ask "would you like me to continue?" â€” just CONTINUE until done.
 - Save checkpoints every 3-5 tool calls on complex tasks.
 
-â”â”â” ANTI-REPETITION â”â”â”
+ANTI-REPETITION AND EFFICIENCY
 - Never call the same tool with same/similar args twice.
+- Never re-read a file you just wrote or edited. The tool response already contains the result.
 - Never re-search, re-load skills, or re-decompose tasks.
-- If a tool returned results, USE THEM.
-- If you created a file, edit it â€” don't recreate it.
+- If a tool returned results, USE THEM. They are in your context.
+- If you created a file, edit it - don't recreate it.
+- If you got a build/test error, the error message IS your guide. Don't re-read to understand what went wrong.
 - Check your history before every tool call.
 
 â”â”â” TASK PROTOCOL â”â”â”
@@ -2192,11 +2224,27 @@ You have ${ toolCount } tools:
 
 TERMINAL:
 - system_shell / workspace_run_command: Run ANY shell command (PowerShell). Use for npm, tsc, pytest, git, Get-Content, rg, etc.
+  - NEVER prefix commands with "cd path;". Use the workingDir/cwd parameter with an ABSOLUTE PATH instead.
+  - This is Windows/PowerShell. Do NOT use Unix commands directly:
+    mkdir -p → New-Item -ItemType Directory -Force -Path "path" (auto-translated but prefer native)
+    rm -rf → Remove-Item -Recurse -Force "path"
+    touch → New-Item -ItemType File -Force -Path "path"
+    cat → Get-Content
   - File reading: "Get-Content file.ts" or "Get-Content file.ts | Select-Object -First 50 -Last 50"
   - Code search: "rg 'pattern' -n --type ts" or "rg 'pattern' --json" (ripgrep — fastest code search)
   - If result has stillRunning/backgroundTaskId, the command is already alive in the background.
-- process_manager: anything long-running (dev servers, watchers, databases).
+- process_manager: anything long-running (dev servers, watchers, databases). Use action="start" with cwd.
 - terminal_access: read-only terminal capability check.
+
+LONG-RUNNING COMMAND PROTOCOL (CRITICAL — follow this exactly):
+  npm install / pip install / cargo build / yarn → timeout auto-set to 120s. Just run normally.
+  Dev servers (npm run dev, vite, flask) → ALWAYS use process_manager action="start". NEVER system_shell.
+  If a command STILL times out at 120s:
+    1. background_task mode="launch" command="same command" cwd="same absolute path"
+    2. wait_timer seconds=60
+    3. background_task mode="check" taskId="returned ID"
+    4. Repeat step 2-3 until complete.
+  NEVER retry the exact same timed-out command with system_shell/workspace_run_command — it WILL time out again.
 - Terminal handoff protocol: never rerun a handed-off command. Read stdout/stderr, call wait_timer for the suggested interval, then call background_task with mode="check" and the returned taskId. If the check still says running and no independent work remains, wait again instead of stopping or guessing. Continue work only after final output/exitCode arrives.
 
 FILE EDITING (use workspace_apply_patch for all code edits):
@@ -3291,7 +3339,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
 
 EXTERNAL ACTION NOTE CUE
 - Decide intelligently whether this response begins a new action phase.
-- If a new action phase is starting, write exactly one Codex-style external work note as ordinary assistant text, then call the related tool(s) immediately.
+- If a new action phase is starting, write exactly one  external work note as ordinary assistant text, then call the related tool(s) immediately.
 - If this is a continuation of the same phase, call the next tool(s) without a new note.
 - If you are ready to answer without tools, ignore this cue and answer normally.
 - This is guidance, not a formatting trap: choose the cadence intelligently from the actual work.
@@ -3310,9 +3358,9 @@ EXTERNAL ACTION NOTE CUE
   - Verification: "The change is in place. Next Iâ€™m running a focused check."
   - Recovery: "That route failed in this environment, so Iâ€™m switching to the local fallback."
   - Error fixing: "Hero.tsx is missing its closing brace. Iâ€™m patching that structure before verifying again."
-- Strong Codex-style: "I found the actual issue: the first visible note is coming from the Gemini prompt path. Iâ€™m tightening that prompt now."
-- Strong Codex-style: "The patch is in place. Next Iâ€™m running TypeScript so this doesnâ€™t ship with a hidden runtime issue."
-- Strong Codex-style: "That command timed out, so Iâ€™m checking whether it left a process behind before moving on."
+- Strong : "I found the actual issue: the first visible note is coming from the Gemini prompt path. Iâ€™m tightening that prompt now."
+- Strong : "The patch is in place. Next Iâ€™m running TypeScript so this doesnâ€™t ship with a hidden runtime issue."
+- Strong : "That command timed out, so Iâ€™m checking whether it left a process behind before moving on."
 - Weak style to avoid: "Initializing the Nike 2026 project using the artifacts builder."
 - Weak style to avoid: "Executing multi-step project initialization using PowerShell compatible chaining."
 - Weak style to avoid: "Synthesizing deep context for enterprise autonomous execution."
@@ -3496,7 +3544,7 @@ EXTERNAL ACTION NOTE CUE
         } catch { /* silent */ }
 
         if (compressionStage >= 2) {
-          console.log(`[GeminiClient] 📦 Progressive compression stage ${compressionStage}: keeping ${keepTurns} turns, ledger budget ${ledgerTokenBudget} tokens`);
+          console.log(`[GeminiClient] 📦 Progressive compression stage ${ compressionStage }: keeping ${ keepTurns } turns, ledger budget ${ ledgerTokenBudget } tokens`);
         }
 
         // CRITICAL FIX: The first element after contents[0] (user) MUST be a 'model' turn
@@ -3538,7 +3586,7 @@ EXTERNAL ACTION NOTE CUE
           try {
             const health = globalSessionManager.getSessionHealthForChat(chatId);
             if (health.score < 80) {
-              sessionHealthStr = `\n[SESSION HEALTH] Warning: Score is ${health.score}/100. complexity: ${health.complexity}. Warnings:\n${health.warnings.map(w => `- ${w}`).join('\n')}\nAdjust your plans accordingly to avoid loops/stalls.`;
+              sessionHealthStr = `\n[SESSION HEALTH] Warning: Score is ${ health.score }/100. complexity: ${ health.complexity }. Warnings:\n${ health.warnings.map(w => `- ${ w }`).join('\n') }\nAdjust your plans accordingly to avoid loops/stalls.`;
             }
           } catch { /* silent */ }
         }
@@ -3566,7 +3614,7 @@ EXTERNAL ACTION NOTE CUE
         // Rebuild dynamic suffix fresh every iteration (date/time stays accurate)
         const freshSuffix = this.buildDynamicSystemSuffix(context, dynamicContext);
         config.systemInstruction = visibleProgressCue
-          ? `${freshSuffix}${visibleProgressCue}`
+          ? `${ freshSuffix }${ visibleProgressCue }`
           : freshSuffix;
         // Ensure tools NOT in config (they live in the cache)
         delete (config as any).tools;
@@ -3578,12 +3626,12 @@ EXTERNAL ACTION NOTE CUE
       }
       if (!isGemmaModel) {
         // ADAPTIVE THINKING: Escalate reasoning depth as task complexity reveals itself
-      const dynamicThinkingLevel = interactions > 20
-        ? 'HIGH' as any  // Deep into complex work — maximum reasoning
-        : interactions > 8 && thinkingLevel === ThinkingLevel.LOW
-          ? ThinkingLevel.MEDIUM  // Task proving harder than expected
-          : thinkingLevel;
-      config.thinkingConfig = { thinkingLevel: dynamicThinkingLevel, includeThoughts };
+        const dynamicThinkingLevel = interactions > 20
+          ? 'HIGH' as any  // Deep into complex work — maximum reasoning
+          : interactions > 8 && thinkingLevel === ThinkingLevel.LOW
+            ? ThinkingLevel.MEDIUM  // Task proving harder than expected
+            : thinkingLevel;
+        config.thinkingConfig = { thinkingLevel: dynamicThinkingLevel, includeThoughts };
       }
 
       let stream: any = null;
@@ -3717,7 +3765,7 @@ EXTERNAL ACTION NOTE CUE
             _connectionGuard,
           ]);
           _cleanupRef.cleanup?.(); // cleanup on success
-          console.log(`[GeminiClient] 🟢 Live connection working! Streaming started successfully for model: ${currentModel}`);
+          console.log(`[GeminiClient] 🟢 Live connection working! Streaming started successfully for model: ${ currentModel }`);
           activeStreamAbortController = attemptAbortController;
           if (onTrace && lightweightTelegramMode && streamAttempts > 1) {
             onTrace({ type: 'progress', text: 'Connected; continuing' });
@@ -3997,7 +4045,7 @@ EXTERNAL ACTION NOTE CUE
         const promptTokens = lastUsageMetadata.promptTokenCount ?? lastUsageMetadata.inputTokenCount ?? 0;
         const completionTokens = lastUsageMetadata.candidatesTokenCount ?? lastUsageMetadata.outputTokenCount ?? 0;
         const totalTokens = lastUsageMetadata.totalTokenCount ?? (promptTokens + completionTokens);
-        console.log(`[GeminiClient] 📊 Token Usage: Input: ${promptTokens} | Output: ${completionTokens} | Total: ${totalTokens}`);
+        console.log(`[GeminiClient] 📊 Token Usage: Input: ${ promptTokens } | Output: ${ completionTokens } | Total: ${ totalTokens }`);
       }
 
       // Build the full response content for history
@@ -4357,7 +4405,7 @@ EXTERNAL ACTION NOTE CUE
 
         const failureWarning = cognitiveCore.checkToolFailureWarning(call.name, args);
         if (failureWarning) {
-          console.warn(`[CognitiveCore] Injected failure warning for ${call.name}: ${failureWarning}`);
+          console.warn(`[CognitiveCore] Injected failure warning for ${ call.name }: ${ failureWarning }`);
           return {
             functionResponse: {
               name: call.name,
@@ -5069,7 +5117,7 @@ EXTERNAL ACTION NOTE CUE
             resultSummary = `FAILED (exit code ${ exitCode })${ stderrMsg }`.substring(0, 180).replace(/\n/g, ' ');
           } else if (toolOutput?.content) {
             resultSummary = `OK (${ String(toolOutput.content).length } chars)`;
-                        } else if (toolOutput?.success !== undefined) {
+          } else if (toolOutput?.success !== undefined) {
             resultSummary = toolOutput.success
               ? `SUCCESS: ${ toolOutput.path || toolOutput.message || 'done' }`.substring(0, 120)
               : `FAILED: ${ toolOutput.error || toolOutput.message || 'unknown error' }`.substring(0, 120);

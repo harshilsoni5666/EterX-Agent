@@ -1742,7 +1742,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     emitModelSettingsUpdate({ type: 'model-selection-updated', modelOverrides: {}, chatModelSelection: AUTO_MODEL_SELECTION });
   }, [isModelLocked, modelOptions, storedModelSettings.chatModelSelection]);
   const controlPopoutVerticalClass = 'bottom-[calc(100%+10px)]';
-  const selectorPopoutVerticalClass = 'bottom-[calc(100%+10px)]';
+  const selectorPopoutVerticalClass = isNewChatHome ? 'top-[calc(100%+10px)]' : 'bottom-[calc(100%+10px)]';
   const selectorMenuOffset = 8;
   const agentMenuX = `calc(-50% + ${agentMenuXOffset}px)`;
   const modelMenuX = `calc(-50% + ${modelMenuXOffset}px)`;

@@ -61,8 +61,8 @@ const lightweightSidebarCss = `
     --sidebar-toggle-hover-bg: rgba(255, 255, 255, 0.07);
     --sidebar-active-bg: rgba(255, 255, 255, 0.105);
     --sidebar-toggle-active-bg: rgba(255, 255, 255, 0.105);
-    --sidebar-active-fade: rgba(26, 32, 36, 0.96);
-    --sidebar-menu-bg: #1D2428;
+    --sidebar-active-fade: rgba(15, 15, 15, 0.96);
+    --sidebar-menu-bg: #121212;
     --sidebar-menu-border: transparent;
     --sidebar-active-shadow: none;
     background: var(--sidebar-bg) !important;
@@ -112,15 +112,19 @@ const lightweightSidebarCss = `
   :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-recents,
   :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-recents,
   .eterx-sidebar-shell .eterx-sidebar-recents {
-    -webkit-backdrop-filter: blur(18px) saturate(1.08) !important;
-    backdrop-filter: blur(18px) saturate(1.08) !important;
-    border-color: rgba(255, 255, 255, 0.065) !important;
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045) !important;
+    -webkit-backdrop-filter: blur(16px) saturate(1.08) !important;
+    backdrop-filter: blur(16px) saturate(1.08) !important;
+    border-color: rgba(255, 255, 255, 0.072) !important;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.052),
+      inset 0 -1px 0 rgba(0, 0, 0, 0.18) !important;
   }
 
   :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-recents,
   .eterx-sidebar-shell .eterx-sidebar-recents {
-    background: linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.018)) !important;
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.040), rgba(255, 255, 255, 0.018)),
+      rgba(16, 16, 16, 0.30) !important;
   }
 
   :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-recents {
@@ -132,7 +136,8 @@ const lightweightSidebarCss = `
   :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-profile,
   :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-profile,
   .eterx-sidebar-shell .eterx-sidebar-profile {
-    background: var(--sidebar-bg) !important;
+    background: transparent !important;
+    border-top-color: transparent !important;
   }
 
   .eterx-sidebar-resize-handle {
@@ -224,16 +229,19 @@ const lightweightSidebarCss = `
   :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-toggle:hover,
   :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-nav-item:hover,
   :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-chat-row:hover,
+  :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-settings-button:hover,
   :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-profile-icon-button:hover,
   :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-chat-menu-button:hover,
   :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-toggle:hover,
   :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-nav-item:hover,
   :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-chat-row:hover,
+  :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-settings-button:hover,
   :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-profile-icon-button:hover,
   :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-chat-menu-button:hover,
   .eterx-sidebar-shell .eterx-sidebar-toggle:hover,
   .eterx-sidebar-shell .eterx-sidebar-nav-item:hover,
   .eterx-sidebar-shell .eterx-sidebar-chat-row:hover,
+  .eterx-sidebar-shell .eterx-sidebar-settings-button:hover,
   .eterx-sidebar-shell .eterx-sidebar-profile-icon-button:hover,
   .eterx-sidebar-shell .eterx-sidebar-chat-menu-button:hover,
   .eterx-sidebar-menu button:hover {
@@ -264,6 +272,19 @@ const lightweightSidebarCss = `
   .eterx-sidebar-menu .eterx-sidebar-menu-chevron {
     transform: none !important;
     filter: none !important;
+  }
+
+  @media (min-width: 769px) {
+    .eterx-sidebar-shell {
+      border-top-right-radius: 0 !important;
+      border-bottom-right-radius: 0 !important;
+      margin-right: -8px !important;
+    }
+
+    .eterx-sidebar-shell .eterx-sidebar-sheen {
+      border-top-right-radius: 0 !important;
+      border-bottom-right-radius: 0 !important;
+    }
   }
 `;
 
@@ -401,7 +422,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const [isDragSelecting, setIsDragSelecting] = React.useState(false);
   const [dragSelectState, setDragSelectState] = React.useState<boolean>(true);
 
-  const isNewChatActive = activeView === 'chat' && !activeChatId;
+  const isNewChatActive = false;
   const [glassClick, setGlassClick] = React.useState<{ key: string; x: number; y: number; tick: number } | null>(null);
   const glassClickTimeoutRef = React.useRef<number | null>(null);
 
@@ -953,7 +974,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                           }
                         }}
                         style={glassClickStyle(`chat-${ chat.id }`)}
-                        className={`eterx-sidebar-click-surface eterx-sidebar-chat-row ${ glassClickClass(`chat-${ chat.id }`) } ${ isActive && !isSelectMode ? 'eterx-sidebar-chat-active' : '' } ${ isWorking && !isSelectMode ? 'eterx-sidebar-chat-working' : '' } ${ isSelectMode && isSelected ? 'eterx-sidebar-chat-selected' : '' } w-full min-h-[38px] text-left px-3 transition-colors duration-150 ease-out flex items-center justify-between group cursor-pointer text-[13px] leading-normal rounded-[10px] border relative z-0 overflow-hidden ${ isActive && !isSelectMode ? 'bg-[var(--sidebar-active-bg)] text-[var(--sidebar-active-text)] border-transparent font-medium' : isWorking && !isSelectMode ? 'bg-transparent text-[var(--sidebar-text)] border-transparent' : 'text-[var(--sidebar-text)] border-transparent' } ${ isSelectMode && isSelected ? 'bg-[var(--sidebar-active-bg)] text-[var(--sidebar-active-text)] border-transparent' : '' } ${ isSelectMode ? 'select-none touch-none' : '' }`}
+                        className={`eterx-sidebar-click-surface eterx-sidebar-chat-row ${ glassClickClass(`chat-${ chat.id }`) } ${ isActive && !isSelectMode ? 'eterx-sidebar-chat-active' : '' } ${ isWorking && !isSelectMode ? 'eterx-sidebar-chat-working' : '' } ${ isSelectMode && isSelected ? 'eterx-sidebar-chat-selected' : '' } w-full min-h-[38px] text-left px-3 transition-colors duration-150 ease-out flex items-center group cursor-pointer text-[13px] leading-normal rounded-[10px] border relative z-0 overflow-hidden ${ isActive && !isSelectMode ? 'bg-[var(--sidebar-active-bg)] text-[var(--sidebar-active-text)] border-transparent font-medium' : isWorking && !isSelectMode ? 'bg-transparent text-[var(--sidebar-text)] border-transparent' : 'text-[var(--sidebar-text)] border-transparent' } ${ isSelectMode && isSelected ? 'bg-[var(--sidebar-active-bg)] text-[var(--sidebar-active-text)] border-transparent' : '' } ${ isSelectMode ? 'select-none touch-none' : '' }`}
                       >
                         {isSelectMode && (
                           <span
@@ -964,10 +985,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
                           </span>
                         )}
 
-                        <div className="eterx-sidebar-chat-content flex min-w-0 items-center overflow-hidden flex-1 relative z-10 w-full pl-0">
+                        <div className={`eterx-sidebar-chat-content ${ !isWorking && !isSelectMode && (isMenuOpen || isActive) ? 'eterx-sidebar-chat-content-menu-visible' : '' } ${ isWorking && !isSelectMode ? 'eterx-sidebar-chat-content-working' : '' } flex min-w-0 items-center overflow-hidden flex-1 relative z-10 w-full pl-0`}>
                           {isWorking ? (
                             <motion.span
-                              className="eterx-sidebar-chat-title truncate pr-2 relative z-10 eterx-text-shimmer eterx-text-shimmer-ambient font-medium leading-normal"
+                              className="eterx-sidebar-chat-title truncate relative z-10 eterx-text-shimmer eterx-text-shimmer-ambient font-medium leading-normal"
                             >
                               {chat.title}
                             </motion.span>
@@ -992,7 +1013,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                               onClick={(e) => e.stopPropagation()}
                             />
                           ) : (
-                            <div className="eterx-sidebar-chat-title-wrap flex items-center truncate pr-2 relative z-10 w-full min-w-0">
+                            <div className="eterx-sidebar-chat-title-wrap flex items-center truncate relative z-10 w-full min-w-0">
                               {chat.isFavorite && <PremiumStar className="eterx-sidebar-favorite-icon w-3.5 h-3.5 text-yellow-500/90 mr-1.5 shrink-0" />}
                               <span className="eterx-sidebar-chat-title truncate text-current leading-normal">{chat.title}</span>
                             </div>
@@ -1000,18 +1021,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         </div>
 
                         {isWorking && (
-                          <div className="eterx-sidebar-working-fade absolute right-0 top-0 bottom-0 w-[4.5rem] pointer-events-none z-20 flex items-center justify-end rounded-r-[10px] pr-3">
+                          <div className="eterx-sidebar-working-fade absolute right-0 top-0 bottom-0 w-[3.25rem] pointer-events-none z-20 flex items-center justify-end rounded-r-[10px] pr-3">
                             <div className="eterx-sidebar-loading-spinner w-[14px] h-[14px] rounded-full border-[2px] border-[#8E918F]/30 border-r-[#3A3835] animate-[spin_0.8s_linear_infinite]" />
                           </div>
                         )}
 
-                        <div className="relative ml-1 flex h-7 w-7 shrink-0 items-center justify-center">
+                        <div className="absolute right-1.5 top-1/2 z-30 flex h-7 w-7 -translate-y-1/2 items-center justify-center">
                           <button
                             type="button"
                             aria-label="Chat options"
                             onMouseDown={(e) => triggerGlassClick(e, `chat-menu-${ chat.id }`)}
                             style={glassClickStyle(`chat-menu-${ chat.id }`)}
-                            className={`eterx-sidebar-click-surface eterx-sidebar-chat-menu-button ${ glassClickClass(`chat-menu-${ chat.id }`) } flex h-7 w-7 items-center justify-center rounded-[8px] bg-transparent transition-colors duration-150 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--sidebar-focus-ring)] ${ isMenuOpen ? 'opacity-100 bg-[var(--sidebar-active-bg)] text-[var(--sidebar-active-text)] border border-transparent' : (isWorking || isSelectMode ? 'opacity-0 pointer-events-none hidden' : 'opacity-0 group-hover:opacity-100 text-[var(--sidebar-muted-text)] hover:bg-[var(--sidebar-hover-bg)] hover:text-[var(--sidebar-hover-text)] border border-transparent') } relative z-40`}
+                            className={`eterx-sidebar-click-surface eterx-sidebar-chat-menu-button ${ glassClickClass(`chat-menu-${ chat.id }`) } flex h-7 w-7 items-center justify-center rounded-[8px] bg-transparent transition-colors duration-150 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--sidebar-focus-ring)] ${ isMenuOpen ? 'opacity-100 text-[var(--sidebar-active-text)] border border-transparent' : (isWorking || isSelectMode ? 'opacity-0 pointer-events-none hidden' : `${ isActive ? 'opacity-100' : 'opacity-0 group-hover:opacity-100' } text-[var(--sidebar-muted-text)] hover:bg-transparent hover:text-[var(--sidebar-hover-text)] border border-transparent`) } relative z-40`}
                             onClick={(e) => {
                               e.stopPropagation();
                               if (isWorking) return;
@@ -1039,7 +1060,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
           {/* Bottom Profile Area */}
           {isOpen ? (
-            <div className="eterx-sidebar-profile relative z-10 px-3 py-2 border-t border-[var(--sidebar-shell-border)] bg-[var(--sidebar-profile-bg)]">
+            <div className="eterx-sidebar-profile relative z-10 px-2 py-2 border-t border-transparent bg-transparent">
               <Tooltip text="Open settings" side="right">
                 <button
                   type="button"
@@ -1047,9 +1068,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   onClick={onSettingsClick}
                   aria-label="Open settings"
                   style={glassClickStyle('profile-card')}
-                className={`eterx-sidebar-click-surface eterx-sidebar-profile-card eterx-sidebar-settings-button ${ glassClickClass('profile-card') } flex h-10 w-[174px] max-w-full cursor-pointer items-center gap-2.5 rounded-[12px] border px-3 text-left transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--sidebar-focus-ring)] group`}
+                className={`eterx-sidebar-click-surface eterx-sidebar-profile-card eterx-sidebar-settings-button ${ glassClickClass('profile-card') } flex h-[42px] w-full cursor-pointer items-center gap-3 rounded-[10px] border border-transparent px-3 text-left text-[var(--sidebar-text)] transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--sidebar-focus-ring)] group`}
                 >
-                  <span className="eterx-sidebar-profile-action flex h-6 w-6 shrink-0 items-center justify-center rounded-[8px] border border-transparent text-current transition-colors">
+                  <span className="eterx-sidebar-profile-action flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] border border-transparent text-current transition-colors">
                     <PremiumSettings className="w-4 h-4 transition-colors duration-150" strokeWidth={2.15} />
                   </span>
                   <span className="min-w-0 flex-1 truncate text-[13.5px] font-medium text-current transition-colors">
@@ -1059,7 +1080,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               </Tooltip>
             </div>
           ) : (
-            <div className="eterx-sidebar-profile relative z-10 px-2 py-2 border-t border-[var(--sidebar-shell-border)] bg-[var(--sidebar-profile-bg)] flex flex-col items-center">
+            <div className="eterx-sidebar-profile relative z-10 px-2 py-2 border-t border-transparent bg-transparent flex flex-col items-center">
               <Tooltip text="Settings" side="right">
                 <button
                   onClick={onSettingsClick}

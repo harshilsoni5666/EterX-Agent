@@ -47,11 +47,42 @@ export function secondsFromTimeoutMs(timeoutMs: number): number {
 export function terminalTimeoutNote(command: string, timeoutMs: number): string {
   const seconds = secondsFromTimeoutMs(timeoutMs);
   const shortCommand = command.trim().replace(/\s+/g, ' ').substring(0, 120);
-  return [
-    `The command was stopped after ${seconds} seconds: ${shortCommand}`,
-    'Read the partial output and continue from it.',
-    'If this work is intentionally long-running, start it with process_manager/background_task, then use wait_timer for short check-ins instead of rerunning blindly.'
-  ].join(' ');
+  const lower = command.toLowerCase();
+
+  // Specific recovery instructions based on command type
+  let recoveryInstruction: string;
+
+  if (/\b(npm\s+(install|ci|i)\b|yarn\s*(install)?\b|pnpm\s+(install|i)\b|pip\s+install|cargo\s+(build|install)|npm\s+create|npx\s)/i.test(lower)) {
+    recoveryInstruction = [
+      'This is a package install/scaffold command that needs more time.',
+      'DO NOT retry this command with system_shell or workspace_run_command.',
+      'Instead: use background_task mode="launch" with the same command and cwd,',
+      'then wait_timer seconds=60, then background_task mode="check" with the returned taskId.',
+      'NEVER retry the exact same timed-out command — it will time out again.'
+    ].join(' ');
+  } else if (/\b(npm\s+run\s+(dev|start|serve)|yarn\s+(dev|start)|pnpm\s+(dev|start)|next\s+dev|vite\s*$|python\s+-m\s+(http|flask|uvicorn)|node\s+.*server)/i.test(lower)) {
+    recoveryInstruction = [
+      'This looks like a dev server or watcher — it runs forever and WILL always time out.',
+      'Use process_manager action="start" with this command instead.',
+      'Then use process_manager action="logs" to check its output.',
+      'NEVER run dev servers with system_shell or workspace_run_command.'
+    ].join(' ');
+  } else if (/\b(npm\s+run\s+build|yarn\s+build|next\s+build|vite\s+build|tsc\b|cargo\s+build|mvn|gradle)/i.test(lower)) {
+    recoveryInstruction = [
+      'This is a build command that needs more time.',
+      'Use background_task mode="launch" with the same command,',
+      'then wait_timer seconds=60, then background_task mode="check" with the returned taskId.'
+    ].join(' ');
+  } else {
+    recoveryInstruction = [
+      'Read the partial output and continue from it.',
+      'If this work is intentionally long-running, start it with process_manager/background_task,',
+      'then use wait_timer for short check-ins instead of rerunning blindly.',
+      'NEVER retry the exact same command without changing the approach.'
+    ].join(' ');
+  }
+
+  return `The command was stopped after ${seconds} seconds: ${shortCommand}. ${recoveryInstruction}`;
 }
 
 export function terminalBackgroundHandoffNote(command: string, taskId: string, checkInMs: number): string {

@@ -33,19 +33,21 @@ export const processManagerTool: ToolDefinition = {
   name: 'process_manager',
   description: `Manage long-running background processes. Start servers, watch scripts, build processes, or any command that runs continuously. Monitor their output and stop them when needed.
   
-  Examples:
-  - Start a dev server in the background
-  - Run "npm run build --watch" and monitor its output
-  - Start a database server
-  - Kill a stuck process`,
+  USAGE:
+  - Start a dev server: action="start" command="npm run dev" cwd="C:\\Users\\User\\Desktop\\my-project"
+  - Monitor output: action="logs" processId="dev-server"
+  - Check status: action="status" processId="dev-server"
+  - Stop: action="stop" processId="dev-server"
+
+  CRITICAL: Always use ABSOLUTE PATHS for the cwd parameter. Relative paths resolve against the workspace root, not the current directory. NEVER prefix commands with "cd path;".`,
   category: 'automation',
   inputSchema: z.object({
     action: z.enum(['start', 'stop', 'status', 'logs', 'list', 'kill_all'])
       .describe('Action: start a new process, stop/kill one, check status, view logs, list all'),
-    command: z.string().optional().describe('Shell command to start (required for start action)'),
+    command: z.string().optional().describe('Shell command to start (required for start action). Do NOT prefix with "cd path;"'),
     processId: z.string().optional().describe('Process ID for stop/status/logs actions'),
     name: z.string().optional().describe('Friendly name for the process (e.g., "dev-server")'),
-    cwd: z.string().optional().describe('Working directory for start action. Absolute path or relative to workspace root. Defaults to workspace root.'),
+    cwd: z.string().optional().describe('ABSOLUTE PATH to the working directory for the command. Required for start action. Example: "C:\\\\Users\\\\User\\\\Desktop\\\\my-project"'),
     shellType: z.enum(['default', 'powershell', 'cmd']).optional().default('default').describe('Shell for start action. Use default unless a command specifically needs PowerShell or cmd.'),
     env: z.string().optional().describe('Optional JSON object string of environment variables, e.g. {"PORT":"3001"}')
   }),

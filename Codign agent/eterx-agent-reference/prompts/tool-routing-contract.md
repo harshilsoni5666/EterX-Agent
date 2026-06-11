@@ -73,6 +73,27 @@ Terminal:
 - workspace_run_command for finite commands (PowerShell)
 - workspace_execute_script for one-shot analysis/transform scripts only
 - process_manager or background_task for dev servers and watchers
+- NEVER prefix commands with "cd path;". Use the cwd parameter instead.
+
+Windows Command Reference (this is PowerShell, NOT bash):
+- mkdir -p path → New-Item -ItemType Directory -Force -Path "path"
+- rm -rf path → Remove-Item -Recurse -Force "path"
+- touch file → New-Item -ItemType File -Force -Path "file"
+- cat file → Get-Content file
+- ls → Get-ChildItem
+
+Long-Running Command Protocol:
+  Install commands (npm install, pip install, cargo build, yarn):
+    → Auto-get 120s timeout. Just run with workspace_run_command normally.
+  Dev servers (npm run dev, vite, flask run, node server.js):
+    → ALWAYS use process_manager action="start". NEVER system_shell.
+  If a command STILL times out at 120s:
+    1. background_task mode="launch" with same command and cwd
+    2. wait_timer seconds=60
+    3. background_task mode="check" with the returned taskId
+    4. Repeat 2-3 until complete
+  ABSOLUTE RULE: NEVER retry a timed-out command with the same tool.
+  Change the approach: increase timeout OR use background_task.
 
 Verification:
 - realtime_verify for quick syntax/json/file/port checks

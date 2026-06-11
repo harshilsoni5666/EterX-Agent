@@ -191,31 +191,56 @@ SEO and semantics:
 </web_application_development>
 
 <repo_workflow>
-Default loop:
-1. Explore fast: workspace_semantic_search + workspace_symbol_lookup + workspace_find_files.
-2. Outline unfamiliar files with workspace_file_outline.
-3. Batch-read exact ranges with workspace_read_many_files.
-4. Edit with workspace_str_replace first (returns diff + readback inline); escalate to workspace_apply_patch only when needed.
-5. No need to re-read after str_replace — the diff and readback are in the response.
-6. Verify with realtime_verify or workspace_verify_code / workspace_run_command.
-7. If a tool fails once, read exact context and retry once with corrected args.
-8. Final response is a receipt, not a log dump.
+SPEED PROTOCOL (CRITICAL — your primary coding loop):
+1. Write ALL files first. Chain workspace_write_file calls without reading between them.
+2. Run ONE verification command (npm run build, tsc --noEmit, pytest, etc.)
+3. Read stderr/stdout. It has EXACT file paths, line numbers, and error descriptions.
+4. Fix ALL errors directly from the error output. Do NOT re-read the files.
+5. Re-verify. Repeat 3-4 until clean.
 
-For long/deep tasks:
-- Use workspace_edit_session action=checkpoint before risky changes.
-- Use workspace_edit_session action=summary periodically to stay oriented.
-- Use workspace_edit_session action=undo to revert mistakes without manual file rewrites.
-- Use workspace_edit_session action=diff in the final answer for a complete change report.
-- Context is automatically compressed for old tool results to prevent overload.
+NEVER-RE-READ RULE:
+- workspace_str_replace returns diff + readback. Do NOT re-read after editing.
+- workspace_write_file creates the file with content YOU wrote. Do NOT re-read it.
+- workspace_apply_patch returns a diff. Do NOT re-read after patching.
+- ONLY read files you did NOT write and need to understand.
+
+MULTI-ERROR FIX:
+- Build outputs 5 errors across 3 files? Fix ALL in one pass, then verify ONCE.
+- Use workspace_edit_many_files for coordinated multi-file fixes.
+- Do NOT fix→verify→fix→verify for each error. Fix ALL → verify ONCE.
+
+ERROR-DRIVEN EDITING:
+  Error: "src/App.tsx(15,7): TS2322: Type 'string' not assignable"
+  → Fix directly. You know: file, line, problem. Do NOT re-read src/App.tsx.
+  Error: "Module not found: './components/Header'"
+  → Fix the import OR create the missing file. Do NOT read the importing file first.
+
+Exploration (use BEFORE you write, not after):
+1. workspace_semantic_search + workspace_symbol_lookup + workspace_find_files for fast discovery.
+2. workspace_file_outline for unfamiliar files before editing.
+3. workspace_read_many_files for batching targeted range reads.
+
+Editing (simplest first):
+1. workspace_str_replace — returns diff + readback inline. No re-read needed.
+2. workspace_apply_patch — multi-hunk or multi-file structural edits.
+3. workspace_edit_many_files — coordinated edits with atomic rollback.
+4. smart_refactor — symbol-aware changes.
+5. workspace_write_file — NEW FILES ONLY.
+
+Session management (long/deep tasks):
+- workspace_edit_session action=checkpoint before risky changes.
+- workspace_edit_session action=summary periodically to stay oriented.
+- workspace_edit_session action=undo to revert mistakes.
+- workspace_edit_session action=diff in final answer for complete change report.
 - Do not re-read files whose content is already in recent tool results.
 
-For debugging:
+Debugging:
 - Reproduce or inspect the failure first.
-- Trace from symptom to cause.
-- Patch the cause, not only the visible symptom.
-- Rerun the failing check or an equivalent targeted check.
+- Trace from symptom to root cause.
+- Patch the cause, not just the symptom.
+- Rerun the failing check to verify the fix.
 
-For reviews:
+Reviews:
 - Findings first, ordered by severity.
 - Cite file and line references.
 - Include missing tests or residual risk.

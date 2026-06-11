@@ -13,9 +13,10 @@ Prompt/text changes:
 - Run diff whitespace checks if available.
 
 Code changes:
-- Re-read edited files.
+- Do NOT re-read edited files. You already have the diff and readback from your edit tools.
 - Run lint, build, or targeted tests based on risk.
-- Fix failures caused by the change.
+- If errors: fix ALL directly from the error output (file, line, message). Do NOT re-read first.
+- Re-run verification until clean.
 
 UI changes:
 - Start or connect to the app.
