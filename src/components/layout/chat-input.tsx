@@ -1,6 +1,6 @@
 import React, { useRef, useState, useEffect, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { FileText, X, Check, Activity, CheckCircle2, XCircle, Folder, File as FileIcon, ChevronDown, ChevronRight, Image as ImageIcon, AlertCircle, ListTodo, ArrowUpRight, LaptopMinimal, GitBranch, Search, FolderPlus, FolderOpen, Cloud, CloudOff, ExternalLink, Gauge, Plus, CircleSlash, GitFork } from 'lucide-react';
+import { FileText, X, Check, Activity, CheckCircle2, XCircle, Folder, File as FileIcon, ChevronDown, ChevronRight, Image as ImageIcon, AlertCircle, ListTodo, ArrowUpRight, LaptopMinimal, GitBranch, Search, FolderPlus, FolderOpen, Cloud, CloudOff, ExternalLink, Gauge, Plus, CircleSlash, GitFork, Terminal } from 'lucide-react';
 import { PremiumMic, PremiumSend, PremiumPlus, PremiumAudioLines, PremiumVolume2, PremiumVolumeX, PremiumMicOff } from '../ui/premium-icons';
 import { Tooltip } from '../ui/tooltip';
 import { ConnectorsModal, ConnectorsButton } from './connectors-modal';
@@ -3107,14 +3107,9 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                         <GitFork className="eterx-status-menu-icon" strokeWidth={1.95} />
                         <span className="min-w-0 flex-1 truncate">New worktree</span>
                       </button>
-                      <button type="button" className="eterx-status-menu-item" onClick={() => window.open('https://chatgpt.com/codex', '_blank', 'noopener,noreferrer')}>
-                        <Cloud className="eterx-status-menu-icon" strokeWidth={1.95} />
-                        <span className="min-w-0 flex-1 truncate">Connect Codex web</span>
-                        <ExternalLink className="h-4 w-4 shrink-0 opacity-65" strokeWidth={2.1} />
-                      </button>
-                      <button type="button" className="eterx-status-menu-item is-disabled" disabled>
-                        <CloudOff className="eterx-status-menu-icon" strokeWidth={1.95} />
-                        <span className="min-w-0 flex-1 truncate">Send to cloud</span>
+                      <button type="button" className="eterx-status-menu-item" onClick={() => setOpenStatusMenu(null)}>
+                        <Terminal className="eterx-status-menu-icon" strokeWidth={1.95} />
+                        <span className="min-w-0 flex-1 truncate">Sandbox</span>
                       </button>
                       <div className="eterx-status-menu-rule" />
                       <button type="button" className="eterx-status-menu-item" onClick={() => setOpenStatusMenu(null)}>

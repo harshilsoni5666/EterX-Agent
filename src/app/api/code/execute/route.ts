@@ -17,9 +17,12 @@ export async function POST(req: NextRequest) {
     }
 
     const defaultDir = getPathResolverInfo().desktopPath;
-    const workingDir = cwd
-      ? (path.isAbsolute(cwd) ? cwd : path.resolve(defaultDir, cwd))
-      : defaultDir;
+    let workingDir = defaultDir;
+    if (cwd === 'PROJECT_ROOT' || cwd === 'ETERX_ROOT') {
+      workingDir = process.cwd();
+    } else if (cwd) {
+      workingDir = path.isAbsolute(cwd) ? cwd : path.resolve(defaultDir, cwd);
+    }
 
     const result = await runTerminalCommandWithCheckIn({
       command,

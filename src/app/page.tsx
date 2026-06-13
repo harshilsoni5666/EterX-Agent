@@ -5,7 +5,7 @@ import dynamic from 'next/dynamic';
 import { Sidebar } from '../components/layout/sidebar';
 import { ChatInput } from '../components/layout/chat-input';
 import { ChatFeed } from '../components/chat/chat-feed';
-import { AlertTriangle, CheckCircle2, ChevronDown, Clock3, Code2, GraduationCap, List, MessageSquare, Pencil, PenTool, SendHorizontal, SquarePen, Search, X, ArrowLeft, Trash, ListTodo } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, ChevronDown, Clock3, Code2, GraduationCap, List, MessageSquare, Pencil, PenTool, SendHorizontal, SquarePen, Search, X, ArrowLeft, Trash, ListTodo, ChevronRight, Monitor, GitFork, Terminal, GitBranch, GitCommit, PlusSquare, Check, FileCode, FileText } from 'lucide-react';
 import { Tooltip } from '../components/ui/tooltip';
 import { motion, AnimatePresence } from 'framer-motion';
 import { InteractiveGrid } from '../components/ui/interactive-grid';
@@ -83,6 +83,64 @@ const HeaderSidebarOpenIcon = ({ className = "w-[18px] h-[18px]" }: { className?
     <path className="opacity-0 transition-opacity duration-150 group-hover:opacity-100" d="M13 9l3 3-3 3" strokeLinecap="round" strokeLinejoin="round" />
   </svg>
 );
+
+const getBasename = (path: string) => path.split(/[/\\]/).pop() || path;
+
+const isProjectFile = (filepath: string) => {
+  if (!filepath) return false;
+  const pathLower = filepath.toLowerCase();
+  
+  // Exclude EterX-Agent internal files
+  if (pathLower.includes('page.tsx')) return false;
+  if (pathLower.includes('chat-input.tsx')) return false;
+  if (pathLower.includes('route.ts')) return false;
+  if (pathLower.includes('system')) return false;
+  if (pathLower.includes('walkthrough.md')) return false;
+  if (pathLower.includes('task.md')) return false;
+  if (pathLower.includes('implementation_plan.md')) return false;
+  
+  // Other standard excludes
+  if (pathLower.includes('.system_generated')) return false;
+  if (pathLower.includes('node_modules')) return false;
+  if (pathLower.includes('.next')) return false;
+  if (pathLower.includes('.git/')) return false;
+  if (pathLower.includes('.git\\')) return false;
+  if (pathLower.includes('.vscode')) return false;
+  if (pathLower.includes('.temp')) return false;
+  if (pathLower.includes('.gitleaks')) return false;
+  if (pathLower.endsWith('.log')) return false;
+  
+  return true;
+};
+
+const getFileIcon = (filepath: string) => {
+  const ext = filepath.split('.').pop()?.toLowerCase();
+  if (['ts', 'tsx', 'js', 'jsx', 'html', 'css', 'py', 'go', 'json', 'sh', 'md'].includes(ext || '')) {
+    return FileCode;
+  }
+  return FileText;
+};
+
+const TaskStatusGlyphMini = ({ status, active }: { status?: string; active?: boolean }) => {
+  if (status === 'done') {
+    return (
+      <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full bg-[#A9A9A9] text-[#1F1F1F] shadow-[inset_0_1px_0_rgba(255,255,255,0.28)]">
+        <Check className="h-2 w-2" strokeWidth={3.5} />
+      </span>
+    );
+  }
+
+  if (active || status === 'in_progress') {
+    return (
+      <span className="relative flex h-3.5 w-3.5 shrink-0 items-center justify-center" aria-hidden="true">
+        <span className="absolute inset-0 rounded-full border-[1.5px] border-white/[0.16]" />
+        <span className="absolute inset-0 rounded-full border-[1.5px] border-transparent border-r-white/45 border-t-white/90 animate-[spin_1.15s_linear_infinite]" />
+      </span>
+    );
+  }
+
+  return <span className="block h-3.5 w-3.5 shrink-0 rounded-full border-[1.5px] border-[#A9A9A9]/50" />;
+};
 
 interface ChatSession {
   id: string;
@@ -713,6 +771,22 @@ function DeepWorkUI() {
     agentName: 'General',
   });
   const [pinnedItems, setPinnedItems] = useState<PinnedItem[]>([]);
+  const [envDropdownOpen, setEnvDropdownOpen] = useState(false);
+  const envDropdownRef = useRef<HTMLDivElement | null>(null);
+  const [activeSubmenu, setActiveSubmenu] = useState<'local' | 'branch' | 'todo' | null>(null);
+  const [currentBranch, setCurrentBranch] = useState('safe-hardening');
+  const [currentEnv, setCurrentEnv] = useState('Local');
+  const [branchSearch, setBranchSearch] = useState('');
+  const [gitBranches, setGitBranches] = useState<Array<{ name: string; uncommitted: string | null }>>([
+    { name: 'main', uncommitted: null },
+    { name: 'safe-hardening', uncommitted: 'Uncommitted: 1 file' }
+  ]);
+  const [isCreatingBranch, setIsCreatingBranch] = useState(false);
+  const [newBranchName, setNewBranchName] = useState('');
+  const [gitError, setGitError] = useState<string | null>(null);
+  const [todoSectionOpen, setTodoSectionOpen] = useState(true);
+  const [sourcesSectionOpen, setSourcesSectionOpen] = useState(true);
+  const [subAgentsSectionOpen, setSubAgentsSectionOpen] = useState(true);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [monitorOpen, setMonitorOpen] = useState(false);
   const [agentTeamOpen, setAgentTeamOpen] = useState(false);
@@ -3576,6 +3650,199 @@ function DeepWorkUI() {
     }
     return Array.from(agentMap.values());
   }, [traceLogs]);
+
+  const lastTaskTracker = useMemo<TaskTrackerState | null>(() => {
+    for (let i = traceLogs.length - 1; i >= 0; i--) {
+      const log = traceLogs[i];
+      if (log?.type === 'task_plan') {
+        return {
+          goal: log.goal,
+          phase: log.phase,
+          status: log.status,
+          complexity: log.complexity,
+          estimatedMinutes: log.estimatedMinutes,
+          completedSteps: log.completedSteps,
+          totalSteps: log.totalSteps,
+          activeStepName: log.activeStepName,
+          steps: Array.isArray(log.steps) ? log.steps : [],
+        };
+      }
+    }
+    return null;
+  }, [traceLogs]);
+
+  const todoCounterText = useMemo(() => {
+    const tracker = lastTaskTracker || currentTaskTracker;
+    if (!tracker?.steps || tracker.steps.length === 0) return '';
+    const completed = tracker.steps.filter(s => s.status === 'done').length;
+    const total = tracker.steps.length;
+    return `${completed}/${total}`;
+  }, [lastTaskTracker, currentTaskTracker]);
+
+  const chatChangeStats = useMemo(() => {
+    const fileStatusMap = new Map<string, { path: string; status: 'MOD' | 'ADD' }>();
+    const fileDiffsMap = new Map<string, { additions: number; deletions: number }>();
+
+    for (const log of traceLogs) {
+      if (!log) continue;
+      
+      // Only process file_edit logs to calculate changes, avoiding duplicate count from file_preview logs
+      if (log.type !== 'file_edit') {
+        continue;
+      }
+
+      const toolName = log.tool || log.name || '';
+      const args = log.toolArgs || {};
+      const text = String(log.text || log.content || log.secondary || '').toLowerCase();
+      
+      // Determine file status if we edit or write to a file
+      let targetFile = '';
+      const argFilename = args.TargetFile || args.targetFile || args.filePath || args.filepath || args.filename || args.fileName || '';
+      if (argFilename && typeof argFilename === 'string') {
+        targetFile = argFilename.trim();
+      } else {
+        const filename = log.filename || log.secondary || '';
+        if (filename && typeof filename === 'string') {
+          let cleaned = filename.trim();
+          if (cleaned.startsWith('"') && cleaned.endsWith('"')) {
+            cleaned = cleaned.substring(1, cleaned.length - 1);
+          }
+          if (cleaned.includes('.') || cleaned.includes('/') || cleaned.includes('\\')) {
+            const lastPart = cleaned.split(/[/\\]/).pop() || '';
+            if (lastPart.includes('.')) {
+              targetFile = cleaned;
+            }
+          }
+        }
+      }
+
+      if (targetFile && !isProjectFile(targetFile)) {
+        continue;
+      }
+
+      if (targetFile && isProjectFile(targetFile)) {
+        const key = getBasename(targetFile).toLowerCase();
+        let fileStatus: 'MOD' | 'ADD' = 'MOD';
+        if (
+          toolName.includes('write_to_file') || 
+          toolName.includes('write_file') || 
+          toolName.includes('create_file') ||
+          text.includes('created file') || 
+          text.includes('new file') || 
+          text.includes('wrote file')
+        ) {
+          fileStatus = 'ADD';
+        }
+        
+        const existingStatus = fileStatusMap.get(key);
+        // Prefer absolute path if available (contains slashes)
+        const pathVal = (targetFile.includes('/') || targetFile.includes('\\')) ? targetFile : (existingStatus?.path || targetFile);
+        if (!existingStatus || fileStatus === 'ADD') {
+          fileStatusMap.set(key, { path: pathVal, status: fileStatus });
+        } else {
+          existingStatus.path = pathVal;
+        }
+      }
+
+      // Extract additions/deletions
+      let logAdditions = 0;
+      let logDeletions = 0;
+      const addVal = parseInt(log.added || log.additions || log.linesAdded || log.add || 0, 10);
+      const delVal = parseInt(log.removed || log.deletions || log.linesRemoved || log.remove || 0, 10);
+
+      if (!isNaN(addVal)) logAdditions = addVal;
+      if (!isNaN(delVal)) logDeletions = delVal;
+
+      if (targetFile && isProjectFile(targetFile)) {
+        const key = getBasename(targetFile).toLowerCase();
+        const existing = fileDiffsMap.get(key) || { additions: 0, deletions: 0 };
+        fileDiffsMap.set(key, {
+          additions: existing.additions + logAdditions,
+          deletions: existing.deletions + logDeletions
+        });
+      }
+    }
+
+    let summedAdditions = 0;
+    let summedDeletions = 0;
+    const filesList = Array.from(fileStatusMap.entries()).map(([key, info]) => {
+      const diffs = fileDiffsMap.get(key) || { additions: 0, deletions: 0 };
+      summedAdditions += diffs.additions;
+      summedDeletions += diffs.deletions;
+      return {
+        path: info.path,
+        status: info.status,
+        additions: diffs.additions,
+        deletions: diffs.deletions
+      };
+    });
+
+    return {
+      additions: summedAdditions,
+      deletions: summedDeletions,
+      files: filesList
+    };
+  }, [traceLogs]);
+
+  const fetchGitInfo = useCallback(async () => {
+    // Completely disconnected from executing real git command lines on host.
+    // Calculate session uncommitted files dynamically from chatChangeStats
+    const filesCount = chatChangeStats?.files?.length || 0;
+    const uncommittedText = filesCount > 0 ? `Uncommitted: ${filesCount} file${filesCount > 1 ? 's' : ''}` : null;
+    
+    setGitBranches(prev => {
+      const hasCurrent = prev.some(b => b.name === currentBranch);
+      const updatedList = hasCurrent ? [...prev] : [...prev, { name: currentBranch, uncommitted: null }];
+      return updatedList.map(b => {
+        if (b.name === currentBranch) {
+          return { ...b, uncommitted: uncommittedText };
+        }
+        return b;
+      });
+    });
+  }, [chatChangeStats?.files?.length, currentBranch]);
+
+  const handleCheckoutBranch = async (branchName: string) => {
+    setGitError(null);
+    setCurrentBranch(branchName);
+    
+    // Update the uncommitted count immediately for the checked-out branch
+    const filesCount = chatChangeStats?.files?.length || 0;
+    const uncommittedText = filesCount > 0 ? `Uncommitted: ${filesCount} file${filesCount > 1 ? 's' : ''}` : null;
+    setGitBranches(prev => {
+      const hasBranch = prev.some(b => b.name === branchName);
+      const updatedList = hasBranch ? [...prev] : [...prev, { name: branchName, uncommitted: null }];
+      return updatedList.map(b => {
+        return { ...b, uncommitted: b.name === branchName ? uncommittedText : null };
+      });
+    });
+    setActiveSubmenu(null);
+  };
+
+  const handleCreateBranchSubmit = async () => {
+    if (!newBranchName.trim()) return;
+    setGitError(null);
+    const newName = newBranchName.trim();
+    setCurrentBranch(newName);
+    
+    const filesCount = chatChangeStats?.files?.length || 0;
+    const uncommittedText = filesCount > 0 ? `Uncommitted: ${filesCount} file${filesCount > 1 ? 's' : ''}` : null;
+    setGitBranches(prev => {
+      const hasBranch = prev.some(b => b.name === newName);
+      const updatedList = hasBranch ? [...prev] : [...prev, { name: newName, uncommitted: null }];
+      return updatedList.map(b => {
+        return { ...b, uncommitted: b.name === newName ? uncommittedText : null };
+      });
+    });
+    
+    setIsCreatingBranch(false);
+    setNewBranchName('');
+    setActiveSubmenu(null);
+  };
+
+  useEffect(() => {
+    fetchGitInfo();
+  }, [traceLogs.length, isThinking, fetchGitInfo]);
   const petMonitorTitle = useMemo(() => {
     const activeChat = activeChatId ? chats.find(chat => chat.id === activeChatId) : null;
     if (activeChat?.title && !isDefaultChatTitle(activeChat.title)) return activeChat.title;
@@ -3866,17 +4133,568 @@ function DeepWorkUI() {
             </div>
             <div className="flex shrink-0 items-center gap-1.5 pointer-events-auto [-webkit-app-region:no-drag]">
               {canUseMonitor && (
-                <button
-                  type="button"
-                  aria-label="Toggle task monitor"
-                  onMouseDown={(e) => e.stopPropagation()}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                  }}
-                  className={`eterx-header-icon-button flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-transparent bg-transparent text-[var(--sidebar-muted-text)] transition-colors duration-150 hover:bg-[var(--sidebar-toggle-hover-bg)] hover:text-[var(--sidebar-hover-text)] active:bg-[var(--sidebar-toggle-active-bg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--sidebar-focus-ring)]`}
-                >
-                  <ListTodo className="h-[17px] w-[17px]" strokeWidth={2.15} />
-                </button>
+                <div className="relative">
+                  <button
+                    type="button"
+                    aria-label="Toggle git environment dropdown"
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setEnvDropdownOpen(!envDropdownOpen);
+                    }}
+                    className={`relative eterx-header-icon-button flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-transparent bg-transparent text-[var(--sidebar-muted-text)] transition-colors duration-150 hover:bg-[var(--sidebar-toggle-hover-bg)] hover:text-[var(--sidebar-hover-text)] active:bg-[var(--sidebar-toggle-active-bg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--sidebar-focus-ring)] ${envDropdownOpen ? 'bg-[var(--sidebar-toggle-hover-bg)] text-[var(--sidebar-hover-text)]' : ''}`}
+                  >
+                    <ListTodo className="h-[17px] w-[17px]" strokeWidth={2.15} />
+                  </button>
+                  <AnimatePresence>
+                    {envDropdownOpen && (
+                      <motion.div
+                        ref={envDropdownRef}
+                        initial={{ opacity: 0, y: -5, scale: 0.98 }}
+                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                        exit={{ opacity: 0, y: -5, scale: 0.98 }}
+                        transition={{ duration: 0.15, ease: "easeOut" }}
+                        onMouseLeave={() => setActiveSubmenu(null)}
+                        className="absolute right-0 top-[calc(100%+8px)] w-[280px] z-50 bg-[#18181B] border border-white/[0.08] rounded-xl shadow-[0_12px_40px_rgba(0,0,0,0.6)] p-2 flex flex-col gap-0.5 text-[13px] text-white/70"
+                        onMouseDown={(e) => e.stopPropagation()}
+                      >
+                        {/* Todo Header */}
+                        <button
+                          type="button"
+                          onMouseEnter={() => setActiveSubmenu(null)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setTodoSectionOpen(!todoSectionOpen);
+                          }}
+                          className="flex items-center justify-between w-full text-[13px] text-white/90 hover:text-white px-2.5 py-2 text-left transition-colors cursor-pointer select-none focus:outline-none group"
+                        >
+                          <span>Todo</span>
+                          <ChevronDown className={`w-3.5 h-3.5 text-white/30 group-hover:text-white/60 transition-transform duration-150 ${todoSectionOpen ? '' : '-rotate-90'}`} />
+                        </button>
+
+                        {/* Todo List Container */}
+                        <AnimatePresence initial={false}>
+                          {todoSectionOpen && (
+                            <motion.div
+                              initial={{ height: 0, opacity: 0 }}
+                              animate={{ height: "auto", opacity: 1 }}
+                              exit={{ height: 0, opacity: 0 }}
+                              transition={{ duration: 0.15, ease: "easeOut" }}
+                              className="overflow-hidden"
+                            >
+                              <div 
+                                onMouseEnter={() => setActiveSubmenu(null)}
+                                className="flex flex-col gap-0.5 px-1.5 max-h-[82px] overflow-y-auto custom-scrollbar mb-1.5"
+                              >
+                                {(() => {
+                                  const tracker = lastTaskTracker || currentTaskTracker;
+                                  const isGenerating = tracker?.phase === 'generating' || 
+                                                       tracker?.status === 'generating' || 
+                                                       (isThinking && (!tracker || !tracker.steps || tracker.steps.length === 0));
+
+                                  if (isGenerating) {
+                                    return (
+                                      <div className="space-y-1.5 px-1 py-1">
+                                        {[0, 1, 2].map(index => (
+                                          <div key={index} className="flex h-6 items-center gap-2.5 overflow-hidden rounded-[10px] px-1">
+                                            <span className="block h-3.5 w-3.5 shrink-0 rounded-full border-[1.5px] border-[#A9A9A9]/35" />
+                                            <div className={`h-[8px] overflow-hidden rounded-full bg-white/[0.04] ${ index === 1 ? 'w-[72%]' : 'w-[58%]' }`}>
+                                              <div className="h-full w-full eterx-surface-shimmer eterx-surface-shimmer-progress" />
+                                            </div>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    );
+                                  }
+
+                                  if (tracker?.steps && tracker.steps.length > 0) {
+                                    return tracker.steps.map((step) => {
+                                      const activeWorking = step.status === 'in_progress' || (step.status === 'pending' && tracker.activeStepName === step.name);
+                                      return (
+                                        <div
+                                          key={step.id || step.step}
+                                          className="flex items-center gap-2.5 px-1.5 py-1 rounded-lg text-left text-white/80 text-[12px]"
+                                        >
+                                          <span className="shrink-0">
+                                            <TaskStatusGlyphMini status={step.status} active={activeWorking} />
+                                          </span>
+                                          <span className={`truncate flex-1 ${step.status === 'done' ? 'line-through text-white/45' : activeWorking ? 'text-white font-medium' : 'text-white/70'}`}>
+                                            {step.name || `Task ${step.step}`}
+                                          </span>
+                                        </div>
+                                      );
+                                    });
+                                  }
+
+                                  return (
+                                    <div className="px-1.5 py-1 text-white/40 text-[12px] flex items-center gap-2">
+                                      <span className="w-1.5 h-1.5 rounded-full bg-white/10" />
+                                      <span>Nothing to show</span>
+                                    </div>
+                                  );
+                                })()}
+                              </div>
+                            </motion.div>
+                          )}
+                        </AnimatePresence>
+
+                        {/* Divider */}
+                        <div 
+                          onMouseEnter={() => setActiveSubmenu(null)}
+                          className="h-[1px] bg-white/5 my-1.5 mx-1" 
+                        />
+
+                        {/* Changes Row */}
+                        <button 
+                          onMouseEnter={() => setActiveSubmenu(null)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setEnvDropdownOpen(false);
+                            setMonitorOpen(true);
+                          }}
+                          className="flex items-center gap-2.5 w-full px-2.5 py-2 rounded-lg text-left hover:bg-white/5 hover:text-white transition-all group text-white/80"
+                        >
+                          <PlusSquare className="w-4 h-4 text-white/30 group-hover:text-white/80" />
+                          <span className="flex-1 flex items-center justify-between">
+                            <span className="text-white/90">Changes</span>
+                            <div className="flex items-center gap-1.5 text-[11px] font-semibold">
+                              <span className="text-[#19C37D] font-mono">+{chatChangeStats.additions}</span>
+                              <span className="text-[#EF4444] font-mono">-{chatChangeStats.deletions}</span>
+                            </div>
+                          </span>
+                        </button>
+
+                        {/* Local Row */}
+                        <button 
+                          onMouseEnter={() => setActiveSubmenu('local')}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setActiveSubmenu(activeSubmenu === 'local' ? null : 'local');
+                          }}
+                          className={`relative flex items-center gap-2.5 w-full px-2.5 py-2 rounded-lg text-left hover:bg-white/5 hover:text-white transition-all group text-white/80 ${activeSubmenu === 'local' ? 'bg-white/5 text-white' : ''}`}
+                        >
+                          <Monitor className="w-4 h-4 text-white/30 group-hover:text-white/80" />
+                          <span className="flex-1 flex items-center justify-between">
+                            <span className={activeSubmenu === 'local' ? 'text-white font-medium' : ''}>{currentEnv}</span>
+                            <ChevronRight className={`w-3.5 h-3.5 text-white/30 transition-transform ${activeSubmenu === 'local' ? 'text-white' : ''}`} />
+                          </span>
+
+                          {/* Local Submenu Flyout */}
+                          <AnimatePresence>
+                            {activeSubmenu === 'local' && (
+                              <motion.div
+                                initial={{ opacity: 0, x: 5 }}
+                                animate={{ opacity: 1, x: 0 }}
+                                exit={{ opacity: 0, x: 5 }}
+                                transition={{ duration: 0.15 }}
+                                className="absolute right-[calc(100%+8px)] top-0 w-[240px] bg-[#18181B] border border-white/[0.08] rounded-xl shadow-[0_12px_40px_rgba(0,0,0,0.6)] p-2 flex flex-col gap-0.5 text-[13px] text-white/70"
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                <div className="text-[11px] font-medium text-white/35 px-2.5 py-1">
+                                  Continue in
+                                </div>
+
+                                <button 
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setCurrentEnv('Local');
+                                    setActiveSubmenu(null);
+                                  }}
+                                  className="flex items-center gap-2.5 w-full px-2.5 py-2 rounded-lg text-left hover:bg-white/5 hover:text-white transition-all group"
+                                >
+                                  <Monitor className="w-4 h-4 text-white/30 group-hover:text-white/80 shrink-0" />
+                                  <span className="flex-1 flex items-center justify-between min-w-0">
+                                    <span className={currentEnv === 'Local' ? 'text-white font-medium' : ''}>Work locally</span>
+                                    {currentEnv === 'Local' && <Check className="w-3.5 h-3.5 text-[#19C37D] shrink-0" />}
+                                  </span>
+                                </button>
+
+                                <button 
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setCurrentEnv('Worktree');
+                                    setActiveSubmenu(null);
+                                  }}
+                                  className="flex items-center gap-2.5 w-full px-2.5 py-2 rounded-lg text-left hover:bg-white/5 hover:text-white transition-all group"
+                                >
+                                  <GitFork className="w-4 h-4 text-white/30 group-hover:text-white/80 shrink-0" />
+                                  <span className="flex-1 flex items-center justify-between min-w-0">
+                                    <span className={currentEnv === 'Worktree' ? 'text-white font-medium' : ''}>Handoff to worktree</span>
+                                    {currentEnv === 'Worktree' && <Check className="w-3.5 h-3.5 text-[#19C37D] shrink-0" />}
+                                  </span>
+                                </button>
+
+                                <button 
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setCurrentEnv('Sandbox');
+                                    setActiveSubmenu(null);
+                                  }}
+                                  className="flex items-center gap-2.5 w-full px-2.5 py-2 rounded-lg text-left hover:bg-white/5 hover:text-white transition-all group"
+                                >
+                                  <Terminal className="w-4 h-4 text-white/30 group-hover:text-white/80 shrink-0" />
+                                  <span className="flex-1 flex items-center justify-between min-w-0">
+                                    <span className={currentEnv === 'Sandbox' ? 'text-white font-medium' : ''}>Sandbox</span>
+                                    {currentEnv === 'Sandbox' && <Check className="w-3.5 h-3.5 text-[#19C37D] shrink-0" />}
+                                  </span>
+                                </button>
+                              </motion.div>
+                            )}
+                          </AnimatePresence>
+                        </button>
+
+                        {/* Branch Row */}
+                        <button 
+                          onMouseEnter={() => setActiveSubmenu('branch')}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setActiveSubmenu(activeSubmenu === 'branch' ? null : 'branch');
+                          }}
+                          className={`relative flex items-center gap-2.5 w-full px-2.5 py-2 rounded-lg text-left hover:bg-white/5 hover:text-white transition-all group text-white/80 ${activeSubmenu === 'branch' ? 'bg-white/5 text-white' : ''}`}
+                        >
+                          <GitBranch className="w-4 h-4 text-white/30 group-hover:text-white/80" />
+                          <span className="flex-1 flex items-center justify-between">
+                            <span className={activeSubmenu === 'branch' ? 'text-white font-medium' : ''}>{currentBranch}</span>
+                            <ChevronRight className={`w-3.5 h-3.5 text-white/30 transition-transform ${activeSubmenu === 'branch' ? 'text-white' : ''}`} />
+                          </span>
+
+                          {/* Branch Submenu Flyout */}
+                          <AnimatePresence>
+                            {activeSubmenu === 'branch' && (
+                              <motion.div
+                                initial={{ opacity: 0, x: 5 }}
+                                animate={{ opacity: 1, x: 0 }}
+                                exit={{ opacity: 0, x: 5 }}
+                                transition={{ duration: 0.15 }}
+                                className="absolute right-[calc(100%+8px)] top-0 w-[260px] bg-[#18181B] border border-white/[0.08] rounded-xl shadow-[0_12px_40px_rgba(0,0,0,0.6)] p-2.5 flex flex-col gap-1 text-[13px] text-white/70"
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                {gitError && (
+                                  <div className="text-[11px] text-red-400 bg-red-500/10 border border-red-500/20 rounded-md p-2 mb-1.5 break-words">
+                                    {gitError}
+                                  </div>
+                                )}
+
+                                {isCreatingBranch ? (
+                                  <div className="flex flex-col gap-2">
+                                    <div className="text-[11px] font-medium text-white/35 px-1 py-0.5">
+                                      Create new branch
+                                    </div>
+                                    
+                                    <div className="flex items-center gap-2 w-full bg-white/5 rounded-md px-2 py-1.5 border border-white/5 focus-within:border-white/15 transition-all">
+                                      <GitBranch className="w-3.5 h-3.5 text-white/30 shrink-0" />
+                                      <input
+                                        type="text"
+                                        placeholder="Branch name"
+                                        autoFocus
+                                        value={newBranchName}
+                                        onChange={(e) => setNewBranchName(e.target.value)}
+                                        className="bg-transparent border-none outline-none text-[12px] text-white/90 placeholder:text-white/35 w-full font-mono"
+                                        onKeyDown={(e) => {
+                                          if (e.key === 'Enter') {
+                                            handleCreateBranchSubmit();
+                                          } else if (e.key === 'Escape') {
+                                            setIsCreatingBranch(false);
+                                            setNewBranchName('');
+                                          }
+                                        }}
+                                      />
+                                    </div>
+
+                                    <div className="flex items-center gap-2 justify-end mt-1">
+                                      <button
+                                        onClick={() => {
+                                          setIsCreatingBranch(false);
+                                          setNewBranchName('');
+                                          setGitError(null);
+                                        }}
+                                        className="px-2.5 py-1 rounded bg-white/5 hover:bg-white/10 text-white/80 hover:text-white text-[11px] font-medium transition-all"
+                                      >
+                                        Cancel
+                                      </button>
+                                      <button
+                                        disabled={!newBranchName.trim()}
+                                        onClick={handleCreateBranchSubmit}
+                                        className="px-2.5 py-1 rounded bg-[#19C37D]/20 hover:bg-[#19C37D]/30 disabled:opacity-40 disabled:hover:bg-[#19C37D]/20 text-[#19C37D] disabled:text-[#19C37D]/50 text-[11px] font-semibold transition-all"
+                                      >
+                                        Create
+                                      </button>
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <>
+                                    <div className="flex items-center gap-2 w-full bg-white/5 rounded-md px-2 py-1.5 mb-1.5 border border-white/5 focus-within:border-white/15 transition-all">
+                                      <Search className="w-3.5 h-3.5 text-white/30" />
+                                      <input
+                                        type="text"
+                                        placeholder="Search branches"
+                                        value={branchSearch}
+                                        onChange={(e) => setBranchSearch(e.target.value)}
+                                        className="bg-transparent border-none outline-none text-[12px] text-white/90 placeholder:text-white/35 w-full"
+                                      />
+                                    </div>
+
+                                    <div className="text-[11px] font-medium text-white/35 px-2 py-0.5">
+                                      Branches
+                                    </div>
+
+                                    <div className="flex flex-col gap-[2px] max-h-[180px] overflow-y-auto custom-scrollbar">
+                                      {(() => {
+                                        const filteredBranches = gitBranches.filter(b => 
+                                          b.name.toLowerCase().includes(branchSearch.toLowerCase())
+                                        );
+
+                                        if (filteredBranches.length === 0) {
+                                          return <div className="px-2 py-2 text-[12px] text-white/30 italic">No branches found</div>;
+                                        }
+
+                                        return filteredBranches.map((b) => (
+                                          <button 
+                                            key={b.name}
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              handleCheckoutBranch(b.name);
+                                            }}
+                                            className="flex items-start gap-2.5 w-full px-2 py-1.5 rounded-lg text-left hover:bg-white/5 hover:text-white transition-all group"
+                                          >
+                                            <GitBranch className="w-4 h-4 text-white/30 group-hover:text-white/80 mt-0.5 shrink-0" />
+                                            <span className="flex-1 flex items-start justify-between min-w-0">
+                                              <div className="flex flex-col min-w-0">
+                                                <span className={`truncate ${currentBranch === b.name ? 'text-white font-medium' : 'text-white/70'}`}>{b.name}</span>
+                                                {b.uncommitted && (
+                                                  <span className="text-[10px] text-white/35">{b.uncommitted}</span>
+                                                )}
+                                              </div>
+                                              {currentBranch === b.name && (
+                                                <Check className="w-3.5 h-3.5 text-[#19C37D] shrink-0 mt-0.5" />
+                                              )}
+                                            </span>
+                                          </button>
+                                        ));
+                                      })()}
+                                    </div>
+
+                                    <div className="h-[1px] bg-white/5 my-1" />
+
+                                    <button 
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setIsCreatingBranch(true);
+                                      }}
+                                      className="flex items-center gap-2.5 w-full px-2 py-1.5 rounded-lg text-left hover:bg-white/5 hover:text-white transition-all group text-white/60"
+                                    >
+                                      <PlusSquare className="w-4 h-4 text-white/30 group-hover:text-white/80" />
+                                      <span className="flex-1">Create and checkout new branch...</span>
+                                    </button>
+                                  </>
+                                )}
+                              </motion.div>
+                            )}
+                          </AnimatePresence>
+                        </button>
+
+                        {/* Commit/Push Row */}
+                        <button 
+                          onMouseEnter={() => setActiveSubmenu(null)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setEnvDropdownOpen(false);
+                            setMonitorOpen(true);
+                          }}
+                          className="flex items-center gap-2.5 w-full px-2.5 py-2 rounded-lg text-left hover:bg-white/5 hover:text-white transition-all group text-white/80"
+                        >
+                          <GitCommit className="w-4 h-4 text-white/30 group-hover:text-white/80" />
+                          <span className="flex-1">Commit or push</span>
+                        </button>
+
+                        {/* Divider */}
+                        <div 
+                          onMouseEnter={() => setActiveSubmenu(null)}
+                          className="h-[1px] bg-white/5 my-1.5 mx-1" 
+                        />
+
+                        {/* Sources Header */}
+                        <button
+                          type="button"
+                          onMouseEnter={() => setActiveSubmenu(null)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSourcesSectionOpen(!sourcesSectionOpen);
+                          }}
+                          className="flex items-center justify-between w-full text-[13px] text-white/90 hover:text-white px-2.5 py-2 text-left transition-colors cursor-pointer select-none focus:outline-none group"
+                        >
+                          <span>Sources</span>
+                          <ChevronDown className={`w-3.5 h-3.5 text-white/30 group-hover:text-white/60 transition-transform duration-150 ${sourcesSectionOpen ? '' : '-rotate-90'}`} />
+                        </button>
+
+                        {/* Sources List Container */}
+                        <AnimatePresence initial={false}>
+                          {sourcesSectionOpen && (
+                            <motion.div
+                              initial={{ height: 0, opacity: 0 }}
+                              animate={{ height: "auto", opacity: 1 }}
+                              exit={{ height: 0, opacity: 0 }}
+                              transition={{ duration: 0.15, ease: "easeOut" }}
+                              className="overflow-hidden"
+                            >
+                              <div 
+                                onMouseEnter={() => setActiveSubmenu(null)}
+                                className="flex flex-col gap-0.5 px-1.5 max-h-[82px] overflow-y-auto custom-scrollbar"
+                              >
+                                {(() => {
+                                  const itemsList: Array<{ 
+                                    id: string; 
+                                    name: string; 
+                                    path: string; 
+                                    isPinned?: boolean; 
+                                    status?: 'MOD' | 'ADD';
+                                    additions?: number;
+                                    deletions?: number;
+                                  }> = [];
+                                  
+                                  if (pinnedItems) {
+                                    for (const item of pinnedItems) {
+                                      itemsList.push({
+                                        id: item.id,
+                                        name: item.name,
+                                        path: item.path,
+                                        isPinned: true
+                                      });
+                                    }
+                                  }
+
+                                  if (chatChangeStats.files) {
+                                    for (const file of chatChangeStats.files) {
+                                      const name = getBasename(file.path);
+                                      const existing = itemsList.find(item => item.path === file.path || item.name === name);
+                                      if (existing) {
+                                        existing.status = file.status;
+                                        existing.additions = file.additions;
+                                        existing.deletions = file.deletions;
+                                      } else {
+                                        itemsList.push({
+                                          id: `chat-${file.path}`,
+                                          name: name,
+                                          path: file.path,
+                                          status: file.status,
+                                          additions: file.additions,
+                                          deletions: file.deletions
+                                        });
+                                      }
+                                    }
+                                  }
+
+                                  if (itemsList.length > 0) {
+                                    return itemsList.map((item) => {
+                                      const Icon = getFileIcon(item.path);
+                                      const iconColor = 'text-[#60A5FA]'; // beautiful blue color
+                                      return (
+                                        <div
+                                          key={item.id}
+                                          className="group flex items-center gap-2.5 px-2 py-1.5 rounded-lg text-left hover:bg-white/[0.04] transition-all text-[12px] cursor-pointer"
+                                        >
+                                          <Icon 
+                                            className={`w-3.5 h-3.5 shrink-0 transition-colors ${iconColor}`} 
+                                            strokeWidth={1.8}
+                                          />
+                                          <span className="truncate flex-1 font-mono text-white/75 group-hover:text-white" title={item.path}>
+                                            {item.name}
+                                          </span>
+                                          {((item.additions || 0) > 0 || (item.deletions || 0) > 0) && (
+                                            <div className="flex items-center gap-1.5 text-[10.5px] font-semibold font-mono shrink-0 ml-2">
+                                              {(item.additions || 0) > 0 && <span className="text-[#10B981]">+{item.additions}</span>}
+                                              {(item.deletions || 0) > 0 && <span className="text-[#EF4444]">-{item.deletions}</span>}
+                                            </div>
+                                          )}
+                                        </div>
+                                      );
+                                    });
+                                  }
+
+                                  return (
+                                    <div className="px-1.5 py-1 text-white/40 text-[12px] flex items-center gap-2">
+                                      <span className="w-1.5 h-1.5 rounded-full bg-white/10" />
+                                      <span>No active sources</span>
+                                    </div>
+                                  );
+                                })()}
+                              </div>
+                            </motion.div>
+                          )}
+                        </AnimatePresence>
+
+                        {/* Divider */}
+                        <div 
+                          onMouseEnter={() => setActiveSubmenu(null)}
+                          className="h-[1px] bg-white/5 my-1.5 mx-1" 
+                        />
+
+                        {/* Sub-agents Header */}
+                        <button
+                          type="button"
+                          onMouseEnter={() => setActiveSubmenu(null)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSubAgentsSectionOpen(!subAgentsSectionOpen);
+                          }}
+                          className="flex items-center justify-between w-full text-[13px] text-white/90 hover:text-white px-2.5 py-2 text-left transition-colors cursor-pointer select-none focus:outline-none group"
+                        >
+                          <span>Sub-agents</span>
+                          <ChevronDown className={`w-3.5 h-3.5 text-white/30 group-hover:text-white/60 transition-transform duration-150 ${subAgentsSectionOpen ? '' : '-rotate-90'}`} />
+                        </button>
+
+                        {/* Sub-agents Row */}
+                        <AnimatePresence initial={false}>
+                          {subAgentsSectionOpen && (
+                            <motion.div
+                              initial={{ height: 0, opacity: 0 }}
+                              animate={{ height: "auto", opacity: 1 }}
+                              exit={{ height: 0, opacity: 0 }}
+                              transition={{ duration: 0.15, ease: "easeOut" }}
+                              className="overflow-hidden"
+                            >
+                              <div 
+                                onMouseEnter={() => setActiveSubmenu(null)}
+                                className="flex flex-col gap-0.5 px-1.5 max-h-[82px] overflow-y-auto custom-scrollbar"
+                              >
+                                {currentSubAgents && currentSubAgents.length > 0 ? (
+                                  currentSubAgents.map((agent) => {
+                                    const isWorking = agent.status === 'working' || agent.status === 'spawning';
+                                    const isCompleted = agent.status === 'completed';
+                                    const iconColor = isWorking 
+                                      ? 'text-[#19C37D]' 
+                                      : isCompleted 
+                                        ? 'text-white/40' 
+                                        : 'text-red-400';
+                                    return (
+                                      <div
+                                        key={agent.name}
+                                        className="group flex items-center gap-2.5 px-2 py-1.5 rounded-lg text-left hover:bg-white/[0.04] transition-all text-[12px] cursor-pointer"
+                                      >
+                                        <GraduationCap 
+                                          className={`w-3.5 h-3.5 shrink-0 transition-colors ${iconColor} ${isWorking ? 'animate-pulse' : ''}`}
+                                          strokeWidth={1.8}
+                                        />
+                                        <span className="truncate flex-1 font-mono text-white/75 group-hover:text-white" title={agent.task}>
+                                          {agent.name}
+                                        </span>
+                                      </div>
+                                    );
+                                  })
+                                ) : (
+                                  <div className="px-1.5 py-1 text-white/40 text-[12px] flex items-center gap-2">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-white/10" />
+                                    <span>No active sub-agents</span>
+                                  </div>
+                                )}
+                              </div>
+                            </motion.div>
+                          )}
+                        </AnimatePresence>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
               )}
             </div>
           </div>
