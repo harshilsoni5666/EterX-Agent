@@ -790,6 +790,7 @@ function DeepWorkUI() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [monitorOpen, setMonitorOpen] = useState(false);
   const [agentTeamOpen, setAgentTeamOpen] = useState(false);
+  const [activeSubAgentTab, setActiveSubAgentTab] = useState<string | null>(null);
   const [petWidgetOpen, setPetWidgetOpen] = useState(false);
   const [nativePetAvailable, setNativePetAvailable] = useState(false);
   const canUseMonitor = activeView === 'chat' && !!activeChatId;
@@ -3052,9 +3053,11 @@ function DeepWorkUI() {
   };
 
   const handleOpenAgentTeam = useCallback((agentName?: string) => {
+    if (agentName) {
+      // Switch to that agent's tab in the header
+      setActiveSubAgentTab(agentName);
+    }
     setAgentTeamOpen(true);
-    // If a specific agent name is passed, the AgentTeamView will focus on it
-    // via its own internal state from the traceLogs
   }, []);
 
   const handleSend = async () => {
@@ -3606,6 +3609,22 @@ function DeepWorkUI() {
       : traceLogs),
     ...getLiveTraceLogs()
   ], [liveState, traceLogs, getLiveTraceLogs]);
+
+  // Per-sub-agent trace logs — filters the main traceLogs for the selected sub-agent tab
+  const subAgentDisplayLogs = useMemo(() => {
+    if (!activeSubAgentTab) return [];
+    return traceLogs.filter(log => {
+      if (!log) return false;
+      const agentName = log.agentName || log.subAgent;
+      return agentName === activeSubAgentTab;
+    });
+  }, [traceLogs, activeSubAgentTab]);
+
+  // Which logs to show in ChatFeed — main or sub-agent
+  const effectiveDisplayLogs = activeSubAgentTab ? subAgentDisplayLogs : displayTraceLogs;
+  const effectiveIsThinking = activeSubAgentTab
+    ? currentSubAgents.some(a => a.name === activeSubAgentTab && (a.status === 'working' || a.status === 'spawning'))
+    : isThinking;
   const currentTaskTracker = useMemo<TaskTrackerState | null>(() => {
     for (let i = traceLogs.length - 1; i >= 0; i--) {
       const log = traceLogs[i];
@@ -3639,13 +3658,22 @@ function DeepWorkUI() {
         });
       } else if (log.type === 'sub_agent_action') {
         const a = agentMap.get(name);
-        if (a) { a.status = 'working'; a.currentAction = log.text?.substring(0, 80); a.stepCount = log.agentStep || (a.stepCount + 1); }
+        if (a && a.status !== 'closed') { a.status = 'working'; a.currentAction = log.text?.substring(0, 80); a.stepCount = log.agentStep || (a.stepCount + 1); }
       } else if (log.type === 'sub_agent_complete') {
         const a = agentMap.get(name);
         if (a) { a.status = 'completed'; a.durationMs = log.durationMs || 0; a.stepCount = log.stepCount || a.stepCount; }
       } else if (log.type === 'sub_agent_error') {
         const a = agentMap.get(name);
         if (a) { a.status = 'error'; }
+      } else if (log.type === 'sub_agent_pause') {
+        const a = agentMap.get(name);
+        if (a) { a.status = 'paused'; }
+      } else if (log.type === 'sub_agent_resume') {
+        const a = agentMap.get(name);
+        if (a) { a.status = 'working'; }
+      } else if (log.type === 'sub_agent_close') {
+        const a = agentMap.get(name);
+        if (a) { a.status = 'closed'; }
       }
     }
     return Array.from(agentMap.values());
@@ -4131,6 +4159,74 @@ function DeepWorkUI() {
                 );
               })()}
             </div>
+
+            {/* Sub-Agent Tabs — shown in header when agents are active */}
+            {currentSubAgents.length > 0 && activeView === 'chat' && activeChatId && (
+              <div className="flex items-center gap-0.5 overflow-x-auto hide-scrollbar pointer-events-auto [-webkit-app-region:no-drag] px-1">
+                {/* Main agent tab */}
+                <button
+                  type="button"
+                  onClick={() => setActiveSubAgentTab(null)}
+                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11.5px] font-medium transition-all shrink-0 cursor-pointer select-none
+                    ${!activeSubAgentTab
+                      ? 'bg-white/[0.08] text-white/90 shadow-sm'
+                      : 'text-white/45 hover:bg-white/[0.04] hover:text-white/70'
+                    }`}
+                >
+                  <span className="flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-blue-500 to-indigo-600">
+                    <svg className="w-2.5 h-2.5 text-white" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1a7 7 0 100 14A7 7 0 008 1zm0 2.5a2 2 0 110 4 2 2 0 010-4zM4.5 11.5c0-1.5 1.5-2.5 3.5-2.5s3.5 1 3.5 2.5" /></svg>
+                  </span>
+                  <span>Main</span>
+                </button>
+                {/* Sub-agent tabs */}
+                {currentSubAgents.map((agent: any) => {
+                  const isActive = activeSubAgentTab === agent.name;
+                  const isClosed = agent.status === 'closed';
+                  const isWorking = agent.status === 'working' || agent.status === 'spawning';
+                  const lowerName = String(agent.name || '').toLowerCase().trim();
+                  const SUB_AGENT_TAB_ICONS = [
+                    'einstein', 'heisenberg', 'sam', 'dario', 'elon',
+                    'tesla', 'newton', 'turing', 'ada', 'curie',
+                    'feynman', 'darwin', 'hawking', 'galileo', 'davinci',
+                    'aristotle', 'oppenheimer', 'gates', 'jobs', 'pascal'
+                  ];
+                  const hasImage = SUB_AGENT_TAB_ICONS.includes(lowerName);
+                  return (
+                    <button
+                      key={agent.name}
+                      type="button"
+                      onClick={() => setActiveSubAgentTab(agent.name)}
+                      className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11.5px] font-medium transition-all shrink-0 cursor-pointer select-none
+                        ${isActive
+                          ? 'bg-white/[0.08] text-white/90 shadow-sm'
+                          : isClosed
+                            ? 'text-white/20 hover:bg-white/[0.02]'
+                            : 'text-white/45 hover:bg-white/[0.04] hover:text-white/70'
+                        }`}
+                    >
+                      {hasImage ? (
+                        <span className="flex h-[18px] w-[18px] shrink-0 items-center justify-center overflow-hidden rounded-full border border-white/[0.06]">
+                          <img src={`/icons/sub-agents/${lowerName}.png`} alt={agent.name} className="w-full h-full object-cover select-none" />
+                        </span>
+                      ) : (
+                        <span className="flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-full border border-white/[0.06] bg-white/[0.04] text-[8px] font-bold text-white/50">
+                          {String(agent.name || 'A').charAt(0).toUpperCase()}
+                        </span>
+                      )}
+                      <span className={isClosed ? 'line-through' : ''}>{agent.name}</span>
+                      {isWorking && (
+                        <svg className="w-2.5 h-2.5 shrink-0 animate-spin text-emerald-400" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="2" strokeDasharray="28" strokeDashoffset="8" strokeLinecap="round" /></svg>
+                      )}
+                    </button>
+                  );
+                })}
+                {/* + button placeholder */}
+                <div className="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-lg text-white/20 hover:text-white/40 hover:bg-white/[0.03] transition-colors cursor-pointer">
+                  <svg className="w-3 h-3" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="8" y1="3" x2="8" y2="13" /><line x1="3" y1="8" x2="13" y2="8" /></svg>
+                </div>
+              </div>
+            )}
+
             <div className="flex shrink-0 items-center gap-1.5 pointer-events-auto [-webkit-app-region:no-drag]">
               {canUseMonitor && (
                 <div className="relative">
@@ -4660,24 +4756,60 @@ function DeepWorkUI() {
                                 {currentSubAgents && currentSubAgents.length > 0 ? (
                                   currentSubAgents.map((agent) => {
                                     const isWorking = agent.status === 'working' || agent.status === 'spawning';
+                                    const isPaused = agent.status === 'paused';
                                     const isCompleted = agent.status === 'completed';
-                                    const iconColor = isWorking 
-                                      ? 'text-[#19C37D]' 
-                                      : isCompleted 
-                                        ? 'text-white/40' 
-                                        : 'text-red-400';
+                                    const isClosed = agent.status === 'closed';
+                                    const isError = agent.status === 'error';
+                                    const lowerName = String(agent.name || '').toLowerCase().trim();
+                                    const SUB_AGENT_ICON_NAMES = [
+                                      'einstein', 'heisenberg', 'sam', 'dario', 'elon',
+                                      'tesla', 'newton', 'turing', 'ada', 'curie',
+                                      'feynman', 'darwin', 'hawking', 'galileo', 'davinci',
+                                      'aristotle', 'oppenheimer', 'gates', 'jobs', 'pascal'
+                                    ];
+                                    const hasImage = SUB_AGENT_ICON_NAMES.includes(lowerName);
                                     return (
                                       <div
                                         key={agent.name}
                                         className="group flex items-center gap-2.5 px-2 py-1.5 rounded-lg text-left hover:bg-white/[0.04] transition-all text-[12px] cursor-pointer"
+                                        onClick={() => handleOpenAgentTeam(agent.name)}
                                       >
-                                        <GraduationCap 
-                                          className={`w-3.5 h-3.5 shrink-0 transition-colors ${iconColor} ${isWorking ? 'animate-pulse' : ''}`}
-                                          strokeWidth={1.8}
-                                        />
-                                        <span className="truncate flex-1 font-mono text-white/75 group-hover:text-white" title={agent.task}>
+                                        {/* Round profile image */}
+                                        {hasImage ? (
+                                          <span className="flex h-[22px] w-[22px] shrink-0 items-center justify-center overflow-hidden rounded-full border border-white/[0.08] bg-black/10">
+                                            <img
+                                              src={`/icons/sub-agents/${lowerName}.png`}
+                                              alt={agent.name}
+                                              className="w-full h-full object-cover select-none"
+                                            />
+                                          </span>
+                                        ) : (
+                                          <span className="flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-full border border-white/[0.08] bg-white/[0.04] text-[9px] font-bold text-white/60">
+                                            {String(agent.name || 'A').charAt(0).toUpperCase()}
+                                          </span>
+                                        )}
+                                        {/* Agent name */}
+                                        <span className={`truncate flex-1 text-[12px] font-medium ${isClosed ? 'text-white/30 line-through' : 'text-white/75 group-hover:text-white'}`} title={agent.task}>
                                           {agent.name}
                                         </span>
+                                        {/* Status indicator on right */}
+                                        {isWorking && (
+                                          <svg className="w-3.5 h-3.5 shrink-0 animate-spin text-emerald-400" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="2" strokeDasharray="28" strokeDashoffset="8" strokeLinecap="round" /></svg>
+                                        )}
+                                        {isPaused && (
+                                          <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center text-amber-400">
+                                            <svg viewBox="0 0 10 10" fill="currentColor" className="w-2.5 h-2.5"><rect x="1" y="1" width="3" height="8" rx="0.5" /><rect x="6" y="1" width="3" height="8" rx="0.5" /></svg>
+                                          </span>
+                                        )}
+                                        {isCompleted && (
+                                          <span className="w-2 h-2 shrink-0 rounded-full bg-emerald-400/80" />
+                                        )}
+                                        {isError && (
+                                          <span className="w-2 h-2 shrink-0 rounded-full bg-red-400/80" />
+                                        )}
+                                        {isClosed && (
+                                          <span className="w-2 h-2 shrink-0 rounded-full bg-white/15" />
+                                        )}
                                       </div>
                                     );
                                   })
@@ -4746,9 +4878,9 @@ function DeepWorkUI() {
                   style={hasOpenFiles ? { width: chatPanelWidth ?? undefined, flexBasis: chatPanelWidth === null ? `${ DEFAULT_CHAT_PANEL_RATIO * 100 }%` : undefined } : undefined}
                 >
                   <ChatFeed
-                    key={activeChatId}
-                    traceLogs={displayTraceLogs}
-                    isThinking={isThinking}
+                    key={`${activeChatId}-${activeSubAgentTab || 'main'}`}
+                    traceLogs={effectiveDisplayLogs}
+                    isThinking={effectiveIsThinking}
                     messagesEndRef={messagesEndRef}
                     setSidebarOpen={setSidebarOpen}
                     sidebarOpen={sidebarOpen}
@@ -4895,38 +5027,117 @@ function DeepWorkUI() {
                           <X className="h-3.5 w-3.5" />
                         </button>
                       </div>
-                      <div className="max-h-[360px] overflow-y-auto p-2">
+                      <div className="max-h-[420px] overflow-y-auto p-2 space-y-1.5">
                         {currentSubAgents.length === 0 ? (
                           <div className="rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-3 text-[12px] text-white/48">
                             No delegated agents are active yet.
                           </div>
                         ) : (
-                          <div className="space-y-1.5">
-                            {currentSubAgents.map((agent: any) => {
-                              const status = String(agent.status || 'pending');
-                              const statusColor = status === 'completed'
-                                ? 'bg-emerald-400'
-                                : status === 'error'
-                                  ? 'bg-rose-400'
-                                  : status === 'working' || status === 'spawning'
-                                    ? 'bg-amber-400 animate-pulse'
-                                    : 'bg-white/35';
-                              return (
-                                <div key={agent.name} className="flex items-start gap-2.5 rounded-lg border border-white/[0.055] bg-white/[0.025] px-3 py-2.5">
-                                  <span className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${statusColor}`} />
+                          currentSubAgents.map((agent: any) => {
+                            const status = String(agent.status || 'pending');
+                            const isWorking = status === 'working' || status === 'spawning';
+                            const isPaused = status === 'paused';
+                            const isCompleted = status === 'completed';
+                            const isClosed = status === 'closed';
+                            const isError = status === 'error';
+                            const lowerName = String(agent.name || '').toLowerCase().trim();
+                            const SUB_AGENT_ICON_NAMES = [
+                              'einstein', 'heisenberg', 'sam', 'dario', 'elon',
+                              'tesla', 'newton', 'turing', 'ada', 'curie',
+                              'feynman', 'darwin', 'hawking', 'galileo', 'davinci',
+                              'aristotle', 'oppenheimer', 'gates', 'jobs', 'pascal'
+                            ];
+                            const hasImage = SUB_AGENT_ICON_NAMES.includes(lowerName);
+
+                            const handleControl = async (action: string) => {
+                              try {
+                                await fetch('/api/agent/control', {
+                                  method: 'POST',
+                                  headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({ action, projectId: activeChatId, agentName: agent.name }),
+                                });
+                              } catch (err) {
+                                console.error(`[AgentControl] ${action} failed:`, err);
+                              }
+                            };
+
+                            const statusBadge = isCompleted
+                              ? { bg: 'bg-emerald-500/10 text-emerald-400', label: 'Done' }
+                              : isPaused
+                                ? { bg: 'bg-amber-500/10 text-amber-400', label: 'Paused' }
+                                : isClosed
+                                  ? { bg: 'bg-white/[0.04] text-white/30', label: 'Closed' }
+                                  : isError
+                                    ? { bg: 'bg-red-500/10 text-red-400', label: 'Error' }
+                                    : isWorking
+                                      ? { bg: 'bg-emerald-500/10 text-emerald-400', label: 'Working' }
+                                      : { bg: 'bg-white/[0.04] text-white/40', label: status };
+
+                            return (
+                              <div key={agent.name} className={`rounded-lg border border-white/[0.055] bg-white/[0.025] px-3 py-2.5 ${isClosed ? 'opacity-40' : ''}`}>
+                                <div className="flex items-center gap-2.5">
+                                  {/* Round profile image */}
+                                  {hasImage ? (
+                                    <span className="flex h-[28px] w-[28px] shrink-0 items-center justify-center overflow-hidden rounded-full border border-white/[0.08] bg-black/10">
+                                      <img src={`/icons/sub-agents/${lowerName}.png`} alt={agent.name} className="w-full h-full object-cover select-none" />
+                                    </span>
+                                  ) : (
+                                    <span className="flex h-[28px] w-[28px] shrink-0 items-center justify-center rounded-full border border-white/[0.08] bg-white/[0.04] text-[10px] font-bold text-white/60">
+                                      {String(agent.name || 'A').charAt(0).toUpperCase()}
+                                    </span>
+                                  )}
+                                  {/* Name + status */}
                                   <div className="min-w-0 flex-1">
-                                    <div className="flex items-center justify-between gap-2">
-                                      <div className="truncate text-[12px] font-semibold text-white/86">{agent.name}</div>
-                                      <div className="shrink-0 text-[10px] uppercase tracking-wide text-white/34">{status}</div>
+                                    <div className="flex items-center gap-2">
+                                      <span className="truncate text-[12px] font-semibold text-white/86">{agent.name}</span>
+                                      <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-[8px] font-semibold uppercase tracking-wider ${statusBadge.bg}`}>
+                                        {statusBadge.label}
+                                      </span>
                                     </div>
-                                    <div className="mt-0.5 line-clamp-2 text-[11px] leading-4 text-white/46">
-                                      {agent.currentAction || agent.task || 'Waiting for next action'}
+                                    <div className="mt-0.5 line-clamp-1 text-[10.5px] leading-4 text-white/40">
+                                      {agent.currentAction || agent.task || 'Waiting...'}
                                     </div>
                                   </div>
+                                  {/* Control buttons */}
+                                  {!isClosed && !isCompleted && (
+                                    <div className="flex shrink-0 items-center gap-1">
+                                      {isWorking && (
+                                        <button
+                                          type="button"
+                                          onClick={() => handleControl('pause')}
+                                          className="flex h-6 w-6 items-center justify-center rounded-md text-white/40 transition-colors hover:bg-amber-500/10 hover:text-amber-400"
+                                          aria-label={`Pause ${agent.name}`}
+                                          title="Pause"
+                                        >
+                                          <svg viewBox="0 0 10 10" fill="currentColor" className="w-2.5 h-2.5"><rect x="1" y="1" width="3" height="8" rx="0.5" /><rect x="6" y="1" width="3" height="8" rx="0.5" /></svg>
+                                        </button>
+                                      )}
+                                      {isPaused && (
+                                        <button
+                                          type="button"
+                                          onClick={() => handleControl('resume')}
+                                          className="flex h-6 w-6 items-center justify-center rounded-md text-white/40 transition-colors hover:bg-emerald-500/10 hover:text-emerald-400"
+                                          aria-label={`Resume ${agent.name}`}
+                                          title="Resume"
+                                        >
+                                          <svg viewBox="0 0 10 10" fill="currentColor" className="w-3 h-3"><polygon points="2,1 9,5 2,9" /></svg>
+                                        </button>
+                                      )}
+                                      <button
+                                        type="button"
+                                        onClick={() => handleControl('close')}
+                                        className="flex h-6 w-6 items-center justify-center rounded-md text-white/40 transition-colors hover:bg-red-500/10 hover:text-red-400"
+                                        aria-label={`Close ${agent.name}`}
+                                        title="Close"
+                                      >
+                                        <X className="w-3 h-3" />
+                                      </button>
+                                    </div>
+                                  )}
                                 </div>
-                              );
-                            })}
-                          </div>
+                              </div>
+                            );
+                          })
                         )}
                       </div>
                     </motion.aside>

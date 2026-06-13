@@ -1,4 +1,4 @@
-﻿import { autoContextManager } from './resilience/auto-context';
+import { autoContextManager } from './resilience/auto-context';
 import { getOrCreateGeminiCache, handleGeminiCacheNotFound, invalidateGeminiCacheForKey } from './gemini-cache';
 import { conversationLedger } from './memory/conversation-ledger';
 import { chatBoundary } from './chat-boundary';
@@ -4529,7 +4529,7 @@ EXTERNAL ACTION NOTE CUE
         api_key_vault: { text: 'Vault operation', type: 'command', iconCategory: 'computer', argKey: 'action' },
         context_manager: { text: 'Context operation', type: 'command', iconCategory: 'computer', argKey: 'action' },
         // Next-Gen tools
-        spawn_sub_agent: { text: 'Spawning sub-agents', type: 'command', iconCategory: 'agent', argKey: 'mode' },
+        spawn_sub_agent: { text: 'Creating agents', type: 'command', iconCategory: 'agent', argKey: 'mode' },
         deep_research: { text: 'Deep researching', type: 'exploration', iconCategory: 'web_search', argKey: 'topic' },
         code_intelligence: { text: 'Analyzing code', type: 'exploration', iconCategory: 'search', argKey: 'target' },
         smart_refactor: { text: 'Refactoring code', type: 'file_edit', iconCategory: 'file_edit', argKey: 'file' },

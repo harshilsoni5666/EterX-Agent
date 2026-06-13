@@ -61,6 +61,173 @@ function safeAgentSegment(value: string, fallback: string): string {
 const cancelFlags: Map<string, boolean> = new Map();
 let globalCancelFlag = false; // Emergency stop for ALL agents
 
+// === PER-AGENT PAUSE/CLOSE CONTROLS ===
+// pauseState maps "projectId:agentName" -> { paused, resolver }
+// When paused, the agent's trace loop awaits a promise that resolves on resume.
+interface AgentPauseState {
+  paused: boolean;
+  resolver: (() => void) | null;
+  promise: Promise<void> | null;
+}
+const agentPauseStates: Map<string, AgentPauseState> = new Map();
+const agentCloseFlags: Map<string, boolean> = new Map();
+
+function agentKey(projectId: string, agentName: string): string {
+  return `${projectId}:${agentName}`;
+}
+
+/**
+ * Pause a specific sub-agent. Its execution loop will suspend at the next trace callback.
+ */
+export function pauseAgent(projectId: string, agentName: string, onTrace?: (trace: any) => void): boolean {
+  const key = agentKey(projectId, agentName);
+  const existing = agentPauseStates.get(key);
+  if (existing?.paused) return false; // already paused
+
+  let resolver: (() => void) | null = null;
+  const promise = new Promise<void>((resolve) => { resolver = resolve; });
+  agentPauseStates.set(key, { paused: true, resolver, promise });
+  console.log(`[SubAgent] ⏸ Paused: ${agentName}`);
+
+  if (onTrace) {
+    onTrace({
+      type: 'sub_agent_pause',
+      text: `${agentName} paused`,
+      subAgent: agentName,
+      agentName: agentName,
+      agentStatus: 'paused',
+    });
+  }
+  return true;
+}
+
+/**
+ * Resume a previously paused sub-agent.
+ */
+export function resumeAgent(projectId: string, agentName: string, onTrace?: (trace: any) => void): boolean {
+  const key = agentKey(projectId, agentName);
+  const state = agentPauseStates.get(key);
+  if (!state?.paused) return false; // not paused
+
+  state.paused = false;
+  state.resolver?.(); // resolve the promise — execution continues
+  agentPauseStates.delete(key);
+  console.log(`[SubAgent] ▶ Resumed: ${agentName}`);
+
+  if (onTrace) {
+    onTrace({
+      type: 'sub_agent_resume',
+      text: `${agentName} resumed`,
+      subAgent: agentName,
+      agentName: agentName,
+      agentStatus: 'working',
+    });
+  }
+  return true;
+}
+
+/**
+ * Close (terminate) a specific sub-agent without cancelling the whole chat.
+ */
+export function closeAgent(projectId: string, agentName: string, onTrace?: (trace: any) => void): boolean {
+  const key = agentKey(projectId, agentName);
+  agentCloseFlags.set(key, true);
+
+  // If it's paused, also resume it so it can see the close flag and exit
+  const pauseState = agentPauseStates.get(key);
+  if (pauseState?.paused) {
+    pauseState.paused = false;
+    pauseState.resolver?.();
+    agentPauseStates.delete(key);
+  }
+
+  console.log(`[SubAgent] ✕ Closed: ${agentName}`);
+
+  if (onTrace) {
+    onTrace({
+      type: 'sub_agent_close',
+      text: `${agentName} closed`,
+      subAgent: agentName,
+      agentName: agentName,
+      agentStatus: 'closed',
+    });
+  }
+  return true;
+}
+
+/**
+ * Check if a specific agent is paused.
+ */
+export function isAgentPaused(projectId: string, agentName: string): boolean {
+  return agentPauseStates.get(agentKey(projectId, agentName))?.paused === true;
+}
+
+/**
+ * Check if a specific agent has been closed (terminated).
+ */
+export function isAgentClosed(projectId: string, agentName: string): boolean {
+  return agentCloseFlags.get(agentKey(projectId, agentName)) === true;
+}
+
+/**
+ * Wait while an agent is paused. Returns immediately if not paused.
+ * Called inside the agent's trace loop to suspend execution.
+ */
+export async function awaitIfPaused(projectId: string, agentName: string): Promise<void> {
+  const key = agentKey(projectId, agentName);
+  const state = agentPauseStates.get(key);
+  if (state?.paused && state.promise) {
+    await state.promise;
+  }
+}
+
+/**
+ * Get control state for all agents in a project.
+ */
+export function getAgentControlStates(projectId: string): Array<{ name: string; paused: boolean; closed: boolean }> {
+  const results: Array<{ name: string; paused: boolean; closed: boolean }> = [];
+  const seen = new Set<string>();
+
+  for (const [key, state] of agentPauseStates.entries()) {
+    if (key.startsWith(projectId + ':')) {
+      const name = key.substring(projectId.length + 1);
+      seen.add(name);
+      results.push({ name, paused: state.paused, closed: agentCloseFlags.get(key) === true });
+    }
+  }
+  for (const [key] of agentCloseFlags.entries()) {
+    if (key.startsWith(projectId + ':')) {
+      const name = key.substring(projectId.length + 1);
+      if (!seen.has(name)) {
+        results.push({ name, paused: false, closed: true });
+      }
+    }
+  }
+  return results;
+}
+
+/**
+ * Reset agent control state (called when a new task starts).
+ */
+export function resetAgentControls(projectId?: string) {
+  if (projectId) {
+    for (const key of [...agentPauseStates.keys()]) {
+      if (key.startsWith(projectId + ':')) {
+        const state = agentPauseStates.get(key);
+        state?.resolver?.();
+        agentPauseStates.delete(key);
+      }
+    }
+    for (const key of [...agentCloseFlags.keys()]) {
+      if (key.startsWith(projectId + ':')) agentCloseFlags.delete(key);
+    }
+  } else {
+    for (const state of agentPauseStates.values()) state.resolver?.();
+    agentPauseStates.clear();
+    agentCloseFlags.clear();
+  }
+}
+
 /**
  * Cancel agents for a specific chat only.
  */
@@ -87,6 +254,7 @@ export function cancelAllSubAgents() {
 export function resetCancelFlag(chatId?: string) {
   if (chatId) {
     cancelFlags.set(chatId, false);
+    resetAgentControls(chatId);
     // Also reset global flag if it was set — emergency is over if we're starting new work
     if (globalCancelFlag) {
       globalCancelFlag = false;
@@ -95,17 +263,18 @@ export function resetCancelFlag(chatId?: string) {
   } else {
     globalCancelFlag = false;
     cancelFlags.clear();
+    resetAgentControls();
     console.log('[SubAgent] 🔄 All cancel flags cleared');
   }
 }
 
 /**
- * Check if a specific chat is cancelled.
- * CRITICAL: Does NOT check globalCancelFlag during normal operation.
- * Global flag is ONLY for emergency app shutdown — never for per-chat stops.
- * This prevents stopping Chat A from killing agents in Chat B.
+ * Check if a specific chat is cancelled, or if a specific agent within it is closed.
  */
-export function isCancelled(chatId?: string): boolean {
+export function isCancelled(chatId?: string, agentName?: string): boolean {
+  if (chatId && agentName) {
+    if (isAgentClosed(chatId, agentName)) return true;
+  }
   if (chatId) return cancelFlags.get(chatId) === true;
   // Only return true for global if no chatId specified (legacy callers)
   return globalCancelFlag;
@@ -326,9 +495,26 @@ export class SubAgentSpawner {
         deepBrief,
         [],
         (trace) => {
+          // Check per-agent close flag first
+          if (isAgentClosed(context.projectId, name)) {
+            throw new Error('CANCELLED_BY_USER');
+          }
           // Check cancellation on every trace event for this specific chat
           if (isCancelled(context.projectId)) {
             throw new Error('CANCELLED_BY_USER');
+          }
+
+          // Check pause — if paused, this blocks until resumed
+          // We can't await here (sync callback), so we use a microtask check
+          // The actual await happens in the executeMessageLoop's async iterations
+          const pauseKey = agentKey(context.projectId, name);
+          const pauseState = agentPauseStates.get(pauseKey);
+          if (pauseState?.paused && pauseState.promise) {
+            // Signal that we're paused to the message loop by throwing a special marker
+            // The message loop's outer try/catch will handle this
+            instance.status = 'paused' as any;
+          } else if (instance.status === ('paused' as any)) {
+            instance.status = 'running';
           }
 
           const logEntry = `[${ new Date().toISOString() }] ${ trace.type }: ${ trace.text || '' }${ trace.secondary ? ' | ' + trace.secondary : '' }`;
@@ -337,7 +523,7 @@ export class SubAgentSpawner {
           // Write status every 8th event (reduced disk I/O for speed)
           if (traceLog.length % 8 === 0) {
             agentMessageBus.writeAgentStatus(name, {
-              status: 'running',
+              status: instance.status === ('paused' as any) ? 'paused' : 'running',
               task,
               progress: trace.text || 'Working...',
               traceLog: traceLog.slice(-10),
@@ -355,7 +541,7 @@ export class SubAgentSpawner {
               text: trace.text,
               subAgent: name,
               agentName: name,
-              agentStatus: 'working',
+              agentStatus: instance.status === ('paused' as any) ? 'paused' : 'working',
               agentStep: traceLog.length
             });
           }

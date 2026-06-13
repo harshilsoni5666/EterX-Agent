@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { ToolDefinition } from '../../schemas';
-import { globalSubAgentSpawner, agentMessageBus, SubAgentName, getPendingResults, hasPendingResults } from '../../roles/sub_agent';
+import { globalSubAgentSpawner, agentMessageBus, SubAgentName, getPendingResults, hasPendingResults, pauseAgent, resumeAgent, closeAgent } from '../../roles/sub_agent';
 import { enforceToolCapability } from '../security/tool_policy';
 
 /**
@@ -42,8 +42,8 @@ WHEN TO USE CONSENSUS: For high-stakes analysis (stock comparison, security audi
 IMPORTANT: After spawning, you MUST immediately start working on your own tasks. Do NOT call mode="status" in a loop — just keep working and collect when ready.`,
   category: 'core',
   inputSchema: z.object({
-    mode: z.enum(['spawn', 'status', 'collect', 'clear', 'consensus'])
-      .describe('spawn = fire-and-forget launch, status = check progress, collect = get results, clear = cleanup, consensus = 3-agent debate panel for high-stakes analysis'),
+    mode: z.enum(['spawn', 'status', 'collect', 'clear', 'consensus', 'pause', 'resume', 'close'])
+      .describe('spawn = fire-and-forget launch, status = check progress, collect = get results, clear = cleanup, consensus = 3-agent debate panel, pause = pause agent, resume = resume paused agent, close = terminate agent'),
     tasks: z.array(z.object({
       task: z.string().describe('Detailed task description for this sub-agent'),
       name: z.string().optional().describe('Optional agent name (auto-assigned if not provided)')
@@ -254,6 +254,45 @@ IMPORTANT: After spawning, you MUST immediately start working on your own tasks.
 
       default:
         return { mode: input.mode, agents: [], message: `Unknown mode: ${ input.mode }` };
+
+      // === PAUSE: Pause a specific sub-agent ===
+      case 'pause': {
+        if (!input.agentName) {
+          return { mode: 'pause', agents: [], message: 'ERROR: agentName is required for pause mode.' };
+        }
+        const paused = pauseAgent(context?.projectId, input.agentName, onTrace);
+        return {
+          mode: 'pause',
+          agents: [{ name: input.agentName, status: paused ? 'paused' : 'already_paused' }],
+          message: paused ? `${input.agentName} has been paused. Call mode="resume" to continue.` : `${input.agentName} is already paused.`
+        };
+      }
+
+      // === RESUME: Resume a paused sub-agent ===
+      case 'resume': {
+        if (!input.agentName) {
+          return { mode: 'resume', agents: [], message: 'ERROR: agentName is required for resume mode.' };
+        }
+        const resumed = resumeAgent(context?.projectId, input.agentName, onTrace);
+        return {
+          mode: 'resume',
+          agents: [{ name: input.agentName, status: resumed ? 'working' : 'not_paused' }],
+          message: resumed ? `${input.agentName} has been resumed.` : `${input.agentName} was not paused.`
+        };
+      }
+
+      // === CLOSE: Terminate a specific sub-agent ===
+      case 'close': {
+        if (!input.agentName) {
+          return { mode: 'close', agents: [], message: 'ERROR: agentName is required for close mode.' };
+        }
+        const closed = closeAgent(context?.projectId, input.agentName, onTrace);
+        return {
+          mode: 'close',
+          agents: [{ name: input.agentName, status: 'closed' }],
+          message: closed ? `${input.agentName} has been terminated.` : `${input.agentName} close signal sent.`
+        };
+      }
     }
   }
 };

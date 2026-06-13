@@ -2256,42 +2256,56 @@ const SubAgentCard = ({ log, onOpenAgentTeam }: { log: any; onOpenAgentTeam?: (n
   );
 };
 
-// Sub-agent spawn card — shows when agents are launched
-const SubAgentSpawnCard = ({ log, onOpenAgentTeam }: { log: any; onOpenAgentTeam?: (name?: string) => void }) => {
+// Agent created card — minimal, enterprise-grade card shown when sub-agents are created
+const AgentCreatedCard = ({ log, onOpenAgentTeam }: { log: any; onOpenAgentTeam?: (name?: string) => void }) => {
   const agents = log.agentDetails || log.spawnedAgents || [];
   const agentList = Array.isArray(agents)
     ? agents.map((a: any) => typeof a === 'string' ? a : a.name).filter(Boolean)
     : [];
-  const nameStr = agentList.length > 0 ? agentList.join(' · ') : String(log.secondary || log.text || '');
-  const taskText = log.task || log.text || 'Spawning sub-agents';
+  // If single agent spawn (from spawnAgent), use the direct name
+  const singleName = log.agentName || log.subAgent || '';
+  const displayList = agentList.length > 0 ? agentList : (singleName ? [singleName] : ['Agent']);
+
+  // Known sub-agent names that have profile images
+  const SUB_AGENT_NAMES = [
+    'einstein', 'heisenberg', 'sam', 'dario', 'elon',
+    'tesla', 'newton', 'turing', 'ada', 'curie',
+    'feynman', 'darwin', 'hawking', 'galileo', 'davinci',
+    'aristotle', 'oppenheimer', 'gates', 'jobs', 'pascal'
+  ];
 
   return (
-    <div className="my-1.5 overflow-hidden">
-      <button
-        type="button"
-        onClick={() => onOpenAgentTeam?.(agentList[0])}
-        className={`w-full flex min-h-[46px] items-center gap-3 rounded-[12px] px-3 py-2.5 bg-white/[0.018] border border-white/[0.065] text-left transition-colors hover:bg-white/[0.028] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/16 ${ACTION_CARD_CLASS}`}
-        aria-label="Open spawned agents in agent team"
-      >
-        <span className="flex shrink-0 items-center -space-x-1.5">
-          {(agentList.length > 0 ? agentList : ['Sub-agent']).slice(0, 3).map((name: string) => (
-            <SubAgentIdentityIcon key={name} name={name} status="spawning" size={30} />
-          ))}
-          {agentList.length > 3 && (
-            <span className="flex h-[30px] min-w-[30px] items-center justify-center rounded-[8px] border border-white/[0.08] bg-[#20201F] px-1 text-[10px] font-semibold text-white/60">
-              +{agentList.length - 3}
-            </span>
-          )}
-        </span>
-        <span className="min-w-0 flex-1 text-left">
-          <span className="flex items-center gap-2">
-            <span className="text-[13px] font-medium text-[#D8D1C8]">Team spawned</span>
-            <span className="text-[10px] text-[#938B80] font-mono">{agentList.length > 0 ? `${agentList.length} agents` : ''}</span>
-          </span>
-          <span className="block truncate text-[11px] text-[#7E766C] mt-0.5">{nameStr || taskText}</span>
-        </span>
-      </button>
-    </div>
+    <>
+      {displayList.map((name: string) => {
+        const lowerName = String(name).toLowerCase().trim();
+        const hasImage = SUB_AGENT_NAMES.includes(lowerName);
+        return (
+          <div key={name} className="my-1">
+            <button
+              type="button"
+              onClick={() => onOpenAgentTeam?.(name)}
+              className={`w-full flex h-[44px] items-center gap-3 rounded-[12px] px-3.5 bg-white/[0.015] border border-white/[0.06] text-left transition-all hover:bg-white/[0.03] hover:border-white/[0.09] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/16 cursor-pointer group ${ACTION_CARD_CLASS}`}
+              aria-label={`View agent ${name}`}
+            >
+              {hasImage ? (
+                <span className="flex h-[28px] w-[28px] shrink-0 items-center justify-center overflow-hidden rounded-full border border-white/[0.08] bg-black/10 shadow-[0_2px_8px_rgba(0,0,0,0.12)]">
+                  <img
+                    src={`/icons/sub-agents/${lowerName}.png`}
+                    alt={name}
+                    className="w-full h-full object-cover select-none"
+                  />
+                </span>
+              ) : (
+                <SubAgentIdentityIcon name={name} status="spawning" size={28} />
+              )}
+              <span className="text-[13px] font-medium text-[#C8C1B8] group-hover:text-[#E0DAD2] transition-colors">
+                Creating <span className="text-[#E0DAD2]">{name}</span>
+              </span>
+            </button>
+          </div>
+        );
+      })}
+    </>
   );
 };
 
@@ -3121,11 +3135,11 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
     else if (log.type === 'work_note') { flush(idx - 1); segs.push({ kind: 'note', log, idx }); }
     else if (log.type === 'safety_warning') { flush(idx - 1); segs.push({ kind: 'safety', log, idx }); }
     else if (log.type === 'steering_received') { flush(idx - 1); segs.push({ kind: 'steering', log, idx }); }
-    else if (log.type === 'sub_agent_answer' || log.type === 'sub_agent_result' || log.type === 'sub_agent_complete') { flush(idx - 1); segs.push({ kind: 'subagent', log, idx }); }
+    else if (log.type === 'sub_agent_answer' || log.type === 'sub_agent_result' || log.type === 'sub_agent_complete') { /* hidden from main feed */ }
     else if (log.type === 'sub_agent_spawn') { flush(idx - 1); segs.push({ kind: 'subagent_spawn', log, idx }); }
-    else if (log.type === 'sub_agent_error') { flush(idx - 1); segs.push({ kind: 'subagent_error', log, idx }); }
-    else if (log.type === 'sub_agent_action') { flush(idx - 1); segs.push({ kind: 'subagent_action', log, idx }); }
-    else if (log.type === 'inter_agent_comm') { flush(idx - 1); segs.push({ kind: 'comm', log, idx }); }
+    else if (log.type === 'sub_agent_error') { /* hidden from main feed */ }
+    else if (log.type === 'sub_agent_action') { /* hidden from main feed */ }
+    else if (log.type === 'inter_agent_comm') { /* hidden from main feed */ }
     else if (log.type === 'ask_user') { flush(idx - 1); segs.push({ kind: 'ask_user', log, idx }); }
     else if (log.type === 'console_output') {
       const commandSnippet = String(log.command || '').trim().substring(0, 20);
@@ -3193,11 +3207,11 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
         if (seg.kind === 'note') return <WorkNoteBlock key={`n-${ seg.idx }`} text={seg.log.text} isActive={isThinking && isLast && i === segs.length - 1 && !hasExternalLiveWork} />;
         if (seg.kind === 'safety') return <SafetyBanner key={`sf-${ seg.idx }`} log={seg.log} />;
         if (seg.kind === 'steering') return <SteeringCard key={`steer-${ seg.idx }`} log={seg.log} />;
-        if (seg.kind === 'subagent') return <SubAgentCard key={`sa-${ seg.idx }`} log={seg.log} onOpenAgentTeam={onOpenAgentTeam} />;
-        if (seg.kind === 'comm') return <InterAgentCommCard key={`comm-${ seg.idx }`} log={seg.log} onOpenAgentTeam={onOpenAgentTeam} />;
-        if (seg.kind === 'subagent_action') return <SubAgentActionCard key={`saa-${ seg.idx }`} log={seg.log} />;
-        if (seg.kind === 'subagent_spawn') return <SubAgentSpawnCard key={`ss-${ seg.idx }`} log={seg.log} onOpenAgentTeam={onOpenAgentTeam} />;
-        if (seg.kind === 'subagent_error') return <SubAgentErrorCard key={`se-${ seg.idx }`} log={seg.log} />;
+        if (seg.kind === 'subagent') return null; /* hidden from main feed */
+        if (seg.kind === 'comm') return null; /* hidden from main feed */
+        if (seg.kind === 'subagent_action') return null; /* hidden from main feed */
+        if (seg.kind === 'subagent_spawn') return <AgentCreatedCard key={`ss-${ seg.idx }`} log={seg.log} onOpenAgentTeam={onOpenAgentTeam} />;
+        if (seg.kind === 'subagent_error') return null; /* hidden from main feed */
         if (seg.kind === 'ask_user') return <AskUserTimelineCard key={`ask-tl-${ seg.idx }`} log={seg.log} isLive={isThinking && isLast && i === segs.length - 1 && !seg.log.answeredWith} />;
         if (seg.kind === 'console') return <TerminalTraceCard key={`console-${ seg.idx }`} log={seg.log} preview={seg.log} isLiveChip={isThinking && isLast && i === segs.length - 1} />;
         if (seg.kind === 'action_group' && prevSeg?.kind === 'note') return null;
