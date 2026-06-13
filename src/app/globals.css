@@ -182,29 +182,36 @@
   }
 
   .eterx-app-shell[data-sidebar-open="true"] .eterx-workspace-shell {
-    margin-left: -8px;
+    margin-left: 0 !important;
+    padding-left: 8px !important;
+    padding-right: 0 !important;
+    padding-bottom: 0 !important;
   }
 
   .eterx-app-shell[data-sidebar-open="true"] .eterx-workspace-shell::before {
-    content: "";
-    position: absolute;
-    left: -10px;
-    top: var(--eterx-shell-topbar-height);
-    bottom: 0;
-    z-index: 0;
-    width: calc(var(--eterx-main-panel-left-radius) + 10px);
-    pointer-events: none;
-    background:
-      var(--sidebar-shell-sheen),
-      var(--sidebar-bg);
-    background-size: 180% 100%, 100% 100%;
-    border-top-right-radius: var(--eterx-main-panel-left-radius);
-    border-bottom-right-radius: var(--eterx-main-panel-left-radius);
+    content: none !important;
+    display: none !important;
   }
 
   .eterx-app-shell[data-sidebar-open="false"] .eterx-workspace-shell::before {
     display: none;
   }
+
+  .eterx-app-shell[data-sidebar-open="true"] .eterx-main-panel {
+    border-top-left-radius: var(--eterx-main-panel-left-radius) !important;
+    border-bottom-left-radius: var(--eterx-main-panel-left-radius) !important;
+    border-top-right-radius: 0 !important;
+    border-bottom-right-radius: 0 !important;
+  }
+
+  .eterx-app-shell[data-sidebar-open="true"] .eterx-main-panel::after {
+    border-top-left-radius: var(--eterx-main-panel-left-radius) !important;
+    border-bottom-left-radius: var(--eterx-main-panel-left-radius) !important;
+    border-top-right-radius: 0 !important;
+    border-bottom-right-radius: 0 !important;
+  }
+
+
 
   .eterx-sidebar-closed-toggle-shell {
     position: absolute;
@@ -319,25 +326,23 @@
   }
 
   .eterx-main-panel-sidebar-closed {
-    border-top-left-radius: 0 !important;
-    border-bottom-left-radius: 0 !important;
+    border-radius: 0 !important;
   }
 
   .eterx-app-shell[data-sidebar-open="false"] .eterx-main-panel {
-    border-top-left-radius: 0 !important;
-    border-bottom-left-radius: 0 !important;
+    border-radius: 0 !important;
   }
 
   .eterx-app-shell[data-sidebar-open="false"] .eterx-main-panel::after,
   .eterx-main-panel-sidebar-closed::after {
-    border-top-left-radius: 0 !important;
-    border-bottom-left-radius: 0 !important;
+    border-radius: 0 !important;
   }
 
   .eterx-new-chat-motion-field {
     border-bottom-left-radius: inherit;
     contain: paint;
   }
+
 
   .eterx-main-header {
     height: var(--eterx-main-header-height);
@@ -1380,6 +1385,200 @@
 [data-radix-scroll-area-thumb]:active {
   background: var(--sb-thumb-active) !important;
 }
+:root[data-theme="light"] .eterx-text-shimmer,
+[data-theme="light"] .eterx-text-shimmer {
+  --eterx-shimmer-a: #4C4944;
+  --eterx-shimmer-d: #FFFFFF;
+  text-shadow: none;
+}
+
+:root[data-theme="light"] .eterx-text-shimmer-active,
+[data-theme="light"] .eterx-text-shimmer-active,
+:root[data-theme="light"] .eterx-text-shimmer-working,
+[data-theme="light"] .eterx-text-shimmer-working {
+  --eterx-shimmer-a: #24221F;
+  --eterx-shimmer-d: #FFFFFF;
+}
+
+:root[data-theme="light"] .eterx-surface-shimmer,
+[data-theme="light"] .eterx-surface-shimmer {
+  background: linear-gradient(
+    102deg,
+    transparent 0%,
+    transparent 44%,
+    rgba(255,255,255,.76) 50%,
+    rgba(255,255,255,.76) 56%,
+    transparent 62%,
+    transparent 100%
+  );
+  background-size: 245% 100%;
+  background-position: 260% 50%;
+  background-repeat: no-repeat;
+}
+
+:root[data-theme="light"] .eterx-chat-input-dock-active,
+[data-theme="light"] .eterx-chat-input-dock-active {
+  background: transparent !important;
+  isolation: isolate;
+}
+
+:root[data-theme="light"] .eterx-chat-input-dock-active::before,
+[data-theme="light"] .eterx-chat-input-dock-active::before {
+  content: "";
+  position: absolute;
+  inset: auto 0 0 0;
+  height: min(260px, 30vh);
+  pointer-events: none;
+  z-index: -1;
+  background: linear-gradient(
+    0deg,
+    #FFFFFF 0%,
+    rgba(255, 255, 255, 0.98) 38%,
+    rgba(255, 255, 255, 0.76) 68%,
+    rgba(255, 255, 255, 0) 100%
+  ) !important;
+}
+
+:root[data-theme="light"] .eterx-composer-popout,
+[data-theme="light"] .eterx-composer-popout {
+  background: rgba(255, 255, 255, 0.985) !important;
+  border-color: rgba(31, 31, 29, 0.07) !important;
+  box-shadow: 0 1px 4px rgba(31, 31, 29, 0.055) !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+
+:root[data-theme="light"] .eterx-composer-popout-caret,
+[data-theme="light"] .eterx-composer-popout-caret {
+  background: #FFFFFF !important;
+  border-color: rgba(31, 31, 29, 0.07) !important;
+  box-shadow: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .eterx-text-shimmer {
+    background: none;
+    color: #C8C5BF;
+    -webkit-text-fill-color: currentColor;
+    text-shadow: none;
+    animation: none;
+  }
+
+  :root[data-theme="light"] .eterx-text-shimmer,
+  [data-theme="light"] .eterx-text-shimmer {
+    color: #777674;
+  }
+
+  .eterx-surface-shimmer {
+    animation: none;
+    background: transparent;
+  }
+
+  :root[data-theme="light"] .eterx-surface-shimmer,
+  [data-theme="light"] .eterx-surface-shimmer {
+    background: transparent;
+  }
+}
+
+/* Global modern scrollbar styling. Chrome/Electron use WebKit pseudos so thumb rounding works. */
+::-webkit-scrollbar,
+*::-webkit-scrollbar {
+  width: var(--sb-size) !important;
+  height: var(--sb-size) !important;
+  background: transparent !important;
+}
+
+::-webkit-scrollbar-button,
+*::-webkit-scrollbar-button {
+  display: none !important;
+  visibility: hidden !important;
+  opacity: 0 !important;
+  width: 0 !important;
+  height: 0 !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  background: transparent !important;
+  background-color: transparent !important;
+  background-image: none !important;
+  border: 0 !important;
+  box-shadow: none !important;
+  -webkit-appearance: none !important;
+}
+
+::-webkit-scrollbar-track,
+*::-webkit-scrollbar-track,
+::-webkit-scrollbar-track-piece,
+*::-webkit-scrollbar-track-piece,
+::-webkit-scrollbar-track-piece:start,
+*::-webkit-scrollbar-track-piece:start,
+::-webkit-scrollbar-track-piece:end,
+*::-webkit-scrollbar-track-piece:end,
+::-webkit-scrollbar-corner,
+*::-webkit-scrollbar-corner,
+::-webkit-resizer,
+*::-webkit-resizer {
+  background: transparent !important;
+  background-color: transparent !important;
+  background-image: none !important;
+  border: 0 !important;
+  box-shadow: none !important;
+}
+
+::-webkit-scrollbar-thumb,
+*::-webkit-scrollbar-thumb {
+  min-height: 48px !important;
+  min-width: 48px !important;
+  background: var(--sb-thumb) !important;
+  background-color: var(--sb-thumb) !important;
+  border: var(--sb-inset) solid transparent !important;
+  border-radius: var(--sb-radius) !important;
+  background-clip: content-box !important;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.03) !important;
+  transition: background-color 0.2s ease !important;
+}
+
+::-webkit-scrollbar-thumb:hover,
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--sb-thumb-hover) !important;
+  background-color: var(--sb-thumb-hover) !important;
+  background-clip: content-box !important;
+}
+
+::-webkit-scrollbar-thumb:active,
+*::-webkit-scrollbar-thumb:active {
+  background: var(--sb-thumb-active) !important;
+  background-color: var(--sb-thumb-active) !important;
+  background-clip: content-box !important;
+}
+
+.monaco-scrollable-element > .scrollbar,
+.monaco-editor .scrollbar,
+[data-radix-scroll-area-scrollbar] {
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+}
+
+.monaco-scrollable-element > .scrollbar > .slider,
+.monaco-editor .scrollbar > .slider,
+[data-radix-scroll-area-thumb] {
+  background: var(--sb-thumb) !important;
+  border: 0 !important;
+  border-radius: var(--sb-radius) !important;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.03) !important;
+}
+
+.monaco-scrollable-element > .scrollbar > .slider:hover,
+.monaco-editor .scrollbar > .slider:hover,
+[data-radix-scroll-area-thumb]:hover {
+  background: var(--sb-thumb-hover) !important;
+}
+
+.monaco-scrollable-element > .scrollbar > .slider:active,
+.monaco-editor .scrollbar > .slider:active,
+[data-radix-scroll-area-thumb]:active {
+  background: var(--sb-thumb-active) !important;
+}
 
 /* Complete hide utilities */
 .scrollbar-hide::-webkit-scrollbar,
@@ -1414,6 +1613,11 @@
   right: calc(var(--chat-feed-sb-size, var(--sb-size)) + 4px) !important;
 }
 
+.eterx-chat-input-dock-active {
+  right: calc(var(--chat-feed-sb-size, var(--sb-size)) + 4px) !important;
+  width: auto !important;
+}
+
 .eterx-chat-feed-scroll {
   --sb-size: var(--chat-feed-sb-size);
 }
@@ -1445,6 +1649,12 @@
   --eterx-new-chat-rail-hover-bg: rgba(255, 255, 255, 0.62);
   --eterx-new-chat-rail-hover-text: #2F3A48;
   --eterx-new-chat-rail-shadow: 0 14px 32px rgba(32, 44, 61, 0.075);
+  --eterx-status-popout-bg: rgba(255, 255, 255, 0.985);
+  --eterx-status-popout-border: rgba(31, 31, 29, 0.10);
+  --eterx-status-popout-text: #22211f;
+  --eterx-status-popout-muted: #77716a;
+  --eterx-status-popout-hover: rgba(31, 31, 29, 0.06);
+  --eterx-status-search-bg: rgba(31, 31, 29, 0.045);
 }
 
 :root[data-theme="dark"] .eterx-composer-shell {
@@ -1455,6 +1665,12 @@
   --eterx-new-chat-rail-hover-bg: rgba(255, 255, 255, 0.065);
   --eterx-new-chat-rail-hover-text: #F2EFEA;
   --eterx-new-chat-rail-shadow: 0 14px 36px rgba(0, 0, 0, 0.22);
+  --eterx-status-popout-bg: rgba(34, 34, 34, 0.985);
+  --eterx-status-popout-border: rgba(255, 255, 255, 0.095);
+  --eterx-status-popout-text: #F4F1EA;
+  --eterx-status-popout-muted: #A9A49C;
+  --eterx-status-popout-hover: rgba(255, 255, 255, 0.07);
+  --eterx-status-search-bg: rgba(255, 255, 255, 0.055);
 }
 
 .eterx-new-chat-composer-surface {
@@ -1475,11 +1691,11 @@
 
 .eterx-new-chat-status-rail {
   position: relative;
-  z-index: 1;
+  z-index: 1; /* Render underneath the composer surface so bottom controls are not cut off/blocked */
   width: 100%;
   align-self: center;
   margin-top: -25px;
-  overflow: hidden;
+  overflow: visible;
   border: 1px solid var(--eterx-new-chat-rail-border);
   border-top: 0;
   border-radius: 0 0 30px 30px;
@@ -1487,7 +1703,11 @@
   box-shadow: var(--eterx-new-chat-rail-shadow);
   -webkit-backdrop-filter: blur(18px) saturate(1.08);
   backdrop-filter: blur(18px) saturate(1.08);
-  padding: 31px 23px 10px;
+  padding: 31px 20px 11px;
+}
+
+.eterx-new-chat-status-rail:has(.is-open) {
+  z-index: 10; /* Temporarily lift z-index when status menus are open so dropdowns render on top */
 }
 
 .eterx-new-chat-status-rail::before {
@@ -1498,9 +1718,9 @@
   display: flex;
   min-width: 0;
   align-items: center;
-  gap: 28px;
-  overflow-x: auto;
-  overflow-y: hidden;
+  flex-wrap: wrap;
+  gap: 8px;
+  overflow: visible;
   scrollbar-width: none;
 }
 
@@ -1508,27 +1728,44 @@
   display: none;
 }
 
-.eterx-new-chat-status-item {
-  display: inline-flex;
+.eterx-new-chat-status-anchor {
+  position: relative;
+  flex: 0 1 auto;
   min-width: 0;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 6px;
-  height: 23px;
-  max-width: 230px;
-  border-radius: 999px;
-  padding: 0 3px;
-  color: var(--eterx-new-chat-rail-text);
-  font-size: 13px;
-  font-weight: 520;
-  line-height: 1;
-  letter-spacing: 0;
-  transition: background-color 160ms ease, color 160ms ease;
 }
 
-.eterx-new-chat-status-item:hover {
+.eterx-new-chat-status-item {
+  appearance: none;
+  display: inline-flex;
+  min-width: 0;
+  max-width: 240px;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background: transparent;
+  padding: 0 10px;
+  color: var(--eterx-new-chat-rail-text);
+  font-size: 13px;
+  font-weight: 560;
+  line-height: 1;
+  letter-spacing: 0;
+  cursor: pointer;
+  transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease, transform 160ms ease;
+}
+
+.eterx-new-chat-status-item:hover,
+.eterx-new-chat-status-item:focus-visible,
+.eterx-new-chat-status-item.is-open {
   background: var(--eterx-new-chat-rail-hover-bg);
+  border-color: var(--eterx-new-chat-rail-border);
   color: var(--eterx-new-chat-rail-hover-text);
+  outline: none;
+}
+
+.eterx-new-chat-status-item:active {
+  transform: scale(0.985);
 }
 
 .eterx-new-chat-status-item span {
@@ -1556,8 +1793,147 @@
 }
 
 .eterx-new-chat-status-item:hover .eterx-new-chat-status-icon,
-.eterx-new-chat-status-item:hover .eterx-new-chat-status-chevron {
+.eterx-new-chat-status-item:hover .eterx-new-chat-status-chevron,
+.eterx-new-chat-status-item:focus-visible .eterx-new-chat-status-icon,
+.eterx-new-chat-status-item:focus-visible .eterx-new-chat-status-chevron,
+.eterx-new-chat-status-item.is-open .eterx-new-chat-status-icon,
+.eterx-new-chat-status-item.is-open .eterx-new-chat-status-chevron {
   color: currentColor;
+}
+
+.eterx-new-chat-status-item.is-open .eterx-new-chat-status-chevron {
+  transform: rotate(180deg);
+}
+
+.eterx-status-popout {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 8px);
+  z-index: 260 !important;
+  display: flex;
+  width: min(318px, calc(100vw - 48px));
+  max-height: min(420px, calc(100dvh - 220px));
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--eterx-status-popout-border) !important;
+  border-radius: 18px;
+  background: var(--eterx-status-popout-bg) !important;
+  color: var(--eterx-status-popout-text);
+  box-shadow: 0 18px 46px rgba(0, 0, 0, 0.36), inset 0 1px 0 rgba(255, 255, 255, 0.055) !important;
+  -webkit-backdrop-filter: blur(22px) saturate(1.08);
+  backdrop-filter: blur(22px) saturate(1.08);
+  padding: 7px;
+}
+
+.eterx-status-popout-project {
+  width: min(360px, calc(100vw - 48px));
+}
+
+.eterx-status-popout-run {
+  width: min(326px, calc(100vw - 48px));
+}
+
+.eterx-status-popout-branch {
+  right: 0;
+  left: auto;
+  width: min(268px, calc(100vw - 48px));
+}
+
+.eterx-status-search {
+  display: flex;
+  height: 38px;
+  align-items: center;
+  gap: 8px;
+  border-radius: 12px;
+  background: var(--eterx-status-search-bg);
+  color: var(--eterx-status-popout-muted);
+  padding: 0 10px;
+}
+
+.eterx-status-search input {
+  min-width: 0;
+  flex: 1 1 auto;
+  border: 0;
+  background: transparent;
+  color: var(--eterx-status-popout-text);
+  font-size: 13px;
+  font-weight: 540;
+  outline: 0;
+}
+
+.eterx-status-search input::placeholder {
+  color: var(--eterx-status-popout-muted);
+  opacity: 1;
+}
+
+.eterx-status-menu-section {
+  margin-top: 6px;
+  overflow-y: auto;
+}
+
+.eterx-status-menu-label {
+  padding: 7px 10px 5px;
+  color: var(--eterx-status-popout-muted);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1;
+}
+
+.eterx-status-menu-item {
+  display: flex;
+  min-height: 42px;
+  width: 100%;
+  align-items: center;
+  gap: 10px;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--eterx-status-popout-text);
+  cursor: pointer;
+  padding: 7px 10px;
+  text-align: left;
+  font-size: 13.5px;
+  font-weight: 610;
+  letter-spacing: 0;
+  transition: background-color 140ms ease, color 140ms ease, opacity 140ms ease;
+}
+
+.eterx-status-menu-item:hover,
+.eterx-status-menu-item:focus-visible,
+.eterx-status-menu-item.is-selected {
+  background: var(--eterx-status-popout-hover);
+  outline: 0;
+}
+
+.eterx-status-menu-item.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.eterx-status-menu-icon {
+  height: 18px;
+  width: 18px;
+  flex: 0 0 auto;
+  color: var(--eterx-status-popout-muted);
+}
+
+.eterx-status-menu-item:hover .eterx-status-menu-icon,
+.eterx-status-menu-item:focus-visible .eterx-status-menu-icon,
+.eterx-status-menu-item.is-selected .eterx-status-menu-icon {
+  color: currentColor;
+}
+
+.eterx-status-menu-rule {
+  height: 1px;
+  margin: 7px 6px;
+  background: var(--eterx-status-popout-border);
+}
+
+.eterx-status-empty {
+  padding: 12px 10px;
+  color: var(--eterx-status-popout-muted);
+  font-size: 13px;
+  font-weight: 540;
 }
 
 .eterx-chat-input-dock,
@@ -3426,16 +3802,21 @@
   .eterx-main-panel {
     border-top-left-radius: var(--eterx-main-panel-left-radius);
     border-bottom-left-radius: var(--eterx-main-panel-left-radius);
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
   }
 
+
   .eterx-app-shell[data-sidebar-open="false"] .eterx-main-panel {
-    border-top-left-radius: 0 !important;
-    border-bottom-left-radius: 0 !important;
+    border-radius: 0 !important;
   }
 
   .eterx-main-panel > .eterx-chat-top-fade {
     border-top-left-radius: inherit;
+    border-top-right-radius: inherit;
   }
+
+
 }
 
 .eterx-sidebar-brand span {
@@ -3472,11 +3853,11 @@
 .eterx-sidebar-settings-button:active {
   background: color-mix(in srgb, var(--sidebar-active-bg) 82%, var(--sidebar-strong-text) 10%) !important;
   border-color: color-mix(in srgb, var(--sidebar-strong-text) 10%, transparent) !important;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--sidebar-strong-text) 5%, transparent) !important;
   color: var(--sidebar-hover-text) !important;
   transform: none !important;
 }
 
-.eterx-sidebar-profile-name,
 .eterx-sidebar-chat-title {
   letter-spacing: 0;
 }
@@ -3484,6 +3865,11 @@
 .eterx-sidebar-profile-name {
   color: var(--sidebar-strong-text) !important;
   font-weight: 560;
+}
+
+.eterx-sidebar-chat-title,
+.eterx-sidebar-chat-title-wrap {
+  text-overflow: clip !important;
 }
 
 .eterx-sidebar-profile-meta,
@@ -3523,6 +3909,7 @@
   color: var(--sidebar-icon);
 }
 
+
 .eterx-sidebar-nav-active,
 .eterx-sidebar-chat-active {
   background: var(--sidebar-active-bg) !important;
@@ -3561,10 +3948,23 @@
 }
 
 .eterx-sidebar-chat-content {
-  -webkit-mask-image: linear-gradient(90deg, #000 0%, #000 100%);
-  mask-image: linear-gradient(90deg, #000 0%, #000 100%);
+  -webkit-mask-image: linear-gradient(90deg, #000 0%, #000 calc(100% - 0.2rem), transparent calc(100% - 0.05rem));
+  mask-image: linear-gradient(90deg, #000 0%, #000 calc(100% - 0.2rem), transparent calc(100% - 0.05rem));
   transition: -webkit-mask-image 150ms ease, mask-image 150ms ease;
 }
+
+.eterx-sidebar-chat-content-menu-visible,
+.eterx-sidebar-chat-row:hover .eterx-sidebar-chat-content {
+  -webkit-mask-image: linear-gradient(90deg, #000 0%, #000 calc(100% - 2.35rem), transparent calc(100% - 2.2rem));
+  mask-image: linear-gradient(90deg, #000 0%, #000 calc(100% - 2.35rem), transparent calc(100% - 2.2rem));
+}
+
+
+
+
+
+
+
 
 .eterx-sidebar-chat-content-working {
   padding-right: 2.75rem;
@@ -3574,18 +3974,23 @@
   max-width: 100%;
 }
 
-.eterx-sidebar-chat-row:hover .eterx-sidebar-chat-content,
-.eterx-sidebar-chat-content-menu-visible {
-  -webkit-mask-image: linear-gradient(90deg, #000 0%, #000 calc(100% - 4.5rem), rgba(0, 0, 0, 0.18) calc(100% - 2.7rem), transparent calc(100% - 1.35rem));
-  mask-image: linear-gradient(90deg, #000 0%, #000 calc(100% - 4.5rem), rgba(0, 0, 0, 0.18) calc(100% - 2.7rem), transparent calc(100% - 1.35rem));
+.eterx-sidebar-shell .eterx-sidebar-chat-menu-button {
+  background: color-mix(in srgb, var(--sidebar-bg) 40%, var(--sidebar-strong-text) 12%) !important;
+  border: 1px solid var(--sidebar-surface-border) !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.16) !important;
 }
 
-.eterx-sidebar-shell .eterx-sidebar-chat-menu-button,
-.eterx-sidebar-shell .eterx-sidebar-chat-menu-button:hover,
-.eterx-sidebar-shell .eterx-sidebar-chat-menu-button:active {
-  background: transparent !important;
-  box-shadow: none !important;
+.eterx-sidebar-shell .eterx-sidebar-chat-menu-button:hover {
+  background: color-mix(in srgb, var(--sidebar-bg) 20%, var(--sidebar-strong-text) 20%) !important;
+  border-color: var(--sidebar-surface-border) !important;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.22) !important;
 }
+
+.eterx-sidebar-shell .eterx-sidebar-chat-menu-button:active {
+  background: color-mix(in srgb, var(--sidebar-bg) 10%, var(--sidebar-strong-text) 26%) !important;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12) !important;
+}
+
 
 .eterx-sidebar-chat-active .eterx-sidebar-chat-title {
   background: none !important;
@@ -4906,4 +5311,50 @@
     background-position: 0 0, 0 0, 28% 0, 52% 0, 12% 0, 0% 0;
     filter: hue-rotate(128deg) saturate(0.98);
   }
+}
+
+/* Ensure the main panel and its children become perfect rectangles when the sidebar is closed. */
+.eterx-app-shell[data-sidebar-open="false"] .eterx-main-panel,
+.eterx-app-shell[data-sidebar-open="false"] .eterx-main-panel::after,
+.eterx-main-panel.eterx-main-panel-sidebar-closed,
+.eterx-main-panel.eterx-main-panel-sidebar-closed::after {
+  border-top-left-radius: 0 !important;
+  border-bottom-left-radius: 0 !important;
+  border-top-right-radius: 0 !important;
+  border-bottom-right-radius: 0 !important;
+  border-radius: 0 !important;
+}
+
+.eterx-app-shell[data-sidebar-open="false"] .eterx-new-chat-motion-field {
+  clip-path: inset(0 0 0 0 round 0) !important;
+}
+
+/* Premium floating panel visual continuity overrides when sidebar is open */
+.eterx-app-shell[data-sidebar-open="true"] .eterx-sidebar-shell {
+  width: calc(var(--eterx-shell-sidebar-width) + 32px) !important;
+  margin-right: -40px !important;
+  z-index: 1 !important;
+  overflow: visible !important;
+}
+
+.eterx-app-shell[data-sidebar-open="true"] .eterx-sidebar-shell > div:not(.eterx-sidebar-sheen):not(.eterx-sidebar-resize-handle) {
+  width: var(--eterx-shell-sidebar-width) !important;
+}
+
+.eterx-app-shell[data-sidebar-open="true"] .eterx-sidebar-resize-handle {
+  right: 32px !important;
+}
+
+.eterx-app-shell[data-sidebar-open="true"] .eterx-workspace-shell {
+  z-index: 2 !important;
+  pointer-events: none !important;
+  background: transparent !important;
+}
+
+:root[data-theme="dark"] .eterx-app-shell[data-sidebar-open="true"] .eterx-workspace-shell {
+  background: transparent !important;
+}
+
+.eterx-app-shell[data-sidebar-open="true"] .eterx-workspace-shell > * {
+  pointer-events: auto !important;
 }

@@ -1,28 +1,31 @@
 ---
 name: system-architecture
-description: Masterclass on building modular, scalable, and secure application architectures.
+description: Use for architecture design, refactoring boundaries, module decomposition, scalability, reliability, security, and long-term maintainability decisions.
+icon: Network
+category: coding
 ---
-# System Architecture Masterclass
 
-## 1. The Core Philosophy
-As an advanced AI agent, you must think beyond single files. When tasked with building or refactoring an application, you are responsible for the entire architecture. You must build systems that are modular, scalable, and secure by default.
+# System Architecture
 
-## 2. Architectural Principles
-- **Separation of Concerns (SoC)**: UI code should NEVER contain raw database queries. Abstract business logic into separate services or controllers.
-- **Single Source of Truth**: Data states should be centralized. Do not pass props 10 levels down; use proper context or state management tools.
-- **Micro-Utility Focus**: Functions should do exactly ONE thing. If a function is longer than 50 lines, reconsider its architecture.
-- **Stateless by Default**: Systems should be designed so that any node/instance can crash and restart without permanently losing user state (store state in DBs/Caches, not memory).
+Architect from current constraints, not generic diagrams.
 
-## 3. The Implementation Blueprint
-When starting a new project, ALWAYS establish this directory structure logically:
-- `/components` - Pure UI rendering, no heavy business logic.
-- `/services` or `/lib` - Core business logic, API calls, and heavy computations.
-- `/schemas` or `/models` - Data definitions and typing (Zod, Typescript Interfaces).
-- `/api` - Routing and network ingress.
+## Workflow
 
-## 4. Anti-Patterns (Avoid these!)
-- ❌ The "God File": Do not write 2000-line index.js files. Split logic up.
-- ❌ Hardcoding Secrets: NEVER hardcode API keys or DB URIs. Always use environment variables.
-- ❌ Synchronous Blocks: Do not block the event loop. Use async/await for all IO operations.
+1. Read the existing system shape: modules, data flow, boundaries, deployment, and constraints.
+2. Identify the decision being made and what must remain compatible.
+3. Compare options by correctness, simplicity, operability, security, cost, and migration risk.
+4. Prefer small reversible steps over speculative rewrites.
+5. Document the chosen boundary and the reason it exists.
 
-Apply these principles from the very first line of code you write.
+## Principles
+
+- Keep business logic out of UI-only components.
+- Put IO, persistence, and external APIs behind explicit boundaries.
+- Make data ownership clear.
+- Design failure modes before happy-path scale.
+- Avoid global state unless it is truly shared application state.
+- Keep observability and rollback paths in the design.
+
+## Deliverables
+
+Use concise artifacts: module map, decision table, migration plan, risk list, or interface sketch. Do not create architecture theater when a small code change is enough.

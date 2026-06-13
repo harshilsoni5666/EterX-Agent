@@ -353,7 +353,8 @@ export function autoStreamPing(chatId: string): void {
   if (!isLiveStreaming()) {
     startLiveStream({ fps: 8, quality: 80, maxWidth: 1280, chatId }).catch(() => {});
   } else if (_stream && chatId && _stream.cfg.chatId !== chatId) {
-    _stream.cfg.chatId = chatId;
+    stopLiveStream();
+    startLiveStream({ fps: 8, quality: 80, maxWidth: 1280, chatId }).catch(() => {});
   }
 }
 

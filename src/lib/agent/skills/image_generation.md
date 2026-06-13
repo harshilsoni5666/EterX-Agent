@@ -1,4 +1,4 @@
----
+﻿---
 name: image-generation
 description: "Use this skill for raster image generation or image editing requests: photos, illustrations, product mockups, UI mockups, transparent cutouts, sprites, covers, ad creatives, infographics, or project visual assets. Do not use for charts/data visualization, repo-native SVG/icon systems, simple CSS/canvas shapes, or deterministic diagrams better built as code."
 ---

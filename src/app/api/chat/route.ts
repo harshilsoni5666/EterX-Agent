@@ -8,7 +8,20 @@ import {
   getAgentIdFromBuilderChatId,
   isAgentBuilderChatId,
 } from '../../../lib/agent/builder-agent';
-import { applyRuntimeApiKeys, applyRuntimeModelOverrides } from '../../../lib/agent/runtime-api-keys';
+import { buildScopedRuntimeSettings } from '../../../lib/agent/runtime-api-keys';
+import {
+  attachAgentApiSessionCookie,
+  cleanString,
+  getOrCreateAgentApiSession,
+  isSafeChatId,
+  jsonError,
+  MAX_PROMPT_CHARS,
+  normalizeHistory,
+  normalizeMediaAttachments,
+  readJsonObject,
+  rejectCrossOrigin,
+  requireChatOwner,
+} from '../agent/_shared';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -30,9 +43,14 @@ import '../../../lib/agent/tools/index';
  * This is the bridge between old SSE-based UI and new registry-based backend.
  */
 export async function POST(req: NextRequest) {
+  let session: ReturnType<typeof getOrCreateAgentApiSession> | null = null;
   try {
+    const originError = rejectCrossOrigin(req);
+    if (originError) return originError;
+    session = getOrCreateAgentApiSession(req);
+
     const { 
-      prompt, 
+      prompt: rawPrompt, 
       history = [], 
       mediaAttachments = [], 
       userId = 'default_user', 
@@ -43,23 +61,36 @@ export async function POST(req: NextRequest) {
       userName = 'Developer',
       apiKeys = null,
       modelOverrides = null,
-    } = await req.json();
+    } = await readJsonObject(req);
+    const prompt = cleanString(rawPrompt, MAX_PROMPT_CHARS);
+    const chatId = projectId;
 
-    if (!prompt) {
-      return NextResponse.json({ error: 'Prompt is required' }, { status: 400 });
+    if (!isSafeChatId(chatId) || !prompt) {
+      return attachAgentApiSessionCookie(
+        jsonError('Valid projectId and prompt are required', 400),
+        session,
+      );
+    }
+
+    const ownerError = requireChatOwner(chatId, session.sessionId);
+    if (ownerError) {
+      return attachAgentApiSessionCookie(ownerError, session);
     }
 
     const safeMode = normalizeMainAgentMode(mode);
     const safeThinkingLevel = normalizeMainAgentThinkingLevel(thinkingLevel);
-    const runtimeKeyResult = applyRuntimeApiKeys(apiKeys);
-    applyRuntimeModelOverrides(modelOverrides);
-    // Use projectId as chatId (they're the same in the frontend)
-    const chatId = projectId;
+    const safeUserId = cleanString(userId, 120) || 'default_user';
+    const safeUserName = cleanString(userName, 120) || 'Developer';
+    const safePinnedContext = pinnedContext && typeof pinnedContext === 'object' && !Array.isArray(pinnedContext)
+      ? pinnedContext
+      : {};
+    const runtimeSettings = buildScopedRuntimeSettings(apiKeys, modelOverrides);
     const isBuilderChat = isAgentBuilderChatId(chatId);
     const builderAgentId = isBuilderChat ? getAgentIdFromBuilderChatId(chatId) : '';
     const effectivePinnedContext = {
-      ...(isBuilderChat ? buildAgentBuilderPinnedContext(chatId, pinnedContext) : (pinnedContext || {})),
+      ...(isBuilderChat ? buildAgentBuilderPinnedContext(chatId, safePinnedContext) : safePinnedContext),
       thinkingLevel: safeThinkingLevel,
+      agentSessionId: session.sessionId,
     };
     const effectivePrompt = isBuilderChat ? buildAgentBuilderUserRequest(builderAgentId, prompt) : prompt;
     const effectiveMode = isBuilderChat ? getAgentBuilderMode(safeMode) : safeMode;
@@ -68,17 +99,21 @@ export async function POST(req: NextRequest) {
     const startResult = agentRegistry.startAgent(
       chatId,
       effectivePrompt,
-      history,
+      normalizeHistory(history),
       effectiveMode,
-      userId,
+      safeUserId,
       effectivePinnedContext,
-      mediaAttachments,
-      userName,
-      runtimeKeyResult.preferredGeminiApiKey
+      normalizeMediaAttachments(mediaAttachments),
+      safeUserName,
+      runtimeSettings.preferredGeminiApiKey,
+      runtimeSettings
     );
 
     if (startResult.status === 'no_keys') {
-      return NextResponse.json({ error: 'All API keys are in use. Try again shortly.' }, { status: 503 });
+      return attachAgentApiSessionCookie(jsonError('All API keys are in use. Try again shortly.', 503, startResult), session);
+    }
+    if (startResult.status === 'already_running') {
+      return attachAgentApiSessionCookie(jsonError(startResult.message, 409, startResult), session);
     }
 
     // Now stream the traces via SSE by polling the registry buffer
@@ -160,19 +195,20 @@ export async function POST(req: NextRequest) {
       }
     });
 
-    return new Response(stream, {
+    return attachAgentApiSessionCookie(new Response(stream, {
       headers: {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache, no-store, must-revalidate',
         'Connection': 'keep-alive',
         'X-Accel-Buffering': 'no', // Disable nginx/proxy buffering
       },
-    });
+    }), session);
   } catch (error: any) {
     console.error('API Error:', error);
-    return NextResponse.json(
+    const response = NextResponse.json(
       { error: 'Internal Agent Error', details: error.message },
       { status: 500 }
     );
+    return session ? attachAgentApiSessionCookie(response, session) : response;
   }
 }

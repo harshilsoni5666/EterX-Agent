@@ -7,6 +7,10 @@ import { domSnapshot } from '../../browser/snapshot';
 import { browserSessionManager } from '../../browser/session';
 import { networkMonitor } from '../../browser/network';
 import { monitorEmitter } from '../../monitor/emitter';
+import {
+  resolveReadableWorkspacePathForContext,
+  resolveWorkspacePathForContext,
+} from '../../workspace/path_resolver';
 
 // ═══════════════════════════════════════
 // PATHS & CONSTANTS
@@ -253,16 +257,62 @@ let _browserVisualSessionPage: any = null;
 let _browserVisualIdleTimer: ReturnType<typeof setTimeout> | null = null;
 const BROWSER_VISUAL_IDLE_MS = 30000;
 
-async function withBrowserLock<T>(fn: () => Promise<T>): Promise<T> {
+function getAbortSignal(context?: any): AbortSignal | undefined {
+  return context?.abortSignal || context?.signal;
+}
+
+function isBrowserCancelled(context?: any): boolean {
+  if (getAbortSignal(context)?.aborted) return true;
+  try {
+    return typeof context?.isCancelled === 'function' && context.isCancelled() === true;
+  } catch {
+    return false;
+  }
+}
+
+function browserCancelledError(): Error {
+  const error = new Error('CANCELLED_BY_USER');
+  (error as any).cancelled = true;
+  return error;
+}
+
+function isBrowserCancellationError(error: any): boolean {
+  return error?.cancelled === true ||
+    error?.name === 'AbortError' ||
+    error?.message === 'CANCELLED_BY_USER';
+}
+
+function throwIfBrowserCancelled(context?: any): void {
+  if (isBrowserCancelled(context)) throw browserCancelledError();
+}
+
+function cancellationPromise(context?: any): Promise<never> | null {
+  const signal = getAbortSignal(context);
+  if (!signal) return null;
+  if (signal.aborted) return Promise.reject(browserCancelledError());
+  return new Promise<never>((_, reject) => {
+    signal.addEventListener('abort', () => reject(browserCancelledError()), { once: true });
+  });
+}
+
+async function waitWithBrowserCancellation<T>(promise: Promise<T>, context?: any): Promise<T> {
+  throwIfBrowserCancelled(context);
+  const abort = cancellationPromise(context);
+  if (!abort) return promise;
+  return Promise.race([promise, abort]);
+}
+
+async function withBrowserLock<T>(context: any, fn: () => Promise<T>): Promise<T> {
   let release: () => void;
   const acquired = new Promise<void>(resolve => { release = resolve; });
   const previousLock = _browserLock;
   _browserLock = acquired;
   
   // Wait for previous operation to finish
-  await previousLock;
+  await waitWithBrowserCancellation(previousLock, context);
   
   try {
+    throwIfBrowserCancelled(context);
     return await fn();
   } finally {
     release!();
@@ -298,6 +348,45 @@ function fail(action: string, msg: string, recovery?: string, nextAction?: strin
     ...(recovery ? { recovery } : {}),
     ...(nextAction ? { nextAction } : {}),
   };
+}
+
+function failCancelled(action: string, startedAt: number) {
+  return {
+    success: false,
+    action,
+    result: 'Browser action cancelled by user.',
+    error: 'CANCELLED_BY_USER',
+    cancelled: true,
+    elapsedMs: Date.now() - startedAt,
+  };
+}
+
+const SENSITIVE_BROWSER_ACTIONS = new Set([
+  'connect',
+  'evaluate',
+  'get_cookies',
+  'set_cookie',
+  'clear_cookies',
+  'get_storage',
+  'set_storage',
+  'save_session',
+  'restore_session',
+  'export_cookies',
+  'import_cookies',
+  'upload',
+  'pdf',
+]);
+
+function hasUnsafeBrowserCapability(context?: any): boolean {
+  if (process.env.ETERX_ALLOW_UNSAFE_BROWSER_ACTIONS === '1') return true;
+  if (context?.allowUnsafeBrowserActions === true) return true;
+  const capabilities = [
+    ...(Array.isArray(context?.capabilities) ? context.capabilities : []),
+    ...(Array.isArray(context?.toolCapabilities) ? context.toolCapabilities : []),
+    ...(Array.isArray(context?.allowedCapabilities) ? context.allowedCapabilities : []),
+    ...(Array.isArray(context?.toolPolicy?.allowedCapabilities) ? context.toolPolicy.allowedCapabilities : []),
+  ];
+  return capabilities.includes('browser:unsafe') || capabilities.includes('browser:secrets');
 }
 
 async function failWithPageState(page: any, action: string, msg: string, recovery: string, nextAction: string, input: any, startedAt: number) {
@@ -340,15 +429,19 @@ async function failWithPageState(page: any, action: string, msg: string, recover
   };
 }
 
-async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+async function withTimeout<T>(promise: Promise<T>, ms: number, label: string, context?: any): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | null = null;
   try {
-    return await Promise.race([
+    throwIfBrowserCancelled(context);
+    const races: Promise<T | never>[] = [
       promise,
       new Promise<never>((_, reject) => {
         timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
       }),
-    ]);
+    ];
+    const abort = cancellationPromise(context);
+    if (abort) races.push(abort);
+    return await Promise.race(races);
   } finally {
     if (timer) clearTimeout(timer);
   }
@@ -1203,7 +1296,8 @@ async function endBrowserActivity(page: any, delayMs = 0): Promise<void> {
   } catch {}
 }
 
-async function askUserInBrowser(page: any, input: any): Promise<any> {
+async function askUserInBrowser(page: any, input: any, context?: any): Promise<any> {
+  throwIfBrowserCancelled(context);
   await installVisualFeedback(page);
   const rawOptions = Array.isArray(input.options) ? input.options : (Array.isArray(input.choices) ? input.choices : []);
   const options = rawOptions
@@ -1351,7 +1445,7 @@ async function askUserInBrowser(page: any, input: any): Promise<any> {
       showFallback();
       timer = setTimeout(() => finish({ choice: 'timeout', cancelled: true, timedOut: true, at: Date.now() }), timeout);
     });
-  }, { payload, timeout }), timeout + 1000, 'browser user prompt');
+  }, { payload, timeout }), timeout + 1000, 'browser user prompt', context);
 }
 
 async function showCursor(page: any, x: number, y: number): Promise<void> {
@@ -1842,13 +1936,24 @@ USE THIS WHEN THE USER ASKS TO:
     elapsedMs: z.number().optional(),
   }),
 
-  execute: async (input: any) => {
+  execute: async (input: any, context?: any) => {
     // SEQUENTIAL EXECUTION: All browser actions are queued and run one after another.
     // This prevents race conditions (e.g. goto running before launch finishes).
-    return withBrowserLock(async () => {
+    return withBrowserLock(context, async () => {
     const { action } = input;
     const startedAt = Date.now();
     let activityPage: any = null;
+
+    throwIfBrowserCancelled(context);
+
+    const unsafeLaunch = action === 'launch' && (input.mode === 'cdp' || input.mode === 'remote');
+    if ((SENSITIVE_BROWSER_ACTIONS.has(action) || unsafeLaunch) && !hasUnsafeBrowserCapability(context)) {
+      return fail(
+        action,
+        'Browser action requires an unsafe browser capability.',
+        'Use normal launch/goto/read/click/type actions, or run from a trusted context with browser:unsafe/browser:secrets when script execution, CDP, cookies, storage, or session export is explicitly required.',
+      );
+    }
 
     console.log(`[BrowserControl] 🌐 ${action} | ref:${input.ref || '-'} url:"${(input.url || '').substring(0, 60)}" sel:"${input.selector || ''}" text:"${(input.text || '').substring(0, 40)}"`);
     void logAction(action, { url: input.url, ref: input.ref, selector: input.selector, text: input.text }); // fire-and-forget, no await for speed
@@ -1864,14 +1969,15 @@ USE THIS WHEN THE USER ASKS TO:
       // ═══════════════════════════════════════
 
       if (action === 'launch' || action === 'connect') {
-        page = await browserEngine.launch({
+        page = await waitWithBrowserCancellation(browserEngine.launch({
           mode: input.mode || 'managed',
           headless: input.headless ?? true,
           profile: input.profile,
           cdpEndpoint: input.cdpEndpoint,
           wsEndpoint: input.wsEndpoint,
           viewport: input.width && input.height ? { width: input.width, height: input.height } : null,
-        });
+        }), context);
+        throwIfBrowserCancelled(context);
 
         // Restore session if profile specified
         if (input.profile) {
@@ -1881,7 +1987,12 @@ USE THIS WHEN THE USER ASKS TO:
         // Navigate if URL provided
         if (input.url) {
           const url = normalizeBrowserUrl(input.url);
-          await page.goto(url, { waitUntil: 'domcontentloaded', timeout: actionTimeout(input, 15000, 30000) });
+          await withTimeout(
+            page.goto(url, { waitUntil: 'domcontentloaded', timeout: actionTimeout(input, 15000, 30000) }),
+            actionTimeout(input, 15000, 30000) + 1000,
+            'browser launch navigation',
+            context
+          );
         }
 
         // Auto-start network monitoring (non-fatal)
@@ -1938,7 +2049,8 @@ USE THIS WHEN THE USER ASKS TO:
         return fail(action, 'Browser not connected. Use action "launch" first.');
       }
 
-      page = await browserEngine.getActivePage();
+      page = await waitWithBrowserCancellation(browserEngine.getActivePage(), context);
+      throwIfBrowserCancelled(context);
       if (input.visualFeedback !== false) {
         ensureVisualHooks(page);
         activityPage = page;
@@ -1967,6 +2079,7 @@ USE THIS WHEN THE USER ASKS TO:
         // ═══════════════════════════════════════
 
         case 'goto': {
+          throwIfBrowserCancelled(context);
           if (!input.url) return fail(action, 'url required');
           const url = normalizeBrowserUrl(input.url);
           
@@ -1974,11 +2087,11 @@ USE THIS WHEN THE USER ASKS TO:
           domSnapshot.invalidate();
 
           if (input.reuseTab !== false) {
-            const reused = await browserEngine.switchOrOpenPage(url, {
+            const reused = await waitWithBrowserCancellation(browserEngine.switchOrOpenPage(url, {
               match: input.tabMatch || 'exact',
               navigateIfBlank: true,
               openIfMissing: false,
-            });
+            }), context);
             page = reused.page;
             activityPage = page;
             if (reused.reused && reused.reason !== 'blank') {
@@ -1992,20 +2105,30 @@ USE THIS WHEN THE USER ASKS TO:
               break;
             }
             if (reused.reason === 'active') {
-              await page.goto(url, { 
-                waitUntil: 'domcontentloaded', 
-                timeout: actionTimeout(input, 15000, 30000)
-              });
+              await withTimeout(
+                page.goto(url, { 
+                  waitUntil: 'domcontentloaded', 
+                  timeout: actionTimeout(input, 15000, 30000)
+                }),
+                actionTimeout(input, 15000, 30000) + 1000,
+                'browser navigation',
+                context
+              );
             }
             if (input.visualFeedback !== false) {
               ensureVisualHooks(page);
               await showBrowserAction(page, action, input);
             }
           } else {
-            await page.goto(url, { 
-              waitUntil: 'domcontentloaded', 
-              timeout: actionTimeout(input, 15000, 30000)
-            });
+            await withTimeout(
+              page.goto(url, { 
+                waitUntil: 'domcontentloaded', 
+                timeout: actionTimeout(input, 15000, 30000)
+              }),
+              actionTimeout(input, 15000, 30000) + 1000,
+              'browser navigation',
+              context
+            );
           }
           result = { navigated: url, title: await page.title().catch(() => ''), note: 'Use snapshot/read_page when page context is needed.' };
           
@@ -2025,21 +2148,36 @@ USE THIS WHEN THE USER ASKS TO:
 
         case 'back': {
           domSnapshot.invalidate();
-          await page.goBack({ waitUntil: 'domcontentloaded', timeout: actionTimeout(input, 8000, 15000) });
+          await withTimeout(
+            page.goBack({ waitUntil: 'domcontentloaded', timeout: actionTimeout(input, 8000, 15000) }),
+            actionTimeout(input, 8000, 15000) + 1000,
+            'browser back navigation',
+            context
+          );
           result = { navigated: 'back', url: page.url() };
           break;
         }
 
         case 'forward': {
           domSnapshot.invalidate();
-          await page.goForward({ waitUntil: 'domcontentloaded', timeout: actionTimeout(input, 8000, 15000) });
+          await withTimeout(
+            page.goForward({ waitUntil: 'domcontentloaded', timeout: actionTimeout(input, 8000, 15000) }),
+            actionTimeout(input, 8000, 15000) + 1000,
+            'browser forward navigation',
+            context
+          );
           result = { navigated: 'forward', url: page.url() };
           break;
         }
 
         case 'reload': {
           domSnapshot.invalidate();
-          await page.reload({ waitUntil: 'domcontentloaded', timeout: actionTimeout(input, 8000, 15000) });
+          await withTimeout(
+            page.reload({ waitUntil: 'domcontentloaded', timeout: actionTimeout(input, 8000, 15000) }),
+            actionTimeout(input, 8000, 15000) + 1000,
+            'browser reload',
+            context
+          );
           result = { reloaded: true, url: page.url() };
           break;
         }
@@ -2668,7 +2806,7 @@ USE THIS WHEN THE USER ASKS TO:
         }
 
         case 'ask_user_browser': {
-          const response = await askUserInBrowser(page, input);
+          const response = await askUserInBrowser(page, input, context);
           result = {
             prompt: input.question || input.promptMessage || input.text || '',
             response,
@@ -2692,32 +2830,35 @@ USE THIS WHEN THE USER ASKS TO:
                 if (!input.selector && input.ref == null) return fail(action, 'selector or ref required for wait_for element');
                 const sel = input.selector || (input.ref != null ? `[data-ref="${input.ref}"]` : '');
                 try {
-                  await page.waitForSelector(sel, { timeout, state: 'visible' });
+                  await withTimeout(page.waitForSelector(sel, { timeout, state: 'visible' }), timeout + 500, 'browser wait_for element', context);
                   result = { found: true, selector: sel };
-                } catch {
+                } catch (error: any) {
+                  if (isBrowserCancellationError(error)) throw error;
                   result = { found: false, selector: sel, message: 'Timeout' };
                 }
                 break;
               }
               case 'navigation': {
                 try {
-                  await page.waitForNavigation({ timeout, waitUntil: 'domcontentloaded' });
+                  await withTimeout(page.waitForNavigation({ timeout, waitUntil: 'domcontentloaded' }), timeout + 500, 'browser wait_for navigation', context);
                   result = { navigated: true, url: page.url() };
-                } catch {
+                } catch (error: any) {
+                  if (isBrowserCancellationError(error)) throw error;
                   result = { navigated: false, url: page.url(), message: 'Timeout' };
                 }
                 break;
               }
               case 'network': {
-                const idle = await networkMonitor.waitForNetworkIdle(page, timeout);
+                const idle = await withTimeout(networkMonitor.waitForNetworkIdle(page, timeout), timeout + 500, 'browser network idle', context);
                 result = { networkIdle: idle };
                 break;
               }
               case 'load': {
                 try {
-                  await page.waitForLoadState('load', { timeout });
+                  await withTimeout(page.waitForLoadState('load', { timeout }), timeout + 500, 'browser load state', context);
                   result = { loaded: true };
-                } catch {
+                } catch (error: any) {
+                  if (isBrowserCancellationError(error)) throw error;
                   result = { loaded: false, message: 'Timeout' };
                 }
                 break;
@@ -2725,7 +2866,7 @@ USE THIS WHEN THE USER ASKS TO:
             }
           } else {
             const ms = Math.min(input.amount || input.timeout || 1000, 30000);
-            await page.waitForTimeout(ms);
+            await withTimeout(page.waitForTimeout(ms), ms + 500, 'browser wait', context);
             result = { waited: `${ms}ms` };
           }
           break;
@@ -2736,16 +2877,18 @@ USE THIS WHEN THE USER ASKS TO:
           if (input.selector || input.ref != null) {
             const sel = input.selector || `[data-ref="${input.ref}"]`;
             try {
-              await page.waitForSelector(sel, { timeout, state: 'visible' });
+              await withTimeout(page.waitForSelector(sel, { timeout, state: 'visible' }), timeout + 500, 'browser wait_for element', context);
               result = { found: true, selector: sel };
-            } catch {
+            } catch (error: any) {
+              if (isBrowserCancellationError(error)) throw error;
               result = { found: false, selector: sel, message: 'Timeout' };
             }
           } else if (input.url) {
             try {
-              await page.waitForURL(input.url, { timeout });
+              await withTimeout(page.waitForURL(input.url, { timeout }), timeout + 500, 'browser wait_for URL', context);
               result = { matched: true, url: page.url() };
-            } catch {
+            } catch (error: any) {
+              if (isBrowserCancellationError(error)) throw error;
               result = { matched: false, message: 'Timeout' };
             }
           } else {
@@ -2824,23 +2967,26 @@ USE THIS WHEN THE USER ASKS TO:
 
         case 'upload': {
           if (!input.filePath) return fail(action, 'filePath required');
+          const uploadPath = resolveReadableWorkspacePathForContext(String(input.filePath), context);
           
           const el = await resolveElement(page, input);
           if (!el) return fail(action, 'File input element not found. Provide ref or selector.');
           
           try {
-            await el.setInputFiles(input.filePath, { timeout: 2000 });
+            await el.setInputFiles(uploadPath, { timeout: 2000 });
           } catch {
             return await failWithPageState(page, action, 'File input is not currently available for upload.', 'Take a fresh snapshot and choose a visible file input ref, or open the upload dialog first.', 'snapshot', input, startedAt);
           }
-          result = { uploaded: input.filePath };
+          result = { uploaded: uploadPath };
           await smartWait(page, action);
           break;
         }
 
         case 'pdf': {
           await fs.ensureDir(PDF_DIR);
-          const pdfPath = input.filePath || path.join(PDF_DIR, `page_${Date.now()}.pdf`);
+          const pdfPath = input.filePath
+            ? resolveWorkspacePathForContext(String(input.filePath), context)
+            : path.join(PDF_DIR, `page_${Date.now()}.pdf`);
           await page.pdf({ 
             path: pdfPath, 
             format: 'A4',
@@ -3103,6 +3249,9 @@ USE THIS WHEN THE USER ASKS TO:
       };
 
     } catch (error: any) {
+      if (isBrowserCancellationError(error)) {
+        return failCancelled(action, startedAt);
+      }
       console.error(`[BrowserControl] ❌ ${action}:`, error.message?.substring(0, 500));
       
       // Smart error recovery suggestions

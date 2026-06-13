@@ -90,15 +90,11 @@ import { youtubeTranscriptTool } from './research/youtube';
 import { rssFeedTool } from './research/rss';
 
 // ==========================================
-// AUTOMATION TOOLS (5 tools)
+// AUTOMATION TOOLS
 // ==========================================
-import { schedulerTool } from './automation/scheduler';
 import { processManagerTool } from './automation/process_manager';
 import { fileWatcherTool } from './automation/file_watcher';
 import { httpServerTool } from './automation/http_server';
-import { chainExecutorTool } from './automation/chain_executor';
-import { agentCronSchedulerTool } from './automation/agent_cron_scheduler';
-import { agentConnectorTriggerTool } from './automation/agent_connector_trigger';
 import { agentBuilderTools } from './automation/agent_builder';
 
 // ==========================================
@@ -136,11 +132,10 @@ export function bootstrapTools() {
     csvAnalyzerTool, docxGeneratorTool, officeArtifactBuilderTool, compressionTool,
     codeGeneratorTool, diffTool, markdownTool,
     webScraperTool, pdfParserTool, youtubeTranscriptTool, rssFeedTool,
-    schedulerTool, processManagerTool, fileWatcherTool, httpServerTool,
-    chainExecutorTool, agentCronSchedulerTool, agentConnectorTriggerTool,
+    processManagerTool, fileWatcherTool, httpServerTool,
     ...agentBuilderTools,
     whatsappControllerTool, telegramUserControllerTool, slackControllerTool,
-  ]);
+  ], { allowOverride: true });
 
   dynamicSkillEngine.initialize().catch(() => { });
   const total = globalToolRegistry.getAllTools().length;

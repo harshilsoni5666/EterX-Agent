@@ -305,6 +305,34 @@ export const SubAgentIdentityIcon = ({
   className?: string;
   title?: string;
 }) => {
+  const cleanName = String(name || 'Subagent').trim();
+  const lowerName = cleanName.toLowerCase();
+  
+  const SUB_AGENT_NAMES = [
+    'einstein', 'heisenberg', 'sam', 'dario', 'elon',
+    'tesla', 'newton', 'turing', 'ada', 'curie',
+    'feynman', 'darwin', 'hawking', 'galileo', 'davinci',
+    'aristotle', 'oppenheimer', 'gates', 'jobs', 'pascal'
+  ];
+  
+  const hasIcon = SUB_AGENT_NAMES.includes(lowerName);
+
+  if (hasIcon) {
+    return (
+      <span
+        className={`eterx-subagent-identity flex items-center justify-center overflow-hidden rounded-full border border-white/[0.08] bg-black/10 shadow-[0_4px_12px_rgba(0,0,0,0.16)] ${className}`}
+        style={{ width: size, height: size }}
+        title={title || cleanName}
+      >
+        <img
+          src={`/icons/sub-agents/${lowerName}.png`}
+          alt={cleanName}
+          className="w-full h-full object-cover select-none"
+        />
+      </span>
+    );
+  }
+
   const identity = getSubAgentIdentity(name);
   const normalizedStatus = ['spawning', 'working', 'completed', 'error'].includes(String(status))
     ? String(status)

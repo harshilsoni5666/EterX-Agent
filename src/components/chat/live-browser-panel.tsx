@@ -37,6 +37,26 @@ export interface LiveBrowserPanelProps {
 const MAX_LOG_ENTRIES = 50;
 const SSE_URL = '/api/monitor/screenshots';
 
+const RUNTIME_SECRET_PATTERNS: RegExp[] = [
+  /\bAIza[0-9A-Za-z_-]{20,}\b/g,
+  /\bsk-(?:proj-|ant-|live-|test-)?[0-9A-Za-z_-]{16,}\b/g,
+  /\b(?:authorization|api[_-]?key|apikey|access[_-]?token|refresh[_-]?token|token|secret|password|passwd)\s*[:=]\s*(?:Bearer\s+)?['"]?[^'"\r\n&]+/gi,
+  /\bBearer\s+[A-Za-z0-9._~+/=-]{12,}/gi,
+];
+
+const redactRuntimeText = (value: unknown, maxLength = 900) => {
+  const raw = String(value ?? '');
+  const clipped = raw.length > maxLength ? `${raw.slice(0, maxLength)}\n...[truncated]` : raw;
+  return RUNTIME_SECRET_PATTERNS.reduce((text, pattern) => (
+    text.replace(pattern, (match) => {
+      const separator = match.match(/^(.+?\s*[:=]\s*)(?:Bearer\s+)?/i);
+      if (separator) return `${separator[1]}[redacted]`;
+      if (/^Bearer\s+/i.test(match)) return 'Bearer [redacted]';
+      return '[redacted]';
+    })
+  ), clipped);
+};
+
 function normalizeBrowserAddress(input: string) {
   const trimmed = input.trim();
   if (!trimmed) return '';
@@ -147,7 +167,7 @@ export const LiveBrowserPanel: React.FC<LiveBrowserPanelProps> = ({
           }
 
           if (data.type === 'terminal' && data.cmd) {
-            addLog({ ts: data.ts, type: 'terminal', text: `$ ${data.cmd}` });
+            addLog({ ts: data.ts, type: 'terminal', text: `$ ${redactRuntimeText(data.cmd)}` });
             return;
           }
 

@@ -78,6 +78,7 @@ import {
   sendManagedKey,
   typeManagedText,
 } from '../../computer/managed-computer';
+import { enforceToolCapability } from '../security/tool_policy';
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
@@ -874,6 +875,10 @@ TIPS:
     const chatId = input.chatId || ctx?.chatId;
     const quality = input.quality ?? 72;
     const speedFactor = input.speed === 'slow' ? 1.8 : input.speed === 'fast' ? 0.5 : 1;
+    const decision = enforceToolCapability('screen_agent', input, ctx);
+    if (!decision.allowed) {
+      return { success: false, action, result: decision.reason || 'Screen agent control is not allowed', vision: null };
+    }
 
     // Auto-start live stream whenever screen_agent is used
     if (chatId) autoStreamPing(chatId);

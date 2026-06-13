@@ -24,7 +24,33 @@ export interface CustomAgentTraceLog {
   secondary?: string;
   timestamp: number;
   agentName?: string;
+  [key: string]: unknown;
 }
+
+const RUNTIME_SECRET_PATTERNS: RegExp[] = [
+  /\bAIza[0-9A-Za-z_-]{20,}\b/g,
+  /\bsk-(?:proj-|ant-|live-|test-)?[0-9A-Za-z_-]{16,}\b/g,
+  /\b(?:authorization|api[_-]?key|apikey|access[_-]?token|refresh[_-]?token|token|secret|password|passwd)\s*[:=]\s*(?:Bearer\s+)?['"]?[^'"\r\n&]+/gi,
+  /\bBearer\s+[A-Za-z0-9._~+/=-]{12,}/gi,
+];
+
+const redactRuntimeText = (value: unknown, maxLength = 2000) => {
+  const raw = String(value ?? '');
+  const clipped = raw.length > maxLength ? `${raw.slice(0, maxLength)}\n...[truncated]` : raw;
+  return RUNTIME_SECRET_PATTERNS.reduce((text, pattern) => (
+    text.replace(pattern, (match) => {
+      const separator = match.match(/^(.+?\s*[:=]\s*)(?:Bearer\s+)?/i);
+      if (separator) return `${separator[1]}[redacted]`;
+      if (/^Bearer\s+/i.test(match)) return 'Bearer [redacted]';
+      return '[redacted]';
+    })
+  ), clipped);
+};
+
+const stringifyTraceValue = (value: unknown, maxLength = 200) => {
+  const text = typeof value === 'string' ? value : JSON.stringify(value || {});
+  return redactRuntimeText(text, maxLength);
+};
 
 export function useCustomAgent() {
   const [state, setState] = useState<CustomAgentState>({
@@ -37,6 +63,7 @@ export function useCustomAgent() {
   const [traceLogs, setTraceLogs] = useState<CustomAgentTraceLog[]>([]);
   const [responseText, setResponseText] = useState('');
   const abortRef = useRef<AbortController | null>(null);
+  const runSeqRef = useRef(0);
 
   /** Check if an agent is ready to run */
   const checkAgent = useCallback(async (agentId: string): Promise<{
@@ -47,6 +74,9 @@ export function useCustomAgent() {
     try {
       const res = await fetch(`/api/agents/run?agentId=${encodeURIComponent(agentId)}`);
       const data = await res.json();
+      if (!res.ok) {
+        return { ready: false, error: data?.error || `HTTP ${res.status}` };
+      }
       return data;
     } catch (err: any) {
       return { ready: false, error: err.message };
@@ -66,6 +96,8 @@ export function useCustomAgent() {
 
     const controller = new AbortController();
     abortRef.current = controller;
+    const runSeq = ++runSeqRef.current;
+    const isCurrentRun = () => abortRef.current === controller && runSeqRef.current === runSeq;
 
     setState(prev => ({
       ...prev,
@@ -75,6 +107,7 @@ export function useCustomAgent() {
       error: null,
     }));
     setResponseText('');
+    setTraceLogs([]);
 
     const messages = [
       ...history,
@@ -101,11 +134,14 @@ export function useCustomAgent() {
       let buffer = '';
       let fullText = '';
 
-      setState(prev => ({ ...prev, isLoading: false }));
+      if (isCurrentRun()) {
+        setState(prev => ({ ...prev, isLoading: false }));
+      }
 
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
+        if (!isCurrentRun()) break;
 
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split('\n');
@@ -115,6 +151,7 @@ export function useCustomAgent() {
           if (!line.trim()) continue;
           try {
             const event = JSON.parse(line);
+            if (!isCurrentRun()) break;
             
             // Convert events to trace logs
             switch (event.type) {
@@ -135,7 +172,7 @@ export function useCustomAgent() {
                   id: `ca-tc-${Date.now()}`,
                   type: 'progress',
                   text: `Using ${event.toolName}`,
-                  secondary: JSON.stringify(event.toolArgs || {}).substring(0, 100),
+                  secondary: stringifyTraceValue(event.toolArgs, 100),
                   agentName: event.agentName,
                   timestamp: event.timestamp,
                 }]);
@@ -146,9 +183,7 @@ export function useCustomAgent() {
                   id: `ca-tr-${Date.now()}`,
                   type: 'exploration',
                   text: `${event.toolName} completed`,
-                  secondary: typeof event.toolResult === 'string'
-                    ? event.toolResult.substring(0, 200)
-                    : JSON.stringify(event.toolResult || {}).substring(0, 200),
+                  secondary: stringifyTraceValue(event.toolResult, 200),
                   agentName: event.agentName,
                   timestamp: event.timestamp,
                 }]);
@@ -165,12 +200,28 @@ export function useCustomAgent() {
                 }]);
                 break;
 
+              case 'ask_user':
+                setTraceLogs(prev => [...prev, {
+                  id: `ca-ask-${String(event.responseKey || Date.now())}`,
+                  ...event,
+                  type: 'ask_user',
+                  text: event.question || 'Input needed',
+                  agentName: event.agentName,
+                  timestamp: event.timestamp || Date.now(),
+                }]);
+                break;
+
               case 'error':
-                setState(prev => ({ ...prev, error: event.text || 'Unknown error' }));
+                setState(prev => ({
+                  ...prev,
+                  isRunning: false,
+                  isLoading: false,
+                  error: event.text || 'Unknown error',
+                }));
                 break;
 
               case 'done':
-                setState(prev => ({ ...prev, isRunning: false }));
+                setState(prev => ({ ...prev, isRunning: false, isLoading: false }));
                 break;
             }
           } catch {
@@ -179,16 +230,35 @@ export function useCustomAgent() {
         }
       }
 
-      setState(prev => ({ ...prev, isRunning: false }));
+      if (buffer.trim() && isCurrentRun()) {
+        try {
+          const event = JSON.parse(buffer.trim());
+          if (event.type === 'done') {
+            setState(prev => ({ ...prev, isRunning: false, isLoading: false }));
+          } else if (event.type === 'error') {
+            setState(prev => ({ ...prev, isRunning: false, isLoading: false, error: event.text || 'Unknown error' }));
+          }
+        } catch {
+          // Ignore trailing malformed JSON.
+        }
+      }
+
+      if (isCurrentRun()) {
+        setState(prev => ({ ...prev, isRunning: false, isLoading: false }));
+      }
 
     } catch (err: any) {
-      if (err.name !== 'AbortError') {
+      if (err.name !== 'AbortError' && isCurrentRun()) {
         setState(prev => ({
           ...prev,
           isRunning: false,
           isLoading: false,
           error: err.message,
         }));
+      }
+    } finally {
+      if (isCurrentRun()) {
+        abortRef.current = null;
       }
     }
   }, []);
@@ -199,7 +269,8 @@ export function useCustomAgent() {
       abortRef.current.abort();
       abortRef.current = null;
     }
-    setState(prev => ({ ...prev, isRunning: false }));
+    runSeqRef.current += 1;
+    setState(prev => ({ ...prev, isRunning: false, isLoading: false }));
   }, []);
 
   /** Clear state for a new conversation */
@@ -208,6 +279,7 @@ export function useCustomAgent() {
       abortRef.current.abort();
       abortRef.current = null;
     }
+    runSeqRef.current += 1;
     setState({
       agentId: null,
       agentName: '',
@@ -229,6 +301,7 @@ export function useCustomAgent() {
     try {
       const res = await fetch('/api/agents/list');
       const data = await res.json();
+      if (!res.ok) return [];
       return (data.agents || []).filter((a: any) => a.status === 'ready');
     } catch {
       return [];

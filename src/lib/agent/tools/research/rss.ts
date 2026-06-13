@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { ToolDefinition } from '../../schemas';
-import axios from 'axios';
+import { redactUrlForLog, safeAxiosRequest } from '../shared/url_safety';
+import { enforceToolCapability } from '../security/tool_policy';
 
 /**
  * RSS Feed Reader
@@ -27,19 +28,28 @@ export const rssFeedTool: ToolDefinition = {
     })),
     error: z.string().optional()
   }),
-  execute: async (input: { feedUrl: string, maxItems?: number }) => {
-    console.log(`[Tool: rss_feed_reader] Fetching feed: ${input.feedUrl}`);
+  execute: async (input: { feedUrl: string, maxItems?: number }, context?: any) => {
+    console.log(`[Tool: rss_feed_reader] Fetching feed: ${redactUrlForLog(input.feedUrl)}`);
 
     try {
-      const { data: xml } = await axios.get(input.feedUrl, {
+      const decision = enforceToolCapability('rss_feed_reader', input, context);
+      if (!decision.allowed) {
+        return { feedTitle: '', items: [], error: decision.reason || 'RSS feed access is not allowed' };
+      }
+
+      const { data: xml } = await safeAxiosRequest<string>({
+        url: input.feedUrl,
+        method: 'GET',
         headers: {
           'User-Agent': 'EterX-Agent/1.0 RSS Reader',
           'Accept': 'application/rss+xml, application/xml, text/xml, application/atom+xml'
         },
-        timeout: 15000
-      });
+        timeout: 15000,
+        responseType: 'text',
+        maxContentLength: 2 * 1024 * 1024,
+      }, context);
 
-      const maxItems = input.maxItems || 10;
+      const maxItems = Math.min(50, Math.max(1, Math.floor(input.maxItems || 10)));
 
       // Detect feed type (RSS vs Atom)
       const isAtom = xml.includes('<feed') && xml.includes('xmlns="http://www.w3.org/2005/Atom"');

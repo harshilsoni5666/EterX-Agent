@@ -9,6 +9,7 @@ import {
   listManagedWindows,
   typeManagedText,
 } from '../../computer/managed-computer';
+import { enforceToolCapability } from '../security/tool_policy';
 
 export const computerTool: ToolDefinition = {
   name: 'computer',
@@ -63,6 +64,10 @@ Host UI Automation actions (get_controls and click_in) are disabled unless ETERX
   execute: async (input: any, ctx: any) => {
     const action = input.action;
     const chatId = input.chatId || ctx?.chatId;
+    const decision = enforceToolCapability('computer', input, ctx);
+    if (!decision.allowed) {
+      return { success: false, action, result: decision.reason || 'Computer control is not allowed' };
+    }
 
     try {
       switch (action) {

@@ -17,6 +17,22 @@ export const CODE_AGENT_TOOLS = [
   'workspace_run_command',
   'workspace_verify_code',
   'workspace_edit_session',
+  'process_manager',
+  'background_task',
+  'wait_timer',
+  'browser_control',
+  'screenshot_capture',
+  'spawn_sub_agent',
+  'task_decomposer',
+  'task_checkpoint',
+  'get_skill_guidelines',
+  'memory_v2',
+  'context_manager',
+  'safety_guard',
+  'web_search',
+  'web_scraper',
+  'deep_research',
+  'image_asset_search',
   'code_intelligence',
   'git_intelligence',
   'realtime_verify',
@@ -41,6 +57,13 @@ const STATELESS_TOOLS = new Set<string>([
   'realtime_verify',
   'workspace_analyze',
   'smart_file_analyzer',
+  'get_skill_guidelines',
+  'context_manager',
+  'safety_guard',
+  'web_search',
+  'web_scraper',
+  'deep_research',
+  'image_asset_search',
 ]);
 
 const STATEFUL_PREFIXES = [
@@ -92,14 +115,25 @@ CODING AGENT WORKFLOW:
    - workspace_apply_patch for multi-hunk/multi-file edits
    - workspace_edit_file / workspace_edit_many_files for line-range edits
    - smart_refactor for symbol-aware refactors
-   - workspace_write_file only for new files or full rewrites
+   - workspace_write_file only for new files
 
 4. VERIFY SMALL
    - realtime_verify for quick syntax/json/file checks
    - workspace_verify_code or workspace_run_command for project checks
    - git_intelligence only when the user asks about repo changes
 
-5. SESSION MANAGEMENT (long tasks)
+5. RUNTIME PROOF AND RISK CONTROL
+   - process_manager/background_task/wait_timer for servers or long checks
+   - browser_control plus screenshot_capture for visible UI behavior
+   - safety_guard before destructive, credential, external upload, or production-impacting work
+
+6. ADVANCED AGENT SUPPORT
+   - spawn_sub_agent only for independent exploration or blind review
+   - task_decomposer/task_checkpoint for broad or long-running work
+   - get_skill_guidelines for domain-specific implementation constraints
+   - memory_v2/context_manager for durable facts and stale-context hygiene
+
+7. SESSION MANAGEMENT (long tasks)
    - workspace_edit_session action=summary to review all changes
    - workspace_edit_session action=checkpoint to save progress
    - workspace_edit_session action=undo to revert a mistake

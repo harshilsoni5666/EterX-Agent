@@ -1,8 +1,10 @@
 import { z } from 'zod';
 import { ToolDefinition } from '../../schemas';
-import axios, { AxiosRequestConfig } from 'axios';
+import { AxiosRequestConfig } from 'axios';
+import crypto from 'crypto';
 import path from 'path';
 import fs from 'fs-extra';
+import { redactUrlForLog, safeAxiosRequest } from '../shared/url_safety';
 
 /**
  * Smart API Hub — Pre-configured connectors for popular APIs
@@ -13,6 +15,32 @@ import fs from 'fs-extra';
 
 const CACHE_DIR = path.resolve(process.cwd(), '.workspaces', '.cache', 'api');
 const rateLimitMap: Map<string, { count: number, resetAt: number }> = new Map();
+
+function isPathInside(parent: string, candidate: string): boolean {
+  const relative = path.relative(parent, candidate);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function resolveUnder(parent: string, ...segments: string[]): string {
+  const resolved = path.resolve(parent, ...segments);
+  if (!isPathInside(parent, resolved)) {
+    throw new Error(`Resolved path escapes expected directory: ${resolved}`);
+  }
+  return resolved;
+}
+
+function cacheFileForKey(key: string): string {
+  const hash = crypto.createHash('sha256').update(String(key)).digest('hex');
+  return resolveUnder(CACHE_DIR, `${hash}.json`);
+}
+
+async function writeJsonAtomic(filePath: string, data: unknown): Promise<void> {
+  const dir = path.dirname(filePath);
+  await fs.ensureDir(dir);
+  const tmpPath = path.join(dir, `.${path.basename(filePath)}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`);
+  await fs.writeJson(tmpPath, data, { spaces: 2 });
+  await fs.move(tmpPath, filePath, { overwrite: true });
+}
 
 export const apiHubTool: ToolDefinition = {
   name: 'smart_api_hub',
@@ -43,7 +71,7 @@ export const apiHubTool: ToolDefinition = {
     cacheMinutes: z.number().optional().default(5).describe('Cache duration (0 to disable, default: 5 min)')
   }),
   outputSchema: z.object({ success: z.boolean(), data: z.any(), cached: z.boolean().optional() }),
-  execute: async (input: any) => {
+  execute: async (input: any, context?: any) => {
     await fs.ensureDir(CACHE_DIR);
 
     try {
@@ -142,7 +170,9 @@ export const apiHubTool: ToolDefinition = {
             data: body,
             timeout: 30000
           };
-          cacheKey = input.cacheMinutes ? `custom_${Buffer.from(input.url).toString('base64').substring(0, 40)}` : '';
+          cacheKey = input.cacheMinutes
+            ? buildCacheKey('custom', { url: input.url, method: config.method, headers, body })
+            : '';
           break;
         }
       }
@@ -164,8 +194,8 @@ export const apiHubTool: ToolDefinition = {
       }
 
       // Execute with auto-retry
-      console.log(`[API Hub] ${input.connector}:${input.action || 'default'} → ${config.url?.substring(0, 80)}`);
-      const response = await retryWithBackoff(config, 3);
+      console.log(`[API Hub] ${input.connector}:${input.action || 'default'} -> ${redactUrlForLog(config.url).substring(0, 160)}`);
+      const response = await retryWithBackoff(config, 3, context);
 
       // Cache response
       if (cacheKey && cacheDuration > 0) {
@@ -201,17 +231,23 @@ function checkRateLimit(domain: string): boolean {
 }
 
 // --- Auto-Retry with Backoff ---
-async function retryWithBackoff(config: AxiosRequestConfig, maxRetries: number): Promise<any> {
+async function retryWithBackoff(config: AxiosRequestConfig, maxRetries: number, context?: any): Promise<any> {
   let lastErr;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      return await axios(config);
+      if (context?.abortSignal?.aborted || context?.isCancelled?.()) {
+        throw new Error('CANCELLED_BY_USER');
+      }
+      return await safeAxiosRequest(config, context);
     } catch (err: any) {
       lastErr = err;
+      if (err?.message === 'CANCELLED_BY_USER' || context?.abortSignal?.aborted || context?.isCancelled?.()) {
+        throw err;
+      }
       if (attempt < maxRetries && (err.response?.status === 429 || err.response?.status >= 500 || !err.response)) {
         const wait = Math.min(1000 * Math.pow(2, attempt), 10000);
         console.log(`[API Hub] Retry ${attempt + 1}/${maxRetries} in ${wait}ms...`);
-        await new Promise(r => setTimeout(r, wait));
+        await sleepWithAbort(wait, context?.abortSignal);
       } else {
         throw err;
       }
@@ -220,10 +256,26 @@ async function retryWithBackoff(config: AxiosRequestConfig, maxRetries: number):
   throw lastErr;
 }
 
+function sleepWithAbort(ms: number, signal?: AbortSignal): Promise<void> {
+  if (!signal) return new Promise(resolve => setTimeout(resolve, ms));
+  if (signal.aborted) return Promise.reject(new Error('CANCELLED_BY_USER'));
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new Error('CANCELLED_BY_USER'));
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
 // --- Response Cache ---
 async function getCachedResponse(key: string, maxAge: number): Promise<any | null> {
   try {
-    const file = path.join(CACHE_DIR, `${key}.json`);
+    const file = cacheFileForKey(key);
     if (!await fs.pathExists(file)) return null;
     const stat = await fs.stat(file);
     if (Date.now() - stat.mtimeMs > maxAge) return null;
@@ -233,7 +285,7 @@ async function getCachedResponse(key: string, maxAge: number): Promise<any | nul
 
 async function setCachedResponse(key: string, data: any): Promise<void> {
   try {
-    await fs.writeJSON(path.join(CACHE_DIR, `${key}.json`), data);
+    await writeJsonAtomic(cacheFileForKey(key), data);
   } catch { }
 }
 
@@ -241,6 +293,21 @@ function getDateDaysAgo(days: number): string {
   const d = new Date();
   d.setDate(d.getDate() - days);
   return d.toISOString().split('T')[0];
+}
+
+function buildCacheKey(prefix: string, payload: any): string {
+  const hash = crypto
+    .createHash('sha256')
+    .update(stableStringify(payload))
+    .digest('hex')
+    .slice(0, 40);
+  return `${prefix}_${hash}`;
+}
+
+function stableStringify(value: any): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(',')}}`;
 }
 
 function parseJsonValue(value: any): any {

@@ -113,7 +113,7 @@ export class ExecutionMonitor {
       if (toolName === 'workspace_write_file') {
         this.filesCreated.add(filename);
         this.recordMilestone(`Created: ${String(filename).split(/[\\/]/).pop()}`, 'creation');
-      } else if (toolName === 'workspace_edit_file') {
+      } else if (['workspace_str_replace', 'workspace_apply_patch', 'workspace_edit_file', 'workspace_edit_many_files'].includes(toolName)) {
         this.filesModified.add(filename);
         this.recordMilestone(`Modified: ${String(filename).split(/[\\/]/).pop()}`, 'fix');
       }
@@ -121,7 +121,7 @@ export class ExecutionMonitor {
 
     // Track progress
     const productiveTools = new Set([
-      'workspace_write_file', 'workspace_edit_file', 'system_shell',
+      'workspace_write_file', 'workspace_str_replace', 'workspace_apply_patch', 'workspace_edit_file', 'workspace_edit_many_files', 'system_shell',
       'workspace_run_command', 'project_scaffolder', 'chart_generator',
       'image_generator', 'docx_generator', 'office_artifact_builder',
     ]);

@@ -8,6 +8,7 @@
 import { NextRequest } from 'next/server';
 import fs from 'fs-extra';
 import path from 'path';
+import { isSafeAgentId, jsonError, readJsonObject, rejectCrossOrigin } from '../../agent/_shared';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -15,8 +16,8 @@ export const runtime = 'nodejs';
 const AGENTS_ROOT = path.resolve(process.cwd(), '.workspaces', 'agent-builder', 'agents');
 
 const resolveAgentDir = (agentId: string) => {
-  const safeId = String(agentId || '').trim().replace(/[^a-zA-Z0-9_-]/g, '');
-  if (!safeId) return null;
+  const safeId = String(agentId || '').trim();
+  if (!isSafeAgentId(safeId)) return null;
   const resolved = path.resolve(AGENTS_ROOT, safeId);
   if (resolved === AGENTS_ROOT || !resolved.startsWith(AGENTS_ROOT + path.sep)) return null;
   return { safeId, resolved };
@@ -64,17 +65,18 @@ export async function GET(_req: NextRequest) {
 
 export async function DELETE(req: NextRequest) {
   try {
+    const originError = rejectCrossOrigin(req);
+    if (originError) return originError;
+
     let agentId = req.nextUrl.searchParams.get('agentId') || '';
     if (!agentId) {
-      try {
-        const body = await req.json();
-        agentId = body?.agentId || '';
-      } catch { }
+      const body = await readJsonObject(req);
+      agentId = body?.agentId || '';
     }
 
     const target = resolveAgentDir(agentId);
     if (!target) {
-      return Response.json({ success: false, error: 'Valid agentId is required.' }, { status: 400 });
+      return jsonError('Valid agentId is required.', 400);
     }
 
     if (await fs.pathExists(target.resolved)) {

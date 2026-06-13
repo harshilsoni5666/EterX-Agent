@@ -23,7 +23,7 @@ Each eval should define:
   "id": "ui-responsive-button-overflow",
   "mode": "ui-build",
   "prompt": "Fix the toolbar buttons so labels never overflow on mobile.",
-  "expectedTools": ["workspace_search_text", "workspace_read_file", "workspace_edit_file", "workspace_verify_code", "browser_control"],
+  "expectedTools": ["workspace_search_text", "workspace_read_file", "workspace_str_replace", "workspace_verify_code", "browser_control"],
   "mustVerify": ["lint", "browser-mobile"],
   "forbidden": ["unrelated page rewrites", "placeholder text"],
   "successCriteria": [

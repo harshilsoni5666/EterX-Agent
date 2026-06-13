@@ -29,8 +29,8 @@ const RUNTIME_PROMPT_FILES: RuntimePromptFile[] = [
     relativePath: path.join('prompts', 'ui-trace-kernel.md'),
   },
   {
-    label: 'Work note kernel',
-    relativePath: path.join('prompts', 'work-note-kernel.md'),
+    label: 'Progress timeline kernel',
+    relativePath: path.join('prompts', 'progress-timeline-kernel.md'),
   },
   {
     label: 'Review and verification gates',
@@ -192,30 +192,32 @@ SEO and semantics:
 
 <repo_workflow>
 SPEED PROTOCOL (CRITICAL — your primary coding loop):
-1. Write ALL files first. Chain workspace_write_file calls without reading between them.
-2. Run ONE verification command (npm run build, tsc --noEmit, pytest, etc.)
-3. Read stderr/stdout. It has EXACT file paths, line numbers, and error descriptions.
-4. Fix ALL errors directly from the error output. Do NOT re-read the files.
-5. Re-verify. Repeat 3-4 until clean.
+1. Search or outline first to find the right files and ownership.
+2. Read only the target ranges needed to understand the change.
+3. Apply precise edits with workspace_str_replace or workspace_apply_patch; use workspace_write_file only for brand-new files.
+4. Run ONE meaningful verification command for the completed batch.
+5. Read stderr/stdout. Fix all errors that are fully identified by file, line, and message; re-read only when the current source is uncertain.
+6. Re-verify. Repeat until clean or report the exact blocker.
 
-NEVER-RE-READ RULE:
-- workspace_str_replace returns diff + readback. Do NOT re-read after editing.
-- workspace_write_file creates the file with content YOU wrote. Do NOT re-read it.
-- workspace_apply_patch returns a diff. Do NOT re-read after patching.
-- ONLY read files you did NOT write and need to understand.
+TARGETED READBACK RULE:
+- workspace_str_replace returns diff + readback. Do not re-read after editing unless the result is insufficient.
+- workspace_write_file creates a brand-new file with content you wrote. Do not use it for existing source files.
+- workspace_apply_patch returns a diff. Re-read only when the patch result or later error output requires current context.
+- Re-read edited files when they changed externally, the tool result is ambiguous, or verification points at source you no longer have in context.
 
 MULTI-ERROR FIX:
-- Build outputs 5 errors across 3 files? Fix ALL in one pass, then verify ONCE.
+- Build outputs 5 errors across 3 files? Fix all errors with sufficient context in one pass, then verify once.
 - Use workspace_edit_many_files for coordinated multi-file fixes.
-- Do NOT fix→verify→fix→verify for each error. Fix ALL → verify ONCE.
+- Avoid fix-verify loops for each individual compiler error when one safe batch can address them.
 
 ERROR-DRIVEN EDITING:
+  Use error output directly only when current context is sufficient. If the target line or local pattern is ambiguous, re-read a narrow range first.
   Error: "src/App.tsx(15,7): TS2322: Type 'string' not assignable"
-  → Fix directly. You know: file, line, problem. Do NOT re-read src/App.tsx.
+  -> Fix directly when the current context is sufficient. Re-read a narrow range if the line is ambiguous.
   Error: "Module not found: './components/Header'"
-  → Fix the import OR create the missing file. Do NOT read the importing file first.
+  -> Fix the import OR create the missing file after confirming the intended local pattern.
 
-Exploration (use BEFORE you write, not after):
+Exploration (use BEFORE you edit):
 1. workspace_semantic_search + workspace_symbol_lookup + workspace_find_files for fast discovery.
 2. workspace_file_outline for unfamiliar files before editing.
 3. workspace_read_many_files for batching targeted range reads.
@@ -269,7 +271,7 @@ Editing:
 - workspace_edit_file for a single existing file line-range/simple replace.
 - workspace_edit_many_files for coordinated edits across multiple files with atomic rollback.
 - smart_refactor for symbol-aware changes.
-- workspace_write_file for new files or intentional full replacement only.
+- workspace_write_file for new files only; never use it to update an existing source file.
 
 Commands and verification:
 - workspace_run_command for finite commands with explicit cwd.

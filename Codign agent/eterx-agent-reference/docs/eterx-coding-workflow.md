@@ -54,7 +54,7 @@ Use the safest edit route:
 - exact `workspace_edit_file` replacements,
 - new file via `workspace_write_file`,
 - `smart_refactor` for cross-file symbol changes,
-- `diff_patch` for patch workflows.
+- `workspace_apply_patch` for multi-hunk or multi-file patch workflows.
 
 Read after major edits. Keep unrelated files untouched.
 

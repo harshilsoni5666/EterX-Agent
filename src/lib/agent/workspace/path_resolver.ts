@@ -42,6 +42,15 @@ function isPathInsideOrEqual(parentPath: string, candidatePath: string): boolean
   return relative === '' || (Boolean(relative) && !relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
+function resolveUnder(rootPath: string, ...segments: string[]): string {
+  const root = path.resolve(rootPath);
+  const resolved = path.resolve(root, ...segments);
+  if (!isPathInsideOrEqual(root, resolved)) {
+    throw new Error(`Blocked path traversal outside allowed root: ${resolved}`);
+  }
+  return resolved;
+}
+
 function relativeStartsWithPath(relativePath: string, prefix: string): boolean {
   const normalizedRelative = relativePath.replace(/\\/g, '/').toLowerCase();
   const normalizedPrefix = prefix.replace(/\\/g, '/').toLowerCase();
@@ -220,7 +229,7 @@ function ensureExtension(filePath: string, extension?: string): string {
 function expandHomePath(filename: string): string | null {
   if (filename === '~') return os.homedir();
   if (filename.startsWith(`~${path.sep}`) || filename.startsWith('~/') || filename.startsWith('~\\')) {
-    return path.resolve(os.homedir(), filename.slice(2));
+    return resolveUnder(os.homedir(), filename.slice(2));
   }
   return null;
 }
@@ -233,7 +242,7 @@ function resolveUserFolderAlias(filename: string): string | null {
   const resolver = USER_FOLDER_ALIASES.get(match[1].toLowerCase());
   if (!resolver) return null;
 
-  return path.resolve(resolver(), match[2] || '');
+  return resolveUnder(resolver(), match[2] || '');
 }
 
 function resolveSpecialUserPath(filename: string): string | null {
@@ -295,37 +304,63 @@ export function getRuntimeWorkspaceRoot(context?: any): string {
   return path.resolve(process.cwd());
 }
 
-export function resolveWorkspacePathForContext(filename: string, context?: any): string {
-  if (isExplicitUserPath(filename)) return resolveWorkspacePath(filename);
+function getRuntimeAllowedRoots(context?: any): string[] {
+  if (!hasRuntimeWorkspaceContext(context)) return [];
+  const rawCandidates = [
+    context?.workspacePath,
+    context?.workspaceRoot,
+    ...(Array.isArray(context?.allowedPaths) ? context.allowedPaths : []),
+    ...(Array.isArray(context?.paths) ? context.paths : []),
+  ].filter((candidate): candidate is string => typeof candidate === 'string' && candidate.trim().length > 0);
+  return uniquePaths(rawCandidates.map(candidate => path.resolve(candidate)));
+}
 
-  const root = getRuntimeWorkspaceRoot(context);
-  const filePath = path.resolve(root, filename);
+function enforceRuntimePathContainment(filePath: string, context: any, operation: 'read' | 'write' | 'execute'): string {
+  const resolved = path.resolve(filePath);
+  const allowedRoots = getRuntimeAllowedRoots(context);
+  if (allowedRoots.length === 0 || context?.allowAllPaths === true || process.env.ETERX_ALLOW_ALL_TOOL_PATHS === '1') {
+    return resolved;
+  }
+
+  const allowed = allowedRoots.some(root => isPathInsideOrEqual(root, resolved));
+  if (!allowed) {
+    throw new Error(`Blocked ${operation}: path is outside allowed workspace roots (${resolved})`);
+  }
+  return resolved;
+}
+
+function enforceEterXProtectionForContext(filePath: string, context: any): void {
+  if (context?.allowEterXSource === true) return;
   const protection = checkEterXProtection(filePath);
   if (protection.blocked) {
     throw new Error(protection.reason);
   }
-  return filePath;
+}
+
+export function resolveWorkspacePathForContext(filename: string, context?: any): string {
+  const filePath = isExplicitUserPath(filename)
+    ? resolveWorkspacePath(filename)
+    : path.resolve(getRuntimeWorkspaceRoot(context), filename);
+  enforceEterXProtectionForContext(filePath, context);
+  return enforceRuntimePathContainment(filePath, context, 'write');
 }
 
 export function resolveReadableWorkspacePathForContext(filename: string, context?: any): string {
-  if (isExplicitUserPath(filename)) return resolveReadableWorkspacePath(filename);
-
-  const root = getRuntimeWorkspaceRoot(context);
-  const scopedPath = path.resolve(root, filename);
-  if (fs.existsSync(scopedPath)) return scopedPath;
-  return scopedPath;
+  const filePath = isExplicitUserPath(filename)
+    ? resolveReadableWorkspacePath(filename)
+    : path.resolve(getRuntimeWorkspaceRoot(context), filename);
+  enforceEterXProtectionForContext(filePath, context);
+  return enforceRuntimePathContainment(filePath, context, 'read');
 }
 
 export function resolveWorkspaceDirectoryForContext(directory: string | undefined, context?: any): string {
-  if (!directory || !directory.trim()) return getRuntimeWorkspaceRoot(context);
-  if (isExplicitUserPath(directory)) return resolveWorkspacePath(directory);
-
-  const dirPath = path.resolve(getRuntimeWorkspaceRoot(context), directory);
-  const protection = checkEterXProtection(dirPath);
-  if (protection.blocked) {
-    throw new Error(protection.reason);
-  }
-  return dirPath;
+  const dirPath = !directory || !directory.trim()
+    ? getRuntimeWorkspaceRoot(context)
+    : isExplicitUserPath(directory)
+      ? resolveWorkspacePath(directory)
+      : path.resolve(getRuntimeWorkspaceRoot(context), directory);
+  enforceEterXProtectionForContext(dirPath, context);
+  return enforceRuntimePathContainment(dirPath, context, 'execute');
 }
 
 /**
@@ -428,14 +463,21 @@ export function getWorkspacePathCandidates(filename: string): string[] {
   if (path.isAbsolute(filename)) return [path.resolve(filename)];
 
   const specialUserPath = resolveSpecialUserPath(filename);
-  const candidates = [
-    ...(specialUserPath ? [specialUserPath] : []),
-    path.resolve(process.cwd(), filename),
-    path.resolve(process.cwd(), '.workspaces', 'sandbox', filename),
-    path.resolve(process.cwd(), '.workspaces', 'temp', filename),
-    path.resolve(process.cwd(), '.temp', filename),
-    path.resolve(getRealDesktopPath(), filename),
-  ];
+  const candidates: string[] = [];
+  if (specialUserPath) candidates.push(specialUserPath);
+  for (const root of [
+    process.cwd(),
+    path.resolve(process.cwd(), '.workspaces', 'sandbox'),
+    path.resolve(process.cwd(), '.workspaces', 'temp'),
+    path.resolve(process.cwd(), '.temp'),
+    getRealDesktopPath(),
+  ]) {
+    try {
+      candidates.push(resolveUnder(root, filename));
+    } catch {
+      // Ignore traversal candidates for read fallback.
+    }
+  }
 
   try {
     candidates.push(resolveWorkspacePath(filename));
@@ -458,7 +500,8 @@ export function resolveReadableWorkspacePath(filename: string): string {
   }
 
   if (path.isAbsolute(filename)) return path.resolve(filename);
-  return candidates[candidates.length - 1] || path.resolve(process.cwd(), filename);
+  if (candidates.length > 0) return candidates[candidates.length - 1];
+  throw new Error(`Blocked read path traversal: ${filename}`);
 }
 
 /**
@@ -470,12 +513,13 @@ export function resolveReadableWorkspacePath(filename: string): string {
  */
 export function resolveWorkspacePath(filename: string): string {
   if (path.isAbsolute(filename)) {
+    const resolved = path.resolve(filename);
     // Check protection before allowing absolute path writes
-    const protection = checkEterXProtection(filename);
+    const protection = checkEterXProtection(resolved);
     if (protection.blocked) {
       throw new Error(protection.reason);
     }
-    return filename;
+    return resolved;
   }
 
   const specialUserPath = resolveSpecialUserPath(filename);
@@ -507,7 +551,7 @@ export function resolveWorkspacePath(filename: string): string {
     if (stripped === filename && ['.temp', 'temp', 'sandbox'].includes(lowerFilename)) {
       return tempDir;
     }
-    return path.join(tempDir, stripped);
+    return resolveUnder(tempDir, stripped);
   }
 
   // .workspaces/ paths — resolve inside EterX root (where sub-agents and sandbox live)
@@ -515,7 +559,9 @@ export function resolveWorkspacePath(filename: string): string {
     lowerFilename === '.workspaces' ||
     lowerFilename.startsWith('.workspaces/')
   ) {
-    return path.resolve(process.cwd(), filename);
+    const workspacesDir = path.resolve(process.cwd(), '.workspaces');
+    if (lowerFilename === '.workspaces') return workspacesDir;
+    return resolveUnder(workspacesDir, filename.replace(/^\.workspaces[\/\\]/i, ''));
   }
 
   // Legacy tracker names resolve inside task storage, never the repo root.
@@ -524,7 +570,7 @@ export function resolveWorkspacePath(filename: string): string {
   }
 
   // Default for user requests: REAL Desktop
-  const finalPath = path.resolve(desktopPath, filename);
+  const finalPath = resolveUnder(desktopPath, filename);
 
   // Double-check: make sure resolved path isn't somehow inside EterX
   const protection = checkEterXProtection(finalPath);

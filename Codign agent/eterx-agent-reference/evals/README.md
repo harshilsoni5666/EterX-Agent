@@ -6,6 +6,16 @@ Use these evals before promoting new rules into `AGENTS.md`, `Skill.md`, or `age
 
 ## Run Method
 
+Run the deterministic CI gate from the repository root:
+
+```powershell
+npm run test:reference-evals
+```
+
+The CI gate validates eval schema, expected tool names, and stale prompt/policy regressions. It does not call an LLM or the network.
+
+## Manual Agent Scoring
+
 1. Pick one eval JSON.
 2. Start from the described workspace state.
 3. Run EterX-Code with the eval prompt.

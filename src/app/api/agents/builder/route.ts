@@ -3,7 +3,8 @@ import { GoogleGenAI } from '@google/genai';
 import { apiKeyPool } from '../../../../lib/agent/api-key-pool';
 import { buildAgentBuilderStandaloneSystemInstruction } from '../../../../lib/agent/builder-agent';
 import { resolveModelName } from '../../../../lib/agent/model-routing';
-import { applyRuntimeApiKeys, applyRuntimeModelOverrides } from '../../../../lib/agent/runtime-api-keys';
+import { buildScopedRuntimeSettings } from '../../../../lib/agent/runtime-api-keys';
+import { cleanString, isSafeAgentId, jsonError, normalizeRunnerMessages, readJsonObject, rejectCrossOrigin } from '../../agent/_shared';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -43,29 +44,48 @@ function getAvailableSkills() {
 
 export async function POST(req: NextRequest) {
   try {
-    const { messages, agentId = 'standalone-builder', apiKeys = null, modelOverrides = null } = await req.json();
-    const runtimeKeyResult = applyRuntimeApiKeys(apiKeys);
-    applyRuntimeModelOverrides(modelOverrides);
+    const originError = rejectCrossOrigin(req);
+    if (originError) return originError;
 
-    if (!messages || !Array.isArray(messages)) {
-      return new Response(JSON.stringify({ error: 'Messages array is required' }), { status: 400 });
+    const { messages, agentId = 'standalone-builder', apiKeys = null, modelOverrides = null } = await readJsonObject(req);
+    const safeAgentId = cleanString(agentId, 96) || 'standalone-builder';
+    if (!isSafeAgentId(safeAgentId)) {
+      return jsonError('A valid agentId is required.', 400);
     }
+
+    const normalized = normalizeRunnerMessages(messages);
+    if (normalized.error || !normalized.messages) {
+      return jsonError(normalized.error || 'Messages array is required.', 400);
+    }
+
+    const runtimeSettings = buildScopedRuntimeSettings(apiKeys, modelOverrides);
 
     // Use our global API key pool to perfectly load balance without hitting 429s!
     apiKeyPool.initialize();
     const sessionId = `builder-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
-    const lease = runtimeKeyResult.preferredGeminiApiKey
-      ? apiKeyPool.leaseSpecificKey(sessionId, runtimeKeyResult.preferredGeminiApiKey, 'main_agent') || apiKeyPool.leaseKey(sessionId, 'main_agent')
-      : apiKeyPool.leaseKey(sessionId, 'main_agent');
+    const scopedGeminiKeys = runtimeSettings.apiKeys.gemini || [];
+    let lease = runtimeSettings.preferredGeminiApiKey
+      ? apiKeyPool.leaseSpecificKey(sessionId, runtimeSettings.preferredGeminiApiKey, 'main_agent')
+      : null;
+    if (!lease) {
+      for (const key of scopedGeminiKeys) {
+        lease = apiKeyPool.leaseSpecificKey(sessionId, key, 'main_agent');
+        if (lease) break;
+      }
+    }
+    if (!lease) {
+      lease = apiKeyPool.leaseKey(sessionId, 'main_agent');
+    }
     
     if (!lease) {
       return new Response(JSON.stringify({ error: 'No API keys available right now.' }), { status: 503 });
     }
 
-    const ai = new GoogleGenAI({ apiKey: lease.apiKey });
+    const initialLease = lease;
+    const ai = new GoogleGenAI({ apiKey: initialLease.apiKey });
     
     // Format messages for Gemini SDK
-    const formattedMessages = messages.map(msg => ({
+    const formattedMessages = normalized.messages.map(msg => ({
       role: msg.role === 'user' ? 'user' : 'model',
       parts: [{ text: msg.content }]
     }));
@@ -76,9 +96,16 @@ export async function POST(req: NextRequest) {
     const stream = new ReadableStream({
       async start(controller) {
         let currentSessionId = sessionId;
-        let currentLease = lease;
+        let currentLease = initialLease;
         let aiInstance = ai;
         let responseStream;
+        let closed = false;
+        const abort = () => {
+          closed = true;
+          apiKeyPool.releaseKey(currentSessionId);
+          try { controller.close(); } catch { }
+        };
+        req.signal.addEventListener('abort', abort);
 
         try {
           // Auto-retry loop to automatically switch AI keys on 503 errors
@@ -86,10 +113,10 @@ export async function POST(req: NextRequest) {
           while (retries < 3) {
             try {
               responseStream = await aiInstance.models.generateContentStream({
-                model: resolveModelName('think'),
+                model: resolveModelName('think', runtimeSettings),
                 contents: formattedMessages,
                 config: {
-                  systemInstruction: buildAgentBuilderStandaloneSystemInstruction(agentId) + getAvailableSkills(),
+                  systemInstruction: buildAgentBuilderStandaloneSystemInstruction(safeAgentId) + getAvailableSkills(),
                   temperature: 0.7,
                 }
               });
@@ -103,7 +130,12 @@ export async function POST(req: NextRequest) {
               
               // Auto key change
               currentSessionId = `${sessionId}-retry${retries}`;
-              const newLease = apiKeyPool.leaseKey(currentSessionId, 'main_agent');
+              let newLease: typeof currentLease | null = null;
+              for (const key of scopedGeminiKeys) {
+                newLease = apiKeyPool.leaseSpecificKey(currentSessionId, key, 'main_agent');
+                if (newLease) break;
+              }
+              if (!newLease) newLease = apiKeyPool.leaseKey(currentSessionId, 'main_agent');
               if (!newLease) throw new Error('No keys for retry');
               currentLease = newLease;
               aiInstance = new GoogleGenAI({ apiKey: currentLease.apiKey });
@@ -113,6 +145,7 @@ export async function POST(req: NextRequest) {
           if (responseStream) {
             let lastUsageMetadata: any = null;
             for await (const chunk of responseStream) {
+              if (closed || req.signal.aborted) break;
               if (chunk.usageMetadata) {
                 lastUsageMetadata = chunk.usageMetadata;
               }
@@ -128,15 +161,19 @@ export async function POST(req: NextRequest) {
             }
           }
           
-          apiKeyPool.reportSuccess(currentSessionId);
+          if (!closed) apiKeyPool.reportSuccess(currentSessionId);
           apiKeyPool.releaseKey(currentSessionId);
-          controller.close();
+          if (!closed) controller.close();
         } catch (error: any) {
           console.error('[AgentBuilder] Stream error:', error);
           // Removed reportFailure to avoid cooldown penalties on transient issues
           apiKeyPool.releaseKey(currentSessionId);
-          // Silently fail the stream so the UI doesn't get flooded with error text
-          controller.close();
+          if (!closed) {
+            controller.enqueue(encoder.encode(`\nAgent Builder failed: ${String(error.message || error).slice(0, 300)}`));
+            controller.close();
+          }
+        } finally {
+          req.signal.removeEventListener('abort', abort);
         }
       }
     });

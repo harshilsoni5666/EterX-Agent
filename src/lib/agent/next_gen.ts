@@ -19,6 +19,27 @@ const CACHE_DIR = path.resolve(process.cwd(), '.workspaces', 'cache');
 const KNOWLEDGE_DIR = path.resolve(process.cwd(), '.workspaces', 'knowledge');
 const PIPELINES_DIR = path.resolve(process.cwd(), '.workspaces', 'pipelines');
 
+function isPathInside(parent: string, candidate: string): boolean {
+  const relative = path.relative(parent, candidate);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function resolveUnder(parent: string, ...segments: string[]): string {
+  const resolved = path.resolve(parent, ...segments);
+  if (!isPathInside(parent, resolved)) {
+    throw new Error(`Resolved path escapes expected directory: ${resolved}`);
+  }
+  return resolved;
+}
+
+async function writeJsonAtomic(filePath: string, data: unknown): Promise<void> {
+  const dir = path.dirname(filePath);
+  await fs.ensureDir(dir);
+  const tmpPath = path.join(dir, `.${path.basename(filePath)}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`);
+  await fs.writeJson(tmpPath, data, { spaces: 2 });
+  await fs.move(tmpPath, filePath, { overwrite: true });
+}
+
 // ═══════════════════════════════════════════════════════════════
 // 1. INTELLIGENT CACHING LAYER
 // ═══════════════════════════════════════════════════════════════
@@ -60,12 +81,12 @@ const TOOL_TTL: Record<string, number> = {
 
 // Tools that should NEVER be cached (have side effects or need fresh results)
 const UNCACHEABLE_TOOLS = new Set([
-  'workspace_write_file', 'workspace_edit_file', 'system_shell',
+  'workspace_write_file', 'workspace_str_replace', 'workspace_apply_patch', 'workspace_edit_file', 'workspace_edit_many_files', 'system_shell',
   'workspace_run_command', 'workspace_verify_code', 'git_operations',
   'docx_generator', 'task_decomposer', 'spawn_sub_agent', 'background_task',
   'create_dynamic_tool', 'run_macro', 'screenshot_capture',
   'desktop_notification', 'email_sender', 'tts_engine',
-  'process_manager', 'task_scheduler', 'file_watcher',
+  'process_manager', 'file_watcher',
   'code_generator', 'compression_tool', 'self_improve',
   'ask_user',            // MUST always actually ask the user
   'task_checkpoint',     // MUST always read/write real checkpoint state
@@ -255,7 +276,7 @@ export class SmartQueryRouter {
       estimatedSteps = 5;
     } else if (hasCode) {
       strategy = 'code_heavy';
-      suggestedTools = ['workspace_write_file', 'workspace_edit_file', 'workspace_verify_code', 'workspace_run_command'];
+      suggestedTools = ['workspace_write_file', 'workspace_str_replace', 'workspace_apply_patch', 'workspace_verify_code', 'workspace_run_command'];
       complexity = wordCount > 30 ? 'complex' : 'moderate';
       estimatedSteps = wordCount > 30 ? 8 : 4;
     } else if (hasResearch) {
@@ -348,7 +369,7 @@ export class KnowledgeEngine {
     if (this.loaded) return;
     try {
       await fs.ensureDir(KNOWLEDGE_DIR);
-      const filePath = path.join(KNOWLEDGE_DIR, 'knowledge_base.json');
+      const filePath = resolveUnder(KNOWLEDGE_DIR, 'knowledge_base.json');
       if (await fs.pathExists(filePath)) {
         this.entries = await fs.readJson(filePath);
       }
@@ -366,7 +387,7 @@ export class KnowledgeEngine {
       await fs.ensureDir(KNOWLEDGE_DIR);
       // Keep most recent 200 entries
       const toSave = this.entries.slice(-200);
-      await fs.writeJson(path.join(KNOWLEDGE_DIR, 'knowledge_base.json'), toSave, { spaces: 2 });
+      await writeJsonAtomic(resolveUnder(KNOWLEDGE_DIR, 'knowledge_base.json'), toSave);
     } catch { }
   }
 
@@ -703,7 +724,7 @@ export class PipelineBuilder {
       const files = await fs.readdir(PIPELINES_DIR);
       for (const file of files) {
         if (file.endsWith('.json')) {
-          const pipeline = await fs.readJson(path.join(PIPELINES_DIR, file));
+          const pipeline = await fs.readJson(resolveUnder(PIPELINES_DIR, file));
           this.pipelines.set(pipeline.id, pipeline);
         }
       }
@@ -727,7 +748,7 @@ export class PipelineBuilder {
     this.pipelines.set(pipeline.id, pipeline);
 
     await fs.ensureDir(PIPELINES_DIR);
-    await fs.writeJson(path.join(PIPELINES_DIR, `${pipeline.id}.json`), pipeline, { spaces: 2 });
+    await writeJsonAtomic(resolveUnder(PIPELINES_DIR, `${pipeline.id}.json`), pipeline);
 
     console.log(`[Pipeline] Created: ${name} (${steps.length} steps)`);
     return pipeline;

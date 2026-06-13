@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { ToolDefinition } from '../../schemas';
 import { globalSubAgentSpawner, agentMessageBus, SubAgentName, getPendingResults, hasPendingResults } from '../../roles/sub_agent';
+import { enforceToolCapability } from '../security/tool_policy';
 
 /**
  * Spawn Sub-Agent Tool v2 — Fire-and-Forget Parallel Agent Spawner
@@ -59,6 +60,11 @@ IMPORTANT: After spawning, you MUST immediately start working on your own tasks.
     tasks?: Array<{ task: string, name?: string }>,
     agentName?: string
   }, context: any) => {
+    const decision = enforceToolCapability('spawn_sub_agent', input, context);
+    if (!decision.allowed) {
+      return { mode: input.mode || 'blocked', agents: [], message: decision.reason || 'Sub-agent spawning is not allowed' };
+    }
+
     // Extract the UI trace callback from context (injected by gemini.ts)
     const onTrace = context?._onTrace as ((t: any) => void) | undefined;
 

@@ -50,11 +50,11 @@ export interface ToolUsageRecord {
 // ─── Common Chains ────────────────────────────────────────────────────────────
 
 const KNOWN_CHAINS: Array<{ trigger: string; chain: string[]; name: string }> = [
-  { trigger: 'workspace_read_file', chain: ['workspace_read_file', 'workspace_edit_file', 'workspace_verify_code'], name: 'read→edit→verify' },
+  { trigger: 'workspace_read_file', chain: ['workspace_read_file', 'workspace_str_replace', 'workspace_verify_code'], name: 'read->replace->verify' },
   { trigger: 'workspace_write_file', chain: ['workspace_write_file', 'workspace_verify_code'], name: 'write→verify' },
   { trigger: 'web_search', chain: ['web_search', 'web_search', 'web_search'], name: 'multi-search' },
   { trigger: 'project_scaffolder', chain: ['project_scaffolder', 'workspace_write_file', 'workspace_run_command'], name: 'scaffold→write→build' },
-  { trigger: 'workspace_search_text', chain: ['workspace_search_text', 'workspace_read_file', 'workspace_edit_file'], name: 'search→read→fix' },
+  { trigger: 'workspace_search_text', chain: ['workspace_search_text', 'workspace_read_file', 'workspace_str_replace'], name: 'search->read->fix' },
   { trigger: 'system_shell', chain: ['system_shell', 'workspace_read_file'], name: 'run→check-output' },
   { trigger: 'image_generator', chain: ['image_generator', 'workspace_write_file'], name: 'generate→save-image' },
 ];
@@ -63,11 +63,11 @@ const KNOWN_CHAINS: Array<{ trigger: string; chain: string[]; name: string }> = 
 
 const INTENT_TOOL_MAP: Array<{ pattern: RegExp; tools: string[]; priority: number }> = [
   // Code modification
-  { pattern: /\b(edit|modify|change|update|fix|patch|refactor)\b/i, tools: ['workspace_read_file', 'workspace_edit_file', 'workspace_verify_code'], priority: 1 },
+  { pattern: /\b(edit|modify|change|update|fix|patch|refactor)\b/i, tools: ['workspace_semantic_search', 'workspace_read_file', 'workspace_str_replace', 'workspace_apply_patch', 'workspace_verify_code'], priority: 1 },
   // File creation
   { pattern: /\b(create|write|generate|make|build|scaffold)\b.*\b(file|component|module|page|class)\b/i, tools: ['workspace_write_file', 'workspace_verify_code'], priority: 1 },
   // Debugging
-  { pattern: /\b(debug|fix|error|crash|broken|not\s*work)\b/i, tools: ['workspace_search_text', 'workspace_read_file', 'workspace_edit_file', 'workspace_verify_code'], priority: 1 },
+  { pattern: /\b(debug|fix|error|crash|broken|not\s*work)\b/i, tools: ['workspace_semantic_search', 'workspace_search_text', 'workspace_read_file', 'workspace_str_replace', 'workspace_verify_code'], priority: 1 },
   // Research
   { pattern: /\b(research|investigate|find out|learn|explore)\b/i, tools: ['web_search', 'deep_research'], priority: 2 },
   // Project setup
@@ -75,7 +75,7 @@ const INTENT_TOOL_MAP: Array<{ pattern: RegExp; tools: string[]; priority: numbe
   // Running/testing
   { pattern: /\b(run|execute|test|build|compile|start|deploy)\b/i, tools: ['workspace_run_command', 'system_shell'], priority: 1 },
   // Analysis
-  { pattern: /\b(analyze|examine|inspect|review|audit)\b/i, tools: ['workspace_read_file', 'smart_file_analyzer', 'workspace_search_text'], priority: 2 },
+  { pattern: /\b(analyze|examine|inspect|review|audit)\b/i, tools: ['workspace_semantic_search', 'workspace_symbol_lookup', 'smart_file_analyzer', 'workspace_search_text'], priority: 2 },
   // Documents
   { pattern: /\b(document|docx|pdf|report|presentation|pptx|xlsx)\b/i, tools: ['docx_generator', 'office_artifact_builder'], priority: 1 },
   // Images/visual
@@ -282,8 +282,8 @@ export class ToolIntelligenceEngine {
     if (calls.length <= 1) return [calls];
 
     // Group into independent and dependent
-    const writingTools = new Set(['workspace_write_file', 'workspace_edit_file', 'system_shell', 'workspace_run_command']);
-    const readingTools = new Set(['workspace_read_file', 'workspace_search_text', 'web_search', 'workspace_list_directory']);
+    const writingTools = new Set(['workspace_write_file', 'workspace_str_replace', 'workspace_apply_patch', 'workspace_edit_file', 'workspace_edit_many_files', 'system_shell', 'workspace_run_command']);
+    const readingTools = new Set(['workspace_read_file', 'workspace_read_many_files', 'workspace_semantic_search', 'workspace_symbol_lookup', 'workspace_search_text', 'web_search', 'workspace_list_directory']);
 
     const readers = calls.filter(c => readingTools.has(c.name));
     const writers = calls.filter(c => writingTools.has(c.name));

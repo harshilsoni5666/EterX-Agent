@@ -191,7 +191,7 @@ export class CognitiveReasoningEngine {
         hypotheses.push({
           id: 'h_read_fix',
           approach: 'Read the error context, identify root cause, apply targeted fix, verify',
-          toolsNeeded: ['workspace_read_file', 'workspace_edit_file', 'workspace_verify_code'],
+          toolsNeeded: ['workspace_read_file', 'workspace_str_replace', 'workspace_verify_code'],
           estimatedSteps: 4,
           risks: ['Root cause may be in a different file', 'Fix may introduce new issues'],
           confidence: 0.75,
@@ -200,7 +200,7 @@ export class CognitiveReasoningEngine {
         hypotheses.push({
           id: 'h_search_fix',
           approach: 'Search codebase for error pattern, trace the call chain, fix at source',
-          toolsNeeded: ['workspace_search_text', 'workspace_read_file', 'workspace_edit_file'],
+          toolsNeeded: ['workspace_semantic_search', 'workspace_search_text', 'workspace_read_file', 'workspace_str_replace'],
           estimatedSteps: 5,
           risks: ['Search may return too many results', 'Deeper systemic issue'],
           confidence: 0.6,
@@ -246,7 +246,7 @@ export class CognitiveReasoningEngine {
           hypotheses.push({
             id: 'h_scaffold_then_fill',
             approach: 'Scaffold project structure first, then fill in implementation details',
-            toolsNeeded: ['project_scaffolder', 'workspace_write_file', 'workspace_edit_file', 'workspace_verify_code'],
+            toolsNeeded: ['project_scaffolder', 'workspace_write_file', 'workspace_str_replace', 'workspace_apply_patch', 'workspace_verify_code'],
             estimatedSteps: Math.max(6, this.estimateStepCount(message)),
             risks: ['Scaffold may not match exact requirements', 'May need heavy customization'],
             confidence: 0.6,
@@ -305,7 +305,7 @@ export class CognitiveReasoningEngine {
         nodes.push(
           { id: 'read_context', description: 'Read the file/error context', toolHint: 'workspace_read_file', dependencies: [], status: 'pending', verificationRequired: false },
           { id: 'identify_cause', description: 'Identify root cause from the error', dependencies: ['read_context'], status: 'pending', verificationRequired: false },
-          { id: 'apply_fix', description: 'Apply the targeted fix', toolHint: 'workspace_edit_file', dependencies: ['identify_cause'], status: 'pending', verificationRequired: true },
+          { id: 'apply_fix', description: 'Apply the targeted fix', toolHint: 'workspace_str_replace', dependencies: ['identify_cause'], status: 'pending', verificationRequired: true },
           { id: 'verify_fix', description: 'Verify the fix works', toolHint: 'workspace_verify_code', dependencies: ['apply_fix'], status: 'pending', verificationRequired: false },
         );
         break;
@@ -519,8 +519,12 @@ export class CognitiveReasoningEngine {
 
     if (/\b(file|read|open|check|see|look)\b/i.test(lower)) tools.push('workspace_read_file');
     if (/\b(write|create|make|generate|add|new)\b/i.test(lower)) tools.push('workspace_write_file');
-    if (/\b(edit|modify|change|update|fix|patch)\b/i.test(lower)) tools.push('workspace_edit_file');
-    if (/\b(search|find|grep|locate)\b/i.test(lower)) tools.push('workspace_search_text');
+    if (/\b(edit|modify|change|update|fix|patch)\b/i.test(lower)) {
+      tools.push('workspace_str_replace', 'workspace_apply_patch');
+    }
+    if (/\b(search|find|grep|locate)\b/i.test(lower)) {
+      tools.push('workspace_semantic_search', 'workspace_search_text');
+    }
     if (/\b(run|execute|command|shell|terminal|npm|pip|install)\b/i.test(lower)) tools.push('system_shell');
     if (/\b(web|search|google|online|internet|latest)\b/i.test(lower)) tools.push('web_search');
     if (/\b(test|verify|check|lint|build)\b/i.test(lower)) tools.push('workspace_verify_code');

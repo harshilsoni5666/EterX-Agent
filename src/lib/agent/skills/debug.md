@@ -1,35 +1,26 @@
 ---
-name: Debug
-id: debug
-description: Debug issues by analyzing logs, stack traces, and error patterns. Diagnose root causes and suggest concrete fixes.
+name: debug
+description: Use when something is broken, failing, throwing errors, behaving unexpectedly, or producing confusing logs. Focuses on evidence-first diagnosis and minimal verified fixes.
 icon: Bug
 category: coding
 ---
 
-# Debug Skill
+# Debug
 
-Help the user debug issues in their code or environment.
-
-## Instructions
-
-1. Review the user's issue description
-2. Read relevant log files and error outputs
-3. Look for ERROR and WARN entries, stack traces, failure patterns
-4. Consider launching a sub-agent to understand relevant features
-5. Explain what you found in plain language
-6. Suggest concrete fixes or next steps
+Debug by narrowing uncertainty, not by guessing.
 
 ## Workflow
 
-1. **Gather context**: Read error logs, console output, and relevant source files
-2. **Identify patterns**: Look for common error patterns (null refs, type mismatches, import failures, race conditions)
-3. **Trace the root cause**: Follow the error chain from symptom to source
-4. **Propose fix**: Suggest a minimal, targeted fix
-5. **Verify**: After applying fix, run tests or reproduce the scenario to confirm
+1. Capture the exact symptom, command, request, or user action that fails.
+2. Read the full error output, stack trace, log tail, and relevant source.
+3. Identify the first failing boundary: input, state, dependency, network, filesystem, build, runtime, or UI.
+4. Form two or three hypotheses and test the cheapest one first.
+5. Make the smallest fix that explains the evidence.
+6. Reproduce the original scenario or run the closest available check.
 
-## Tips
-- Always read the FULL error message, not just the first line
-- Check recent git changes with `git diff` to find what changed
-- Look at both the failing code AND its callers
-- Check environment variables and config files
-- Consider race conditions for intermittent failures
+## Rules
+
+- Do not repeat the same failed command without changing something meaningful.
+- Do not swallow errors or hide failing output.
+- If the issue is intermittent, look for race conditions, caching, stale state, clocks, retries, and environment differences.
+- If verification is impossible, state exactly what remains unverified.

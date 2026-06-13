@@ -1,6 +1,29 @@
 import fs from 'fs-extra';
 import path from 'path';
 
+function safeSegment(value: string, fallback: string): string {
+  const cleaned = String(value || '').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80);
+  return cleaned || fallback;
+}
+
+function resolveUnder(rootPath: string, ...segments: string[]): string {
+  const root = path.resolve(rootPath);
+  const resolved = path.resolve(root, ...segments);
+  const relative = path.relative(root, resolved);
+  if (relative && (relative.startsWith('..') || path.isAbsolute(relative))) {
+    throw new Error(`Blocked path traversal outside workspace: ${resolved}`);
+  }
+  return resolved;
+}
+
+async function writeFileAtomic(filePath: string, content: Buffer | string, encoding?: BufferEncoding): Promise<void> {
+  const dir = path.dirname(filePath);
+  await fs.ensureDir(dir);
+  const tmpPath = path.join(dir, `.${path.basename(filePath)}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`);
+  await fs.writeFile(tmpPath, content, encoding as any);
+  await fs.move(tmpPath, filePath, { overwrite: true });
+}
+
 /**
  * WorkspaceManager v2
  * 
@@ -20,13 +43,15 @@ export class WorkspaceManager {
   private sandboxDir: string;
 
   constructor(userId: string, projectId: string) {
-    this.baseDir = path.resolve(process.cwd(), `.workspaces/${userId}/projects/${projectId}`);
+    const safeUserId = safeSegment(userId, 'user');
+    const safeProjectId = safeSegment(projectId, 'project');
+    this.baseDir = path.resolve(process.cwd(), '.workspaces', safeUserId, 'projects', safeProjectId);
     
     this.inputDir = path.join(this.baseDir, 'input');
     this.workingDir = path.join(this.baseDir, 'working');
     this.outputDir = path.join(this.baseDir, 'output');
     this.logsDir = path.join(this.baseDir, 'logs');
-    this.sandboxDir = path.resolve(process.cwd(), '.workspaces', 'sandbox');
+    this.sandboxDir = path.join(this.baseDir, 'sandbox');
   }
 
   /**
@@ -50,14 +75,14 @@ export class WorkspaceManager {
    * Retrieves an absolute path inside the working directory.
    */
   public getWorkingFilePath(filename: string): string {
-    return path.join(this.workingDir, filename);
+    return resolveUnder(this.workingDir, filename);
   }
 
   /**
    * Get the sandbox directory path.
    */
   public getSandboxPath(filename?: string): string {
-    if (filename) return path.join(this.sandboxDir, filename);
+    if (filename) return resolveUnder(this.sandboxDir, filename);
     return this.sandboxDir;
   }
 
@@ -65,9 +90,8 @@ export class WorkspaceManager {
    * Write a draft file to the sandbox (not user's real workspace).
    */
   public async writeSandboxDraft(filename: string, content: string): Promise<string> {
-    const filePath = path.join(this.sandboxDir, filename);
-    await fs.ensureDir(path.dirname(filePath));
-    await fs.writeFile(filePath, content, 'utf-8');
+    const filePath = resolveUnder(this.sandboxDir, filename);
+    await writeFileAtomic(filePath, content, 'utf-8');
     console.log(`[WorkspaceManager] 📝 Sandbox draft written: ${filename}`);
     return filePath;
   }
@@ -76,7 +100,7 @@ export class WorkspaceManager {
    * Read a draft from the sandbox.
    */
   public async readSandboxDraft(filename: string): Promise<string> {
-    const filePath = path.join(this.sandboxDir, filename);
+    const filePath = resolveUnder(this.sandboxDir, filename);
     if (!await fs.pathExists(filePath)) {
       throw new Error(`Sandbox draft not found: ${filename}`);
     }
@@ -96,13 +120,13 @@ export class WorkspaceManager {
    * This is the "go live" step — only called when work is finalized.
    */
   public async promoteSandboxFile(filename: string, outputFilename?: string): Promise<string> {
-    const sandboxPath = path.join(this.sandboxDir, filename);
+    const sandboxPath = resolveUnder(this.sandboxDir, filename);
     if (!await fs.pathExists(sandboxPath)) {
       throw new Error(`Sandbox file not found: ${filename}`);
     }
 
     const destFilename = outputFilename || filename;
-    const outputPath = path.join(this.outputDir, destFilename);
+    const outputPath = resolveUnder(this.outputDir, destFilename);
     await fs.ensureDir(path.dirname(outputPath));
     await fs.copy(sandboxPath, outputPath);
     console.log(`[WorkspaceManager] 🚀 Promoted sandbox file: ${filename} → ${outputPath}`);
@@ -126,15 +150,15 @@ export class WorkspaceManager {
    */
   public async writeDraft(filename: string, content: string): Promise<void> {
     const filePath = this.getWorkingFilePath(filename);
-    await fs.writeFile(filePath, content, 'utf-8');
+    await writeFileAtomic(filePath, content, 'utf-8');
   }
 
   /**
    * Export polished artifact to the output directory.
    */
   public async exportOutput(filename: string, content: Buffer | string): Promise<string> {
-    const outputPath = path.join(this.outputDir, filename);
-    await fs.writeFile(outputPath, content);
+    const outputPath = resolveUnder(this.outputDir, filename);
+    await writeFileAtomic(outputPath, content);
     return outputPath;
   }
 

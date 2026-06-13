@@ -69,7 +69,7 @@ export class ExecutionVelocityMonitor {
     }
     // File editing
     else if (/\b(edit|fix|change|update|modify|refactor|rename)\b/i.test(lower) && /\b(file|code|function|class|method)\b/i.test(lower)) {
-      this.taskProfile = { type: 'file_edit', expectedIterations: [2, 15], expectedTools: ['workspace_read_file', 'workspace_edit_file', 'workspace_write_file'] };
+      this.taskProfile = { type: 'file_edit', expectedIterations: [2, 15], expectedTools: ['workspace_read_file', 'workspace_str_replace', 'workspace_apply_patch', 'workspace_write_file'] };
     }
     // Project creation
     else if (/\b(create|build|make|scaffold|generate|setup|initialize)\b.*\b(project|app|website|api|server|tool)\b/i.test(lower)) {
@@ -109,7 +109,7 @@ export class ExecutionVelocityMonitor {
     this.lastCallTime = Date.now();
 
     // Track file creation
-    if ((tool === 'workspace_write_file' || tool === 'workspace_edit_file') && success) {
+    if (['workspace_write_file', 'workspace_str_replace', 'workspace_apply_patch', 'workspace_edit_file', 'workspace_edit_many_files'].includes(tool) && success) {
       this.fileArtifactsCreated++;
     }
 
@@ -255,7 +255,10 @@ export class ExecutionVelocityMonitor {
     switch (tool) {
       case 'workspace_read_file':
       case 'workspace_write_file':
+      case 'workspace_str_replace':
+      case 'workspace_apply_patch':
       case 'workspace_edit_file':
+      case 'workspace_edit_many_files':
         return String(args?.filename || args?.path || '').split('/').pop() || '';
       case 'web_search':
       case 'deep_research':

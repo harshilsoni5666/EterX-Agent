@@ -1,23 +1,29 @@
 import { z } from 'zod';
 import { ToolDefinition } from '../../schemas';
 import path from 'path';
+import { enforceToolCapability } from '../security/tool_policy';
+import { loadOptionalModule } from './optional_module';
+import { requireOutboundApproval } from './outbound_approval';
 
 // Lazy-load whatsapp-web.js — webpack-invisible dynamic require
 let Client: any = null;
 let LocalAuth: any = null;
 let qrcode: any = null;
 let whatsappAvailable = false;
+let whatsappLoadAttempted = false;
 
-try {
-  // eval('require') hides this from webpack's static analysis
-  const dynamicRequire = eval('require');
-  const wwebjs = dynamicRequire('whatsapp-web.js');
-  Client = wwebjs.Client;
-  LocalAuth = wwebjs.LocalAuth;
-  qrcode = dynamicRequire('qrcode-terminal');
-  whatsappAvailable = true;
-} catch {
-  console.warn('[WhatsApp] whatsapp-web.js package not installed. WhatsApp tool will be unavailable.');
+function ensureWhatsAppSdk(): boolean {
+  if (Client && LocalAuth && qrcode) return true;
+  if (whatsappLoadAttempted) return false;
+  whatsappLoadAttempted = true;
+
+  const wwebjs = loadOptionalModule<any>('whatsapp-web.js');
+  qrcode = loadOptionalModule<any>('qrcode-terminal');
+  Client = wwebjs?.Client || null;
+  LocalAuth = wwebjs?.LocalAuth || null;
+  whatsappAvailable = Boolean(Client && LocalAuth && qrcode);
+  if (!whatsappAvailable) console.warn('[WhatsApp] whatsapp-web.js package not installed. WhatsApp tool will be unavailable.');
+  return whatsappAvailable;
 }
 
 /**
@@ -45,6 +51,7 @@ export const whatsappControllerTool: ToolDefinition = {
     action: z.enum(['init', 'status', 'contacts', 'send', 'read']),
     to: z.string().optional().describe('Phone number with country code (e.g. 1234567890@c.us) or Group ID'),
     message: z.string().optional().describe('Text message to send'),
+    confirm: z.boolean().optional().describe('Required true for sending WhatsApp messages'),
     limit: z.number().optional().default(10).describe('Limit for contacts or messages to read')
   }),
   outputSchema: z.object({
@@ -52,9 +59,14 @@ export const whatsappControllerTool: ToolDefinition = {
     status: z.string(),
     data: z.any().optional()
   }),
-  execute: async (input: any) => {
+  execute: async (input: any, context?: any) => {
     try {
-      if (!whatsappAvailable) {
+      const decision = enforceToolCapability('whatsapp_controller', input, context);
+      if (!decision.allowed) {
+        return { success: false, status: decision.reason || 'WhatsApp access is not allowed' };
+      }
+
+      if (!ensureWhatsAppSdk()) {
         return { success: false, status: 'whatsapp-web.js package is not installed. Run: npm install whatsapp-web.js qrcode-terminal' };
       }
 
@@ -112,11 +124,15 @@ export const whatsappControllerTool: ToolDefinition = {
       }
 
       if (input.action === 'send') {
+        const approval = await requireOutboundApproval('WhatsApp', 'send', input, context, input.to, input.message);
+        if (approval) return approval;
         if (!input.to || !input.message) return { success: false, status: 'Missing "to" or "message" parameter.' };
         // Ensure format is correct for standard numbers if user didn't add @c.us
         let toChatId = input.to;
         if (!toChatId.includes('@')) {
-           toChatId = `${toChatId.replace(/\D/g, '')}@c.us`; // strip non-digits and append @c.us
+           const digits = toChatId.replace(/\D/g, '');
+           if (digits.length < 8 || digits.length > 15) return { success: false, status: 'Invalid WhatsApp phone number. Use international digits or a full chat ID.' };
+           toChatId = `${digits}@c.us`; // strip non-digits and append @c.us
         }
         
         await waClient.sendMessage(toChatId, input.message);

@@ -8,6 +8,9 @@ import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
 import { globalToolRegistry } from './tools/registry';
 import './tools/index'; // Bootstrap all tools!
+import { normalizeRegistryToolName } from './tools/registry';
+import { normalizeRegistryToolArgs, validateRegistryToolArgs } from './tools/tool-args';
+import { DEFAULT_MAIN_AGENT_ALLOWED_CAPABILITIES, enforceToolCapability } from './tools/security/tool_policy';
 import { ProjectContext } from './schemas';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { SKILL_REGISTRY } from './skills';
@@ -15,7 +18,13 @@ import { workspaceIntelligence, agentReflection, dynamicSkillEngine } from './en
 import { agentMemory, ContextWindowManager } from './memory';
 import { memoryV2 } from './memory/v2';
 import { apiKeyPool } from './api-key-pool';
-import { getRuntimeApiKey, getRuntimeApiKeyValues } from './runtime-api-keys';
+import {
+  getRuntimeApiKey,
+  getScopedRuntimeApiKey,
+  getScopedRuntimeApiKeyValues,
+  type RuntimeApiKeyProvider,
+  type ScopedRuntimeSettings,
+} from './runtime-api-keys';
 import {
   intelligentCache, smartQueryRouter, knowledgeEngine,
   multiStrategyRecovery, performanceAnalytics, initializeNextGenSystems
@@ -31,6 +40,7 @@ import { isCancelled } from './roles/sub_agent';
 import { MAIN_AGENT_MODE_CONFIG, type MainAgentMode, type MainAgentProvider, type MainAgentThinkingLevel, resolveModelName, isModelDeprecatedError, getFallbackChain } from './model-routing';
 import { lifetimeBrain } from './memory/lifetime';
 import { monitorEmitter } from './monitor/emitter';
+import { createToolExecutionContext, isToolCancellationError } from './cancellation';
 import { readTaskTracker, readTaskTrackerMarkdown, trackerToTrace, writeTaskTrackerJson } from './task-tracker-store';
 import { normalizeTimeoutMs, secondsFromTimeoutMs } from './tools/core/terminal_timeout';
 import { buildAgentBuilderRuntimePrompt, isAgentBuilderRuntimeContext, shouldExposeToolToRuntime } from './builder-agent';
@@ -40,6 +50,7 @@ import { ensureCodeIndex } from './workspace/code-index';
 import { getCodingAgentToolSummary } from '../code/code-agent-runtime';
 import * as cognitiveCore from './hooks/cognitive-core';
 import { formatVisibleWorkNote as formatCleanVisibleWorkNote } from './work-note';
+import { RuntimeEvidenceLedger } from './runtime-evidence';
 import * as pathLib from 'path';
 import * as fsExtra from 'fs-extra';
 
@@ -53,6 +64,7 @@ type SkillCandidate = {
 
 type GeminiAgentClientOptions = {
   provider?: MainAgentProvider;
+  runtimeSettings?: ScopedRuntimeSettings | null;
 };
 
 type AgentMediaFile = {
@@ -161,11 +173,14 @@ export class GeminiAgentClient {
   private activeProvider: MainAgentProvider = 'gemini';
   private mistralModelName = MAIN_AGENT_MODE_CONFIG.mistral.modelName;
   private readonly geminiHttpTimeoutMs = positiveIntEnv('GEMINI_HTTP_TIMEOUT_MS', 300_000);
+  private runtimeSettings?: ScopedRuntimeSettings | null;
+  private providerKeyCursor: Partial<Record<MainAgentProvider, number>> = {};
 
   constructor(options: GeminiAgentClientOptions = {}) {
     this.activeProvider = options.provider || 'gemini';
+    this.runtimeSettings = options.runtimeSettings || null;
 
-    this.apiKeys = getRuntimeApiKeyValues('gemini');
+    this.apiKeys = getScopedRuntimeApiKeyValues(this.runtimeSettings, 'gemini');
 
     if (this.apiKeys.length === 0) {
       if (this.activeProvider !== 'gemini') return;
@@ -201,6 +216,10 @@ export class GeminiAgentClient {
     this.currentKeyIndex = (this.currentKeyIndex + 1) % this.apiKeys.length;
     this.initializeClient();
     console.log(`[GeminiClient] Rotated API route to index ${ this.currentKeyIndex }/${ this.apiKeys.length - 1 }`);
+  }
+
+  private resolveModelForMode(mode: MainAgentMode): string {
+    return resolveModelName(mode, this.runtimeSettings);
   }
 
   private rotateKeyForError(context: ProjectContext | undefined, errorMsg: string): void {
@@ -266,7 +285,7 @@ export class GeminiAgentClient {
         includeAnswer: true,
         includeRawContent: false,
         numResults: 4,
-      }, { source: 'telegram', directAnswer: true });
+      }, { source: 'telegram', directAnswer: true, allowNetwork: true, networkPolicy: 'allow' });
 
       const payload = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
       return payload.length > 6000 ? payload.slice(0, 6000) : payload;
@@ -362,18 +381,18 @@ export class GeminiAgentClient {
     const modeConfig = MAIN_AGENT_MODE_CONFIG[mode] || MAIN_AGENT_MODE_CONFIG.think;
     if (modeConfig.provider !== 'gemini') {
       this.activeProvider = modeConfig.provider;
-      this.mistralModelName = modeConfig.modelName;
+      this.mistralModelName = this.resolveModelForMode(mode);
       console.log(`[GeminiClient] Mode: ${ modeConfig.provider } -> Model: ${ this.mistralModelName }`);
       return;
     }
 
     this.activeProvider = 'gemini';
     if (mode === 'fast') {
-      this.modelName = resolveModelName('fast');
-      this.fallbackModel = resolveModelName('fast');
+      this.modelName = this.resolveModelForMode('fast');
+      this.fallbackModel = this.resolveModelForMode('fast');
     } else {
-      this.modelName = resolveModelName('think');
-      this.fallbackModel = resolveModelName('fast');
+      this.modelName = this.resolveModelForMode('think');
+      this.fallbackModel = this.resolveModelForMode('fast');
     }
     console.log(`[GeminiClient] ðŸ§  Mode: ${ mode } â†’ Model: ${ this.modelName } | Fallback: ${ this.fallbackModel }`);
   }
@@ -562,17 +581,20 @@ export class GeminiAgentClient {
     return { refreshed: inserted, contents: nextContents };
   }
 
-  private getMistralApiKey(): string {
-    let apiKey = '';
-    if (this.activeProvider === 'openai') {
-      apiKey = getRuntimeApiKey('openai');
-    } else if (this.activeProvider === 'openrouter') {
-      apiKey = getRuntimeApiKey('openrouter');
-    } else if (this.activeProvider === 'groq') {
-      apiKey = getRuntimeApiKey('groq');
-    } else {
-      apiKey = getRuntimeApiKey('mistral');
+  private getProviderApiKey(provider: MainAgentProvider): string {
+    const runtimeProvider = provider as RuntimeApiKeyProvider;
+    const scopedKeys = getScopedRuntimeApiKeyValues(this.runtimeSettings, runtimeProvider);
+    if (scopedKeys.length > 0) {
+      const cursor = this.providerKeyCursor[provider] || 0;
+      const apiKey = scopedKeys[cursor % scopedKeys.length] || scopedKeys[0];
+      this.providerKeyCursor[provider] = (cursor + 1) % scopedKeys.length;
+      return apiKey;
     }
+    return getRuntimeApiKey(runtimeProvider);
+  }
+
+  private getMistralApiKey(): string {
+    const apiKey = this.getProviderApiKey(this.activeProvider);
     if (!apiKey) {
       throw new Error(`Missing ${ this.activeProvider.toUpperCase() } API key. Add it in Settings > API Keys before using this provider.`);
     }
@@ -601,7 +623,7 @@ export class GeminiAgentClient {
   }
 
   private getAnthropicApiKey(): string {
-    const apiKey = getRuntimeApiKey('anthropic');
+    const apiKey = getScopedRuntimeApiKey(this.runtimeSettings, 'anthropic');
     if (!apiKey) {
       throw new Error('Missing ANTHROPIC_API_KEY. Add it in Settings > API Keys before using Claude.');
     }
@@ -797,24 +819,38 @@ export class GeminiAgentClient {
       return { error: 'Cancelled by user.' };
     }
 
-    const tool = globalToolRegistry.getTool(name);
-    if (!tool) return { error: `Tool ${ name } not found in registry.` };
+    const canonicalToolName = normalizeRegistryToolName(name);
+    const tool = globalToolRegistry.getTool(canonicalToolName);
+    if (!tool) return { error: `Tool ${ canonicalToolName } not found in registry.` };
 
-    const cachedResult = sharedCacheDisabled ? null : intelligentCache.get(name, args);
+    let effectiveArgs = normalizeRegistryToolArgs(canonicalToolName, args);
+    const validation = validateRegistryToolArgs(tool, effectiveArgs);
+    if (!validation.success) return { error: validation.error };
+    effectiveArgs = validation.args;
+
+    const capabilityDecision = enforceToolCapability(canonicalToolName, effectiveArgs, context);
+    if (!capabilityDecision.allowed) {
+      return { error: capabilityDecision.reason || `Tool ${canonicalToolName} is not allowed` };
+    }
+
+    const cachedResult = sharedCacheDisabled ? null : intelligentCache.get(canonicalToolName, effectiveArgs);
     if (cachedResult) return { ...cachedResult, _cached: true };
 
     const startedAt = Date.now();
+    const toolExec = createToolExecutionContext(context, onTrace);
     try {
-      const output = await tool.execute(args, { ...(context as any), _onTrace: onTrace });
-      performanceAnalytics.recordToolCall(name, Date.now() - startedAt, true);
-      if (!sharedCacheDisabled) intelligentCache.set(name, args, output);
+      toolExec.throwIfCancelled();
+      const output = await tool.execute(effectiveArgs, toolExec.context);
+      toolExec.throwIfCancelled();
+      performanceAnalytics.recordToolCall(canonicalToolName, Date.now() - startedAt, true);
+      if (!sharedCacheDisabled) intelligentCache.set(canonicalToolName, effectiveArgs, output);
 
       const artifactPaths = this.extractArtifactPathsFromToolOutput(output);
       if (artifactPaths.length > 0) {
         const artifactEvt = {
           type: 'artifact',
           text: artifactPaths.length === 1 ? 'Generated file' : `Generated ${ artifactPaths.length } files`,
-          data: { tool: name, artifactsGenerated: artifactPaths },
+          data: { tool: canonicalToolName, artifactsGenerated: artifactPaths },
         };
         trace.push(artifactEvt);
         onTrace?.(artifactEvt);
@@ -822,11 +858,16 @@ export class GeminiAgentClient {
 
       return output;
     } catch (error: any) {
-      performanceAnalytics.recordToolCall(name, Date.now() - startedAt, false);
+      performanceAnalytics.recordToolCall(canonicalToolName, Date.now() - startedAt, false);
+      if (isToolCancellationError(error) || toolExec.signal.aborted) {
+        return { error: 'CANCELLED_BY_USER', cancelled: true };
+      }
       return {
         error: error?.message || String(error),
-        _suggestion: `Tool ${ name } failed. Try a different tool or a smaller, more direct call.`,
+        _suggestion: `Tool ${ canonicalToolName } failed. Try a different tool or a smaller, more direct call.`,
       };
+    } finally {
+      toolExec.dispose();
     }
   }
 
@@ -1518,7 +1559,6 @@ export class GeminiAgentClient {
       'task_checkpoint',
       'context_manager',
       'file_watcher',
-      'task_scheduler',
       'create_dynamic_tool',
       'self_improve',
       'get_skill_guidelines',
@@ -1578,6 +1618,9 @@ export class GeminiAgentClient {
           return false;
         }
         if (!shouldExposeToolToRuntime(tool.name, isBuilder)) {
+          return false;
+        }
+        if (context && !enforceToolCapability(tool.name, {}, context).allowed) {
           return false;
         }
         return true;
@@ -1644,8 +1687,14 @@ export class GeminiAgentClient {
           text = `\n[TASK TRACKER] Progress: ${ completedSteps }/${ totalSteps } steps done.`;
           if (currentStep) {
             text += `\n[NEXT STEP] Step ${ currentStep.step }: "${ currentStep.name }" - ${ currentStep.description }`;
+            if (currentStep.step_type) text += `\n[STEP TYPE] ${ currentStep.step_type }`;
+            if (currentStep.expected_output) text += `\n[EXPECTED OUTPUT] ${ currentStep.expected_output }`;
             text += `\n[TOOLS TO USE] ${ (currentStep.tools || []).join(', ') }`;
             text += `\n[DONE WHEN] ${ currentStep.done_when || (currentStep as any).verification || 'Step completed' }`;
+            if (Array.isArray(currentStep.artifacts) && currentStep.artifacts.length > 0) {
+              text += `\n[ARTIFACTS] ${ currentStep.artifacts.join(', ') }`;
+            }
+            if (currentStep.risk) text += `\n[RISK] ${ currentStep.risk }`;
           }
           const doneNames = steps.filter((s: any) => s.status === 'done').map((s: any) => s.name);
           if (doneNames.length > 0) {
@@ -1672,10 +1721,61 @@ export class GeminiAgentClient {
 
   /**
    * Updates the JSON task tracker to mark a step as done.
-   * Matches by step name, description keywords, or tool usage.
-   * Completely silent â€” no UI events, no trace emissions.
+   * Scores the current task step against tool usage, args, and the step contract.
+   * Emits progress traces when status changes so the task dock stays current.
    */
-  private markTrackerStepDone(chatId: string | undefined | null, hint: string, toolUsed?: string, skipSessionSync = false, onTrace?: (event: any) => void): void {
+  private getTrackerMatchTokens(args: any): string[] {
+    const tokens = new Set<string>();
+    const add = (value: unknown) => {
+      const text = String(value || '').trim();
+      if (!text) return;
+      tokens.add(text.toLowerCase());
+      const tail = text.split(/[\\/]/).pop() || text;
+      tokens.add(tail.toLowerCase());
+      tail
+        .replace(/\.[^.]+$/, '')
+        .split(/[^a-zA-Z0-9_-]+/)
+        .map(part => part.trim().toLowerCase())
+        .filter(part => part.length >= 3)
+        .forEach(part => tokens.add(part));
+    };
+
+    const visit = (value: any, key = '', depth = 0) => {
+      if (depth > 3 || value == null) return;
+      if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+        const normalizedKey = key.toLowerCase();
+        if (
+          !key ||
+          normalizedKey.includes('file') ||
+          normalizedKey.includes('path') ||
+          normalizedKey.includes('command') ||
+          normalizedKey.includes('query') ||
+          normalizedKey.includes('topic') ||
+          normalizedKey.includes('url') ||
+          normalizedKey.includes('action') ||
+          normalizedKey.includes('selector') ||
+          normalizedKey.includes('name')
+        ) {
+          add(value);
+        }
+        return;
+      }
+      if (Array.isArray(value)) {
+        value.slice(0, 8).forEach(item => visit(item, key, depth + 1));
+        return;
+      }
+      if (typeof value === 'object') {
+        for (const [childKey, childValue] of Object.entries(value).slice(0, 16)) {
+          visit(childValue, childKey, depth + 1);
+        }
+      }
+    };
+
+    visit(args || {});
+    return Array.from(tokens).slice(0, 30);
+  }
+
+  private markTrackerStepDone(chatId: string | undefined | null, hint: string, toolUsed?: string, toolArgs?: any, skipSessionSync = false, onTrace?: (event: any) => void): void {
     if (!chatId) return;
     try {
       const tracker = readTaskTracker(chatId);
@@ -1684,35 +1784,80 @@ export class GeminiAgentClient {
       const steps = Array.isArray(data.steps) ? data.steps : [];
 
       const lowerHint = hint.toLowerCase();
-      let changed = false;
+      const genericHints = new Set(['html', 'css', 'javascript', 'typescript', 'documentation', 'write', 'directory', 'dependencies', 'command', 'research', 'scrape', 'skill', 'guideline', 'verify', 'test', 'document', 'generate', 'notify', 'delivery', 'browser', 'navigate', 'interact', 'capture', 'browse']);
+      const isGenericHint = lowerHint.length < 5 || genericHints.has(lowerHint);
+      const activeStep = steps.find((s: any) => s.status === 'in_progress') || steps.find((s: any) => s.status === 'pending');
+      if (!activeStep) return;
 
-      for (const step of steps) {
-        if (step.status !== 'pending' && step.status !== 'in_progress') continue;
+      const contextTokens = this.getTrackerMatchTokens(toolArgs)
+        .map(token => token.toLowerCase())
+        .filter(token => token.length >= 3 && !genericHints.has(token))
+        .slice(0, 12);
 
-        const name = String(step.name || '').toLowerCase();
-        const description = String(step.description || '').toLowerCase();
-        const nameMatch = name.includes(lowerHint) || lowerHint.includes(name);
-        const descMatch = description && (
-          description.includes(lowerHint) ||
-          lowerHint.includes(description.substring(0, 30))
-        );
-        const toolMatch = toolUsed && Array.isArray(step.tools) && step.tools.some((t: string) => t === toolUsed);
+      const toolTypeMatches = (step: any) => {
+        const stepType = String(step.step_type || '').toLowerCase();
+        const name = String(toolUsed || '').toLowerCase();
+        if (!name || !stepType) return false;
+        if (stepType === 'inspect') return /read|search|find|semantic|symbol|outline|analy/.test(name);
+        if (stepType === 'edit') return /patch|replace|edit|write/.test(name);
+        if (stepType === 'create') return /write|generator|builder|artifact|image/.test(name);
+        if (stepType === 'verify') return /verify|run_command|shell|browser|screenshot|realtime/.test(name);
+        if (stepType === 'research') return /search|scraper|research|pdf|youtube|rss/.test(name);
+        if (stepType === 'run') return /run_command|shell|execute/.test(name);
+        if (stepType === 'communicate') return /ask_user|slack|telegram|whatsapp|email/.test(name);
+        return false;
+      };
 
-        if (nameMatch || descMatch || toolMatch) {
-          step.status = 'done';
-          step.completedAt = Date.now();
-          changed = true;
-          console.log(`[TaskTracker] Auto-marked step ${ step.step } done: "${ step.name }"`);
-          break;
+      const scoreStep = (step: any) => {
+        const searchable = [
+          step.name,
+          step.description,
+          step.done_when,
+          step.expected_output,
+          step.step_type,
+          ...(Array.isArray(step.artifacts) ? step.artifacts : []),
+        ].map(value => String(value || '').toLowerCase()).join(' ');
+        const tools = Array.isArray(step.tools) ? step.tools.map((t: string) => String(t).toLowerCase()) : [];
+        let score = step === activeStep ? 1.5 : -2;
+        if (!isGenericHint && searchable.includes(lowerHint)) score += 3;
+        for (const token of contextTokens) {
+          if (searchable.includes(token)) score += 3;
         }
+        if (toolUsed && tools.includes(String(toolUsed).toLowerCase())) score += step === activeStep ? 2 : 0.5;
+        if (toolUsed && tools[0] === String(toolUsed).toLowerCase()) score += 0.75;
+        if (toolTypeMatches(step)) score += 1.25;
+        if (step.status === 'in_progress') score += 0.5;
+        return score;
+      };
+
+      const candidates = steps
+        .filter((step: any) => step.status === 'pending' || step.status === 'in_progress')
+        .map((step: any) => ({ step, score: scoreStep(step) }))
+        .sort((a: any, b: any) => b.score - a.score);
+
+      const best = candidates[0];
+      if (!best) return;
+
+      const activeScore = scoreStep(activeStep);
+      const chosen = best.step === activeStep || best.score >= activeScore + 3 ? best : { step: activeStep, score: activeScore };
+      const minimumScore = isGenericHint ? 4 : 3;
+      if (chosen.score < minimumScore) {
+        if (activeStep.status === 'pending' && toolUsed && Array.isArray(activeStep.tools) && activeStep.tools.includes(toolUsed)) {
+          activeStep.status = 'in_progress';
+          data.updatedAt = Date.now();
+          writeTaskTrackerJson(chatId, data).catch(() => { });
+          this._trackerCache = null;
+          onTrace?.(trackerToTrace(data, 'progress'));
+        }
+        return;
       }
 
-      const firstPending = steps.find((s: any) => s.status === 'pending');
-      if (!changed && firstPending && toolUsed && Array.isArray(firstPending.tools) && firstPending.tools[0] === toolUsed) {
-        firstPending.status = 'done';
-        firstPending.completedAt = Date.now();
+      let changed = false;
+      if (chosen.step.status === 'pending' || chosen.step.status === 'in_progress') {
+        chosen.step.status = 'done';
+        chosen.step.completedAt = Date.now();
         changed = true;
-        console.log(`[TaskTracker] Auto-marked first pending step ${ firstPending.step } done via primary tool: "${ firstPending.name }"`);
+        console.log(`[TaskTracker] Auto-marked step ${ chosen.step.step } done: "${ chosen.step.name }" (score ${ chosen.score.toFixed(1) })`);
       }
 
       if (changed) {
@@ -1749,7 +1894,7 @@ export class GeminiAgentClient {
     if (!success) return;
 
     const filename = String(args?.filename || args?.path || '').toLowerCase();
-    const mark = (hint: string) => this.markTrackerStepDone(chatId, hint, toolName, skipSessionSync, onTrace);
+    const mark = (hint: string) => this.markTrackerStepDone(chatId, hint, toolName, args, skipSessionSync, onTrace);
 
     switch (toolName) {
       case 'workspace_write_file':
@@ -1761,6 +1906,7 @@ export class GeminiAgentClient {
         else if (filename.includes('readme') || filename.includes('.md')) mark('documentation');
         else mark('write');
         break;
+      case 'workspace_run_command':
       case 'system_shell':
         const cmd = String(args?.command || '').toLowerCase();
         if (cmd.includes('mkdir') || cmd.includes('new-item') || cmd.includes('init')) mark('directory');
@@ -1807,6 +1953,22 @@ export class GeminiAgentClient {
   // Context-caching helpers
   // ─────────────────────────────────────────────────────────────────────────
 
+  private getDefaultDesktopToolPolicyContext(): any {
+    return {
+      allowedCapabilities: DEFAULT_MAIN_AGENT_ALLOWED_CAPABILITIES,
+      allowNetwork: true,
+      networkPolicy: 'allow',
+      allowAgentSpawning: true,
+      allowDynamicCode: true,
+      allowBrowserControl: true,
+      allowHostControl: false,
+      allowAutomation: false,
+      allowExternalCommunication: false,
+      allowSecretManagement: false,
+      allowVcs: false,
+    };
+  }
+
   /**
    * Generates the STATIC (cacheable) portion of the system prompt.
    *
@@ -1817,6 +1979,7 @@ export class GeminiAgentClient {
    */
   public generateCacheableSystemPrompt(): string {
     const blankCtx: any = {
+      ...this.getDefaultDesktopToolPolicyContext(),
       projectId: '__cached__',
       uploadedFiles: [],
       userPreferences: {},
@@ -1921,7 +2084,6 @@ export class GeminiAgentClient {
       'task_checkpoint',
       'context_manager',
       'file_watcher',
-      'task_scheduler',
       'create_dynamic_tool',
       'self_improve',
       'get_skill_guidelines',
@@ -1930,7 +2092,8 @@ export class GeminiAgentClient {
     const availableTools = globalToolRegistry.getAllTools()
       .filter(t => !((context as any).disableSubAgents && t.name === 'spawn_sub_agent'))
       .filter(t => !((context as any).disablePlannerTools && telegramHiddenTools.has(t.name)))
-      .filter(t => shouldExposeToolToRuntime(t.name, isBuilderPromptContext));
+      .filter(t => shouldExposeToolToRuntime(t.name, isBuilderPromptContext))
+      .filter(t => enforceToolCapability(t.name, {}, context).allowed);
     const toolNames = availableTools.map(t => `${ t.name }`).join(', ');
     const toolCount = availableTools.length;
 
@@ -2101,35 +2264,32 @@ DEPTH CALIBRATION:
 
 FOR CODING (CRITICAL - this is your primary workflow):
 
-SPEED PROTOCOL - Write -> Verify -> Fix-from-stderr -> Continue:
-1. Write ALL files first. Don't stop to read between writes. Chain workspace_write_file calls.
-2. After writing all files: run ONE verification command (npm run build, tsc --noEmit, python -c "import X", etc.)
-3. Read the error output (stderr/stdout). It contains EXACT file paths, line numbers, and error messages.
-4. Fix ALL errors directly from the error output using workspace_str_replace. Do NOT re-read the file first.
-   The error tells you: file path, line number, what's wrong. That's enough to write the fix.
-5. Run verification again. Repeat 3-4 until clean.
+SPEED PROTOCOL - Inspect -> Edit -> Verify -> Fix -> Continue:
+1. Locate the relevant files with semantic search, symbol lookup, find-files, or targeted reads.
+2. For existing files, use workspace_str_replace for precise replacements or workspace_apply_patch for multi-hunk/multi-file edits.
+3. Use workspace_write_file only for brand-new files with complete content.
+4. Run the narrowest meaningful verification command after related edits.
+5. If stderr/stdout gives an exact, unambiguous file/line/fix, patch directly. If local context is ambiguous, re-read only the narrow target range before editing.
 
-NEVER-RE-READ RULE (CRITICAL):
-- workspace_str_replace returns a diff + readback. You already see the result. Do NOT re-read the file.
-- workspace_write_file creates the file. You wrote the content. You KNOW what's in it. Do NOT re-read it.
-- workspace_apply_patch returns a diff. Do NOT re-read the file after patching.
-- The ONLY time to read a file is when you did NOT write it and need to understand its structure.
-- If you created 5 files and got a build error in file 3, fix file 3 from the error message. Do NOT read files 1-5 again.
+TARGETED READBACK RULE:
+- workspace_str_replace returns diff + readback; avoid redundant re-reads when that result is sufficient.
+- workspace_apply_patch returns a diff; re-read only when the patch result, later errors, or ambiguity requires current context.
+- workspace_write_file is for new files. For existing files, use targeted edit tools instead of rewriting.
+- Use workspace_read_many_files for several known ranges instead of reading whole files one by one.
+- Never re-read broad files just to regain context; read the smallest range that answers the question.
 
 MULTI-ERROR FIX PATTERN:
 - When tsc/eslint/pytest outputs 5 errors across 3 files, fix ALL of them in one pass:
   - Use workspace_str_replace for single-file fixes (one call per file)
-  - Use workspace_edit_many_files for coordinated multi-file fixes (one call for all)
+  - Use workspace_apply_patch or workspace_edit_many_files for coordinated multi-file fixes
   - Do NOT fix error 1, re-verify, fix error 2, re-verify. Fix ALL then verify ONCE.
 
-ERROR-DRIVEN EDITING (fix from stderr, not from re-reading):
+ERROR-DRIVEN EDITING (use stderr plus targeted context):
   Error: "src/App.tsx(15,7): error TS2322: Type 'string' not assignable to type 'number'"
-  -> You know: file=src/App.tsx, line=15, issue=type mismatch. Fix it directly with workspace_str_replace.
-  -> Do NOT: workspace_read_file src/App.tsx then think about it then fix it.
+  -> You know: file=src/App.tsx, line=15, issue=type mismatch. Fix directly if the line context is already known; otherwise read lines around 15, then use workspace_str_replace.
 
   Error: "Module not found: Can't resolve './components/Header'"
-  -> You know: the import path is wrong or the file doesn't exist. Fix the import OR create the file.
-  -> Do NOT: read the importing file, then read the directory, then figure out what's missing.
+  -> Check the path with workspace_find_files or a narrow directory read, then fix the import or create the missing file.
 
 COMPLETE FILES - No placeholders, TODOs, or "// Add more here". Every file production-ready.
 After creating ALL code files: verify it compiles/runs before reporting done.
@@ -2247,8 +2407,9 @@ LONG-RUNNING COMMAND PROTOCOL (CRITICAL — follow this exactly):
   NEVER retry the exact same timed-out command with system_shell/workspace_run_command — it WILL time out again.
 - Terminal handoff protocol: never rerun a handed-off command. Read stdout/stderr, call wait_timer for the suggested interval, then call background_task with mode="check" and the returned taskId. If the check still says running and no independent work remains, wait again instead of stopping or guessing. Continue work only after final output/exitCode arrives.
 
-FILE EDITING (use workspace_apply_patch for all code edits):
-- workspace_apply_patch: THE primary tool for editing existing files. Uses context-line matching for precision.
+FILE EDITING (use targeted edits for existing files):
+- workspace_str_replace: default edit tool for precise one-file replacements after reading enough context.
+- workspace_apply_patch: multi-hunk or multi-file structural edits. Uses context-line matching for precision.
   Format:
   *** Begin Patch
   *** Update File: path/to/file.ts
@@ -2260,11 +2421,10 @@ FILE EDITING (use workspace_apply_patch for all code edits):
   +new file content
   *** Delete File: path/to/remove.ts
   *** End Patch
-  RULES: Always read the file FIRST. Include 2-3 unchanged context lines before/after each change.
+  RULES: Include 2-3 unchanged context lines before/after each change.
   For new files use *** Add File (lines start with +). For deletion use *** Delete File.
-- workspace_str_replace: Primary edit tool. Exact old_string -> new_string after reading the file.
 - workspace_edit_file: Simple search/replace or line-range edits on one file.
-- workspace_write_file: Create entirely new files or full replacements.
+- workspace_write_file: Create entirely new files only. Do not use it for existing source-file replacements.
 - workspace_edit_many_files / smart_refactor: Coordinated multi-file changes.
 
 FILE INSPECTION:
@@ -2543,11 +2703,11 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
    */
   private isSemanticallyDuplicate(normalizedSig: string, callHistory: Set<string>): boolean {
     // NEVER dedup these tools â€” they legitimately need to be called multiple times
-    // workspace_edit_file: used for appending content in chunked writing
+    // workspace_* edit tools: side-effecting file operations
     // workspace_read_file: agent may legitimately re-read a file after editing it
     // docx_generator: may need retry after content expansion
     // ask_user: always needs fresh interaction
-    const neverDedupTools = ['workspace_write_file', 'workspace_edit_file', 'workspace_edit_many_files', 'workspace_apply_patch', 'workspace_read_file', 'workspace_read_many_files', 'docx_generator', 'ask_user', 'task_checkpoint', 'realtime_verify', 'browser_control', 'spawn_sub_agent', 'api_caller'];
+    const neverDedupTools = ['workspace_write_file', 'workspace_str_replace', 'workspace_apply_patch', 'workspace_edit_file', 'workspace_edit_many_files', 'workspace_read_file', 'workspace_read_many_files', 'docx_generator', 'ask_user', 'task_checkpoint', 'realtime_verify', 'browser_control', 'spawn_sub_agent', 'api_caller'];
     const dedupToolName = normalizedSig.split(':')[0];
     if (neverDedupTools.includes(dedupToolName)) return false;
 
@@ -2683,7 +2843,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
   }
 
   private hasDeliverableIntent(message: string): boolean {
-    return /\b(create|make|generate|export|build|prepare|save|download|format|edit|finish|final|real)\b/i.test(message) &&
+    return /\b(create|make|generate|export|build|prepare|save|download|format|edit|finish|final|deliver)\b/i.test(message) &&
       /\b(file|artifact|excel|xlsx|spreadsheet|workbook|csv|docx|document|pdf|pptx|presentation|slides?|html|website|app|report)\b/i.test(message);
   }
 
@@ -2698,18 +2858,33 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
       /\b(?:typo|one line|single file|quick|small change|tiny|simple)\b/i.test(lower);
     if (directOrTiny && wordCount < 34) return false;
 
-    if (/\b(task\s*(?:tracker|plan|list|breakdown)|decompose|step[-\s]?by[-\s]?step|roadmap)\b/i.test(lower)) return true;
-    if (/\b(full|entire|end[-\s]?to[-\s]?end|deep|complex|multi[-\s]?(?:step|phase|file)|all files|whole project|complete (?:app|site|system|workflow))\b/i.test(lower)) return true;
+    const asksForPlan = /\b(task\s*(?:tracker|plan|list|breakdown)|decompose|step[-\s]?by[-\s]?step|roadmap|checklist)\b/i.test(lower);
+    const questionOnly = /^(?:what|who|when|where|why|how|explain|summarize)\b/i.test(lower) &&
+      !/\b(?:build|create|implement|refactor|migrate|debug|fix|polish|design|generate|audit|research|analy[sz]e|integrate|connect|edit|update)\b/i.test(lower);
+    if (asksForPlan && !questionOnly) return true;
 
-    const multiObjective = (lower.match(/\b(?:and|then|also|plus|with|while|after)\b/g) || []).length >= 2;
-    const workIntent = /\b(build|create|implement|refactor|migrate|debug|fix|polish|design|generate|audit|research|analy[sz]e|integrate|connect)\b/i.test(lower);
-    const multiSurface = /\b(ui|api|backend|frontend|database|storage|prompt|agent|tests?|styles?|component|route|server|client)\b/i.test(lower);
-    const deliverable = /\b(app|website|platform|dashboard|report|presentation|deck|document|workflow|integration|feature|system)\b/i.test(lower);
+    const objectiveCount = (lower.match(/\b(?:and|then|also|plus|with|while|after|alongside|as well as)\b/g) || []).length;
+    const surfaceMatches = lower.match(/\b(ui|api|backend|frontend|database|storage|prompt|agent|tests?|styles?|component|route|server|client|runtime|schema|security|browser|comms?|communication|workspace)\b/g) || [];
+    const surfaceCount = new Set(surfaceMatches).size;
+    const workIntent = /\b(build|create|implement|refactor|migrate|debug|fix|polish|design|generate|audit|research|analy[sz]e|integrate|connect|edit|update|harden|remove)\b/i.test(lower);
+    const scaleSignal = /\b(full|entire|end[-\s]?to[-\s]?end|complex|multi[-\s]?(?:step|phase|file|surface)|all files|whole project|complete (?:app|site|system|workflow)|enterprise|production|professional|advanced?)\b/i.test(lower);
+    const deliverable = this.hasDeliverableIntent(lower) ||
+      /\b(app|website|platform|dashboard|report|presentation|deck|document|workflow|integration|feature|system|artifact)\b/i.test(lower);
+    const codebaseWide = /\b(src\/|src\\|codebase|repo|workspace|all tools|registry|runtime|ui side|backend side)\b/i.test(lower);
 
     if (!workIntent) return false;
-    if ((multiObjective && multiSurface) || (multiObjective && deliverable)) return wordCount >= 16;
-    if (multiSurface && deliverable) return wordCount >= 22;
-    return wordCount >= 48 && (multiObjective || multiSurface || deliverable);
+    if (wordCount < 12 && !asksForPlan) return false;
+
+    const complexityScore =
+      (objectiveCount >= 2 ? 1 : 0) +
+      (surfaceCount >= 2 ? 1 : 0) +
+      (scaleSignal ? 1 : 0) +
+      (deliverable ? 1 : 0) +
+      (codebaseWide ? 1 : 0);
+
+    if (complexityScore >= 3 && wordCount >= 14) return true;
+    if (complexityScore >= 2 && wordCount >= 22) return true;
+    return wordCount >= 60 && complexityScore >= 1;
   }
 
   private isExploratoryToolCall(name: string, args: any): boolean {
@@ -2838,6 +3013,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
     const toolCallCounts = survivorState?.toolCallCounts ?? (sessionHydrated && sessionState?.toolCallCounts ? new Map<string, number>(sessionState.toolCallCounts) : new Map<string, number>());
     const loadedSkills = survivorState?.loadedSkills ?? (sessionHydrated && sessionState?.loadedSkills ? new Set<string>(sessionState.loadedSkills) : new Set<string>());
     const writtenFiles = survivorState?.writtenFiles ?? (sessionHydrated && sessionState?.writtenFiles ? new Set<string>(sessionState.writtenFiles) : new Set<string>());
+    const evidenceLedger = new RuntimeEvidenceLedger(String(context.projectId || chatId || 'agent'));
     let interactions = survivorState?.interactions ?? 0;
     let noToolCallStreak = 0;
     let taskDecomposerUsed = survivorState?.taskDecomposerUsed ?? false;
@@ -3259,9 +3435,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
     if (_canUseContextCache) {
       try {
         _cacheableStaticPrompt = this.generateCacheableSystemPrompt();
-        // Use the full tool set (no context-based filtering) for the cache so it
-        // stays stable across all desktop-mode requests.
-        const _cacheToolDecls = this.buildFunctionDeclarations(false, null);
+        const _cacheToolDecls = this.buildFunctionDeclarations(false, this.getDefaultDesktopToolPolicyContext());
         _cachedContentName = await getOrCreateGeminiCache(
           this.ai,
           this.getCurrentApiKey(),
@@ -3805,7 +3979,7 @@ EXTERNAL ACTION NOTE CUE
           if (isCacheExpiredError && _cacheableStaticPrompt && _canUseContextCache) {
             console.warn('[GeminiClient] ⚠️ Cached content expired mid-session — rebuilding cache...');
             try {
-              const _rebuildDecls = this.buildFunctionDeclarations(false, null);
+              const _rebuildDecls = this.buildFunctionDeclarations(false, this.getDefaultDesktopToolPolicyContext());
               _cachedContentName = await handleGeminiCacheNotFound(
                 this.ai,
                 this.getCurrentApiKey(),
@@ -4332,7 +4506,6 @@ EXTERNAL ACTION NOTE CUE
         calculator: { text: 'Calculating', type: 'command', iconCategory: 'computer', argKey: 'expression' },
         csv_analyzer: { text: 'Analyzing data', type: 'exploration', iconCategory: 'search', argKey: 'filename' },
         smart_api_hub: { text: 'API call', type: 'exploration', iconCategory: 'computer', argKey: 'connector' },
-        chain_executor: { text: 'Executing chain', type: 'command', iconCategory: 'computer' },
         http_server: { text: 'HTTP server', type: 'command', iconCategory: 'computer', argKey: 'action' },
         youtube_transcript: { text: 'Extracting transcript', type: 'exploration', iconCategory: 'web_search', argKey: 'videoUrl' },
         clipboard_manager: { text: 'Clipboard', type: 'command', iconCategory: 'computer', argKey: 'action' },
@@ -4355,7 +4528,6 @@ EXTERNAL ACTION NOTE CUE
         crypto_utils: { text: 'Crypto operation', type: 'command', iconCategory: 'computer', argKey: 'operation' },
         api_key_vault: { text: 'Vault operation', type: 'command', iconCategory: 'computer', argKey: 'action' },
         context_manager: { text: 'Context operation', type: 'command', iconCategory: 'computer', argKey: 'action' },
-        task_scheduler: { text: 'Scheduled task', type: 'command', iconCategory: 'computer', argKey: 'taskName' },
         // Next-Gen tools
         spawn_sub_agent: { text: 'Spawning sub-agents', type: 'command', iconCategory: 'agent', argKey: 'mode' },
         deep_research: { text: 'Deep researching', type: 'exploration', iconCategory: 'web_search', argKey: 'topic' },
@@ -4377,8 +4549,6 @@ EXTERNAL ACTION NOTE CUE
         task_checkpoint: { text: 'Saving progress', type: 'command', iconCategory: 'computer', argKey: 'action' },
         image_asset_search: { text: 'Searching images', type: 'exploration', iconCategory: 'image', argKey: 'query' },
         desktop_control: { text: 'Controlling desktop', type: 'command', iconCategory: 'computer', argKey: 'action' },
-        agent_cron_scheduler: { text: 'Scheduling agent cron', type: 'command', iconCategory: 'computer', argKey: 'cronExpression' },
-        agent_connector_trigger: { text: 'Triggering connector', type: 'command', iconCategory: 'computer', argKey: 'connectorId' },
         slack_controller: { text: 'Slack operation', type: 'communication', iconCategory: 'computer', argKey: 'action' },
       };
 
@@ -4391,7 +4561,6 @@ EXTERNAL ACTION NOTE CUE
         'task_checkpoint',
         'context_manager',
         'file_watcher',
-        'task_scheduler',
         'create_dynamic_tool',
         'self_improve',
       ]);
@@ -4605,12 +4774,13 @@ EXTERNAL ACTION NOTE CUE
         }
 
         // 6. File edit tracking
-        if (call.name === 'workspace_edit_file') {
-          const filename = String(args?.filename || args?.path || '').toLowerCase().trim();
+        if (['workspace_str_replace', 'workspace_apply_patch', 'workspace_edit_file', 'workspace_edit_many_files'].includes(call.name)) {
+          const filename = String(args?.filename || args?.path || args?.filePath || args?.file_path || '').toLowerCase().trim();
           const purpose = args?.uiActionText || `Edited via ${ call.name }`;
-          if (!sessionPersistenceDisabled) {
-            globalSessionManager.trackFileForChat(chatId, filename, 'edited', purpose, args?.newContent || args?.replacement || '');
-            globalSessionManager.addActionForChat(chatId, `Edited: ${ filename }`);
+          if (filename) writtenFiles.add(filename);
+          if (!sessionPersistenceDisabled && filename) {
+            globalSessionManager.trackFileForChat(chatId, filename, 'edited', purpose, args?.newContent || args?.replacement || args?.new_string || args?.patch || '');
+            globalSessionManager.addActionForChat(chatId, `Edited: ${ filename || call.name }`);
           }
         }
 
@@ -4650,7 +4820,22 @@ EXTERNAL ACTION NOTE CUE
           };
         }
         console.log(`[GeminiClient] âš¡ ${ call.name } (#${ currentCount })`);
-        const tool = globalToolRegistry.getTool(call.name);
+        const canonicalToolName = normalizeRegistryToolName(call.name);
+        const tool = globalToolRegistry.getTool(canonicalToolName);
+        let effectiveArgs = normalizeRegistryToolArgs(canonicalToolName, call.args);
+        let preflightError = '';
+        if (tool) {
+          const validation = validateRegistryToolArgs(tool, effectiveArgs);
+          if (validation.success) {
+            effectiveArgs = validation.args;
+            const capabilityDecision = enforceToolCapability(canonicalToolName, effectiveArgs, context);
+            if (!capabilityDecision.allowed) {
+              preflightError = capabilityDecision.reason || `Tool ${canonicalToolName} is not allowed`;
+            }
+          } else {
+            preflightError = validation.error;
+          }
+        }
 
         let toolOutput: any;
         if (plannerToolsDisabled && plannerHiddenTools.has(call.name)) {
@@ -4661,25 +4846,30 @@ EXTERNAL ACTION NOTE CUE
           toolOutput = {
             error: 'Sub-agents are disabled for this direct main-agent Telegram run. Complete the request in the main agent.',
           };
+        } else if (preflightError) {
+          toolOutput = { error: preflightError };
         } else if (tool) {
           // === INTELLIGENT CACHE: Check for cached result first ===
-          const cachedResult = sharedCacheDisabled ? null : intelligentCache.get(call.name, call.args);
+          const cachedResult = sharedCacheDisabled ? null : intelligentCache.get(canonicalToolName, effectiveArgs);
           if (cachedResult) {
             toolOutput = cachedResult;
             toolOutput._cached = true;
-            performanceAnalytics.recordToolCall(call.name, 0, true);
+            performanceAnalytics.recordToolCall(canonicalToolName, 0, true);
           } else {
             const execStart = Date.now();
+            const toolExec = createToolExecutionContext(context, onTrace);
             // === MONITOR: broadcast tool_start ===
-            try { monitorEmitter.toolStart(call.name, args || {}, (context as any).projectId || (context as any).chatId); } catch { }
+            try { monitorEmitter.toolStart(canonicalToolName, effectiveArgs || {}, (context as any).projectId || (context as any).chatId); } catch { }
             try {
               // No timeout â€” tools run until complete. User has Stop button for manual cancel.
-              toolOutput = await tool.execute(call.args as any, { ...(context as any), _onTrace: onTrace });
-              toolOutput = toolResultCompactor.compact(call.name, call.args || {}, toolOutput);
+              toolExec.throwIfCancelled();
+              toolOutput = await tool.execute(effectiveArgs as any, toolExec.context);
+              toolExec.throwIfCancelled();
+              toolOutput = toolResultCompactor.compact(canonicalToolName, effectiveArgs || {}, toolOutput);
               const execDuration = Date.now() - execStart;
 
               // Track performance
-              performanceAnalytics.recordToolCall(call.name, execDuration, true);
+              performanceAnalytics.recordToolCall(canonicalToolName, execDuration, true);
 
               // META-COGNITIVE: Record success, reset failure counter
               metaCognition.consecutiveFailures = 0;
@@ -4693,17 +4883,17 @@ EXTERNAL ACTION NOTE CUE
 
               // Auto-progress tracking
               if (!plannerToolsDisabled && taskDecomposerUsed) {
-                this.autoMarkProgress(call.name, args, true, sessionPersistenceDisabled, (context as any).projectId || (context as any).chatId, onTrace);
+                this.autoMarkProgress(canonicalToolName, effectiveArgs, true, sessionPersistenceDisabled, (context as any).projectId || (context as any).chatId, onTrace);
               }
 
               // Cache the result for future use
               if (!sharedCacheDisabled) {
-                intelligentCache.set(call.name, call.args, toolOutput);
+                intelligentCache.set(canonicalToolName, effectiveArgs, toolOutput);
               }
 
               // Extract knowledge from results
               if (!longTermMemoryDisabled) {
-                knowledgeEngine.extractFromToolResult(call.name, args, toolOutput).catch(() => { });
+                knowledgeEngine.extractFromToolResult(canonicalToolName, effectiveArgs, toolOutput).catch(() => { });
               }
 
               // === LIFETIME BRAIN: Auto-ingest every tool result (fire-and-forget) ===
@@ -4711,8 +4901,8 @@ EXTERNAL ACTION NOTE CUE
                 lifetimeBrain.autoIngestToolResult({
                   chatId: context.projectId,
                   projectId: context.projectId,
-                  toolName: call.name,
-                  args: (args || {}) as Record<string, any>,
+                  toolName: canonicalToolName,
+                  args: (effectiveArgs || {}) as Record<string, any>,
                   result: toolOutput,
                   durationMs: execDuration,
                 });
@@ -4722,7 +4912,7 @@ EXTERNAL ACTION NOTE CUE
               // === MONITOR: broadcast tool_end + domain-specific events ===
               try {
                 const _mChatId = (context as any).projectId || (context as any).chatId;
-                monitorEmitter.toolEnd(call.name, toolOutput, execDuration, _mChatId);
+                monitorEmitter.toolEnd(canonicalToolName, toolOutput, execDuration, _mChatId);
                 if (call.name === 'workspace_write_file' && args?.filename) monitorEmitter.fileWrite(String(args.filename || args.path || ''), _mChatId);
                 if ((call.name === 'workspace_read_file' || call.name === 'workspace_view_file') && args?.path) monitorEmitter.fileRead(String(args.path || ''), _mChatId);
                 if ((call.name === 'web_search' || call.name === 'deep_research') && args?.query) monitorEmitter.searchQuery(String(args.query || args.topic || ''), _mChatId);
@@ -4986,7 +5176,22 @@ EXTERNAL ACTION NOTE CUE
 
             } catch (err: any) {
               const execDuration = Date.now() - execStart;
-              performanceAnalytics.recordToolCall(call.name, execDuration, false);
+              performanceAnalytics.recordToolCall(canonicalToolName, execDuration, false);
+              if (isToolCancellationError(err) || toolExec.signal.aborted || isCancelled((context as any).projectId || (context as any).chatId)) {
+                toolOutput = {
+                  error: 'CANCELLED_BY_USER',
+                  cancelled: true,
+                  _retryFailed: false,
+                };
+                try { monitorEmitter.toolError(canonicalToolName, 'CANCELLED_BY_USER', execDuration, (context as any).projectId || (context as any).chatId); } catch { }
+                return {
+                  functionResponse: {
+                    name: call.name,
+                    response: { output: toolOutput },
+                    ...(call.id ? { id: call.id } : {}),
+                  }
+                };
+              }
               console.warn(`[GeminiClient] âš ï¸ Tool ${ call.name } failed: ${ err.message }`);
 
 
@@ -4995,7 +5200,7 @@ EXTERNAL ACTION NOTE CUE
                 lifetimeBrain.recordError({
                   chatId: context.projectId,
                   projectId: context.projectId,
-                  tool: call.name,
+                  tool: canonicalToolName,
                   error: err.message,
                 });
               } catch { /* never block */ }
@@ -5022,7 +5227,8 @@ EXTERNAL ACTION NOTE CUE
                   _suggestion: 'Do not repeat the same browser_control action blindly; refresh browser state first.',
                 };
               } else if (recovery) {
-                const altTool = globalToolRegistry.getTool(recovery.newTool);
+                const recoveryToolName = normalizeRegistryToolName(recovery.newTool);
+                const altTool = globalToolRegistry.getTool(recoveryToolName);
                 if (plannerToolsDisabled && plannerHiddenTools.has(recovery.newTool)) {
                   toolOutput = {
                     error: 'This internal planning/background recovery tool is disabled for Telegram direct mode. Use a direct main-agent recovery path.',
@@ -5034,52 +5240,84 @@ EXTERNAL ACTION NOTE CUE
                   };
                 } else if (altTool) {
                   try {
-                    toolOutput = await altTool.execute(recovery.newArgs, { ...(context as any), _onTrace: onTrace });
-                    toolOutput = toolResultCompactor.compact(recovery.newTool, recovery.newArgs || {}, toolOutput);
-                    console.log(`[GeminiClient] âœ… Recovery succeeded via ${ recovery.newTool }`);
-                    performanceAnalytics.recordToolCall(recovery.newTool, Date.now() - execStart, true);
+                    let recoveryArgs = normalizeRegistryToolArgs(recoveryToolName, recovery.newArgs);
+                    const recoveryValidation = validateRegistryToolArgs(altTool, recoveryArgs);
+                    if (!recoveryValidation.success) {
+                      throw new Error(recoveryValidation.error);
+                    }
+                    recoveryArgs = recoveryValidation.args;
+                    const recoveryCapability = enforceToolCapability(recoveryToolName, recoveryArgs, context);
+                    if (!recoveryCapability.allowed) {
+                      throw new Error(recoveryCapability.reason || `Tool ${recoveryToolName} is not allowed`);
+                    }
+
+                    toolExec.throwIfCancelled();
+                    toolOutput = await altTool.execute(recoveryArgs, toolExec.context);
+                    toolExec.throwIfCancelled();
+                    toolOutput = toolResultCompactor.compact(recoveryToolName, recoveryArgs || {}, toolOutput);
+                    console.log(`[GeminiClient] âœ… Recovery succeeded via ${ recoveryToolName }`);
+                    performanceAnalytics.recordToolCall(recoveryToolName, Date.now() - execStart, true);
                   } catch (recoveryErr: any) {
                     toolOutput = {
                       error: recoveryErr.message, _retryFailed: true,
-                      _suggestion: `Tool ${ call.name } failed. Recovery via ${ recovery.newTool } also failed.`
+                      _suggestion: `Tool ${ canonicalToolName } failed. Recovery via ${ recoveryToolName } also failed.`
                     };
                   }
                 }
               } else {
                 // Standard retry
                 try {
-                  toolOutput = await tool.execute(call.args as any, { ...(context as any), _onTrace: onTrace });
-                  toolOutput = toolResultCompactor.compact(call.name, call.args || {}, toolOutput);
-                  console.log(`[GeminiClient] âœ… Retry succeeded for ${ call.name }`);
+                  toolExec.throwIfCancelled();
+                  toolOutput = await tool.execute(effectiveArgs as any, toolExec.context);
+                  toolExec.throwIfCancelled();
+                  toolOutput = toolResultCompactor.compact(canonicalToolName, effectiveArgs || {}, toolOutput);
+                  console.log(`[GeminiClient] âœ… Retry succeeded for ${ canonicalToolName }`);
                 } catch (retryErr: any) {
                   toolOutput = {
                     error: retryErr.message, _retryFailed: true,
-                    _suggestion: `Tool ${ call.name } failed twice. Try a different approach.`
+                    _suggestion: `Tool ${ canonicalToolName } failed twice. Try a different approach.`
                   };
                 }
               }
 
               // Learn from error â€” both knowledge and persistent memory
               if (!longTermMemoryDisabled) {
-                knowledgeEngine.extractFromToolResult(call.name, args, toolOutput).catch(() => { });
+                knowledgeEngine.extractFromToolResult(canonicalToolName, effectiveArgs, toolOutput).catch(() => { });
                 agentMemory.recordError(
-                  call.name,
+                  canonicalToolName,
                   err.message,
                   toolOutput?._retryFailed ? 'Retry also failed' : 'Recovered via retry/alt tool'
                 );
               }
+            } finally {
+              toolExec.dispose();
             }
           }
         } else {
           toolOutput = { error: `Tool ${ call.name } not found in registry.` };
         }
 
+        try {
+          const evidenceNode = evidenceLedger.recordTool(canonicalToolName, effectiveArgs || {}, toolOutput);
+          if (evidenceNode.kind === 'verification' || evidenceNode.kind === 'failure') {
+            trace.push({
+              type: 'evidence',
+              kind: evidenceNode.kind,
+              tool: evidenceNode.toolName,
+              success: evidenceNode.success,
+              summary: evidenceNode.summary,
+              targets: evidenceNode.targets,
+              timestamp: evidenceNode.timestamp,
+            });
+          }
+        } catch { /* evidence is advisory during execution */ }
+
         if (!toolOutput?.error && this.hasUserFacingArtifact(toolOutput)) {
           userFacingArtifactCreated = true;
           exploratoryCallsWithoutArtifact = 0;
         } else if (this.isExploratoryToolCall(call.name, args)) {
           exploratoryCallsWithoutArtifact++;
-        } else if (call.name === 'workspace_write_file' || call.name === 'workspace_edit_file' || call.name === 'workspace_edit_many_files' || call.name === 'office_artifact_builder') {
+        } else if (call.name === 'workspace_write_file' || call.name === 'workspace_str_replace' || call.name === 'workspace_apply_patch' || call.name === 'workspace_edit_file' || call.name === 'workspace_edit_many_files' || call.name === 'office_artifact_builder') {
           exploratoryCallsWithoutArtifact = 0;
         }
 
@@ -5165,7 +5403,20 @@ EXTERNAL ACTION NOTE CUE
             agentWorkNote: loopAccumulatedText || '',
           });
           if (!ahResult.passed && ahResult.correctionPrompt) {
-            toolOutput = toolOutput + '\n\nâš ï¸ SELF-CHECK: ' + ahResult.correctionPrompt;
+            const selfCheck = `SELF-CHECK: ${ahResult.correctionPrompt}`;
+            if (typeof toolOutput === 'string') {
+              toolOutput = `${toolOutput}\n\n${selfCheck}`;
+            } else if (toolOutput && typeof toolOutput === 'object' && !Array.isArray(toolOutput)) {
+              toolOutput = {
+                ...toolOutput,
+                selfCheck,
+              };
+            } else {
+              toolOutput = {
+                output: toolOutput,
+                selfCheck,
+              };
+            }
             console.log(`[GeminiClient] ðŸ›¡ï¸ Anti-hallucination triggered for ${ call.name }: ${ ahResult.correctionPrompt.substring(0, 100) }`);
           }
         } catch { /* anti-hallucination is advisory */ }
@@ -5292,7 +5543,7 @@ EXTERNAL ACTION NOTE CUE
 
       // Detect if this was a work task vs a question
       const wasWorkTask = toolsUsed.some(t =>
-        ['workspace_write_file', 'workspace_edit_file', 'workspace_edit_many_files', 'system_shell', 'workspace_run_command',
+        ['workspace_write_file', 'workspace_str_replace', 'workspace_apply_patch', 'workspace_edit_file', 'workspace_edit_many_files', 'system_shell', 'workspace_run_command',
           'process_manager', 'browser_control', 'docx_generator', 'office_artifact_builder',
           'chart_generator', 'image_generator', 'project_scaffolder'].includes(t)
       );
@@ -5302,6 +5553,16 @@ EXTERNAL ACTION NOTE CUE
         // Agent finished work but gave a very short response â€” enrich it
         const enrichment = '\n\n**Files created/modified:** ' + filesWritten.join(', ');
         loopAccumulatedText = (loopAccumulatedText || '') + enrichment;
+      }
+
+      const evidenceGate = evidenceLedger.buildCompletionGate({
+        finalText: loopAccumulatedText || responseText,
+        toolsUsed,
+      });
+      const finalEvidenceText = loopAccumulatedText || responseText || '';
+      const alreadyDisclaimsVerification = /\bverification\b[\s\S]{0,160}\b(not recorded|not run|not verified|unable to verify|could not verify|was not run)\b/i.test(finalEvidenceText);
+      if (evidenceGate.shouldAppendCaveat && !alreadyDisclaimsVerification) {
+        loopAccumulatedText = (loopAccumulatedText || responseText || '') + evidenceGate.caveat;
       }
     } catch { /* self-assessment is advisory */ }
 
@@ -5346,8 +5607,22 @@ function rememberIsolatedClient(cacheKey: string, client: GeminiAgentClient): Ge
   return client;
 }
 
-export function createIsolatedClient(apiKey: string, mode: MainAgentMode = 'think'): GeminiAgentClient {
+export function createIsolatedClient(apiKey: string, mode: MainAgentMode = 'think', runtimeSettings?: ScopedRuntimeSettings | null): GeminiAgentClient {
   const provider = MAIN_AGENT_MODE_CONFIG[mode]?.provider || 'gemini';
+
+  if (runtimeSettings) {
+    const client = new GeminiAgentClient({
+      provider: provider !== 'gemini' ? provider : undefined,
+      runtimeSettings,
+    });
+    if (provider === 'gemini') {
+      const scopedGeminiKey = apiKey || getScopedRuntimeApiKey(runtimeSettings, 'gemini');
+      if (scopedGeminiKey) client.setLeasedKey(scopedGeminiKey);
+    }
+    client.setMode(mode);
+    return client;
+  }
+
   if (provider !== 'gemini') {
     const cacheKey = `${ provider }:${ apiKey || 'default' }:${ mode }`;
     const cached = getCachedIsolatedClient(cacheKey);

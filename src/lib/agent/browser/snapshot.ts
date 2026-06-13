@@ -279,12 +279,14 @@ export class DOMSnapshot {
              'template', 'slot', 'canvas'].includes(tag)) return;
         
         try { if (!isVisible(el)) return; } catch { return; }
+        if (viewportOnly && !isInViewport(el)) return;
         
         const interactive = isInteractive(el);
         const landmark = isLandmark(el);
+        const shouldReference = interactive || (mode === 'full' && landmark) || (mode === 'forms' && tag === 'form');
         
         // Assign ref to interactive elements (always) and landmarks (in full mode)
-        if (interactive || (mode === 'full' && landmark)) {
+        if (shouldReference) {
           const ref = refCounter++;
           el.setAttribute('data-ref', String(ref));
           

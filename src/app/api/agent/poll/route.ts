@@ -1,6 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { agentRegistry } from '../../../../lib/agent/agent-registry';
 import { taskStore } from '../../../../lib/agent/task-store';
+import {
+  attachAgentApiSessionCookie,
+  getOrCreateAgentApiSession,
+  isSafeChatId,
+  jsonError,
+  parseInteger,
+  rejectCrossOrigin,
+  requireChatOwner,
+} from '../_shared';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -18,16 +27,26 @@ export const runtime = 'nodejs';
  * Returns: { status, traces: [...], totalTraces, maxIndex, finalAnswer, startedAt, completedAt }
  */
 export async function GET(req: NextRequest) {
+  let session: ReturnType<typeof getOrCreateAgentApiSession> | null = null;
   try {
+    const originError = rejectCrossOrigin(req);
+    if (originError) return originError;
+    session = getOrCreateAgentApiSession(req);
+
     const searchParams = req.nextUrl.searchParams;
     const chatId = searchParams.get('chatId');
     const afterStr = searchParams.get('after');
 
-    if (!chatId) {
-      return NextResponse.json({ error: 'chatId is required' }, { status: 400 });
+    if (!isSafeChatId(chatId)) {
+      return attachAgentApiSessionCookie(jsonError('chatId is required', 400), session);
     }
 
-    const afterIndex = afterStr ? parseInt(afterStr, 10) : -1;
+    const ownerError = requireChatOwner(chatId, session.sessionId);
+    if (ownerError) {
+      return attachAgentApiSessionCookie(ownerError, session);
+    }
+
+    const afterIndex = Math.max(-1, parseInteger(afterStr, -1));
     let result = agentRegistry.getTraces(chatId, afterIndex);
 
     if (result.status === 'idle') {
@@ -38,7 +57,7 @@ export async function GET(req: NextRequest) {
     }
 
     // Return with anti-cache headers for maximum freshness
-    return new NextResponse(JSON.stringify(result), {
+    return attachAgentApiSessionCookie(new NextResponse(JSON.stringify(result), {
       status: 200,
       headers: {
         'Content-Type': 'application/json',
@@ -46,12 +65,13 @@ export async function GET(req: NextRequest) {
         'Pragma': 'no-cache',
         'Expires': '0',
       },
-    });
+    }), session);
   } catch (error: any) {
     console.error('[API: agent/poll] Error:', error);
-    return NextResponse.json(
+    const response = NextResponse.json(
       { status: 'idle', traces: [], totalTraces: 0, maxIndex: -1, finalAnswer: '', error: error.message },
       { status: 500 }
     );
+    return session ? attachAgentApiSessionCookie(response, session) : response;
   }
 }

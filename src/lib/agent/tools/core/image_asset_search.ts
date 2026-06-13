@@ -1,7 +1,6 @@
 import { z } from 'zod';
 import { ToolDefinition } from '../../schemas';
 import { tavily } from '@tavily/core';
-import axios from 'axios';
 import fse from 'fs-extra';
 import fs from 'fs/promises';
 import path from 'path';
@@ -12,6 +11,7 @@ import {
   hasRuntimeWorkspaceContext,
   resolveWorkspaceDirectoryForContext,
 } from '../../workspace/path_resolver';
+import { safeAxiosRequest } from '../shared/url_safety';
 
 type RawImageCandidate = {
   url: string;
@@ -268,10 +268,13 @@ async function downloadAndValidateImage(
   }
 
   try {
-    const response = await axios.get(candidate.url, {
+    const response = await safeAxiosRequest<ArrayBuffer>({
+      url: candidate.url,
+      method: 'GET',
       responseType: 'arraybuffer',
       timeout: 15000,
       maxContentLength: options.maxBytes,
+      maxBodyLength: options.maxBytes,
       headers: {
         Accept: 'image/avif,image/webp,image/png,image/jpeg,image/*;q=0.8,*/*;q=0.2',
         'User-Agent': 'Mozilla/5.0 EterX image asset validator',

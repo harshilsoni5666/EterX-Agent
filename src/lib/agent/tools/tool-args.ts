@@ -1,4 +1,9 @@
 import { normalizeRegistryToolName } from './registry';
+import type { ToolDefinition } from '../schemas';
+
+type ToolArgValidationResult =
+  | { success: true; args: any }
+  | { success: false; error: string };
 
 export function normalizeRegistryToolArgs(toolName: string, args: any): any {
   const name = normalizeRegistryToolName(toolName);
@@ -35,4 +40,58 @@ export function normalizeRegistryToolArgs(toolName: string, args: any): any {
   }
 
   return input;
+}
+
+function hasSafeParse(schema: unknown): schema is { safeParse: (value: unknown) => any } {
+  return Boolean(schema && typeof (schema as any).safeParse === 'function');
+}
+
+function formatIssuePath(pathValue: unknown): string {
+  if (!Array.isArray(pathValue) || pathValue.length === 0) return 'args';
+  return pathValue.map(part => String(part)).join('.');
+}
+
+function formatValidationIssues(error: any): string {
+  const issues = Array.isArray(error?.issues) ? error.issues : [];
+  if (issues.length === 0) {
+    return error?.message ? String(error.message) : 'Input did not match the tool schema.';
+  }
+
+  const shown = issues.slice(0, 8).map((issue: any) => {
+    const path = formatIssuePath(issue?.path);
+    const message = issue?.message ? String(issue.message) : 'Invalid value';
+    return `${path}: ${message}`;
+  });
+
+  if (issues.length > shown.length) {
+    shown.push(`...and ${issues.length - shown.length} more issue(s)`);
+  }
+
+  return shown.join('; ');
+}
+
+export function validateRegistryToolArgs(
+  tool: Pick<ToolDefinition, 'name' | 'inputSchema'>,
+  args: any,
+): ToolArgValidationResult {
+  if (!hasSafeParse(tool.inputSchema)) {
+    return { success: true, args };
+  }
+
+  try {
+    const result = tool.inputSchema.safeParse(args ?? {});
+    if (result.success) {
+      return { success: true, args: result.data };
+    }
+
+    return {
+      success: false,
+      error: `Invalid arguments for ${tool.name} after alias normalization: ${formatValidationIssues(result.error)}`,
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      error: `Invalid arguments for ${tool.name}: ${err?.message || 'Tool schema validation failed.'}`,
+    };
+  }
 }

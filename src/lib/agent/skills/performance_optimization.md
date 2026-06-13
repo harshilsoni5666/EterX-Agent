@@ -1,31 +1,32 @@
 ---
 name: performance-optimization
-description: Guidelines for writing extreme high-performance, O(1)/O(n) optimized code and avoiding memory boundaries.
+description: Use when code is slow, memory-heavy, laggy, expensive, or likely to regress performance. Focuses on measurement, bottleneck isolation, and targeted optimization.
+icon: Zap
+category: coding
 ---
-# Performance and Memory Optimization Masterclass
 
-## 1. The Core Philosophy
-You are an expert at writing blazing-fast, O(1) or O(n) code. Performance is not an afterthought; it is structurally integrated into everything you write.
+# Performance Optimization
 
-## 2. Advanced JavaScript/TypeScript Performance
-- **Avoid Object.keys() / Object.values() in Hot Paths**: Use `for...in` loops cautiously, or map over arrays natively.
-- **Pre-allocate Arrays**: If you know the size of an array in loop, use `new Array(size)` rather than `.push()` inside a loop.
-- **Memoization**: If a function is pure and expensive, strongly consider wrapping it in a memoization cache or `useMemo` in React.
-- **Streams over Buffers**: When handling large files or payloads (like CSV parsing or log reading), ALWAYS use Streams rather than pulling 500MB into memory with `fs.readFileSync`.
+Optimize from evidence. Do not make performance changes because they sound fast.
 
-## 3. DOM & UI Rendering Physics
-- **React Render Boundaries**: Never place heavy computations directly inside the render loop without `useMemo`. When writing React, isolate state to the smallest possible leaf component.
-- **RequestAnimationFrame**: For UI animations that aren't purely CSS, always sync with `requestAnimationFrame` rather than `setInterval`.
+## Workflow
 
-## 4. Python Native Extensions (If writing Python)
-- Avoid native Python `for` loops on large numeric datasets. Use NumPy vectorization.
-- For IO-bound tasks, use `asyncio` or `ThreadPoolExecutor`.
-- For CPU-bound tasks, use `ProcessPoolExecutor` or write it in C/Go.
+1. Define the metric: latency, throughput, memory, bundle size, render time, query count, or CPU.
+2. Establish a baseline with available profiling, logs, benchmarks, or reproducible commands.
+3. Identify the bottleneck before editing.
+4. Prefer algorithmic improvements over micro-optimizations.
+5. Preserve behavior with tests or sample output comparisons.
+6. Measure again and report the delta.
 
-## 5. Architectural Checklist for Fast Services
-When instructed to build something, ask yourself:
-1. Is there an N+1 query problem here?
-2. Are we doing network blocking inside a loop?
-3. Could this payload easily exceed 5MB and crash the Node V8 memory limit?
+## Common Targets
 
-**Your code must be benchmark-ready upon the first generation.**
+- N+1 queries and repeated network calls.
+- Work inside render loops.
+- Full-file reads where streaming or sampling is enough.
+- Unbounded concurrency or retries.
+- Large client bundles and unnecessary imports.
+- Repeated parsing, serialization, sorting, or deep cloning.
+
+## Completion
+
+State the baseline, change made, verification run, measured result, and residual risk.

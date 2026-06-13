@@ -43,10 +43,31 @@ async function ensureDir() {
   await fs.ensureDir(TASKS_DIR);
 }
 
+function isPathInside(parent: string, candidate: string): boolean {
+  const relative = path.relative(parent, candidate);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function resolveUnder(parent: string, ...segments: string[]): string {
+  const resolved = path.resolve(parent, ...segments);
+  if (!isPathInside(parent, resolved)) {
+    throw new Error(`Resolved path escapes expected directory: ${resolved}`);
+  }
+  return resolved;
+}
+
 function getTaskPath(chatId: string): string {
   // Sanitize chatId for filesystem safety
-  const safe = chatId.replace(/[^a-zA-Z0-9_-]/g, '_');
-  return path.join(TASKS_DIR, `${safe}.json`);
+  const safe = (chatId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 120) || '_global');
+  return resolveUnder(TASKS_DIR, `${safe}.json`);
+}
+
+async function writeJsonAtomic(filePath: string, value: unknown): Promise<void> {
+  const dir = path.dirname(filePath);
+  await fs.ensureDir(dir);
+  const tmpPath = path.join(dir, `.${path.basename(filePath)}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`);
+  await fs.writeJson(tmpPath, value, { spaces: 2 });
+  await fs.move(tmpPath, filePath, { overwrite: true });
 }
 
 function compactTraceEvent(traceEvent: any): any {
@@ -127,7 +148,7 @@ async function flushToDisk(chatId: string): Promise<void> {
   try {
     await ensureDir();
     trimTask(task);
-    await fs.writeJson(getTaskPath(chatId), task, { spaces: 2 });
+    await writeJsonAtomic(getTaskPath(chatId), task);
   } catch (err: any) {
     console.warn(`[TaskStore] ⚠️ Failed to persist task for ${chatId}: ${err.message}`);
   }
@@ -396,7 +417,8 @@ export const taskStore = {
       for (const file of files) {
         if (!file.endsWith('.json')) continue;
         try {
-          const data = await fs.readJson(path.join(TASKS_DIR, file));
+          const taskPath = resolveUnder(TASKS_DIR, file);
+          const data = await fs.readJson(taskPath);
           let lastUpdated = data.completedAt || data.lastUpdatedAt || data.startedAt || 0;
           
           // Auto-recover/fail tasks that have been "running" globally for >2 hours (likely App crashed)
@@ -407,12 +429,12 @@ export const taskStore = {
             data.completedAt = Date.now();
             data.lastUpdatedAt = Date.now();
             data.traceLogs = (data.traceLogs || []).slice(-MAX_COMPLETED_TRACE_LOGS).map(compactTraceEvent);
-            await fs.writeJson(path.join(TASKS_DIR, file), data, { spaces: 2 });
+            await writeJsonAtomic(taskPath, data);
             lastUpdated = data.completedAt || data.lastUpdatedAt || data.startedAt || 0;
           }
 
           if (data.status !== 'running' && lastUpdated < cutoff) {
-            await fs.remove(path.join(TASKS_DIR, file));
+            await fs.remove(taskPath);
             const chatId = data.chatId || file.replace('.json', '');
             taskCache.delete(chatId);
             const timer = writeTimers.get(chatId);

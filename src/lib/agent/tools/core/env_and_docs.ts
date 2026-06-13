@@ -10,8 +10,25 @@ import {
   resolveWorkspaceDirectoryForContext,
   resolveWorkspacePathForContext,
 } from '../../workspace/path_resolver';
+import { enforceToolCapability } from '../security/tool_policy';
 
 const execAsync = promisify(exec);
+
+function normalizeEnvKey(value: unknown): string {
+  const key = String(value ?? '').trim();
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+    throw new Error('Environment variable names must use letters, numbers, and underscores, and may not start with a number.');
+  }
+  return key;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function formatEnvValue(value: unknown): string {
+  return String(value ?? '').replace(/[\r\n]/g, '\\n');
+}
 
 /**
  * Environment Manager — Smart .env & Config Management
@@ -58,6 +75,11 @@ EXAMPLES:
   }),
   outputSchema: z.object({ success: z.boolean(), result: z.any(), message: z.string() }),
   execute: async (input: any, context?: any) => {
+    const decision = enforceToolCapability('env_manager', input, context);
+    if (!decision.allowed) {
+      return { success: false, result: null, message: decision.reason || 'Environment management is not allowed' };
+    }
+
     const envFile = resolveWorkspacePathForContext(input.file || '.env', context);
 
     switch (input.mode) {
@@ -83,30 +105,32 @@ EXAMPLES:
 
       case 'set': {
         if (!input.key) return { success: false, result: null, message: 'key is required' };
+        const key = normalizeEnvKey(input.key);
         let content = '';
         if (await fs.pathExists(envFile)) {
           content = await fs.readFile(envFile, 'utf-8');
         }
-        const regex = new RegExp(`^${input.key}=.*$`, 'm');
-        const newLine = `${input.key}=${input.value || ''}`;
+        const regex = new RegExp(`^${escapeRegExp(key)}=.*$`, 'm');
+        const newLine = `${key}=${formatEnvValue(input.value)}`;
         if (regex.test(content)) {
           content = content.replace(regex, newLine);
         } else {
           content = content.trimEnd() + '\n' + newLine + '\n';
         }
         await fs.writeFile(envFile, content, 'utf-8');
-        return { success: true, result: { key: input.key }, message: `Set ${input.key} in ${path.basename(envFile)}` };
+        return { success: true, result: { key }, message: `Set ${key} in ${path.basename(envFile)}` };
       }
 
       case 'delete': {
         if (!input.key) return { success: false, result: null, message: 'key is required' };
+        const key = normalizeEnvKey(input.key);
         if (!await fs.pathExists(envFile)) {
           return { success: false, result: null, message: 'File not found' };
         }
         let content = await fs.readFile(envFile, 'utf-8');
-        const lines = content.split('\n').filter(l => !l.trim().startsWith(input.key + '='));
+        const lines = content.split('\n').filter(l => !l.trim().startsWith(key + '='));
         await fs.writeFile(envFile, lines.join('\n'), 'utf-8');
-        return { success: true, result: { key: input.key }, message: `Removed ${input.key}` };
+        return { success: true, result: { key }, message: `Removed ${key}` };
       }
 
       case 'compare': {
@@ -147,6 +171,7 @@ EXAMPLES:
 
       case 'validate': {
         if (!input.requiredKeys?.length) return { success: false, result: null, message: 'requiredKeys array is required' };
+        const requiredKeys = input.requiredKeys.map((key: unknown) => normalizeEnvKey(key));
         if (!await fs.pathExists(envFile)) {
           return { success: false, result: { missing: input.requiredKeys }, message: 'Env file not found — all keys missing' };
         }
@@ -156,8 +181,8 @@ EXAMPLES:
           const eq = line.trim().indexOf('=');
           if (eq > 0 && !line.trim().startsWith('#')) keys.add(line.trim().substring(0, eq).trim());
         }
-        const missing = input.requiredKeys.filter((k: string) => !keys.has(k));
-        const present = input.requiredKeys.filter((k: string) => keys.has(k));
+        const missing = requiredKeys.filter((k: string) => !keys.has(k));
+        const present = requiredKeys.filter((k: string) => keys.has(k));
         return {
           success: missing.length === 0,
           result: { present, missing },

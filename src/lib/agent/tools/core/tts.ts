@@ -5,8 +5,13 @@ import { promisify } from 'util';
 import path from 'path';
 import fs from 'fs-extra';
 import { resolveFinalArtifactPathForContext } from '../../workspace/path_resolver';
+import { enforceToolCapability } from '../security/tool_policy';
 
 const execAsync = promisify(exec);
+
+function psQuote(value: unknown): string {
+  return `'${String(value ?? '').replace(/'/g, "''")}'`;
+}
 
 function ensureExtension(filePath: string, extension: string): string {
   return filePath.toLowerCase().endsWith(extension.toLowerCase()) ? filePath : `${filePath}${extension}`;
@@ -38,11 +43,16 @@ export const ttsTool: ToolDefinition = {
     message: z.string()
   }),
   execute: async (input: { text: string, voice?: string, filename?: string }, context?: any) => {
+    const decision = enforceToolCapability('text_to_speech', input, context);
+    if (!decision.allowed) {
+      return { success: false, filePath: '', message: decision.reason || 'Text-to-speech is not allowed' };
+    }
+
     const voice = input.voice || 'en-US-GuyNeural';
     const filename = input.filename || `speech_${Date.now()}.wav`;
     const filePath = ensureExtension(resolveFinalArtifactPathForContext(filename, '.wav', undefined, context), '.wav');
     await fs.ensureDir(path.dirname(filePath));
-    const textEscaped = input.text.replace(/'/g, "''").replace(/"/g, '`"').substring(0, 5000);
+    const textEscaped = input.text.substring(0, 5000);
 
     console.log(`[Tool: text_to_speech] Converting ${input.text.length} chars with voice: ${voice}`);
 
@@ -52,8 +62,8 @@ export const ttsTool: ToolDefinition = {
       const psScript = `
         Add-Type -AssemblyName System.Speech;
         $synth = New-Object System.Speech.Synthesis.SpeechSynthesizer;
-        $synth.SetOutputToWaveFile('${filePath.replace(/\\/g, '\\\\')}');
-        $synth.Speak('${textEscaped}');
+        $synth.SetOutputToWaveFile(${psQuote(filePath)});
+        $synth.Speak(${psQuote(textEscaped)});
         $synth.Dispose();
         Write-Output 'Speech generated successfully.';
       `.trim();
@@ -81,9 +91,9 @@ export const ttsTool: ToolDefinition = {
           $synth = New-Object System.Speech.Synthesis.SpeechSynthesizer;
           $stream = New-Object System.IO.MemoryStream;
           $synth.SetOutputToWaveStream($stream);
-          $synth.Speak('${textEscaped}');
+          $synth.Speak(${psQuote(textEscaped)});
           $bytes = $stream.ToArray();
-          [System.IO.File]::WriteAllBytes('${filePath.replace(/\\/g, '\\\\')}', $bytes);
+          [System.IO.File]::WriteAllBytes(${psQuote(filePath)}, $bytes);
           $synth.Dispose();
           $stream.Dispose();
           Write-Output 'OK';

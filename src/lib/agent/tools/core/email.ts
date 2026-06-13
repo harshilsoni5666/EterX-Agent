@@ -8,8 +8,25 @@ import {
   resolveFinalArtifactPathForContext,
   resolveReadableWorkspacePathForContext,
 } from '../../workspace/path_resolver';
+import { enforceToolCapability } from '../security/tool_policy';
 
 const execAsync = promisify(exec);
+
+function psQuote(value: unknown): string {
+  return `'${String(value ?? '').replace(/'/g, "''")}'`;
+}
+
+function cleanHeader(value: unknown): string {
+  return String(value ?? '').replace(/[\r\n]+/g, ' ').trim();
+}
+
+function parseSmtpPort(value: string | undefined): number {
+  const port = Number.parseInt(value || '587', 10);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error('Invalid SMTP_PORT. Expected a TCP port between 1 and 65535.');
+  }
+  return port;
+}
 
 /**
  * Email Manager Tool
@@ -39,12 +56,17 @@ export const emailTool: ToolDefinition = {
     console.log(`[Tool: email_manager] Action: ${input.action}`);
 
     try {
+      const decision = enforceToolCapability('email_manager', input, context);
+      if (!decision.allowed) {
+        return { success: false, result: decision.reason || 'Email access is not allowed' };
+      }
+
       switch (input.action) {
         case 'send': {
           // Use PowerShell SMTP sending
-          const smtpServer = process.env.SMTP_SERVER || 'smtp.gmail.com';
-          const smtpPort = process.env.SMTP_PORT || '587';
-          const smtpUser = process.env.SMTP_USER || process.env.EMAIL_ADDRESS;
+          const smtpServer = cleanHeader(process.env.SMTP_SERVER || 'smtp.gmail.com');
+          const smtpPort = parseSmtpPort(process.env.SMTP_PORT);
+          const smtpUser = cleanHeader(process.env.SMTP_USER || process.env.EMAIL_ADDRESS);
           const smtpPass = process.env.SMTP_PASSWORD || process.env.GMAIL_APP_PASSWORD;
 
           if (!smtpUser || !smtpPass) {
@@ -55,26 +77,33 @@ export const emailTool: ToolDefinition = {
             return { success: false, result: 'Missing required fields: to, subject, body' };
           }
 
+          const to = cleanHeader(input.to);
+          const cc = input.cc ? cleanHeader(input.cc) : '';
+          const subject = cleanHeader(input.subject);
+          const body = String(input.body || '');
           const psScript = `
-            $secpasswd = ConvertTo-SecureString '${(smtpPass).replace(/'/g, "''")}' -AsPlainText -Force;
-            $credential = New-Object System.Management.Automation.PSCredential('${smtpUser}', $secpasswd);
+            $secpasswd = ConvertTo-SecureString $env:ETERX_SMTP_PASSWORD -AsPlainText -Force;
+            $credential = New-Object System.Management.Automation.PSCredential(${psQuote(smtpUser)}, $secpasswd);
             $params = @{
-              From = '${smtpUser}'
-              To = '${input.to}'
-              Subject = '${(input.subject || '').replace(/'/g, "''")}'
-              Body = '${(input.body || '').replace(/'/g, "''")}'
-              SmtpServer = '${smtpServer}'
+              From = ${psQuote(smtpUser)}
+              To = ${psQuote(to)}
+              Subject = ${psQuote(subject)}
+              Body = ${psQuote(body)}
+              SmtpServer = ${psQuote(smtpServer)}
               Port = ${smtpPort}
               Credential = $credential
               UseSsl = $true
-              ${input.body?.includes('<') ? "BodyAsHtml = $true" : ''}
+              ${body.includes('<') ? "BodyAsHtml = $true" : ''}
             };
-            ${input.cc ? `$params.Cc = '${input.cc}';` : ''}
+            ${cc ? `$params.Cc = ${psQuote(cc)};` : ''}
             Send-MailMessage @params;
             Write-Output 'Email sent successfully.';
           `.trim();
 
-          const { stdout } = await execAsync(psScript, { shell: 'powershell.exe' });
+          const { stdout } = await execAsync(psScript, {
+            shell: 'powershell.exe',
+            env: { ...process.env, ETERX_SMTP_PASSWORD: smtpPass },
+          });
           return { success: true, result: stdout.trim() || 'Email sent successfully.' };
         }
 
@@ -84,10 +113,10 @@ export const emailTool: ToolDefinition = {
           await fs.ensureDir(path.dirname(draftPath));
 
           const emlContent = [
-            `From: ${process.env.EMAIL_ADDRESS || 'agent@eterx.local'}`,
-            `To: ${input.to || 'recipient@example.com'}`,
-            `Subject: ${input.subject || 'No Subject'}`,
-            input.cc ? `Cc: ${input.cc}` : '',
+            `From: ${cleanHeader(process.env.EMAIL_ADDRESS || 'agent@eterx.local')}`,
+            `To: ${cleanHeader(input.to || 'recipient@example.com')}`,
+            `Subject: ${cleanHeader(input.subject || 'No Subject')}`,
+            input.cc ? `Cc: ${cleanHeader(input.cc)}` : '',
             `Date: ${new Date().toUTCString()}`,
             `MIME-Version: 1.0`,
             `Content-Type: text/plain; charset=UTF-8`,

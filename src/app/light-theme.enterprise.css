@@ -414,6 +414,7 @@
   background: var(--sidebar-bg) !important;
 }
 
+
 .eterx-workspace-tabbar {
   height: var(--eterx-shell-topbar-height) !important;
 }
@@ -443,7 +444,6 @@
   border-radius: inherit !important;
   box-shadow: inset 1px 0 0 rgba(255, 255, 255, 0.035) !important;
 }
-
 .eterx-app-shell[data-sidebar-open="false"] .eterx-main-panel,
 .eterx-main-panel.eterx-main-panel-sidebar-closed {
   border-top-left-radius: 0 !important;
@@ -462,6 +462,7 @@
 
 :root[data-theme="light"] .eterx-new-chat-motion-field {
   filter: saturate(0.78) brightness(1.04) !important;
+
   background:
     radial-gradient(ellipse at 0% 100%, rgba(112, 127, 136, 0.18) 0%, rgba(112, 127, 136, 0.10) 34%, transparent 68%),
     linear-gradient(180deg, transparent 0%, transparent 44%, rgba(112, 127, 136, 0.05) 74%, rgba(112, 127, 136, 0.10) 100%) !important;
@@ -510,6 +511,7 @@
 :root[data-theme="dark"] .eterx-workspace-shell {
   background: var(--sidebar-bg) !important;
 }
+
 
 :root[data-theme="dark"] .eterx-main-panel {
   background: var(--background) !important;
@@ -650,4 +652,50 @@
 :root[data-theme="light"] .eterx-composer-shell .eterx-composer-send-button:hover,
 :root[data-theme="light"] .eterx-composer-shell .eterx-composer-stop-button:hover {
   background: #11100F !important;
+}
+
+/* Ensure the main panel and its children become perfect rectangles when the sidebar is closed. */
+.eterx-app-shell[data-sidebar-open="false"] .eterx-main-panel,
+.eterx-app-shell[data-sidebar-open="false"] .eterx-main-panel::after,
+.eterx-main-panel.eterx-main-panel-sidebar-closed,
+.eterx-main-panel.eterx-main-panel-sidebar-closed::after {
+  border-top-left-radius: 0 !important;
+  border-bottom-left-radius: 0 !important;
+  border-top-right-radius: 0 !important;
+  border-bottom-right-radius: 0 !important;
+  border-radius: 0 !important;
+}
+
+.eterx-app-shell[data-sidebar-open="false"] .eterx-new-chat-motion-field {
+  clip-path: inset(0 0 0 0 round 0) !important;
+}
+
+/* Premium floating panel visual continuity overrides when sidebar is open */
+.eterx-app-shell[data-sidebar-open="true"] .eterx-sidebar-shell {
+  width: calc(var(--eterx-shell-sidebar-width) + 32px) !important;
+  margin-right: -40px !important;
+  z-index: 1 !important;
+  overflow: visible !important;
+}
+
+.eterx-app-shell[data-sidebar-open="true"] .eterx-sidebar-shell > div:not(.eterx-sidebar-sheen):not(.eterx-sidebar-resize-handle) {
+  width: var(--eterx-shell-sidebar-width) !important;
+}
+
+.eterx-app-shell[data-sidebar-open="true"] .eterx-sidebar-resize-handle {
+  right: 32px !important;
+}
+
+.eterx-app-shell[data-sidebar-open="true"] .eterx-workspace-shell {
+  z-index: 2 !important;
+  pointer-events: none !important;
+  background: transparent !important;
+}
+
+:root[data-theme="dark"] .eterx-app-shell[data-sidebar-open="true"] .eterx-workspace-shell {
+  background: transparent !important;
+}
+
+.eterx-app-shell[data-sidebar-open="true"] .eterx-workspace-shell > * {
+  pointer-events: auto !important;
 }

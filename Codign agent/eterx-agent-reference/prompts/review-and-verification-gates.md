@@ -13,9 +13,9 @@ Prompt/text changes:
 - Run diff whitespace checks if available.
 
 Code changes:
-- Do NOT re-read edited files. You already have the diff and readback from your edit tools.
+- Do not re-read edited files when the edit tool already returned sufficient diff/readback evidence.
 - Run lint, build, or targeted tests based on risk.
-- If errors: fix ALL directly from the error output (file, line, message). Do NOT re-read first.
+- If errors include exact file, line, and cause, fix them in a safe batch. Re-read a narrow range first when source context is stale, ambiguous, or missing.
 - Re-run verification until clean.
 
 UI changes:

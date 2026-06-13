@@ -1,4 +1,4 @@
-# Advanced Skill Operating Contract
+﻿# Advanced Skill Operating Contract
 
 Apply this contract whenever a skill is loaded. The skill body gives domain-specific technique; this contract gives the professional execution standard.
 

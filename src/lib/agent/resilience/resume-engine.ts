@@ -306,7 +306,7 @@ export async function buildResumeBrief(opts: ResumeBriefOptions): Promise<Resume
     `🎯 YOUR NEXT ACTION: ${nextLogicalStep}`,
     '',
     '⚡ EXECUTION RULES:',
-    '  1. NEVER re-read, re-profile, or re-inspect anything listed above as DONE.',
+    '  1. Do not repeat DONE work; re-read only a narrow current-state range when needed to safely continue.',
     '  2. NEVER start a new unrelated task — resume only what the last session was doing.',
     '  3. If you see analysis scripts on Desktop → SKIP them, they are DONE → go to the next missing step.',
     '  4. If the deliverable (Excel/report/cleaned file) is missing → create it NOW as your first action.',

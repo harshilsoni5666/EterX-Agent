@@ -16,6 +16,35 @@ import fs from 'fs-extra';
 
 const LEARNING_DIR = path.resolve(process.cwd(), '.workspaces', 'learning');
 
+function isPathInside(parent: string, candidate: string): boolean {
+  const relative = path.relative(parent, candidate);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function resolveUnder(parent: string, ...segments: string[]): string {
+  const resolved = path.resolve(parent, ...segments);
+  if (!isPathInside(parent, resolved)) {
+    throw new Error(`Resolved path escapes expected directory: ${resolved}`);
+  }
+  return resolved;
+}
+
+async function writeJsonAtomic(filePath: string, data: unknown): Promise<void> {
+  const dir = path.dirname(filePath);
+  await fs.ensureDir(dir);
+  const tmpPath = path.join(dir, `.${path.basename(filePath)}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`);
+  await fs.writeJson(tmpPath, data, { spaces: 2 });
+  await fs.move(tmpPath, filePath, { overwrite: true });
+}
+
+function safeFileSegment(value: unknown, fallback: string): string {
+  const cleaned = String(value || '')
+    .trim()
+    .replace(/[^a-zA-Z0-9_-]/g, '_')
+    .slice(0, 80);
+  return cleaned || fallback;
+}
+
 // ═══════════════════════════════════════════════════════════════
 // 1. ADAPTIVE LEARNING ENGINE
 // ═══════════════════════════════════════════════════════════════
@@ -80,7 +109,7 @@ export class AdaptiveLearningEngine {
     if (this.loaded) return;
     try {
       await fs.ensureDir(LEARNING_DIR);
-      const filePath = path.join(LEARNING_DIR, 'adaptive_data.json');
+      const filePath = resolveUnder(LEARNING_DIR, 'adaptive_data.json');
       if (await fs.pathExists(filePath)) {
         const data = await fs.readJson(filePath);
         this.records = data.records || [];
@@ -108,7 +137,7 @@ export class AdaptiveLearningEngine {
         userPatterns: this.userPatterns,
         toolRates: Object.fromEntries(this.toolRates)
       };
-      await fs.writeJson(path.join(LEARNING_DIR, 'adaptive_data.json'), data, { spaces: 2 });
+      await writeJsonAtomic(resolveUnder(LEARNING_DIR, 'adaptive_data.json'), data);
     } catch { }
   }
 
@@ -587,24 +616,29 @@ export class SessionPersistence {
 
   async load(): Promise<void> {
     try {
-      const sessDir = path.join(LEARNING_DIR, 'sessions');
+      const sessDir = resolveUnder(LEARNING_DIR, 'sessions');
       await fs.ensureDir(sessDir);
       const files = await fs.readdir(sessDir);
       for (const file of files) {
         if (file.endsWith('.json')) {
-          const session = await fs.readJson(path.join(sessDir, file));
-          this.sessions.set(session.id, session);
+          try {
+            const session = await fs.readJson(resolveUnder(sessDir, file)) as SessionState;
+            if (!session || typeof session !== 'object') continue;
+            const id = safeFileSegment(session.id || path.basename(file, '.json'), `sess_${Date.now()}`);
+            this.sessions.set(id, { ...session, id });
+          } catch { }
         }
       }
     } catch { }
   }
 
   async saveSession(session: SessionState): Promise<void> {
-    this.sessions.set(session.id, session);
+    const id = safeFileSegment(session.id, `sess_${Date.now()}`);
+    const safeSession = { ...session, id, updatedAt: Date.now() };
+    this.sessions.set(id, safeSession);
     try {
-      const sessDir = path.join(LEARNING_DIR, 'sessions');
-      await fs.ensureDir(sessDir);
-      await fs.writeJson(path.join(sessDir, `${session.id}.json`), session, { spaces: 2 });
+      const sessDir = resolveUnder(LEARNING_DIR, 'sessions');
+      await writeJsonAtomic(resolveUnder(sessDir, `${id}.json`), safeSession);
     } catch { }
   }
 
@@ -626,7 +660,7 @@ export class SessionPersistence {
   }
 
   markStepComplete(sessionId: string, step: string): void {
-    const session = this.sessions.get(sessionId);
+    const session = this.sessions.get(safeFileSegment(sessionId, ''));
     if (session) {
       session.completedSteps.push(step);
       session.pendingSteps = session.pendingSteps.filter(s => s !== step);
@@ -827,7 +861,7 @@ export class NeuralPlasticityEngine {
       }
       
       try {
-        await fs.writeJson(this.rulesPath, { rules: this.evolvedRules }, { spaces: 2 });
+        await writeJsonAtomic(this.rulesPath, { rules: this.evolvedRules });
       } catch { /* silent */ }
     }
   }

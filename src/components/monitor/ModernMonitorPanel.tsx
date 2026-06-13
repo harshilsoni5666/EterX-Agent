@@ -89,6 +89,16 @@ function visualFrameScore(event: MonitorEvent) {
   return event.ts;
 }
 
+const redactRuntimeText = (value: unknown, maxLength = 4000) => {
+  const text = String(value || '');
+  return text
+    .replace(/\b(AIza[0-9A-Za-z_-]{20,})\b/g, '[redacted-key]')
+    .replace(/\b(sk-[0-9A-Za-z_-]{20,})\b/g, '[redacted-key]')
+    .replace(/\b(sk-ant-[0-9A-Za-z_-]{20,})\b/g, '[redacted-key]')
+    .replace(/\b(?:api[_-]?key|token|secret|password|passwd|authorization)\b(\s*[:=]\s*)(["']?)[^\s"']+/gi, (_match, sep, quote) => `credential${sep}${quote}[redacted]`)
+    .slice(0, maxLength);
+};
+
 const MODES: ModeConfig[] = [
   {
     id: 'computer',
@@ -108,7 +118,7 @@ const MODES: ModeConfig[] = [
     ],
   },
   { id: 'browser', label: 'Browser', icon: Globe2, eventTypes: ['browser_nav', 'browser_screenshot'] },
-  { id: 'terminal', label: 'Terminal', icon: Terminal, eventTypes: ['terminal_cmd', 'terminal_output'] },
+  { id: 'terminal', label: 'Runtime', icon: Terminal, eventTypes: ['terminal_cmd', 'terminal_output'] },
   { id: 'files', label: 'Files', icon: FolderOpen, eventTypes: ['file_write', 'file_read', 'file_delete'] },
   { id: 'thoughts', label: 'Thoughts', icon: Brain, eventTypes: ['thought', 'message', 'milestone', 'memory_recall', 'model_switch', 'context_compress'] },
   { id: 'search', label: 'Search', icon: Search, eventTypes: ['search_query', 'search_result', 'api_call'] },
@@ -129,8 +139,8 @@ const EVENT_LABEL: Record<string, string> = {
   user_takeover: 'User control',
   agent_takeover: 'Agent control',
   live_frame: 'Live frame',
-  terminal_cmd: 'Running command',
-  terminal_output: 'Terminal output',
+  terminal_cmd: 'Runtime command',
+  terminal_output: 'Runtime output',
   file_write: 'Writing file',
   file_read: 'Reading file',
   file_delete: 'Deleting file',
@@ -214,13 +224,13 @@ function eventLabel(type: string) {
 }
 
 function eventContent(event: MonitorEvent) {
-  if (event.cmd) return event.cmd;
+  if (event.cmd) return redactRuntimeText(event.cmd, 900);
   if (event.url) return event.url;
   if (event.filePath) return event.filePath;
   if (event.appTitle) return event.appTitle;
   if (event.appName) return event.appName;
   if (event.error) return event.error;
-  if (event.output) return event.output.trim();
+  if (event.output) return redactRuntimeText(event.output, 400).trim();
   if (event.text) return event.text;
   if (event.tool) return event.tool;
   return eventLabel(event.type);
@@ -503,7 +513,7 @@ function TerminalStage({ events }: { events: MonitorEvent[] }) {
   if (terminalEvents.length === 0) {
     return (
       <div className="min-h-0 flex-1 overflow-hidden rounded-[20px] border border-white/[0.09] bg-[#101010]">
-        <EmptyState icon={Terminal} title="No terminal activity" detail="Commands and streaming output will appear when the agent uses the shell." />
+        <EmptyState icon={Terminal} title="No runtime activity" detail="Command activity will appear here when the agent runs workspace operations." />
       </div>
     );
   }
@@ -515,11 +525,11 @@ function TerminalStage({ events }: { events: MonitorEvent[] }) {
           {event.type === 'terminal_cmd' ? (
             <div className="flex items-start gap-2 rounded-xl border border-emerald-400/12 bg-emerald-400/[0.055] px-3 py-2 text-emerald-200/90">
               <span className="select-none text-emerald-400">$</span>
-              <span className="min-w-0 flex-1 break-all">{event.cmd}</span>
+              <span className="min-w-0 flex-1 break-all">{redactRuntimeText(event.cmd, 900)}</span>
               <span className="shrink-0 text-[10px] text-emerald-100/30">{formatClock(event.ts)}</span>
             </div>
           ) : (
-            <pre className="whitespace-pre-wrap break-words px-3 py-1.5 text-white/48">{event.output}</pre>
+            <pre className="whitespace-pre-wrap break-words px-3 py-1.5 text-white/48">{redactRuntimeText(event.output)}</pre>
           )}
         </div>
       ))}

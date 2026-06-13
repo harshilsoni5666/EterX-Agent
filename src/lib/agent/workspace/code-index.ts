@@ -19,6 +19,27 @@ const MAX_FILE_BYTES = 512 * 1024;
 const MAX_INDEX_FILES = 4000;
 const CHUNK_LINES = 40;
 
+function isPathInside(parent: string, candidate: string): boolean {
+  const relative = path.relative(parent, candidate);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function resolveUnder(parent: string, ...segments: string[]): string {
+  const resolved = path.resolve(parent, ...segments);
+  if (!isPathInside(parent, resolved)) {
+    throw new Error(`Resolved path escapes expected directory: ${resolved}`);
+  }
+  return resolved;
+}
+
+async function writeJsonAtomic(filePath: string, data: unknown): Promise<void> {
+  const dir = path.dirname(filePath);
+  await fs.ensureDir(dir);
+  const tmpPath = path.join(dir, `.${path.basename(filePath)}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`);
+  await fs.writeJson(tmpPath, data, { spaces: 2 });
+  await fs.move(tmpPath, filePath, { overwrite: true });
+}
+
 export interface CodeIndexChunk {
   startLine: number;
   endLine: number;
@@ -107,7 +128,7 @@ function chunkLines(lines: string[]): CodeIndexChunk[] {
 
 function indexCachePath(workspacePath: string): string {
   const hash = crypto.createHash('sha1').update(path.resolve(workspacePath)).digest('hex');
-  return path.join(INDEX_ROOT, `${hash}.json`);
+  return resolveUnder(INDEX_ROOT, `${hash}.json`);
 }
 
 async function listCodeFiles(workspacePath: string): Promise<string[]> {
@@ -150,7 +171,7 @@ async function listCodeFiles(workspacePath: string): Promise<string[]> {
 }
 
 async function buildEntry(workspacePath: string, relPath: string): Promise<CodeIndexEntry | null> {
-  const fullPath = path.join(workspacePath, relPath);
+  const fullPath = resolveUnder(workspacePath, relPath);
   try {
     const stat = await fs.stat(fullPath);
     if (!stat.isFile() || stat.size > MAX_FILE_BYTES) return null;
@@ -223,8 +244,7 @@ export async function ensureCodeIndex(workspacePath: string): Promise<CodeIndex>
     fingerprint,
   };
 
-  await fs.ensureDir(INDEX_ROOT);
-  await fs.writeJson(cacheFile, index);
+  await writeJsonAtomic(cacheFile, index);
   indexCache.set(root, { index, fingerprint });
   return index;
 }

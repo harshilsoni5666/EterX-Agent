@@ -19,6 +19,27 @@ import fs from 'fs-extra';
 
 const MEMORY_DIR = path.resolve(process.cwd(), '.workspaces', 'memory');
 
+function isPathInside(parent: string, candidate: string): boolean {
+  const relative = path.relative(parent, candidate);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function resolveUnder(parent: string, ...segments: string[]): string {
+  const resolved = path.resolve(parent, ...segments);
+  if (!isPathInside(parent, resolved)) {
+    throw new Error(`Resolved path escapes expected directory: ${resolved}`);
+  }
+  return resolved;
+}
+
+async function writeJsonAtomic(filePath: string, data: unknown): Promise<void> {
+  const dir = path.dirname(filePath);
+  await fs.ensureDir(dir);
+  const tmpPath = path.join(dir, `.${path.basename(filePath)}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`);
+  await fs.writeJson(tmpPath, data, { spaces: 2 });
+  await fs.move(tmpPath, filePath, { overwrite: true });
+}
+
 interface MemoryStore {
   preferences: Record<string, any>;
   errorPatterns: Array<{ tool: string, error: string, solution: string, timestamp: number }>;
@@ -43,10 +64,10 @@ class AgentMemory {
     try {
       await fs.ensureDir(MEMORY_DIR);
 
-      const prefsPath = path.join(MEMORY_DIR, 'preferences.json');
-      const errorsPath = path.join(MEMORY_DIR, 'errors.json');
-      const projectsPath = path.join(MEMORY_DIR, 'projects.json');
-      const sessionsPath = path.join(MEMORY_DIR, 'sessions.json');
+      const prefsPath = resolveUnder(MEMORY_DIR, 'preferences.json');
+      const errorsPath = resolveUnder(MEMORY_DIR, 'errors.json');
+      const projectsPath = resolveUnder(MEMORY_DIR, 'projects.json');
+      const sessionsPath = resolveUnder(MEMORY_DIR, 'sessions.json');
 
       // All 4 reads in parallel
       const [p, e, pr, s] = await Promise.allSettled([
@@ -74,10 +95,10 @@ class AgentMemory {
     try {
       await fs.ensureDir(MEMORY_DIR);
       await Promise.all([
-        fs.writeJson(path.join(MEMORY_DIR, 'preferences.json'), this.store.preferences, { spaces: 2 }),
-        fs.writeJson(path.join(MEMORY_DIR, 'errors.json'), this.store.errorPatterns.slice(-50), { spaces: 2 }),
-        fs.writeJson(path.join(MEMORY_DIR, 'projects.json'), this.store.projectKnowledge, { spaces: 2 }),
-        fs.writeJson(path.join(MEMORY_DIR, 'sessions.json'), this.store.sessionSummaries.slice(-20), { spaces: 2 }),
+        writeJsonAtomic(resolveUnder(MEMORY_DIR, 'preferences.json'), this.store.preferences),
+        writeJsonAtomic(resolveUnder(MEMORY_DIR, 'errors.json'), this.store.errorPatterns.slice(-50)),
+        writeJsonAtomic(resolveUnder(MEMORY_DIR, 'projects.json'), this.store.projectKnowledge),
+        writeJsonAtomic(resolveUnder(MEMORY_DIR, 'sessions.json'), this.store.sessionSummaries.slice(-20)),
       ]);
     } catch (e) {
       console.warn(`[AgentMemory] Could not save memory.`);

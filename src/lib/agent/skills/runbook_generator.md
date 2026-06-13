@@ -1,80 +1,39 @@
 ---
-description: name: "runbook-generator"
----
-
----
 name: "runbook-generator"
-description: "Runbook Generator"
+description: Use to create or improve operational runbooks for services, deployments, incidents, maintenance, rollbacks, alerts, and on-call procedures.
 ---
 
 # Runbook Generator
 
-**Tier:** POWERFUL  
-**Category:** Engineering  
-**Domain:** DevOps / Site Reliability Engineering
+Runbooks must be executable under pressure. Generate them from real service behavior, not generic placeholders.
 
----
+## Workflow
 
-## Overview
+1. Identify service name, owner, environment, dependencies, dashboards, alerts, deploy path, and rollback path.
+2. Inspect existing docs, scripts, CI/CD workflows, health endpoints, config, and infrastructure files.
+3. Write copy-pasteable commands with expected outputs and verification steps.
+4. Include escalation contacts or placeholders only when real ownership is unavailable.
+5. Add a test/dry-run note so the runbook does not rot.
 
-Generate operational runbooks quickly from a service name, then customize for deployment, incident response, maintenance, and rollback workflows.
+## Runbook Sections
 
-## Core Capabilities
+Use the sections that fit the service:
 
-- Runbook skeleton generation from a CLI
-- Standard sections for start/stop/health/rollback
-- Structured escalation and incident handling placeholders
-- Reference templates for deployment and incident playbooks
+- Purpose and scope.
+- Ownership and escalation.
+- Dependencies and dashboards.
+- Health checks.
+- Deploy procedure.
+- Rollback procedure.
+- Common incidents and diagnosis.
+- Maintenance tasks.
+- Data safety and backup/restore notes.
+- Post-incident update checklist.
 
----
+## Quality Bar
 
-## When to Use
-
-- A service has no runbook and needs a baseline immediately
-- Existing runbooks are inconsistent across teams
-- On-call onboarding requires standardized operations docs
-- You need repeatable runbook scaffolding for new services
-
----
-
-## Quick Start
-
-```bash
-# Print runbook to stdout
-python3 scripts/runbook_generator.py payments-api
-
-# Write runbook file
-python3 scripts/runbook_generator.py payments-api --owner platform --output docs/runbooks/payments-api.md
-```
-
----
-
-## Recommended Workflow
-
-1. Generate the initial skeleton with `scripts/runbook_generator.py`.
-2. Fill in service-specific commands and URLs.
-3. Add verification checks and rollback triggers.
-4. Dry-run in staging.
-5. Store runbook in version control near service code.
-
----
-
-## Reference Docs
-
-- `references/runbook-templates.md`
-
----
-
-## Common Pitfalls
-
-- Missing rollback triggers or rollback commands
-- Steps without expected output checks
-- Stale ownership/escalation contacts
-- Runbooks never tested outside of incidents
-
-## Best Practices
-
-1. Keep every command copy-pasteable.
-2. Include health checks after every critical step.
-3. Validate runbooks on a fixed review cadence.
-4. Update runbook content after incidents and postmortems.
+- Every action has an expected result.
+- Every risky action has rollback or stop criteria.
+- Commands are scoped to environment.
+- Secrets are referenced by name/location, never written out.
+- The runbook says how to verify recovery.

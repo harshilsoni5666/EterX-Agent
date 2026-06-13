@@ -1,6 +1,9 @@
 import { z } from 'zod';
 import { ToolDefinition } from '../../schemas';
-import { dynamicSkillEngine, toolCompositionEngine, workspaceIntelligence } from '../../engines';
+import { dynamicSkillEngine, workspaceIntelligence } from '../../engines';
+import { globalToolRegistry } from '../registry';
+import { enforceToolCapability, validateToolInput } from '../security/tool_policy';
+import { createToolExecutionContext, isToolCancellationError } from '../../cancellation';
 
 /**
  * Dynamic Tool Creator — Runtime Tool Factory
@@ -16,7 +19,7 @@ INPUT:
 - name: Unique tool name (snake_case, e.g. "format_date", "fetch_stock_price")
 - description: What the tool does
 - inputFields: Array of {name, type, description, required}
-- executionCode: JavaScript async code. Has access to: input (object), require, path, fs
+- executionCode: JavaScript async code for pure data transformations. Host APIs such as require, fs, process, network, and child_process are blocked.
 
 EXAMPLE:
 {
@@ -44,7 +47,20 @@ The tool is immediately available after creation. Use it like any other tool.`,
     name: string, description: string,
     inputFields: Array<{ name: string, type: string, description: string, required: boolean }>,
     executionCode: string
-  }) => {
+  }, context?: any) => {
+    const policy = enforceToolCapability('create_dynamic_tool', input, context);
+    if (!policy.allowed) {
+      return { success: false, message: policy.reason || 'create_dynamic_tool is not allowed in this context' };
+    }
+    if (!/^[a-z][a-z0-9_]{2,63}$/.test(input.name)) {
+      return { success: false, message: 'Tool name must be snake_case, start with a letter, and be 3-64 characters.' };
+    }
+    if (globalToolRegistry.getTool(input.name)) {
+      return { success: false, message: `Tool "${input.name}" already exists. Refusing to overwrite registered tools.` };
+    }
+    if (/\b(?:require|process|child_process|fs|net|http|https|eval|Function)\b/.test(input.executionCode)) {
+      return { success: false, message: 'Dynamic tool code contains blocked runtime APIs. Use Agent Builder reviewed tools for filesystem, network, or process access.' };
+    }
     console.log(`[Tool: create_dynamic_tool] Creating: ${ input.name }`);
     return await dynamicSkillEngine.createTool({
       name: input.name,
@@ -127,42 +143,69 @@ EXAMPLE: Research then write
     })).describe('Ordered list of tool execution steps')
   }),
   outputSchema: z.object({ success: z.boolean(), results: z.any() }),
-  execute: async (input: { steps: Array<{ tool: string, args: any, outputKey: string }> }) => {
-    const { globalToolRegistry: reg } = require('../../tools/registry');
-    const context: Record<string, any> = {};
+  execute: async (input: { steps: Array<{ tool: string, args: any, outputKey: string }> }, runtimeContext?: any) => {
+    const macroPolicy = enforceToolCapability('run_macro', input, runtimeContext);
+    if (!macroPolicy.allowed) {
+      return { success: false, results: {}, error: macroPolicy.reason || 'run_macro is not allowed in this context' };
+    }
+    if (input.steps.length > 12) {
+      return { success: false, results: {}, error: 'run_macro supports at most 12 steps per call.' };
+    }
+    const macroContext: Record<string, any> = {};
 
     for (let i = 0; i < input.steps.length; i++) {
       const step = input.steps[i];
-      const tool = reg.getTool(step.tool);
+      const tool = globalToolRegistry.getTool(step.tool);
       if (!tool) {
-        return { success: false, results: context, error: `Step ${ i + 1 }: Tool "${ step.tool }" not found` };
+        return { success: false, results: macroContext, error: `Step ${ i + 1 }: Tool "${ step.tool }" not found` };
       }
 
       // Replace {{key}} placeholders in args with context values
       const rawArgs = parseJsonObject(step.args);
       if (!rawArgs) {
-        return { success: false, results: context, error: `Step ${ i + 1 }: args must be a JSON object string` };
+        return { success: false, results: macroContext, error: `Step ${ i + 1 }: args must be a JSON object string` };
       }
       const resolvedArgs: any = {};
       for (const [key, value] of Object.entries(rawArgs)) {
         if (typeof value === 'string' && value.startsWith('{{') && value.endsWith('}}')) {
           const contextKey = value.slice(2, -2);
-          resolvedArgs[key] = context[contextKey];
+          resolvedArgs[key] = macroContext[contextKey];
         } else {
           resolvedArgs[key] = value;
         }
       }
 
+      const stepPolicy = enforceToolCapability(tool.name, resolvedArgs, runtimeContext);
+      if (!stepPolicy.allowed) {
+        return { success: false, results: macroContext, error: `Step ${i + 1}: ${stepPolicy.reason || `Tool "${tool.name}" is not allowed`}` };
+      }
+
+      const validation = validateToolInput(tool, resolvedArgs);
+      if (!validation.success) {
+        return { success: false, results: macroContext, error: `Step ${i + 1}: ${validation.error}` };
+      }
+
       console.log(`[MacroRunner] Step ${ i + 1 }/${ input.steps.length }: ${ step.tool }`);
       try {
-        const result = await tool.execute(resolvedArgs, {});
-        context[step.outputKey] = result;
+        const toolExec = createToolExecutionContext(runtimeContext);
+        let result: any;
+        try {
+          toolExec.throwIfCancelled();
+          result = await tool.execute(validation.args, toolExec.context);
+          toolExec.throwIfCancelled();
+        } finally {
+          toolExec.dispose();
+        }
+        macroContext[step.outputKey] = result;
       } catch (error: any) {
-        return { success: false, results: context, error: `Step ${ i + 1 } (${ step.tool }) failed: ${ error.message }` };
+        if (isToolCancellationError(error)) {
+          return { success: false, results: macroContext, cancelled: true, error: 'CANCELLED_BY_USER' };
+        }
+        return { success: false, results: macroContext, error: `Step ${ i + 1 } (${ step.tool }) failed: ${ error.message }` };
       }
     }
 
-    return { success: true, results: context };
+    return { success: true, results: macroContext };
   }
 };
 

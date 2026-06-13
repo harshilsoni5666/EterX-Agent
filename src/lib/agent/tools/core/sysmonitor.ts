@@ -3,6 +3,7 @@ import { ToolDefinition } from '../../schemas';
 import os from 'os';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import { enforceToolCapability } from '../security/tool_policy';
 
 const execAsync = promisify(exec);
 
@@ -17,8 +18,13 @@ export const systemMonitorTool: ToolDefinition = {
   outputSchema: z.object({
     metrics: z.any()
   }),
-  execute: async (input: { check: string }) => {
+  execute: async (input: { check: string }, context?: any) => {
     console.log(`[Tool: system_monitor] Checking: ${input.check}`);
+    const decision = enforceToolCapability('system_monitor', input, context);
+    if (!decision.allowed) {
+      return { metrics: { error: decision.reason || 'System monitoring is not allowed' } };
+    }
+
     const metrics: any = {};
 
     const getCpu = () => {

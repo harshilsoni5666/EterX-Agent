@@ -1,37 +1,31 @@
 ---
-name: Git Commit
-id: git_commit
-description: Create proper git commits with staged changes. Follows git safety protocol - never skip hooks, never amend without permission.
+name: git-commit
+description: Use only when the user explicitly asks to stage or commit changes. Provides safe commit hygiene, scoped staging, review-before-commit, and clear commit messages.
 icon: GitCommit
 category: coding
 ---
 
-# Git Commit Skill
+# Git Commit
 
-Create well-formatted git commits following safety protocol.
+Use this skill only for explicit git commit requests.
 
-## Instructions
+## Protocol
 
-1. Run git status to see all changes
-2. Run git diff to review staged and unstaged changes
-3. Run git log -5 to match existing commit message style
-4. Draft a concise commit message (1-2 sentences) focusing on WHY not WHAT
-5. Stage specific files (never use git add -A)
-6. Create the commit using HEREDOC format
+1. Confirm git commands are allowed in the current request.
+2. Review changed files and avoid unrelated user/agent work.
+3. Stage only the files requested or clearly owned by the current task.
+4. Use a concise commit message that explains the user-visible purpose.
+5. Do not amend, rebase, tag, push, force push, skip hooks, or change branches unless explicitly requested.
 
-## Git Safety Protocol
-- NEVER skip hooks (--no-verify) unless explicitly asked
-- NEVER amend existing commits unless explicitly asked
-- NEVER force push unless explicitly asked
-- NEVER commit .env files or credentials
-- Always create NEW commits, not amend
-- Stage files by name, not with -A or .
+## Message Shape
 
-## Commit Message Format
-```bash
-git commit -m "$(cat <<'EOF'
-Brief description of what changed and why
+```text
+Short imperative summary
 
-EOF
-)"
+Optional body explaining why the change was needed.
 ```
+
+## Never Include
+
+- Secrets, `.env` files, generated caches, build output, logs, or unrelated cleanup.
+- Claims that tests passed unless the exact checks were run.

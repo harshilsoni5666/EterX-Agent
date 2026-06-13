@@ -236,7 +236,7 @@ const SteeringFeedCard = ({ log, isCompressed = false }: { log: any; isCompresse
     transition={{ type: 'spring', stiffness: 450, damping: 24 }}
     className="flex justify-end w-full my-3 relative z-10 group/steer"
   >
-    <div className={`eterx-steering-bubble bg-[#20201F] px-4 py-3 rounded-[18px] rounded-tr-[6px] ml-auto text-[15px] text-[#E7E1D8] shadow-[0_4px_16px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(255,255,255,0.025)] leading-[1.56] whitespace-pre-wrap relative border border-white/[0.06] select-text flex flex-row items-end gap-3 ${ isCompressed ? 'max-w-[92%]' : 'max-w-[84%]' }`}>
+    <div className={`eterx-steering-bubble bg-[#20201F] px-4 py-3 rounded-[18px] rounded-tr-[6px] ml-auto text-[13.5px] text-[#F4F2EE] shadow-[0_4px_16px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(255,255,255,0.025)] leading-[1.56] whitespace-pre-wrap relative border border-white/[0.06] select-text flex flex-row items-end gap-3 ${ isCompressed ? 'max-w-[92%]' : 'max-w-[84%]' }`}>
       <span className="block w-full text-left break-words [word-break:break-word] [overflow-wrap:anywhere]">{log.text}</span>
       
       {/* CornerDownLeft arrow representing steering entry */}
@@ -908,7 +908,7 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
               return (
                 <div key={`group-${ groupIdx }`} id={`message-${ groupIdx }`} className="eterx-chat-message-group mt-8 mb-6 flex w-full scroll-m-20 justify-end group/user">
                   <div className="flex w-full justify-end">
-                    <div className={`eterx-user-message-bubble eterx-chat-feed-user-bubble flex min-w-0 flex-col items-end rounded-[18px] border border-white/[0.06] bg-[#20201F] px-4 py-2.5 text-[15px] leading-[1.56] text-[#E7E1D8] shadow-[0_4px_18px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(255,255,255,0.025)] selection:bg-[#D98B6A]/25 relative whitespace-pre-wrap select-text ${ isCompressed ? 'max-w-[92%]' : 'max-w-[520px]' }`}>
+                    <div className={`eterx-user-message-bubble eterx-chat-feed-user-bubble flex min-w-0 flex-col items-end rounded-[18px] border border-white/[0.06] bg-[#20201F] px-4 py-2.5 text-[13.5px] leading-[1.56] text-[#F4F2EE] shadow-[0_4px_18px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(255,255,255,0.025)] selection:bg-[#D98B6A]/25 relative whitespace-pre-wrap select-text ${ isCompressed ? 'max-w-[92%]' : 'max-w-[520px]' }`}>
                       <UserMessageActions text={userText} onEdit={onEditUserMessage} />
                       {first.attachments && first.attachments.length > 0 && (
                         <div className="flex flex-wrap justify-end gap-2.5 mb-3 w-full">
@@ -1174,7 +1174,7 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
                     <div className="relative group/thought">
                       {/* Live typing uses the same renderer so Mermaid, math, and tables appear as soon as Markdown is complete. */}
                       {isAnswerActivelyTyping ? (
-                        <div className="eterx-assistant-answer-body eterx-assistant-live-text text-[15.25px] leading-[1.78] text-[#C9C3BA] font-sans relative">
+                        <div className="eterx-assistant-answer-body eterx-assistant-live-text text-[13.5px] leading-[1.56] text-[#F2F0EC] font-sans relative">
                           <ProfessionalThought
                             text={displayFinalAnswer.text}
                             isLatest={groupIdx === groups.length - 1}
@@ -1185,7 +1185,7 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
                           />
                         </div>
                       ) : (
-                        <div className="eterx-assistant-answer-body text-[15.25px] leading-[1.78] text-[#C9C3BA] font-sans relative">
+                        <div className="eterx-assistant-answer-body text-[13.5px] leading-[1.56] text-[#F2F0EC] font-sans relative">
                           <ProfessionalThought
                             text={displayFinalAnswer.text}
                             isLatest={groupIdx === groups.length - 1}

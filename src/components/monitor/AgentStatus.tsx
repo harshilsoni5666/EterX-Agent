@@ -25,6 +25,7 @@ interface StatusEvent {
   text?: string;
   ts: number;
   meta?: any;
+  stats?: any;
 }
 
 interface AgentStatusState {
@@ -109,21 +110,22 @@ export function useAgentStatus(): AgentStatusState {
 
 function processEvent(prev: AgentStatusState, ev: StatusEvent): AgentStatusState {
   const next = { ...prev };
+  const summary = ev.meta || ev.stats || {};
 
   switch (ev.type) {
     case 'connected':
     case 'ping':
       next.connected = true;
-      if (ev.meta?.actionCount !== undefined) next.actionCount = ev.meta.actionCount;
-      if (ev.meta?.currentApp) next.appName = ev.meta.currentApp;
-      if (ev.meta?.userInControl !== undefined) next.isUserInControl = ev.meta.userInControl;
+      if (summary.actionCount !== undefined) next.actionCount = summary.actionCount;
+      if (summary.currentApp) next.appName = summary.currentApp;
+      if (summary.userInControl !== undefined) next.isUserInControl = summary.userInControl;
       break;
 
     case 'heartbeat':
       next.connected = true;
-      if (ev.meta?.actionCount !== undefined) next.actionCount = ev.meta.actionCount;
-      if (ev.meta?.currentApp) next.appName = ev.meta.currentApp;
-      if (ev.meta?.userInControl !== undefined) next.isUserInControl = ev.meta.userInControl;
+      if (summary.actionCount !== undefined) next.actionCount = summary.actionCount;
+      if (summary.currentApp) next.appName = summary.currentApp;
+      if (summary.userInControl !== undefined) next.isUserInControl = summary.userInControl;
       break;
 
     case 'tool_start':

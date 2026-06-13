@@ -1,19 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Plus, Loader2, ShieldCheck, Settings2, ArrowLeft, ArrowUp } from 'lucide-react';
-import { PremiumEdit, PremiumSettings, PremiumActivity } from '../ui/premium-icons';
+import { Plus, ArrowUp } from 'lucide-react';
+import { PremiumEdit, PremiumSettings } from '../ui/premium-icons';
 import { Tooltip } from '../ui/tooltip';
-import { ProfessionalThought } from '../chat/thought-sequence';
-
-const AgentPeopleIcon = (props: React.SVGProps<SVGSVGElement>) => (
-  <svg {...props} viewBox="0 0 24 24" fill="none" aria-hidden="true">
-    <g stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="12" cy="8.25" r="3.15" />
-      <path d="M5.35 19.25c1.12-2.95 3.33-4.42 6.65-4.42s5.53 1.47 6.65 4.42" />
-    </g>
-  </svg>
-);
 
 interface Agent {
   id: string;
@@ -125,78 +114,66 @@ export const AgentsView = ({
   // Modal state
   const [isCreating, setIsCreating] = useState(false);
   const [newAgentName, setNewAgentName] = useState("");
-  const [newAgentAccess, setNewAgentAccess] = useState<'Full Access' | 'Selected Access' | 'Agent Decides'>('Full Access');
-  const [isSaving, setIsSaving] = useState(false);
-  const [isSaved, setIsSaved] = useState(false);
   const [generatedId, setGeneratedId] = useState("");
-  const [generatedCode, setGeneratedCode] = useState("");
 
   // Settings modal state
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [settingsAgent, setSettingsAgent] = useState<Agent | null>(null);
   const [deletingAgentId, setDeletingAgentId] = useState<string | null>(null);
+  const [settingsError, setSettingsError] = useState('');
 
   const handleDeleteAgent = async (id: string) => {
     if (id === 'default-1' || deletingAgentId) return;
     setDeletingAgentId(id);
+    setSettingsError('');
 
     try {
-      await fetch(`/api/agents/list?agentId=${encodeURIComponent(id)}`, {
+      const res = await fetch(`/api/agents/list?agentId=${encodeURIComponent(id)}`, {
         method: 'DELETE',
-      }).catch(() => null);
-    } finally {
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok || payload?.success === false) {
+        throw new Error(payload?.error || `Delete failed (${res.status})`);
+      }
+
       setAgents(prev => prev.filter(a => a.id !== id));
       if (selectedAgentId === id) onUseAgent?.(null, 'General');
       try {
         window.dispatchEvent(new CustomEvent('eterx_agents_updated', { detail: { deletedAgentId: id } }));
       } catch { }
-      setDeletingAgentId(null);
       setIsSettingsOpen(false);
       setSettingsAgent(null);
+    } catch (error: any) {
+      setSettingsError(error?.message || 'Could not delete this agent.');
+    } finally {
+      setDeletingAgentId(null);
     }
-  };
-
-  const handleSave = () => {
-    if (!newAgentName.trim()) return;
-    setIsSaving(true);
-    
-    // Simulate real-time generation and saving
-    setTimeout(() => {
-      const random4 = Math.floor(1000 + Math.random() * 9000);
-      const shortName = newAgentName.substring(0, 4).toLowerCase().replace(/[^a-z0-9]/g, 'a').padEnd(4, 'x');
-      const newId = `eterxagent-${random4}-${shortName}`;
-      
-      const codeSnippet = `const agentConfig = {\n  id: "${newId}",\n  name: "${newAgentName}",\n  accessType: "${newAgentAccess}",\n  status: "active"\n};\n\nawait EterX.deploy(agentConfig);`;
-      
-      setGeneratedId(newId);
-      setGeneratedCode(codeSnippet);
-      setIsSaving(false);
-      setIsSaved(true);
-    }, 2500);
   };
 
   const handleCloseModal = () => {
-    if (isSaved) {
-      setAgents(prev => [...prev, {
-        id: generatedId,
-        name: newAgentName,
-        description: 'Custom autonomous agent variant.',
-        accessType: newAgentAccess,
-        isSetup: false,
-        builderMessages: []
-      }]);
-    }
     setIsCreating(false);
     
     // Reset modal state after animation completes
     setTimeout(() => {
       setNewAgentName("");
-      setNewAgentAccess('Full Access');
-      setIsSaving(false);
-      setIsSaved(false);
       setGeneratedId("");
-      setGeneratedCode("");
     }, 300);
+  };
+
+  const getOrCreateBuilderId = () => {
+    if (generatedId) return generatedId;
+    const random4 = Math.floor(1000 + Math.random() * 9000);
+    const shortName = newAgentName.substring(0, 4).toLowerCase().replace(/[^a-z0-9]/g, 'a').padEnd(4, 'x');
+    const newId = `eterxagent-${random4}-${shortName}`;
+    setGeneratedId(newId);
+    return newId;
+  };
+
+  const handleStartBuilder = () => {
+    if (!newAgentName.trim()) return;
+    const builderId = getOrCreateBuilderId();
+    handleCloseModal();
+    setTimeout(() => onOpenBuilder(builderId), 300);
   };
 
   return (
@@ -366,16 +343,6 @@ export const AgentsView = ({
                     {agent.isSetup === false ? 'Setup' : 'Open'}
                   </button>
 
-                  <Tooltip text="Statistics coming soon" side="top">
-                    <button 
-                      type="button"
-                      aria-disabled="true"
-                      onClick={(e) => e.stopPropagation()}
-                      className="eterx-agent-icon-button cursor-not-allowed text-[#555350]/70 transition-colors p-2 rounded-xl opacity-55 active:scale-100 group/btn"
-                    >
-                      <PremiumActivity className="w-[18px] h-[18px] transition-transform" />
-                    </button>
-                  </Tooltip>
                   <div className="hidden w-[1px] h-5 bg-white/[0.08] mx-1 sm:block"></div>
                   <Tooltip text="Agent Settings" side="top">
                     <button 
@@ -383,6 +350,7 @@ export const AgentsView = ({
                       onClick={(e) => {
                         e.stopPropagation();
                         setSettingsAgent(agent);
+                        setSettingsError('');
                         setIsSettingsOpen(true);
                       }}
                       className="eterx-agent-icon-button text-[#555350] hover:text-white transition-colors p-2 rounded-xl hover:bg-white/10 active:scale-95 group/btn"
@@ -417,11 +385,9 @@ export const AgentsView = ({
             >
               <div className="flex items-center justify-between">
                 <h2 className="text-xl font-semibold text-white tracking-tight">Agent Builder</h2>
-                {!isSaving && !isSaved && (
-                  <button onClick={handleCloseModal} className="text-[#8C8A88] hover:text-white transition-colors">
-                    <Plus className="w-5 h-5 rotate-45" />
-                  </button>
-                )}
+                <button onClick={handleCloseModal} className="text-[#8C8A88] hover:text-white transition-colors">
+                  <Plus className="w-5 h-5 rotate-45" />
+                </button>
               </div>
 
               <div className="flex flex-col gap-5 overflow-y-auto [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none] min-h-0 pb-2">
@@ -432,126 +398,37 @@ export const AgentsView = ({
                     type="text"
                     value={newAgentName}
                     onChange={(e) => setNewAgentName(e.target.value)}
-                    disabled={isSaving || isSaved}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        handleStartBuilder();
+                      }
+                    }}
                     placeholder="E.g. Financial Analyst Bot"
-                    className="w-full bg-[#121212] border border-white/10 rounded-xl px-4 py-3 text-[14px] text-white placeholder-white/20 focus:outline-none focus:border-white/30 transition-colors disabled:opacity-50"
+                    className="w-full bg-[#121212] border border-white/10 rounded-xl px-4 py-3 text-[14px] text-white placeholder-white/20 focus:outline-none focus:border-white/30 transition-colors"
                   />
                 </div>
 
-                {/* Access Selection */}
-                <div className="flex flex-col gap-3 shrink-0">
-                  <label className="text-[13px] font-medium text-[#A3A19E]">Access & Permissions</label>
-                  <div className="grid grid-cols-1 gap-2">
-                    {[
-                      { id: 'Full Access', icon: ShieldCheck, desc: 'Complete access to all workspace files and tools.' },
-                      { id: 'Selected Access', icon: Settings2, desc: 'Restricted to explicitly selected scopes.' },
-                      { id: 'Agent Decides', icon: AgentPeopleIcon, desc: 'Agent autonomously requests access as needed.' }
-                    ].map(opt => (
-                      <button 
-                        key={opt.id}
-                        disabled={isSaving || isSaved}
-                        onClick={() => setNewAgentAccess(opt.id as any)}
-                        className={`flex items-start gap-3 p-3 rounded-xl border text-left transition-all ${newAgentAccess === opt.id ? 'bg-white/[0.08] border-white/20 shadow-[inset_0_1px_1px_rgba(255,255,255,0.05)]' : 'bg-transparent border-white/5 hover:bg-white/[0.02]'} disabled:opacity-50 disabled:cursor-not-allowed`}
-                      >
-                        <opt.icon className={`w-5 h-5 mt-0.5 shrink-0 ${newAgentAccess === opt.id ? 'text-white' : 'text-[#8C8A88]'}`} />
-                        <div className="flex flex-col">
-                          <span className={`text-[14px] font-medium ${newAgentAccess === opt.id ? 'text-white' : 'text-[#E8E6E3]'}`}>{opt.id}</span>
-                          <span className="text-[12px] text-[#8C8A88] mt-0.5">{opt.desc}</span>
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Real-time generated details block */}
-                <AnimatePresence>
-                  {isSaved && (
-                    <motion.div 
-                      key="saved-details"
-                      initial={{ opacity: 0, height: 0 }}
-                      animate={{ opacity: 1, height: 'auto' }}
-                      className="flex flex-col gap-3 overflow-hidden mt-2 shrink-0"
-                    >
-                      <div className="w-full h-[1px] bg-white/10 mb-2"></div>
-                      <div className="flex flex-col gap-1.5">
-                        <label className="text-[12px] font-semibold tracking-normal text-white/82 flex items-center gap-1.5">
-                          <div className="w-1.5 h-1.5 rounded-full bg-white/75 animate-pulse"></div>
-                          Agent initialized
-                        </label>
-                        <div className="bg-[#121212] border border-white/[0.12] rounded-xl p-3 flex flex-col gap-2">
-                          <div className="flex items-center justify-between">
-                            <span className="text-[12px] text-[#8C8A88]">Generated ID</span>
-                            <span className="text-[12px] font-mono text-[#E8E6E3] bg-white/5 px-2 py-0.5 rounded">{generatedId}</span>
-                          </div>
-                          <div className="w-full h-[1px] bg-white/5"></div>
-                          <div className="text-[11px] font-mono text-[#A3A19E] whitespace-pre p-3 bg-[#0A0A0A] rounded-lg overflow-x-auto [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none] border border-white/5">
-                            {generatedCode}
-                          </div>
-                        </div>
-                      </div>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
               </div>
 
               {/* Bottom Actions */}
               <div className="flex items-center justify-between pt-4 mt-auto shrink-0 border-t border-white/5">
                 <button 
-                  disabled={!isSaved}
-                  onClick={() => {
-                    handleCloseModal();
-                    setTimeout(() => onOpenBuilder(generatedId), 300);
-                  }}
-                  className="px-6 py-2.5 bg-white text-black font-semibold text-[13px] rounded-full hover:bg-[#E8E6E3] transition-all duration-300 active:scale-95 disabled:opacity-30 disabled:hover:bg-white disabled:active:scale-100"
+                  onClick={handleCloseModal}
+                  className="px-5 py-2.5 bg-white/5 text-white font-semibold text-[13px] rounded-full hover:bg-white/10 transition-all duration-300 active:scale-95"
                 >
-                  Go to Agent builder
+                  Cancel
                 </button>
-                
-                {isSaved ? (
-                  <button 
-                    onClick={handleCloseModal}
-                    className="px-6 py-2.5 bg-white text-black font-semibold text-[13px] rounded-full hover:bg-[#E8E6E3] transition-all duration-300 active:scale-95"
-                  >
-                    Close
-                  </button>
-                ) : (
-                  <motion.button 
-                    layout
-                    onClick={handleSave}
-                    disabled={!newAgentName.trim() || isSaving}
-                    className={`relative flex items-center justify-center px-6 py-2.5 font-semibold text-[13px] rounded-full transition-all duration-300 overflow-hidden min-w-[100px] ${
-                      isSaving 
-                        ? 'bg-[#121212] text-white border border-white/20 cursor-wait' 
-                        : 'bg-white text-black hover:bg-[#E8E6E3] active:scale-95 disabled:opacity-50 disabled:hover:bg-white disabled:active:scale-100'
-                    }`}
-                  >
-                    <AnimatePresence mode="wait">
-                      {isSaving ? (
-                        <motion.div 
-                          key="saving"
-                          initial={{ opacity: 0, y: 10 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          exit={{ opacity: 0, y: -10 }}
-                          transition={{ duration: 0.2 }}
-                          className="flex items-center gap-2"
-                        >
-                          <span>Saving</span>
-                          <Loader2 className="w-3.5 h-3.5 animate-spin text-white" />
-                        </motion.div>
-                      ) : (
-                        <motion.span 
-                          key="save"
-                          initial={{ opacity: 0, y: 10 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          exit={{ opacity: 0, y: -10 }}
-                          transition={{ duration: 0.2 }}
-                        >
-                          Save
-                        </motion.span>
-                      )}
-                    </AnimatePresence>
-                  </motion.button>
-                )}
+
+                <motion.button 
+                  layout
+                  onClick={handleStartBuilder}
+                  disabled={!newAgentName.trim()}
+                  className="relative flex items-center justify-center gap-2 px-6 py-2.5 bg-white text-black font-semibold text-[13px] rounded-full hover:bg-[#E8E6E3] transition-all duration-300 active:scale-95 disabled:opacity-50 disabled:hover:bg-white disabled:active:scale-100"
+                >
+                  Continue to builder
+                  <ArrowUp className="w-3.5 h-3.5 rotate-45 text-black" strokeWidth={2.5} />
+                </motion.button>
               </div>
             </motion.div>
           </motion.div>
@@ -580,7 +457,7 @@ export const AgentsView = ({
                   <h2 className="text-xl font-semibold text-white tracking-tight">Agent Settings</h2>
                   <p className="text-[13px] text-[#8C8A88] mt-1">{settingsAgent.name}</p>
                 </div>
-                <button onClick={() => setIsSettingsOpen(false)} className="text-[#8C8A88] hover:text-white transition-colors">
+                <button onClick={() => { setSettingsError(''); setIsSettingsOpen(false); }} className="text-[#8C8A88] hover:text-white transition-colors">
                   <Plus className="w-5 h-5 rotate-45" />
                 </button>
               </div>
@@ -599,6 +476,11 @@ export const AgentsView = ({
                 <div className="flex flex-col gap-2">
                   <h4 className="text-[14px] font-medium text-[#ef4444] mb-1">Danger Zone</h4>
                   <p className="text-[12px] text-[#8C8A88] mb-3">Deleting this agent removes its saved profile, tools, prompt, and local entry. This action cannot be undone.</p>
+                  {settingsError && (
+                    <div className="rounded-lg border border-[#ef4444]/25 bg-[#ef4444]/10 px-3 py-2 text-[12px] text-[#ffb4b4]">
+                      {settingsError}
+                    </div>
+                  )}
                   
                   <button 
                     onClick={() => handleDeleteAgent(settingsAgent.id)}
@@ -612,7 +494,7 @@ export const AgentsView = ({
 
               <div className="flex items-center justify-end pt-4 border-t border-white/5">
                 <button 
-                  onClick={() => setIsSettingsOpen(false)}
+                  onClick={() => { setSettingsError(''); setIsSettingsOpen(false); }}
                   className="px-6 py-2 bg-white/5 text-white font-semibold text-[13px] rounded-full hover:bg-white/10 transition-all duration-300 active:scale-95"
                 >
                   Close

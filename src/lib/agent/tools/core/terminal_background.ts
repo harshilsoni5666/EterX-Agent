@@ -10,6 +10,7 @@ import {
   terminalBackgroundHandoffNote,
   terminalTimeoutNote
 } from './terminal_timeout';
+import { authorizeToolCommand } from '../security/command_broker';
 
 type TerminalTaskStatus = 'running' | 'completed' | 'failed' | 'killed';
 
@@ -64,6 +65,31 @@ const TASKS_DIR = path.resolve(process.cwd(), '.workspaces', 'background_tasks')
 const DEFAULT_MAX_OUTPUT_CHARS = 10 * 1024 * 1024;
 const DEFAULT_TRACE_THROTTLE_MS = 250;
 
+function isPathInside(parent: string, candidate: string): boolean {
+  const relative = path.relative(parent, candidate);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function resolveUnder(parent: string, ...segments: string[]): string {
+  const resolved = path.resolve(parent, ...segments);
+  if (!isPathInside(parent, resolved)) {
+    throw new Error(`Resolved path escapes expected directory: ${resolved}`);
+  }
+  return resolved;
+}
+
+function safeTaskId(value: string): string {
+  return String(value || '').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 100);
+}
+
+async function writeJsonAtomic(filePath: string, data: unknown): Promise<void> {
+  const dir = path.dirname(filePath);
+  await fs.ensureDir(dir);
+  const tmpPath = path.join(dir, `.${path.basename(filePath)}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`);
+  await fs.writeJson(tmpPath, data, { spaces: 2 });
+  await fs.move(tmpPath, filePath, { overwrite: true });
+}
+
 const globalForTerminalTasks = globalThis as typeof globalThis & {
   __eterxTerminalBackgroundTasks?: Map<string, TerminalBackgroundTask>;
 };
@@ -77,6 +103,32 @@ export async function runTerminalCommandWithCheckIn(options: TerminalCommandRunO
 
   const checkInMs = normalizeCheckInMs(options.checkInMs, options.command);
   const hardTimeoutMs = normalizeHardTimeoutMs(options.hardTimeoutMs, checkInMs);
+  const networkPolicy = options.context?.networkPolicy === 'allow' || options.context?.allowNetwork === true
+    ? 'allow'
+    : 'deny';
+  const authorization = await authorizeToolCommand({
+    command: options.command,
+    cwd: options.cwd,
+    context: options.context,
+    env: options.env,
+    timeoutMs: hardTimeoutMs,
+    network: networkPolicy,
+  });
+  if (!authorization.allowed) {
+    const reason = authorization.reason || 'Terminal command blocked by command policy';
+    return {
+      success: false,
+      stdout: '',
+      stderr: reason,
+      output: reason,
+      exitCode: 126,
+      executionTimeMs: 0,
+      timedOut: false,
+      stillRunning: false,
+      status: 'failed',
+    };
+  }
+
   const id = `term_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
   const startedAt = Date.now();
   const streamId = `${options.source}_${startedAt}_${crypto.randomBytes(3).toString('hex')}`;
@@ -87,7 +139,7 @@ export async function runTerminalCommandWithCheckIn(options: TerminalCommandRunO
     command: options.command,
     description: options.description || options.command,
     source: options.source,
-    cwd: options.cwd,
+    cwd: authorization.cwd,
     status: 'running',
     startedAt,
     lastActivityAt: startedAt,
@@ -100,8 +152,8 @@ export async function runTerminalCommandWithCheckIn(options: TerminalCommandRunO
     checkInMs,
     hardTimeoutMs,
     handedOff: false,
-    outputFile: path.join(TASKS_DIR, `${id}_output.txt`),
-    statusFile: path.join(TASKS_DIR, `${id}_status.json`),
+    outputFile: resolveUnder(TASKS_DIR, `${id}_output.txt`),
+    statusFile: resolveUnder(TASKS_DIR, `${id}_status.json`),
     streamId,
     traceContext
   };
@@ -110,11 +162,11 @@ export async function runTerminalCommandWithCheckIn(options: TerminalCommandRunO
   await persistTaskStatus(task);
 
   const child = spawn(options.command, [], {
-    cwd: options.cwd,
+    cwd: authorization.cwd,
     shell: options.shell ?? true,
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
-    env: options.env || process.env
+    env: authorization.env
   });
 
   task.process = child;
@@ -125,9 +177,12 @@ export async function runTerminalCommandWithCheckIn(options: TerminalCommandRunO
   let handoffTimer: NodeJS.Timeout | undefined;
 
   return new Promise((resolve) => {
+    const abortSignal = options.context?.abortSignal as AbortSignal | undefined;
+    let onAbort = () => {};
     const resolveOnce = (result: any) => {
       if (resultResolved) return;
       resultResolved = true;
+      abortSignal?.removeEventListener('abort', onAbort);
       if (handoffTimer) clearTimeout(handoffTimer);
       resolve(result);
     };
@@ -158,6 +213,15 @@ export async function runTerminalCommandWithCheckIn(options: TerminalCommandRunO
       resolveOnce(buildTerminalResult(task));
     };
 
+    onAbort = () => {
+      if (task.status !== 'running') return;
+      appendTaskOutput(task, 'stderr', '\nCancelled by user.\n');
+      killProcessTree(task.pid);
+      finishTask('killed', 130, 'SIGTERM').catch(() => {
+        resolveOnce(buildTerminalResult(task));
+      });
+    };
+
     const onData = (stream: 'stdout' | 'stderr', chunk: Buffer) => {
       appendTaskOutput(task, stream, chunk.toString());
       scheduleTaskFlush(task, options.traceThrottleMs || DEFAULT_TRACE_THROTTLE_MS);
@@ -180,6 +244,12 @@ export async function runTerminalCommandWithCheckIn(options: TerminalCommandRunO
         resolveOnce(buildTerminalResult(task));
       });
     });
+
+    if (abortSignal?.aborted || options.context?.isCancelled?.()) {
+      onAbort();
+    } else {
+      abortSignal?.addEventListener('abort', onAbort, { once: true });
+    }
 
     handoffTimer = setTimeout(() => {
       if (task.status !== 'running') return;
@@ -214,16 +284,20 @@ export async function runTerminalCommandWithCheckIn(options: TerminalCommandRunO
 }
 
 export async function getTerminalBackgroundTaskStatus(taskId: string): Promise<any | null> {
+  taskId = safeTaskId(taskId);
+  if (!taskId) return null;
   const inMemory = terminalTasks.get(taskId);
   if (inMemory) {
     return buildStatusResult(inMemory);
   }
 
-  const statusFile = path.join(TASKS_DIR, `${taskId}_status.json`);
+  const statusFile = resolveUnder(TASKS_DIR, `${taskId}_status.json`);
   if (!await fs.pathExists(statusFile)) return null;
 
   const status = await fs.readJson(statusFile);
-  const outputFile = status.outputFile || path.join(TASKS_DIR, `${taskId}_output.txt`);
+  const outputFile = status.outputFile && isPathInside(TASKS_DIR, path.resolve(status.outputFile))
+    ? status.outputFile
+    : resolveUnder(TASKS_DIR, `${taskId}_output.txt`);
   const output = await readOutputTail(outputFile);
   return {
     success: true,
@@ -262,7 +336,7 @@ export async function listTerminalBackgroundTasks(): Promise<any[]> {
     const taskId = file.replace('_status.json', '');
     if (tasks.has(taskId)) continue;
     try {
-      const status = await fs.readJson(path.join(TASKS_DIR, file));
+      const status = await fs.readJson(resolveUnder(TASKS_DIR, file));
       if (status?.terminalTask === false) continue;
       tasks.set(taskId, {
         id: taskId,
@@ -286,6 +360,8 @@ export async function listTerminalBackgroundTasks(): Promise<any[]> {
 }
 
 export async function killTerminalBackgroundTask(taskId: string): Promise<any | null> {
+  taskId = safeTaskId(taskId);
+  if (!taskId) return null;
   const task = terminalTasks.get(taskId);
   if (task) {
     if (task.status === 'running') {
@@ -300,7 +376,7 @@ export async function killTerminalBackgroundTask(taskId: string): Promise<any | 
     return buildStatusResult(task);
   }
 
-  const statusFile = path.join(TASKS_DIR, `${taskId}_status.json`);
+  const statusFile = resolveUnder(TASKS_DIR, `${taskId}_status.json`);
   if (!await fs.pathExists(statusFile)) return null;
   const status = await fs.readJson(statusFile);
   if (status?.pid && status?.status === 'running') {
@@ -308,7 +384,7 @@ export async function killTerminalBackgroundTask(taskId: string): Promise<any | 
     status.status = 'killed';
     status.exitCode = 143;
     status.completedAt = Date.now();
-    await fs.writeJson(statusFile, status, { spaces: 2 });
+    await writeJsonAtomic(statusFile, status);
   }
   return getTerminalBackgroundTaskStatus(taskId);
 }
@@ -495,7 +571,7 @@ function clearTaskTimers(task: TerminalBackgroundTask) {
 
 async function persistTaskStatus(task: TerminalBackgroundTask) {
   await fs.ensureDir(TASKS_DIR);
-  await fs.writeJson(task.statusFile, serializeTask(task), { spaces: 2 });
+  await writeJsonAtomic(task.statusFile, serializeTask(task));
 }
 
 function serializeTask(task: TerminalBackgroundTask): Record<string, any> {

@@ -1,19 +1,15 @@
 ---
-description: description: "Use when the user asks to create a CodeTour .tour file — persona-targeted, step-by-step walkthroughs that link to real files and line nu
----
-
----
 name: "code-tour"
-description: "Use when the user asks to create a CodeTour .tour file — persona-targeted, step-by-step walkthroughs that link to real files and line numbers. Trigger for: create a tour, onboarding tour, architecture tour, PR review tour, explain how X works, vibe check, RCA tour, contributor guide, or any structured code walkthrough request."
+description: "Use when the user asks to create a CodeTour .tour file - persona-targeted, step-by-step walkthroughs that link to real files and line numbers. Trigger for: create a tour, onboarding tour, architecture tour, PR review tour, explain how X works, vibe check, RCA tour, contributor guide, or any structured code walkthrough request."
 ---
 
 # Code Tour
 
-Create **CodeTour** files — persona-targeted, step-by-step walkthroughs of a codebase that link directly to files and line numbers. CodeTour files live in `.tours/` and work with the [VS Code CodeTour extension](https://github.com/microsoft/codetour).
+Create **CodeTour** files - persona-targeted, step-by-step walkthroughs of a codebase that link directly to files and line numbers. CodeTour files live in `.tours/` and work with the [VS Code CodeTour extension](https://github.com/microsoft/codetour).
 
 ## Overview
 
-A great tour is a **narrative** — a story told to a specific person about what matters, why it matters, and what to do next. Only create `.tour` JSON files. Never modify source code.
+A great tour is a **narrative** - a story told to a specific person about what matters, why it matters, and what to do next. Only create `.tour` JSON files. Never modify source code.
 
 ## When to Use This Skill
 
@@ -29,9 +25,9 @@ A great tour is a **narrative** — a story told to a specific person about what
 Before asking anything, explore the codebase:
 
 In parallel: list root directory, read README, check config files.
-Then: identify language(s), framework(s), project purpose. Map folder structure 1-2 levels deep. Find entry points — every path in the tour must be real.
+Then: identify language(s), framework(s), project purpose. Map folder structure 1-2 levels deep. Find entry points - every path in the tour must be real.
 
-If the repo has fewer than 5 source files, create a quick-depth tour regardless of persona — there's not enough to warrant a deep one.
+If the repo has fewer than 5 source files, create a quick-depth tour regardless of persona - there's not enough to warrant a deep one.
 
 ### 2. Infer the intent
 
@@ -47,7 +43,7 @@ One message should be enough. Infer persona, depth, and focus silently.
 | "security" / "auth review" | security-reviewer | standard |
 | (no qualifier) | new-joiner | standard |
 
-When intent is ambiguous, default to **new-joiner** persona at **standard** depth — it's the most generally useful.
+When intent is ambiguous, default to **new-joiner** persona at **standard** depth - it's the most generally useful.
 
 ### 3. Read actual files
 
@@ -59,11 +55,11 @@ Save to `.tours/<persona>-<focus>.tour`.
 
 ```json
 {
-  "$schema": "https://aka.ms/codetour-schema",
-  "title": "Descriptive Title — Persona / Goal",
-  "description": "Who this is for and what they'll understand after.",
-  "ref": "<current-branch-or-commit>",
-  "steps": []
+ "$schema": "https://aka.ms/codetour-schema",
+ "title": "Descriptive Title - Persona / Goal",
+ "description": "Who this is for and what they'll understand after.",
+ "ref": "<current-branch-or-commit>",
+ "steps": []
 }
 ```
 
@@ -86,12 +82,12 @@ Save to `.tours/<persona>-<focus>.tour`.
 | Standard | 9-13 | Most personas |
 | Deep | 14-18 | Architect, RCA |
 
-### Writing descriptions — SMIG formula
+### Writing descriptions - SMIG formula
 
-- **S — Situation**: What is the reader looking at?
-- **M — Mechanism**: How does this code work?
-- **I — Implication**: Why does this matter for this persona?
-- **G — Gotcha**: What would a smart person get wrong?
+- **S - Situation**: What is the reader looking at?
+- **M - Mechanism**: How does this code work?
+- **I - Implication**: Why does this matter for this persona?
+- **G - Gotcha**: What would a smart person get wrong?
 
 ### 5. Validate
 
@@ -119,26 +115,26 @@ Save to `.tours/<persona>-<focus>.tour`.
 
 ## Narrative Arc
 
-1. **Orientation** — `file` or `directory` step (never content-only first step — blank in VS Code)
-2. **High-level map** — 1-3 directory steps showing major modules
-3. **Core path** — file/line steps, the heart of the tour
-4. **Closing** — what the reader can now do, suggested follow-ups
+1. **Orientation** - `file` or `directory` step (never content-only first step - blank in VS Code)
+2. **High-level map** - 1-3 directory steps showing major modules
+3. **Core path** - file/line steps, the heart of the tour
+4. **Closing** - what the reader can now do, suggested follow-ups
 
 ## Anti-Patterns
 
 | Anti-pattern | Fix |
 |---|---|
-| **File listing** — "this file contains the models" | Tell a story. Each step depends on the previous. |
+| **File listing** - "this file contains the models" | Tell a story. Each step depends on the previous. |
 | **Generic descriptions** | Name the specific pattern unique to this codebase. |
 | **Line number guessing** | Never write a line you didn't verify by reading. |
 | **Too many steps** for quick depth | Actually cut steps. |
 | **Hallucinated files** | If it doesn't exist, skip the step. |
-| **Recap closing** — "we covered X, Y, Z" | Tell the reader what they can now *do*. |
+| **Recap closing** - "we covered X, Y, Z" | Tell the reader what they can now *do*. |
 | **Content-only first step** | Anchor step 1 to a file or directory. |
 
 ## Cross-References
 
-- Related: `engineering/codebase-onboarding` — for broader onboarding beyond tours
-- Related: `engineering/pr-review-expert` — for automated PR review workflows
+- Related: `engineering/codebase-onboarding` - for broader onboarding beyond tours
+- Related: `engineering/pr-review-expert` - for automated PR review workflows
 - CodeTour extension: [microsoft/codetour](https://github.com/microsoft/codetour)
 - Real-world tours: [coder/code-server](https://github.com/coder/code-server/blob/main/.tours/contributing.tour)

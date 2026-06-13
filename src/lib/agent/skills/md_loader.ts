@@ -2,6 +2,16 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { AgentSkill } from './types';
 
+interface ParsedFrontmatter {
+  name: string;
+  id?: string;
+  icon?: string;
+  category?: string;
+  description: string;
+  metadata: Record<string, unknown>;
+  body: string;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // EterX Skill Loader — Unified Markdown Skill System
 // ─────────────────────────────────────────────────────────────────────────────
@@ -72,16 +82,55 @@ import { AgentSkill } from './types';
  *
  * @returns Parsed { name, description, body } or null if frontmatter is missing/invalid
  */
-function parseFrontmatter(content: string): { name: string; description: string; body: string } | null {
-  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/);
+function parseYamlLikeFrontmatter(frontmatter: string): Record<string, unknown> {
+  const data: Record<string, unknown> = {};
+  const lines = frontmatter.split(/\r?\n/);
+
+  for (let i = 0; i < lines.length; i++) {
+    const match = lines[i].match(/^([A-Za-z][A-Za-z0-9_-]*):(?:\s*(.*))?$/);
+    if (!match) continue;
+
+    const key = match[1];
+    let value = (match[2] || '').trim();
+
+    const blockStyle = value.match(/^([>|])[-+]?$/)?.[1];
+    if (blockStyle) {
+      const block: string[] = [];
+      while (i + 1 < lines.length && /^(?:\s+|\t)/.test(lines[i + 1])) {
+        i++;
+        block.push(lines[i].trim());
+      }
+      data[key] = block.filter(Boolean).join(blockStyle === '>' ? ' ' : '\n');
+      continue;
+    }
+
+    if (!value && i + 1 < lines.length && /^(?:\s{2,}|\t)/.test(lines[i + 1])) {
+      const block: string[] = [];
+      while (i + 1 < lines.length && /^(?:\s{2,}|\t)/.test(lines[i + 1])) {
+        i++;
+        block.push(lines[i].trim());
+      }
+      data[key] = block;
+      continue;
+    }
+
+    data[key] = value.replace(/^["']|["']$/g, '');
+  }
+
+  return data;
+}
+
+function parseFrontmatter(content: string): ParsedFrontmatter | null {
+  const normalizedContent = content.replace(/^\uFEFF/, '');
+  const match = normalizedContent.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/);
   if (!match) return null;
 
   const frontmatter = match[1];
   const body = match[2];
+  const metadata = parseYamlLikeFrontmatter(frontmatter);
 
   // Extract name (required)
-  const nameMatch = frontmatter.match(/^name:\s*(.+)$/m);
-  const name = nameMatch ? nameMatch[1].trim().replace(/^["']|["']$/g, '') : '';
+  const name = typeof metadata.name === 'string' ? metadata.name.trim() : '';
 
   // Extract description — supports both inline and multi-line YAML block scalar (>)
   let description = '';
@@ -105,7 +154,17 @@ function parseFrontmatter(content: string): { name: string; description: string;
   }
 
   if (!name) return null;
-  return { name, description, body };
+  return {
+    name,
+    id: typeof metadata.id === 'string' ? metadata.id.trim() : undefined,
+    icon: typeof metadata.icon === 'string' ? metadata.icon.trim() : undefined,
+    category: typeof metadata.category === 'string' ? metadata.category.trim() : undefined,
+    description: typeof metadata.description === 'string' && metadata.description.trim()
+      ? metadata.description.trim()
+      : description,
+    metadata,
+    body
+  };
 }
 
 function loadSharedSkillContract(skillsDir: string): string {
@@ -171,7 +230,119 @@ const SKILL_ICONS: Record<string, string> = {
   'system-architecture': 'Network',        // Scalable architecture
   'performance-optimization': 'Zap',            // O(1) ops and memory
   'advanced-prompting': 'MessageSquare',  // Prompt eng and delegation
+  'a11y-audit': 'Accessibility',
+  'agent-designer': 'Bot',
+  'agenthub': 'GitBranch',
+  'api-design-reviewer': 'Route',
+  'batch-operations': 'Layers',
+  'browser-automation': 'MousePointerClick',
+  'code-review': 'Eye',
+  'code-tour': 'Map',
+  'code-verify': 'CheckCircle',
+  'codebase-onboarding': 'Compass',
+  'database-designer': 'Database',
+  'debug': 'Bug',
+  'design-md': 'FileCode',
+  'docker-development': 'Container',
+  'enhance-prompt': 'Sparkles',
+  'epic-design': 'Wand2',
+  'extreme-power': 'Rocket',
+  'focused-fix': 'Crosshair',
+  'get-unstuck': 'LifeBuoy',
+  'git-commit': 'GitCommit',
+  'iterative-loop': 'Repeat',
+  'karpathy-coder': 'Code2',
+  'performance-profiler': 'Gauge',
+  'rag-architect': 'Network',
+  'react:components': 'Component',
+  'remember': 'Brain',
+  'remotion': 'Video',
+  'runbook-generator': 'BookOpenCheck',
+  'security-pen-testing': 'ShieldAlert',
+  'self-eval': 'Scale',
+  'senior-architect': 'Landmark',
+  'senior-backend': 'ServerCog',
+  'senior-frontend': 'MonitorSmartphone',
+  'senior-qa': 'ClipboardCheck',
+  'shadcn-ui': 'Component',
+  'simplify-code': 'Scissors',
+  'skillify': 'Wand2',
+  'slack': 'MessageSquare',
+  'spec-driven-workflow': 'ListChecks',
+  'stitch-design': 'Paintbrush',
+  'stitch-loop': 'RefreshCw',
+  'taste-design': 'Palette',
+  'tech-debt-tracker': 'Archive',
+  'tech-stack-evaluator': 'Blocks',
 };
+
+function skillIdFromName(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+}
+
+function displayNameFromName(name: string): string {
+  return name
+    .split(/[^a-zA-Z0-9]+/)
+    .filter(Boolean)
+    .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
+}
+
+function localResourceWarnings(skillsDir: string, file: string, body: string): string[] {
+  const warnings = new Set<string>();
+  const fileDir = path.dirname(path.join(skillsDir, file));
+  const refs = body.match(/\b(?:scripts|references|workflows|assets|resources)\/[A-Za-z0-9_.#/-]+/g) || [];
+
+  for (const ref of refs) {
+    const cleanRef = ref.split('#')[0].replace(/[).,;:]+$/g, '');
+    if (!cleanRef || cleanRef.endsWith('/')) continue;
+    if (!fs.existsSync(path.join(fileDir, cleanRef))) warnings.add(cleanRef);
+  }
+
+  return Array.from(warnings).sort();
+}
+
+function operatingNoticeForSkill(id: string): string {
+  const notices: Record<string, string> = {
+    advanced_prompting: [
+      'Do not instruct another model, agent, script, or user to defeat security controls, anti-abuse systems, paywalls, CAPTCHAs, MFA, or access controls.',
+      'Do not reference unavailable delegation tools unless the current runtime actually exposes them.',
+      'Prompts generated by this skill must preserve the user request, system/developer policy, available-tool limits, and safe execution boundaries.'
+    ].join(' '),
+    browser_automation: [
+      'Browser automation must respect site terms, robots guidance, rate limits, account boundaries, and user privacy.',
+      'Do not implement stealth, identity masking, access-control avoidance, or other anti-abuse circumvention.',
+      'For logged-in, sensitive, purchase, booking, upload, deletion, sharing, or account-change flows, stop for user confirmation at the final action boundary.'
+    ].join(' '),
+    security_pen_testing: [
+      'Only perform testing on systems the user owns or has explicit authorization to assess.',
+      'Default to code review, dependency analysis, configuration review, and safe local reproduction.',
+      'Do not attack third-party services, scan public targets, attempt persistence, exfiltrate data, circumvent authentication, or provide weaponized exploitation steps.'
+    ].join(' '),
+    devops: [
+      'Infrastructure actions must be scoped to the user-requested environment.',
+      'Before destructive, production, credential, deployment, DNS, billing, or access-control changes, require explicit confirmation and provide rollback steps.'
+    ].join(' '),
+    docker_development: [
+      'Do not run or recommend privileged containers, host mounts, host networking, or broad capability grants unless the user explicitly asks and the risk is explained.',
+      'Prefer least-privilege images, pinned dependencies, non-root users, and reproducible builds.'
+    ].join(' '),
+    git_commit: [
+      'Never commit, amend, tag, reset, rebase, push, or change branches unless the user explicitly asks for that exact git action.',
+      'When git commands are unavailable or disallowed, provide the intended commit plan instead.'
+    ].join(' '),
+    security_auditor: [
+      'Treat secret findings as sensitive. Do not print full secrets, tokens, private keys, cookies, or credentials in chat or logs.',
+      'Redact values and recommend rotation when exposure is confirmed.'
+    ].join(' ')
+  };
+
+  const notice = notices[id];
+  return notice ? `\n\n## EterX Runtime Safety Boundary\n\n${notice}\n` : '';
+}
 
 /**
  * Loads ALL .md skill files from the skills directory and converts them
@@ -213,7 +384,7 @@ export function loadMarkdownSkills(): AgentSkill[] {
   try {
     const files = fs.readdirSync(skillsDir, { withFileTypes: true })
       .flatMap((entry) => {
-        if (entry.isFile() && entry.name.endsWith('.md')) {
+        if (entry.isFile() && entry.name.endsWith('.md') && !/^SKILL\s*\(\d+\)\.md$/i.test(entry.name)) {
           return [entry.name];
         }
         if (entry.isDirectory()) {
@@ -243,7 +414,11 @@ export function loadMarkdownSkills(): AgentSkill[] {
             const heading = content.match(/^#\s+(.+)$/m)?.[1]?.trim();
             parsed = {
               name: fallbackName,
+              id: undefined,
+              icon: undefined,
+              category: undefined,
               description: heading || `Guidelines for ${fallbackName}`,
+              metadata: {},
               body: content
             };
           }
@@ -255,10 +430,9 @@ export function loadMarkdownSkills(): AgentSkill[] {
         }
 
         // Convert skill names to stable snake_case ids for registry lookup.
-        const id = parsed.name
-          .toLowerCase()
-          .replace(/[^a-z0-9]+/g, '_')
-          .replace(/^_+|_+$/g, '');
+        const declaredId = parsed.id ? skillIdFromName(parsed.id) : '';
+        const nameId = skillIdFromName(parsed.name);
+        const id = declaredId && isCanonicalSkillFile(file, declaredId) ? declaredId : nameId;
         const existing = seenSkillIds.get(id);
         if (existing) {
           const incomingCanonical = isCanonicalSkillFile(file, id);
@@ -277,20 +451,24 @@ export function loadMarkdownSkills(): AgentSkill[] {
 
         // Build human-readable display name from kebab-case
         // e.g. "hover-effects" → "Hover Effects"
-        const displayName = parsed.name
-          .split(/[^a-zA-Z0-9]+/)
-          .filter(Boolean)
-          .map(word => word.charAt(0).toUpperCase() + word.slice(1))
-          .join(' ');
+        const displayName = displayNameFromName(parsed.name);
 
-        const icon = SKILL_ICONS[parsed.name] || 'BookOpen';
+        const icon = parsed.icon || SKILL_ICONS[parsed.name] || SKILL_ICONS[id.replace(/_/g, '-')] || 'BookOpen';
+        const operatingNotice = operatingNoticeForSkill(id);
+        const missingResources = localResourceWarnings(skillsDir, file, parsed.body);
+        const resourceNotice = missingResources.length
+          ? `\n\n## Local Resource Availability\n\nThis skill references local bundled resources that are not present in this repository: ${missingResources.map(ref => `\`${ref}\``).join(', ')}. Do not claim to have used these files or scripts unless they are added or otherwise available at runtime. Use built-in tools or inspect the workspace directly instead.\n`
+          : '';
 
         skills.push({
           id,
           name: displayName,
           icon,
           description: parsed.description,
-          systemPromptAddendum: `${sharedSkillContract}${parsed.body}`,
+          systemPromptAddendum: `${sharedSkillContract}${parsed.body}${operatingNotice}${resourceNotice}`,
+          category: parsed.category,
+          sourceFile: file,
+          metadata: parsed.metadata,
         });
 
       } catch (err) {

@@ -5,7 +5,7 @@ import dynamic from 'next/dynamic';
 import { Sidebar } from '../components/layout/sidebar';
 import { ChatInput } from '../components/layout/chat-input';
 import { ChatFeed } from '../components/chat/chat-feed';
-import { AlertTriangle, CheckCircle2, ChevronDown, Clock3, Code2, GraduationCap, MessageSquare, Pencil, PenTool, SendHorizontal, SquarePen, Search, X, ArrowLeft, Trash } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, ChevronDown, Clock3, Code2, GraduationCap, List, MessageSquare, Pencil, PenTool, SendHorizontal, SquarePen, Search, X, ArrowLeft, Trash, ListTodo } from 'lucide-react';
 import { Tooltip } from '../components/ui/tooltip';
 import { motion, AnimatePresence } from 'framer-motion';
 import { InteractiveGrid } from '../components/ui/interactive-grid';
@@ -110,6 +110,10 @@ type TaskTrackerStep = {
   status: 'pending' | 'in_progress' | 'done' | 'skipped';
   tools?: string[];
   done_when?: string;
+  step_type?: string;
+  expected_output?: string;
+  risk?: string;
+  artifacts?: string[];
 };
 
 type TaskTrackerState = {
@@ -683,6 +687,7 @@ function DeepWorkUI() {
   const [pendingSteering, setPendingSteering] = useState<{ id: string, text: string }[]>([]);
   // Per-chat thinking state: Set of chatIds that have running agents
   const [runningChats, setRunningChats] = useState<Set<string>>(new Set());
+  const [unreadChatIds, setUnreadChatIds] = useState<Set<string>>(new Set());
   const [traceLogs, setTraceLogs] = useState<any[]>([]);
   const [greeting, setGreeting] = useState("Initializing...");
 
@@ -726,11 +731,17 @@ function DeepWorkUI() {
   const networkRestoreTimerRef = useRef<number | null>(null);
   const networkBannerVisibleRef = useRef(false);
   const runningChatsRef = useRef<Set<string>>(new Set());
+  const activeViewRef = useRef<ActiveView>('chat');
   const isNetworkPaused = networkPhase === 'offline';
 
   const setActiveView = useCallback((view: ActiveView) => {
     if (view === 'agents' || view === 'channels' || view === 'projects') {
       setBuildingAgentId(null);
+    }
+    if (view !== 'chat') {
+      setHeaderMenuOpen(false);
+      setHeaderSearchOpen(false);
+      setHeaderSearchQuery("");
     }
     setActiveViewState(view);
   }, []);
@@ -824,8 +835,35 @@ function DeepWorkUI() {
   const panelResizeCleanupRef = useRef<(() => void) | null>(null);
   // Keep ref synced with state
   activeChatIdRef.current = activeChatId;
+  activeViewRef.current = activeView;
   runningChatsRef.current = runningChats;
   networkBannerVisibleRef.current = networkBannerVisible;
+
+  const isChatCurrentlyVisible = useCallback((chatId: string) => (
+    activeChatIdRef.current === chatId &&
+    activeViewRef.current === 'chat' &&
+    (typeof document === 'undefined' || document.visibilityState === 'visible')
+  ), []);
+
+  const markChatUnreadIfBackground = useCallback((chatId: string) => {
+    if (!chatId || isChatCurrentlyVisible(chatId)) return;
+    setUnreadChatIds(prev => {
+      if (prev.has(chatId)) return prev;
+      const next = new Set(prev);
+      next.add(chatId);
+      return next;
+    });
+  }, [isChatCurrentlyVisible]);
+
+  const clearUnreadChat = useCallback((chatId: string | null) => {
+    if (!chatId) return;
+    setUnreadChatIds(prev => {
+      if (!prev.has(chatId)) return prev;
+      const next = new Set(prev);
+      next.delete(chatId);
+      return next;
+    });
+  }, []);
 
   const revealNetworkBanner = useCallback(() => {
     if (!networkPausedRef.current) return;
@@ -1303,6 +1341,7 @@ function DeepWorkUI() {
   useEffect(() => {
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
+        if (activeViewRef.current === 'chat') clearUnreadChat(activeChatIdRef.current);
         // Page just became visible — immediately trigger a catch-up for all running chats
         // so we deliver all accumulated traces smoothly rather than waiting for next timeout
         for (const catchUpPoll of catchUpPollersRef.current.values()) {
@@ -1312,7 +1351,7 @@ function DeepWorkUI() {
     };
     document.addEventListener('visibilitychange', handleVisibilityChange);
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
-  }, []);
+  }, [clearUnreadChat]);
 
 
   useEffect(() => {
@@ -1336,6 +1375,10 @@ function DeepWorkUI() {
     }
     document.title = "EterX";
   }, [activeChatId, chats]);
+
+  useEffect(() => {
+    if (activeView === 'chat' && activeChatId) clearUnreadChat(activeChatId);
+  }, [activeChatId, activeView, clearUnreadChat]);
 
   const updateActiveChatLogs = (updater: any[] | ((prev: any[]) => any[])): any[] => {
     let finalLogs: any[] = [];
@@ -1489,6 +1532,7 @@ function DeepWorkUI() {
       activeChatIdRef.current = id;
       setActiveChatId(id);
       setTraceLogs(chat.traceLogs || []);
+      clearUnreadChat(id);
       if (window.innerWidth < 768) setSidebarOpen(false);
 
       // Clear buildingAgentId if we're not loading a builder chat
@@ -1622,16 +1666,21 @@ function DeepWorkUI() {
       return next;
     });
 
+    setUnreadChatIds(prev => {
+      const next = new Set(prev);
+      idsToDelete.forEach(chatId => next.delete(chatId));
+      return next.size === prev.size ? prev : next;
+    });
+
     setChats(prev => {
-      const updatedChats = prev.filter(c => !deleteSet.has(c.id));
-      try { localStorage.setItem('eterx_chats', JSON.stringify(stripChatsForStorage(updatedChats))); } catch { }
-      return updatedChats;
+      const updated = prev.filter(c => !deleteSet.has(c.id));
+      localStorage.setItem('eterx_chats', JSON.stringify(stripChatsForStorage(updated)));
+      return updated;
     });
 
     if (deletingActiveChat) {
       setActiveChatId(null);
       setTraceLogs([]);
-      setInputValue('');
       setBuildingAgentId(null);
     }
   };
@@ -2015,6 +2064,7 @@ function DeepWorkUI() {
       stopPolling(chatId);
       clearAgentConnectionStatus(chatId);
       removeRunningChat(chatId);
+      markChatUnreadIfBackground(chatId);
       setChatLogsById(chatId, logs => [
         ...stripAgentConnectionLogs(logs),
         systemThoughtLog(`\n\n*${ message }*`)
@@ -2347,6 +2397,7 @@ function DeepWorkUI() {
           clearAgentConnectionStatus(chatId);
           stopPolling(chatId);
           removeRunningChat(chatId);
+          markChatUnreadIfBackground(chatId);
 
           // TRIGGER DESKTOP NOTIFICATION (Outside setState to prevent React.StrictMode double-firing!)
           if (shouldNotify && data.status === 'completed' && 'Notification' in window) {
@@ -2604,6 +2655,7 @@ function DeepWorkUI() {
             startPolling(chatId, data.maxIndex ?? (data.totalTraces - 1));
           } else if (isTerminalAgentStatus(data.status) || (data.status === 'idle' && runningChatsRef.current.has(chatId))) {
             removeRunningChat(chatId);
+            if (isTerminalAgentStatus(data.status)) markChatUnreadIfBackground(chatId);
           }
         } catch {
           // Keep the UI quiet here; the normal poller/backoff path will recover.
@@ -3030,6 +3082,8 @@ function DeepWorkUI() {
       }
     }
 
+    clearUnreadChat(chatIdToUse);
+
     if (window.innerWidth < 768) setSidebarOpen(false);
 
     // Mark this chat as running
@@ -3141,6 +3195,7 @@ function DeepWorkUI() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             agentId: selectedAgent,
+            chatId: chatIdToUse,
             messages: runnerMessages,
             apiKeys: readRuntimeApiKeys(),
             modelOverrides: readRuntimeModelOverrides(),
@@ -3173,6 +3228,18 @@ function DeepWorkUI() {
             pendingCustomText += String(event.text || '');
           } else if (event.type === 'status') {
             appendCustomAgentStatus(String(event.text || ''));
+          } else if (event.type === 'ask_user') {
+            const at = Number(event.timestamp || Date.now());
+            flushCustomWorkNote();
+            appendCustomAgentTrace({
+              id: `custom-ask-${String(event.responseKey || at)}`,
+              ...event,
+              type: 'ask_user',
+              text: String(event.question || 'Input needed'),
+              timestamp: at,
+              startTime: at,
+              endTime: at,
+            });
           } else if (event.type === 'tool_call') {
             const at = Date.now();
             flushCustomWorkNote();
@@ -3244,8 +3311,11 @@ function DeepWorkUI() {
           ], { touchUpdatedAt: true });
         }
       } finally {
-        abortControllerRef.current = null;
+        if (abortControllerRef.current === controller) {
+          abortControllerRef.current = null;
+        }
         removeRunningChat(chatIdToUse!);
+        markChatUnreadIfBackground(chatIdToUse!);
       }
       return;
     }
@@ -3292,15 +3362,16 @@ function DeepWorkUI() {
         signal: controller.signal
       });
 
-      if (!response.ok) {
-        let message = `Agent start failed (${ response.status }).`;
-        try {
-          const errorPayload = await response.json();
-          message = errorPayload.error || errorPayload.details || message;
+        if (!response.ok) {
+          let message = `Agent start failed (${ response.status }).`;
+          try {
+            const errorPayload = await response.json();
+            message = errorPayload.error || errorPayload.details || message;
         } catch { }
 
         stopPolling(chatIdToUse!);
         removeRunningChat(chatIdToUse!);
+        markChatUnreadIfBackground(chatIdToUse!);
         setChatLogsById(chatIdToUse!, prev => [
           ...stripAgentConnectionLogs(prev),
           systemThoughtLog(`\n\n*${ message }*`)
@@ -3348,6 +3419,7 @@ function DeepWorkUI() {
         if (!serverAccepted) {
           stopPolling(chatIdToUse!);
           removeRunningChat(chatIdToUse!);
+          markChatUnreadIfBackground(chatIdToUse!);
           setChatLogsById(chatIdToUse!, prev => [
             ...stripAgentConnectionLogs(prev),
             systemThoughtLog(`\n\n*Agent connection failed: ${ String(error.message || error).slice(0, 180) }*`)
@@ -3359,7 +3431,9 @@ function DeepWorkUI() {
         console.warn('[handleSend] SSE stream disconnected — polling continues:', error.message);
       }
     } finally {
-      abortControllerRef.current = null;
+      if (abortControllerRef.current === controller) {
+        abortControllerRef.current = null;
+      }
     }
   };
 
@@ -3590,7 +3664,7 @@ function DeepWorkUI() {
       return;
     }
     setSidebarOpen(true);
-  }, []);
+  }, [clearUnreadChat]);
 
   return (
     <div data-active-view={activeView} data-sidebar-open={sidebarOpen ? 'true' : 'false'} className="eterx-app-shell flex h-screen font-sans overflow-hidden selection:bg-[#E2765A]/30 transition-colors relative">
@@ -3624,6 +3698,7 @@ function DeepWorkUI() {
           activeView={activeView}
           setActiveView={setActiveView}
           runningChats={runningChats}
+          unreadChats={unreadChatIds}
           onSettingsClick={openSettingsWindow}
           isThinking={isThinking}
         />
@@ -3663,7 +3738,7 @@ function DeepWorkUI() {
         {/* Absolute Header (Draggable Region for Electron) */}
         <>
           <div className={`eterx-main-panel ${!sidebarOpen ? 'eterx-main-panel-sidebar-closed' : ''} flex-1 flex flex-col relative overflow-hidden`}>
-          <div className="eterx-main-header relative z-50 flex h-[var(--eterx-main-header-height)] shrink-0 items-center justify-between gap-4 border-b border-[var(--border)] pl-8 pr-6 [-webkit-app-region:drag]">
+          <div className="eterx-main-header relative z-50 flex h-[var(--eterx-main-header-height)] shrink-0 items-center justify-between gap-4 border-b border-[var(--border)] pl-3 pr-6 [-webkit-app-region:drag]">
             <div className="flex min-w-0 items-center gap-2 pointer-events-auto [-webkit-app-region:no-drag]">
               <div id="agent-builder-back-portal" className="flex items-center">
                 {buildingAgentId && (
@@ -3722,7 +3797,7 @@ function DeepWorkUI() {
                             animate={{ opacity: 1, y: 0, scale: 1 }}
                             exit={{ opacity: 0, y: -5, scale: 0.98 }}
                             transition={{ duration: 0.15, ease: "easeOut" }}
-                            className="absolute top-10 left-0 w-[300px] z-50 bg-[#1A1A1A]/95 backdrop-blur-xl border border-white/10 rounded-xl shadow-[0_8px_30px_rgba(0,0,0,0.4)] p-2 flex flex-col max-h-[400px]"
+                            className="absolute left-0 top-[calc(100%+8px)] w-[300px] z-50 bg-[#1A1A1A]/95 backdrop-blur-xl border border-white/10 rounded-xl shadow-[0_8px_30px_rgba(0,0,0,0.4)] p-2 flex flex-col max-h-[400px]"
                           >
                             <div className="flex items-center justify-between px-2 mb-2 mt-1 h-6">
                               {!headerSearchOpen ? (
@@ -3789,7 +3864,21 @@ function DeepWorkUI() {
                 );
               })()}
             </div>
-            <div className="flex shrink-0 items-center gap-2 pointer-events-auto [-webkit-app-region:no-drag]" />
+            <div className="flex shrink-0 items-center gap-1.5 pointer-events-auto [-webkit-app-region:no-drag]">
+              {canUseMonitor && (
+                <button
+                  type="button"
+                  aria-label="Toggle task monitor"
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                  }}
+                  className={`eterx-header-icon-button flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-transparent bg-transparent text-[var(--sidebar-muted-text)] transition-colors duration-150 hover:bg-[var(--sidebar-toggle-hover-bg)] hover:text-[var(--sidebar-hover-text)] active:bg-[var(--sidebar-toggle-active-bg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--sidebar-focus-ring)]`}
+                >
+                  <ListTodo className="h-[17px] w-[17px]" strokeWidth={2.15} />
+                </button>
+              )}
+            </div>
           </div>
 
 
@@ -3921,6 +4010,10 @@ function DeepWorkUI() {
                     onOpenAgents={() => {
                       setBuildingAgentId(null);
                       setActiveView('agents');
+                    }}
+                    onOpenProjects={() => {
+                      setBuildingAgentId(null);
+                      setActiveView('projects');
                     }}
                   />
 

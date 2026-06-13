@@ -5,6 +5,7 @@ import { promisify } from 'util';
 import path from 'path';
 import fs from 'fs-extra';
 import { resolveReadableWorkspacePathForContext, resolveWorkspaceDirectoryForContext } from '../../workspace/path_resolver';
+import { authorizeToolCommand } from '../security/command_broker';
 
 const execAsync = promisify(exec);
 
@@ -144,10 +145,26 @@ Use this to self-verify before reporting completion.`,
         // ─── COMMAND OUTPUT CHECK ─────────────────────────────────
         case 'command_output': {
           try {
+            const authorization = await authorizeToolCommand({
+              command: input.target,
+              cwd: commandCwd,
+              context,
+              timeoutMs: 30000,
+              network: context?.networkPolicy === 'deny' ? 'deny' : 'allow',
+            });
+            if (!authorization.allowed) {
+              return {
+                passed: false,
+                mode: 'command_output',
+                details: 'Command blocked by command broker',
+                evidence: authorization.reason || 'Command not authorized',
+              };
+            }
             const { stdout, stderr } = await execAsync(input.target, {
               timeout: 30000,
               maxBuffer: 5 * 1024 * 1024,
-              cwd: commandCwd
+              cwd: authorization.cwd,
+              env: authorization.env,
             });
             const output = stdout + stderr;
             const preview = output.substring(0, 1000);
@@ -209,7 +226,26 @@ Use this to self-verify before reporting completion.`,
           }
 
           try {
-            const { stdout, stderr } = await execAsync(command, { timeout: 30000, cwd: path.dirname(fp) });
+            const authorization = await authorizeToolCommand({
+              command,
+              cwd: path.dirname(fp),
+              context,
+              timeoutMs: 30000,
+              network: context?.networkPolicy === 'deny' ? 'deny' : 'allow',
+            });
+            if (!authorization.allowed) {
+              return {
+                passed: false,
+                mode: 'code_syntax',
+                details: 'Syntax check blocked by command broker',
+                evidence: authorization.reason || 'Command not authorized',
+              };
+            }
+            const { stdout, stderr } = await execAsync(command, {
+              timeout: 30000,
+              cwd: authorization.cwd,
+              env: authorization.env,
+            });
             const output = (stdout + stderr).trim();
             const hasErrors = output.toLowerCase().includes('error');
             return {

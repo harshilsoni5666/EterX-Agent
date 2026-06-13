@@ -308,11 +308,14 @@ export const FilePanelModal = ({ filename, filepath, content: initialContent, di
   const modalPreviewUrl = isHtml ? buildPreviewUrl(filepath) : 'http://localhost:3000';
   const [urlInput, setUrlInput] = useState<string>(isHtml ? getPreviewAddress({ filename, filepath }, modalPreviewUrl) : modalPreviewUrl);
   const [previewUrl, setPreviewUrl] = useState<string>(modalPreviewUrl);
+  const previewIframeRef = useRef<HTMLIFrameElement>(null);
 
   useEffect(() => {
     const handleMessage = (e: MessageEvent) => {
+      if (e.source !== previewIframeRef.current?.contentWindow) return;
       if (e.data?.type === 'preview-console') {
-        setConsoleLogs(prev => [...prev, { level: e.data.level, message: e.data.args.join(' ') }]);
+        const args = Array.isArray(e.data.args) ? e.data.args : [];
+        setConsoleLogs(prev => [...prev, { level: String(e.data.level || 'info'), message: args.map(String).join(' ') }]);
         setShowConsole(true);
       }
     };
@@ -486,7 +489,7 @@ export const FilePanelModal = ({ filename, filepath, content: initialContent, di
           <button onClick={() => setTab('code')} className="px-2 py-0.5 rounded-[3px] text-[10px] font-medium transition-colors text-[#555350] hover:text-[#A3A19E]">Code</button>
         </div>
         <button onClick={() => {
-           const iframe = document.getElementById('preview-iframe') as HTMLIFrameElement;
+           const iframe = previewIframeRef.current;
            if (iframe && iframe.contentWindow) {
              iframe.contentWindow.postMessage({ type: 'preview-reload' }, '*');
            }
@@ -515,7 +518,7 @@ export const FilePanelModal = ({ filename, filepath, content: initialContent, di
           {!activeTabMode && <PreviewHeader />}
           {previewUrl ? (
             <div className="flex-1 flex flex-col relative overflow-hidden">
-               <iframe id="preview-iframe" key={previewUrl} src={previewUrl} className="flex-1 border-0 bg-white w-full h-full" sandbox="allow-scripts allow-same-origin allow-modals allow-forms" title={`Preview: ${filename}`} />
+               <iframe ref={previewIframeRef} id="preview-iframe" key={previewUrl} src={previewUrl} className="flex-1 border-0 bg-white w-full h-full" sandbox="allow-scripts allow-same-origin allow-modals allow-forms" title={`Preview: ${filename}`} />
                
                {/* Console UI */}
                <AnimatePresence>
@@ -818,9 +821,11 @@ export const IdePanel = () => {
   // Capture real console logs from preview iframe via postMessage (silent — never auto-opens console)
   useEffect(() => {
     const handleMessage = (e: MessageEvent) => {
+      if (e.source !== iframeRef.current?.contentWindow) return;
       if (e.data?.type === 'preview-console') {
         const level = e.data.level as 'info' | 'warn' | 'error';
-        const text = (e.data.args as string[]).join(' ');
+        const args = Array.isArray(e.data.args) ? e.data.args : [];
+        const text = args.map(String).join(' ');
         setConsoleLogs(prev => [...prev.slice(-99), { type: level, text }]);
         // Never auto-open — user controls the console
       }
@@ -1340,7 +1345,7 @@ export const IdePanel = () => {
         </button>
       )}
       {!isFullscreen && (
-        <button onClick={() => setTerminalOpen(t => !t)} data-active={terminalOpen ? 'true' : undefined} className={`eterx-ide-dock-button relative flex h-7 w-7 items-center justify-center rounded-full transition-all ${terminalOpen ? 'bg-white/[0.13] text-white shadow-inner' : 'text-[#74716D] hover:bg-white/[0.07] hover:text-white'}`} title="Toggle Terminal">
+        <button onClick={() => setTerminalOpen(t => !t)} data-active={terminalOpen ? 'true' : undefined} className={`eterx-ide-dock-button relative flex h-7 w-7 items-center justify-center rounded-full transition-all ${terminalOpen ? 'bg-white/[0.13] text-white shadow-inner' : 'text-[#74716D] hover:bg-white/[0.07] hover:text-white'}`} title="Toggle Console">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>
           {consoleLogs.length > 0 && <span className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-[#FF5F57]" />}
         </button>

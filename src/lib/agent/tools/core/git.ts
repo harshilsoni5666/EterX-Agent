@@ -3,6 +3,7 @@ import { ToolDefinition } from '../../schemas';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import path from 'path';
+import { enforceToolCapability } from '../security/tool_policy';
 
 const execAsync = promisify(exec);
 
@@ -23,7 +24,12 @@ export const gitTool: ToolDefinition = {
     stderr: z.string(),
     exitCode: z.number()
   }),
-  execute: async (input: { operation: string, args?: string, repoPath?: string }) => {
+  execute: async (input: { operation: string, args?: string, repoPath?: string }, context?: any) => {
+    const decision = enforceToolCapability('git_operations', input, context);
+    if (!decision.allowed) {
+      return { stdout: '', stderr: decision.reason || 'Git operations are not allowed', exitCode: 126 };
+    }
+
     const workspaceRoot = path.resolve(process.cwd(), '.workspaces', 'temp');
     const repoDir = input.repoPath ? path.resolve(workspaceRoot, input.repoPath) : workspaceRoot;
 

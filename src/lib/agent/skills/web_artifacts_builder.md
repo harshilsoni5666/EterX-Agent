@@ -1,80 +1,57 @@
 ---
 name: web-artifacts-builder
-description: Suite of tools for creating elaborate, multi-component claude.ai HTML artifacts using modern frontend web technologies (React, Tailwind CSS, shadcn/ui). Use for complex artifacts requiring state management, routing, or shadcn/ui components - not for simple single-file HTML/JSX artifacts.
-license: Complete terms in LICENSE.txt
+description: Use for creating self-contained HTML artifacts or small React/Vite artifact projects with polished UI, local assets, and bundle-ready output.
 ---
 
 # Web Artifacts Builder
 
-To build powerful frontend claude.ai artifacts, follow these steps:
-1. Initialize the frontend repo using `scripts/init-artifact.sh`
-2. Develop your artifact by editing the generated code
-3. Bundle all code into a single HTML file using `scripts/bundle-artifact.sh`
-4. Display artifact to user
-5. (Optional) Test the artifact
+Build the actual usable artifact first. Do not create a landing page, placeholder shell, or explanatory wrapper unless the user specifically asks for one.
 
-**Stack**: React 18 + TypeScript + Vite + Parcel (bundling) + Tailwind CSS + shadcn/ui
+## Recommended Stack
 
-## Design & Style Guidelines
+- Single-file artifacts: plain HTML, CSS, and JavaScript.
+- Rich interactive artifacts: React + TypeScript + Vite, then bundle or export to static HTML when needed.
+- Styling: existing project tokens first; otherwise concise CSS or Tailwind if already installed.
+- Components: use shadcn/ui only when the project already has it or the user asks for that ecosystem.
 
-VERY IMPORTANT: To avoid what is often referred to as "AI slop", avoid using excessive centered layouts, purple gradients, uniform rounded corners, and Inter font.
+## Asset Rules
 
-## Image Asset Rules
+If the artifact needs real imagery, do not hardcode random remote URLs or placeholder services. Use validated local assets, user-provided files, or a proper image search/download workflow, then reference the local path.
 
-If the artifact needs real imagery, do not hardcode random remote image URLs. Use `image_asset_search` to find and download validated assets, then reference the returned local/browser path in the artifact. Reject placeholder services, unrelated stock imagery, and image URLs that were not downloaded or validated.
+## Project Setup
 
-For standalone HTML artifacts, save images beside the artifact in an `assets/images` folder and pass `publicPath: "assets/images"` to `image_asset_search`.
+Use the repo's existing app when one exists. For a standalone artifact:
 
-## Quick Start
-
-### Step 1: Initialize Project
-
-Run the initialization script to create a new React project:
 ```bash
-bash scripts/init-artifact.sh <project-name>
-cd <project-name>
+npm create vite@latest artifact-name -- --template react-ts
+cd artifact-name
+npm install
+npm run dev
 ```
 
-This creates a fully configured project with:
-- ✅ React + TypeScript (via Vite)
-- ✅ Tailwind CSS 3.4.1 with shadcn/ui theming system
-- ✅ Path aliases (`@/`) configured
-- ✅ 40+ shadcn/ui components pre-installed
-- ✅ All Radix UI dependencies included
-- ✅ Parcel configured for bundling (via .parcelrc)
-- ✅ Node 18+ compatibility (auto-detects and pins Vite version)
+For a plain single-file artifact, create an `.html` file that can open directly in the browser.
 
-### Step 2: Develop Your Artifact
+## Build Workflow
 
-To build the artifact, edit the generated files. See **Common Development Tasks** below for guidance.
+1. Define the primary user workflow and make it available on the first screen.
+2. Implement complete controls, states, loading/error behavior, and empty states.
+3. Use stable responsive dimensions for boards, panels, grids, and controls.
+4. Keep text inside containers at mobile and desktop sizes.
+5. Use real icons from the existing icon system when available.
+6. Run the project checks and build command if a package exists.
 
-### Step 3: Bundle to Single HTML File
+## Bundle Options
 
-To bundle the React app into a single HTML artifact:
+Use the repository's build command when available:
+
 ```bash
-bash scripts/bundle-artifact.sh
+npm run build
 ```
 
-This creates `bundle.html` - a self-contained artifact with all JavaScript, CSS, and dependencies inlined. This file can be directly shared in Claude conversations as an artifact.
+For a self-contained HTML artifact, inline only after the app works. Use a documented project bundler or a small static build pipeline; do not claim a bundle was created unless the file exists and opens.
 
-**Requirements**: Your project must have an `index.html` in the root directory.
+## Verification
 
-**What the script does**:
-- Installs bundling dependencies (parcel, @parcel/config-default, parcel-resolver-tspaths, html-inline)
-- Creates `.parcelrc` config with path alias support
-- Builds with Parcel (no source maps)
-- Inlines all assets into single HTML using html-inline
-
-### Step 4: Share Artifact with User
-
-Finally, share the bundled HTML file in conversation with the user so they can view it as an artifact.
-
-### Step 5: Testing/Visualizing the Artifact (Optional)
-
-Note: This is a completely optional step. Only perform if necessary or requested.
-
-To test/visualize the artifact, use available tools (including other Skills or built-in tools like Playwright or Puppeteer). In general, avoid testing the artifact upfront as it adds latency between the request and when the finished artifact can be seen. Test later, after presenting the artifact, if requested or if issues arise.
-
-## Reference
-
-- **shadcn/ui components**: https://ui.shadcn.com/docs/components
+- Open the artifact locally when browser verification is allowed.
+- If browser verification is not allowed, run build/lint/test commands and inspect generated files.
+- Confirm no broken image paths, random placeholder URLs, clipped text, or console-blocking script errors remain.

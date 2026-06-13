@@ -11,9 +11,12 @@ import path from 'path';
 import {
   getMainAgentModelConfig,
   normalizeMainAgentThinkingLevel,
+  resolveModelName,
   type MainAgentMode,
   type MainAgentThinkingLevel,
 } from './model-routing';
+import type { ScopedRuntimeSettings } from './runtime-api-keys';
+import { DEFAULT_MAIN_AGENT_ALLOWED_CAPABILITIES } from './tools/security/tool_policy';
 
 /**
  * The Enhanced Orchestrator v2
@@ -58,6 +61,8 @@ type RuntimeProjectContext = ProjectContext & {
   selectedModelMode?: MainAgentMode;
   selectedModelName?: string;
   selectedThinkingLevel?: MainAgentThinkingLevel;
+  runtimeSettings?: ScopedRuntimeSettings | null;
+  agentSessionId?: string;
   source?: string;
   telegram?: unknown;
   userId?: string;
@@ -65,6 +70,18 @@ type RuntimeProjectContext = ProjectContext & {
   workspaceRoot?: string;
   allowedPaths?: string[];
   paths?: string[];
+  allowNetwork?: boolean;
+  networkPolicy?: 'allow' | 'deny';
+  allowAgentSpawning?: boolean;
+  allowDynamicCode?: boolean;
+  allowBrowserControl?: boolean;
+  allowHostControl?: boolean;
+  allowAutomation?: boolean;
+  allowExternalCommunication?: boolean;
+  allowSecretManagement?: boolean;
+  allowVcs?: boolean;
+  allowedCapabilities?: string[];
+  toolPolicy?: { allowedCapabilities?: string[] };
 };
 
 export class AgentOrchestrator {
@@ -212,14 +229,11 @@ export class AgentOrchestrator {
 
     // 3. Recent task results
     if (storeResult.status === 'fulfilled' && storeResult.value) {
-      const allMemories: any[] = [];
-      for (const projectMemories of Object.values(storeResult.value)) {
-        if (Array.isArray(projectMemories)) {
-          allMemories.push(...projectMemories);
-        }
-      }
-      allMemories.sort((a: any, b: any) => (b.timestamp || 0) - (a.timestamp || 0));
-      const recent = allMemories.slice(0, 5);
+      const projectMemories = Array.isArray(storeResult.value[projectId])
+        ? [...storeResult.value[projectId]]
+        : [];
+      projectMemories.sort((a: any, b: any) => (b.timestamp || 0) - (a.timestamp || 0));
+      const recent = projectMemories.slice(0, 5);
       if (recent.length > 0) {
         context.recentMemories = recent;
       }
@@ -264,7 +278,8 @@ export class AgentOrchestrator {
     mediaFiles: any[] = [],
     imageBackupParts: any[] = [],
     userName?: string,
-    leasedApiKey?: string
+    leasedApiKey?: string,
+    runtimeSettings?: ScopedRuntimeSettings | null
   ): Promise<AgentResponse> {
     const shouldHydrateMemory = !pinnedContext?.disableMemoryHydration;
     const shouldPersistLongTermMemory = !pinnedContext?.disableLongTermMemory;
@@ -320,6 +335,10 @@ export class AgentOrchestrator {
         };
     if (userName) context.userName = userName;
     context.userId = userId;
+    context.runtimeSettings = runtimeSettings || null;
+    if (pinnedContext?.agentSessionId) {
+      context.agentSessionId = String(pinnedContext.agentSessionId);
+    }
     if (Array.isArray(pinnedContext?.paths) && pinnedContext.paths.length > 0) {
       const pinnedPaths = pinnedContext.paths.filter((p: unknown): p is string => typeof p === 'string' && p.trim().length > 0);
       context.paths = pinnedPaths;
@@ -353,6 +372,37 @@ export class AgentOrchestrator {
       context.source = pinnedContext.source;
       context.telegram = pinnedContext.telegram;
     }
+
+    const networkDenied = pinnedContext?.networkPolicy === 'deny' && pinnedContext?.allowNetwork !== true;
+    context.networkPolicy = networkDenied ? 'deny' : 'allow';
+    context.allowNetwork = !networkDenied;
+    context.allowAgentSpawning = !context.disableSubAgents && pinnedContext?.allowAgentSpawning !== false;
+    context.allowDynamicCode = pinnedContext?.allowDynamicCode !== false;
+    context.allowBrowserControl = pinnedContext?.allowBrowserControl !== false;
+    context.allowHostControl = pinnedContext?.allowHostControl === true;
+    context.allowAutomation = pinnedContext?.allowAutomation === true;
+    context.allowExternalCommunication = pinnedContext?.allowExternalCommunication === true;
+    context.allowSecretManagement = pinnedContext?.allowSecretManagement === true;
+    context.allowVcs = pinnedContext?.allowVcs === true;
+
+    const inheritedCapabilities = Array.isArray(context.allowedCapabilities)
+      ? context.allowedCapabilities.map(String)
+      : [];
+    const pinnedAllowedCapabilities = Array.isArray(pinnedContext?.allowedCapabilities)
+      ? pinnedContext.allowedCapabilities.map(String)
+      : [];
+    context.allowedCapabilities = Array.from(new Set([
+      ...DEFAULT_MAIN_AGENT_ALLOWED_CAPABILITIES,
+      ...inheritedCapabilities,
+      ...pinnedAllowedCapabilities,
+    ])).filter(capability => {
+      if (networkDenied && capability.startsWith('network.')) return false;
+      if (context.disableSubAgents && capability === 'agent.spawn') return false;
+      if (context.allowDynamicCode === false && capability === 'code.dynamic') return false;
+      if (context.allowBrowserControl === false && capability === 'browser.control') return false;
+      return true;
+    });
+
     if (shouldHydrateMemory) {
       await this.hydrateContext(context, projectId);
     }
@@ -360,10 +410,10 @@ export class AgentOrchestrator {
     const startTime = Date.now();
     const complexity = pinnedContext?.forceFastMode ? 'standard' : this.classifyComplexity(userRequest);
     const effectiveMode = pinnedContext?.forceFastMode ? 'fast' : this.resolveOptimalMode(mode, complexity);
-    const modelConfig = getMainAgentModelConfig(effectiveMode);
+    const modelConfig = getMainAgentModelConfig(effectiveMode, runtimeSettings);
     const selectedThinkingLevel = normalizeMainAgentThinkingLevel(pinnedContext?.thinkingLevel);
     context.selectedModelMode = effectiveMode;
-    context.selectedModelName = modelConfig.modelName;
+    context.selectedModelName = resolveModelName(effectiveMode, runtimeSettings);
     context.selectedThinkingLevel = selectedThinkingLevel;
     
     // Auto-route to optimal model based on complexity
@@ -394,8 +444,8 @@ export class AgentOrchestrator {
       // PHASE 1: PRIMARY EXECUTION (using isolated or global client)
       // Smart model routing applies the effective mode
       // ═══════════════════════════════════════════════════════
-      if (effectiveMode === 'mistral') {
-        const routedClient = createIsolatedClient(projectId, effectiveMode);
+      if (modelConfig.provider !== 'gemini') {
+        const routedClient = createIsolatedClient(projectId, effectiveMode, runtimeSettings);
         finalAnswer = (await routedClient.executeMessageLoop(
           context,
           effectiveRequest,
@@ -405,9 +455,9 @@ export class AgentOrchestrator {
           imageBackupParts
         )).text;
         effectiveApiKey = '';
-      } else if (leasedApiKey) {
+      } else if (leasedApiKey || runtimeSettings) {
         // Isolated client — recreate with effective mode
-        const routedClient = createIsolatedClient(leasedApiKey, effectiveMode);
+        const routedClient = createIsolatedClient(leasedApiKey || '', effectiveMode, runtimeSettings);
         finalAnswer = (await routedClient.executeMessageLoop(
           context,
           effectiveRequest,
@@ -587,29 +637,31 @@ export class AgentOrchestrator {
     if (this.isProcessing) return;
     this.isProcessing = true;
 
-    while (this.taskQueue.length > 0) {
-      const task = this.taskQueue.shift()!;
-      this.currentTask = task;
-      task.status = 'running';
+    try {
+      while (this.taskQueue.length > 0) {
+        const task = this.taskQueue.shift()!;
+        this.currentTask = task;
+        task.status = 'running';
 
-      try {
-        const result = await this.executePipeline(
-          task.userId,
-          task.projectId,
-          task.request,
-          [],
-          task.onTrace
-        );
-        task.status = 'completed';
-        task.resolve?.(result);
-      } catch (error: any) {
-        task.status = 'failed';
-        task.reject?.(error);
+        try {
+          const result = await this.executePipeline(
+            task.userId,
+            task.projectId,
+            task.request,
+            [],
+            task.onTrace
+          );
+          task.status = 'completed';
+          task.resolve?.(result);
+        } catch (error: any) {
+          task.status = 'failed';
+          task.reject?.(error);
+        }
       }
+    } finally {
+      this.currentTask = null;
+      this.isProcessing = false;
     }
-
-    this.currentTask = null;
-    this.isProcessing = false;
   }
 
   /**

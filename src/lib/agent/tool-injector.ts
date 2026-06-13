@@ -9,9 +9,12 @@
  * 
  * Security: Only tools that pass shouldExposeToolToRuntime() are allowed.
  */
-import { globalToolRegistry } from './tools/registry';
+import { globalToolRegistry, normalizeRegistryToolName } from './tools/registry';
 import type { AgentBuilderDirectTool, AgentBuilderCustomTool, AgentBuilderProfile } from './builder-agent';
 import { isBuilderOnlyToolName } from './builder-agent';
+import { normalizeRegistryToolArgs, validateRegistryToolArgs } from './tools/tool-args';
+import { enforceToolCapability } from './tools/security/tool_policy';
+import { createToolExecutionContext, isToolCancellationError } from './cancellation';
 
 export interface ResolvedTool {
   name: string;
@@ -128,16 +131,38 @@ export function resolveCustomTool(custom: AgentBuilderCustomTool): ResolvedTool 
       execute: async (args: any, context: any) => {
         const results: any[] = [];
         for (const step of (custom.toolChain || [])) {
-          const realTool = globalToolRegistry.getTool(step.tool);
+          const stepToolName = normalizeRegistryToolName(step.tool);
+          const realTool = globalToolRegistry.getTool(stepToolName);
           if (!realTool?.execute) {
             results.push({ tool: step.tool, error: 'Tool not found' });
             continue;
           }
           const stepArgs = step.argsTemplate ? { ...step.argsTemplate, ...args } : args;
           try {
-            const result = await realTool.execute(stepArgs, context);
-            results.push({ tool: step.tool, result });
+            const normalizedArgs = normalizeRegistryToolArgs(stepToolName, stepArgs);
+            const validation = validateRegistryToolArgs(realTool, normalizedArgs);
+            if (!validation.success) {
+              results.push({ tool: step.tool, error: validation.error });
+              continue;
+            }
+            const capabilityDecision = enforceToolCapability(stepToolName, validation.args, context);
+            if (!capabilityDecision.allowed) {
+              results.push({ tool: step.tool, error: capabilityDecision.reason || `Tool ${stepToolName} is not allowed` });
+              continue;
+            }
+            const toolExec = createToolExecutionContext(context);
+            try {
+              toolExec.throwIfCancelled();
+              const result = await realTool.execute(validation.args, toolExec.context);
+              toolExec.throwIfCancelled();
+              results.push({ tool: step.tool, result });
+            } finally {
+              toolExec.dispose();
+            }
           } catch (err: any) {
+            if (isToolCancellationError(err)) {
+              return { chainResults: results, cancelled: true, error: 'CANCELLED_BY_USER' };
+            }
             results.push({ tool: step.tool, error: err.message });
           }
         }

@@ -3,6 +3,7 @@ import { AgentOrchestrator } from './orchestrator';
 import { apiKeyPool, type KeyLease } from './api-key-pool';
 import { taskStore } from './task-store';
 import { getMainAgentModelConfig, type MainAgentMode } from './model-routing';
+import type { ScopedRuntimeSettings } from './runtime-api-keys';
 
 // Ensure tools are bootstrapped
 import './tools/index';
@@ -199,7 +200,8 @@ class AgentRegistry {
     pinnedContext: any = null,
     mediaAttachments: any[] = [],
     userName: string = 'Developer',
-    _preferredGeminiApiKey?: string
+    _preferredGeminiApiKey?: string,
+    runtimeSettings?: ScopedRuntimeSettings | null
   ): { status: 'started' | 'already_running' | 'no_keys'; chatId: string; message: string } {
 
     // Check if this chat already has a running agent
@@ -208,16 +210,30 @@ class AgentRegistry {
       return { status: 'already_running', chatId, message: 'Agent is already running for this chat' };
     }
 
-    const modelConfig = getMainAgentModelConfig(mode);
+    const modelConfig = getMainAgentModelConfig(mode, runtimeSettings);
     const isExternalProvider = modelConfig.provider !== 'gemini';
+    const scopedGeminiKeys = runtimeSettings?.apiKeys?.gemini || [];
+    const preferredGeminiApiKey = _preferredGeminiApiKey || runtimeSettings?.preferredGeminiApiKey || scopedGeminiKeys[0] || '';
 
     // Try to lease a Gemini API key only for Gemini runs. External providers use their own
     // keys and should not be blocked by the Gemini key pool.
-    const lease: KeyLease | null = isExternalProvider
-      ? null
-      : (_preferredGeminiApiKey
-          ? apiKeyPool.leaseSpecificKey(chatId, _preferredGeminiApiKey, 'main_agent') || apiKeyPool.leaseKey(chatId, 'main_agent')
-          : apiKeyPool.leaseKey(chatId, 'main_agent'));
+    let lease: KeyLease | null = null;
+    if (!isExternalProvider) {
+      if (preferredGeminiApiKey) {
+        lease = apiKeyPool.leaseSpecificKey(chatId, preferredGeminiApiKey, 'main_agent');
+      }
+
+      if (!lease) {
+        for (const key of scopedGeminiKeys) {
+          lease = apiKeyPool.leaseSpecificKey(chatId, key, 'main_agent');
+          if (lease) break;
+        }
+      }
+
+      if (!lease) {
+        lease = apiKeyPool.leaseKey(chatId, 'main_agent');
+      }
+    }
     if (!isExternalProvider && !lease) {
       return { status: 'no_keys', chatId, message: 'All API keys are currently in use. Try again in a moment.' };
     }
@@ -285,6 +301,23 @@ class AgentRegistry {
         const hasMediaAttachments = !!(mediaAttachments && mediaAttachments.length > 0);
         if (hasMediaAttachments && !fs.existsSync(workspaceTemp)) fs.mkdirSync(workspaceTemp, { recursive: true });
 
+        const resolveUnder = (rootPath: string, ...segments: string[]) => {
+          const root = path.resolve(rootPath);
+          const resolved = path.resolve(root, ...segments);
+          const relative = path.relative(root, resolved);
+          if (relative && (relative.startsWith('..') || path.isAbsolute(relative))) {
+            throw new Error(`Blocked temp path traversal: ${resolved}`);
+          }
+          return resolved;
+        };
+
+        const safeChatTempName = (value: string) => {
+          const cleaned = String(value || 'chat')
+            .replace(/[^a-zA-Z0-9_-]/g, '_')
+            .slice(0, 120);
+          return cleaned || 'chat';
+        };
+
         const mediaFiles: { path: string, mimeType: string, name: string, fileUri?: string }[] = [];
         const usedMediaNames = new Set<string>();
 
@@ -346,7 +379,7 @@ class AgentRegistry {
             if (att.path && fs.existsSync(att.path)) {
               const sourcePath = path.resolve(att.path);
               const safeName = getRunScopedMediaName(att, attachmentIndex, sourcePath);
-              const destPath = isInsideWorkspaceTemp(sourcePath) ? sourcePath : path.join(workspaceTemp, safeName);
+              const destPath = isInsideWorkspaceTemp(sourcePath) ? sourcePath : resolveUnder(workspaceTemp, safeName);
 
               if (sourcePath !== destPath) {
                 fs.copyFileSync(sourcePath, destPath);
@@ -356,13 +389,13 @@ class AgentRegistry {
               const b64 = att.data || (att.inlineData?.data) || att.inlineData;
               if (typeof b64 === 'string') {
                 const safeName = getRunScopedMediaName(att, attachmentIndex);
-                const destPath = path.join(workspaceTemp, safeName);
+                const destPath = resolveUnder(workspaceTemp, safeName);
                 fs.writeFileSync(destPath, Buffer.from(b64, 'base64'));
                 mediaFiles.push({ path: destPath, mimeType, name: safeName });
               }
             } else if (att.fileUri) {
               const safeName = getRunScopedMediaName(att, attachmentIndex, att.path);
-              const destPath = path.join(workspaceTemp, safeName);
+              const destPath = resolveUnder(workspaceTemp, safeName);
               if (att.path) {
                 try { fs.copyFileSync(att.path, destPath); } catch { }
               }
@@ -381,7 +414,7 @@ class AgentRegistry {
 
         // Media attachments are current-turn only. Re-attaching earlier images
         // makes the model see stale screenshots/photos on unrelated later turns.
-        const visualMemoryPath = path.join(workspaceTemp, `${ chatId }_visual_memory.json`);
+        const visualMemoryPath = resolveUnder(workspaceTemp, `${ safeChatTempName(chatId) }_visual_memory.json`);
         let geminiNativeFiles = [...currentGeminiNativeFiles];
         try {
           if (fs.existsSync(visualMemoryPath)) fs.unlinkSync(visualMemoryPath);
@@ -514,7 +547,8 @@ class AgentRegistry {
           geminiNativeFiles,
           uploadedImageParts, // Files API parts instead of base64
           userName,
-          isExternalProvider ? undefined : lease!.apiKey
+          isExternalProvider ? undefined : lease!.apiKey,
+          runtimeSettings
         );
 
         const responseText = response.finalAnswer || '';
@@ -527,7 +561,7 @@ class AgentRegistry {
         if (responseFailed) execution.error = responseText;
 
         // Update effective model with the model mode resolved by the orchestrator!
-        const actualModelConfig = getMainAgentModelConfig(response.modelMode);
+        const actualModelConfig = getMainAgentModelConfig(response.modelMode, runtimeSettings);
         execution.effectiveModel = actualModelConfig.modelName;
 
         // Emit done event to trace buffer

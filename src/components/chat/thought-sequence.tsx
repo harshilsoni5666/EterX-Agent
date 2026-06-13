@@ -701,14 +701,14 @@ export const ProfessionalThought = ({ text, isLatest, isThinking, variant = 'tho
                 transition={{ duration: 0.18, ease: 'easeOut' }}
                 className="overflow-hidden"
               >
-                <div ref={thoughtScrollRef} onScroll={handleThoughtScroll} className={`eterx-thought-expanded ${ thoughtCanScroll ? 'eterx-scrollbar overflow-y-auto' : 'overflow-y-hidden' } pl-[54px] pr-[18px] pb-4 pt-0.5 text-[13.5px] leading-[1.68] text-[#AFA8A0]`} style={{ maxHeight: 'min(52vh, 520px)' }}>
+                <div ref={thoughtScrollRef} onScroll={handleThoughtScroll} className={`eterx-thought-expanded ${ thoughtCanScroll ? 'eterx-scrollbar overflow-y-auto' : 'overflow-y-hidden' } pl-[54px] pr-[18px] pb-4 pt-0.5 text-[13.5px] leading-[1.56] text-[#D5D3CE]`} style={{ maxHeight: 'min(52vh, 520px)' }}>
                   <ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} components={{
                     ...markdownComponents,
-                    p: ({ node, ...props }: any) => <p className="mb-3 last:mb-0 break-words leading-[1.68] text-[#AFA8A0]" {...props} />,
-                    ol: ({ node, ...props }: any) => <ol className="my-3 list-decimal space-y-2 pl-6 text-[#AFA8A0]" {...props} />,
-                    ul: ({ node, ...props }: any) => <ul className="my-3 list-disc space-y-2 pl-6 text-[#AFA8A0]" {...props} />,
+                    p: ({ node, ...props }: any) => <p className="mb-3 last:mb-0 break-words leading-[1.68] text-[#D5D3CE]" {...props} />,
+                    ol: ({ node, ...props }: any) => <ol className="my-3 list-decimal space-y-2 pl-6 text-[#D5D3CE]" {...props} />,
+                    ul: ({ node, ...props }: any) => <ul className="my-3 list-disc space-y-2 pl-6 text-[#D5D3CE]" {...props} />,
                     li: ({ node, ...props }: any) => <li className="pl-1.5 leading-[1.66] marker:text-[#827C73]" {...props} />,
-                    strong: ({ node, ...props }: any) => <strong className="font-semibold text-[#CEC7BE]" {...props} />,
+                    strong: ({ node, ...props }: any) => <strong className="font-semibold text-[#F3F2EF]" {...props} />,
                     a: ({ node, ...props }: any) => <a className="text-[#E2765A] hover:underline" target="_blank" rel="noopener" {...props} />,
                   }}>{renderText}</ReactMarkdown>
                 </div>
@@ -726,7 +726,7 @@ export const ProfessionalThought = ({ text, isLatest, isThinking, variant = 'tho
       initial={isNote ? { opacity: 0, y: 4 } : false}
       animate={isNote ? { opacity: 1, y: 0 } : undefined}
       transition={isNote ? { duration: 0.2, ease: [0.22, 1, 0.36, 1] } : undefined}
-      className={`professional-thought eterx-professional-thought relative w-full max-w-full font-sans font-normal selection:bg-[#D98B6A]/20 select-text tracking-normal ${ progressive.isRevealing ? 'eterx-reveal-active' : '' } ${ isNote ? 'eterx-professional-note py-0.5 text-[15px] leading-[1.58] text-[#B9B2A8]' : 'eterx-professional-answer text-[15.25px] leading-[1.72] text-[#C9C3BA]' }`}
+      className={`professional-thought eterx-professional-thought relative w-full max-w-full font-sans font-normal selection:bg-[#D98B6A]/20 select-text tracking-normal ${ progressive.isRevealing ? 'eterx-reveal-active' : '' } ${ isNote ? 'eterx-professional-note py-0.5 text-[13.5px] leading-[1.5] text-[#D2CECA]' : 'eterx-professional-answer text-[13.5px] leading-[1.56] text-[#F2F0EC]' }`}
     >
       {revealEnabled ? (
         <div className="eterx-progressive-markdown">
@@ -760,7 +760,7 @@ const WorkNoteBlock = ({ text, isActive = false }: { text: string; isActive?: bo
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       transition={{ duration: 0.12, ease: 'easeOut' }}
-      className={`eterx-work-note-block w-full px-1 py-0 text-[13.25px] leading-[1.46] tracking-normal ${isActive ? 'eterx-live-text eterx-live-text--chip' : 'text-[#B8B0A6]'}`}
+      className={`eterx-work-note-block w-full px-1 py-0 text-[13.5px] leading-[1.5] tracking-normal ${isActive ? 'eterx-live-text eterx-live-text--chip' : 'text-[#E2DFDA]'}`}
     >
       <ReactMarkdown
         remarkPlugins={remarkPlugins}
@@ -2764,7 +2764,7 @@ const SteeringCard = ({ log }: { log: any }) => {
       transition={{ type: 'spring', stiffness: 450, damping: 24 }}
       className="flex justify-end w-full my-3 relative z-10 group/steer"
     >
-      <div className="bg-[#20201F] px-4 py-3 rounded-[18px] rounded-tr-[6px] ml-auto text-[15px] text-[#E7E1D8] shadow-[0_4px_16px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(255,255,255,0.025)] leading-[1.56] whitespace-pre-wrap relative border border-white/[0.06] select-text flex flex-row items-end gap-3 max-w-[84%]">
+      <div className="bg-[#20201F] px-4 py-3 rounded-[18px] rounded-tr-[6px] ml-auto text-[13.5px] text-[#F4F2EE] shadow-[0_4px_16px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(255,255,255,0.025)] leading-[1.56] whitespace-pre-wrap relative border border-white/[0.06] select-text flex flex-row items-end gap-3 max-w-[84%]">
         <span className="block w-full text-left break-words [word-break:break-word] [overflow-wrap:anywhere]">{log.text}</span>
         
         {/* CornerDownLeft arrow representing steering entry */}

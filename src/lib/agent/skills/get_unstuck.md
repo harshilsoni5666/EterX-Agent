@@ -1,38 +1,28 @@
 ---
-name: Get Unstuck
-id: get_unstuck
-description: When blocked on an issue - re-read errors, check assumptions, try focused fixes. Systematic approach to getting unblocked.
+name: get-unstuck
+description: Use when progress has stalled after failed attempts. Forces a reset: reread evidence, list assumptions, isolate the smallest reproducible problem, and choose a different strategy.
 icon: Unlock
 category: coding
 ---
 
-# Get Unstuck Skill
+# Get Unstuck
 
-Systematic approach to getting unblocked when stuck on a coding problem.
+Use this when the current path is looping.
 
-## Instructions
+## Reset Protocol
 
-1. Re-read the error message carefully - the answer is usually in the error
-2. Check your assumptions about what the code does
-3. Try a focused fix based on the error
-4. If that fails, try a different approach
-5. Escalate to the user only when genuinely stuck after investigation
+1. Stop and restate the actual blocker in one sentence.
+2. Reread the most recent error/output and the code that produced it.
+3. List assumptions that may be false.
+4. Build or identify the smallest reproduction.
+5. Try a different class of solution, not a minor variation of the failed one.
+6. If still blocked, produce a concise escalation with evidence, attempted fixes, and the next best option.
 
-## Workflow
+## Common False Assumptions
 
-1. **Read the error**: Parse the full error message, stack trace, and context
-2. **Check assumptions**: Did a file change? Is a dependency missing? Wrong version?
-3. **Isolate**: Create a minimal reproduction of the issue
-4. **Research**: Search for the error message or pattern
-5. **Fix**: Apply the most likely fix
-6. **Verify**: Confirm the fix resolves the issue
-7. **Document**: Note what the issue was for future reference
-
-## Common Causes
-- Missing dependencies (npm install)
-- Wrong Node/Python version
-- Stale cache (.next, node_modules/.cache)
-- Environment variables not set
-- Import path case sensitivity
-- Circular dependencies
-- Race conditions in async code
+- The command ran in the intended directory.
+- The edited file is the file actually imported.
+- The dev server rebuilt after changes.
+- The failing data shape matches the expected type.
+- Environment variables or credentials are present.
+- The dependency version matches documentation.

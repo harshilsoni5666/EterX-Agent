@@ -6,8 +6,8 @@
     "expectedTools": [
       "workspace_search_text",
       "workspace_read_file",
-      "workspace_edit_file",
-      "workspace_write_file",
+      "workspace_str_replace",
+      "workspace_apply_patch",
       "realtime_verify"
     ],
     "mustVerify": [
@@ -32,7 +32,7 @@
     "expectedTools": [
       "workspace_search_text",
       "workspace_read_file",
-      "workspace_edit_file",
+      "workspace_str_replace",
       "workspace_verify_code",
       "process_manager",
       "realtime_verify",

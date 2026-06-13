@@ -1,6 +1,6 @@
 import React, { useRef, useState, useEffect, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { FileText, X, Check, Activity, CheckCircle2, XCircle, Folder, File as FileIcon, ChevronDown, ChevronRight, Image as ImageIcon, AlertCircle, ListTodo, ArrowUpRight, LaptopMinimal, GitBranch } from 'lucide-react';
+import { FileText, X, Check, Activity, CheckCircle2, XCircle, Folder, File as FileIcon, ChevronDown, ChevronRight, Image as ImageIcon, AlertCircle, ListTodo, ArrowUpRight, LaptopMinimal, GitBranch, Search, FolderPlus, FolderOpen, Cloud, CloudOff, ExternalLink, Gauge, Plus, CircleSlash, GitFork } from 'lucide-react';
 import { PremiumMic, PremiumSend, PremiumPlus, PremiumAudioLines, PremiumVolume2, PremiumVolumeX, PremiumMicOff } from '../ui/premium-icons';
 import { Tooltip } from '../ui/tooltip';
 import { ConnectorsModal, ConnectorsButton } from './connectors-modal';
@@ -234,6 +234,10 @@ interface TaskTrackerStep {
   status: 'pending' | 'in_progress' | 'done' | 'skipped';
   tools?: string[];
   done_when?: string;
+  step_type?: string;
+  expected_output?: string;
+  risk?: string;
+  artifacts?: string[];
 }
 
 interface TaskTrackerState {
@@ -290,6 +294,7 @@ interface ChatInputProps {
   isNetworkPaused?: boolean;
   onNetworkPausedAction?: () => void;
   onOpenAgents?: () => void;
+  onOpenProjects?: () => void;
   onOpenAgentBuilder?: (id: string) => void;
   onOpenPet?: () => void;
   activeChatId?: string | null;
@@ -466,6 +471,7 @@ type SlashCommand = {
 };
 
 type SlashPanel = 'agents' | 'goal' | null;
+type StatusRailMenu = 'project' | 'run' | 'branch' | null;
 
 type SavedAgentSummary = {
   id: string;
@@ -827,19 +833,43 @@ const TaskTrackerDock = ({
                     {steps.map((step) => {
                       const active = step.id === activeStep?.id || step.step === activeStep?.step;
                       const activeWorking = active && !isComplete && (isThinking || step.status === 'in_progress');
+                      const detail = step.expected_output || step.done_when || step.description || '';
+                      const tools = Array.isArray(step.tools) ? step.tools.filter(Boolean) : [];
+                      const artifacts = Array.isArray(step.artifacts) ? step.artifacts.filter(Boolean) : [];
+                      const meta = [
+                        step.step_type,
+                        step.risk && step.risk !== 'low' ? `${ step.risk } risk` : '',
+                      ].filter(Boolean).join(' · ');
                       return (
                         <div
                           key={step.id || step.step}
-                          className="relative flex items-center gap-3 rounded-[11px] px-2.5 py-2 transition-colors hover:bg-white/[0.018]"
+                          className="relative flex items-start gap-3 rounded-[11px] px-2.5 py-2.5 transition-colors hover:bg-white/[0.018]"
                         >
-                          <span className="relative z-10 shrink-0">
+                          <span className="relative z-10 mt-0.5 shrink-0">
                             <TaskStatusGlyph status={step.status} active={activeWorking} />
                           </span>
-                          <span className="flex min-w-0 flex-1 items-center">
-                            <span className={`block truncate text-[13px] font-semibold leading-5 ${ activeWorking ? 'eterx-text-shimmer eterx-text-shimmer-working' : 'text-[#9A9A98]' }`}>
-                              {step.name || `Task ${ step.step }`}
+                          <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                            <span className="flex min-w-0 items-center gap-1.5">
+                              <span className={`block min-w-0 truncate text-[13px] font-semibold leading-5 ${ activeWorking ? 'eterx-text-shimmer eterx-text-shimmer-working' : 'text-[#D9D6CE]' }`}>
+                                {step.name || `Task ${ step.step }`}
+                              </span>
+                              {activeWorking && <GeneratingDots className="shrink-0 text-[#CFCFCF]" />}
                             </span>
-                            {activeWorking && <GeneratingDots className="shrink-0 text-[#CFCFCF]" />}
+                            {meta && (
+                              <span className="block truncate text-[10px] font-medium uppercase leading-3 tracking-normal text-white/38">
+                                {meta}
+                              </span>
+                            )}
+                            {detail && (
+                              <span className="block max-h-[32px] overflow-hidden text-[11px] leading-4 text-[#A4A19A]">
+                                {detail}
+                              </span>
+                            )}
+                            {(tools.length > 0 || artifacts.length > 0) && (
+                              <span className="block truncate text-[10px] leading-3 text-white/36">
+                                {[tools.slice(0, 3).join(' · '), artifacts.slice(0, 2).join(' · ')].filter(Boolean).join(' | ')}
+                              </span>
+                            )}
                           </span>
                         </div>
                       );
@@ -872,6 +902,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   isNetworkPaused = false,
   onNetworkPausedAction = () => { },
   onOpenAgents = () => { },
+  onOpenProjects = () => { },
   onOpenAgentBuilder = () => { },
   onOpenPet = () => { },
   activeChatId = null,
@@ -896,6 +927,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const [hasDraftInputText, setHasDraftInputText] = useState(() => Boolean(inputValue.trim()));
   const [showModelMenu, setShowModelMenu] = useState(false);
   const [showAgentMenu, setShowAgentMenu] = useState(false);
+  const [openStatusMenu, setOpenStatusMenu] = useState<StatusRailMenu>(null);
+  const [projectSearch, setProjectSearch] = useState('');
   const [agentMenuXOffset, setAgentMenuXOffset] = useState(0);
   const [modelMenuXOffset, setModelMenuXOffset] = useState(0);
   const [thinkingMenuSide, setThinkingMenuSide] = useState<'left' | 'right'>('right');
@@ -1455,12 +1488,13 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       setOpenPillDrop(null);
       setShowPinMenu(false);
       setSlashTrigger(null);
+      setOpenStatusMenu(null);
     };
-    if (openPillDrop || showPinMenu || slashTrigger) {
+    if (openPillDrop || showPinMenu || slashTrigger || openStatusMenu) {
       window.addEventListener('click', handleClickOutside);
     }
     return () => window.removeEventListener('click', handleClickOutside);
-  }, [openPillDrop, showPinMenu, slashTrigger]);
+  }, [openPillDrop, openStatusMenu, showPinMenu, slashTrigger]);
 
   // Auto-resize textarea dynamically based on scrollHeight
   useEffect(() => {
@@ -1645,6 +1679,24 @@ export const ChatInput: React.FC<ChatInputProps> = ({
 
   const isEmptyHome = traceLogsLength === 0 && liveState === 'idle';
   const isNewChatHome = isEmptyHome && !activeChatId;
+  const workspaceName = 'EterX-Agent';
+  const branchName = 'safe-hardening';
+  const projectOptions = useMemo(() => {
+    const query = projectSearch.trim().toLowerCase();
+    return ['EterX-Agent', 'EterX'].filter(project => project.toLowerCase().includes(query));
+  }, [projectSearch]);
+  const toggleStatusMenu = useCallback((event: React.MouseEvent, menu: Exclude<StatusRailMenu, null>) => {
+    event.stopPropagation();
+    setOpenPillDrop(null);
+    setShowPinMenu(false);
+    setShowAgentMenu(false);
+    setShowModelMenu(false);
+    setOpenStatusMenu(prev => prev === menu ? null : menu);
+  }, []);
+  const openProjectsFromRail = useCallback(() => {
+    setOpenStatusMenu(null);
+    onOpenProjects();
+  }, [onOpenProjects]);
   const shellMaxWidth = isCompressed ? 'max-w-[500px]' : 'max-w-[760px]';
   const inputSidePadding = isCompressed ? 'px-4' : 'px-4 sm:px-10';
   const composerRadius = isCompressed ? 'rounded-[28px]' : 'rounded-[32px]';
@@ -2279,7 +2331,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                     onDrop={handleDrop}
                     onScroll={handleTextareaScroll}
                     placeholder={isNewChatHome ? "Do anything" : "Ask EterX to Work"}
-                    className={`eterx-composer-textarea w-full appearance-none border-0 bg-transparent shadow-none outline-none ring-0 ${ isCompressed ? 'text-[15px]' : 'text-[17px]' } font-normal text-[#F0F0F0] placeholder:text-[#8B8984] focus:border-0 focus:outline-none focus:ring-0 placeholder:font-normal min-h-[26px] max-h-[400px] resize-none leading-[1.45] selection:bg-white/15 transition-colors duration-200 relative z-0 py-1 ${ isOverflowing ? 'overflow-y-auto custom-scrollbar pr-2' : 'overflow-hidden' }`}
+                    className={`eterx-composer-textarea w-full appearance-none border-0 bg-transparent shadow-none outline-none ring-0 text-[13.5px] font-normal text-[#F0F0F0] placeholder:text-[#8B8984] focus:border-0 focus:outline-none focus:ring-0 placeholder:font-normal min-h-[26px] max-h-[400px] resize-none leading-[1.45] selection:bg-white/15 transition-colors duration-200 relative z-0 py-1 ${ isOverflowing ? 'overflow-y-auto custom-scrollbar pr-2' : 'overflow-hidden' }`}
                     style={{
                       caretColor: '#F0F0F0',
                       height: '26px',
@@ -2946,20 +2998,174 @@ export const ChatInput: React.FC<ChatInputProps> = ({
             aria-label="New chat workspace status"
           >
             <div className="eterx-new-chat-status-scroll" aria-hidden={false}>
-              <div className="eterx-new-chat-status-item" aria-label="Workspace EterX-Agent">
-                <Folder className="eterx-new-chat-status-icon" strokeWidth={1.9} />
-                <span>EterX-Agent</span>
-                <ChevronDown className="eterx-new-chat-status-chevron" strokeWidth={2.1} />
+              <div className="eterx-new-chat-status-anchor">
+                <button
+                  type="button"
+                  className={`eterx-new-chat-status-item ${openStatusMenu === 'project' ? 'is-open' : ''}`}
+                  aria-label={`Workspace ${workspaceName}`}
+                  aria-haspopup="dialog"
+                  aria-expanded={openStatusMenu === 'project'}
+                  onClick={(event) => toggleStatusMenu(event, 'project')}
+                >
+                  <Folder className="eterx-new-chat-status-icon" strokeWidth={1.9} />
+                  <span>{workspaceName}</span>
+                  <ChevronDown className="eterx-new-chat-status-chevron" strokeWidth={2.1} />
+                </button>
+                <AnimatePresence>
+                  {openStatusMenu === 'project' && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 8, scale: 0.98 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      exit={{ opacity: 0, y: 8, scale: 0.98 }}
+                      transition={{ duration: 0.16, ease: 'easeOut' }}
+                      className="eterx-composer-popout eterx-status-popout eterx-status-popout-project"
+                      role="dialog"
+                      aria-label="Project menu"
+                      onClick={(event) => event.stopPropagation()}
+                    >
+                      <label className="eterx-status-search">
+                        <Search className="h-4 w-4 shrink-0" strokeWidth={2} />
+                        <input
+                          value={projectSearch}
+                          onChange={(event) => setProjectSearch(event.target.value)}
+                          placeholder="Search projects"
+                        />
+                      </label>
+                      <div className="eterx-status-menu-section">
+                        {projectOptions.length > 0 ? projectOptions.map(project => {
+                          const selected = project === workspaceName;
+                          return (
+                            <button
+                              key={project}
+                              type="button"
+                              className="eterx-status-menu-item"
+                              onClick={() => {
+                                if (!selected) onOpenProjects();
+                                setOpenStatusMenu(null);
+                              }}
+                            >
+                              <FolderOpen className="eterx-status-menu-icon" strokeWidth={1.95} />
+                              <span className="min-w-0 flex-1 truncate">{project}</span>
+                              {selected && <Check className="h-4 w-4 shrink-0" strokeWidth={2.35} />}
+                            </button>
+                          );
+                        }) : (
+                          <div className="eterx-status-empty">No projects found</div>
+                        )}
+                      </div>
+                      <div className="eterx-status-menu-rule" />
+                      <button type="button" className="eterx-status-menu-item" onClick={openProjectsFromRail}>
+                        <FolderPlus className="eterx-status-menu-icon" strokeWidth={1.95} />
+                        <span className="min-w-0 flex-1 truncate">Add new project</span>
+                        <ChevronRight className="h-4 w-4 shrink-0 opacity-65" strokeWidth={2.1} />
+                      </button>
+                      <button type="button" className="eterx-status-menu-item" onClick={openProjectsFromRail}>
+                        <FolderOpen className="eterx-status-menu-icon" strokeWidth={1.95} />
+                        <span className="min-w-0 flex-1 truncate">Use existing folder</span>
+                      </button>
+                      <button type="button" className="eterx-status-menu-item" onClick={() => setOpenStatusMenu(null)}>
+                        <CircleSlash className="eterx-status-menu-icon" strokeWidth={1.95} />
+                        <span className="min-w-0 flex-1 truncate">Do not work in a project</span>
+                      </button>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
               </div>
-              <div className="eterx-new-chat-status-item" aria-label="Work locally">
-                <LaptopMinimal className="eterx-new-chat-status-icon" strokeWidth={1.9} />
-                <span>Work locally</span>
-                <ChevronDown className="eterx-new-chat-status-chevron" strokeWidth={2.1} />
+
+              <div className="eterx-new-chat-status-anchor">
+                <button
+                  type="button"
+                  className={`eterx-new-chat-status-item ${openStatusMenu === 'run' ? 'is-open' : ''}`}
+                  aria-label="Work locally"
+                  aria-haspopup="dialog"
+                  aria-expanded={openStatusMenu === 'run'}
+                  onClick={(event) => toggleStatusMenu(event, 'run')}
+                >
+                  <LaptopMinimal className="eterx-new-chat-status-icon" strokeWidth={1.9} />
+                  <span>Work locally</span>
+                  <ChevronDown className="eterx-new-chat-status-chevron" strokeWidth={2.1} />
+                </button>
+                <AnimatePresence>
+                  {openStatusMenu === 'run' && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 8, scale: 0.98 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      exit={{ opacity: 0, y: 8, scale: 0.98 }}
+                      transition={{ duration: 0.16, ease: 'easeOut' }}
+                      className="eterx-composer-popout eterx-status-popout eterx-status-popout-run"
+                      role="dialog"
+                      aria-label="Run location menu"
+                      onClick={(event) => event.stopPropagation()}
+                    >
+                      <div className="eterx-status-menu-label">Start in</div>
+                      <button type="button" className="eterx-status-menu-item is-selected" onClick={() => setOpenStatusMenu(null)}>
+                        <LaptopMinimal className="eterx-status-menu-icon" strokeWidth={1.95} />
+                        <span className="min-w-0 flex-1 truncate">Work locally</span>
+                        <Check className="h-4 w-4 shrink-0" strokeWidth={2.35} />
+                      </button>
+                      <button type="button" className="eterx-status-menu-item" onClick={openProjectsFromRail}>
+                        <GitFork className="eterx-status-menu-icon" strokeWidth={1.95} />
+                        <span className="min-w-0 flex-1 truncate">New worktree</span>
+                      </button>
+                      <button type="button" className="eterx-status-menu-item" onClick={() => window.open('https://chatgpt.com/codex', '_blank', 'noopener,noreferrer')}>
+                        <Cloud className="eterx-status-menu-icon" strokeWidth={1.95} />
+                        <span className="min-w-0 flex-1 truncate">Connect Codex web</span>
+                        <ExternalLink className="h-4 w-4 shrink-0 opacity-65" strokeWidth={2.1} />
+                      </button>
+                      <button type="button" className="eterx-status-menu-item is-disabled" disabled>
+                        <CloudOff className="eterx-status-menu-icon" strokeWidth={1.95} />
+                        <span className="min-w-0 flex-1 truncate">Send to cloud</span>
+                      </button>
+                      <div className="eterx-status-menu-rule" />
+                      <button type="button" className="eterx-status-menu-item" onClick={() => setOpenStatusMenu(null)}>
+                        <Gauge className="eterx-status-menu-icon" strokeWidth={1.95} />
+                        <span className="min-w-0 flex-1 truncate">Usage remaining</span>
+                        <ChevronRight className="h-4 w-4 shrink-0 opacity-65" strokeWidth={2.1} />
+                      </button>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
               </div>
-              <div className="eterx-new-chat-status-item" aria-label="Git branch Deployment-Phase-1">
-                <GitBranch className="eterx-new-chat-status-icon" strokeWidth={1.9} />
-                <span>Deployment-Phase-1</span>
-                <ChevronDown className="eterx-new-chat-status-chevron" strokeWidth={2.1} />
+
+              <div className="eterx-new-chat-status-anchor">
+                <button
+                  type="button"
+                  className={`eterx-new-chat-status-item ${openStatusMenu === 'branch' ? 'is-open' : ''}`}
+                  aria-label={`Git branch ${branchName}`}
+                  aria-haspopup="dialog"
+                  aria-expanded={openStatusMenu === 'branch'}
+                  onClick={(event) => toggleStatusMenu(event, 'branch')}
+                >
+                  <GitBranch className="eterx-new-chat-status-icon" strokeWidth={1.9} />
+                  <span>{branchName}</span>
+                  <ChevronDown className="eterx-new-chat-status-chevron" strokeWidth={2.1} />
+                </button>
+                <AnimatePresence>
+                  {openStatusMenu === 'branch' && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 8, scale: 0.98 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      exit={{ opacity: 0, y: 8, scale: 0.98 }}
+                      transition={{ duration: 0.16, ease: 'easeOut' }}
+                      className="eterx-composer-popout eterx-status-popout eterx-status-popout-branch"
+                      role="dialog"
+                      aria-label="Branch menu"
+                      onClick={(event) => event.stopPropagation()}
+                    >
+                      <div className="eterx-status-menu-label">Branch</div>
+                      <button type="button" className="eterx-status-menu-item is-selected" onClick={() => setOpenStatusMenu(null)}>
+                        <GitBranch className="eterx-status-menu-icon" strokeWidth={1.95} />
+                        <span className="min-w-0 flex-1 truncate">{branchName}</span>
+                        <Check className="h-4 w-4 shrink-0" strokeWidth={2.35} />
+                      </button>
+                      <button type="button" className="eterx-status-menu-item" onClick={openProjectsFromRail}>
+                        <Plus className="eterx-status-menu-icon" strokeWidth={2.05} />
+                        <span className="min-w-0 flex-1 truncate">Manage branches</span>
+                        <ChevronRight className="h-4 w-4 shrink-0 opacity-65" strokeWidth={2.1} />
+                      </button>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
               </div>
             </div>
           </motion.div>

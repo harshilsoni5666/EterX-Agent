@@ -1,4 +1,4 @@
----
+﻿---
 name: data-analyst
 description: >
   Senior Data Analyst specializing in statistical analysis, data visualization,

@@ -53,8 +53,28 @@ export interface AgentBuilderProfile {
 
 const AGENT_BUILDER_ROOT = path.resolve(process.cwd(), '.workspaces', 'agent-builder', 'agents');
 const BUILDER_TOOL_PREFIX = 'agent_builder_';
-const LEGACY_BUILDER_TOOL_NAMES = new Set(['agent_cron_scheduler', 'agent_connector_trigger']);
 const GLOBAL_DYNAMIC_TOOL_NAMES = new Set(['create_dynamic_tool']);
+
+function isPathInside(parent: string, candidate: string): boolean {
+  const relative = path.relative(parent, candidate);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function resolveUnder(parent: string, ...segments: string[]): string {
+  const resolved = path.resolve(parent, ...segments);
+  if (!isPathInside(parent, resolved)) {
+    throw new Error(`Resolved path escapes expected directory: ${resolved}`);
+  }
+  return resolved;
+}
+
+async function writeJsonAtomic(filePath: string, data: unknown): Promise<void> {
+  const dir = path.dirname(filePath);
+  await fs.ensureDir(dir);
+  const tmpPath = path.join(dir, `.${path.basename(filePath)}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`);
+  await fs.writeJson(tmpPath, data, { spaces: 2 });
+  await fs.move(tmpPath, filePath, { overwrite: true });
+}
 
 export function isAgentBuilderChatId(chatId?: string | null): boolean {
   return typeof chatId === 'string' && chatId.startsWith('agent_builder_');
@@ -69,7 +89,7 @@ export function isAgentBuilderRuntimeContext(context: any): boolean {
 }
 
 export function isBuilderOnlyToolName(toolName: string): boolean {
-  return toolName.startsWith(BUILDER_TOOL_PREFIX) || LEGACY_BUILDER_TOOL_NAMES.has(toolName);
+  return toolName.startsWith(BUILDER_TOOL_PREFIX);
 }
 
 export function shouldExposeToolToRuntime(toolName: string, isBuilder: boolean): boolean {
@@ -106,8 +126,9 @@ export function sanitizeAgentBuilderId(value: string): string {
   return String(value || 'agent')
     .trim()
     .replace(/^agent_builder_/, '')
-    .replace(/[^a-zA-Z0-9._-]/g, '-')
+    .replace(/[^a-zA-Z0-9_-]/g, '-')
     .replace(/-+/g, '-')
+    .replace(/^[-_]+|[-_]+$/g, '')
     .slice(0, 96) || 'agent';
 }
 
@@ -122,11 +143,11 @@ export function sanitizeAgentToolName(value: string): string {
 }
 
 export function getAgentBuilderProfilePath(agentId: string): string {
-  return path.join(AGENT_BUILDER_ROOT, sanitizeAgentBuilderId(agentId), 'profile.json');
+  return resolveUnder(AGENT_BUILDER_ROOT, sanitizeAgentBuilderId(agentId), 'profile.json');
 }
 
 export function getAgentBuilderToolPath(agentId: string, toolName: string): string {
-  return path.join(AGENT_BUILDER_ROOT, sanitizeAgentBuilderId(agentId), 'tools', `${sanitizeAgentToolName(toolName)}.json`);
+  return resolveUnder(AGENT_BUILDER_ROOT, sanitizeAgentBuilderId(agentId), 'tools', `${sanitizeAgentToolName(toolName)}.json`);
 }
 
 export async function readAgentBuilderProfile(agentId: string): Promise<AgentBuilderProfile> {
@@ -155,8 +176,7 @@ export async function writeAgentBuilderProfile(profile: AgentBuilderProfile): Pr
   const normalized = normalizeAgentBuilderProfile(profile, profile.agentId);
   normalized.updatedAt = new Date().toISOString();
   const profilePath = getAgentBuilderProfilePath(normalized.agentId);
-  await fs.ensureDir(path.dirname(profilePath));
-  await fs.writeJson(profilePath, normalized, { spaces: 2 });
+  await writeJsonAtomic(profilePath, normalized);
   return profilePath;
 }
 
@@ -381,7 +401,7 @@ NO DUPLICATE WORK:
 
 BATCH OPERATIONS:
 - When you need to read multiple files, plan all reads first, then execute.
-- When you need to make multiple edits, use workspace_edit_file for precision instead of rewriting.
+- When you need to make multiple edits, use workspace_str_replace for targeted replacements or workspace_apply_patch for multi-hunk changes instead of rewriting.
 - Group related operations together — don't interleave unrelated tasks.
 
 COST-AWARE EXECUTION:
@@ -399,7 +419,8 @@ If primary tool fails → try these fallbacks:
 - web_search fails → try web_scraper with direct URL
 - workspace_read_file fails → try workspace_list_directory to check path, then retry
 - system_shell fails → check command syntax, try simpler version, report to user
-- workspace_edit_file fails → try workspace_write_file with full content
+- workspace_str_replace fails → re-read the exact target range, copy current text, then retry or use workspace_apply_patch
+- workspace_apply_patch fails → reduce to smaller hunks or use workspace_str_replace with exact context
 - Any tool times out → reduce scope and retry with simpler input
 
 ERROR CLASSIFICATION:
@@ -511,10 +532,12 @@ for ALL of these immediately after saving the profile:
 TIER 1 — ALWAYS ATTACH (no exceptions):
   • web_search — "Search the web for information, latest data, documentation, solutions"
   • workspace_read_file — "Read files from the workspace for context and analysis"
-  • workspace_write_file — "Write/create files to save outputs and deliverables"
+  • workspace_write_file — "Create brand-new files and deliverables; do not overwrite existing source files"
   • workspace_list_directory — "Browse workspace structure to understand project layout"
   • workspace_search_text — "Search for patterns/keywords across the workspace codebase"
-  • workspace_edit_file — "Edit existing files precisely without full rewrites"
+  • workspace_str_replace — "Default targeted edit tool for existing files"
+  • workspace_apply_patch — "Multi-hunk or multi-file edits with context"
+  • workspace_edit_file — "Legacy line-range edit tool when precision tools are not suitable"
   • system_shell — "Execute shell commands for verification, builds, installs, automation"
   • smart_file_analyzer — "Deep analysis of file contents, structure, dependencies"
 

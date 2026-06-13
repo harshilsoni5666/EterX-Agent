@@ -178,6 +178,60 @@ const VERIFICATION_RULES: VerificationRule[] = [
     },
   },
 
+  {
+    name: 'str_replace_applied',
+    triggerTool: 'workspace_str_replace',
+    condition: (_args, result) => !result?.error,
+    verify: (args, result) => {
+      if (result?.error) {
+        return {
+          passed: false,
+          detail: `Edit failed: ${String(result.error).substring(0, 100)}`,
+          severity: 'critical',
+          autoFixable: false,
+        };
+      }
+      if (result?.matchesFound === 0 || result?.replaced === false || result?.success === false) {
+        return {
+          passed: false,
+          detail: 'Target text was not replaced; content may have changed',
+          severity: 'warning',
+          autoFixable: true,
+          suggestedTool: 'workspace_read_file',
+          suggestedArgs: { filename: args?.filename || args?.path },
+        };
+      }
+      return { passed: true, detail: 'Targeted replacement applied successfully', severity: 'info', autoFixable: false };
+    },
+  },
+
+  {
+    name: 'patch_applied',
+    triggerTool: 'workspace_apply_patch',
+    condition: (_args, result) => !result?.error,
+    verify: (args, result) => {
+      if (result?.error) {
+        return {
+          passed: false,
+          detail: `Patch failed: ${String(result.error).substring(0, 100)}`,
+          severity: 'critical',
+          autoFixable: false,
+        };
+      }
+      if (result?.success === false || result?.applied === false) {
+        return {
+          passed: false,
+          detail: 'Patch was not applied; re-read current context and retry with smaller hunks',
+          severity: 'warning',
+          autoFixable: true,
+          suggestedTool: 'workspace_read_file',
+          suggestedArgs: { filename: args?.filename || args?.path },
+        };
+      }
+      return { passed: true, detail: 'Patch applied successfully', severity: 'info', autoFixable: false };
+    },
+  },
+
   // ── Search: Check that results are relevant ──
   {
     name: 'search_has_results',
@@ -212,7 +266,7 @@ const VERIFICATION_RULES: VerificationRule[] = [
           detail: `Code verification found ${result.errors.length} error(s)`,
           severity: 'critical',
           autoFixable: true,
-          suggestedTool: 'workspace_edit_file',
+          suggestedTool: 'workspace_str_replace',
         };
       }
       if (hasIssues) {

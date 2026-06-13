@@ -1,88 +1,42 @@
 ---
-description: name: "codebase-onboarding"
----
-
----
 name: "codebase-onboarding"
-description: "Codebase Onboarding"
+description: Use to inspect a repository and create onboarding documentation for engineers, contractors, tech leads, or maintainers. Covers architecture, setup, common workflows, ownership, risks, and contribution guidance from actual repo evidence.
 ---
 
 # Codebase Onboarding
 
-**Tier:** POWERFUL  
-**Category:** Engineering  
-**Domain:** Documentation / Developer Experience
+Create onboarding docs from the real codebase, not from a canned template.
 
----
+## Workflow
 
-## Overview
+1. Inspect the repo structure, manifests, configs, entry points, tests, docs, scripts, and deployment files.
+2. Identify the audience: junior developer, senior engineer, contractor, tech lead, on-call, or product-adjacent reader.
+3. Verify setup/build/test commands from package files or existing docs before recommending them.
+4. Document how the system is actually organized and where a newcomer should start.
+5. Include troubleshooting, ownership boundaries, and safe contribution guidance.
 
-Analyze a codebase and generate onboarding documentation for engineers, tech leads, and contractors. This skill is optimized for fast fact-gathering and repeatable onboarding outputs.
-
-## Core Capabilities
-
-- Architecture and stack discovery from repository signals
-- Key file and config inventory for new contributors
-- Local setup and common-task guidance generation
-- Audience-aware documentation framing
-- Debugging and contribution checklist scaffolding
-
----
-
-## When to Use
-
-- Onboarding a new team member or contractor
-- Rebuilding stale project docs after large refactors
-- Preparing internal handoff documentation
-- Creating a standardized onboarding packet for services
-
----
-
-## Quick Start
+## Useful Local Commands
 
 ```bash
-# 1) Gather codebase facts
-python3 scripts/codebase_analyzer.py /path/to/repo
-
-# 2) Export machine-readable output
-python3 scripts/codebase_analyzer.py /path/to/repo --json
-
-# 3) Use the template to draft onboarding docs
-# See references/onboarding-template.md
+rg --files
+Get-ChildItem -Force
+rg -n "TODO|FIXME|HACK|deprecated|owner|runbook|deploy|test|build"
 ```
 
----
+Use the repo's native commands from `package.json`, `pyproject.toml`, `go.mod`, `Cargo.toml`, Gradle/Maven files, or existing docs.
 
-## Recommended Workflow
+## Output Shape
 
-1. Run `scripts/codebase_analyzer.py` against the target repository.
-2. Capture key signals: file counts, detected languages, config files, top-level structure.
-3. Fill the onboarding template in `references/onboarding-template.md`.
-4. Tailor output depth by audience:
-   - Junior: setup + guardrails
-   - Senior: architecture + operational concerns
-   - Contractor: scoped ownership + integration boundaries
+Adapt sections to the audience:
 
----
+- Project purpose and mental model.
+- Tech stack and runtime.
+- Local setup and verification commands.
+- Directory map with important files.
+- Main workflows: develop, test, build, deploy, debug.
+- Architecture boundaries and data flow.
+- Common gotchas and troubleshooting.
+- Contribution expectations and review checklist.
+- Pointers for deeper reading.
 
-## Onboarding Document Template
-
-Detailed template and section examples live in:
-- `references/onboarding-template.md`
-- `references/output-format-templates.md`
-
----
-
-## Common Pitfalls
-
-- Writing docs without validating setup commands on a clean environment
-- Mixing architecture deep-dives into contractor-oriented docs
-- Omitting troubleshooting and verification steps
-- Letting onboarding docs drift from current repo state
-
-## Best Practices
-
-1. Keep setup instructions executable and time-bounded.
-2. Document the "why" for key architectural decisions.
-3. Update docs in the same PR as behavior changes.
-4. Treat onboarding docs as living operational assets, not one-time deliverables.
+Keep it practical. A contractor handoff can be short and scoped; a platform onboarding guide can be deeper.

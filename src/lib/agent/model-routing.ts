@@ -15,7 +15,11 @@
  * 404 / 501 / "model not found" / "model deprecated" errors.
  */
 
-import { getRuntimeModelOverrides } from './runtime-api-keys';
+import {
+  getRuntimeModelOverrides,
+  getScopedModelOverride,
+  type ScopedRuntimeSettings,
+} from './runtime-api-keys';
 
 export type MainAgentProvider = 'gemini' | 'mistral' | 'openai' | 'openrouter' | 'anthropic' | 'groq';
 export type MainAgentMode = 'think' | 'fast' | 'mistral' | 'openai' | 'openrouter' | 'anthropic' | 'groq';
@@ -113,34 +117,48 @@ export function clearProvenModel(mode: MainAgentMode): void {
  * Resolve the active model name for a mode.
  * Reads env vars first, then proven cache, then first chain entry.
  */
-export function resolveModelName(mode: MainAgentMode): string {
+export function resolveModelName(mode: MainAgentMode, runtimeSettings?: ScopedRuntimeSettings | null): string {
   const overrides = getRuntimeModelOverrides();
   switch (mode) {
     case 'think': {
+      const scopedOverride = getScopedModelOverride(runtimeSettings, 'gemini');
+      if (scopedOverride) return scopedOverride;
       if (overrides.gemini) return overrides.gemini;
       return getProvenModel('think') || GEMINI_THINK_FALLBACK_CHAIN[0];
     }
     case 'fast': {
+      const scopedOverride = getScopedModelOverride(runtimeSettings, 'gemini');
+      if (scopedOverride) return scopedOverride;
       if (overrides.gemini) return overrides.gemini;
       return getProvenModel('fast') || GEMINI_FAST_FALLBACK_CHAIN[0];
     }
     case 'mistral': {
+      const scopedOverride = getScopedModelOverride(runtimeSettings, 'mistral');
+      if (scopedOverride) return scopedOverride;
       if (overrides.mistral) return overrides.mistral;
       return getProvenModel('mistral') || MISTRAL_FALLBACK_CHAIN[0];
     }
     case 'openai': {
+      const scopedOverride = getScopedModelOverride(runtimeSettings, 'openai');
+      if (scopedOverride) return scopedOverride;
       if (overrides.openai) return overrides.openai;
       return getProvenModel('openai') || OPENAI_FALLBACK_CHAIN[0];
     }
     case 'openrouter': {
+      const scopedOverride = getScopedModelOverride(runtimeSettings, 'openrouter');
+      if (scopedOverride) return scopedOverride;
       if (overrides.openrouter) return overrides.openrouter;
       return getProvenModel('openrouter') || OPENROUTER_FALLBACK_CHAIN[0];
     }
     case 'anthropic': {
+      const scopedOverride = getScopedModelOverride(runtimeSettings, 'anthropic');
+      if (scopedOverride) return scopedOverride;
       if (overrides.anthropic) return overrides.anthropic;
       return getProvenModel('anthropic') || ANTHROPIC_FALLBACK_CHAIN[0];
     }
     case 'groq': {
+      const scopedOverride = getScopedModelOverride(runtimeSettings, 'groq');
+      if (scopedOverride) return scopedOverride;
       if (overrides.groq) return overrides.groq;
       return getProvenModel('groq') || GROQ_FALLBACK_CHAIN[0];
     }
@@ -153,8 +171,8 @@ export function resolveModelName(mode: MainAgentMode): string {
  * Get the full fallback chain for a mode.
  * Used by GeminiAgentClient to try next model when primary fails.
  */
-export function getFallbackChain(mode: MainAgentMode): string[] {
-  const primary = resolveModelName(mode);
+export function getFallbackChain(mode: MainAgentMode, runtimeSettings?: ScopedRuntimeSettings | null): string[] {
+  const primary = resolveModelName(mode, runtimeSettings);
   switch (mode) {
     case 'think': {
       const chain = GEMINI_THINK_FALLBACK_CHAIN.filter(m => m !== primary);
@@ -287,8 +305,13 @@ export function normalizeMainAgentMode(value: unknown): MainAgentMode {
   return Object.values(MAIN_AGENT_MODE_CONFIG).find(o => o.modelName === value)?.id || 'think';
 }
 
-export function getMainAgentModelConfig(mode: unknown): MainAgentModelConfig {
-  return MAIN_AGENT_MODE_CONFIG[normalizeMainAgentMode(mode)];
+export function getMainAgentModelConfig(mode: unknown, runtimeSettings?: ScopedRuntimeSettings | null): MainAgentModelConfig {
+  const normalized = normalizeMainAgentMode(mode);
+  const base = MAIN_AGENT_MODE_CONFIG[normalized];
+  return {
+    ...base,
+    modelName: resolveModelName(normalized, runtimeSettings),
+  };
 }
 
 export function normalizeMainAgentThinkingLevel(value: unknown): MainAgentThinkingLevel {

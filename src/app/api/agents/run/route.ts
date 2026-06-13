@@ -14,24 +14,58 @@
  */
 import { NextRequest } from 'next/server';
 import { AgentRunner } from '../../../../lib/agent/agent-runner';
-import { applyRuntimeApiKeys, applyRuntimeModelOverrides } from '../../../../lib/agent/runtime-api-keys';
+import { buildScopedRuntimeSettings } from '../../../../lib/agent/runtime-api-keys';
+import { resolveModelName } from '../../../../lib/agent/model-routing';
+import {
+  attachAgentApiSessionCookie,
+  cleanString,
+  getOrCreateAgentApiSession,
+  isSafeAgentId,
+  isSafeChatId,
+  jsonError,
+  normalizeRunnerMessages,
+  readJsonObject,
+  rejectCrossOrigin,
+  requireChatOwner,
+} from '../../agent/_shared';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 export async function POST(req: NextRequest) {
+  let session: ReturnType<typeof getOrCreateAgentApiSession> | null = null;
   try {
-    const body = await req.json();
-    const { agentId, messages, model, temperature, apiKeys, modelOverrides } = body;
-    const runtimeKeyResult = applyRuntimeApiKeys(apiKeys);
-    applyRuntimeModelOverrides(modelOverrides);
+    const originError = rejectCrossOrigin(req);
+    if (originError) return originError;
+    session = getOrCreateAgentApiSession(req);
+    const activeSession = session;
 
-    if (!agentId || typeof agentId !== 'string') {
-      return new Response(JSON.stringify({ error: 'agentId is required' }), { status: 400 });
+    const body = await readJsonObject(req);
+    const { agentId, messages, model, temperature, apiKeys, modelOverrides } = body;
+
+    if (!isSafeAgentId(agentId)) {
+      return attachAgentApiSessionCookie(jsonError('A valid agentId is required.', 400), session);
     }
-    if (!messages || !Array.isArray(messages) || messages.length === 0) {
-      return new Response(JSON.stringify({ error: 'messages array is required' }), { status: 400 });
+
+    const chatId = isSafeChatId(body.chatId)
+      ? body.chatId
+      : `custom-agent-${agentId}-${Date.now().toString(36)}`;
+    const ownerError = requireChatOwner(chatId, activeSession.sessionId);
+    if (ownerError) return attachAgentApiSessionCookie(ownerError, session);
+    const agentSessionId = activeSession.sessionId;
+
+    const normalized = normalizeRunnerMessages(messages);
+    if (normalized.error || !normalized.messages) {
+      return attachAgentApiSessionCookie(jsonError(normalized.error || 'Invalid messages payload.', 400), session);
     }
+
+    const runtimeSettings = buildScopedRuntimeSettings(apiKeys, modelOverrides);
+    const safeModel = cleanString(model, 160) || runtimeSettings.modelOverrides.gemini || resolveModelName('fast', runtimeSettings);
+    const requestedTemperature = temperature === undefined ? undefined : Number(temperature);
+    if (requestedTemperature !== undefined && (!Number.isFinite(requestedTemperature) || requestedTemperature < 0 || requestedTemperature > 2)) {
+      return attachAgentApiSessionCookie(jsonError('temperature must be a number between 0 and 2.', 400), session);
+    }
+    const safeTemperature = requestedTemperature;
 
     const runner = new AgentRunner();
 
@@ -39,55 +73,83 @@ export async function POST(req: NextRequest) {
     try {
       await runner.loadAgent(agentId);
     } catch (err: any) {
-      return new Response(JSON.stringify({ error: err.message }), { status: 404 });
+      return attachAgentApiSessionCookie(jsonError(err.message || 'Agent is not ready.', 404), session);
     }
 
     // Stream events back
     const encoder = new TextEncoder();
     const stream = new ReadableStream({
       async start(controller) {
+        let closed = false;
+        const abortRun = () => {
+          closed = true;
+          runner.cancel();
+        };
+        const writeEvent = (event: any) => {
+          if (closed) return false;
+          try {
+            controller.enqueue(encoder.encode(JSON.stringify(event) + '\n'));
+            return true;
+          } catch {
+            closed = true;
+            runner.cancel();
+            return false;
+          }
+        };
+
+        req.signal.addEventListener('abort', abortRun);
+
         try {
-          for await (const event of runner.run(messages, {
+          for await (const event of runner.run(normalized.messages!, {
             agentId,
-            model: model || undefined,
-            temperature: temperature || undefined,
-            preferredGeminiApiKey: runtimeKeyResult.preferredGeminiApiKey,
+            model: safeModel,
+            temperature: safeTemperature,
+            preferredGeminiApiKey: runtimeSettings.preferredGeminiApiKey,
+            runtimeSettings,
+            chatId,
+            agentSessionId,
           })) {
-            const line = JSON.stringify(event) + '\n';
-            controller.enqueue(encoder.encode(line));
+            if (closed || req.signal.aborted) {
+              runner.cancel();
+              break;
+            }
+
+            if (!writeEvent(event)) break;
           }
         } catch (err: any) {
-          const errorEvent = JSON.stringify({
+          writeEvent({
             type: 'error',
             text: err.message || 'Agent runner failed',
             timestamp: Date.now(),
-          }) + '\n';
-          controller.enqueue(encoder.encode(errorEvent));
+          });
         } finally {
-          controller.close();
+          req.signal.removeEventListener('abort', abortRun);
+          closed = true;
+          try { controller.close(); } catch { }
         }
       },
     });
 
-    return new Response(stream, {
+    return attachAgentApiSessionCookie(new Response(stream, {
       headers: {
         'Content-Type': 'application/x-ndjson',
         'Transfer-Encoding': 'chunked',
         'Cache-Control': 'no-cache, no-store, must-revalidate',
       },
-    });
+    }), session);
 
   } catch (err: any) {
     console.error('[AgentRunner] Error:', err);
-    return new Response(JSON.stringify({ error: err.message }), { status: 500 });
+    const response = jsonError(err.message || 'Agent runner failed', 500);
+    return session ? attachAgentApiSessionCookie(response, session) : response;
   }
 }
 
 /** GET /api/agents/run?agentId=xxx — Check if agent is ready */
 export async function GET(req: NextRequest) {
   const agentId = req.nextUrl.searchParams.get('agentId');
-  if (!agentId) {
-    return new Response(JSON.stringify({ error: 'agentId param required' }), { status: 400 });
+  if (!isSafeAgentId(agentId)) {
+    return jsonError('A valid agentId param is required.', 400);
   }
 
   try {
@@ -98,7 +160,7 @@ export async function GET(req: NextRequest) {
       agentId: profile.agentId,
       name: profile.name || agentId,
       mission: profile.mission,
-      toolCount: profile.directMainTools.length + profile.customTools.length,
+      toolCount: (profile.directMainTools?.length || 0) + (profile.customTools?.length || 0),
       status: profile.status,
     });
   } catch (err: any) {

@@ -115,6 +115,7 @@ export const CodeChat: React.FC<CodeChatProps> = ({ workspacePath, activeFile, o
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const runSeqRef = useRef(0);
 
   // Auto-scroll
   useEffect(() => {
@@ -145,6 +146,12 @@ export const CodeChat: React.FC<CodeChatProps> = ({ workspacePath, activeFile, o
     }
   }, [input]);
 
+  useEffect(() => () => {
+    runSeqRef.current += 1;
+    abortRef.current?.abort();
+    abortRef.current = null;
+  }, []);
+
   // ─── Stop handler ───
   const handleStop = () => {
     if (abortRef.current) {
@@ -171,10 +178,12 @@ export const CodeChat: React.FC<CodeChatProps> = ({ workspacePath, activeFile, o
     // Add empty assistant message for streaming
     setMessages(prev => [...prev, { role: 'assistant', content: '', thinking: '', toolExecutions: [], timestamp: Date.now() }]);
 
-    try {
-      const controller = new AbortController();
-      abortRef.current = controller;
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const runSeq = ++runSeqRef.current;
+    const isCurrentRun = () => runSeqRef.current === runSeq;
 
+    try {
       const response = await fetch('/api/code/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -212,6 +221,7 @@ export const CodeChat: React.FC<CodeChatProps> = ({ workspacePath, activeFile, o
       while (true) {
         const { value, done } = await reader.read();
         if (done) break;
+        if (!isCurrentRun()) break;
 
         // ─── Proper SSE buffering ───
         sseBuffer += decoder.decode(value, { stream: true });
@@ -223,6 +233,7 @@ export const CodeChat: React.FC<CodeChatProps> = ({ workspacePath, activeFile, o
           if (!trimmed || !trimmed.startsWith('data:')) continue;
           try {
             const parsed = JSON.parse(trimmed.replace(/^data:\s*/, ''));
+            if (!isCurrentRun()) break;
 
             if (parsed.type === 'trace' && parsed.data) {
               const { type: evtType } = parsed.data;
@@ -298,7 +309,7 @@ export const CodeChat: React.FC<CodeChatProps> = ({ workspacePath, activeFile, o
       }
 
       // Flush remaining buffer
-      if (sseBuffer.trim()) {
+      if (sseBuffer.trim() && isCurrentRun()) {
         try {
           const lastChunk = sseBuffer.trim();
           if (lastChunk.startsWith('data:')) {
@@ -317,6 +328,7 @@ export const CodeChat: React.FC<CodeChatProps> = ({ workspacePath, activeFile, o
         } catch { /* ignore trailing */ }
       }
     } catch (error: any) {
+      if (!isCurrentRun()) return;
       if (error.name === 'AbortError') {
         setMessages(prev => {
           const updated = [...prev];
@@ -338,8 +350,12 @@ export const CodeChat: React.FC<CodeChatProps> = ({ workspacePath, activeFile, o
         });
       }
     } finally {
-      setIsStreaming(false);
-      abortRef.current = null;
+      if (isCurrentRun()) {
+        setIsStreaming(false);
+      }
+      if (abortRef.current === controller) {
+        abortRef.current = null;
+      }
     }
   };
 

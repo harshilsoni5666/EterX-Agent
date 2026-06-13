@@ -1,38 +1,32 @@
 ---
-name: Simplify Code
-id: simplify_code
-description: Review code for unnecessary complexity. Remove dead code, simplify abstractions, reduce indirection while maintaining behavior.
+name: simplify-code
+description: Use when code is overly complex, duplicated, dead, hard to follow, or over-abstracted. Simplify while preserving behavior and tests.
 icon: Minimize2
 category: coding
 ---
 
-# Simplify Code Skill
+# Simplify Code
 
-Review and simplify complex code.
+Simplification is a behavior-preserving change.
 
-## Instructions
+## Workflow
 
-1. Read the target code thoroughly
-2. Identify unnecessary complexity:
-   - Dead code and unused imports
-   - Over-engineered abstractions
-   - Unnecessary indirection layers
-   - Duplicated logic
-   - Overly defensive error handling
-3. Suggest simplifications that maintain behavior
-4. Apply changes incrementally
-5. Verify behavior is preserved after each change
+1. Identify the behavior that must stay the same.
+2. Find dead code, unused imports, duplicated branches, needless wrappers, and one-use abstractions.
+3. Search for callers before removing or renaming anything.
+4. Make one simplification at a time.
+5. Run the narrowest relevant verification.
 
-## What to Look For
-- Functions that are only called once (inline them)
-- Abstractions with only one implementation (remove the interface)
-- Try/catch blocks that swallow errors silently
-- Configuration for things that never change
-- Comments that just restate the code
-- Variables used only once after assignment
+## Good Simplifications
 
-## Rules
-- Never change behavior - only simplify implementation
-- Run tests after each simplification
-- Keep changes small and reviewable
-- If unsure whether something is used, search the codebase first
+- Inline one-use helpers that obscure intent.
+- Replace duplicated logic with an existing local helper.
+- Remove unused configuration and dead branches.
+- Collapse layers that do not enforce a boundary.
+- Rename unclear variables only when it improves readability without churn.
+
+## Avoid
+
+- Reformatting unrelated code.
+- Replacing explicit code with clever code.
+- Removing defensive checks without evidence they are redundant.

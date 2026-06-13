@@ -5,7 +5,7 @@
  * ETERX MONITOR PANEL — Real-Time Agent Activity Window
  * Full discrete window — see EVERYTHING the agent does live:
  *   • Browser navigation + screenshots
- *   • Terminal commands + streaming output
+ *   • Runtime command activity with redacted output
  *   • File system changes (read/write/delete)
  *   • Agent thought stream + reasoning
  *   • Web search queries + results
@@ -61,7 +61,7 @@ interface TabConfig {
 const TABS: TabConfig[] = [
   { id: 'live',     label: 'Live',     icon: Activity,   color: '#E2765A', eventTypes: [] },
   { id: 'browser',  label: 'Browser',  icon: Globe,      color: '#3b82f6', eventTypes: ['browser_nav','browser_screenshot'] },
-  { id: 'terminal', label: 'Terminal', icon: Terminal,   color: '#10b981', eventTypes: ['terminal_cmd','terminal_output'] },
+  { id: 'terminal', label: 'Runtime', icon: Terminal,   color: '#10b981', eventTypes: ['terminal_cmd','terminal_output'] },
   { id: 'files',    label: 'Files',    icon: FolderOpen, color: '#f59e0b', eventTypes: ['file_write','file_read','file_delete'] },
   { id: 'thoughts', label: 'Thoughts', icon: Brain,      color: '#8b5cf6', eventTypes: ['thought','message','milestone','memory_recall'] },
   { id: 'search',   label: 'Search',  icon: Search,     color: '#06b6d4', eventTypes: ['search_query','search_result','api_call'] },
@@ -75,8 +75,8 @@ const EVENT_CONFIG: Record<string, { icon: React.FC<{className?:string; style?: 
   message:            { icon: Hash,          color: '#E2765A',  label: 'Response' },
   browser_nav:        { icon: Globe,         color: '#3b82f6',  label: 'Navigate' },
   browser_screenshot: { icon: Monitor,       color: '#3b82f6',  label: 'Screenshot' },
-  terminal_cmd:       { icon: Terminal,      color: '#10b981',  label: 'Command' },
-  terminal_output:    { icon: Hash,          color: '#6b7280',  label: 'Output' },
+  terminal_cmd:       { icon: Terminal,      color: '#10b981',  label: 'Runtime Command' },
+  terminal_output:    { icon: Hash,          color: '#6b7280',  label: 'Runtime Output' },
   file_write:         { icon: Download,      color: '#f59e0b',  label: 'Write File' },
   file_read:          { icon: FolderOpen,    color: '#94a3b8',  label: 'Read File' },
   file_delete:        { icon: X,             color: '#ef4444',  label: 'Delete File' },
@@ -93,6 +93,16 @@ const EVENT_CONFIG: Record<string, { icon: React.FC<{className?:string; style?: 
   context_compress:   { icon: Box,           color: '#f59e0b',  label: 'Compress' },
   session_start:      { icon: Zap,           color: '#10b981',  label: 'Session' },
   heartbeat:          { icon: Activity,      color: '#1f2937',  label: 'Heartbeat' },
+};
+
+const redactRuntimeText = (value: unknown, maxLength = 4000) => {
+  const text = String(value || '');
+  return text
+    .replace(/\b(AIza[0-9A-Za-z_-]{20,})\b/g, '[redacted-key]')
+    .replace(/\b(sk-[0-9A-Za-z_-]{20,})\b/g, '[redacted-key]')
+    .replace(/\b(sk-ant-[0-9A-Za-z_-]{20,})\b/g, '[redacted-key]')
+    .replace(/\b(?:api[_-]?key|token|secret|password|passwd|authorization)\b(\s*[:=]\s*)(["']?)[^\s"']+/gi, (_match, sep, quote) => `credential${sep}${quote}[redacted]`)
+    .slice(0, maxLength);
 };
 
 function fmtTime(ts: number) {
@@ -150,8 +160,8 @@ function LiveEventRow({ event, isNew }: { event: MonitorEvent; isNew: boolean })
 
   const getContent = (): string | null => {
     if (event.type === 'browser_nav' && event.url) return event.url;
-    if (event.type === 'terminal_cmd' && event.cmd) return event.cmd;
-    if (event.type === 'terminal_output' && event.output) return event.output.trim().slice(0, 400);
+    if (event.type === 'terminal_cmd' && event.cmd) return redactRuntimeText(event.cmd, 900);
+    if (event.type === 'terminal_output' && event.output) return redactRuntimeText(event.output, 400).trim();
     if (event.type === 'file_write' && event.filePath) return event.filePath;
     if (event.type === 'file_read' && event.filePath) return event.filePath;
     if (event.type === 'file_delete' && event.filePath) return event.filePath;
@@ -310,7 +320,7 @@ function BrowserView({ events }: { events: MonitorEvent[] }) {
   );
 }
 
-// ── Terminal View ─────────────────────────────────────────────────
+// ── Runtime View ─────────────────────────────────────────────────
 
 function TerminalView({ events }: { events: MonitorEvent[] }) {
   const endRef = useRef<HTMLDivElement>(null);
@@ -324,14 +334,14 @@ function TerminalView({ events }: { events: MonitorEvent[] }) {
     <div className="flex flex-col h-full bg-[#070707]">
       <div className="flex items-center gap-2 px-3 py-2 border-b border-white/[0.06] bg-[#0f0f0f] flex-shrink-0">
         <Terminal className="w-3.5 h-3.5 text-emerald-400" />
-        <span className="text-[11px] font-mono text-white/40">Terminal</span>
+        <span className="text-[11px] font-mono text-white/40">Runtime</span>
         <span className="ml-auto text-[9px] font-mono text-white/20">{cmds.length} entries</span>
       </div>
       <div className="flex-1 overflow-y-auto custom-scrollbar p-3 font-mono text-[11px] leading-relaxed">
         {cmds.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full gap-3 text-white/20">
             <Terminal className="w-8 h-8 opacity-20" />
-            <p>No terminal activity yet</p>
+            <p>No runtime activity yet</p>
           </div>
         ) : (
           <>
@@ -340,12 +350,12 @@ function TerminalView({ events }: { events: MonitorEvent[] }) {
                 {ev.type === 'terminal_cmd' && (
                   <div className="flex items-start gap-2 mt-3 mb-0.5">
                     <span className="text-emerald-500 flex-shrink-0 select-none">❯</span>
-                    <span className="text-emerald-300 break-all">{ev.cmd}</span>
+                    <span className="text-emerald-300 break-all">{redactRuntimeText(ev.cmd, 900)}</span>
                     <span className="ml-auto text-white/15 text-[9px] flex-shrink-0">{fmtTime(ev.ts)}</span>
                   </div>
                 )}
                 {ev.type === 'terminal_output' && (
-                  <pre className="text-white/45 whitespace-pre-wrap break-all pl-4 text-[10px]">{ev.output}</pre>
+                  <pre className="text-white/45 whitespace-pre-wrap break-all pl-4 text-[10px]">{redactRuntimeText(ev.output)}</pre>
                 )}
               </div>
             ))}
@@ -550,7 +560,7 @@ function ActiveToolCard({ event }: { event: MonitorEvent | null }) {
           </div>
           {(event.cmd || event.url || event.filePath || event.text) && (
             <p className="text-[10px] text-white/30 font-mono truncate mt-0.5">
-              {event.cmd || event.url || event.filePath || event.text?.slice(0, 80)}
+              {event.cmd ? redactRuntimeText(event.cmd, 900) : event.url || event.filePath || event.text?.slice(0, 80)}
             </p>
           )}
         </div>

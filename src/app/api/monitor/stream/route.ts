@@ -10,6 +10,8 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 export async function GET(req: NextRequest) {
+  const url = new URL(req.url);
+  const chatId = url.searchParams.get('chatId') || undefined;
   const encoder = new TextEncoder();
 
   const stream = new ReadableStream({
@@ -28,14 +30,17 @@ export async function GET(req: NextRequest) {
 
       send(JSON.stringify({ type: 'connected', ts: Date.now(), version: '2.0' }));
 
-      const unsub = monitorEmitter.subscribe((event) => {
+      const onEvent = (event: any) => {
         if (closed) return;
         try {
           send(JSON.stringify(event));
         } catch {
           closed = true;
         }
-      });
+      };
+      const unsub = chatId
+        ? monitorEmitter.subscribeForChat(chatId, onEvent, { includeGlobal: true })
+        : monitorEmitter.subscribe(onEvent);
 
       req.signal.addEventListener('abort', () => {
         closed = true;
@@ -60,7 +65,10 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => ({}));
     const limit = Math.min(Number(body.limit) || 100, 500);
-    const events = monitorEmitter.getRecent(limit);
+    const chatId = typeof body.chatId === 'string' && body.chatId.trim() ? body.chatId.trim() : '';
+    const events = chatId
+      ? monitorEmitter.getRecentForChat(chatId, limit, { includeGlobal: true })
+      : monitorEmitter.getRecent(limit);
     return Response.json({ events, ts: Date.now() });
   } catch (e: any) {
     return Response.json({ error: e.message }, { status: 500 });

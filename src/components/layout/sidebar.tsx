@@ -10,8 +10,24 @@ const SIDEBAR_MIN_WIDTH = 220;
 const SIDEBAR_MAX_WIDTH = 420;
 const SIDEBAR_AUTO_CLOSE_EDGE = 28;
 const SIDEBAR_WIDTH_STORAGE_KEY = 'eterx.sidebar.width';
+const MINUTE_MS = 60 * 1000;
+const HOUR_MS = 60 * MINUTE_MS;
+const DAY_MS = 24 * HOUR_MS;
 
 const clampSidebarWidth = (width: number) => Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, Math.round(width)));
+
+const formatChatUpdatedAt = (updatedAt: number, now: number) => {
+  if (!Number.isFinite(updatedAt) || updatedAt <= 0) return '';
+
+  const age = Math.max(0, now - updatedAt);
+  if (age < MINUTE_MS) return 'now';
+  if (age < HOUR_MS) return `${ Math.max(1, Math.floor(age / MINUTE_MS)) }m`;
+  if (age < DAY_MS) return `${ Math.max(1, Math.floor(age / HOUR_MS)) }h`;
+  if (age < 30 * DAY_MS) return `${ Math.max(1, Math.floor(age / DAY_MS)) }d`;
+
+  const date = new Date(updatedAt);
+  return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+};
 
 const SidebarToggleIcon = ({ isOpen, isHovered, sizeClass = "w-[18px] h-[18px]" }: { isOpen: boolean, isHovered: boolean, sizeClass?: string }) => {
   if (isOpen) {
@@ -65,6 +81,11 @@ const lightweightSidebarCss = `
     --sidebar-menu-bg: #121212;
     --sidebar-menu-border: transparent;
     --sidebar-active-shadow: none;
+    --sidebar-unread-dot: #77BCFF;
+    --sidebar-unread-dot-ring: rgba(119, 188, 255, 0.18);
+    --sidebar-time-text: rgba(210, 206, 197, 0.56);
+    --sidebar-running-track: rgba(255, 255, 255, 0.20);
+    --sidebar-running-head: rgba(241, 236, 228, 0.92);
     background: var(--sidebar-bg) !important;
   }
 
@@ -77,6 +98,11 @@ const lightweightSidebarCss = `
     --sidebar-menu-bg: #F7F7F4;
     --sidebar-menu-border: transparent;
     --sidebar-active-shadow: none;
+    --sidebar-unread-dot: #228BE6;
+    --sidebar-unread-dot-ring: rgba(34, 139, 230, 0.16);
+    --sidebar-time-text: rgba(80, 91, 104, 0.62);
+    --sidebar-running-track: rgba(39, 49, 63, 0.18);
+    --sidebar-running-head: rgba(39, 49, 63, 0.82);
     background: var(--sidebar-bg) !important;
   }
 
@@ -118,6 +144,40 @@ const lightweightSidebarCss = `
     box-shadow:
       inset 0 1px 0 rgba(255, 255, 255, 0.052),
       inset 0 -1px 0 rgba(0, 0, 0, 0.18) !important;
+  }
+
+  .eterx-sidebar-shell .eterx-sidebar-recents-scroll {
+    scrollbar-gutter: auto !important;
+    --sb-size: 6px !important;
+    --sb-inset: 0px !important;
+  }
+
+
+  .eterx-sidebar-shell .eterx-sidebar-recents-scroll::-webkit-scrollbar {
+    width: 6px !important;
+  }
+
+  .eterx-sidebar-shell .eterx-sidebar-recents-scroll::-webkit-scrollbar-track {
+    background: transparent !important;
+  }
+
+  .eterx-sidebar-shell .eterx-sidebar-recents-scroll::-webkit-scrollbar-thumb {
+    border: none !important;
+    border-radius: 999px !important;
+    background-clip: border-box !important;
+    background-color: rgba(255, 255, 255, 0.20) !important;
+  }
+
+  :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-recents-scroll::-webkit-scrollbar-thumb {
+    background-color: rgba(39, 49, 63, 0.22) !important;
+  }
+
+  .eterx-sidebar-shell .eterx-sidebar-recents-scroll::-webkit-scrollbar-thumb:hover {
+    background-color: rgba(255, 255, 255, 0.32) !important;
+  }
+
+  :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-recents-scroll::-webkit-scrollbar-thumb:hover {
+    background-color: rgba(39, 49, 63, 0.34) !important;
   }
 
   :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-recents,
@@ -202,13 +262,22 @@ const lightweightSidebarCss = `
   :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-nav-active,
   :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-chat-active,
   :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-chat-selected,
+  :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-chat-active.eterx-sidebar-chat-working,
   :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-nav-active,
   :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-chat-active,
   :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-chat-selected,
+  :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-chat-active.eterx-sidebar-chat-working,
   .eterx-sidebar-shell .eterx-sidebar-nav-active,
   .eterx-sidebar-shell .eterx-sidebar-chat-active,
-  .eterx-sidebar-shell .eterx-sidebar-chat-selected {
+  .eterx-sidebar-shell .eterx-sidebar-chat-selected,
+  .eterx-sidebar-shell .eterx-sidebar-chat-active.eterx-sidebar-chat-working {
     background: var(--sidebar-active-bg) !important;
+    border-color: transparent !important;
+    box-shadow: none !important;
+  }
+
+  .eterx-sidebar-shell .eterx-sidebar-chat-working:not(.eterx-sidebar-chat-active) {
+    background: transparent !important;
     border-color: transparent !important;
     box-shadow: none !important;
   }
@@ -231,19 +300,16 @@ const lightweightSidebarCss = `
   :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-chat-row:hover,
   :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-settings-button:hover,
   :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-profile-icon-button:hover,
-  :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-chat-menu-button:hover,
   :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-toggle:hover,
   :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-nav-item:hover,
   :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-chat-row:hover,
   :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-settings-button:hover,
   :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-profile-icon-button:hover,
-  :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-chat-menu-button:hover,
   .eterx-sidebar-shell .eterx-sidebar-toggle:hover,
   .eterx-sidebar-shell .eterx-sidebar-nav-item:hover,
   .eterx-sidebar-shell .eterx-sidebar-chat-row:hover,
   .eterx-sidebar-shell .eterx-sidebar-settings-button:hover,
   .eterx-sidebar-shell .eterx-sidebar-profile-icon-button:hover,
-  .eterx-sidebar-shell .eterx-sidebar-chat-menu-button:hover,
   .eterx-sidebar-menu button:hover {
     background: var(--sidebar-hover-bg) !important;
     border-color: transparent !important;
@@ -251,6 +317,24 @@ const lightweightSidebarCss = `
     transform: none !important;
     filter: none !important;
   }
+
+  .eterx-sidebar-shell .eterx-sidebar-chat-menu-button {
+    background: color-mix(in srgb, var(--sidebar-bg) 40%, var(--sidebar-strong-text) 12%) !important;
+    border: 1px solid var(--sidebar-surface-border) !important;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.16) !important;
+  }
+
+  .eterx-sidebar-shell .eterx-sidebar-chat-menu-button:hover {
+    background: color-mix(in srgb, var(--sidebar-bg) 20%, var(--sidebar-strong-text) 20%) !important;
+    border-color: var(--sidebar-surface-border) !important;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.22) !important;
+  }
+
+  .eterx-sidebar-shell .eterx-sidebar-chat-menu-button:active {
+    background: color-mix(in srgb, var(--sidebar-bg) 10%, var(--sidebar-strong-text) 26%) !important;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12) !important;
+  }
+
 
   :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-nav-active:hover,
   :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-chat-active:hover,
@@ -272,6 +356,102 @@ const lightweightSidebarCss = `
   .eterx-sidebar-menu .eterx-sidebar-menu-chevron {
     transform: none !important;
     filter: none !important;
+  }
+
+  .eterx-sidebar-shell .eterx-sidebar-chat-title,
+  .eterx-sidebar-shell .eterx-sidebar-chat-title-wrap {
+    text-overflow: clip !important;
+  }
+
+  .eterx-sidebar-shell .eterx-sidebar-chat-content {
+    min-width: 0;
+    -webkit-mask-image: linear-gradient(90deg, #000 0%, #000 calc(100% - 0.2rem), transparent calc(100% - 0.05rem)) !important;
+    mask-image: linear-gradient(90deg, #000 0%, #000 calc(100% - 0.2rem), transparent calc(100% - 0.05rem)) !important;
+  }
+
+  .eterx-sidebar-shell .eterx-sidebar-chat-content-menu-visible,
+  .eterx-sidebar-shell .eterx-sidebar-chat-row:hover .eterx-sidebar-chat-content {
+    -webkit-mask-image: linear-gradient(90deg, #000 0%, #000 calc(100% - 2.35rem), transparent calc(100% - 2.2rem)) !important;
+    mask-image: linear-gradient(90deg, #000 0%, #000 calc(100% - 2.35rem), transparent calc(100% - 2.2rem)) !important;
+  }
+
+
+
+
+
+
+
+  .eterx-sidebar-shell .eterx-sidebar-chat-content-working {
+    padding-right: 0 !important;
+  }
+
+
+  .eterx-sidebar-shell .eterx-sidebar-chat-meta {
+    min-width: 2.15rem;
+    height: 100%;
+    color: var(--sidebar-time-text);
+    font-size: 12.5px;
+    font-weight: 560;
+    letter-spacing: 0;
+    transition: opacity 150ms ease, transform 150ms ease, color 150ms ease, min-width 150ms ease, margin-left 150ms ease, width 150ms ease;
+  }
+
+  .eterx-sidebar-shell .eterx-sidebar-chat-row:not(.eterx-sidebar-chat-working):hover .eterx-sidebar-chat-meta,
+  .eterx-sidebar-shell .eterx-sidebar-chat-meta-hidden {
+    opacity: 0;
+    transform: translateX(3px);
+    width: 0 !important;
+    min-width: 0 !important;
+    margin-left: 0 !important;
+    overflow: hidden;
+  }
+
+  .eterx-sidebar-shell .eterx-sidebar-chat-active .eterx-sidebar-chat-meta {
+    color: color-mix(in srgb, var(--sidebar-active-text) 64%, transparent);
+  }
+
+  .eterx-sidebar-shell .eterx-sidebar-unread-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 999px;
+    background: var(--sidebar-unread-dot);
+    box-shadow:
+      0 0 0 3px var(--sidebar-unread-dot-ring),
+      0 0 12px color-mix(in srgb, var(--sidebar-unread-dot) 38%, transparent);
+  }
+
+  .eterx-sidebar-shell .eterx-sidebar-running-indicator {
+    position: relative;
+    width: 16px;
+    height: 16px;
+    border-radius: 999px;
+    border: 2px solid var(--sidebar-running-track);
+    border-right-color: var(--sidebar-running-head);
+    animation: eterx-sidebar-spin 0.82s linear infinite;
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.035);
+  }
+
+  .eterx-sidebar-shell .eterx-sidebar-chat-active .eterx-sidebar-running-indicator {
+    border-color: color-mix(in srgb, var(--sidebar-active-text) 20%, transparent);
+    border-right-color: color-mix(in srgb, var(--sidebar-active-text) 86%, transparent);
+  }
+
+  .eterx-sidebar-shell .eterx-sidebar-chat-working .eterx-sidebar-chat-title {
+    background: none !important;
+    color: var(--sidebar-working-text) !important;
+    -webkit-text-fill-color: currentColor !important;
+    animation: none !important;
+    text-shadow: none !important;
+  }
+
+  .eterx-sidebar-shell .eterx-sidebar-chat-active.eterx-sidebar-chat-working .eterx-sidebar-chat-title {
+    color: var(--sidebar-active-text) !important;
+  }
+
+  @keyframes eterx-sidebar-spin {
+    to {
+      transform: rotate(360deg);
+    }
   }
 
   @media (min-width: 769px) {
@@ -311,18 +491,20 @@ interface SidebarProps {
   activeView: 'chat' | 'code' | 'agents' | 'channels' | 'projects';
   setActiveView: (view: 'chat' | 'code' | 'agents' | 'channels' | 'projects') => void;
   runningChats?: Set<string>;
+  unreadChats?: Set<string>;
   onSettingsClick?: () => void;
   isThinking?: boolean;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
-  isOpen, setIsOpen, createNewChat, chats, activeChatId, loadChat, deleteChat, deleteChats, renameChat, toggleFavorite, onSearchClick, activeView, setActiveView, runningChats, onSettingsClick, isThinking
+  isOpen, setIsOpen, createNewChat, chats, activeChatId, loadChat, deleteChat, deleteChats, renameChat, toggleFavorite, onSearchClick, activeView, setActiveView, runningChats, unreadChats, onSettingsClick, isThinking
 }) => {
   const [menuState, setMenuState] = React.useState<{ id: string, x: number, y: number, dropUp: boolean } | null>(null);
   const [toggleHovered, setToggleHovered] = React.useState(false);
   const [isMobile, setIsMobile] = React.useState(false);
   const [sidebarWidth, setSidebarWidth] = React.useState(SIDEBAR_DEFAULT_WIDTH);
   const [isResizingSidebar, setIsResizingSidebar] = React.useState(false);
+  const [now, setNow] = React.useState(() => Date.now());
   const resizeStartRef = React.useRef({ x: 0, width: SIDEBAR_DEFAULT_WIDTH });
   const resizeCurrentWidthRef = React.useRef(SIDEBAR_DEFAULT_WIDTH);
   const resizeLastClientXRef = React.useRef<number | null>(null);
@@ -332,6 +514,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
     handleResize();
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  React.useEffect(() => {
+    const intervalId = window.setInterval(() => setNow(Date.now()), MINUTE_MS);
+    return () => window.clearInterval(intervalId);
   }, []);
 
   React.useEffect(() => {
@@ -593,8 +780,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
         }
 
         if (velocity !== 0) {
-          const edgeDwell = Math.max(0, timestamp - dragEdgeStateRef.current.enteredAt);
-          const dwellFactor = Math.min(1, edgeDwell / 180);
+          const egeDwell = Math.max(0, timestamp - dragEdgeStateRef.current.enteredAt);
+          const dwellFactor = Math.min(1, egeDwell / 180);
           const delta = lastTimestamp ? Math.min(32, timestamp - lastTimestamp) / 1000 : 1 / 60;
           container.scrollTop += velocity * dwellFactor * delta;
         }
@@ -863,7 +1050,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
           {/* Expanded Recents List */}
           {isOpen ? (
-            <div className="eterx-sidebar-recents flex-1 mt-2 mx-2 mb-1 bg-transparent rounded-[14px] border border-transparent flex flex-col py-2.5 overflow-hidden relative">
+            <div className="eterx-sidebar-recents flex-1 mt-2 ml-2 mr-2 mb-1 bg-transparent rounded-[14px] border border-transparent flex flex-col py-2.5 overflow-hidden relative">
               <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-[var(--sidebar-surface-border)]" />
               <div className="flex items-center justify-between px-3.5 mb-1.5 min-h-[26px] relative z-30">
                 <div className="flex min-w-0 items-baseline gap-2">
@@ -936,17 +1123,19 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
               <div
                 ref={scrollContainerRef}
-                className="flex-1 overflow-y-auto eterx-scrollbar pl-2 pr-1.5 mr-1 space-y-0.5 relative z-10"
+                className="eterx-sidebar-recents-scroll flex-1 overflow-y-auto eterx-scrollbar pl-2 pr-0 mr-0 space-y-0.5 relative z-10"
                 style={{ scrollBehavior: isDragSelecting ? 'auto' : undefined, overscrollBehavior: 'contain' }}
               >
                 {chats.length === 0 ? (
                   <div className="eterx-sidebar-empty px-3 py-2 text-[12.5px] text-[var(--sidebar-muted-text)]">No recent chats</div>
                 ) : (
-                  chats.map((chat, index) => {
+                  chats.map((chat) => {
                     const isActive = activeChatId === chat.id && activeView === 'chat';
                     const isWorking = runningChats?.has(chat.id) ?? false;
+                    const hasUnread = !isActive && !isWorking && (unreadChats?.has(chat.id) ?? false);
                     const isMenuOpen = menuState?.id === chat.id;
                     const isSelected = selectedChatIds.has(chat.id);
+                    const timeLabel = formatChatUpdatedAt(chat.updatedAt, now);
 
                     return (
                       <div
@@ -966,6 +1155,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
                             applyChatSelection(chat.id, willSelect);
                           }
                         }}
+                        onContextMenu={(e) => {
+                          if (isWorking || isSelectMode) return;
+                          e.preventDefault();
+                          e.stopPropagation();
+                          const dropUp = e.clientY + 220 > window.innerHeight;
+                          setMenuState({ id: chat.id, x: e.clientX, y: dropUp ? e.clientY - 200 : e.clientY, dropUp });
+                        }}
                         data-chat-id={chat.id}
                         aria-current={isActive && !isSelectMode ? 'page' : undefined}
                         onClick={() => {
@@ -974,7 +1170,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                           }
                         }}
                         style={glassClickStyle(`chat-${ chat.id }`)}
-                        className={`eterx-sidebar-click-surface eterx-sidebar-chat-row ${ glassClickClass(`chat-${ chat.id }`) } ${ isActive && !isSelectMode ? 'eterx-sidebar-chat-active' : '' } ${ isWorking && !isSelectMode ? 'eterx-sidebar-chat-working' : '' } ${ isSelectMode && isSelected ? 'eterx-sidebar-chat-selected' : '' } w-full min-h-[38px] text-left px-3 transition-colors duration-150 ease-out flex items-center group cursor-pointer text-[13px] leading-normal rounded-[10px] border relative z-0 overflow-hidden ${ isActive && !isSelectMode ? 'bg-[var(--sidebar-active-bg)] text-[var(--sidebar-active-text)] border-transparent font-medium' : isWorking && !isSelectMode ? 'bg-transparent text-[var(--sidebar-text)] border-transparent' : 'text-[var(--sidebar-text)] border-transparent' } ${ isSelectMode && isSelected ? 'bg-[var(--sidebar-active-bg)] text-[var(--sidebar-active-text)] border-transparent' : '' } ${ isSelectMode ? 'select-none touch-none' : '' }`}
+                        className={`eterx-sidebar-click-surface eterx-sidebar-chat-row ${ glassClickClass(`chat-${ chat.id }`) } ${ isActive && !isSelectMode ? 'eterx-sidebar-chat-active' : '' } ${ isWorking && !isSelectMode ? 'eterx-sidebar-chat-working' : '' } ${ hasUnread && !isSelectMode ? 'eterx-sidebar-chat-unread' : '' } ${ isSelectMode && isSelected ? 'eterx-sidebar-chat-selected' : '' } w-full min-h-[38px] text-left px-3 transition-colors duration-150 ease-out flex items-center group cursor-pointer text-[13px] leading-normal rounded-[10px] border relative z-0 overflow-hidden ${ isActive && !isSelectMode ? 'bg-[var(--sidebar-active-bg)] text-[var(--sidebar-active-text)] border-transparent font-medium' : isWorking && !isSelectMode ? 'bg-transparent text-[var(--sidebar-text)] border-transparent' : 'text-[var(--sidebar-text)] border-transparent' } ${ isSelectMode && isSelected ? 'bg-[var(--sidebar-active-bg)] text-[var(--sidebar-active-text)] border-transparent' : '' } ${ isSelectMode ? 'select-none touch-none' : '' }`}
                       >
                         {isSelectMode && (
                           <span
@@ -985,13 +1181,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
                           </span>
                         )}
 
-                        <div className={`eterx-sidebar-chat-content ${ !isWorking && !isSelectMode && (isMenuOpen || isActive) ? 'eterx-sidebar-chat-content-menu-visible' : '' } ${ isWorking && !isSelectMode ? 'eterx-sidebar-chat-content-working' : '' } flex min-w-0 items-center overflow-hidden flex-1 relative z-10 w-full pl-0`}>
+                        <div className={`eterx-sidebar-chat-content ${ !isWorking && !isSelectMode && isMenuOpen ? 'eterx-sidebar-chat-content-menu-visible' : '' } ${ isWorking && !isSelectMode ? 'eterx-sidebar-chat-content-working' : '' } flex min-w-0 items-center overflow-hidden flex-1 relative z-10 w-full pl-0`}>
                           {isWorking ? (
-                            <motion.span
-                              className="eterx-sidebar-chat-title truncate relative z-10 eterx-text-shimmer eterx-text-shimmer-ambient font-medium leading-normal"
-                            >
+                            <span className="eterx-sidebar-chat-title truncate relative z-10 font-medium leading-normal">
                               {chat.title}
-                            </motion.span>
+                            </span>
                           ) : editingChatId === chat.id ? (
                             <input
                               autoFocus
@@ -1020,34 +1214,42 @@ export const Sidebar: React.FC<SidebarProps> = ({
                           )}
                         </div>
 
-                        {isWorking && (
-                          <div className="eterx-sidebar-working-fade absolute right-0 top-0 bottom-0 w-[3.25rem] pointer-events-none z-20 flex items-center justify-end rounded-r-[10px] pr-3">
-                            <div className="eterx-sidebar-loading-spinner w-[14px] h-[14px] rounded-full border-[2px] border-[#8E918F]/30 border-r-[#3A3835] animate-[spin_0.8s_linear_infinite]" />
+                        {!isSelectMode && (
+                          <div className={`eterx-sidebar-chat-meta ml-2 flex shrink-0 items-center justify-end relative z-10 ${ isMenuOpen ? 'eterx-sidebar-chat-meta-hidden' : '' }`}>
+                            {isWorking ? (
+                              <span className="eterx-sidebar-running-indicator" aria-label="Agent working" />
+                            ) : hasUnread ? (
+                              <span className="eterx-sidebar-unread-dot" aria-label="Unread agent update" />
+                            ) : timeLabel ? (
+                              <span className="eterx-sidebar-chat-time tabular-nums" title={new Date(chat.updatedAt).toLocaleString()}>{timeLabel}</span>
+                            ) : null}
                           </div>
                         )}
 
-                        <div className="absolute right-1.5 top-1/2 z-30 flex h-7 w-7 -translate-y-1/2 items-center justify-center">
-                          <button
-                            type="button"
-                            aria-label="Chat options"
-                            onMouseDown={(e) => triggerGlassClick(e, `chat-menu-${ chat.id }`)}
-                            style={glassClickStyle(`chat-menu-${ chat.id }`)}
-                            className={`eterx-sidebar-click-surface eterx-sidebar-chat-menu-button ${ glassClickClass(`chat-menu-${ chat.id }`) } flex h-7 w-7 items-center justify-center rounded-[8px] bg-transparent transition-colors duration-150 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--sidebar-focus-ring)] ${ isMenuOpen ? 'opacity-100 text-[var(--sidebar-active-text)] border border-transparent' : (isWorking || isSelectMode ? 'opacity-0 pointer-events-none hidden' : `${ isActive ? 'opacity-100' : 'opacity-0 group-hover:opacity-100' } text-[var(--sidebar-muted-text)] hover:bg-transparent hover:text-[var(--sidebar-hover-text)] border border-transparent`) } relative z-40`}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              if (isWorking) return;
-                              if (isMenuOpen) {
-                                setMenuState(null);
-                              } else {
-                                const rect = e.currentTarget.getBoundingClientRect();
-                                const dropUp = rect.bottom + 220 > window.innerHeight;
-                                setMenuState({ id: chat.id, x: rect.right, y: dropUp ? rect.top : rect.bottom, dropUp });
-                              }
-                            }}
-                          >
-                            <PremiumMoreHorizontal className="w-4 h-4 transition-colors duration-150" />
-                          </button>
-                        </div>
+                        {!isSelectMode && (
+                          <div className="absolute right-1.5 top-1/2 z-30 flex h-7 w-7 -translate-y-1/2 items-center justify-center">
+                            <button
+                              type="button"
+                              aria-label="Chat options"
+                              onMouseDown={(e) => triggerGlassClick(e, `chat-menu-${ chat.id }`)}
+                              style={glassClickStyle(`chat-menu-${ chat.id }`)}
+                              className={`eterx-sidebar-click-surface eterx-sidebar-chat-menu-button ${ glassClickClass(`chat-menu-${ chat.id }`) } flex h-7 w-7 items-center justify-center rounded-[8px] bg-transparent transition-colors duration-150 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--sidebar-focus-ring)] ${ isMenuOpen ? 'opacity-100 text-[var(--sidebar-active-text)] border border-transparent' : (isWorking || isSelectMode ? 'opacity-0 pointer-events-none hidden' : 'opacity-0 group-hover:opacity-100 text-[var(--sidebar-muted-text)] hover:bg-transparent hover:text-[var(--sidebar-hover-text)] border border-transparent') } relative z-40`}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (isWorking) return;
+                                if (isMenuOpen) {
+                                  setMenuState(null);
+                                } else {
+                                  const rect = e.currentTarget.getBoundingClientRect();
+                                  const dropUp = rect.bottom + 220 > window.innerHeight;
+                                  setMenuState({ id: chat.id, x: rect.right, y: dropUp ? rect.top : rect.bottom, dropUp });
+                                }
+                              }}
+                            >
+                              <PremiumMoreHorizontal className="w-4 h-4 transition-colors duration-150" />
+                            </button>
+                          </div>
+                        )}
                       </div>
                     );
                   })

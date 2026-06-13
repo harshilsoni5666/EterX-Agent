@@ -39,7 +39,9 @@ export async function GET(req: NextRequest) {
       });
 
       // Replay recent events
-      const recent = monitorEmitter.getRecent(onlyFrames ? 5 : 80);
+      const recent = chatId
+        ? monitorEmitter.getRecentForChat(chatId, onlyFrames ? 5 : 80, { includeVisual: true })
+        : monitorEmitter.getRecent(onlyFrames ? 5 : 80);
       for (const ev of recent) {
         if (closed) break;
         if (onlyFrames && ev.type !== 'live_frame' && ev.type !== 'desktop_screenshot' && ev.type !== 'browser_screenshot') continue;
@@ -47,14 +49,14 @@ export async function GET(req: NextRequest) {
       }
 
       // Subscribe to new events
-      const unsub = monitorEmitter.subscribe((ev) => {
+      const onEvent = (ev: any) => {
         if (closed) return;
         if (onlyFrames && ev.type !== 'live_frame' && ev.type !== 'desktop_screenshot' && ev.type !== 'browser_screenshot' && ev.type !== 'heartbeat') return;
-        // Visual frames (live stream and screenshots) represent the current system screen state and should bypass chat-specific filtering
-        const isVisualEvent = ev.type === 'live_frame' || ev.type === 'desktop_screenshot' || ev.type === 'browser_screenshot';
-        if (chatId && ev.chatId && ev.chatId !== chatId && !isVisualEvent) return;
         send(ev);
-      });
+      };
+      const unsub = chatId
+        ? monitorEmitter.subscribeForChat(chatId, onEvent, { replay: false, includeVisual: true })
+        : monitorEmitter.subscribe(onEvent);
 
       // Heartbeat every 8s
       const hb = setInterval(() => {

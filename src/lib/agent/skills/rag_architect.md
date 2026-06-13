@@ -1,8 +1,4 @@
 ---
-description: name: "rag-architect"
----
-
----
 name: "rag-architect"
 description: "Use when the user asks to design RAG pipelines, optimize retrieval strategies, choose embedding models, implement vector search, or build knowledge retrieval systems."
 ---

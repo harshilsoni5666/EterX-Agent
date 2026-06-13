@@ -65,6 +65,7 @@ export class NetworkMonitor {
   private maxEntries: number = 500;
   private blockedCount: number = 0;
   private interceptedPages: WeakSet<any> = new WeakSet();
+  private requestIds: WeakMap<any, string> = new WeakMap();
   
   // Per-page route handlers for cleanup
   private routeHandlers: Map<string, any> = new Map();
@@ -79,6 +80,7 @@ export class NetworkMonitor {
     // Listen to all requests
     page.on('request', (req: any) => {
       const id = `${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+      this.requestIds.set(req, id);
       this.requests.set(id, {
         id,
         url: req.url(),
@@ -97,32 +99,27 @@ export class NetworkMonitor {
     });
 
     page.on('response', (res: any) => {
-      const url = res.url();
-      // Find the matching request
-      for (const [id, req] of this.requests) {
-        if (req.url === url && !req.status) {
-          req.status = res.status();
-          req.statusText = res.statusText();
-          req.responseHeaders = res.headers();
-          req.duration = Date.now() - req.timestamp;
-          try {
-            const contentLength = res.headers()['content-length'];
-            if (contentLength) req.responseSize = parseInt(contentLength);
-          } catch {}
-          break;
-        }
+      const id = this.requestIds.get(res.request?.());
+      const req = id ? this.requests.get(id) : undefined;
+      if (req) {
+        req.status = res.status();
+        req.statusText = res.statusText();
+        req.responseHeaders = res.headers();
+        req.duration = Date.now() - req.timestamp;
+        try {
+          const contentLength = res.headers()['content-length'];
+          if (contentLength) req.responseSize = parseInt(contentLength);
+        } catch {}
       }
     });
 
     page.on('requestfailed', (req: any) => {
-      const url = req.url();
-      for (const [id, r] of this.requests) {
-        if (r.url === url && !r.status) {
-          r.failed = true;
-          r.failureText = req.failure()?.errorText || 'Unknown';
-          r.duration = Date.now() - r.timestamp;
-          break;
-        }
+      const id = this.requestIds.get(req);
+      const record = id ? this.requests.get(id) : undefined;
+      if (record) {
+        record.failed = true;
+        record.failureText = req.failure()?.errorText || 'Unknown';
+        record.duration = Date.now() - record.timestamp;
       }
     });
 
@@ -202,8 +199,13 @@ export class NetworkMonitor {
 
     if (filter) {
       if (filter.urlPattern) {
-        const regex = new RegExp(filter.urlPattern, 'i');
-        results = results.filter(r => regex.test(r.url));
+        try {
+          const regex = new RegExp(filter.urlPattern, 'i');
+          results = results.filter(r => regex.test(r.url));
+        } catch {
+          const needle = filter.urlPattern.toLowerCase();
+          results = results.filter(r => r.url.toLowerCase().includes(needle));
+        }
       }
       if (filter.method) {
         results = results.filter(r => r.method === filter.method!.toUpperCase());

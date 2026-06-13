@@ -138,10 +138,11 @@ export const workspaceWriteTool: ToolDefinition = {
   inputSchema: z.object({
     filename: z.string().describe('File path — absolute or relative to workspace'),
     content: z.string().describe('Content to write'),
-    append: z.boolean().optional().describe('Set to true to append to the file instead of overwriting. EXTREMELY helpful for the auto-chunk workflow.')
+    append: z.boolean().optional().describe('Set to true to append to the file instead of overwriting. EXTREMELY helpful for the auto-chunk workflow.'),
+    overwrite: z.boolean().optional().describe('Explicitly allow replacing an existing file. Defaults to false because this tool is intended for new files.')
   }),
   outputSchema: z.object({ success: z.boolean(), path: z.string() }),
-  execute: async (input: { filename: string, content: string, append?: boolean }, context?: any) => {
+  execute: async (input: { filename: string, content: string, append?: boolean, overwrite?: boolean }, context?: any) => {
     // Guard against undefined/empty filename — this was causing "path must be string" crashes
     if (!input.filename || typeof input.filename !== 'string' || !input.filename.trim()) {
       return { success: false, error: 'INVALID FILENAME: You must provide a valid filename string. Do not pass undefined or empty string.', path: '' };
@@ -171,6 +172,13 @@ export const workspaceWriteTool: ToolDefinition = {
       try {
         const existingStat = await fs.stat(filePath);
         if (existingStat.isFile()) {
+          if (!input.overwrite) {
+            return {
+              success: false,
+              error: `Refusing to overwrite existing file: ${filePath}. Use workspace_str_replace/workspace_apply_patch for edits, append=true to append, or overwrite=true only when replacing the whole file is intentional.`,
+              path: filePath,
+            };
+          }
           const existingContent = await fs.readFile(filePath, 'utf-8');
           const existingLines = existingContent.split('\n').length;
           

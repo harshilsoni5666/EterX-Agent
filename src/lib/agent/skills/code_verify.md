@@ -1,4 +1,4 @@
----
+﻿---
 name: Code Verify
 id: code_verify
 description: Verify code correctness by running tests, type checking, linting, and build validation. Ensure code works before reporting done.

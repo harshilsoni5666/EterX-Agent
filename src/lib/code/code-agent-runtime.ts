@@ -28,7 +28,7 @@ const BUDGET_WARN_THRESHOLD = 350;
 
 export const CODING_AGENT_SPEED_RULES = `
 CODING FAST MODE:
-- No task_decomposer, no sub-agents, no background scouting unless the user explicitly asks.
+- Use task_decomposer, sub-agents, and background scouting only when they create real leverage: broad scope, independent review, long-running checks, or UI/server workflows.
 - Explore with workspace_semantic_search + workspace_symbol_lookup before broad reads.
 - Batch reads with workspace_read_many_files. Never read the same file twice in one task unless it changed.
 - Default edit tool: workspace_str_replace. One precise change per call. It returns diff + readback automatically.

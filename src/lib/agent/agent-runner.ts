@@ -14,15 +14,19 @@ import { GoogleGenAI } from '@google/genai';
 import { apiKeyPool } from './api-key-pool';
 import { readAgentBuilderProfile, type AgentBuilderProfile } from './builder-agent';
 import { resolveAgentTools, type ResolvedTool } from './tool-injector';
-import { globalToolRegistry } from './tools/registry';
+import { globalToolRegistry, normalizeRegistryToolName } from './tools/registry';
+import { normalizeRegistryToolArgs, validateRegistryToolArgs } from './tools/tool-args';
+import { enforceToolCapability } from './tools/security/tool_policy';
 import { getPathResolverInfo } from './workspace/path_resolver';
+import { createToolExecutionContext, isToolCancellationError } from './cancellation';
+import type { ScopedRuntimeSettings } from './runtime-api-keys';
 
 // ═══════════════════════════════════════════════════════════════
 // Types
 // ═══════════════════════════════════════════════════════════════
 
 export interface AgentRunnerEvent {
-  type: 'text' | 'tool_call' | 'tool_result' | 'status' | 'error' | 'done';
+  type: 'text' | 'tool_call' | 'tool_result' | 'status' | 'error' | 'done' | 'ask_user';
   text?: string;
   toolName?: string;
   toolArgs?: Record<string, unknown>;
@@ -30,6 +34,7 @@ export interface AgentRunnerEvent {
   agentId?: string;
   agentName?: string;
   timestamp: number;
+  [key: string]: unknown;
 }
 
 export interface AgentRunnerConfig {
@@ -38,6 +43,9 @@ export interface AgentRunnerConfig {
   temperature?: number;
   model?: string;
   preferredGeminiApiKey?: string;
+  runtimeSettings?: ScopedRuntimeSettings | null;
+  chatId?: string;
+  agentSessionId?: string;
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -49,6 +57,7 @@ export class AgentRunner {
   private resolvedTools: ResolvedTool[] = [];
   private toolPrompt = '';
   private cancelled = false;
+  private cancelController: AbortController | null = null;
 
   /** Load an agent profile from disk */
   async loadAgent(agentId: string): Promise<AgentBuilderProfile> {
@@ -212,6 +221,7 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
   /** Cancel the running agent */
   cancel(): void {
     this.cancelled = true;
+    this.cancelController?.abort();
   }
 
   /**
@@ -234,6 +244,7 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
     }
 
     this.cancelled = false;
+    this.cancelController = new AbortController();
     const maxIter = config.maxIterations || 20;
     const agentName = this.profile?.name || config.agentId;
     const TOOL_TIMEOUT_MS = 45_000; // Default non-terminal tool guard
@@ -241,9 +252,19 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
     // Lease an API key
     apiKeyPool.initialize();
     const sessionId = `custom_agent_${config.agentId}_${Date.now()}`;
-    const lease = config.preferredGeminiApiKey
-      ? apiKeyPool.leaseSpecificKey(sessionId, config.preferredGeminiApiKey, 'main_agent') || apiKeyPool.leaseKey(sessionId, 'main_agent')
-      : apiKeyPool.leaseKey(sessionId, 'main_agent');
+    const scopedGeminiKeys = config.runtimeSettings?.apiKeys?.gemini || [];
+    let lease = config.preferredGeminiApiKey
+      ? apiKeyPool.leaseSpecificKey(sessionId, config.preferredGeminiApiKey, 'main_agent')
+      : null;
+    if (!lease) {
+      for (const key of scopedGeminiKeys) {
+        lease = apiKeyPool.leaseSpecificKey(sessionId, key, 'main_agent');
+        if (lease) break;
+      }
+    }
+    if (!lease) {
+      lease = apiKeyPool.leaseKey(sessionId, 'main_agent');
+    }
     if (!lease) {
       yield { type: 'error', text: 'No API keys available. Please check your API key configuration.', timestamp: Date.now() };
       return;
@@ -378,12 +399,42 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
               // Execute the tool with timeout protection
               let result: unknown;
               try {
-                const execPromise = this.executeToolSafe(name || '', args || {}, config.agentId);
+                const sideEvents: AgentRunnerEvent[] = [];
+                const pushSideEvent = (trace: any) => {
+                  if (!trace || typeof trace !== 'object') return;
+                  sideEvents.push({
+                    ...trace,
+                    type: trace.type || 'status',
+                    agentId: config.agentId,
+                    agentName,
+                    timestamp: Number(trace.timestamp || Date.now()),
+                  } as AgentRunnerEvent);
+                };
+                const execPromise = this.executeToolSafe(name || '', args || {}, config, pushSideEvent);
                 const toolTimeoutMs = this.resolveToolTimeoutMs(name || '', args || {}, TOOL_TIMEOUT_MS);
-                const timeoutPromise = new Promise<{ error: string }>((_, reject) =>
+                const timeoutPromise = new Promise<never>((_, reject) =>
                   setTimeout(() => reject(new Error(`Tool "${name}" timed out after ${toolTimeoutMs / 1000}s`)), toolTimeoutMs)
                 );
-                result = await Promise.race([execPromise, timeoutPromise]);
+                const resultPromise = Promise.race([execPromise, timeoutPromise]);
+
+                while (true) {
+                  const settled = await Promise.race([
+                    resultPromise.then(
+                      value => ({ status: 'fulfilled' as const, value }),
+                      error => ({ status: 'rejected' as const, error }),
+                    ),
+                    new Promise<null>(resolve => setTimeout(() => resolve(null), 100)),
+                  ]);
+
+                  while (sideEvents.length > 0) {
+                    yield sideEvents.shift()!;
+                  }
+
+                  if (!settled) continue;
+                  if (settled.status === 'rejected') throw settled.error;
+                  result = settled.value;
+                  break;
+                }
               } catch (err: any) {
                 result = { error: err.message || 'Tool execution failed' };
               }
@@ -475,6 +526,7 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
 
     } finally {
       apiKeyPool.releaseKey(sessionId);
+      this.cancelController = null;
     }
   }
 
@@ -505,28 +557,79 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
   private async executeToolSafe(
     toolName: string,
     args: any,
-    agentId: string
+    config: AgentRunnerConfig,
+    onTrace?: (trace: any) => void
   ): Promise<unknown> {
+    const agentId = config.agentId;
+    const chatId = config.chatId || `custom-agent-${agentId}`;
     const context = {
       agentId,
       agentRuntime: 'custom_agent' as const,
+      projectId: chatId,
+      chatId,
+      agentSessionId: config.agentSessionId || '',
       workspaceRoot: getPathResolverInfo().desktopPath,
       paths: [getPathResolverInfo().desktopPath],
+      allowedPaths: [getPathResolverInfo().desktopPath],
+      allowedCapabilities: [
+        'command.workspace',
+        'filesystem.read',
+        'filesystem.write',
+        'tool.utility',
+        'memory.manage',
+        'network.public',
+        'browser.control',
+      ],
+      allowBrowserControl: true,
+      networkPolicy: 'deny',
+      _onTrace: onTrace,
+      abortSignal: this.cancelController?.signal,
+      signal: this.cancelController?.signal,
+      isCancelled: () => this.cancelled || this.cancelController?.signal.aborted === true,
     };
+    const canonicalToolName = normalizeRegistryToolName(toolName);
+    const registryTool = globalToolRegistry.getTool(canonicalToolName);
+    let effectiveArgs = normalizeRegistryToolArgs(canonicalToolName, args);
 
+    if (registryTool) {
+      const validation = validateRegistryToolArgs(registryTool, effectiveArgs);
+      if (!validation.success) return { error: validation.error };
+      effectiveArgs = validation.args;
+
+      const capabilityDecision = enforceToolCapability(canonicalToolName, effectiveArgs, context);
+      if (!capabilityDecision.allowed) {
+        return { error: capabilityDecision.reason || `Tool ${canonicalToolName} is not allowed` };
+      }
+    }
+
+    const toolExec = createToolExecutionContext(context, onTrace);
     // Priority 1: Resolved tool from agent profile
-    const resolvedTool = this.resolvedTools.find(t => t.name === toolName);
-    if (resolvedTool?.execute) {
-      return await resolvedTool.execute(args, context);
-    }
+    try {
+      toolExec.throwIfCancelled();
+      const resolvedTool = this.resolvedTools.find(t => t.name === toolName);
+      if (resolvedTool?.execute) {
+        const result = await resolvedTool.execute(effectiveArgs, toolExec.context);
+        toolExec.throwIfCancelled();
+        return result;
+      }
 
-    // Priority 2: Global tool registry
-    const regTool = globalToolRegistry.getTool(toolName);
-    if (regTool?.execute) {
-      return await regTool.execute(args, context);
-    }
+      // Priority 2: Global tool registry
+      const regTool = registryTool || globalToolRegistry.getTool(toolName);
+      if (regTool?.execute) {
+        const result = await regTool.execute(effectiveArgs, toolExec.context);
+        toolExec.throwIfCancelled();
+        return result;
+      }
 
-    return { error: `Tool "${toolName}" not found. Available tools: ${this.resolvedTools.map(t => t.name).join(', ')}` };
+      return { error: `Tool "${toolName}" not found. Available tools: ${this.resolvedTools.map(t => t.name).join(', ')}` };
+    } catch (error: any) {
+      if (isToolCancellationError(error) || toolExec.signal.aborted) {
+        return { error: 'CANCELLED_BY_USER', cancelled: true };
+      }
+      throw error;
+    } finally {
+      toolExec.dispose();
+    }
   }
 }
 

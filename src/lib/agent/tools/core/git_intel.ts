@@ -3,6 +3,7 @@ import { ToolDefinition } from '../../schemas';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import path from 'path';
+import { enforceToolCapability } from '../security/tool_policy';
 
 const execAsync = promisify(exec);
 
@@ -48,7 +49,12 @@ EXAMPLES:
     branch: z.string().optional().describe('Target branch (for conflict_check)')
   }),
   outputSchema: z.object({ success: z.boolean(), result: z.any(), message: z.string() }),
-  execute: async (input: { mode: string, message?: string, count?: number, branch?: string }) => {
+  execute: async (input: { mode: string, message?: string, count?: number, branch?: string }, context?: any) => {
+    const decision = enforceToolCapability('git_intelligence', input, context);
+    if (!decision.allowed) {
+      return { success: false, result: null, message: decision.reason || 'Git intelligence is not allowed' };
+    }
+
     const cwd = process.cwd();
 
     const run = async (cmd: string): Promise<string> => {

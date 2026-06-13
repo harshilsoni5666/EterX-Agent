@@ -18,9 +18,16 @@ Use this file when creating an EterX custom agent from this pack.
 Attach these EterX tools first:
 
 - `workspace_list_directory`
+- `workspace_semantic_search`
+- `workspace_symbol_lookup`
+- `workspace_find_files`
 - `workspace_search_text`
+- `workspace_read_many_files`
 - `workspace_read_file`
+- `workspace_str_replace`
+- `workspace_apply_patch`
 - `workspace_edit_file`
+- `workspace_edit_many_files`
 - `workspace_write_file`
 - `workspace_run_command`
 - `workspace_verify_code`
@@ -46,7 +53,6 @@ Attach these EterX tools first:
 - `deep_research`
 - `image_asset_search`
 - `project_scaffolder`
-- `diff_patch`
 
 ## Tool Attachment Guidance
 
@@ -60,11 +66,11 @@ For each attached tool, include:
 Example:
 
 ```text
-Tool: workspace_edit_file
-Purpose: Apply precise edits to existing workspace files.
-When to use: After reading the target file and identifying exact changes.
-Input policy: Prefer exact search and replace; use line ranges only when needed.
-Output policy: Re-read or verify changed content before finalizing.
+Tool: workspace_str_replace
+Purpose: Apply precise exact-text edits to existing workspace files.
+When to use: Default edit path after reading the target range and identifying the exact change.
+Input policy: Provide exact old_string and new_string, including whitespace.
+Output policy: Use returned diff/readback as evidence; re-read only when the result is ambiguous.
 ```
 
 ## Custom Tools To Consider Later

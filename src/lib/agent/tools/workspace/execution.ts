@@ -14,6 +14,7 @@ import {
   normalizeTimeoutMs,
   terminalTimeoutNote
 } from '../core/terminal_timeout';
+import { authorizeToolCommand } from '../security/command_broker';
 
 const execAsync = promisify(exec);
 
@@ -87,7 +88,22 @@ export const workspaceRunCommandTool: ToolDefinition = {
       };
     }
 
-    console.log(`[Tool: workspace_run_command] Executing: ${input.command} in ${runDir}`);
+    const authorization = await authorizeToolCommand({
+      command: input.command,
+      cwd: runDir,
+      context,
+      timeoutMs,
+      network: context?.networkPolicy === 'deny' ? 'deny' : 'allow',
+    });
+    if (!authorization.allowed) {
+      return {
+        stdout: '',
+        stderr: authorization.reason || 'Command blocked by command broker',
+        exitCode: 126,
+      };
+    }
+
+    console.log(`[Tool: workspace_run_command] Executing: ${input.command} in ${authorization.cwd}`);
     
     try {
       const { taskStore } = require('../../task-store');
@@ -97,10 +113,12 @@ export const workspaceRunCommandTool: ToolDefinition = {
         const { spawn } = require('child_process');
         // Run via shell to get exact command execution semantics
         const child = spawn(input.command, { 
-          cwd: runDir, 
-          shell: true
+          cwd: authorization.cwd, 
+          shell: true,
+          env: authorization.env
         });
         let didTimeout = false;
+        let abortedBySignal = false;
         let settled = false;
 
         const timeoutNote = () => terminalTimeoutNote(input.command, timeoutMs);
@@ -150,6 +168,23 @@ export const workspaceRunCommandTool: ToolDefinition = {
           killTimer.unref?.();
         };
 
+        const abortSignal = context?.abortSignal as AbortSignal | undefined;
+        const onAbort = () => {
+          if (settled || abortedBySignal) return;
+          abortedBySignal = true;
+          emitRuntimeTrace(context, {
+            type: 'timer_expired',
+            text: 'Terminal command cancelled',
+            title: 'Terminal command',
+            note: 'Command was stopped because the user cancelled the run.',
+            command: input.command,
+            iconCategory: 'terminal'
+          });
+          stopChildTree();
+        };
+        if (abortSignal?.aborted || context?.isCancelled?.()) onAbort();
+        else abortSignal?.addEventListener('abort', onAbort, { once: true });
+
         const timeoutTimer = setTimeout(() => {
           didTimeout = true;
           emitRuntimeTrace(context, {
@@ -169,6 +204,7 @@ export const workspaceRunCommandTool: ToolDefinition = {
           if (settled) return;
           settled = true;
           clearTimeout(timeoutTimer);
+          abortSignal?.removeEventListener('abort', onAbort);
           resolve(result);
         };
 
@@ -213,6 +249,17 @@ export const workspaceRunCommandTool: ToolDefinition = {
             return;
           }
 
+          if (abortedBySignal) {
+            finish({
+              stdout: finalOutput,
+              stderr: 'Command cancelled by user.',
+              exitCode: 130,
+              cancelled: true,
+              timeoutMs,
+            });
+            return;
+          }
+
           finish({
             stdout: finalOutput,
             stderr: '',
@@ -234,6 +281,17 @@ export const workspaceRunCommandTool: ToolDefinition = {
               timedOut: true,
               timeoutMs,
               nextActionNote: note
+            });
+            return;
+          }
+
+          if (abortedBySignal) {
+            finish({
+              stdout: combinedOutput,
+              stderr: 'Command cancelled by user.',
+              exitCode: 130,
+              cancelled: true,
+              timeoutMs,
             });
             return;
           }
@@ -362,16 +420,38 @@ export const workspaceExecuteScriptTool: ToolDefinition = {
     const scriptPath = path.join(runDir, `.eterx-temp-${Date.now()}${ext}`);
 
     try {
+      if (context?.abortSignal?.aborted || context?.isCancelled?.()) {
+        return { stdout: '', stderr: 'Script cancelled by user.', exitCode: 130, cancelled: true, timeoutMs };
+      }
+
       await fs.writeFile(scriptPath, input.script, 'utf-8');
       const command =
         input.language === 'powershell' ? `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${scriptPath}"` :
         input.language === 'python' ? `python "${scriptPath}"` :
         `node "${scriptPath}"`;
 
-      const { stdout, stderr } = await execAsync(command, {
+      const authorization = await authorizeToolCommand({
+        command,
         cwd: runDir,
+        context,
+        timeoutMs,
+        network: context?.networkPolicy === 'deny' ? 'deny' : 'allow',
+      });
+      if (!authorization.allowed) {
+        return {
+          stdout: '',
+          stderr: authorization.reason || 'Command blocked by command broker',
+          exitCode: 126,
+          timeoutMs,
+        };
+      }
+
+      const { stdout, stderr } = await execAsync(command, {
+        cwd: authorization.cwd,
+        env: authorization.env,
         maxBuffer: 8 * 1024 * 1024,
         timeout: timeoutMs,
+        signal: context?.abortSignal,
       });
 
       return {
@@ -381,6 +461,15 @@ export const workspaceExecuteScriptTool: ToolDefinition = {
         timeoutMs,
       };
     } catch (error: any) {
+      if (error?.name === 'AbortError' || context?.abortSignal?.aborted || context?.isCancelled?.()) {
+        return {
+          stdout: String(error.stdout || '').slice(0, 30000),
+          stderr: 'Script cancelled by user.',
+          exitCode: 130,
+          cancelled: true,
+          timeoutMs,
+        };
+      }
       if (isExecTimeoutError(error)) {
         const note = terminalTimeoutNote('workspace_execute_script', timeoutMs);
         return {
@@ -458,10 +547,40 @@ export const workspaceVerifyCodeTool: ToolDefinition = {
     console.log(`[Tool: workspace_verify_code] Verifying with: ${command} in ${workDir}`);
     
     try {
-      const { stdout, stderr } = await execAsync(command, { 
+      if (context?.abortSignal?.aborted || context?.isCancelled?.()) {
+        return {
+          passed: false,
+          errors: 1,
+          warnings: 0,
+          output: 'Verification cancelled by user.',
+          commandUsed: command,
+          cancelled: true,
+          timeoutMs,
+        };
+      }
+      const authorization = await authorizeToolCommand({
+        command,
         cwd: workDir,
+        context,
+        timeoutMs,
+        network: context?.networkPolicy === 'deny' ? 'deny' : 'allow',
+      });
+      if (!authorization.allowed) {
+        return {
+          passed: false,
+          errors: 1,
+          warnings: 0,
+          output: authorization.reason || 'Command blocked by command broker',
+          commandUsed: command,
+          timeoutMs,
+        };
+      }
+      const { stdout, stderr } = await execAsync(command, { 
+        cwd: authorization.cwd,
+        env: authorization.env,
         maxBuffer: 10 * 1024 * 1024,
-        timeout: timeoutMs
+        timeout: timeoutMs,
+        signal: context?.abortSignal,
       });
       const output = stdout + stderr;
       
@@ -479,6 +598,17 @@ export const workspaceVerifyCodeTool: ToolDefinition = {
     } catch (error: any) {
       const output = (error.stdout || '') + (error.stderr || error.message);
       const errorMatch = output.match(/(\d+)\s+errors?/i);
+      if (error?.name === 'AbortError' || context?.abortSignal?.aborted || context?.isCancelled?.()) {
+        return {
+          passed: false,
+          errors: errorMatch ? parseInt(errorMatch[1]) : 1,
+          warnings: 0,
+          output: 'Verification cancelled by user.',
+          commandUsed: command,
+          cancelled: true,
+          timeoutMs,
+        };
+      }
       if (isExecTimeoutError(error)) {
         const note = terminalTimeoutNote(command, timeoutMs);
         emitRuntimeTrace(context, {

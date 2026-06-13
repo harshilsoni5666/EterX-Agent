@@ -203,7 +203,13 @@ export class ConversationIntelligenceEngine {
     }
 
     // After debugging, suggest testing
-    if (this.snapshot.intentPhase === 'debugging' && toolsUsed.includes('workspace_edit_file')) {
+    const usedEditTool = toolsUsed.some(tool => [
+      'workspace_str_replace',
+      'workspace_apply_patch',
+      'workspace_edit_file',
+      'workspace_edit_many_files',
+    ].includes(tool));
+    if (this.snapshot.intentPhase === 'debugging' && usedEditTool) {
       suggestions.push({
         text: 'Run tests to verify the fix works correctly',
         confidence: 0.85,

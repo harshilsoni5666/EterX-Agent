@@ -13,6 +13,7 @@ import {
   resolveReadableWorkspacePathForContext,
 } from '../../workspace/path_resolver';
 import { docxGeneratorTool } from './docx';
+import { safeAxiosRequest } from '../shared/url_safety';
 
 const AdmZip = require('adm-zip');
 const execFileAsync = promisify(execFile);
@@ -230,15 +231,21 @@ async function materializeImage(source: string, context?: any): Promise<string |
       return resolveReadableForContext(source, context);
     }
 
-    const response = await fetch(source);
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const contentType = response.headers.get('content-type') || '';
+    const response = await safeAxiosRequest<ArrayBuffer>({
+      url: source,
+      method: 'GET',
+      responseType: 'arraybuffer',
+      timeout: 15000,
+    }, context);
+    if (response.status < 200 || response.status >= 300) throw new Error(`HTTP ${response.status}`);
+    const rawContentType = response.headers['content-type'];
+    const contentType = Array.isArray(rawContentType) ? rawContentType[0] || '' : String(rawContentType || '');
     if (!/^image\//i.test(contentType)) throw new Error(`URL is not an image (${contentType || 'unknown content type'})`);
     const ext = contentType.includes('png') ? '.png' : contentType.includes('webp') ? '.webp' : '.jpg';
     const tempDir = path.resolve(process.cwd(), '.temp', 'office-artifacts', 'images');
     await fse.ensureDir(tempDir);
     const imagePath = path.join(tempDir, `image_${Date.now()}_${Math.random().toString(16).slice(2)}${ext}`);
-    await fs.writeFile(imagePath, Buffer.from(await response.arrayBuffer()));
+    await fs.writeFile(imagePath, Buffer.from(response.data));
     return imagePath;
   } catch (error: any) {
     console.warn(`[office_artifact_builder] Could not materialize image "${source}": ${error.message}`);

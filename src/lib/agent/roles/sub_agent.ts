@@ -19,15 +19,42 @@ import { interAgentMailbox } from './inter_agent_comm';
  */
 
 const AGENT_NAMES = [
-  'Dave', 'Nova', 'Sam', 'Kai', 'Alex',
-  'Mira', 'Leo', 'Zara', 'Finn', 'Ivy',
-  'Max', 'Luna', 'Ash', 'Jade', 'Cole',
-  'Aria', 'Rex', 'Sage', 'Blake', 'Sky'
+  'Einstein', 'Heisenberg', 'Sam', 'Dario', 'Elon',
+  'Tesla', 'Newton', 'Turing', 'Ada', 'Curie',
+  'Feynman', 'Darwin', 'Hawking', 'Galileo', 'DaVinci',
+  'Aristotle', 'Oppenheimer', 'Gates', 'Jobs', 'Pascal'
 ] as const;
 
 export type SubAgentName = typeof AGENT_NAMES[number];
 
 const AGENTS_DIR = path.resolve(process.cwd(), '.workspaces', 'agents');
+
+function isPathInside(parent: string, candidate: string): boolean {
+  const relative = path.relative(parent, candidate);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function resolveUnder(parent: string, ...segments: string[]): string {
+  const resolved = path.resolve(parent, ...segments);
+  if (!isPathInside(parent, resolved)) {
+    throw new Error(`Resolved path escapes expected directory: ${resolved}`);
+  }
+  return resolved;
+}
+
+async function writeJsonAtomic(filePath: string, data: unknown): Promise<void> {
+  const dir = path.dirname(filePath);
+  await fs.ensureDir(dir);
+  const tmpPath = path.join(dir, `.${path.basename(filePath)}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`);
+  await fs.writeJson(tmpPath, data, { spaces: 2 });
+  await fs.move(tmpPath, filePath, { overwrite: true });
+}
+
+function safeAgentSegment(value: string, fallback: string): string {
+  return String(value || fallback)
+    .replace(/[^a-zA-Z0-9_-]/g, '_')
+    .slice(0, 80) || fallback;
+}
 
 // === PER-CHAT CANCELLATION FLAGS ===
 // Each chat has its own cancel flag. Stopping one chat doesn't kill another.
@@ -93,9 +120,9 @@ class AgentMessageBus {
   }
 
   private statusFilePath(agentName: string, projectId?: string): string {
-    const safeName = agentName.toLowerCase().replace(/[^a-z0-9_-]/g, '_');
-    const safeProject = projectId ? `${projectId.replace(/[^a-zA-Z0-9_-]/g, '_')}_` : '';
-    return path.join(AGENTS_DIR, `${safeProject}${safeName}.json`);
+    const safeName = safeAgentSegment(agentName.toLowerCase(), 'agent');
+    const safeProject = projectId ? `${safeAgentSegment(projectId, 'project')}_` : '';
+    return resolveUnder(AGENTS_DIR, `${safeProject}${safeName}.json`);
   }
 
   async writeAgentStatus(agentName: string, data: {
@@ -109,7 +136,7 @@ class AgentMessageBus {
   }, projectId?: string) {
     await this.ensureDir();
     const filePath = this.statusFilePath(agentName, projectId);
-    await fs.writeJson(filePath, { ...data, projectId, agentName, updatedAt: Date.now() }, { spaces: 2 });
+    await writeJsonAtomic(filePath, { ...data, projectId, agentName, updatedAt: Date.now() });
   }
 
   async readAgentStatus(agentName: string, projectId?: string): Promise<any | null> {
@@ -124,12 +151,12 @@ class AgentMessageBus {
     await this.ensureDir();
     const files = await fs.readdir(AGENTS_DIR);
     const statuses: Record<string, any> = {};
-    const safeProjectPrefix = projectId ? `${projectId.replace(/[^a-zA-Z0-9_-]/g, '_')}_` : '';
+    const safeProjectPrefix = projectId ? `${safeAgentSegment(projectId, 'project')}_` : '';
     for (const file of files) {
       if (file.endsWith('.json')) {
         if (projectId && !file.startsWith(safeProjectPrefix)) continue;
         try {
-          const data = await fs.readJson(path.join(AGENTS_DIR, file));
+          const data = await fs.readJson(resolveUnder(AGENTS_DIR, file));
           statuses[file.replace('.json', '')] = data;
         } catch { }
       }
@@ -143,11 +170,11 @@ class AgentMessageBus {
         await fs.emptyDir(AGENTS_DIR);
         return;
       }
-      const safeProjectPrefix = `${projectId.replace(/[^a-zA-Z0-9_-]/g, '_')}_`;
+      const safeProjectPrefix = `${safeAgentSegment(projectId, 'project')}_`;
       const files = await fs.readdir(AGENTS_DIR);
       await Promise.all(files
         .filter((file) => file.endsWith('.json') && file.startsWith(safeProjectPrefix))
-        .map((file) => fs.remove(path.join(AGENTS_DIR, file))));
+        .map((file) => fs.remove(resolveUnder(AGENTS_DIR, file))));
     }
   }
 }
@@ -156,6 +183,7 @@ export const agentMessageBus = new AgentMessageBus();
 
 interface SubAgentInstance {
   id: string;
+  projectId: string;
   name: SubAgentName;
   task: string;
   deepBrief: string;
@@ -230,9 +258,9 @@ export class SubAgentSpawner {
   }
 
   /** Build a TEAM-AWARE task brief for a sub-agent. */
-  private buildDeepBrief(task: string, agentName: SubAgentName, parentContext?: string): string {
+  private buildDeepBrief(task: string, agentName: SubAgentName, projectId: string, parentContext?: string): string {
     const otherAgents = Array.from(this.activeAgents.values())
-      .filter(a => a.status === 'running' && a.name !== agentName)
+      .filter(a => a.projectId === projectId && a.status === 'running' && a.name !== agentName)
       .map(a => `  • ${a.name}: "${(a as any).task?.substring(0, 60) || 'working'}"`)
       .join('\n');
     const teamSection = otherAgents
@@ -258,10 +286,10 @@ export class SubAgentSpawner {
     // Register agents in inter-agent mailbox
     interAgentMailbox.registerAgent(context.projectId, name);
     interAgentMailbox.registerAgent(context.projectId, 'Main');
-    const deepBrief = this.buildDeepBrief(task, name, parentContext);
+    const deepBrief = this.buildDeepBrief(task, name, context.projectId, parentContext);
     const traceLog: string[] = [];
     const instance: SubAgentInstance = {
-      id: agentId, name, task, deepBrief,
+      id: agentId, projectId: context.projectId, name, task, deepBrief,
       status: 'spawning', traceLog, startedAt: Date.now()
     };
     this.activeAgents.set(agentId, instance);
@@ -406,6 +434,7 @@ export class SubAgentSpawner {
       return { agentId, name, result: instance.result!, success: false, durationMs, traceLog };
     } finally {
       apiKeyPool.releaseSubAgentKey(context.projectId, name);
+      this.activeAgents.delete(agentId);
     }
   }
 
@@ -497,19 +526,24 @@ export class SubAgentSpawner {
     resetCancelFlag(context.projectId);
 
     const startTime = Date.now();
+    const reservedNames = new Set<SubAgentName>();
+    const agentNames = tasks.map((t) => {
+      const name = this.resolveAgentName(context.projectId, t.name, reservedNames);
+      reservedNames.add(name);
+      return name;
+    });
 
     if (onTrace) {
-      const spawnedAgents = tasks.map((t, i) => t.name || AGENT_NAMES[i % AGENT_NAMES.length]);
       onTrace({
         type: 'command',
         text: `Spawning ${ tasks.length } parallel agents`,
-        secondary: spawnedAgents.join(' + '),
-        spawnedAgents: spawnedAgents
+        secondary: agentNames.join(' + '),
+        spawnedAgents: agentNames
       });
     }
 
     const promises = tasks.map((t, index) => {
-      const name = t.name || this.getNextName();
+      const name = agentNames[index];
       return new Promise<any>(async (resolve) => {
         if (isCancelled(context.projectId)) {
           resolve({ agentId: '', name, result: 'Cancelled', success: false, durationMs: 0, traceLog: [] });
@@ -523,7 +557,7 @@ export class SubAgentSpawner {
             return;
           }
         }
-        const result = await this.spawnAgent(t.task, context, index, parentContext, onTrace, name as SubAgentName);
+        const result = await this.spawnAgent(t.task, context, index, parentContext, onTrace, name);
         resolve(result);
       });
     });

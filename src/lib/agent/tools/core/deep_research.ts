@@ -4,6 +4,7 @@ import { globalToolRegistry } from '../registry';
 import path from 'path';
 import fs from 'fs-extra';
 import { resolveFinalArtifactPathForContext } from '../../workspace/path_resolver';
+import { enforceToolCapability } from '../security/tool_policy';
 
 function detectTavilyTopic(text: string): 'general' | 'news' | 'finance' {
   const lower = text.toLowerCase();
@@ -108,7 +109,13 @@ Returns a structured research synthesis with sources.`,
     depth?: string,
     outputFile?: string
   }, context?: any) => {
+    const decision = enforceToolCapability('deep_research', input, context);
+    if (!decision.allowed) {
+      return { success: false, report: '', sources: [], savedTo: '', error: decision.reason || 'Deep research is not allowed' };
+    }
+
     const depth = input.depth || 'medium';
+    const networkContext = { ...(context || {}), allowNetwork: true, networkPolicy: 'allow' };
     const angles = (input.angles?.length ? input.angles : [
       input.topic,
       `${input.topic} current facts sources`,
@@ -137,7 +144,7 @@ Returns a structured research synthesis with sources.`,
           includeAnswer: true,
           includeRawContent: depth === 'deep',
           numResults: depth === 'deep' ? 8 : 5
-        }, {});
+        }, networkContext);
         return { angle, result, success: true };
       } catch (err: any) {
         return { angle, result: null, success: false, error: err.message };
@@ -172,7 +179,7 @@ Returns a structured research synthesis with sources.`,
             urls: selectedUrls,
             searchDepth: depth === 'deep' ? 'advanced' : 'basic',
             includeImages: false
-          }, {});
+          }, networkContext);
           const extractedResults = Array.isArray(extracted?.results) ? extracted.results : [];
           scrapedContent.push(...extractedResults
             .filter((item: any) => item?.url && (item?.rawContent || item?.content))
@@ -191,7 +198,7 @@ Returns a structured research synthesis with sources.`,
         .slice(0, Math.max(0, sourceTarget - scrapedContent.length))
         .map(async (url) => {
           try {
-            const result = await webScraper.execute({ url }, {});
+            const result = await webScraper.execute({ url }, networkContext);
             const content = typeof result === 'string'
               ? result
               : String(result?.textContext || result?.content || JSON.stringify(result));

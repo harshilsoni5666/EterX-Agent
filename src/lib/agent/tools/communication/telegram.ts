@@ -3,24 +3,32 @@ import { ToolDefinition } from '../../schemas';
 import fs from 'fs-extra';
 import path from 'path';
 import { resolveReadableWorkspacePathForContext } from '../../workspace/path_resolver';
+import { enforceToolCapability } from '../security/tool_policy';
+import { loadOptionalModule } from './optional_module';
+import { requireOutboundApproval } from './outbound_approval';
 
 let TelegramClient: any = null;
 let StringSession: any = null;
 let telegramAvailable = false;
+let telegramLoadAttempted = false;
 
-try {
-  const dynamicRequire = eval('require');
-  const telegram = dynamicRequire('telegram');
-  const sessions = dynamicRequire('telegram/sessions');
-  TelegramClient = telegram.TelegramClient;
-  StringSession = sessions.StringSession;
-  telegramAvailable = true;
-} catch {
-  console.warn('[Telegram] GramJS package not installed. User-account Telegram actions will be unavailable.');
+function ensureTelegramSdk(): boolean {
+  if (TelegramClient && StringSession) return true;
+  if (telegramLoadAttempted) return false;
+  telegramLoadAttempted = true;
+
+  const telegram = loadOptionalModule<any>('telegram');
+  const sessions = loadOptionalModule<any>('telegram/sessions');
+  TelegramClient = telegram?.TelegramClient || null;
+  StringSession = sessions?.StringSession || null;
+  telegramAvailable = Boolean(TelegramClient && StringSession);
+  if (telegramAvailable && !stringSession) stringSession = new StringSession('');
+  if (!telegramAvailable) console.warn('[Telegram] GramJS package not installed. User-account Telegram actions will be unavailable.');
+  return telegramAvailable;
 }
 
 const SESSION_FILE = path.resolve(process.cwd(), '.workspaces', '.telegram_session');
-let stringSession: any = telegramAvailable ? new StringSession('') : null;
+let stringSession: any = null;
 let tgClient: any = null;
 let tgReady = false;
 
@@ -31,6 +39,9 @@ let resolvePhone: ((phone: string) => void) | null = null;
 let resolveCode: ((code: string) => void) | null = null;
 let resolvePassword: ((pw: string) => void) | null = null;
 let authState = 'NOT_STARTED';
+
+const TELEGRAM_API_TIMEOUT_MS = 15_000;
+const TELEGRAM_BOT_METHODS = new Set(['getMe', 'sendMessage', 'sendDocument']);
 
 async function getTelegramBotToken(): Promise<string | null> {
   try {
@@ -47,18 +58,33 @@ async function getTelegramBotToken(): Promise<string | null> {
 }
 
 async function telegramApi(method: string, payload: any, isForm = false) {
+  if (!TELEGRAM_BOT_METHODS.has(method)) {
+    return { success: false, status: `Telegram API method is not allowed: ${method}` };
+  }
+
   const token = await getTelegramBotToken();
   if (!token) {
     return { success: false, status: 'Telegram bot is not connected. Set TELEGRAM_BOT_TOKEN in .env.local.' };
   }
 
-  const response = await fetch(`https://api.telegram.org/bot${token}/${method}`, isForm
-    ? { method: 'POST', body: payload }
-    : {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), TELEGRAM_API_TIMEOUT_MS);
+  let response: Response;
+  try {
+    response = await fetch(`https://api.telegram.org/bot${token}/${method}`, isForm
+      ? { method: 'POST', body: payload, signal: controller.signal }
+      : {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+  } catch (error: any) {
+    const timedOut = error?.name === 'AbortError';
+    return { success: false, status: timedOut ? 'Telegram API request timed out.' : `Telegram API request failed: ${error?.message || error}` };
+  } finally {
+    clearTimeout(timeout);
+  }
 
   const data: any = await response.json().catch(() => ({}));
   if (!response.ok || data.ok === false) {
@@ -91,6 +117,7 @@ For inbound mobile requests, telegram-bot.ts automatically forwards every Telegr
     message: z.string().optional().describe('Text message or upload caption'),
     file_path: z.string().optional().describe('Local absolute or relative file path for upload'),
     filename: z.string().optional().describe('Optional upload filename'),
+    confirm: z.boolean().optional().describe('Required true for actions that send messages or upload files'),
     limit: z.number().optional().default(10),
   }),
   outputSchema: z.object({
@@ -101,6 +128,11 @@ For inbound mobile requests, telegram-bot.ts automatically forwards every Telegr
   }),
   execute: async (input: any, context?: any) => {
     try {
+      const decision = enforceToolCapability('telegram_user_controller', input, context);
+      if (!decision.allowed) {
+        return { success: false, status: decision.reason || 'Telegram access is not allowed' };
+      }
+
       if (input.action === 'bot_status') {
         const result = await telegramApi('getMe', {});
         if (!result.success) return result;
@@ -112,20 +144,25 @@ For inbound mobile requests, telegram-bot.ts automatically forwards every Telegr
       }
 
       if (input.action === 'send') {
+        const approval = await requireOutboundApproval('Telegram', 'send', input, context, input.data, input.message);
+        if (approval) return approval;
         if (!input.data || !input.message) return { success: false, status: 'Missing target(data) or message.' };
         const botResult = await telegramApi('sendMessage', {
           chat_id: input.data,
           text: input.message,
           disable_web_page_preview: false,
         });
-        if (botResult.success || !telegramAvailable) {
-          return botResult.success
-            ? { success: true, status: `Message sent to Telegram chat ${input.data}.`, results: botResult.results }
-            : botResult;
+        if (botResult.success) {
+          return { success: true, status: `Message sent to Telegram chat ${input.data}.`, results: botResult.results };
+        }
+        if (!ensureTelegramSdk()) {
+          return botResult;
         }
       }
 
       if (input.action === 'upload') {
+        const approval = await requireOutboundApproval('Telegram', 'upload', input, context, input.data, input.file_path || input.filename);
+        if (approval) return approval;
         if (!input.data || !input.file_path) return { success: false, status: 'Missing target(data) or file_path.' };
         const absolutePath = resolveReadableWorkspacePathForContext(input.file_path, context);
         if (!await fs.pathExists(absolutePath)) return { success: false, status: `File not found: ${input.file_path}` };
@@ -141,13 +178,13 @@ For inbound mobile requests, telegram-bot.ts automatically forwards every Telegr
           : result;
       }
 
+      if (!ensureTelegramSdk()) {
+        return { success: false, status: 'GramJS is not installed. Run: npm install telegram' };
+      }
+
       if (!tgClient && await fs.pathExists(SESSION_FILE)) {
         const saved = await fs.readFile(SESSION_FILE, 'utf-8');
         stringSession = new StringSession(saved);
-      }
-
-      if (!telegramAvailable) {
-        return { success: false, status: 'GramJS is not installed. Run: npm install telegram' };
       }
 
       if (!tgClient && (input.action === 'init' || input.action === 'status')) {

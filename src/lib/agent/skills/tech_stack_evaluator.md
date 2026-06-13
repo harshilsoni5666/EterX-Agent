@@ -1,8 +1,4 @@
 ---
-description: name: "tech-stack-evaluator"
----
-
----
 name: "tech-stack-evaluator"
 description: Technology stack evaluation and comparison with TCO analysis, security assessment, and ecosystem health scoring. Use when comparing frameworks, evaluating technology stacks, calculating total cost of ownership, assessing migration paths, or analyzing ecosystem viability.
 ---
@@ -17,8 +13,7 @@ Evaluate and compare technologies, frameworks, and cloud providers with data-dri
 - [Quick Start](#quick-start)
 - [Input Formats](#input-formats)
 - [Analysis Types](#analysis-types)
-- [Scripts](#scripts)
-- [References](#references)
+- [Evidence Sources](#evidence-sources)
 
 ---
 
@@ -109,57 +104,29 @@ comparison:
 
 ---
 
-## Scripts
+## Evidence Sources
 
-### stack_comparator.py
+Use current, verifiable evidence. For fast local review, inspect manifests and lockfiles. For current ecosystem and pricing claims, verify against primary sources before presenting numbers.
 
-Compare technologies with customizable weighted criteria.
-
-```bash
-python scripts/stack_comparator.py --help
-```
-
-### tco_calculator.py
-
-Calculate total cost of ownership over multi-year projections.
+Useful local commands:
 
 ```bash
-python scripts/tco_calculator.py --input assets/sample_input_tco.json
+rg --files
+cat package.json
+npm view <package> version
+npm audit --audit-level=high
+pnpm why <package>
 ```
 
-### ecosystem_analyzer.py
+Useful evidence categories:
 
-Analyze ecosystem health from GitHub, npm, and community metrics.
-
-```bash
-python scripts/ecosystem_analyzer.py --technology react
-```
-
-### security_assessor.py
-
-Evaluate security posture and compliance readiness.
-
-```bash
-python scripts/security_assessor.py --technology express --compliance soc2,gdpr
-```
-
-### migration_analyzer.py
-
-Estimate migration complexity, effort, and risks.
-
-```bash
-python scripts/migration_analyzer.py --from angular-1.x --to react
-```
-
----
-
-## References
-
-| Document | Content |
-|----------|---------|
-| `references/metrics.md` | Detailed scoring algorithms and calculation formulas |
-| `references/examples.md` | Input/output examples for all analysis types |
-| `references/workflows.md` | Step-by-step evaluation workflows |
+| Category | Evidence |
+|----------|----------|
+| Fit | Product requirements, team skills, integration needs |
+| Cost | Hosting, licenses, staff ramp-up, migration effort, operations |
+| Ecosystem | Release cadence, issue health, package adoption, documentation |
+| Security | CVEs, maintenance status, auth/data handling maturity |
+| Migration | Compatibility gaps, rewrite surface, parallel-run strategy |
 
 ---
 

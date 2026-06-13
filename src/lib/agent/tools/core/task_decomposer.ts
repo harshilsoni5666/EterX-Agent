@@ -35,12 +35,14 @@ export const taskDecomposerTool: ToolDefinition = {
   inputSchema: z.object({
     complexTask: z.string().describe('The full complex task description from the user'),
     context: z.string().optional().describe('Additional context (file list, project type, constraints)'),
-    maxSubtasks: z.number().optional().default(15).describe('Maximum number of subtasks (default: 15)')
+    maxSubtasks: z.number().int().min(3).max(20).optional().default(15).describe('Maximum number of subtasks (default: 15, max: 20)')
   }),
   outputSchema: z.object({
     plan: z.array(z.any()),
     totalSteps: z.number(),
-    estimatedTools: z.array(z.string())
+    estimatedTools: z.array(z.string()),
+    plannerVersion: z.string().optional(),
+    qualityWarnings: z.array(z.string()).optional(),
   }),
   execute: async (input: { complexTask: string, context?: string, maxSubtasks?: number }, runtimeContext?: any) => {
     console.log(`[Tool: task_decomposer] Decomposing via API: "${ input.complexTask.substring(0, 80) }..."`);
@@ -61,7 +63,9 @@ export const taskDecomposerTool: ToolDefinition = {
     try {
       // === Call the selected-model Task Planner ===
       const selectedMode = normalizeMainAgentMode(runtimeContext?.selectedModelMode || runtimeContext?.modelMode || 'think');
-      const planResult = await globalTaskPlanner.decompose(input.complexTask, input.context, selectedMode);
+      const planResult = await globalTaskPlanner.decompose(input.complexTask, input.context || '', selectedMode, {
+        maxSubtasks: input.maxSubtasks,
+      });
       const steps = planResult.steps;
 
       // === Write DUAL tracker files for the ReAct loop to read back ===
@@ -76,8 +80,16 @@ export const taskDecomposerTool: ToolDefinition = {
       steps.forEach((step: any) => {
         trackerMd += `- [ ] **Step ${ step.step }: ${ step.name }**\n`;
         trackerMd += `  - Action: ${ step.description }\n`;
-        trackerMd += `  - Tools: ${ step.tools.join(', ') }\n`;
+        trackerMd += `  - Type: ${ step.step_type || 'work' }\n`;
+        trackerMd += `  - Expected output: ${ step.expected_output || step.done_when }\n`;
+        trackerMd += `  - Tools: ${ Array.isArray(step.tools) && step.tools.length ? step.tools.join(', ') : 'none' }\n`;
         trackerMd += `  - Done when: ${ step.done_when }\n`;
+        if (step.risk) {
+          trackerMd += `  - Risk: ${ step.risk }\n`;
+        }
+        if (Array.isArray(step.artifacts) && step.artifacts.length > 0) {
+          trackerMd += `  - Artifacts: ${ step.artifacts.join(', ') }\n`;
+        }
         if (step.depends_on?.length > 0) {
           trackerMd += `  - Depends on: Step ${ step.depends_on.join(', Step ') }\n`;
         }
@@ -105,6 +117,10 @@ export const taskDecomposerTool: ToolDefinition = {
           done_when: s.done_when,
           depends_on: s.depends_on,
           priority: s.priority,
+          step_type: s.step_type,
+          expected_output: s.expected_output,
+          risk: s.risk,
+          artifacts: s.artifacts,
           status: 'pending',  // pending | in_progress | done | skipped
           completedAt: null
         }))
@@ -126,7 +142,12 @@ export const taskDecomposerTool: ToolDefinition = {
           steps.map((s: any) => ({
             name: s.name,
             status: 'pending' as const,
-            description: s.description
+            description: [
+              s.description,
+              s.expected_output ? `Expected: ${ s.expected_output }` : '',
+              s.done_when ? `Done when: ${ s.done_when }` : '',
+              Array.isArray(s.tools) && s.tools.length ? `Tools: ${ s.tools.join(', ') }` : '',
+            ].filter(Boolean).join(' | ')
           }))
         );
         globalSessionManager.addAction(`Decomposed task into ${ steps.length } steps: ${ steps.map((s: any) => s.name).join(', ') }`);
@@ -134,7 +155,7 @@ export const taskDecomposerTool: ToolDefinition = {
       } catch { /* silent */ }
 
       // Collect unique tools used across all steps
-      const allTools = [...new Set(steps.flatMap((s: any) => s.tools))];
+      const allTools = [...new Set(steps.flatMap((s: any) => Array.isArray(s.tools) ? s.tools : []))];
 
       return {
         plan: steps,
@@ -142,9 +163,11 @@ export const taskDecomposerTool: ToolDefinition = {
         estimatedTools: allTools,
         complexity: planResult.estimated_complexity,
         estimatedMinutes: planResult.estimated_time_minutes,
+        plannerVersion: planResult.planner_version,
+        qualityWarnings: planResult.quality_warnings || [],
         strategy: steps.length > 6 ? 'parallel_where_possible' : 'sequential',
         trackerFiles,
-        message: `Task decomposed into ${ steps.length } focused steps via AI planner (${ planResult.estimated_complexity } complexity, ~${ planResult.estimated_time_minutes } min). Tracker is stored inside this chat's task folder. Execute steps ONE AT A TIME in order. Do NOT repeat any completed step. Focus on the NEXT pending step only.`
+        message: `Task decomposed into ${ steps.length } concrete execution steps (${ planResult.estimated_complexity } complexity, ~${ planResult.estimated_time_minutes } min). Tracker is stored inside this chat's task folder. Execute the NEXT pending step only, using its expected_output and done_when as the completion contract. Do NOT repeat completed steps.`
       };
     } catch (error: any) {
       console.error(`[Tool: task_decomposer] ❌ Decomposition failed: ${ error.message }`);

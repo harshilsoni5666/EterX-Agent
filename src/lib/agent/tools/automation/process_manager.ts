@@ -4,6 +4,7 @@ import { exec, spawn, ChildProcess } from 'child_process';
 import { promisify } from 'util';
 import fs from 'fs-extra';
 import { resolveWorkspaceDirectoryForContext } from '../../workspace/path_resolver';
+import { authorizeToolCommand } from '../security/command_broker';
 
 const execAsync = promisify(exec);
 
@@ -70,6 +71,19 @@ export const processManagerTool: ToolDefinition = {
           if (!await fs.pathExists(workingDir)) {
             return { success: false, message: `Working directory not found: ${workingDir}` };
           }
+          const env = parseStringRecord(input.env);
+          const authorization = await authorizeToolCommand({
+            command: input.command,
+            cwd: workingDir,
+            context,
+            env,
+          });
+          if (!authorization.allowed) {
+            return {
+              success: false,
+              message: authorization.reason || 'Command blocked by command broker',
+            };
+          }
 
           const shell = input.shellType === 'powershell'
             ? 'powershell.exe'
@@ -79,10 +93,10 @@ export const processManagerTool: ToolDefinition = {
 
           const child = spawn(input.command, [], {
             shell,
-            cwd: workingDir,
+            cwd: authorization.cwd,
             stdio: ['pipe', 'pipe', 'pipe'],
             detached: false,
-            env: { ...process.env, ...parseStringRecord(input.env) }
+            env: authorization.env
           });
 
           const managed: ManagedProcess = {
@@ -91,7 +105,7 @@ export const processManagerTool: ToolDefinition = {
             pid: child.pid || 0,
             status: 'running',
             startedAt: Date.now(),
-            cwd: workingDir,
+            cwd: authorization.cwd,
             exitCode: null,
             output: [],
             errors: [],

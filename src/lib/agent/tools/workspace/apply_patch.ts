@@ -306,6 +306,10 @@ async function applyOperations(
     try {
       switch (op.type) {
         case 'add': {
+          if (await fse.pathExists(resolvedPath)) {
+            result.errors.push(`File already exists for add operation: ${resolvedPath}. Use *** Update File to modify existing files.`);
+            continue;
+          }
           await fse.ensureDir(path.dirname(resolvedPath));
           const content = (op.newFileContent || []).join('\n');
           await fs.writeFile(resolvedPath, content, 'utf-8');

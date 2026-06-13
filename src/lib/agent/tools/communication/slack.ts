@@ -1,6 +1,24 @@
 import { z } from 'zod';
 import { ToolDefinition } from '../../schemas';
+import fs from 'fs-extra';
+import path from 'path';
 import { resolveReadableWorkspacePathForContext } from '../../workspace/path_resolver';
+import { enforceToolCapability } from '../security/tool_policy';
+import { loadOptionalModule } from './optional_module';
+import { requireOutboundApproval } from './outbound_approval';
+
+const SLACK_WRITE_ACTIONS = new Set([
+  'send',
+  'send_rich',
+  'reply',
+  'react',
+  'upload',
+  'create_channel',
+  'invite_user',
+  'pin',
+  'delete_message',
+  'set_topic',
+]);
 
 /**
  * Full-Power Slack Connector Tool
@@ -8,25 +26,17 @@ import { resolveReadableWorkspacePathForContext } from '../../workspace/path_res
  */
 
 let WebClient: any = null;
-let slackAvailable = false;
 
-try {
-  const dynamicRequire = eval('require');
-  const { WebClient: SlackWebClient } = dynamicRequire('@slack/web-api');
-  WebClient = SlackWebClient;
-  slackAvailable = true;
-} catch {
-  console.warn('[Slack] @slack/web-api not yet available.');
-}
+const slackSdk = loadOptionalModule<{ WebClient: any }>('@slack/web-api');
+WebClient = slackSdk?.WebClient || null;
+if (!WebClient) console.warn('[Slack] @slack/web-api not yet available.');
 
 // ─── Token resolution: OAuth file > env var ──────────────
 async function getSlackToken(): Promise<string | null> {
   try {
-    const fsExtra = eval('require')('fs-extra');
-    const pathMod = eval('require')('path');
-    const connectorsFile = pathMod.resolve(process.cwd(), '.workspaces', '.connectors.json');
-    if (await fsExtra.pathExists(connectorsFile)) {
-      const connectors = await fsExtra.readJson(connectorsFile);
+    const connectorsFile = path.resolve(process.cwd(), '.workspaces', '.connectors.json');
+    if (await fs.pathExists(connectorsFile)) {
+      const connectors = await fs.readJson(connectorsFile);
       if (connectors?.slack?.accessToken) return connectors.slack.accessToken;
     }
   } catch { }
@@ -87,6 +97,7 @@ Available actions:
     userId: z.string().optional().describe('Slack User ID'),
     is_private: z.boolean().optional().describe('Whether to create a private channel'),
     topic: z.string().optional().describe('Channel topic text'),
+    confirm: z.boolean().optional().describe('Required true for actions that send, react, upload, delete, invite, create, pin, or update Slack content'),
     limit: z.number().optional().default(20).describe('Max items to return'),
   }),
 
@@ -98,7 +109,12 @@ Available actions:
 
   execute: async (input: any, context?: any) => {
     try {
-      if (!slackAvailable) {
+      const decision = enforceToolCapability('slack_controller', input, context);
+      if (!decision.allowed) {
+        return { success: false, status: decision.reason || 'Slack access is not allowed' };
+      }
+
+      if (!WebClient) {
         return { success: false, status: 'Slack SDK not installed. Run: npm install @slack/web-api' };
       }
 
@@ -109,6 +125,17 @@ Available actions:
 
       const client = new WebClient(token);
       const limit = input.limit || 20;
+      if (SLACK_WRITE_ACTIONS.has(input.action)) {
+        const approval = await requireOutboundApproval(
+          'Slack',
+          input.action,
+          input,
+          context,
+          input.channel || input.channel_name,
+          input.message || input.topic || input.filename || input.file_path || input.content,
+        );
+        if (approval) return approval;
+      }
 
       // ── STATUS ──────────────────────────────────────────
       if (input.action === 'status') {
@@ -210,17 +237,14 @@ Available actions:
         if (!input.content && !input.file_path) return { success: false, status: 'Missing content or file_path.' };
         
         const ch = await resolveChannel(client, input.channel);
-        const fsExtra = eval('require')('fs-extra');
-        const pathMod = eval('require')('path');
-        
         let fileContent = input.content;
         let finalFilename = input.filename || 'agent_output.txt';
 
         if (input.file_path) {
           const absolutePath = resolveReadableWorkspacePathForContext(input.file_path, context);
-          if (await fsExtra.pathExists(absolutePath)) {
-            fileContent = await fsExtra.readFile(absolutePath);
-            finalFilename = input.filename || pathMod.basename(absolutePath);
+          if (await fs.pathExists(absolutePath)) {
+            fileContent = await fs.readFile(absolutePath);
+            finalFilename = input.filename || path.basename(absolutePath);
           } else {
             return { success: false, status: `File not found: ${input.file_path}` };
           }

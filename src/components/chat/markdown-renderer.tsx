@@ -954,14 +954,14 @@ export const markdownComponents = {
   input: ({ type, ...props }: any) => type === 'checkbox'
     ? <input type="checkbox" className="eterx-markdown-checkbox mr-2 h-4 w-4 translate-y-[2px] rounded border-white/20 accent-[#E2765A]" {...props} />
     : <input type={type} {...props} />,
-  h1: makeHeading('h1', 'mt-8 mb-4 text-[24px] font-bold leading-tight text-[#C4C1BC]'),
-  h2: makeHeading('h2', 'mt-7 mb-3 text-[20px] font-bold leading-tight text-[#C4C1BC]'),
-  h3: makeHeading('h3', 'mt-6 mb-3 text-[17px] font-bold leading-tight text-[#C4C1BC]'),
-  h4: makeHeading('h4', 'mt-5 mb-2 text-[15px] font-semibold leading-tight text-[#C4C1BC]'),
-  h5: makeHeading('h5', 'mt-4 mb-2 text-[14px] font-semibold leading-tight text-[#B0ADA9]'),
-  h6: makeHeading('h6', 'mt-3 mb-2 text-[13px] font-semibold leading-tight text-[#9C9893]'),
-  strong: ({ ...props }: any) => <strong className="font-bold text-[#D0CDC7]" {...props} />,
-  em: ({ ...props }: any) => <em className="italic text-[#B0ADA9]" {...props} />,
+  h1: makeHeading('h1', 'mt-8 mb-4 text-[24px] font-bold leading-tight text-[#EBEAE6]'),
+  h2: makeHeading('h2', 'mt-7 mb-3 text-[20px] font-bold leading-tight text-[#EBEAE6]'),
+  h3: makeHeading('h3', 'mt-6 mb-3 text-[17px] font-bold leading-tight text-[#EBEAE6]'),
+  h4: makeHeading('h4', 'mt-5 mb-2 text-[15px] font-semibold leading-tight text-[#EBEAE6]'),
+  h5: makeHeading('h5', 'mt-4 mb-2 text-[14px] font-semibold leading-tight text-[#D5D3CE]'),
+  h6: makeHeading('h6', 'mt-3 mb-2 text-[13px] font-semibold leading-tight text-[#BCB9B4]'),
+  strong: ({ ...props }: any) => <strong className="font-bold text-[#F3F2EF]" {...props} />,
+  em: ({ ...props }: any) => <em className="italic text-[#D5D3CE]" {...props} />,
   blockquote: ({ node, ...props }: any) => {
     const quoteText = getNodeText(node).trim().toLowerCase();
     const callout = quoteText.startsWith('warning:') || quoteText.startsWith('caution:')
@@ -971,7 +971,7 @@ export const markdownComponents = {
         : 'quote';
     return (
       <blockquote
-        className="eterx-markdown-callout my-4 rounded-r-xl border-l-[3px] border-[#E2765A]/55 bg-[#2A2927] px-4 py-3 text-[#A8A39C]"
+        className="eterx-markdown-callout my-4 rounded-r-xl border-l-[3px] border-[#E2765A]/55 bg-[#2A2927] px-4 py-3 text-[#D2CECA]"
         data-callout={callout}
         {...props}
       />
@@ -984,8 +984,8 @@ export const markdownComponents = {
     </div>
   ),
   thead: ({ ...props }: any) => <thead className="eterx-markdown-thead bg-[#1C1B1A]" {...props} />,
-  th: ({ ...props }: any) => <th className="eterx-markdown-th border border-white/[0.06] px-4 py-2.5 text-left font-bold text-[#C4C1BC]" {...props} />,
-  td: ({ ...props }: any) => <td className="eterx-markdown-td border border-white/[0.06] px-4 py-2.5 align-top text-[#B0ADA9]" {...props} />,
+  th: ({ ...props }: any) => <th className="eterx-markdown-th border border-white/[0.06] px-4 py-2.5 text-left font-bold text-[#EBEAE6]" {...props} />,
+  td: ({ ...props }: any) => <td className="eterx-markdown-td border border-white/[0.06] px-4 py-2.5 align-top text-[#D5D3CE]" {...props} />,
   tr: ({ ...props }: any) => <tr className="eterx-markdown-tr transition-colors hover:bg-white/[0.035]" {...props} />,
   img: ({ alt, ...props }: any) => (
     <figure className="eterx-markdown-figure my-5">

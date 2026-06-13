@@ -4,10 +4,10 @@ import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
 import { getMainAgentModelConfig, normalizeMainAgentMode } from '../../../../lib/agent/model-routing';
 import {
-  applyRuntimeApiKeys,
-  applyRuntimeModelOverrides,
-  getRuntimeApiKey,
+  buildScopedRuntimeSettings,
+  getScopedRuntimeApiKey,
 } from '../../../../lib/agent/runtime-api-keys';
+import { readJsonObject, rejectCrossOrigin } from '../../agent/_shared';
 
 export const runtime = 'nodejs';
 
@@ -83,13 +83,14 @@ const cleanTitle = (rawTitle: unknown, history: any[] = []) => {
 
 export async function POST(req: NextRequest) {
   try {
-    const { history, currentTitle, mode, apiKeys, modelOverrides } = await req.json();
-    const runtimeKeyResult = applyRuntimeApiKeys(apiKeys);
-    applyRuntimeModelOverrides(modelOverrides);
+    const originError = rejectCrossOrigin(req);
+    if (originError) return originError;
+    const { history, currentTitle, mode, apiKeys, modelOverrides } = await readJsonObject(req);
+    const runtimeSettings = buildScopedRuntimeSettings(apiKeys, modelOverrides);
     const safeHistory = Array.isArray(history) ? history : [];
     const latestUserText = getLatestUserText(safeHistory);
     const safeMode = normalizeMainAgentMode(mode);
-    const modelConfig = getMainAgentModelConfig(safeMode);
+    const modelConfig = getMainAgentModelConfig(safeMode, runtimeSettings);
 
     const prompt = `
       Generate a fresh short title for the CURRENT chat.
@@ -114,7 +115,7 @@ export async function POST(req: NextRequest) {
     `.trim();
 
     if (modelConfig.provider === 'anthropic') {
-      const apiKey = getRuntimeApiKey('anthropic');
+      const apiKey = getScopedRuntimeApiKey(runtimeSettings, 'anthropic');
       if (!apiKey) return NextResponse.json({ error: 'Missing Anthropic API key. Add it in Settings > Connections.' }, { status: 500 });
 
       const client = new Anthropic({ apiKey });
@@ -137,12 +138,12 @@ export async function POST(req: NextRequest) {
     if (modelConfig.provider !== 'gemini') {
       const provider = modelConfig.provider;
       const apiKey = provider === 'openai'
-        ? getRuntimeApiKey('openai')
+        ? getScopedRuntimeApiKey(runtimeSettings, 'openai')
         : provider === 'openrouter'
-          ? getRuntimeApiKey('openrouter')
+          ? getScopedRuntimeApiKey(runtimeSettings, 'openrouter')
           : provider === 'groq'
-            ? getRuntimeApiKey('groq')
-            : getRuntimeApiKey('mistral');
+            ? getScopedRuntimeApiKey(runtimeSettings, 'groq')
+            : getScopedRuntimeApiKey(runtimeSettings, 'mistral');
       if (!apiKey) return NextResponse.json({ error: `Missing ${ provider } API key. Add it in Settings > Connections.` }, { status: 500 });
 
       const client = new OpenAI({
@@ -171,7 +172,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ title });
     }
 
-    const apiKey = runtimeKeyResult.preferredGeminiApiKey || getRuntimeApiKey('gemini');
+    const apiKey = runtimeSettings.preferredGeminiApiKey || getScopedRuntimeApiKey(runtimeSettings, 'gemini');
 
     if (!apiKey) {
       return NextResponse.json({ error: 'Missing Gemini API key. Add it in Settings > Connections.' }, { status: 500 });

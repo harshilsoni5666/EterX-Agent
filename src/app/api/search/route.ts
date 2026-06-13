@@ -29,7 +29,7 @@ export async function POST(req: Request) {
       searchDepth,
       topic,
       numResults,
-    }, {} as any);
+    }, { source: 'api_search', allowNetwork: true, networkPolicy: 'allow' } as any);
 
     return NextResponse.json({ results });
   } catch (error: any) {

@@ -35,6 +35,14 @@ export type RuntimeModelOverrideStatus = {
   reason?: string;
 };
 
+export type ScopedRuntimeSettings = {
+  apiKeys: Record<RuntimeApiKeyProvider, string[]>;
+  modelOverrides: Record<RuntimeModelProvider, string>;
+  apiKeyResult: RuntimeApiKeyApplyResult;
+  modelOverrideStatuses: RuntimeModelOverrideStatus[];
+  preferredGeminiApiKey?: string;
+};
+
 const PROVIDERS: RuntimeApiKeyProvider[] = [
   'gemini',
   'mistral',
@@ -154,35 +162,6 @@ const isValidProviderKey = (provider: RuntimeApiKeyProvider, key: string): boole
   }
 };
 
-const setRuntimeEnv = (envKeys: string[], values: string[]) => {
-  if (values.length === 0) return;
-  envKeys.forEach(envKey => {
-    process.env[envKey] = values[0];
-  });
-
-  values.forEach((value, index) => {
-    process.env[`${ envKeys[0] }_${ index + 1 }`] = value;
-  });
-};
-
-const clearKnownRuntimeEnvKeys = () => {
-  const exactKeys = new Set(Object.values(ENV_KEYS).flat());
-  const indexedPrefixes = Array.from(exactKeys);
-
-  for (const key of Object.keys(process.env)) {
-    if (exactKeys.has(key) || indexedPrefixes.some(prefix => key.startsWith(`${prefix}_`))) {
-      delete process.env[key];
-    }
-  }
-};
-
-const clearKnownRuntimeModelEnvKeys = () => {
-  const exactKeys = new Set(Object.values(MODEL_ENV_KEYS).flat());
-  for (const key of exactKeys) {
-    delete process.env[key];
-  }
-};
-
 export function getRuntimeModelOverrides(): Record<RuntimeModelProvider, string> {
   return { ...runtimeModelOverrides };
 
@@ -242,7 +221,6 @@ export function applyRuntimeModelOverrides(raw: unknown): RuntimeModelOverrideSt
   const overrides = normalizeRuntimeModelOverrides(raw);
   const statuses: RuntimeModelOverrideStatus[] = [];
 
-  clearKnownRuntimeModelEnvKeys();
   MODEL_PROVIDERS.forEach(provider => {
     runtimeModelOverrides[provider] = '';
   });
@@ -260,9 +238,6 @@ export function applyRuntimeModelOverrides(raw: unknown): RuntimeModelOverrideSt
       continue;
     }
 
-    MODEL_ENV_KEYS[provider].forEach(envKey => {
-      process.env[envKey] = model;
-    });
     runtimeModelOverrides[provider] = model;
     statuses.push({ provider, accepted: true, model });
   }
@@ -293,14 +268,111 @@ const discoverEnvKeys = (provider: RuntimeApiKeyProvider): string[] => {
   return Array.from(new Set(keys.filter(key => isValidProviderKey(provider, key))));
 };
 
-export function applyRuntimeApiKeys(raw: unknown): RuntimeApiKeyApplyResult {
-  // Lazy-initialize and cache original environment keys before we clear process.env
+const getOriginalEnvKeys = (): Record<RuntimeApiKeyProvider, string[]> => {
   if (!globalForRuntimeKeys.__eterxOriginalEnvKeys) {
     globalForRuntimeKeys.__eterxOriginalEnvKeys = PROVIDERS.reduce((acc, provider) => {
       acc[provider] = discoverEnvKeys(provider);
       return acc;
     }, {} as Record<RuntimeApiKeyProvider, string[]>);
   }
+  return globalForRuntimeKeys.__eterxOriginalEnvKeys;
+};
+
+export function buildScopedRuntimeSettings(rawKeys: unknown, rawModelOverrides: unknown = null): ScopedRuntimeSettings {
+  const payload = normalizeRuntimeApiKeyPayload(rawKeys);
+  const originalEnvKeys = getOriginalEnvKeys();
+  const scopedKeys = PROVIDERS.reduce((acc, provider) => {
+    acc[provider] = [];
+    return acc;
+  }, {} as Record<RuntimeApiKeyProvider, string[]>);
+  const providers: RuntimeApiKeyProviderStatus[] = [];
+  let acceptedCount = 0;
+  let rejectedCount = 0;
+  let preferredGeminiApiKey = '';
+
+  for (const provider of PROVIDERS) {
+    const values = normalizeKeyValues(payload[provider]);
+    const userKeys = Array.from(new Set(values.filter(value => isValidProviderKey(provider, value))));
+    const invalidCount = values.length - userKeys.length;
+    rejectedCount += invalidCount;
+
+    const envKeys = originalEnvKeys[provider] || [];
+    const validValues = Array.from(new Set([...userKeys, ...envKeys]));
+    scopedKeys[provider] = validValues;
+
+    if (provider === 'gemini') {
+      preferredGeminiApiKey = userKeys[0] || envKeys[0] || '';
+    }
+
+    if (validValues.length === 0) {
+      providers.push({
+        provider,
+        accepted: false,
+        count: 0,
+        reason: invalidCount > 0 ? 'Invalid key format' : 'No key supplied',
+      });
+      continue;
+    }
+
+    acceptedCount += validValues.length;
+    providers.push({ provider, accepted: true, count: validValues.length });
+  }
+
+  const rawOverrides = normalizeRuntimeModelOverrides(rawModelOverrides);
+  const modelOverrides = MODEL_PROVIDERS.reduce((acc, provider) => {
+    acc[provider] = '';
+    return acc;
+  }, {} as Record<RuntimeModelProvider, string>);
+  const modelOverrideStatuses: RuntimeModelOverrideStatus[] = [];
+
+  for (const provider of MODEL_PROVIDERS) {
+    const model = rawOverrides[provider];
+    if (!model) continue;
+
+    if (model.length > 220 || /[\r\n\t]/.test(model)) {
+      modelOverrideStatuses.push({
+        provider,
+        accepted: false,
+        reason: 'Invalid model id',
+      });
+      continue;
+    }
+
+    modelOverrides[provider] = model;
+    modelOverrideStatuses.push({ provider, accepted: true, model });
+  }
+
+  return {
+    apiKeys: scopedKeys,
+    modelOverrides,
+    apiKeyResult: {
+      acceptedCount,
+      rejectedCount,
+      providers,
+      preferredGeminiApiKey: preferredGeminiApiKey || undefined,
+    },
+    modelOverrideStatuses,
+    preferredGeminiApiKey: preferredGeminiApiKey || undefined,
+  };
+}
+
+export function getScopedRuntimeApiKeyValues(settings: ScopedRuntimeSettings | undefined | null, provider: RuntimeApiKeyProvider): string[] {
+  const scoped = settings?.apiKeys?.[provider] || [];
+  return scoped.length > 0 ? [...scoped] : getRuntimeApiKeyValues(provider);
+}
+
+export function getScopedRuntimeApiKey(settings: ScopedRuntimeSettings | undefined | null, provider: RuntimeApiKeyProvider): string {
+  const scoped = settings?.apiKeys?.[provider] || [];
+  return scoped[0] || getRuntimeApiKey(provider);
+}
+
+export function getScopedModelOverride(settings: ScopedRuntimeSettings | undefined | null, provider: RuntimeModelProvider): string {
+  return settings?.modelOverrides?.[provider] || '';
+}
+
+export function applyRuntimeApiKeys(raw: unknown): RuntimeApiKeyApplyResult {
+  // Lazy-initialize and cache original environment keys before we clear process.env
+  const originalEnvKeys = getOriginalEnvKeys();
 
   const payload = normalizeRuntimeApiKeyPayload(raw);
   const providers: RuntimeApiKeyProviderStatus[] = [];
@@ -308,7 +380,6 @@ export function applyRuntimeApiKeys(raw: unknown): RuntimeApiKeyApplyResult {
   let rejectedCount = 0;
   let preferredGeminiApiKey = '';
 
-  clearKnownRuntimeEnvKeys();
   PROVIDERS.forEach(provider => {
     runtimeApiKeys[provider] = [];
     runtimeApiKeyCursor[provider] = 0;
@@ -321,7 +392,7 @@ export function applyRuntimeApiKeys(raw: unknown): RuntimeApiKeyApplyResult {
     const invalidCount = values.length - userKeys.length;
     rejectedCount += invalidCount;
 
-    const envKeys = globalForRuntimeKeys.__eterxOriginalEnvKeys[provider] || [];
+    const envKeys = originalEnvKeys[provider] || [];
     const validValues = Array.from(new Set([...userKeys, ...envKeys]));
 
     if (validValues.length === 0) {
@@ -337,11 +408,9 @@ export function applyRuntimeApiKeys(raw: unknown): RuntimeApiKeyApplyResult {
     if (provider === 'gemini') {
       runtimeApiKeys.gemini = validValues;
       apiKeyPool.setRuntimeKeys(validValues);
-      setRuntimeEnv(ENV_KEYS.gemini, validValues);
       preferredGeminiApiKey = userKeys[0] || envKeys[0] || '';
     } else {
       runtimeApiKeys[provider] = validValues;
-      setRuntimeEnv(ENV_KEYS[provider], validValues);
     }
 
     acceptedCount += validValues.length;

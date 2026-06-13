@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { ToolDefinition } from '../../schemas';
-import axios from 'axios';
+import { redactUrlForLog, safeAxiosRequest } from '../shared/url_safety';
 
 export const apiCallerTool: ToolDefinition = {
   name: 'api_caller',
@@ -17,17 +17,19 @@ export const apiCallerTool: ToolDefinition = {
     data: z.any(),
     error: z.string().optional()
   }),
-  execute: async (input: { url: string, method: string, headers?: Record<string, string> | string, body?: any }) => {
-    console.log(`[Tool: api_caller] Requesting ${input.method} ${input.url}`);
+  execute: async (input: { url: string, method: string, headers?: Record<string, string> | string, body?: any }, context?: any) => {
+    console.log(`[Tool: api_caller] Requesting ${input.method} ${redactUrlForLog(input.url)}`);
     try {
       const headers = parseStringRecord(input.headers);
       const body = parseJsonValue(input.body);
-      const response = await axios({
+      const response = await safeAxiosRequest({
         method: input.method as any,
         url: input.url,
         headers,
-        data: body
-      });
+        data: body,
+        maxContentLength: 2 * 1024 * 1024,
+        maxBodyLength: 2 * 1024 * 1024,
+      }, context);
       return { status: response.status, data: response.data };
     } catch (error: any) {
       return { 

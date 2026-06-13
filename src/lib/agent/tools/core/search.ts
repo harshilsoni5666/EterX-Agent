@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { ToolDefinition } from '../../schemas';
 import { tavily } from "@tavily/core";
+import { enforceToolCapability } from '../security/tool_policy';
 
 // Load all Tavily keys from environment
 const getTavilyKeys = (): string[] => {
@@ -93,9 +94,14 @@ HOW TO USE:
     numResults: z.number().optional().default(5).describe('Number of raw search results to return')
   }),
   outputSchema: z.any(),
-  execute: async (input: any) => {
+  execute: async (input: any, context?: any) => {
     console.log(`[Tool: web_search] Tavily AI Action: ${input.action}`);
     try {
+      const decision = enforceToolCapability('web_search', input, context);
+      if (!decision.allowed) {
+        return { error: decision.reason || 'Web search is not allowed' };
+      }
+
       const tvlyClient = getNextTavilyClient();
 
       if (input.action === 'extract') {

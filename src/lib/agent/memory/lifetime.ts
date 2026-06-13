@@ -46,6 +46,14 @@ const MAX_BOOT_CMDS = 6;
 const MAX_BOOT_ERRORS = 4;
 const MAX_BOOT_FACTS = 8;
 
+async function writeJsonAtomic(filePath: string, data: unknown): Promise<void> {
+  const dir = path.dirname(filePath);
+  await fs.ensureDir(dir);
+  const tmpPath = path.join(dir, `.${path.basename(filePath)}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`);
+  await fs.writeJson(tmpPath, data, { spaces: 2 });
+  await fs.move(tmpPath, filePath, { overwrite: true });
+}
+
 export type LifetimeEventType =
   | 'file_write'
   | 'file_edit'
@@ -84,11 +92,11 @@ interface LifetimeIndex {
   totalEvents: number;
   firstEventAt: number;
   lastEventAt: number;
-  recentFiles: Array<{ filename: string; action: string; ts: number; chatId: string; summary: string }>;
-  recentCmds: Array<{ cmd: string; output: string; exitCode: number | null; ts: number; chatId: string }>;
-  recentTasks: Array<{ title: string; status: string; ts: number; chatId: string; durationMs?: number }>;
-  recentErrors: Array<{ tool: string; error: string; fixed: boolean; ts: number; chatId: string }>;
-  learnedFacts: Array<{ fact: string; ts: number; confidence: number; tags: string[] }>;
+  recentFiles: Array<{ filename: string; action: string; ts: number; chatId: string; projectId?: string; summary: string }>;
+  recentCmds: Array<{ cmd: string; output: string; exitCode: number | null; ts: number; chatId: string; projectId?: string }>;
+  recentTasks: Array<{ title: string; status: string; ts: number; chatId: string; projectId?: string; durationMs?: number }>;
+  recentErrors: Array<{ tool: string; error: string; fixed: boolean; ts: number; chatId: string; projectId?: string }>;
+  learnedFacts: Array<{ fact: string; ts: number; confidence: number; tags: string[]; chatId?: string; projectId?: string }>;
   lastChatId: string;
   lastProjectId: string;
   modelProven: Record<string, string>; // mode → proven model name
@@ -157,6 +165,25 @@ function scoreEvent(
   if (projectId && event.projectId === projectId) score += 2;
 
   return score;
+}
+
+function eventMatchesScope(event: LifetimeEvent, opts?: { chatId?: string; projectId?: string }): boolean {
+  if (opts?.chatId && event.chatId !== opts.chatId) return false;
+  if (opts?.projectId && event.projectId !== opts.projectId) return false;
+  return true;
+}
+
+function indexEntryMatchesScope(
+  entry: { chatId?: string; projectId?: string },
+  opts?: { chatId?: string; projectId?: string }
+): boolean {
+  if (!opts?.chatId && !opts?.projectId) return true;
+  if (opts.chatId && entry.chatId !== opts.chatId) return false;
+  if (opts.projectId) {
+    if (entry.projectId) return entry.projectId === opts.projectId;
+    return Boolean(opts.chatId && entry.chatId === opts.chatId);
+  }
+  return true;
 }
 
 // ─── Main class ───────────────────────────────────────────────────────────────
@@ -276,7 +303,7 @@ class LifetimeBrain {
         this.indexSaveTimer = null;
         if (this.indexDirty) {
           this.indexDirty = false;
-          fs.writeJson(INDEX_FILE, this.index, { spaces: 2 }).catch(() => {});
+          writeJsonAtomic(INDEX_FILE, this.index).catch(() => {});
         }
       }, 2000);
     }
@@ -302,6 +329,7 @@ class LifetimeBrain {
             action: event.type.replace('file_', ''),
             ts: event.ts,
             chatId: event.chatId,
+            projectId: event.projectId,
             summary: event.title,
           });
           this.index.recentFiles = this.index.recentFiles.slice(0, 30);
@@ -317,6 +345,7 @@ class LifetimeBrain {
           exitCode: event.metadata?.exitCode ?? null,
           ts: event.ts,
           chatId: event.chatId,
+          projectId: event.projectId,
         });
         this.index.recentCmds = this.index.recentCmds.slice(0, 20);
         break;
@@ -332,6 +361,7 @@ class LifetimeBrain {
           status: event.type === 'task_complete' ? 'completed' : event.type === 'task_failed' ? 'failed' : 'started',
           ts: event.ts,
           chatId: event.chatId,
+          projectId: event.projectId,
           durationMs: event.metadata?.durationMs,
         });
         this.index.recentTasks = this.index.recentTasks.slice(0, 20);
@@ -346,6 +376,7 @@ class LifetimeBrain {
           fixed: event.type === 'error_fixed',
           ts: event.ts,
           chatId: event.chatId,
+          projectId: event.projectId,
         });
         this.index.recentErrors = this.index.recentErrors.slice(0, 20);
         break;
@@ -362,6 +393,8 @@ class LifetimeBrain {
           ts: event.ts,
           confidence: event.metadata?.confidence ?? 0.7,
           tags: event.tags,
+          chatId: event.chatId,
+          projectId: event.projectId,
         });
         this.index.learnedFacts = this.index.learnedFacts.slice(0, 50);
         break;
@@ -557,6 +590,7 @@ class LifetimeBrain {
     for (const event of this.hotCache) {
       if (typeFilter && !typeFilter.has(event.type)) continue;
       if (event.importance < minImportance) continue;
+      if (!eventMatchesScope(event, opts)) continue;
 
       const score = scoreEvent(event, queryWords, opts.chatId, opts.projectId);
       if (queryWords.size === 0 || score > 0) {
@@ -596,25 +630,10 @@ class LifetimeBrain {
       `📊 Brain: ${totalEvts.toLocaleString()} lifetime events | Active since ${ageDays === 0 ? 'today' : ageDays === 1 ? 'yesterday' : `${ageDays} days ago`}`
     );
 
-    // ── Last chat context ──
-    const lastChatId = this.index.lastChatId;
-    if (lastChatId && opts?.chatId && lastChatId !== opts.chatId) {
-      // Switched chat — show what was happening in the last session
-      const lastSessionEvents = this.hotCache
-        .filter(e => e.chatId === lastChatId)
-        .slice(-5);
-      if (lastSessionEvents.length > 0) {
-        const lastTask = lastSessionEvents.find(e => e.type === 'task_complete' || e.type === 'task_start');
-        if (lastTask) {
-          const agoMin = Math.round((now - lastTask.ts) / 60000);
-          const agoStr = agoMin < 60 ? `${agoMin}m ago` : agoMin < 1440 ? `${Math.round(agoMin/60)}h ago` : `${Math.round(agoMin/1440)}d ago`;
-          parts.push(`🔄 Last session (${agoStr}): ${lastTask.title}`);
-        }
-      }
-    }
-
     // ── Recent Files ──
-    const recentFiles = this.index.recentFiles.slice(0, MAX_BOOT_FILES);
+    const recentFiles = this.index.recentFiles
+      .filter(f => indexEntryMatchesScope(f, opts))
+      .slice(0, MAX_BOOT_FILES);
     if (recentFiles.length > 0) {
       const fileLines = recentFiles.map(f => {
         const agoMin = Math.round((now - f.ts) / 60000);
@@ -626,7 +645,9 @@ class LifetimeBrain {
     }
 
     // ── Recent Terminal Commands ──
-    const recentCmds = this.index.recentCmds.slice(0, MAX_BOOT_CMDS);
+    const recentCmds = this.index.recentCmds
+      .filter(c => indexEntryMatchesScope(c, opts))
+      .slice(0, MAX_BOOT_CMDS);
     if (recentCmds.length > 0) {
       const cmdLines = recentCmds.map(c => {
         const agoMin = Math.round((now - c.ts) / 60000);
@@ -640,7 +661,9 @@ class LifetimeBrain {
     }
 
     // ── Last Completed Task ──
-    const lastCompletedTask = this.index.recentTasks.find(t => t.status === 'completed');
+    const lastCompletedTask = this.index.recentTasks
+      .filter(t => indexEntryMatchesScope(t, opts))
+      .find(t => t.status === 'completed');
     if (lastCompletedTask) {
       const agoMin = Math.round((now - lastCompletedTask.ts) / 60000);
       const agoStr = agoMin < 60 ? `${agoMin}m ago` : agoMin < 1440 ? `${Math.round(agoMin/60)}h ago` : `${Math.round(agoMin/1440)}d ago`;
@@ -649,7 +672,9 @@ class LifetimeBrain {
     }
 
     // ── Recent Errors ──
-    const unresolvedErrors = this.index.recentErrors.filter(e => !e.fixed).slice(0, MAX_BOOT_ERRORS);
+    const unresolvedErrors = this.index.recentErrors
+      .filter(e => indexEntryMatchesScope(e, opts) && !e.fixed)
+      .slice(0, MAX_BOOT_ERRORS);
     if (unresolvedErrors.length > 0) {
       const errLines = unresolvedErrors.map(e => {
         const agoMin = Math.round((now - e.ts) / 60000);
@@ -660,7 +685,9 @@ class LifetimeBrain {
     }
 
     // Fixed errors — learn from them
-    const fixedErrors = this.index.recentErrors.filter(e => e.fixed).slice(0, 3);
+    const fixedErrors = this.index.recentErrors
+      .filter(e => indexEntryMatchesScope(e, opts) && e.fixed)
+      .slice(0, 3);
     if (fixedErrors.length > 0) {
       const fixLines = fixedErrors.map(e => `  • [${e.tool}] ${e.error.substring(0, 60)} → FIXED`);
       parts.push(`🔧 ERRORS FIXED PREVIOUSLY:\n${fixLines.join('\n')}`);
@@ -668,7 +695,7 @@ class LifetimeBrain {
 
     // ── Learned Facts ──
     const topFacts = this.index.learnedFacts
-      .filter(f => f.confidence >= 0.7)
+      .filter(f => indexEntryMatchesScope(f, opts) && f.confidence >= 0.7)
       .slice(0, MAX_BOOT_FACTS);
     if (topFacts.length > 0) {
       const factLines = topFacts.map(f => `  • ${f.fact.substring(0, 100)}`);
@@ -843,7 +870,7 @@ class LifetimeBrain {
     }
     if (this.indexDirty) {
       this.indexDirty = false;
-      await fs.writeJson(INDEX_FILE, this.index, { spaces: 2 }).catch(() => {});
+      await writeJsonAtomic(INDEX_FILE, this.index).catch(() => {});
     }
     if (this.writeStream) {
       await new Promise<void>(resolve => this.writeStream!.end(resolve));

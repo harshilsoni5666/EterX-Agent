@@ -25,6 +25,31 @@ const MAX_LOADED_SKILLS = 80;
 const MAX_TOOL_RESULT_DIGEST = 150;
 const STALE_CLEANUP_MS = 7 * 24 * 60 * 60 * 1000; // 7 days auto-GC
 
+function isPathInside(parent: string, candidate: string): boolean {
+  const relative = path.relative(parent, candidate);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function resolveUnder(parent: string, ...segments: string[]): string {
+  const resolved = path.resolve(parent, ...segments);
+  if (!isPathInside(parent, resolved)) {
+    throw new Error(`Resolved path escapes expected directory: ${resolved}`);
+  }
+  return resolved;
+}
+
+async function writeJsonAtomic(filePath: string, data: unknown): Promise<void> {
+  const dir = path.dirname(filePath);
+  await fs.ensureDir(dir);
+  const tmpPath = path.join(dir, `.${path.basename(filePath)}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`);
+  await fs.writeJson(tmpPath, data, { spaces: 2 });
+  await fs.move(tmpPath, filePath, { overwrite: true });
+}
+
+function safeSessionFileId(chatId: string): string {
+  return chatId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 120) || '_global';
+}
+
 /** Rich file record — tracks what was done to each file and why */
 
 /** Rich file record — tracks what was done to each file and why */
@@ -120,9 +145,9 @@ export class SessionStateManager {
   private getStateFilePath(chatId?: string): string {
     if (chatId) {
       // Per-chat isolated file
-      return path.join(SESSION_DIR, `${chatId.replace(/[^a-zA-Z0-9_-]/g, '_')}.json`);
+      return resolveUnder(SESSION_DIR, `${safeSessionFileId(chatId)}.json`);
     }
-    return STATE_FILE; // Legacy fallback
+    return resolveUnder(SESSION_DIR, 'state.json'); // Legacy fallback
   }
 
   private isIsolatedSessionId(projectId?: string | null): boolean {
@@ -165,14 +190,14 @@ export class SessionStateManager {
     }
   }
 
-  private trimStateForRetention(): void {
-    this.state.callHistory = this.state.callHistory.slice(-MAX_CALL_HISTORY);
-    this.state.writtenFiles = this.state.writtenFiles.slice(-MAX_WRITTEN_FILES);
-    this.state.loadedSkills = this.state.loadedSkills.slice(-MAX_LOADED_SKILLS);
-    this.state.toolResultDigest = this.state.toolResultDigest.slice(-MAX_TOOL_RESULT_DIGEST);
-    this.state.fileRecords = this.state.fileRecords.slice(-80); // Keep 80 for rich file history
-    this.state.actionSummary = this.state.actionSummary.slice(-15);
-    this.state.taskPlanSteps = this.state.taskPlanSteps.slice(0, 20);
+  private trimStateForRetention(state: SessionState = this.state): void {
+    state.callHistory = state.callHistory.slice(-MAX_CALL_HISTORY);
+    state.writtenFiles = state.writtenFiles.slice(-MAX_WRITTEN_FILES);
+    state.loadedSkills = state.loadedSkills.slice(-MAX_LOADED_SKILLS);
+    state.toolResultDigest = state.toolResultDigest.slice(-MAX_TOOL_RESULT_DIGEST);
+    state.fileRecords = state.fileRecords.slice(-80); // Keep 80 for rich file history
+    state.actionSummary = state.actionSummary.slice(-15);
+    state.taskPlanSteps = state.taskPlanSteps.slice(0, 20);
   }
 
   private maybeCleanupStaleSessions(): void {
@@ -370,22 +395,32 @@ export class SessionStateManager {
       this.state.lastActivityAt = Date.now();
       await fs.ensureDir(SESSION_DIR);
       
-      // Save to per-chat file (primary) + legacy file in PARALLEL
+      // Save every active chat snapshot. Runtime updates are chat-scoped, so
+      // persisting only the currently bound state can lose data during tab/chat
+      // switches or concurrent runs.
       const chatId = this.currentProjectId || this.state.boundChatId;
       const writes: Promise<void>[] = [];
       
       if (chatId) {
-        const chatFile = this.getStateFilePath(chatId);
         this.trimStateForRetention();
-        writes.push(fs.writeJson(chatFile, { ...this.state, _projectId: chatId }, { spaces: 2 }));
-        // Update in-memory cache
         this.rememberActiveSession(chatId);
+      }
+
+      const statesToWrite = new Map<string, SessionState>();
+      for (const [id, cachedState] of this.activeChatSessions.entries()) {
+        if (!id) continue;
+        statesToWrite.set(id, this.cloneState(cachedState));
+      }
+
+      for (const [id, state] of statesToWrite.entries()) {
+        this.trimStateForRetention(state);
+        writes.push(writeJsonAtomic(this.getStateFilePath(id), { ...state, boundChatId: id, _projectId: id }));
       }
       
       // Also save to legacy file for backward compatibility, but never let
       // isolated Telegram/WhatsApp chats overwrite the shared browser/UI state.
       if (!this.isIsolatedSessionId(chatId)) {
-        writes.push(fs.writeJson(STATE_FILE, { ...this.state, _projectId: this.currentProjectId }, { spaces: 2 }));
+        writes.push(writeJsonAtomic(this.getStateFilePath(), { ...this.state, _projectId: this.currentProjectId }));
       }
       
       await Promise.all(writes);
@@ -525,6 +560,7 @@ export class SessionStateManager {
     const state = this.getOrCreateStateForChat(chatId);
     state.lastUserMessage = message;
     this.rememberActiveSession(chatId, state);
+    this.debouncedSave();
   }
 
   /** Set the agent's last output for a SPECIFIC chat */
@@ -532,6 +568,7 @@ export class SessionStateManager {
     const state = this.getOrCreateStateForChat(chatId);
     state.lastAgentOutput = output.substring(0, 1500);
     this.rememberActiveSession(chatId, state);
+    this.debouncedSave();
   }
 
   /** Get session summary for a SPECIFIC chat — NEVER leaks other chats' data */
@@ -588,18 +625,13 @@ export class SessionStateManager {
     state.toolResultDigest = state.toolResultDigest.slice(-MAX_TOOL_RESULT_DIGEST);
     
     this.rememberActiveSession(chatId, state);
+    this.debouncedSave();
   }
 
   /** Self-review for a SPECIFIC chat */
   public async selfReviewForChat(chatId: string): Promise<string> {
     const state = this.getStateForChat(chatId);
-    if (state.fileRecords.length === 0) return '';
-    // Temporarily swap state for selfReview, then restore
-    const originalState = this.state;
-    this.state = state;
-    const result = await this.selfReview();
-    this.state = originalState;
-    return result;
+    return this.selfReviewFromState(state);
   }
 
   /** Enable LONG-TASK MODE for a specific chat */
@@ -656,12 +688,16 @@ export class SessionStateManager {
     if (state.fileRecords.length > 15) {
       state.fileRecords = state.fileRecords.slice(-15);
     }
+    this.rememberActiveSession(chatId, state);
+    this.debouncedSave();
   }
 
   /** Store the current task plan steps for progress tracking in a specific chat */
   public setTaskPlanForChat(chatId: string, steps: Array<{ name: string; status: 'pending' | 'done'; description?: string }>): void {
     const state = this.getOrCreateStateForChat(chatId);
     state.taskPlanSteps = steps.slice(0, 20); // Cap at 20 steps
+    this.rememberActiveSession(chatId, state);
+    this.debouncedSave();
   }
 
   /** Add a human-readable action summary entry for a specific chat */
@@ -671,12 +707,16 @@ export class SessionStateManager {
     if (state.actionSummary.length > 15) {
       state.actionSummary = state.actionSummary.slice(-15);
     }
+    this.rememberActiveSession(chatId, state);
+    this.debouncedSave();
   }
 
   /** Increment message count for a specific chat */
   public incrementMessageCountForChat(chatId: string): void {
     const state = this.getOrCreateStateForChat(chatId);
     state.messageCount = (state.messageCount || 0) + 1;
+    this.rememberActiveSession(chatId, state);
+    this.debouncedSave();
   }
 
   /** Get the current message count for a specific chat */
@@ -808,11 +848,15 @@ export class SessionStateManager {
    * This lets the agent "see" its own work when the user says "work more on it".
    */
   public async selfReview(): Promise<string> {
-    if (this.state.fileRecords.length === 0) return '';
+    return this.selfReviewFromState(this.state);
+  }
+
+  private async selfReviewFromState(state: SessionState): Promise<string> {
+    if (state.fileRecords.length === 0) return '';
 
     const reviews: string[] = [];
 
-    for (const record of this.state.fileRecords.slice(-8)) { // Review last 8 files max
+    for (const record of state.fileRecords.slice(-8)) { // Review last 8 files max
       try {
         const fullPath = path.isAbsolute(record.filename)
           ? record.filename
@@ -936,8 +980,9 @@ export class SessionStateManager {
     const chatId = this.currentProjectId || this.state.boundChatId;
     this.state = { ...EMPTY_STATE, createdAt: Date.now(), lastActivityAt: Date.now(), messageCount: 0, boundChatId: '' };
     try {
-      if (await fs.pathExists(STATE_FILE)) {
-        await fs.remove(STATE_FILE);
+      const legacyFile = this.getStateFilePath();
+      if (await fs.pathExists(legacyFile)) {
+        await fs.remove(legacyFile);
       }
       if (chatId) {
         const chatFile = this.getStateFilePath(chatId);
@@ -1213,7 +1258,7 @@ export class SessionStateManager {
       for (const file of files) {
         if (!file.endsWith('.json') || file === 'state.json') continue;
         
-        const filePath = path.join(SESSION_DIR, file);
+        const filePath = resolveUnder(SESSION_DIR, file);
         try {
           const stat = await fs.stat(filePath);
           const age = Date.now() - stat.mtimeMs;

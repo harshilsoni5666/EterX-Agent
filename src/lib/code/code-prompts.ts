@@ -75,7 +75,7 @@ export function getToolEnhancements(): Record<string, string> {
     workspace_apply_patch: 'Multi-hunk or multi-file structural edits. Returns readback per file.',
     workspace_edit_file: 'Line-range or simple one-file replace.',
     workspace_edit_many_files: 'Same simple edit across files with atomic rollback. Returns per-file diffs.',
-    workspace_write_file: 'New files or intentional full rewrites only.',
+    workspace_write_file: 'New files only. Do not use it to modify existing files.',
     workspace_edit_session: 'Session management: summary, undo, checkpoint, rollback, diff report. Essential for long tasks.',
     workspace_execute_script: 'One-shot analysis/transform scripts only.',
     workspace_run_command: 'Finite shell commands for npm/tsc/pytest/cargo/go/git.',

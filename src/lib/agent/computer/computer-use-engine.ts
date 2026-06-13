@@ -29,6 +29,25 @@ import { monitorEmitter } from '../monitor/emitter';
 const execAsync = promisify(exec);
 const SCREENSHOTS_DIR = path.resolve(process.cwd(), '.workspaces', 'temp', 'screenshots');
 
+function isPathInside(parent: string, candidate: string): boolean {
+  const relative = path.relative(parent, candidate);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function resolveUnder(parent: string, ...segments: string[]): string {
+  const resolved = path.resolve(parent, ...segments);
+  if (!isPathInside(parent, resolved)) {
+    throw new Error(`Resolved path escapes expected directory: ${resolved}`);
+  }
+  return resolved;
+}
+
+function safeArtifactLabel(label: string, fallback = 'view'): string {
+  return String(label || fallback)
+    .replace(/[^a-zA-Z0-9_-]/g, '_')
+    .slice(0, 60) || fallback;
+}
+
 // ─── PowerShell Preamble (shared with desktop_control.ts) ────────────────────
 // Minimal version — full version is in desktop_control.ts
 const PS_BASE = `
@@ -97,7 +116,7 @@ export interface ScreenshotResult {
 
 export async function captureScreen(label: string = 'view', chatId?: string): Promise<ScreenshotResult | null> {
   await fs.ensureDir(SCREENSHOTS_DIR);
-  const filePath = path.join(SCREENSHOTS_DIR, `desktop_${label}_${Date.now()}.png`);
+  const filePath = resolveUnder(SCREENSHOTS_DIR, `desktop_${safeArtifactLabel(label)}_${Date.now()}.png`);
   try {
     await runPS(`${PS_DC_PREAMBLE}\n[DCE]::CaptureFullScreen('${filePath.replace(/\\/g, '\\\\')}');`, 12000);
     if (!await fs.pathExists(filePath)) return null;
@@ -117,7 +136,7 @@ export async function captureScreen(label: string = 'view', chatId?: string): Pr
 
 export async function captureWindow(windowTitle: string, label: string = 'window', chatId?: string): Promise<ScreenshotResult | null> {
   await fs.ensureDir(SCREENSHOTS_DIR);
-  const filePath = path.join(SCREENSHOTS_DIR, `window_${label}_${Date.now()}.png`);
+  const filePath = resolveUnder(SCREENSHOTS_DIR, `window_${safeArtifactLabel(label, 'window')}_${Date.now()}.png`);
   try {
     await runPS(`
       ${PS_DC_PREAMBLE}
@@ -139,8 +158,8 @@ export async function captureWindow(windowTitle: string, label: string = 'window
 
 export async function readScreenText(x: number, y: number, w: number, h: number): Promise<string> {
   // Captures a region and attempts to extract visible text using Windows OCR engine
-  const tmpImg = path.join(SCREENSHOTS_DIR, `ocr_${Date.now()}.png`);
-  const txtOut = path.join(SCREENSHOTS_DIR, `ocr_${Date.now()}.txt`);
+  const tmpImg = resolveUnder(SCREENSHOTS_DIR, `ocr_${Date.now()}.png`);
+  const txtOut = resolveUnder(SCREENSHOTS_DIR, `ocr_${Date.now()}.txt`);
   try {
     await runPS(`
       ${PS_DC_PREAMBLE}

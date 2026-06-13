@@ -1,4 +1,9 @@
 import { ToolDefinition } from '../schemas';
+import { zodToJsonSchema } from 'zod-to-json-schema';
+
+type RegisterOptions = {
+  allowOverride?: boolean;
+};
 
 export function normalizeRegistryToolName(name: string): string {
   const value = String(name || '').trim();
@@ -7,7 +12,7 @@ export function normalizeRegistryToolName(name: string): string {
   if (value === 'search_text') return 'workspace_search_text';
   if (value === 'find_files') return 'workspace_find_files';
   if (value === 'apply_patch') return 'workspace_apply_patch';
-  if (value === 'shell_command') return 'system_shell';
+  if (value === 'shell_command') return 'workspace_run_command';
   return value;
 }
 
@@ -17,8 +22,12 @@ class ToolRegistry {
   /**
    * Register a new tool with the agent OS.
    */
-  public registerTool(tool: ToolDefinition) {
-    if (this.tools.has(tool.name)) {
+  public registerTool(tool: ToolDefinition, options: RegisterOptions = {}) {
+    const existing = this.tools.get(tool.name);
+    if (existing && !options.allowOverride) {
+      throw new Error(`Tool ${tool.name} is already registered. Refusing to overwrite without allowOverride.`);
+    }
+    if (existing && options.allowOverride) {
       console.warn(`Tool ${tool.name} is already registered. Overwriting.`);
     }
     this.tools.set(tool.name, tool);
@@ -27,8 +36,8 @@ class ToolRegistry {
   /**
    * Register multiple tools without removing existing entries.
    */
-  public registerTools(tools: ToolDefinition[]) {
-    tools.forEach(t => this.registerTool(t));
+  public registerTools(tools: ToolDefinition[], options: RegisterOptions = {}) {
+    tools.forEach(t => this.registerTool(t, options));
   }
 
   /**
@@ -55,18 +64,40 @@ class ToolRegistry {
   }
 
   /**
-   * Generates the Function Declaration schemas for Gemini API.
-   * This maps our custom Zod schema to Gemini's expected JSON Schema format.
-   * Note: A robust implementation would use zod-to-json-schema.
+   * Generates Function Declaration schemas for Gemini/API tool calling.
    */
   public getGeminiFunctionDeclarations() {
     return this.getAllTools().map(tool => ({
       name: tool.name,
       description: tool.description,
-      // We will integrate zod-to-json-schema mapping here
-      // parameters: zodToJsonSchema(tool.inputSchema) 
+      parameters: toFunctionParameters(tool),
     }));
   }
 }
 
 export const globalToolRegistry = new ToolRegistry();
+
+function toFunctionParameters(tool: ToolDefinition): Record<string, any> {
+  try {
+    const schema = zodToJsonSchema(tool.inputSchema as any, {
+      $refStrategy: 'none',
+      target: 'jsonSchema7',
+    }) as Record<string, any>;
+    return sanitizeJsonSchema(schema);
+  } catch (error: any) {
+    console.warn(`Failed to convert schema for tool ${tool.name}: ${error?.message || error}`);
+    return { type: 'object', properties: {} };
+  }
+}
+
+function sanitizeJsonSchema(value: any): any {
+  if (Array.isArray(value)) return value.map(sanitizeJsonSchema);
+  if (!value || typeof value !== 'object') return value;
+
+  const result: Record<string, any> = {};
+  for (const [key, raw] of Object.entries(value)) {
+    if (key === '$schema' || key === 'definitions' || key === '$ref') continue;
+    result[key] = sanitizeJsonSchema(raw);
+  }
+  return result;
+}

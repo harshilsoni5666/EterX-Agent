@@ -3,9 +3,51 @@ import { ToolDefinition } from '../../schemas';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { isUnsafeHostControlEnabled } from '../../computer/computer-session';
+import { resolveReadableWorkspacePathForContext } from '../../workspace/path_resolver';
+import { enforceToolCapability } from '../security/tool_policy';
 
 const execAsync = promisify(exec);
 const SAFE_READONLY_ACTIONS = new Set(['battery']);
+
+function psQuote(value: unknown): string {
+  return `'${String(value ?? '').replace(/'/g, "''")}'`;
+}
+
+function requireTarget(input: any, field = 'target'): string {
+  const value = String(input?.[field] ?? '').trim();
+  if (!value) throw new Error(`${field} is required`);
+  return value;
+}
+
+function requireEnvName(value: unknown): string {
+  const name = String(value ?? '').trim();
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+    throw new Error('Environment variable names must use letters, numbers, and underscores, and may not start with a number.');
+  }
+  return name;
+}
+
+function requireProcessName(value: unknown): string {
+  const name = String(value ?? '').trim();
+  if (!/^[A-Za-z0-9_.-]+$/.test(name)) {
+    throw new Error('Process names may only contain letters, numbers, underscore, dot, and dash.');
+  }
+  return name;
+}
+
+function requireHttpUrl(value: unknown): string {
+  const url = new URL(String(value ?? '').trim());
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new Error('open_url only allows http:// and https:// URLs.');
+  }
+  return url.toString();
+}
+
+function clampVolume(value: unknown): number {
+  const level = Number.parseInt(String(value ?? '50'), 10);
+  if (!Number.isFinite(level)) return 50;
+  return Math.max(0, Math.min(100, level));
+}
 
 /**
  * System Automation — Open apps, manage windows, control OS
@@ -29,7 +71,12 @@ export const sysAutomationTool: ToolDefinition = {
     value: z.string().optional().describe('Value for set operations (e.g., env var value, volume level 0-100)')
   }),
   outputSchema: z.object({ success: z.boolean(), result: z.any() }),
-  execute: async (input: any) => {
+  execute: async (input: any, context?: any) => {
+    const decision = enforceToolCapability('system_automation', input, context);
+    if (!decision.allowed && !SAFE_READONLY_ACTIONS.has(input.action)) {
+      return { success: false, result: decision.reason || 'System automation is not allowed' };
+    }
+
     if (!isUnsafeHostControlEnabled() && !SAFE_READONLY_ACTIONS.has(input.action)) {
       return {
         success: false,
@@ -39,83 +86,98 @@ export const sysAutomationTool: ToolDefinition = {
 
     try {
       switch (input.action) {
-        case 'open_app':
-          await execAsync(`Start-Process "${input.target}"`, { shell: 'powershell.exe' });
-          return { success: true, result: `Opened: ${input.target}` };
-        case 'open_url':
-          await execAsync(`Start-Process "${input.target}"`, { shell: 'powershell.exe' });
-          return { success: true, result: `Opened URL: ${input.target}` };
-        case 'open_file':
-          await execAsync(`Invoke-Item "${input.target}"`, { shell: 'powershell.exe' });
-          return { success: true, result: `Opened file: ${input.target}` };
-        case 'open_folder':
-          await execAsync(`explorer "${input.target || '.'}"`, { shell: 'powershell.exe' });
-          return { success: true, result: `Opened folder: ${input.target}` };
+        case 'open_app': {
+          const target = requireTarget(input);
+          await execAsync(`Start-Process ${psQuote(target)}`, { shell: 'powershell.exe', windowsHide: true });
+          return { success: true, result: `Opened: ${target}` };
+        }
+        case 'open_url': {
+          const target = requireHttpUrl(input.target);
+          await execAsync(`Start-Process ${psQuote(target)}`, { shell: 'powershell.exe', windowsHide: true });
+          return { success: true, result: `Opened URL: ${target}` };
+        }
+        case 'open_file': {
+          const target = resolveReadableWorkspacePathForContext(requireTarget(input), context);
+          await execAsync(`Invoke-Item ${psQuote(target)}`, { shell: 'powershell.exe', windowsHide: true });
+          return { success: true, result: `Opened file: ${target}` };
+        }
+        case 'open_folder': {
+          const target = resolveReadableWorkspacePathForContext(input.target || '.', context);
+          await execAsync(`Start-Process -FilePath explorer.exe -ArgumentList ${psQuote(target)}`, { shell: 'powershell.exe', windowsHide: true });
+          return { success: true, result: `Opened folder: ${target}` };
+        }
         case 'list_running': {
           const { stdout } = await execAsync(
             `Get-Process | Where-Object {$_.MainWindowTitle -ne ''} | Select-Object -First 30 Name, Id, CPU, WorkingSet64 | Format-Table -AutoSize | Out-String -Width 300`,
-            { shell: 'powershell.exe' }
+            { shell: 'powershell.exe', windowsHide: true }
           );
           return { success: true, result: stdout.trim() };
         }
-        case 'kill_app':
-          await execAsync(`Stop-Process -Name "${input.target}" -Force -ErrorAction SilentlyContinue`, { shell: 'powershell.exe' });
-          return { success: true, result: `Killed: ${input.target}` };
-        case 'set_env':
-          if (!input.target || !input.value) return { success: false, result: 'target (name) and value required' };
-          await execAsync(`[System.Environment]::SetEnvironmentVariable("${input.target}", "${input.value}", "User")`, { shell: 'powershell.exe' });
-          return { success: true, result: `Set env: ${input.target}=${input.value}` };
+        case 'kill_app': {
+          const target = requireProcessName(input.target);
+          await execAsync(`Stop-Process -Name ${psQuote(target)} -Force -ErrorAction SilentlyContinue`, { shell: 'powershell.exe', windowsHide: true });
+          return { success: true, result: `Killed: ${target}` };
+        }
+        case 'set_env': {
+          const target = requireEnvName(input.target);
+          if (input.value === undefined || input.value === null) return { success: false, result: 'target (name) and value required' };
+          await execAsync(`[System.Environment]::SetEnvironmentVariable(${psQuote(target)}, ${psQuote(input.value)}, "User")`, { shell: 'powershell.exe', windowsHide: true });
+          return { success: true, result: `Set env: ${target}=<redacted>` };
+        }
         case 'get_env': {
+          const target = input.target ? requireEnvName(input.target) : '';
           const { stdout } = await execAsync(
-            input.target 
-              ? `[System.Environment]::GetEnvironmentVariable("${input.target}", "User")`
+            target
+              ? `[System.Environment]::GetEnvironmentVariable(${psQuote(target)}, "User")`
               : `Get-ChildItem Env: | Select-Object -First 30 Name, Value | Format-Table -AutoSize | Out-String -Width 300`,
-            { shell: 'powershell.exe' }
+            { shell: 'powershell.exe', windowsHide: true }
           );
           return { success: true, result: stdout.trim() };
         }
         case 'volume': {
-          const level = parseInt(input.value || '50');
+          const level = clampVolume(input.value);
           await execAsync(
             `$obj = New-Object -ComObject WScript.Shell; ` +
             `1..50 | ForEach-Object { $obj.SendKeys([char]174) }; ` +
             `1..${Math.floor(level/2)} | ForEach-Object { $obj.SendKeys([char]175) }`,
-            { shell: 'powershell.exe' }
+            { shell: 'powershell.exe', windowsHide: true }
           );
           return { success: true, result: `Volume set to ~${level}%` };
         }
         case 'lock_screen':
-          await execAsync(`rundll32.exe user32.dll,LockWorkStation`, { shell: 'powershell.exe' });
+          await execAsync(`rundll32.exe user32.dll,LockWorkStation`, { shell: 'powershell.exe', windowsHide: true });
           return { success: true, result: 'Screen locked' };
         case 'empty_trash':
-          await execAsync(`Clear-RecycleBin -Force -ErrorAction SilentlyContinue`, { shell: 'powershell.exe' });
+          await execAsync(`Clear-RecycleBin -Force -ErrorAction SilentlyContinue`, { shell: 'powershell.exe', windowsHide: true });
           return { success: true, result: 'Recycle bin emptied' };
         case 'battery': {
           const { stdout } = await execAsync(
             `Get-CimInstance Win32_Battery | Select-Object EstimatedChargeRemaining, BatteryStatus, EstimatedRunTime | Format-List | Out-String`,
-            { shell: 'powershell.exe' }
+            { shell: 'powershell.exe', windowsHide: true }
           );
           return { success: true, result: stdout.trim() || 'No battery detected (desktop PC)' };
         }
         case 'installed_apps': {
           const { stdout } = await execAsync(
             `Get-ItemProperty HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\* | Select-Object -First 25 DisplayName, DisplayVersion, Publisher | Sort-Object DisplayName | Format-Table -AutoSize | Out-String -Width 400`,
-            { shell: 'powershell.exe' }
+            { shell: 'powershell.exe', windowsHide: true }
           );
           return { success: true, result: stdout.trim() };
         }
         case 'startup_items': {
           const { stdout } = await execAsync(
             `Get-CimInstance Win32_StartupCommand | Select-Object Name, Command, Location | Format-Table -AutoSize | Out-String -Width 400`,
-            { shell: 'powershell.exe' }
+            { shell: 'powershell.exe', windowsHide: true }
           );
           return { success: true, result: stdout.trim() };
         }
         case 'services': {
-          const filter = input.target ? `| Where-Object {$_.Name -like '*${input.target}*' -or $_.DisplayName -like '*${input.target}*'}` : '| Select-Object -First 20';
+          const filter = input.target
+            ? `| Where-Object {$needle = ${psQuote(input.target)}; $_.Name -like "*$needle*" -or $_.DisplayName -like "*$needle*"}`
+            : '| Select-Object -First 20';
           const { stdout } = await execAsync(
             `Get-Service ${filter} | Select-Object Name, DisplayName, Status, StartType | Format-Table -AutoSize | Out-String -Width 400`,
-            { shell: 'powershell.exe' }
+            { shell: 'powershell.exe', windowsHide: true }
           );
           return { success: true, result: stdout.trim() };
         }

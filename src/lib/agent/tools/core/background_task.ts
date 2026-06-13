@@ -5,6 +5,7 @@ import { promisify } from 'util';
 import path from 'path';
 import fs from 'fs-extra';
 import { resolveWorkspaceDirectoryForContext } from '../../workspace/path_resolver';
+import { authorizeToolCommand } from '../security/command_broker';
 
 const execAsync = promisify(exec);
 
@@ -27,6 +28,50 @@ const execAsync = promisify(exec);
  */
 
 const TASKS_DIR = path.resolve(process.cwd(), '.workspaces', 'background_tasks');
+
+function isPathInside(parent: string, candidate: string): boolean {
+  const relative = path.relative(parent, candidate);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function resolveUnder(parent: string, ...segments: string[]): string {
+  const resolved = path.resolve(parent, ...segments);
+  if (!isPathInside(parent, resolved)) {
+    throw new Error(`Resolved path escapes expected directory: ${resolved}`);
+  }
+  return resolved;
+}
+
+function safeTaskId(value: string): string {
+  return String(value || '').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80);
+}
+
+async function writeJsonAtomic(filePath: string, data: unknown): Promise<void> {
+  const dir = path.dirname(filePath);
+  await fs.ensureDir(dir);
+  const tmpPath = path.join(dir, `.${path.basename(filePath)}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`);
+  await fs.writeJson(tmpPath, data, { spaces: 2 });
+  await fs.move(tmpPath, filePath, { overwrite: true });
+}
+
+async function writeFileAtomic(filePath: string, data: string): Promise<void> {
+  const dir = path.dirname(filePath);
+  await fs.ensureDir(dir);
+  const tmpPath = path.join(dir, `.${path.basename(filePath)}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`);
+  await fs.writeFile(tmpPath, data, 'utf8');
+  await fs.move(tmpPath, filePath, { overwrite: true });
+}
+
+function killProcessTree(pid?: number): void {
+  if (!pid) return;
+  if (process.platform === 'win32') {
+    exec(`taskkill /PID ${pid} /T /F`, { windowsHide: true }, () => undefined);
+    return;
+  }
+  try { process.kill(-pid, 'SIGTERM'); } catch {
+    try { process.kill(pid, 'SIGTERM'); } catch { }
+  }
+}
 
 interface BackgroundTask {
   id: string;
@@ -86,9 +131,24 @@ Use for: long installs, builds, data processing, file watching, anything that ta
         if (!input.command) {
           return { success: false, message: 'command is required for launch mode' };
         }
+        if (context?.abortSignal?.aborted || context?.isCancelled?.()) {
+          return { success: false, message: 'Background task launch cancelled by user' };
+        }
 
         const taskId = `bg_${Date.now()}`;
         const workDir = resolveWorkspaceDirectoryForContext(input.cwd, context);
+        const authorization = await authorizeToolCommand({
+          command: input.command,
+          cwd: workDir,
+          context,
+          timeoutMs: 600000,
+        });
+        if (!authorization.allowed) {
+          return {
+            success: false,
+            message: authorization.reason || 'Command blocked by command broker',
+          };
+        }
 
         const task: BackgroundTask = {
           id: taskId,
@@ -102,17 +162,19 @@ Use for: long installs, builds, data processing, file watching, anything that ta
         console.log(`[BackgroundTask] 🚀 Launching: ${input.command} (${taskId})`);
 
         // Run in background — don't await
-        const outputFile = path.join(TASKS_DIR, `${taskId}_output.txt`);
-        const statusFile = path.join(TASKS_DIR, `${taskId}_status.json`);
+        const outputFile = resolveUnder(TASKS_DIR, `${taskId}_output.txt`);
+        const statusFile = resolveUnder(TASKS_DIR, `${taskId}_status.json`);
 
         // Write initial status
-        await fs.writeJson(statusFile, task, { spaces: 2 });
+        await writeJsonAtomic(statusFile, task);
 
         // Execute asynchronously
         const child = exec(input.command, {
-          cwd: workDir,
+          cwd: authorization.cwd,
+          env: authorization.env,
           timeout: 600000,  // 10 minute timeout
-          maxBuffer: 50 * 1024 * 1024  // 50MB buffer
+          maxBuffer: 50 * 1024 * 1024,  // 50MB buffer
+          signal: context?.abortSignal,
         }, async (error, stdout, stderr) => {
           const output = stdout + (stderr ? `\nSTDERR:\n${stderr}` : '');
           task.output = output.substring(0, 10000);  // Cap at 10KB
@@ -126,8 +188,8 @@ Use for: long installs, builds, data processing, file watching, anything that ta
           }
 
           // Write final output and status
-          await fs.writeFile(outputFile, output).catch(() => {});
-          await fs.writeJson(statusFile, task, { spaces: 2 }).catch(() => {});
+          await writeFileAtomic(outputFile, output).catch(() => {});
+          await writeJsonAtomic(statusFile, task).catch(() => {});
 
           console.log(`[BackgroundTask] ${task.status === 'completed' ? '✅' : '❌'} ${taskId}: ${task.status}`);
         });
@@ -155,9 +217,13 @@ Use for: long installs, builds, data processing, file watching, anything that ta
         if (!input.taskId) {
           return { success: false, message: 'taskId is required for check mode' };
         }
+        const taskId = safeTaskId(input.taskId);
+        if (!taskId) {
+          return { success: false, message: 'Invalid taskId' };
+        }
 
         // Check in-memory first
-        const task = activeTasks.get(input.taskId);
+        const task = activeTasks.get(taskId);
         if (task) {
           const elapsed = ((Date.now() - task.startedAt) / 1000).toFixed(1);
           const partialOutput = task.output || '(no output yet)';
@@ -167,28 +233,28 @@ Use for: long installs, builds, data processing, file watching, anything that ta
 
           return {
             success: true,
-            taskId: input.taskId,
+            taskId,
             output: partialOutput,
             status: task.status,
             elapsedSeconds: parseFloat(elapsed),
-            message: `Task ${input.taskId}: ${statusHint} | "${task.description}" | Started: ${new Date(task.startedAt).toLocaleTimeString()}${task.completedAt ? ` | Duration: ${((task.completedAt - task.startedAt) / 1000).toFixed(1)}s` : ''}`
+            message: `Task ${taskId}: ${statusHint} | "${task.description}" | Started: ${new Date(task.startedAt).toLocaleTimeString()}${task.completedAt ? ` | Duration: ${((task.completedAt - task.startedAt) / 1000).toFixed(1)}s` : ''}`
           };
         }
 
         // Check persisted status file
-        const statusFile = path.join(TASKS_DIR, `${input.taskId}_status.json`);
+        const statusFile = resolveUnder(TASKS_DIR, `${taskId}_status.json`);
         if (await fs.pathExists(statusFile)) {
           const status = await fs.readJson(statusFile);
           return {
             success: true,
-            taskId: input.taskId,
+            taskId,
             output: status.output || '',
             status: status.status,
-            message: `Task ${input.taskId}: ${status.status} | "${status.description}"`
+            message: `Task ${taskId}: ${status.status} | "${status.description}"`
           };
         }
 
-        return { success: false, taskId: input.taskId, message: `Task ${input.taskId} not found. Use mode="list" to see all tasks.` };
+        return { success: false, taskId, message: `Task ${taskId} not found. Use mode="list" to see all tasks.` };
       }
 
       case 'list': {
@@ -210,7 +276,7 @@ Use for: long installs, builds, data processing, file watching, anything that ta
             if (file.endsWith('_status.json')) {
               const taskId = file.replace('_status.json', '');
               if (!activeTasks.has(taskId)) {
-                const status = await fs.readJson(path.join(TASKS_DIR, file));
+                const status = await fs.readJson(resolveUnder(TASKS_DIR, file));
                 tasks.push({
                   id: taskId, status: status.status, description: status.description,
                   startedAt: new Date(status.startedAt).toLocaleTimeString(),
@@ -232,21 +298,26 @@ Use for: long installs, builds, data processing, file watching, anything that ta
         if (!input.taskId) {
           return { success: false, message: 'taskId is required for kill mode' };
         }
+        const taskId = safeTaskId(input.taskId);
+        if (!taskId) {
+          return { success: false, message: 'Invalid taskId' };
+        }
 
-        const task = activeTasks.get(input.taskId);
+        const task = activeTasks.get(taskId);
         if (task && task.pid && task.status === 'running') {
           try {
-            process.kill(task.pid, 'SIGTERM');
+            killProcessTree(task.pid);
             task.status = 'failed';
             task.error = 'Killed by agent';
             task.completedAt = Date.now();
-            return { success: true, message: `Task ${input.taskId} (PID: ${task.pid}) terminated.` };
+            await writeJsonAtomic(resolveUnder(TASKS_DIR, `${taskId}_status.json`), task).catch(() => {});
+            return { success: true, message: `Task ${taskId} (PID: ${task.pid}) terminated.` };
           } catch (e: any) {
             return { success: false, message: `Could not kill task: ${e.message}` };
           }
         }
 
-        return { success: false, message: `Task ${input.taskId} not found or not running` };
+        return { success: false, message: `Task ${taskId} not found or not running` };
       }
 
       default:

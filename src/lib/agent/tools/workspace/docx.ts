@@ -16,6 +16,7 @@ import {
   resolveReadableWorkspacePathForContext,
   resolveWorkspacePathForContext,
 } from '../../workspace/path_resolver';
+import { safeAxiosRequest } from '../shared/url_safety';
 
 /**
  * Rich DOCX Generator — creates professional Word documents with:
@@ -210,11 +211,17 @@ The file is saved to the EXACT path you specify — use full paths like C:\\User
         try {
           let data: Buffer;
           if (/^https?:\/\//i.test(source)) {
-            const response = await fetch(source);
-            if (!response.ok) throw new Error(`HTTP ${response.status}`);
-            const contentType = response.headers.get('content-type') || '';
+            const response = await safeAxiosRequest<ArrayBuffer>({
+              url: source,
+              method: 'GET',
+              responseType: 'arraybuffer',
+              timeout: 15000,
+            }, context);
+            if (response.status < 200 || response.status >= 300) throw new Error(`HTTP ${response.status}`);
+            const rawContentType = response.headers['content-type'];
+            const contentType = Array.isArray(rawContentType) ? rawContentType[0] || '' : String(rawContentType || '');
             if (!/^image\//i.test(contentType)) throw new Error(`URL is not an image (${contentType || 'unknown content type'})`);
-            data = Buffer.from(await response.arrayBuffer());
+            data = Buffer.from(response.data);
           } else {
             const imagePath = hasRuntimeWorkspaceContext(context)
               ? resolveReadableWorkspacePathForContext(source, context)

@@ -1,6 +1,9 @@
 import { z } from 'zod';
 import { ToolDefinition } from './schemas';
-import { globalToolRegistry } from './tools/registry';
+import { globalToolRegistry, normalizeRegistryToolName } from './tools/registry';
+import { normalizeRegistryToolArgs, validateRegistryToolArgs } from './tools/tool-args';
+import { enforceToolCapability } from './tools/security/tool_policy';
+import { createToolExecutionContext, isToolCancellationError } from './cancellation';
 import path from 'path';
 import fs from 'fs-extra';
 
@@ -24,6 +27,62 @@ import fs from 'fs-extra';
  */
 
 const DYNAMIC_TOOLS_DIR = path.resolve(process.cwd(), '.workspaces', 'dynamic_tools');
+const MAX_DYNAMIC_TOOL_CODE_LENGTH = 10_000;
+
+function isPathInside(parent: string, candidate: string): boolean {
+  const relative = path.relative(parent, candidate);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function resolveUnder(parent: string, ...segments: string[]): string {
+  const resolved = path.resolve(parent, ...segments);
+  if (!isPathInside(parent, resolved)) {
+    throw new Error(`Resolved path escapes expected directory: ${resolved}`);
+  }
+  return resolved;
+}
+
+async function writeJsonAtomic(filePath: string, data: unknown): Promise<void> {
+  const dir = path.dirname(filePath);
+  await fs.ensureDir(dir);
+  const tmpPath = path.join(dir, `.${path.basename(filePath)}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`);
+  await fs.writeJson(tmpPath, data, { spaces: 2 });
+  await fs.move(tmpPath, filePath, { overwrite: true });
+}
+
+function safeToolName(name: unknown): string | null {
+  const value = String(name || '').trim();
+  return /^[a-z][a-z0-9_]{2,63}$/.test(value) ? value : null;
+}
+
+function safeFieldName(name: unknown): string | null {
+  const value = String(name || '').trim();
+  return /^[a-zA-Z_][a-zA-Z0-9_]{0,63}$/.test(value) ? value : null;
+}
+
+function dynamicToolExecutionEnabled(): boolean {
+  return process.env.ETERX_ENABLE_DYNAMIC_TOOL_EXECUTION === '1';
+}
+
+function validateDynamicExecutionCode(code: string): string | null {
+  if (code.length > MAX_DYNAMIC_TOOL_CODE_LENGTH) {
+    return `Execution code exceeds ${MAX_DYNAMIC_TOOL_CODE_LENGTH} characters.`;
+  }
+
+  const blockedPatterns = [
+    /\b(?:require|process|child_process|fs|net|http|https|eval|Function|constructor|globalThis|window|document|Buffer)\b/i,
+    /\bimport\s*\(/i,
+    /\b(?:rm\s+-rf|format\s+c:|del\s+\/f)\b/i,
+  ];
+
+  for (const pattern of blockedPatterns) {
+    if (pattern.test(code)) {
+      return 'Execution code contains blocked runtime APIs or shell patterns.';
+    }
+  }
+
+  return null;
+}
 
 interface DynamicToolSpec {
   name: string;
@@ -40,6 +99,88 @@ class DynamicSkillEngine {
   private dynamicTools: Map<string, DynamicToolSpec> = new Map();
   private initialized = false;
 
+  private normalizeSpec(raw: any, fallbackName?: string): DynamicToolSpec | null {
+    if (!raw || typeof raw !== 'object') return null;
+
+    const name = safeToolName(raw.name) || safeToolName(fallbackName);
+    if (!name) return null;
+
+    const inputFields = Array.isArray(raw.inputFields)
+      ? raw.inputFields.slice(0, 50).flatMap((field: any) => {
+          const fieldName = safeFieldName(field?.name);
+          if (!fieldName) return [];
+          const fieldType = ['string', 'number', 'boolean', 'array'].includes(field?.type) ? field.type : 'string';
+          return [{
+            name: fieldName,
+            type: fieldType,
+            description: String(field?.description || '').slice(0, 500),
+            required: Boolean(field?.required),
+          }];
+        })
+      : [];
+
+    return {
+      name,
+      description: String(raw.description || 'Dynamic tool').slice(0, 1000),
+      category: String(raw.category || 'dynamic').slice(0, 100),
+      inputFields,
+      executionCode: String(raw.executionCode || ''),
+      composedFrom: Array.isArray(raw.composedFrom)
+        ? raw.composedFrom.map((tool: any) => String(tool)).filter(Boolean).slice(0, 20)
+        : undefined,
+      createdAt: Number.isFinite(Number(raw.createdAt)) ? Number(raw.createdAt) : Date.now(),
+      createdBy: String(raw.createdBy || 'unknown').slice(0, 100),
+    };
+  }
+
+  private buildToolDefinition(spec: DynamicToolSpec): ToolDefinition {
+    const schemaFields: Record<string, any> = {};
+    for (const field of spec.inputFields) {
+      let zodType: any;
+      switch (field.type) {
+        case 'number': zodType = z.number(); break;
+        case 'boolean': zodType = z.boolean(); break;
+        case 'array': zodType = z.array(z.any()); break;
+        default: zodType = z.string();
+      }
+      if (field.description) zodType = zodType.describe(field.description);
+      schemaFields[field.name] = field.required ? zodType : zodType.optional();
+    }
+
+    return {
+      name: spec.name,
+      description: `[DYNAMIC] ${spec.description}`,
+      category: 'core' as const,
+      inputSchema: z.object(schemaFields),
+      outputSchema: z.object({ result: z.any(), success: z.boolean() }),
+      execute: async (input: any) => {
+        console.log(`[DynamicTool: ${spec.name}] Executing...`);
+        if (!dynamicToolExecutionEnabled()) {
+          return {
+            result: null,
+            success: false,
+            error: 'Dynamic tool execution is disabled. Set ETERX_ENABLE_DYNAMIC_TOOL_EXECUTION=1 only for trusted local tools.',
+          };
+        }
+
+        const blockedReason = validateDynamicExecutionCode(spec.executionCode);
+        if (blockedReason) {
+          return { result: null, success: false, error: blockedReason };
+        }
+
+        try {
+          const AsyncFunction = Object.getPrototypeOf(async function () { }).constructor;
+          const fn = new AsyncFunction('input', `"use strict";\n${spec.executionCode}`);
+          const safeInput = input && typeof input === 'object' ? Object.freeze({ ...input }) : input;
+          const result = await fn(safeInput);
+          return { result, success: true };
+        } catch (error: any) {
+          return { result: null, success: false, error: error.message };
+        }
+      }
+    };
+  }
+
   /** Load all dynamic tools from disk and register them */
   async initialize(): Promise<void> {
     if (this.initialized) return;
@@ -50,8 +191,17 @@ class DynamicSkillEngine {
       for (const file of files) {
         if (!file.endsWith('.json')) continue;
         try {
-          const spec: DynamicToolSpec = await fs.readJson(path.join(DYNAMIC_TOOLS_DIR, file));
+          const filePath = resolveUnder(DYNAMIC_TOOLS_DIR, file);
+          const raw = await fs.readJson(filePath);
+          const spec = this.normalizeSpec(raw, path.basename(file, '.json'));
+          if (!spec) {
+            console.warn(`[DynamicSkills] Skipping invalid dynamic tool file ${file}`);
+            continue;
+          }
           this.registerDynamicTool(spec);
+          if (dynamicToolExecutionEnabled() && !globalToolRegistry.getTool(spec.name)) {
+            globalToolRegistry.registerTools([this.buildToolDefinition(spec)]);
+          }
         } catch (e) {
           console.warn(`[DynamicSkills] Could not load ${file}`);
         }
@@ -69,56 +219,30 @@ class DynamicSkillEngine {
 
   /** Create and register a new dynamic tool */
   async createTool(spec: DynamicToolSpec): Promise<{ success: boolean, message: string }> {
+    const normalized = this.normalizeSpec(spec);
+    if (!normalized) {
+      return { success: false, message: 'Invalid dynamic tool spec. Use a snake_case name and valid input field names.' };
+    }
+    spec = normalized;
+
+    if (!dynamicToolExecutionEnabled()) {
+      return {
+        success: false,
+        message: 'Dynamic tool creation is disabled for safety. Enable ETERX_ENABLE_DYNAMIC_TOOL_EXECUTION=1 only for trusted local tools.',
+      };
+    }
+
     // Validate name doesn't conflict with existing tools
     if (globalToolRegistry.getTool(spec.name)) {
       return { success: false, message: `Tool "${spec.name}" already exists in the registry. Choose a different name.` };
     }
 
-    // Validate the execution code is safe (basic checks)
-    const dangerousPatterns = ['process.exit', 'require("child_process")', 'rm -rf', 'format c:', 'del /f'];
-    for (const pattern of dangerousPatterns) {
-      if (spec.executionCode.includes(pattern)) {
-        return { success: false, message: `Execution code contains dangerous pattern: "${pattern}". Rejected.` };
-      }
+    const blockedReason = validateDynamicExecutionCode(spec.executionCode);
+    if (blockedReason) {
+      return { success: false, message: blockedReason };
     }
 
-    // Build Zod schema from input fields
-    const schemaFields: Record<string, any> = {};
-    for (const field of spec.inputFields) {
-      let zodType: any;
-      switch (field.type) {
-        case 'string': zodType = z.string(); break;
-        case 'number': zodType = z.number(); break;
-        case 'boolean': zodType = z.boolean(); break;
-        case 'array': zodType = z.array(z.any()); break;
-        default: zodType = z.string();
-      }
-      if (field.description) zodType = zodType.describe(field.description);
-      schemaFields[field.name] = field.required ? zodType : zodType.optional();
-    }
-
-    // Create the tool definition
-    const toolDef: ToolDefinition = {
-      name: spec.name,
-      description: `[DYNAMIC] ${spec.description}`,
-      category: 'core' as const,
-      inputSchema: z.object(schemaFields),
-      outputSchema: z.object({ result: z.any(), success: z.boolean() }),
-      execute: async (input: any) => {
-        console.log(`[DynamicTool: ${spec.name}] Executing...`);
-        try {
-          // Create a sandboxed execution context. 
-          // Abstract require via eval to prevent Next.js from throwing static extraction warnings.
-          const AsyncFunction = Object.getPrototypeOf(async function () { }).constructor;
-          const _req = typeof window === 'undefined' ? eval('require') : null;
-          const fn = new AsyncFunction('input', 'require', 'path', 'fs', spec.executionCode);
-          const result = await fn(input, _req, _req ? _req('path') : path, _req ? _req('fs-extra') : fs);
-          return { result, success: true };
-        } catch (error: any) {
-          return { result: null, success: false, error: error.message };
-        }
-      }
-    };
+    const toolDef = this.buildToolDefinition(spec);
 
     // Register in the global registry
     this.registerDynamicTool(spec);
@@ -138,12 +262,9 @@ class DynamicSkillEngine {
 
   /** Save tool spec to disk */
   private async saveTool(spec: DynamicToolSpec) {
-    await fs.ensureDir(DYNAMIC_TOOLS_DIR);
-    await fs.writeJson(
-      path.join(DYNAMIC_TOOLS_DIR, `${spec.name}.json`),
-      spec,
-      { spaces: 2 }
-    );
+    const toolName = safeToolName(spec.name);
+    if (!toolName) throw new Error(`Invalid dynamic tool name: ${spec.name}`);
+    await writeJsonAtomic(resolveUnder(DYNAMIC_TOOLS_DIR, `${toolName}.json`), spec);
   }
 
   /** List all dynamic tools */
@@ -153,8 +274,15 @@ class DynamicSkillEngine {
 
   /** Delete a dynamic tool */
   async deleteTool(name: string): Promise<boolean> {
-    this.dynamicTools.delete(name);
-    const filePath = path.join(DYNAMIC_TOOLS_DIR, `${name}.json`);
+    const toolName = safeToolName(name);
+    if (!toolName) return false;
+
+    this.dynamicTools.delete(toolName);
+    globalToolRegistry.replaceAllTools(
+      globalToolRegistry.getAllTools().filter(tool => tool.name !== toolName)
+    );
+
+    const filePath = resolveUnder(DYNAMIC_TOOLS_DIR, `${toolName}.json`);
     if (await fs.pathExists(filePath)) {
       await fs.remove(filePath);
       return true;
@@ -191,17 +319,18 @@ class ToolCompositionEngine {
   private macros: Map<string, MacroDefinition> = new Map();
 
   /** Execute a macro — run steps in sequence, piping outputs */
-  async executeMacro(macro: MacroDefinition, input: any): Promise<any> {
+  async executeMacro(macro: MacroDefinition, input: any, runtimeContext: any = {}): Promise<any> {
     console.log(`[MacroEngine] Executing macro: ${macro.name} (${macro.steps.length} steps)`);
 
     const context: Record<string, any> = { ...input };
 
     for (let i = 0; i < macro.steps.length; i++) {
       const step = macro.steps[i];
-      const tool = globalToolRegistry.getTool(step.tool);
+      const stepToolName = normalizeRegistryToolName(step.tool);
+      const tool = globalToolRegistry.getTool(stepToolName);
 
       if (!tool) {
-        return { error: `Step ${i + 1}: Tool "${step.tool}" not found`, step: i + 1 };
+        return { error: `Step ${i + 1}: Tool "${stepToolName}" not found`, step: i + 1 };
       }
 
       // Build input from mapping
@@ -210,13 +339,33 @@ class ToolCompositionEngine {
         stepInput[toolField] = context[macroField];
       }
 
-      console.log(`[MacroEngine] Step ${i + 1}/${macro.steps.length}: ${step.tool}`);
+      console.log(`[MacroEngine] Step ${i + 1}/${macro.steps.length}: ${stepToolName}`);
 
       try {
-        const result = await tool.execute(stepInput, {});
+        const normalizedArgs = normalizeRegistryToolArgs(stepToolName, stepInput);
+        const validation = validateRegistryToolArgs(tool, normalizedArgs);
+        if (!validation.success) {
+          return { error: `Step ${i + 1} (${stepToolName}) invalid args: ${validation.error}`, step: i + 1, context };
+        }
+        const capabilityDecision = enforceToolCapability(stepToolName, validation.args, runtimeContext);
+        if (!capabilityDecision.allowed) {
+          return { error: `Step ${i + 1} (${stepToolName}) blocked: ${capabilityDecision.reason || 'capability denied'}`, step: i + 1, context };
+        }
+        const toolExec = createToolExecutionContext(runtimeContext);
+        let result: any;
+        try {
+          toolExec.throwIfCancelled();
+          result = await tool.execute(validation.args, toolExec.context);
+          toolExec.throwIfCancelled();
+        } finally {
+          toolExec.dispose();
+        }
         context[step.outputKey] = result;
       } catch (error: any) {
-        return { error: `Step ${i + 1} (${step.tool}) failed: ${error.message}`, step: i + 1, context };
+        if (isToolCancellationError(error)) {
+          return { error: 'CANCELLED_BY_USER', cancelled: true, step: i + 1, context };
+        }
+        return { error: `Step ${i + 1} (${stepToolName}) failed: ${error.message}`, step: i + 1, context };
       }
     }
 
@@ -401,8 +550,8 @@ class WorkspaceIntelligence {
       console.log(`[WorkspaceIntel]    Features: TS=${profile.hasTypeScript} Docker=${profile.hasDocker} CI=${profile.hasCI} Tests=${profile.hasTests}`);
 
       // Persist for quick access
-      await fs.ensureDir(path.join(cwd, '.workspaces'));
-      await fs.writeJson(path.join(cwd, '.workspaces', 'workspace_profile.json'), profile, { spaces: 2 });
+      const workspaceDir = path.join(cwd, '.workspaces');
+      await writeJsonAtomic(resolveUnder(workspaceDir, 'workspace_profile.json'), profile);
 
       return profile;
     } catch (error: any) {
@@ -503,7 +652,7 @@ class AgentReflectionEngine {
     // 2. Contains placeholder/TODO markers
     if (agentOutput.includes('TODO') || agentOutput.includes('placeholder') || agentOutput.includes('FIXME')) {
       suggestions.push('Contains TODO/placeholder/FIXME — incomplete work');
-      improvementActions.push({ tool: 'workspace_edit_file', reason: 'Replace placeholders with real implementation' });
+      improvementActions.push({ tool: 'workspace_str_replace', reason: 'Replace placeholders with real implementation' });
     }
     
     // 3. Claims inability instead of trying
@@ -533,7 +682,13 @@ class AgentReflectionEngine {
     // 7. Coding task but no files created
     const isCodingTask = /\\b(build|create|write|make|implement|code|develop|app|website|script|function|component)\\b/i.test(goalLower);
     if (isCodingTask) {
-      const fileTools = toolsUsed.filter(t => t.startsWith('workspace_write_file') || t.startsWith('workspace_edit_file'));
+      const fileTools = toolsUsed.filter(t =>
+        t.startsWith('workspace_write_file') ||
+        t.startsWith('workspace_str_replace') ||
+        t.startsWith('workspace_apply_patch') ||
+        t.startsWith('workspace_edit_file') ||
+        t.startsWith('workspace_edit_many_files')
+      );
       if (fileTools.length === 0 && !outputLower.includes('file') && !outputLower.includes('created')) {
         suggestions.push('Coding task but no files created');
         improvementActions.push({ tool: 'workspace_write_file', reason: 'Need to create actual code files' });

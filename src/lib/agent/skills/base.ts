@@ -1,11 +1,11 @@
 export const UNIVERSAL_DOCUMENT_PRINCIPLES = `
-## THE PARENT SKILL — UNIVERSAL DOCUMENT CREATION PRINCIPLES
+## Universal Document Creation Principles
 
-Before you touch any format-specific tool, you must follow these five universal laws:
+Before using a format-specific document tool, apply these principles in proportion to the task:
 
-**Law 1 — Understand Before Creating.** You never start writing a document the moment you receive a request. First, build a content model — a structured understanding of what the document needs to contain, who will read it, what they need to walk away knowing, and what the depth and tone is. Ask these questions internally before touching any tool.
-**Law 2 — Structure Before Content.** Every document gets a skeleton first. Headings, sections, table placeholders, chart placeholders, and an appendix plan are decided before a single sentence is written. The skeleton is built from the content model and reviewed internally.
-**Law 3 — Data Drives Everything.** Any claim, number, trend, or comparison must come from verifiable data (user provided, web search, or API). You are explicitly forbidden from filling in plausible-sounding numbers. If data is missing, mark it as a placeholder.
-**Law 4 — Format Serves Content.** Formatting decisions are made in service of communication, not aesthetics. A table is used for multi-dimensional comparison. Prose is used for flowing ideas.
-**Law 5 — Quality Gate Before Delivery.** Every document passes through a format-specific quality checklist. If any item fails, fix it before delivering.
+**Understand the job.** Identify the audience, purpose, required format, source material, and expected level of polish before creating or editing the artifact.
+**Let structure follow content.** Use headings, tables, figures, appendices, sheets, or slides only when they help the reader. Do not force cover pages, placeholder charts, diagrams, or appendices into simple work.
+**Use real evidence.** Claims, figures, dates, and comparisons must come from user-provided material, inspected files, reliable local data, or current research when browsing is allowed. If evidence is unavailable, say what is missing instead of inventing content.
+**Preserve editability.** Prefer native document, spreadsheet, deck, and PDF structures over screenshots or flattened output unless the user explicitly needs a static artifact.
+**Verify before delivery.** Run the relevant format checks, render/export checks, or file-open checks available in the environment. Report any verification that could not be performed.
 `;

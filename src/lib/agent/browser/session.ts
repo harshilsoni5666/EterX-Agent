@@ -14,6 +14,33 @@
 import path from 'path';
 import fs from 'fs-extra';
 
+function safeProfileName(name: string): string {
+  const cleaned = String(name || 'default')
+    .trim()
+    .replace(/[^a-zA-Z0-9._-]/g, '_')
+    .replace(/^\.+$/, '')
+    .slice(0, 80);
+  return cleaned || 'default';
+}
+
+function resolveUnder(rootPath: string, ...segments: string[]): string {
+  const root = path.resolve(rootPath);
+  const resolved = path.resolve(root, ...segments);
+  const relative = path.relative(root, resolved);
+  if (relative && (relative.startsWith('..') || path.isAbsolute(relative))) {
+    throw new Error(`Blocked browser profile path traversal: ${resolved}`);
+  }
+  return resolved;
+}
+
+async function writeJsonAtomic(filePath: string, data: unknown): Promise<void> {
+  const dir = path.dirname(filePath);
+  await fs.ensureDir(dir);
+  const tmpPath = path.join(dir, `.${path.basename(filePath)}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`);
+  await fs.writeJson(tmpPath, data, { spaces: 2 });
+  await fs.move(tmpPath, filePath, { overwrite: true });
+}
+
 // ═══════════════════════════════════════
 // TYPES
 // ═══════════════════════════════════════
@@ -60,17 +87,30 @@ export class BrowserSessionManager {
     this.stateDir = path.resolve(process.cwd(), '.workspaces', 'browser_state');
   }
 
+  private profileDir(name: string): string {
+    return resolveUnder(this.profilesDir, safeProfileName(name));
+  }
+
+  private profileMetadataPath(name: string): string {
+    return resolveUnder(this.profileDir(name), 'profile.json');
+  }
+
+  private stateFile(name: string, suffix: 'cookies' | 'state'): string {
+    return resolveUnder(this.stateDir, `${safeProfileName(name)}_${suffix}.json`);
+  }
+
   // ─── Profile Management ───
 
   /**
    * Create a new named profile.
    */
   async createProfile(name: string, notes?: string): Promise<BrowserProfile> {
-    const profileDir = path.join(this.profilesDir, name);
+    const profileName = safeProfileName(name);
+    const profileDir = this.profileDir(profileName);
     await fs.ensureDir(profileDir);
 
     const profile: BrowserProfile = {
-      name,
+      name: profileName,
       createdAt: Date.now(),
       lastUsed: Date.now(),
       userDataDir: profileDir,
@@ -78,8 +118,8 @@ export class BrowserSessionManager {
       notes,
     };
 
-    await fs.writeJson(path.join(profileDir, 'profile.json'), profile, { spaces: 2 });
-    console.log(`[BrowserSession] 📁 Created profile: ${name}`);
+    await writeJsonAtomic(this.profileMetadataPath(profileName), profile);
+    console.log(`[BrowserSession] 📁 Created profile: ${profileName}`);
     return profile;
   }
 
@@ -92,7 +132,8 @@ export class BrowserSessionManager {
     const profiles: BrowserProfile[] = [];
 
     for (const dir of dirs) {
-      const profilePath = path.join(this.profilesDir, dir, 'profile.json');
+      const profileDir = resolveUnder(this.profilesDir, dir);
+      const profilePath = resolveUnder(profileDir, 'profile.json');
       try {
         if (await fs.pathExists(profilePath)) {
           const profile = await fs.readJson(profilePath);
@@ -103,7 +144,7 @@ export class BrowserSessionManager {
             name: dir,
             createdAt: 0,
             lastUsed: 0,
-            userDataDir: path.join(this.profilesDir, dir),
+            userDataDir: profileDir,
             cookies: 0,
           });
         }
@@ -117,7 +158,7 @@ export class BrowserSessionManager {
    * Get profile info by name.
    */
   async getProfile(name: string): Promise<BrowserProfile | null> {
-    const profilePath = path.join(this.profilesDir, name, 'profile.json');
+    const profilePath = this.profileMetadataPath(name);
     try {
       if (await fs.pathExists(profilePath)) {
         return await fs.readJson(profilePath);
@@ -130,12 +171,12 @@ export class BrowserSessionManager {
    * Update profile's last used timestamp.
    */
   async touchProfile(name: string): Promise<void> {
-    const profilePath = path.join(this.profilesDir, name, 'profile.json');
+    const profilePath = this.profileMetadataPath(name);
     try {
       if (await fs.pathExists(profilePath)) {
         const profile = await fs.readJson(profilePath);
         profile.lastUsed = Date.now();
-        await fs.writeJson(profilePath, profile, { spaces: 2 });
+        await writeJsonAtomic(profilePath, profile);
       }
     } catch {}
   }
@@ -144,11 +185,12 @@ export class BrowserSessionManager {
    * Delete a profile and its data.
    */
   async deleteProfile(name: string): Promise<boolean> {
-    const profileDir = path.join(this.profilesDir, name);
+    const profileName = safeProfileName(name);
+    const profileDir = this.profileDir(profileName);
     try {
       if (await fs.pathExists(profileDir)) {
         await fs.remove(profileDir);
-        console.log(`[BrowserSession] 🗑️ Deleted profile: ${name}`);
+        console.log(`[BrowserSession] 🗑️ Deleted profile: ${profileName}`);
         return true;
       }
     } catch {}
@@ -159,7 +201,7 @@ export class BrowserSessionManager {
    * Get the user data directory for a profile.
    */
   getProfileDir(name: string): string {
-    return path.join(this.profilesDir, name);
+    return this.profileDir(name);
   }
 
   // ─── Cookie Management ───
@@ -172,17 +214,16 @@ export class BrowserSessionManager {
       const cookies = await context.cookies();
       
       if (profile) {
-        const cookiePath = path.join(this.stateDir, `${profile}_cookies.json`);
-        await fs.ensureDir(this.stateDir);
-        await fs.writeJson(cookiePath, cookies, { spaces: 2 });
+        const cookiePath = this.stateFile(profile, 'cookies');
+        await writeJsonAtomic(cookiePath, cookies);
         
         // Update profile metadata
-        const profilePath = path.join(this.profilesDir, profile, 'profile.json');
+        const profilePath = this.profileMetadataPath(profile);
         if (await fs.pathExists(profilePath)) {
           const p = await fs.readJson(profilePath);
           p.cookies = cookies.length;
           p.lastUsed = Date.now();
-          await fs.writeJson(profilePath, p, { spaces: 2 });
+          await writeJsonAtomic(profilePath, p);
         }
         
         console.log(`[BrowserSession] 🍪 Exported ${cookies.length} cookies for profile: ${profile}`);
@@ -200,7 +241,7 @@ export class BrowserSessionManager {
    */
   async importCookies(context: any, profile: string): Promise<number> {
     try {
-      const cookiePath = path.join(this.stateDir, `${profile}_cookies.json`);
+      const cookiePath = this.stateFile(profile, 'cookies');
       if (!(await fs.pathExists(cookiePath))) return 0;
       
       const cookies = await fs.readJson(cookiePath);
@@ -273,12 +314,7 @@ export class BrowserSessionManager {
         timestamp: Date.now(),
       };
 
-      await fs.ensureDir(this.stateDir);
-      await fs.writeJson(
-        path.join(this.stateDir, `${profile}_state.json`),
-        state,
-        { spaces: 2 }
-      );
+      await writeJsonAtomic(this.stateFile(profile, 'state'), state);
 
       console.log(`[BrowserSession] 💾 Saved state for profile: ${profile} (${cookies.length} cookies, ${Object.keys(storage.localStorage).length} localStorage items)`);
     } catch (err: any) {
@@ -291,7 +327,7 @@ export class BrowserSessionManager {
    */
   async restoreState(context: any, page: any, profile: string): Promise<boolean> {
     try {
-      const statePath = path.join(this.stateDir, `${profile}_state.json`);
+      const statePath = this.stateFile(profile, 'state');
       if (!(await fs.pathExists(statePath))) return false;
 
       const state: SessionState = await fs.readJson(statePath);

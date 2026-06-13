@@ -2,8 +2,22 @@ import { z } from 'zod';
 import { ToolDefinition } from '../../schemas';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import { enforceToolCapability } from '../security/tool_policy';
 
 const execAsync = promisify(exec);
+
+function psQuote(value: unknown): string {
+  return `'${String(value ?? '').replace(/'/g, "''")}'`;
+}
+
+function escapeXml(value: unknown): string {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
 
 export const desktopNotifyTool: ToolDefinition = {
   name: 'desktop_notification',
@@ -18,13 +32,18 @@ export const desktopNotifyTool: ToolDefinition = {
     success: z.boolean(),
     message: z.string()
   }),
-  execute: async (input: { title: string, message: string, urgency?: string }) => {
+  execute: async (input: { title: string, message: string, urgency?: string }, context?: any) => {
     console.log(`[Tool: desktop_notification] Sending: "${input.title}" - ${input.message}`);
 
     try {
+      const decision = enforceToolCapability('desktop_notification', input, context);
+      if (!decision.allowed) {
+        return { success: false, message: decision.reason || 'Desktop notifications are not allowed' };
+      }
+
       // Use PowerShell to create a Windows Toast notification
-      const escapedTitle = input.title.replace(/'/g, "''").replace(/`/g, '``');
-      const escapedMsg = input.message.replace(/'/g, "''").replace(/`/g, '``');
+      const escapedTitle = escapeXml(input.title).slice(0, 120);
+      const escapedMsg = escapeXml(input.message).slice(0, 500);
       
       const psScript = `
         [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null;
@@ -56,7 +75,7 @@ export const desktopNotifyTool: ToolDefinition = {
           $notify = New-Object System.Windows.Forms.NotifyIcon;
           $notify.Icon = [System.Drawing.SystemIcons]::Information;
           $notify.Visible = $true;
-          $notify.ShowBalloonTip(5000, '${input.title.replace(/'/g, "''")}', '${input.message.replace(/'/g, "''")}', 'Info');
+          $notify.ShowBalloonTip(5000, ${psQuote(String(input.title).slice(0, 120))}, ${psQuote(String(input.message).slice(0, 500))}, 'Info');
           Start-Sleep -Seconds 6;
           $notify.Dispose();
         `.trim();

@@ -1,7 +1,8 @@
 import { z } from 'zod';
 import { ToolDefinition } from '../../schemas';
-import axios from 'axios';
 import * as cheerio from 'cheerio';
+import { redactUrlForLog, safeAxiosRequest } from '../shared/url_safety';
+import { enforceToolCapability } from '../security/tool_policy';
 
 export const webScraperTool: ToolDefinition = {
   name: 'web_scraper',
@@ -15,10 +16,22 @@ export const webScraperTool: ToolDefinition = {
     textContext: z.string(),
     error: z.string().optional()
   }),
-  execute: async (input: { url: string }) => {
-    console.log(`[Tool: web_scraper] Scraping ${ input.url }`);
+  execute: async (input: { url: string }, context?: any) => {
+    console.log(`[Tool: web_scraper] Scraping ${redactUrlForLog(input.url)}`);
     try {
-      const { data } = await axios.get(input.url, { timeout: 10000 });
+      const decision = enforceToolCapability('web_scraper', input, context);
+      if (!decision.allowed) {
+        return { title: '', textContext: '', error: decision.reason || 'Web scraping is not allowed' };
+      }
+
+      const { data } = await safeAxiosRequest<string>({
+        url: input.url,
+        method: 'GET',
+        timeout: 10000,
+        responseType: 'text',
+        maxContentLength: 2 * 1024 * 1024,
+        headers: { 'User-Agent': 'EterX-Agent/1.0 Web Scraper' },
+      }, context);
       const $ = cheerio.load(data);
 
       // Remove noise

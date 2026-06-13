@@ -6,6 +6,8 @@ import fse from 'fs-extra';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { resolveFinalArtifactPathForContext } from '../../workspace/path_resolver';
+import { authorizeToolCommand } from '../security/command_broker';
+import { enforceToolCapability } from '../security/tool_policy';
 
 const execAsync = promisify(exec);
 
@@ -109,6 +111,16 @@ EXAMPLE:
     chartType: string, title: string,
     data: any, options?: any, filename?: string
   }, context?: any) => {
+    const decision = enforceToolCapability('chart_generator', input, context);
+    if (!decision.allowed) {
+      return {
+        success: false,
+        imagePath: '',
+        scriptPath: '',
+        message: decision.reason || 'Chart generation is not allowed',
+      };
+    }
+
     const timestamp = Date.now();
     const filename = input.filename || `chart_${input.chartType}_${timestamp}`;
     const imagePath = ensureExtension(resolveFinalArtifactPathForContext(filename, '.png', input.title, context), '.png');
@@ -133,9 +145,27 @@ EXAMPLE:
 
     // Execute the Python script
     try {
-      const { stdout, stderr } = await execAsync(`python "${scriptPath}"`, {
+      const command = `python "${scriptPath}"`;
+      const authorization = await authorizeToolCommand({
+        command,
+        cwd: outputDir,
+        context,
+        timeoutMs: 30000,
+        network: 'deny',
+      });
+      if (!authorization.allowed) {
+        return {
+          success: false,
+          imagePath: '',
+          scriptPath,
+          message: authorization.reason || 'Chart generation command blocked by policy',
+        };
+      }
+
+      const { stdout, stderr } = await execAsync(command, {
         timeout: 30000,
-        cwd: outputDir
+        cwd: authorization.cwd,
+        env: authorization.env,
       });
 
       if (stderr && !stderr.includes('UserWarning')) {
@@ -165,7 +195,22 @@ EXAMPLE:
 
       // Try with python3
       try {
-        await execAsync(`python3 "${scriptPath}"`, { timeout: 30000, cwd: outputDir });
+        const fallbackCommand = `python3 "${scriptPath}"`;
+        const fallbackAuthorization = await authorizeToolCommand({
+          command: fallbackCommand,
+          cwd: outputDir,
+          context,
+          timeoutMs: 30000,
+          network: 'deny',
+        });
+        if (!fallbackAuthorization.allowed) {
+          throw new Error(fallbackAuthorization.reason || 'Fallback chart generation command blocked by policy');
+        }
+        await execAsync(fallbackCommand, {
+          timeout: 30000,
+          cwd: fallbackAuthorization.cwd,
+          env: fallbackAuthorization.env,
+        });
         if (await fse.pathExists(imagePath)) {
           const stats = await fs.stat(imagePath);
           return {

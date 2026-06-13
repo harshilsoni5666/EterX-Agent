@@ -1,4 +1,4 @@
-# Codex Field Skill Parity Guide
+﻿# Codex Field Skill Parity Guide
 
 Apply this guide with the domain skill that was loaded. It mirrors the practical operating standards from the strongest local Codex skills: use the right artifact workflow, inspect real outputs, and deliver only the useful final result.
 
@@ -54,7 +54,7 @@ Apply this guide with the domain skill that was loaded. It mirrors the practical
 - Prefer human-like but efficient actions: scroll only as needed, click visible/enabled elements, type into focused fields, and wait for the specific signal that proves the next state.
 - Do not brute-force site URLs, search query grids, or many candidate pages. Try one focused route, then switch to visible navigation or explain the remaining uncertainty.
 - For irreversible or sensitive actions such as purchase, booking, payment, deletion, sending messages, changing account settings, or bypassing security checks, stop for confirmation at the final boundary.
-- For logged-in, protected, or security-sensitive sites, respect the visible workflow. Do not attempt to bypass access controls, CAPTCHAs, MFA, or anti-abuse protections.
+- For logged-in, protected, or security-sensitive sites, respect the visible workflow. Do not attempt to defeat access controls, CAPTCHAs, MFA, or anti-abuse protections.
 - When Chrome/extension UI feedback exists, use it as user-facing confidence only; correctness still comes from page state and action results.
 
 ## Images And Visual Assets
@@ -78,7 +78,7 @@ Apply this guide with the domain skill that was loaded. It mirrors the practical
 
 - Skills need strong trigger descriptions, compact procedural bodies, and progressive disclosure. Put long examples, APIs, or templates in references or scripts.
 - A good skill says when to use it, what evidence to gather, what workflow to follow, how to validate, and what final output should look like.
-- For plugin scaffolds, keep required structure intact: manifest, optional skills/scripts/assets/hooks/MCP/apps, and marketplace metadata only when requested.
+- For plugin scaffolds, keep required structure intact: manifest, optional skills or tool folders, and marketplace metadata only when requested.
 - Do not create surprising or unsafe skills. Skill behavior must match its description and should not hide unrelated automation.
 - Prefer reusable scripts for deterministic repetitive work instead of long fragile prompt instructions.
 

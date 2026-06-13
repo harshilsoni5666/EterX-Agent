@@ -4,4 +4,7 @@ export interface AgentSkill {
   icon: string;
   description?: string;
   systemPromptAddendum: string;
+  category?: string;
+  sourceFile?: string;
+  metadata?: Record<string, unknown>;
 }

@@ -78,6 +78,13 @@ export interface MonitorEvent {
   meta?: Record<string, any>;
 }
 
+export interface MonitorSubscriptionOptions {
+  replay?: boolean;
+  replayLimit?: number;
+  includeGlobal?: boolean;
+  includeVisual?: boolean;
+}
+
 // ─── Global action counter (persists for session) ─────────────────────────────
 let _globalActionCount = 0;
 let _currentAppName: string | null = null;
@@ -129,8 +136,38 @@ class AgentMonitorEmitter extends EventEmitter {
     return () => this.subscribers.delete(cb);
   }
 
+  subscribeForChat(
+    chatId: string,
+    cb: (event: MonitorEvent) => void,
+    options: MonitorSubscriptionOptions = {}
+  ): () => void {
+    const wrapped = (event: MonitorEvent) => {
+      if (this.eventMatchesScope(event, chatId, options)) cb(event);
+    };
+
+    this.subscribers.add(wrapped);
+    if (options.replay !== false) {
+      const recent = this.getRecentForChat(chatId, options.replayLimit ?? 80, options);
+      for (const ev of recent) {
+        try { cb(ev); } catch { }
+      }
+    }
+
+    return () => this.subscribers.delete(wrapped);
+  }
+
   getRecent(limit = 200): MonitorEvent[] {
     return this.recentEvents.slice(-limit);
+  }
+
+  getRecentForChat(
+    chatId: string,
+    limit = 200,
+    options: Pick<MonitorSubscriptionOptions, 'includeGlobal' | 'includeVisual'> = {}
+  ): MonitorEvent[] {
+    return this.recentEvents
+      .filter(event => this.eventMatchesScope(event, chatId, options))
+      .slice(-limit);
   }
 
   getStats() {
@@ -177,6 +214,23 @@ class AgentMonitorEmitter extends EventEmitter {
     } catch {
       return String(value).substring(0, maxLen);
     }
+  }
+
+  private eventMatchesScope(
+    event: MonitorEvent,
+    chatId: string,
+    options: Pick<MonitorSubscriptionOptions, 'includeGlobal' | 'includeVisual'> = {}
+  ): boolean {
+    if (!chatId) return true;
+    if (event.chatId === chatId) return true;
+    if (!event.chatId && options.includeGlobal === true) return true;
+    if (
+      options.includeVisual === true &&
+      (event.type === 'live_frame' || event.type === 'desktop_screenshot' || event.type === 'browser_screenshot')
+    ) {
+      return true;
+    }
+    return false;
   }
 
   // ── Tool tracking ──────────────────────────────────────────────

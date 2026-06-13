@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { ToolDefinition } from '../../schemas';
-import axios from 'axios';
+import { safeAxiosRequest } from '../shared/url_safety';
+import { enforceToolCapability } from '../security/tool_policy';
 
 /**
  * YouTube Transcript Extractor
@@ -21,23 +22,36 @@ export const youtubeTranscriptTool: ToolDefinition = {
     segments: z.number(),
     error: z.string().optional()
   }),
-  execute: async (input: { videoUrl: string, language?: string }) => {
+  execute: async (input: { videoUrl: string, language?: string }, context?: any) => {
     console.log(`[Tool: youtube_transcript] Extracting transcript from: ${input.videoUrl}`);
 
     try {
+      const decision = enforceToolCapability('youtube_transcript', input, context);
+      if (!decision.allowed) {
+        return { transcript: '', segments: 0, error: decision.reason || 'YouTube transcript access is not allowed' };
+      }
+
       // Extract video ID from URL
       let videoId = input.videoUrl;
       const urlMatch = input.videoUrl.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/|youtube\.com\/shorts\/)([a-zA-Z0-9_-]{11})/);
       if (urlMatch) videoId = urlMatch[1];
+      if (!/^[a-zA-Z0-9_-]{11}$/.test(videoId)) {
+        return { transcript: '', segments: 0, error: 'Invalid YouTube video ID or URL' };
+      }
+      const lang = /^[a-z]{2,3}(?:-[A-Z]{2})?$/.test(input.language || '') ? input.language! : 'en';
 
       // Fetch the video page to extract caption track info
       const pageUrl = `https://www.youtube.com/watch?v=${videoId}`;
-      const { data: pageHtml } = await axios.get(pageUrl, {
+      const { data: pageHtml } = await safeAxiosRequest<string>({
+        url: pageUrl,
+        method: 'GET',
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
           'Accept-Language': 'en-US,en;q=0.9'
-        }
-      });
+        },
+        timeout: 15000,
+        responseType: 'text',
+      }, context);
 
       // Extract captions from ytInitialPlayerResponse
       const captionMatch = pageHtml.match(/"captionTracks":\s*(\[.*?\])/);
@@ -46,8 +60,6 @@ export const youtubeTranscriptTool: ToolDefinition = {
       }
 
       const captionTracks = JSON.parse(captionMatch[1]);
-      const lang = input.language || 'en';
-      
       // Find the requested language track, fallback to first available
       let track = captionTracks.find((t: any) => t.languageCode === lang);
       if (!track) track = captionTracks[0];
@@ -57,7 +69,12 @@ export const youtubeTranscriptTool: ToolDefinition = {
       }
 
       // Fetch the actual transcript XML
-      const { data: transcriptXml } = await axios.get(track.baseUrl);
+      const { data: transcriptXml } = await safeAxiosRequest<string>({
+        url: String(track.baseUrl),
+        method: 'GET',
+        timeout: 15000,
+        responseType: 'text',
+      }, context);
       
       // Parse XML transcript
       const textSegments: string[] = [];

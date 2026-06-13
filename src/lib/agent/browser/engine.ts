@@ -22,6 +22,7 @@ import path from 'path';
 import fs from 'fs-extra';
 import { exec, execSync } from 'child_process';
 import { promisify } from 'util';
+import net from 'net';
 
 const execAsync = promisify(exec);
 
@@ -39,9 +40,62 @@ function allowUserChromeAccess(): boolean {
   return process.env.ETERX_ALLOW_USER_CHROME === '1' || process.env.ETERX_ALLOW_UNSAFE_HOST_COMPUTER === '1';
 }
 
+function shouldRunHeadless(requested?: boolean): boolean {
+  return requested === true && process.env.ETERX_BROWSER_ALLOW_HEADLESS === '1';
+}
+
+function allowCustomUserDataDir(): boolean {
+  return process.env.ETERX_BROWSER_ALLOW_CUSTOM_USER_DATA_DIR === '1';
+}
+
+function safeProfileName(name: string): string {
+  const cleaned = String(name || 'default')
+    .trim()
+    .replace(/[^a-zA-Z0-9._-]/g, '_')
+    .replace(/^\.+$/, '')
+    .slice(0, 80);
+  return cleaned || 'default';
+}
+
+function resolveUnder(rootPath: string, ...segments: string[]): string {
+  const root = path.resolve(rootPath);
+  const resolved = path.resolve(root, ...segments);
+  const relative = path.relative(root, resolved);
+  if (relative && (relative.startsWith('..') || path.isAbsolute(relative))) {
+    throw new Error(`Blocked browser path traversal: ${resolved}`);
+  }
+  return resolved;
+}
+
 // ═══════════════════════════════════════
 // TYPES
 // ═══════════════════════════════════════
+
+function safeDownloadFilename(name: string): string {
+  const basename = path.basename(String(name || 'download').replace(/[\\/]+/g, path.sep));
+  const cleaned = basename
+    .replace(/[<>:"|?*\x00-\x1F]/g, '_')
+    .replace(/^\.+$/, '')
+    .slice(0, 180);
+  return cleaned || 'download';
+}
+
+function sanitizeLaunchArgs(args: string[] = []): string[] {
+  const blockedPrefixes = new Set([
+    '--user-data-dir',
+    '--remote-debugging-port',
+    '--remote-debugging-address',
+    '--load-extension',
+    '--disable-extensions-except',
+    '--profile-directory',
+    '--headless',
+  ]);
+
+  return args.filter((arg) => {
+    const name = String(arg || '').split('=')[0].trim().toLowerCase();
+    return name && !blockedPrefixes.has(name);
+  });
+}
 
 export type ConnectionMode = 'managed' | 'cdp' | 'remote';
 
@@ -81,6 +135,13 @@ export interface DownloadInfo {
   totalBytes: number;
 }
 
+interface BrowserInstall {
+  displayName: string;
+  executablePath: string;
+  processName: string;
+  userDataDirCandidates: string[];
+}
+
 // ═══════════════════════════════════════
 // BROWSER ENGINE — Singleton
 // ═══════════════════════════════════════
@@ -92,6 +153,7 @@ export class BrowserEngine {
   private activePageId: string = 'main';
   private connectionMode: ConnectionMode = 'managed';
   private isConnected: boolean = false;
+  private ownsBrowserConnection: boolean = false;
 
   // Per-page state
   private consoleLogs: Map<string, ConsoleEntry[]> = new Map();
@@ -181,15 +243,11 @@ export class BrowserEngine {
    * Returns null if it can't be done (e.g., profile locked by already-running Chrome).
    */
   private async launchUserChromeWithDebug(options: LaunchOptions): Promise<any | null> {
-    const chromePath = await this.findChromePath();
+    const install = await this.findBrowserInstall();
+    const chromePath = install.executablePath;
     
     // Find the user's actual Chrome profile directory
-    const localAppData = process.env.LOCALAPPDATA || '';
-    const possibleProfileDirs = [
-      path.join(localAppData, 'Google', 'Chrome', 'User Data'),
-      path.join(localAppData, 'BraveSoftware', 'Brave-Browser', 'User Data'),
-      path.join(localAppData, 'Microsoft', 'Edge', 'User Data'),
-    ];
+    const possibleProfileDirs = install.userDataDirCandidates;
 
     let userDataDir = '';
     for (const dir of possibleProfileDirs) {
@@ -206,12 +264,12 @@ export class BrowserEngine {
 
     // Check if Chrome is already running (profile would be locked)
     try {
-      const { stdout } = await execAsync('tasklist /FI "IMAGENAME eq chrome.exe" /NH', {
+      const { stdout } = await execAsync(`tasklist /FI "IMAGENAME eq ${install.processName}" /NH`, {
         shell: 'cmd.exe',
         timeout: 3000,
       });
       
-      if (stdout.toLowerCase().includes('chrome.exe')) {
+      if (stdout.toLowerCase().includes(install.processName.toLowerCase())) {
         // Chrome is already running — check if it has debug port
         const port = await this.findChromeDebugPort();
         if (port) {
@@ -230,7 +288,11 @@ export class BrowserEngine {
     } catch {}
 
     // Chrome is NOT running — we can launch it with their profile + debug port!
-    const debugPort = 9222;
+    const debugPort = await this.findAvailableDebugPort([9222, 9223, 9333, 18800, 18801, 18802]);
+    if (!debugPort) {
+      console.log(`[BrowserEngine] No available Chrome debug port found`);
+      return null;
+    }
     console.log(`[BrowserEngine] 🚀 Launching user's Chrome with debug port ${debugPort}...`);
 
     try {
@@ -247,6 +309,7 @@ export class BrowserEngine {
         '--no-default-browser-check',
         '--disable-features=TranslateUI',
         '--disable-infobars',
+        '--new-window',
         ...extensionArgs,
       ], {
         detached: true,
@@ -292,8 +355,14 @@ export class BrowserEngine {
     const pw = getPlaywright();
 
     // ALWAYS use a persistent profile — 'default' if none specified
-    const profileName = options.profile || 'default';
-    const userDataDir = options.userDataDir || path.join(this.profilesDir, profileName);
+    const profileName = safeProfileName(options.profile || 'default');
+    const customUserDataDir = options.userDataDir && allowCustomUserDataDir()
+      ? path.resolve(options.userDataDir)
+      : '';
+    const userDataDir = customUserDataDir || resolveUnder(this.profilesDir, profileName);
+    if (options.userDataDir && !customUserDataDir) {
+      console.warn('[BrowserEngine] Ignoring custom userDataDir because ETERX_BROWSER_ALLOW_CUSTOM_USER_DATA_DIR is not enabled.');
+    }
     await fs.ensureDir(userDataDir);
 
     const launchArgs = [
@@ -304,31 +373,44 @@ export class BrowserEngine {
       '--disable-infobars',
       '--disable-notifications',
       '--disable-popup-blocking',
-      '--remote-debugging-port=9223', // Enable debug port so CDP can connect later
-      ...(options.args || []),
+      ...sanitizeLaunchArgs(options.args),
     ];
 
-    if (!options.headless) {
+    const headless = shouldRunHeadless(options.headless);
+    if (!headless) {
       launchArgs.push('--start-maximized');
     }
 
+    const debugPort = await this.findAvailableDebugPort([9223, 9333, 18800, 18801, 18802]);
+    if (debugPort) {
+      launchArgs.push(`--remote-debugging-port=${debugPort}`);
+    }
+
     const extensionDir = path.resolve(process.cwd(), 'src', 'lib', 'agent', 'browser', 'extension');
-    if (!options.headless && await fs.pathExists(extensionDir)) {
+    if (!headless && await fs.pathExists(extensionDir)) {
       launchArgs.push(`--disable-extensions-except=${extensionDir}`, `--load-extension=${extensionDir}`);
     }
 
-    // Use persistent context — sessions/cookies persist across restarts
-    this.context = await pw.chromium.launchPersistentContext(userDataDir, {
-      headless: options.headless ?? false,
-      channel: 'chrome',
+    const chromePath = await this.findChromePath();
+    const browserLaunchOptions: Record<string, any> = {
+      headless,
       args: launchArgs,
       viewport: options.viewport === null ? null : (options.viewport || { width: 1920, height: 1080 }),
       userAgent: this.getUserAgent(),
       ignoreDefaultArgs: ['--enable-automation'],
       acceptDownloads: true,
       ...(options.proxy ? { proxy: options.proxy } : {}),
-    });
+    };
+    if (chromePath && chromePath !== 'chrome') {
+      browserLaunchOptions.executablePath = chromePath;
+    } else {
+      browserLaunchOptions.channel = 'chrome';
+    }
+
+    // Use persistent context — sessions/cookies persist across restarts
+    this.context = await pw.chromium.launchPersistentContext(userDataDir, browserLaunchOptions);
     this.browser = null;
+    this.ownsBrowserConnection = true;
     this.pages.clear();
     this.consoleLogs.clear();
 
@@ -346,6 +428,7 @@ export class BrowserEngine {
     });
     this.activePageId = 'main';
     this.isConnected = true;
+    await page.bringToFront().catch(() => {});
     
     console.log(`[BrowserEngine] 🚀 Launched Chrome with persistent profile: ${profileName}`);
     return page;
@@ -371,6 +454,7 @@ export class BrowserEngine {
     this.browser = await pw.chromium.connectOverCDP(endpoint, {
       timeout: options.timeout || 15000,
     });
+    this.ownsBrowserConnection = false;
 
     const contexts = this.browser.contexts();
     this.context = contexts[0] || await this.browser.newContext();
@@ -391,6 +475,7 @@ export class BrowserEngine {
 
     this.activePageId = 'main';
     this.isConnected = true;
+    await page.bringToFront().catch(() => {});
     
     console.log(`[BrowserEngine] 🔗 Connected to Chrome CDP at ${endpoint}`);
     return page;
@@ -409,6 +494,7 @@ export class BrowserEngine {
     this.browser = await pw.chromium.connect(options.wsEndpoint, {
       timeout: options.timeout || 30000,
     });
+    this.ownsBrowserConnection = true;
 
     this.context = await this.browser.newContext({
       viewport: options.viewport === null ? null : (options.viewport || { width: 1920, height: 1080 }),
@@ -435,26 +521,31 @@ export class BrowserEngine {
    */
   async disconnect(): Promise<void> {
     this.isConnected = false;
-    
-    // Close all pages
-    for (const [, page] of this.pages) {
-      try { if (!page.isClosed()) await page.close(); } catch {}
+
+    if (this.ownsBrowserConnection) {
+      for (const [, page] of this.pages) {
+        try { if (!page.isClosed()) await page.close(); } catch {}
+      }
+
+      try {
+        if (this.context) await this.context.close();
+      } catch {}
+
+      try {
+        if (this.browser) await this.browser.close();
+      } catch {}
+    } else {
+      try {
+        if (this.browser?.disconnect) await this.browser.disconnect();
+      } catch {}
     }
+
     this.pages.clear();
     this.consoleLogs.clear();
 
-    // Close context (for persistent contexts, this closes the browser too)
-    try {
-      if (this.context) await this.context.close();
-    } catch {}
-
-    // Close browser if separate
-    try {
-      if (this.browser) await this.browser.close();
-    } catch {}
-
     this.browser = null;
     this.context = null;
+    this.ownsBrowserConnection = false;
     console.log(`[BrowserEngine] 🔌 Disconnected`);
   }
 
@@ -762,8 +853,9 @@ export class BrowserEngine {
 
     // Download tracking
     page.on('download', async (download: any) => {
+      const filename = safeDownloadFilename(download.suggestedFilename());
       const info: DownloadInfo = {
-        filename: download.suggestedFilename(),
+        filename,
         url: download.url(),
         path: '',
         state: 'in_progress',
@@ -774,7 +866,7 @@ export class BrowserEngine {
 
       try {
         await fs.ensureDir(this.downloadsDir);
-        const savePath = path.join(this.downloadsDir, download.suggestedFilename());
+        const savePath = resolveUnder(this.downloadsDir, filename);
         await download.saveAs(savePath);
         info.path = savePath;
         info.state = 'completed';
@@ -837,30 +929,104 @@ export class BrowserEngine {
   /**
    * Find Chrome executable path on Windows.
    */
-  async findChromePath(): Promise<string> {
-    const commonPaths = [
-      'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-      'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
-      `${process.env.LOCALAPPDATA}\\Google\\Chrome\\Application\\chrome.exe`,
-      'C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe',
-      'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+  private async findBrowserInstall(): Promise<BrowserInstall> {
+    const localAppData = process.env.LOCALAPPDATA || '';
+    const candidates: Array<Omit<BrowserInstall, 'executablePath'> & { executablePaths: string[] }> = [
+      {
+        displayName: 'Chrome',
+        processName: 'chrome.exe',
+        executablePaths: [
+          'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+          'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+          localAppData ? path.join(localAppData, 'Google', 'Chrome', 'Application', 'chrome.exe') : '',
+        ],
+        userDataDirCandidates: [
+          localAppData ? path.join(localAppData, 'Google', 'Chrome', 'User Data') : '',
+        ].filter(Boolean),
+      },
+      {
+        displayName: 'Brave',
+        processName: 'brave.exe',
+        executablePaths: [
+          'C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe',
+          'C:\\Program Files (x86)\\BraveSoftware\\Brave-Browser\\Application\\brave.exe',
+          localAppData ? path.join(localAppData, 'BraveSoftware', 'Brave-Browser', 'Application', 'brave.exe') : '',
+        ],
+        userDataDirCandidates: [
+          localAppData ? path.join(localAppData, 'BraveSoftware', 'Brave-Browser', 'User Data') : '',
+        ].filter(Boolean),
+      },
+      {
+        displayName: 'Edge',
+        processName: 'msedge.exe',
+        executablePaths: [
+          'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+          'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+          localAppData ? path.join(localAppData, 'Microsoft', 'Edge', 'Application', 'msedge.exe') : '',
+        ],
+        userDataDirCandidates: [
+          localAppData ? path.join(localAppData, 'Microsoft', 'Edge', 'User Data') : '',
+        ].filter(Boolean),
+      },
     ];
 
-    for (const p of commonPaths) {
-      if (await fs.pathExists(p)) return p;
+    for (const candidate of candidates) {
+      for (const executablePath of candidate.executablePaths.filter(Boolean)) {
+        if (await fs.pathExists(executablePath)) {
+          return {
+            displayName: candidate.displayName,
+            executablePath,
+            processName: candidate.processName,
+            userDataDirCandidates: candidate.userDataDirCandidates,
+          };
+        }
+      }
     }
 
-    // Try registry
     try {
       const result = execSync(
         'reg query "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\chrome.exe" /ve',
         { encoding: 'utf-8', timeout: 3000 }
       );
       const match = result.match(/REG_SZ\s+(.+\.exe)/i);
-      if (match) return match[1].trim();
+      if (match) {
+        return {
+          displayName: 'Chrome',
+          executablePath: match[1].trim(),
+          processName: 'chrome.exe',
+          userDataDirCandidates: candidates[0].userDataDirCandidates,
+        };
+      }
     } catch {}
 
-    return 'chrome'; // Fallback to PATH
+    return {
+      displayName: 'Chrome',
+      executablePath: 'chrome',
+      processName: 'chrome.exe',
+      userDataDirCandidates: candidates[0].userDataDirCandidates,
+    };
+  }
+
+  async findChromePath(): Promise<string> {
+    return (await this.findBrowserInstall()).executablePath;
+  }
+
+  private async findAvailableDebugPort(candidates: number[]): Promise<number | null> {
+    for (const port of candidates) {
+      if (await this.isPortAvailable(port)) return port;
+    }
+    return null;
+  }
+
+  private isPortAvailable(port: number): Promise<boolean> {
+    return new Promise((resolve) => {
+      const server = net.createServer();
+      server.once('error', () => resolve(false));
+      server.once('listening', () => {
+        server.close(() => resolve(true));
+      });
+      server.listen(port, '127.0.0.1');
+    });
   }
 
   private isBlankUrl(url: string): boolean {

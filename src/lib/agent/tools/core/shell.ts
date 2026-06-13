@@ -11,6 +11,7 @@ import {
   normalizeTimeoutMs,
   terminalTimeoutNote
 } from './terminal_timeout';
+import { authorizeToolCommand } from '../security/command_broker';
 
 const execAsync = promisify(exec);
 
@@ -244,11 +245,29 @@ export const shellTool: ToolDefinition = {
 
       // Build environment
       const parsedEnv = parseStringRecord(input.env);
-      const execEnv = { ...process.env, ...parsedEnv };
+      const authorization = await authorizeToolCommand({
+        command,
+        cwd,
+        context,
+        env: parsedEnv,
+        timeoutMs,
+        network: context?.networkPolicy === 'deny' ? 'deny' : 'allow',
+      });
+      if (!authorization.allowed) {
+        return {
+          stdout: '',
+          stderr: authorization.reason || 'Command blocked by command broker',
+          exitCode: 126,
+          executionTimeMs: Date.now() - startTime,
+          timeoutMs,
+          cwd,
+        };
+      }
+      const execEnv = authorization.env;
 
       const { stdout, stderr } = await execAsync(command, {
         shell: shellExe,
-        cwd,
+        cwd: authorization.cwd,
         maxBuffer: 10 * 1024 * 1024, // 10MB buffer (up from default 1MB)
         timeout: timeoutMs,
         env: execEnv

@@ -1,84 +1,62 @@
 ---
 name: stitch-design
-description: Unified entry point for Stitch design work. Handles prompt enhancement (UI/UX keywords, atmosphere), design system synthesis (.stitch/DESIGN.md), and high-fidelity screen generation/editing via Stitch MCP.
-allowed-tools:
-  - "StitchMCP"
-  - "Read"
-  - "Write"
+description: Use for Stitch design generation, editing, prompt refinement, and optional design-system synthesis. Supports high-fidelity UI design while adapting to the user's product and not forcing one visual system.
 ---
 
-# Stitch Design Expert
+# Stitch Design
 
-You are an expert Design Systems Lead and Prompt Engineer specializing in the **Stitch MCP server**. Your goal is to help users create high-fidelity, consistent, and professional UI designs by bridging the gap between vague ideas and precise design specifications.
+Use Stitch to create or edit screens from user intent. The job is to make the prompt clearer and the output more useful, not to impose a standard page formula.
 
-## Core Responsibilities
+## Workflow Routing
 
-1.  **Prompt Enhancement** — Transform rough intent into structured prompts using professional UI/UX terminology and design system context.
-2.  **Design System Synthesis** — Analyze existing Stitch projects to create `.stitch/DESIGN.md` "source of truth" documents.
-3.  **Workflow Routing** — Intelligently route user requests to specialized generation or editing workflows.
-4.  **Consistency Management** — Ensure all new screens leverage the project's established visual language.
-5.  **Asset Management** — Automatically download generated HTML and screenshots to the `.stitch/designs` directory.
+| User Intent | Workflow |
+|---|---|
+| Create a new screen | Turn intent into a clear generation prompt and call the available Stitch generation tool |
+| Edit an existing screen | Make a targeted edit prompt that preserves everything else |
+| Create/update design guidance | Analyze existing screens and write a concise `DESIGN.md` |
+| Export implementation assets | Retrieve generated HTML/screenshots and save them locally when needed |
 
----
+## Prompt Preparation
 
-## 🚀 Workflows
+Before generation or edit:
 
-Based on the user's request, follow one of these workflows:
+1. Identify platform, audience, product type, primary task, and content priority.
+2. Read `DESIGN.md` only if it exists and is relevant to the current project.
+3. Add design context that helps this specific request.
+4. Avoid hardcoded sections such as hero/footer/cards unless they fit.
+5. Preserve the user's requested mood, even when it is playful, utilitarian, dense, minimal, experimental, or plain.
 
-| User Intent | Workflow | Primary Tool |
-|:---|:---|:---|
-| "Design a [page]..." | [text-to-design](workflows/text-to-design.md) | `generate_screen_from_text` + `Download` |
-| "Edit this [screen]..." | [edit-design](workflows/edit-design.md) | `edit_screens` + `Download` |
-| "Create/Update .stitch/DESIGN.md" | [generate-design-md](workflows/generate-design-md.md) | `get_screen` + `Write` |
-
----
-
-## 🎨 Prompt Enhancement Pipeline
-
-Before calling any Stitch generation or editing tool, you MUST enhance the user's prompt.
-
-### 1. Analyze Context
-- **Project Scope**: Maintain the current `projectId`. Use `list_projects` if unknown.
-- **Design System**: Check for `.stitch/DESIGN.md`. If it exists, incorporate its tokens (colors, typography). If not, suggest the `generate-design-md` workflow.
-
-### 2. Refine UI/UX Terminology
-Consult [Design Mappings](references/design-mappings.md) to replace vague terms.
-- Vague: "Make a nice header"
-- Professional: "Sticky navigation bar with glassmorphism effect and centered logo"
-
-### 3. Structure the Final Prompt
-Format the enhanced prompt for Stitch like this:
+## Prompt Shape
 
 ```markdown
-[Overall vibe, mood, and purpose of the page]
+[Purpose and desired feel]
 
-**DESIGN SYSTEM (REQUIRED):**
-- Platform: [Web/Mobile], [Desktop/Mobile]-first
-- Palette: [Primary Name] (#hex for role), [Secondary Name] (#hex for role)
-- Styles: [Roundness description], [Shadow/Elevation style]
+Design context:
+- Platform:
+- Audience:
+- Product type:
+- Existing visual system:
 
-**PAGE STRUCTURE:**
-1. **Header:** [Description of navigation and branding]
-2. **Hero Section:** [Headline, subtext, and primary CTA]
-3. **Primary Content Area:** [Detailed component breakdown]
-4. **Footer:** [Links and copyright information]
+Screen requirements:
+- Primary task:
+- Main regions/components:
+- Key states:
+- Responsive behavior:
+- Assets/data:
+
+Avoid:
+- [Only patterns that would harm this specific product]
 ```
 
-### 4. Present AI Insights
-After any tool call, always surface the `outputComponents` (Text Description and Suggestions) to the user.
+## After Tool Calls
 
----
+- Save generated HTML and screenshots only when the workflow needs local assets.
+- Surface useful generated descriptions/suggestions to the user.
+- If output misses the brief, prefer a targeted edit over a full regeneration.
+- Keep project IDs and screen IDs in local metadata only when the workflow needs repeatable follow-up.
 
-## 📚 References
+## Quality Bar
 
-- [Tool Schemas](references/tool-schemas.md) — How to call Stitch MCP tools.
-- [Design Mappings](references/design-mappings.md) — UI/UX keywords and atmosphere descriptors.
-- [Prompting Keywords](references/prompt-keywords.md) — Technical terms Stitch understands best.
-
----
-
-## 💡 Best Practices
-
-- **Iterative Polish**: Prefere `edit_screens` for targeted adjustments over full re-generation.
-- **Semantic First**: Name colors by their role (e.g., "Primary Action") as well as their appearance.
-- **Atmosphere Matters**: Explicitly set the "vibe" (Minimalist, Vibrant, Brutalist) to guide the generator.
+- The design should match the domain and user goal.
+- Consistency matters for multi-screen products, but creative divergence is allowed when the user asks for it.
+- Accessibility, readable text, meaningful states, and responsive layout are always more important than decorative style.

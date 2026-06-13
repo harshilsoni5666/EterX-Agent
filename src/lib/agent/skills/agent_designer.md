@@ -1,8 +1,4 @@
 ---
-description: name: "agent-designer"
----
-
----
 name: "agent-designer"
 description: "Use when the user asks to design multi-agent systems, create agent architectures, define agent communication patterns, or build autonomous agent workflows."
 ---

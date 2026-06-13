@@ -5,8 +5,13 @@ import { promisify } from 'util';
 import path from 'path';
 import fs from 'fs-extra';
 import { resolveFinalArtifactPathForContext } from '../../workspace/path_resolver';
+import { enforceToolCapability } from '../security/tool_policy';
 
 const execAsync = promisify(exec);
+
+function psQuote(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
 
 export const screenshotTool: ToolDefinition = {
   name: 'screenshot_capture',
@@ -23,6 +28,11 @@ export const screenshotTool: ToolDefinition = {
     message: z.string()
   }),
   execute: async (input: { target?: string, filename?: string }, context?: any) => {
+    const decision = enforceToolCapability('screenshot_capture', input, context);
+    if (!decision.allowed) {
+      return { success: false, filePath: '', message: decision.reason || 'Screenshot capture is not allowed' };
+    }
+
     const filename = input.filename || `screenshot_${ Date.now() }.png`;
     const filePath = resolveFinalArtifactPathForContext(filename, '.png', 'Screenshot', context);
     await fs.ensureDir(path.dirname(filePath));
@@ -57,7 +67,7 @@ export const screenshotTool: ToolDefinition = {
           $bmp = New-Object System.Drawing.Bitmap($w, $h);
           $graphics = [System.Drawing.Graphics]::FromImage($bmp);
           $graphics.CopyFromScreen($rect.Left, $rect.Top, 0, 0, (New-Object System.Drawing.Size($w, $h)));
-          $bmp.Save('${ filePath.replace(/\\/g, '\\\\') }');
+          $bmp.Save(${psQuote(filePath)});
           $graphics.Dispose();
           $bmp.Dispose();
         `.trim();
@@ -69,7 +79,7 @@ export const screenshotTool: ToolDefinition = {
           $bmp = New-Object System.Drawing.Bitmap($screen.Width, $screen.Height);
           $graphics = [System.Drawing.Graphics]::FromImage($bmp);
           $graphics.CopyFromScreen($screen.Location, [System.Drawing.Point]::Empty, $screen.Size);
-          $bmp.Save('${ filePath.replace(/\\/g, '\\\\') }');
+          $bmp.Save(${psQuote(filePath)});
           $graphics.Dispose();
           $bmp.Dispose();
         `.trim();

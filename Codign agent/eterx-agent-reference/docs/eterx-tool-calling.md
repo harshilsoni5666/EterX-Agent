@@ -85,7 +85,7 @@ Use line ranges only when exact search text is not stable enough.
 
 ### Write File
 
-Use for new files or intentional full rewrites.
+Use for new files only. Do not use this tool to update an existing source file; use `workspace_str_replace` or `workspace_apply_patch` instead.
 
 ```json
 {

@@ -14,21 +14,23 @@ import {
 import { editTracker } from '@/lib/code/edit-tracker';
 import { ensureCodeIndex } from '@/lib/agent/workspace/code-index';
 import { resolveModelName } from '@/lib/agent/model-routing';
-import { normalizeRegistryToolArgs } from '@/lib/agent/tools/tool-args';
+import { normalizeRegistryToolArgs, validateRegistryToolArgs } from '@/lib/agent/tools/tool-args';
+import { enforceToolCapability } from '@/lib/agent/tools/security/tool_policy';
 import { shouldExposeToolToRuntime } from '@/lib/agent/builder-agent';
 import {
-  applyRuntimeApiKeys,
-  applyRuntimeModelOverrides,
-  getRuntimeApiKeyValues,
+  buildScopedRuntimeSettings,
+  getScopedRuntimeApiKeyValues,
+  type ScopedRuntimeSettings,
 } from '@/lib/agent/runtime-api-keys';
 import path from 'path';
 
-function createAIClient(preferredGeminiApiKey?: string): GoogleGenAI {
+function createAIClient(runtimeSettings?: ScopedRuntimeSettings | null): GoogleGenAI {
+  const preferredGeminiApiKey = runtimeSettings?.preferredGeminiApiKey;
   if (preferredGeminiApiKey) {
     return new GoogleGenAI({ apiKey: preferredGeminiApiKey });
   }
 
-  const keys = getRuntimeApiKeyValues('gemini');
+  const keys = getScopedRuntimeApiKeyValues(runtimeSettings, 'gemini');
   if (keys.length === 0) {
     throw new Error('Missing Gemini API key. Add one in Settings > Connections.');
   }
@@ -306,7 +308,13 @@ async function executeRegistryTool(
       }
     }
 
-    const result = await tool.execute(args, {
+    const validation = validateRegistryToolArgs(tool, args);
+    if (!validation.success) {
+      return { success: false, output: validation.error };
+    }
+    args = validation.args;
+
+    const toolContext = {
       workspacePath,
       workspaceRoot: workspacePath,
       projectId: workspacePath || 'code-chat',
@@ -316,7 +324,15 @@ async function executeRegistryTool(
       allowEterXSource: isInternalEterXWorkspace,
       agentRuntime: isInternalEterXWorkspace ? 'eterx_internal_dev' : undefined,
       source: isInternalEterXWorkspace ? 'eterx_internal_dev' : undefined,
-    });
+      allowedCapabilities: ['command.workspace', 'filesystem.read', 'filesystem.write', 'tool.utility', 'memory.manage'],
+      networkPolicy: 'deny',
+    };
+    const capabilityDecision = enforceToolCapability(canonicalToolName, args, toolContext);
+    if (!capabilityDecision.allowed) {
+      return { success: false, output: capabilityDecision.reason || `Tool ${canonicalToolName} is not allowed` };
+    }
+
+    const result = await tool.execute(args, toolContext);
     const output = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
     return { success: !didToolReturnFailure(result), output: output.slice(0, 30000) };
   } catch (err: any) {
@@ -409,8 +425,7 @@ export async function POST(req: NextRequest) {
     return new Response(JSON.stringify({ error: 'Prompt is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
   }
 
-  const runtimeKeyResult = applyRuntimeApiKeys(apiKeys);
-  applyRuntimeModelOverrides(modelOverrides);
+  const runtimeSettings = buildScopedRuntimeSettings(apiKeys, modelOverrides);
 
   const loadedToolNames = getCodingAgentToolNames();
   if (workspacePath) {
@@ -488,12 +503,12 @@ export async function POST(req: NextRequest) {
 
         let requestAiClient: GoogleGenAI;
         try {
-          requestAiClient = createAIClient(runtimeKeyResult.preferredGeminiApiKey);
+          requestAiClient = createAIClient(runtimeSettings);
         } catch (keyErr: any) {
           send({ type: 'trace', data: { type: 'answer', text: `API Key Error: ${keyErr.message}` } });
           return;
         }
-        const requestModelName = resolveModelName('fast');
+        const requestModelName = resolveModelName('fast', runtimeSettings);
 
         while (iterations < MAX_ITERATIONS && streamAlive) {
           iterations++;

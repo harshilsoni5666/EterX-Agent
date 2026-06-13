@@ -48,7 +48,11 @@ Use these EterX tools:
 - `workspace_list_directory`
 - `workspace_search_text`
 - `workspace_read_file`
+- `workspace_read_many_files`
+- `workspace_str_replace`
+- `workspace_apply_patch`
 - `workspace_edit_file`
+- `workspace_edit_many_files`
 - `workspace_write_file`
 - `workspace_run_command`
 - `workspace_verify_code`
@@ -88,9 +92,10 @@ Timeline note style:
 
 ## Editing Discipline
 
-- Prefer `workspace_edit_file` with exact `search` and `replace` text.
-- Use `startLine` and `endLine` only when exact replacement text is not practical.
-- Use `workspace_write_file` for new files or intentional full rewrites.
+- Prefer `workspace_str_replace` with exact `old_string` and `new_string` text.
+- Use `workspace_apply_patch` for multi-hunk or multi-file structural edits.
+- Use `workspace_edit_file` for simple line-range edits when exact replacement text is not practical.
+- Use `workspace_write_file` only for brand-new files.
 - Avoid broad rewrites when a local patch solves the problem.
 - Preserve unrelated user edits.
 

@@ -20,7 +20,17 @@ const SCREENSHOTS_DIR = path.resolve(process.cwd(), '.workspaces', 'temp', 'scre
 // Ensure dir exists
 fs.mkdirSync(SCREENSHOTS_DIR, { recursive: true });
 
-async function readFileAsBase64(filePath: string): Promise<string | null> {
+function resolveUnder(parent: string, ...segments: string[]): string {
+  const root = path.resolve(parent);
+  const resolved = path.resolve(root, ...segments);
+  const relative = path.relative(root, resolved);
+  if (relative && (relative.startsWith('..') || path.isAbsolute(relative))) {
+    throw new Error(`Blocked screenshot path traversal: ${resolved}`);
+  }
+  return resolved;
+}
+
+function readFileAsBase64(filePath: string): string | null {
   try {
     const buf = fs.readFileSync(filePath);
     return buf.toString('base64');
@@ -34,8 +44,8 @@ function getLatestScreenshot(): { path: string; ts: number } | null {
     const files = fs.readdirSync(SCREENSHOTS_DIR)
       .filter(f => f.endsWith('.png'))
       .map(f => ({
-        path: path.join(SCREENSHOTS_DIR, f),
-        ts: fs.statSync(path.join(SCREENSHOTS_DIR, f)).mtimeMs,
+        path: resolveUnder(SCREENSHOTS_DIR, f),
+        ts: fs.statSync(resolveUnder(SCREENSHOTS_DIR, f)).mtimeMs,
       }))
       .sort((a, b) => b.ts - a.ts);
     return files[0] || null;
@@ -45,6 +55,8 @@ function getLatestScreenshot(): { path: string; ts: number } | null {
 }
 
 export async function GET(req: NextRequest) {
+  const url = new URL(req.url);
+  const chatId = url.searchParams.get('chatId') || undefined;
   const encoder = new TextEncoder();
 
   const stream = new ReadableStream({
@@ -68,21 +80,17 @@ export async function GET(req: NextRequest) {
       // Send the latest existing screenshot immediately
       const latest = getLatestScreenshot();
       if (latest) {
-        const b64 = readFileAsBase64(latest.path);
-        if (b64) {
-          Promise.resolve(b64).then(base64 => {
-            if (base64) {
-              send({
-                type: 'screenshot',
-                ts: latest.ts,
-                path: latest.path,
-                filename: path.basename(latest.path),
-                base64,
-              });
-              lastScreenshotPath = latest.path;
-              lastEventTs = latest.ts;
-            }
+        const base64 = readFileAsBase64(latest.path);
+        if (base64) {
+          send({
+            type: 'screenshot',
+            ts: latest.ts,
+            path: latest.path,
+            filename: path.basename(latest.path),
+            base64,
           });
+          lastScreenshotPath = latest.path;
+          lastEventTs = latest.ts;
         }
       }
 
@@ -91,7 +99,12 @@ export async function GET(req: NextRequest) {
       try {
         watcher = fs.watch(SCREENSHOTS_DIR, { persistent: false }, (eventType, filename) => {
           if (!filename || !filename.endsWith('.png') || closed) return;
-          const filePath = path.join(SCREENSHOTS_DIR, filename);
+          let filePath = '';
+          try {
+            filePath = resolveUnder(SCREENSHOTS_DIR, filename);
+          } catch {
+            return;
+          }
           // Small delay to ensure file is fully written
           setTimeout(() => {
             if (closed) return;
@@ -115,7 +128,7 @@ export async function GET(req: NextRequest) {
       } catch { /* fs.watch may not be supported */ }
 
       // Also subscribe to monitor emitter for browser_screenshot events
-      const unsubMonitor = monitorEmitter.subscribe((ev) => {
+      const onMonitorEvent = (ev: any) => {
         if (closed) return;
         if (ev.type === 'browser_nav') {
           send({ type: 'nav', ts: ev.ts, url: ev.url, chatId: ev.chatId });
@@ -132,7 +145,10 @@ export async function GET(req: NextRequest) {
         if (ev.type === 'file_write' || ev.type === 'file_read') {
           send({ type: 'file', ts: ev.ts, path: ev.filePath, action: ev.type });
         }
-      });
+      };
+      const unsubMonitor = chatId
+        ? monitorEmitter.subscribeForChat(chatId, onMonitorEvent, { replay: false, includeVisual: true })
+        : monitorEmitter.subscribe(onMonitorEvent);
 
       // Heartbeat every 10s
       const heartbeat = setInterval(() => {

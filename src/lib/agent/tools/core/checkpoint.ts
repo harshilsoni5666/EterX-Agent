@@ -15,6 +15,27 @@ import fs from 'fs-extra';
 
 const CHECKPOINT_DIR = path.resolve(process.cwd(), '.workspaces', '.checkpoints');
 
+function isPathInside(parent: string, candidate: string): boolean {
+  const relative = path.relative(parent, candidate);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function resolveUnder(parent: string, ...segments: string[]): string {
+  const resolved = path.resolve(parent, ...segments);
+  if (!isPathInside(parent, resolved)) {
+    throw new Error(`Resolved path escapes expected directory: ${resolved}`);
+  }
+  return resolved;
+}
+
+async function writeJsonAtomic(filePath: string, data: unknown): Promise<void> {
+  const dir = path.dirname(filePath);
+  await fs.ensureDir(dir);
+  const tmpPath = path.join(dir, `.${path.basename(filePath)}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`);
+  await fs.writeJson(tmpPath, data, { spaces: 2 });
+  await fs.move(tmpPath, filePath, { overwrite: true });
+}
+
 export const checkpointTool: ToolDefinition = {
   name: 'task_checkpoint',
   description: `Save or load a task progress checkpoint. Use this on long tasks to persist your progress so you can resume later if interrupted.
@@ -41,7 +62,7 @@ This is your insurance against interruption — save checkpoints every 3-5 tool 
     // Chat-scoped checkpoint: each chat gets its own file
     const chatId = context?.projectId || context?.chatId || 'default';
     const safeChatId = chatId.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 64);
-    const checkpointFile = path.join(CHECKPOINT_DIR, `${safeChatId}.json`);
+    const checkpointFile = resolveUnder(CHECKPOINT_DIR, `${safeChatId || 'default'}.json`);
 
     try {
       switch (input.action) {
@@ -56,7 +77,7 @@ This is your insurance against interruption — save checkpoints every 3-5 tool 
             toolCallsCompleted: true
           };
 
-          await fs.writeJson(checkpointFile, checkpoint, { spaces: 2 });
+          await writeJsonAtomic(checkpointFile, checkpoint);
           console.log(`[Tool: task_checkpoint] 💾 Checkpoint saved: ${input.taskSummary?.substring(0, 60)}`);
           
           return {

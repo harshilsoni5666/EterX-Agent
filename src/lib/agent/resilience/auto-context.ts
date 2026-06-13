@@ -33,6 +33,14 @@ import { lifetimeBrain } from '../memory/lifetime';
 const CONTEXT_DIR = path.resolve(process.cwd(), '.workspaces', '.context');
 const SNAPSHOT_FILE = path.join(CONTEXT_DIR, 'context_snapshots.json');
 
+async function writeJsonAtomic(filePath: string, data: unknown): Promise<void> {
+  const dir = path.dirname(filePath);
+  await fs.ensureDir(dir);
+  const tmpPath = path.join(dir, `.${path.basename(filePath)}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`);
+  await fs.writeJson(tmpPath, data, { spaces: 2 });
+  await fs.move(tmpPath, filePath, { overwrite: true });
+}
+
 // ─── Token estimation ─────────────────────────────────────────────────────────
 // ~4 chars per token (empirical for mixed code/text)
 const CHARS_PER_TOKEN = 4;
@@ -355,7 +363,7 @@ export async function saveMilestoneSnapshot(opts: {
     });
 
     // Debounce disk save
-    await fs.writeJson(SNAPSHOT_FILE, _snapshotCache.slice(-20), { spaces: 2 });
+    await writeJsonAtomic(SNAPSHOT_FILE, _snapshotCache.slice(-20));
     console.log(`[AutoContext] 📌 Milestone snapshot saved at iteration ${opts.iteration} (${(tokens / 1000).toFixed(0)}k tokens)`);
   } catch { /* silent */ }
 }

@@ -3,8 +3,9 @@ import { ToolDefinition } from '../../schemas';
 import path from 'path';
 import fs from 'fs/promises';
 import fse from 'fs-extra';
-import axios from 'axios';
 import { resolveFinalArtifactPathForContext } from '../../workspace/path_resolver';
+import { safeAxiosRequest } from '../shared/url_safety';
+import { enforceToolCapability } from '../security/tool_policy';
 
 /**
  * AI Image Generator Tool
@@ -69,6 +70,16 @@ Styles: realistic, illustration, diagram, icon, abstract, photo, 3d, anime, logo
     filename?: string,
     enhancePrompt?: boolean
   }, context?: any) => {
+    const policy = enforceToolCapability('image_generator', input, context);
+    if (!policy.allowed) {
+      return {
+        success: false,
+        filePath: '',
+        enhancedPrompt: String(input?.prompt || ''),
+        message: policy.reason || 'image_generator is not allowed in this context',
+      };
+    }
+
     const filename = input.filename || `generated_${Date.now()}.png`;
     const filePath = ensureExtension(resolveFinalArtifactPathForContext(filename, '.png', undefined, context), '.png');
     const outputDir = path.dirname(filePath);
@@ -89,8 +100,15 @@ Styles: realistic, illustration, diagram, icon, abstract, photo, 3d, anime, logo
 
     try {
       const apiKey = process.env.FREEPIK_API_KEY
-        || process.env.ETERX_FREEPIK_API_KEY
-        || 'FPSX171f9cfed0e8d2c6260648587154a0b8';
+        || process.env.ETERX_FREEPIK_API_KEY;
+      if (!apiKey) {
+        return {
+          success: false,
+          filePath,
+          enhancedPrompt: finalPrompt,
+          message: 'Missing FREEPIK_API_KEY or ETERX_FREEPIK_API_KEY. Configure the key in the environment or secret vault before using image generation.',
+        };
+      }
 
       const payload = {
         prompt: finalPrompt,
@@ -98,12 +116,16 @@ Styles: realistic, illustration, diagram, icon, abstract, photo, 3d, anime, logo
       };
 
       console.log('[Tool: image_generator] Submitting task to Freepik API (flux-dev)...');
-      const postRes = await axios.post('https://api.freepik.com/v1/ai/text-to-image/flux-dev', payload, {
+      const postRes = await safeAxiosRequest({
+        url: 'https://api.freepik.com/v1/ai/text-to-image/flux-dev',
+        method: 'POST',
+        data: payload,
+        timeout: 30000,
         headers: {
           'Content-Type': 'application/json',
           'x-freepik-api-key': apiKey
         }
-      });
+      }, context);
 
       const taskId = postRes.data?.data?.task_id;
       if (!taskId) throw new Error('No task_id returned from Freepik API');
@@ -113,9 +135,12 @@ Styles: realistic, illustration, diagram, icon, abstract, photo, 3d, anime, logo
       let generatedUrl = '';
       for (let attempts = 0; attempts < 30; attempts++) {
         await new Promise(resolve => setTimeout(resolve, 2000));
-        const statusRes = await axios.get(`https://api.freepik.com/v1/ai/text-to-image/flux-dev/${taskId}`, {
+        const statusRes = await safeAxiosRequest({
+          url: `https://api.freepik.com/v1/ai/text-to-image/flux-dev/${taskId}`,
+          method: 'GET',
+          timeout: 15000,
           headers: { 'x-freepik-api-key': apiKey }
-        });
+        }, context);
 
         const status = statusRes.data?.data?.status;
         if (status === 'COMPLETED') {
@@ -132,10 +157,14 @@ Styles: realistic, illustration, diagram, icon, abstract, photo, 3d, anime, logo
       }
 
       console.log(`[Tool: image_generator] Task complete. Downloading image from: ${generatedUrl}`);
-      const imageRes = await axios.get(generatedUrl, {
+      const imageRes = await safeAxiosRequest<ArrayBuffer>({
+        url: generatedUrl,
+        method: 'GET',
         responseType: 'arraybuffer',
-        timeout: 30000
-      });
+        timeout: 30000,
+        maxContentLength: 15 * 1024 * 1024,
+        maxBodyLength: 15 * 1024 * 1024,
+      }, context);
 
       await fs.writeFile(filePath, Buffer.from(imageRes.data));
       const stats = await fs.stat(filePath);

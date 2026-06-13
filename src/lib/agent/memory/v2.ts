@@ -165,6 +165,22 @@ function stableId(prefix: string): string {
   return `${prefix}_${crypto.randomUUID()}`;
 }
 
+async function writeJsonAtomic(filePath: string, value: unknown): Promise<void> {
+  const dir = path.dirname(filePath);
+  await fs.ensureDir(dir);
+  const tmpPath = path.join(dir, `.${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`);
+  await fs.writeJson(tmpPath, value, { spaces: 2 });
+  await fs.move(tmpPath, filePath, { overwrite: true });
+}
+
+async function writeTextAtomic(filePath: string, value: string): Promise<void> {
+  const dir = path.dirname(filePath);
+  await fs.ensureDir(dir);
+  const tmpPath = path.join(dir, `.${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`);
+  await fs.writeFile(tmpPath, value, 'utf8');
+  await fs.move(tmpPath, filePath, { overwrite: true });
+}
+
 export class MemoryV2Manager {
   private state: MemoryV2State = {
     records: [],
@@ -383,7 +399,10 @@ export class MemoryV2Manager {
       .filter(record => {
         if (record.scope === 'user') return true;
         if (record.scope === 'project') return !input.projectId || record.projectId === input.projectId;
-        if (record.scope === 'session') return !input.chatId || record.chatId === input.chatId || record.projectId === input.projectId;
+        if (record.scope === 'session') {
+          if (input.chatId) return record.chatId === input.chatId;
+          return !input.projectId || record.projectId === input.projectId;
+        }
         if (record.scope === 'credential') return !input.projectId || !record.projectId || record.projectId === input.projectId;
         return !record.projectId || !input.projectId || record.projectId === input.projectId;
       })
@@ -738,11 +757,15 @@ export class MemoryV2Manager {
     await fs.ensureDir(BASE_DIR);
     if (await fs.pathExists(MASTER_KEY_FILE)) {
       const raw = String(await fs.readFile(MASTER_KEY_FILE, 'utf8')).trim();
-      return Buffer.from(raw, 'base64');
+      const key = Buffer.from(raw, 'base64');
+      if (key.length !== 32) {
+        throw new Error('Invalid EterX memory vault master key. Set ETERX_MEMORY_VAULT_KEY or repair .vault_master_key.');
+      }
+      return key;
     }
 
     const key = crypto.randomBytes(32);
-    await fs.writeFile(MASTER_KEY_FILE, key.toString('base64'), 'utf8');
+    await writeTextAtomic(MASTER_KEY_FILE, key.toString('base64'));
     try {
       await fs.chmod(MASTER_KEY_FILE, 0o600);
     } catch {
@@ -765,10 +788,10 @@ export class MemoryV2Manager {
   private async persist(): Promise<void> {
     await fs.ensureDir(BASE_DIR);
     await Promise.all([
-      fs.writeJson(RECORDS_FILE, this.state.records.slice(-MAX_RECORDS), { spaces: 2 }),
-      fs.writeJson(CREDENTIALS_FILE, this.state.credentials, { spaces: 2 }),
-      fs.writeJson(IMPROVEMENTS_FILE, this.state.improvements, { spaces: 2 }),
-      fs.writeJson(RAW_EVENTS_FILE, this.state.rawEvents.slice(-MAX_RAW_EVENTS), { spaces: 2 }),
+      writeJsonAtomic(RECORDS_FILE, this.state.records.slice(-MAX_RECORDS)),
+      writeJsonAtomic(CREDENTIALS_FILE, this.state.credentials),
+      writeJsonAtomic(IMPROVEMENTS_FILE, this.state.improvements),
+      writeJsonAtomic(RAW_EVENTS_FILE, this.state.rawEvents.slice(-MAX_RAW_EVENTS)),
     ]);
   }
 }

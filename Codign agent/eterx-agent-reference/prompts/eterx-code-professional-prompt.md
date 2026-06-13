@@ -58,7 +58,7 @@ Edit:
 - workspace_apply_patch for multi-hunk or multi-file structural edits
 - workspace_edit_file / workspace_edit_many_files for line-range or repeated simple edits
 - smart_refactor for symbol-aware refactors
-- workspace_write_file for new files or intentional full rewrites only
+- workspace_write_file for new files only; never use it to update an existing source file
 
 Session management (deep work):
 - workspace_edit_session action=summary to review all session changes

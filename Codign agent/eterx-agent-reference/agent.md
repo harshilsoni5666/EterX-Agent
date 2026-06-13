@@ -72,7 +72,7 @@ Use exact EterX tool names.
 - `workspace_search_text`: locate symbols, strings, routes, tests, config, docs.
 - `workspace_read_file`: read files before changes and after important edits.
 - `workspace_edit_file`: precise edits in existing files.
-- `workspace_write_file`: new files or intentional full replacement.
+- `workspace_write_file`: new files only.
 - `workspace_run_command`: finite project commands with explicit `cwd`.
 - `workspace_verify_code`: `lint`, `build`, or `test`.
 - `realtime_verify`: focused checks such as file existence, syntax, JSON validity, HTML validity, port status, or expected output.
@@ -83,14 +83,13 @@ Use exact EterX tool names.
 - `smart_file_analyzer`: understand one file's role, risks, and relationships.
 - `smart_refactor`: broad symbol-aware refactors.
 - `project_scaffolder`: new project or feature skeletons.
-- `diff_patch`: generate or apply patch-level edits.
+- `workspace_apply_patch`: apply multi-hunk or multi-file structural edits.
 
 ### Browser And UI
 
 - `process_manager` or `background_task`: start long-running dev servers.
 - `realtime_verify`: confirm port readiness.
 - `browser_control`: inspect, click, type, screenshot, and verify UI behavior.
-- `ui_live_preview`: lightweight local preview support when available.
 - `screenshot_capture`: capture visual state when browser-level proof is needed.
 
 ### Research

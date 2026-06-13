@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { ToolDefinition } from '../../schemas';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import { enforceToolCapability } from '../security/tool_policy';
 
 const execAsync = promisify(exec);
 
@@ -17,10 +18,15 @@ export const clipboardTool: ToolDefinition = {
     content: z.string(),
     success: z.boolean()
   }),
-  execute: async (input: { action: string, content?: string }) => {
+  execute: async (input: { action: string, content?: string }, context?: any) => {
     console.log(`[Tool: clipboard_manager] Action: ${input.action}`);
 
     try {
+      const decision = enforceToolCapability('clipboard_manager', input, context);
+      if (!decision.allowed) {
+        return { content: '', success: false, error: decision.reason || 'Clipboard access is not allowed' };
+      }
+
       if (input.action === 'read') {
         const { stdout } = await execAsync('Get-Clipboard', { shell: 'powershell.exe' });
         return { content: stdout.trim(), success: true };
