@@ -192,6 +192,8 @@ export const workspaceEditManyFilesTool: ToolDefinition = {
       filename: z.string(),
       search: z.string().optional().describe('Exact text to find for search/replace mode'),
       replace: z.string().describe('Replacement text'),
+      replaceAll: z.boolean().optional().describe('Replace every matching occurrence. Defaults to false; ambiguous matches are rejected unless true.'),
+      replace_all: z.boolean().optional().describe('Alias for replaceAll. Defaults to false.'),
       startLine: z.number().optional(),
       endLine: z.number().optional(),
     })).min(1).max(30),
@@ -202,13 +204,13 @@ export const workspaceEditManyFilesTool: ToolDefinition = {
     applied: z.number(),
     results: z.array(z.any()),
   }),
-  execute: async (input: { edits: Array<{ filename: string; search?: string; replace: string; startLine?: number; endLine?: number }>; atomic?: boolean }, context?: any) => {
+  execute: async (input: { edits: Array<{ filename: string; search?: string; replace: string; replaceAll?: boolean; replace_all?: boolean; startLine?: number; endLine?: number }>; atomic?: boolean }, context?: any) => {
     const atomic = input.atomic !== false;
     const originals = new Map<string, string>();
     const latest = new Map<string, string>();
     const results: Array<Record<string, unknown>> = [];
 
-    const applyOne = async (edit: { filename: string; search?: string; replace: string; startLine?: number; endLine?: number }) => {
+    const applyOne = async (edit: { filename: string; search?: string; replace: string; replaceAll?: boolean; replace_all?: boolean; startLine?: number; endLine?: number }) => {
       const filePath = resolveWorkspacePathForContext(edit.filename, context);
       const protection = checkEterXProtection(filePath);
       if (protection.blocked) throw new Error(protection.reason);
@@ -236,7 +238,14 @@ export const workspaceEditManyFilesTool: ToolDefinition = {
         if (!content.includes(edit.search)) {
           throw new Error(`Search text not found in ${edit.filename}`);
         }
-        content = content.split(edit.search).join(edit.replace);
+        const occurrences = content.split(edit.search).length - 1;
+        const replaceAll = edit.replaceAll === true || edit.replace_all === true;
+        if (occurrences > 1 && !replaceAll) {
+          throw new Error(`Search text matched ${occurrences} times in ${edit.filename}. Add more context, use startLine/endLine, use workspace_apply_patch, or set replaceAll=true intentionally.`);
+        }
+        content = replaceAll
+          ? content.split(edit.search).join(edit.replace)
+          : content.replace(edit.search, edit.replace);
       } else {
         throw new Error(`Edit for ${edit.filename} needs search or startLine/endLine`);
       }

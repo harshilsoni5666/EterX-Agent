@@ -550,7 +550,7 @@
   --eterx-composer-fog-strong: rgba(251, 250, 247, 0.94);
   --eterx-composer-fog-clear: rgba(255, 255, 255, 0);
   border-color: rgba(31, 31, 29, 0.115) !important;
-  border-radius: 28px !important;
+  border-radius: 26px !important;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.76), rgba(255, 255, 255, 0) 46%),
     #FBFAF7 !important;

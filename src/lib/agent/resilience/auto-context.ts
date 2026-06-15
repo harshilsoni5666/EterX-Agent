@@ -119,10 +119,31 @@ function compressTextPart(part: any, tier: CompressionTier): any {
   if (part.text.length <= maxLength) return part;
   const head = part.text.substring(0, maxLength * 0.8);
   const tail = part.text.slice(-(maxLength * 0.2));
-  return { text: `${head}\n…[${tier} compressed]…\n${tail}` };
+  return { ...part, text: `${head}\n...[${tier} compressed]...\n${tail}` };
 }
 
 // ─── Protected content detection ──────────────────────────────────────────────
+
+function hasGeminiContinuationPart(entry: any): boolean {
+  return Array.isArray(entry?.parts) && entry.parts.some((part: any) =>
+    part?.functionCall || part?.thoughtSignature
+  );
+}
+
+function hasFunctionResponsePart(entry: any): boolean {
+  return Array.isArray(entry?.parts) && entry.parts.some((part: any) => part?.functionResponse);
+}
+
+function getSafeTail(contents: any[], keepTurns: number): any[] {
+  let start = Math.max(0, contents.length - keepTurns);
+  for (let idx = start; idx < contents.length; idx++) {
+    if (hasFunctionResponsePart(contents[idx]) && idx > 0 && idx - 1 < start) {
+      start = idx - 1;
+      break;
+    }
+  }
+  return contents.slice(start);
+}
 
 function isProtectedContent(text: string): boolean {
   const t = text.toLowerCase();
@@ -183,6 +204,10 @@ export function compressContents(
     if (idx >= protectedStart) return entry; // Never compress recent turns
     if (!Array.isArray(entry?.parts)) return entry;
 
+    // Gemini thinking/function-calling turns can contain opaque thoughtSignature
+    // parts that must be sent back unchanged with their matching function calls.
+    if (entry.role === 'model' && hasGeminiContinuationPart(entry)) return entry;
+
     const tier = getCompressionTier(idx, total);
     if (tier === 'none') return entry;
 
@@ -194,6 +219,9 @@ export function compressContents(
       if (part?.functionResponse) {
         const toolName = part.functionResponse.name || '';
         return compressFunctionResponse(part, tier, toolName);
+      }
+      if (part?.functionCall || part?.thoughtSignature) {
+        return part;
       }
       if (part?.text) {
         return compressTextPart(part, tier);
@@ -251,7 +279,7 @@ export function autoCompress(
   }
 
   // Last resort: keep only last 8 turns
-  const tail = contents.slice(-8);
+  const tail = getSafeTail(contents, 8);
   const tailTokens = estimateContentsTokens(tail);
   const report = `Emergency truncation: kept last 8 turns (${(tailTokens / 1000).toFixed(0)}k tokens)`;
   console.warn(`[AutoContext] 🆘 ${report}`);

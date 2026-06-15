@@ -61,6 +61,7 @@ interface AgentExecution {
   complexity: string;          // Task complexity classification
   peakMemoryMB: number;        // Peak memory usage during execution
   retentionCompacted?: boolean;
+  orchestratorProjectId?: string;
 }
 
 const MAX_TRACE_BUFFER = 2000;          // Max traces kept in memory per chat
@@ -145,11 +146,20 @@ class AgentRegistry {
     execution.retentionCompacted = true;
   }
 
-  private appendTrace(execution: AgentExecution, traceEvent: any, persistToTaskStore = true): TraceEvent {
-    if (traceEvent?.type === 'file_preview' && traceEvent.filepath) {
-      const existingIdx = execution.traceBuffer.findIndex(entry =>
-        entry.data?.type === 'file_preview' && entry.data?.filepath === traceEvent.filepath
-      );
+  public appendTrace(execution: AgentExecution, traceEvent: any, persistToTaskStore = true): TraceEvent {
+    if (traceEvent?.type === 'file_preview') {
+      const existingIdx = traceEvent.ownerTraceId
+        ? execution.traceBuffer.findIndex(entry =>
+          entry.data?.type === 'file_preview' &&
+          entry.data?.ownerTraceId === traceEvent.ownerTraceId
+        )
+        : traceEvent.filepath && traceEvent.dedupe !== false
+          ? execution.traceBuffer.findIndex(entry =>
+            entry.data?.type === 'file_preview' &&
+            entry.data?.filepath === traceEvent.filepath &&
+            entry.data?.dedupe !== false
+          )
+          : -1;
       if (existingIdx >= 0) execution.traceBuffer.splice(existingIdx, 1);
     }
 
@@ -536,6 +546,7 @@ class AgentRegistry {
         const projectId = pinnedContext?.telegram?.chatId
           ? `telegram-${ pinnedContext.telegram.chatId }`
           : chatId;
+        execution.orchestratorProjectId = projectId;
         const response = await orchestrator.executePipeline(
           userId,
           projectId,

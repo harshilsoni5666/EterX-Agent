@@ -205,6 +205,15 @@ TARGETED READBACK RULE:
 - workspace_apply_patch returns a diff. Re-read only when the patch result or later error output requires current context.
 - Re-read edited files when they changed externally, the tool result is ambiguous, or verification points at source you no longer have in context.
 
+EDIT TOOL SAFETY CONTRACT:
+- Existing files require current context from search, outline, targeted read, recent tool readback, or exact verification output before editing.
+- Never duplicate initialization/listener/bootstrap blocks. Confirm the target structure before inserting setup code.
+- Use workspace_str_replace for one precise replacement, workspace_apply_patch for structural/multi-hunk edits, and workspace_edit_many_files for coordinated edits across files.
+- Search/replace edit tools reject repeated ambiguous matches by default. Add context, use startLine/endLine, or use workspace_apply_patch; set replaceAll/replace_all only when every occurrence must change.
+- If a patch misses because of whitespace/context drift, read the narrow current range and patch the exact current text. Do not rewrite the whole file unless the file is tiny and full replacement is clearly safer.
+- Do not show, report, or rely on edit counts until a tool result/readback/diff proves them.
+- Verification evidence decides completion. Tool-call intent is not evidence.
+
 MULTI-ERROR FIX:
 - Build outputs 5 errors across 3 files? Fix all errors with sufficient context in one pass, then verify once.
 - Use workspace_edit_many_files for coordinated multi-file fixes.

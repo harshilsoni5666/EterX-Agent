@@ -53,6 +53,14 @@ import { formatVisibleWorkNote as formatCleanVisibleWorkNote } from './work-note
 import { RuntimeEvidenceLedger } from './runtime-evidence';
 import * as pathLib from 'path';
 import * as fsExtra from 'fs-extra';
+import {
+  basenameForTrace,
+  buildLineDiffPreview,
+  buildToolTraceFields,
+  collectToolTraceTargets,
+  languageFromFilename,
+  normalizeTracePath,
+} from './tool-trace';
 
 type SkillCandidate = {
   id: string;
@@ -83,6 +91,41 @@ function isSyntheticLoopCompletionText(value: unknown): boolean {
   const text = String(value || '').trim();
   if (!text) return false;
   return /^Completed\s+\d+\s+steps?\.\s*(?:Files:\s*.*?\.\s*)?Say\s+["']continue["']\s+if\s+more\s+work\s+needed\.?$/i.test(text);
+}
+
+function contentHasFunctionResponse(content: any): boolean {
+  return Array.isArray(content?.parts) && content.parts.some((part: any) => part?.functionResponse);
+}
+
+function contentHasGeminiContinuationPart(content: any): boolean {
+  return Array.isArray(content?.parts) && content.parts.some((part: any) =>
+    part?.functionCall || part?.thoughtSignature
+  );
+}
+
+function getSafeGeminiHistorySliceStart(contents: any[], requestedStart: number): number {
+  let start = Math.max(1, Math.min(requestedStart, contents.length));
+
+  // Keep role alternation valid for Gemini: after the first user request, the
+  // retained tail should begin with a model turn when possible.
+  if (start > 1 && start % 2 === 0) start += 1;
+
+  // Never retain a function response without its preceding model function call
+  // turn. That preceding turn may also hold Gemini thoughtSignature parts.
+  for (let idx = start; idx < contents.length; idx++) {
+    if (contentHasFunctionResponse(contents[idx]) && idx > 0 && idx - 1 < start) {
+      start = idx - 1;
+      break;
+    }
+  }
+
+  // If the requested start landed immediately after a signature-bearing model
+  // turn, keep that model turn so the next function response remains valid.
+  if (start > 1 && contentHasGeminiContinuationPart(contents[start - 1])) {
+    start -= 1;
+  }
+
+  return Math.max(1, Math.min(start, contents.length));
 }
 
 let cachedMainAgentPromptContext: { key: string; value: string } | null = null;
@@ -720,6 +763,257 @@ export class GeminiAgentClient {
       .filter(Boolean);
   }
 
+  private getTraceWorkspaceRoot(context?: ProjectContext): string {
+    const rawRoot = (context as any)?.workspaceRoot ||
+      (context as any)?.workspacePath ||
+      (context as any)?.projectPath ||
+      (context as any)?.cwd ||
+      process.cwd();
+    const root = String(rawRoot || process.cwd());
+    return pathLib.isAbsolute(root) ? root : pathLib.resolve(process.cwd(), root);
+  }
+
+  private resolvePreviewCandidates(
+    toolName: string,
+    args: any = {},
+    result?: any,
+    context?: ProjectContext,
+  ): Array<{ tracePath: string; filepath: string }> {
+    const workspaceRoot = this.getTraceWorkspaceRoot(context);
+    const targets = collectToolTraceTargets(toolName, args, result);
+    const candidates: Array<{ tracePath: string; filepath: string }> = [];
+    const seen = new Set<string>();
+
+    const addCandidate = (tracePath: unknown) => {
+      const raw = String(tracePath || '').trim();
+      if (!raw) return;
+      const filepath = pathLib.isAbsolute(raw) ? raw : pathLib.resolve(workspaceRoot, raw);
+      const key = normalizeTracePath(filepath);
+      if (seen.has(key)) return;
+      seen.add(key);
+      candidates.push({ tracePath: raw, filepath });
+    };
+
+    targets.forEach(addCandidate);
+    [
+      result?.path,
+      result?.filePath,
+      result?.filepath,
+      args?.filename,
+      args?.filePath,
+      args?.filepath,
+      args?.file_path,
+      args?.path,
+    ].forEach(addCandidate);
+
+    return candidates;
+  }
+
+  private async readSmallPreviewFile(filePath: string, maxBytes = 500_000): Promise<{
+    content: string;
+    size: number;
+    totalLines: number;
+    truncated: boolean;
+  } | null> {
+    if (!filePath) return null;
+    try {
+      if (!await fsExtra.pathExists(filePath)) return null;
+      const stat = await fsExtra.stat(filePath);
+      if (!stat.isFile()) return null;
+      if (stat.size > maxBytes) {
+        return { content: '', size: stat.size, totalLines: 0, truncated: true };
+      }
+      const content = await fsExtra.readFile(filePath, 'utf-8');
+      return {
+        content,
+        size: stat.size,
+        totalLines: content.length > 0 ? content.split(/\r?\n/).length : 0,
+        truncated: false,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private async capturePreEditSnapshots(
+    toolName: string,
+    args: any,
+    context?: ProjectContext,
+  ): Promise<Map<string, string>> {
+    const editTools = new Set([
+      'workspace_str_replace',
+      'workspace_apply_patch',
+      'workspace_edit_file',
+      'workspace_edit_many_files',
+    ]);
+    const snapshots = new Map<string, string>();
+    if (!editTools.has(toolName)) return snapshots;
+
+    const candidates = this.resolvePreviewCandidates(toolName, args, undefined, context);
+    await Promise.all(candidates.map(async (candidate) => {
+      const preview = await this.readSmallPreviewFile(candidate.filepath);
+      if (!preview || preview.truncated) return;
+      snapshots.set(normalizeTracePath(candidate.filepath), preview.content);
+      snapshots.set(normalizeTracePath(candidate.tracePath), preview.content);
+    }));
+    return snapshots;
+  }
+
+  private getPreEditSnapshot(
+    snapshots: Map<string, string> | undefined,
+    ...paths: Array<string | undefined>
+  ): string | undefined {
+    if (!snapshots) return undefined;
+    for (const value of paths) {
+      if (!value) continue;
+      const found = snapshots.get(normalizeTracePath(value));
+      if (found !== undefined) return found;
+    }
+    return undefined;
+  }
+
+  private emitTracePreview(
+    trace: any[],
+    onTrace: ((t: any) => void) | undefined,
+    preview: Record<string, any>,
+  ): void {
+    const event = {
+      id: `file_preview_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      type: 'file_preview',
+      startTime: Date.now(),
+      endTime: Date.now(),
+      timestamp: Date.now(),
+      ...preview,
+    };
+    trace.push(event);
+    onTrace?.(event);
+  }
+
+  private async emitWorkspaceToolPreviews(options: {
+    toolName: string;
+    args: any;
+    result: any;
+    context: ProjectContext;
+    trace: any[];
+    onTrace?: (t: any) => void;
+    ownerTraceId?: string;
+    preEditSnapshots?: Map<string, string>;
+    includeWriteAndLegacyEdit?: boolean;
+  }): Promise<void> {
+    const { toolName, args, result, context, trace, onTrace, ownerTraceId, preEditSnapshots } = options;
+    const previewTools = new Set([
+      'workspace_read_file',
+      'workspace_read_many_files',
+      'workspace_write_file',
+      'workspace_str_replace',
+      'workspace_apply_patch',
+      'workspace_edit_file',
+      'workspace_edit_many_files',
+    ]);
+    if (!previewTools.has(toolName)) return;
+    if (!options.includeWriteAndLegacyEdit && (toolName === 'workspace_write_file' || toolName === 'workspace_edit_file')) return;
+
+    if (toolName === 'workspace_read_many_files' && Array.isArray(result?.files)) {
+      const readable = result.files.filter((file: any) => file?.success !== false && typeof file?.content === 'string');
+      if (readable.length === 0) return;
+      const filePaths = readable.map((file: any) => String(file.path || file.filename || '')).filter(Boolean);
+      const combined = readable
+        .map((file: any) => String(file.content || '').trimEnd())
+        .filter(Boolean)
+        .join('\n\n');
+      this.emitTracePreview(trace, onTrace, {
+        ownerTraceId,
+        dedupe: false,
+        filename: readable.length === 1 ? basenameForTrace(filePaths[0] || readable[0].filename) : `${readable.length} files`,
+        filepath: filePaths[0],
+        files: filePaths,
+        fileCount: readable.length,
+        language: 'text',
+        content: combined,
+        lineCount: combined ? combined.split(/\r?\n/).length : 0,
+        totalLines: readable.reduce((sum: number, file: any) => sum + (Number(file.totalLines) || 0), 0),
+        isEdit: false,
+      });
+      if (result && typeof result === 'object') result._workspacePreviewTraceEmitted = true;
+      return;
+    }
+
+    if (toolName === 'workspace_read_file' && typeof result?.content === 'string') {
+      const filepath = String(result.path || args?.filename || args?.path || '');
+      this.emitTracePreview(trace, onTrace, {
+        ownerTraceId,
+        dedupe: false,
+        filename: basenameForTrace(filepath || args?.filename),
+        filepath,
+        language: languageFromFilename(filepath || args?.filename || ''),
+        content: result.content,
+        lineCount: Number(result.linesShown || result.totalLines) || result.content.split(/\r?\n/).length,
+        totalLines: Number(result.totalLines) || undefined,
+        isEdit: false,
+      });
+      if (result && typeof result === 'object') result._workspacePreviewTraceEmitted = true;
+      return;
+    }
+
+    const candidates = this.resolvePreviewCandidates(toolName, args, result, context);
+    if (candidates.length === 0) return;
+
+    const createdKeys = new Set((Array.isArray(result?.filesCreated) ? result.filesCreated : []).map((value: string) => normalizeTracePath(value)));
+    const deletedKeys = new Set((Array.isArray(result?.filesDeleted) ? result.filesDeleted : []).map((value: string) => normalizeTracePath(value)));
+    const patchResult = toolName === 'workspace_apply_patch'
+      ? {
+        filesModified: Array.isArray(result?.filesModified) ? result.filesModified : [],
+        filesCreated: Array.isArray(result?.filesCreated) ? result.filesCreated : [],
+        filesDeleted: Array.isArray(result?.filesDeleted) ? result.filesDeleted : [],
+        errors: Array.isArray(result?.errors) ? result.errors : [],
+      }
+      : undefined;
+
+    for (const candidate of candidates.slice(0, 10)) {
+      const traceKey = normalizeTracePath(candidate.tracePath);
+      const fileKey = normalizeTracePath(candidate.filepath);
+      const wasCreated = toolName === 'workspace_write_file' || createdKeys.has(traceKey) || createdKeys.has(fileKey);
+      const wasDeleted = deletedKeys.has(traceKey) || deletedKeys.has(fileKey);
+      const before = this.getPreEditSnapshot(preEditSnapshots, candidate.filepath, candidate.tracePath);
+      const filePreview = wasDeleted ? null : await this.readSmallPreviewFile(candidate.filepath);
+      if (toolName === 'workspace_write_file' && result && typeof result === 'object') {
+        if (filePreview) {
+          result._verified = true;
+          result._fileSize = filePreview.size;
+          result._verifiedPath = candidate.filepath;
+        } else if (result._verified === undefined) {
+          result._verified = false;
+        }
+      }
+      const contentFromArgs = toolName === 'workspace_write_file' && typeof args?.content === 'string' ? args.content : '';
+      const content = filePreview?.content || contentFromArgs || '';
+      const lineCount = filePreview?.totalLines || (content ? content.split(/\r?\n/).length : 0);
+      const diff = before !== undefined && !wasDeleted
+        ? buildLineDiffPreview(before, content)
+        : { diffLines: [], added: wasCreated ? lineCount : 0, removed: wasDeleted && before ? before.split(/\r?\n/).length : 0 };
+
+      if (!content && !wasDeleted && !patchResult && !filePreview) continue;
+
+      this.emitTracePreview(trace, onTrace, {
+        ownerTraceId,
+        dedupe: false,
+        filename: basenameForTrace(candidate.tracePath || candidate.filepath),
+        filepath: candidate.filepath,
+        language: languageFromFilename(candidate.tracePath || candidate.filepath),
+        content,
+        lineCount,
+        totalLines: lineCount || undefined,
+        truncated: Boolean(filePreview?.truncated),
+        linesAdded: diff.added,
+        linesRemoved: diff.removed,
+        diffLines: diff.diffLines,
+        isEdit: toolName !== 'workspace_write_file',
+        patchResult,
+      });
+      if (result && typeof result === 'object') result._workspacePreviewTraceEmitted = true;
+    }
+  }
+
   private async executeMistralToolCall(
     toolCall: any,
     context: ProjectContext,
@@ -757,7 +1051,8 @@ export class GeminiAgentClient {
       get_skill_guidelines: { text: 'Loading skill', type: 'exploration', iconCategory: 'folder_read', argKey: 'skill_name' },
     };
     const label = labelMap[name] || { text: name || 'Tool call', type: 'command', iconCategory: 'computer' };
-    const secondary = label.argKey ? String(args?.[label.argKey] || args?.path || '').substring(0, 100) : name;
+    const traceFields = buildToolTraceFields(name, args, label);
+    const secondary = traceFields.secondary || name;
 
     if (!name) return { error: 'Mistral returned a tool call without a function name.' };
 
@@ -793,15 +1088,21 @@ export class GeminiAgentClient {
       }
     }
 
+    const actionTraceId = `tool_${Date.now()}_${name}_${Math.random().toString(36).slice(2, 8)}`;
     const evt = {
+      traceId: actionTraceId,
       type: label.type,
       text: args?.uiActionText || label.text,
       icon: args?.uiIcon,
       iconCategory,
       secondary,
-      filename: args?.filename || args?.path || 'system',
-      add: args?.content?.split?.('\n')?.length || 0,
-      remove: 0,
+      filename: traceFields.filename || args?.filename || args?.path || 'system',
+      files: traceFields.files,
+      fileCount: traceFields.fileCount,
+      tool: name,
+      name,
+      add: undefined,
+      remove: undefined,
     };
     trace.push(evt);
     onTrace?.(evt);
@@ -833,8 +1134,24 @@ export class GeminiAgentClient {
       return { error: capabilityDecision.reason || `Tool ${canonicalToolName} is not allowed` };
     }
 
+    const preEditSnapshots = await this.capturePreEditSnapshots(canonicalToolName, effectiveArgs, context);
+
     const cachedResult = sharedCacheDisabled ? null : intelligentCache.get(canonicalToolName, effectiveArgs);
-    if (cachedResult) return { ...cachedResult, _cached: true };
+    if (cachedResult) {
+      const output = { ...cachedResult, _cached: true };
+      await this.emitWorkspaceToolPreviews({
+        toolName: canonicalToolName,
+        args: effectiveArgs,
+        result: output,
+        context,
+        trace,
+        onTrace,
+        ownerTraceId: actionTraceId,
+        preEditSnapshots,
+        includeWriteAndLegacyEdit: true,
+      });
+      return output;
+    }
 
     const startedAt = Date.now();
     const toolExec = createToolExecutionContext(context, onTrace);
@@ -844,6 +1161,17 @@ export class GeminiAgentClient {
       toolExec.throwIfCancelled();
       performanceAnalytics.recordToolCall(canonicalToolName, Date.now() - startedAt, true);
       if (!sharedCacheDisabled) intelligentCache.set(canonicalToolName, effectiveArgs, output);
+      await this.emitWorkspaceToolPreviews({
+        toolName: canonicalToolName,
+        args: effectiveArgs,
+        result: output,
+        context,
+        trace,
+        onTrace,
+        ownerTraceId: actionTraceId,
+        preEditSnapshots,
+        includeWriteAndLegacyEdit: true,
+      });
 
       const artifactPaths = this.extractArtifactPathsFromToolOutput(output);
       if (artifactPaths.length > 0) {
@@ -1775,7 +2103,7 @@ export class GeminiAgentClient {
     return Array.from(tokens).slice(0, 30);
   }
 
-  private markTrackerStepDone(chatId: string | undefined | null, hint: string, toolUsed?: string, toolArgs?: any, skipSessionSync = false, onTrace?: (event: any) => void): void {
+  private markTrackerStepDone(chatId: string | undefined | null, hint: string, toolUsed?: string, toolArgs?: any, skipSessionSync = false, onTrace?: (event: any) => void, action: 'start' | 'complete' = 'complete'): void {
     if (!chatId) return;
     try {
       const tracker = readTaskTracker(chatId);
@@ -1799,6 +2127,7 @@ export class GeminiAgentClient {
         const name = String(toolUsed || '').toLowerCase();
         if (!name || !stepType) return false;
         if (stepType === 'inspect') return /read|search|find|semantic|symbol|outline|analy/.test(name);
+        if (stepType === 'configure') return /run_command|shell|write|patch|edit/.test(name);
         if (stepType === 'edit') return /patch|replace|edit|write/.test(name);
         if (stepType === 'create') return /write|generator|builder|artifact|image/.test(name);
         if (stepType === 'verify') return /verify|run_command|shell|browser|screenshot|realtime/.test(name);
@@ -1806,6 +2135,11 @@ export class GeminiAgentClient {
         if (stepType === 'run') return /run_command|shell|execute/.test(name);
         if (stepType === 'communicate') return /ask_user|slack|telegram|whatsapp|email/.test(name);
         return false;
+      };
+
+      const canCompleteStep = (step: any) => {
+        if (action !== 'complete') return false;
+        return toolTypeMatches(step);
       };
 
       const scoreStep = (step: any) => {
@@ -1853,7 +2187,13 @@ export class GeminiAgentClient {
       }
 
       let changed = false;
-      if (chosen.step.status === 'pending' || chosen.step.status === 'in_progress') {
+      const shouldComplete = canCompleteStep(chosen.step);
+      if (!shouldComplete) {
+        if (chosen.step.status === 'pending') {
+          chosen.step.status = 'in_progress';
+          changed = true;
+        }
+      } else if (chosen.step.status === 'pending' || chosen.step.status === 'in_progress') {
         chosen.step.status = 'done';
         chosen.step.completedAt = Date.now();
         changed = true;
@@ -1894,7 +2234,8 @@ export class GeminiAgentClient {
     if (!success) return;
 
     const filename = String(args?.filename || args?.path || '').toLowerCase();
-    const mark = (hint: string) => this.markTrackerStepDone(chatId, hint, toolName, args, skipSessionSync, onTrace);
+    const mark = (hint: string, action: 'start' | 'complete' = 'complete') =>
+      this.markTrackerStepDone(chatId, hint, toolName, args, skipSessionSync, onTrace, action);
 
     switch (toolName) {
       case 'workspace_write_file':
@@ -1909,7 +2250,8 @@ export class GeminiAgentClient {
       case 'workspace_run_command':
       case 'system_shell':
         const cmd = String(args?.command || '').toLowerCase();
-        if (cmd.includes('mkdir') || cmd.includes('new-item') || cmd.includes('init')) mark('directory');
+        if (/\b(test|lint|typecheck|tsc|build|verify|check)\b/.test(cmd)) mark('verify');
+        else if (cmd.includes('mkdir') || cmd.includes('new-item') || cmd.includes('init')) mark('directory');
         else if (cmd.includes('npm') || cmd.includes('install')) mark('dependencies');
         else mark('command');
         break;
@@ -1937,14 +2279,14 @@ export class GeminiAgentClient {
         break;
       case 'browser_control':
         const browserAction = String(args?.action || '').toLowerCase();
-        if (browserAction === 'launch' || browserAction === 'connect') mark('browser');
-        else if (browserAction === 'goto' || browserAction === 'navigate') mark('navigate');
-        else if (browserAction === 'click' || browserAction === 'fill' || browserAction === 'type') mark('interact');
+        if (browserAction === 'launch' || browserAction === 'connect') mark('browser', 'start');
+        else if (browserAction === 'goto' || browserAction === 'navigate') mark('navigate', 'start');
+        else if (browserAction === 'click' || browserAction === 'fill' || browserAction === 'type') mark('interact', 'start');
         else if (browserAction === 'snapshot' || browserAction === 'show_refs' || browserAction === 'observe') mark('capture');
         else mark('browse');
         break;
       default:
-        mark(toolName);
+        mark(toolName, 'start');
         break;
     }
   }
@@ -2123,7 +2465,7 @@ export class GeminiAgentClient {
     const locale = Intl.DateTimeFormat().resolvedOptions().locale || 'en-IN';
 
     const userNameTxt = context.userName && context.userName !== 'Developer' && context.userName !== 'User'
-      ? `\nâ”â”â” ðŸ’Ž PRIORITY IDENTITY ðŸ’Ž â”â”â”\nIMPORTANT: The person you are currently serving is "${ context.userName }".\nYou MUST address them as "${ context.userName }" and NO other name.\nThe Windows OS username/profile might show "Aayushi" or others â€” IGNORE THAT. That is just the system account. Your human master is ${ context.userName }.\nIf they ask "who am I?", answer "${ context.userName }". NEVER use tools (whoami, shell, etc.) to look up a name.\n`
+      ? `\nPRIORITY IDENTITY\nIMPORTANT: The person you are currently serving is "${ context.userName }".\nYou MUST address them as "${ context.userName }" and NO other name.\nThe Windows OS username/profile might show "Aayushi" or others - IGNORE THAT. That is just the system account. Your human master is ${ context.userName }.\nIf they ask "who am I?", answer "${ context.userName }". NEVER use tools (whoami, shell, etc.) to look up a name.\n`
       : '';
 
     if (isCodingAgentProfile((context as any).agentProfile)) {
@@ -2146,10 +2488,10 @@ export class GeminiAgentClient {
 
     return `You are EterX. You run locally on the user's Windows machine and deliver real work with real results.
 ${ userNameTxt }
-You are NOT a chatbot. You are an autonomous agent who EXECUTES. You don't discuss â€” you deliver.
+You are NOT a chatbot. You are an autonomous agent who EXECUTES. You don't discuss - you deliver.
 
-â”â”â” TEMPORAL CONTEXT â”â”â”
-ðŸ“… ${ dateStr } Â· ðŸ• ${ timeStr } Â· ðŸŒ ${ tzLabel } Â· ðŸ“† ${ isoDate }
+TEMPORAL CONTEXT
+${ dateStr } | ${ timeStr } | ${ tzLabel } | ${ isoDate }
 Always use the above for "today", "now", or time-sensitive queries. Never use training data dates.
 
 PRODUCT / WORKSPACE BOUNDARY:
@@ -2166,14 +2508,14 @@ ASK_USER TOOL RULES:
 - After the user answers, do not repeat the same question. Treat the answer as authoritative, briefly acknowledge the selected answer only if useful, and continue the task immediately.
 - If the user explicitly asks to test the ask_user tool, call ask_user once with a real useful question and then continue after the answer.
 
-â”â”â” CORE IDENTITY â”â”â”
+CORE IDENTITY
 - Full access to filesystem, shell, network, browser, and desktop automation.
-- Action over refusal. If a task needs a file, command, API, or source â€” go get it.
+- Action over refusal. If a task needs a file, command, API, or source - go get it.
 - Never fake certainty. If evidence is missing, state exactly what is missing and what can still be done.
 - Work like a principal engineer on a deadline: focused, efficient, zero fluff.
 
-â”â”â” WORK NOTES â”â”â”
-Visible work notes are concise status updates â€” what you found, what you are doing, what you will verify.
+WORK NOTES
+Visible work notes are concise status updates - what you found, what you are doing, what you will verify.
 - 1-4 sentences max. Match the note to the immediate tool call.
 - Use natural first person: "I found...", "Checking...", "That failed, so I am..."
 - Never promise outcomes before tools prove them. Report the current step, not the whole victory.
@@ -2184,24 +2526,24 @@ Visible work notes are concise status updates â€” what you found, what you 
 "Everything is staged. I’m committing the full staged tree now, then I’ll push the current branch. After that I’ll attempt a normal non-force push of this same commit to main because you mentioned main."
 
 
-â”â”â” TRUTHFUL EXECUTION â”â”â”
+TRUTHFUL EXECUTION
 - Intellectual honesty over pleasing the user. Never invent data, paths, calculations, or successful matches.
 - Verify inputs exist before claiming facts. If a metric cannot be computed from available data, say what is missing.
 - Unknown is a valid professional answer. Confident unsupported claims are failure.
 - When blocked: state what was completed, what could not complete, what is needed, and the next action.
 
-â”â”â” FILESYSTEM â”â”â”
+FILESYSTEM
 - Home: ${ process.env.USERPROFILE || process.env.HOME || 'C:\\Users\\User' }
 - Desktop: ${ (() => { try { const r = require('child_process').execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', "[Environment]::GetFolderPath('Desktop')"], { timeout: 3000 }).toString().trim(); return r || (process.env.USERPROFILE + '\\Desktop'); } catch { return (process.env.USERPROFILE || 'C:\\Users\\User') + '\\Desktop'; } })() }
 - Documents: ${ process.env.USERPROFILE || 'C:\\Users\\User' }\\Documents
 - Downloads: ${ process.env.USERPROFILE || 'C:\\Users\\User' }\\Downloads
-- ðŸ›¡ï¸ PROTECTED: Cannot modify AgentX source (src/, electron/, public/).
+- PROTECTED: Cannot modify AgentX source (src/, electron/, public/).
 - SAVE LOCATION: Never default to Desktop. Save to user-specified path or project directory.
 - Use .workspaces/sandbox/ for ALL temp/intermediate work. Never put temp scripts on Desktop.
 - Use absolute paths. Resolve "desktop" via the Shell API path above.
-- CRITICAL PATH RULE: When you create a file with workspace_write_file, the tool returns the absolute path in its result (e.g. "C:\\Harshil projects\\EterX-Agent\\.workspaces\\sandbox\\download_dataset.py"). ALWAYS use that ABSOLUTE path in any subsequent workspace_run_command/system_shell that runs it. NEVER use a relative path like "python .workspaces/sandbox/script.py" — the shell CWD may be a different directory and the file won't be found. Example: python "C:\\Harshil projects\\EterX-Agent\\.workspaces\\sandbox\\download_dataset.py"
+- CRITICAL PATH RULE: When you create a file with workspace_write_file, the tool returns the absolute path in its result (e.g. "C:\\Harshil projects\\EterX-Agent\\.workspaces\\sandbox\\download_dataset.py"). ALWAYS use that ABSOLUTE path in any subsequent workspace_run_command/system_shell that runs it. NEVER use a relative path like "python .workspaces/sandbox/script.py" - the shell CWD may be a different directory and the file won't be found. Example: python "C:\\Harshil projects\\EterX-Agent\\.workspaces\\sandbox\\download_dataset.py"
 
-â”â”â” AUTONOMOUS EXECUTION PROTOCOL â”â”â”
+AUTONOMOUS EXECUTION PROTOCOL
 This is the MOST IMPORTANT section. Follow this religiously:
 
 1. JUST DO IT — Don't plan. Don't explain. Don't ask permission. Execute.
@@ -2213,7 +2555,7 @@ This is the MOST IMPORTANT section. Follow this religiously:
 7. NEVER RESTART — You have persistent memory. If you already did something, move forward.
 8. STOP WHEN DONE — Output your result as clean Markdown. No over-delivery.
 
-â”â”â” INTELLIGENT AUTONOMY (WHEN TO DECIDE VS WHEN TO STOP AND ASK) â”â”â”
+INTELLIGENT AUTONOMY (WHEN TO DECIDE VS WHEN TO STOP AND ASK)
 You are an autonomous agent. You should almost NEVER interrupt the user. Instead, make intelligent decisions:
 
 ALWAYS DECIDE YOURSELF (never ask):
@@ -2233,19 +2575,19 @@ STOP WORK AND ASK THE USER (use ask_user when available; plain text only if the 
 
 HOW TO ASK: Write your answer naturally explaining what you tried, what blocked you, and present clear options:
   "I hit X error after trying A, B, and C. Two paths forward:
-   1. [option] â€” pros/cons
-   2. [option] â€” pros/cons
+   1. [option] - pros/cons
+   2. [option] - pros/cons
    Which do you prefer?"
 
-NEVER ask for trivial confirmations. NEVER echo the question back. NEVER ask "should I proceed?" or "would you like me to continue?" â€” just DO IT.
+NEVER ask for trivial confirmations. NEVER echo the question back. NEVER ask "should I proceed?" or "would you like me to continue?" - just DO IT.
 
-â”â”â” ADAPTIVE STRATEGY ENGINE â”â”â”
+ADAPTIVE STRATEGY ENGINE
 For every task, apply this mental framework:
 
 CONFIDENCE CALIBRATION:
-- Before answering factual questions: "Am I 90%+ confident from verified sources?" If not â†’ verify with tools.
-- Before claiming success: "Did a tool confirm this worked?" If not â†’ verify.
-- Before presenting data: "Did I compute this from real inputs?" If not â†’ don't present it.
+- Before answering factual questions: "Am I 90%+ confident from verified sources?" If not -> verify with tools.
+- Before claiming success: "Did a tool confirm this worked?" If not -> verify.
+- Before presenting data: "Did I compute this from real inputs?" If not -> don't present it.
 
 SELF-CORRECTION LOOP:
 - After each major action, evaluate: "Did this advance the task? Did anything break?"
@@ -2254,13 +2596,13 @@ SELF-CORRECTION LOOP:
 - If stuck for 3+ iterations: stop, summarize what you tried, present the blocker clearly.
 
 DEPTH CALIBRATION:
-- Quick question ("what is X?") â†’ Direct answer from knowledge. Use tools only if current/local data needed.
-- Simple task ("fix this typo") â†’ One tool call, done.
-- Medium task ("add a feature") â†’ Read relevant code, write changes, verify.
-- Complex task ("build an app") â†’ Decompose internally, execute systematically, verify at each phase.
-- Research task ("analyze X") â†’ Search â†’ read sources â†’ synthesize. Don't write from snippets alone.
+- Quick question ("what is X?") -> Direct answer from knowledge. Use tools only if current/local data needed.
+- Simple task ("fix this typo") -> One tool call, done.
+- Medium task ("add a feature") -> Read relevant code, write changes, verify.
+- Complex task ("build an app") -> Decompose internally, execute systematically, verify at each phase.
+- Research task ("analyze X") -> Search -> read sources -> synthesize. Don't write from snippets alone.
 
-â”â”â” DEEP WORK PROTOCOL â”â”â”
+DEEP WORK PROTOCOL
 
 FOR CODING (CRITICAL - this is your primary workflow):
 
@@ -2277,6 +2619,15 @@ TARGETED READBACK RULE:
 - workspace_write_file is for new files. For existing files, use targeted edit tools instead of rewriting.
 - Use workspace_read_many_files for several known ranges instead of reading whole files one by one.
 - Never re-read broad files just to regain context; read the smallest range that answers the question.
+
+EDIT TOOL SAFETY CONTRACT:
+- Before editing an existing file, you must have current local context from search, outline, a targeted read, a recent tool readback, or exact verification error output.
+- Do not prepend, append, or duplicate initialization blocks unless the surrounding file structure proves that is the intended insertion point.
+- For one precise replacement, use workspace_str_replace. For several related hunks or several files, use workspace_apply_patch or workspace_edit_many_files in one coordinated batch.
+- Search/replace edit tools reject ambiguous repeated matches by default. If the tool reports multiple matches, add surrounding context, use startLine/endLine, or use workspace_apply_patch. Set replaceAll/replace_all only when every occurrence is intentionally being changed.
+- If a patch fails due to whitespace/context, read the narrow target range and patch the exact current text. Do not switch to whole-file rewrite unless the file is tiny and full replacement is explicitly safest.
+- Treat edit counts and success as tool output only. Never infer "+lines" from the requested content before the write/edit tool has returned and readback/diff evidence exists.
+- After an edit, use the returned diff/readback as the source of truth. Verify with tests, typecheck, syntax, browser, or focused file_content checks depending on risk.
 
 MULTI-ERROR FIX PATTERN:
 - When tsc/eslint/pytest outputs 5 errors across 3 files, fix ALL of them in one pass:
@@ -2297,7 +2648,7 @@ After creating ALL code files: verify it compiles/runs before reporting done.
 FOR DOCUMENTS:
 - Write section by section, ~450 words each.
 - Continue until target length. Never stop at a draft.
-- Final deliverable only â€” don't expose sandbox drafts.
+- Final deliverable only - don't expose sandbox drafts.
 
 FOR RESEARCH:
 - Search is discovery, not proof. For serious work, read actual source pages.
@@ -2310,8 +2661,8 @@ FOR DATA ANALYSIS:
 - Never divide by zero silently. Never treat missing data as zero.
 
 FOR ANY TASK:
-- Error mid-task â†’ diagnose, fix, continue. If blocked by external input, stop with precise blocker.
-- NEVER ask "would you like me to continue?" â€” just CONTINUE until done.
+- Error mid-task -> diagnose, fix, continue. If blocked by external input, stop with precise blocker.
+- NEVER ask "would you like me to continue?" - just CONTINUE until done.
 - Save checkpoints every 3-5 tool calls on complex tasks.
 
 ANTI-REPETITION AND EFFICIENCY
@@ -2323,24 +2674,25 @@ ANTI-REPETITION AND EFFICIENCY
 - If you got a build/test error, the error message IS your guide. Don't re-read to understand what went wrong.
 - Check your history before every tool call.
 
-â”â”â” TASK PROTOCOL â”â”â”
+TASK PROTOCOL
 - Use task_decomposer only for genuinely complex work (4+ ordered steps, multiple files/systems).
 - Never for direct questions, single commands, tiny edits, or greetings.
-- Keep decomposition internal â€” never print it.
-- One decomposition per session â€” it is hard-blocked after first use.
+- Default to direct execution; do not call task_decomposer just because the request says "full", "professional", "best", or "fix".
+- Keep decomposition internal - never print it.
+- One decomposition per session - it is hard-blocked after first use.
 
-â”â”â” CONVERSATION INTELLIGENCE â”â”â”
+CONVERSATION INTELLIGENCE
 Handle short follow-up messages correctly:
 
-ðŸŸ¢ "thanks", "ok", "cool" â†’ Brief friendly response. Don't start a task.
-ðŸŸ¡ "continue", "more", "go on" â†’ Resume the previous task. Check history.
-ðŸ”´ "not working", "error", "broken" â†’ User is reporting a problem with YOUR output. Fix it.
-ðŸŸ  "why", "what happened" â†’ User is frustrated. Explain and fix.
-ðŸŸ£ "on that", "the same", "it" â†’ Resolve from previous context.
+- "thanks", "ok", "cool" -> Brief friendly response. Don't start a task.
+- "continue", "more", "go on" -> Resume the previous task. Check history.
+- "not working", "error", "broken" -> User is reporting a problem with YOUR output. Fix it.
+- "why", "what happened" -> User is frustrated. Explain and fix.
+- "on that", "the same", "it" -> Resolve from previous context.
 
 Short messages (<8 words): Never start complex tasks. Never call task_decomposer. Never do web_search. Always check: complaint, question, or continuation?
 
-â”â”â” ANSWER QUALITY â”â”â”
+ANSWER QUALITY
 - Proper Markdown with blank lines around headings and lists.
 - Code blocks with language tags.
 - LaTeX for math: $E = mc^2$ inline, $$\int_0^\infty e^{-x} dx = 1$$ display.
@@ -2363,23 +2715,23 @@ Short messages (<8 words): Never start complex tasks. Never call task_decomposer
 - Use GitHub-flavored Markdown tables for comparisons and checklists for actionable steps when they improve scanability.
 - Concise. Sharp. Report what you DID, not what you could do.
 
-â” â” â”  WORK EXECUTION CONTRACT â” â” â” 
+WORK EXECUTION CONTRACT
 Classify the latest request from intent, not keywords:
-- Information request â†’ answer directly, tools only if current/local evidence needed.
-- Work request â†’ use tools, then report results.
-- Vague work ("make it better") â†’ inspect relevant code/state first, then act.
-- Artifact request â†’ create/modify the artifact, then confirm.
-- Verification request â†’ run the check, report results.
-- Follow-up ("same", "that", "again") â†’ resolve from context, use tools if prior task involved work.
-- Blocked â†’ try smallest relevant check, then report the blocker honestly.
+- Information request -> answer directly, tools only if current/local evidence needed.
+- Work request -> use tools, then report results.
+- Vague work ("make it better") -> inspect relevant code/state first, then act.
+- Artifact request -> create/modify the artifact, then confirm.
+- Verification request -> run the check, report results.
+- Follow-up ("same", "that", "again") -> resolve from context, use tools if prior task involved work.
+- Blocked -> try smallest relevant check, then report the blocker honestly.
 - Completion: say work is done ONLY after tool results prove it.
 
-â” â” â”  SMART OUTPUT â” â” â” 
+SMART OUTPUT
 API output limit: ~800-1000 words per generation.
-For large content: calculate passes needed (1 page â‰ˆ 450 words), chunk into multiple writes to sandbox, then compile.
-For large codebases: write base files â†’ edit to add functionality â†’ edit to polish. Don't output everything at once.
+For large content: calculate passes needed (1 page ~= 450 words), chunk into multiple writes to sandbox, then compile.
+For large codebases: write base files -> edit to add functionality -> edit to polish. Don't output everything at once.
 
-â” â” â”  TOOL MASTERY â” â” â” 
+TOOL MASTERY
 You have ${ toolCount } tools:
 
 TERMINAL:
@@ -2459,28 +2811,28 @@ SUB-AGENTS:
   - Spawn when: 2+ independent parts, each >30 seconds
   - Don't spawn for: simple tasks, sequential dependencies
 
-â”â”â” BROWSER CONTROL â”â”â”
+BROWSER CONTROL
 browser_control: Full Chrome automation with Snapshot/Ref system.
 
-ðŸš¨ ONE CALL AT A TIME. Never parallel browser_control calls.
+ONE CALL AT A TIME. Never parallel browser_control calls.
 
 Workflow:
-1. launch with URL â†’ 2. snapshot/read_page for refs â†’ 3. interact (click/fill/type) â†’ 4. snapshot to verify
+1. launch with URL -> 2. snapshot/read_page for refs -> 3. interact (click/fill/type) -> 4. snapshot to verify
 
 Rules:
 - Default: managed EterX browser, not user's Chrome.
 - Never connect to user's Chrome unless ETERX_ALLOW_USER_CHROME=1.
 - read_page for understanding, snapshot for refs, evaluate for bulk DOM ops.
 
-â”â”â” ACTION ICONS (uiIcon) â”â”â”
+ACTION ICONS (uiIcon)
 Every tool call needs uiIcon from this EXACT list:
 "terminal" | "agent" | "image" | "file_read" | "computer" | "file_create" | "file_edit" | "folder_read" | "folder_create" | "search" | "web_search" | "verification"
 Never use Lucide names. No step numbers in uiActionText.
 
-â”â”â” AVAILABLE TOOLS â”â”â”
+AVAILABLE TOOLS
 ${ toolNames }
 
-â”â”â” ANTI-AMNESIA PROTOCOL (CRITICAL) â”â”â”
+ANTI-AMNESIA PROTOCOL (CRITICAL)
 Your context window is managed. Earlier tool results may have been compressed into a CONVERSATION LEDGER.
 BEFORE calling any tool, mentally check:
 1. Did I already do this? Check [SYSTEM - COMPRESSED HISTORY] at the top of your context.
@@ -2490,7 +2842,7 @@ BEFORE calling any tool, mentally check:
 5. If the ledger says you already searched, do NOT search again.
 VIOLATION: Repeating a ledger-recorded action is a CATASTROPHIC FAILURE.
 
-â”â”â” CONTEXT â”â”â”
+CONTEXT
 Project: ${ context.projectId }
 Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgentMode }${ prefsContext }${ errorContext }${ dynamicContext ? '\n\n' + dynamicContext : '' }`.trim();
   }
@@ -3520,21 +3872,21 @@ EXTERNAL ACTION NOTE CUE
 - Do not create a 1 note : 1 action rhythm. One external note should usually cover 2-4 related action rows; aim for roughly 25-35% of action turns to have notes.
 - Create a new note only for a real phase change: inspect -> edit, edit -> verify, setup -> generate, failure -> recovery, research -> build.
 - The note should sound like a real Codex intermediary update: calm, concrete, first-person, and tied to the exact next action.
-- Use the formula: "I found/saw/need X. Iâ€™m going to do Y." or "X is now in place. Next Iâ€™m checking Y."
+- Use the formula: "I found/saw/need X. I'm going to do Y." or "X is now in place. Next I'm checking Y."
 - Mention what you just saw, what changed, or what you will do next. Do not write a tool title.
 - Keep it realistic and polished. Prefer one sentence; use two short sentences for major phase changes, failed commands, or verification handoffs.
 - Long notes are not needed. Never turn a work note into a full plan.
 - Never start with dangling code/file fragments such as "tsx\` where" or "json\`:". Convert them into complete sentences with the file name.
 - Convert action labels into natural narration:
-  - Reading/checking: "I need to see how this is wired, so Iâ€™m opening the relevant file now."
-  - Editing/fixing: "I found the broken path. Iâ€™m patching it in the smallest place."
-  - Terminal/setup: "The repo is ready for setup, so Iâ€™m running the install step and watching the output."
-  - Verification: "The change is in place. Next Iâ€™m running a focused check."
-  - Recovery: "That route failed in this environment, so Iâ€™m switching to the local fallback."
-  - Error fixing: "Hero.tsx is missing its closing brace. Iâ€™m patching that structure before verifying again."
-- Strong : "I found the actual issue: the first visible note is coming from the Gemini prompt path. Iâ€™m tightening that prompt now."
-- Strong : "The patch is in place. Next Iâ€™m running TypeScript so this doesnâ€™t ship with a hidden runtime issue."
-- Strong : "That command timed out, so Iâ€™m checking whether it left a process behind before moving on."
+  - Reading/checking: "I need to see how this is wired, so I'm opening the relevant file now."
+  - Editing/fixing: "I found the broken path. I'm patching it in the smallest place."
+  - Terminal/setup: "The repo is ready for setup, so I'm running the install step and watching the output."
+  - Verification: "The change is in place. Next I'm running a focused check."
+  - Recovery: "That route failed in this environment, so I'm switching to the local fallback."
+  - Error fixing: "Hero.tsx is missing its closing brace. I'm patching that structure before verifying again."
+- Strong : "I found the actual issue: the first visible note is coming from the Gemini prompt path. I'm tightening that prompt now."
+- Strong : "The patch is in place. Next I'm running TypeScript so this doesn't ship with a hidden runtime issue."
+- Strong : "That command timed out, so I'm checking whether it left a process behind before moving on."
 - Weak style to avoid: "Initializing the Nike 2026 project using the artifacts builder."
 - Weak style to avoid: "Executing multi-step project initialization using PowerShell compatible chaining."
 - Weak style to avoid: "Synthesizing deep context for enterprise autonomous execution."
@@ -3591,10 +3943,10 @@ EXTERNAL ACTION NOTE CUE
       }
 
       recent.forEach((entry, i) => {
-        lines.push(`  ${ older.length + i + 1 }. ${ entry.tool }(${ entry.args }) â†’ ${ entry.result }`);
+        lines.push(`  ${ older.length + i + 1 }. ${ entry.tool }(${ entry.args }) -> ${ entry.result }`);
       });
 
-      return `\nâ”â”â” TOOL RESULTS MEMORY (DO NOT REPEAT THESE CALLS) â”â”â”\n${ lines.join('\n') }\nâ”â”â” END TOOL MEMORY â”â”â”`;
+      return `\nTOOL RESULTS MEMORY (DO NOT REPEAT THESE CALLS)\n${ lines.join('\n') }\nEND TOOL MEMORY`;
     };
 
     /** META-COGNITIVE: Build self-awareness injection for the agent */
@@ -3623,10 +3975,10 @@ EXTERNAL ACTION NOTE CUE
 
       // Cascading failure alert
       if (metaCognition.consecutiveFailures >= 3) {
-        parts.push(`ðŸš¨ CASCADING FAILURES DETECTED (${ metaCognition.consecutiveFailures } in a row). CHANGE STRATEGY IMMEDIATELY.`);
+        parts.push(`CASCADING FAILURES DETECTED (${ metaCognition.consecutiveFailures } in a row). CHANGE STRATEGY IMMEDIATELY.`);
       }
 
-      return parts.length > 0 ? `\nâ”â”â” META-COGNITIVE AWARENESS â”â”â”\n${ parts.join('\n') }\nâ”â”â” END META â”â”â”` : '';
+      return parts.length > 0 ? `\nMETA-COGNITIVE AWARENESS\n${ parts.join('\n') }\nEND META` : '';
     };
 
     while (interactions < maxLoopIterations) {
@@ -3729,6 +4081,7 @@ EXTERNAL ACTION NOTE CUE
         if (sliceStart % 2 === 0) {
           sliceStart += 1; // Ensure slice starts on an odd index (model)
         }
+        sliceStart = getSafeGeminiHistorySliceStart(contents, sliceStart);
 
         if (ledgerSummary) {
           contents = [
@@ -4324,7 +4677,7 @@ EXTERNAL ACTION NOTE CUE
               contents.push({
                 role: 'user',
                 parts: [{
-                  text: '[SYSTEM] Your response expresses uncertainty. Before giving up:\n1. Try using web_search, workspace_read_file, or workspace_search_text to find the answer.\n2. If you genuinely need user input, use ask_user to ask a specific question.\n3. Only express uncertainty in your final answer if you have exhausted all available tools.\nDo NOT guess â€” either find the answer or ask.',
+                  text: '[SYSTEM] Your response expresses uncertainty. Before giving up:\n1. Try using web_search, workspace_read_file, or workspace_search_text to find the answer.\n2. If you genuinely need user input, use ask_user to ask a specific question.\n3. Only express uncertainty in your final answer if you have exhausted all available tools.\nDo NOT guess - either find the answer or ask.',
                 }],
               });
               accumulatedText = '';
@@ -4598,6 +4951,20 @@ EXTERNAL ACTION NOTE CUE
           };
         }
 
+        if (call.name === 'task_decomposer' && taskDecomposerUsed) {
+          return {
+            functionResponse: {
+              name: call.name,
+              response: {
+                output: {
+                  error: 'Task decomposition already exists for this task. Use the current tracker state and execute the next pending step instead of decomposing again.',
+                },
+              },
+              ...(call.id ? { id: call.id } : {})
+            }
+          };
+        }
+
         if (firstBrowserControlIndex >= 0 && callIndex !== firstBrowserControlIndex) {
           return {
             functionResponse: {
@@ -4617,8 +4984,8 @@ EXTERNAL ACTION NOTE CUE
 
         // Get label from compact lookup
         const label = toolLabels[call.name] || { text: call.name, type: 'command', iconCategory: 'computer' };
-        const argKey = label.argKey;
-        let secondary = argKey ? String(args?.[argKey] || args?.path || '').substring(0, 100) : call.name;
+        const traceFields = buildToolTraceFields(call.name, args, label);
+        let secondary = traceFields.secondary || call.name;
 
         // Special: spawn_sub_agent shows agent names + task summaries
         if (call.name === 'spawn_sub_agent' && args?.mode === 'spawn' && args?.tasks) {
@@ -4672,15 +5039,21 @@ EXTERNAL ACTION NOTE CUE
           }
         }
 
+        const actionTraceId = `tool_${Date.now()}_${callIndex}_${call.name}_${Math.random().toString(36).slice(2, 8)}`;
         const evt = {
+          traceId: actionTraceId,
           type: label.type,
           text: displayText,
           icon: args?.uiIcon,
           iconCategory,
           secondary,
-          filename: args?.filename || args?.path || 'system',
-          add: args?.content?.split?.('\n')?.length || 0,
-          remove: 0
+          filename: traceFields.filename || args?.filename || args?.path || 'system',
+          files: traceFields.files,
+          fileCount: traceFields.fileCount,
+          tool: call.name,
+          name: call.name,
+          add: undefined,
+          remove: undefined
         };
         trace.push(evt);
         if (onTrace) onTrace(evt);
@@ -4710,7 +5083,7 @@ EXTERNAL ACTION NOTE CUE
           return {
             functionResponse: {
               name: call.name,
-              response: { output: { error: `HINT: This appears similar to a previous call. The prior result may still be in your context. Consider using the existing result. If you have a specific reason to re-run this (e.g., data changed, different parameters needed), proceed â€” you decide.` } },
+              response: { output: { error: `HINT: This appears similar to a previous call. The prior result may still be in your context. Consider using the existing result. If you have a specific reason to re-run this (e.g., data changed, different parameters needed), proceed - you decide.` } },
               ...(call.id ? { id: call.id } : {})
             }
           };
@@ -4727,7 +5100,7 @@ EXTERNAL ACTION NOTE CUE
               name: call.name,
               response: {
                 output: {
-                  error: 'HINT: You have done significant exploration. Consider whether you have enough information to produce the requested deliverable now. If you need more specific data, continue â€” but if you are looping, produce the output.',
+                  error: 'HINT: You have done significant exploration. Consider whether you have enough information to produce the requested deliverable now. If you need more specific data, continue - but if you are looping, produce the output.',
                 },
               },
               ...(call.id ? { id: call.id } : {})
@@ -4806,9 +5179,6 @@ EXTERNAL ACTION NOTE CUE
 
         // === EXECUTE THE TOOL ===
         callHistory.add(normalizedSig);
-        if (call.name === 'task_decomposer') {
-          taskDecomposerUsed = true;
-        }
         // Cancellation check before executing each tool
         if (isCancelled(context.projectId)) {
           return {
@@ -4837,6 +5207,8 @@ EXTERNAL ACTION NOTE CUE
           }
         }
 
+        const preEditSnapshots = await this.capturePreEditSnapshots(canonicalToolName, effectiveArgs, context);
+
         let toolOutput: any;
         if (plannerToolsDisabled && plannerHiddenTools.has(call.name)) {
           toolOutput = {
@@ -4855,6 +5227,17 @@ EXTERNAL ACTION NOTE CUE
             toolOutput = cachedResult;
             toolOutput._cached = true;
             performanceAnalytics.recordToolCall(canonicalToolName, 0, true);
+            await this.emitWorkspaceToolPreviews({
+              toolName: canonicalToolName,
+              args: effectiveArgs,
+              result: toolOutput,
+              context,
+              trace,
+              onTrace,
+              ownerTraceId: actionTraceId,
+              preEditSnapshots,
+              includeWriteAndLegacyEdit: true,
+            });
           } else {
             const execStart = Date.now();
             const toolExec = createToolExecutionContext(context, onTrace);
@@ -4944,7 +5327,19 @@ EXTERNAL ACTION NOTE CUE
               }
 
               // Auto-verify file writes â€” check the ACTUAL path the tool wrote to
-              if (call.name === 'workspace_write_file' && toolOutput && !toolOutput.error) {
+              await this.emitWorkspaceToolPreviews({
+                toolName: canonicalToolName,
+                args: effectiveArgs,
+                result: toolOutput,
+                context,
+                trace,
+                onTrace,
+                ownerTraceId: actionTraceId,
+                preEditSnapshots,
+                includeWriteAndLegacyEdit: true,
+              });
+
+              if (call.name === 'workspace_write_file' && toolOutput && !toolOutput.error && !toolOutput._workspacePreviewTraceEmitted) {
                 const filename = args?.filename || args?.path || '';
                 // Use the path from tool output if available (it has the resolved absolute path)
                 const actualPath = toolOutput?.path || toolOutput?.filePath || filename;
@@ -5006,6 +5401,8 @@ EXTERNAL ACTION NOTE CUE
                       type: 'file_preview',
                       filename: pathLib.basename(filename),
                       filepath: filename,
+                      ownerTraceId: actionTraceId,
+                      dedupe: false,
                       language: lang,
                       content: content,
                       lineCount,
@@ -5013,13 +5410,13 @@ EXTERNAL ACTION NOTE CUE
                       linesAdded: lineCount,
                       linesRemoved: 0,
                     };
-                    if (onTrace) onTrace(previewEvt);
+                    onTrace?.(previewEvt);
                   }
                 } catch { /* silent */ }
               }
 
               // â•â•â• LIVE FILE PREVIEW (workspace_edit_file): VS Code-style diff â•â•â•
-              if (call.name === 'workspace_edit_file' && toolOutput && !toolOutput.error) {
+              if (call.name === 'workspace_edit_file' && toolOutput && !toolOutput.error && !toolOutput._workspacePreviewTraceEmitted) {
                 try {
                   const editFilename = String(args?.filename || args?.path || '');
                   const ext = pathLib.extname(editFilename).toLowerCase();
@@ -5134,10 +5531,12 @@ EXTERNAL ACTION NOTE CUE
                       }
                       const _added = diffLines.filter(l => l.type === 'added').length;
                       const _removed = diffLines.filter(l => l.type === 'removed').length;
-                      if (onTrace) onTrace({
+                      onTrace?.({
                         type: 'file_preview',
                         filename: pathLib.basename(editFilename),
                         filepath: editFilename,
+                        ownerTraceId: actionTraceId,
+                        dedupe: false,
                         language: lang2,
                         content: newContent.substring(0, 80000),
                         lineCount: _M,
@@ -5281,6 +5680,18 @@ EXTERNAL ACTION NOTE CUE
               }
 
               // Learn from error â€” both knowledge and persistent memory
+              await this.emitWorkspaceToolPreviews({
+                toolName: canonicalToolName,
+                args: effectiveArgs,
+                result: toolOutput,
+                context,
+                trace,
+                onTrace,
+                ownerTraceId: actionTraceId,
+                preEditSnapshots,
+                includeWriteAndLegacyEdit: true,
+              });
+
               if (!longTermMemoryDisabled) {
                 knowledgeEngine.extractFromToolResult(canonicalToolName, effectiveArgs, toolOutput).catch(() => { });
                 agentMemory.recordError(
@@ -5332,7 +5743,7 @@ EXTERNAL ACTION NOTE CUE
               argsKey = `${ args?.mode || 'status' }: ${ args?.agentName || 'all' }`;
             }
           } else if (label.argKey && args?.[label.argKey]) {
-            argsKey = String(args[label.argKey]).substring(0, 90);
+            argsKey = String(traceFields.secondary || '').substring(0, 90);
           } else if (args?.filename || args?.path || args?.command || args?.query) {
             argsKey = String(args.filename || args.path || args.command || args.query).substring(0, 90);
           } else {
@@ -5436,6 +5847,15 @@ EXTERNAL ACTION NOTE CUE
           }
         } catch (err: any) {
           console.warn('[GeminiClient] Cognitive Core post-tool hook failed (non-blocking):', err.message);
+        }
+
+        if (
+          call.name === 'task_decomposer' &&
+          !toolOutput?.error &&
+          Array.isArray(toolOutput?.plan) &&
+          toolOutput.plan.length > 0
+        ) {
+          taskDecomposerUsed = true;
         }
 
         return {

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useMemo } from 'react';
 import { motion } from 'framer-motion';
 
 interface LiveArtifactProps {
@@ -13,15 +13,7 @@ interface LiveArtifactProps {
  * Renders content in a seamless iframe to prevent style leakage.
  */
 export const LiveArtifact: React.FC<LiveArtifactProps> = ({ html = '', css = '', js = '', title = 'Live Component' }) => {
-  const iframeRef = useRef<HTMLIFrameElement>(null);
-
-  useEffect(() => {
-    if (!iframeRef.current) return;
-
-    const doc = iframeRef.current.contentDocument;
-    if (!doc) return;
-
-    const fullContent = `
+  const fullContent = useMemo(() => `
       <!DOCTYPE html>
       <html>
         <head>
@@ -50,12 +42,7 @@ export const LiveArtifact: React.FC<LiveArtifactProps> = ({ html = '', css = '',
           </script>
         </body>
       </html>
-    `;
-
-    doc.open();
-    doc.write(fullContent);
-    doc.close();
-  }, [html, css, js]);
+  `, [html, css, js]);
 
   return (
     <motion.div
@@ -75,10 +62,10 @@ export const LiveArtifact: React.FC<LiveArtifactProps> = ({ html = '', css = '',
       </div>
       <div className="relative w-full min-h-[300px] bg-transparent">
         <iframe
-          ref={iframeRef}
           className="w-full h-full min-h-[300px] border-none"
           title={title}
           sandbox="allow-scripts"
+          srcDoc={fullContent}
         />
       </div>
     </motion.div>

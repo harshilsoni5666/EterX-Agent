@@ -175,3 +175,15 @@ export const taskDecomposerTool: ToolDefinition = {
     }
   }
 };
+
+taskDecomposerTool.description = `Decompose only genuinely broad work into smaller, actionable subtasks using the selected model for AI-powered planning. Default to direct execution; call this only when a tracker will materially improve reliability. Returns a structured execution plan with granular steps, tool assignments, and verification conditions. Never call this more than once per task because the plan is persistent.
+
+Examples:
+- Use only when the task likely needs 4+ ordered steps across multiple files/systems, a long deliverable, deep research, or the user explicitly asks for tasks/a tracker.
+- Do not use for direct questions, tiny edits, one command, one-file reads, simple fixes, greetings, or short follow-ups.
+- Do not use merely because the request says "full", "professional", "best", or "fix" if you can execute directly.
+- "Build me a full website with authentication"
+- "Create a 10-page research report on climate change"
+- "Set up CI/CD pipeline for this project"
+
+Returns: Structured plan with steps, tools, verification conditions, and dependency graph.`;

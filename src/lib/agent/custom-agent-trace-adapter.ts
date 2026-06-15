@@ -1,3 +1,5 @@
+import { buildToolTraceFields, summarizeTraceValue } from './tool-trace';
+
 type CustomToolLogType = 'command' | 'exploration' | 'file_edit' | 'communication' | 'browser';
 
 type CustomToolUi = {
@@ -25,6 +27,7 @@ const formatCustomToolLabel = (toolName: string) => {
     workspace_read_file: 'Reading file',
     workspace_write_file: 'Writing artifact',
     workspace_edit_file: 'Editing file',
+    workspace_apply_patch: 'Patching files',
     workspace_search_text: 'Searching codebase',
     smart_file_analyzer: 'Analyzing files',
     workspace_analyze: 'Analyzing workspace',
@@ -59,12 +62,26 @@ const getCustomToolArg = (args: any, keys: string[]) => {
   if (!args || typeof args !== 'object') return '';
   for (const key of keys) {
     const value = args[key];
-    if (typeof value === 'string' && value.trim()) return value.trim();
+    if (typeof value === 'string' && value.trim()) return summarizeTraceValue(value.trim(), 180);
     if (typeof value === 'number' || typeof value === 'boolean') return String(value);
     if (Array.isArray(value) && value.length > 0) {
-      return value.map(item => typeof item === 'string' ? item : JSON.stringify(item)).join(', ').slice(0, 180);
+      const summary = summarizeTraceValue(value, 180);
+      if (summary) return summary;
+      return value.map((item) => {
+        if (typeof item === 'string') return item;
+        if (item && typeof item === 'object') {
+          const record = item as Record<string, any>;
+          const fileish = record.filename || record.filePath || record.filepath || record.file_path || record.path || record.file;
+          if (fileish) return String(fileish);
+        }
+        try {
+          return JSON.stringify(item);
+        } catch {
+          return String(item);
+        }
+      }).join(', ').slice(0, 180);
     }
-    if (value && typeof value === 'object') return JSON.stringify(value).slice(0, 180);
+    if (value && typeof value === 'object') return summarizeTraceValue(value, 180);
   }
   return '';
 };
@@ -84,6 +101,7 @@ const getCustomToolUi = (toolName: string): CustomToolUi => {
     workspace_symbol_lookup: { text: 'Finding symbol', type: 'exploration', iconCategory: 'search', argKeys: ['symbol', 'name'] },
     workspace_file_outline: { text: 'Outlining file', type: 'exploration', iconCategory: 'file_read', argKeys: ['filename', 'path', 'file'] },
     workspace_str_replace: { text: 'Editing file', type: 'file_edit', iconCategory: 'file_edit', argKeys: ['filename', 'filePath', 'file_path', 'path', 'file'] },
+    workspace_apply_patch: { text: 'Patching files', type: 'file_edit', iconCategory: 'file_edit', argKeys: ['patch', 'content', 'diff'] },
     workspace_find_files: { text: 'Finding files', type: 'exploration', iconCategory: 'search', argKeys: ['glob', 'directory'] },
     workspace_read_file: { text: 'Reading file', type: 'exploration', iconCategory: 'file_read', argKeys: ['filename', 'filePath', 'file_path', 'path'] },
     workspace_read_many_files: { text: 'Reading files', type: 'exploration', iconCategory: 'file_read', argKeys: ['files'] },
@@ -236,6 +254,7 @@ export const createCustomToolActionLog = (
   const toolName = String(event?.toolName || 'custom_tool');
   const args = event?.toolArgs || {};
   const ui = getCustomToolUi(toolName);
+  const traceFields = buildToolTraceFields(toolName, args, { argKey: ui.argKeys[0] });
   const preferredSecondary = getCustomToolArg(args, ui.argKeys);
   const command = getCustomToolArg(args, ['command', 'cmd', 'script']);
   const filePath = getCustomToolArg(args, [
@@ -262,29 +281,28 @@ export const createCustomToolActionLog = (
     'source_path',
   ]);
   const query = getCustomToolArg(args, ['query', 'pattern', 'search', 'goal', 'request']);
-  const secondary = preferredSecondary || command || primaryPath || query;
+  const secondary = traceFields.secondary || preferredSecondary || command || primaryPath || query;
   const type = ui.type === 'ask_user' ? 'exploration' : ui.type;
   const shouldLinkFile = ['file_read', 'file_edit', 'file_create'].includes(ui.iconCategory)
     || /workspace_(?:read|write|edit)_file|docx|pdf|csv|markdown|chart|image/i.test(toolName);
-  const linkedFile = shouldLinkFile ? (filePath || primaryPath) : '';
+  const linkedFile = shouldLinkFile ? (traceFields.filename || filePath || primaryPath) : '';
   const iconCategory = mapCustomUiIcon(args?.uiIcon) || (command ? 'terminal' : ui.iconCategory);
-  const content = typeof args?.content === 'string' ? args.content : '';
-  const add = content ? content.split('\n').length : 0;
-
   return {
     id: `custom_tool_${startedAt}_${toolName}_${randomSuffix()}`,
     type,
     text: cleanActionText(args?.uiActionText, ui.text),
     secondary,
     filename: linkedFile || undefined,
+    files: traceFields.files,
+    fileCount: traceFields.fileCount,
     command: command || undefined,
     icon: args?.uiIcon,
     tool: toolName,
     name: toolName,
     subAgent: agentName,
     iconCategory,
-    add: type === 'file_edit' && add > 0 ? add : undefined,
-    remove: 0,
+    add: undefined,
+    remove: undefined,
     startTime: startedAt,
     endTime: startedAt,
     timestamp: startedAt,
@@ -360,6 +378,8 @@ export const createCustomToolResultLogs = (
       content: result.content,
       language: languageFromFilename(active.filename),
       isEdit: false,
+      ownerTraceId: active.id,
+      dedupe: false,
       startTime: at,
       endTime: at,
       timestamp: at,
@@ -378,6 +398,8 @@ export const createCustomToolResultLogs = (
       linesAdded: active.toolArgs.content.split('\n').length,
       linesRemoved: 0,
       isEdit: false,
+      ownerTraceId: active.id,
+      dedupe: false,
       startTime: at,
       endTime: at,
       timestamp: at,

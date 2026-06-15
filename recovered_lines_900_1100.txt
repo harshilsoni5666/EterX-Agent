@@ -1,0 +1,209 @@
+Created At: 2026-06-14T04:24:18Z
+Completed At: 2026-06-14T04:24:19Z
+File Path: `file:///c:/Harshil%20projects/EterX-Agent/src/lib/agent/gemini.ts`
+Total Lines: 5905
+Total Bytes: 303861
+Showing lines 900 to 1100
+The following code has been modified to include a line number before every line, in the format: <line_number>: <original_line>. Please note that any changes targeting the original code should remove the line number, colon, and leading space.
+900:         size: read?.size,
+901:         linesAdded: created ? lineCount : diff.added,
+902:         linesRemoved: created ? 0 : diff.removed,
+903:         added: created ? lineCount : diff.added,
+904:         removed: created ? 0 : diff.removed,
+905:         diffLines: diff.diffLines,
+906:         isEdit: !created,
+907:         patchResult,
+908:       }));
+909:     }));
+910:   }
+911: 
+912:   private async executeMistralToolCall(
+913:     toolCall: any,
+914:     context: ProjectContext,
+915:     onTrace: ((t: any) => void) | undefined,
+916:     trace: any[],
+917:     callHistory: Set<string>,
+918:     toolCallCounts: Map<string, number>,
+919:     sharedCacheDisabled: boolean
+920:   ): Promise<any> {
+921:     const name = String(toolCall?.function?.name || toolCall?.name || '');
+922:     const args = this.parseMistralToolArguments(toolCall?.function?.arguments ?? toolCall?.arguments);
+923:     const normalizedSig = this.normalizeCallSignature(name, args);
+924:     const labelMap: Record<string, { text: string; type: string; iconCategory: string; argKey?: string }> = {
+925:       system_shell: { text: 'Running command', type: 'command', iconCategory: 'terminal', argKey: 'command' },
+926:       terminal_access: { text: 'Checking terminal access', type: 'exploration', iconCategory: 'terminal', argKey: 'action' },
+927:       workspace_run_command: { text: 'Running project command', type: 'command', iconCategory: 'terminal', argKey: 'command' },
+928:       wait_timer: { text: 'Waiting for check-in', type: 'command', iconCategory: 'terminal', argKey: 'title' },
+929:       background_task: { text: 'Checking background task', type: 'command', iconCategory: 'terminal', argKey: 'taskId' },
+930:       web_search: { text: 'Researching', type: 'exploration', iconCategory: 'web_search', argKey: 'query' },
+931:       web_scraper: { text: 'Reading source', type: 'exploration', iconCategory: 'web_search', argKey: 'url' },
+932:       workspace_semantic_search: { text: 'Searching codebase', type: 'exploration', iconCategory: 'search', argKey: 'query' },
+933:       workspace_symbol_lookup: { text: 'Finding symbol', type: 'exploration', iconCategory: 'search', argKey: 'symbol' },
+934:       workspace_file_outline: { text: 'Outlining file', type: 'exploration', iconCategory: 'file_read', argKey: 'filename' },
+935:       workspace_find_files: { text: 'Finding files', type: 'exploration', iconCategory: 'search', argKey: 'glob' },
+936:       workspace_read_file: { text: 'Reading file', type: 'exploration', iconCategory: 'file_read', argKey: 'filename' },
+937:       workspace_read_many_files: { text: 'Reading files', type: 'exploration', iconCategory: 'file_read', argKey: 'files' },
+938:       workspace_search_text: { text: 'Searching codebase', type: 'exploration', iconCategory: 'search', argKey: 'pattern' },
+939:       workspace_str_replace: { text: 'Editing file', type: 'file_edit', iconCategory: 'file_edit', argKey: 'filename' },
+940:       workspace_write_file: { text: 'Writing artifact', type: 'file_edit', iconCategory: 'file_create', argKey: 'filename' },
+941:       workspace_edit_file: { text: 'Editing file', type: 'file_edit', iconCategory: 'file_edit', argKey: 'filename' },
+942:       workspace_edit_many_files: { text: 'Editing files', type: 'file_edit', iconCategory: 'file_edit', argKey: 'files' },
+943:       workspace_verify_code: { text: 'Verifying code', type: 'command', iconCategory: 'verification', argKey: 'checkType' },
+944:       browser_control: { text: 'Using browser', type: 'browser', iconCategory: 'computer', argKey: 'action' },
+945:       deep_research: { text: 'Deep researching', type: 'exploration', iconCategory: 'web_search', argKey: 'topic' },
+946:       get_skill_guidelines: { text: 'Loading skill', type: 'exploration', iconCategory: 'folder_read', argKey: 'skill_name' },
+947:     };
+948:     const label = labelMap[name] || { text: name || 'Tool call', type: 'command', iconCategory: 'computer' };
+949:     const traceFields = buildToolTraceFields(name, args, label);
+950:     const secondary = traceFields.secondary || name;
+951: 
+952:     if (!name) return { error: 'Mistral returned a tool call without a function name.' };
+953: 
+954:     let iconCategory = label.iconCategory || 'computer';
+955:     if (args?.uiIcon) {
+956:       const lowerUiIcon = String(args.uiIcon).toLowerCase();
+957:       if (['computer', 'agent', 'terminal', 'image', 'file_read', 'file_create', 'file_edit', 'folder_read', 'folder_create', 'search', 'web_search', 'verification'].includes(lowerUiIcon)) {
+958:         iconCategory = lowerUiIcon;
+959:       } else {
+960:         if (['agent', 'bot', 'subagent', 'sub_agent'].includes(lowerUiIcon)) {
+961:           iconCategory = 'agent';
+962:         } else if (['image', 'photo', 'picture', 'visual'].includes(lowerUiIcon)) {
+963:           iconCategory = 'image';
+964:         } else if (['code', 'settings', 'barchart', 'monitor', 'cpu'].includes(lowerUiIcon)) {
+965:           iconCategory = 'computer';
+966:         } else if (['search', 'database'].includes(lowerUiIcon)) {
+967:           iconCategory = 'search';
+968:         } else if (['globe', 'rss', 'compass'].includes(lowerUiIcon)) {
+969:           iconCategory = 'web_search';
+970:         } else if (['filetext', 'file', 'document', 'doc', 'read'].includes(lowerUiIcon)) {
+971:           iconCategory = 'file_read';
+972:         } else if (['edit', 'pen'].includes(lowerUiIcon)) {
+973:           iconCategory = 'file_edit';
+974:         } else if (['fileplus', 'fileadd'].includes(lowerUiIcon)) {
+975:           iconCategory = 'file_create';
+976:         } else if (['folder', 'folderopen'].includes(lowerUiIcon)) {
+977:           iconCategory = 'folder_read';
+978:         } else if (['folderplus', 'folderadd'].includes(lowerUiIcon)) {
+979:           iconCategory = 'folder_create';
+980:         } else if (['check', 'checkcircle', 'shield', 'award'].includes(lowerUiIcon)) {
+981:           iconCategory = 'verification';
+982:         }
+983:       }
+984:     }
+985: 
+986:     const actionTraceId = `tool_${ Date.now() }_${ name }_${ Math.random().toString(36).slice(2, 8) }`;
+987:     const evt = {
+988:       traceId: actionTraceId,
+989:       type: label.type,
+990:       text: args?.uiActionText || label.text,
+991:       icon: args?.uiIcon,
+992:       iconCategory,
+993:       secondary,
+994:       filename: traceFields.filename,
+995:       files: traceFields.files,
+996:       fileCount: traceFields.fileCount,
+997:       tool: name,
+998:       name,
+999:       add: args?.content?.split?.('\n')?.length || 0,
+1000:       remove: 0,
+1001:     };
+1002:     trace.push(evt);
+1003:     onTrace?.(evt);
+1004: 
+1005:     if (this.isSemanticallyDuplicate(normalizedSig, callHistory)) {
+1006:       return {
+1007:         error: 'HINT: This looks similar to a previous call. Consider using the existing result unless you have a reason to re-run.',
+1008:       };
+1009:     }
+1010: 
+1011:     callHistory.add(normalizedSig);
+1012:     toolCallCounts.set(name, (toolCallCounts.get(name) || 0) + 1);
+1013: 
+1014:     if (isCancelled(context.projectId)) {
+1015:       return { error: 'Cancelled by user.' };
+1016:     }
+1017: 
+1018:     const canonicalToolName = normalizeRegistryToolName(name);
+1019:     const tool = globalToolRegistry.getTool(canonicalToolName);
+1020:     if (!tool) return { error: `Tool ${ canonicalToolName } not found in registry.` };
+1021: 
+1022:     let effectiveArgs = normalizeRegistryToolArgs(canonicalToolName, args);
+1023:     const validation = validateRegistryToolArgs(tool, effectiveArgs);
+1024:     if (!validation.success) return { error: validation.error };
+1025:     effectiveArgs = validation.args;
+1026: 
+1027:     const capabilityDecision = enforceToolCapability(canonicalToolName, effectiveArgs, context);
+1028:     if (!capabilityDecision.allowed) {
+1029:       return { error: capabilityDecision.reason || `Tool ${canonicalToolName} is not allowed` };
+1030:     }
+1031: 
+1032:     const preEditSnapshots = await this.capturePreEditSnapshots(canonicalToolName, effectiveArgs, context);
+1033: 
+1034:     const cachedResult = sharedCacheDisabled ? null : intelligentCache.get(canonicalToolName, effectiveArgs);
+1035:     if (cachedResult) {
+1036:       const output = { ...cachedResult, _cached: true };
+1037:       await this.emitWorkspaceToolPreviews({
+1038:         toolName: canonicalToolName,
+1039:         args: effectiveArgs,
+1040:         result: output,
+1041:         context,
+1042:         trace,
+1043:         onTrace,
+1044:         ownerTraceId: actionTraceId,
+1045:         preEditSnapshots,
+1046:         includeWriteAndLegacyEdit: true,
+1047:       });
+1048:       return output;
+1049:     }
+1050: 
+1051:     const startedAt = Date.now();
+1052:     const toolExec = createToolExecutionContext(context, onTrace);
+1053:     try {
+1054:       toolExec.throwIfCancelled();
+1055:       const output = await tool.execute(effectiveArgs, toolExec.context);
+1056:       toolExec.throwIfCancelled();
+1057:       performanceAnalytics.recordToolCall(canonicalToolName, Date.now() - startedAt, true);
+1058:       if (!sharedCacheDisabled) intelligentCache.set(canonicalToolName, effectiveArgs, output);
+1059: 
+1060:       await this.emitWorkspaceToolPreviews({
+1061:         toolName: canonicalToolName,
+1062:         args: effectiveArgs,
+1063:         result: output,
+1064:         context,
+1065:         trace,
+1066:         onTrace,
+1067:         ownerTraceId: actionTraceId,
+1068:         preEditSnapshots,
+1069:         includeWriteAndLegacyEdit: true,
+1070:       });
+1071: 
+1072:       const artifactPaths = this.extractArtifactPathsFromToolOutput(output);
+1073:       if (artifactPaths.length > 0) {
+1074:         const artifactEvt = {
+1075:           type: 'artifact',
+1076:           text: artifactPaths.length === 1 ? 'Generated file' : `Generated ${ artifactPaths.length } files`,
+1077:           data: { tool: canonicalToolName, artifactsGenerated: artifactPaths },
+1078:         };
+1079:         trace.push(artifactEvt);
+1080:         onTrace?.(artifactEvt);
+1081:       }
+1082: 
+1083:       return output;
+1084:     } catch (error: any) {
+1085:       performanceAnalytics.recordToolCall(canonicalToolName, Date.now() - startedAt, false);
+1086:       if (isToolCancellationError(error) || toolExec.signal.aborted) {
+1087:         return { error: 'CANCELLED_BY_USER', cancelled: true };
+1088:       }
+1089:       return {
+1090:         error: error?.message || String(error),
+1091:         _suggestion: `Tool ${ canonicalToolName } failed. Try a different tool or a smaller, more direct call.`,
+1092:       };
+1093:     } finally {
+1094:       toolExec.dispose();
+1095:     }
+1096:   }
+1097: 
+1098:   private async runMistralReActLoop(
+1099:     context: ProjectContext,
+1100:     message: string,
+The above content does NOT show the entire file contents. If you need to view any lines of the file which were not shown to complete your task, call this tool again to view those lines.

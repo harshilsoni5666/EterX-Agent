@@ -5,7 +5,7 @@ import dynamic from 'next/dynamic';
 import { Sidebar } from '../components/layout/sidebar';
 import { ChatInput } from '../components/layout/chat-input';
 import { ChatFeed } from '../components/chat/chat-feed';
-import { AlertTriangle, CheckCircle2, ChevronDown, Clock3, Code2, GraduationCap, List, MessageSquare, Pencil, PenTool, SendHorizontal, SquarePen, Search, X, ArrowLeft, Trash, ListTodo, ChevronRight, Monitor, GitFork, Terminal, GitBranch, GitCommit, PlusSquare, Check, FileCode, FileText } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, ChevronDown, Clock3, Code2, GraduationCap, List, MessageSquare, Pencil, PenTool, SendHorizontal, SquarePen, Search, X, ArrowLeft, Trash, ListTodo, ChevronRight, Monitor, GitFork, Terminal, GitBranch, GitCommit, PlusSquare, Check, FileCode, FileText, MoreHorizontal, Sparkles } from 'lucide-react';
 import { Tooltip } from '../components/ui/tooltip';
 import { motion, AnimatePresence } from 'framer-motion';
 import { InteractiveGrid } from '../components/ui/interactive-grid';
@@ -119,6 +119,156 @@ const getFileIcon = (filepath: string) => {
     return FileCode;
   }
   return FileText;
+};
+
+type WorkMenuSourceItem = {
+  id: string;
+  name: string;
+  path: string;
+  isPinned?: boolean;
+  status?: 'MOD' | 'ADD';
+  additions?: number;
+  deletions?: number;
+};
+
+const WorkMenuSectionButton = ({
+  title,
+  meta,
+  open,
+  onClick,
+  onMouseEnter,
+}: {
+  title: string;
+  meta?: string | number;
+  open: boolean;
+  onClick: (event: React.MouseEvent<HTMLButtonElement>) => void;
+  onMouseEnter?: () => void;
+}) => (
+  <button
+    type="button"
+    aria-expanded={open}
+    onMouseEnter={onMouseEnter}
+    onClick={onClick}
+    className="eterx-work-menu-section-button group"
+  >
+    <span className="min-w-0 truncate">{title}</span>
+    <span className="flex shrink-0 items-center gap-2">
+      {meta !== undefined && meta !== '' && (
+        <span className="eterx-work-menu-section-badge">{meta}</span>
+      )}
+      <ChevronDown className={`h-3.5 w-3.5 text-white/34 transition duration-150 group-hover:text-white/64 ${open ? '' : '-rotate-90'}`} />
+    </span>
+  </button>
+);
+
+const WorkMenuEmptyState = ({ label, detail }: { label: string; detail?: string }) => (
+  <div className="eterx-work-menu-empty">
+    <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-white/14" />
+    <span className="min-w-0 flex-1 truncate">{label}</span>
+    {detail && <span className="hidden shrink-0 text-white/28 sm:inline">{detail}</span>}
+  </div>
+);
+
+const WorkMenuStatusIndicator = ({ status }: { status?: string }) => {
+  switch (status) {
+    case 'working':
+    case 'spawning':
+      return <span className="eterx-agent-working-ring" aria-label="Working" />;
+    case 'paused':
+      return (
+        <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center text-amber-400" aria-label="Paused">
+          <svg viewBox="0 0 10 10" fill="currentColor" className="h-2.5 w-2.5">
+            <rect x="1" y="1" width="3" height="8" rx="0.5" />
+            <rect x="6" y="1" width="3" height="8" rx="0.5" />
+          </svg>
+        </span>
+      );
+    case 'completed':
+      return <span className="h-2 w-2 shrink-0 rounded-full bg-emerald-400/80" aria-label="Completed" />;
+    case 'error':
+      return <span className="h-2 w-2 shrink-0 rounded-full bg-red-400/80" aria-label="Error" />;
+    case 'closed':
+      return <span className="h-2 w-2 shrink-0 rounded-full bg-white/15" aria-label="Closed" />;
+    default:
+      return <span className="h-2 w-2 shrink-0 rounded-full bg-white/20" aria-label="Idle" />;
+  }
+};
+
+const SUB_AGENT_ICON_NAMES = new Set([
+  'einstein', 'heisenberg', 'sam', 'dario', 'elon',
+  'tesla', 'newton', 'turing', 'ada', 'curie',
+  'feynman', 'darwin', 'hawking', 'galileo', 'davinci',
+  'aristotle', 'oppenheimer', 'gates', 'jobs', 'pascal'
+]);
+
+const getAgentDisplayName = (name?: string) => String(name || 'Agent').trim() || 'Agent';
+
+const getAgentInitials = (name?: string) => {
+  const safeName = getAgentDisplayName(name);
+  const parts = safeName.split(/[\s_-]+/).filter(Boolean);
+  if (parts.length > 1) {
+    return `${parts[0][0] || ''}${parts[1][0] || ''}`.toUpperCase();
+  }
+  return safeName.slice(0, 2).toUpperCase();
+};
+
+const getSubAgentStatusTone = (status?: string) => {
+  switch (status) {
+    case 'working':
+    case 'spawning':
+      return 'emerald';
+    case 'paused':
+      return 'amber';
+    case 'completed':
+      return 'blue';
+    case 'error':
+      return 'red';
+    case 'closed':
+      return 'muted';
+    default:
+      return 'neutral';
+  }
+};
+
+const SubAgentAvatar = ({
+  name,
+  status,
+  size = 'sm',
+}: {
+  name?: string;
+  status?: string;
+  size?: 'xs' | 'sm' | 'md';
+}) => {
+  const displayName = getAgentDisplayName(name);
+  const lowerName = displayName.toLowerCase().trim();
+  const hasImage = SUB_AGENT_ICON_NAMES.has(lowerName);
+  const tone = getSubAgentStatusTone(status);
+  const sizeClass = size === 'md' ? 'h-7 w-7' : size === 'xs' ? 'h-[22px] w-[22px]' : 'h-6 w-6';
+  const textClass = size === 'md' ? 'text-[10px]' : 'text-[9px]';
+  const dotClass = tone === 'emerald'
+    ? 'bg-emerald-400 shadow-[0_0_0_2px_rgba(15,15,15,0.95),0_0_10px_rgba(52,211,153,0.45)]'
+    : tone === 'amber'
+      ? 'bg-amber-400 shadow-[0_0_0_2px_rgba(15,15,15,0.95),0_0_10px_rgba(251,191,36,0.38)]'
+      : tone === 'blue'
+        ? 'bg-sky-400 shadow-[0_0_0_2px_rgba(15,15,15,0.95)]'
+        : tone === 'red'
+          ? 'bg-red-400 shadow-[0_0_0_2px_rgba(15,15,15,0.95)]'
+          : tone === 'muted'
+            ? 'bg-white/18 shadow-[0_0_0_2px_rgba(15,15,15,0.95)]'
+            : 'bg-white/32 shadow-[0_0_0_2px_rgba(15,15,15,0.95)]';
+
+  return (
+    <span className={`relative flex ${sizeClass} shrink-0 items-center justify-center overflow-hidden rounded-full border border-white/[0.13] bg-[radial-gradient(circle_at_30%_20%,rgba(255,255,255,0.18),rgba(255,255,255,0.04)_42%,rgba(0,0,0,0.18))] shadow-[inset_0_1px_0_rgba(255,255,255,0.18)]`}>
+      {hasImage ? (
+        <img src={`/icons/sub-agents/${lowerName}.png`} alt={displayName} className="h-full w-full select-none object-cover" />
+      ) : (
+        <span className={`${textClass} font-bold leading-none text-white/72`}>
+          {getAgentInitials(displayName)}
+        </span>
+      )}
+      <span className={`absolute bottom-0 right-0 h-1.5 w-1.5 rounded-full ${dotClass}`} />
+    </span>
+  );
 };
 
 const TaskStatusGlyphMini = ({ status, active }: { status?: string; active?: boolean }) => {
@@ -1879,6 +2029,29 @@ function DeepWorkUI() {
     }
   };
 
+  const mergeTaskPlanLog = (logs: any[], trace: any) => {
+    let planIdx = -1;
+    for (let i = logs.length - 1; i >= 0; i--) {
+      if (logs[i]?.type === 'user_action') break;
+      if (logs[i]?.type === 'task_plan') {
+        planIdx = i;
+        break;
+      }
+    }
+
+    if (planIdx >= 0) {
+      logs[planIdx] = {
+        ...logs[planIdx],
+        ...trace,
+        startTime: logs[planIdx].startTime || trace.startTime,
+        endTime: trace.endTime,
+        timestamp: trace.timestamp,
+      };
+    } else {
+      logs.push(trace);
+    }
+  };
+
   /**
    * Process raw server trace events into the format expected by the UI.
    * Handles merging thought_stream, answer, and other events.
@@ -1888,9 +2061,17 @@ function DeepWorkUI() {
     // Only dedup within current turn (after last user_action in existing logs)
     const lastUserIdx = existingLogs.reduceRight((found, l, i) => found === -1 && l.type === 'user_action' ? i : found, -1);
     const dedupScope = lastUserIdx >= 0 ? existingLogs.slice(lastUserIdx) : existingLogs;
+    const seenTraceIdx = new Set(
+      dedupScope
+        .map((log: any) => log?._traceIdx)
+        .filter((idx: any) => idx !== undefined && idx !== null)
+    );
     for (const trace of traces) {
       // Deduplicate by _traceIdx only within current turn
-      if (trace._traceIdx !== undefined && dedupScope.some(l => l._traceIdx === trace._traceIdx)) continue;
+      if (trace._traceIdx !== undefined && trace._traceIdx !== null) {
+        if (seenTraceIdx.has(trace._traceIdx)) continue;
+        seenTraceIdx.add(trace._traceIdx);
+      }
 
       let processedLog = withTraceTiming(trace);
       const traceAt = processedLog.endTime;
@@ -2027,6 +2208,8 @@ function DeepWorkUI() {
         } else {
           logs.push(nextAskLog);
         }
+      } else if (trace.type === 'task_plan') {
+        mergeTaskPlanLog(logs, processedLog);
       } else if (trace.type === 'answer' && !trace.subAgent) {
         let answerIdx = -1;
         for (let i = logs.length - 1; i >= 0; i--) {
@@ -2039,12 +2222,31 @@ function DeepWorkUI() {
           logs.push(processedLog);
         }
       } else if (trace.type === 'file_preview') {
-        // Replace existing preview for same file (post-edit update)
-        const existingIdx = logs.findLastIndex((l: any) => l.type === 'file_preview' && l.filepath === trace.filepath);
-        if (existingIdx >= 0) {
-          logs[existingIdx] = { ...processedLog, startTime: logs[existingIdx].startTime || processedLog.startTime, endTime: traceAt };
+        const stablePreviewIdx = logs.findLastIndex((l: any) =>
+          l.type === 'file_preview' && (
+            (trace._traceIdx !== undefined && trace._traceIdx !== null && l._traceIdx === trace._traceIdx) ||
+            (trace.traceId && l.traceId === trace.traceId) ||
+            (trace.id && l.id === trace.id)
+          )
+        );
+        if (stablePreviewIdx >= 0) {
+          logs[stablePreviewIdx] = { ...processedLog, startTime: logs[stablePreviewIdx].startTime || processedLog.startTime, endTime: traceAt };
         } else {
-          logs.push(processedLog);
+          const tracePreviewPath = String(trace.filepath || trace.filename || '');
+          const existingIdx = trace.ownerTraceId
+            ? logs.findLastIndex((l: any) =>
+              l.type === 'file_preview' &&
+              l.ownerTraceId === trace.ownerTraceId &&
+              (!tracePreviewPath || String(l.filepath || l.filename || '') === tracePreviewPath)
+            )
+            : trace.dedupe !== false
+              ? logs.findLastIndex((l: any) => l.type === 'file_preview' && l.filepath === trace.filepath && l.dedupe !== false)
+              : -1;
+          if (existingIdx >= 0) {
+            logs[existingIdx] = { ...processedLog, startTime: logs[existingIdx].startTime || processedLog.startTime, endTime: traceAt };
+          } else {
+            logs.push(processedLog);
+          }
         }
       } else if (trace.type === 'console_output') {
         const mergeIdx = findMergeableConsoleOutputIndex(logs, trace);
@@ -2234,9 +2436,17 @@ function DeepWorkUI() {
             // Find start of current turn (after last user_action) for dedup scoping
             const lastUserIdx = logs.reduceRight((found, l, i) => found === -1 && l.type === 'user_action' ? i : found, -1);
             const currentTurnLogs = lastUserIdx >= 0 ? logs.slice(lastUserIdx) : logs;
+            const seenTraceIdx = new Set(
+              currentTurnLogs
+                .map((log: any) => log?._traceIdx)
+                .filter((idx: any) => idx !== undefined && idx !== null)
+            );
             for (const trace of data.traces) {
               // DEDUP: only skip if _traceIdx already exists in the CURRENT TURN (not old questions)
-              if (trace._traceIdx !== undefined && currentTurnLogs.some((l: any) => l._traceIdx === trace._traceIdx)) continue;
+              if (trace._traceIdx !== undefined && trace._traceIdx !== null) {
+                if (seenTraceIdx.has(trace._traceIdx)) continue;
+                seenTraceIdx.add(trace._traceIdx);
+              }
               const timedTrace = withTraceTiming(trace);
               const traceAt = timedTrace.endTime;
 
@@ -2361,6 +2571,8 @@ function DeepWorkUI() {
                 } else {
                   logs.push(nextAskLog);
                 }
+              } else if (trace.type === 'task_plan') {
+                mergeTaskPlanLog(logs, timedTrace);
               } else if (trace.type === 'answer' && !trace.subAgent) {
                 let answerIdx = -1;
                 for (let i = logs.length - 1; i >= 0; i--) {
@@ -2373,12 +2585,31 @@ function DeepWorkUI() {
                   logs.push(timedTrace);
                 }
               } else if (trace.type === 'file_preview') {
-                // Dedup by filepath: replace existing preview for same file with latest post-edit version
-                const existingIdx = logs.findLastIndex((l: any) => l.type === 'file_preview' && l.filepath === trace.filepath);
-                if (existingIdx >= 0) {
-                  logs[existingIdx] = { ...timedTrace, startTime: logs[existingIdx].startTime || timedTrace.startTime, endTime: traceAt };
+                const stablePreviewIdx = logs.findLastIndex((l: any) =>
+                  l.type === 'file_preview' && (
+                    (trace._traceIdx !== undefined && trace._traceIdx !== null && l._traceIdx === trace._traceIdx) ||
+                    (trace.traceId && l.traceId === trace.traceId) ||
+                    (trace.id && l.id === trace.id)
+                  )
+                );
+                if (stablePreviewIdx >= 0) {
+                  logs[stablePreviewIdx] = { ...timedTrace, startTime: logs[stablePreviewIdx].startTime || timedTrace.startTime, endTime: traceAt };
                 } else {
-                  logs.push(timedTrace);
+                  const tracePreviewPath = String(trace.filepath || trace.filename || '');
+                  const existingIdx = trace.ownerTraceId
+                    ? logs.findLastIndex((l: any) =>
+                      l.type === 'file_preview' &&
+                      l.ownerTraceId === trace.ownerTraceId &&
+                      (!tracePreviewPath || String(l.filepath || l.filename || '') === tracePreviewPath)
+                    )
+                    : trace.dedupe !== false
+                      ? logs.findLastIndex((l: any) => l.type === 'file_preview' && l.filepath === trace.filepath && l.dedupe !== false)
+                      : -1;
+                  if (existingIdx >= 0) {
+                    logs[existingIdx] = { ...timedTrace, startTime: logs[existingIdx].startTime || timedTrace.startTime, endTime: traceAt };
+                  } else {
+                    logs.push(timedTrace);
+                  }
                 }
               } else if (trace.type === 'console_output') {
                 // Always push new console output — each shell execution is a unique event
@@ -3055,7 +3286,7 @@ function DeepWorkUI() {
   const handleOpenAgentTeam = useCallback((agentName?: string) => {
     if (agentName) {
       // Switch to that agent's tab in the header
-      setActiveSubAgentTab(agentName);
+      setActiveSubAgentTab(agentName === 'Main' ? null : agentName);
     }
     setAgentTeamOpen(true);
   }, []);
@@ -3603,58 +3834,80 @@ function DeepWorkUI() {
   ];
   // No longer use full-screen initializing state — always show ChatFeed immediately
   const isInitializingChat = false;
-  const displayTraceLogs = useMemo(() => [
-    ...(liveState !== 'idle'
+  const displayTraceLogs = useMemo(() => {
+    const baseLogs = liveState !== 'idle'
       ? traceLogs.filter(l => l.type !== 'thought_stream')
-      : traceLogs),
-    ...getLiveTraceLogs()
-  ], [liveState, traceLogs, getLiveTraceLogs]);
+      : traceLogs;
 
-  // Per-sub-agent trace logs — filters the main traceLogs for the selected sub-agent tab
-  const subAgentDisplayLogs = useMemo(() => {
-    if (!activeSubAgentTab) return [];
-    return traceLogs.filter(log => {
-      if (!log) return false;
-      const agentName = log.agentName || log.subAgent;
-      return agentName === activeSubAgentTab;
-    });
-  }, [traceLogs, activeSubAgentTab]);
-
-  // Which logs to show in ChatFeed — main or sub-agent
-  const effectiveDisplayLogs = activeSubAgentTab ? subAgentDisplayLogs : displayTraceLogs;
-  const effectiveIsThinking = activeSubAgentTab
-    ? currentSubAgents.some(a => a.name === activeSubAgentTab && (a.status === 'working' || a.status === 'spawning'))
-    : isThinking;
-  const currentTaskTracker = useMemo<TaskTrackerState | null>(() => {
-    for (let i = traceLogs.length - 1; i >= 0; i--) {
-      const log = traceLogs[i];
-      if (log?.type === 'task_plan') {
-        return {
-          goal: log.goal,
-          phase: log.phase,
-          status: log.status,
-          complexity: log.complexity,
-          estimatedMinutes: log.estimatedMinutes,
-          completedSteps: log.completedSteps,
-          totalSteps: log.totalSteps,
-          activeStepName: log.activeStepName,
-          steps: Array.isArray(log.steps) ? log.steps : [],
-        };
+    // Filter out sub-agent details when we are in the main view
+    const filteredLogs = baseLogs.filter(l => {
+      if (!l) return false;
+      const isSubAgentLog = l.subAgent && l.subAgent !== 'Main';
+      if (isSubAgentLog) {
+        // Keep ONLY sub_agent_spawn in the main timeline
+        return l.type === 'sub_agent_spawn';
       }
-      if (log?.type === 'user_action') break;
-    }
-    return null;
-  }, [traceLogs]);
+      return true;
+    });
+
+    return [...filteredLogs, ...getLiveTraceLogs()];
+  }, [liveState, traceLogs, getLiveTraceLogs]);
+
   const currentSubAgents = useMemo(() => {
     const agentMap = new Map<string, any>();
+    const getTraceEventTime = (log: any) => {
+      const at = Number(log?.startTime || log?.timestamp || log?.endTime || 0);
+      return Number.isFinite(at) && at > 0 ? at : 0;
+    };
+    const firstTraceAt = traceLogs.map(getTraceEventTime).find(Boolean) || Date.now();
+
+    // Add Main agent if running or if we have trace logs for it
+    if (isThinking) {
+      let mainStatus = 'working';
+      let mainStartedAt = 0;
+      for (const log of traceLogs) {
+        if (!log) continue;
+        const name = log.agentName || log.subAgent;
+        if (name === 'Main' && !mainStartedAt) mainStartedAt = getTraceEventTime(log);
+        if (name !== 'Main') continue;
+        if (log.type === 'sub_agent_pause') {
+          mainStatus = 'paused';
+        } else if (log.type === 'sub_agent_resume') {
+          mainStatus = 'working';
+        } else if (log.type === 'sub_agent_close') {
+          mainStatus = 'closed';
+        }
+      }
+      agentMap.set('Main', {
+        name: 'Main',
+        status: mainStatus,
+        task: 'Main orchestrator',
+        stepCount: 0,
+        durationMs: 0,
+        startedAt: mainStartedAt || firstTraceAt,
+      });
+    }
+
     for (const log of traceLogs) {
       if (!log) continue;
       const name = log.agentName || log.subAgent;
       if (!name) continue;
+
+      if (name === 'Main') {
+        const m = agentMap.get('Main');
+        if (m) {
+          if (log.type === 'sub_agent_pause') m.status = 'paused';
+          else if (log.type === 'sub_agent_resume') m.status = 'working';
+          else if (log.type === 'sub_agent_close') m.status = 'closed';
+        }
+        continue;
+      }
+
       if (log.type === 'sub_agent_spawn') {
+        const existing = agentMap.get(name);
         agentMap.set(name, {
-          name, status: 'spawning', task: log.secondary || log.text || '',
-          stepCount: 0, durationMs: 0, startedAt: Date.now(),
+          name, status: 'working', task: log.task || log.secondary || log.text || '',
+          stepCount: 0, durationMs: 0, startedAt: existing?.startedAt || getTraceEventTime(log) || firstTraceAt,
         });
       } else if (log.type === 'sub_agent_action') {
         const a = agentMap.get(name);
@@ -3677,6 +3930,82 @@ function DeepWorkUI() {
       }
     }
     return Array.from(agentMap.values());
+  }, [traceLogs, isThinking]);
+
+  const realSubAgents = useMemo(
+    () => currentSubAgents.filter((agent: any) => agent?.name && agent.name !== 'Main'),
+    [currentSubAgents]
+  );
+
+  const headerSubAgentTabs = useMemo(() => {
+    const maxVisibleTabs = activeSubAgentTab ? 3 : 4;
+    if (!activeSubAgentTab) return realSubAgents.slice(0, maxVisibleTabs);
+
+    const selected = realSubAgents.find((agent: any) => agent.name === activeSubAgentTab);
+    const remaining = realSubAgents.filter((agent: any) => agent.name !== activeSubAgentTab);
+    return selected ? [selected, ...remaining].slice(0, maxVisibleTabs) : remaining.slice(0, maxVisibleTabs);
+  }, [activeSubAgentTab, realSubAgents]);
+
+  const hiddenHeaderSubAgentCount = Math.max(0, realSubAgents.length - headerSubAgentTabs.length);
+
+  useEffect(() => {
+    if (!activeSubAgentTab) return;
+    if (!realSubAgents.some((agent: any) => agent.name === activeSubAgentTab)) {
+      setActiveSubAgentTab(null);
+    }
+  }, [activeSubAgentTab, realSubAgents]);
+
+  // Per-sub-agent trace logs — filters the main traceLogs for the selected sub-agent tab
+  const subAgentDisplayLogs = useMemo(() => {
+    if (!activeSubAgentTab) return [];
+    const filtered = traceLogs.filter(log => {
+      if (!log) return false;
+      const agentName = log.agentName || log.subAgent;
+      return agentName === activeSubAgentTab;
+    });
+
+    // Prepend a synthetic user_action log with the sub-agent's full task brief
+    const agentInfo = currentSubAgents.find(a => a.name === activeSubAgentTab);
+    if (agentInfo && agentInfo.task) {
+      return [
+        {
+          type: 'user_action',
+          text: agentInfo.task,
+          timestamp: agentInfo.startedAt || Date.now(),
+          agentName: activeSubAgentTab,
+          subAgent: activeSubAgentTab
+        },
+        ...filtered
+      ];
+    }
+    return filtered;
+  }, [traceLogs, activeSubAgentTab, currentSubAgents]);
+
+  // Which logs to show in ChatFeed — main or sub-agent
+  const effectiveDisplayLogs = activeSubAgentTab ? subAgentDisplayLogs : displayTraceLogs;
+  // Compute effective thinking state
+  const effectiveIsThinking = activeSubAgentTab
+    ? currentSubAgents.some(a => a.name === activeSubAgentTab && a.status === 'working')
+    : isThinking && (!currentSubAgents.some(a => a.name === 'Main' && a.status === 'paused'));
+  const currentTaskTracker = useMemo<TaskTrackerState | null>(() => {
+    for (let i = traceLogs.length - 1; i >= 0; i--) {
+      const log = traceLogs[i];
+      if (log?.type === 'task_plan') {
+        return {
+          goal: log.goal,
+          phase: log.phase,
+          status: log.status,
+          complexity: log.complexity,
+          estimatedMinutes: log.estimatedMinutes,
+          completedSteps: log.completedSteps,
+          totalSteps: log.totalSteps,
+          activeStepName: log.activeStepName,
+          steps: Array.isArray(log.steps) ? log.steps : [],
+        };
+      }
+      if (log?.type === 'user_action') break;
+    }
+    return null;
   }, [traceLogs]);
 
   const lastTaskTracker = useMemo<TaskTrackerState | null>(() => {
@@ -3811,6 +4140,40 @@ function DeepWorkUI() {
       files: filesList
     };
   }, [traceLogs]);
+
+  const workMenuSources = useMemo<WorkMenuSourceItem[]>(() => {
+    const itemsList: WorkMenuSourceItem[] = [];
+
+    for (const item of pinnedItems || []) {
+      itemsList.push({
+        id: item.id,
+        name: item.name,
+        path: item.path,
+        isPinned: true,
+      });
+    }
+
+    for (const file of chatChangeStats.files || []) {
+      const name = getBasename(file.path);
+      const existing = itemsList.find(item => item.path === file.path || item.name === name);
+      if (existing) {
+        existing.status = file.status;
+        existing.additions = file.additions;
+        existing.deletions = file.deletions;
+      } else {
+        itemsList.push({
+          id: `chat-${file.path}`,
+          name,
+          path: file.path,
+          status: file.status,
+          additions: file.additions,
+          deletions: file.deletions,
+        });
+      }
+    }
+
+    return itemsList;
+  }, [pinnedItems, chatChangeStats.files]);
 
   const fetchGitInfo = useCallback(async () => {
     // Completely disconnected from executing real git command lines on host.
@@ -4161,69 +4524,65 @@ function DeepWorkUI() {
             </div>
 
             {/* Sub-Agent Tabs — shown in header when agents are active */}
-            {currentSubAgents.length > 0 && activeView === 'chat' && activeChatId && (
-              <div className="flex items-center gap-0.5 overflow-x-auto hide-scrollbar pointer-events-auto [-webkit-app-region:no-drag] px-1">
+            {realSubAgents.length > 0 && activeView === 'chat' && activeChatId && (
+              <div className="eterx-agent-dock pointer-events-auto [-webkit-app-region:no-drag]" role="tablist" aria-label="Agent workspaces">
                 {/* Main agent tab */}
                 <button
                   type="button"
                   onClick={() => setActiveSubAgentTab(null)}
-                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11.5px] font-medium transition-all shrink-0 cursor-pointer select-none
+                  role="tab"
+                  aria-selected={!activeSubAgentTab}
+                  className={`eterx-agent-tab eterx-agent-tab-main flex items-center gap-2
                     ${!activeSubAgentTab
-                      ? 'bg-white/[0.08] text-white/90 shadow-sm'
-                      : 'text-white/45 hover:bg-white/[0.04] hover:text-white/70'
+                      ? 'eterx-agent-tab-active'
+                      : 'eterx-agent-tab-idle'
                     }`}
                 >
-                  <span className="flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-blue-500 to-indigo-600">
-                    <svg className="w-2.5 h-2.5 text-white" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1a7 7 0 100 14A7 7 0 008 1zm0 2.5a2 2 0 110 4 2 2 0 010-4zM4.5 11.5c0-1.5 1.5-2.5 3.5-2.5s3.5 1 3.5 2.5" /></svg>
+                  <span className="eterx-main-agent-glyph">
+                    <Sparkles className="h-3.5 w-3.5" strokeWidth={2.1} />
                   </span>
-                  <span>Main</span>
+                  <span className="eterx-agent-tab-label">Main</span>
                 </button>
                 {/* Sub-agent tabs */}
-                {currentSubAgents.map((agent: any) => {
+                {headerSubAgentTabs.map((agent: any) => {
                   const isActive = activeSubAgentTab === agent.name;
                   const isClosed = agent.status === 'closed';
                   const isWorking = agent.status === 'working' || agent.status === 'spawning';
-                  const lowerName = String(agent.name || '').toLowerCase().trim();
-                  const SUB_AGENT_TAB_ICONS = [
-                    'einstein', 'heisenberg', 'sam', 'dario', 'elon',
-                    'tesla', 'newton', 'turing', 'ada', 'curie',
-                    'feynman', 'darwin', 'hawking', 'galileo', 'davinci',
-                    'aristotle', 'oppenheimer', 'gates', 'jobs', 'pascal'
-                  ];
-                  const hasImage = SUB_AGENT_TAB_ICONS.includes(lowerName);
                   return (
                     <button
                       key={agent.name}
                       type="button"
                       onClick={() => setActiveSubAgentTab(agent.name)}
-                      className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11.5px] font-medium transition-all shrink-0 cursor-pointer select-none
+                      role="tab"
+                      aria-selected={isActive}
+                      title={agent.task || agent.currentAction || agent.name}
+                      className={`eterx-agent-tab min-w-0
                         ${isActive
-                          ? 'bg-white/[0.08] text-white/90 shadow-sm'
+                          ? 'eterx-agent-tab-active'
                           : isClosed
-                            ? 'text-white/20 hover:bg-white/[0.02]'
-                            : 'text-white/45 hover:bg-white/[0.04] hover:text-white/70'
+                            ? 'eterx-agent-tab-closed'
+                            : 'eterx-agent-tab-idle'
                         }`}
                     >
-                      {hasImage ? (
-                        <span className="flex h-[18px] w-[18px] shrink-0 items-center justify-center overflow-hidden rounded-full border border-white/[0.06]">
-                          <img src={`/icons/sub-agents/${lowerName}.png`} alt={agent.name} className="w-full h-full object-cover select-none" />
-                        </span>
-                      ) : (
-                        <span className="flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-full border border-white/[0.06] bg-white/[0.04] text-[8px] font-bold text-white/50">
-                          {String(agent.name || 'A').charAt(0).toUpperCase()}
-                        </span>
-                      )}
-                      <span className={isClosed ? 'line-through' : ''}>{agent.name}</span>
+                      <SubAgentAvatar name={agent.name} status={agent.status} size="xs" />
+                      <span className={`eterx-agent-tab-label min-w-0 truncate ${isClosed ? 'line-through' : ''}`}>{agent.name}</span>
                       {isWorking && (
-                        <svg className="w-2.5 h-2.5 shrink-0 animate-spin text-emerald-400" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="2" strokeDasharray="28" strokeDashoffset="8" strokeLinecap="round" /></svg>
+                        <span className="eterx-agent-working-ring" aria-label="Working" />
                       )}
                     </button>
                   );
                 })}
-                {/* + button placeholder */}
-                <div className="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-lg text-white/20 hover:text-white/40 hover:bg-white/[0.03] transition-colors cursor-pointer">
-                  <svg className="w-3 h-3" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="8" y1="3" x2="8" y2="13" /><line x1="3" y1="8" x2="13" y2="8" /></svg>
-                </div>
+                {hiddenHeaderSubAgentCount > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setAgentTeamOpen(true)}
+                    className="eterx-agent-tab eterx-agent-tab-overflow"
+                    title={`${hiddenHeaderSubAgentCount} more agents`}
+                  >
+                    <MoreHorizontal className="h-4 w-4" strokeWidth={2.1} />
+                    <span className="text-[11px] font-semibold">+{hiddenHeaderSubAgentCount}</span>
+                  </button>
+                )}
               </div>
             )}
 
@@ -4251,22 +4610,34 @@ function DeepWorkUI() {
                         exit={{ opacity: 0, y: -5, scale: 0.98 }}
                         transition={{ duration: 0.15, ease: "easeOut" }}
                         onMouseLeave={() => setActiveSubmenu(null)}
-                        className="absolute right-0 top-[calc(100%+8px)] w-[280px] z-50 bg-[#18181B] border border-white/[0.08] rounded-xl shadow-[0_12px_40px_rgba(0,0,0,0.6)] p-2 flex flex-col gap-0.5 text-[13px] text-white/70"
+                        className="eterx-work-menu absolute right-0 top-[calc(100%+10px)] z-[70]"
                         onMouseDown={(e) => e.stopPropagation()}
                       >
-                        {/* Todo Header */}
-                        <button
-                          type="button"
+                        <div className="eterx-work-menu-header">
+                          <div className="min-w-0">
+                            <div className="eterx-work-menu-eyebrow">Work control</div>
+                            <div className="eterx-work-menu-title">
+                              <span className="truncate">{currentEnv}</span>
+                              <span className="text-white/26">/</span>
+                              <span className="truncate font-mono">{currentBranch}</span>
+                            </div>
+                          </div>
+                          <span className={`eterx-work-menu-state ${isThinking ? 'eterx-work-menu-state-live' : ''}`}>
+                            {isThinking ? 'Active' : 'Ready'}
+                          </span>
+                        </div>
+
+                        <div className="eterx-work-menu-content">
+                        <WorkMenuSectionButton
+                          title="Todo"
+                          meta={todoCounterText || (isThinking ? 'Live' : undefined)}
+                          open={todoSectionOpen}
                           onMouseEnter={() => setActiveSubmenu(null)}
                           onClick={(e) => {
                             e.stopPropagation();
                             setTodoSectionOpen(!todoSectionOpen);
                           }}
-                          className="flex items-center justify-between w-full text-[13px] text-white/90 hover:text-white px-2.5 py-2 text-left transition-colors cursor-pointer select-none focus:outline-none group"
-                        >
-                          <span>Todo</span>
-                          <ChevronDown className={`w-3.5 h-3.5 text-white/30 group-hover:text-white/60 transition-transform duration-150 ${todoSectionOpen ? '' : '-rotate-90'}`} />
-                        </button>
+                        />
 
                         {/* Todo List Container */}
                         <AnimatePresence initial={false}>
@@ -4280,7 +4651,7 @@ function DeepWorkUI() {
                             >
                               <div 
                                 onMouseEnter={() => setActiveSubmenu(null)}
-                                className="flex flex-col gap-0.5 px-1.5 max-h-[82px] overflow-y-auto custom-scrollbar mb-1.5"
+                                className="eterx-work-menu-list custom-scrollbar mb-1"
                               >
                                 {(() => {
                                   const tracker = lastTaskTracker || currentTaskTracker;
@@ -4288,15 +4659,20 @@ function DeepWorkUI() {
                                                        tracker?.status === 'generating' || 
                                                        (isThinking && (!tracker || !tracker.steps || tracker.steps.length === 0));
 
-                                  if (isGenerating) {
-                                    return (
-                                      <div className="space-y-1.5 px-1 py-1">
-                                        {[0, 1, 2].map(index => (
-                                          <div key={index} className="flex h-6 items-center gap-2.5 overflow-hidden rounded-[10px] px-1">
-                                            <span className="block h-3.5 w-3.5 shrink-0 rounded-full border-[1.5px] border-[#A9A9A9]/35" />
-                                            <div className={`h-[8px] overflow-hidden rounded-full bg-white/[0.04] ${ index === 1 ? 'w-[72%]' : 'w-[58%]' }`}>
-                                              <div className="h-full w-full eterx-surface-shimmer eterx-surface-shimmer-progress" />
-                                            </div>
+                                   if (isGenerating) {
+                                     return (
+                                      <div className="space-y-1 px-1 py-1">
+                                        {['Preparing steps', 'Checking scope', 'Organizing work'].map((label, index) => (
+                                          <div key={label} className="eterx-work-menu-task-row text-white/58">
+                                            <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full border border-[#A9A9A9]/30 bg-white/[0.02]">
+                                              <span
+                                                className="h-[4px] w-[4px] rounded-full bg-current opacity-60 animate-[eterx-task-dot_2.8s_ease-in-out_infinite]"
+                                                style={{ animationDelay: `${ index * 0.32 }s` }}
+                                              />
+                                            </span>
+                                            <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-white/50">
+                                              {label}
+                                            </span>
                                           </div>
                                         ))}
                                       </div>
@@ -4309,7 +4685,7 @@ function DeepWorkUI() {
                                       return (
                                         <div
                                           key={step.id || step.step}
-                                          className="flex items-center gap-2.5 px-1.5 py-1 rounded-lg text-left text-white/80 text-[12px]"
+                                          className="eterx-work-menu-task-row text-white/80"
                                         >
                                           <span className="shrink-0">
                                             <TaskStatusGlyphMini status={step.status} active={activeWorking} />
@@ -4323,10 +4699,7 @@ function DeepWorkUI() {
                                   }
 
                                   return (
-                                    <div className="px-1.5 py-1 text-white/40 text-[12px] flex items-center gap-2">
-                                      <span className="w-1.5 h-1.5 rounded-full bg-white/10" />
-                                      <span>Nothing to show</span>
-                                    </div>
+                                    <WorkMenuEmptyState label="Nothing to show" detail="No current plan" />
                                   );
                                 })()}
                               </div>
@@ -4335,25 +4708,25 @@ function DeepWorkUI() {
                         </AnimatePresence>
 
                         {/* Divider */}
-                        <div 
+                        <div
                           onMouseEnter={() => setActiveSubmenu(null)}
-                          className="h-[1px] bg-white/5 my-1.5 mx-1" 
+                          className="eterx-work-menu-divider"
                         />
 
                         {/* Changes Row */}
-                        <button 
+                        <button
                           onMouseEnter={() => setActiveSubmenu(null)}
                           onClick={(e) => {
                             e.stopPropagation();
                             setEnvDropdownOpen(false);
                             setMonitorOpen(true);
                           }}
-                          className="flex items-center gap-2.5 w-full px-2.5 py-2 rounded-lg text-left hover:bg-white/5 hover:text-white transition-all group text-white/80"
+                          className="eterx-work-menu-row group"
                         >
-                          <PlusSquare className="w-4 h-4 text-white/30 group-hover:text-white/80" />
-                          <span className="flex-1 flex items-center justify-between">
-                            <span className="text-white/90">Changes</span>
-                            <div className="flex items-center gap-1.5 text-[11px] font-semibold">
+                          <PlusSquare className="eterx-work-menu-row-icon" />
+                          <span className="flex min-w-0 flex-1 items-center justify-between gap-3">
+                            <span className="truncate text-white/90">Changes</span>
+                            <div className="flex shrink-0 items-center gap-1.5 text-[11px] font-semibold">
                               <span className="text-[#19C37D] font-mono">+{chatChangeStats.additions}</span>
                               <span className="text-[#EF4444] font-mono">-{chatChangeStats.deletions}</span>
                             </div>
@@ -4361,18 +4734,27 @@ function DeepWorkUI() {
                         </button>
 
                         {/* Local Row */}
-                        <button 
+                        <div
+                          role="button"
+                          tabIndex={0}
                           onMouseEnter={() => setActiveSubmenu('local')}
                           onClick={(e) => {
                             e.stopPropagation();
                             setActiveSubmenu(activeSubmenu === 'local' ? null : 'local');
                           }}
-                          className={`relative flex items-center gap-2.5 w-full px-2.5 py-2 rounded-lg text-left hover:bg-white/5 hover:text-white transition-all group text-white/80 ${activeSubmenu === 'local' ? 'bg-white/5 text-white' : ''}`}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              setActiveSubmenu(activeSubmenu === 'local' ? null : 'local');
+                            }
+                          }}
+                          className={`eterx-work-menu-row group relative ${activeSubmenu === 'local' ? 'eterx-work-menu-row-active' : ''}`}
                         >
-                          <Monitor className="w-4 h-4 text-white/30 group-hover:text-white/80" />
-                          <span className="flex-1 flex items-center justify-between">
-                            <span className={activeSubmenu === 'local' ? 'text-white font-medium' : ''}>{currentEnv}</span>
-                            <ChevronRight className={`w-3.5 h-3.5 text-white/30 transition-transform ${activeSubmenu === 'local' ? 'text-white' : ''}`} />
+                          <Monitor className="eterx-work-menu-row-icon" />
+                          <span className="flex min-w-0 flex-1 items-center justify-between gap-3">
+                            <span className={`truncate ${activeSubmenu === 'local' ? 'text-white font-medium' : ''}`}>{currentEnv}</span>
+                            <ChevronRight className={`h-3.5 w-3.5 shrink-0 text-white/30 transition-transform ${activeSubmenu === 'local' ? 'text-white' : ''}`} />
                           </span>
 
                           {/* Local Submenu Flyout */}
@@ -4383,10 +4765,10 @@ function DeepWorkUI() {
                                 animate={{ opacity: 1, x: 0 }}
                                 exit={{ opacity: 0, x: 5 }}
                                 transition={{ duration: 0.15 }}
-                                className="absolute right-[calc(100%+8px)] top-0 w-[240px] bg-[#18181B] border border-white/[0.08] rounded-xl shadow-[0_12px_40px_rgba(0,0,0,0.6)] p-2 flex flex-col gap-0.5 text-[13px] text-white/70"
+                                className="eterx-work-menu-flyout absolute right-[calc(100%+10px)] top-0 w-[248px]"
                                 onClick={(e) => e.stopPropagation()}
                               >
-                                <div className="text-[11px] font-medium text-white/35 px-2.5 py-1">
+                                <div className="eterx-work-menu-flyout-label">
                                   Continue in
                                 </div>
 
@@ -4396,11 +4778,11 @@ function DeepWorkUI() {
                                     setCurrentEnv('Local');
                                     setActiveSubmenu(null);
                                   }}
-                                  className="flex items-center gap-2.5 w-full px-2.5 py-2 rounded-lg text-left hover:bg-white/5 hover:text-white transition-all group"
+                                  className="eterx-work-menu-row group"
                                 >
-                                  <Monitor className="w-4 h-4 text-white/30 group-hover:text-white/80 shrink-0" />
-                                  <span className="flex-1 flex items-center justify-between min-w-0">
-                                    <span className={currentEnv === 'Local' ? 'text-white font-medium' : ''}>Work locally</span>
+                                  <Monitor className="eterx-work-menu-row-icon" />
+                                  <span className="flex min-w-0 flex-1 items-center justify-between gap-3">
+                                    <span className={`truncate ${currentEnv === 'Local' ? 'text-white font-medium' : ''}`}>Work locally</span>
                                     {currentEnv === 'Local' && <Check className="w-3.5 h-3.5 text-[#19C37D] shrink-0" />}
                                   </span>
                                 </button>
@@ -4411,11 +4793,11 @@ function DeepWorkUI() {
                                     setCurrentEnv('Worktree');
                                     setActiveSubmenu(null);
                                   }}
-                                  className="flex items-center gap-2.5 w-full px-2.5 py-2 rounded-lg text-left hover:bg-white/5 hover:text-white transition-all group"
+                                  className="eterx-work-menu-row group"
                                 >
-                                  <GitFork className="w-4 h-4 text-white/30 group-hover:text-white/80 shrink-0" />
-                                  <span className="flex-1 flex items-center justify-between min-w-0">
-                                    <span className={currentEnv === 'Worktree' ? 'text-white font-medium' : ''}>Handoff to worktree</span>
+                                  <GitFork className="eterx-work-menu-row-icon" />
+                                  <span className="flex min-w-0 flex-1 items-center justify-between gap-3">
+                                    <span className={`truncate ${currentEnv === 'Worktree' ? 'text-white font-medium' : ''}`}>Handoff to worktree</span>
                                     {currentEnv === 'Worktree' && <Check className="w-3.5 h-3.5 text-[#19C37D] shrink-0" />}
                                   </span>
                                 </button>
@@ -4426,32 +4808,41 @@ function DeepWorkUI() {
                                     setCurrentEnv('Sandbox');
                                     setActiveSubmenu(null);
                                   }}
-                                  className="flex items-center gap-2.5 w-full px-2.5 py-2 rounded-lg text-left hover:bg-white/5 hover:text-white transition-all group"
+                                  className="eterx-work-menu-row group"
                                 >
-                                  <Terminal className="w-4 h-4 text-white/30 group-hover:text-white/80 shrink-0" />
-                                  <span className="flex-1 flex items-center justify-between min-w-0">
-                                    <span className={currentEnv === 'Sandbox' ? 'text-white font-medium' : ''}>Sandbox</span>
+                                  <Terminal className="eterx-work-menu-row-icon" />
+                                  <span className="flex min-w-0 flex-1 items-center justify-between gap-3">
+                                    <span className={`truncate ${currentEnv === 'Sandbox' ? 'text-white font-medium' : ''}`}>Sandbox</span>
                                     {currentEnv === 'Sandbox' && <Check className="w-3.5 h-3.5 text-[#19C37D] shrink-0" />}
                                   </span>
                                 </button>
                               </motion.div>
                             )}
                           </AnimatePresence>
-                        </button>
+                        </div>
 
                         {/* Branch Row */}
-                        <button 
+                        <div
+                          role="button"
+                          tabIndex={0}
                           onMouseEnter={() => setActiveSubmenu('branch')}
                           onClick={(e) => {
                             e.stopPropagation();
                             setActiveSubmenu(activeSubmenu === 'branch' ? null : 'branch');
                           }}
-                          className={`relative flex items-center gap-2.5 w-full px-2.5 py-2 rounded-lg text-left hover:bg-white/5 hover:text-white transition-all group text-white/80 ${activeSubmenu === 'branch' ? 'bg-white/5 text-white' : ''}`}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              setActiveSubmenu(activeSubmenu === 'branch' ? null : 'branch');
+                            }
+                          }}
+                          className={`eterx-work-menu-row group relative ${activeSubmenu === 'branch' ? 'eterx-work-menu-row-active' : ''}`}
                         >
-                          <GitBranch className="w-4 h-4 text-white/30 group-hover:text-white/80" />
-                          <span className="flex-1 flex items-center justify-between">
-                            <span className={activeSubmenu === 'branch' ? 'text-white font-medium' : ''}>{currentBranch}</span>
-                            <ChevronRight className={`w-3.5 h-3.5 text-white/30 transition-transform ${activeSubmenu === 'branch' ? 'text-white' : ''}`} />
+                          <GitBranch className="eterx-work-menu-row-icon" />
+                          <span className="flex min-w-0 flex-1 items-center justify-between gap-3">
+                            <span className={`truncate font-mono ${activeSubmenu === 'branch' ? 'text-white font-medium' : ''}`}>{currentBranch}</span>
+                            <ChevronRight className={`h-3.5 w-3.5 shrink-0 text-white/30 transition-transform ${activeSubmenu === 'branch' ? 'text-white' : ''}`} />
                           </span>
 
                           {/* Branch Submenu Flyout */}
@@ -4462,30 +4853,30 @@ function DeepWorkUI() {
                                 animate={{ opacity: 1, x: 0 }}
                                 exit={{ opacity: 0, x: 5 }}
                                 transition={{ duration: 0.15 }}
-                                className="absolute right-[calc(100%+8px)] top-0 w-[260px] bg-[#18181B] border border-white/[0.08] rounded-xl shadow-[0_12px_40px_rgba(0,0,0,0.6)] p-2.5 flex flex-col gap-1 text-[13px] text-white/70"
+                                className="eterx-work-menu-flyout absolute right-[calc(100%+10px)] top-0 w-[276px]"
                                 onClick={(e) => e.stopPropagation()}
                               >
                                 {gitError && (
-                                  <div className="text-[11px] text-red-400 bg-red-500/10 border border-red-500/20 rounded-md p-2 mb-1.5 break-words">
+                                  <div className="mb-1.5 rounded-[10px] border border-red-500/20 bg-red-500/10 p-2 text-[11px] text-red-400 break-words">
                                     {gitError}
                                   </div>
                                 )}
 
                                 {isCreatingBranch ? (
                                   <div className="flex flex-col gap-2">
-                                    <div className="text-[11px] font-medium text-white/35 px-1 py-0.5">
+                                    <div className="eterx-work-menu-flyout-label px-1">
                                       Create new branch
                                     </div>
                                     
-                                    <div className="flex items-center gap-2 w-full bg-white/5 rounded-md px-2 py-1.5 border border-white/5 focus-within:border-white/15 transition-all">
-                                      <GitBranch className="w-3.5 h-3.5 text-white/30 shrink-0" />
+                                    <div className="eterx-work-menu-search">
+                                      <GitBranch className="h-3.5 w-3.5 shrink-0 text-white/34" />
                                       <input
                                         type="text"
                                         placeholder="Branch name"
                                         autoFocus
                                         value={newBranchName}
                                         onChange={(e) => setNewBranchName(e.target.value)}
-                                        className="bg-transparent border-none outline-none text-[12px] text-white/90 placeholder:text-white/35 w-full font-mono"
+                                        className="w-full border-none bg-transparent font-mono text-[12px] text-white/90 outline-none placeholder:text-white/35"
                                         onKeyDown={(e) => {
                                           if (e.key === 'Enter') {
                                             handleCreateBranchSubmit();
@@ -4504,14 +4895,14 @@ function DeepWorkUI() {
                                           setNewBranchName('');
                                           setGitError(null);
                                         }}
-                                        className="px-2.5 py-1 rounded bg-white/5 hover:bg-white/10 text-white/80 hover:text-white text-[11px] font-medium transition-all"
+                                        className="rounded-[8px] bg-white/[0.055] px-2.5 py-1 text-[11px] font-medium text-white/78 transition-colors hover:bg-white/[0.10] hover:text-white"
                                       >
                                         Cancel
                                       </button>
                                       <button
                                         disabled={!newBranchName.trim()}
                                         onClick={handleCreateBranchSubmit}
-                                        className="px-2.5 py-1 rounded bg-[#19C37D]/20 hover:bg-[#19C37D]/30 disabled:opacity-40 disabled:hover:bg-[#19C37D]/20 text-[#19C37D] disabled:text-[#19C37D]/50 text-[11px] font-semibold transition-all"
+                                        className="rounded-[8px] bg-[#19C37D]/18 px-2.5 py-1 text-[11px] font-semibold text-[#35D291] transition-colors hover:bg-[#19C37D]/28 disabled:text-[#19C37D]/50 disabled:opacity-40 disabled:hover:bg-[#19C37D]/18"
                                       >
                                         Create
                                       </button>
@@ -4519,29 +4910,29 @@ function DeepWorkUI() {
                                   </div>
                                 ) : (
                                   <>
-                                    <div className="flex items-center gap-2 w-full bg-white/5 rounded-md px-2 py-1.5 mb-1.5 border border-white/5 focus-within:border-white/15 transition-all">
-                                      <Search className="w-3.5 h-3.5 text-white/30" />
+                                    <div className="eterx-work-menu-search mb-1.5">
+                                      <Search className="h-3.5 w-3.5 shrink-0 text-white/34" />
                                       <input
                                         type="text"
                                         placeholder="Search branches"
                                         value={branchSearch}
                                         onChange={(e) => setBranchSearch(e.target.value)}
-                                        className="bg-transparent border-none outline-none text-[12px] text-white/90 placeholder:text-white/35 w-full"
+                                        className="w-full border-none bg-transparent text-[12px] text-white/90 outline-none placeholder:text-white/35"
                                       />
                                     </div>
 
-                                    <div className="text-[11px] font-medium text-white/35 px-2 py-0.5">
+                                    <div className="eterx-work-menu-flyout-label">
                                       Branches
                                     </div>
 
-                                    <div className="flex flex-col gap-[2px] max-h-[180px] overflow-y-auto custom-scrollbar">
+                                    <div className="eterx-work-menu-list eterx-work-menu-list-tall custom-scrollbar">
                                       {(() => {
                                         const filteredBranches = gitBranches.filter(b => 
                                           b.name.toLowerCase().includes(branchSearch.toLowerCase())
                                         );
 
                                         if (filteredBranches.length === 0) {
-                                          return <div className="px-2 py-2 text-[12px] text-white/30 italic">No branches found</div>;
+                                          return <WorkMenuEmptyState label="No branches found" />;
                                         }
 
                                         return filteredBranches.map((b) => (
@@ -4551,12 +4942,12 @@ function DeepWorkUI() {
                                               e.stopPropagation();
                                               handleCheckoutBranch(b.name);
                                             }}
-                                            className="flex items-start gap-2.5 w-full px-2 py-1.5 rounded-lg text-left hover:bg-white/5 hover:text-white transition-all group"
+                                            className="eterx-work-menu-row group items-start"
                                           >
-                                            <GitBranch className="w-4 h-4 text-white/30 group-hover:text-white/80 mt-0.5 shrink-0" />
-                                            <span className="flex-1 flex items-start justify-between min-w-0">
+                                            <GitBranch className="eterx-work-menu-row-icon mt-0.5" />
+                                            <span className="flex min-w-0 flex-1 items-start justify-between gap-3">
                                               <div className="flex flex-col min-w-0">
-                                                <span className={`truncate ${currentBranch === b.name ? 'text-white font-medium' : 'text-white/70'}`}>{b.name}</span>
+                                                <span className={`truncate font-mono ${currentBranch === b.name ? 'text-white font-medium' : 'text-white/70'}`}>{b.name}</span>
                                                 {b.uncommitted && (
                                                   <span className="text-[10px] text-white/35">{b.uncommitted}</span>
                                                 )}
@@ -4570,24 +4961,24 @@ function DeepWorkUI() {
                                       })()}
                                     </div>
 
-                                    <div className="h-[1px] bg-white/5 my-1" />
+                                    <div className="eterx-work-menu-divider my-1" />
 
                                     <button 
                                       onClick={(e) => {
                                         e.stopPropagation();
                                         setIsCreatingBranch(true);
                                       }}
-                                      className="flex items-center gap-2.5 w-full px-2 py-1.5 rounded-lg text-left hover:bg-white/5 hover:text-white transition-all group text-white/60"
+                                      className="eterx-work-menu-row group text-white/64"
                                     >
-                                      <PlusSquare className="w-4 h-4 text-white/30 group-hover:text-white/80" />
-                                      <span className="flex-1">Create and checkout new branch...</span>
+                                      <PlusSquare className="eterx-work-menu-row-icon" />
+                                      <span className="min-w-0 flex-1 truncate">Create and checkout new branch...</span>
                                     </button>
                                   </>
                                 )}
                               </motion.div>
                             )}
                           </AnimatePresence>
-                        </button>
+                        </div>
 
                         {/* Commit/Push Row */}
                         <button 
@@ -4597,31 +4988,28 @@ function DeepWorkUI() {
                             setEnvDropdownOpen(false);
                             setMonitorOpen(true);
                           }}
-                          className="flex items-center gap-2.5 w-full px-2.5 py-2 rounded-lg text-left hover:bg-white/5 hover:text-white transition-all group text-white/80"
+                          className="eterx-work-menu-row group"
                         >
-                          <GitCommit className="w-4 h-4 text-white/30 group-hover:text-white/80" />
-                          <span className="flex-1">Commit or push</span>
+                          <GitCommit className="eterx-work-menu-row-icon" />
+                          <span className="min-w-0 flex-1 truncate">Commit or push</span>
                         </button>
 
                         {/* Divider */}
-                        <div 
+                        <div
                           onMouseEnter={() => setActiveSubmenu(null)}
-                          className="h-[1px] bg-white/5 my-1.5 mx-1" 
+                          className="eterx-work-menu-divider"
                         />
 
-                        {/* Sources Header */}
-                        <button
-                          type="button"
+                        <WorkMenuSectionButton
+                          title="Sources"
+                          meta={workMenuSources.length || undefined}
+                          open={sourcesSectionOpen}
                           onMouseEnter={() => setActiveSubmenu(null)}
                           onClick={(e) => {
                             e.stopPropagation();
                             setSourcesSectionOpen(!sourcesSectionOpen);
                           }}
-                          className="flex items-center justify-between w-full text-[13px] text-white/90 hover:text-white px-2.5 py-2 text-left transition-colors cursor-pointer select-none focus:outline-none group"
-                        >
-                          <span>Sources</span>
-                          <ChevronDown className={`w-3.5 h-3.5 text-white/30 group-hover:text-white/60 transition-transform duration-150 ${sourcesSectionOpen ? '' : '-rotate-90'}`} />
-                        </button>
+                        />
 
                         {/* Sources List Container */}
                         <AnimatePresence initial={false}>
@@ -4633,111 +5021,64 @@ function DeepWorkUI() {
                               transition={{ duration: 0.15, ease: "easeOut" }}
                               className="overflow-hidden"
                             >
-                              <div 
+                              <div
                                 onMouseEnter={() => setActiveSubmenu(null)}
-                                className="flex flex-col gap-0.5 px-1.5 max-h-[82px] overflow-y-auto custom-scrollbar"
+                                className="eterx-work-menu-list custom-scrollbar"
                               >
-                                {(() => {
-                                  const itemsList: Array<{ 
-                                    id: string; 
-                                    name: string; 
-                                    path: string; 
-                                    isPinned?: boolean; 
-                                    status?: 'MOD' | 'ADD';
-                                    additions?: number;
-                                    deletions?: number;
-                                  }> = [];
-                                  
-                                  if (pinnedItems) {
-                                    for (const item of pinnedItems) {
-                                      itemsList.push({
-                                        id: item.id,
-                                        name: item.name,
-                                        path: item.path,
-                                        isPinned: true
-                                      });
-                                    }
-                                  }
-
-                                  if (chatChangeStats.files) {
-                                    for (const file of chatChangeStats.files) {
-                                      const name = getBasename(file.path);
-                                      const existing = itemsList.find(item => item.path === file.path || item.name === name);
-                                      if (existing) {
-                                        existing.status = file.status;
-                                        existing.additions = file.additions;
-                                        existing.deletions = file.deletions;
-                                      } else {
-                                        itemsList.push({
-                                          id: `chat-${file.path}`,
-                                          name: name,
-                                          path: file.path,
-                                          status: file.status,
-                                          additions: file.additions,
-                                          deletions: file.deletions
-                                        });
-                                      }
-                                    }
-                                  }
-
-                                  if (itemsList.length > 0) {
-                                    return itemsList.map((item) => {
-                                      const Icon = getFileIcon(item.path);
-                                      const iconColor = 'text-[#60A5FA]'; // beautiful blue color
-                                      return (
-                                        <div
-                                          key={item.id}
-                                          className="group flex items-center gap-2.5 px-2 py-1.5 rounded-lg text-left hover:bg-white/[0.04] transition-all text-[12px] cursor-pointer"
-                                        >
-                                          <Icon 
-                                            className={`w-3.5 h-3.5 shrink-0 transition-colors ${iconColor}`} 
-                                            strokeWidth={1.8}
-                                          />
-                                          <span className="truncate flex-1 font-mono text-white/75 group-hover:text-white" title={item.path}>
-                                            {item.name}
+                                {workMenuSources.length > 0 ? (
+                                  workMenuSources.map((item) => {
+                                    const Icon = getFileIcon(item.path);
+                                    return (
+                                      <div
+                                        key={item.id}
+                                        className="eterx-work-menu-row group"
+                                        title={item.path}
+                                      >
+                                        <Icon
+                                          className="h-3.5 w-3.5 shrink-0 text-[#67A9FF] transition-colors group-hover:text-[#8EC1FF]"
+                                          strokeWidth={1.8}
+                                        />
+                                        <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-white/75 group-hover:text-white">
+                                          {item.name}
+                                        </span>
+                                        {item.status && (
+                                          <span className={`eterx-work-menu-file-chip ${item.status === 'ADD' ? 'eterx-work-menu-file-chip-add' : ''}`}>
+                                            {item.status}
                                           </span>
-                                          {((item.additions || 0) > 0 || (item.deletions || 0) > 0) && (
-                                            <div className="flex items-center gap-1.5 text-[10.5px] font-semibold font-mono shrink-0 ml-2">
-                                              {(item.additions || 0) > 0 && <span className="text-[#10B981]">+{item.additions}</span>}
-                                              {(item.deletions || 0) > 0 && <span className="text-[#EF4444]">-{item.deletions}</span>}
-                                            </div>
-                                          )}
-                                        </div>
-                                      );
-                                    });
-                                  }
-
-                                  return (
-                                    <div className="px-1.5 py-1 text-white/40 text-[12px] flex items-center gap-2">
-                                      <span className="w-1.5 h-1.5 rounded-full bg-white/10" />
-                                      <span>No active sources</span>
-                                    </div>
-                                  );
-                                })()}
+                                        )}
+                                        {((item.additions || 0) > 0 || (item.deletions || 0) > 0) && (
+                                          <div className="ml-1 flex shrink-0 items-center gap-1.5 text-[10.5px] font-semibold font-mono">
+                                            {(item.additions || 0) > 0 && <span className="text-[#34D399]">+{item.additions}</span>}
+                                            {(item.deletions || 0) > 0 && <span className="text-[#F87171]">-{item.deletions}</span>}
+                                          </div>
+                                        )}
+                                      </div>
+                                    );
+                                  })
+                                ) : (
+                                  <WorkMenuEmptyState label="No active sources" detail="Pinned files appear here" />
+                                )}
                               </div>
                             </motion.div>
                           )}
                         </AnimatePresence>
 
                         {/* Divider */}
-                        <div 
+                        <div
                           onMouseEnter={() => setActiveSubmenu(null)}
-                          className="h-[1px] bg-white/5 my-1.5 mx-1" 
+                          className="eterx-work-menu-divider"
                         />
 
-                        {/* Sub-agents Header */}
-                        <button
-                          type="button"
+                        <WorkMenuSectionButton
+                          title="Sub-agents"
+                          meta={realSubAgents.length || undefined}
+                          open={subAgentsSectionOpen}
                           onMouseEnter={() => setActiveSubmenu(null)}
                           onClick={(e) => {
                             e.stopPropagation();
                             setSubAgentsSectionOpen(!subAgentsSectionOpen);
                           }}
-                          className="flex items-center justify-between w-full text-[13px] text-white/90 hover:text-white px-2.5 py-2 text-left transition-colors cursor-pointer select-none focus:outline-none group"
-                        >
-                          <span>Sub-agents</span>
-                          <ChevronDown className={`w-3.5 h-3.5 text-white/30 group-hover:text-white/60 transition-transform duration-150 ${subAgentsSectionOpen ? '' : '-rotate-90'}`} />
-                        </button>
+                        />
 
                         {/* Sub-agents Row */}
                         <AnimatePresence initial={false}>
@@ -4751,78 +5092,37 @@ function DeepWorkUI() {
                             >
                               <div 
                                 onMouseEnter={() => setActiveSubmenu(null)}
-                                className="flex flex-col gap-0.5 px-1.5 max-h-[82px] overflow-y-auto custom-scrollbar"
+                                className="eterx-work-menu-list custom-scrollbar"
                               >
-                                {currentSubAgents && currentSubAgents.length > 0 ? (
-                                  currentSubAgents.map((agent) => {
-                                    const isWorking = agent.status === 'working' || agent.status === 'spawning';
-                                    const isPaused = agent.status === 'paused';
-                                    const isCompleted = agent.status === 'completed';
+                                {realSubAgents.length > 0 ? (
+                                  realSubAgents.map((agent) => {
                                     const isClosed = agent.status === 'closed';
-                                    const isError = agent.status === 'error';
-                                    const lowerName = String(agent.name || '').toLowerCase().trim();
-                                    const SUB_AGENT_ICON_NAMES = [
-                                      'einstein', 'heisenberg', 'sam', 'dario', 'elon',
-                                      'tesla', 'newton', 'turing', 'ada', 'curie',
-                                      'feynman', 'darwin', 'hawking', 'galileo', 'davinci',
-                                      'aristotle', 'oppenheimer', 'gates', 'jobs', 'pascal'
-                                    ];
-                                    const hasImage = SUB_AGENT_ICON_NAMES.includes(lowerName);
                                     return (
                                       <div
                                         key={agent.name}
-                                        className="group flex items-center gap-2.5 px-2 py-1.5 rounded-lg text-left hover:bg-white/[0.04] transition-all text-[12px] cursor-pointer"
-                                        onClick={() => handleOpenAgentTeam(agent.name)}
+                                        className="eterx-work-menu-row group"
+                                        onClick={() => {
+                                          handleOpenAgentTeam(agent.name);
+                                          setEnvDropdownOpen(false);
+                                        }}
                                       >
-                                        {/* Round profile image */}
-                                        {hasImage ? (
-                                          <span className="flex h-[22px] w-[22px] shrink-0 items-center justify-center overflow-hidden rounded-full border border-white/[0.08] bg-black/10">
-                                            <img
-                                              src={`/icons/sub-agents/${lowerName}.png`}
-                                              alt={agent.name}
-                                              className="w-full h-full object-cover select-none"
-                                            />
-                                          </span>
-                                        ) : (
-                                          <span className="flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-full border border-white/[0.08] bg-white/[0.04] text-[9px] font-bold text-white/60">
-                                            {String(agent.name || 'A').charAt(0).toUpperCase()}
-                                          </span>
-                                        )}
+                                        <SubAgentAvatar name={agent.name} status={agent.status} size="xs" />
                                         {/* Agent name */}
                                         <span className={`truncate flex-1 text-[12px] font-medium ${isClosed ? 'text-white/30 line-through' : 'text-white/75 group-hover:text-white'}`} title={agent.task}>
                                           {agent.name}
                                         </span>
-                                        {/* Status indicator on right */}
-                                        {isWorking && (
-                                          <svg className="w-3.5 h-3.5 shrink-0 animate-spin text-emerald-400" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="2" strokeDasharray="28" strokeDashoffset="8" strokeLinecap="round" /></svg>
-                                        )}
-                                        {isPaused && (
-                                          <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center text-amber-400">
-                                            <svg viewBox="0 0 10 10" fill="currentColor" className="w-2.5 h-2.5"><rect x="1" y="1" width="3" height="8" rx="0.5" /><rect x="6" y="1" width="3" height="8" rx="0.5" /></svg>
-                                          </span>
-                                        )}
-                                        {isCompleted && (
-                                          <span className="w-2 h-2 shrink-0 rounded-full bg-emerald-400/80" />
-                                        )}
-                                        {isError && (
-                                          <span className="w-2 h-2 shrink-0 rounded-full bg-red-400/80" />
-                                        )}
-                                        {isClosed && (
-                                          <span className="w-2 h-2 shrink-0 rounded-full bg-white/15" />
-                                        )}
+                                        <WorkMenuStatusIndicator status={agent.status} />
                                       </div>
                                     );
                                   })
                                 ) : (
-                                  <div className="px-1.5 py-1 text-white/40 text-[12px] flex items-center gap-2">
-                                    <span className="w-1.5 h-1.5 rounded-full bg-white/10" />
-                                    <span>No active sub-agents</span>
-                                  </div>
+                                  <WorkMenuEmptyState label="No active sub-agents" detail="Delegations appear here" />
                                 )}
                               </div>
                             </motion.div>
                           )}
                         </AnimatePresence>
+                        </div>
                       </motion.div>
                     )}
                   </AnimatePresence>
@@ -4889,6 +5189,8 @@ function DeepWorkUI() {
                     isCompressed={isRightPanelVisible}
                     onAnswerAskUser={handleAnswerAskUser}
                     onEditUserMessage={setInputValue}
+                    onOpenAgentTeam={handleOpenAgentTeam}
+                    isSubAgentTab={!!activeSubAgentTab}
                   />
 
                   {/* Pending Steering Queue */}
@@ -5027,27 +5329,19 @@ function DeepWorkUI() {
                           <X className="h-3.5 w-3.5" />
                         </button>
                       </div>
-                      <div className="max-h-[420px] overflow-y-auto p-2 space-y-1.5">
-                        {currentSubAgents.length === 0 ? (
+                      <div className="max-h-[420px] overflow-y-auto p-2 space-y-1.5 custom-scrollbar">
+                        {realSubAgents.length === 0 ? (
                           <div className="rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-3 text-[12px] text-white/48">
                             No delegated agents are active yet.
                           </div>
                         ) : (
-                          currentSubAgents.map((agent: any) => {
+                          realSubAgents.map((agent: any) => {
                             const status = String(agent.status || 'pending');
                             const isWorking = status === 'working' || status === 'spawning';
                             const isPaused = status === 'paused';
                             const isCompleted = status === 'completed';
                             const isClosed = status === 'closed';
                             const isError = status === 'error';
-                            const lowerName = String(agent.name || '').toLowerCase().trim();
-                            const SUB_AGENT_ICON_NAMES = [
-                              'einstein', 'heisenberg', 'sam', 'dario', 'elon',
-                              'tesla', 'newton', 'turing', 'ada', 'curie',
-                              'feynman', 'darwin', 'hawking', 'galileo', 'davinci',
-                              'aristotle', 'oppenheimer', 'gates', 'jobs', 'pascal'
-                            ];
-                            const hasImage = SUB_AGENT_ICON_NAMES.includes(lowerName);
 
                             const handleControl = async (action: string) => {
                               try {
@@ -5074,18 +5368,9 @@ function DeepWorkUI() {
                                       : { bg: 'bg-white/[0.04] text-white/40', label: status };
 
                             return (
-                              <div key={agent.name} className={`rounded-lg border border-white/[0.055] bg-white/[0.025] px-3 py-2.5 ${isClosed ? 'opacity-40' : ''}`}>
+                              <div key={agent.name} className={`rounded-[12px] border border-white/[0.07] bg-[linear-gradient(180deg,rgba(255,255,255,0.055),rgba(255,255,255,0.026))] px-3 py-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] ${isClosed ? 'opacity-45' : ''}`}>
                                 <div className="flex items-center gap-2.5">
-                                  {/* Round profile image */}
-                                  {hasImage ? (
-                                    <span className="flex h-[28px] w-[28px] shrink-0 items-center justify-center overflow-hidden rounded-full border border-white/[0.08] bg-black/10">
-                                      <img src={`/icons/sub-agents/${lowerName}.png`} alt={agent.name} className="w-full h-full object-cover select-none" />
-                                    </span>
-                                  ) : (
-                                    <span className="flex h-[28px] w-[28px] shrink-0 items-center justify-center rounded-full border border-white/[0.08] bg-white/[0.04] text-[10px] font-bold text-white/60">
-                                      {String(agent.name || 'A').charAt(0).toUpperCase()}
-                                    </span>
-                                  )}
+                                  <SubAgentAvatar name={agent.name} status={status} size="md" />
                                   {/* Name + status */}
                                   <div className="min-w-0 flex-1">
                                     <div className="flex items-center gap-2">

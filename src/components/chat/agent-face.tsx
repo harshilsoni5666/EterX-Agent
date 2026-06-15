@@ -172,7 +172,7 @@ export const AgentFace = ({
     hoverDroveControllerRef.current = false;
   };
 
-  const shimmerDuration = active ? 5.2 : 7.0;
+  const shimmerDuration = active ? 7.8 : 10.5;
   const faceScale = sizeProfile.faceScale;
   const attention = syncWithController ? controllerSnapshot.attention : 'center';
   const attentionIntensity = syncWithController ? controllerSnapshot.attentionIntensity : 0;
@@ -370,9 +370,9 @@ export const AgentFace = ({
             className="absolute -left-3 top-1 h-7 w-7 rounded-full bg-white/20 blur-[5px]"
           />
           <motion.span
-            animate={{ x: active || isCurious || isLaughing ? [-18, 30] : [-14, 24], opacity: active || isCurious || isLaughing ? [0, 0.42, 0] : [0, 0.22, 0] }}
+            animate={{ x: active || isCurious || isLaughing ? [-18, 30] : [-14, 24], opacity: active || isCurious || isLaughing ? [0, 0.30, 0] : [0, 0.16, 0] }}
             transition={{ duration: shimmerDuration, repeat: Infinity, ease: 'easeInOut', delay: profile.shine }}
-            className="absolute -top-2 h-11 w-[7px] rotate-[22deg] bg-white/32 blur-[3px]"
+            className="absolute -top-2 h-11 w-[7px] rotate-[22deg] bg-white/24 blur-[3px]"
           />
           <motion.span
             animate={{ opacity: effectiveMode === 'error' ? [0.22, 0.38, 0.24] : isLaughing ? [0.22, 0.38, 0.22] : [0.16, 0.3, 0.16] }}

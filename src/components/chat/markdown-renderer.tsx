@@ -26,6 +26,8 @@ const PLAIN_TEXT_LANGUAGE_ALIASES = new Set(['', 'text', 'txt', 'plain', 'plaint
 const MERMAID_START_PATTERN = /^\s*(?:graph|flowchart|sequenceDiagram|classDiagram|classDiagram-v2|stateDiagram|stateDiagram-v2|erDiagram|journey|gantt|pie|timeline|mindmap|quadrantChart|xychart-beta|block-beta|sankey-beta|gitGraph|C4Context|C4Container|C4Component|C4Dynamic)\b/i;
 const CODE_FENCE_SPLIT = /(```[\s\S]*?```|~~~[\s\S]*?~~~)/g;
 const MERMAID_FONT_FAMILY = 'var(--font-dm-sans), "DM Sans", Inter, system-ui, sans-serif';
+const ACCIDENTAL_MARKDOWN_FENCE_LANGUAGES = new Set(['', 'md', 'markdown', 'text', 'txt', 'plain', 'plaintext', 'answer', 'response']);
+const TABLE_SEPARATOR_PATTERN = /^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$/;
 
 const slugify = (value: string) =>
   value
@@ -57,9 +59,104 @@ const normalizeLatexOutsideCode = (value: string) =>
       ));
   }).join('');
 
+const splitMarkdownTableCells = (line: string) => {
+  const trimmed = line.trim();
+  const body = trimmed.replace(/^\|/, '').replace(/\|$/, '');
+  return body.split('|').map(cell => cell.trim());
+};
+
+const isMarkdownTableSeparator = (line: string) => TABLE_SEPARATOR_PATTERN.test(line.trim());
+
+const isPotentialMarkdownTableRow = (line: string) => {
+  const trimmed = line.trim();
+  if (!trimmed || !trimmed.includes('|') || isMarkdownTableSeparator(trimmed)) return false;
+  const cells = splitMarkdownTableCells(trimmed);
+  if (cells.length < 2) return false;
+  return cells.some(Boolean);
+};
+
+const makeMarkdownTableSeparator = (line: string) => {
+  const cells = splitMarkdownTableCells(line);
+  if (line.trim().startsWith('|') || line.trim().endsWith('|')) {
+    return `| ${cells.map(() => '---').join(' | ')} |`;
+  }
+  return cells.map(() => '---').join(' | ');
+};
+
+const repairMarkdownTablesOutsideCode = (value: string) =>
+  value.split(CODE_FENCE_SPLIT).map((chunk) => {
+    if (/^(```|~~~)/.test(chunk)) return chunk;
+
+    const lines = chunk.split('\n');
+    const repaired: string[] = [];
+    let inTable = false;
+
+    for (let i = 0; i < lines.length; i += 1) {
+      const line = lines[i];
+      const isSeparator = isMarkdownTableSeparator(line);
+      const isRow = isPotentialMarkdownTableRow(line);
+      const nextLine = lines[i + 1] || '';
+      const nextIsSeparator = isMarkdownTableSeparator(nextLine);
+      const nextIsRow = isPotentialMarkdownTableRow(nextLine);
+      const isDelimitedRow = line.trim().startsWith('|') || line.trim().endsWith('|');
+
+      repaired.push(line);
+
+      if (isSeparator) {
+        inTable = true;
+        continue;
+      }
+
+      if (isRow) {
+        if (!inTable && !nextIsSeparator && (nextIsRow || isDelimitedRow)) {
+          repaired.push(makeMarkdownTableSeparator(line));
+          inTable = true;
+        }
+        continue;
+      }
+
+      if (line.trim()) inTable = false;
+    }
+
+    return repaired.join('\n');
+  }).join('');
+
+const looksLikeCodePayload = (value: string, language: string) => {
+  const trimmed = value.trim();
+  if (!trimmed) return false;
+  if (language === 'md' || language === 'markdown' || language === 'answer' || language === 'response') return false;
+
+  const hasMarkdownStructure = /(^|\n)\s*(#{1,6}\s+\S|[-+*]\s+\S|\d{1,2}[.)]\s+\S|>\s+\S|\|.+\|)/.test(trimmed);
+  if (hasMarkdownStructure) return false;
+
+  const proseWords = trimmed.match(/[A-Za-z]{2,}/g)?.length || 0;
+  const proseSentences = /[.!?]\s+[A-Z0-9]/.test(trimmed);
+  const codeSignals = [
+    /^\s*(?:import|export|const|let|var|function|class|interface|type|enum|def|from|package|using|namespace|public|private|protected)\b/m,
+    /^\s*(?:if|for|while|switch|try|catch)\s*\(/m,
+    /^\s*[<{][\s\S]*[>}]\s*$/m,
+    /;\s*(?:\/\/.*)?$/m,
+  ].some(pattern => pattern.test(trimmed));
+
+  return codeSignals && !(proseWords > 18 && proseSentences);
+};
+
+const unwrapAccidentalMarkdownFence = (value: string) => {
+  const trimmed = value.trim();
+  const match = trimmed.match(/^(```|~~~)([^\n]*)\n([\s\S]*?)\n?\1\s*$/);
+  if (!match) return value;
+
+  const language = match[2].trim().toLowerCase();
+  if (!ACCIDENTAL_MARKDOWN_FENCE_LANGUAGES.has(language)) return value;
+
+  const inner = match[3].trim();
+  if (!inner || looksLikeCodePayload(inner, language)) return value;
+  return inner;
+};
+
 export const normalizeMarkdownForRendering = (value: string) => {
   if (!value) return '';
-  return normalizeLatexOutsideCode(value)
+  return repairMarkdownTablesOutsideCode(normalizeLatexOutsideCode(unwrapAccidentalMarkdownFence(value)))
     .replace(/\n{3,}(\$\$)/g, '\n\n$1')
     .replace(/(\$\$)\n{3,}/g, '$1\n\n');
 };
@@ -919,21 +1016,7 @@ export const markdownComponents = {
     }
 
     if (!inline && (language === 'react-preview' || language === 'preview')) {
-      return (
-        <div className="eterx-markdown-preview my-5 w-full overflow-hidden rounded-2xl border border-white/[0.08] bg-[#050505] shadow-[0_16px_44px_rgba(0,0,0,0.24)]">
-          <div className="eterx-markdown-preview-header flex items-center justify-between border-b border-white/[0.07] bg-white/[0.04] p-4">
-            <div className="ml-2 flex gap-1.5">
-              <div className="h-2.5 w-2.5 rounded-full bg-[#FF5F56]" />
-              <div className="h-2.5 w-2.5 rounded-full bg-[#FFBD2E]" />
-              <div className="h-2.5 w-2.5 rounded-full bg-[#27C93F]" />
-            </div>
-            <span className="px-4 text-[11px] font-black uppercase tracking-widest text-white/40">Preview</span>
-          </div>
-          <div className="eterx-markdown-preview-body flex min-h-[200px] items-center justify-center p-8">
-            <div dangerouslySetInnerHTML={{ __html: content }} />
-          </div>
-        </div>
-      );
+      return <LiveArtifact html={content} title="Preview" />;
     }
 
     if (!inline) {

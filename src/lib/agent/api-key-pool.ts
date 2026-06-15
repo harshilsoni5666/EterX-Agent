@@ -176,24 +176,36 @@ class APIKeyPool {
 
     const now = Date.now();
 
-    // Get indices of keys currently leased to OTHER chats
+    // 1. Try to find keys not leased to ANY chat at all
     const leasedIndices = new Set<number>();
     for (const lease of this.activeLeases.values()) {
       leasedIndices.add(lease.keyIndex);
     }
 
-    // Find ready keys: not leased, not retired, and not the key that just failed.
-    const candidates: { index: number; health: KeyHealth }[] = [];
-
+    let candidates: { index: number; health: KeyHealth }[] = [];
     for (let i = 0; i < this.allKeys.length; i++) {
-      // Skip keys currently in use by other chats
       if (leasedIndices.has(i)) continue;
       if (this.retiredKeyIndices.has(i)) continue;
       if (avoidKeyIndex === i) continue;
+      candidates.push({ index: i, health: this.keyHealth.get(i)! });
+    }
 
-      const health = this.keyHealth.get(i)!;
+    // 2. Fall back to allowing sharing for sub-agents/Main of the same chat if no free keys exist
+    if (candidates.length === 0) {
+      const leasedToOtherOwners = new Set<number>();
+      const requestOwner = this.ownerIdFor(chatId);
+      for (const [otherChatId, lease] of this.activeLeases.entries()) {
+        if (this.ownerIdFor(otherChatId) !== requestOwner) {
+          leasedToOtherOwners.add(lease.keyIndex);
+        }
+      }
 
-      candidates.push({ index: i, health });
+      for (let i = 0; i < this.allKeys.length; i++) {
+        if (leasedToOtherOwners.has(i)) continue;
+        if (this.retiredKeyIndices.has(i)) continue;
+        if (avoidKeyIndex === i) continue;
+        candidates.push({ index: i, health: this.keyHealth.get(i)! });
+      }
     }
 
     if (candidates.length === 0 && avoidKeyIndex != null && !leasedIndices.has(avoidKeyIndex) && !this.retiredKeyIndices.has(avoidKeyIndex)) {

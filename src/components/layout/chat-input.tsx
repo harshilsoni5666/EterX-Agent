@@ -779,22 +779,22 @@ const TaskTrackerDock = ({
       animate={{ opacity: 1, y: 0, scale: 1 }}
       exit={{ opacity: 0, y: 8, scale: 0.992 }}
       transition={{ duration: 0.2, ease: [0.2, 0.8, 0.2, 1] }}
-      className={`relative z-0 mx-auto -mb-3 w-[calc(100%-16px)] ${ isCompressed ? 'max-w-[504px]' : 'max-w-[784px]' } translate-y-2 overflow-hidden rounded-t-[24px] border border-b-0 border-white/[0.10] bg-[#242424] shadow-[0_-10px_26px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(255,255,255,0.045)]`}
+      className={`relative z-0 mx-auto -mb-2 w-[calc(100%-20px)] ${ isCompressed ? 'max-w-[424px]' : 'max-w-[600px]' } translate-y-2 overflow-hidden rounded-t-[18px] border border-b-0 border-white/[0.09] bg-[#202020] shadow-[0_-8px_22px_rgba(0,0,0,0.16),inset_0_1px_0_rgba(255,255,255,0.04)]`}
     >
       <button
         type="button"
         onClick={() => setOpen(value => !value)}
-        className="group flex min-h-[44px] w-full items-center gap-2.5 px-4 py-2 text-left transition-colors hover:bg-white/[0.025]"
+        className="group flex min-h-[38px] w-full items-center gap-2 px-3.5 py-1.5 text-left transition-colors hover:bg-white/[0.025]"
         aria-expanded={open}
       >
         <span className="flex min-w-0 flex-1 -translate-y-[3px] items-center gap-2">
           {liveHeader ? (
             <ProgressLoader className="h-[15px] w-[15px]" />
           ) : (
-            <ListTodo className="h-[15px] w-[15px] shrink-0 text-[#F2EFEA]/88" strokeWidth={2.35} />
+            <ListTodo className="h-[14px] w-[14px] shrink-0 text-[#F2EFEA]/82" strokeWidth={2.25} />
           )}
           <span className="flex min-w-0 items-center">
-            <span className={`truncate text-[13px] font-semibold leading-5 tracking-normal ${ liveHeader ? 'eterx-text-shimmer eterx-text-shimmer-active' : 'text-[#F4F1EA]' }`}>
+            <span className={`truncate text-[12.5px] font-semibold leading-5 tracking-normal ${ liveHeader ? 'eterx-text-shimmer eterx-text-shimmer-active' : 'text-[#F4F1EA]' }`}>
               {headerTitle}
             </span>
             {liveHeader && <GeneratingDots className="shrink-0 text-[#D7D7D7]" />}
@@ -813,23 +813,28 @@ const TaskTrackerDock = ({
             transition={{ duration: 0.24, ease: [0.2, 0.8, 0.2, 1] }}
             className="overflow-hidden"
           >
-            <div className="px-3.5 pb-3.5 pt-1">
+            <div className="px-2.5 pb-2.5 pt-0.5">
               {generating ? (
-                <div className="space-y-2">
-                  {[0, 1, 2].map(index => (
-                    <div key={index} className="flex h-7 items-center gap-3 overflow-hidden rounded-[10px] px-2">
-                      <span className="block h-[18px] w-[18px] shrink-0 rounded-full border-[2px] border-[#A9A9A9]/35" />
-                      <div className={`h-[10px] overflow-hidden rounded-full bg-white/[0.04] ${ index === 1 ? 'w-[72%]' : 'w-[58%]' }`}>
-                        <div className="h-full w-full eterx-surface-shimmer eterx-surface-shimmer-progress" />
-                      </div>
+                <div className="space-y-1.5">
+                  {['Preparing steps', 'Checking scope', 'Organizing work'].map((label, index) => (
+                    <div key={label} className="flex h-7 items-center gap-3 rounded-[10px] px-2 text-[#BDB8AF]">
+                      <span className="flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-full border border-[#A9A9A9]/30 bg-white/[0.018]">
+                        <span
+                          className="h-[5px] w-[5px] rounded-full bg-current opacity-55 animate-[eterx-task-dot_2.8s_ease-in-out_infinite]"
+                          style={{ animationDelay: `${ index * 0.32 }s` }}
+                        />
+                      </span>
+                      <span className="min-w-0 truncate text-[12px] font-medium leading-5 text-[#BDB8AF]/80">
+                        {label}
+                      </span>
                     </div>
                   ))}
                 </div>
               ) : (
                 <div className="relative">
-                  <div className="pointer-events-none absolute inset-x-0 top-0 z-20 h-5 bg-gradient-to-b from-[#242424] to-transparent" />
-                  <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 h-6 bg-gradient-to-t from-[#242424] to-transparent" />
-                  <div className="relative max-h-[220px] space-y-0.5 overflow-y-auto py-1 pr-1 custom-scrollbar">
+                  <div className="pointer-events-none absolute inset-x-0 top-0 z-20 h-5 bg-gradient-to-b from-[#202020] to-transparent" />
+                  <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 h-6 bg-gradient-to-t from-[#202020] to-transparent" />
+                  <div className="relative max-h-[176px] space-y-0.5 overflow-y-auto py-1 pr-1 custom-scrollbar">
                     {steps.map((step) => {
                       const active = step.id === activeStep?.id || step.step === activeStep?.step;
                       const activeWorking = active && !isComplete && (isThinking || step.status === 'in_progress');
@@ -843,14 +848,14 @@ const TaskTrackerDock = ({
                       return (
                         <div
                           key={step.id || step.step}
-                          className="relative flex items-start gap-3 rounded-[11px] px-2.5 py-2.5 transition-colors hover:bg-white/[0.018]"
+                          className="relative flex items-start gap-2.5 rounded-[10px] px-2.5 py-2 transition-colors hover:bg-white/[0.018]"
                         >
                           <span className="relative z-10 mt-0.5 shrink-0">
                             <TaskStatusGlyph status={step.status} active={activeWorking} />
                           </span>
                           <span className="flex min-w-0 flex-1 flex-col gap-0.5">
                             <span className="flex min-w-0 items-center gap-1.5">
-                              <span className={`block min-w-0 truncate text-[13px] font-semibold leading-5 ${ activeWorking ? 'eterx-text-shimmer eterx-text-shimmer-working' : 'text-[#D9D6CE]' }`}>
+                              <span className={`block min-w-0 truncate text-[12.5px] font-semibold leading-5 ${ activeWorking ? 'eterx-text-shimmer eterx-text-shimmer-working' : 'text-[#D9D6CE]' }`}>
                                 {step.name || `Task ${ step.step }`}
                               </span>
                               {activeWorking && <GeneratingDots className="shrink-0 text-[#CFCFCF]" />}
@@ -954,7 +959,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const refreshStoredModelSettings = useCallback(() => {
     setStoredModelSettings(readStoredModelSettings());
   }, []);
-  const textareaMaxHeight = isCompressed ? 220 : 320;
+  const textareaMaxHeight = isCompressed ? 180 : 240;
   const isModelLocked = isThinking;
   const activeAgentDisplay = useMemo(() => {
     if (!selectedAgent) {
@@ -1697,9 +1702,9 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     setOpenStatusMenu(null);
     onOpenProjects();
   }, [onOpenProjects]);
-  const shellMaxWidth = isCompressed ? 'max-w-[500px]' : 'max-w-[760px]';
-  const inputSidePadding = isCompressed ? 'px-4' : 'px-4 sm:px-10';
-  const composerRadius = isCompressed ? 'rounded-[28px]' : 'rounded-[32px]';
+  const shellMaxWidth = isCompressed ? 'max-w-[460px]' : 'max-w-[660px]';
+  const inputSidePadding = isCompressed ? 'px-4' : 'px-4 sm:px-8';
+  const composerRadius = isCompressed ? 'rounded-[24px]' : 'rounded-[26px]';
   const modelOptions = useMemo<ChatModelOption[]>(() => {
     return storedModelSettings.modelEntries.map(entry => {
       const mode = MODEL_PROVIDER_MODE[entry.provider];
@@ -1817,7 +1822,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
             animate={{ opacity: 1, scale: 1, filter: 'blur(0px)', x: "-50%" }}
             exit={{ opacity: 0, scale: 0.95, filter: 'blur(10px)', y: -20, x: "-50%" }}
             transition={{ duration: 0.4, ease: "easeOut" }}
-            className={`absolute bottom-full left-1/2 flex flex-col items-center w-full pointer-events-none ${ isCompressed ? 'mb-4 max-w-[500px]' : 'mb-6 max-w-[760px]' }`}
+            className={`absolute bottom-full left-1/2 flex flex-col items-center w-full pointer-events-none ${ isCompressed ? 'mb-4 max-w-[460px]' : 'mb-6 max-w-[660px]' }`}
           >
             <div className={`flex items-center ${ isCompressed ? 'gap-3' : 'gap-5 -translate-x-[32px]' }`}>
               <div
@@ -2330,8 +2335,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                     onDragOver={handleDragOver}
                     onDrop={handleDrop}
                     onScroll={handleTextareaScroll}
-                    placeholder={isNewChatHome ? "Do anything" : "Ask EterX to Work"}
-                    className={`eterx-composer-textarea w-full appearance-none border-0 bg-transparent shadow-none outline-none ring-0 text-[13.5px] font-normal text-[#F0F0F0] placeholder:text-[#8B8984] focus:border-0 focus:outline-none focus:ring-0 placeholder:font-normal min-h-[26px] max-h-[400px] resize-none leading-[1.45] selection:bg-white/15 transition-colors duration-200 relative z-0 py-1 ${ isOverflowing ? 'overflow-y-auto custom-scrollbar pr-2' : 'overflow-hidden' }`}
+                    placeholder={isThinking ? "Send guidance to the running agent" : isNewChatHome ? "What should EterX work on?" : "Message EterX"}
+                    className={`eterx-composer-textarea w-full appearance-none border-0 bg-transparent shadow-none outline-none ring-0 text-[14.5px] font-normal text-[#F0F0F0] placeholder:text-[#8B8984] focus:border-0 focus:outline-none focus:ring-0 placeholder:font-normal min-h-[26px] max-h-[400px] resize-none leading-[1.45] selection:bg-white/15 transition-colors duration-200 relative z-0 py-1 ${ isOverflowing ? 'overflow-y-auto custom-scrollbar pr-2' : 'overflow-hidden' }`}
                     style={{
                       caretColor: '#F0F0F0',
                       height: '26px',

@@ -144,8 +144,12 @@ export const AgentChannelsView = () => {
                 EterX
                 <CheckCircle2 className="h-4 w-4 text-[#1398FF]" fill="#1398FF" stroke="white" strokeWidth={2.2} />
               </span>
-              <span className="eterx-channel-skeleton-line mt-2.5 block h-2 w-full rounded-full bg-[#E3E2DF]" />
-              <span className="eterx-channel-skeleton-line mt-1.5 block h-2 w-[62%] rounded-full bg-[#E3E2DF]" />
+              <span className="mt-2 block truncate text-[11.5px] font-medium leading-4 text-[#85817c]">
+                Enterprise assistant ready
+              </span>
+              <span className="block truncate text-[11px] leading-4 text-[#8A8680]">
+                Connected across critical channels
+              </span>
             </span>
           </div>
 

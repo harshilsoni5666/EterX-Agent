@@ -22,7 +22,9 @@ const AGENT_NAMES = [
   'Einstein', 'Heisenberg', 'Sam', 'Dario', 'Elon',
   'Tesla', 'Newton', 'Turing', 'Ada', 'Curie',
   'Feynman', 'Darwin', 'Hawking', 'Galileo', 'DaVinci',
-  'Aristotle', 'Oppenheimer', 'Gates', 'Jobs', 'Pascal'
+  'Aristotle', 'Oppenheimer', 'Gates', 'Jobs', 'Pascal',
+  'Dave', 'Nova', 'Mira', 'Leo', 'Kai',
+  'Zara', 'Sage'
 ] as const;
 
 export type SubAgentName = typeof AGENT_NAMES[number];
@@ -72,8 +74,24 @@ interface AgentPauseState {
 const agentPauseStates: Map<string, AgentPauseState> = new Map();
 const agentCloseFlags: Map<string, boolean> = new Map();
 
+function resolveProjectId(projectId: string): string {
+  const registry = (globalThis as any).__eterxAgentRegistry;
+  if (registry?.executions) {
+    const exec = registry.executions.get(projectId);
+    if (exec?.orchestratorProjectId) {
+      return exec.orchestratorProjectId;
+    }
+    for (const e of registry.executions.values()) {
+      if (e.chatId === projectId) {
+        return e.orchestratorProjectId || projectId;
+      }
+    }
+  }
+  return projectId;
+}
+
 function agentKey(projectId: string, agentName: string): string {
-  return `${projectId}:${agentName}`;
+  return `${resolveProjectId(projectId)}:${agentName}`;
 }
 
 /**
@@ -89,14 +107,22 @@ export function pauseAgent(projectId: string, agentName: string, onTrace?: (trac
   agentPauseStates.set(key, { paused: true, resolver, promise });
   console.log(`[SubAgent] ⏸ Paused: ${agentName}`);
 
+  const traceEvent = {
+    type: 'sub_agent_pause',
+    text: `${agentName} paused`,
+    subAgent: agentName,
+    agentName: agentName,
+    agentStatus: 'paused',
+  };
+
   if (onTrace) {
-    onTrace({
-      type: 'sub_agent_pause',
-      text: `${agentName} paused`,
-      subAgent: agentName,
-      agentName: agentName,
-      agentStatus: 'paused',
-    });
+    onTrace(traceEvent);
+  } else {
+    const registry = (globalThis as any).__eterxAgentRegistry;
+    const exec = registry?.executions?.get(projectId);
+    if (exec) {
+      registry.appendTrace(exec, traceEvent, !exec.pinnedContext?.disableTaskStore);
+    }
   }
   return true;
 }
@@ -114,14 +140,22 @@ export function resumeAgent(projectId: string, agentName: string, onTrace?: (tra
   agentPauseStates.delete(key);
   console.log(`[SubAgent] ▶ Resumed: ${agentName}`);
 
+  const traceEvent = {
+    type: 'sub_agent_resume',
+    text: `${agentName} resumed`,
+    subAgent: agentName,
+    agentName: agentName,
+    agentStatus: 'working',
+  };
+
   if (onTrace) {
-    onTrace({
-      type: 'sub_agent_resume',
-      text: `${agentName} resumed`,
-      subAgent: agentName,
-      agentName: agentName,
-      agentStatus: 'working',
-    });
+    onTrace(traceEvent);
+  } else {
+    const registry = (globalThis as any).__eterxAgentRegistry;
+    const exec = registry?.executions?.get(projectId);
+    if (exec) {
+      registry.appendTrace(exec, traceEvent, !exec.pinnedContext?.disableTaskStore);
+    }
   }
   return true;
 }
@@ -143,14 +177,22 @@ export function closeAgent(projectId: string, agentName: string, onTrace?: (trac
 
   console.log(`[SubAgent] ✕ Closed: ${agentName}`);
 
+  const traceEvent = {
+    type: 'sub_agent_close',
+    text: `${agentName} closed`,
+    subAgent: agentName,
+    agentName: agentName,
+    agentStatus: 'closed',
+  };
+
   if (onTrace) {
-    onTrace({
-      type: 'sub_agent_close',
-      text: `${agentName} closed`,
-      subAgent: agentName,
-      agentName: agentName,
-      agentStatus: 'closed',
-    });
+    onTrace(traceEvent);
+  } else {
+    const registry = (globalThis as any).__eterxAgentRegistry;
+    const exec = registry?.executions?.get(projectId);
+    if (exec) {
+      registry.appendTrace(exec, traceEvent, !exec.pinnedContext?.disableTaskStore);
+    }
   }
   return true;
 }
@@ -185,19 +227,20 @@ export async function awaitIfPaused(projectId: string, agentName: string): Promi
  * Get control state for all agents in a project.
  */
 export function getAgentControlStates(projectId: string): Array<{ name: string; paused: boolean; closed: boolean }> {
+  const resolvedProjectId = resolveProjectId(projectId);
   const results: Array<{ name: string; paused: boolean; closed: boolean }> = [];
   const seen = new Set<string>();
 
   for (const [key, state] of agentPauseStates.entries()) {
-    if (key.startsWith(projectId + ':')) {
-      const name = key.substring(projectId.length + 1);
+    if (key.startsWith(resolvedProjectId + ':')) {
+      const name = key.substring(resolvedProjectId.length + 1);
       seen.add(name);
       results.push({ name, paused: state.paused, closed: agentCloseFlags.get(key) === true });
     }
   }
   for (const [key] of agentCloseFlags.entries()) {
-    if (key.startsWith(projectId + ':')) {
-      const name = key.substring(projectId.length + 1);
+    if (key.startsWith(resolvedProjectId + ':')) {
+      const name = key.substring(resolvedProjectId.length + 1);
       if (!seen.has(name)) {
         results.push({ name, paused: false, closed: true });
       }
@@ -211,15 +254,16 @@ export function getAgentControlStates(projectId: string): Array<{ name: string; 
  */
 export function resetAgentControls(projectId?: string) {
   if (projectId) {
+    const resolvedProjectId = resolveProjectId(projectId);
     for (const key of [...agentPauseStates.keys()]) {
-      if (key.startsWith(projectId + ':')) {
+      if (key.startsWith(resolvedProjectId + ':')) {
         const state = agentPauseStates.get(key);
         state?.resolver?.();
         agentPauseStates.delete(key);
       }
     }
     for (const key of [...agentCloseFlags.keys()]) {
-      if (key.startsWith(projectId + ':')) agentCloseFlags.delete(key);
+      if (key.startsWith(resolvedProjectId + ':')) agentCloseFlags.delete(key);
     }
   } else {
     for (const state of agentPauseStates.values()) state.resolver?.();
@@ -397,14 +441,7 @@ export function hasPendingResults(projectId?: string): boolean {
 
 export class SubAgentSpawner {
   private activeAgents: Map<string, SubAgentInstance> = new Map();
-  private nameIndex: number = 0;
   private backgroundPromises: Map<string, BackgroundSubAgentRun> = new Map();
-
-  private getNextName(): SubAgentName {
-    const name = AGENT_NAMES[this.nameIndex % AGENT_NAMES.length];
-    this.nameIndex++;
-    return name;
-  }
 
   private isAgentName(name?: string): name is SubAgentName {
     return AGENT_NAMES.includes(name as SubAgentName);
@@ -412,18 +449,23 @@ export class SubAgentSpawner {
 
   private isNameBusy(projectId: string, name: SubAgentName, reservedNames?: Set<SubAgentName>): boolean {
     if (reservedNames?.has(name)) return true;
+    const activeNameMatch = Array.from(this.activeAgents.values())
+      .some(agent => agent.projectId === projectId && agent.name === name && agent.status !== 'completed' && agent.status !== 'failed' && agent.status !== 'cancelled');
+    if (activeNameMatch) return true;
     return Array.from(this.backgroundPromises.values())
       .some(run => run.projectId === projectId && run.name === name);
+  }
+
+  private pickRandomName(projectId: string, reservedNames?: Set<SubAgentName>): SubAgentName {
+    const availableNames = AGENT_NAMES.filter(name => !this.isNameBusy(projectId, name, reservedNames));
+    const pool = availableNames.length > 0 ? availableNames : AGENT_NAMES;
+    return pool[Math.floor(Math.random() * pool.length)];
   }
 
   private resolveAgentName(projectId: string, preferredName?: string, reservedNames?: Set<SubAgentName>): SubAgentName {
     const preferred = this.isAgentName(preferredName) ? preferredName : undefined;
     if (preferred && !this.isNameBusy(projectId, preferred, reservedNames)) return preferred;
-    for (let i = 0; i < AGENT_NAMES.length; i++) {
-      const candidate = this.getNextName();
-      if (!this.isNameBusy(projectId, candidate, reservedNames)) return candidate;
-    }
-    return preferred || this.getNextName();
+    return this.pickRandomName(projectId, reservedNames);
   }
 
   /** Build a TEAM-AWARE task brief for a sub-agent. */
@@ -447,7 +489,7 @@ export class SubAgentSpawner {
     onTrace?: (trace: any) => void,
     customName?: SubAgentName
   ): Promise<{ agentId: string, name: SubAgentName, result: string, success: boolean, durationMs: number, traceLog: string[] }> {
-    const name = customName || this.getNextName();
+    const name = customName || this.resolveAgentName(context.projectId);
     const agentId = `${name.toLowerCase().replace('-', '_')}_${Date.now()}`;
     if (isCancelled(context.projectId)) {
       return { agentId, name, result: 'Cancelled by user', success: false, durationMs: 0, traceLog: ['Cancelled before start'] };
@@ -459,7 +501,7 @@ export class SubAgentSpawner {
     const traceLog: string[] = [];
     const instance: SubAgentInstance = {
       id: agentId, projectId: context.projectId, name, task, deepBrief,
-      status: 'spawning', traceLog, startedAt: Date.now()
+      status: 'running', traceLog, startedAt: Date.now()
     };
     this.activeAgents.set(agentId, instance);
     await agentMessageBus.writeAgentStatus(name, {
@@ -474,9 +516,10 @@ export class SubAgentSpawner {
         type: 'sub_agent_spawn',
         text: `${ name } started`,
         secondary: task.substring(0, 80),
+        task: task,
         subAgent: name,
         agentName: name,
-        agentStatus: 'spawning'
+        agentStatus: 'running'
       });
     }
 
@@ -488,7 +531,8 @@ export class SubAgentSpawner {
       const { createIsolatedClient } = await import('../gemini');
       lease = apiKeyPool.leaseSubAgentKey(context.projectId, name);
       if (!lease) throw new Error('No API keys available for sub-agent');
-      const subAgentClient = createIsolatedClient(lease.apiKey, 'fast'); // Use fast model for sub-agents
+      const subAgentMode = (context as any).selectedModelMode || 'fast';
+      const subAgentClient = createIsolatedClient(lease.apiKey, subAgentMode, (context as any).runtimeSettings);
       
       const result = await subAgentClient.executeMessageLoop(
         context,
@@ -536,8 +580,7 @@ export class SubAgentSpawner {
           if (onTrace && trace.type !== 'answer') {
             onTrace({
               ...trace,
-              type: trace.type === 'command' || trace.type === 'search' || trace.type === 'file_create' || trace.type === 'file_edit' || trace.type === 'file_read'
-                ? 'sub_agent_action' : trace.type,
+              type: trace.type,
               text: trace.text,
               subAgent: name,
               agentName: name,
@@ -608,12 +651,16 @@ export class SubAgentSpawner {
         completedAt: instance.completedAt
       }, context.projectId);
 
-      if (onTrace) {
+      if (onTrace && !wasCancelled) {
+        // Emit sub_agent_error (hidden from main feed) instead of safety_warning
+        // so failed agents don't pollute the main chat with red banners
         onTrace({
-          type: wasCancelled ? 'command' : 'safety_warning',
-          text: `${ name } ${ wasCancelled ? 'cancelled' : 'failed' }`,
-          secondary: wasCancelled ? 'Stopped by user' : error.message.substring(0, 60),
-          subAgent: name
+          type: 'sub_agent_error',
+          text: `${ name } failed`,
+          secondary: error.message.substring(0, 120),
+          subAgent: name,
+          agentName: name,
+          agentStatus: 'error',
         });
       }
 
@@ -656,7 +703,7 @@ export class SubAgentSpawner {
           agentDetails: tasks.map((t, i) => ({
             name: agentNames[i],
             task: t.task.substring(0, 100),
-            status: 'spawning'
+            status: 'running'
           }))
         });
     }
@@ -761,7 +808,7 @@ export class SubAgentSpawner {
         };
       }
       return {
-        name: (tasks[i].name || AGENT_NAMES[i % AGENT_NAMES.length]) as SubAgentName,
+        name: agentNames[i],
         result: (r as PromiseRejectedResult).reason?.message || 'Unknown error',
         success: false,
         durationMs: 0

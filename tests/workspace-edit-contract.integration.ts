@@ -2,10 +2,14 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { workspaceWriteTool } from '../src/lib/agent/tools/workspace/fileops';
+import { workspaceEditFileTool, workspaceWriteTool } from '../src/lib/agent/tools/workspace/fileops';
+import { workspaceEditManyFilesTool } from '../src/lib/agent/tools/workspace/fast_ops';
 import { workspaceStrReplaceTool } from '../src/lib/agent/tools/workspace/str_replace';
 import { workspaceApplyPatchTool } from '../src/lib/agent/tools/workspace/apply_patch';
+import { normalizeRegistryToolArgs } from '../src/lib/agent/tools/tool-args';
 import { RuntimeEvidenceLedger } from '../src/lib/agent/runtime-evidence';
+import { createCustomToolActionLog } from '../src/lib/agent/custom-agent-trace-adapter';
+import { buildLineDiffPreview, buildToolTraceFields } from '../src/lib/agent/tool-trace';
 
 type ToolLike = {
   name: string;
@@ -93,9 +97,105 @@ async function main() {
     assert.equal(added.success, true, 'workspace_apply_patch should create new files with Add File');
     assert.equal(await readFile(path.join(root, 'src/new-file.txt'), 'utf8'), 'created by patch');
 
+    await writeFile(targetPath, 'red\ngreen\nblue\n', 'utf8');
+    const lineEdited = await runTool(ledger, workspaceEditFileTool, {
+      filename: target,
+      edits: [{ startLine: 2, endLine: 2, replace: 'GREEN' }],
+    }, context);
+    assert.equal(lineEdited.success, true, 'workspace_edit_file should apply line-based replacement');
+    assert.equal(lineEdited.path, targetPath, 'workspace_edit_file should return the resolved path');
+    assert.equal(lineEdited.filename, target, 'workspace_edit_file should return the requested filename');
+    assert.equal(lineEdited.editsApplied, 1, 'workspace_edit_file should return edit count metadata');
+    assert.equal(await readFile(targetPath, 'utf8'), 'red\nGREEN\nblue\n');
+
+    await writeFile(targetPath, 'dup\ndup\n', 'utf8');
+    const unsafeSingleEdit = await runTool(ledger, workspaceEditFileTool, {
+      filename: target,
+      edits: [{ search: 'dup', replace: 'safe' }],
+    }, context);
+    assert.equal(unsafeSingleEdit.success, false, 'workspace_edit_file should reject ambiguous search edits by default');
+    assert.match(String(unsafeSingleEdit.error), /matched 2 times/i);
+    assert.equal(unsafeSingleEdit.editsApplied, 0, 'ambiguous workspace_edit_file call must not report applied edits');
+    assert.equal(await readFile(targetPath, 'utf8'), 'dup\ndup\n');
+
+    const explicitBulkEdit = await runTool(ledger, workspaceEditFileTool, {
+      filename: target,
+      edits: [{ search: 'dup', replace: 'safe', replaceAll: true }],
+    }, context);
+    assert.equal(explicitBulkEdit.success, true, 'workspace_edit_file should allow explicit bulk replacement');
+    assert.equal(await readFile(targetPath, 'utf8'), 'safe\nsafe\n');
+
+    await writeFile(targetPath, 'multi\nmulti\n', 'utf8');
+    const unsafeManyEdit = await runTool(ledger, workspaceEditManyFilesTool, {
+      edits: [{ filename: target, search: 'multi', replace: 'changed' }],
+    }, context);
+    assert.equal(unsafeManyEdit.success, false, 'workspace_edit_many_files should reject ambiguous search edits by default');
+    assert.match(String(unsafeManyEdit.error), /matched 2 times/i);
+    assert.equal(await readFile(targetPath, 'utf8'), 'multi\nmulti\n', 'ambiguous batch edit must rollback');
+
+    const batchReadTrace = buildToolTraceFields('workspace_read_many_files', {
+      files: [{ filename: 'src/a.ts' }, { filename: 'src/b.ts' }],
+    }, { argKey: 'files' } as any);
+    assert.equal(batchReadTrace.secondary, 'a.ts, b.ts');
+    assert.deepEqual(batchReadTrace.files, ['src/a.ts', 'src/b.ts']);
+    assert.doesNotMatch(batchReadTrace.secondary, /\[object Object\]/);
+
+    const normalizedStringPaths = normalizeRegistryToolArgs('workspace_read_many_files', {
+      paths: 'src/a.ts, src/b.ts',
+    });
+    assert.deepEqual(normalizedStringPaths.files, [{ filename: 'src/a.ts' }, { filename: 'src/b.ts' }]);
+
+    const normalizedWriteAlias = normalizeRegistryToolArgs('workspace_write_file', {
+      file_path: 'src/generated.ts',
+      content: 'export const ok = true;\n',
+    });
+    assert.equal(normalizedWriteAlias.filename, 'src/generated.ts');
+
+    const normalizedEditAlias = normalizeRegistryToolArgs('workspace_edit_file', {
+      path: target,
+      edits: [{ search: 'x', replace: 'y' }],
+    });
+    assert.equal(normalizedEditAlias.filename, target);
+
+    const normalizedManyEditAlias = normalizeRegistryToolArgs('workspace_edit_many_files', {
+      files: [{ path: 'src/a.ts', search: 'a', replace: 'b' }],
+    });
+    assert.deepEqual(normalizedManyEditAlias.edits, [{ path: 'src/a.ts', search: 'a', replace: 'b', filename: 'src/a.ts' }]);
+
+    const patchTrace = buildToolTraceFields('workspace_apply_patch', {
+      patch: [
+        '*** Begin Patch',
+        '*** Update File: src/example.txt',
+        '-before',
+        '+after',
+        '*** End Patch',
+      ].join('\n'),
+    }, { argKey: 'patch' } as any);
+    assert.equal(patchTrace.secondary, 'example.txt');
+    assert.equal(patchTrace.filename, 'src/example.txt');
+
+    const multiEditTrace = buildToolTraceFields('workspace_edit_many_files', {
+      edits: [{ filename: 'src/a.ts', search: 'a', replace: 'b' }, { filename: 'src/b.ts', search: 'c', replace: 'd' }],
+    }, { argKey: 'files' } as any);
+    assert.equal(multiEditTrace.secondary, 'a.ts, b.ts');
+    assert.deepEqual(multiEditTrace.files, ['src/a.ts', 'src/b.ts']);
+    assert.doesNotMatch(multiEditTrace.secondary, /\[object Object\]/);
+
+    const customAction = createCustomToolActionLog({
+      toolName: 'workspace_write_file',
+      toolArgs: { filename: 'src/generated.ts', content: 'one\ntwo\nthree' },
+    }, 'Tester', Date.now());
+    assert.equal(customAction.add, undefined, 'tool action rows must not show synthetic pre-execution line counts');
+    assert.equal(customAction.remove, undefined, 'tool action rows must not show synthetic pre-execution removals');
+
+    const diffPreview = buildLineDiffPreview('one\ntwo\nthree\n', 'one\nTWO\nthree\n');
+    assert.equal(diffPreview.added, 1);
+    assert.equal(diffPreview.removed, 1);
+    assert.equal(diffPreview.diffLines.some(line => line.type === 'added' && line.content === 'TWO'), true);
+
     const gateBeforeVerification = ledger.buildCompletionGate({
       finalText: 'Implemented and verified the edit.',
-      toolsUsed: ['workspace_write_file', 'workspace_str_replace', 'workspace_apply_patch'],
+      toolsUsed: ['workspace_write_file', 'workspace_str_replace', 'workspace_apply_patch', 'workspace_edit_file'],
     });
     assert.equal(gateBeforeVerification.shouldAppendCaveat, true, 'work without verification evidence should trigger a caveat');
     assert.match(gateBeforeVerification.caveat, /Verification/);

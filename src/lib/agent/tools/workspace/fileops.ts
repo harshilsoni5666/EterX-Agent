@@ -402,11 +402,21 @@ export const workspaceEditFileTool: ToolDefinition = {
     edits: z.array(z.object({
       search: z.string().optional().describe('Exact text to find (for search-replace mode). Must match EXACTLY including whitespace.'),
       replace: z.string().describe('Replacement text'),
+      replaceAll: z.boolean().optional().describe('Replace every matching occurrence. Defaults to false; ambiguous matches are rejected unless true.'),
+      replace_all: z.boolean().optional().describe('Alias for replaceAll. Defaults to false.'),
       startLine: z.number().optional().describe('Start line number (for line-replace mode, 1-indexed)'),
       endLine: z.number().optional().describe('End line number (for line-replace mode, 1-indexed)')
     }))
   }),
-  outputSchema: z.object({ success: z.boolean(), message: z.string() }),
+  outputSchema: z.object({
+    success: z.boolean(),
+    message: z.string().optional(),
+    path: z.string().optional(),
+    filename: z.string().optional(),
+    editsApplied: z.number().optional(),
+    totalLines: z.number().optional(),
+    size: z.number().optional(),
+  }).passthrough(),
   execute: async (input: { filename: string, edits: any[] }, context?: any) => {
     const filePath = resolveWorkspacePathForContext(input.filename, context);
 
@@ -458,12 +468,25 @@ export const workspaceEditFileTool: ToolDefinition = {
 
         // Count occurrences to warn about ambiguity
         const occurrences = content.split(edit.search).length - 1;
+        const replaceAll = edit.replaceAll === true || edit.replace_all === true;
+        if (occurrences > 1 && !replaceAll) {
+          return {
+            success: false,
+            error: `Search text matched ${occurrences} times in ${input.filename} (edit #${editIdx + 1}). Add more context, use startLine/endLine, use workspace_apply_patch, or set replaceAll=true intentionally.`,
+            path: filePath,
+            filename: input.filename,
+            occurrences,
+            editsApplied: 0,
+          };
+        }
         if (occurrences > 1) {
-          console.warn(`[workspace_edit_file] ⚠️ Search text found ${occurrences} times in ${input.filename}. Replacing ALL occurrences. Use workspace_apply_patch with context lines for precise single-occurrence edits.`);
+          console.warn(`[workspace_edit_file] replaceAll=true: replacing ${occurrences} occurrences in ${input.filename}.`);
         }
 
         // FIX: Use split/join to replace ALL occurrences (not just first)
-        content = content.split(edit.search).join(edit.replace);
+        content = (edit.replaceAll === true || edit.replace_all === true)
+          ? content.split(edit.search).join(edit.replace)
+          : content.replace(edit.search, edit.replace);
         lines = content.split('\n');
       } else {
         throw new Error('Edit chunk must have either a "search" string or "startLine" and "endLine" numbers.');
@@ -476,10 +499,24 @@ export const workspaceEditFileTool: ToolDefinition = {
         success: true,
         message: `No changes detected — the edits resulted in identical content. File unchanged: ${ filePath }`,
         warning: 'The search and replace values may be the same.',
+        path: filePath,
+        filename: input.filename,
+        editsApplied: 0,
+        totalLines: content.split('\n').length,
+        size: content.length,
       };
     }
 
-    await fs.writeFile(filePath, lines.join('\n'), 'utf-8');
-    return { success: true, message: `Applied ${ input.edits.length } edits to ${ filePath }` };
+    const finalContent = lines.join('\n');
+    await fs.writeFile(filePath, finalContent, 'utf-8');
+    return {
+      success: true,
+      message: `Applied ${ input.edits.length } edits to ${ filePath }`,
+      path: filePath,
+      filename: input.filename,
+      editsApplied: input.edits.length,
+      totalLines: finalContent.split('\n').length,
+      size: finalContent.length,
+    };
   }
 };

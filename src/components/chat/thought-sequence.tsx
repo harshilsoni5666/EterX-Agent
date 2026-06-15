@@ -176,7 +176,7 @@ const tokenizeMarkdownForReveal = (value: string) => {
         continue;
       }
 
-      if (isTableLine(line) && (isTableSeparatorLine(line) || isTableLine(lines[i - 1] || ''))) {
+      if (isTableLine(line) && (isTableSeparatorLine(line) || isTableLine(lines[i - 1] || '') || isTableSeparatorLine(lines[i - 1] || ''))) {
         chunks.push(line);
         continue;
       }
@@ -184,7 +184,8 @@ const tokenizeMarkdownForReveal = (value: string) => {
       if (isTableLine(line)) {
         const trimmed = line.trim();
         if (trimmed.startsWith('|') || trimmed.endsWith('|')) {
-          chunks.push(line);
+          if (!isCompleteLine && i === lines.length - 1) break;
+          pushProseRevealChunks(line, chunks, isCompleteLine);
           continue;
         }
       }
@@ -432,6 +433,13 @@ const getToolMeta = (text: string, type: string, _iconName?: string) => {
   return { icon: null, verb, color: '#E8E6E3' };
 };
 
+const stripTrailingFileName = (value: string, fileName: string) => {
+  if (!value || !fileName) return value;
+  const escapedFileName = fileName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const stripped = value.replace(new RegExp(`\\s+(?:file\\s+)?${escapedFileName}$`, 'i'), '').trim();
+  return stripped || value;
+};
+
 const TERMINAL_ACTION_PATTERN = /\b(?:shell|terminal|command|exec|run|process|server|watch|powershell|pwsh|cmd(?:\.exe)?|bash|zsh|sh|git|npm|npx|pnpm|yarn|bun|node|python|py|pip|pytest|tsx|tsc|eslint|prettier|docker|cargo|go\s+(?:test|build|run|vet)|mvn|gradle|java|dotnet|php|ruby|rails|uv|poetry|rg|grep|curl|wget)\b/i;
 
 const shouldUseTerminalIcon = (log: any, subtitle = '', preview?: any) => {
@@ -464,6 +472,7 @@ const LIVE_THOUGHT_FRESH_MS = 2400;
 const LIVE_ACTION_SETTLE_MS = 1400;
 const LIVE_FACE_REGULAR_DELAY_MS = 8500;
 const LIVE_FACE_DEEP_WORK_DELAY_MS = 2400;
+const THOUGHT_ELAPSED_TICK_MS = 5000;
 
 const getLogUpdatedAt = (log: any) =>
   asTimestamp(log?.endTime) ?? asTimestamp(log?.updatedAt) ?? asTimestamp(log?.timestamp) ?? asTimestamp(log?.startTime);
@@ -514,7 +523,7 @@ const useThinkTimer = (isLive: boolean, startedAt?: number, updatedAt?: number) 
       setSecs(elapsedFrom(Date.now()));
       const id = setInterval(() => {
         setSecs(elapsedFrom(Date.now()));
-      }, 1000);
+      }, THOUGHT_ELAPSED_TICK_MS);
       return () => clearInterval(id);
     }
 
@@ -530,6 +539,14 @@ const useThinkTimer = (isLive: boolean, startedAt?: number, updatedAt?: number) 
 
   // Always return the frozen value if available (never re-tick after done)
   return frozenRef.current !== null ? frozenRef.current : secs;
+};
+
+const formatThoughtElapsed = (seconds: number) => {
+  if (seconds <= 0) return '';
+  if (seconds < 5) return 'under 5s';
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  return minutes > 0 ? `${ minutes }m ${ rest }s` : `${ rest }s`;
 };
 
 export const ProfessionalThought = ({ text, isLatest, isThinking, variant = 'thought', suffix, startedAt, updatedAt, reveal = false }: { text: string, isLatest: boolean, isThinking: boolean, variant?: 'thought' | 'answer' | 'note', suffix?: React.ReactNode, startedAt?: number, updatedAt?: number, reveal?: boolean }) => {
@@ -623,10 +640,11 @@ export const ProfessionalThought = ({ text, isLatest, isThinking, variant = 'tho
   }, [open, renderText]);
 
   // "Thinking... 4s" while live → "Thought for 4s" when done
+  const elapsedLabel = formatThoughtElapsed(secs);
   const thinkLabel = isLive
-    ? `Thinking... ${secs}s`
-    : secs > 0
-      ? `Thought for ${secs}s`
+    ? `Thinking${elapsedLabel ? `... ${elapsedLabel}` : ''}`
+    : elapsedLabel
+      ? `Thought for ${elapsedLabel}`
       : 'Thought';
   const isNote = variant === 'note';
   const revealEnabled = variant === 'answer'
@@ -687,7 +705,7 @@ export const ProfessionalThought = ({ text, isLatest, isThinking, variant = 'tho
             aria-expanded={open}
             className="eterx-thought-toggle flex min-h-[33px] w-full items-center gap-2.5 px-3 py-1 text-left transition-colors hover:bg-white/[0.026] group"
           >
-            <span className={`flex-1 text-[13.5px] font-medium ${ isLive ? 'text-[#A0A0A0] eterx-live-text eterx-live-text--thought' : 'text-[#7C776F]' }`}>
+            <span className={`flex-1 text-[13.5px] font-medium ${ isLive ? 'eterx-text-shimmer eterx-text-shimmer-working' : 'text-[#7C776F]' }`}>
               {thinkLabel}
             </span>
             <ChevronRight className={`h-4 w-4 text-[#625C54] group-hover:text-[#A8A198] transition-all ${ open ? 'rotate-90' : '' }`} />
@@ -760,7 +778,7 @@ const WorkNoteBlock = ({ text, isActive = false }: { text: string; isActive?: bo
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       transition={{ duration: 0.12, ease: 'easeOut' }}
-      className={`eterx-work-note-block w-full px-1 py-0 text-[13.5px] leading-[1.5] tracking-normal ${isActive ? 'eterx-live-text eterx-live-text--chip' : 'text-[#E2DFDA]'}`}
+      className={`eterx-work-note-block w-full px-1 py-0 text-[13.5px] leading-[1.5] tracking-normal ${isActive ? 'eterx-text-shimmer eterx-text-shimmer-active' : 'text-[#E2DFDA]'}`}
     >
       <ReactMarkdown
         remarkPlugins={remarkPlugins}
@@ -955,7 +973,7 @@ const InlineConsole = ({ command, content, exitCode, durationMs }: { command: st
       <div className="eterx-terminal-console-footer flex items-center justify-end gap-2 bg-[#1D1D1C] px-3 pb-2 pt-1 text-[11.5px] font-medium text-[#A9A196]">
         <span className={`inline-flex items-center gap-1.5 ${ success ? 'text-[#BDB8AF]' : 'text-red-300' }`}>
           {isRunning ? (
-            <span className="h-2 w-2 rounded-full bg-[#BDB8AF] shadow-[0_0_10px_rgba(189,184,175,0.4)] animate-pulse" />
+            <span className="h-2 w-2 rounded-full bg-[#BDB8AF]/85 shadow-[0_0_10px_rgba(189,184,175,0.28)]" />
           ) : success ? (
             <CheckCircle className="h-3.5 w-3.5 text-[#BDB8AF]" />
           ) : (
@@ -1307,14 +1325,14 @@ const getPreviewContent = (preview: any) => {
 };
 
 const getDiffStats = (preview: any, log: any) => {
-  let added = numberFrom(log.added, log.additions, log.insertions, log.linesAdded, log.add);
-  let removed = numberFrom(log.removed, log.deleted, log.deletions, log.linesRemoved, log.remove);
+  let added = 0;
+  let removed = 0;
   if (preview?.diffLines?.length) {
     added = preview.diffLines.filter((line: any) => line.type === 'added').length;
     removed = preview.diffLines.filter((line: any) => line.type === 'removed').length;
   } else if (preview) {
-    added = numberFrom(preview.added, preview.additions, preview.insertions, preview.linesAdded, added);
-    removed = numberFrom(preview.removed, preview.deleted, preview.deletions, preview.linesRemoved, removed);
+    added = numberFrom(preview.added, preview.additions, preview.insertions, preview.linesAdded);
+    removed = numberFrom(preview.removed, preview.deleted, preview.deletions, preview.linesRemoved);
     const previewContent = getPreviewContent(preview);
     if (!preview.isEdit && added === 0 && removed === 0) {
       const createdLineCount = numberFrom(preview.linesAdded, preview.lineCount, preview.totalLines);
@@ -1394,6 +1412,11 @@ const parsePatchFileTargets = (value: string) => {
   return found;
 };
 
+const COMMON_EXTENSIONLESS_FILES = new Set([
+  'dockerfile', 'makefile', 'license', 'rakefile', 'gemfile', 'procfile',
+  'readme', 'authors', 'copying', 'install', 'todo', 'changelog'
+]);
+
 const toFileTraceTarget = (candidate: unknown): FileTraceTarget | null => {
   const cleaned = cleanFileTargetString(candidate);
   if (!cleaned) return null;
@@ -1406,7 +1429,12 @@ const toFileTraceTarget = (candidate: unknown): FileTraceTarget | null => {
   const filename = segments[segments.length - 1] || normalized;
   if (!filename || filename.length > 160) return null;
   if (!/[A-Za-z0-9_.-]/.test(filename)) return null;
-  const looksPathLike = /[\\/]/.test(normalized) || /\.[A-Za-z0-9]{1,16}$/.test(filename) || filename.startsWith('.');
+  const lowerFilename = filename.toLowerCase();
+  const looksPathLike =
+    /[\\/]/.test(normalized) ||
+    /\.[A-Za-z0-9]{1,16}$/.test(filename) ||
+    filename.startsWith('.') ||
+    COMMON_EXTENSIONLESS_FILES.has(lowerFilename);
   if (!looksPathLike) return null;
   return { filename, filepath: cleaned };
 };
@@ -1544,6 +1572,11 @@ const getActionLookupIdentity = (log: any) => [
   compactActionKeyPart(log?.command),
   compactActionKeyPart(log?.filename),
 ].join('|');
+
+const getStableActionEventId = (log: any) => {
+  const value = log?.traceId ?? log?.id ?? log?._traceIdx ?? null;
+  return value === null || value === undefined ? '' : String(value);
+};
 
 const ACTION_CARD_CLASS = "eterx-action-card w-full overflow-hidden rounded-[12px] border border-white/[0.075] bg-[#151514]/60 shadow-[inset_0_1px_0_rgba(255,255,255,0.028),0_2px_10px_rgba(0,0,0,0.14)]";
 const ACTION_ROW_DIVIDER_CLASS = "eterx-action-row-divider border-t border-white/[0.052]";
@@ -1689,7 +1722,7 @@ const TerminalTraceCard = ({
         <span className="eterx-action-icon eterx-terminal-icon flex h-6 w-6 shrink-0 items-center justify-center text-[#A39B91]">
           <Terminal className="h-[15px] w-[15px]" strokeWidth={2.1} />
         </span>
-        <span className={`min-w-0 truncate text-[13.5px] font-medium leading-tight tracking-normal ${isStreaming ? 'eterx-live-text eterx-live-text--chip' : 'text-[#C8C1B8]'}`}>
+        <span className={`min-w-0 truncate text-[13.5px] font-medium leading-tight tracking-normal ${isStreaming ? 'eterx-text-shimmer eterx-text-shimmer-active' : 'text-[#C8C1B8]'}`}>
           {headerLabel}
         </span>
         {!isExpanded && (
@@ -1749,7 +1782,7 @@ const FileChangeTraceCard = ({
   const isEditPreview = preview?.type === 'file_preview' && Boolean(preview?.isEdit);
   const isCreateAction = /^(?:creat|generat|scaffold|writ)/i.test(displayVerb);
   const canPreview = preview?.type === 'file_preview' && (
-    (isEditPreview && hasDiffPreview) ||
+    (isEditPreview && (hasDiffPreview || previewContent.length > 0 || Boolean(previewFilePath))) ||
     (!isEditPreview && (previewContent.length > 0 || Boolean(previewFilePath)))
   );
   const showDiff = Boolean(isEditPreview && hasDiffPreview);
@@ -1760,7 +1793,7 @@ const FileChangeTraceCard = ({
   // Patch result — extract from log.result or log (apply_patch returns filesModified/Created/Deleted)
   const isPatch = /patch/i.test(String(displayVerb || '')) || /patch/i.test(String(log?.text || ''));
   const patchResult = useMemo(() => {
-    const src = log?.result ?? log;
+    const src = preview?.patchResult ?? log?.result ?? log;
     const hasData = Array.isArray(src?.filesModified) || Array.isArray(src?.filesCreated) || Array.isArray(src?.filesDeleted);
     if (!hasData) return null;
     return {
@@ -1769,7 +1802,7 @@ const FileChangeTraceCard = ({
       filesDeleted: (src?.filesDeleted ?? []) as string[],
       errors: (src?.errors ?? []) as string[],
     };
-  }, [log]);
+  }, [log, preview]);
   const isPatchWithResult = Boolean(isPatch && patchResult);
 
   const canExpand = isPatchWithResult || canPreview || canFetchCreatedFile || canShowFileList;
@@ -1848,7 +1881,7 @@ const FileChangeTraceCard = ({
       showExpand={false}
       filepath={previewFilePath}
       fetchFull
-      created
+      created={isCreateAction}
       flush
     />
   );
@@ -1908,7 +1941,7 @@ const FileChangeTraceCard = ({
         <span className="eterx-action-icon eterx-file-change-icon flex h-6 w-6 shrink-0 items-center justify-center">
           <AI isLive={isLiveChip} size={15} color={isLiveChip ? ac : '#DAD6CF'} />
         </span>
-        <span className={`eterx-file-change-title min-w-max whitespace-nowrap text-[13.5px] font-medium leading-tight tracking-normal ${isLiveChip ? 'eterx-live-text eterx-live-text--chip' : 'text-[#C8C1B8]'}`}>
+        <span className={`eterx-file-change-title min-w-max whitespace-nowrap text-[13.5px] font-medium leading-tight tracking-normal ${isLiveChip ? 'eterx-text-shimmer eterx-text-shimmer-active' : 'text-[#C8C1B8]'}`}>
           {title}
         </span>
         <span className="eterx-file-change-detail flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 overflow-visible">
@@ -1954,6 +1987,9 @@ const ActionChip = ({
   const preview = useMemo(() => {
     const directIdx = allLogs.indexOf(log);
     const exactIdentity = log?._traceIdx ?? log?.traceId ?? log?.id ?? null;
+    const ownerIdentities = [log?.traceId, log?.id, log?._traceIdx]
+      .filter(value => value !== null && value !== undefined)
+      .map(value => String(value));
     const lookupIdentity = getActionLookupIdentity(log);
     const myIdx = directIdx !== -1
       ? directIdx
@@ -1964,6 +2000,13 @@ const ActionChip = ({
         return getActionLookupIdentity(candidate) === lookupIdentity;
       });
     const searchLogs = myIdx !== -1 ? allLogs.slice(myIdx) : allLogs;
+    const findOwnerPreview = (items: any[]) => items.find((l: any) =>
+      l?.type === 'file_preview' &&
+      ownerIdentities.length > 0 &&
+      ownerIdentities.includes(String(l.ownerTraceId || ''))
+    );
+    const ownerPreview = findOwnerPreview(searchLogs) || findOwnerPreview(allLogs);
+    if (ownerPreview) return ownerPreview;
     if (log.type === 'command') {
       const cmd = getTerminalCommandText(log, undefined, String(log.secondary || ''));
       // Search forward from this log first, then try searching all logs
@@ -1989,7 +2032,7 @@ const ActionChip = ({
     return null;
   }, [allLogs, isEdit, log, logFileTargets]);
   const [isExpanded, setIsExpanded] = useState(false);
-  const actionIdentity = getActionLookupIdentity(log);
+  const actionIdentity = `${getStableActionEventId(log)}|${getActionLookupIdentity(log)}`;
   useEffect(() => {
     setIsExpanded(false);
   }, [actionIdentity]);
@@ -2039,6 +2082,7 @@ const ActionChip = ({
     return { ...base, verbDone: base.verb, verbLive: LIVE_VERBS[base.verb] || base.verb };
   }, [isEdit, log.text, log.type, log.icon, log.iconCategory, preview]);
   const displayVerb = isLiveChip ? (meta.verbLive || meta.verbDone) : (meta.verbDone || (meta as any).verb);
+  const displayVerbLabel = hasFile ? stripTrailingFileName(displayVerb, fileName) : displayVerb;
   const isTerminalAction = isTerminalActionLike(log, preview);
   if (isTerminalAction) {
     return (
@@ -2062,10 +2106,10 @@ const ActionChip = ({
       content: typeof preview?.content === 'string' ? preview.content : undefined,
       diffLines: preview?.diffLines,
       isEdit: preview?.isEdit || isEdit,
-      linesAdded: preview?.linesAdded ?? preview?.added ?? log.linesAdded ?? log.added,
-      linesRemoved: preview?.linesRemoved ?? preview?.removed ?? log.linesRemoved ?? log.removed,
-      added: preview?.added ?? preview?.linesAdded ?? log.added ?? log.linesAdded,
-      removed: preview?.removed ?? preview?.linesRemoved ?? log.removed ?? log.linesRemoved,
+      linesAdded: preview?.linesAdded ?? preview?.added,
+      linesRemoved: preview?.linesRemoved ?? preview?.removed,
+      added: preview?.added ?? preview?.linesAdded,
+      removed: preview?.removed ?? preview?.linesRemoved,
       lineCount: preview?.lineCount,
       totalLines: preview?.totalLines ?? preview?.lineCount,
       loadedLines: preview?.loadedLines,
@@ -2083,7 +2127,7 @@ const ActionChip = ({
         log={log}
         preview={preview}
         isLiveChip={isLiveChip}
-        displayVerb={displayVerb}
+        displayVerb={displayVerbLabel}
         fileTargets={fileTargets}
         diffStats={diffStats}
         inCard={inCard}
@@ -2115,12 +2159,12 @@ const ActionChip = ({
         {!isThinkChip && (() => {
           // Terminal-style traces can arrive with custom text and older computer categories.
           const iconCategory = shouldUseTerminalIcon(log, subtitle, preview) ? 'terminal' : log.iconCategory;
-          const agentEntry = resolveAgentIcon(displayVerb, log.text, iconCategory);
+          const agentEntry = resolveAgentIcon(displayVerbLabel, log.text, iconCategory);
           const { Icon: AI, color: ac } = agentEntry;
           return <span className="eterx-action-icon flex h-6 w-6 items-center justify-center shrink-0"><AI isLive={isLiveChip} size={15} color={isLiveChip ? ac : '#DAD6CF'} /></span>;
         })()}
         {isThinkChip && <span className="h-6 w-6 shrink-0" />}
-        <span className={`eterx-action-verb shrink-0 truncate text-[13.5px] font-medium leading-tight tracking-normal ${isLiveChip ? 'eterx-live-text eterx-live-text--chip' : 'text-[#C8C1B8]'}`}>{displayVerb}</span>
+        <span className={`eterx-action-verb shrink-0 truncate text-[13.5px] font-medium leading-tight tracking-normal ${isLiveChip ? 'eterx-text-shimmer eterx-text-shimmer-active' : 'text-[#C8C1B8]'}`}>{displayVerbLabel}</span>
         {hasFile && (
           <span className="flex min-w-0 items-center gap-1.5">
             <button
@@ -2176,7 +2220,7 @@ const ActionChip = ({
         <div className="w-full">
           {preview.type === 'console_output'
             ? <InlineConsole command={preview.command || subtitle} content={preview.output || preview.content} exitCode={preview.exitCode} durationMs={preview.durationMs} />
-            : preview.type === 'file_preview' && preview.isEdit
+            : preview.type === 'file_preview' && preview.isEdit && Array.isArray(preview.diffLines) && preview.diffLines.length > 0
               ? <InlineDiffView filename={preview.filename || fileName} diffLines={preview.diffLines} />
               : preview.type === 'file_preview'
                 ? <InlineCodeView filename={preview.filename || fileName} content={getPreviewContent(preview)} filepath={preview.filepath || fullPath} fetchFull={Boolean(preview.filepath || fullPath)} />
@@ -2227,7 +2271,7 @@ const SubAgentCard = ({ log, onOpenAgentTeam }: { log: any; onOpenAgentTeam?: (n
                 {statusBadge.label}
               </span>
             </span>
-            <span className={`mt-0.5 block truncate text-[11px] font-medium ${isWorking ? 'eterx-text-shimmer eterx-text-shimmer-action' : 'text-[#7E766C]'}`}>{metaText}</span>
+            <span className={`mt-0.5 block truncate text-[11px] font-medium ${isWorking ? 'text-[#BDB5AA]' : 'text-[#7E766C]'}`}>{metaText}</span>
           </span>
 
           <ChevronRight className={`h-3.5 w-3.5 shrink-0 text-[#6F685F] transition-all ${ open ? 'rotate-90 text-[#B6AEA3]' : '' }`} />
@@ -2299,7 +2343,7 @@ const AgentCreatedCard = ({ log, onOpenAgentTeam }: { log: any; onOpenAgentTeam?
                 <SubAgentIdentityIcon name={name} status="spawning" size={28} />
               )}
               <span className="text-[13px] font-medium text-[#C8C1B8] group-hover:text-[#E0DAD2] transition-colors">
-                Creating <span className="text-[#E0DAD2]">{name}</span>
+                Created <span className="text-[#E0DAD2]">{name}</span>
               </span>
             </button>
           </div>
@@ -2334,7 +2378,7 @@ const SubAgentActionCard = ({ log }: { log: any }) => {
           </span>
           <span className="eterx-agent-live-rail shrink-0" aria-hidden="true" />
         </span>
-        <span className="mt-0.5 block min-w-0 truncate text-[13px] font-medium leading-5 eterx-text-shimmer eterx-text-shimmer-action">
+        <span className="mt-0.5 block min-w-0 truncate text-[13px] font-medium leading-5 text-[#C8C1B8]">
           {actionText}
         </span>
         {detailText && (
@@ -2438,7 +2482,7 @@ const AskUserTimelineCard = ({ log, isLive }: { log: any; isLive: boolean }) => 
             <AgentAssetIcon size={18} color="#DAD6CF" />
           )}
         </span>
-        <span className={`shrink-0 truncate text-[13.5px] font-medium leading-tight tracking-normal ${!answered && isLive ? 'eterx-live-text eterx-live-text--chip' : 'text-[#C8C1B8]'}`}>
+        <span className={`shrink-0 truncate text-[13.5px] font-medium leading-tight tracking-normal ${!answered && isLive ? 'eterx-text-shimmer eterx-text-shimmer-active' : 'text-[#C8C1B8]'}`}>
           {answered ? 'Asked user' : `Asking user${isLive ? '...' : ''}`}
         </span>
         <span className="min-w-0 flex-1 truncate text-[12.75px] text-[#918A80]">
@@ -2740,7 +2784,7 @@ const LiveWorkingIndicator = ({ logs }: { logs: any[] }) => {
           animate={{ opacity: 1, x: 0 }}
           exit={{ opacity: 0, x: -4 }}
           transition={{ duration: 0.18, ease: 'easeOut' }}
-          className="eterx-live-text eterx-live-text--ambient min-w-0 truncate pb-[2px] text-[13.5px] font-medium leading-[1.35] tracking-normal"
+          className="eterx-text-shimmer eterx-text-shimmer-ambient min-w-0 truncate pb-[2px] text-[13.5px] font-medium leading-[1.35] tracking-normal"
         >
           {displayLabel}
         </motion.span>
@@ -2757,12 +2801,11 @@ const useElapsed = (active: boolean) => {
   useEffect(() => {
     if (!active) return;
     start.current = Date.now();
-    const iv = setInterval(() => setT(Math.floor((Date.now() - start.current) / 1000)), 1000);
+    const iv = setInterval(() => setT(Math.floor((Date.now() - start.current) / 1000)), THOUGHT_ELAPSED_TICK_MS);
     return () => clearInterval(iv);
   }, [active]);
   if (!active) return null;
-  const m = Math.floor(t / 60), s = t % 60;
-  return m > 0 ? `${ m }m ${ s }s` : `${ s }s`;
+  return formatThoughtElapsed(t) || 'under 5s';
 };
 
 
@@ -3086,17 +3129,19 @@ const HtmlPreviewCard = ({ log }: { log: any }) => {
 };
 
 
-export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showLiveIndicator = false, onOpenAgentTeam }: { logs: any[], liveLogs?: any[], isThinking: boolean, isLast: boolean, showLiveIndicator?: boolean, onOpenAgentTeam?: (agentName?: string) => void }) => {
+export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showLiveIndicator = false, onOpenAgentTeam, isSubAgentTab = false }: { logs: any[], liveLogs?: any[], isThinking: boolean, isLast: boolean, showLiveIndicator?: boolean, onOpenAgentTeam?: (agentName?: string) => void, isSubAgentTab?: boolean }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const NOISE_PATTERN = /reconnect|retrying|stalled|stream interrupted|model error|fallback|cancelled/i;
   const isFlowLog = (l: any) =>
     ['thought_stream', 'work_note', 'command', 'exploration', 'file_edit', 'progress', 'browser', 'safety_warning', 'communication', 'sub_agent_answer', 'sub_agent_result', 'sub_agent_spawn', 'sub_agent_action', 'sub_agent_complete', 'sub_agent_error', 'inter_agent_comm', 'file_preview', 'console_output', 'ask_user'].includes(l.type) &&
     !(['progress', 'command', 'exploration'].includes(l.type) && /analyz(?:e|ing) task complexity/i.test(String(l.text || ''))) &&
-    !(l.type === 'progress' && NOISE_PATTERN.test(String(l.text || '')));
+    !(l.type === 'progress' && NOISE_PATTERN.test(String(l.text || ''))) &&
+    // Filter out spawning announcement commands that have spawnedAgents (shown separately as agent cards)
+    !(l.spawnedAgents && Array.isArray(l.spawnedAgents) && l.spawnedAgents.length > 0 && l.type === 'command');
   const flowLogs = logs.filter(isFlowLog);
   const liveFlowLogs = liveLogs.filter(isFlowLog);
-  const statusLogs = [...flowLogs, ...liveFlowLogs];
-  const hasExternalLiveWork = liveFlowLogs.length > 0;
+  const timelineLogs = [...flowLogs, ...liveFlowLogs];
+  const statusLogs = timelineLogs;
   const segs: any[] = []; let aBuf: any[] = []; let aBufFirstIdx = -1;
   const SPEC = new Set(['file_preview', 'console_output', 'sub_agent_answer', 'sub_agent_result', 'sub_agent_spawn', 'sub_agent_action', 'sub_agent_complete', 'sub_agent_error', 'inter_agent_comm', 'safety_warning']);
   const flush = (idx: number) => {
@@ -3105,7 +3150,12 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
       aBuf.forEach((log, i) => {
         if (i > 0) {
           const prev = unique[unique.length - 1];
-          if (getActionLookupIdentity(log) === getActionLookupIdentity(prev)) {
+          const logEventId = getStableActionEventId(log);
+          const prevEventId = getStableActionEventId(prev);
+          const isSameEvent = logEventId && prevEventId
+            ? logEventId === prevEventId
+            : getActionLookupIdentity(log) === getActionLookupIdentity(prev);
+          if (isSameEvent) {
             unique[unique.length - 1] = {
               ...prev,
               ...log,
@@ -3125,9 +3175,22 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
     if (aBuf.length === 0) aBufFirstIdx = idx;
     aBuf.push(log);
   };
-  flowLogs.forEach((log, idx) => {
+  // Build set of agent names already covered by team-spawn events so individual
+  // spawn logs for those same agents are not rendered a second time.
+  const teamSpawnedNames = new Set<string>();
+  timelineLogs.forEach((log: any) => {
+    if (log.type === 'sub_agent_spawn' && Array.isArray(log.spawnedAgents) && log.spawnedAgents.length > 1) {
+      const details = log.agentDetails || log.spawnedAgents || [];
+      const names: string[] = Array.isArray(details)
+        ? details.map((a: any) => typeof a === 'string' ? a : a.name).filter(Boolean)
+        : [];
+      names.forEach(n => teamSpawnedNames.add(String(n).toLowerCase().trim()));
+    }
+  });
+
+  timelineLogs.forEach((log, idx) => {
     if (log.type === 'thought_stream') {
-      if (shouldRenderThoughtSegment(log, flowLogs, idx)) {
+      if (shouldRenderThoughtSegment(log, timelineLogs, idx)) {
         flush(idx - 1);
         segs.push({ kind: 'thought', log, idx });
       }
@@ -3135,15 +3198,44 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
     else if (log.type === 'work_note') { flush(idx - 1); segs.push({ kind: 'note', log, idx }); }
     else if (log.type === 'safety_warning') { flush(idx - 1); segs.push({ kind: 'safety', log, idx }); }
     else if (log.type === 'steering_received') { flush(idx - 1); segs.push({ kind: 'steering', log, idx }); }
-    else if (log.type === 'sub_agent_answer' || log.type === 'sub_agent_result' || log.type === 'sub_agent_complete') { /* hidden from main feed */ }
-    else if (log.type === 'sub_agent_spawn') { flush(idx - 1); segs.push({ kind: 'subagent_spawn', log, idx }); }
-    else if (log.type === 'sub_agent_error') { /* hidden from main feed */ }
-    else if (log.type === 'sub_agent_action') { /* hidden from main feed */ }
-    else if (log.type === 'inter_agent_comm') { /* hidden from main feed */ }
+    else if (log.type === 'sub_agent_answer' || log.type === 'sub_agent_result') { /* hidden */ }
+    else if (log.type === 'sub_agent_complete') {
+      if (isSubAgentTab) {
+        flush(idx - 1);
+        segs.push({ kind: 'subagent_complete', log, idx });
+      }
+    }
+    else if (log.type === 'sub_agent_spawn') {
+      // Skip individual single-agent spawn events whose name was already covered by a team spawn
+      const singleName = String(log.agentName || log.subAgent || '').toLowerCase().trim();
+      const isTeamEvent = Array.isArray(log.spawnedAgents) && log.spawnedAgents.length > 1;
+      const isDuplicate = !isTeamEvent && singleName && teamSpawnedNames.has(singleName);
+      if (!isDuplicate) {
+        flush(idx - 1);
+        segs.push({ kind: 'subagent_spawn', log, idx });
+      }
+    }
+    else if (log.type === 'sub_agent_error') {
+      if (isSubAgentTab) {
+        flush(idx - 1);
+        segs.push({ kind: 'subagent_error', log, idx });
+      }
+    }
+    else if (log.type === 'sub_agent_action') {
+      if (isSubAgentTab) {
+        pushActionLog(log, idx);
+      }
+    }
+    else if (log.type === 'inter_agent_comm') {
+      if (isSubAgentTab) {
+        flush(idx - 1);
+        segs.push({ kind: 'comm', log, idx });
+      }
+    }
     else if (log.type === 'ask_user') { flush(idx - 1); segs.push({ kind: 'ask_user', log, idx }); }
     else if (log.type === 'console_output') {
       const commandSnippet = String(log.command || '').trim().substring(0, 20);
-      const hasCommandOwner = Boolean(commandSnippet) && flowLogs
+      const hasCommandOwner = Boolean(commandSnippet) && timelineLogs
         .slice(0, idx)
         .some((candidate: any) =>
           candidate?.type === 'command' &&
@@ -3157,7 +3249,7 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
     else if (SPEC.has(log.type)) { flush(idx - 1); }
     else { pushActionLog(log, idx); }
   });
-  flush(flowLogs.length - 1);
+  flush(timelineLogs.length - 1);
   const scrollRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     // Only auto-scroll if user hasn't scrolled up manually
@@ -3177,9 +3269,9 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
         const nextSeg = segs[i + 1];
         const prevSeg = segs[i - 1];
         const phaseIsLastVisible = i === segs.length - 1 || (seg.kind === 'note' && nextSeg?.kind === 'action_group' && i + 1 === segs.length - 1);
-        const phaseIsActive = isThinking && isLast && phaseIsLastVisible && !hasExternalLiveWork;
+        const phaseIsActive = isThinking && isLast && phaseIsLastVisible;
 
-        if (seg.kind === 'thought') return <ProfessionalThought key={`t-${ seg.idx }`} text={seg.log.text} isLatest={isLast && i === segs.length - 1 && !hasExternalLiveWork} isThinking={isThinking} startedAt={seg.log.startTime} updatedAt={seg.log.endTime} />;
+        if (seg.kind === 'thought') return <ProfessionalThought key={`t-${ seg.idx }`} text={seg.log.text} isLatest={isLast && i === segs.length - 1} isThinking={isThinking} startedAt={seg.log.startTime} updatedAt={seg.log.endTime} />;
         if (seg.kind === 'note' && nextSeg?.kind === 'action_group') {
           const firstIdx = nextSeg.firstIdx ?? nextSeg.lastIdx ?? i;
           const groupKey = `phase-g-${ firstIdx }-${ getActionIdentity(nextSeg.logs[0], firstIdx) }`;
@@ -3198,27 +3290,34 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
                   logs={nextSeg.logs}
                   isActiveGroup={phaseIsActive}
                   isLast={isLast}
-                  allLogs={flowLogs}
+                  allLogs={timelineLogs}
                 />
               </div>
             </motion.div>
           );
         }
-        if (seg.kind === 'note') return <WorkNoteBlock key={`n-${ seg.idx }`} text={seg.log.text} isActive={isThinking && isLast && i === segs.length - 1 && !hasExternalLiveWork} />;
+        if (seg.kind === 'note') return <WorkNoteBlock key={`n-${ seg.idx }`} text={seg.log.text} isActive={isThinking && isLast && i === segs.length - 1} />;
         if (seg.kind === 'safety') return <SafetyBanner key={`sf-${ seg.idx }`} log={seg.log} />;
         if (seg.kind === 'steering') return <SteeringCard key={`steer-${ seg.idx }`} log={seg.log} />;
-        if (seg.kind === 'subagent') return null; /* hidden from main feed */
-        if (seg.kind === 'comm') return null; /* hidden from main feed */
-        if (seg.kind === 'subagent_action') return null; /* hidden from main feed */
+        if (seg.kind === 'subagent') return null;
+        if (seg.kind === 'comm') {
+          return isSubAgentTab ? <InterAgentCommCard key={`comm-${ seg.idx }`} log={seg.log} onOpenAgentTeam={onOpenAgentTeam} /> : null;
+        }
+        if (seg.kind === 'subagent_action') return null;
         if (seg.kind === 'subagent_spawn') return <AgentCreatedCard key={`ss-${ seg.idx }`} log={seg.log} onOpenAgentTeam={onOpenAgentTeam} />;
-        if (seg.kind === 'subagent_error') return null; /* hidden from main feed */
+        if (seg.kind === 'subagent_complete') {
+          return isSubAgentTab ? <SubAgentCard key={`sc-${ seg.idx }`} log={seg.log} onOpenAgentTeam={onOpenAgentTeam} /> : null;
+        }
+        if (seg.kind === 'subagent_error') {
+          return isSubAgentTab ? <SubAgentErrorCard key={`se-${ seg.idx }`} log={seg.log} /> : null;
+        }
         if (seg.kind === 'ask_user') return <AskUserTimelineCard key={`ask-tl-${ seg.idx }`} log={seg.log} isLive={isThinking && isLast && i === segs.length - 1 && !seg.log.answeredWith} />;
         if (seg.kind === 'console') return <TerminalTraceCard key={`console-${ seg.idx }`} log={seg.log} preview={seg.log} isLiveChip={isThinking && isLast && i === segs.length - 1} />;
         if (seg.kind === 'action_group' && prevSeg?.kind === 'note') return null;
         
         const firstIdx = seg.firstIdx ?? seg.lastIdx ?? i;
         const groupKey = `g-${ firstIdx }-${ getActionIdentity(seg.logs[0], firstIdx) }`;
-        return <CollapsibleActionGroup key={groupKey} logs={seg.logs} isActiveGroup={isThinking && isLast && i === segs.length - 1 && !hasExternalLiveWork} isLast={isLast} allLogs={flowLogs} />;
+        return <CollapsibleActionGroup key={groupKey} logs={seg.logs} isActiveGroup={isThinking && isLast && i === segs.length - 1} isLast={isLast} allLogs={timelineLogs} />;
       })}
       <AnimatePresence>
         {showLiveIndicator && isThinking && isLast && <LiveWorkingIndicator key="live-working" logs={statusLogs} />}

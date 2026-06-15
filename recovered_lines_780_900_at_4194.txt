@@ -1,0 +1,129 @@
+Created At: 2026-06-14T04:24:15Z
+Completed At: 2026-06-14T04:24:16Z
+File Path: `file:///c:/Harshil%20projects/EterX-Agent/src/lib/agent/gemini.ts`
+Total Lines: 5905
+Total Bytes: 303861
+Showing lines 780 to 900
+The following code has been modified to include a line number before every line, in the format: <line_number>: <original_line>. Please note that any changes targeting the original code should remove the line number, colon, and leading space.
+780: 
+781:   private getPreEditSnapshot(snapshots: Map<string, string>, ...paths: string[]): string {
+782:     for (const candidate of paths) {
+783:       const key = normalizeTracePath(candidate);
+784:       if (key && snapshots.has(key)) return snapshots.get(key)!;
+785:     }
+786:     return '';
+787:   }
+788: 
+789:   private emitTracePreview(trace: any[], onTrace: ((t: any) => void) | undefined, event: any): void {
+790:     trace.push(event);
+791:     onTrace?.(event);
+792:   }
+793: 
+794:   private async emitWorkspaceToolPreviews(opts: {
+795:     toolName: string;
+796:     args: any;
+797:     result: any;
+798:     context: any;
+799:     trace: any[];
+800:     onTrace?: (trace: any) => void;
+801:     ownerTraceId?: string;
+802:     preEditSnapshots?: Map<string, string>;
+803:     includeWriteAndLegacyEdit?: boolean;
+804:   }): Promise<void> {
+805:     const { toolName, args, result, context, trace, onTrace, ownerTraceId } = opts;
+806:     if (!result || result.error || result.cancelled) return;
+807: 
+808:     const basePreview = (event: any) => ({
+809:       ...event,
+810:       ownerTraceId,
+811:       dedupe: false,
+812:       timestamp: Date.now(),
+813:     });
+814: 
+815:     const emitReadPreview = (filePath: string, content: string, meta: any = {}) => {
+816:       if (!filePath || typeof content !== 'string') return;
+817:       const filename = basenameForTrace(filePath);
+818:       this.emitTracePreview(trace, onTrace, basePreview({
+819:         type: 'file_preview',
+820:         filename,
+821:         filepath: meta.path || filePath,
+822:         language: languageFromFilename(filename),
+823:         content,
+824:         contentPreview: content.length > 80_000 ? content.slice(0, 80_000) : undefined,
+825:         lineCount: meta.lineCount ?? content.split(/\r?\n/).length,
+826:         totalLines: meta.totalLines ?? meta.lineCount ?? content.split(/\r?\n/).length,
+827:         loadedLines: meta.linesShown,
+828:         startLine: meta.startLine,
+829:         endLine: meta.endLine,
+830:         truncated: meta.truncated ?? content.length > 80_000,
+831:         size: meta.size,
+832:         isEdit: false,
+833:       }));
+834:     };
+835: 
+836:     if (toolName === 'workspace_read_file') {
+837:       const filePath = result.path || args?.filename || args?.path;
+838:       if (typeof result.content === 'string') {
+839:         emitReadPreview(filePath, result.content, result);
+840:       }
+841:       return;
+842:     }
+843: 
+844:     if (toolName === 'workspace_read_many_files') {
+845:       const files = Array.isArray(result.files) ? result.files : [];
+846:       files.slice(0, 8).forEach((file: any) => {
+847:         if (!file?.success || typeof file.content !== 'string') return;
+848:         emitReadPreview(file.path || file.filename, file.content, file);
+849:       });
+850:       return;
+851:     }
+852: 
+853:     const isWrite = toolName === 'workspace_write_file';
+854:     const isLegacyEdit = toolName === 'workspace_edit_file';
+855:     if ((isWrite || isLegacyEdit) && !opts.includeWriteAndLegacyEdit) return;
+856: 
+857:     if (!['workspace_write_file', 'workspace_str_replace', 'workspace_apply_patch', 'workspace_edit_file', 'workspace_edit_many_files'].includes(toolName)) {
+858:       return;
+859:     }
+860: 
+861:     const patchResult = toolName === 'workspace_apply_patch'
+862:       ? {
+863:         filesModified: Array.isArray(result.filesModified) ? result.filesModified : [],
+864:         filesCreated: Array.isArray(result.filesCreated) ? result.filesCreated : [],
+865:         filesDeleted: Array.isArray(result.filesDeleted) ? result.filesDeleted : [],
+866:         errors: Array.isArray(result.errors) ? result.errors : [],
+867:       }
+868:       : undefined;
+869: 
+870:     const targets = collectToolTraceTargets(toolName, args, result).slice(0, 8);
+871:     const createdSet = new Set<string>([
+872:       ...(Array.isArray(result.filesCreated) ? result.filesCreated : []),
+873:       isWrite ? (result.path || args?.filename || args?.path || '') : '',
+874:     ].filter(Boolean).map(normalizeTracePath));
+875:     const deletedSet = new Set<string>((Array.isArray(result.filesDeleted) ? result.filesDeleted : []).map(normalizeTracePath));
+876: 
+877:     await Promise.all(targets.map(async (target) => {
+878:       if (deletedSet.has(normalizeTracePath(target))) return;
+879:       const read = await this.readSmallPreviewFile(target, context);
+880:       const content = read?.content || (isWrite && typeof args?.content === 'string' ? args.content : '');
+881:       if (!content) return;
+882: 
+883:       const effectivePath = read?.filepath || result.path || target;
+884:       const filename = basenameForTrace(effectivePath || target);
+885:       const created = createdSet.has(normalizeTracePath(target)) || createdSet.has(normalizeTracePath(effectivePath));
+886:       const before = created ? '' : this.getPreEditSnapshot(opts.preEditSnapshots || new Map(), target, effectivePath);
+887:       const diff = before ? buildLineDiffPreview(before, content) : { diffLines: [], added: 0, removed: 0 };
+888:       const lineCount = content.split(/\r?\n/).length;
+889: 
+890:       this.emitTracePreview(trace, onTrace, basePreview({
+891:         type: 'file_preview',
+892:         filename,
+893:         filepath: effectivePath,
+894:         language: languageFromFilename(filename),
+895:         content: content.slice(0, 80_000),
+896:         contentPreview: content.length > 80_000 ? content.slice(0, 80_000) : undefined,
+897:         lineCount,
+898:         totalLines: lineCount,
+899:         truncated: content.length > 80_000,
+900:         size: read?.size,
+The above content does NOT show the entire file contents. If you need to view any lines of the file which were not shown to complete your task, call this tool again to view those lines.

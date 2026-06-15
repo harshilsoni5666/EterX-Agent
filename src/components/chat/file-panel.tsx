@@ -147,9 +147,8 @@ function buildPreviewUrl(filepath: string) {
   return `/api/preview/${filepath.replace(/\\/g, '/').split('/').filter(Boolean).map(encodeURIComponent).join('/')}`;
 }
 
-function getPreviewAddress(file?: PreviewFile | null, fallback = 'http://localhost:3000') {
-  if (!file?.filepath) return fallback;
-  return `file:///${normalizeWorkspacePath(file.filepath)}`;
+function getPreviewAddress(_file?: PreviewFile | null, fallback = 'http://localhost:3000') {
+  return fallback || 'http://localhost:3000';
 }
 
 function normalizeLocalhostPreviewAddress(input: string) {
@@ -1328,7 +1327,7 @@ export const IdePanel = () => {
               </a>
               <button onClick={handleCopyPreviewPath} className="flex h-9 items-center justify-center gap-2 rounded-full border border-white/[0.12] bg-white/[0.04] text-[11px] font-bold uppercase tracking-[0.12em] text-white/68 transition-colors hover:bg-white/[0.08]">
                 {copiedPreviewPath ? <Check className="h-3.5 w-3.5" strokeWidth={2.2} /> : <Copy className="h-3.5 w-3.5" strokeWidth={2.2} />}
-                {copiedPreviewPath ? 'Copied' : 'Copy path'}
+                {copiedPreviewPath ? 'Copied' : 'Copy URL'}
               </button>
             </div>
           </div>
@@ -1543,11 +1542,11 @@ export const IdePanel = () => {
               ) : activeTabMode === 'code' ? (
                 activeFile ? (
                   activeFileIsLoading ? (
-                    <div className="flex h-full flex-col items-center justify-center gap-3 text-center" style={{ background: editorBackground }}>
-                      <div className={`h-8 w-8 animate-spin rounded-full border-2 ${isLightTheme ? 'border-black/10 border-t-black/55' : 'border-white/10 border-t-white/50'}`} />
-                      <span className={`text-[11px] font-semibold uppercase tracking-[0.18em] ${isLightTheme ? 'text-black/38' : 'text-white/30'}`}>Reading file</span>
-                      <span className={`max-w-[360px] truncate font-mono text-[11px] ${isLightTheme ? 'text-black/34' : 'text-white/24'}`}>{activeFile.filepath}</span>
-                    </div>
+                      <div className="flex h-full flex-col items-center justify-center gap-3 text-center" style={{ background: editorBackground }}>
+                        <div className={`h-8 w-8 animate-spin rounded-full border-2 ${isLightTheme ? 'border-black/10 border-t-black/55' : 'border-white/10 border-t-white/50'}`} />
+                        <span className={`text-[11px] font-semibold uppercase tracking-[0.18em] ${isLightTheme ? 'text-black/38' : 'text-white/30'}`}>Reading file</span>
+                        <span className={`max-w-[320px] truncate text-[12px] font-medium ${isLightTheme ? 'text-black/42' : 'text-white/34'}`}>{activeFile.filename}</span>
+                      </div>
                   ) : activeFile.loadError && !activeFile.content ? (
                     <div className="flex h-full flex-col items-center justify-center gap-3 p-12 text-center" style={{ background: editorBackground }}>
                       <ShieldAlert className={`h-9 w-9 ${isLightTheme ? 'text-black/22' : 'text-white/16'}`} strokeWidth={1.4} />
@@ -1587,7 +1586,7 @@ export const IdePanel = () => {
                     loading={
                       <div className="flex flex-col items-center justify-center h-full" style={{ background: editorBackground }}>
                         <div className={`w-8 h-8 border-2 rounded-full animate-spin mb-3 ${isLightTheme ? 'border-black/10 border-t-black/55' : 'border-white/10 border-t-white/50'}`} />
-                        <span className="text-[11px] text-white/30 uppercase tracking-widest">Preparing editor...</span>
+                        <span className={`text-[11px] uppercase tracking-widest ${isLightTheme ? 'text-black/38' : 'text-white/30'}`}>Preparing editor...</span>
                       </div>
                     }
                   />
@@ -1667,7 +1666,7 @@ export const IdePanel = () => {
                           placeholder="Enter dev server URL (e.g. http://localhost:3000)"
                         />
                         <div className="flex shrink-0 items-center gap-2.5">
-                          <button onClick={handleCopyPreviewPath} className="eterx-ide-address-action text-white/35 hover:text-white/85 transition-colors" title="Copy path">
+                          <button onClick={handleCopyPreviewPath} className="eterx-ide-address-action text-white/35 hover:text-white/85 transition-colors" title="Copy preview URL">
                             {copiedPreviewPath ? <Check className="h-[13px] w-[13px]" strokeWidth={2.5} /> : <Copy className="h-[13px] w-[13px]" strokeWidth={2.5} />}
                           </button>
                           <button onClick={handleOpenPreviewFile} className="eterx-ide-address-action text-white/35 hover:text-white/85 transition-colors" title="Open in browser">
@@ -1717,10 +1716,6 @@ export const IdePanel = () => {
                             </div>
                             {/* Body skeleton */}
                             <div className={`flex-1 p-6 flex flex-col gap-4 relative overflow-hidden ${isLightTheme ? 'bg-[#F7F6F3]' : 'bg-[#18181b]'}`}>
-                               {/* Shimmer overlay */}
-                               <motion.div 
-                                 className="absolute inset-0 z-10 eterx-surface-shimmer eterx-surface-shimmer-panel"
-                               />
                                <div className="w-3/4 h-5 rounded-md bg-white/5" />
                                <div className="w-1/2 h-4 rounded-md bg-white/5" />
                                <div className="w-full h-16 rounded-md bg-white/5 mt-2" />

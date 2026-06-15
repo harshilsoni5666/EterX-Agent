@@ -266,7 +266,7 @@ function getPetWindowHtml() {
         background-clip: text;
         color: transparent;
         -webkit-text-fill-color: transparent;
-        animation: petShimmer 5.8s cubic-bezier(.4, 0, .12, 1) infinite;
+        animation: petShimmer 8.4s cubic-bezier(.4, 0, .12, 1) infinite;
       }
       .card:hover:not(.replying) .preview,
       body.hovering .card:not(.replying) .preview { display: none; }
@@ -290,8 +290,8 @@ function getPetWindowHtml() {
       @keyframes spin { to { transform: rotate(360deg); } }
       @keyframes petShimmer {
         0% { background-position: 260% 50%, 0 0; }
-        22% { background-position: 260% 50%, 0 0; }
-        70% { background-position: -260% 50%, 0 0; }
+        28% { background-position: 260% 50%, 0 0; }
+        74% { background-position: -260% 50%, 0 0; }
         100% { background-position: -260% 50%, 0 0; }
       }
       .reply-area {

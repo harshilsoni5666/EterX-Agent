@@ -18,6 +18,7 @@ interface ChatFeedProps {
   onOpenAgentTeam?: (agentName?: string) => void;
   onAnswerAskUser?: (timestamp: number, answer: string, responseKey?: string) => void;
   onEditUserMessage?: (text: string) => void;
+  isSubAgentTab?: boolean;
 }
 
 const copyTextToClipboard = async (text: string) => {
@@ -255,57 +256,8 @@ const liveMotionStyles = `
     0%, 76%, 100% { transform: translateY(0) scale(.92); opacity: .36; box-shadow: 0 0 0 rgba(190,190,186,0); }
     38% { transform: translateY(-2px) scale(1.08); opacity: .95; box-shadow: 0 0 9px rgba(190,190,186,.34); }
   }
-  @keyframes eterx-shimmer {
-    0%   { background-position: 170% center, 0 0; }
-    100% { background-position: -170% center, 0 0; }
-  }
-  .eterx-live-text {
-    --eterx-live-shimmer-duration: 5.9s;
-    --eterx-live-shimmer-ease: linear;
-    --eterx-live-shimmer-a: #BDB7AE;
-    --eterx-live-shimmer-d: #E3DDD4;
-    background:
-      linear-gradient(
-        104deg,
-        transparent 0%,
-        transparent 38%,
-        color-mix(in srgb, var(--eterx-live-shimmer-d) 8%, transparent) 45%,
-        color-mix(in srgb, var(--eterx-live-shimmer-d) 72%, transparent) 50%,
-        color-mix(in srgb, var(--eterx-live-shimmer-d) 16%, transparent) 56%,
-        transparent 64%,
-        transparent 100%
-      ),
-      linear-gradient(var(--eterx-live-shimmer-a), var(--eterx-live-shimmer-a));
-    background-size: 180% 100%, 100% 100%;
-    background-position: 170% center, 0 0;
-    background-repeat: no-repeat, no-repeat;
-    -webkit-background-clip: text;
-    background-clip: text;
-    -webkit-text-fill-color: transparent;
-    animation: eterx-shimmer var(--eterx-live-shimmer-duration) var(--eterx-live-shimmer-ease) infinite;
-    text-shadow: none;
-    will-change: background-position;
-  }
-  .eterx-live-text * { -webkit-text-fill-color: inherit; }
-  .eterx-live-text--medium { --eterx-live-shimmer-duration: 5.9s; }
-  .eterx-live-text--slow { --eterx-live-shimmer-duration: 7.0s; }
-  .eterx-live-text--chip { --eterx-live-shimmer-duration: 5.4s; --eterx-live-shimmer-a: #CFC8BE; --eterx-live-shimmer-d: #E7E0D7; }
-  .eterx-live-text--thought { --eterx-live-shimmer-duration: 6.2s; }
-  .eterx-live-text--process { --eterx-live-shimmer-duration: 6.5s; --eterx-live-shimmer-a: #C4BDB4; --eterx-live-shimmer-d: #DED7CE; }
-  .eterx-live-text--ambient { --eterx-live-shimmer-duration: 7.6s; --eterx-live-shimmer-a: #AAA49C; --eterx-live-shimmer-d: #D2CCC3; }
-  :root[data-theme="light"] .eterx-live-text,
-  [data-theme="light"] .eterx-live-text {
-    --eterx-live-shimmer-a: #34312D;
-    --eterx-live-shimmer-d: #FFFFFF;
-    text-shadow: none;
-  }
   .eterx-live-dot { animation: eterx-live-dot 1.45s ease-in-out infinite; }
   @media (prefers-reduced-motion: reduce) {
-    .eterx-live-text {
-      background: none;
-      -webkit-text-fill-color: #C8C5BF;
-      animation: none;
-    }
     .eterx-live-dot { animation: none; opacity: .75; }
   }
 `;
@@ -468,8 +420,11 @@ const isHiddenStatusOnlyLog = (log: any) => {
   );
 };
 
+const WORK_ELAPSED_TICK_MS = 5000;
+
 const formatWorkElapsed = (seconds: number) => {
   const safeSeconds = Math.max(0, seconds);
+  if (safeSeconds < 5) return 'under 5s';
   const minutes = Math.floor(safeSeconds / 60);
   const rest = safeSeconds % 60;
   return minutes > 0 ? `${ minutes }m ${ rest }s` : `${ rest }s`;
@@ -540,7 +495,7 @@ const useWorkElapsedSeconds = (active: boolean, logs: any[], startedAt?: number 
     };
 
     tick();
-    const interval = window.setInterval(tick, 1000);
+    const interval = window.setInterval(tick, WORK_ELAPSED_TICK_MS);
     return () => window.clearInterval(interval);
   }, [active, bounds.start, bounds.end, normalizedEndedAt]);
 
@@ -548,8 +503,8 @@ const useWorkElapsedSeconds = (active: boolean, logs: any[], startedAt?: number 
 };
 
 const ThoughtSequence = ({
-  logs, liveLogs = [], isThinking, isLast, hasAnswer, stepCount, turnStartedAt, turnEndedAt, onOpenAgentTeam
-}: { logs: any[], liveLogs?: any[], isThinking: boolean, isLast: boolean, hasAnswer: boolean, stepCount: number, turnStartedAt?: number | null, turnEndedAt?: number | null, onOpenAgentTeam?: (agentName?: string) => void }) => {
+  logs, liveLogs = [], isThinking, isLast, hasAnswer, stepCount, turnStartedAt, turnEndedAt, onOpenAgentTeam, isSubAgentTab = false
+}: { logs: any[], liveLogs?: any[], isThinking: boolean, isLast: boolean, hasAnswer: boolean, stepCount: number, turnStartedAt?: number | null, turnEndedAt?: number | null, onOpenAgentTeam?: (agentName?: string) => void, isSubAgentTab?: boolean }) => {
   const [open, setOpen] = React.useState(() => isThinking || !hasAnswer);
   const containerRef = React.useRef<HTMLDivElement>(null);
   const prevHasAnswer = React.useRef(false);
@@ -645,7 +600,7 @@ const ThoughtSequence = ({
               aria-expanded={isOpen}
               className="eterx-process-summary-chip eterx-process-summary-chip-live group inline-flex min-h-[36px] shrink-0 items-center gap-1.5 rounded-full bg-[#1C1C1C]/78 px-3 py-[6px] text-[13px] font-semibold leading-[1.35] tracking-normal text-[#C9C6C0] outline outline-1 outline-white/[0.12] backdrop-blur-xl transition-colors duration-150 hover:bg-[#262626]/92 hover:text-[#E8E6E3]"
             >
-              <span className="eterx-process-summary-label eterx-live-text eterx-live-text--process inline-flex items-center pb-[1px] leading-[1.35]">
+              <span className="eterx-process-summary-label eterx-text-shimmer eterx-text-shimmer-working inline-flex items-center pb-[1px] leading-[1.35]">
                 {`Working for ${ workElapsedLabel }`}
               </span>
               {isOpen
@@ -687,7 +642,7 @@ const ThoughtSequence = ({
               >
                 <StepCounterIcon live={isLiveThinking} />
               </span>
-              <span className={`eterx-process-summary-label${isLiveThinking ? ' eterx-live-text eterx-live-text--chip' : ''}`} style={{ fontSize: 13, fontWeight: 650, letterSpacing: 0, lineHeight: 1 }}>{actionLabel}</span>
+              <span className={`eterx-process-summary-label${isLiveThinking ? ' eterx-text-shimmer eterx-text-shimmer-active' : ''}`} style={{ fontSize: 13, fontWeight: 650, letterSpacing: 0, lineHeight: 1 }}>{actionLabel}</span>
               {isOpen
                 ? <ChevronDown style={{ width: 9, height: 9, flexShrink: 0, opacity: 0.6 }} />
                 : <ChevronRight style={{ width: 9, height: 9, flexShrink: 0, opacity: 0.6 }} />
@@ -715,6 +670,7 @@ const ThoughtSequence = ({
               isLast={isLast}
               showLiveIndicator={isLiveThinking && isLast && liveLogs.length === 0}
               onOpenAgentTeam={onOpenAgentTeam}
+              isSubAgentTab={isSubAgentTab}
             />
           </motion.div>
         )}
@@ -724,7 +680,7 @@ const ThoughtSequence = ({
 };
 
 export const ChatFeed: React.FC<ChatFeedProps> = ({
-  traceLogs, isThinking, messagesEndRef, setSidebarOpen, sidebarOpen, handleScroll: externalHandleScroll, showScrollBottom, isCompressed = false, onOpenAgentTeam, onAnswerAskUser, onEditUserMessage
+  traceLogs, isThinking, messagesEndRef, setSidebarOpen, sidebarOpen, handleScroll: externalHandleScroll, showScrollBottom, isCompressed = false, onOpenAgentTeam, onAnswerAskUser, onEditUserMessage, isSubAgentTab = false
 }) => {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const previewScrollRef = useRef<HTMLDivElement>(null);
@@ -1159,6 +1115,7 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
                       turnStartedAt={turnStartedAt}
                       turnEndedAt={displayFinalAnswer?.endTime ?? displayFinalAnswer?.timestamp ?? null}
                       onOpenAgentTeam={onOpenAgentTeam}
+                      isSubAgentTab={isSubAgentTab}
                     />
                   );
                 })}

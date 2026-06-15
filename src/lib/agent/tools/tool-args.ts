@@ -5,24 +5,59 @@ type ToolArgValidationResult =
   | { success: true; args: any }
   | { success: false; error: string };
 
+function normalizeFilenameArgs(input: any): void {
+  if (!input || typeof input !== 'object') return;
+  if (input.path && !input.filename) input.filename = input.path;
+  if (input.file && !input.filename) input.filename = input.file;
+  if (input.filePath && !input.filename) input.filename = input.filePath;
+  if (input.filepath && !input.filename) input.filename = input.filepath;
+  if (input.file_path && !input.filename) input.filename = input.file_path;
+}
+
+function normalizeFileSpec(value: any): any {
+  if (typeof value === 'string') return { filename: value };
+  if (!value || typeof value !== 'object') return value;
+  const spec = { ...value };
+  normalizeFilenameArgs(spec);
+  return spec;
+}
+
+function normalizeFileSpecArray(value: any): any[] {
+  if (Array.isArray(value)) return value.map(normalizeFileSpec);
+  if (typeof value === 'string' && value.trim()) {
+    return value
+      .split(/\s*,\s*/)
+      .filter(Boolean)
+      .map(filename => ({ filename }));
+  }
+  if (value && typeof value === 'object') return [normalizeFileSpec(value)];
+  return [];
+}
+
 export function normalizeRegistryToolArgs(toolName: string, args: any): any {
   const name = normalizeRegistryToolName(toolName);
   const input = args && typeof args === 'object' ? { ...args } : {};
 
-  if (name === 'workspace_read_file' && input.path && !input.filename) input.filename = input.path;
-  if (name === 'workspace_read_file' && input.file && !input.filename) input.filename = input.file;
+  if (name === 'workspace_read_file' || name === 'workspace_write_file' || name === 'workspace_edit_file') {
+    normalizeFilenameArgs(input);
+  }
   if (name === 'workspace_read_many_files' && input.paths && !input.files) {
-    input.files = input.paths.map((p: string) => ({ filename: p }));
+    input.files = normalizeFileSpecArray(input.paths);
+  }
+  if (name === 'workspace_read_many_files' && input.files) {
+    input.files = normalizeFileSpecArray(input.files);
   }
   if (name === 'workspace_edit_many_files' && input.files && !input.edits) input.edits = input.files;
+  if (name === 'workspace_edit_many_files' && input.edits) {
+    input.edits = normalizeFileSpecArray(input.edits);
+  }
   if (name === 'workspace_search_text' && input.query && !input.pattern) input.pattern = input.query;
   if (name === 'workspace_find_files' && input.pattern && !input.glob) input.glob = input.pattern;
   if (name === 'workspace_run_command' && input.cmd && !input.command) input.command = input.cmd;
   if (name === 'workspace_apply_patch' && input.content && !input.patch) input.patch = input.content;
   if (name === 'workspace_apply_patch' && input.diff && !input.patch) input.patch = input.diff;
   if (name === 'workspace_str_replace') {
-    if (input.path && !input.filename) input.filename = input.path;
-    if (input.file && !input.filename) input.filename = input.file;
+    normalizeFilenameArgs(input);
     if (input.search && !input.old_string) input.old_string = input.search;
     if (input.replace && !input.new_string) input.new_string = input.replace;
   }
