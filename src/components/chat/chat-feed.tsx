@@ -420,14 +420,64 @@ const isHiddenStatusOnlyLog = (log: any) => {
   );
 };
 
-const WORK_ELAPSED_TICK_MS = 5000;
-
 const formatWorkElapsed = (seconds: number) => {
   const safeSeconds = Math.max(0, seconds);
-  if (safeSeconds < 5) return 'under 5s';
-  const minutes = Math.floor(safeSeconds / 60);
+  const hours = Math.floor(safeSeconds / 3600);
+  const minutes = Math.floor((safeSeconds % 3600) / 60);
   const rest = safeSeconds % 60;
+
+  if (hours > 0) {
+    return `${ hours }h ${ minutes }m ${ rest }s`;
+  }
   return minutes > 0 ? `${ minutes }m ${ rest }s` : `${ rest }s`;
+};
+
+const AnimatedDigit = ({ char }: { char: string }) => {
+  const isDigit = /^[0-9]$/.test(char);
+  if (!isDigit) {
+    return (
+      <span
+        className="inline-block whitespace-pre"
+        style={{ color: 'inherit', WebkitTextFillColor: 'currentcolor' }}
+      >
+        {char}
+      </span>
+    );
+  }
+
+  return (
+    <span
+      className="inline-flex relative overflow-hidden h-[1.35em] justify-center items-center tabular-nums"
+      style={{ color: 'inherit', WebkitTextFillColor: 'currentcolor' }}
+    >
+      <AnimatePresence mode="popLayout">
+        <motion.span
+          key={char}
+          initial={{ y: '100%', opacity: 0 }}
+          animate={{ y: '0%', opacity: 1 }}
+          exit={{ y: '-100%', opacity: 0 }}
+          transition={{ type: 'spring', stiffness: 360, damping: 28, mass: 0.8 }}
+          className="inline-block font-semibold tabular-nums"
+          style={{ color: 'inherit', WebkitTextFillColor: 'currentcolor' }}
+        >
+          {char}
+        </motion.span>
+      </AnimatePresence>
+    </span>
+  );
+};
+
+const RollingTimeDisplay = ({ label }: { label: string }) => {
+  return (
+    <span
+      className="inline-flex items-center text-[13.5px] font-semibold tracking-wide"
+      style={{ color: 'inherit', WebkitTextFillColor: 'currentcolor' }}
+    >
+      {label.split('').map((char, index) => (
+        <AnimatedDigit key={index} char={char} />
+      ))}
+    </span>
+  );
 };
 
 const MAX_REASONABLE_WORK_MS = 24 * 60 * 60 * 1000;
@@ -470,34 +520,49 @@ const getWorkElapsedFromBounds = (start: number | null, end: number | null) => {
 };
 
 const useWorkElapsedSeconds = (active: boolean, logs: any[], startedAt?: number | null, endedAt?: number | null) => {
-  const startRef = React.useRef<number | null>(null);
   const [seconds, setSeconds] = React.useState(0);
-  const bounds = React.useMemo(() => getWorkTimeBounds(logs, startedAt), [logs, startedAt]);
+  const sessionStartRef = React.useRef<number | null>(null);
+
+  const normalizedStartedAt = React.useMemo(() => normalizeWorkTimestamp(startedAt), [startedAt]);
   const normalizedEndedAt = React.useMemo(() => normalizeWorkTimestamp(endedAt), [endedAt]);
 
+  // 1. Establish stable session start time
   React.useEffect(() => {
-    if (!active) {
-      const finalEnd = normalizedEndedAt ?? bounds.end ?? (startRef.current !== null ? Date.now() : null);
-      const finalStart = bounds.start ?? startRef.current;
-      const finalSeconds = getWorkElapsedFromBounds(finalStart, finalEnd);
-      startRef.current = null;
-      setSeconds(finalSeconds);
-      return;
+    if (active) {
+      if (sessionStartRef.current === null) {
+        const bounds = getWorkTimeBounds(logs, normalizedStartedAt);
+        sessionStartRef.current = bounds.start ?? normalizedStartedAt ?? Date.now();
+      }
+    } else {
+      sessionStartRef.current = null;
     }
+  }, [active, normalizedStartedAt]);
 
-    const nextStart = bounds.start ?? Date.now();
-    startRef.current = startRef.current === null ? nextStart : Math.min(startRef.current, nextStart);
+  // 2. Manage the live tick interval when active (no dependence on logs/bounds changes)
+  React.useEffect(() => {
+    if (!active) return;
 
     const tick = () => {
-      const start = startRef.current ?? Date.now();
-      const elapsedMs = Math.max(0, Math.min(Date.now() - start, MAX_REASONABLE_WORK_MS));
-      setSeconds(Math.floor(elapsedMs / 1000));
+      if (sessionStartRef.current !== null) {
+        const elapsedMs = Math.max(0, Math.min(Date.now() - sessionStartRef.current, MAX_REASONABLE_WORK_MS));
+        setSeconds(Math.floor(elapsedMs / 1000));
+      }
     };
 
     tick();
-    const interval = window.setInterval(tick, WORK_ELAPSED_TICK_MS);
+    const interval = window.setInterval(tick, 1000);
     return () => window.clearInterval(interval);
-  }, [active, bounds.start, bounds.end, normalizedEndedAt]);
+  }, [active]);
+
+  // 3. Fallback to static bounds calculation when inactive
+  React.useEffect(() => {
+    if (!active) {
+      const bounds = getWorkTimeBounds(logs, normalizedStartedAt);
+      const finalEnd = normalizedEndedAt ?? bounds.end ?? Date.now();
+      const finalStart = bounds.start ?? normalizedStartedAt ?? Date.now();
+      setSeconds(getWorkElapsedFromBounds(finalStart, finalEnd));
+    }
+  }, [active, logs, normalizedStartedAt, normalizedEndedAt]);
 
   return seconds;
 };
@@ -598,10 +663,13 @@ const ThoughtSequence = ({
               type="button"
               onClick={toggleOpen}
               aria-expanded={isOpen}
-              className="eterx-process-summary-chip eterx-process-summary-chip-live group inline-flex min-h-[36px] shrink-0 items-center gap-1.5 rounded-full bg-[#1C1C1C]/78 px-3 py-[6px] text-[13px] font-semibold leading-[1.35] tracking-normal text-[#C9C6C0] outline outline-1 outline-white/[0.12] backdrop-blur-xl transition-colors duration-150 hover:bg-[#262626]/92 hover:text-[#E8E6E3]"
+              className="eterx-process-summary-chip eterx-process-summary-chip-live group inline-flex min-h-[36px] shrink-0 items-center gap-1.5 rounded-full bg-[#1C1C1C] px-3 py-[6px] text-[13px] font-semibold leading-[1.35] tracking-normal text-[#C9C6C0] outline outline-1 outline-white/[0.12] shadow-[inset_0_-1px_0_rgba(255,255,255,0.12)] transition-all duration-150 hover:bg-[#262626] hover:outline-white/[0.2] hover:shadow-[inset_0_-2px_0_rgba(255,255,255,0.68)] hover:text-[#E8E6E3]"
             >
-              <span className="eterx-process-summary-label eterx-text-shimmer eterx-text-shimmer-working inline-flex items-center pb-[1px] leading-[1.35]">
-                {`Working for ${ workElapsedLabel }`}
+              <span className="eterx-process-summary-label inline-flex items-center pb-[1px] leading-[1.35] text-[#C9C6C0] group-hover:text-[#E8E6E3]">
+                <span className="eterx-text-shimmer eterx-text-shimmer-working mr-1">
+                  Working for
+                </span>
+                <RollingTimeDisplay label={workElapsedLabel} />
               </span>
               {isOpen
                 ? <ChevronDown className="h-3 w-3 opacity-55 transition-opacity group-hover:opacity-80" />
@@ -818,7 +886,7 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
       <style dangerouslySetInnerHTML={{ __html: `${ liveMotionStyles }\n${ chatFeedSurfaceStyles }` }} />
       <div className={`eterx-chat-feed relative flex-1 min-h-0 w-full overflow-hidden ${ isEmptyNewChatFeed ? 'eterx-chat-feed-empty' : '' }`}>
       <div
-        className={`eterx-chat-feed-scroll relative h-full w-full flex flex-col overflow-y-auto overflow-x-hidden pb-40 eterx-scrollbar ${ isCompressed ? 'pl-3 pr-3 sm:pl-4 sm:pr-4' : 'px-4 sm:px-10' }`}
+        className={`eterx-chat-feed-scroll relative h-full w-full flex flex-col overflow-y-auto overflow-x-hidden pb-40 eterx-scrollbar ${ isCompressed ? 'px-4' : 'px-4 sm:px-8' }`}
         id="chat-container"
         ref={scrollContainerRef}
         onScroll={handleScrollWrap}
@@ -837,7 +905,7 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
 
 
       {traceLogs.length > 0 && (
-        <div className={`eterx-chat-feed-content w-full mx-auto pb-4 relative ${ isCompressed ? 'max-w-[500px] pt-14' : 'max-w-[760px] pt-16' }`}>
+        <div className={`eterx-chat-feed-content w-full mx-auto pb-4 relative ${ isCompressed ? 'max-w-[460px] pt-14' : 'max-w-[660px] pt-16' }`}>
           {hiddenGroupCount > 0 && (
             <div className="mb-7 flex justify-center">
               <button

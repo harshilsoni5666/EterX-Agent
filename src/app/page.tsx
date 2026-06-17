@@ -113,12 +113,100 @@ const isProjectFile = (filepath: string) => {
   return true;
 };
 
-const getFileIcon = (filepath: string) => {
+const getFileIconPath = (filepath: string) => {
   const ext = filepath.split('.').pop()?.toLowerCase();
-  if (['ts', 'tsx', 'js', 'jsx', 'html', 'css', 'py', 'go', 'json', 'sh', 'md'].includes(ext || '')) {
-    return FileCode;
+  const filename = filepath.split('/').pop()?.toLowerCase() || '';
+  
+  if (filename.startsWith('.git') || filename.includes('git')) {
+    return '/icons/files/git.svg';
   }
-  return FileText;
+  if (filename.includes('eslint')) {
+    return '/icons/files/eslint.svg';
+  }
+  if (filename.includes('prettier')) {
+    return '/icons/files/prettier.svg';
+  }
+  if (filename.includes('tsconfig')) {
+    return '/icons/files/tsconfig.svg';
+  }
+  if (filename === 'package.json') {
+    return '/icons/files/npm.svg';
+  }
+  if (filename === 'yarn.lock') {
+    return '/icons/files/yarn.svg';
+  }
+  if (filename === 'pnpm-lock.yaml') {
+    return '/icons/files/pnpm.svg';
+  }
+  if (filename.includes('next.config')) {
+    return '/icons/files/next.svg';
+  }
+  if (filename.includes('vite.config')) {
+    return '/icons/files/vite.svg';
+  }
+  if (filename.includes('webpack.config')) {
+    return '/icons/files/webpack.svg';
+  }
+  if (filename.startsWith('.env') || filename === 'settings.json') {
+    return '/icons/files/settings.svg';
+  }
+  
+  switch (ext) {
+    case 'tsx':
+    case 'jsx':
+      return '/icons/files/react.svg';
+    case 'ts':
+      return '/icons/files/typescript.svg';
+    case 'js':
+      return '/icons/files/javascript.svg';
+    case 'py':
+      return '/icons/files/python.svg';
+    case 'html':
+      return '/icons/files/html.svg';
+    case 'css':
+      return '/icons/files/css.svg';
+    case 'json':
+      return '/icons/files/json.svg';
+    case 'go':
+      return '/icons/files/go.svg';
+    case 'md':
+      return '/icons/files/markdown.svg';
+    case 'sh':
+    case 'bash':
+    case 'zsh':
+      return '/icons/files/console.svg';
+    case 'svg':
+      return '/icons/files/svg.svg';
+    case 'yaml':
+    case 'yml':
+      return '/icons/files/yaml.svg';
+    case 'dockerfile':
+      return '/icons/files/docker.svg';
+    case 'png':
+    case 'jpg':
+    case 'jpeg':
+    case 'gif':
+    case 'webp':
+    case 'ico':
+      return '/icons/files/image.svg';
+    case 'pdf':
+      return '/icons/files/pdf.svg';
+    case 'zip':
+    case 'tar':
+    case 'gz':
+    case 'rar':
+      return '/icons/files/zip.svg';
+    case 'lock':
+      return '/icons/files/lock.svg';
+    case 'sql':
+    case 'db':
+      return '/icons/files/database.svg';
+    case 'sass':
+    case 'scss':
+      return '/icons/files/sass.svg';
+    default:
+      return '/icons/files/document.svg';
+  }
 };
 
 type WorkMenuSourceItem = {
@@ -958,6 +1046,173 @@ function DeepWorkUI() {
   const runningChatsRef = useRef<Set<string>>(new Set());
   const activeViewRef = useRef<ActiveView>('chat');
   const isNetworkPaused = networkPhase === 'offline';
+
+  const [workMenuLayouts, setWorkMenuLayouts] = useState<Record<string, { x: number; y: number; width: number; height: number | 'auto' }>>({});
+
+  const handleMenuDragStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const chatId = activeChatId || 'default';
+    const currentLayout = workMenuLayouts[chatId] || { x: 0, y: 0, width: 320, height: 'auto' };
+    
+    const startX = currentLayout.x;
+    const startY = currentLayout.y;
+    const startMouseX = e.clientX;
+    const startMouseY = e.clientY;
+
+    const handleMouseMove = (moveEvent: MouseEvent) => {
+      const dx = moveEvent.clientX - startMouseX;
+      const dy = moveEvent.clientY - startMouseY;
+      
+      let nextX = startX + dx;
+      let nextY = startY + dy;
+
+      if (envDropdownRef.current) {
+        const rect = envDropdownRef.current.getBoundingClientRect();
+        const defaultLeft = rect.left - startX;
+        const defaultTop = rect.top - startY;
+
+        const minX = -defaultLeft + 10;
+        const maxX = window.innerWidth - defaultLeft - rect.width - 10;
+        const minY = -defaultTop + 10;
+        const maxY = window.innerHeight - defaultTop - rect.height - 10;
+
+        nextX = Math.max(minX, Math.min(maxX, nextX));
+        nextY = Math.max(minY, Math.min(maxY, nextY));
+      }
+
+      setWorkMenuLayouts(prev => ({
+        ...prev,
+        [chatId]: {
+          ...currentLayout,
+          x: nextX,
+          y: nextY
+        }
+      }));
+    };
+
+    const handleMouseUp = () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+  }, [activeChatId, workMenuLayouts]);
+
+  const handleMenuResizeLeftStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const chatId = activeChatId || 'default';
+    const currentLayout = workMenuLayouts[chatId] || { x: 0, y: 0, width: 320, height: 'auto' };
+    
+    const startWidth = currentLayout.width;
+    const startX = currentLayout.x;
+    const startMouseX = e.clientX;
+
+    const handleMouseMove = (moveEvent: MouseEvent) => {
+      const dx = moveEvent.clientX - startMouseX;
+      const nextWidth = Math.max(260, Math.min(600, startWidth - dx));
+      const actualDx = startWidth - nextWidth;
+      const nextX = startX + actualDx;
+
+      setWorkMenuLayouts(prev => ({
+        ...prev,
+        [chatId]: {
+          ...prev[chatId] || currentLayout,
+          width: nextWidth,
+          x: nextX
+        }
+      }));
+    };
+
+    const handleMouseUp = () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+  }, [activeChatId, workMenuLayouts]);
+
+  const handleMenuResizeBottomStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const chatId = activeChatId || 'default';
+    let startHeight = 350;
+    if (envDropdownRef.current) {
+      startHeight = envDropdownRef.current.offsetHeight;
+    }
+    
+    const currentLayout = workMenuLayouts[chatId] || { x: 0, y: 0, width: 320, height: 'auto' };
+    const startMouseY = e.clientY;
+
+    const handleMouseMove = (moveEvent: MouseEvent) => {
+      const dy = moveEvent.clientY - startMouseY;
+      const nextHeight = Math.max(150, Math.min(window.innerHeight - 100, startHeight + dy));
+
+      setWorkMenuLayouts(prev => ({
+        ...prev,
+        [chatId]: {
+          ...prev[chatId] || currentLayout,
+          height: nextHeight
+        }
+      }));
+    };
+
+    const handleMouseUp = () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+  }, [activeChatId, workMenuLayouts]);
+
+  const handleMenuResizeCornerStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const chatId = activeChatId || 'default';
+    let startHeight = 350;
+    if (envDropdownRef.current) {
+      startHeight = envDropdownRef.current.offsetHeight;
+    }
+    
+    const currentLayout = workMenuLayouts[chatId] || { x: 0, y: 0, width: 320, height: 'auto' };
+    const startWidth = currentLayout.width;
+    const startX = currentLayout.x;
+    const startMouseX = e.clientX;
+    const startMouseY = e.clientY;
+
+    const handleMouseMove = (moveEvent: MouseEvent) => {
+      const dx = moveEvent.clientX - startMouseX;
+      const dy = moveEvent.clientY - startMouseY;
+      
+      const nextWidth = Math.max(260, Math.min(600, startWidth - dx));
+      const actualDx = startWidth - nextWidth;
+      const nextX = startX + actualDx;
+      
+      const nextHeight = Math.max(150, Math.min(window.innerHeight - 100, startHeight + dy));
+
+      setWorkMenuLayouts(prev => ({
+        ...prev,
+        [chatId]: {
+          ...prev[chatId] || currentLayout,
+          width: nextWidth,
+          x: nextX,
+          height: nextHeight
+        }
+      }));
+    };
+
+    const handleMouseUp = () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+  }, [activeChatId, workMenuLayouts]);
 
   const setActiveView = useCallback((view: ActiveView) => {
     if (view === 'agents' || view === 'channels' || view === 'projects') {
@@ -4602,32 +4857,48 @@ function DeepWorkUI() {
                     <ListTodo className="h-[17px] w-[17px]" strokeWidth={2.15} />
                   </button>
                   <AnimatePresence>
-                    {envDropdownOpen && (
-                      <motion.div
-                        ref={envDropdownRef}
-                        initial={{ opacity: 0, y: -5, scale: 0.98 }}
-                        animate={{ opacity: 1, y: 0, scale: 1 }}
-                        exit={{ opacity: 0, y: -5, scale: 0.98 }}
-                        transition={{ duration: 0.15, ease: "easeOut" }}
-                        onMouseLeave={() => setActiveSubmenu(null)}
-                        className="eterx-work-menu absolute right-0 top-[calc(100%+10px)] z-[70]"
-                        onMouseDown={(e) => e.stopPropagation()}
-                      >
-                        <div className="eterx-work-menu-header">
-                          <div className="min-w-0">
-                            <div className="eterx-work-menu-eyebrow">Work control</div>
-                            <div className="eterx-work-menu-title">
-                              <span className="truncate">{currentEnv}</span>
-                              <span className="text-white/26">/</span>
-                              <span className="truncate font-mono">{currentBranch}</span>
-                            </div>
+                    {envDropdownOpen && (() => {
+                      const chatId = activeChatId || 'default';
+                      const layout = workMenuLayouts[chatId] || { x: 0, y: 0, width: 320, height: 'auto' };
+                      return (
+                        <motion.div
+                          ref={envDropdownRef}
+                          initial={{ opacity: 0, y: -5, scale: 0.98 }}
+                          animate={{ opacity: 1, y: 0, scale: 1 }}
+                          exit={{ opacity: 0, y: -5, scale: 0.98 }}
+                          transition={{ duration: 0.15, ease: "easeOut" }}
+                          onMouseLeave={() => setActiveSubmenu(null)}
+                          className="eterx-work-menu absolute right-0 top-[calc(100%+10px)] z-[70] flex flex-col"
+                          style={{
+                            transform: `translate(${layout.x}px, ${layout.y}px)`,
+                            width: layout.width,
+                            height: layout.height,
+                          }}
+                          onMouseDown={(e) => e.stopPropagation()}
+                        >
+                          {/* Drag handle */}
+                          <div 
+                            className="eterx-work-menu-drag-bar group/drag"
+                            onMouseDown={handleMenuDragStart}
+                          >
+                            <div className="eterx-work-menu-drag-handle" />
                           </div>
-                          <span className={`eterx-work-menu-state ${isThinking ? 'eterx-work-menu-state-live' : ''}`}>
-                            {isThinking ? 'Active' : 'Ready'}
-                          </span>
-                        </div>
 
-                        <div className="eterx-work-menu-content">
+                          {/* Resize handles */}
+                          <div 
+                            className="eterx-work-menu-resize-l"
+                            onMouseDown={handleMenuResizeLeftStart}
+                          />
+                          <div 
+                            className="eterx-work-menu-resize-b"
+                            onMouseDown={handleMenuResizeBottomStart}
+                          />
+                          <div 
+                            className="eterx-work-menu-resize-corner"
+                            onMouseDown={handleMenuResizeCornerStart}
+                          />
+
+                          <div className="eterx-work-menu-content flex-1 overflow-y-auto custom-scrollbar">
                         <WorkMenuSectionButton
                           title="Todo"
                           meta={todoCounterText || (isThinking ? 'Live' : undefined)}
@@ -4699,7 +4970,7 @@ function DeepWorkUI() {
                                   }
 
                                   return (
-                                    <WorkMenuEmptyState label="Nothing to show" detail="No current plan" />
+                                    <WorkMenuEmptyState label="Nothing to show" />
                                   );
                                 })()}
                               </div>
@@ -4726,9 +4997,9 @@ function DeepWorkUI() {
                           <PlusSquare className="eterx-work-menu-row-icon" />
                           <span className="flex min-w-0 flex-1 items-center justify-between gap-3">
                             <span className="truncate text-white/90">Changes</span>
-                            <div className="flex shrink-0 items-center gap-1.5 text-[11px] font-semibold">
-                              <span className="text-[#19C37D] font-mono">+{chatChangeStats.additions}</span>
-                              <span className="text-[#EF4444] font-mono">-{chatChangeStats.deletions}</span>
+                            <div className="flex shrink-0 items-center gap-1.5 text-[11px] font-semibold tabular-nums">
+                              <span className="text-[#19C37D]">+{chatChangeStats.additions}</span>
+                              <span className="text-[#EF4444]">-{chatChangeStats.deletions}</span>
                             </div>
                           </span>
                         </button>
@@ -5027,27 +5298,23 @@ function DeepWorkUI() {
                               >
                                 {workMenuSources.length > 0 ? (
                                   workMenuSources.map((item) => {
-                                    const Icon = getFileIcon(item.path);
+                                    const iconPath = getFileIconPath(item.path);
                                     return (
                                       <div
                                         key={item.id}
                                         className="eterx-work-menu-row group"
                                         title={item.path}
                                       >
-                                        <Icon
-                                          className="h-3.5 w-3.5 shrink-0 text-[#67A9FF] transition-colors group-hover:text-[#8EC1FF]"
-                                          strokeWidth={1.8}
+                                        <img
+                                          src={iconPath}
+                                          className="h-4 w-4 shrink-0 object-contain transition-transform duration-100 group-hover:scale-105"
+                                          alt=""
                                         />
-                                        <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-white/75 group-hover:text-white">
+                                        <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-white/80 group-hover:text-white">
                                           {item.name}
                                         </span>
-                                        {item.status && (
-                                          <span className={`eterx-work-menu-file-chip ${item.status === 'ADD' ? 'eterx-work-menu-file-chip-add' : ''}`}>
-                                            {item.status}
-                                          </span>
-                                        )}
                                         {((item.additions || 0) > 0 || (item.deletions || 0) > 0) && (
-                                          <div className="ml-1 flex shrink-0 items-center gap-1.5 text-[10.5px] font-semibold font-mono">
+                                          <div className="ml-1 flex shrink-0 items-center gap-1.5 text-[10.5px] font-semibold tabular-nums">
                                             {(item.additions || 0) > 0 && <span className="text-[#34D399]">+{item.additions}</span>}
                                             {(item.deletions || 0) > 0 && <span className="text-[#F87171]">-{item.deletions}</span>}
                                           </div>
@@ -5056,7 +5323,7 @@ function DeepWorkUI() {
                                     );
                                   })
                                 ) : (
-                                  <WorkMenuEmptyState label="No active sources" detail="Pinned files appear here" />
+                                  <WorkMenuEmptyState label="No active sources" />
                                 )}
                               </div>
                             </motion.div>
@@ -5116,15 +5383,16 @@ function DeepWorkUI() {
                                     );
                                   })
                                 ) : (
-                                  <WorkMenuEmptyState label="No active sub-agents" detail="Delegations appear here" />
+                                  <WorkMenuEmptyState label="No active sub-agents" />
                                 )}
                               </div>
                             </motion.div>
                           )}
                         </AnimatePresence>
-                        </div>
-                      </motion.div>
-                    )}
+                          </div>
+                        </motion.div>
+                      );
+                    })()}
                   </AnimatePresence>
                 </div>
               )}

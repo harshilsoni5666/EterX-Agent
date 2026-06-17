@@ -19,7 +19,7 @@ MODES:
 - "graph": Build a dependency graph for a directory — shows how files import each other, entry points, external deps
 
 EXAMPLES:
-- Analyze: { mode: "analyze", target: "src/lib/agent/gemini.ts" }
+- Analyze: { mode: "analyze", target: "src/lib/agent/Agent.ts" }
 - Graph: { mode: "graph", target: "src/lib/agent" }
 
 Use this BEFORE modifying code to understand the codebase structure.`,

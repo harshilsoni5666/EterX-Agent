@@ -4,6 +4,7 @@ import { apiKeyPool, type KeyLease } from './api-key-pool';
 import { taskStore } from './task-store';
 import { getMainAgentModelConfig, type MainAgentMode } from './model-routing';
 import type { ScopedRuntimeSettings } from './runtime-api-keys';
+import { flushLedgerForChat } from './memory/conversation-ledger';
 
 // Ensure tools are bootstrapped
 import './tools/index';
@@ -628,10 +629,12 @@ class AgentRegistry {
 
       } finally {
         // ALWAYS release ALL keys associated with this chat (main agent + ANY dynamically named sub-agents)
-        // apiKeyPool tracks leases by id, so we release the main chat ID
         if (!isExternalProvider) apiKeyPool.releaseKey(chatId);
-
         apiKeyPool.releaseLeasesWithPrefix(`${ chatId }_sub_`);
+
+        // Flush ledger so no pending writes are lost when the agent finishes,
+        // crashes, or is stopped. Non-blocking — errors are swallowed.
+        flushLedgerForChat(chatId).catch(() => {});
       }
     })();
 
@@ -710,8 +713,10 @@ class AgentRegistry {
 
     taskStore.stopTask(chatId).catch(() => { });
     apiKeyPool.releaseKey(chatId);
-
     apiKeyPool.releaseLeasesWithPrefix(`${ chatId }_sub_`);
+
+    // Flush the ledger so the last tool calls are not lost on stop.
+    flushLedgerForChat(chatId).catch(() => {});
 
     console.log(`[AgentRegistry] 🛑 Stopped agent for chat ${ chatId.substring(0, 8) }...`);
     return true;
@@ -735,7 +740,9 @@ class AgentRegistry {
     };
     execution.steeringQueue.push(queuedMessage);
     if (execution.steeringQueue.length > MAX_STEERING_QUEUE) {
-      execution.steeringQueue.splice(0, execution.steeringQueue.length - MAX_STEERING_QUEUE);
+      const toDrop = execution.steeringQueue.length - MAX_STEERING_QUEUE;
+      console.warn(`[AgentRegistry] ⚠️ Steering queue full — dropping ${ toDrop } oldest message(s) for chat ${ chatId.substring(0, 8) }...`);
+      execution.steeringQueue.splice(0, toDrop);
     }
 
     // Immediately emit a trace so the UI shows the steering card right away
@@ -761,6 +768,24 @@ class AgentRegistry {
     const messages = [...execution.steeringQueue];
     execution.steeringQueue = [];
     return messages;
+  }
+
+  /**
+   * Peek at the pending steering messages without dequeuing them.
+   */
+  public peekSteeringQueue(chatId: string): SteeringMessage[] {
+    const execution = this.executions.get(chatId);
+    if (!execution) return [];
+    return [...execution.steeringQueue];
+  }
+
+  /**
+   * Remove the first N messages from the steering queue.
+   */
+  public consumeSteeringQueue(chatId: string, count: number): void {
+    const execution = this.executions.get(chatId);
+    if (!execution || count <= 0) return;
+    execution.steeringQueue.splice(0, count);
   }
 
   /**

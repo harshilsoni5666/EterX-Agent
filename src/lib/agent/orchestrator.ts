@@ -2,7 +2,7 @@ import { WorkspaceManager } from './workspace/manager';
 import { globalMemoryManager } from './memory/store';
 import { memoryV2 } from './memory/v2';
 import { AgentResponse, AgentTask, ProjectContext } from './schemas';
-import { globalGeminiClient, createIsolatedClient } from './gemini';
+import { globalGeminiClient, createIsolatedClient } from './Agent';
 import { globalSubAgentSpawner, resetCancelFlag } from './roles/sub_agent';
 import { globalSessionManager } from './session';
 // Critic removed — was causing false rejections on user-stopped outputs and wasting execution time

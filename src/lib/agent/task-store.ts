@@ -3,13 +3,20 @@ import path from 'path';
 
 /**
  * TaskStore — Persistent Server-Side Task State
- * 
+ *
  * Saves task execution state (trace logs, status, final answer) to disk.
- * This ensures that:
- * 1. If the app closes while a task is running, the task CONTINUES on the server
- * 2. When the app reopens, it can retrieve completed/running task results
- * 3. Each chat's task state is fully independent
- * 
+ *
+ * What this DOES:
+ * - Allows the polling UI to retrieve streamed trace events and the final answer
+ *   even after a page reload or network blip.
+ * - Persists the last known status and answer for completed/stopped/failed tasks.
+ * - Each chat's task state is fully independent (keyed by chatId).
+ *
+ * What this does NOT do:
+ * - Running tasks are NOT resumed after a process restart. The Node.js
+ *   process dies with the task; on the next cleanup pass those entries
+ *   are detected (status='running' + age > 2 h) and marked 'failed'.
+ *
  * Storage: .workspaces/.tasks/{chatId}.json
  */
 

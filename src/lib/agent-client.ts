@@ -17,7 +17,7 @@ const API_KEYS = [
 
 let currentKeyIndex = 0;
 
-export function getGeminiClient() {
+export function getAgentClient() {
   const apiKey = API_KEYS[currentKeyIndex];
   currentKeyIndex = (currentKeyIndex + 1) % API_KEYS.length;
   return new GoogleGenerativeAI(apiKey);

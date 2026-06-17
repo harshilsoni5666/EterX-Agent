@@ -406,5 +406,28 @@ export const createCustomToolResultLogs = (
     });
   }
 
+  // --- Add Professional Tool Result Previews ---
+  const EXCLUDED_PREVIEW_TOOLS = new Set([
+    'skill_loader', 'screenshot_capture', 'system_automation', 'self_improve',
+    'memory_v2', 'api_hub', 'api_key_vault', 'env_manager', 'desktop_control',
+    'browser_control', 'checkpoint', 'computer', 'screen_agent'
+  ]);
+
+  if (result !== undefined && result !== null && !EXCLUDED_PREVIEW_TOOLS.has(active.toolName)) {
+    if (!['workspace_read_file', 'workspace_write_file', 'workspace_edit_file', 'system_shell', 'workspace_run_command'].includes(active.toolName)) {
+      logs.push({
+        id: `custom_result_${at}_${randomSuffix()}`,
+        type: 'tool_result_preview',
+        toolName: active.toolName,
+        toolArgs: active.toolArgs,
+        result: result,
+        ownerTraceId: active.id,
+        startTime: at,
+        endTime: at,
+        timestamp: at,
+      });
+    }
+  }
+
   return logs;
 };

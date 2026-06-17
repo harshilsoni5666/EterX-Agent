@@ -528,7 +528,7 @@ export class SubAgentSpawner {
 
     try {
       // Import createIsolatedClient dynamically to avoid circular deps
-      const { createIsolatedClient } = await import('../gemini');
+      const { createIsolatedClient } = await import('../Agent');
       lease = apiKeyPool.leaseSubAgentKey(context.projectId, name);
       if (!lease) throw new Error('No API keys available for sub-agent');
       const subAgentMode = (context as any).selectedModelMode || 'fast';

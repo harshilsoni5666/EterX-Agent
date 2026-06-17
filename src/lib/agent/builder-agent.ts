@@ -730,7 +730,7 @@ PROMPT QUALITY MARKERS:
 ━━━ BUILDER'S OWN SAFETY & SEPARATION ━━━
 
 - Builder changes are for the target agent ONLY
-- NEVER edit src/lib/agent/gemini.ts, orchestrator.ts, agent-registry.ts, tools/index.ts
+- NEVER edit src/lib/agent/Agent.ts, orchestrator.ts, agent-registry.ts, tools/index.ts
 - NEVER create or modify global runtime tools
 - NEVER modify the main agent's system prompt, tools, or behavior
 - NEVER expose secrets or ask for connector credentials

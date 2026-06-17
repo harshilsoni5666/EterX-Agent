@@ -1,5 +1,5 @@
 /**
- * GeminiContextCacheManager
+ * AgentContextCacheManager
  *
  * Caches the static portion of the EterX system prompt (base identity + rules +
  * all tool function declarations) on the Gemini server once per API key/model pair.
@@ -53,24 +53,24 @@ const SUPPORTED_MODEL_PREFIXES = [
 // Global singleton cache store
 // ─────────────────────────────────────────────────────────────────────────────
 
-const globalForGeminiCache = globalThis as typeof globalThis & {
-  __eterxGeminiContextCaches?: Map<string, CacheEntry>;
+const globalForAgentCache = globalThis as typeof globalThis & {
+  __eterxAgentContextCaches?: Map<string, CacheEntry>;
   /** API key tails permanently disabled after a free-tier / permission quota error */
-  __eterxGeminiCacheDisabledKeyTails?: Set<string>;
+  __eterxAgentCacheDisabledKeyTails?: Set<string>;
 };
 
 function getCacheStore(): Map<string, CacheEntry> {
-  if (!globalForGeminiCache.__eterxGeminiContextCaches) {
-    globalForGeminiCache.__eterxGeminiContextCaches = new Map();
+  if (!globalForAgentCache.__eterxAgentContextCaches) {
+    globalForAgentCache.__eterxAgentContextCaches = new Map();
   }
-  return globalForGeminiCache.__eterxGeminiContextCaches;
+  return globalForAgentCache.__eterxAgentContextCaches;
 }
 
 function getDisabledKeyTails(): Set<string> {
-  if (!globalForGeminiCache.__eterxGeminiCacheDisabledKeyTails) {
-    globalForGeminiCache.__eterxGeminiCacheDisabledKeyTails = new Set();
+  if (!globalForAgentCache.__eterxAgentCacheDisabledKeyTails) {
+    globalForAgentCache.__eterxAgentCacheDisabledKeyTails = new Set();
   }
-  return globalForGeminiCache.__eterxGeminiCacheDisabledKeyTails;
+  return globalForAgentCache.__eterxAgentCacheDisabledKeyTails;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -114,15 +114,15 @@ function startHeartbeat(ai: any, entry: CacheEntry, entryStoreKey: string): void
     try {
       await ai.caches.update(entry.name, { config: { ttl: `${CACHE_TTL_S}s` } });
       entry.expiresAt = Date.now() + CACHE_TTL_S * 1000 - CACHE_SAFETY_BUFFER_MS;
-      console.log(`[GeminiCache] 💓 Heartbeat extended TTL for ${entry.name}`);
+      console.log(`[AgentCache] 💓 Heartbeat extended TTL for ${entry.name}`);
     } catch (err: any) {
       const msg = String(err?.message || err).toLowerCase();
-      console.warn(`[GeminiCache] ⚠️ Heartbeat failed for ${entry.name}: ${String(err?.message || '').slice(0, 80)}`);
+      console.warn(`[AgentCache] ⚠️ Heartbeat failed for ${entry.name}: ${String(err?.message || '').slice(0, 80)}`);
       if (msg.includes('not_found') || msg.includes('not found') || msg.includes('404')) {
         // Cache vanished on Google's side — clear so next request rebuilds
         clearEntry(entry);
         getCacheStore().delete(entryStoreKey);
-        console.log(`[GeminiCache] 🗑️ Stale cache cleared (NOT_FOUND on heartbeat): ${entry.name}`);
+        console.log(`[AgentCache] 🗑️ Stale cache cleared (NOT_FOUND on heartbeat): ${entry.name}`);
       }
     }
   }, HEARTBEAT_INTERVAL_MS);
@@ -145,7 +145,7 @@ function startHeartbeat(ai: any, entry: CacheEntry, entryStoreKey: string): void
  *  - Model doesn't support caching
  *  - Any error during creation (silent fallback to uncached)
  */
-export async function getOrCreateGeminiCache(
+export async function getOrCreateAgentCache(
   ai: any,              // GoogleGenAI instance
   apiKey: string,
   modelName: string,
@@ -166,7 +166,7 @@ export async function getOrCreateGeminiCache(
   // ── Check existing valid cache ──
   const existing = store.get(key);
   if (existing && existing.contentHash === hash && Date.now() < existing.expiresAt) {
-    console.log(`[GeminiCache] ♻️ Reusing cache: ${existing.name}`);
+    console.log(`[AgentCache] ♻️ Reusing cache: ${existing.name}`);
     return existing.name;
   }
 
@@ -174,12 +174,12 @@ export async function getOrCreateGeminiCache(
   if (existing) {
     clearEntry(existing);
     store.delete(key);
-    console.log(`[GeminiCache] 🔄 Stale/changed cache invalidated for model ${modelName}`);
+    console.log(`[AgentCache] 🔄 Stale/changed cache invalidated for model ${modelName}`);
   }
 
   // ── Create new cache ──
   try {
-    console.log(`[GeminiCache] 🔨 Creating context cache for model ${modelName} ...`);
+    console.log(`[AgentCache] 🔨 Creating context cache for model ${modelName} ...`);
 
     const cache = await ai.caches.create({
       model: modelName,
@@ -212,7 +212,7 @@ export async function getOrCreateGeminiCache(
 
     const estimatedTokens = Math.round(staticSystemInstruction.length / 4);
     console.log(
-      `[GeminiCache] ✅ Created cache: ${cacheName}` +
+      `[AgentCache] ✅ Created cache: ${cacheName}` +
       ` (~${estimatedTokens.toLocaleString()} tokens estimated, TTL=${CACHE_TTL_S}s)`
     );
 
@@ -229,12 +229,12 @@ export async function getOrCreateGeminiCache(
     if (isQuotaOrPermError) {
       getDisabledKeyTails().add(apiKey.slice(-8));
       console.warn(
-        `[GeminiCache] ℹ️ Context caching unavailable for this API key ` +
+        `[AgentCache] ℹ️ Context caching unavailable for this API key ` +
         `(free-tier or no permission). Falling back to uncached mode permanently. ` +
         `Upgrade to a paid Gemini API key to enable caching.`
       );
     } else {
-      console.warn(`[GeminiCache] ⚠️ Cache creation failed (falling back to uncached): ${msg.slice(0, 120)}`);
+      console.warn(`[AgentCache] ⚠️ Cache creation failed (falling back to uncached): ${msg.slice(0, 120)}`);
     }
     return null;
   }
@@ -246,7 +246,7 @@ export async function getOrCreateGeminiCache(
  *
  * Returns the new cache name, or null if rebuild also fails.
  */
-export async function handleGeminiCacheNotFound(
+export async function handleAgentCacheNotFound(
   ai: any,
   apiKey: string,
   modelName: string,
@@ -260,22 +260,22 @@ export async function handleGeminiCacheNotFound(
     clearEntry(existing);
     store.delete(key);
   }
-  console.log(`[GeminiCache] 🔄 Cache NOT_FOUND — rebuilding for model ${modelName} ...`);
-  return getOrCreateGeminiCache(ai, apiKey, modelName, staticSystemInstruction, toolDeclarations);
+  console.log(`[AgentCache] 🔄 Cache NOT_FOUND — rebuilding for model ${modelName} ...`);
+  return getOrCreateAgentCache(ai, apiKey, modelName, staticSystemInstruction, toolDeclarations);
 }
 
 /**
  * Invalidates all cache entries associated with a given API key.
  * Call after key rotation so the next request builds a fresh cache for the new key.
  */
-export function invalidateGeminiCacheForKey(apiKey: string): void {
+export function invalidateAgentCacheForKey(apiKey: string): void {
   const store = getCacheStore();
   const tail = apiKey.slice(-8);
   for (const [k, entry] of store.entries()) {
     if (entry.apiKeyTail === tail) {
       clearEntry(entry);
       store.delete(k);
-      console.log(`[GeminiCache] 🗑️ Cache invalidated after key rotation (tail: ...${tail})`);
+      console.log(`[AgentCache] 🗑️ Cache invalidated after key rotation (tail: ...${tail})`);
     }
   }
 }

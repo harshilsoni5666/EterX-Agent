@@ -35,6 +35,8 @@ const MAX_ENTRIES = 3_000;
 const FLUSH_DEBOUNCE_MS = 1_500;
 const MAX_KEY_FACTS = 5;
 const MAX_SUMMARY_CHARS = 200;
+/** Maximum number of per-chat ledger instances to keep in the LRU. */
+const MAX_LEDGER_INSTANCES = 30;
 
 const FILLER_WORDS = new Set([
   'the', 'a', 'an', 'and', 'or', 'of', 'for', 'in', 'to', 'is',
@@ -958,5 +960,97 @@ export class ConversationLedger {
   }
 }
 
-// ─── Global singleton ─────────────────────────────────────────────────────────
-export const conversationLedger = new ConversationLedger();
+// ─── Per-chat instance registry ───────────────────────────────────────────────
+// Each chat gets its own isolated ConversationLedger so that concurrent chats
+// cannot overwrite each other's ledgerFilePath, entries, dedupCache, or
+// pendingWrites.  An LRU of MAX_LEDGER_INSTANCES prevents unbounded memory use.
+
+const _ledgerInstances: Map<string, ConversationLedger> = new Map();
+const _ledgerAccessOrder: string[] = []; // front = oldest
+
+/**
+ * Return the ConversationLedger instance dedicated to `chatId`.
+ * Creates and initializes a new one on first access.
+ * Never throws — returns a fresh uninitialized instance on failure.
+ */
+export function getLedgerForChat(chatId: string): ConversationLedger {
+  try {
+    const existing = _ledgerInstances.get(chatId);
+    if (existing) {
+      // Refresh LRU position
+      const idx = _ledgerAccessOrder.indexOf(chatId);
+      if (idx !== -1) _ledgerAccessOrder.splice(idx, 1);
+      _ledgerAccessOrder.push(chatId);
+      return existing;
+    }
+
+    const instance = new ConversationLedger();
+    _ledgerInstances.set(chatId, instance);
+    _ledgerAccessOrder.push(chatId);
+
+    // Evict oldest instance if over the LRU cap
+    while (_ledgerAccessOrder.length > MAX_LEDGER_INSTANCES) {
+      const oldest = _ledgerAccessOrder.shift();
+      if (oldest) {
+        const evicted = _ledgerInstances.get(oldest);
+        if (evicted) {
+          // Best-effort flush before eviction so no data is lost
+          evicted.flush().catch(() => {});
+        }
+        _ledgerInstances.delete(oldest);
+      }
+    }
+
+    return instance;
+  } catch {
+    return new ConversationLedger();
+  }
+}
+
+/**
+ * Force-flush the ledger for `chatId` to disk.
+ * Safe to call from agent `finally` blocks — never throws.
+ */
+export async function flushLedgerForChat(chatId: string): Promise<void> {
+  try {
+    const instance = _ledgerInstances.get(chatId);
+    if (instance) await instance.flush();
+  } catch { /* never throw from a finally block */ }
+}
+
+/**
+ * Flush then clear the ledger for `chatId`.
+ * Guarantees no pending writes are discarded before clearing.
+ */
+export async function clearLedgerForChat(chatId: string): Promise<void> {
+  try {
+    const instance = _ledgerInstances.get(chatId);
+    if (instance) {
+      await instance.flush();  // write everything pending FIRST
+      await instance.clear();
+    }
+  } catch { /* advisory — never throw */ }
+}
+
+// ─── Backward-compat shim ─────────────────────────────────────────────────────
+// Code that uses the old `conversationLedger` singleton still works.
+// It delegates to the most-recently-initialized per-chat instance, or to
+// a dedicated fallback instance if no chat has been initialized yet.
+const _fallbackLedger = new ConversationLedger();
+
+export const conversationLedger: ConversationLedger = new Proxy(_fallbackLedger, {
+  get(target, prop) {
+    if (prop === 'initialize') {
+      return async function(chatId: string) {
+        const inst = getLedgerForChat(chatId);
+        return inst.initialize(chatId);
+      };
+    }
+    // Walk the LRU from newest to oldest to find the active instance
+    for (let i = _ledgerAccessOrder.length - 1; i >= 0; i--) {
+      const inst = _ledgerInstances.get(_ledgerAccessOrder[i]);
+      if (inst) return (inst as any)[prop];
+    }
+    return (target as any)[prop];
+  },
+});

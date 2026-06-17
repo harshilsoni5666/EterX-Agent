@@ -1,11 +1,12 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+﻿import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { createPortal } from 'react-dom';
 import { useFilePanelActions } from '../../contexts/FilePanelContext';
 // Only the Lucide icons actually rendered in JSX (not icon-map/TOOL_META)
 import {
   ChevronRight, ChevronDown, Monitor, ShieldHalf, Copy, CheckCircle, Maximize2, CornerDownLeft,
-  RefreshCw, ExternalLink, Check, Globe, Smartphone, Tablet, Terminal, ArrowRight
+  RefreshCw, ExternalLink, Check, Globe, Smartphone, Tablet, Terminal, ArrowRight,
+  Search, FileText, Calculator, Database, Hash, Cpu, FolderOpen, AlertTriangle
 } from 'lucide-react';
 // @ts-ignore
 import ReactMarkdown from 'react-markdown';
@@ -1095,6 +1096,623 @@ const PatchSummaryPanel = ({
   );
 };
 
+
+// ─── Shared card shell — defined OUTSIDE ToolResultPreview so React never remounts ───
+const TrpCard = React.memo(({ icon, title, badge, children }: {
+  icon?: React.ReactNode;
+  title?: string;
+  badge?: React.ReactNode;
+  children: React.ReactNode;
+}) => (
+  <div className="mx-3 mt-1.5 mb-2 overflow-hidden rounded-[11px] border border-white/[0.07] bg-[#191918] text-[#D0C8C0] shadow-[0_4px_16px_rgba(0,0,0,0.24)]">
+    {title && (
+      <div className="flex items-center gap-2 border-b border-white/[0.055] px-3.5 py-2.5">
+        {icon && <span className="flex h-4 w-4 shrink-0 items-center justify-center text-[#6A6460]">{icon}</span>}
+        <span className="flex-1 text-[11.5px] font-semibold text-[#B0A9A1] tracking-[-0.01em]">{title}</span>
+        {badge && <span className="shrink-0">{badge}</span>}
+      </div>
+    )}
+    <div className="px-3.5 py-3">{children}</div>
+  </div>
+));
+TrpCard.displayName = 'TrpCard';
+
+
+// ─── Domain extractor for clean source display ─────────────────────────────
+function extractDomain(url: string): string {
+  try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return url; }
+}
+
+// ─── Source list used by multiple views ────────────────────────────────────
+const TrpSources = React.memo(({ sources }: { sources: string[] }) => {
+  if (!sources.length) return null;
+  return (
+    <div className="mt-3 border-t border-white/[0.055] pt-3">
+      <div className="mb-2 text-[10px] font-semibold uppercase tracking-widest text-[#5E5A55]">{sources.length} sources</div>
+      <div className="flex flex-col gap-1 max-h-[130px] overflow-y-auto eterx-scrollbar">
+        {sources.map((src, i) => (
+          <a key={i} href={src} target="_blank" rel="noopener noreferrer"
+            className="group flex items-center gap-2 rounded-[6px] px-2 py-1 text-[11.5px] hover:bg-white/[0.035] transition-colors">
+            <ExternalLink className="w-2.5 h-2.5 shrink-0 text-[#545148] group-hover:text-[#94C7E0] transition-colors" />
+            <span className="truncate font-medium text-[#7E9BAD] group-hover:text-[#94C7E0] transition-colors">{extractDomain(src)}</span>
+            <span className="ml-auto shrink-0 truncate text-[10px] text-[#47443F] max-w-[180px] hidden sm:block">{src}</span>
+          </a>
+        ))}
+      </div>
+    </div>
+  );
+});
+TrpSources.displayName = 'TrpSources';
+
+// ─── Memoized markdown renderer ────────────────────────────────────────────
+const TrpMarkdown = React.memo(({ content }: { content: string }) => (
+  <div className="
+    text-[12.5px] leading-[1.7] text-[#C8C0B8]
+    [&_h1]:text-[15px] [&_h1]:font-bold [&_h1]:text-[#E6E0D8] [&_h1]:mt-0 [&_h1]:mb-3 [&_h1]:leading-tight
+    [&_h2]:text-[13.5px] [&_h2]:font-semibold [&_h2]:text-[#D8D0C8] [&_h2]:mt-4 [&_h2]:mb-2 [&_h2]:leading-tight
+    [&_h3]:text-[12.5px] [&_h3]:font-semibold [&_h3]:text-[#C8C0B8] [&_h3]:mt-3 [&_h3]:mb-1.5
+    [&_p]:mb-3 [&_p]:last:mb-0 [&_p]:leading-[1.7]
+    [&_ul]:pl-4 [&_ul]:mb-3 [&_ul]:space-y-1
+    [&_ol]:pl-4 [&_ol]:mb-3 [&_ol]:space-y-1
+    [&_li]:text-[#BEB7AE] [&_li]:leading-[1.6]
+    [&_strong]:text-[#E6E0D8] [&_strong]:font-semibold
+    [&_em]:text-[#B8B0A8] [&_em]:italic
+    [&_a]:text-[#6B9AB8] [&_a]:underline [&_a]:underline-offset-2 [&_a]:decoration-white/20 [&_a]:hover:text-[#94C7E0]
+    [&_code]:font-mono [&_code]:text-[11px] [&_code]:text-[#B8A878] [&_code]:bg-white/[0.055] [&_code]:px-1.5 [&_code]:py-0.5 [&_code]:rounded-[4px]
+    [&_blockquote]:pl-3 [&_blockquote]:border-l-2 [&_blockquote]:border-white/[0.12] [&_blockquote]:text-[#908880] [&_blockquote]:italic
+    [&_hr]:border-white/[0.07] [&_hr]:my-4
+    [&_table]:w-full [&_table]:text-[11px] [&_table]:border-collapse
+    [&_th]:bg-white/[0.04] [&_th]:text-[#9A9388] [&_th]:font-semibold [&_th]:px-2.5 [&_th]:py-1.5 [&_th]:text-left [&_th]:border [&_th]:border-white/[0.06]
+    [&_td]:px-2.5 [&_td]:py-1.5 [&_td]:border [&_td]:border-white/[0.045] [&_td]:text-[#C0B8B0]
+  ">
+    <ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins}>{content}</ReactMarkdown>
+  </div>
+));
+TrpMarkdown.displayName = 'TrpMarkdown';
+
+// ─── Main component ────────────────────────────────────────────────────────
+const ToolResultPreview = React.memo(({ toolName, args, result }: { toolName: string; args: any; result: any }) => {
+
+  // ── 1. deep_research ──────────────────────────────────────────────────────
+  if (toolName === 'deep_research' || toolName === 'research_report') {
+    const report: string = result?.report || result?.content || result?.text || '';
+    const sources: string[] = Array.isArray(result?.sources) ? result.sources : [];
+    const topic: string = args?.topic || args?.query || '';
+    const isOk = result?.success !== false;
+    return (
+      <TrpCard>
+        {topic && (
+          <div className="mb-3 text-[11px] text-[#5E5A55]">
+            <span className="font-medium text-[#7A7470]">Topic — </span>{topic}
+          </div>
+        )}
+        {report ? (
+          <div className="max-h-[380px] overflow-y-auto overflow-x-hidden eterx-scrollbar -mr-1 pr-1">
+            <TrpMarkdown content={report} />
+          </div>
+        ) : (
+          <div className="py-6 text-center text-[12px] text-[#4E4A46] italic">No report generated.</div>
+        )}
+        <TrpSources sources={sources} />
+      </TrpCard>
+    );
+  }
+
+  // ── 2. verify_* / realtime_verify / check_* ───────────────────────────────
+  const isVerifyTool = toolName.includes('verify') || toolName.startsWith('check_') || toolName === 'realtime_verify';
+  if (isVerifyTool && result && typeof result === 'object') {
+    const passed = result.passed === true || result.success === true || result.exists === true;
+    const failed = result.passed === false || result.success === false || result.exists === false;
+    const mode: string = String(result.mode || result.type || '').replace(/_/g, ' ');
+    const details: string = String(result.details || result.message || result.info || '');
+    const evidence: string = String(result.evidence || result.output || '');
+    const items: any[] = Array.isArray(result.items) ? result.items : Array.isArray(result.checks) ? result.checks : [];
+    const status = passed ? 'passed' : failed ? 'failed' : 'unknown';
+    const badgeCls = status === 'passed' ? 'text-emerald-400/90 bg-emerald-500/10' : status === 'failed' ? 'text-red-400/90 bg-red-500/10' : 'text-amber-400/90 bg-amber-500/10';
+    const detailsCls = status === 'passed' ? 'bg-emerald-500/8 border-emerald-500/15 text-emerald-300/90' : status === 'failed' ? 'bg-red-500/8 border-red-500/15 text-red-300/90' : 'bg-amber-500/8 border-amber-500/15 text-amber-300/90';
+    return (
+      <TrpCard>
+        {mode && <div className="mb-2 text-[11px] text-[#5E5A55]"><span className="font-medium text-[#7A7470]">Mode — </span>{mode}</div>}
+        {details && (
+          <div className={`mb-2.5 rounded-[8px] border px-3 py-2 text-[12px] leading-[1.5] ${detailsCls}`}>{details}</div>
+        )}
+        {evidence && (
+          <div className="mb-2.5 rounded-[7px] bg-black/25 border border-white/[0.05] px-3 py-2 font-mono text-[11px] text-[#9A9288] leading-snug select-all">{evidence}</div>
+        )}
+        {items.length > 0 && (
+          <div className="flex flex-col gap-1 max-h-[160px] overflow-y-auto eterx-scrollbar">
+            {items.map((item: any, i: number) => {
+              const ok = item.passed === true || item.result === true || item.success === true;
+              const fail = item.passed === false || item.result === false || item.success === false;
+              const name: string = item.name || item.check || item.label || `Check ${i + 1}`;
+              const msg: string = item.message || item.details || item.error || '';
+              return (
+                <div key={i} className="flex items-start gap-2.5 rounded-[7px] bg-white/[0.025] px-2.5 py-1.5">
+                  <span className={`mt-0.5 text-[11px] font-bold shrink-0 ${ok ? 'text-emerald-400' : fail ? 'text-red-400' : 'text-amber-400'}`}>{ok ? '✓' : fail ? '✗' : '·'}</span>
+                  <div>
+                    <div className="text-[12px] font-medium text-[#C0B8B0]">{name}</div>
+                    {msg && <div className="text-[11px] text-[#5E5A55] mt-0.5">{msg}</div>}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </TrpCard>
+    );
+  }
+
+  // ── 3. web_search ────────────────────────────────────────────────────────
+  if (toolName === 'web_search' || toolName === 'deep_search') {
+    const summary: string = result?.ai_summary || result?.answer || result?.summary || '';
+    const items: any[] = Array.isArray(result?.results) ? result.results : Array.isArray(result) ? result : [];
+    const images: any[] = Array.isArray(result?.images) ? result.images : [];
+    return (
+      <TrpCard>
+        {summary && (
+          <div className="mb-3 rounded-[8px] bg-white/[0.025] border border-white/[0.05] p-2.5 text-[12.5px] leading-[1.65] text-[#C0B8B0]">
+            <div className="text-[10px] font-semibold uppercase tracking-widest text-[#4E4A46] mb-1.5">Summary</div>
+            {summary}
+          </div>
+        )}
+        {items.length > 0 ? (
+          <div className="flex flex-col gap-1.5 max-h-[300px] overflow-y-auto pr-0.5 eterx-scrollbar">
+            {items.map((item: any, idx: number) => (
+              <div key={idx} className="rounded-[8px] bg-white/[0.02] border border-white/[0.045] p-2.5 hover:border-white/[0.09] transition-colors">
+                <div className="flex items-start justify-between gap-2 mb-1">
+                  <a href={item.url} target="_blank" rel="noopener noreferrer"
+                    className="text-[12.5px] font-semibold text-[#6B9AB8] hover:text-[#94C7E0] hover:underline flex items-center gap-1.5 min-w-0 transition-colors">
+                    <span className="truncate">{item.title || extractDomain(item.url)}</span>
+                    <ExternalLink className="w-2.5 h-2.5 shrink-0 opacity-50" />
+                  </a>
+                  {item.score !== undefined && (
+                    <span className="shrink-0 text-[9.5px] font-mono text-[#4E4A46]">{(item.score * 100).toFixed(0)}%</span>
+                  )}
+                </div>
+                {item.content && <p className="text-[11.5px] leading-[1.5] text-[#7A7470] line-clamp-2">{item.content}</p>}
+                <span className="mt-1 block text-[10px] text-[#3E3A36] font-mono truncate">{item.url}</span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="py-6 text-center text-[12px] text-[#4E4A46] italic">No results returned.</div>
+        )}
+        {images.length > 0 && (
+          <div className="mt-3 pt-2.5 border-t border-white/[0.05]">
+            <div className="mb-2 text-[10px] font-semibold uppercase tracking-widest text-[#4E4A46]">Images</div>
+            <div className="flex gap-2 overflow-x-auto pb-1 eterx-scrollbar">
+              {images.slice(0, 8).map((img: any, i: number) => (
+                <a key={i} href={img.url} target="_blank" rel="noopener noreferrer"
+                  className="shrink-0 w-18 h-18 rounded-[7px] overflow-hidden border border-white/[0.06] hover:border-white/[0.14] transition-colors">
+                  <img src={img.url} alt="" className="w-full h-full object-cover" />
+                </a>
+              ))}
+            </div>
+          </div>
+        )}
+      </TrpCard>
+    );
+  }
+
+  // ── 4. web_scraper / pdf_parser / youtube_transcript / rss_feed ───────────
+  if (['web_scraper', 'pdf_parser', 'youtube_transcript', 'rss_feed'].includes(toolName)) {
+    const contentText: string = typeof result === 'string' ? result : result?.content || result?.text || result?.transcript || '';
+    const wordCount = contentText.split(/\s+/).filter(Boolean).length;
+    const source: string = args?.url || args?.filename || args?.path || '';
+    const labels: Record<string, string> = { web_scraper: 'Scraped Page', pdf_parser: 'PDF', youtube_transcript: 'Transcript', rss_feed: 'RSS Feed' };
+    return (
+      <TrpCard>
+        {source && <div className="mb-2 text-[10.5px] font-mono text-[#4E4A46] truncate select-all">{source}</div>}
+        <div className="max-h-[260px] overflow-y-auto eterx-scrollbar rounded-[7px] bg-black/25 border border-white/[0.05] p-2.5">
+          <p className="font-mono text-[11.5px] leading-[1.6] text-[#9A9288] whitespace-pre-wrap break-words select-text">{contentText || '(empty)'}</p>
+        </div>
+      </TrpCard>
+    );
+  }
+
+  // ── 5. calculator ────────────────────────────────────────────────────────
+  if (toolName === 'calculator') {
+    const expr: string = args?.expression || '';
+    const val = typeof result === 'object' ? (result?.result ?? result?.output ?? result?.value ?? JSON.stringify(result)) : String(result);
+    return (
+      <TrpCard>
+        <div className="flex items-center gap-3 font-mono">
+          {expr && <div className="flex-1 text-[12.5px] text-[#5E5A55] truncate">{expr}</div>}
+          <div className="flex items-center gap-2">
+            <span className="text-[#3E3A36]">=</span>
+            <span className="text-[15px] font-bold text-[#E0D8D0] bg-white/[0.05] border border-white/[0.08] rounded-[7px] px-3 py-0.5 select-all">{String(val)}</span>
+          </div>
+        </div>
+      </TrpCard>
+    );
+  }
+
+  // ── 6. database / db_query ────────────────────────────────────────────────
+  if (toolName === 'database' || toolName === 'db_query') {
+    const query: string = args?.query || args?.sql || '';
+    const rows: any[] | null = Array.isArray(result) ? result : Array.isArray(result?.rows) ? result.rows : null;
+    const isError = !!(result?.error || result?.success === false);
+    const errorMsg = String(result?.message || result?.error || '');
+    return (
+      <TrpCard>
+        {query && (
+          <div className="mb-2.5 rounded-[7px] bg-black/25 border border-white/[0.05] px-2.5 py-2 font-mono text-[11px] text-[#D0C8C0] whitespace-pre-wrap">{query}</div>
+        )}
+        {isError ? (
+          <div className="rounded-[7px] bg-red-500/8 border border-red-500/15 p-2.5 text-[11.5px] font-mono text-red-300/80">Error: {errorMsg}</div>
+        ) : rows && rows.length > 0 ? (
+          <div className="overflow-x-auto eterx-scrollbar max-h-[200px] rounded-[7px] border border-white/[0.05]">
+            <table className="w-full text-left text-[11px] border-collapse">
+              <thead>
+                <tr className="bg-white/[0.025] text-[#6A6460]">
+                  {Object.keys(rows[0]).map((k, i) => <th key={i} className="px-2.5 py-1.5 font-semibold border-b border-white/[0.06] border-r last:border-r-0 whitespace-nowrap">{k}</th>)}
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((row: any, ri: number) => (
+                  <tr key={ri} className="border-b border-white/[0.03] last:border-0 hover:bg-white/[0.02]">
+                    {Object.values(row).map((v: any, vi: number) => (
+                      <td key={vi} className="px-2.5 py-1.5 border-r border-white/[0.03] last:border-r-0 max-w-[180px] truncate select-all text-[#A0988E]" title={String(v)}>
+                        {v === null ? <span className="text-white/20 italic">null</span> : String(v)}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : rows ? (
+          <div className="py-4 text-center text-[11px] text-[#4E4A46] italic">Empty result set.</div>
+        ) : null}
+      </TrpCard>
+    );
+  }
+
+  // ── 7. workspace_list_directory ───────────────────────────────────────────
+  if (toolName === 'workspace_list_directory' || toolName === 'list_directory') {
+    const list: any[] = Array.isArray(result) ? result : Array.isArray(result?.files) ? result.files : Array.isArray(result?.entries) ? result.entries : [];
+    const dirPath: string = args?.directory || args?.dir || args?.path || '';
+    const dirs = list.filter((i: any) => i.isDir || i.isDirectory || i.type === 'directory').length;
+    const files = list.length - dirs;
+    return (
+      <TrpCard>
+        {dirPath && <div className="mb-2 text-[10.5px] font-mono text-[#4E4A46] truncate select-all">{dirPath}</div>}
+        <div className="flex flex-col max-h-[240px] overflow-y-auto eterx-scrollbar">
+          {list.length > 0 ? list.map((item: any, i: number) => {
+            const name: string = item.name || item.relative || item.path || item.filename || '';
+            const isDir = item.isDir || item.isDirectory || item.type === 'directory';
+            const size: string = typeof item.size === 'number'
+              ? item.size >= 1048576 ? `${(item.size / 1048576).toFixed(1)}M` : `${(item.size / 1024).toFixed(1)}K`
+              : '';
+            return (
+              <div key={i} className="flex items-center gap-2 py-[3px] px-1 rounded-[4px] hover:bg-white/[0.025] font-mono text-[11.5px]">
+                <span className={`shrink-0 text-[9px] ${isDir ? 'text-amber-500/70' : 'text-[#3E3A36]'}`}>{isDir ? '▸' : '·'}</span>
+                <span className="truncate select-all text-[#9A9288]">{name}</span>
+                {!isDir && size && <span className="ml-auto shrink-0 text-[10px] text-[#3E3A36]">{size}</span>}
+              </div>
+            );
+          }) : <div className="py-4 text-center text-[11px] text-[#4E4A46] italic">Empty directory.</div>}
+        </div>
+      </TrpCard>
+    );
+  }
+
+  // ── 8. workspace_search_text / workspace_find_files ───────────────────────
+  if (['workspace_search_text', 'workspace_find_files', 'search_files'].includes(toolName)) {
+    const list: any[] = Array.isArray(result) ? result : Array.isArray(result?.matches) ? result.matches : Array.isArray(result?.files) ? result.files : [];
+    const pattern: string = args?.pattern || args?.query || args?.glob || args?.search || '';
+    return (
+      <TrpCard
+        icon={<Search className="w-3.5 h-3.5" />}
+        title="Code Search"
+        badge={<span className="text-[10px] font-medium text-[#5E5A55]">{list.length} match{list.length !== 1 ? 'es' : ''}</span>}
+      >
+        {pattern && <div className="mb-2 text-[11px] font-mono text-[#4E4A46]">Pattern: <span className="text-[#9A9288] select-all">{pattern}</span></div>}
+        <div className="flex flex-col gap-1 max-h-[240px] overflow-y-auto eterx-scrollbar">
+          {list.length > 0 ? list.map((item: any, i: number) => {
+            const file: string = typeof item === 'string' ? item : item.file || item.filename || item.path || '';
+            const line = item.line || item.lineNumber;
+            const content: string = item.content || item.lineContent || item.match || '';
+            return (
+              <div key={i} className="rounded-[7px] bg-white/[0.02] border border-white/[0.04] p-2 hover:border-white/[0.07] transition-colors">
+                <div className="flex items-center gap-2 text-[10.5px] mb-1">
+                  <span className="text-[#6B9AB8] font-mono truncate select-all flex-1">{file}</span>
+                  {line && <span className="shrink-0 text-[#4E4A46] font-mono">:{line}</span>}
+                </div>
+                {content && <div className="font-mono text-[10.5px] text-[#9A9288] pl-2 border-l border-white/[0.07] whitespace-pre-wrap break-words select-all">{content.trim()}</div>}
+              </div>
+            );
+          }) : <div className="py-4 text-center text-[11px] text-[#4E4A46] italic">No matches found.</div>}
+        </div>
+      </TrpCard>
+    );
+  }
+
+  // ── 9. api_caller / http_request ──────────────────────────────────────────
+  if (toolName === 'api_caller' || toolName === 'http_request') {
+    const url: string = args?.url || '';
+    const method: string = String(args?.method || 'GET').toUpperCase();
+    const status = Number(result?.status || result?.statusCode || 0);
+    const isErr = !!(result?.error) || status >= 400;
+    const body = result?.data || result?.body || result?.response;
+    const bodyStr: string = typeof body === 'object' ? JSON.stringify(body, null, 2) : String(body || result || '');
+    return (
+      <TrpCard>
+        <div className="flex items-center gap-2 font-mono text-[11.5px] mb-2.5">
+          <span className="shrink-0 font-bold text-[#6B9AB8] bg-white/[0.04] border border-white/[0.07] px-2 py-0.5 rounded-[5px]">{method}</span>
+          <span className="text-[#5E5A55] truncate select-all">{url}</span>
+        </div>
+        <div className="max-h-[200px] overflow-auto eterx-scrollbar rounded-[7px] bg-black/25 border border-white/[0.05] p-2.5 font-mono text-[10.5px] leading-[1.5] text-[#9A9288] whitespace-pre select-text">{bodyStr}</div>
+      </TrpCard>
+    );
+  }
+
+  // ── 10. Universal smart renderer ──────────────────────────────────────────
+  // Detects the shape of ANY tool result and renders it properly.
+  // No tool name matching — purely data-driven.
+
+  // ── Helpers ────────────────────────────────────────────────────────────────
+  const IMG_EXT = /\.(jpe?g|png|gif|webp|svg|avif|bmp)(\?.*)?$/i;
+  const isImgSrc = (v: string) => IMG_EXT.test(v) || v.startsWith('data:image/') || /\/(image|photo|img|thumb|asset)s?\//i.test(v);
+  const isUrl = (v: string) => /^https?:\/\//i.test(v);
+  const isFilePath = (v: string) => /^[A-Za-z]:[\\\/]/.test(v) || v.startsWith('/') || v.startsWith('./');
+  const hasImgExt = (v: string) => IMG_EXT.test(v);
+
+  // Flatten: result can be an object or array
+  const rootArr: any[] | null = Array.isArray(result) ? result : null;
+  const obj: Record<string, any> = typeof result === 'object' && result !== null && !Array.isArray(result) ? result : {};
+
+  // Primary message/text
+  const primaryText: string = typeof result === 'string' ? result
+    : obj.message || obj.content || obj.text || obj.output || obj.summary || obj.answer || obj.report || '';
+  const hasPrimaryText = primaryText.trim().length > 0;
+  const primaryIsMd = hasPrimaryText && /^#{1,3}\s|\*\*|\n#{1,3}\s|\[.+?\]\(.+?\)/.test(primaryText);
+
+  // Collect ALL arrays in the result
+  const SKIP_ARRAY_KEYS = new Set(['sources', 'urls', 'links', 'checks', 'items', 'errors']);
+  const arrayFields: Array<{ key: string; items: any[] }> = [];
+  for (const [k, v] of Object.entries(obj)) {
+    if (Array.isArray(v) && v.length > 0 && !SKIP_ARRAY_KEYS.has(k)) {
+      arrayFields.push({ key: k, items: v });
+    }
+  }
+  if (rootArr && rootArr.length > 0) arrayFields.push({ key: '', items: rootArr });
+
+  // Scalar fields to show as key-value tiles
+  const SKIP_SCALAR = new Set(['success', 'passed', 'ok', 'error', 'message', 'content', 'text',
+    'output', 'summary', 'answer', 'report', '_cached', '_traceIdx', 'timestamp', 'data']);
+  const scalarFields: [string, any][] = Object.entries(obj).filter(
+    ([k, v]) => !SKIP_SCALAR.has(k) && !Array.isArray(v) && typeof v !== 'object' && v !== null && v !== undefined && String(v).trim().length > 0
+  );
+
+  // Source links
+  const linkSources: string[] = Array.isArray(obj.sources) ? obj.sources
+    : Array.isArray(obj.urls) ? obj.urls
+    : Array.isArray(obj.links) ? obj.links : [];
+
+  // Detect image assets in arrays
+  const findImageAssets = (items: any[]): any[] => {
+    return items.filter((item: any) => {
+      if (typeof item === 'string') return hasImgExt(item) || (isUrl(item) && isImgSrc(item));
+      if (typeof item === 'object' && item !== null) {
+        const imgFields = ['publicPath', 'url', 'src', 'localPath', 'filepath', 'path', 'thumbnail', 'imageUrl'];
+        return imgFields.some(f => item[f] && (isImgSrc(String(item[f])) || hasImgExt(String(item[f]))));
+      }
+      return false;
+    });
+  };
+  const getImgSrc = (item: any): string => {
+    if (typeof item === 'string') return item;
+    return item.url || item.src || item.publicPath || item.thumbnail || item.imageUrl || item.localPath || item.filepath || item.path || '';
+  };
+  const getItemLabel = (item: any): string => {
+    if (typeof item === 'string') return item.split(/[\\/]/).pop() || item;
+    return item.filename || item.name || item.title || item.alt || '';
+  };
+
+  // Classify arrays
+  const classifyArray = (items: any[]): 'images' | 'files' | 'urls' | 'objects' | 'strings' => {
+    if (items.length === 0) return 'strings';
+    const first = items[0];
+    if (typeof first === 'string') {
+      if (findImageAssets(items).length > items.length * 0.4) return 'images';
+      if (items.every(v => isUrl(String(v)))) return 'urls';
+      if (items.every(v => isFilePath(String(v)))) return 'files';
+      return 'strings';
+    }
+    if (typeof first === 'object' && first !== null) {
+      if (findImageAssets(items).length > items.length * 0.4) return 'images';
+      return 'objects';
+    }
+    return 'strings';
+  };
+
+  const hasAnyContent = hasPrimaryText || arrayFields.length > 0 || scalarFields.length > 0;
+
+  return (
+    <TrpCard>
+      {/* Error banner */}
+      {obj.error && (
+        <div className="mb-3 rounded-[7px] bg-red-500/8 border border-red-500/15 px-3 py-2 text-[11.5px] font-mono text-red-300/80">
+          {String(obj.error)}
+        </div>
+      )}
+
+      {/* Primary text/markdown */}
+      {hasPrimaryText && (
+        <div className="mb-3 max-h-[280px] overflow-y-auto overflow-x-hidden eterx-scrollbar">
+          {primaryIsMd
+            ? <TrpMarkdown content={primaryText} />
+            : <p className="text-[12.5px] leading-[1.7] text-[#C0B8B0] whitespace-pre-wrap break-words select-text">{primaryText}</p>
+          }
+        </div>
+      )}
+
+      {/* Smart array renderers */}
+      {arrayFields.map(({ key, items }) => {
+        const kind = classifyArray(items);
+        const imgAssets = kind === 'images' ? findImageAssets(items) : [];
+        const sectionLabel = key ? key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) : null;
+
+        // ── Image gallery ──────────────────────────────────────────────────
+        if (kind === 'images') {
+          return (
+            <div key={key} className={hasPrimaryText && key ? 'mt-3 pt-2.5 border-t border-white/[0.05]' : ''}>
+              {sectionLabel && (
+                <div className="mb-2 flex items-center justify-between">
+                  <span className="text-[10px] font-semibold uppercase tracking-widest text-[#4E4A46]">{sectionLabel}</span>
+                  <span className="text-[10px] text-[#4E4A46]">{imgAssets.length} item{imgAssets.length !== 1 ? 's' : ''}</span>
+                </div>
+              )}
+              <div className="grid grid-cols-3 gap-1.5">
+                {imgAssets.slice(0, 12).map((item: any, i: number) => {
+                  const src = getImgSrc(item);
+                  const label = getItemLabel(item);
+                  const role = typeof item === 'object' ? (item.visualRole || item.role || item.category || '') : '';
+                  return (
+                    <div key={i} className="relative group overflow-hidden rounded-[7px] border border-white/[0.06] bg-white/[0.02] aspect-square">
+                      <img
+                        src={src}
+                        alt={label}
+                        className="w-full h-full object-cover transition-transform duration-200 group-hover:scale-105"
+                        onError={e => { (e.target as HTMLImageElement).parentElement!.innerHTML = `<div class="w-full h-full flex items-center justify-center text-[#3E3A36] text-[9px] font-mono px-1 text-center break-all">${label || src.split('/').pop() || '?'}</div>`; }}
+                      />
+                      {(label || role) && (
+                        <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 to-transparent pt-4 pb-1.5 px-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                          {label && <div className="text-[9.5px] font-medium text-white/85 truncate leading-tight">{label}</div>}
+                          {role && <div className="text-[8.5px] text-white/45 capitalize">{role}</div>}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+              {imgAssets.length > 12 && (
+                <div className="mt-1.5 text-center text-[10px] text-[#4E4A46]">+{imgAssets.length - 12} more</div>
+              )}
+            </div>
+          );
+        }
+
+        // ── URL list ────────────────────────────────────────────────────────
+        if (kind === 'urls') {
+          return (
+            <div key={key} className={hasPrimaryText && key ? 'mt-3 pt-2.5 border-t border-white/[0.05]' : ''}>
+              {sectionLabel && <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-widest text-[#4E4A46]">{sectionLabel}</div>}
+              <div className="flex flex-col gap-1 max-h-[160px] overflow-y-auto eterx-scrollbar">
+                {items.map((url: string, i: number) => (
+                  <a key={i} href={url} target="_blank" rel="noopener noreferrer"
+                    className="group flex items-center gap-2 rounded-[6px] px-2 py-1 text-[11.5px] hover:bg-white/[0.035] transition-colors">
+                    <ExternalLink className="w-2.5 h-2.5 shrink-0 text-[#4E4A46] group-hover:text-[#94C7E0] transition-colors" />
+                    <span className="font-medium text-[#6B9AB8] group-hover:text-[#94C7E0] transition-colors truncate">{extractDomain(url)}</span>
+                    <span className="ml-auto shrink-0 text-[9.5px] text-[#3E3A36] truncate max-w-[160px] hidden sm:block">{url}</span>
+                  </a>
+                ))}
+              </div>
+            </div>
+          );
+        }
+
+        // ── File path list ───────────────────────────────────────────────────
+        if (kind === 'files') {
+          return (
+            <div key={key} className={hasPrimaryText && key ? 'mt-3 pt-2.5 border-t border-white/[0.05]' : ''}>
+              {sectionLabel && <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-widest text-[#4E4A46]">{sectionLabel}</div>}
+              <div className="flex flex-col gap-0.5 max-h-[160px] overflow-y-auto eterx-scrollbar">
+                {items.map((f: string, i: number) => (
+                  <div key={i} className="flex items-center gap-2 py-[3px] px-1 rounded-[4px] hover:bg-white/[0.02] font-mono text-[11px] text-[#9A9288]">
+                    <span className="text-[9px] text-[#3E3A36]">·</span>
+                    <span className="truncate select-all">{f}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        }
+
+        // ── String chip list ─────────────────────────────────────────────────
+        if (kind === 'strings') {
+          return (
+            <div key={key} className={hasPrimaryText && key ? 'mt-3 pt-2.5 border-t border-white/[0.05]' : ''}>
+              {sectionLabel && <div className="mb-2 text-[10px] font-semibold uppercase tracking-widest text-[#4E4A46]">{sectionLabel}</div>}
+              <div className="flex flex-wrap gap-1.5">
+                {items.map((s: any, i: number) => (
+                  <span key={i} className="inline-flex items-center rounded-[5px] bg-white/[0.035] border border-white/[0.06] px-2 py-0.5 text-[11.5px] text-[#9A9288] font-mono select-all">{String(s)}</span>
+                ))}
+              </div>
+            </div>
+          );
+        }
+
+        // ── Object cards ─────────────────────────────────────────────────────
+        if (kind === 'objects') {
+          const cardKeys = items.length > 0
+            ? Object.keys(items[0]).filter(k => typeof items[0][k] !== 'object' && !Array.isArray(items[0][k])).slice(0, 4)
+            : [];
+          const primaryKey = cardKeys.find(k => /title|name|label|filename|query|subject/i.test(k)) || cardKeys[0] || '';
+          const secondaryKey = cardKeys.find(k => k !== primaryKey && /content|description|text|message|value|status/i.test(k)) || cardKeys[1] || '';
+          const metaKeys = cardKeys.filter(k => k !== primaryKey && k !== secondaryKey).slice(0, 2);
+          return (
+            <div key={key} className={hasPrimaryText && key ? 'mt-3 pt-2.5 border-t border-white/[0.05]' : ''}>
+              {sectionLabel && (
+                <div className="mb-2 flex items-center justify-between">
+                  <span className="text-[10px] font-semibold uppercase tracking-widest text-[#4E4A46]">{sectionLabel}</span>
+                  <span className="text-[10px] text-[#4E4A46]">{items.length} item{items.length !== 1 ? 's' : ''}</span>
+                </div>
+              )}
+              <div className="flex flex-col gap-1.5 max-h-[280px] overflow-y-auto eterx-scrollbar">
+                {items.map((item: any, i: number) => (
+                  <div key={i} className="rounded-[7px] bg-white/[0.02] border border-white/[0.04] px-2.5 py-2 hover:border-white/[0.08] transition-colors">
+                    {primaryKey && item[primaryKey] != null && (
+                      <div className="text-[12px] font-semibold text-[#C0B8B0] leading-tight mb-0.5 truncate">{String(item[primaryKey])}</div>
+                    )}
+                    {secondaryKey && item[secondaryKey] != null && (
+                      <div className="text-[11.5px] text-[#7A7470] leading-snug line-clamp-2">{String(item[secondaryKey])}</div>
+                    )}
+                    {metaKeys.length > 0 && (
+                      <div className="mt-1 flex gap-2 flex-wrap">
+                        {metaKeys.map(mk => item[mk] != null && (
+                          <span key={mk} className="text-[10px] font-mono text-[#4E4A46]">
+                            <span className="text-[#3A3631]">{mk}: </span>{String(item[mk])}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        }
+
+        return null;
+      })}
+
+      {/* Scalar key-value tiles (only if there IS some structured data above or no arrays at all) */}
+      {scalarFields.length > 0 && (
+        <div className={`grid grid-cols-2 gap-1.5 ${hasPrimaryText || arrayFields.length > 0 ? 'mt-3 pt-2.5 border-t border-white/[0.05]' : ''}`}>
+          {scalarFields.map(([k, v]) => (
+            <div key={k} className="flex flex-col gap-0.5 rounded-[6px] bg-white/[0.02] border border-white/[0.04] px-2 py-1.5">
+              <span className="text-[9.5px] font-semibold uppercase tracking-widest text-[#4E4A46]">{k.replace(/_/g, ' ')}</span>
+              <span className="text-[12px] font-medium text-[#C0B8B0] select-all break-all">{String(v)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Absolute last resort: raw JSON if nothing was rendered */}
+      {!hasAnyContent && (
+        <div className="max-h-[200px] overflow-auto eterx-scrollbar rounded-[7px] bg-black/25 border border-white/[0.05] p-2.5 font-mono text-[10.5px] leading-[1.5] text-[#7A7470] whitespace-pre select-text">
+          {typeof result === 'string' ? result : JSON.stringify(result, null, 2)}
+        </div>
+      )}
+
+      <TrpSources sources={linkSources} />
+    </TrpCard>
+  );
+});
+ToolResultPreview.displayName = 'ToolResultPreview';
+
 const InlineDiffView = ({ filename, diffLines, showExpand = true, flush = false }: { filename: string, diffLines: any[], showExpand?: boolean, flush?: boolean }) => {
   const [full, setFull] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -1985,6 +2603,25 @@ const ActionChip = ({
   // Subtitle: the secondary arg (command string, URL, query, etc.)
   const subtitle = log.secondary && log.secondary !== log.filename ? String(log.secondary).substring(0, 120) : '';
   const preview = useMemo(() => {
+    if (log.toolResult !== undefined && log.toolResult !== null) {
+      const EXCLUDED_PREVIEW_TOOLS = new Set([
+        'skill_loader', 'screenshot_capture', 'system_automation', 'self_improve',
+        'memory_v2', 'api_hub', 'api_key_vault', 'env_manager', 'desktop_control',
+        'browser_control', 'checkpoint', 'computer', 'screen_agent'
+      ]);
+      const toolName = log.tool || log.name || '';
+      if (!EXCLUDED_PREVIEW_TOOLS.has(toolName) && !['workspace_read_file', 'workspace_write_file', 'workspace_edit_file', 'system_shell', 'workspace_run_command'].includes(toolName)) {
+        return {
+          id: `inline_result_${log.id}`,
+          type: 'tool_result_preview',
+          toolName,
+          toolArgs: log.toolArgs || log.args || {},
+          result: log.toolResult,
+          ownerTraceId: log.id,
+        };
+      }
+    }
+
     const directIdx = allLogs.indexOf(log);
     const exactIdentity = log?._traceIdx ?? log?.traceId ?? log?.id ?? null;
     const ownerIdentities = [log?.traceId, log?.id, log?._traceIdx]
@@ -2001,7 +2638,7 @@ const ActionChip = ({
       });
     const searchLogs = myIdx !== -1 ? allLogs.slice(myIdx) : allLogs;
     const findOwnerPreview = (items: any[]) => items.find((l: any) =>
-      l?.type === 'file_preview' &&
+      (l?.type === 'file_preview' || l?.type === 'tool_result_preview') &&
       ownerIdentities.length > 0 &&
       ownerIdentities.includes(String(l.ownerTraceId || ''))
     );
@@ -2216,17 +2853,28 @@ const ActionChip = ({
           )}
         </span>
       </div>
-      <AnimatePresence>{isExpanded && preview && (
-        <div className="w-full">
-          {preview.type === 'console_output'
-            ? <InlineConsole command={preview.command || subtitle} content={preview.output || preview.content} exitCode={preview.exitCode} durationMs={preview.durationMs} />
-            : preview.type === 'file_preview' && preview.isEdit && Array.isArray(preview.diffLines) && preview.diffLines.length > 0
-              ? <InlineDiffView filename={preview.filename || fileName} diffLines={preview.diffLines} />
-              : preview.type === 'file_preview'
-                ? <InlineCodeView filename={preview.filename || fileName} content={getPreviewContent(preview)} filepath={preview.filepath || fullPath} fetchFull={Boolean(preview.filepath || fullPath)} />
-                : null}
-        </div>
-      )}</AnimatePresence>
+      <AnimatePresence initial={false}>
+        {isExpanded && preview && (
+          <motion.div
+            key="action-chip-preview"
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
+            className="w-full overflow-hidden"
+          >
+            {preview.type === 'console_output'
+              ? <InlineConsole command={preview.command || subtitle} content={preview.output || preview.content} exitCode={preview.exitCode} durationMs={preview.durationMs} />
+              : preview.type === 'file_preview' && preview.isEdit && Array.isArray(preview.diffLines) && preview.diffLines.length > 0
+                ? <InlineDiffView filename={preview.filename || fileName} diffLines={preview.diffLines} />
+                : preview.type === 'file_preview'
+                  ? <InlineCodeView filename={preview.filename || fileName} content={getPreviewContent(preview)} filepath={preview.filepath || fullPath} fetchFull={Boolean(preview.filepath || fullPath)} />
+                  : preview.type === 'tool_result_preview'
+                    ? <ToolResultPreview toolName={preview.toolName} args={preview.toolArgs} result={preview.result} />
+                    : null}
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 };
@@ -3133,7 +3781,7 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
   const containerRef = useRef<HTMLDivElement>(null);
   const NOISE_PATTERN = /reconnect|retrying|stalled|stream interrupted|model error|fallback|cancelled/i;
   const isFlowLog = (l: any) =>
-    ['thought_stream', 'work_note', 'command', 'exploration', 'file_edit', 'progress', 'browser', 'safety_warning', 'communication', 'sub_agent_answer', 'sub_agent_result', 'sub_agent_spawn', 'sub_agent_action', 'sub_agent_complete', 'sub_agent_error', 'inter_agent_comm', 'file_preview', 'console_output', 'ask_user'].includes(l.type) &&
+    ['thought_stream', 'work_note', 'command', 'exploration', 'file_edit', 'progress', 'browser', 'safety_warning', 'communication', 'sub_agent_answer', 'sub_agent_result', 'sub_agent_spawn', 'sub_agent_action', 'sub_agent_complete', 'sub_agent_error', 'inter_agent_comm', 'file_preview', 'console_output', 'ask_user', 'tool_result_preview'].includes(l.type) &&
     !(['progress', 'command', 'exploration'].includes(l.type) && /analyz(?:e|ing) task complexity/i.test(String(l.text || ''))) &&
     !(l.type === 'progress' && NOISE_PATTERN.test(String(l.text || ''))) &&
     // Filter out spawning announcement commands that have spawnedAgents (shown separately as agent cards)
@@ -3143,7 +3791,7 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
   const timelineLogs = [...flowLogs, ...liveFlowLogs];
   const statusLogs = timelineLogs;
   const segs: any[] = []; let aBuf: any[] = []; let aBufFirstIdx = -1;
-  const SPEC = new Set(['file_preview', 'console_output', 'sub_agent_answer', 'sub_agent_result', 'sub_agent_spawn', 'sub_agent_action', 'sub_agent_complete', 'sub_agent_error', 'inter_agent_comm', 'safety_warning']);
+  const SPEC = new Set(['file_preview', 'console_output', 'sub_agent_answer', 'sub_agent_result', 'sub_agent_spawn', 'sub_agent_action', 'sub_agent_complete', 'sub_agent_error', 'inter_agent_comm', 'safety_warning', 'tool_result_preview']);
   const flush = (idx: number) => {
     if (aBuf.length > 0) {
       const unique: any[] = [];

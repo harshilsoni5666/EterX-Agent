@@ -7,7 +7,7 @@
  * 3. Runs a ReAct loop with the agent's own tools
  * 4. Streams events back for UI consumption
  * 
- * Completely separate from the main agent in gemini.ts.
+ * Completely separate from the main agent in Agent.ts.
  * Uses the same apiKeyPool for API key management.
  */
 import { GoogleGenAI } from '@google/genai';

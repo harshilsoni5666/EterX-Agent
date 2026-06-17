@@ -1,6 +1,6 @@
 import { autoContextManager } from './resilience/auto-context';
-import { getOrCreateGeminiCache, handleGeminiCacheNotFound, invalidateGeminiCacheForKey } from './gemini-cache';
-import { conversationLedger } from './memory/conversation-ledger';
+import { getOrCreateAgentCache, handleAgentCacheNotFound, invalidateAgentCacheForKey } from './agent-cache';
+import { conversationLedger, flushLedgerForChat, clearLedgerForChat } from './memory/conversation-ledger';
 import { chatBoundary } from './chat-boundary';
 import { antiHallucination } from './anti-hallucination';
 import { GoogleGenAI, Type, ThinkingLevel } from '@google/genai';
@@ -101,6 +101,25 @@ function contentHasGeminiContinuationPart(content: any): boolean {
   return Array.isArray(content?.parts) && content.parts.some((part: any) =>
     part?.functionCall || part?.thoughtSignature
   );
+}
+
+function cleanConsecutiveRoles(rawContents: any[]): any[] {
+  const clean: any[] = [];
+  for (const turn of rawContents) {
+    if (!turn) continue;
+    if (clean.length > 0 && clean[clean.length - 1].role === turn.role) {
+      const lastTurn = clean[clean.length - 1];
+      const lastParts = Array.isArray(lastTurn.parts) ? lastTurn.parts : (lastTurn.text ? [{ text: lastTurn.text }] : []);
+      const newParts = Array.isArray(turn.parts) ? turn.parts : (turn.text ? [{ text: turn.text }] : []);
+      lastTurn.parts = [...lastParts, ...newParts];
+    } else {
+      clean.push({
+        role: turn.role,
+        parts: Array.isArray(turn.parts) ? [...turn.parts] : (turn.text ? [{ text: turn.text }] : [])
+      });
+    }
+  }
+  return clean;
 }
 
 function getSafeGeminiHistorySliceStart(contents: any[], requestedStart: number): number {
@@ -1172,6 +1191,27 @@ export class GeminiAgentClient {
         preEditSnapshots,
         includeWriteAndLegacyEdit: true,
       });
+
+      // --- Emit tool_result_preview event for all other tools ---
+      const EXCLUDED_PREVIEW_TOOLS = new Set([
+        'skill_loader', 'screenshot_capture', 'system_automation', 'self_improve',
+        'memory_v2', 'api_hub', 'api_key_vault', 'env_manager', 'desktop_control',
+        'browser_control', 'checkpoint', 'computer', 'screen_agent'
+      ]);
+      if (output !== undefined && output !== null && !EXCLUDED_PREVIEW_TOOLS.has(canonicalToolName)) {
+        if (!['workspace_read_file', 'workspace_write_file', 'workspace_edit_file', 'system_shell', 'workspace_run_command'].includes(canonicalToolName)) {
+          const resultEvt = {
+            type: 'tool_result_preview',
+            toolName: canonicalToolName,
+            toolArgs: effectiveArgs || {},
+            result: output,
+            ownerTraceId: actionTraceId,
+            timestamp: Date.now(),
+          };
+          trace.push(resultEvt);
+          onTrace?.(resultEvt);
+        }
+      }
 
       const artifactPaths = this.extractArtifactPathsFromToolOutput(output);
       if (artifactPaths.length > 0) {
@@ -3382,10 +3422,12 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
         newMessage: userVisibleMessage,
         lastUserMessage: globalSessionManager.getLastUserMessageForChat(chatId),
         lastAgentOutput: globalSessionManager.getLastAgentOutputForChat(chatId),
-        activeTaskPlan: null,
+        activeTaskPlan: globalSessionManager.getStateForChat(chatId).taskPlanSteps ?? null,
         recentToolNames: Array.from(toolCallCounts.keys()),
         recentFileNames: Array.from(writtenFiles),
-        pendingAskUser: false,
+        pendingAskUser: typeof globalThis !== 'undefined' && (globalThis as any).__pendingAskUser
+          ? Object.values((globalThis as any).__pendingAskUser).some((pending: any) => pending?.chatId === chatId && pending?.status === 'pending')
+          : false,
       });
       if (chatBoundaryDecision.decision === 'new_task' && chatBoundaryDecision.shouldResetSession) {
         // Archive old context to lifetime brain, then reset working state
@@ -3403,7 +3445,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
             });
           }
         } catch { /* silent */ }
-        conversationLedger.clear();
+        await clearLedgerForChat(chatId);
         callHistory.clear();
         toolCallCounts.clear();
         writtenFiles.clear();
@@ -3425,6 +3467,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
     // Track message count for session analytics
     if (!sessionPersistenceDisabled) {
       globalSessionManager.incrementMessageCountForChat(chatId);
+      globalSessionManager.setLastUserMessageForChat(chatId, userVisibleMessage);
     }
 
     // Selective cache invalidation: only purge expired entries, keep valid cross-message cache
@@ -3788,7 +3831,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
       try {
         _cacheableStaticPrompt = this.generateCacheableSystemPrompt();
         const _cacheToolDecls = this.buildFunctionDeclarations(false, this.getDefaultDesktopToolPolicyContext());
-        _cachedContentName = await getOrCreateGeminiCache(
+        _cachedContentName = await getOrCreateAgentCache(
           this.ai,
           this.getCurrentApiKey(),
           this.modelName,
@@ -4020,7 +4063,35 @@ EXTERNAL ACTION NOTE CUE
       // the start of each ReAct iteration â€” never mid-tool-call, never disruptive.
       try {
         const __reg = (globalThis as any).__eterxAgentRegistry;
-        if (__reg && typeof __reg.getAndClearSteeringQueue === 'function') {
+        if (__reg && typeof __reg.peekSteeringQueue === 'function' && typeof __reg.consumeSteeringQueue === 'function') {
+          const __steersRaw: any[] = __reg.peekSteeringQueue(context.projectId);
+          const __steers = __steersRaw
+            .map((item: any) => typeof item === 'string' ? { text: item } : item)
+            .filter((item: any) => typeof item?.text === 'string' && item.text.trim());
+          if (__steers.length > 0) {
+            const __steerText = __steers
+              .map((item: any, i: number) => `[LIVE USER STEERING ${ i + 1 }${ item.id ? ` | id=${ item.id }` : '' }]\n${ item.text }\n[/LIVE USER STEERING]`)
+              .join('\n\n');
+            const __last = contents[contents.length - 1];
+            if (__last?.role === 'user' && Array.isArray(__last.parts)) {
+              __last.parts.push({ text: __steerText });
+            } else {
+              contents.push({ role: 'user', parts: [{ text: __steerText }] });
+            }
+            const appliedTrace = {
+              type: 'steering_applied',
+              text: __steers.map((item: any) => item.text).join('\n\n'),
+              steeringIds: __steers.map((item: any) => item.id).filter(Boolean),
+              timestamp: Date.now(),
+            };
+            trace.push(appliedTrace);
+            if (onTrace) {
+              onTrace(appliedTrace);
+            }
+            __reg.consumeSteeringQueue(context.projectId, __steersRaw.length);
+            console.log(`[GeminiClient] Steering injected (${ __steers.length } msg) at iteration ${ interactions }`);
+          }
+        } else if (__reg && typeof __reg.getAndClearSteeringQueue === 'function') {
           const __steersRaw: any[] = __reg.getAndClearSteeringQueue(context.projectId);
           const __steers = __steersRaw
             .map((item: any) => typeof item === 'string' ? { text: item } : item)
@@ -4126,6 +4197,9 @@ EXTERNAL ACTION NOTE CUE
           });
         }
       }
+
+      // Ensure we clean consecutive roles to prevent 400 Bad Request
+      contents = cleanConsecutiveRoles(contents);
 
       // Use streaming to get live thinking + response
       // Fast failover: rotate key + fallback model on failure
@@ -4333,7 +4407,7 @@ EXTERNAL ACTION NOTE CUE
             console.warn('[GeminiClient] ⚠️ Cached content expired mid-session — rebuilding cache...');
             try {
               const _rebuildDecls = this.buildFunctionDeclarations(false, this.getDefaultDesktopToolPolicyContext());
-              _cachedContentName = await handleGeminiCacheNotFound(
+              _cachedContentName = await handleAgentCacheNotFound(
                 this.ai,
                 this.getCurrentApiKey(),
                 this.modelName,
@@ -5296,6 +5370,41 @@ EXTERNAL ACTION NOTE CUE
               try {
                 const _mChatId = (context as any).projectId || (context as any).chatId;
                 monitorEmitter.toolEnd(canonicalToolName, toolOutput, execDuration, _mChatId);
+                
+                // Auto-verify file writes — check the ACTUAL path the tool wrote to
+                await this.emitWorkspaceToolPreviews({
+                  toolName: canonicalToolName,
+                  args: effectiveArgs,
+                  result: toolOutput,
+                  context,
+                  trace,
+                  onTrace,
+                  ownerTraceId: actionTraceId,
+                  preEditSnapshots,
+                  includeWriteAndLegacyEdit: true,
+                });
+
+                // --- Emit tool_result_preview event for all other tools ---
+                const EXCLUDED_PREVIEW_TOOLS = new Set([
+                  'skill_loader', 'screenshot_capture', 'system_automation', 'self_improve',
+                  'memory_v2', 'api_hub', 'api_key_vault', 'env_manager', 'desktop_control',
+                  'browser_control', 'checkpoint', 'computer', 'screen_agent'
+                ]);
+                if (toolOutput !== undefined && toolOutput !== null && !EXCLUDED_PREVIEW_TOOLS.has(canonicalToolName)) {
+                  if (!['workspace_read_file', 'workspace_write_file', 'workspace_edit_file', 'system_shell', 'workspace_run_command'].includes(canonicalToolName)) {
+                    const resultEvt = {
+                      type: 'tool_result_preview',
+                      toolName: canonicalToolName,
+                      toolArgs: effectiveArgs || {},
+                      result: toolOutput,
+                      ownerTraceId: actionTraceId,
+                      timestamp: Date.now(),
+                    };
+                    trace.push(resultEvt);
+                    if (onTrace) onTrace(resultEvt);
+                  }
+                }
+
                 if (call.name === 'workspace_write_file' && args?.filename) monitorEmitter.fileWrite(String(args.filename || args.path || ''), _mChatId);
                 if ((call.name === 'workspace_read_file' || call.name === 'workspace_view_file') && args?.path) monitorEmitter.fileRead(String(args.path || ''), _mChatId);
                 if ((call.name === 'web_search' || call.name === 'deep_research') && args?.query) monitorEmitter.searchQuery(String(args.query || args.topic || ''), _mChatId);
@@ -5326,7 +5435,7 @@ EXTERNAL ACTION NOTE CUE
                 } catch { /* never block */ }
               }
 
-              // Auto-verify file writes â€” check the ACTUAL path the tool wrote to
+              // Auto-verify file writes — check the ACTUAL path the tool wrote to
               await this.emitWorkspaceToolPreviews({
                 toolName: canonicalToolName,
                 args: effectiveArgs,
@@ -5363,7 +5472,7 @@ EXTERNAL ACTION NOTE CUE
                       try {
                         if (await fsExtra.pathExists(checkPath)) {
                           const stat = await fsExtra.stat(checkPath);
-                          console.log(`[GeminiClient] âœ… AUTO-VERIFY: ${ filename } exists at ${ checkPath } (${ (stat.size / 1024).toFixed(1) } KB)`);
+                          console.log(`[GeminiClient] ✅ AUTO-VERIFY: ${ filename } exists at ${ checkPath } (${ (stat.size / 1024).toFixed(1) } KB)`);
                           toolOutput._verified = true;
                           toolOutput._fileSize = stat.size;
                           toolOutput._verifiedPath = checkPath;
@@ -5374,13 +5483,13 @@ EXTERNAL ACTION NOTE CUE
                     }
 
                     if (!verified) {
-                      console.warn(`[GeminiClient] âš ï¸ AUTO-VERIFY: ${ filename } NOT FOUND (checked ${ candidatePaths.length } paths)`);
+                      console.warn(`[GeminiClient] ⚠️ AUTO-VERIFY: ${ filename } NOT FOUND (checked ${ candidatePaths.length } paths)`);
                       toolOutput._verified = false;
                     }
                   } catch { /* silent */ }
                 }
 
-                // â•â•â• LIVE FILE PREVIEW (workspace_write_file): Emit code content to UI â•â•â•
+                // ═══ LIVE FILE PREVIEW (workspace_write_file): Emit code content to UI ═══
                 const codeExtensions: Record<string, string> = {
                   '.ts': 'typescript', '.tsx': 'tsx', '.js': 'javascript', '.jsx': 'jsx',
                   '.py': 'python', '.css': 'css', '.scss': 'scss', '.html': 'html',
@@ -5415,7 +5524,7 @@ EXTERNAL ACTION NOTE CUE
                 } catch { /* silent */ }
               }
 
-              // â•â•â• LIVE FILE PREVIEW (workspace_edit_file): VS Code-style diff â•â•â•
+              // ═══ LIVE FILE PREVIEW (workspace_edit_file): VS Code-style diff ═══
               if (call.name === 'workspace_edit_file' && toolOutput && !toolOutput.error && !toolOutput._workspacePreviewTraceEmitted) {
                 try {
                   const editFilename = String(args?.filename || args?.path || '');
@@ -5446,7 +5555,7 @@ EXTERNAL ACTION NOTE CUE
                     }
                     if (!newContent) newContent = String(args?.newContent || args?.replacement || '');
                     if (newContent) {
-                      // â”€â”€ Compute Myers-style line diff â”€â”€
+                      // ── Compute Myers-style line diff ──
                       const _oldLines = (_preEditContent || '').split('\n');
                       const _newLines = newContent.split('\n');
                       const _N = _oldLines.length, _M = _newLines.length;
@@ -5552,7 +5661,7 @@ EXTERNAL ACTION NOTE CUE
                 } catch { /* silent */ }
               }
 
-              // â•â•â• LIVE CONSOLE OUTPUT: Emit real shell stdout/stderr to UI â•â•â•
+              // ═══ LIVE CONSOLE OUTPUT: Emit real shell stdout/stderr to UI ═══
               if ((call.name === 'system_shell' || call.name === 'workspace_run_command') && toolOutput && !toolOutput?._consoleTraceEmitted) {
                 const rawStdout = String(toolOutput?.stdout || toolOutput?.output || toolOutput?.result || '').trim();
                 const rawStderr = String(toolOutput?.stderr || '').trim();
@@ -5591,7 +5700,7 @@ EXTERNAL ACTION NOTE CUE
                   }
                 };
               }
-              console.warn(`[GeminiClient] âš ï¸ Tool ${ call.name } failed: ${ err.message }`);
+              console.warn(`[GeminiClient] ⚠️ Tool ${ call.name } failed: ${ err.message }`);
 
 
               // === LIFETIME BRAIN: Record tool errors for permanent learning ===
@@ -5613,7 +5722,7 @@ EXTERNAL ACTION NOTE CUE
               // If a tool has failed 3+ times total, inject a warning so the agent avoids it
               const toolFailCount = metaCognition.failedTools.get(call.name) || 0;
               if (toolFailCount >= 3) {
-                console.warn(`[GeminiClient] ðŸš« Tool ${ call.name } has failed ${ toolFailCount } times â€” agent should use alternatives`);
+                console.warn(`[GeminiClient] 🚫 Tool ${ call.name } has failed ${ toolFailCount } times — agent should use alternatives`);
               }
 
               if (call.name === 'browser_control') {

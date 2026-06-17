@@ -916,7 +916,7 @@
 }
 
 .eterx-work-menu {
-  width: min(388px, calc(100vw - 24px));
+  width: min(320px, calc(100vw - 24px));
   border: 1px solid rgba(255, 255, 255, 0.095);
   border-radius: 16px;
   background: linear-gradient(180deg, rgba(24, 24, 27, 0.98), rgba(17, 17, 19, 0.98));
@@ -969,20 +969,37 @@
   flex-shrink: 0;
   align-items: center;
   justify-content: center;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.045);
-  color: rgba(255, 255, 255, 0.58);
+  background: #1C1C1C;
+  color: rgba(255, 255, 255, 0.68);
   padding: 0 9px;
   font-size: 11px;
   font-weight: 750;
   line-height: 1;
+  box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.12);
+  transition: all 150ms ease;
+}
+
+.eterx-work-menu-state:hover {
+  background: #262626;
+  border-color: rgba(255, 255, 255, 0.2);
+  box-shadow: inset 0 -2px 0 rgba(255, 255, 255, 0.68);
+  color: #E8E6E3;
 }
 
 .eterx-work-menu-state-live {
   border-color: rgba(52, 211, 153, 0.18);
   background: rgba(16, 185, 129, 0.11);
   color: #78e8b9;
+  box-shadow: inset 0 -1px 0 rgba(52, 211, 153, 0.18);
+}
+
+.eterx-work-menu-state-live:hover {
+  background: rgba(16, 185, 129, 0.2);
+  border-color: rgba(52, 211, 153, 0.3);
+  box-shadow: inset 0 -2px 0 rgba(52, 211, 153, 0.68);
+  color: #9bf3cc;
 }
 
 .eterx-work-menu-content {
@@ -1024,13 +1041,22 @@
   height: 20px;
   align-items: center;
   justify-content: center;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.045);
+  background: #1C1C1C;
   color: rgba(255, 255, 255, 0.54);
   padding: 0 7px;
   font-size: 10.5px;
   font-weight: 750;
+  box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.12);
+  transition: all 150ms ease;
+}
+
+.eterx-work-menu-section-button:hover .eterx-work-menu-section-badge {
+  background: #262626;
+  border-color: rgba(255, 255, 255, 0.2);
+  box-shadow: inset 0 -2px 0 rgba(255, 255, 255, 0.68);
+  color: #E8E6E3;
 }
 
 .eterx-work-menu-list {
@@ -1171,26 +1197,44 @@
   flex-shrink: 0;
   align-items: center;
   justify-content: center;
-  border: 1px solid rgba(96, 165, 250, 0.2);
+  border: 1px solid rgba(96, 165, 250, 0.22);
   border-radius: 999px;
-  background: rgba(96, 165, 250, 0.12);
+  background: #152233;
   color: #8ec1ff;
   padding: 0 6px;
   font-size: 9.5px;
   font-weight: 800;
   line-height: 1;
+  box-shadow: inset 0 -1px 0 rgba(96, 165, 250, 0.22);
+  transition: all 150ms ease;
+}
+
+.eterx-work-menu-row:hover .eterx-work-menu-file-chip {
+  background: #1e334d;
+  border-color: rgba(96, 165, 250, 0.45);
+  box-shadow: inset 0 -2px 0 rgba(96, 165, 250, 0.75);
+  color: #cce3ff;
 }
 
 .eterx-work-menu-file-chip-add {
-  border-color: rgba(52, 211, 153, 0.18);
-  background: rgba(16, 185, 129, 0.11);
+  border-color: rgba(52, 211, 153, 0.22);
+  background: #11261d;
   color: #78e8b9;
+  box-shadow: inset 0 -1px 0 rgba(52, 211, 153, 0.22);
+  transition: all 150ms ease;
+}
+
+.eterx-work-menu-row:hover .eterx-work-menu-file-chip-add {
+  background: #1a3c2e;
+  border-color: rgba(52, 211, 153, 0.45);
+  box-shadow: inset 0 -2px 0 rgba(52, 211, 153, 0.75);
+  color: #adffd9;
 }
 
 @media (max-width: 720px) {
   .eterx-work-menu {
     right: -12px;
-    width: min(360px, calc(100vw - 16px));
+    width: min(300px, calc(100vw - 16px));
   }
 
   .eterx-work-menu-title {
@@ -1213,6 +1257,90 @@
   .eterx-work-menu-list-tall {
     max-height: 156px;
   }
+}
+
+/* Drag Bar at the top of the card */
+.eterx-work-menu-drag-bar {
+  height: 12px;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: grab;
+  user-select: none;
+  background: transparent;
+  border-radius: 16px 16px 0 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.02);
+}
+.eterx-work-menu-drag-bar:active {
+  cursor: grabbing;
+}
+.eterx-work-menu-drag-handle {
+  width: 32px;
+  height: 3.5px;
+  border-radius: 99px;
+  background: rgba(255, 255, 255, 0.12);
+  transition: background 150ms ease;
+}
+.eterx-work-menu-drag-bar:hover .eterx-work-menu-drag-handle {
+  background: rgba(255, 255, 255, 0.24);
+}
+
+/* Resize Handles */
+.eterx-work-menu-resize-l {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: w-resize;
+  z-index: 80;
+  background: transparent;
+  transition: background 150ms ease;
+}
+.eterx-work-menu-resize-l:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.eterx-work-menu-resize-b {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 6px;
+  cursor: s-resize;
+  z-index: 80;
+  background: transparent;
+  transition: background 150ms ease;
+}
+.eterx-work-menu-resize-b:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.eterx-work-menu-resize-corner {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 12px;
+  height: 12px;
+  cursor: sw-resize;
+  z-index: 81;
+  background: transparent;
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-start;
+  padding: 2.5px;
+}
+.eterx-work-menu-resize-corner::after {
+  content: '';
+  width: 4px;
+  height: 4px;
+  border-left: 1px solid rgba(255, 255, 255, 0.2);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+  transition: border-color 150ms ease;
+}
+.eterx-work-menu-resize-corner:hover::after {
+  border-color: rgba(255, 255, 255, 0.6);
 }
 
 .eterx-text-shimmer {
