@@ -287,23 +287,7 @@ const chatFeedSurfaceStyles = `
   .eterx-chat-feed-empty .eterx-chat-feed-content {
     background: transparent;
   }
-  .eterx-chat-feed-scroll::-webkit-scrollbar,
-  .eterx-chat-feed-scroll::-webkit-scrollbar-track,
-  .eterx-chat-feed-scroll::-webkit-scrollbar-track-piece,
-  .eterx-chat-feed-scroll::-webkit-scrollbar-corner {
-    background: var(--eterx-chat-feed-bg) !important;
-    background-color: var(--eterx-chat-feed-bg) !important;
-    background-image: none !important;
-    border: 0 !important;
-    box-shadow: none !important;
-  }
-  .eterx-chat-feed-scroll::-webkit-scrollbar-thumb {
-    background-color: rgba(255, 255, 255, 0.16) !important;
-    border-color: var(--eterx-chat-feed-bg) !important;
-  }
-  :root[data-theme="light"] .eterx-chat-feed-scroll::-webkit-scrollbar-thumb {
-    background-color: rgba(58, 72, 91, 0.18) !important;
-  }
+
   .eterx-user-message-action-fade {
     filter: none;
     background:
