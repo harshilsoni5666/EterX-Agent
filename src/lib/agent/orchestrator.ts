@@ -85,6 +85,7 @@ type RuntimeProjectContext = ProjectContext & {
   runLocation?: string;
   sandboxGuard?: any;
   allowRawCommand?: boolean;
+  isFocusedWorkspace?: boolean;
 };
 
 export class AgentOrchestrator {
@@ -386,6 +387,9 @@ export class AgentOrchestrator {
       context.allowDynamicCode = false;
       context.allowRawCommand = false;
     } else {
+      if (pinnedContext?.isFocusedWorkspace) {
+        context.isFocusedWorkspace = true;
+      }
       if (Array.isArray(pinnedContext?.paths) && pinnedContext.paths.length > 0) {
         const pinnedPaths = pinnedContext.paths.filter((p: unknown): p is string => typeof p === 'string' && p.trim().length > 0);
         context.paths = pinnedPaths;

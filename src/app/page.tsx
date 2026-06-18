@@ -386,6 +386,8 @@ interface ChatSession {
   updatedAt: number;
   traceLogs: any[];
   isFavorite?: boolean;
+  workspacePath?: string | null;
+  runLocation?: 'local' | 'sandbox';
 }
 
 type ComposerAttachment = {
@@ -1008,6 +1010,8 @@ function DeepWorkUI() {
     agentId: null,
     agentName: 'General',
   });
+  const [activeWorkspacePath, setActiveWorkspacePath] = useState<string | null>(null);
+  const [activeRunLocation, setActiveRunLocation] = useState<'local' | 'sandbox'>('local');
   const [pinnedItems, setPinnedItems] = useState<PinnedItem[]>([]);
   const [envDropdownOpen, setEnvDropdownOpen] = useState(false);
   const envDropdownRef = useRef<HTMLDivElement | null>(null);
@@ -2012,6 +2016,15 @@ function DeepWorkUI() {
       activeChatIdRef.current = id;
       setActiveChatId(id);
       setTraceLogs(chat.traceLogs || []);
+      setActiveWorkspacePath(chat.workspacePath || null);
+      if (typeof window !== 'undefined') {
+        if (chat.workspacePath) {
+          localStorage.setItem('eterx_active_workspace_path', chat.workspacePath);
+        } else {
+          localStorage.removeItem('eterx_active_workspace_path');
+        }
+      }
+      setActiveRunLocation(chat.runLocation || 'local');
       clearUnreadChat(id);
       if (window.innerWidth < 768) setSidebarOpen(false);
 
@@ -2058,6 +2071,35 @@ function DeepWorkUI() {
       }, 50);
     }
   };
+
+  const handleWorkspacePathChange = useCallback((path: string | null) => {
+    setActiveWorkspacePath(path);
+    if (typeof window !== 'undefined') {
+      if (path) {
+        localStorage.setItem('eterx_active_workspace_path', path);
+      } else {
+        localStorage.removeItem('eterx_active_workspace_path');
+      }
+    }
+    if (activeChatId) {
+      setChats(prev => {
+        const updated = prev.map(chat => chat.id === activeChatId ? { ...chat, workspacePath: path } : chat);
+        localStorage.setItem('eterx_chats', JSON.stringify(stripChatsForStorage(updated)));
+        return updated;
+      });
+    }
+  }, [activeChatId]);
+
+  const handleRunLocationChange = useCallback((location: 'local' | 'sandbox') => {
+    setActiveRunLocation(location);
+    if (activeChatId) {
+      setChats(prev => {
+        const updated = prev.map(chat => chat.id === activeChatId ? { ...chat, runLocation: location } : chat);
+        localStorage.setItem('eterx_chats', JSON.stringify(stripChatsForStorage(updated)));
+        return updated;
+      });
+    }
+  }, [activeChatId]);
 
   const handleOpenAgentBuilder = (id: string) => {
     setBuildingAgentId(id);
@@ -3604,7 +3646,9 @@ function DeepWorkUI() {
         id: chatIdToUse,
         title: initialTitle,
         updatedAt: Date.now(),
-        traceLogs: [userLog]
+        traceLogs: [userLog],
+        workspacePath: activeWorkspacePath,
+        runLocation: activeRunLocation,
       };
 
       setChats(prev => {
@@ -3896,6 +3940,11 @@ function DeepWorkUI() {
       ...(pinnedItems.length > 0 ? { paths: pinnedItems.map(p => p.path) } : {}),
       ...(isBuilderChat ? { agentRuntime: 'agent_builder', agentId: builderAgentId } : {}),
       ...(selectedAgent === 'coding' && !isBuilderChat ? { agentRuntime: 'main_coding_agent', agentProfile: 'eterx-code' } : {}),
+      ...(activeWorkspacePath ? {
+        paths: [activeWorkspacePath, ...(pinnedItems.length > 0 ? pinnedItems.map(p => p.path) : [])],
+        workspacePath: activeWorkspacePath,
+        isFocusedWorkspace: true
+      } : {}),
     };
     const hasPinnedContext = Object.keys(requestPinnedContext).length > 0;
 
@@ -3909,7 +3958,7 @@ function DeepWorkUI() {
     let serverAccepted = false;
     // Also start SSE stream for faster real-time events (optional enhancement)
     try {
-      const runLocationVal = typeof window !== 'undefined' ? (window.localStorage.getItem('eterx_run_location') || 'local') : 'local';
+      const runLocationVal = activeRunLocation;
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -5531,6 +5580,10 @@ function DeepWorkUI() {
                     selectedAgentName={selectedAgentName}
                     onAgentChange={handleAgentChange}
                     onOpenPet={openPetWidget}
+                    workspacePath={activeWorkspacePath}
+                    onWorkspacePathChange={handleWorkspacePathChange}
+                    runLocation={activeRunLocation}
+                    onRunLocationChange={handleRunLocationChange}
                     onOpenAgents={() => {
                       setBuildingAgentId(null);
                       setActiveView('agents');

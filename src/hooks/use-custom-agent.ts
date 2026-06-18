@@ -116,10 +116,22 @@ export function useCustomAgent() {
 
     try {
       const runLocationVal = typeof window !== 'undefined' ? (window.localStorage.getItem('eterx_run_location') || 'local') : 'local';
+      const workspacePathVal = typeof window !== 'undefined' ? window.localStorage.getItem('eterx_active_workspace_path') : null;
+      const pinnedContextVal = workspacePathVal ? {
+        paths: [workspacePathVal],
+        workspacePath: workspacePathVal,
+        isFocusedWorkspace: true
+      } : null;
+
       const res = await fetch('/api/agents/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ agentId, messages, runLocation: runLocationVal }),
+        body: JSON.stringify({
+          agentId,
+          messages,
+          runLocation: runLocationVal,
+          pinnedContext: pinnedContextVal
+        }),
         signal: controller.signal,
       });
 

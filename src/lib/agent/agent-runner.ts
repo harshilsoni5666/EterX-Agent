@@ -10,6 +10,8 @@
  * Completely separate from the main agent in Agent.ts.
  * Uses the same apiKeyPool for API key management.
  */
+import path from 'path';
+import fs from 'fs';
 import { GoogleGenAI } from '@google/genai';
 import { apiKeyPool } from './api-key-pool';
 import { readAgentBuilderProfile, type AgentBuilderProfile } from './builder-agent';
@@ -47,6 +49,7 @@ export interface AgentRunnerConfig {
   chatId?: string;
   agentSessionId?: string;
   runLocation?: string;
+  pinnedContext?: any;
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -568,6 +571,7 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
     let paths = [workspaceRoot];
     let allowedPaths = [workspaceRoot];
     let sandboxGuard: any = null;
+    let isFocusedWorkspace = false;
 
     if (config.runLocation === 'sandbox') {
       try {
@@ -596,6 +600,19 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
       } catch (e) {
         console.error('Failed to initialize sandbox workspace for agent runner:', e);
       }
+    } else {
+      const customWorkspace = config.pinnedContext?.workspacePath || config.pinnedContext?.paths?.[0];
+      if (customWorkspace) {
+        const resolvedCustom = path.resolve(customWorkspace);
+        try {
+          if (fs.existsSync(resolvedCustom)) {
+            workspaceRoot = resolvedCustom;
+            paths = [workspaceRoot];
+            allowedPaths = [workspaceRoot];
+            isFocusedWorkspace = !!config.pinnedContext?.isFocusedWorkspace;
+          }
+        } catch {}
+      }
     }
 
     const context = {
@@ -605,8 +622,10 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
       chatId,
       agentSessionId: config.agentSessionId || '',
       workspaceRoot,
+      workspacePath: workspaceRoot,
       paths,
       allowedPaths,
+      isFocusedWorkspace,
       runLocation: config.runLocation || 'local',
       sandboxGuard: sandboxGuard || undefined,
       allowedCapabilities: config.runLocation === 'sandbox'

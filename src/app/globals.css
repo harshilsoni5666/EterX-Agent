@@ -69,17 +69,17 @@
     --font-dm-sans: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     --font-mono: 'JetBrains Mono', ui-monospace, 'Cascadia Code', 'Fira Code', monospace;
 
-    --sb-size: 11px;
+    --sb-size: 7px;
     --sb-button-size: 0px;
     --sb-track: transparent;
     --sb-track-solid: transparent;
     --sb-track-edge: transparent;
-    --sb-thumb: rgba(31, 31, 29, 0.20);
-    --sb-thumb-hover: rgba(31, 31, 29, 0.32);
-    --sb-thumb-active: rgba(31, 31, 29, 0.46);
+    --sb-thumb: rgba(31, 31, 29, 0.18);
+    --sb-thumb-hover: rgba(31, 31, 29, 0.30);
+    --sb-thumb-active: rgba(31, 31, 29, 0.45);
     --sb-radius: 9999px;
-    --sb-inset: 2px;
-    --chat-feed-sb-size: 13px;
+    --sb-inset: 0px;
+    --chat-feed-sb-size: 7px;
   }
 
   :root[data-theme="dark"] {
@@ -145,8 +145,8 @@
     --destructive: #ef4444;
     --info: #3b82f6;
 
-    --sb-thumb: rgba(255, 255, 255, 0.16);
-    --sb-thumb-hover: rgba(255, 255, 255, 0.3);
+    --sb-thumb: rgba(255, 255, 255, 0.18);
+    --sb-thumb-hover: rgba(255, 255, 255, 0.30);
     --sb-thumb-active: rgba(255, 255, 255, 0.45);
   }
 
@@ -1768,9 +1768,7 @@
   min-width: 48px !important;
   background: var(--sb-thumb) !important;
   background-color: var(--sb-thumb) !important;
-  border: var(--sb-inset) solid transparent !important;
   border-radius: var(--sb-radius) !important;
-  background-clip: content-box !important;
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.03) !important;
   transition: background-color 0.2s ease !important;
 }
@@ -1779,14 +1777,12 @@
 *::-webkit-scrollbar-thumb:hover {
   background: var(--sb-thumb-hover) !important;
   background-color: var(--sb-thumb-hover) !important;
-  background-clip: content-box !important;
 }
 
 ::-webkit-scrollbar-thumb:active,
 *::-webkit-scrollbar-thumb:active {
   background: var(--sb-thumb-active) !important;
   background-color: var(--sb-thumb-active) !important;
-  background-clip: content-box !important;
 }
 
 .monaco-scrollable-element > .scrollbar,
@@ -1867,9 +1863,7 @@
   min-width: 48px !important;
   background: var(--sb-thumb) !important;
   background-color: var(--sb-thumb) !important;
-  border: var(--sb-inset) solid transparent !important;
   border-radius: var(--sb-radius) !important;
-  background-clip: content-box !important;
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.03) !important;
   transition: background-color 0.2s ease !important;
 }
@@ -1878,14 +1872,12 @@
 *::-webkit-scrollbar-thumb:hover {
   background: var(--sb-thumb-hover) !important;
   background-color: var(--sb-thumb-hover) !important;
-  background-clip: content-box !important;
 }
 
 ::-webkit-scrollbar-thumb:active,
 *::-webkit-scrollbar-thumb:active {
   background: var(--sb-thumb-active) !important;
   background-color: var(--sb-thumb-active) !important;
-  background-clip: content-box !important;
 }
 
 .monaco-scrollable-element > .scrollbar,

@@ -301,6 +301,10 @@ interface ChatInputProps {
   selectedAgent?: string | null;
   selectedAgentName?: string;
   onAgentChange?: (agentId: string | null, agentName: string) => void;
+  workspacePath?: string | null;
+  onWorkspacePathChange?: (path: string | null) => void;
+  runLocation?: 'local' | 'sandbox';
+  onRunLocationChange?: (location: 'local' | 'sandbox') => void;
 }
 
 const inferFileExtension = (mimeType: string) => {
@@ -914,6 +918,10 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   selectedAgent = null,
   selectedAgentName = 'General',
   onAgentChange,
+  workspacePath,
+  onWorkspacePathChange,
+  runLocation: propRunLocation,
+  onRunLocationChange,
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -956,20 +964,93 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     chatModelSelection: AUTO_MODEL_SELECTION,
   }));
   const connectors = useConnectors();
-  const [runLocation, setRunLocation] = useState<'local' | 'sandbox'>(() => {
+  const [localRunLocation, setLocalRunLocation] = useState<'local' | 'sandbox'>(() => {
     if (typeof window !== 'undefined') {
-      const saved = window.localStorage.getItem('eterx_run_location');
-      if (saved === 'sandbox') return 'sandbox';
+      return (window.localStorage.getItem('eterx_run_location') as 'local' | 'sandbox') || 'local';
     }
     return 'local';
   });
+  const runLocation = propRunLocation !== undefined ? propRunLocation : localRunLocation;
   const handleRunLocationChange = useCallback((location: 'local' | 'sandbox') => {
-    setRunLocation(location);
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem('eterx_run_location', location);
+    if (onRunLocationChange) {
+      onRunLocationChange(location);
+    } else {
+      setLocalRunLocation(location);
+      if (typeof window !== 'undefined') {
+        window.localStorage.setItem('eterx_run_location', location);
+      }
     }
     setOpenStatusMenu(null);
-  }, []);
+  }, [onRunLocationChange]);
+
+  const [localWorkspacePath, setLocalWorkspacePath] = useState<string | null>(null);
+  const activeWorkspacePath = workspacePath !== undefined ? workspacePath : localWorkspacePath;
+  const handleWorkspacePathChange = useCallback((path: string | null) => {
+    if (onWorkspacePathChange) {
+      onWorkspacePathChange(path);
+    } else {
+      setLocalWorkspacePath(path);
+    }
+  }, [onWorkspacePathChange]);
+
+  const workspaceName = useMemo(() => {
+    if (!activeWorkspacePath) return 'Local Project';
+    return activeWorkspacePath.split(/[/\\]/).filter(Boolean).pop() || activeWorkspacePath;
+  }, [activeWorkspacePath]);
+
+  const [recentProjects, setRecentProjects] = useState<Array<{path: string; name: string}>>([]);
+  useEffect(() => {
+    if (openStatusMenu === 'project' && typeof window !== 'undefined') {
+      try {
+        const saved = localStorage.getItem('eterx_recent_projects');
+        const parsed = saved ? JSON.parse(saved) : [];
+        if (Array.isArray(parsed)) {
+          setRecentProjects(parsed);
+        }
+      } catch { }
+    }
+  }, [openStatusMenu]);
+
+  const filteredRecentProjects = useMemo(() => {
+    const query = projectSearch.trim().toLowerCase();
+    if (!query) return recentProjects;
+    return recentProjects.filter(p => p.name.toLowerCase().includes(query) || p.path.toLowerCase().includes(query));
+  }, [recentProjects, projectSearch]);
+
+  const looksLikePath = useMemo(() => {
+    const trimmed = projectSearch.trim();
+    return /^[a-zA-Z]:[\\/]/i.test(trimmed) || trimmed.includes('/') || trimmed.includes('\\');
+  }, [projectSearch]);
+
+  const handleSelectFolderDialog = useCallback(async () => {
+    const w = window as any;
+    let selectedPath: string | null = null;
+    if (w.electronAPI?.selectFolder) {
+      selectedPath = await w.electronAPI.selectFolder();
+    } else {
+      selectedPath = window.prompt('Paste or type your local project folder path:');
+    }
+    
+    if (selectedPath && selectedPath.trim()) {
+      const cleanPath = selectedPath.trim();
+      handleWorkspacePathChange(cleanPath);
+      
+      // Save to recent projects
+      if (typeof window !== 'undefined') {
+        try {
+          const saved = localStorage.getItem('eterx_recent_projects');
+          const parsed = saved ? JSON.parse(saved) : [];
+          const name = cleanPath.split(/[/\\]/).filter(Boolean).pop() || cleanPath;
+          const updated = [
+            { path: cleanPath, name, openedAt: Date.now() },
+            ...parsed.filter((p: any) => p.path !== cleanPath)
+          ].slice(0, 8);
+          localStorage.setItem('eterx_recent_projects', JSON.stringify(updated));
+        } catch { }
+      }
+    }
+    setOpenStatusMenu(null);
+  }, [handleWorkspacePathChange]);
   const refreshStoredModelSettings = useCallback(() => {
     setStoredModelSettings(readStoredModelSettings());
   }, []);
@@ -1698,12 +1779,27 @@ export const ChatInput: React.FC<ChatInputProps> = ({
 
   const isEmptyHome = traceLogsLength === 0 && liveState === 'idle';
   const isNewChatHome = isEmptyHome && !activeChatId;
-  const workspaceName = 'EterX-Agent';
-  const branchName = 'safe-hardening';
-  const projectOptions = useMemo(() => {
-    const query = projectSearch.trim().toLowerCase();
-    return ['EterX-Agent', 'EterX'].filter(project => project.toLowerCase().includes(query));
-  }, [projectSearch]);
+  const [branchName, setBranchName] = useState('main');
+  useEffect(() => {
+    if (!activeWorkspacePath) {
+      setBranchName('main');
+      return;
+    }
+    fetch('/api/code/execute', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command: 'git branch --show-current', cwd: activeWorkspacePath }),
+    })
+      .then(r => r.json())
+      .then(data => {
+        if (data.stdout?.trim()) {
+          setBranchName(data.stdout.trim());
+        } else {
+          setBranchName('main');
+        }
+      })
+      .catch(() => setBranchName('main'));
+  }, [activeWorkspacePath]);
   const toggleStatusMenu = useCallback((event: React.MouseEvent, menu: Exclude<StatusRailMenu, null>) => {
     event.stopPropagation();
     setOpenPillDrop(null);
@@ -3039,7 +3135,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       transition={{ duration: 0.16, ease: 'easeOut' }}
                       className="eterx-composer-popout eterx-status-popout eterx-status-popout-project"
                       role="dialog"
-                      aria-label="Project menu"
+                      aria-label="Workspace folder selector"
                       onClick={(event) => event.stopPropagation()}
                     >
                       <label className="eterx-status-search">
@@ -3047,44 +3143,79 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                         <input
                           value={projectSearch}
                           onChange={(event) => setProjectSearch(event.target.value)}
-                          placeholder="Search projects"
+                          placeholder="Search or paste folder path..."
                         />
                       </label>
-                      <div className="eterx-status-menu-section">
-                        {projectOptions.length > 0 ? projectOptions.map(project => {
-                          const selected = project === workspaceName;
+                      <div className="eterx-status-menu-section max-h-[150px] overflow-y-auto">
+                        {looksLikePath && (
+                          <button
+                            type="button"
+                            className="eterx-status-menu-item bg-white/[0.04] hover:bg-white/[0.08]"
+                            onClick={() => {
+                              const pathVal = projectSearch.trim();
+                              handleWorkspacePathChange(pathVal);
+                              try {
+                                const saved = localStorage.getItem('eterx_recent_projects');
+                                const parsed = saved ? JSON.parse(saved) : [];
+                                const name = pathVal.split(/[/\\]/).filter(Boolean).pop() || pathVal;
+                                const updated = [
+                                  { path: pathVal, name, openedAt: Date.now() },
+                                  ...parsed.filter((p: any) => p.path !== pathVal)
+                                ].slice(0, 8);
+                                localStorage.setItem('eterx_recent_projects', JSON.stringify(updated));
+                              } catch { }
+                              setProjectSearch('');
+                              setOpenStatusMenu(null);
+                            }}
+                          >
+                            <FolderPlus className="eterx-status-menu-icon text-[#E2765A]" strokeWidth={1.95} />
+                            <div className="min-w-0 flex-1 text-left">
+                              <div className="text-[12px] font-semibold text-[#E2765A] leading-none mb-0.5">Use pasted path</div>
+                              <div className="truncate text-[10px] text-white/55 font-mono leading-none">{projectSearch.trim()}</div>
+                            </div>
+                          </button>
+                        )}
+                        {filteredRecentProjects.length > 0 ? filteredRecentProjects.map(project => {
+                          const selected = project.path === activeWorkspacePath;
                           return (
                             <button
-                              key={project}
+                              key={project.path}
                               type="button"
-                              className="eterx-status-menu-item"
+                              className={`eterx-status-menu-item ${selected ? 'is-selected' : ''}`}
                               onClick={() => {
-                                if (!selected) onOpenProjects();
+                                handleWorkspacePathChange(project.path);
                                 setOpenStatusMenu(null);
                               }}
                             >
                               <FolderOpen className="eterx-status-menu-icon" strokeWidth={1.95} />
-                              <span className="min-w-0 flex-1 truncate">{project}</span>
+                              <div className="min-w-0 flex-1 text-left">
+                                <div className="truncate text-[13px] font-medium leading-none mb-0.5">{project.name}</div>
+                                <div className="truncate text-[10px] text-white/40 font-mono leading-none">{project.path}</div>
+                              </div>
                               {selected && <Check className="h-4 w-4 shrink-0" strokeWidth={2.35} />}
                             </button>
                           );
-                        }) : (
-                          <div className="eterx-status-empty">No projects found</div>
+                        }) : !looksLikePath && (
+                          <div className="eterx-status-empty text-xs py-4 text-center text-white/30">No recent folders found</div>
                         )}
                       </div>
                       <div className="eterx-status-menu-rule" />
-                      <button type="button" className="eterx-status-menu-item" onClick={openProjectsFromRail}>
+                      <button type="button" className="eterx-status-menu-item" onClick={handleSelectFolderDialog}>
                         <FolderPlus className="eterx-status-menu-icon" strokeWidth={1.95} />
-                        <span className="min-w-0 flex-1 truncate">Add new project</span>
+                        <span className="min-w-0 flex-1 truncate">Browse system folder</span>
                         <ChevronRight className="h-4 w-4 shrink-0 opacity-65" strokeWidth={2.1} />
                       </button>
-                      <button type="button" className="eterx-status-menu-item" onClick={openProjectsFromRail}>
-                        <FolderOpen className="eterx-status-menu-icon" strokeWidth={1.95} />
-                        <span className="min-w-0 flex-1 truncate">Use existing folder</span>
-                      </button>
-                      <button type="button" className="eterx-status-menu-item" onClick={() => setOpenStatusMenu(null)}>
+                      <button
+                        type="button"
+                        className={`eterx-status-menu-item ${!activeWorkspacePath ? 'is-selected' : ''}`}
+                        onClick={() => {
+                          handleWorkspacePathChange(null);
+                          setOpenStatusMenu(null);
+                        }}
+                      >
                         <CircleSlash className="eterx-status-menu-icon" strokeWidth={1.95} />
-                        <span className="min-w-0 flex-1 truncate">Do not work in a project</span>
+                        <span className="min-w-0 flex-1 truncate">Use default local project</span>
+                        {!activeWorkspacePath && <Check className="h-4 w-4 shrink-0" strokeWidth={2.35} />}
                       </button>
                     </motion.div>
                   )}

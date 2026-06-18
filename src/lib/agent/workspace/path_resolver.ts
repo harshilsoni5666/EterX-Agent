@@ -346,6 +346,20 @@ function enforceRuntimePathContainment(filePath: string, context: any, operation
     }
   }
 
+  // Focused Workspace (Local Custom Workspace):
+  // If we are in local mode (not sandbox) and we have a custom workspace path marked as focused,
+  // we restrict writes/executes strictly to this workspace path, but allow reads everywhere.
+  if (context?.runLocation !== 'sandbox' && context?.isFocusedWorkspace && context?.workspaceRoot) {
+    if (operation === 'write' || operation === 'execute') {
+      const workspaceRoot = context.workspaceRoot;
+      if (workspaceRoot && !isPathInsideOrEqual(workspaceRoot, resolved)) {
+        throw new Error(`Blocked ${operation} in Focused mode: writes and execution are restricted to the selected folder (${workspaceRoot})`);
+      }
+    }
+    // Allow reads everywhere (local-only reads)
+    return resolved;
+  }
+
   const allowedRoots = getRuntimeAllowedRoots(context);
   if (allowedRoots.length === 0 || context?.allowAllPaths === true || process.env.ETERX_ALLOW_ALL_TOOL_PATHS === '1') {
     return resolved;
