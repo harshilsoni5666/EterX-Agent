@@ -86,7 +86,7 @@ function main() {
 
   const referenceText = readTextFiles(walkFiles(referenceRoot, new Set(['.md', '.json'])));
   const livePromptText = readTextFiles([
-    path.join(repoRoot, 'src', 'lib', 'agent', 'gemini.ts'),
+    path.join(repoRoot, 'src', 'lib', 'agent', 'Agent.ts'),
     path.join(repoRoot, 'src', 'lib', 'agent', 'coding-agent-profile.ts'),
     path.join(repoRoot, 'src', 'lib', 'code', 'code-agent-tools.ts'),
     path.join(repoRoot, 'src', 'lib', 'code', 'code-prompts.ts'),

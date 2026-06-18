@@ -956,6 +956,20 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     chatModelSelection: AUTO_MODEL_SELECTION,
   }));
   const connectors = useConnectors();
+  const [runLocation, setRunLocation] = useState<'local' | 'sandbox'>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = window.localStorage.getItem('eterx_run_location');
+      if (saved === 'sandbox') return 'sandbox';
+    }
+    return 'local';
+  });
+  const handleRunLocationChange = useCallback((location: 'local' | 'sandbox') => {
+    setRunLocation(location);
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem('eterx_run_location', location);
+    }
+    setOpenStatusMenu(null);
+  }, []);
   const refreshStoredModelSettings = useCallback(() => {
     setStoredModelSettings(readStoredModelSettings());
   }, []);
@@ -3081,13 +3095,17 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                 <button
                   type="button"
                   className={`eterx-new-chat-status-item ${openStatusMenu === 'run' ? 'is-open' : ''}`}
-                  aria-label="Work locally"
+                  aria-label={runLocation === 'local' ? "Work locally" : "Sandbox"}
                   aria-haspopup="dialog"
                   aria-expanded={openStatusMenu === 'run'}
                   onClick={(event) => toggleStatusMenu(event, 'run')}
                 >
-                  <LaptopMinimal className="eterx-new-chat-status-icon" strokeWidth={1.9} />
-                  <span>Work locally</span>
+                  {runLocation === 'local' ? (
+                    <LaptopMinimal className="eterx-new-chat-status-icon" strokeWidth={1.9} />
+                  ) : (
+                    <Terminal className="eterx-new-chat-status-icon" strokeWidth={1.9} />
+                  )}
+                  <span>{runLocation === 'local' ? "Work locally" : "Sandbox"}</span>
                   <ChevronDown className="eterx-new-chat-status-chevron" strokeWidth={2.1} />
                 </button>
                 <AnimatePresence>
@@ -3103,24 +3121,27 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       onClick={(event) => event.stopPropagation()}
                     >
                       <div className="eterx-status-menu-label">Start in</div>
-                      <button type="button" className="eterx-status-menu-item is-selected" onClick={() => setOpenStatusMenu(null)}>
+                      <button
+                        type="button"
+                        className={`eterx-status-menu-item ${runLocation === 'local' ? 'is-selected' : ''}`}
+                        onClick={() => handleRunLocationChange('local')}
+                      >
                         <LaptopMinimal className="eterx-status-menu-icon" strokeWidth={1.95} />
                         <span className="min-w-0 flex-1 truncate">Work locally</span>
-                        <Check className="h-4 w-4 shrink-0" strokeWidth={2.35} />
+                        {runLocation === 'local' && <Check className="h-4 w-4 shrink-0" strokeWidth={2.35} />}
                       </button>
                       <button type="button" className="eterx-status-menu-item" onClick={openProjectsFromRail}>
                         <GitFork className="eterx-status-menu-icon" strokeWidth={1.95} />
                         <span className="min-w-0 flex-1 truncate">New worktree</span>
                       </button>
-                      <button type="button" className="eterx-status-menu-item" onClick={() => setOpenStatusMenu(null)}>
+                      <button
+                        type="button"
+                        className={`eterx-status-menu-item ${runLocation === 'sandbox' ? 'is-selected' : ''}`}
+                        onClick={() => handleRunLocationChange('sandbox')}
+                      >
                         <Terminal className="eterx-status-menu-icon" strokeWidth={1.95} />
                         <span className="min-w-0 flex-1 truncate">Sandbox</span>
-                      </button>
-                      <div className="eterx-status-menu-rule" />
-                      <button type="button" className="eterx-status-menu-item" onClick={() => setOpenStatusMenu(null)}>
-                        <Gauge className="eterx-status-menu-icon" strokeWidth={1.95} />
-                        <span className="min-w-0 flex-1 truncate">Usage remaining</span>
-                        <ChevronRight className="h-4 w-4 shrink-0 opacity-65" strokeWidth={2.1} />
+                        {runLocation === 'sandbox' && <Check className="h-4 w-4 shrink-0" strokeWidth={2.35} />}
                       </button>
                     </motion.div>
                   )}

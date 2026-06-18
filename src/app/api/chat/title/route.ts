@@ -6,6 +6,7 @@ import { getMainAgentModelConfig, normalizeMainAgentMode } from '../../../../lib
 import {
   buildScopedRuntimeSettings,
   getScopedRuntimeApiKey,
+  type ScopedRuntimeSettings,
 } from '../../../../lib/agent/runtime-api-keys';
 import { readJsonObject, rejectCrossOrigin } from '../../agent/_shared';
 
@@ -81,6 +82,111 @@ const cleanTitle = (rawTitle: unknown, history: any[] = []) => {
   return fallbackTitleFromHistory(history);
 };
 
+async function generateTitleWithProvider(
+  provider: string,
+  modelName: string,
+  prompt: string,
+  runtimeSettings: ScopedRuntimeSettings,
+  safeHistory: any[]
+): Promise<string> {
+  if (provider === 'anthropic') {
+    const apiKey = getScopedRuntimeApiKey(runtimeSettings, 'anthropic');
+    if (!apiKey) throw new Error('Missing Anthropic API key');
+
+    const client = new Anthropic({ apiKey });
+    const result = await client.messages.create({
+      model: modelName,
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.2,
+      max_tokens: 24,
+    } as any);
+    const titleText = Array.isArray((result as any).content)
+      ? (result as any).content
+        .map((part: any) => part?.type === 'text' ? String(part.text || '') : '')
+        .filter(Boolean)
+        .join('')
+      : '';
+    return cleanTitle(titleText, safeHistory);
+  }
+
+  if (provider === 'gemini') {
+    const apiKey = runtimeSettings.preferredGeminiApiKey || getScopedRuntimeApiKey(runtimeSettings, 'gemini');
+    if (!apiKey) throw new Error('Missing Gemini API key');
+
+    const genAI = new GoogleGenAI({ apiKey });
+    let result;
+    try {
+      result = await genAI.models.generateContent({
+        model: modelName,
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        config: {
+          thinkingConfig: {
+            thinkingLevel: 'minimal' as any,
+            includeThoughts: false,
+          },
+        },
+      });
+    } catch (err: any) {
+      const errMsg = String(err.message || '').toLowerCase();
+      if (
+        errMsg.includes('thinking') ||
+        errMsg.includes('config') ||
+        errMsg.includes('parameter') ||
+        errMsg.includes('invalid') ||
+        errMsg.includes('unsupported') ||
+        errMsg.includes('fields') ||
+        errMsg.includes('argument')
+      ) {
+        console.log(`[Title] Model ${modelName} does not support thinkingConfig, retrying without it.`);
+        result = await genAI.models.generateContent({
+          model: modelName,
+          contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        });
+      } else {
+        throw err;
+      }
+    }
+
+    const candidates = result.candidates || [];
+    const titleText = candidates[0]?.content?.parts?.find(p => 'text' in p)?.text;
+    return cleanTitle(titleText, safeHistory);
+  }
+
+  // Other OpenAI-compatible providers: openai, openrouter, groq, mistral
+  const apiKey = provider === 'openai'
+    ? getScopedRuntimeApiKey(runtimeSettings, 'openai')
+    : provider === 'openrouter'
+      ? getScopedRuntimeApiKey(runtimeSettings, 'openrouter')
+      : provider === 'groq'
+        ? getScopedRuntimeApiKey(runtimeSettings, 'groq')
+        : getScopedRuntimeApiKey(runtimeSettings, 'mistral');
+  if (!apiKey) throw new Error(`Missing ${provider} API key`);
+
+  const client = new OpenAI({
+    apiKey,
+    baseURL: provider === 'openai'
+      ? (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1')
+      : provider === 'openrouter'
+        ? (process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1')
+        : provider === 'groq'
+          ? (process.env.GROQ_BASE_URL || 'https://api.groq.com/openai/v1')
+          : (process.env.MISTRAL_BASE_URL || process.env.MISTRAL_API_BASE_URL || 'https://api.mistral.ai/v1'),
+    defaultHeaders: provider === 'openrouter'
+      ? {
+        'HTTP-Referer': process.env.OPENROUTER_HTTP_REFERER || 'http://localhost:3000',
+        'X-Title': 'EterX Agent',
+      }
+      : undefined,
+  });
+  const result = await client.chat.completions.create({
+    model: modelName,
+    messages: [{ role: 'user', content: prompt }],
+    temperature: 0.2,
+    max_tokens: 24,
+  });
+  return cleanTitle(result.choices?.[0]?.message?.content, safeHistory);
+}
+
 export async function POST(req: NextRequest) {
   try {
     const originError = rejectCrossOrigin(req);
@@ -114,90 +220,96 @@ export async function POST(req: NextRequest) {
       ${ JSON.stringify(safeHistory.slice(-10)) }
     `.trim();
 
-    if (modelConfig.provider === 'anthropic') {
-      const apiKey = getScopedRuntimeApiKey(runtimeSettings, 'anthropic');
-      if (!apiKey) return NextResponse.json({ error: 'Missing Anthropic API key. Add it in Settings > Connections.' }, { status: 500 });
-
-      const client = new Anthropic({ apiKey });
-      const result = await client.messages.create({
-        model: modelConfig.modelName,
-        messages: [{ role: 'user', content: prompt }],
-        temperature: 0.2,
-        max_tokens: 24,
-      } as any);
-      const titleText = Array.isArray((result as any).content)
-        ? (result as any).content
-          .map((part: any) => part?.type === 'text' ? String(part.text || '') : '')
-          .filter(Boolean)
-          .join('')
-        : '';
-      const title = cleanTitle(titleText, safeHistory);
-      return NextResponse.json({ title });
+    // 1. Try primary provider first
+    try {
+      const title = await generateTitleWithProvider(
+        modelConfig.provider,
+        modelConfig.modelName,
+        prompt,
+        runtimeSettings,
+        safeHistory
+      );
+      if (title && !isDefaultChatTitle(title)) {
+        return NextResponse.json({ title });
+      }
+    } catch (e: any) {
+      console.warn(`[Title] Primary provider ${modelConfig.provider} (${modelConfig.modelName}) failed:`, e.message || e);
     }
 
+    // 2. Fallback: Loop through other providers to find one with an active key
+    const fallbackProviders: { provider: string; modelName: string }[] = [];
+    
+    // Add gemini as the preferred fallback if it wasn't the primary
     if (modelConfig.provider !== 'gemini') {
-      const provider = modelConfig.provider;
-      const apiKey = provider === 'openai'
-        ? getScopedRuntimeApiKey(runtimeSettings, 'openai')
-        : provider === 'openrouter'
-          ? getScopedRuntimeApiKey(runtimeSettings, 'openrouter')
-          : provider === 'groq'
-            ? getScopedRuntimeApiKey(runtimeSettings, 'groq')
-            : getScopedRuntimeApiKey(runtimeSettings, 'mistral');
-      if (!apiKey) return NextResponse.json({ error: `Missing ${ provider } API key. Add it in Settings > Connections.` }, { status: 500 });
-
-      const client = new OpenAI({
-        apiKey,
-        baseURL: provider === 'openai'
-          ? (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1')
-          : provider === 'openrouter'
-            ? (process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1')
-            : provider === 'groq'
-              ? (process.env.GROQ_BASE_URL || 'https://api.groq.com/openai/v1')
-              : (process.env.MISTRAL_BASE_URL || process.env.MISTRAL_API_BASE_URL || 'https://api.mistral.ai/v1'),
-        defaultHeaders: provider === 'openrouter'
-          ? {
-            'HTTP-Referer': process.env.OPENROUTER_HTTP_REFERER || 'http://localhost:3000',
-            'X-Title': 'EterX Agent',
-          }
-          : undefined,
-      });
-      const result = await client.chat.completions.create({
-        model: modelConfig.modelName,
-        messages: [{ role: 'user', content: prompt }],
-        temperature: 0.2,
-        max_tokens: 24,
-      });
-      const title = cleanTitle(result.choices?.[0]?.message?.content, safeHistory);
-      return NextResponse.json({ title });
+      const geminiConfig = getMainAgentModelConfig('think', runtimeSettings);
+      fallbackProviders.push({ provider: 'gemini', modelName: geminiConfig.modelName });
+    }
+    
+    // Add other potential providers in order
+    const orderedProviders: { mode: 'openai' | 'anthropic' | 'openrouter' | 'groq' | 'mistral'; provider: string }[] = [
+      { mode: 'openai', provider: 'openai' },
+      { mode: 'anthropic', provider: 'anthropic' },
+      { mode: 'openrouter', provider: 'openrouter' },
+      { mode: 'groq', provider: 'groq' },
+      { mode: 'mistral', provider: 'mistral' }
+    ];
+    
+    for (const p of orderedProviders) {
+      if (p.provider !== modelConfig.provider) {
+        const config = getMainAgentModelConfig(p.mode, runtimeSettings);
+        fallbackProviders.push({ provider: p.provider, modelName: config.modelName });
+      }
     }
 
-    const apiKey = runtimeSettings.preferredGeminiApiKey || getScopedRuntimeApiKey(runtimeSettings, 'gemini');
+    for (const fb of fallbackProviders) {
+      // Check if this provider has an API key in settings
+      const key = fb.provider === 'gemini'
+        ? (runtimeSettings.preferredGeminiApiKey || getScopedRuntimeApiKey(runtimeSettings, 'gemini'))
+        : fb.provider === 'openai'
+          ? getScopedRuntimeApiKey(runtimeSettings, 'openai')
+          : fb.provider === 'anthropic'
+            ? getScopedRuntimeApiKey(runtimeSettings, 'anthropic')
+            : fb.provider === 'openrouter'
+              ? getScopedRuntimeApiKey(runtimeSettings, 'openrouter')
+              : fb.provider === 'groq'
+                ? getScopedRuntimeApiKey(runtimeSettings, 'groq')
+                : fb.provider === 'mistral'
+                  ? getScopedRuntimeApiKey(runtimeSettings, 'mistral')
+                  : null;
+      
+      if (!key) continue;
 
-    if (!apiKey) {
-      return NextResponse.json({ error: 'Missing Gemini API key. Add it in Settings > Connections.' }, { status: 500 });
+      try {
+        console.log(`[Title] Attempting fallback with provider: ${fb.provider} (${fb.modelName})`);
+        const title = await generateTitleWithProvider(
+          fb.provider,
+          fb.modelName,
+          prompt,
+          runtimeSettings,
+          safeHistory
+        );
+        if (title && !isDefaultChatTitle(title)) {
+          return NextResponse.json({ title });
+        }
+      } catch (e: any) {
+        console.warn(`[Title] Fallback provider ${fb.provider} (${fb.modelName}) failed:`, e.message || e);
+      }
     }
 
-    const genAI = new GoogleGenAI({ apiKey });
-
-    const result = await genAI.models.generateContent({
-      model: modelConfig.modelName,
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      config: {
-        thinkingConfig: {
-          thinkingLevel: 'minimal' as any,
-          includeThoughts: false,
-        },
-      },
-    });
-
-    const candidates = result.candidates || [];
-    const titleText = candidates[0]?.content?.parts?.find(p => 'text' in p)?.text;
-    const title = cleanTitle(titleText, safeHistory);
-
+    // 3. Absolute fallback: generate from history locally (no API call)
+    console.log('[Title] All API title generation attempts failed. Using local history-based fallback.');
+    const title = fallbackTitleFromHistory(safeHistory);
     return NextResponse.json({ title });
   } catch (error: any) {
-    console.error('Title generation error:', error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    console.error('Title generation critical error:', error);
+    // If anything fails critically, return a local history-based fallback rather than failing
+    try {
+      const { history } = await readJsonObject(req).catch(() => ({ history: [] }));
+      const safeHistory = Array.isArray(history) ? history : [];
+      const title = fallbackTitleFromHistory(safeHistory);
+      return NextResponse.json({ title });
+    } catch {
+      return NextResponse.json({ title: DEFAULT_CHAT_TITLE });
+    }
   }
 }

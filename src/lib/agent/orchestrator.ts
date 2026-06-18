@@ -158,13 +158,10 @@ export class AgentOrchestrator {
     return request;
   }
 
-  /**
-   * SMART MODEL ROUTING — Auto-select optimal model based on task complexity.
-   * Overrides user-selected mode when the task demands it.
-   * Trivial tasks always use fast mode; critical tasks always use think mode.
-   */
   private resolveOptimalMode(userMode: MainAgentMode, complexity: 'trivial' | 'standard' | 'complex' | 'critical'): MainAgentMode {
-    if (userMode === 'mistral') return 'mistral';
+    if (userMode !== 'think' && userMode !== 'fast') {
+      return userMode;
+    }
     switch (complexity) {
       case 'trivial':  return 'fast';   // Never waste big model on greetings
       case 'standard': return userMode; // Respect user preference
