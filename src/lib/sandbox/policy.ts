@@ -8,12 +8,64 @@ import {
   SandboxDecision,
   SandboxNetworkPolicy,
   SandboxOperation,
+  SandboxResourceLimits,
   SandboxSession,
 } from './types';
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_OUTPUT_CHARS = 2 * 1024 * 1024;
 const MAX_SEGMENT_LENGTH = 80;
+
+export const DEFAULT_RESOURCE_LIMITS: SandboxResourceLimits = {
+  maxFileSizeBytes: 50 * 1024 * 1024,   // 50MB per file
+  maxFileCount: 5000,                    // 5000 files max
+  maxTotalDiskBytes: 500 * 1024 * 1024,  // 500MB total
+  maxCommandTimeoutMs: 120_000,          // 2 minutes max
+};
+
+/** Comprehensive list of dangerous command patterns blocked in sandbox mode */
+export const SANDBOX_BLOCKED_COMMAND_PATTERNS: RegExp[] = [
+  // Destructive file operations
+  /\brm\s+-rf\b/i,
+  /\bdel\s+\/[fsq]/i,
+  /\brmdir\s+\/s\b/i,
+  /\bformat\b/i,
+  /\bdiskpart\b/i,
+  // Registry and system modification
+  /\breg\s+(add|delete|import)\b/i,
+  /\bshutdown\b/i,
+  /\brestart-computer\b/i,
+  /\bstop-computer\b/i,
+  /\btaskkill\b/i,
+  // Permission changes
+  /\bchmod\s/i,
+  /\bchown\s/i,
+  /\bicacls\s/i,
+  /\btakeown\s/i,
+  // Service manipulation
+  /\bsc\s+(create|delete|config|start|stop)\b/i,
+  /\bnet\s+(start|stop|user|localgroup)\b/i,
+  /\b(start|stop|restart|set)-service\b/i,
+  // Scheduled tasks
+  /\bschtasks\s/i,
+  /\bat\s+\d/i,
+  // Execution policy bypass
+  /\bset-executionpolicy\b/i,
+  // PowerShell remoting
+  /\binvoke-command\b/i,
+  /\benter-pssession\b/i,
+  /\bnew-pssession\b/i,
+  // Credential access
+  /\bget-credential\b/i,
+  /\bcmdkey\b/i,
+  /\brunas\b/i,
+  // Symbolic link / junction creation (escape sandbox via links)
+  /\bmklink\b/i,
+  /\bnew-item.*-itemtype\s+(symboliclink|junction|hardlink)\b/i,
+  // Environment variable persistence
+  /\bsetx\b/i,
+  /\[Environment\]::SetEnvironmentVariable/i,
+];
 
 const SECRET_ENV_PATTERNS = [
   /api[_-]?key/i,
@@ -23,6 +75,21 @@ const SECRET_ENV_PATTERNS = [
   /credential/i,
   /private[_-]?key/i,
   /connection[_-]?string/i,
+];
+
+/** Environment variable names that must never be exposed to sandbox */
+export const SANDBOX_BLOCKED_ENV_VARS: RegExp[] = [
+  ...SECRET_ENV_PATTERNS,
+  /^HOME$/i,
+  /^USERPROFILE$/i,
+  /^HOMEPATH$/i,
+  /^HOMEDRIVE$/i,
+  /^APPDATA$/i,
+  /^LOCALAPPDATA$/i,
+  /^COMPUTERNAME$/i,
+  /^USERNAME$/i,
+  /^LOGNAME$/i,
+  /^USER$/i,
 ];
 
 const DEFAULT_DENY_NAMES = [
@@ -48,6 +115,11 @@ export function createSandboxSession(input: SandboxCreateInput = {}): SandboxSes
   const tempRoot = path.join(root, 'tmp');
   const auditLogPath = path.join(root, 'audit.jsonl');
 
+  const resourceLimits: SandboxResourceLimits = {
+    ...DEFAULT_RESOURCE_LIMITS,
+    ...(input.resourceLimits || {}),
+  };
+
   return {
     id: stableId(tenantId, userId, projectId, sessionId, workspaceRoot),
     tenantId,
@@ -62,9 +134,11 @@ export function createSandboxSession(input: SandboxCreateInput = {}): SandboxSes
     auditLogPath,
     allowPaths: uniqueResolvedPaths([workspaceRoot, root, tempRoot, ...(input.allowPaths || [])]),
     denyPaths: uniqueResolvedPaths([...defaultDenyPaths(workspaceRoot), ...(input.denyPaths || [])]),
+    readOnlyPaths: uniqueResolvedPaths(input.readOnlyPaths || []),
     env: sanitizeEnvironment(input.env || {}),
     maxOutputChars: input.maxOutputChars || DEFAULT_MAX_OUTPUT_CHARS,
     timeoutMs: input.timeoutMs || DEFAULT_TIMEOUT_MS,
+    resourceLimits,
     createdAt: new Date().toISOString(),
   };
 }
@@ -211,10 +285,11 @@ export function isPathInsideOrEqual(parentPath: string, candidatePath: string): 
 }
 
 function commandLooksLikeNetworkAccess(command: string): boolean {
-  const networkTools = /\b(curl|wget|ssh|scp|ftp)\b/i;
-  const networkPackageOps = /\b(npm\s+(install|add|publish)|pnpm\s+(install|add)|yarn\s+(add|install)|pip\s+install|python\s+-m\s+pip\s+install|git\s+(clone|fetch|pull|push)|docker\s+(pull|push|run))\b/i;
-  const powershellNetwork = /\b(invoke-webrequest|iwr|invoke-restmethod|irm)\b/i;
-  return networkTools.test(command) || networkPackageOps.test(command) || powershellNetwork.test(command);
+  const networkTools = /\b(curl|wget|ssh|scp|sftp|ftp|telnet|nc|ncat|netcat|nmap|ping|tracert|traceroute|dig|nslookup)\b/i;
+  const networkPackageOps = /\b(npm\s+(install|add|publish|login|whoami)|pnpm\s+(install|add)|yarn\s+(add|install)|pip\s+install|python\s+-m\s+pip\s+install|gem\s+install|cargo\s+install|go\s+get|git\s+(clone|fetch|pull|push|remote)|docker\s+(pull|push|run|login))\b/i;
+  const powershellNetwork = /\b(invoke-webrequest|iwr|invoke-restmethod|irm|test-netconnection|new-object\s+system\.net|start-bitstransfer|send-mailmessage)\b/i;
+  const nodeNetwork = /\b(fetch|axios|got|request|http\.get|https\.get|net\.connect|dgram)\b/i;
+  return networkTools.test(command) || networkPackageOps.test(command) || powershellNetwork.test(command) || nodeNetwork.test(command);
 }
 
 function defaultDenyPaths(workspaceRoot: string): string[] {

@@ -61,6 +61,7 @@ export async function POST(req: NextRequest) {
       userName = 'Developer',
       apiKeys = null,
       modelOverrides = null,
+      runLocation = 'local',
     } = await readJsonObject(req);
     const prompt = cleanString(rawPrompt, MAX_PROMPT_CHARS);
     const chatId = projectId;
@@ -91,6 +92,7 @@ export async function POST(req: NextRequest) {
       ...(isBuilderChat ? buildAgentBuilderPinnedContext(chatId, safePinnedContext) : safePinnedContext),
       thinkingLevel: safeThinkingLevel,
       agentSessionId: session.sessionId,
+      runLocation: typeof runLocation === 'string' ? runLocation : 'local',
     };
     const effectivePrompt = isBuilderChat ? buildAgentBuilderUserRequest(builderAgentId, prompt) : prompt;
     const effectiveMode = isBuilderChat ? getAgentBuilderMode(safeMode) : safeMode;

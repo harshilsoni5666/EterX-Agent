@@ -82,6 +82,9 @@ type RuntimeProjectContext = ProjectContext & {
   allowVcs?: boolean;
   allowedCapabilities?: string[];
   toolPolicy?: { allowedCapabilities?: string[] };
+  runLocation?: string;
+  sandboxGuard?: any;
+  allowRawCommand?: boolean;
 };
 
 export class AgentOrchestrator {
@@ -336,17 +339,65 @@ export class AgentOrchestrator {
     if (pinnedContext?.agentSessionId) {
       context.agentSessionId = String(pinnedContext.agentSessionId);
     }
-    if (Array.isArray(pinnedContext?.paths) && pinnedContext.paths.length > 0) {
-      const pinnedPaths = pinnedContext.paths.filter((p: unknown): p is string => typeof p === 'string' && p.trim().length > 0);
-      context.paths = pinnedPaths;
-      context.allowedPaths = pinnedPaths;
-      const firstDirectory = pinnedPaths.find((p: string) => {
-        try { return fs.existsSync(p) && fs.statSync(p).isDirectory(); } catch { return false; }
-      });
-      const firstPath = firstDirectory || pinnedPaths[0];
-      if (firstPath) {
-        context.workspaceRoot = firstDirectory || path.dirname(path.resolve(firstPath));
-        context.workspacePath = context.workspaceRoot;
+
+    const runLocation = pinnedContext?.runLocation || 'local';
+    context.runLocation = runLocation;
+
+    if (runLocation === 'sandbox') {
+      let sandboxPath = workspace.getSandboxPath();
+      const pinnedPaths = Array.isArray(pinnedContext?.paths) ? pinnedContext.paths.filter((p: unknown): p is string => typeof p === 'string' && p.trim().length > 0) : [];
+      try {
+        const { createSandboxSession, initializeSandbox, createSandboxGuard } = require('../sandbox');
+        const sandboxSession = createSandboxSession({
+          tenantId: 'local',
+          userId,
+          projectId,
+          sessionId: projectId,
+          workspaceRoot: sandboxPath,
+          allowPaths: pinnedPaths,
+          readOnlyPaths: pinnedPaths,
+          network: 'deny',
+        });
+        await initializeSandbox(sandboxSession);
+        sandboxPath = sandboxSession.root;
+
+        // Create the enterprise SandboxGuard and attach to context
+        const guard = createSandboxGuard(sandboxSession);
+        context.sandboxGuard = guard;
+        await guard.audit({ type: 'sandbox.guard.created', pinnedPaths, sandboxRoot: sandboxPath });
+      } catch (e) {
+        console.error('Failed to initialize real sandbox session:', e);
+      }
+
+      context.workspaceRoot = sandboxPath;
+      context.workspacePath = sandboxPath;
+      context.paths = [sandboxPath];
+      context.allowedPaths = [
+        sandboxPath,
+        ...pinnedPaths,
+      ];
+      // Force security restrictions in sandbox mode
+      context.networkPolicy = 'deny';
+      context.allowNetwork = false;
+      context.allowAgentSpawning = false;
+      context.allowHostControl = false;
+      context.allowBrowserControl = false;
+      context.allowExternalCommunication = false;
+      context.allowDynamicCode = false;
+      context.allowRawCommand = false;
+    } else {
+      if (Array.isArray(pinnedContext?.paths) && pinnedContext.paths.length > 0) {
+        const pinnedPaths = pinnedContext.paths.filter((p: unknown): p is string => typeof p === 'string' && p.trim().length > 0);
+        context.paths = pinnedPaths;
+        context.allowedPaths = pinnedPaths;
+        const firstDirectory = pinnedPaths.find((p: string) => {
+          try { return fs.existsSync(p) && fs.statSync(p).isDirectory(); } catch { return false; }
+        });
+        const firstPath = firstDirectory || pinnedPaths[0];
+        if (firstPath) {
+          context.workspaceRoot = firstDirectory || path.dirname(path.resolve(firstPath));
+          context.workspacePath = context.workspaceRoot;
+        }
       }
     }
     if (pinnedContext?.disableSubAgents) {

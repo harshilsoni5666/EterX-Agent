@@ -109,7 +109,32 @@ export const workspaceRunCommandTool: ToolDefinition = {
       const { taskStore } = require('../../task-store');
       let combinedOutput = '';
 
-      return new Promise((resolve) => {
+      return new Promise(async (resolve) => {
+        const startTime = Date.now();
+        if (context?.runLocation === 'sandbox') {
+          try {
+            if (context?.sandboxGuard) {
+              await context.sandboxGuard.audit({
+                type: 'command.started',
+                command: input.command,
+                cwd: authorization.cwd,
+                timeoutMs,
+              });
+            } else if (authorization.session) {
+              const { initializeSandbox, appendSandboxAudit } = require('../../../sandbox');
+              await initializeSandbox(authorization.session);
+              await appendSandboxAudit(authorization.session, {
+                type: 'command.started',
+                command: input.command,
+                cwd: authorization.cwd,
+                timeoutMs,
+              });
+            }
+          } catch (e) {
+            console.error('Failed to log sandbox command start:', e);
+          }
+        }
+
         const { spawn } = require('child_process');
         // Run via shell to get exact command execution semantics
         const child = spawn(input.command, { 
@@ -205,6 +230,30 @@ export const workspaceRunCommandTool: ToolDefinition = {
           settled = true;
           clearTimeout(timeoutTimer);
           abortSignal?.removeEventListener('abort', onAbort);
+
+          if (context?.runLocation === 'sandbox') {
+            if (context?.sandboxGuard) {
+              context.sandboxGuard.audit({
+                type: 'command.finished',
+                command: input.command,
+                cwd: authorization.cwd,
+                exitCode: result.exitCode,
+                timedOut: result.timedOut || false,
+                durationMs: Date.now() - startTime,
+              }).catch(() => {});
+            } else if (authorization.session) {
+              const { appendSandboxAudit } = require('../../../sandbox');
+              appendSandboxAudit(authorization.session, {
+                type: 'command.finished',
+                command: input.command,
+                cwd: authorization.cwd,
+                exitCode: result.exitCode,
+                timedOut: result.timedOut || false,
+                durationMs: Date.now() - startTime,
+              }).catch(() => {});
+            }
+          }
+
           resolve(result);
         };
 

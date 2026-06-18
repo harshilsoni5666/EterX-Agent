@@ -46,6 +46,7 @@ export interface AgentRunnerConfig {
   runtimeSettings?: ScopedRuntimeSettings | null;
   chatId?: string;
   agentSessionId?: string;
+  runLocation?: string;
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -562,26 +563,71 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
   ): Promise<unknown> {
     const agentId = config.agentId;
     const chatId = config.chatId || `custom-agent-${agentId}`;
+
+    let workspaceRoot = getPathResolverInfo().desktopPath;
+    let paths = [workspaceRoot];
+    let allowedPaths = [workspaceRoot];
+    let sandboxGuard: any = null;
+
+    if (config.runLocation === 'sandbox') {
+      try {
+        const { WorkspaceManager } = require('./workspace/manager');
+        const workspace = new WorkspaceManager('user', chatId);
+        await workspace.initialize();
+        const baseSandboxPath = workspace.getSandboxPath();
+
+        const { createSandboxSession, initializeSandbox, createSandboxGuard } = require('../sandbox');
+        const sandboxSession = createSandboxSession({
+          tenantId: 'local',
+          userId: 'user',
+          projectId: chatId,
+          sessionId: chatId,
+          workspaceRoot: baseSandboxPath,
+          network: 'deny',
+        });
+        await initializeSandbox(sandboxSession);
+        workspaceRoot = sandboxSession.root;
+        paths = [workspaceRoot];
+        allowedPaths = [workspaceRoot];
+
+        // Create the enterprise SandboxGuard and attach later to context
+        sandboxGuard = createSandboxGuard(sandboxSession);
+        await sandboxGuard.audit({ type: 'sandbox.guard.created', agentId, sandboxRoot: workspaceRoot });
+      } catch (e) {
+        console.error('Failed to initialize sandbox workspace for agent runner:', e);
+      }
+    }
+
     const context = {
       agentId,
       agentRuntime: 'custom_agent' as const,
       projectId: chatId,
       chatId,
       agentSessionId: config.agentSessionId || '',
-      workspaceRoot: getPathResolverInfo().desktopPath,
-      paths: [getPathResolverInfo().desktopPath],
-      allowedPaths: [getPathResolverInfo().desktopPath],
-      allowedCapabilities: [
-        'command.workspace',
-        'filesystem.read',
-        'filesystem.write',
-        'tool.utility',
-        'memory.manage',
-        'network.public',
-        'browser.control',
-      ],
-      allowBrowserControl: true,
-      networkPolicy: 'deny',
+      workspaceRoot,
+      paths,
+      allowedPaths,
+      runLocation: config.runLocation || 'local',
+      sandboxGuard: sandboxGuard || undefined,
+      allowedCapabilities: config.runLocation === 'sandbox'
+        ? ['command.workspace', 'filesystem.read', 'filesystem.write', 'tool.utility', 'memory.manage']
+        : [
+            'command.workspace',
+            'filesystem.read',
+            'filesystem.write',
+            'tool.utility',
+            'memory.manage',
+            'network.public',
+            'browser.control',
+          ],
+      allowBrowserControl: config.runLocation !== 'sandbox',
+      networkPolicy: config.runLocation === 'sandbox' ? 'deny' : 'deny',
+      allowNetwork: config.runLocation !== 'sandbox' ? undefined : false,
+      allowAgentSpawning: config.runLocation !== 'sandbox' ? undefined : false,
+      allowHostControl: config.runLocation !== 'sandbox' ? undefined : false,
+      allowExternalCommunication: config.runLocation !== 'sandbox' ? undefined : false,
+      allowDynamicCode: config.runLocation !== 'sandbox' ? undefined : false,
+      allowRawCommand: config.runLocation !== 'sandbox' ? undefined : false,
       _onTrace: onTrace,
       abortSignal: this.cancelController?.signal,
       signal: this.cancelController?.signal,

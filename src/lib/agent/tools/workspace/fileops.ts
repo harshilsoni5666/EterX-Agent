@@ -89,6 +89,65 @@ export const workspaceReadTool: ToolDefinition = {
     const filePath = resolveReadableWorkspacePathForContext(input.filename, context);
     console.log(`[Tool: workspace_read_file] Reading: ${ filePath }${ input.startLine ? ` (lines ${input.startLine}-${input.endLine || 'end'})` : '' }`);
 
+    if (context?.runLocation === 'sandbox') {
+      // Use SandboxGuard if available (enterprise enforcement)
+      const guard = context?.sandboxGuard;
+      if (guard) {
+        const readDecision = guard.assertCanRead(filePath);
+        if (!readDecision.allowed) {
+          await guard.audit({ type: 'file.read.blocked', path: filePath, reason: readDecision.reason });
+          throw new Error(readDecision.reason);
+        }
+        await guard.audit({ type: 'file.read', path: filePath });
+      } else {
+        // Fallback: use sandbox module directly
+        const { createSandboxSession, readSandboxFile } = require('../../../sandbox');
+        const session = createSandboxSession({
+          tenantId: 'local',
+          userId: context?.userId || 'user',
+          projectId: context?.projectId || context?.chatId || 'default',
+          sessionId: context?.chatId || context?.agentId || 'default',
+          workspaceRoot: context?.workspaceRoot || process.cwd(),
+          allowPaths: context?.allowedPaths || [],
+        });
+        await readSandboxFile(session, filePath);
+      }
+
+      if (!await fse.pathExists(filePath)) {
+        throw new Error(`File not found: ${filePath}. Check the path and try again.`);
+      }
+
+      const stats = await fs.stat(filePath);
+      const rawContent = await fs.readFile(filePath, 'utf-8');
+      const lines = rawContent.split('\n');
+      const start = Math.max(1, input.startLine || 1);
+      const end = input.endLine ?? lines.length;
+      const maxLines = input.maxLines || 500;
+      const rangedLines = lines.slice(start - 1, end);
+      const outputLines = rangedLines.slice(0, maxLines);
+      
+      const numberedContent = outputLines
+        .map((line: string, idx: number) => `${start + idx}| ${line}`)
+        .join('\n');
+        
+      const truncated = rangedLines.length > maxLines;
+      let content = numberedContent;
+      if (truncated) {
+        content += `\n\n...[TRUNCATED at ${maxLines} lines. File has ${lines.length} total lines. Showing lines ${start}-${start + maxLines - 1}. Use startLine/endLine for specific ranges.]...`;
+      }
+      const fileInfo = `[File: ${path.basename(filePath)} | ${lines.length} lines | ${(stats.size / 1024).toFixed(1)}KB | Showing lines ${start}-${start + outputLines.length - 1}]`;
+      
+      return {
+        content: `${fileInfo}\n${content}`,
+        size: stats.size,
+        path: filePath,
+        totalLines: lines.length,
+        linesShown: outputLines.length,
+        startLine: start,
+        endLine: start + outputLines.length - 1,
+      };
+    }
+
     if (!await fse.pathExists(filePath)) {
       throw new Error(`File not found: ${ filePath }. Check the path and try again.`);
     }
@@ -148,6 +207,53 @@ export const workspaceWriteTool: ToolDefinition = {
       return { success: false, error: 'INVALID FILENAME: You must provide a valid filename string. Do not pass undefined or empty string.', path: '' };
     }
     const filePath = resolveWorkspacePathForContext(input.filename, context);
+
+    if (context?.runLocation === 'sandbox') {
+      // Use SandboxGuard if available (enterprise enforcement)
+      const guard = context?.sandboxGuard;
+      if (guard) {
+        const writeDecision = guard.assertCanWrite(filePath);
+        if (!writeDecision.allowed) {
+          await guard.audit({ type: 'file.write.blocked', path: filePath, reason: writeDecision.reason });
+          return { success: false, error: writeDecision.reason, path: filePath };
+        }
+        
+        await fse.ensureDir(path.dirname(filePath));
+        let finalContent = input.content;
+        if (input.append) {
+          try {
+            const existing = await fs.readFile(filePath, 'utf-8');
+            finalContent = existing + input.content;
+          } catch {}
+        }
+        await fs.writeFile(filePath, finalContent, 'utf-8');
+        await guard.audit({ type: 'file.write', path: filePath, bytes: Buffer.byteLength(finalContent) });
+        return { success: true, path: filePath, size: finalContent.length };
+      } else {
+        // Fallback: use sandbox module directly
+        const { createSandboxSession, writeSandboxFile, readSandboxFile } = require('../../../sandbox');
+        const session = createSandboxSession({
+          tenantId: 'local',
+          userId: context?.userId || 'user',
+          projectId: context?.projectId || context?.chatId || 'default',
+          sessionId: context?.chatId || context?.agentId || 'default',
+          workspaceRoot: context?.workspaceRoot || process.cwd(),
+          allowPaths: context?.allowedPaths || [],
+        });
+        
+        let finalContent = input.content;
+        if (input.append) {
+          try {
+            const existing = await readSandboxFile(session, filePath);
+            finalContent = existing + input.content;
+          } catch {}
+        }
+        
+        const writtenPath = await writeSandboxFile(session, filePath, finalContent);
+        return { success: true, path: writtenPath, size: finalContent.length };
+      }
+    }
+
     if (isDesktopHelperScript(filePath)) {
       return {
         success: false,

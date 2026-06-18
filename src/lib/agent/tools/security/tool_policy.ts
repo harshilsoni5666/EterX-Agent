@@ -1,4 +1,5 @@
 import type { ToolDefinition } from '../../schemas';
+import { SANDBOX_BLOCKED_TOOLS, SANDBOX_ALLOWED_CAPABILITIES } from '../../../sandbox/sandbox-guard';
 
 export type ToolCapabilityDecision = {
   allowed: boolean;
@@ -113,6 +114,29 @@ export function enforceToolCapability(
   _args: any,
   context?: any,
 ): ToolCapabilityDecision {
+  // ── Sandbox enforcement (ONLY when sandbox mode is active) ──
+  if (context?.runLocation === 'sandbox') {
+    if (SANDBOX_BLOCKED_TOOLS.has(toolName)) {
+      return {
+        allowed: false,
+        capability: 'sandbox.blocked',
+        reason: `🔒 Sandbox: Tool "${toolName}" is disabled in sandbox mode. Use workspace_run_command for shell operations.`,
+      };
+    }
+
+    // Use the SandboxGuard on context if available for capability checks
+    if (context?.sandboxGuard) {
+      const capability = CAPABILITY_BY_TOOL[toolName] || inferCapability(toolName);
+      if (!SANDBOX_ALLOWED_CAPABILITIES.has(capability)) {
+        return {
+          allowed: false,
+          capability,
+          reason: `🔒 Sandbox: Capability "${capability}" required by "${toolName}" is not available in sandbox mode.`,
+        };
+      }
+    }
+  }
+
   const capability = CAPABILITY_BY_TOOL[toolName] || inferCapability(toolName);
 
   if (QUARANTINED_TOOLS.has(toolName) && !isQuarantineOverrideEnabled(context)) {

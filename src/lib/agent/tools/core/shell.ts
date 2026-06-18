@@ -152,7 +152,21 @@ export const shellTool: ToolDefinition = {
     nextActionNote: z.string().optional()
   }),
   execute: async (input: { command: string, workingDir?: string, shellType?: string, env?: Record<string, string> | string, timeoutSeconds?: number, timeoutMs?: number }, context?: any) => {
+    // ═══ SANDBOX GATE (defense-in-depth) ═══
+    // system_shell is completely disabled in sandbox mode.
+    // The agent should use workspace_run_command instead.
+    if (context?.runLocation === 'sandbox') {
+      return {
+        CRITICAL_ERROR: '🔒 Sandbox: system_shell is disabled in sandbox mode for security. Use workspace_run_command instead — it provides the same functionality within the sandbox boundary.',
+        stdout: '',
+        stderr: '🔒 Sandbox: system_shell blocked. Use workspace_run_command.',
+        exitCode: 126,
+        executionTimeMs: 0,
+      };
+    }
+
     const startTime = Date.now();
+    let authorization: any = null;
 
     // === AUTO-CWD EXTRACTION ===
     // Detect "cd path; command" pattern and extract workingDir automatically
@@ -245,7 +259,7 @@ export const shellTool: ToolDefinition = {
 
       // Build environment
       const parsedEnv = parseStringRecord(input.env);
-      const authorization = await authorizeToolCommand({
+      authorization = await authorizeToolCommand({
         command,
         cwd,
         context,
@@ -265,6 +279,21 @@ export const shellTool: ToolDefinition = {
       }
       const execEnv = authorization.env;
 
+      if (context?.runLocation === 'sandbox' && authorization.session) {
+        try {
+          const { initializeSandbox, appendSandboxAudit } = require('../../sandbox');
+          await initializeSandbox(authorization.session);
+          await appendSandboxAudit(authorization.session, {
+            type: 'command.started',
+            command,
+            cwd: authorization.cwd,
+            timeoutMs,
+          });
+        } catch (e) {
+          console.error('Failed to log sandbox command start:', e);
+        }
+      }
+
       const { stdout, stderr } = await execAsync(command, {
         shell: shellExe,
         cwd: authorization.cwd,
@@ -279,6 +308,20 @@ export const shellTool: ToolDefinition = {
       // Old: 200+50 lines (caused ~40% loss). New: 500+150 lines.
       const truncatedStdout = truncateOutput(stdout, 500, 150);
       const truncatedStderr = truncateOutput(stderr, 100, 50);
+
+      if (context?.runLocation === 'sandbox' && authorization.session) {
+        try {
+          const { appendSandboxAudit } = require('../../sandbox');
+          await appendSandboxAudit(authorization.session, {
+            type: 'command.finished',
+            command: input.command,
+            cwd: authorization.cwd,
+            exitCode: 0,
+            timedOut: false,
+            durationMs: executionTime,
+          });
+        } catch {}
+      }
 
       if (stderr && stderr.trim().length > 0) {
         return {
@@ -295,6 +338,19 @@ export const shellTool: ToolDefinition = {
       return { stdout: truncatedStdout, stderr: '', exitCode: 0, executionTimeMs: executionTime, timeoutMs, cwd };
     } catch (error: any) {
       const executionTime = Date.now() - startTime;
+      if (context?.runLocation === 'sandbox' && authorization?.session) {
+        try {
+          const { appendSandboxAudit } = require('../../sandbox');
+          await appendSandboxAudit(authorization.session, {
+            type: 'command.finished',
+            command: input.command,
+            cwd: authorization.cwd,
+            exitCode: error.code || (isExecTimeoutError(error) ? 124 : 1),
+            timedOut: isExecTimeoutError(error),
+            durationMs: executionTime,
+          }).catch(() => {});
+        } catch {}
+      }
       if (isExecTimeoutError(error)) {
         const note = terminalTimeoutNote(input.command, timeoutMs);
         emitRuntimeTrace(context, {

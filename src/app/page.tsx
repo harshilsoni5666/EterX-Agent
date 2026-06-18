@@ -3753,6 +3753,7 @@ function DeepWorkUI() {
       ];
 
       try {
+        const runLocationVal = typeof window !== 'undefined' ? (window.localStorage.getItem('eterx_run_location') || 'local') : 'local';
         const response = await fetch('/api/agents/run', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -3762,6 +3763,7 @@ function DeepWorkUI() {
             messages: runnerMessages,
             apiKeys: readRuntimeApiKeys(),
             modelOverrides: readRuntimeModelOverrides(),
+            runLocation: runLocationVal,
           }),
           signal: controller.signal,
         });
@@ -3907,6 +3909,7 @@ function DeepWorkUI() {
     let serverAccepted = false;
     // Also start SSE stream for faster real-time events (optional enhancement)
     try {
+      const runLocationVal = typeof window !== 'undefined' ? (window.localStorage.getItem('eterx_run_location') || 'local') : 'local';
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -3920,7 +3923,8 @@ function DeepWorkUI() {
           thinkingLevel: runThinkingLevel,
           pinnedContext: hasPinnedContext ? requestPinnedContext : null,
           apiKeys: readRuntimeApiKeys(),
-          modelOverrides: readRuntimeModelOverrides()
+          modelOverrides: readRuntimeModelOverrides(),
+          runLocation: runLocationVal
         }),
         signal: controller.signal
       });

@@ -317,6 +317,35 @@ function getRuntimeAllowedRoots(context?: any): string[] {
 
 function enforceRuntimePathContainment(filePath: string, context: any, operation: 'read' | 'write' | 'execute'): string {
   const resolved = path.resolve(filePath);
+
+  // When SandboxGuard is available, delegate ALL enforcement to it
+  if (context?.sandboxGuard) {
+    const guard = context.sandboxGuard;
+    if (operation === 'read') {
+      const decision = guard.assertCanRead(resolved);
+      if (!decision.allowed) {
+        throw new Error(decision.reason);
+      }
+    } else {
+      // write or execute
+      const decision = guard.assertCanWrite(resolved);
+      if (!decision.allowed) {
+        throw new Error(decision.reason);
+      }
+    }
+    return resolved;
+  }
+
+  // Fallback: existing sandbox mode without guard
+  if (context?.runLocation === 'sandbox') {
+    if (operation === 'write' || operation === 'execute') {
+      const sandboxRoot = context.workspaceRoot;
+      if (sandboxRoot && !isPathInsideOrEqual(sandboxRoot, resolved)) {
+        throw new Error(`Blocked ${operation} in Sandbox mode: writes and execution are restricted to the sandbox directory (${resolved})`);
+      }
+    }
+  }
+
   const allowedRoots = getRuntimeAllowedRoots(context);
   if (allowedRoots.length === 0 || context?.allowAllPaths === true || process.env.ETERX_ALLOW_ALL_TOOL_PATHS === '1') {
     return resolved;

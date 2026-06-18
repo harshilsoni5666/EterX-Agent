@@ -41,7 +41,7 @@ export async function POST(req: NextRequest) {
     const activeSession = session;
 
     const body = await readJsonObject(req);
-    const { agentId, messages, model, temperature, apiKeys, modelOverrides } = body;
+    const { agentId, messages, model, temperature, apiKeys, modelOverrides, runLocation } = body;
 
     if (!isSafeAgentId(agentId)) {
       return attachAgentApiSessionCookie(jsonError('A valid agentId is required.', 400), session);
@@ -108,6 +108,7 @@ export async function POST(req: NextRequest) {
             runtimeSettings,
             chatId,
             agentSessionId,
+            runLocation: typeof runLocation === 'string' ? runLocation : 'local',
           })) {
             if (closed || req.signal.aborted) {
               runner.cancel();
