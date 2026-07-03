@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import * as fs from 'fs';
 import * as path from 'path';
 import { checkEterXProtection } from '../../../../lib/agent/workspace/path_resolver';
+import { rejectCrossOrigin } from '../../agent/_shared';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -9,6 +10,9 @@ export const runtime = 'nodejs';
 // POST: Write / save file content
 export async function POST(req: NextRequest) {
   try {
+    const originError = rejectCrossOrigin(req);
+    if (originError) return originError;
+
     const { filePath, content, createDirs } = await req.json();
 
     if (!filePath || content === undefined) {

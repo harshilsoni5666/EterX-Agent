@@ -173,7 +173,7 @@ export const AgentChannelsView = () => {
           })}
         </motion.div>
 
-        <h1 className="relative mt-1 flex h-[62px] w-full items-center justify-center overflow-visible whitespace-nowrap text-center font-serif text-[clamp(31px,2.45vw,44px)] font-semibold leading-none tracking-normal text-[#3B3835]">
+        <h1 className="relative mt-1 flex h-[62px] w-full items-center justify-center overflow-visible whitespace-nowrap text-center font-sans text-[clamp(31px,2.45vw,44px)] font-semibold leading-none tracking-normal text-[#3B3835]">
           <AnimatePresence mode="wait">
             <motion.span
               key={HEADLINE_LINES[headlineIndex]}

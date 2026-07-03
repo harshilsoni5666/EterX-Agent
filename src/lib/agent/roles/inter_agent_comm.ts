@@ -42,10 +42,16 @@ export interface AgentMessage {
   body: string;           // Full message content
   metadata?: {
     filePaths?: string[];   // Related files
+    artifactPaths?: string[];
     toolName?: string;      // Tool that triggered this message
     priority?: 'low' | 'normal' | 'high' | 'critical';
     replyTo?: string;       // ID of message being replied to
     expiresAt?: number;     // Auto-expire timestamp
+    deliverAfter?: number;  // Do not surface to agents before this timestamp
+    requiresResponse?: boolean;
+    confidence?: number;
+    tags?: string[];
+    deliveryMode?: 'interrupt' | 'defer' | 'silent';
   };
   read: boolean;
   readAt?: number;
@@ -55,12 +61,26 @@ export interface MailboxSummary {
   agentName: string;
   unreadCount: number;
   totalCount: number;
+  urgentUnreadCount?: number;
+  deferredUnreadCount?: number;
+  scheduledCount?: number;
+  silentCount?: number;
   latestMessage?: {
     from: string;
     type: MessageType;
     subject: string;
     timestamp: number;
   };
+}
+
+export interface AgentPresence {
+  agentName: string;
+  role: 'main' | 'sub_agent' | 'unknown';
+  status: string;
+  task?: string;
+  progress?: string;
+  registeredAt: number;
+  updatedAt: number;
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -70,6 +90,8 @@ export interface MailboxSummary {
 class InterAgentMailbox {
   // Key: "projectId:agentName" → messages for that agent
   private mailboxes: Map<string, AgentMessage[]> = new Map();
+  private presence: Map<string, Map<string, AgentPresence>> = new Map();
+  private projectLogs: Map<string, AgentMessage[]> = new Map();
   // Listeners for real-time delivery
   private listeners: Map<string, Array<(msg: AgentMessage) => void>> = new Map();
   // Message counter for unique IDs
@@ -87,6 +109,138 @@ class InterAgentMailbox {
     return this.mailboxes.get(key)!;
   }
 
+  private presenceKey(agentName: string): string {
+    return agentName.toLowerCase();
+  }
+
+  private getPresenceMap(projectId: string): Map<string, AgentPresence> {
+    if (!this.presence.has(projectId)) {
+      this.presence.set(projectId, new Map());
+    }
+    return this.presence.get(projectId)!;
+  }
+
+  private getRegisteredRecipients(projectId: string, sender: string): string[] {
+    const senderKey = this.presenceKey(sender);
+    const recipients = new Map<string, string>();
+    const prefix = `${projectId}:`;
+
+    for (const presence of this.getPresenceMap(projectId).values()) {
+      const key = this.presenceKey(presence.agentName);
+      if (key !== senderKey) recipients.set(key, presence.agentName);
+    }
+
+    for (const key of this.mailboxes.keys()) {
+      if (!key.startsWith(prefix)) continue;
+      const agentName = key.substring(prefix.length);
+      const normalized = this.presenceKey(agentName);
+      if (normalized !== senderKey && !recipients.has(normalized)) {
+        recipients.set(normalized, agentName);
+      }
+    }
+
+    return Array.from(recipients.values());
+  }
+
+  private appendProjectLog(message: AgentMessage): void {
+    const log = this.projectLogs.get(message.projectId) || [];
+    log.push({ ...message });
+    if (log.length > 1000) {
+      log.splice(0, log.length - 1000);
+    }
+    this.projectLogs.set(message.projectId, log);
+  }
+
+  private isVisibleToAgent(message: AgentMessage, agentName: string): boolean {
+    const normalized = this.presenceKey(agentName);
+    return this.presenceKey(message.from) === normalized ||
+      this.presenceKey(message.to) === normalized ||
+      message.to === '*';
+  }
+
+  private isInterruptingMessage(message: AgentMessage): boolean {
+    const priority = message.metadata?.priority || 'normal';
+    return message.metadata?.deliveryMode === 'interrupt' ||
+      message.metadata?.requiresResponse === true ||
+      priority === 'critical';
+  }
+
+  private isDeliverable(message: AgentMessage, now = Date.now()): boolean {
+    return (!message.metadata?.expiresAt || message.metadata.expiresAt > now) &&
+      (!message.metadata?.deliverAfter || message.metadata.deliverAfter <= now);
+  }
+
+  getProjectMessages(projectId: string, opts?: {
+    agentName?: string;
+    type?: MessageType;
+    from?: string;
+    to?: string;
+    limit?: number;
+  }): AgentMessage[] {
+    const now = Date.now();
+    let messages = [...(this.projectLogs.get(projectId) || [])]
+      .filter(message => this.isDeliverable(message, now));
+
+    if (opts?.agentName) {
+      messages = messages.filter(message => this.isVisibleToAgent(message, opts.agentName!));
+    }
+    if (opts?.type) {
+      messages = messages.filter(message => message.type === opts.type);
+    }
+    if (opts?.from) {
+      messages = messages.filter(message => this.presenceKey(message.from) === this.presenceKey(opts.from!));
+    }
+    if (opts?.to) {
+      messages = messages.filter(message => message.to === '*' || this.presenceKey(message.to) === this.presenceKey(opts.to!));
+    }
+    if (opts?.limit) {
+      messages = messages.slice(-opts.limit);
+    }
+
+    return messages;
+  }
+
+  getThread(projectId: string, messageId: string): AgentMessage[] {
+    const messages = this.getProjectMessages(projectId, { limit: 1000 });
+    const byId = new Map(messages.map(message => [message.id, message]));
+    const threadIds = new Set<string>();
+
+    let cursor: AgentMessage | undefined = byId.get(messageId);
+    while (cursor) {
+      threadIds.add(cursor.id);
+      const parentId = cursor.metadata?.replyTo;
+      cursor = parentId ? byId.get(parentId) : undefined;
+    }
+    if (threadIds.size === 0) threadIds.add(messageId);
+
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const message of messages) {
+        const parentId = message.metadata?.replyTo;
+        if (parentId && threadIds.has(parentId) && !threadIds.has(message.id)) {
+          threadIds.add(message.id);
+          changed = true;
+        }
+      }
+    }
+
+    return messages.filter(message => threadIds.has(message.id));
+  }
+
+  getInterruptingMessages(projectId: string, agentName: string, limit = 3): AgentMessage[] {
+    return this.checkMailbox(projectId, agentName, { unreadOnly: true, limit: Math.max(limit * 4, limit) })
+      .filter(message => this.isInterruptingMessage(message))
+      .slice(-limit);
+  }
+
+  getDeferredMessages(projectId: string, agentName: string, limit = 5): AgentMessage[] {
+    return this.checkMailbox(projectId, agentName, { unreadOnly: true, limit: Math.max(limit * 6, 20) })
+      .filter(message => !this.isInterruptingMessage(message))
+      .filter(message => message.metadata?.deliveryMode !== 'silent')
+      .slice(-limit);
+  }
+
   /**
    * Send a message from one agent to another (or broadcast to all).
    * Returns immediately — message is queued in recipient's mailbox.
@@ -98,31 +252,36 @@ class InterAgentMailbox {
       timestamp: Date.now(),
       read: false,
     };
+    this.appendProjectLog(fullMessage);
 
     if (message.to === '*') {
-      // Broadcast: deliver to ALL mailboxes in this project
-      for (const [key, box] of this.mailboxes.entries()) {
-        if (key.startsWith(`${message.projectId}:`) && !key.endsWith(`:${message.from.toLowerCase()}`)) {
-          box.push({ ...fullMessage });
-          this.capMailbox(box);
-        }
-      }
-      // Also notify listeners
-      for (const [key, listeners] of this.listeners.entries()) {
-        if (key.startsWith(`${message.projectId}:`) && !key.endsWith(`:${message.from.toLowerCase()}`)) {
-          listeners.forEach(cb => { try { cb(fullMessage); } catch {} });
+      // Broadcast to every registered teammate, including planned agents
+      // that have not emitted their first trace yet.
+      for (const recipient of this.getRegisteredRecipients(message.projectId, message.from)) {
+        const deliveredMessage = { ...fullMessage, to: recipient };
+        const inbox = this.getMailbox(message.projectId, recipient);
+        inbox.push(deliveredMessage);
+        this.capMailbox(inbox);
+
+        const key = this.mailboxKey(message.projectId, recipient);
+        if (this.isDeliverable(deliveredMessage)) {
+          const listeners = this.listeners.get(key) || [];
+          listeners.forEach(cb => { try { cb(deliveredMessage); } catch {} });
         }
       }
     } else {
       // Direct message
+      const deliveredMessage = { ...fullMessage };
       const inbox = this.getMailbox(message.projectId, message.to);
-      inbox.push(fullMessage);
+      inbox.push(deliveredMessage);
       this.capMailbox(inbox);
 
       // Notify listeners
       const key = this.mailboxKey(message.projectId, message.to);
-      const listeners = this.listeners.get(key) || [];
-      listeners.forEach(cb => { try { cb(fullMessage); } catch {} });
+      if (this.isDeliverable(deliveredMessage)) {
+        const listeners = this.listeners.get(key) || [];
+        listeners.forEach(cb => { try { cb(deliveredMessage); } catch {} });
+      }
     }
 
     // Best-effort disk persistence
@@ -154,9 +313,10 @@ class InterAgentMailbox {
       messages = messages.filter(m => m.from.toLowerCase() === opts.from!.toLowerCase());
     }
 
-    // Remove expired messages
+    // Hide expired or not-yet-deliverable messages from active mailboxes.
     const now = Date.now();
-    messages = messages.filter(m => !m.metadata?.expiresAt || m.metadata.expiresAt > now);
+    messages = messages.filter(m => this.isDeliverable(m, now));
+    messages = messages.filter(m => m.metadata?.deliveryMode !== 'silent');
 
     if (opts?.limit) {
       messages = messages.slice(-opts.limit);
@@ -187,16 +347,27 @@ class InterAgentMailbox {
   getMailboxSummaries(projectId: string): MailboxSummary[] {
     const summaries: MailboxSummary[] = [];
     const prefix = `${projectId}:`;
+    const now = Date.now();
 
     for (const [key, inbox] of this.mailboxes.entries()) {
       if (!key.startsWith(prefix)) continue;
       const agentName = key.substring(prefix.length);
-      const unread = inbox.filter(m => !m.read);
-      const latest = inbox[inbox.length - 1];
+      const deliverable = inbox.filter(m => this.isDeliverable(m, now) && m.metadata?.deliveryMode !== 'silent');
+      const unread = deliverable.filter(m => !m.read);
+      const latest = deliverable[deliverable.length - 1];
+      const scheduled = inbox.filter(m => !m.read &&
+        !!m.metadata?.deliverAfter &&
+        m.metadata.deliverAfter > now &&
+        (!m.metadata?.expiresAt || m.metadata.expiresAt > now));
+      const silent = inbox.filter(m => !m.read && this.isDeliverable(m, now) && m.metadata?.deliveryMode === 'silent');
       summaries.push({
         agentName,
         unreadCount: unread.length,
         totalCount: inbox.length,
+        urgentUnreadCount: unread.filter(m => this.isInterruptingMessage(m)).length,
+        deferredUnreadCount: unread.filter(m => !this.isInterruptingMessage(m)).length,
+        scheduledCount: scheduled.length,
+        silentCount: silent.length,
         latestMessage: latest ? {
           from: latest.from,
           type: latest.type,
@@ -211,8 +382,54 @@ class InterAgentMailbox {
   /**
    * Register an agent so it has a mailbox (call when spawning).
    */
-  registerAgent(projectId: string, agentName: string): void {
+  registerAgent(projectId: string, agentName: string, details?: {
+    role?: AgentPresence['role'];
+    task?: string;
+    status?: string;
+    progress?: string;
+  }): void {
     this.getMailbox(projectId, agentName);
+    const now = Date.now();
+    const team = this.getPresenceMap(projectId);
+    const key = this.presenceKey(agentName);
+    const existing = team.get(key);
+    team.set(key, {
+      agentName,
+      role: details?.role || existing?.role || (agentName.toLowerCase() === 'main' ? 'main' : 'sub_agent'),
+      status: details?.status || existing?.status || 'registered',
+      task: details?.task ?? existing?.task,
+      progress: details?.progress ?? existing?.progress,
+      registeredAt: existing?.registeredAt || now,
+      updatedAt: now,
+    });
+  }
+
+  updateAgentPresence(projectId: string, agentName: string, update: Partial<Omit<AgentPresence, 'agentName' | 'registeredAt' | 'updatedAt'>>): void {
+    const now = Date.now();
+    const team = this.getPresenceMap(projectId);
+    const key = this.presenceKey(agentName);
+    const existing = team.get(key) || {
+      agentName,
+      role: agentName.toLowerCase() === 'main' ? 'main' as const : 'sub_agent' as const,
+      status: 'registered',
+      registeredAt: now,
+      updatedAt: now,
+    };
+
+    team.set(key, {
+      ...existing,
+      ...update,
+      agentName: existing.agentName || agentName,
+      registeredAt: existing.registeredAt,
+      updatedAt: now,
+    });
+  }
+
+  getTeamSnapshot(projectId: string): AgentPresence[] {
+    return Array.from(this.getPresenceMap(projectId).values()).sort((a, b) => {
+      if (a.role !== b.role) return a.role === 'main' ? -1 : 1;
+      return a.registeredAt - b.registeredAt || a.agentName.localeCompare(b.agentName);
+    });
   }
 
   /**
@@ -265,6 +482,8 @@ class InterAgentMailbox {
     for (const key of [...this.listeners.keys()]) {
       if (key.startsWith(prefix)) this.listeners.delete(key);
     }
+    this.presence.delete(projectId);
+    this.projectLogs.delete(projectId);
   }
 
   // Cap mailbox at 200 messages to prevent memory bloat

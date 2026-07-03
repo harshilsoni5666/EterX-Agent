@@ -238,7 +238,8 @@ export class MemoryV2Manager {
 
     const analysis = this.analyzeContent(input.content);
     const now = Date.now();
-    const ttlMs = input.ttlDays && input.ttlDays > 0 ? input.ttlDays * 24 * 60 * 60 * 1000 : undefined;
+    // TTL has been removed to allow anytime user continuity without expiration
+    const ttlMs = undefined;
     const sensitivity: MemoryV2Sensitivity = analysis.promptInjection
       ? 'prompt_injection'
       : analysis.hasSecret
@@ -392,7 +393,7 @@ export class MemoryV2Manager {
 
     const candidates = this.state.records
       .filter(record => record.status === 'active' || record.status === 'promoted')
-      .filter(record => !record.expiresAt || record.expiresAt > now)
+      // TTL filters removed to persist memories permanently
       .filter(record => record.sensitivity === 'safe' || record.sensitivity === 'secret_ref')
       .filter(record => record.userId === (input.userId || 'user') || record.userId === 'user')
       .filter(record => !scopes || scopes.has(record.scope))

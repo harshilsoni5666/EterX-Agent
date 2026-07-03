@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { rejectCrossOrigin } from '../../agent/_shared';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -13,6 +14,9 @@ export const runtime = 'nodejs';
  */
 export async function POST(req: NextRequest) {
   try {
+    const originError = rejectCrossOrigin(req);
+    if (originError) return originError;
+
     const fs = require('fs');
     const fsp = fs.promises;
     const path = require('path');

@@ -18,7 +18,7 @@ import { readAgentBuilderProfile, type AgentBuilderProfile } from './builder-age
 import { resolveAgentTools, type ResolvedTool } from './tool-injector';
 import { globalToolRegistry, normalizeRegistryToolName } from './tools/registry';
 import { normalizeRegistryToolArgs, validateRegistryToolArgs } from './tools/tool-args';
-import { enforceToolCapability } from './tools/security/tool_policy';
+import { DEFAULT_MAIN_AGENT_ALLOWED_CAPABILITIES, enforceToolCapability } from './tools/security/tool_policy';
 import { getPathResolverInfo } from './workspace/path_resolver';
 import { createToolExecutionContext, isToolCancellationError } from './cancellation';
 import type { ScopedRuntimeSettings } from './runtime-api-keys';
@@ -615,6 +615,22 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
       }
     }
 
+    const isSandboxRun = config.runLocation === 'sandbox';
+    const networkDenied = isSandboxRun || (config.pinnedContext?.networkPolicy === 'deny' && config.pinnedContext?.allowNetwork !== true);
+    const localAllowedCapabilities = Array.from(new Set([
+      ...DEFAULT_MAIN_AGENT_ALLOWED_CAPABILITIES,
+      'command.raw',
+      'vcs.local',
+    ])).filter(capability => {
+      if (networkDenied && capability.startsWith('network.')) return false;
+      if (config.pinnedContext?.allowBrowserControl === false && capability === 'browser.control') return false;
+      if (config.pinnedContext?.allowDynamicCode === false && capability === 'code.dynamic') return false;
+      if (config.pinnedContext?.allowAgentSpawning === false && capability === 'agent.spawn') return false;
+      if (config.pinnedContext?.allowRawCommand === false && capability === 'command.raw') return false;
+      if (config.pinnedContext?.allowVcs === false && capability === 'vcs.local') return false;
+      return true;
+    });
+
     const context = {
       agentId,
       agentRuntime: 'custom_agent' as const,
@@ -626,27 +642,20 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
       paths,
       allowedPaths,
       isFocusedWorkspace,
-      runLocation: config.runLocation || 'local',
+      runLocation: isSandboxRun ? 'sandbox' : 'local',
       sandboxGuard: sandboxGuard || undefined,
-      allowedCapabilities: config.runLocation === 'sandbox'
+      allowedCapabilities: isSandboxRun
         ? ['command.workspace', 'filesystem.read', 'filesystem.write', 'tool.utility', 'memory.manage']
-        : [
-            'command.workspace',
-            'filesystem.read',
-            'filesystem.write',
-            'tool.utility',
-            'memory.manage',
-            'network.public',
-            'browser.control',
-          ],
-      allowBrowserControl: config.runLocation !== 'sandbox',
-      networkPolicy: config.runLocation === 'sandbox' ? 'deny' : 'deny',
-      allowNetwork: config.runLocation !== 'sandbox' ? undefined : false,
-      allowAgentSpawning: config.runLocation !== 'sandbox' ? undefined : false,
-      allowHostControl: config.runLocation !== 'sandbox' ? undefined : false,
-      allowExternalCommunication: config.runLocation !== 'sandbox' ? undefined : false,
-      allowDynamicCode: config.runLocation !== 'sandbox' ? undefined : false,
-      allowRawCommand: config.runLocation !== 'sandbox' ? undefined : false,
+        : localAllowedCapabilities,
+      allowBrowserControl: isSandboxRun ? false : config.pinnedContext?.allowBrowserControl !== false,
+      networkPolicy: networkDenied ? 'deny' : 'allow',
+      allowNetwork: !networkDenied,
+      allowAgentSpawning: isSandboxRun ? false : config.pinnedContext?.allowAgentSpawning !== false,
+      allowHostControl: isSandboxRun ? false : config.pinnedContext?.allowHostControl === true,
+      allowExternalCommunication: isSandboxRun ? false : config.pinnedContext?.allowExternalCommunication === true,
+      allowDynamicCode: isSandboxRun ? false : config.pinnedContext?.allowDynamicCode !== false,
+      allowRawCommand: isSandboxRun ? false : config.pinnedContext?.allowRawCommand !== false,
+      allowVcs: isSandboxRun ? false : config.pinnedContext?.allowVcs !== false,
       _onTrace: onTrace,
       abortSignal: this.cancelController?.signal,
       signal: this.cancelController?.signal,

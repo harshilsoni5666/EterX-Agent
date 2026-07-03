@@ -1,10 +1,14 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { webSearchTool } from '../../../lib/agent/tools/core/search';
+import { rejectCrossOrigin } from '../agent/_shared';
 
 export const dynamic = 'force-dynamic';
 
-export async function POST(req: Request) {
+export async function POST(req: NextRequest) {
   try {
+    const originError = rejectCrossOrigin(req);
+    if (originError) return originError;
+
     const {
       query,
       includeImages = false,

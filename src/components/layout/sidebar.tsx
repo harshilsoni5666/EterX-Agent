@@ -148,37 +148,9 @@ const lightweightSidebarCss = `
 
   .eterx-sidebar-shell .eterx-sidebar-recents-scroll {
     scrollbar-gutter: auto !important;
-    --sb-size: 6px !important;
-    --sb-inset: 0px !important;
   }
 
 
-  .eterx-sidebar-shell .eterx-sidebar-recents-scroll::-webkit-scrollbar {
-    width: 6px !important;
-  }
-
-  .eterx-sidebar-shell .eterx-sidebar-recents-scroll::-webkit-scrollbar-track {
-    background: transparent !important;
-  }
-
-  .eterx-sidebar-shell .eterx-sidebar-recents-scroll::-webkit-scrollbar-thumb {
-    border: none !important;
-    border-radius: 999px !important;
-    background-clip: border-box !important;
-    background-color: rgba(255, 255, 255, 0.20) !important;
-  }
-
-  :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-recents-scroll::-webkit-scrollbar-thumb {
-    background-color: rgba(39, 49, 63, 0.22) !important;
-  }
-
-  .eterx-sidebar-shell .eterx-sidebar-recents-scroll::-webkit-scrollbar-thumb:hover {
-    background-color: rgba(255, 255, 255, 0.32) !important;
-  }
-
-  :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-recents-scroll::-webkit-scrollbar-thumb:hover {
-    background-color: rgba(39, 49, 63, 0.34) !important;
-  }
 
   :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-recents,
   .eterx-sidebar-shell .eterx-sidebar-recents {

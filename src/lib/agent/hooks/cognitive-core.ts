@@ -1,332 +1,281 @@
-/**
- * ═══════════════════════════════════════════════════════════════
- * COGNITIVE CORE INTEGRATION — Wiring Layer for Advanced Reasoning
- * ═══════════════════════════════════════════════════════════════
- *
- * This module provides hook functions that can be called from
- * gemini.ts at strategic points in the ReAct loop. Rather than
- * modifying the massive 4600-line gemini.ts directly, this module
- * exports clean functions that the ReAct loop calls.
- *
- * HOOK POINTS:
- * 1. onTaskStart(message) — Called at the start of executeMessageLoop
- * 2. enhanceSystemPrompt(basePrompt, message) — Augments the system prompt
- * 3. onToolCallComplete(toolName, args, result, success) — After each tool call
- * 4. onFinalAnswer(message, response, toolsUsed, toolResultDigest, filesCreated) — Before returning
- * 5. getVerificationInjection(toolName, args, result) — Get correction text
- */
+import { CognitiveReasoningEngine, type CognitiveState } from '../reasoning/cognitive-engine';
+import { DeepSelfCorrectionEngine } from '../reasoning/self-correction';
+import { VerificationPipeline, type VerificationResult } from '../reasoning/verification-pipeline';
+import { ToolIntelligenceEngine } from '../reasoning/tool-intelligence';
+import { ConversationIntelligenceEngine } from '../reasoning/conversation-intelligence';
+import { ContextIntelligenceEngine } from '../reasoning/context-intelligence';
+import { PrecisionOutputEngine } from '../reasoning/output-engine';
+import { SemanticWorkingMemory } from '../memory/working-memory';
+import { ErrorRecoveryEngine } from '../resilience/error-recovery';
+import { ExecutionMonitor } from '../monitor/execution-monitor';
+import { ExecutionVelocityMonitor } from './velocity-monitor';
 
-import {
-  cognitiveEngine, deepSelfCorrection, verificationPipeline,
-  toolIntelligence, conversationIntelligence, contextIntelligence,
-  precisionOutput, type CognitiveState,
-} from '../reasoning';
-import { workingMemory } from '../memory/working-memory';
-import { errorRecovery } from '../resilience/error-recovery';
-import { executionMonitor } from '../monitor/execution-monitor';
-import { velocityMonitor } from './velocity-monitor';
-
-// ─── State ────────────────────────────────────────────────────────────────────
-
-const _failurePatternMemory = new Map<string, { error: string; count: number }>();
-
-let _currentCogState: CognitiveState | null = null;
-let _recentVerifications: import('../reasoning/verification-pipeline').VerificationResult[] = [];
-let _taskStarted = false;
-
-// ─── Hook 1: Task Start ──────────────────────────────────────────────────────
+type ToolResultDigestEntry = {
+  tool: string;
+  args: string;
+  result: string;
+};
 
 /**
- * Initialize all advanced reasoning engines when a new task begins.
- * Called at the start of runReActLoop.
+ * Run-scoped cognitive state.
+ *
+ * Agent executions are concurrent, so reasoning state must never live in a
+ * process-wide singleton. Each ReAct run owns one of these sessions and keeps
+ * it across provider/key retries.
  */
-export function onTaskStart(message: string, availableToolNames: string[], modelName: string): void {
-  try {
-    // Cognitive Engine — classify and hypothesize
-    _currentCogState = cognitiveEngine.initializeState(message, availableToolNames);
+export class CognitiveCoreSession {
+  private readonly cognitiveEngine = new CognitiveReasoningEngine();
+  private readonly deepSelfCorrection = new DeepSelfCorrectionEngine();
+  private readonly verificationPipeline = new VerificationPipeline();
+  private readonly toolIntelligence = new ToolIntelligenceEngine();
+  private readonly conversationIntelligence = new ConversationIntelligenceEngine();
+  private readonly contextIntelligence = new ContextIntelligenceEngine();
+  private readonly precisionOutput = new PrecisionOutputEngine();
+  private readonly workingMemory = new SemanticWorkingMemory();
+  private readonly errorRecovery = new ErrorRecoveryEngine();
+  private readonly executionMonitor = new ExecutionMonitor();
+  private readonly velocityMonitor = new ExecutionVelocityMonitor();
+  private readonly failurePatternMemory = new Map<string, { error: string; count: number }>();
 
-    // Conversation Intelligence — detect emotion and intent
-    conversationIntelligence.analyzeMessage(message);
+  private currentCogState: CognitiveState | null = null;
+  private recentVerifications: VerificationResult[] = [];
+  private taskStarted = false;
 
-    // Working Memory — extract constraints and context
-    workingMemory.extractFromMessage(message);
-    workingMemory.updateUserModel(message);
+  onTaskStart(message: string, availableToolNames: string[], modelName: string): void {
+    try {
+      this.currentCogState = this.cognitiveEngine.initializeState(message, availableToolNames);
+      this.conversationIntelligence.analyzeMessage(message);
+      this.workingMemory.extractFromMessage(message);
+      this.workingMemory.updateUserModel(message);
+      this.executionMonitor.startTask(this.currentCogState.hypotheses[0]?.approach || 'executing');
+      this.contextIntelligence.setModel(modelName);
+      this.recentVerifications = [];
+      this.failurePatternMemory.clear();
+      this.velocityMonitor.reset();
+      this.velocityMonitor.profileTask(message);
+      this.taskStarted = true;
 
-    // Execution Monitor — start tracking
-    executionMonitor.startTask(_currentCogState.hypotheses[0]?.approach || 'executing');
-
-    // Context Intelligence — set model
-    contextIntelligence.setModel(modelName);
-
-    // Reset verifications
-    _recentVerifications = [];
-    _failurePatternMemory.clear();
-    velocityMonitor.reset();
-    velocityMonitor.profileTask(message);
-    _taskStarted = true;
-
-    console.log(`[CognitiveCore] ⚡ Task classified: ${_currentCogState.problemClass} (confidence: ${(_currentCogState.confidence * 100).toFixed(0)}%)`);
-  } catch (err) {
-    console.warn('[CognitiveCore] onTaskStart failed (non-blocking):', (err as Error).message);
+      console.log(
+        `[CognitiveCore] Task classified: ${this.currentCogState.problemClass} ` +
+        `(confidence: ${(this.currentCogState.confidence * 100).toFixed(0)}%)`
+      );
+    } catch (error: any) {
+      console.warn('[CognitiveCore] onTaskStart failed (non-blocking):', error?.message || error);
+    }
   }
-}
 
-// ─── Hook 2: System Prompt Enhancement ───────────────────────────────────────
+  getEnhancedContext(message: string, availableToolNames: string[]): string {
+    try {
+      const parts: string[] = [];
 
-/**
- * Augment the system prompt with cognitive layers.
- * Returns additional context to append to the dynamic context.
- */
-export function getEnhancedContext(message: string, availableToolNames: string[]): string {
-  try {
-    const parts: string[] = [];
-
-    // Cognitive directive
-    if (_currentCogState) {
-      const directive = cognitiveEngine.generateCognitiveDirective(_currentCogState, message);
-      if (directive) parts.push(directive);
-    }
-
-    // Conversation context (emotion, intent, references)
-    const convCtx = conversationIntelligence.buildConversationContext();
-    if (convCtx) parts.push(convCtx);
-
-    // Working memory (constraints, learned facts, user model)
-    const memCtx = workingMemory.buildFullMemoryContext(message);
-    if (memCtx) parts.push(memCtx);
-
-    // Tool predictions
-    const predictions = toolIntelligence.predictTools(message, availableToolNames);
-    if (predictions.length > 0) {
-      parts.push(`Tool predictions: ${predictions.slice(0, 4).map(p => `${p.toolName}(${(p.confidence * 100).toFixed(0)}%)`).join(', ')}`);
-    }
-
-    // Execution monitor warnings
-    const monitorCtx = executionMonitor.buildMetricsContext();
-    if (monitorCtx) parts.push(monitorCtx);
-
-    // Velocity monitor warnings and nudges
-    const nudge = velocityMonitor.generateNudge();
-    if (nudge) {
-      parts.push(nudge);
-    }
-
-    // Verification alerts from recent tool calls
-    const verCtx = verificationPipeline.buildVerificationContext(_recentVerifications);
-    if (verCtx) parts.push(verCtx);
-
-    return parts.filter(Boolean).join('\n\n');
-  } catch (err) {
-    console.warn('[CognitiveCore] getEnhancedContext failed (non-blocking):', (err as Error).message);
-    return '';
-  }
-}
-
-// ─── Hook 3: After Each Tool Call ────────────────────────────────────────────
-
-/**
- * Called after each tool call completes. Runs verification pipeline,
- * updates cognitive state, records tool intelligence data, and
- * generates episodic memory entries.
- *
- * Returns a correction injection string if verification failed,
- * or null if everything passed.
- */
-export function onToolCallComplete(
-  toolName: string,
-  args: Record<string, any>,
-  result: any,
-  success: boolean,
-  durationMs: number,
-): string | null {
-  try {
-    // 1. Verification Pipeline — auto-verify tool results
-    const verification = verificationPipeline.verify(toolName, args || {}, result);
-    _recentVerifications.push(verification);
-    if (_recentVerifications.length > 20) _recentVerifications.shift();
-
-    // 2. Cognitive State — update DAG progress
-    if (_currentCogState) {
-      const resultSummary = result?.error ? `Error: ${result.error}` : 'Success';
-      cognitiveEngine.updateAfterToolCall(_currentCogState, toolName, success, resultSummary);
-    }
-
-    // 3. Tool Intelligence — record for learning
-    toolIntelligence.recordToolCall(toolName, args || {}, success, durationMs, result?.error);
-
-    // 4. Execution Monitor — record the call
-    executionMonitor.recordToolCall(toolName, success, args);
-    executionMonitor.recordIteration();
-
-    velocityMonitor.recordToolCall(toolName, args || {}, success, durationMs);
-    velocityMonitor.recordIteration();
-
-    // 5. Working Memory — record significant events as episodic memory
-    if (!success) {
-      if (result?.error) {
-        recordToolFailure(toolName, args, String(result.error));
+      if (this.currentCogState) {
+        const directive = this.cognitiveEngine.generateCognitiveDirective(this.currentCogState, message);
+        if (directive) parts.push(directive);
       }
-      workingMemory.recordEpisode({
-        type: 'error',
-        summary: `${toolName} failed: ${String(result?.error || 'unknown').substring(0, 80)}`,
-        tools: [toolName],
-        outcome: 'failure',
-        relevanceKeywords: [toolName, ...(args?.filename || args?.command || '').split(/\s+/).filter((w: string) => w.length > 3)],
-      });
-    } else if (toolName === 'workspace_write_file' && args?.filename) {
-      workingMemory.recordEpisode({
-        type: 'task_complete',
-        summary: `Created file: ${args.filename}`,
-        tools: [toolName],
-        outcome: 'success',
-        relevanceKeywords: [toolName, String(args.filename).split(/[\\/]/).pop() || ''],
-      });
+
+      const conversationContext = this.conversationIntelligence.buildConversationContext();
+      if (conversationContext) parts.push(conversationContext);
+
+      const memoryContext = this.workingMemory.buildFullMemoryContext(message);
+      if (memoryContext) parts.push(memoryContext);
+
+      const predictions = this.toolIntelligence.predictTools(message, availableToolNames);
+      if (predictions.length > 0) {
+        parts.push(
+          `Tool predictions: ${predictions.slice(0, 4)
+            .map(prediction => `${prediction.toolName}(${(prediction.confidence * 100).toFixed(0)}%)`)
+            .join(', ')}`
+        );
+      }
+
+      const monitorContext = this.executionMonitor.buildMetricsContext();
+      if (monitorContext) parts.push(monitorContext);
+
+      const velocityNudge = this.velocityMonitor.generateNudge();
+      if (velocityNudge) parts.push(velocityNudge);
+
+      const verificationContext = this.verificationPipeline.buildVerificationContext(this.recentVerifications);
+      if (verificationContext) parts.push(verificationContext);
+
+      return parts.filter(Boolean).join('\n\n');
+    } catch (error: any) {
+      console.warn('[CognitiveCore] getEnhancedContext failed (non-blocking):', error?.message || error);
+      return '';
     }
+  }
 
-    // 6. Error Recovery — diagnose if failed
-    if (!success && result?.error) {
-      const diagnosis = errorRecovery.diagnose({
-        toolName,
-        args: args || {},
-        errorMessage: String(result.error),
-        previousErrors: [],
-        filesModified: [],
-      });
+  onToolCallComplete(
+    toolName: string,
+    args: Record<string, any>,
+    result: any,
+    success: boolean,
+    durationMs: number,
+  ): string | null {
+    try {
+      const verification = this.verificationPipeline.verify(toolName, args || {}, result);
+      this.recentVerifications.push(verification);
+      if (this.recentVerifications.length > 20) this.recentVerifications.shift();
 
-      if (diagnosis.canAutoFix && diagnosis.suggestedFix) {
-        const recoveryDirective = errorRecovery.generateRecoveryDirective(diagnosis, {
+      if (this.currentCogState) {
+        const resultSummary = result?.error ? `Error: ${result.error}` : 'Success';
+        this.cognitiveEngine.updateAfterToolCall(this.currentCogState, toolName, success, resultSummary);
+      }
+
+      this.toolIntelligence.recordToolCall(toolName, args || {}, success, durationMs, result?.error);
+      this.executionMonitor.recordToolCall(toolName, success, args);
+      this.executionMonitor.recordIteration();
+      this.velocityMonitor.recordToolCall(toolName, args || {}, success, durationMs);
+      this.velocityMonitor.recordIteration();
+
+      if (!success) {
+        if (result?.error) this.recordToolFailure(toolName, args, String(result.error));
+        this.workingMemory.recordEpisode({
+          type: 'error',
+          summary: `${toolName} failed: ${String(result?.error || 'unknown').substring(0, 80)}`,
+          tools: [toolName],
+          outcome: 'failure',
+          relevanceKeywords: [
+            toolName,
+            ...String(args?.filename || args?.command || '').split(/\s+/).filter(word => word.length > 3),
+          ],
+        });
+      } else if (toolName === 'workspace_write_file' && args?.filename) {
+        this.workingMemory.recordEpisode({
+          type: 'task_complete',
+          summary: `Created file: ${args.filename}`,
+          tools: [toolName],
+          outcome: 'success',
+          relevanceKeywords: [toolName, String(args.filename).split(/[\\/]/).pop() || ''],
+        });
+      }
+
+      if (!success && result?.error) {
+        const errorContext = {
           toolName,
           args: args || {},
           errorMessage: String(result.error),
           previousErrors: [],
           filesModified: [],
-        });
-        return recoveryDirective;
+        };
+        const diagnosis = this.errorRecovery.diagnose(errorContext);
+        if (diagnosis.canAutoFix && diagnosis.suggestedFix) {
+          return this.errorRecovery.generateRecoveryDirective(diagnosis, errorContext);
+        }
       }
+
+      return verification.correctionInjection;
+    } catch (error: any) {
+      console.warn('[CognitiveCore] onToolCallComplete failed (non-blocking):', error?.message || error);
+      return null;
     }
-
-    // Return verification correction if critical failure
-    return verification.correctionInjection;
-  } catch (err) {
-    console.warn('[CognitiveCore] onToolCallComplete failed (non-blocking):', (err as Error).message);
-    return null;
   }
-}
 
-// ─── Hook 4: Final Answer Quality Gate ───────────────────────────────────────
-
-/**
- * Assess the quality of the agent's final response before returning it.
- * Returns a correction prompt if quality is too low, or null if it passes.
- */
-export function assessFinalAnswer(
-  userMessage: string,
-  agentResponse: string,
-  toolsUsed: string[],
-  toolResultDigest: Array<{ tool: string; args: string; result: string }>,
-  filesCreated: string[],
-): string | null {
-  try {
-    // 1. Deep Self-Correction — semantic quality assessment
-    const assessment = deepSelfCorrection.assess({
-      userMessage,
-      agentResponse,
-      toolsUsed,
-      toolResultDigest,
-      filesCreated,
-    });
-
-    // 2. Output analysis — bloat detection
-    const outputAnalysis = precisionOutput.analyze(agentResponse);
-
-    // 3. Record conversation for intelligence
-    conversationIntelligence.recordAgentResponse(agentResponse);
-
-    // 4. Record episodic memory
-    workingMemory.recordEpisode({
-      type: 'task_complete',
-      summary: `Completed task: ${userMessage.substring(0, 60)}`,
-      tools: toolsUsed,
-      outcome: assessment.passes ? 'success' : 'partial',
-      relevanceKeywords: userMessage.toLowerCase().split(/\s+/).filter(w => w.length > 3).slice(0, 5),
-    });
-
-    // 5. Learn semantic facts from the interaction
-    if (filesCreated.length > 0) {
-      workingMemory.learnFact({
-        domain: 'project_context',
-        fact: `Files created in this session: ${filesCreated.join(', ')}`,
-        confidence: 0.9,
-        source: 'auto-learn',
+  assessFinalAnswer(
+    userMessage: string,
+    agentResponse: string,
+    toolsUsed: string[],
+    toolResultDigest: ToolResultDigestEntry[],
+    filesCreated: string[],
+  ): string | null {
+    try {
+      const assessment = this.deepSelfCorrection.assess({
+        userMessage,
+        agentResponse,
+        toolsUsed,
+        toolResultDigest,
+        filesCreated,
       });
-    }
+      const outputAnalysis = this.precisionOutput.analyze(agentResponse);
 
-    // If quality is too low, return the correction prompt
-    if (!assessment.passes && assessment.correctionPrompt) {
-      console.log(`[CognitiveCore] 🔍 Quality gate triggered: score ${assessment.qualityScore}/100`);
-      return assessment.correctionPrompt;
-    }
+      this.conversationIntelligence.recordAgentResponse(agentResponse);
+      this.workingMemory.recordEpisode({
+        type: 'task_complete',
+        summary: `Completed task: ${userMessage.substring(0, 60)}`,
+        tools: toolsUsed,
+        outcome: assessment.passes ? 'success' : 'partial',
+        relevanceKeywords: userMessage.toLowerCase().split(/\s+/).filter(word => word.length > 3).slice(0, 5),
+      });
 
-    // If output is bloated, return quality directive
-    if (outputAnalysis.bloatScore > 0.3) {
-      const directive = precisionOutput.buildQualityDirective(outputAnalysis);
-      if (directive) {
-        console.log(`[CognitiveCore] ✂️ Output bloat detected: ${(outputAnalysis.bloatScore * 100).toFixed(0)}%`);
-        return directive;
+      if (filesCreated.length > 0) {
+        this.workingMemory.learnFact({
+          domain: 'project_context',
+          fact: `Files created in this session: ${filesCreated.join(', ')}`,
+          confidence: 0.9,
+          source: 'auto-learn',
+        });
       }
-    }
 
-    return null; // Passes quality gate
-  } catch (err) {
-    console.warn('[CognitiveCore] assessFinalAnswer failed (non-blocking):', (err as Error).message);
+      if (!assessment.passes && assessment.correctionPrompt) {
+        console.log(`[CognitiveCore] Quality gate triggered: score ${assessment.qualityScore}/100`);
+        return assessment.correctionPrompt;
+      }
+
+      if (outputAnalysis.bloatScore > 0.3) {
+        const directive = this.precisionOutput.buildQualityDirective(outputAnalysis);
+        if (directive) return directive;
+      }
+
+      return null;
+    } catch (error: any) {
+      console.warn('[CognitiveCore] assessFinalAnswer failed (non-blocking):', error?.message || error);
+      return null;
+    }
+  }
+
+  deBloatResponse(text: string): string {
+    try {
+      return this.precisionOutput.deBloat(text);
+    } catch {
+      return text;
+    }
+  }
+
+  getCognitiveState(): CognitiveState | null {
+    return this.currentCogState;
+  }
+
+  getExecutionMetrics() {
+    return this.executionMonitor.getMetrics();
+  }
+
+  recordToolFailure(toolName: string, args: any, error: string): void {
+    const key = `${toolName}:${JSON.stringify(args || {})}`;
+    const existing = this.failurePatternMemory.get(key);
+    if (existing) {
+      existing.count++;
+      existing.error = error;
+    } else {
+      this.failurePatternMemory.set(key, { error, count: 1 });
+    }
+  }
+
+  checkToolFailureWarning(toolName: string, args: any): string | null {
+    const key = `${toolName}:${JSON.stringify(args || {})}`;
+    const record = this.failurePatternMemory.get(key);
+    if (record && record.count >= 2) {
+      return `Warning: This tool call previously failed ${record.count} times. Last error: "${record.error}". Please correct parameters before trying again.`;
+    }
     return null;
   }
-}
 
-// ─── Hook 5: De-bloat Final Text ─────────────────────────────────────────────
-
-/**
- * Remove AI bloat from the final response text.
- * Called right before returning the text to the user.
- */
-export function deBloatResponse(text: string): string {
-  try {
-    return precisionOutput.deBloat(text);
-  } catch {
-    return text; // Never fail
+  hasStarted(): boolean {
+    return this.taskStarted;
   }
 }
 
-// ─── Hook 6: Get Current Cognitive State ─────────────────────────────────────
-
-export function getCognitiveState(): CognitiveState | null {
-  return _currentCogState;
+export function createCognitiveCoreSession(): CognitiveCoreSession {
+  return new CognitiveCoreSession();
 }
 
-// ─── Hook 7: Get Execution Metrics ───────────────────────────────────────────
+// Backward-compatible process-wide facade for callers that have not migrated.
+const defaultSession = createCognitiveCoreSession();
 
-export function getExecutionMetrics() {
-  return executionMonitor.getMetrics();
-}
-
-// ─── Hook 8: Failure Pattern Memory ──────────────────────────────────────────
-
-export function recordToolFailure(toolName: string, args: any, error: string): void {
-  const key = `${toolName}:${JSON.stringify(args || {})}`;
-  const existing = _failurePatternMemory.get(key);
-  if (existing) {
-    existing.count++;
-    existing.error = error;
-  } else {
-    _failurePatternMemory.set(key, { error, count: 1 });
-  }
-}
-
-export function checkToolFailureWarning(toolName: string, args: any): string | null {
-  const key = `${toolName}:${JSON.stringify(args || {})}`;
-  const record = _failurePatternMemory.get(key);
-  if (record && record.count >= 2) {
-    return `Warning: This tool call previously failed ${record.count} times. Last error: "${record.error}". Please correct parameters before trying again.`;
-  }
-  return null;
-}
+export const onTaskStart = defaultSession.onTaskStart.bind(defaultSession);
+export const getEnhancedContext = defaultSession.getEnhancedContext.bind(defaultSession);
+export const onToolCallComplete = defaultSession.onToolCallComplete.bind(defaultSession);
+export const assessFinalAnswer = defaultSession.assessFinalAnswer.bind(defaultSession);
+export const deBloatResponse = defaultSession.deBloatResponse.bind(defaultSession);
+export const getCognitiveState = defaultSession.getCognitiveState.bind(defaultSession);
+export const getExecutionMetrics = defaultSession.getExecutionMetrics.bind(defaultSession);
+export const recordToolFailure = defaultSession.recordToolFailure.bind(defaultSession);
+export const checkToolFailureWarning = defaultSession.checkToolFailureWarning.bind(defaultSession);

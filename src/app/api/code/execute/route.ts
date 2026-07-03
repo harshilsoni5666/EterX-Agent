@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import * as path from 'path';
 import { getPathResolverInfo } from '@/lib/agent/workspace/path_resolver';
 import { runTerminalCommandWithCheckIn } from '@/lib/agent/tools/core/terminal_background';
+import { rejectCrossOrigin } from '../../agent/_shared';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -10,6 +11,9 @@ export const maxDuration = 60;
 // POST: Execute a command in the workspace
 export async function POST(req: NextRequest) {
   try {
+    const originError = rejectCrossOrigin(req);
+    if (originError) return originError;
+
     const { command, cwd, timeoutSeconds, timeoutMs, checkInSeconds, checkInMs, hardTimeoutSeconds, hardTimeoutMs } = await req.json();
 
     if (!command) {

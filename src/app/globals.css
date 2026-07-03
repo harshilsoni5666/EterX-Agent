@@ -66,23 +66,37 @@
     --destructive: #dc2626;
     --info: #2563eb;
 
-    --font-dm-sans: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    --font-mono: 'JetBrains Mono', ui-monospace, 'Cascadia Code', 'Fira Code', monospace;
+    --font-dm-sans: var(--font-sans), -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 
-    --sb-size: 8px;
-    --sb-button-size: 0px;
+    --sb-size: 12px;
+    --sb-button-size: 12px;
     --sb-track: transparent;
     --sb-track-solid: transparent;
     --sb-track-edge: transparent;
-    --sb-thumb: rgba(31, 31, 29, 0.28);
-    --sb-thumb-hover: rgba(31, 31, 29, 0.45);
-    --sb-thumb-active: rgba(31, 31, 29, 0.60);
+    --sb-thumb: rgba(0, 0, 0, 0.35);
+    --sb-thumb-hover: rgba(0, 0, 0, 0.50);
+    --sb-thumb-active: rgba(0, 0, 0, 0.65);
     --sb-radius: 9999px;
-    --sb-inset: 0px;
-    --chat-feed-sb-size: 8px;
+    --sb-inset: 2px;
+    --chat-feed-sb-size: 13px;
+
+    /* Scrollbar SVG variables (Light Mode) */
+    --sb-arrow-up: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA4IDUnIGZpbGw9JyMwMDAwMDAnIGZpbGwtb3BhY2l0eT0nMC4zNScgc3Ryb2tlPScjMDAwMDAwJyBzdHJva2Utb3BhY2l0eT0nMC4zNScgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00wLjc1IDQuMjUgTDcuMjUgNC4yNSBMNCAwLjc1IFonLz48L3N2Zz4=");
+    --sb-arrow-up-hover: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA4IDUnIGZpbGw9JyMwMDAwMDAnIGZpbGwtb3BhY2l0eT0nMC41MCcgc3Ryb2tlPScjMDAwMDAwJyBzdHJva2Utb3BhY2l0eT0nMC41MCcgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00wLjc1IDQuMjUgTDcuMjUgNC4yNSBMNCAwLjc1IFonLz48L3N2Zz4=");
+    --sb-arrow-up-active: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA4IDUnIGZpbGw9JyMwMDAwMDAnIGZpbGwtb3BhY2l0eT0nMC42NScgc3Ryb2tlPScjMDAwMDAwJyBzdHJva2Utb3BhY2l0eT0nMC42NScgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00wLjc1IDQuMjUgTDcuMjUgNC4yNSBMNCAwLjc1IFonLz48L3N2Zz4=");
+    --sb-arrow-down: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA4IDUnIGZpbGw9JyMwMDAwMDAnIGZpbGwtb3BhY2l0eT0nMC4zNScgc3Ryb2tlPScjMDAwMDAwJyBzdHJva2Utb3BhY2l0eT0nMC4zNScgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00wLjc1IDAuNzUgTDcuMjUgMC43NSBMNCA0LjI1IFonLz48L3N2Zz4=");
+    --sb-arrow-down-hover: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA4IDUnIGZpbGw9JyMwMDAwMDAnIGZpbGwtb3BhY2l0eT0nMC41MCcgc3Ryb2tlPScjMDAwMDAwJyBzdHJva2Utb3BhY2l0eT0nMC41MCcgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00wLjc1IDAuNzUgTDcuMjUgMC43NSBMNCA0LjI1IFonLz48L3N2Zz4=");
+    --sb-arrow-down-active: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA4IDUnIGZpbGw9JyMwMDAwMDAnIGZpbGwtb3BhY2l0eT0nMC42NScgc3Ryb2tlPScjMDAwMDAwJyBzdHJva2Utb3BhY2l0eT0nMC42NScgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00wLjc1IDAuNzUgTDcuMjUgMC43NSBMNCA0LjI1IFonLz48L3N2Zz4=");
+    --sb-arrow-left: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA1IDgnIGZpbGw9JyMwMDAwMDAnIGZpbGwtb3BhY2l0eT0nMC4zNScgc3Ryb2tlPScjMDAwMDAwJyBzdHJva2Utb3BhY2l0eT0nMC4zNScgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J000LjI1IDAuNzUgTDQuMjUgNy4yNSBMMC43NSA0IFonLz48L3N2Zz4=");
+    --sb-arrow-left-hover: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA1IDgnIGZpbGw9JyMwMDAwMDAnIGZpbGwtb3BhY2l0eT0nMC41MCcgc3Ryb2tlPScjMDAwMDAwJyBzdHJva2Utb3BhY2l0eT0nMC41MCcgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J000LjI1IDAuNzUgTDQuMjUgNy4yNSBMMC43NSA0IFonLz48L3N2Zz4=");
+    --sb-arrow-left-active: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA1IDgnIGZpbGw9JyMwMDAwMDAnIGZpbGwtb3BhY2l0eT0nMC42NScgc3Ryb2tlPScjMDAwMDAwJyBzdHJva2Utb3BhY2l0eT0nMC42NScgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J000LjI1IDAuNzUgTDQuMjUgNy4yNSBMMC43NSA0IFonLz48L3N2Zz4=");
+    --sb-arrow-right: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA1IDgnIGZpbGw9JyMwMDAwMDAnIGZpbGwtb3BhY2l0eT0nMC4zNScgc3Ryb2tlPScjMDAwMDAwJyBzdHJva2Utb3BhY2l0eT0nMC4zNScgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00wLjc1IDAuNzUgTDAuNzUgNy4yNSBMNC4yNSA0IFonLz48L3N2Zz4=");
+    --sb-arrow-right-hover: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA1IDgnIGZpbGw9JyMwMDAwMDAnIGZpbGwtb3BhY2l0eT0nMC41MCcgc3Ryb2tlPScjMDAwMDAwJyBzdHJva2Utb3BhY2l0eT0nMC41MCcgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00wLjc1IDAuNzUgTDAuNzUgNy4yNSBMNC4yNSA0IFonLz48L3N2Zz4=");
+    --sb-arrow-right-active: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA1IDgnIGZpbGw9JyMwMDAwMDAnIGZpbGwtb3BhY2l0eT0nMC42NScgc3Ryb2tlPScjMDAwMDAwJyBzdHJva2Utb3BhY2l0eT0nMC42NScgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00wLjc1IDAuNzUgTDAuNzUgNy4yNSBMNC4yNSA0IFonLz48L3N2Zz4=");
   }
 
-  :root[data-theme="dark"] {
+  :root[data-theme="dark"],
+  .dark {
     --background: #0F0F0F;
     --foreground: #E3E3E3;
 
@@ -132,7 +146,7 @@
     --sidebar-danger-bg: rgba(239, 68, 68, 0.12);
     --sidebar-focus-ring: rgba(229, 222, 212, 0.34);
     --sidebar-active-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.105) 0%, rgba(255, 255, 255, 0.068) 100%);
-    --sidebar-active-border: rgba(255, 255, 255, 0.12);
+    --sidebar-active-border: rgba(255, 255, 255, 0.30);
     --sidebar-active-text: #F1ECE4;
     --sidebar-active-shadow: 0 8px 20px rgba(0, 0, 0, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.09);
     --sidebar-active-accent: linear-gradient(180deg, #E5DED4 0%, #AFA79B 100%);
@@ -145,15 +159,32 @@
     --destructive: #ef4444;
     --info: #3b82f6;
 
-    --sb-thumb: rgba(255, 255, 255, 0.28);
+    --sb-track: transparent;
+    --sb-track-solid: transparent;
+    --sb-track-edge: transparent;
+    --sb-thumb: rgba(255, 255, 255, 0.30);
     --sb-thumb-hover: rgba(255, 255, 255, 0.45);
     --sb-thumb-active: rgba(255, 255, 255, 0.60);
+
+    /* Scrollbar SVG variables (Dark Mode) */
+    --sb-arrow-up: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA4IDUnIGZpbGw9JyNmZmZmZmYnIGZpbGwtb3BhY2l0eT0nMC4zMCcgc3Ryb2tlPScjZmZmZmZmJyBzdHJva2Utb3BhY2l0eT0nMC4zMCcgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00wLjc1IDQuMjUgTDcuMjUgNC4yNSBMNCAwLjc1IFonLz48L3N2Zz4=");
+    --sb-arrow-up-hover: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA4IDUnIGZpbGw9JyNmZmZmZmYnIGZpbGwtb3BhY2l0eT0nMC40NScgc3Ryb2tlPScjZmZmZmZmJyBzdHJva2Utb3BhY2l0eT0nMC40NScgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00wLjc1IDQuMjUgTDcuMjUgNC4yNSBMNCAwLjc1IFonLz48L3N2Zz4=");
+    --sb-arrow-up-active: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA4IDUnIGZpbGw9JyNmZmZmZmYnIGZpbGwtb3BhY2l0eT0nMC42MCcgc3Ryb2tlPScjZmZmZmZmJyBzdHJva2Utb3BhY2l0eT0nMC42MCcgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00wLjc1IDQuMjUgTDcuMjUgNC4yNSBMNCAwLjc1IFonLz48L3N2Zz4=");
+    --sb-arrow-down: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA4IDUnIGZpbGw9JyNmZmZmZmYnIGZpbGwtb3BhY2l0eT0nMC4zMCcgc3Ryb2tlPScjZmZmZmZmJyBzdHJva2Utb3BhY2l0eT0nMC4zMCcgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00wLjc1IDAuNzUgTDcuMjUgMC43NSBMNCA0LjI1IFonLz48L3N2Zz4=");
+    --sb-arrow-down-hover: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA4IDUnIGZpbGw9JyNmZmZmZmYnIGZpbGwtb3BhY2l0eT0nMC40NScgc3Ryb2tlPScjZmZmZmZmJyBzdHJva2Utb3BhY2l0eT0nMC40NScgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00wLjc1IDAuNzUgTDcuMjUgMC43NSBMNCA0LjI1IFonLz48L3N2Zz4=");
+    --sb-arrow-down-active: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA4IDUnIGZpbGw9JyNmZmZmZmYnIGZpbGwtb3BhY2l0eT0nMC42MCcgc3Ryb2tlPScjZmZmZmZmJyBzdHJva2Utb3BhY2l0eT0nMC42MCcgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00wLjc1IDAuNzUgTDcuMjUgMC43NSBMNCA0LjI1IFonLz48L3N2Zz4=");
+    --sb-arrow-left: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA1IDgnIGZpbGw9JyNmZmZmZmYnIGZpbGwtb3BhY2l0eT0nMC4zMCcgc3Ryb2tlPScjZmZmZmZmJyBzdHJva2Utb3BhY2l0eT0nMC4zMCcgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J000LjI1IDAuNzUgTDQuMjUgNy4yNSBMMC43NSA0IFonLz48L3N2Zz4=");
+    --sb-arrow-left-hover: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA1IDgnIGZpbGw9JyNmZmZmZmYnIGZpbGwtb3BhY2l0eT0nMC40NScgc3Ryb2tlPScjZmZmZmZmJyBzdHJva2Utb3BhY2l0eT0nMC40NScgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J000LjI1IDAuNzUgTDQuMjUgNy4yNSBMMC43NSA0IFonLz48L3N2Zz4=");
+    --sb-arrow-left-active: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA1IDgnIGZpbGw9JyNmZmZmZmYnIGZpbGwtb3BhY2l0eT0nMC42MCcgc3Ryb2tlPScjZmZmZmZmJyBzdHJva2Utb3BhY2l0eT0nMC42MCcgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J000LjI1IDAuNzUgTDQuMjUgNy4yNSBMMC43NSA0IFonLz48L3N2Zz4=");
+    --sb-arrow-right: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA1IDgnIGZpbGw9JyNmZmZmZmYnIGZpbGwtb3BhY2l0eT0nMC4zMCcgc3Ryb2tlPScjZmZmZmZmJyBzdHJva2Utb3BhY2l0eT0nMC4zMCcgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00wLjc1IDAuNzUgTDAuNzUgNy4yNSBMNC4yNSA0IFonLz48L3N2Zz4=");
+    --sb-arrow-right-hover: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA1IDgnIGZpbGw9JyNmZmZmZmYnIGZpbGwtb3BhY2l0eT0nMC40NScgc3Ryb2tlPScjZmZmZmZmJyBzdHJva2Utb3BhY2l0eT0nMC40NScgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00wLjc1IDAuNzUgTDAuNzUgNy4yNSBMNC4yNSA0IFonLz48L3N2Zz4=");
+    --sb-arrow-right-active: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA1IDgnIGZpbGw9JyNmZmZmZmYnIGZpbGwtb3BhY2l0eT0nMC42MCcgc3Ryb2tlPScjZmZmZmZmJyBzdHJva2Utb3BhY2l0eT0nMC42MCcgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00wLjc1IDAuNzUgTDAuNzUgNy4yNSBMNC4yNSA0IFonLz48L3N2Zz4=");
   }
 
   html, body {
     background-color: var(--background);
     color: var(--foreground);
-    font-family: var(--font-dm-sans, 'Inter'), -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-family: var(--font-sans), -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     overflow-x: hidden;
@@ -404,9 +435,17 @@
   }
 
   /* Use JetBrains Mono for all monospace content */
-  code, kbd, pre, .font-mono {
-    font-family: var(--font-mono);
+  code, pre, .monaco-editor, .terminal-panel, kbd, .font-mono {
+    font-family: var(--font-mono), ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace !important;
+    font-variant-ligatures: normal;
     font-feature-settings: "liga" 1, "calt" 1;
+  }
+
+  /* Premium Document / Rich Text Mode */
+  .prose, .document-frame, blockquote {
+    font-family: var(--font-sans), -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    line-height: 1.75;
+    letter-spacing: -0.01em;
   }
 }
 
@@ -969,7 +1008,7 @@
   flex-shrink: 0;
   align-items: center;
   justify-content: center;
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.30);
   border-radius: 999px;
   background: #1C1C1C;
   color: rgba(255, 255, 255, 0.68);
@@ -977,7 +1016,7 @@
   font-size: 11px;
   font-weight: 750;
   line-height: 1;
-  box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.12);
+  box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.30);
   transition: all 150ms ease;
 }
 
@@ -1041,14 +1080,14 @@
   height: 20px;
   align-items: center;
   justify-content: center;
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.30);
   border-radius: 999px;
   background: #1C1C1C;
   color: rgba(255, 255, 255, 0.54);
   padding: 0 7px;
   font-size: 10.5px;
   font-weight: 750;
-  box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.12);
+  box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.30);
   transition: all 150ms ease;
 }
 
@@ -1145,7 +1184,7 @@
   align-items: center;
   gap: 9px;
   border-radius: 10px;
-  color: rgba(255, 255, 255, 0.42);
+  color: rgba(255, 255, 255, 0.60);
   padding: 6px 10px;
   font-size: 12px;
   line-height: 1.2;
@@ -1279,7 +1318,7 @@
   width: 32px;
   height: 3.5px;
   border-radius: 99px;
-  background: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.30);
   transition: background 150ms ease;
 }
 .eterx-work-menu-drag-bar:hover .eterx-work-menu-drag-handle {
@@ -1721,220 +1760,145 @@
 /* Global modern scrollbar styling. Chrome/Electron use WebKit pseudos so thumb rounding works. */
 ::-webkit-scrollbar,
 *::-webkit-scrollbar {
-  width: var(--sb-size) !important;
-  height: var(--sb-size) !important;
+  width: var(--sb-size, 12px) !important;
+  height: var(--sb-size, 12px) !important;
   background: transparent !important;
 }
 
-::-webkit-scrollbar-button,
-*::-webkit-scrollbar-button {
-  display: none !important;
-  visibility: hidden !important;
-  opacity: 0 !important;
-  width: 0 !important;
-  height: 0 !important;
-  min-width: 0 !important;
-  min-height: 0 !important;
+::-webkit-scrollbar-corner,
+*::-webkit-scrollbar-corner {
   background: transparent !important;
   background-color: transparent !important;
-  background-image: none !important;
-  border: 0 !important;
-  box-shadow: none !important;
-  -webkit-appearance: none !important;
 }
 
 ::-webkit-scrollbar-track,
-*::-webkit-scrollbar-track,
-::-webkit-scrollbar-track-piece,
-*::-webkit-scrollbar-track-piece,
-::-webkit-scrollbar-track-piece:start,
-*::-webkit-scrollbar-track-piece:start,
-::-webkit-scrollbar-track-piece:end,
-*::-webkit-scrollbar-track-piece:end,
-::-webkit-scrollbar-corner,
-*::-webkit-scrollbar-corner,
-::-webkit-resizer,
-*::-webkit-resizer {
-  background: transparent !important;
-  background-color: transparent !important;
-  background-image: none !important;
-  border: 0 !important;
-  box-shadow: none !important;
+*::-webkit-scrollbar-track {
+  background: var(--sb-track, transparent) !important;
 }
 
 ::-webkit-scrollbar-thumb,
 *::-webkit-scrollbar-thumb {
-  background: var(--sb-thumb) !important;
   background-color: var(--sb-thumb) !important;
-  border-radius: var(--sb-radius) !important;
-  border-width: 3px 2px !important;
-  border-style: solid !important;
-  border-color: transparent !important;
+  border-radius: var(--sb-radius, 9999px) !important;
+  border: var(--sb-inset, 2px) solid transparent !important;
   background-clip: padding-box !important;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.03) !important;
-  transition: background-color 0.2s ease !important;
-}
-
-::-webkit-scrollbar-thumb:vertical,
-*::-webkit-scrollbar-thumb:vertical {
-  min-height: 24px !important;
-}
-
-::-webkit-scrollbar-thumb:horizontal,
-*::-webkit-scrollbar-thumb:horizontal {
-  min-width: 24px !important;
 }
 
 ::-webkit-scrollbar-thumb:hover,
 *::-webkit-scrollbar-thumb:hover {
-  background: var(--sb-thumb-hover) !important;
   background-color: var(--sb-thumb-hover) !important;
-  background-clip: padding-box !important;
 }
 
 ::-webkit-scrollbar-thumb:active,
 *::-webkit-scrollbar-thumb:active {
-  background: var(--sb-thumb-active) !important;
   background-color: var(--sb-thumb-active) !important;
-  background-clip: padding-box !important;
 }
 
-.monaco-scrollable-element > .scrollbar,
-.monaco-editor .scrollbar,
-[data-radix-scroll-area-scrollbar] {
-  background: transparent !important;
-  border: 0 !important;
-  box-shadow: none !important;
-}
-
-.monaco-scrollable-element > .scrollbar > .slider,
-.monaco-editor .scrollbar > .slider,
-[data-radix-scroll-area-thumb] {
-  background: var(--sb-thumb) !important;
-  border: 0 !important;
-  border-radius: var(--sb-radius) !important;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.03) !important;
-}
-
-.monaco-scrollable-element > .scrollbar > .slider:hover,
-.monaco-editor .scrollbar > .slider:hover,
-[data-radix-scroll-area-thumb]:hover {
-  background: var(--sb-thumb-hover) !important;
-}
-
-.monaco-scrollable-element > .scrollbar > .slider:active,
-.monaco-editor .scrollbar > .slider:active,
-[data-radix-scroll-area-thumb]:active {
-  background: var(--sb-thumb-active) !important;
-}
-/* Global modern scrollbar styling. Chrome/Electron use WebKit pseudos so thumb rounding works. */
-::-webkit-scrollbar,
-*::-webkit-scrollbar {
-  width: var(--sb-size) !important;
-  height: var(--sb-size) !important;
-  background: transparent !important;
-}
-
-::-webkit-scrollbar-button,
-*::-webkit-scrollbar-button {
+/* Hide duplicate/non-single scrollbar buttons */
+::-webkit-scrollbar-button:not(:single-button),
+*::-webkit-scrollbar-button:not(:single-button) {
   display: none !important;
-  visibility: hidden !important;
-  opacity: 0 !important;
   width: 0 !important;
   height: 0 !important;
-  min-width: 0 !important;
-  min-height: 0 !important;
   background: transparent !important;
+}
+
+/* Vertical scrollbar buttons (Up/Down arrows) - Single buttons only */
+::-webkit-scrollbar-button:single-button:vertical:decrement,
+*::-webkit-scrollbar-button:single-button:vertical:decrement {
+  display: block !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+  width: var(--sb-size, 12px) !important;
+  height: var(--sb-size, 12px) !important;
   background-color: transparent !important;
-  background-image: none !important;
+  background-repeat: no-repeat !important;
+  background-position: center !important;
+  background-size: calc(var(--sb-size) - 4px) calc((var(--sb-size) - 4px) * 0.625) !important;
   border: 0 !important;
   box-shadow: none !important;
-  -webkit-appearance: none !important;
+  background-image: var(--sb-arrow-up) !important;
+}
+::-webkit-scrollbar-button:single-button:vertical:decrement:hover,
+*::-webkit-scrollbar-button:single-button:vertical:decrement:hover {
+  background-image: var(--sb-arrow-up-hover) !important;
+}
+::-webkit-scrollbar-button:single-button:vertical:decrement:active,
+*::-webkit-scrollbar-button:single-button:vertical:decrement:active {
+  background-image: var(--sb-arrow-up-active) !important;
 }
 
-::-webkit-scrollbar-track,
-*::-webkit-scrollbar-track,
-::-webkit-scrollbar-track-piece,
-*::-webkit-scrollbar-track-piece,
-::-webkit-scrollbar-track-piece:start,
-*::-webkit-scrollbar-track-piece:start,
-::-webkit-scrollbar-track-piece:end,
-*::-webkit-scrollbar-track-piece:end,
-::-webkit-scrollbar-corner,
-*::-webkit-scrollbar-corner,
-::-webkit-resizer,
-*::-webkit-resizer {
-  background: transparent !important;
+::-webkit-scrollbar-button:single-button:vertical:increment,
+*::-webkit-scrollbar-button:single-button:vertical:increment {
+  display: block !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+  width: var(--sb-size, 12px) !important;
+  height: var(--sb-size, 12px) !important;
   background-color: transparent !important;
-  background-image: none !important;
+  background-repeat: no-repeat !important;
+  background-position: center !important;
+  background-size: calc(var(--sb-size) - 4px) calc((var(--sb-size) - 4px) * 0.625) !important;
   border: 0 !important;
   box-shadow: none !important;
+  background-image: var(--sb-arrow-down) !important;
+}
+::-webkit-scrollbar-button:single-button:vertical:increment:hover,
+*::-webkit-scrollbar-button:single-button:vertical:increment:hover {
+  background-image: var(--sb-arrow-down-hover) !important;
+}
+::-webkit-scrollbar-button:single-button:vertical:increment:active,
+*::-webkit-scrollbar-button:single-button:vertical:increment:active {
+  background-image: var(--sb-arrow-down-active) !important;
 }
 
-::-webkit-scrollbar-thumb,
-*::-webkit-scrollbar-thumb {
-  background: var(--sb-thumb) !important;
-  background-color: var(--sb-thumb) !important;
-  border-radius: var(--sb-radius) !important;
-  border-width: 3px 2px !important;
-  border-style: solid !important;
-  border-color: transparent !important;
-  background-clip: padding-box !important;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.03) !important;
-  transition: background-color 0.2s ease !important;
-}
-
-::-webkit-scrollbar-thumb:vertical,
-*::-webkit-scrollbar-thumb:vertical {
-  min-height: 24px !important;
-}
-
-::-webkit-scrollbar-thumb:horizontal,
-*::-webkit-scrollbar-thumb:horizontal {
-  min-width: 24px !important;
-}
-
-::-webkit-scrollbar-thumb:hover,
-*::-webkit-scrollbar-thumb:hover {
-  background: var(--sb-thumb-hover) !important;
-  background-color: var(--sb-thumb-hover) !important;
-  background-clip: padding-box !important;
-}
-
-::-webkit-scrollbar-thumb:active,
-*::-webkit-scrollbar-thumb:active {
-  background: var(--sb-thumb-active) !important;
-  background-color: var(--sb-thumb-active) !important;
-  background-clip: padding-box !important;
-}
-
-.monaco-scrollable-element > .scrollbar,
-.monaco-editor .scrollbar,
-[data-radix-scroll-area-scrollbar] {
-  background: transparent !important;
+/* Horizontal scrollbar buttons (Left/Right arrows) - Single buttons only */
+::-webkit-scrollbar-button:single-button:horizontal:decrement,
+*::-webkit-scrollbar-button:single-button:horizontal:decrement {
+  display: block !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+  width: var(--sb-size, 12px) !important;
+  height: var(--sb-size, 12px) !important;
+  background-color: transparent !important;
+  background-repeat: no-repeat !important;
+  background-position: center !important;
+  background-size: calc((var(--sb-size) - 4px) * 0.625) calc(var(--sb-size) - 4px) !important;
   border: 0 !important;
   box-shadow: none !important;
+  background-image: var(--sb-arrow-left) !important;
+}
+::-webkit-scrollbar-button:single-button:horizontal:decrement:hover,
+*::-webkit-scrollbar-button:single-button:horizontal:decrement:hover {
+  background-image: var(--sb-arrow-left-hover) !important;
+}
+::-webkit-scrollbar-button:single-button:horizontal:decrement:active,
+*::-webkit-scrollbar-button:single-button:horizontal:decrement:active {
+  background-image: var(--sb-arrow-left-active) !important;
 }
 
-.monaco-scrollable-element > .scrollbar > .slider,
-.monaco-editor .scrollbar > .slider,
-[data-radix-scroll-area-thumb] {
-  background: var(--sb-thumb) !important;
+::-webkit-scrollbar-button:single-button:horizontal:increment,
+*::-webkit-scrollbar-button:single-button:horizontal:increment {
+  display: block !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+  width: var(--sb-size, 12px) !important;
+  height: var(--sb-size, 12px) !important;
+  background-color: transparent !important;
+  background-repeat: no-repeat !important;
+  background-position: center !important;
+  background-size: calc((var(--sb-size) - 4px) * 0.625) calc(var(--sb-size) - 4px) !important;
   border: 0 !important;
-  border-radius: var(--sb-radius) !important;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.03) !important;
+  box-shadow: none !important;
+  background-image: var(--sb-arrow-right) !important;
 }
-
-.monaco-scrollable-element > .scrollbar > .slider:hover,
-.monaco-editor .scrollbar > .slider:hover,
-[data-radix-scroll-area-thumb]:hover {
-  background: var(--sb-thumb-hover) !important;
+::-webkit-scrollbar-button:single-button:horizontal:increment:hover,
+*::-webkit-scrollbar-button:single-button:horizontal:increment:hover {
+  background-image: var(--sb-arrow-right-hover) !important;
 }
-
-.monaco-scrollable-element > .scrollbar > .slider:active,
-.monaco-editor .scrollbar > .slider:active,
-[data-radix-scroll-area-thumb]:active {
-  background: var(--sb-thumb-active) !important;
+::-webkit-scrollbar-button:single-button:horizontal:increment:active,
+*::-webkit-scrollbar-button:single-button:horizontal:increment:active {
+  background-image: var(--sb-arrow-right-active) !important;
 }
 
 /* Complete hide utilities */
@@ -1946,6 +1910,34 @@
   width: 0 !important;
   height: 0 !important;
   background: transparent !important;
+}
+
+/* Hide scrollbar buttons utility */
+.scrollbar-no-buttons::-webkit-scrollbar-button,
+.scrollbar-no-buttons::-webkit-scrollbar-button:single-button,
+.scrollbar-no-buttons::-webkit-scrollbar-button:single-button:vertical,
+.scrollbar-no-buttons::-webkit-scrollbar-button:single-button:vertical:decrement,
+.scrollbar-no-buttons::-webkit-scrollbar-button:single-button:vertical:increment,
+.scrollbar-no-buttons::-webkit-scrollbar-button:single-button:horizontal,
+.scrollbar-no-buttons::-webkit-scrollbar-button:single-button:horizontal:decrement,
+.scrollbar-no-buttons::-webkit-scrollbar-button:single-button:horizontal:increment {
+  display: none !important;
+  visibility: hidden !important;
+  opacity: 0 !important;
+  width: 0 !important;
+  height: 0 !important;
+  background: transparent !important;
+  background-image: none !important;
+  border: 0 !important;
+  box-shadow: none !important;
+}
+
+/* Monaco Editor scrollbar and corner fixes */
+.monaco-editor .scrollbar-corner,
+.monaco-scrollable-element > .scrollbar-corner,
+.monaco-editor .decorationsOverviewRuler {
+  background: transparent !important;
+  background-color: transparent !important;
 }
 
 @supports (-moz-appearance: none) {
@@ -1977,24 +1969,6 @@
 
 .eterx-chat-feed-scroll {
   --sb-size: var(--chat-feed-sb-size);
-}
-
-.eterx-chat-feed-scroll::-webkit-scrollbar-button,
-.eterx-chat-feed-scroll::-webkit-scrollbar-button:single-button,
-.eterx-chat-feed-scroll::-webkit-scrollbar-button:single-button:vertical,
-.eterx-chat-feed-scroll::-webkit-scrollbar-button:single-button:vertical:decrement,
-.eterx-chat-feed-scroll::-webkit-scrollbar-button:single-button:vertical:increment {
-  display: none !important;
-  visibility: hidden !important;
-  opacity: 0 !important;
-  width: 0 !important;
-  height: 0 !important;
-  min-width: 0 !important;
-  min-height: 0 !important;
-  background: transparent !important;
-  background-image: none !important;
-  border: 0 !important;
-  box-shadow: none !important;
 }
 
 .eterx-composer-shell {
@@ -2952,7 +2926,7 @@
   position: relative;
   display: inline-block;
   color: transparent;
-  font-family: Georgia, "Times New Roman", ui-serif, serif;
+  font-family: var(--font-sans), -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   font-size: 92px;
   font-weight: 500;
   line-height: 0.95;
@@ -3386,11 +3360,11 @@
 }
 
 .eterx-agent-tab-closed {
-  color: rgba(255, 255, 255, 0.26);
+  color: rgba(255, 255, 255, 0.45);
 }
 
 .eterx-agent-tab-closed:hover {
-  color: rgba(255, 255, 255, 0.42);
+  color: rgba(255, 255, 255, 0.60);
   background: rgba(255, 255, 255, 0.025);
 }
 
@@ -3504,7 +3478,7 @@
 @keyframes eterx-writer-pulse {
   0%, 100% {
     transform: translateY(3px) scale(0.96);
-    box-shadow: 0 7px 18px rgba(0, 0, 0, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+    box-shadow: 0 7px 18px rgba(0, 0, 0, 0.50), inset 0 1px 0 rgba(255, 255, 255, 0.2);
   }
   48% {
     transform: translateY(3px) scale(1.04);
@@ -3847,7 +3821,7 @@
 }
 
 .eterx-mermaid-canvas svg text {
-  font-family: var(--font-dm-sans), Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif !important;
+  font-family: var(--font-sans), -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif !important;
   font-size: 14px !important;
   letter-spacing: 0 !important;
 }
@@ -3977,7 +3951,7 @@
   color: var(--eterx-md-muted);
   box-shadow: 0 10px 26px rgba(0, 0, 0, 0.16), inset 0 0 0 1px color-mix(in srgb, var(--eterx-md-border) 84%, transparent);
   backdrop-filter: blur(14px);
-  font-family: var(--font-dm-sans), Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: var(--font-sans), -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   transition: transform 150ms ease, background-color 150ms ease, color 150ms ease, box-shadow 150ms ease;
 }
 
@@ -4008,7 +3982,7 @@
   background: color-mix(in srgb, var(--eterx-md-card) 96%, transparent) !important;
   border-color: var(--eterx-md-border-strong) !important;
   color: var(--eterx-md-text) !important;
-  font-family: var(--font-dm-sans), Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: var(--font-sans), -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
 .eterx-mermaid-menu-item {
@@ -5435,10 +5409,10 @@
   --eterx-project-shadow: none;
   --eterx-project-shadow-soft: none;
   --eterx-project-success-bg: rgba(255, 255, 255, 0.055);
-  --eterx-project-success-border: rgba(255, 255, 255, 0.12);
+  --eterx-project-success-border: rgba(255, 255, 255, 0.30);
   --eterx-project-success-text: #D8D8D8;
   --eterx-project-danger-bg: rgba(255, 255, 255, 0.055);
-  --eterx-project-danger-border: rgba(255, 255, 255, 0.12);
+  --eterx-project-danger-border: rgba(255, 255, 255, 0.30);
   --eterx-project-danger-text: #D8D8D8;
 }
 
@@ -5728,7 +5702,7 @@
   background: rgba(18, 18, 16, 0.96) !important;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.045),
-    0 20px 54px rgba(0, 0, 0, 0.28) !important;
+    0 20px 54px rgba(0, 0, 0, 0.50) !important;
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
 }
@@ -6031,3 +6005,18 @@
 .eterx-app-shell[data-sidebar-open="true"] .eterx-workspace-shell > * {
   pointer-events: auto !important;
 }
+
+/* Hide scrollbar universally on all composer popouts (Agent selector, model options, folders/files attachment popups, goal text, status popups, etc.) */
+.eterx-composer-popout::-webkit-scrollbar,
+.eterx-composer-popout *::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+}
+
+.eterx-composer-popout,
+.eterx-composer-popout * {
+  scrollbar-width: none !important;
+  -ms-overflow-style: none !important;
+}
+

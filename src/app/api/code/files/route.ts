@@ -3,6 +3,7 @@ import { promises as fs } from 'fs';
 import * as path from 'path';
 import { createHash } from 'crypto';
 import { getPathResolverInfo, resolveReadableWorkspacePath } from '@/lib/agent/workspace/path_resolver';
+import { rejectCrossOrigin } from '../../agent/_shared';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -129,6 +130,9 @@ async function getFileTree(dirPath: string, depth: number, maxDepth: number, sta
 
 export async function GET(req: NextRequest) {
   try {
+    const originError = rejectCrossOrigin(req);
+    if (originError) return originError;
+
     const { searchParams } = new URL(req.url);
     const dirPath = path.resolve(path.normalize(searchParams.get('path') || getPathResolverInfo().desktopPath));
     const requestedDepth = Number.parseInt(searchParams.get('depth') || '3', 10);
@@ -167,6 +171,9 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   try {
+    const originError = rejectCrossOrigin(req);
+    if (originError) return originError;
+
     const { filePath, offset, limit } = await req.json();
 
     if (typeof filePath !== 'string' || !filePath.trim()) {

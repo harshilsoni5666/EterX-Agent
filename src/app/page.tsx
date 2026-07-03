@@ -1945,6 +1945,55 @@ function DeepWorkUI() {
     const endTime = normalizeClientTraceTime(trace?.endTime, timestamp);
     return { ...trace, timestamp, startTime, endTime };
   };
+  const interAgentMessageLog = (message: any, agentNameOverride?: string) => {
+    const at = normalizeClientTraceTime(message?.timestamp, Date.now());
+    const agentName = agentNameOverride || (message?.to && message.to !== '*' && message.to !== 'Main' ? message.to : message?.from);
+    const deliverAfter = Number(message?.deliverAfter || message?.metadata?.deliverAfter || 0) || undefined;
+    return {
+      id: `comm_${message?.id || `${at}_${Math.random().toString(36).slice(2, 8)}`}`,
+      type: 'inter_agent_message',
+      text: String(message?.body || message?.text || ''),
+      from: message?.from || 'Main',
+      to: message?.to || agentName,
+      subject: message?.subject || 'Agent message',
+      body: String(message?.body || message?.text || ''),
+      messageType: message?.type || message?.messageType || 'coordination',
+      priority: message?.priority || message?.metadata?.priority || 'normal',
+      deliveryMode: message?.deliveryMode || message?.metadata?.deliveryMode || 'defer',
+      scheduled: message?.scheduled === true || (deliverAfter ? deliverAfter > Date.now() : false),
+      deliverAfter,
+      requiresResponse: message?.requiresResponse === true || message?.metadata?.requiresResponse === true,
+      messageId: message?.id || message?.messageId,
+      replyTo: message?.replyTo || message?.metadata?.replyTo,
+      filePaths: message?.filePaths || message?.metadata?.filePaths,
+      artifactPaths: message?.artifactPaths || message?.metadata?.artifactPaths,
+      tags: message?.tags || message?.metadata?.tags,
+      agentName,
+      subAgent: agentName && agentName !== 'Main' ? agentName : undefined,
+      timestamp: at,
+      startTime: at,
+      endTime: at,
+    };
+  };
+  const parseScheduledAgentMessage = (raw: string) => {
+    const match = raw.match(/^\/(?:in|after)\s+(\d+)\s*(ms|s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours)\s+([\s\S]+)$/i);
+    if (!match) return { text: raw, deliverAfterMs: undefined as number | undefined, label: '' };
+    const value = Math.max(0, Number(match[1]) || 0);
+    const unit = match[2].toLowerCase();
+    const multiplier = unit === 'ms'
+      ? 1
+      : unit.startsWith('s')
+        ? 1000
+        : unit.startsWith('h') || unit === 'hr' || unit === 'hrs'
+          ? 3_600_000
+          : 60_000;
+    const deliverAfterMs = Math.min(value * multiplier, 86_400_000);
+    return {
+      text: match[3].trim(),
+      deliverAfterMs,
+      label: `${value}${unit}`,
+    };
+  };
   const systemThoughtLog = (text: string, at = Date.now()) => ({
     type: 'thought',
     text,
@@ -3588,6 +3637,94 @@ function DeepWorkUI() {
     setAgentTeamOpen(true);
   }, []);
 
+  const handleSendSubAgentMessage = useCallback(async () => {
+    const agentName = activeSubAgentTab;
+    const chatId = activeChatId;
+    if (!agentName || !chatId) return;
+
+    if (isRecording && mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+      mediaRecorderRef.current.stop();
+      setIsRecording(false);
+    }
+    if (!inputValue.trim() && attachments.length === 0) return;
+    if (networkPausedRef.current) {
+      revealNetworkBanner();
+      return;
+    }
+
+    const sentAt = Date.now();
+    const scheduledMessage = parseScheduledAgentMessage(inputValue.trim());
+    const currentAttachments = [...attachments];
+    const filePaths = currentAttachments
+      .map(att => (att as any).localPath || (att.file as any).path || att.name || att.file?.name)
+      .filter(Boolean);
+    const attachmentContext = currentAttachments.length > 0
+      ? `\n\n[Attachments]\n${ currentAttachments.map(att => {
+        const name = att.name || att.file?.name || 'attachment';
+        const path = (att as any).localPath || (att.file as any).path;
+        return `- ${ name }${ path ? ` (${ path })` : '' }`;
+      }).join('\n') }`
+      : '';
+    const body = `${scheduledMessage.text}${attachmentContext}`.trim();
+
+    setInputValue('');
+    setAttachments([]);
+
+    try {
+      const res = await fetch('/api/agents/comm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: scheduledMessage.deliverAfterMs ? 'schedule' : 'send',
+          projectId: chatId,
+          from: 'Main',
+          to: agentName,
+          type: 'question',
+          subject: scheduledMessage.deliverAfterMs ? `Scheduled message (${scheduledMessage.label})` : 'Main message',
+          body,
+          priority: 'normal',
+          deliveryMode: 'defer',
+          requiresResponse: false,
+          deliverAfterMs: scheduledMessage.deliverAfterMs,
+          filePaths,
+          tags: ['ui', 'sub-agent-chat'],
+        }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data?.success) {
+        throw new Error(data?.error || `HTTP ${res.status}`);
+      }
+
+      const message = data.message ? {
+        ...data.message,
+        scheduled: data.scheduled,
+        deliverAfter: data.deliverAfter || data.message.deliverAfter,
+      } : {
+        id: data.messageId,
+        from: 'Main',
+        to: agentName,
+        type: 'question',
+        subject: scheduledMessage.deliverAfterMs ? `Scheduled message (${scheduledMessage.label})` : 'Main message',
+        body,
+        priority: 'normal',
+        deliveryMode: 'defer',
+        scheduled: !!scheduledMessage.deliverAfterMs,
+        deliverAfter: scheduledMessage.deliverAfterMs ? sentAt + scheduledMessage.deliverAfterMs : undefined,
+        filePaths,
+        timestamp: sentAt,
+      };
+      const log = interAgentMessageLog(message, agentName);
+      setChatLogsById(chatId, previousLogs => {
+        const existingIds = new Set(previousLogs.map((item: any) => item.messageId || item.id).filter(Boolean));
+        if (existingIds.has(log.messageId) || existingIds.has(log.id)) return previousLogs;
+        return [...previousLogs, log];
+      }, { touchUpdatedAt: true });
+    } catch (error: any) {
+      const failureLog = systemThoughtLog(`Failed to send message to ${agentName}: ${error?.message || 'Unknown error'}`, Date.now());
+      setChatLogsById(chatId, previousLogs => [...previousLogs, failureLog], { touchUpdatedAt: true });
+    }
+  }, [activeChatId, activeSubAgentTab, attachments, inputValue, isRecording, revealNetworkBanner]);
+
   const handleSend = async () => {
     if (isRecording && mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
       mediaRecorderRef.current.stop();
@@ -4253,6 +4390,49 @@ function DeepWorkUI() {
     const remaining = realSubAgents.filter((agent: any) => agent.name !== activeSubAgentTab);
     return selected ? [selected, ...remaining].slice(0, maxVisibleTabs) : remaining.slice(0, maxVisibleTabs);
   }, [activeSubAgentTab, realSubAgents]);
+
+  useEffect(() => {
+    if (!activeChatId || !activeSubAgentTab) return;
+    let cancelled = false;
+    const chatId = activeChatId;
+    const agentName = activeSubAgentTab;
+
+    const syncSubAgentHistory = async () => {
+      try {
+        const params = new URLSearchParams({
+          action: 'history',
+          projectId: chatId,
+          agentName,
+          limit: '80',
+        });
+        const res = await fetch(`/api/agents/comm?${params.toString()}`, { cache: 'no-store' });
+        if (!res.ok || cancelled) return;
+        const data = await res.json().catch(() => null);
+        if (!data?.success || !Array.isArray(data.messages) || cancelled) return;
+
+        const incomingLogs = data.messages
+          .map((message: any) => interAgentMessageLog(message, agentName))
+          .filter((log: any) => log.messageId);
+
+        if (incomingLogs.length === 0) return;
+
+        setChatLogsById(chatId, previousLogs => {
+          const existingIds = new Set(previousLogs.map((log: any) => log.messageId || log.id).filter(Boolean));
+          const additions = incomingLogs.filter((log: any) => !existingIds.has(log.messageId) && !existingIds.has(log.id));
+          return additions.length > 0 ? [...previousLogs, ...additions] : previousLogs;
+        });
+      } catch {
+        // History polling is best-effort; normal agent polling still owns run state.
+      }
+    };
+
+    syncSubAgentHistory();
+    const intervalId = window.setInterval(syncSubAgentHistory, 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [activeChatId, activeSubAgentTab]);
 
   const hiddenHeaderSubAgentCount = Math.max(0, realSubAgents.length - headerSubAgentTabs.length);
 
@@ -5515,7 +5695,7 @@ function DeepWorkUI() {
                   />
 
                   {/* Pending Steering Queue */}
-                  {pendingSteering.length > 0 && (
+                  {!activeSubAgentTab && pendingSteering.length > 0 && (
                     <div className={`px-4 ${ isRightPanelVisible ? 'sm:px-4' : 'sm:px-12' } w-full max-w-[760px] mx-auto flex flex-col gap-2 pb-2`}>
                       <div className="text-xs text-neutral-500 font-medium px-1 flex items-center gap-1.5">
                         Pending messages <span className="w-4 h-4 inline-flex items-center justify-center rounded-full bg-neutral-800 text-[10px] text-neutral-400">i</span>
@@ -5534,14 +5714,31 @@ function DeepWorkUI() {
                     </div>
                   )}
 
+                  {activeSubAgentTab && (
+                    <div className={`px-4 ${ isRightPanelVisible ? 'sm:px-4' : 'sm:px-12' } w-full max-w-[760px] mx-auto pb-2`}>
+                      <div className="flex min-h-[34px] items-center justify-between gap-3 rounded-[8px] border border-white/[0.07] bg-[#181818]/88 px-3 py-1.5 shadow-[0_8px_24px_rgba(0,0,0,0.18)]">
+                        <span className="flex min-w-0 items-center gap-2">
+                          <MessageSquare className="h-3.5 w-3.5 shrink-0 text-white/48" strokeWidth={2.1} />
+                          <span className="min-w-0 truncate text-[12px] font-semibold text-white/82">{activeSubAgentTab}</span>
+                        </span>
+                        <span className="flex shrink-0 items-center gap-1.5">
+                          <span className={`h-1.5 w-1.5 rounded-full ${ effectiveIsThinking ? 'bg-emerald-300/80' : 'bg-white/28' }`} />
+                          <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-white/38">
+                            {effectiveIsThinking ? 'working' : 'ready'} - deferred
+                          </span>
+                        </span>
+                      </div>
+                    </div>
+                  )}
+
                   <ChatInput
                     inputValue={inputValue}
                     setInputValue={setInputValue}
-                    isThinking={isThinking}
+                    isThinking={activeSubAgentTab ? false : isThinking}
                     isRecording={isRecording}
-                    handleSend={handleSend}
+                    handleSend={activeSubAgentTab ? handleSendSubAgentMessage : handleSend}
                     handleStop={handleStop}
-                    handleSteer={handleSteer}
+                    handleSteer={activeSubAgentTab ? handleSendSubAgentMessage : handleSteer}
                     toggleSpeech={toggleSpeech}
                     attachments={attachments}
                     setAttachments={setAttachments}
@@ -5577,7 +5774,8 @@ function DeepWorkUI() {
                     activeChatId={activeChatId}
                     onOpenAgentBuilder={handleOpenAgentBuilder}
                     selectedAgent={selectedAgent}
-                    selectedAgentName={selectedAgentName}
+                    selectedAgentName={activeSubAgentTab || selectedAgentName}
+                    composerPlaceholder={activeSubAgentTab ? `Message ${activeSubAgentTab}` : undefined}
                     onAgentChange={handleAgentChange}
                     onOpenPet={openPetWidget}
                     workspacePath={activeWorkspacePath}

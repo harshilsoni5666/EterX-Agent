@@ -14,7 +14,7 @@ import { DEFAULT_MAIN_AGENT_ALLOWED_CAPABILITIES, enforceToolCapability } from '
 import { ProjectContext } from './schemas';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { SKILL_REGISTRY } from './skills';
-import { workspaceIntelligence, agentReflection, dynamicSkillEngine } from './engines';
+import { workspaceIntelligence, AgentReflectionEngine, dynamicSkillEngine } from './engines';
 import { agentMemory, ContextWindowManager } from './memory';
 import { memoryV2 } from './memory/v2';
 import { apiKeyPool } from './api-key-pool';
@@ -36,9 +36,11 @@ import {
 } from './adaptive';
 import { globalSessionManager } from './session';
 import { toolResultCompactor } from './memory/tool-result-compactor';
-import { isCancelled } from './roles/sub_agent';
+import { awaitIfPaused, isCancelled } from './roles/sub_agent';
+import { interAgentMailbox } from './roles/inter_agent_comm';
 import { MAIN_AGENT_MODE_CONFIG, type MainAgentMode, type MainAgentProvider, type MainAgentThinkingLevel, resolveModelName, isModelDeprecatedError, getFallbackChain } from './model-routing';
 import { lifetimeBrain } from './memory/lifetime';
+import { getSynapseGraphForChat } from './memory/synapse-graph';
 import { monitorEmitter } from './monitor/emitter';
 import { createToolExecutionContext, isToolCancellationError } from './cancellation';
 import { readTaskTracker, readTaskTrackerMarkdown, trackerToTrace, writeTaskTrackerJson } from './task-tracker-store';
@@ -897,7 +899,7 @@ export class GeminiAgentClient {
     preview: Record<string, any>,
   ): void {
     const event = {
-      id: `file_preview_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      id: `file_preview_${ Date.now() }_${ Math.random().toString(36).slice(2, 8) }`,
       type: 'file_preview',
       startTime: Date.now(),
       endTime: Date.now(),
@@ -943,7 +945,7 @@ export class GeminiAgentClient {
       this.emitTracePreview(trace, onTrace, {
         ownerTraceId,
         dedupe: false,
-        filename: readable.length === 1 ? basenameForTrace(filePaths[0] || readable[0].filename) : `${readable.length} files`,
+        filename: readable.length === 1 ? basenameForTrace(filePaths[0] || readable[0].filename) : `${ readable.length } files`,
         filepath: filePaths[0],
         files: filePaths,
         fileCount: readable.length,
@@ -1107,7 +1109,7 @@ export class GeminiAgentClient {
       }
     }
 
-    const actionTraceId = `tool_${Date.now()}_${name}_${Math.random().toString(36).slice(2, 8)}`;
+    const actionTraceId = `tool_${ Date.now() }_${ name }_${ Math.random().toString(36).slice(2, 8) }`;
     const evt = {
       traceId: actionTraceId,
       type: label.type,
@@ -1150,7 +1152,7 @@ export class GeminiAgentClient {
 
     const capabilityDecision = enforceToolCapability(canonicalToolName, effectiveArgs, context);
     if (!capabilityDecision.allowed) {
-      return { error: capabilityDecision.reason || `Tool ${canonicalToolName} is not allowed` };
+      return { error: capabilityDecision.reason || `Tool ${ canonicalToolName } is not allowed` };
     }
 
     const preEditSnapshots = await this.capturePreEditSnapshots(canonicalToolName, effectiveArgs, context);
@@ -2845,11 +2847,16 @@ CREATION:
 - project_scaffolder: complete project templates
 
 SUB-AGENTS:
-- spawn_sub_agent: 10 parallel agents for independent tasks
+- spawn_sub_agent: bounded parallel agents for independent tasks
+  - mode="advise": ask for solo vs parallel vs consensus/debate/specialist routing when uncertain
   - mode="spawn": launch parallel agents
   - mode="consensus": 3-agent debate panel for high-stakes analysis
+  - mode="debate": multi-round adversarial panel for critical choices and assumption checks
+  - mode="specialist": one focused security/performance/architecture/QA/research expert
   - Spawn when: 2+ independent parts, each >30 seconds
   - Don't spawn for: simple tasks, sequential dependencies
+  - Subagents can ask Main with agent_communicate action="ask_main" and hand off with action="handoff_main"
+  - Main/user control messages interrupt subagents at tool boundaries; subagents must check mailbox before continuing
 
 BROWSER CONTROL
 browser_control: Full Chrome automation with Snapshot/Ref system.
@@ -2901,6 +2908,8 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
     mediaFiles: AgentMediaFile[] = [],
     imageBackupParts: any[] = []
   ): Promise<{ text: string, trace: any[] }> {
+    const cognitiveSession = cognitiveCore.createCognitiveCoreSession();
+    const reflectionEngine = new AgentReflectionEngine();
     const telegramFastDirect = (context as any).source === 'telegram'
       && !!(context as any).forceFastMode
       && !!(context as any).telegram?.quickAnswer
@@ -2940,6 +2949,9 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
       interactions: number;
       trace: any[];
       loopAccumulatedText: string;
+      currentRunToolCallCount: number;
+      exploratoryCallsWithoutArtifact: number;
+      userFacingArtifactCreated: boolean;
     } | null = null;
     let mediaPartsKey = this.getCurrentApiKey();
 
@@ -2954,7 +2966,17 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
             console.log('[GeminiClient] Re-uploaded media for rotated API key before retry.');
           }
         }
-        return await this.runReActLoop(context, message, history, onTrace, mediaFiles, imageBackupParts, survivorState);
+        return await this.runReActLoop(
+          context,
+          message,
+          history,
+          onTrace,
+          mediaFiles,
+          imageBackupParts,
+          survivorState,
+          cognitiveSession,
+          reflectionEngine,
+        );
       } catch (error: any) {
         const errorMsg = error.message?.toLowerCase() || '';
 
@@ -3362,7 +3384,12 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
       interactions: number;
       trace: any[];
       loopAccumulatedText: string;
-    } | null
+      currentRunToolCallCount: number;
+      exploratoryCallsWithoutArtifact: number;
+      userFacingArtifactCreated: boolean;
+    } | null,
+    cognitiveSession: cognitiveCore.CognitiveCoreSession = cognitiveCore.createCognitiveCoreSession(),
+    reflectionEngine: AgentReflectionEngine = new AgentReflectionEngine(),
   ): Promise<{ text: string, trace: any[] }> {
     const sessionPersistenceDisabled = !!(context as any).disableSessionPersistence;
     const longTermMemoryDisabled = !!(context as any).disableLongTermMemory;
@@ -3497,6 +3524,11 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
       longTermMemoryDisabled ? Promise.resolve() : initializeNextGenSystems(),
       skillAutoLoadDisabled ? Promise.resolve() : dynamicSkillEngine.initialize(),
     ]);
+
+    if (!cognitiveSession.hasStarted()) {
+      const availableTools = globalToolRegistry.getAllTools().map(tool => tool.name);
+      cognitiveSession.onTaskStart(message, availableTools, this.modelName);
+    }
 
     if (isCodingAgentProfile((context as any).agentProfile)) {
       const workspaceRoot = String((context as any).workspacePath || (context as any).workspaceRoot || '').trim();
@@ -3754,6 +3786,23 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
       } catch { /* brain is always optional */ }
     }
 
+    // === SYNAPSE GRAPH v2: Structured record storage + 5-question decision surface ===
+    if (!longTermMemoryDisabled) {
+      try {
+        const _sg = getSynapseGraphForChat(context.projectId);
+        await _sg.initialize(context.projectId, context.projectId);
+        const _sr = _sg.processTurn(userVisibleMessage);
+        if (_sr.renderedContext) dynamicContextParts.push(_sr.renderedContext);
+        const ds = _sr.decisionSurface;
+        console.log(
+          `[SynapseGraph] ✅ state=${ _sr.state } Ω=${ _sr.omega.toFixed(3) } conf=${ _sr.confidence.toFixed(2) } | ` +
+          `records=${ ds.totalRecords } semantic=${ ds.semanticMatchCount } fresh=${ ds.freshCount } ` +
+          `confident=${ ds.confidentCount } injected=${ ds.finalCount } | ` +
+          `transition=${ _sr.topicTransition } reactivated=${ _sr.topicReactivated } (${ _sr.processingTimeMs.toFixed(1) }ms)`
+        );
+      } catch (e: any) { console.warn(`[SynapseGraph] ⚠️ ${ e?.message?.substring(0, 80) || 'error' }`); }
+    }
+
     // === LONG-TASK AUTO-DETECTION: Enable immortal session for marathon tasks ===
     if (!sessionPersistenceDisabled) {
       try {
@@ -3805,7 +3854,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
     // === COGNITIVE CORE SYSTEM PROMPT ENHANCEMENT ===
     try {
       const availableTools = globalToolRegistry.getAllTools().map(t => t.name);
-      const enhancedContext = cognitiveCore.getEnhancedContext(message, availableTools);
+      const enhancedContext = cognitiveSession.getEnhancedContext(message, availableTools);
       if (enhancedContext) {
         dynamicContextParts.push(enhancedContext);
       }
@@ -3882,13 +3931,16 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
     }
 
     // === UNLIMITED ITERATIONS â€” agent works until done or user stops ===
-    const maxLoopIterations = 999999;
+    const maxLoopIterations = Math.min(
+      positiveIntEnv('GEMINI_REACT_MAX_ITERATIONS', lightweightTelegramMode ? 40 : 240),
+      1000,
+    );
 
     // Track accumulated text at loop level for fallback message
     let loopAccumulatedText = survivorState?.loopAccumulatedText ?? '';
-    let currentRunToolCallCount = survivorState ? survivorState.callHistory.size : 0;
-    let exploratoryCallsWithoutArtifact = 0;
-    let userFacingArtifactCreated = false;
+    let currentRunToolCallCount = survivorState?.currentRunToolCallCount ?? (survivorState ? survivorState.callHistory.size : 0);
+    let exploratoryCallsWithoutArtifact = survivorState?.exploratoryCallsWithoutArtifact ?? 0;
+    let userFacingArtifactCreated = survivorState?.userFacingArtifactCreated ?? false;
     const deliverableIntent = !isDirectAnswer && intent.primaryIntent !== 'educate_explain';
     // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     // TOOL RESULT MEMORY â€” tracks what each tool returned so the agent
@@ -3957,17 +4009,6 @@ EXTERNAL ACTION NOTE CUE
     if (!(metaCognition.failedTools instanceof Map)) {
       metaCognition.failedTools = new Map(Object.entries(metaCognition.failedTools || {}));
     }
-
-    // === COGNITIVE CORE: Task Start Classification ===
-    if (!survivorState) {
-      try {
-        const availableTools = globalToolRegistry.getAllTools().map(t => t.name);
-        cognitiveCore.onTaskStart(message, availableTools, this.modelName);
-      } catch (err: any) {
-        console.warn('[GeminiClient] Cognitive Core onTaskStart failed (non-blocking):', err.message);
-      }
-    }
-
 
     /** Build a compact summary of all tool results for context injection */
     const buildToolHistorySummary = (): string => {
@@ -4117,6 +4158,59 @@ EXTERNAL ACTION NOTE CUE
         }
       } catch (__steerErr: any) {
         console.warn('[GeminiClient] Steering queue check failed (non-fatal):', String(__steerErr?.message).substring(0, 80));
+      }
+
+      // === INTER-AGENT DEFERRED DELIVERY ===
+      // Routine teammate messages are injected only at safe iteration boundaries,
+      // matching live steering behavior without interrupting an active tool call.
+      try {
+        const mailboxProjectId = String((context as any).projectId || (context as any).chatId || chatId || '').trim();
+        const mailboxAgentName = (context as any).isSubAgent
+          ? String((context as any).agentName || (context as any).subAgentName || '').trim()
+          : 'Main';
+
+        if (mailboxProjectId && mailboxAgentName) {
+          const deferredMessages = interAgentMailbox.getDeferredMessages(mailboxProjectId, mailboxAgentName, 5);
+          if (deferredMessages.length > 0) {
+            const mailboxText = deferredMessages.map((message: any, index: number) => {
+              const priority = message.metadata?.priority || 'normal';
+              const deliveryMode = message.metadata?.deliveryMode || 'defer';
+              return `[INTER-AGENT MESSAGE ${ index + 1 } | id=${ message.id } | from=${ message.from } | type=${ message.type } | priority=${ priority } | delivery=${ deliveryMode }]\nSUBJECT: ${ message.subject }\n${ message.body }\n[/INTER-AGENT MESSAGE]`;
+            }).join('\n\n');
+
+            const injectedText = `[INTER-AGENT MESSAGES DELIVERED AFTER SAFE STEP]\nThese messages arrived between work steps. Treat them as teammate context unless they change correctness, priority, or ownership.\n\n${ mailboxText }\n[/INTER-AGENT MESSAGES]`;
+            const lastContent = contents[contents.length - 1];
+            if (lastContent?.role === 'user' && Array.isArray(lastContent.parts)) {
+              lastContent.parts.push({ text: injectedText });
+            } else {
+              contents.push({ role: 'user', parts: [{ text: injectedText }] });
+            }
+
+            interAgentMailbox.markRead(mailboxProjectId, mailboxAgentName, deferredMessages.map((message: any) => message.id));
+
+            for (const message of deferredMessages as any[]) {
+              const traceEvent = {
+                type: 'inter_agent_message',
+                text: `${ message.from } -> ${ mailboxAgentName }: ${ message.subject }\n${ message.body }`,
+                from: message.from,
+                to: message.to,
+                subject: message.subject,
+                body: message.body,
+                messageType: message.type,
+                priority: message.metadata?.priority || 'normal',
+                deliveryMode: message.metadata?.deliveryMode || 'defer',
+                messageId: message.id,
+                timestamp: Date.now(),
+                agentName: mailboxAgentName,
+                subAgent: mailboxAgentName !== 'Main' ? mailboxAgentName : undefined,
+              };
+              trace.push(traceEvent);
+              if (onTrace) onTrace(traceEvent);
+            }
+          }
+        }
+      } catch (__mailboxErr: any) {
+        console.warn('[GeminiClient] Inter-agent mailbox delivery failed (non-fatal):', String(__mailboxErr?.message).substring(0, 80));
       }
 
       // === PROGRESSIVE CONTEXT COMPRESSION (Staged) ===
@@ -4299,6 +4393,7 @@ EXTERNAL ACTION NOTE CUE
 
       const nextStreamChunk = async (iterator: AsyncIterator<any>, timeoutMs: number, abortController?: AbortController | null) => {
         let cancelInterval: ReturnType<typeof setInterval> | null = null;
+        let chunkTimer: ReturnType<typeof setTimeout> | null = null;
         try {
           const cancel = new Promise<never>((_, reject) => {
             cancelInterval = setInterval(() => {
@@ -4309,9 +4404,16 @@ EXTERNAL ACTION NOTE CUE
               }
             }, 150);
           });
-          return await Promise.race([iterator.next(), cancel]);
+          const timeout = new Promise<never>((_, reject) => {
+            chunkTimer = setTimeout(() => {
+              abortController?.abort();
+              reject(new Error(`STREAM_CHUNK_TIMEOUT_${ timeoutMs }ms`));
+            }, timeoutMs);
+          });
+          return await Promise.race([iterator.next(), cancel, timeout]);
         } finally {
           if (cancelInterval) clearInterval(cancelInterval);
+          if (chunkTimer) clearTimeout(chunkTimer);
         }
       };
 
@@ -4510,6 +4612,9 @@ EXTERNAL ACTION NOTE CUE
               interactions,
               trace: [...trace],
               loopAccumulatedText,
+              currentRunToolCallCount,
+              exploratoryCallsWithoutArtifact,
+              userFacingArtifactCreated,
             };
             throw exhaustedErr;
           }
@@ -4614,6 +4719,8 @@ EXTERNAL ACTION NOTE CUE
         }
       } catch (streamReadErr: any) {
         const errMsg = String(streamReadErr?.message || streamReadErr);
+        activeStreamAbortController?.abort();
+        activeStreamAbortController = null;
         if (errMsg === 'CANCELLED_BY_USER' || errMsg.toLowerCase().includes('cancelled_by_user')) {
           throw streamReadErr;
         }
@@ -4637,6 +4744,9 @@ EXTERNAL ACTION NOTE CUE
           interactions,
           trace: [...trace],
           loopAccumulatedText: loopAccumulatedText || accumulatedText || accumulatedThought,
+          currentRunToolCallCount,
+          exploratoryCallsWithoutArtifact,
+          userFacingArtifactCreated,
         };
         throw retryErr;
       }
@@ -4665,7 +4775,7 @@ EXTERNAL ACTION NOTE CUE
         if (shouldEmitFinalWorkNote) {
           const noteEvt = { type: 'work_note', text: noteText, isDelta: false, isStreaming: false, noteId: workNoteId };
           trace.push(noteEvt);
-          if (onTrace) onTrace(noteEvt);
+          if (onTrace && (!workNoteEmitted || emittedWorkNoteText !== noteText)) onTrace(noteEvt);
           workNoteEmitted = true;
           emittedWorkNoteText = noteText;
         }
@@ -4689,7 +4799,11 @@ EXTERNAL ACTION NOTE CUE
           metaCognition.strategyShifts++;
           // Inject a strategy-shift nudge
           if (functionCalls.length === 0) {
+            if (fullResponseContent) contents.push(fullResponseContent);
             contents.push({ role: 'user', parts: [{ text: `[META-COGNITIVE ALERT] You are reasoning in circles. Your thought pattern has repeated ${ circularThought[1] } times. SHIFT STRATEGY: try a completely different approach, use a different tool, or deliver what you have so far.` }] });
+            accumulatedText = '';
+            accumulatedThought = '';
+            continue;
           }
         }
       }
@@ -4705,6 +4819,7 @@ EXTERNAL ACTION NOTE CUE
           const finalText = accumulatedText;
           if (isSyntheticLoopCompletionText(finalText)) {
             console.warn('[GeminiClient] Ignoring synthetic loop completion text and continuing work.');
+            if (fullResponseContent) contents.push(fullResponseContent);
             contents.push({
               role: 'user',
               parts: [{
@@ -4724,6 +4839,7 @@ EXTERNAL ACTION NOTE CUE
               if (trackerCheck && /pending|in_progress/i.test(trackerCheck) && !/all.*(?:done|complete)/i.test(trackerCheck)) {
                 console.warn('[GeminiClient] ðŸ§  Agent tried to stop but task tracker has pending steps.');
                 (metaCognition as any).incompleteTaskNudged = true;
+                if (fullResponseContent) contents.push(fullResponseContent);
                 contents.push({
                   role: 'user',
                   parts: [{
@@ -4748,6 +4864,7 @@ EXTERNAL ACTION NOTE CUE
             if (isUncertain && hasNotAskedUser && isShortAnswer) {
               console.log('[GeminiClient] ðŸ§  Agent expressed uncertainty â€” nudging to investigate or ask.');
               (metaCognition as any).uncertaintyNudged = true;
+              if (fullResponseContent) contents.push(fullResponseContent);
               contents.push({
                 role: 'user',
                 parts: [{
@@ -4764,7 +4881,7 @@ EXTERNAL ACTION NOTE CUE
           try {
             const toolsUsed = Array.from(toolCallCounts.keys());
             const filesCreated = Array.from(writtenFiles);
-            const correction = cognitiveCore.assessFinalAnswer(
+            const correction = cognitiveSession.assessFinalAnswer(
               message,
               finalText,
               toolsUsed,
@@ -4774,6 +4891,7 @@ EXTERNAL ACTION NOTE CUE
 
             if (correction) {
               console.log(`[GeminiClient] ðŸ” Cognitive Core quality gate returned a correction prompt. Retrying.`);
+              if (fullResponseContent) contents.push(fullResponseContent);
               contents.push({ role: 'user', parts: [{ text: correction }] });
               accumulatedText = '';
               accumulatedThought = '';
@@ -4786,26 +4904,12 @@ EXTERNAL ACTION NOTE CUE
           // === COGNITIVE CORE DEBLOAT ===
           let cleanText = finalText;
           try {
-            cleanText = cognitiveCore.deBloatResponse(finalText);
+            cleanText = cognitiveSession.deBloatResponse(finalText);
           } catch (err: any) {
             console.warn('[GeminiClient] Cognitive Core deBloatResponse failed (non-blocking):', err.message);
           }
 
-          loopAccumulatedText = cleanText;
-          const answerEvt = { type: 'answer', text: cleanText };
-          const existingIdx = trace.findIndex(t => t.type === 'answer');
-          if (existingIdx >= 0) trace[existingIdx] = answerEvt;
-          else trace.push(answerEvt);
-          if (onTrace) onTrace(answerEvt);
-
-          // Background learning (non-blocking)
           const toolsUsedList = Array.from(callHistory).map(s => s.split(':')[0]);
-          if (!longTermMemoryDisabled) {
-            adaptiveLearning.recordTask(message, toolsUsedList, true, interactions * 2000).catch(() => { });
-          }
-          if (!sessionPersistenceDisabled) {
-            globalSessionManager.setLastAgentOutputForChat(chatId, cleanText);
-          }
 
           // === AUTONOMOUS TOOL SYNTHESIS: Detect repeating patterns ===
           try {
@@ -4828,17 +4932,32 @@ EXTERNAL ACTION NOTE CUE
           // === SELF-REFLECTION GATE (now with improvement actions) ===
           const reflection = lightweightTelegramMode
             ? { shouldImprove: false, suggestions: [], improvementActions: [] }
-            : await agentReflection.reflect(message, cleanText, toolsUsedList);
+            : await reflectionEngine.reflect(message, cleanText, toolsUsedList);
           if (reflection.shouldImprove) {
             console.log(`[GeminiClient] ðŸ”„ Self-Correction triggered:`, reflection.suggestions);
             const actionHints = reflection.improvementActions?.length > 0
               ? `\nSuggested actions: ${ reflection.improvementActions.map(a => `${ a.tool } (${ a.reason })`).join(', ') }`
               : '';
+            if (fullResponseContent) contents.push(fullResponseContent);
             contents.push({ role: 'user', parts: [{ text: `[SYSTEM SELF-REFLECTION] Your last output has quality issues:\n${ reflection.suggestions.map(s => `- ${ s }`).join('\n') }${ actionHints }\n\nPlease fix these issues and continue.` }] });
+            accumulatedText = '';
+            accumulatedThought = '';
             continue; // Force the model to try again and fix its formatting/answer
           }
-          if (!lightweightTelegramMode) agentReflection.reset(); // Reset for next user query
+          loopAccumulatedText = cleanText;
+          const answerEvt = { type: 'answer', text: cleanText };
+          const existingIdx = trace.findIndex(t => t.type === 'answer');
+          if (existingIdx >= 0) trace[existingIdx] = answerEvt;
+          else trace.push(answerEvt);
+          if (onTrace) onTrace(answerEvt);
 
+          // Background learning (non-blocking)
+          if (!longTermMemoryDisabled) {
+            adaptiveLearning.recordTask(message, toolsUsedList, true, interactions * 2000).catch(() => { });
+          }
+          if (!sessionPersistenceDisabled) {
+            globalSessionManager.setLastAgentOutputForChat(chatId, cleanText);
+          }
           return { text: cleanText, trace };
         }
 
@@ -4998,8 +5117,96 @@ EXTERNAL ACTION NOTE CUE
       const executeSingleCall = async (call: any, callIndex: number) => {
         const args = call.args as any;
         const normalizedSig = this.normalizeCallSignature(call.name, args);
+        const subAgentName = String((context as any).agentName || (context as any).subAgentName || '').trim();
+        const subAgentProjectId = String((context as any).projectId || (context as any).chatId || '').trim();
 
-        const failureWarning = cognitiveCore.checkToolFailureWarning(call.name, args);
+        if ((context as any).isSubAgent && subAgentName && subAgentProjectId) {
+          if (isCancelled(subAgentProjectId, subAgentName)) {
+            return {
+              functionResponse: {
+                name: call.name,
+                response: { output: { error: 'Cancelled by main agent control.' } },
+                ...(call.id ? { id: call.id } : {})
+              }
+            };
+          }
+
+          await awaitIfPaused(subAgentProjectId, subAgentName);
+
+          if (isCancelled(subAgentProjectId, subAgentName)) {
+            return {
+              functionResponse: {
+                name: call.name,
+                response: { output: { error: 'Cancelled by main agent control.' } },
+                ...(call.id ? { id: call.id } : {})
+              }
+            };
+          }
+
+          if (call.name !== 'agent_communicate') {
+            const pendingControlMessages = interAgentMailbox.getInterruptingMessages(subAgentProjectId, subAgentName, 3);
+
+            if (pendingControlMessages.length > 0) {
+              return {
+                functionResponse: {
+                  name: call.name,
+                  response: {
+                    output: {
+                      error: `CONTROL_MESSAGE_PENDING: ${ pendingControlMessages.length } urgent message(s). Call agent_communicate with action="check" before continuing. Routine messages stay queued and do not interrupt active work.`,
+                      controlMessagePending: true,
+                      requiredTool: 'agent_communicate',
+                      unreadCount: pendingControlMessages.length,
+                      messageIds: pendingControlMessages.map((message: any) => message.id),
+                      latestSubjects: pendingControlMessages.map((message: any) => ({
+                        id: message.id,
+                        from: message.from,
+                        type: message.type,
+                        subject: message.subject,
+                        priority: message.metadata?.priority || 'normal',
+                        deliveryMode: message.metadata?.deliveryMode || 'defer',
+                        requiresResponse: message.metadata?.requiresResponse === true,
+                      })),
+                    }
+                  },
+                  ...(call.id ? { id: call.id } : {})
+                }
+              };
+            }
+          }
+        }
+
+        if (!(context as any).isSubAgent && subAgentProjectId && call.name !== 'agent_communicate') {
+          const pendingMainMessages = interAgentMailbox.getInterruptingMessages(subAgentProjectId, 'Main', 3);
+
+          if (pendingMainMessages.length > 0) {
+            return {
+              functionResponse: {
+                name: call.name,
+                response: {
+                  output: {
+                    error: `MAIN_CONTROL_MESSAGE_PENDING: ${ pendingMainMessages.length } urgent message(s). Call agent_communicate with action="check" before continuing. Routine messages stay queued and do not interrupt active work.`,
+                    controlMessagePending: true,
+                    requiredTool: 'agent_communicate',
+                    unreadCount: pendingMainMessages.length,
+                    messageIds: pendingMainMessages.map((message: any) => message.id),
+                    latestSubjects: pendingMainMessages.map((message: any) => ({
+                      id: message.id,
+                      from: message.from,
+                      type: message.type,
+                      subject: message.subject,
+                      priority: message.metadata?.priority || 'normal',
+                      deliveryMode: message.metadata?.deliveryMode || 'defer',
+                      requiresResponse: message.metadata?.requiresResponse === true,
+                    })),
+                  }
+                },
+                ...(call.id ? { id: call.id } : {})
+              }
+            };
+          }
+        }
+
+        const failureWarning = cognitiveSession.checkToolFailureWarning(call.name, args);
         if (failureWarning) {
           console.warn(`[CognitiveCore] Injected failure warning for ${ call.name }: ${ failureWarning }`);
           return {
@@ -5113,7 +5320,7 @@ EXTERNAL ACTION NOTE CUE
           }
         }
 
-        const actionTraceId = `tool_${Date.now()}_${callIndex}_${call.name}_${Math.random().toString(36).slice(2, 8)}`;
+        const actionTraceId = `tool_${ Date.now() }_${ callIndex }_${ call.name }_${ Math.random().toString(36).slice(2, 8) }`;
         const evt = {
           traceId: actionTraceId,
           type: label.type,
@@ -5274,7 +5481,7 @@ EXTERNAL ACTION NOTE CUE
             effectiveArgs = validation.args;
             const capabilityDecision = enforceToolCapability(canonicalToolName, effectiveArgs, context);
             if (!capabilityDecision.allowed) {
-              preflightError = capabilityDecision.reason || `Tool ${canonicalToolName} is not allowed`;
+              preflightError = capabilityDecision.reason || `Tool ${ canonicalToolName } is not allowed`;
             }
           } else {
             preflightError = validation.error;
@@ -5363,6 +5570,15 @@ EXTERNAL ACTION NOTE CUE
                   result: toolOutput,
                   durationMs: execDuration,
                 });
+                // === SYNAPSE GRAPH: Feed tool results for topic tracking ===
+                try {
+                  const _sg2 = getSynapseGraphForChat(context.projectId);
+                  _sg2.registerToolResult(
+                    canonicalToolName,
+                    (effectiveArgs || {}) as Record<string, any>,
+                    typeof toolOutput === 'string' ? toolOutput : JSON.stringify(toolOutput).substring(0, 500),
+                  );
+                } catch { /* non-critical */ }
                 // Extend session lifetime on every successful tool call
                 if (!sessionPersistenceDisabled) globalSessionManager.extendSessionForChat(chatId);
               } catch { /* never block agent on brain writes */ }
@@ -5370,7 +5586,7 @@ EXTERNAL ACTION NOTE CUE
               try {
                 const _mChatId = (context as any).projectId || (context as any).chatId;
                 monitorEmitter.toolEnd(canonicalToolName, toolOutput, execDuration, _mChatId);
-                
+
                 // Auto-verify file writes — check the ACTUAL path the tool wrote to
                 await this.emitWorkspaceToolPreviews({
                   toolName: canonicalToolName,
@@ -5756,7 +5972,7 @@ EXTERNAL ACTION NOTE CUE
                     recoveryArgs = recoveryValidation.args;
                     const recoveryCapability = enforceToolCapability(recoveryToolName, recoveryArgs, context);
                     if (!recoveryCapability.allowed) {
-                      throw new Error(recoveryCapability.reason || `Tool ${recoveryToolName} is not allowed`);
+                      throw new Error(recoveryCapability.reason || `Tool ${ recoveryToolName } is not allowed`);
                     }
 
                     toolExec.throwIfCancelled();
@@ -5923,9 +6139,9 @@ EXTERNAL ACTION NOTE CUE
             agentWorkNote: loopAccumulatedText || '',
           });
           if (!ahResult.passed && ahResult.correctionPrompt) {
-            const selfCheck = `SELF-CHECK: ${ahResult.correctionPrompt}`;
+            const selfCheck = `SELF-CHECK: ${ ahResult.correctionPrompt }`;
             if (typeof toolOutput === 'string') {
-              toolOutput = `${toolOutput}\n\n${selfCheck}`;
+              toolOutput = `${ toolOutput }\n\n${ selfCheck }`;
             } else if (toolOutput && typeof toolOutput === 'object' && !Array.isArray(toolOutput)) {
               toolOutput = {
                 ...toolOutput,
@@ -5944,7 +6160,7 @@ EXTERNAL ACTION NOTE CUE
         // === COGNITIVE CORE: Post-Tool Verification & Recovery ===
         try {
           const isSuccess = !toolOutput?.error && (toolOutput?.exitCode === undefined || toolOutput.exitCode === 0);
-          const correction = cognitiveCore.onToolCallComplete(
+          const correction = cognitiveSession.onToolCallComplete(
             call.name,
             args || {},
             toolOutput,

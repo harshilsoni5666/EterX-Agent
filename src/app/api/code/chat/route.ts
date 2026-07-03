@@ -22,6 +22,7 @@ import {
   getScopedRuntimeApiKeyValues,
   type ScopedRuntimeSettings,
 } from '@/lib/agent/runtime-api-keys';
+import { rejectCrossOrigin } from '../../agent/_shared';
 import path from 'path';
 
 function createAIClient(runtimeSettings?: ScopedRuntimeSettings | null): GoogleGenAI {
@@ -412,6 +413,9 @@ async function executeToolCallsParallel(
 }
 
 export async function POST(req: NextRequest) {
+  const originError = rejectCrossOrigin(req);
+  if (originError) return originError;
+
   // ─── Input Validation ───
   let body: any;
   try {

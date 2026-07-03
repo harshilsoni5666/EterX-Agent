@@ -6,6 +6,7 @@
  * ═══════════════════════════════════════════════════════════════
  */
 import { NextRequest, NextResponse } from 'next/server';
+import { rejectCrossOrigin } from '../../../agent/_shared';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -46,6 +47,9 @@ async function proxyRequest(
   method: string
 ) {
   try {
+    const originError = rejectCrossOrigin(req);
+    if (originError) return originError;
+
     const port = parseInt(params.port, 10);
 
     if (isNaN(port) || port < 1 || port > 65535) {
@@ -91,7 +95,6 @@ async function proxyRequest(
     // Allow embedding in iframe
     responseHeaders.delete('x-frame-options');
     responseHeaders.delete('content-security-policy');
-    responseHeaders.set('Access-Control-Allow-Origin', '*');
 
     const contentType = response.headers.get('content-type') || '';
     let finalBody: ArrayBuffer | string = responseBody;

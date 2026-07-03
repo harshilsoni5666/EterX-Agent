@@ -10,6 +10,9 @@ import { normalizeRegistryToolArgs } from '../src/lib/agent/tools/tool-args';
 import { RuntimeEvidenceLedger } from '../src/lib/agent/runtime-evidence';
 import { createCustomToolActionLog } from '../src/lib/agent/custom-agent-trace-adapter';
 import { buildLineDiffPreview, buildToolTraceFields } from '../src/lib/agent/tool-trace';
+import { interAgentMailbox } from '../src/lib/agent/roles/inter_agent_comm';
+import { buildSubAgentStrategy } from '../src/lib/agent/roles/sub_agent_strategy';
+import { agentCommTool } from '../src/lib/agent/tools/core/agent_comm';
 
 type ToolLike = {
   name: string;
@@ -192,6 +195,178 @@ async function main() {
     assert.equal(diffPreview.added, 1);
     assert.equal(diffPreview.removed, 1);
     assert.equal(diffPreview.diffLines.some(line => line.type === 'added' && line.content === 'TWO'), true);
+
+    const multiAgentProjectId = `test-agents-${Date.now()}`;
+    try {
+      interAgentMailbox.registerAgent(multiAgentProjectId, 'Main', {
+        role: 'main',
+        status: 'coordinating',
+      });
+      interAgentMailbox.registerAgent(multiAgentProjectId, 'Ada', {
+        role: 'sub_agent',
+        task: 'Map relevant files',
+        status: 'planned',
+      });
+      interAgentMailbox.registerAgent(multiAgentProjectId, 'Turing', {
+        role: 'sub_agent',
+        task: 'Find edge cases',
+        status: 'planned',
+      });
+      interAgentMailbox.send({
+        from: 'Main',
+        to: '*',
+        projectId: multiAgentProjectId,
+        type: 'coordination',
+        subject: 'Shared constraint',
+        body: 'Do not edit the same file concurrently.',
+      });
+      const adaMessages = interAgentMailbox.checkMailbox(multiAgentProjectId, 'Ada');
+      const turingMessages = interAgentMailbox.checkMailbox(multiAgentProjectId, 'Turing');
+      assert.equal(adaMessages.length, 1, 'broadcast should reach planned Ada mailbox');
+      assert.equal(turingMessages.length, 1, 'broadcast should reach planned Turing mailbox');
+      assert.equal(adaMessages[0].to, 'Ada');
+      assert.equal(turingMessages[0].to, 'Turing');
+
+      interAgentMailbox.updateAgentPresence(multiAgentProjectId, 'Ada', {
+        status: 'running',
+        progress: 'Reading source files',
+      });
+      const teamSnapshot = interAgentMailbox.getTeamSnapshot(multiAgentProjectId);
+      const adaPresence = teamSnapshot.find(agent => agent.agentName === 'Ada');
+      assert.equal(adaPresence?.status, 'running');
+      assert.equal(adaPresence?.task, 'Map relevant files');
+
+      const messageTypes = ['info_share', 'question', 'answer', 'alert', 'coordination', 'discovery', 'progress', 'handoff'] as const;
+      for (const type of messageTypes) {
+        interAgentMailbox.send({
+          from: 'Turing',
+          to: 'Ada',
+          projectId: multiAgentProjectId,
+          type,
+          subject: `Type check ${type}`,
+          body: `Message type ${type} should be accepted.`,
+          metadata: { deliveryMode: 'defer', priority: type === 'alert' ? 'critical' : 'normal' },
+        });
+      }
+      const typeHistory = interAgentMailbox.getProjectMessages(multiAgentProjectId, { agentName: 'Ada', limit: 40 });
+      for (const type of messageTypes) {
+        assert.equal(typeHistory.some(message => message.type === type), true, `history should include ${type} messages`);
+      }
+
+      const deferred = interAgentMailbox.send({
+        from: 'Main',
+        to: 'Ada',
+        projectId: multiAgentProjectId,
+        type: 'coordination',
+        subject: 'Non disruptive guidance',
+        body: 'Apply this at the next safe boundary.',
+        metadata: { deliveryMode: 'defer', priority: 'normal' },
+      });
+      const urgent = interAgentMailbox.send({
+        from: 'Main',
+        to: 'Ada',
+        projectId: multiAgentProjectId,
+        type: 'question',
+        subject: 'Urgent checkpoint',
+        body: 'Stop at the next safe boundary and answer.',
+        metadata: { deliveryMode: 'interrupt', priority: 'high', requiresResponse: true },
+      });
+      const delayed = interAgentMailbox.send({
+        from: 'Main',
+        to: 'Ada',
+        projectId: multiAgentProjectId,
+        type: 'question',
+        subject: 'Delayed checkpoint',
+        body: 'This should not be visible yet.',
+        metadata: { deliveryMode: 'interrupt', priority: 'critical', requiresResponse: true, deliverAfter: Date.now() + 60_000 },
+      });
+      const deferredMessages = interAgentMailbox.getDeferredMessages(multiAgentProjectId, 'Ada', 8);
+      const interruptingMessages = interAgentMailbox.getInterruptingMessages(multiAgentProjectId, 'Ada', 8);
+      assert.equal(deferredMessages.some(message => message.id === deferred.id), true, 'deferred messages should be available for safe-boundary injection');
+      assert.equal(deferredMessages.some(message => message.id === urgent.id), false, 'urgent messages should not be treated as deferred guidance');
+      assert.equal(interruptingMessages.some(message => message.id === urgent.id), true, 'interrupting messages should be surfaced separately');
+      assert.equal(interruptingMessages.some(message => message.id === delayed.id), false, 'delayed messages should not interrupt before deliverAfter');
+      assert.equal(interAgentMailbox.checkMailbox(multiAgentProjectId, 'Ada', { unreadOnly: false }).some(message => message.id === delayed.id), false, 'delayed messages should be hidden from mailbox checks before deliverAfter');
+
+      const toolSend = await agentCommTool.execute({
+        action: 'send',
+        to: 'Ada',
+        type: 'question',
+        subject: 'Need scope',
+        body: 'Please confirm relevant files.',
+        deliveryMode: 'defer',
+        artifactPaths: ['reports/scope.md'],
+        tags: ['scope'],
+      }, { projectId: multiAgentProjectId, agentName: 'Main' });
+      assert.equal(toolSend.success, true, 'agent_communicate send should succeed');
+
+      const adaCheck = await agentCommTool.execute({
+        action: 'check',
+        autoMarkRead: false,
+        unreadOnly: true,
+        limit: 30,
+      }, { projectId: multiAgentProjectId, agentName: 'Ada' });
+      assert.equal(adaCheck.success, true, 'agent_communicate check should succeed');
+      assert.equal(adaCheck.messages.some((message: any) => message.id === toolSend.messageId), true, 'check should see the sent message without marking it read');
+
+      const toolReply = await agentCommTool.execute({
+        action: 'reply',
+        replyToId: toolSend.messageId,
+        body: 'Confirmed: inspect orchestration and UI routing.',
+      }, { projectId: multiAgentProjectId, agentName: 'Ada' });
+      assert.equal(toolReply.success, true, 'agent_communicate reply should succeed');
+
+      const toolThread = await agentCommTool.execute({
+        action: 'thread',
+        messageId: toolSend.messageId,
+        includeAll: true,
+      }, { projectId: multiAgentProjectId, agentName: 'Main' });
+      assert.equal(toolThread.success, true, 'agent_communicate thread should succeed');
+      assert.equal(toolThread.messages.some((message: any) => message.id === toolReply.messageId), true, 'thread should include replies');
+
+      const toolHistory = await agentCommTool.execute({
+        action: 'history',
+        limit: 50,
+      }, { projectId: multiAgentProjectId, agentName: 'Ada' });
+      assert.equal(toolHistory.success, true, 'agent_communicate history should succeed');
+      assert.equal(toolHistory.messages.some((message: any) => message.id === toolSend.messageId), true, 'history should include visible messages');
+
+      const markedRead = await agentCommTool.execute({
+        action: 'mark_read',
+        messageIds: [toolSend.messageId],
+      }, { projectId: multiAgentProjectId, agentName: 'Ada' });
+      assert.equal(markedRead.success, true, 'agent_communicate mark_read should succeed');
+      assert.equal(markedRead.markedRead >= 1, true, 'mark_read should mark selected messages');
+
+      const askMain = await agentCommTool.execute({
+        action: 'ask_main',
+        subject: 'Need decision',
+        body: 'Should this be treated as blocking?',
+      }, { projectId: multiAgentProjectId, agentName: 'Ada' });
+      assert.equal(askMain.success, true, 'ask_main should succeed');
+      assert.equal(interAgentMailbox.getInterruptingMessages(multiAgentProjectId, 'Main', 10).some(message => message.id === askMain.messageId), true, 'ask_main should interrupt Main at a safe boundary');
+
+      const handoffMain = await agentCommTool.execute({
+        action: 'handoff_main',
+        subject: 'Evidence bundle',
+        body: 'Partial findings are ready.',
+      }, { projectId: multiAgentProjectId, agentName: 'Ada' });
+      assert.equal(handoffMain.success, true, 'handoff_main should succeed');
+      assert.equal(interAgentMailbox.getDeferredMessages(multiAgentProjectId, 'Main', 10).some(message => message.id === handoffMain.messageId), true, 'handoff_main should be deferred for Main');
+
+      const statusResult = await agentCommTool.execute({
+        action: 'status',
+      }, { projectId: multiAgentProjectId, agentName: 'Main' });
+      assert.equal(statusResult.success, true, 'agent_communicate status should succeed');
+      assert.equal(statusResult.agents.some((agent: any) => agent.agentName === 'Ada'), true, 'status should include registered sub-agents');
+
+      const strategy = buildSubAgentStrategy('Deeply review the subagent orchestration architecture, fix bugs, and improve coordination.');
+      assert.equal(strategy.shouldSpawn, true, 'complex orchestration work should recommend sub-agent help');
+      assert.ok(['parallel', 'hybrid', 'specialist'].includes(strategy.mode), `unexpected strategy mode: ${strategy.mode}`);
+      assert.ok(strategy.estimatedAgentCount >= 1);
+    } finally {
+      interAgentMailbox.clearProject(multiAgentProjectId);
+    }
 
     const gateBeforeVerification = ledger.buildCompletionGate({
       finalText: 'Implemented and verified the edit.',

@@ -6,12 +6,16 @@ import {
   getRuntimeApiKeyStatus,
   getRuntimeModelOverrides,
 } from '../../../../lib/agent/runtime-api-keys';
+import { rejectCrossOrigin } from '../../agent/_shared';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 export async function POST(req: NextRequest) {
   try {
+    const originError = rejectCrossOrigin(req);
+    if (originError) return originError;
+
     const body = await req.json().catch(() => ({}));
     const result = applyRuntimeApiKeys(body?.apiKeys || body);
     const modelOverrides = applyRuntimeModelOverrides(body?.modelOverrides);

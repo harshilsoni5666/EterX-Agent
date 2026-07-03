@@ -124,16 +124,13 @@ export function enforceToolCapability(
       };
     }
 
-    // Use the SandboxGuard on context if available for capability checks
-    if (context?.sandboxGuard) {
-      const capability = CAPABILITY_BY_TOOL[toolName] || inferCapability(toolName);
-      if (!SANDBOX_ALLOWED_CAPABILITIES.has(capability)) {
-        return {
-          allowed: false,
-          capability,
+    const capability = CAPABILITY_BY_TOOL[toolName] || inferCapability(toolName);
+    if (!SANDBOX_ALLOWED_CAPABILITIES.has(capability)) {
+      return {
+        allowed: false,
+        capability,
           reason: `🔒 Sandbox: Capability "${capability}" required by "${toolName}" is not available in sandbox mode.`,
-        };
-      }
+      };
     }
   }
 
@@ -167,6 +164,10 @@ function inferCapability(toolName: string): string {
 
 function isCapabilityAllowed(capability: string, context?: any): boolean {
   if (context?.allowUnsafeTools === true || process.env.ETERX_ALLOW_UNSAFE_TOOLS === '1') return true;
+
+  if (capability.startsWith('network.') && context?.networkPolicy === 'deny' && context?.allowNetwork !== true) {
+    return false;
+  }
 
   const configured = new Set<string>([
     ...DEFAULT_ALLOWED_CAPABILITIES,

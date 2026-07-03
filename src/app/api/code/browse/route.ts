@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { getPathResolverInfo } from '../../../../lib/agent/workspace/path_resolver';
+import { rejectCrossOrigin } from '../../agent/_shared';
 
 export const dynamic = 'force-dynamic';
 
@@ -13,6 +14,9 @@ export const dynamic = 'force-dynamic';
  * POST /api/code/browse              → create a new folder
  */
 export async function GET(req: NextRequest) {
+  const originError = rejectCrossOrigin(req);
+  if (originError) return originError;
+
   const searchParams = req.nextUrl.searchParams;
   const browsePath = searchParams.get('path');
 
@@ -111,6 +115,9 @@ export async function GET(req: NextRequest) {
  * Create a new project folder
  */
 export async function POST(req: NextRequest) {
+  const originError = rejectCrossOrigin(req);
+  if (originError) return originError;
+
   const { parentPath, folderName } = await req.json();
 
   if (!parentPath || !folderName) {

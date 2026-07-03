@@ -300,6 +300,7 @@ interface ChatInputProps {
   activeChatId?: string | null;
   selectedAgent?: string | null;
   selectedAgentName?: string;
+  composerPlaceholder?: string;
   onAgentChange?: (agentId: string | null, agentName: string) => void;
   workspacePath?: string | null;
   onWorkspacePathChange?: (path: string | null) => void;
@@ -917,6 +918,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   activeChatId = null,
   selectedAgent = null,
   selectedAgentName = 'General',
+  composerPlaceholder,
   onAgentChange,
   workspacePath,
   onWorkspacePathChange,
@@ -1969,7 +1971,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                   )}
                 </AnimatePresence>
               </div>
-              <h1 className={`eterx-home-greeting font-serif tracking-tight leading-[1.2] pb-1 font-medium text-transparent bg-clip-text bg-gradient-to-r from-[#A3A19E] via-[#E8E6E3] to-[#8C8A88] drop-shadow-[0_2px_12px_rgba(255,255,255,0.05)] ${ isCompressed ? 'max-w-[360px] truncate text-[30px]' : 'text-[44px] whitespace-nowrap' }`}>
+              <h1 className={`eterx-home-greeting font-sans tracking-tight leading-[1.2] pb-1 font-medium text-transparent bg-clip-text bg-gradient-to-r from-[#A3A19E] via-[#E8E6E3] to-[#8C8A88] drop-shadow-[0_2px_12px_rgba(255,255,255,0.05)] ${ isCompressed ? 'max-w-[360px] truncate text-[30px]' : 'text-[44px] whitespace-nowrap' }`}>
                 {greeting}
               </h1>
             </div>
@@ -2445,7 +2447,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                     onDragOver={handleDragOver}
                     onDrop={handleDrop}
                     onScroll={handleTextareaScroll}
-                    placeholder={isThinking ? "Send guidance to the running agent" : isNewChatHome ? "What should EterX work on?" : "Message EterX"}
+                    placeholder={composerPlaceholder || (isThinking ? "Send guidance to the running agent" : isNewChatHome ? "What should EterX work on?" : "Message EterX")}
                     className={`eterx-composer-textarea w-full appearance-none border-0 bg-transparent shadow-none outline-none ring-0 text-[14.5px] font-normal text-[#F0F0F0] placeholder:text-[#8B8984] focus:border-0 focus:outline-none focus:ring-0 placeholder:font-normal min-h-[26px] max-h-[400px] resize-none leading-[1.45] selection:bg-white/15 transition-colors duration-200 relative z-0 py-1 ${ isOverflowing ? 'overflow-y-auto custom-scrollbar pr-2' : 'overflow-hidden' }`}
                     style={{
                       caretColor: '#F0F0F0',

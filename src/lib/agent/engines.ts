@@ -614,7 +614,7 @@ class WorkspaceIntelligence {
  * - Improvement action suggestions (specific tool calls to improve output)
  * - Reflection history for pattern detection across sessions
  */
-class AgentReflectionEngine {
+export class AgentReflectionEngine {
   private reflectionCount = 0;
   private maxReflections = 3; // Increased from 2
   private reflectionHistory: Array<{ quality: string; issues: string[]; timestamp: number }> = [];

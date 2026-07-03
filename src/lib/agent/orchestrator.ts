@@ -1,6 +1,7 @@
 import { WorkspaceManager } from './workspace/manager';
 import { globalMemoryManager } from './memory/store';
 import { memoryV2 } from './memory/v2';
+import { getSynapseGraphForChat, flushSynapseGraph } from './memory/synapse-graph';
 import { AgentResponse, AgentTask, ProjectContext } from './schemas';
 import { globalGeminiClient, createIsolatedClient } from './Agent';
 import { globalSubAgentSpawner, resetCancelFlag } from './roles/sub_agent';
@@ -167,11 +168,11 @@ export class AgentOrchestrator {
       return userMode;
     }
     switch (complexity) {
-      case 'trivial':  return 'fast';   // Never waste big model on greetings
+      case 'trivial': return 'fast';   // Never waste big model on greetings
       case 'standard': return userMode; // Respect user preference
-      case 'complex':  return 'think';  // Complex tasks need max reasoning
+      case 'complex': return 'think';  // Complex tasks need max reasoning
       case 'critical': return 'think';  // Critical tasks ALWAYS get full power
-      default:         return userMode;
+      default: return userMode;
     }
   }
 
@@ -223,7 +224,7 @@ export class AgentOrchestrator {
       const errors = errorsResult.value;
       if (Array.isArray(errors) && errors.length > 0) {
         context.errorHistory = errors.slice(-5).map((e: any) =>
-          `${e.tool}: ${(e.error || '').substring(0, 120)}`
+          `${ e.tool }: ${ (e.error || '').substring(0, 120) }`
         );
       }
     }
@@ -269,8 +270,8 @@ export class AgentOrchestrator {
    * Execute the full pipeline for a user request via Gemini 3 API.
    */
   public async executePipeline(
-    userId: string, 
-    projectId: string, 
+    userId: string,
+    projectId: string,
     userRequest: string,
     history: any[] = [],
     onTrace?: (trace: any) => void,
@@ -288,26 +289,28 @@ export class AgentOrchestrator {
     const shouldExportTranscript = pinnedContext?.exportTranscript !== false;
     const shouldInitializeMemory = shouldHydrateMemory || shouldPersistLongTermMemory;
     const shouldInitializeWorkspace = shouldExportTranscript || !pinnedContext?.disableWorkspaceInit;
-    
+
     // Inject pinned context into standard prompt if it exists
     let effectiveRequest = userRequest;
     if (pinnedContext && pinnedContext.paths) {
-      effectiveRequest = `[CRITICAL PINNED CONTEXT]\nPinned workspace paths: ${JSON.stringify(pinnedContext.paths)}\nKeep file, code, and terminal operations inside these paths unless the user explicitly provides another target path. External web/API lookups are allowed only when the current request asks for current factual information.\n\nMy Request:\n${userRequest}`;
+      effectiveRequest = `[CRITICAL PINNED CONTEXT]\nPinned workspace paths: ${ JSON.stringify(pinnedContext.paths) }\nKeep file, code, and terminal operations inside these paths unless the user explicitly provides another target path. External web/API lookups are allowed only when the current request asks for current factual information.\n\nMy Request:\n${ userRequest }`;
     }
 
-    console.log(`[Orchestrator] ▶ "${effectiveRequest.substring(0, 80)}" | User: ${userId}`);
-    
+    console.log(`[Orchestrator] ▶ "${ effectiveRequest.substring(0, 80) }" | User: ${ userId }`);
+
     resetCancelFlag(projectId);
     const workspace = new WorkspaceManager(userId, projectId);
 
     // PARALLEL INIT — all disk I/O runs concurrently instead of sequentially
+    const synapseGraph = shouldHydrateMemory ? getSynapseGraphForChat(projectId) : null;
     await Promise.all([
       shouldInitializeMemory ? globalMemoryManager.initialize() : Promise.resolve(),
       shouldInitializeMemory ? memoryV2.initialize() : Promise.resolve(),
       shouldPersistSession ? globalSessionManager.loadForProject(projectId) : Promise.resolve(),
       shouldInitializeWorkspace ? workspace.initialize() : Promise.resolve(),
+      synapseGraph ? synapseGraph.initialize(projectId, projectId) : Promise.resolve(),
     ]);
-    
+
     if (shouldPersistLongTermMemory) {
       memoryV2.recordRawEvent({
         userId,
@@ -327,13 +330,13 @@ export class AgentOrchestrator {
     const context: RuntimeProjectContext = shouldPersistLongTermMemory
       ? globalMemoryManager.getProjectContext(projectId)
       : {
-          projectId,
-          conversationSummary: 'Current request only.',
-          uploadedFiles: [],
-          recentMemories: [],
-          userPreferences: {},
-          errorHistory: []
-        };
+        projectId,
+        conversationSummary: 'Current request only.',
+        uploadedFiles: [],
+        recentMemories: [],
+        userPreferences: {},
+        errorHistory: []
+      };
     if (userName) context.userName = userName;
     context.userId = userId;
     context.runtimeSettings = runtimeSettings || null;
@@ -425,17 +428,18 @@ export class AgentOrchestrator {
       context.telegram = pinnedContext.telegram;
     }
 
-    const networkDenied = pinnedContext?.networkPolicy === 'deny' && pinnedContext?.allowNetwork !== true;
+    const isSandboxRun = runLocation === 'sandbox';
+    const networkDenied = isSandboxRun || (pinnedContext?.networkPolicy === 'deny' && pinnedContext?.allowNetwork !== true);
     context.networkPolicy = networkDenied ? 'deny' : 'allow';
     context.allowNetwork = !networkDenied;
-    context.allowAgentSpawning = !context.disableSubAgents && pinnedContext?.allowAgentSpawning !== false;
-    context.allowDynamicCode = pinnedContext?.allowDynamicCode !== false;
-    context.allowBrowserControl = pinnedContext?.allowBrowserControl !== false;
-    context.allowHostControl = pinnedContext?.allowHostControl === true;
-    context.allowAutomation = pinnedContext?.allowAutomation === true;
-    context.allowExternalCommunication = pinnedContext?.allowExternalCommunication === true;
-    context.allowSecretManagement = pinnedContext?.allowSecretManagement === true;
-    context.allowVcs = pinnedContext?.allowVcs === true;
+    context.allowAgentSpawning = isSandboxRun ? false : (!context.disableSubAgents && pinnedContext?.allowAgentSpawning !== false);
+    context.allowDynamicCode = isSandboxRun ? false : pinnedContext?.allowDynamicCode !== false;
+    context.allowBrowserControl = isSandboxRun ? false : pinnedContext?.allowBrowserControl !== false;
+    context.allowHostControl = isSandboxRun ? false : pinnedContext?.allowHostControl === true;
+    context.allowAutomation = isSandboxRun ? false : pinnedContext?.allowAutomation === true;
+    context.allowExternalCommunication = isSandboxRun ? false : pinnedContext?.allowExternalCommunication === true;
+    context.allowSecretManagement = isSandboxRun ? false : pinnedContext?.allowSecretManagement === true;
+    context.allowVcs = isSandboxRun ? false : pinnedContext?.allowVcs === true;
 
     const inheritedCapabilities = Array.isArray(context.allowedCapabilities)
       ? context.allowedCapabilities.map(String)
@@ -449,7 +453,7 @@ export class AgentOrchestrator {
       ...pinnedAllowedCapabilities,
     ])).filter(capability => {
       if (networkDenied && capability.startsWith('network.')) return false;
-      if (context.disableSubAgents && capability === 'agent.spawn') return false;
+      if ((isSandboxRun || context.disableSubAgents) && capability === 'agent.spawn') return false;
       if (context.allowDynamicCode === false && capability === 'code.dynamic') return false;
       if (context.allowBrowserControl === false && capability === 'browser.control') return false;
       return true;
@@ -467,13 +471,13 @@ export class AgentOrchestrator {
     context.selectedModelMode = effectiveMode;
     context.selectedModelName = resolveModelName(effectiveMode, runtimeSettings);
     context.selectedThinkingLevel = selectedThinkingLevel;
-    
+
     // Auto-route to optimal model based on complexity
     if (effectiveMode !== mode) {
-      console.log(`[Orchestrator] 🎯 Smart routing: user=${mode} → effective=${effectiveMode} (complexity: ${complexity})`);
+      console.log(`[Orchestrator] 🎯 Smart routing: user=${ mode } → effective=${ effectiveMode } (complexity: ${ complexity })`);
     }
-    console.log(`[Orchestrator] 🧠 Task complexity: ${complexity} | Model mode: ${effectiveMode} | Model: ${modelConfig.modelName}${leasedApiKey ? ' [ISOLATED CLIENT]' : ''}`);
-    
+    console.log(`[Orchestrator] 🧠 Task complexity: ${ complexity } | Model mode: ${ effectiveMode } | Model: ${ modelConfig.modelName }${ leasedApiKey ? ' [ISOLATED CLIENT]' : '' }`);
+
     // ═══════════════════════════════════════════════════════
     // PREDICTIVE BACKGROUND INTELLIGENCE (AGI Feature)
     // TEMPORARILY DISABLED: While powerful, spawning 4 parallel 
@@ -487,10 +491,14 @@ export class AgentOrchestrator {
       // ... background spawning logic ...
     }
     */
-    
+
+    // SYNAPSE GRAPH is now deeply integrated in Agent.ts runReActLoop.
+    // Context injection + tool result tracking happen inside the model loop.
+    // Orchestrator only handles init + flush.
+
     let finalAnswer = "";
     let effectiveApiKey = leasedApiKey || '';
-    
+
     try {
       // ═══════════════════════════════════════════════════════
       // PHASE 1: PRIMARY EXECUTION (using isolated or global client)
@@ -530,32 +538,32 @@ export class AgentOrchestrator {
           imageBackupParts
         )).text;
       }
-      
+
     } catch (error: any) {
       const errMsg = error.message || '';
       if (errMsg === 'CANCELLED_BY_USER' || errMsg.toLowerCase().includes('cancelled_by_user')) {
         // Clean stop — not an error
         finalAnswer = 'Stopped by user.';
-        console.log(`[Orchestrator] 🛑 Agent cancelled by user for ${projectId.substring(0, 8)}...`);
+        console.log(`[Orchestrator] 🛑 Agent cancelled by user for ${ projectId.substring(0, 8) }...`);
       } else {
-        finalAnswer = `Agent Execution Failed: ${error.message}`;
+        finalAnswer = `Agent Execution Failed: ${ error.message }`;
         console.error(`[Orchestrator] 💥 Fatal error:`, error.message);
         if (shouldPersistLongTermMemory) {
-          globalMemoryManager.logError('orchestrator', error.message, `Task: ${userRequest}`);
+          globalMemoryManager.logError('orchestrator', error.message, `Task: ${ userRequest }`);
           memoryV2.remember({
             userId,
             projectId,
             chatId: projectId,
             scope: 'error',
             type: 'orchestrator_failure',
-            content: `Task failed: ${userRequest}\nError: ${error.message}`,
+            content: `Task failed: ${ userRequest }\nError: ${ error.message }`,
             tags: ['orchestrator', 'failure'],
             confidence: 0.86,
             importance: 9,
             source: 'system',
           }).catch(() => undefined);
         }
-        
+
         // TRIGGER NEURAL PLASTICITY (AGI Feature)
         // Synthesize a permanent rule to avoid this error in the future
         if (shouldPersistLongTermMemory) {
@@ -572,9 +580,14 @@ export class AgentOrchestrator {
       await globalSessionManager.save();
     }
 
+    // Flush Synapse graph state to disk
+    if (synapseGraph) {
+      flushSynapseGraph(projectId).catch(() => {});
+    }
+
     const artifactsGenerated: string[] = [];
     if (shouldExportTranscript) {
-      const outputFilename = `result_${Date.now()}.txt`;
+      const outputFilename = `result_${ Date.now() }.txt`;
       const outputPath = await workspace.exportOutput(outputFilename, finalAnswer);
       artifactsGenerated.push(outputPath);
     }
@@ -584,8 +597,8 @@ export class AgentOrchestrator {
 
     if (shouldPersistLongTermMemory) {
       globalMemoryManager.saveEpisodicMemory(
-        projectId, 
-        `Executed task: ${userRequest}`, 
+        projectId,
+        `Executed task: ${ userRequest }`,
         'task_result',
         success ? 7 : 5,
         ['task', success ? 'success' : 'failed']
@@ -611,7 +624,7 @@ export class AgentOrchestrator {
       await globalMemoryManager.flush();
     }
 
-    console.log(`[Orchestrator] ✅ Pipeline complete in ${executionTime}ms (complexity: ${complexity}, mode: ${effectiveMode})`);
+    console.log(`[Orchestrator] ✅ Pipeline complete in ${ executionTime }ms (complexity: ${ complexity }, mode: ${ effectiveMode })`);
 
     // Record performance for adaptive learning
     if (shouldPersistLongTermMemory) {
@@ -668,14 +681,14 @@ export class AgentOrchestrator {
       const insertIdx = this.taskQueue.findIndex(
         t => priorityOrder[t.priority] > priorityOrder[priority]
       );
-      
+
       if (insertIdx === -1) {
         this.taskQueue.push(task);
       } else {
         this.taskQueue.splice(insertIdx, 0, task);
       }
 
-      console.log(`[Orchestrator] Task queued: "${request.substring(0, 50)}..." (priority: ${priority}, queue size: ${this.taskQueue.length})`);
+      console.log(`[Orchestrator] Task queued: "${ request.substring(0, 50) }..." (priority: ${ priority }, queue size: ${ this.taskQueue.length })`);
 
       // Start processing if not already running
       this.processQueue();
@@ -719,10 +732,10 @@ export class AgentOrchestrator {
   /**
    * Get current queue status.
    */
-  public getQueueStatus(): { 
-    currentTask: string | null, 
-    queueLength: number, 
-    tasks: Array<{ id: string, request: string, priority: string, status: string }> 
+  public getQueueStatus(): {
+    currentTask: string | null,
+    queueLength: number,
+    tasks: Array<{ id: string, request: string, priority: string, status: string }>
   } {
     return {
       currentTask: this.currentTask?.request || null,

@@ -6,7 +6,7 @@ import { useFilePanelActions } from '../../contexts/FilePanelContext';
 import {
   ChevronRight, ChevronDown, Monitor, ShieldHalf, Copy, CheckCircle, Maximize2, CornerDownLeft,
   RefreshCw, ExternalLink, Check, Globe, Smartphone, Tablet, Terminal, ArrowRight,
-  Search, FileText, Calculator, Database, Hash, Cpu, FolderOpen, AlertTriangle
+  Search, FileText, Calculator, Database, Hash, Cpu, FolderOpen, AlertTriangle, MessageSquare
 } from 'lucide-react';
 // @ts-ignore
 import ReactMarkdown from 'react-markdown';
@@ -3043,34 +3043,63 @@ const InterAgentCommCard = ({ log, onOpenAgentTeam }: { log: any; onOpenAgentTea
   const msgType = log.messageType || log.commType || 'info_share';
   const subject = log.subject || log.text || '';
   const body = log.body || log.content || '';
+  const deliveryMode = log.deliveryMode || 'defer';
+  const priority = log.priority || 'normal';
+  const preview = body && body !== subject ? body : '';
+  const deliverAfter = Number(log.deliverAfter || 0) || undefined;
+  const isScheduled = log.scheduled === true || (deliverAfter ? deliverAfter > Date.now() : false);
+  const focusAgent = fromAgent === 'Main'
+    ? (toAgent && toAgent !== '*' ? toAgent : undefined)
+    : fromAgent;
 
-  const typeEmoji: Record<string, string> = {
-    info_share: '💡', question: '❓', answer: '✅', alert: '🚨',
-    coordination: '🤝', discovery: '🔍', progress: '📊', handoff: '📋',
+  const typeIcon: Record<string, React.ReactNode> = {
+    info_share: <Hash className="h-3.5 w-3.5" />,
+    question: <MessageSquare className="h-3.5 w-3.5" />,
+    answer: <CheckCircle className="h-3.5 w-3.5" />,
+    alert: <AlertTriangle className="h-3.5 w-3.5" />,
+    coordination: <ArrowRight className="h-3.5 w-3.5" />,
+    discovery: <Search className="h-3.5 w-3.5" />,
+    progress: <Monitor className="h-3.5 w-3.5" />,
+    handoff: <CornerDownLeft className="h-3.5 w-3.5" />,
   };
+  const priorityClass = priority === 'critical'
+    ? 'border-red-400/20 bg-red-500/[0.08] text-red-200'
+    : priority === 'high'
+      ? 'border-amber-300/18 bg-amber-400/[0.06] text-amber-100'
+      : 'border-white/[0.075] bg-white/[0.026] text-[#AFA79D]';
 
   return (
     <div className="my-1.5 overflow-hidden">
       <button
         type="button"
-        onClick={() => onOpenAgentTeam?.(fromAgent)}
-        className={`eterx-agent-comm-card flex min-h-[46px] w-full items-center gap-3 rounded-[12px] px-3 py-2.5 bg-white/[0.014] border border-white/[0.065] text-left transition-colors hover:bg-white/[0.026] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/16 ${ACTION_CARD_CLASS}`}
-        aria-label={`Open ${fromAgent} in agent team`}
+        onClick={() => onOpenAgentTeam?.(focusAgent)}
+        className={`eterx-agent-comm-card flex min-h-[58px] w-full items-start gap-3 rounded-[8px] px-3 py-2.5 bg-white/[0.012] border border-white/[0.07] text-left transition-colors hover:bg-white/[0.024] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/16 ${ACTION_CARD_CLASS}`}
+        aria-label={`Open ${focusAgent || 'agent team'} in agent team`}
       >
-        <span className="eterx-agent-comm-identities flex shrink-0 items-center gap-1.5">
+        <span className="eterx-agent-comm-identities mt-0.5 flex shrink-0 items-center gap-1.5">
           <SubAgentIdentityIcon name={fromAgent} status="working" size={28} />
           <ArrowRight className="h-3.5 w-3.5 text-[#6F685F]" />
           <SubAgentIdentityIcon name={toAgent === '*' ? 'All agents' : toAgent} status="idle" size={28} />
         </span>
-        <span className="text-[16px] shrink-0">{typeEmoji[msgType] || '📩'}</span>
         <span className="min-w-0 flex-1">
-          <span className="flex items-center gap-1.5">
-            <span className="text-[12px] font-medium text-[#CFC8BD]">{fromAgent}</span>
+          <span className="flex min-w-0 flex-wrap items-center gap-1.5">
+            <span className="text-[12px] font-semibold text-[#D8D1C7]">{fromAgent}</span>
             <ArrowRight className="h-3 w-3 text-[#6F685F]" />
-            <span className="text-[12px] font-medium text-[#CFC8BD]">{toAgent === '*' ? 'All' : toAgent}</span>
-            <span className="px-1.5 py-0.5 rounded-full bg-white/[0.028] border border-white/[0.065] text-[8px] font-semibold text-[#8F877C] uppercase tracking-[0.08em]">{msgType.replace('_', ' ')}</span>
+            <span className="text-[12px] font-semibold text-[#D8D1C7]">{toAgent === '*' ? 'All agents' : toAgent}</span>
+            <span className="inline-flex items-center gap-1 rounded-[6px] border border-white/[0.075] bg-white/[0.026] px-1.5 py-0.5 text-[8.5px] font-semibold uppercase tracking-[0.08em] text-[#9C948B]">
+              {typeIcon[msgType] || <MessageSquare className="h-3.5 w-3.5" />}
+              {msgType.replace('_', ' ')}
+            </span>
+            <span className={`rounded-[6px] border px-1.5 py-0.5 text-[8.5px] font-semibold uppercase tracking-[0.08em] ${priorityClass}`}>{priority}</span>
+            <span className="rounded-[6px] border border-white/[0.065] bg-black/10 px-1.5 py-0.5 text-[8.5px] font-semibold uppercase tracking-[0.08em] text-[#827A70]">{deliveryMode}</span>
+            {isScheduled && (
+              <span className="rounded-[6px] border border-sky-300/16 bg-sky-400/[0.055] px-1.5 py-0.5 text-[8.5px] font-semibold uppercase tracking-[0.08em] text-sky-100/85">
+                scheduled
+              </span>
+            )}
           </span>
-          {subject && <span className="block text-[11px] text-[#918A80] mt-0.5 truncate">{subject}</span>}
+          {subject && <span className="mt-1 block truncate text-[12px] font-medium text-[#BDB5AB]">{subject}</span>}
+          {preview && <span className="mt-0.5 block truncate text-[11px] text-[#817970]">{preview}</span>}
         </span>
       </button>
     </div>

@@ -105,6 +105,10 @@ export function pauseAgent(projectId: string, agentName: string, onTrace?: (trac
   let resolver: (() => void) | null = null;
   const promise = new Promise<void>((resolve) => { resolver = resolve; });
   agentPauseStates.set(key, { paused: true, resolver, promise });
+  interAgentMailbox.updateAgentPresence(resolveProjectId(projectId), agentName, {
+    status: 'paused',
+    progress: 'Paused by main control',
+  });
   console.log(`[SubAgent] ⏸ Paused: ${agentName}`);
 
   const traceEvent = {
@@ -138,6 +142,10 @@ export function resumeAgent(projectId: string, agentName: string, onTrace?: (tra
   state.paused = false;
   state.resolver?.(); // resolve the promise — execution continues
   agentPauseStates.delete(key);
+  interAgentMailbox.updateAgentPresence(resolveProjectId(projectId), agentName, {
+    status: 'running',
+    progress: 'Resumed by main control',
+  });
   console.log(`[SubAgent] ▶ Resumed: ${agentName}`);
 
   const traceEvent = {
@@ -175,6 +183,10 @@ export function closeAgent(projectId: string, agentName: string, onTrace?: (trac
     agentPauseStates.delete(key);
   }
 
+  interAgentMailbox.updateAgentPresence(resolveProjectId(projectId), agentName, {
+    status: 'closed',
+    progress: 'Closed by main control',
+  });
   console.log(`[SubAgent] ✕ Closed: ${agentName}`);
 
   const traceEvent = {
@@ -470,14 +482,29 @@ export class SubAgentSpawner {
 
   /** Build a TEAM-AWARE task brief for a sub-agent. */
   private buildDeepBrief(task: string, agentName: SubAgentName, projectId: string, parentContext?: string): string {
-    const otherAgents = Array.from(this.activeAgents.values())
-      .filter(a => a.projectId === projectId && a.status === 'running' && a.name !== agentName)
-      .map(a => `  • ${a.name}: "${(a as any).task?.substring(0, 60) || 'working'}"`)
-      .join('\n');
+    const activeTaskByName = new Map(
+      Array.from(this.activeAgents.values())
+        .filter(a => a.projectId === projectId)
+        .map(a => [a.name, a.task] as const)
+    );
+    const teamSnapshot = interAgentMailbox.getTeamSnapshot(projectId)
+      .filter(agent => agent.agentName !== agentName && agent.agentName.toLowerCase() !== 'main');
+    const otherAgents = teamSnapshot.length > 0
+      ? teamSnapshot
+          .map(agent => {
+            const taskSummary = (agent.task || activeTaskByName.get(agent.agentName as SubAgentName) || 'working').substring(0, 80);
+            return `  - ${agent.agentName} (${agent.status}): "${taskSummary}"`;
+          })
+          .join('\n')
+      : Array.from(this.activeAgents.values())
+          .filter(a => a.projectId === projectId && a.status === 'running' && a.name !== agentName)
+          .map(a => `  - ${a.name}: "${(a as any).task?.substring(0, 80) || 'working'}"`)
+          .join('\n');
     const teamSection = otherAgents
-      ? `\n🤝 TEAM — Other agents working:\n${otherAgents}\nUse agent_communicate tool to talk to them.\n`
+      ? `\nTEAM - Other agents planned or running:\n${otherAgents}\nUse agent_communicate action="status" to inspect team state and action="send" or "broadcast" to coordinate.\n`
       : '';
-    return `━━━ ${agentName} — Sub-Agent Task ━━━\n🎯 You are ${agentName}, a parallel sub-agent.\n\n${task}\n${teamSection}\nRULES:\n1. Full tool access. Work deeply — no shortcuts.\n2. NEVER call task_decomposer or spawn_sub_agent.\n3. VERIFY your work before finishing.\n4. You are ONE of multiple parallel agents.\n\nINTER-AGENT COMMUNICATION (agent_communicate tool):\n- check: See messages from other agents\n- send: Send info/question/alert to a specific agent\n- broadcast: Alert ALL agents\n- handoff: Pass results to Main agent\n\n## ${agentName} — Report Format\n**Task:** [what you did]\n**Files:** [paths]\n**Key Results:** [findings]\n**Verified:** [yes/no]\n\n${parentContext ? `CONTEXT: ${parentContext}\n` : ''}EXECUTE NOW.`;
+    const controlSection = `\nUNIFIED CONTROL:\n- Use agent_communicate with to="Main" when you need clarification, approval, a merge decision, or user-facing escalation.\n- Check your mailbox before major decisions and after long tool runs.\n- Broadcast only blockers or discoveries that affect other agents.\n- Handoff concise partial results to Main when your lane is complete.\n`;
+    return `━━━ ${agentName} — Sub-Agent Task ━━━\n🎯 You are ${agentName}, a parallel sub-agent.\n\n${task}\n${teamSection}\nRULES:\n1. Full tool access. Work deeply — no shortcuts.\n2. NEVER call task_decomposer or spawn_sub_agent.\n3. VERIFY your work before finishing.\n4. You are ONE of multiple parallel agents.\n\nINTER-AGENT COMMUNICATION (agent_communicate tool):\n- check: See messages from other agents\n- send: Send info/question/alert to a specific agent\n- broadcast: Alert ALL agents\n- handoff: Pass results to Main agent\n${controlSection}\n## ${agentName} — Report Format\n**Task:** [what you did]\n**Files:** [paths]\n**Key Results:** [findings]\n**Verified:** [yes/no]\n\n${parentContext ? `CONTEXT: ${parentContext}\n` : ''}EXECUTE NOW.`;
   }
 
   /** Spawn a single sub-agent with its own API key. */
@@ -495,8 +522,23 @@ export class SubAgentSpawner {
       return { agentId, name, result: 'Cancelled by user', success: false, durationMs: 0, traceLog: ['Cancelled before start'] };
     }
     // Register agents in inter-agent mailbox
-    interAgentMailbox.registerAgent(context.projectId, name);
-    interAgentMailbox.registerAgent(context.projectId, 'Main');
+    interAgentMailbox.registerAgent(context.projectId, name, {
+      role: 'sub_agent',
+      task,
+      status: 'running',
+      progress: 'Starting execution...',
+    });
+    interAgentMailbox.registerAgent(context.projectId, 'Main', {
+      role: 'main',
+      status: 'coordinating',
+    });
+    const subAgentContext = {
+      ...(context as any),
+      agentName: name,
+      subAgentName: name,
+      parentAgentName: 'Main',
+      isSubAgent: true,
+    };
     const deepBrief = this.buildDeepBrief(task, name, context.projectId, parentContext);
     const traceLog: string[] = [];
     const instance: SubAgentInstance = {
@@ -509,6 +551,11 @@ export class SubAgentSpawner {
       progress: 'Starting execution...',
       startedAt: instance.startedAt
     }, context.projectId);
+    interAgentMailbox.updateAgentPresence(context.projectId, name, {
+      status: 'running',
+      task,
+      progress: 'Starting execution...',
+    });
 
     // Emit spawn event to UI
     if (onTrace) {
@@ -535,7 +582,7 @@ export class SubAgentSpawner {
       const subAgentClient = createIsolatedClient(lease.apiKey, subAgentMode, (context as any).runtimeSettings);
       
       const result = await subAgentClient.executeMessageLoop(
-        context,
+        subAgentContext,
         deepBrief,
         [],
         (trace) => {
@@ -566,6 +613,11 @@ export class SubAgentSpawner {
 
           // Write status every 8th event (reduced disk I/O for speed)
           if (traceLog.length % 8 === 0) {
+            interAgentMailbox.updateAgentPresence(context.projectId, name, {
+              status: instance.status === ('paused' as any) ? 'paused' : 'running',
+              task,
+              progress: trace.text || 'Working...',
+            });
             agentMessageBus.writeAgentStatus(name, {
               status: instance.status === ('paused' as any) ? 'paused' : 'running',
               task,
@@ -597,6 +649,11 @@ export class SubAgentSpawner {
       instance.completedAt = Date.now();
       instance.durationMs = durationMs;
 
+      interAgentMailbox.updateAgentPresence(context.projectId, name, {
+        status: 'completed',
+        task,
+        progress: 'Done',
+      });
       await agentMessageBus.writeAgentStatus(name, {
         status: 'completed',
         task,
@@ -641,6 +698,11 @@ export class SubAgentSpawner {
       instance.completedAt = Date.now();
       instance.durationMs = durationMs;
 
+      interAgentMailbox.updateAgentPresence(context.projectId, name, {
+        status: wasCancelled ? 'cancelled' : 'failed',
+        task,
+        progress: wasCancelled ? 'Cancelled' : `Failed: ${ error.message }`,
+      });
       await agentMessageBus.writeAgentStatus(name, {
         status: wasCancelled ? 'cancelled' : 'failed',
         task,
@@ -694,6 +756,20 @@ export class SubAgentSpawner {
       return name;
     });
 
+    interAgentMailbox.registerAgent(context.projectId, 'Main', {
+      role: 'main',
+      status: 'coordinating',
+      progress: `Managing ${teamSize} planned sub-agent(s)`,
+    });
+    tasks.forEach((taskItem, index) => {
+      interAgentMailbox.registerAgent(context.projectId, agentNames[index], {
+        role: 'sub_agent',
+        task: taskItem.task,
+        status: 'planned',
+        progress: index === 0 ? 'Queued for immediate start' : `Queued with ${index * 500}ms stagger`,
+      });
+    });
+
     if (onTrace) {
       onTrace({
           type: 'sub_agent_spawn',
@@ -715,12 +791,26 @@ export class SubAgentSpawner {
 
       // Fire-and-forget: start without awaiting
       const promise = (async () => {
-        if (isCancelled(context.projectId)) return;
+        if (isCancelled(context.projectId)) {
+          interAgentMailbox.updateAgentPresence(context.projectId, name, {
+            status: 'cancelled',
+            task: t.task,
+            progress: 'Cancelled before start',
+          });
+          return;
+        }
         
         // Minimal stagger: 500ms (was 2s) — each agent has its own key, minimal collision risk
         if (index > 0) {
           await new Promise(r => setTimeout(r, index * 500));
-          if (isCancelled(context.projectId)) return;
+          if (isCancelled(context.projectId)) {
+            interAgentMailbox.updateAgentPresence(context.projectId, name, {
+              status: 'cancelled',
+              task: t.task,
+              progress: 'Cancelled before start',
+            });
+            return;
+          }
         }
 
         await this.spawnAgent(t.task, context, index, parentContext, onTrace, name);
@@ -764,6 +854,20 @@ export class SubAgentSpawner {
       const name = this.resolveAgentName(context.projectId, t.name, reservedNames);
       reservedNames.add(name);
       return name;
+    });
+
+    interAgentMailbox.registerAgent(context.projectId, 'Main', {
+      role: 'main',
+      status: 'coordinating',
+      progress: `Waiting for ${tasks.length} parallel sub-agent(s)`,
+    });
+    tasks.forEach((taskItem, index) => {
+      interAgentMailbox.registerAgent(context.projectId, agentNames[index], {
+        role: 'sub_agent',
+        task: taskItem.task,
+        status: 'planned',
+        progress: index === 0 ? 'Queued for immediate start' : `Queued with ${index * 500}ms stagger`,
+      });
     });
 
     if (onTrace) {

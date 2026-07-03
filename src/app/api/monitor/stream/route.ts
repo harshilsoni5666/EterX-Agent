@@ -5,11 +5,15 @@
 
 import { NextRequest } from 'next/server';
 import { monitorEmitter } from '../../../../lib/agent/monitor/emitter';
+import { rejectCrossOrigin } from '../../agent/_shared';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 export async function GET(req: NextRequest) {
+  const originError = rejectCrossOrigin(req);
+  if (originError) return originError;
+
   const url = new URL(req.url);
   const chatId = url.searchParams.get('chatId') || undefined;
   const encoder = new TextEncoder();
@@ -56,13 +60,15 @@ export async function GET(req: NextRequest) {
       'Cache-Control': 'no-cache, no-transform',
       'Connection': 'keep-alive',
       'X-Accel-Buffering': 'no',
-      'Access-Control-Allow-Origin': '*',
     },
   });
 }
 
 export async function POST(req: NextRequest) {
   try {
+    const originError = rejectCrossOrigin(req);
+    if (originError) return originError;
+
     const body = await req.json().catch(() => ({}));
     const limit = Math.min(Number(body.limit) || 100, 500);
     const chatId = typeof body.chatId === 'string' && body.chatId.trim() ? body.chatId.trim() : '';

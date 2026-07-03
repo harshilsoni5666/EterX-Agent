@@ -11,6 +11,7 @@ import { NextRequest } from 'next/server';
 import path from 'path';
 import fs from 'fs';
 import { monitorEmitter } from '../../../../lib/agent/monitor/emitter';
+import { rejectCrossOrigin } from '../../agent/_shared';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -55,6 +56,9 @@ function getLatestScreenshot(): { path: string; ts: number } | null {
 }
 
 export async function GET(req: NextRequest) {
+  const originError = rejectCrossOrigin(req);
+  if (originError) return originError;
+
   const url = new URL(req.url);
   const chatId = url.searchParams.get('chatId') || undefined;
   const encoder = new TextEncoder();
@@ -172,7 +176,6 @@ export async function GET(req: NextRequest) {
       'Cache-Control': 'no-cache, no-transform',
       'Connection': 'keep-alive',
       'X-Accel-Buffering': 'no',
-      'Access-Control-Allow-Origin': '*',
     },
   });
 }
@@ -180,6 +183,9 @@ export async function GET(req: NextRequest) {
 // Poll endpoint — returns latest screenshot as base64
 export async function POST(req: NextRequest) {
   try {
+    const originError = rejectCrossOrigin(req);
+    if (originError) return originError;
+
     const latest = getLatestScreenshot();
     if (!latest) {
       return Response.json({ screenshot: null, ts: Date.now() });

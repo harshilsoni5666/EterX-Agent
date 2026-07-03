@@ -1,6 +1,7 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { apiKeyPool } from '../../../../lib/agent/api-key-pool';
 import { applyRuntimeApiKeys, applyRuntimeModelOverrides } from '../../../../lib/agent/runtime-api-keys';
+import { rejectCrossOrigin } from '../../agent/_shared';
 
 export const dynamic = 'force-dynamic';
 
@@ -10,8 +11,11 @@ export const dynamic = 'force-dynamic';
  * The client calls this before connecting to the Live API WebSocket.
  * Returns a key from the pool, leased under a unique live session ID.
  */
-export async function POST(req: Request) {
+export async function POST(req: NextRequest) {
   try {
+    const originError = rejectCrossOrigin(req);
+    if (originError) return originError;
+
     const body = await req.json().catch(() => ({}));
     const chatId = body.chatId || `live_${Date.now()}`;
     const runtimeKeyResult = applyRuntimeApiKeys(body.apiKeys);
