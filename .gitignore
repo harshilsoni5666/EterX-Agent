@@ -80,3 +80,5 @@ chunk_log*.txt
 
 # Allow config example
 # !.env.example
+
+ARCHITECTURE.md

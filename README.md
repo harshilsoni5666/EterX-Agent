@@ -15,7 +15,7 @@
 
 ---
 
-## 📖 Table of Contents
+## Table of Contents
 
 - [About](#-about-eterx-agent)
 - [Key Features](#-key-features)
@@ -24,11 +24,12 @@
 - [Usage](#-usage)
 - [Supported Providers](#-supported-model-providers)
 - [CLI Commands](#-cli-commands)
+- [Project Structure](#-project-structure)
 - [Local Storage Architecture](#-local-storage-architecture)
 
 ---
 
-## 🤖 About EterX Agent
+## About EterX Agent
 
 EterX-Agent is designed to operate as an **adaptive AI assistant** that can:
 - Learn from use and improve skills over time.
@@ -40,19 +41,21 @@ It runs with a custom EterX app interface and supports practical integrations, a
 
 ---
 
-## ✨ Key Features
+## Key Features
 
-- **Multi-Provider Support**: Seamlessly switch between Google Gemini, OpenAI, Anthropic, OpenRouter, Groq, local models via Ollama, and more.
-- **Persistent Memory**: Retains user facts, project context, and session data locally.
-- **Cross-Platform Interfaces**: Access your agent via Web App, Desktop Electron App, or a Telegram bot.
-- **Self-Improving**: Automatically learns from your workflow and generates self-improvement patches.
-- **Local First**: All data is stored locally on your machine.
+- **Advanced Reasoning & Planning**: Dynamically breaks down complex tasks, spawns specialized sub-agents (e.g., critics and planners), and utilizes neural plasticity for self-improvement.
+- **Multi-Provider AI**: Seamlessly switch between Google Gemini, OpenAI, Anthropic, OpenRouter, Groq, DeepSeek, local models via Ollama, and more—with automatic load balancing and error fallbacks.
+- **Multi-Tier Persistent Memory**: Retains user facts, project context, and session data locally through a sophisticated graph-based memory system.
+- **Sandboxed Execution**: Safely compiles, runs, and manipulates code in a strictly isolated local environment with strict capability boundaries.
+- **Cross-Platform Interfaces**: Access your agent seamlessly via the Next.js Web App, native Desktop Electron App, or on-the-go with the Telegram Bot integration.
+- **Dynamic Skill Creation**: The agent can autonomously write and integrate new tools for itself on the fly to solve novel problems.
+- **Local First & Private**: All memories, workspace configurations, and logs are stored strictly on your local disk.
 
 ---
 
-## 🚀 Installation
+## Installation
 
-### ⚡ One-Command Install (Recommended)
+### One-Command Install (Recommended)
 
 **Windows (PowerShell):**
 ```powershell
@@ -65,7 +68,7 @@ curl -fsSL https://raw.githubusercontent.com/harshilsoni5666/EterX-agent-/main/i
 ```
 > **Note:** The installer automatically handles Node.js, Git, dependencies, API key configuration, local storage, desktop shortcuts, and application launch. For existing installs, it repairs setup and dependencies without altering source files (unless `ETERX_UPDATE=1` is set).
 
-### 🛠️ Manual Install
+### Manual Install
 
 If you prefer to set up everything manually:
 ```bash
@@ -77,7 +80,7 @@ The interactive wizard will guide you through system detection, dependency insta
 
 ---
 
-## ⚙️ Configuration
+## Configuration
 
 After installation, you can add or manage API keys at any time using:
 
@@ -88,7 +91,7 @@ The quick wizard prioritizes Google Gemini, followed by optional setups for Tavi
 
 ---
 
-## 💻 Usage
+## Usage
 
 Run EterX via the global CLI command or npm scripts:
 
@@ -100,7 +103,7 @@ Run EterX via the global CLI command or npm scripts:
 
 ---
 
-## 🧠 Supported Model Providers
+## Supported Model Providers
 
 EterX-Agent supports a vast array of top-tier AI models:
 
@@ -133,7 +136,7 @@ EterX-Agent supports a vast array of top-tier AI models:
 
 ---
 
-## 🛠 CLI Commands
+## CLI Commands
 
 EterX comes with a powerful CLI tool for easy management:
 
@@ -168,7 +171,31 @@ eterx uninstall        # Remove EterX
 
 ---
 
-## 📂 Local Storage Architecture
+## Project Structure
+
+The codebase is organized into several key components, spanning both frontend interfaces and backend agent logic:
+
+```text
+EterX-Agent/
+├── electron/                # Desktop application wrapper using Electron
+├── fastapi_blog/            # Python backend (FastAPI) for API integrations
+├── src/
+│   ├── app/                 # Next.js web application routing and pages
+│   ├── components/          # Reusable React UI components
+│   ├── contexts/            # React context providers for state management
+│   └── lib/                 # Core AI agent engine
+│       ├── agent/           # Adaptive logic, reasoning, roles, memory
+│       ├── code/            # Code generation and editing tools
+│       ├── live/            # Real-time WebSocket/communication
+│       └── sandbox/         # Isolated execution environments
+├── scripts/                 # Utility scripts for theme generation and testing
+├── setup/                   # Setup wizards and installation scripts
+└── eterx.js                 # Global CLI entry point
+```
+
+---
+
+## Local Storage Architecture
 
 All data remains strictly local on your machine under the `.workspaces/` directory:
 
@@ -189,6 +216,6 @@ All data remains strictly local on your machine under the `.workspaces/` directo
 
 ---
 
-## 🧑‍💻 Developer
+## Developer
 
 **EterX-Agent** is proudly built and maintained by **Harshil Soni**.
