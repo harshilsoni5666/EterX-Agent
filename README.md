@@ -34,6 +34,28 @@ A premium, highly integrated interface supporting both custom light and dark the
 
 ---
 
+## Architecture
+
+### Sub-Agent System
+
+EterX operates a collaborative multi-agent architecture. For complex or multi-layered projects, the main agent can delegate tasks to parallel sub-agents running independently in the background.
+
+*   **Identifiable Personas**: Sub-agents are loaded as distinct personas named after prominent thinkers and scientists (such as Einstein, Heisenberg, Turing, Ada, and Curie) to make it easy to follow who is performing each task.
+*   **Parallel Non-Blocking Workflows**: When the main agent delegates work, sub-agents start immediately in the background with a staggered delay. The main agent is never blocked and can continue its own tasks in parallel. Results are saved locally and collected once the sub-agents complete their goals.
+*   **Key Isolation & Throttling Prevention**: To prevent rate limits, each sub-agent is assigned its own client with a different API key leased from the local pool. This prevents parallel agents from conflicting, hitting limits, or getting blocked during high-concurrency tasks.
+*   **Inter-Agent Mailbox (Agent-to-Agent Communication)**: A real-time mailbox system lets agents coordinate. Sub-agents check their mailboxes between tasks to read coordination requests, send questions to the main agent, hand off partial results, or broadcast warnings to the entire swarm. Messages include priorities, attachments, and confidence metrics.
+*   **Interactive Control Loops**: You have complete command over the background swarm. Sub-agents can be individually paused (suspending their loops safely), resumed when needed, or closed (terminated) immediately without affecting the remaining active agents.
+*   **Specialized Domain Experts**: EterX can spawn highly focused specialist profiles depending on the requirements:
+    *   **Mira (Security Auditor)**: Audits code security, reviews authorization flows, and assesses data handling.
+    *   **Leo (Performance Analyst)**: Profiles latency issues, finds memory bottlenecks, and implements optimizations.
+    *   **Kai (Architect)**: Analyzes system design, agent orchestration patterns, and module boundaries.
+    *   **Zara (QA Tester)**: Tracks bugs, verifies edge cases, and writes test suites.
+    *   **Sage (Researcher)**: Conducts multi-source research with source verification and date-aware constraints.
+*   **Consensus Panels**: Spawns a three-agent panel composed of an Optimist (Dave) to identify upsides, a Skeptic (Nova) to challenge assumptions and find risks, and a Realist (Sam) to ground suggestions in practical constraints. Together, they debate and synthesize a balanced recommendation.
+*   **Adversarial Debate Panels**: Runs multi-round debate swarms where agents critique each other's code, designs, or decisions, providing structured arguments and rebuttals to identify the absolute best path forward.
+
+---
+
 ## End-to-End Workflow
 
 EterX is organized around a seamless, end-to-end workflow that connects model configuration, customized personas, and multi-agent execution:
@@ -43,25 +65,6 @@ EterX is organized around a seamless, end-to-end workflow that connects model co
 *   **Delegate Tasks to Collaborative Sub-Agents**: Initiate your workflow and let the main agent break down complex tasks. It can spawn specialized sub-agents in the background that work in parallel and communicate via an inter-agent mailbox system to coordinate and assemble the final output.
 *   **Execute Local Workspace Actions**: Let your agents interact directly with your workspace. They can safely read and edit files, execute commands in isolated local sandboxes, conduct deep multi-angle web research, and use the computer cursor naturally to complete your instructions.
 *   **Retain Memory and Relational Context**: When a workflow finishes, EterX persists the learnings, facts, and project details locally. This feeds into a continuous learning loop, making all future tasks faster and context-aware.
-
----
-
-## Sub-Agent System
-
-This is one of the most powerful parts of EterX. Instead of doing everything sequentially, the main agent can spawn independent sub-agents that run in parallel in the background.
-
-**How it works:**
-- The main agent calls `spawn_sub_agent` with `mode="spawn"` — this fires off background agents immediately and returns without waiting.
-- The main agent continues its own work in parallel.
-- When needed, it calls `mode="collect"` to gather results.
-- Sub-agents communicate through an **inter-agent mailbox** system.
-
-**Available orchestration modes:**
-- `spawn` — Fire-and-forget parallel execution across independent tasks
-- `consensus` — 3-agent panel (Optimist / Skeptic / Realist) for high-stakes analysis
-- `debate` — Multi-round adversarial analysis for critical decisions
-- `specialist` — One deeply specialized agent: `security_auditor`, `performance_analyst`, `architect`, `qa_tester`, `researcher`
-- `advise` — Ask the system whether to use sub-agents or handle it solo
 
 ---
 
