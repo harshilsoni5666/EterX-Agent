@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./banner.png" width="100%" alt="EterX-Agent Banner">
+  <img src="./public/assets/banner.png" width="100%" alt="EterX-Agent Banner">
 </p>
 
 <h1 align="center">EterX-Agent</h1>
@@ -33,8 +33,8 @@ You can talk to the Agent Builder to create customized agents tailored specifica
 A premium, highly integrated interface supporting both custom light and dark themes designed specifically to match your preferred workspace aesthetics. All data runs locally on your machine, ensuring your workspace configurations and memories remain entirely private.
 
 <p align="center">
-  <img src="./white-theme.png" width="48%" alt="White Theme" />
-  <img src="./black-theme.png" width="48%" alt="Dark Theme" />
+  <img src="./public/assets/white-theme.png" width="48%" alt="White Theme" />
+  <img src="./public/assets/black-theme.png" width="48%" alt="Dark Theme" />
 </p>
 
 ---
