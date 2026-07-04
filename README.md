@@ -56,6 +56,11 @@ The sub-agent system is entirely orchestrated and managed by the AI engine itsel
     *   *Consensus Panels*: Spawns Dave (Optimist), Nova (Skeptic), and Sam (Realist) to debate upside opportunities, surface failure risks, and compile actionable realist recommendations.
     *   *Adversarial Debate*: Runs multi-round critique rounds where agents debate findings, write rebuttals, modify their stances, and generate a final synthesis backed by concession-based confidence scores.
 
+<p align="center">
+  <img src="./public/assets/sub-agent.png" width="48%" alt="Sub-Agent Panel" />
+  <img src="./public/assets/sub-agent1.png" width="48%" alt="Sub-Agent Workflow" />
+</p>
+
 ---
 
 ## End-to-End Workflow
