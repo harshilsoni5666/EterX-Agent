@@ -35,30 +35,26 @@ A premium, highly integrated interface supporting both custom light and dark the
 ---
 
 ## Architecture
+### Autonomous Sub-Agent Swarms
 
-### Sub-Agent System
+The sub-agent system is entirely orchestrated and managed by the AI engine itself, rather than being manually controlled by the user. When a complex task is submitted, the primary agent evaluates the goals and autonomously decides how, when, and which sub-agents to deploy:
 
-EterX operates a collaborative multi-agent architecture. For complex or multi-layered projects, the main agent can delegate tasks to parallel sub-agents running independently in the background.
-
-*   **Identifiable Personas**: Sub-agents are loaded as distinct personas named after prominent thinkers and scientists (such as Einstein, Heisenberg, Turing, Ada, and Curie) to make it easy to follow who is performing each task in the workspace logs.
-*   **Parallel Non-Blocking Workflows**: When the main agent delegates work, sub-agents start immediately in the background with a staggered delay (such as 500ms intervals) to prevent startup bottlenecks and environment race conditions. The main agent is never blocked and can continue its own tasks in parallel. Results are saved locally and collected once the sub-agents complete their goals.
-*   **Key Isolation & Throttling Prevention**: To prevent rate limits, each sub-agent is assigned its own client with a different API key leased from the local pool. This prevents parallel agents from conflicting, hitting limits, or getting blocked during high-concurrency tasks.
-*   **Inter-Agent Mailbox (Agent-to-Agent Communication)**: A real-time mailbox system lets agents coordinate. Sub-agents check their mailboxes between tasks to read coordination requests, send questions to the main agent, hand off partial results, or broadcast warnings to the entire swarm. Messages include priorities (low, normal, high, critical) and delivery modes:
-    *   *Interrupt*: Pauses the recipient at their next safe boundary to force a response to critical questions or alerts.
-    *   *Defer*: Delivers the message silently to be processed when the agent is free.
-    *   *Silent*: Logs the data directly to history without disrupting the agent's active execution flow.
-*   **Interactive Control Loops**: You have complete command over the background swarm. Sub-agents can be individually paused (suspending their loops safely using promise resolvers), resumed when needed, or closed (terminated) immediately. A global emergency stop flag can also be triggered to halt all active background agents across all chats instantly.
-*   **Specialized Domain Experts**: EterX can spawn highly focused specialist profiles depending on the requirements:
-    *   **Mira (Security Auditor)**: Audits code security, reviews authorization flows, checks for exposed credentials, evaluates header policies (CORS, CSRF), and assesses unsafe data-handling paths.
-    *   **Leo (Performance Analyst)**: Profiles latency issues, identifies memory leaks (such as unclosed streams or listener buildup), analyzes database query efficiency (like N+1 loops), and implements CPU optimizations.
-    *   **Kai (Architect)**: Analyzes module design, checks for circular dependencies, reviews state management flows, and maps out system boundaries using visual flow diagrams.
-    *   **Zara (QA Tester)**: Tracks bugs, verifies edge cases, identifies untested code paths, and automatically writes test suites (using Jest or Vitest) to check for regressions.
-    *   **Sage (Researcher)**: Conducts deep multi-source research using date-aware search limits and source-credibility filtering to verify claims and resolve conflicting evidence.
-*   **Consensus Panels**: Spawns a three-agent panel composed of an Optimist (Dave) to identify upsides, a Skeptic (Nova) to challenge assumptions and find risks, and a Realist (Sam) to ground suggestions in practical constraints. Together, they debate and synthesize a balanced recommendation.
-*   **Adversarial Debate Panels**: Runs multi-round debate swarms where agents critique each other's work:
-    *   *Round 1*: Agents analyze the task independently.
-    *   *Round 2*: Agents review the opposing analysis, write cross-rebuttals, and revise their initial positions.
-    *   *Round 3*: A confidence score is calculated based on concessions and agreement patterns, and a final synthesis is compiled by the realist or main agent.
+*   **Self-Directed Swarms**: The primary agent determines if a project requires parallel execution. It autonomously spawns background sub-agents—identified by distinct personas (Einstein, Ada, Turing, Curie, etc.)—to handle independent lanes, staggered at 500ms intervals to prevent environment race conditions. Results are queued and merged without user intervention.
+*   **Automatic Key Isolation**: To avoid service disruptions, the system leases separate API keys from the pool to different sub-agents. This routing is handled entirely by the AI, preventing rate limit conflicts or speed throttling.
+*   **Independent Agent-to-Agent Mailbox**: Sub-agents autonomously check and manage their own mailbox coordination. They decide when to share discoveries, query other sub-agents, or send handoffs and alerts back to the main agent. This features multiple delivery modes:
+    *   *Interrupt*: The sending agent forces the recipient to pause at their next logical boundary to handle high-priority items.
+    *   *Defer*: Messages are queued to be read between tool execution runs.
+    *   *Silent*: Updates are written directly to logs for trace history without affecting agent behavior.
+*   **Interactive Control Override**: While the execution paths are autonomous, you retain override control. You can manually pause sub-agents (safely suspending their loops), resume them, or terminate them instantly via a global emergency stop.
+*   **Dynamic Specialist Deployments**: The agent analyzes code signals and automatically deploys tailored experts as needed:
+    *   *Mira (Security)*: Automatically scans for SQL/XSS vulnerabilities, credentials, and data-handling leaks.
+    *   *Leo (Performance)*: Explores memory leaks (unclosed streams/listeners) and database inefficiencies (N+1 query patterns).
+    *   *Kai (Architecture)*: Assesses module boundaries, state management, and maps circular dependencies.
+    *   *Zara (QA)*: Identifies untested paths and writes Jest/Vitest test suites to verify outputs.
+    *   *Sage (Research)*: Researches with date-aware filters, citations, and source credibility scoring.
+*   **Autonomous Cognitive Panels**: The system determines when high-stakes decisions require diverse perspectives and triggers advanced panels:
+    *   *Consensus Panels*: Spawns Dave (Optimist), Nova (Skeptic), and Sam (Realist) to debate upside opportunities, surface failure risks, and compile actionable realist recommendations.
+    *   *Adversarial Debate*: Runs multi-round critique rounds where agents debate findings, write rebuttals, modify their stances, and generate a final synthesis backed by concession-based confidence scores.
 
 ---
 
