@@ -18,16 +18,11 @@
 
 ## About EterX Agent
 
-EterX is an autonomous agent platform designed to run workflows, manage tasks, and coordinate intelligent workspace actions. It acts as an assistant that can take high-level requests, plan the necessary steps, coordinate specialized helper agents, and interact with files and applications to get real work done.
+EterX is an autonomous agent platform that plans, runs tasks, and operates your computer locally. It takes high-level goals, breaks them down into clear steps, and executes them using specialized tools and helper agents.
 
-### Collaborative Swarms
-For complex projects, EterX operates like a team. The main agent can delegate tasks to specialized sub-agents running concurrently in the background. These helpers communicate using an inter-agent mailbox system, sharing progress, debating choices, and working together to compile the final result.
-
-### Intelligent Model Routing
-EterX dynamically manages how it communicates with different AI models. It automatically determines the best model for the task at hand and handles connection issues or model availability behind the scenes with a silent fallback system. It also supports load balancing across multiple API keys to prevent interruptions.
-
-### Custom Agent Builder
-You can talk to the Agent Builder to create customized agents tailored specifically to your exact work requirements. Based on your conversation, it designs the agent's core mission, behavior rules, and safety guidelines. It can create a custom chain of tools tailored for that agent's work environment, automatically attaching the required subset of tools from the 80+ built-in library. If a completely unique, tailored tool is required, the builder creates it specifically for that agent, validating the profile when it is ready to deploy.
+*   **Collaborative Swarms**: Spawns parallel background sub-agents that communicate via a built-in mailbox system to tackle complex, independent tasks.
+*   **Intelligent Model Routing**: Automatically selects the best model, balances load across API keys, and routes through fallback chains to prevent service interruption.
+*   **Custom Agent Builder**: Talk to the builder to create specialized agents with custom rules, missions, and tailored tool chains built specifically for your environment.
 
 ### Agent-first app support with themes
 A premium, highly integrated interface supporting both custom light and dark themes designed specifically to match your preferred workspace aesthetics. All data runs locally on your machine, ensuring your workspace configurations and memories remain entirely private.
