@@ -29,8 +29,13 @@ EterX dynamically manages how it communicates with different AI models. It autom
 ### Custom Agent Builder
 You can talk to the Agent Builder to create customized agents tailored specifically to your exact work requirements. Based on your conversation, it designs the agent's core mission, behavior rules, and safety guidelines. It can create a custom chain of tools tailored for that agent's work environment, automatically attaching the required subset of tools from the 80+ built-in library. If a completely unique, tailored tool is required, the builder creates it specifically for that agent, validating the profile when it is ready to deploy.
 
-### Workspace & Custom Themes
-A clean, premium design supporting light and dark themes to match your preferred workflow aesthetic. All data runs locally on your machine, ensuring your workspace configurations and memories remain entirely private.
+### Agent-first app support with themes
+A premium, highly integrated interface supporting both custom light and dark themes designed specifically to match your preferred workspace aesthetics. All data runs locally on your machine, ensuring your workspace configurations and memories remain entirely private.
+
+<p align="center">
+  <img src="./white-theme.png" width="48%" alt="White Theme" />
+  <img src="./black-theme.png" width="48%" alt="Dark Theme" />
+</p>
 
 ---
 
