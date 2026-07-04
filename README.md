@@ -157,19 +157,22 @@ The `screen_agent` tool gives EterX full, real human-like control of your comput
 EterX does not depend on any specific models. Any model can be easily connected and the agent can be run on that model easily. All models are fully compatible in EterX.
 
 To connect your models:
-*   Bring your own API keys.
-*   Paste them directly in the application settings.
+1. Open the application **Settings** panel.
+2. Locate the **API Keys** section.
+3. Select your preferred **Provider**.
+4. Input your **API Key** and save to connect.
 
 ### Supported Providers
 
 | Provider | Available Models |
 |----------|------------------|
-| **Google Gemini** | User can select any Gemini model (e.g., Gemini 1.5 Pro, 2.0 Flash) |
-| **OpenAI** | User can select any OpenAI model (e.g., GPT-4o, GPT-4) |
-| **Anthropic** | User can select any Anthropic model (e.g., Claude 3.5 Sonnet, Claude 3 Opus) |
-| **OpenRouter** | User can select any model supported on OpenRouter |
-| **Mistral** | User can select any Mistral model (e.g., Mistral Large, Codestral) |
-| **Groq** | User can select any model supported on Groq |
+| **Google Gemini** | Select and run the agent on any Gemini model |
+| **OpenAI** | Select and run the agent on any OpenAI model |
+| **Anthropic** | Select and run the agent on any Anthropic model |
+| **OpenRouter** | Select and run the agent on any OpenRouter model |
+| **Mistral** | Select and run the agent on any Mistral model |
+| **Groq** | Select and run the agent on any Groq model |
+
 
 ### Dynamic Parameter Configuration
 Different models have different parameters (such as thinking/reasoning modes, medium models, or small models). EterX automatically configures those provider-specific model parameters and exposes them directly in the UI of the application, allowing you to select your preferred configuration and work in real time.
