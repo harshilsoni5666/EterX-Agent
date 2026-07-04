@@ -5,7 +5,7 @@
 <h1 align="center">EterX-Agent</h1>
 
 <p align="center">
-  <strong>An autonomous AI agent that thinks, plans, learns, and operates your computer — built for real work.</strong>
+  <strong>An autonomous AI agent that works and operates in your computer, plans, and learns — built for real work.</strong>
 </p>
 
 <p align="center">
@@ -18,7 +18,7 @@
 
 ## About EterX Agent
 
-EterX is a professional, autonomous agent platform designed to run workflows, manage tasks, and coordinate intelligent workspace actions. It acts as an assistant that can take high-level requests, plan the necessary steps, coordinate specialized helper agents, and interact with files and applications to get real work done.
+EterX is an autonomous agent platform designed to run workflows, manage tasks, and coordinate intelligent workspace actions. It acts as an assistant that can take high-level requests, plan the necessary steps, coordinate specialized helper agents, and interact with files and applications to get real work done.
 
 ### Collaborative Swarms
 For complex projects, EterX operates like a team. The main agent can delegate tasks to specialized sub-agents running concurrently in the background. These helpers communicate using an inter-agent mailbox system, sharing progress, debating choices, and working together to compile the final result.
@@ -27,7 +27,7 @@ For complex projects, EterX operates like a team. The main agent can delegate ta
 EterX dynamically manages how it communicates with different AI models. It automatically determines the best model for the task at hand and handles connection issues or model availability behind the scenes with a silent fallback system. It also supports load balancing across multiple API keys to prevent interruptions.
 
 ### Custom Agent Builder
-Design and train custom personas for specific responsibilities. The Agent Builder lets you construct new agents with distinct missions, safety guidelines, and tailored toolsets, creating specialized assistants ready for your workspace.
+You can talk to the Agent Builder to create customized agents tailored specifically to your exact work requirements. Based on your conversation, it designs the agent's core mission, behavior rules, and safety guidelines. It then lets you attach existing workspace tools or write custom scripts and macros that only that specific agent can use, finally validating the profile when it is ready to deploy.
 
 ### Workspace & Custom Themes
 A clean, premium design supporting light and dark themes to match your preferred workflow aesthetic. All data runs locally on your machine, ensuring your workspace configurations and memories remain entirely private.
