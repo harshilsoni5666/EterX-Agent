@@ -27,7 +27,7 @@ For complex projects, EterX operates like a team. The main agent can delegate ta
 EterX dynamically manages how it communicates with different AI models. It automatically determines the best model for the task at hand and handles connection issues or model availability behind the scenes with a silent fallback system. It also supports load balancing across multiple API keys to prevent interruptions.
 
 ### Custom Agent Builder
-You can talk to the Agent Builder to create customized agents tailored specifically to your exact work requirements. Based on your conversation, it designs the agent's core mission, behavior rules, and safety guidelines. It automatically attaches the required subset of tools from the 90+ built-in library, and if a custom, tailored tool is required, the builder creates it specifically for that agent, validating the profile when it is ready to deploy.
+You can talk to the Agent Builder to create customized agents tailored specifically to your exact work requirements. Based on your conversation, it designs the agent's core mission, behavior rules, and safety guidelines. It can create a custom chain of tools tailored for that agent's work environment, automatically attaching the required subset of tools from the 80+ built-in library. If a completely unique, tailored tool is required, the builder creates it specifically for that agent, validating the profile when it is ready to deploy.
 
 ### Workspace & Custom Themes
 A clean, premium design supporting light and dark themes to match your preferred workflow aesthetic. All data runs locally on your machine, ensuring your workspace configurations and memories remain entirely private.
