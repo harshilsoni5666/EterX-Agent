@@ -34,7 +34,7 @@ A premium, highly integrated interface supporting both custom light and dark the
 
 ---
 
-## Architecture
+## Workflow-Overview
 ### Autonomous Sub-Agent Swarms
 
 The sub-agent system is entirely orchestrated and managed by the AI engine itself, rather than being manually controlled by the user. When a complex task is submitted, the primary agent evaluates the goals and autonomously decides how, when, and which sub-agents to deploy:
@@ -152,41 +152,19 @@ The `screen_agent` tool gives EterX full, real human-like control of your comput
 
 ---
 
-## Agent Builder
+## Models
 
-EterX includes a built-in **Agent Builder** system that lets you create and deploy your own custom AI agents.
+EterX does not depend on any models. Any model can be easily connected and the agent can be run on that model easily. All the models are easily compatible in EterX.
 
-When operating in Agent Builder mode, the agent can:
-
-1. **Define a mission and professional system prompt** for a custom agent
-2. **Attach existing tools** by reference (e.g., give a custom agent access to `web_search`)
-3. **Define agent-scoped custom tools** — prompt macros, tool chains, or scoped code
-4. **Set behavior rules, safety rules, tool use policies, and completion criteria**
-5. **Finalize and validate** the agent when all requirements are satisfied
-
-The finalized custom agent is saved as a structured profile with a `SYSTEM_PROMPT.md` file, ready to be loaded into any EterX session.
-
----
-
-## Model System
-
-EterX does not hardcode any model names. Every model reference is resolved through a **Universal Model Registry** that reads from environment variables and maintains proven-model caching.
-
-**Supported providers and their fallback chains:**
-
-| Provider | Default Model | Fallback Chain |
-|----------|--------------|----------------|
-| **Gemini (Think)** | gemini-3.5-flash | gemini-3-flash-preview → gemini-2.5-pro → ... |
-| **Gemini (Fast)** | gemini-3.5-flash | gemini-3-flash-preview → gemini-2.5-flash → ... |
-| **OpenAI** | gpt-5.5 | gpt-5.4 → gpt-5.4-mini → gpt-5.4-nano |
-| **Anthropic** | claude-opus-4-8 | claude-sonnet-4-6 → claude-haiku-4-5 → ... |
-| **OpenRouter** | openai/gpt-5.5 | anthropic/claude-opus → google/gemini → ... |
-| **Mistral** | mistral-medium-3-5 | mistral-small → ministral-14b → ... |
-| **Groq** | openai/gpt-oss-120b | llama-3.3-70b → compound → compound-mini |
-
-If a model is deprecated or unavailable, the agent automatically walks the fallback chain without any code changes. You only need to update your `.env.local` file to override.
-
-**Multi-key load balancing:** You can configure multiple API keys per provider. EterX shuffles and rotates them automatically to distribute load and avoid rate limits.
+| Provider | Default Model | Available Models |
+|----------|--------------|------------------|
+| **Gemini (Think)** | gemini-3.5-flash | User can select any Gemini model (e.g., Gemini 1.5 Pro, 2.0 Flash) |
+| **Gemini (Fast)** | gemini-3.5-flash | User can select any Gemini model (e.g., Gemini 1.5 Flash, 1.5 Pro) |
+| **OpenAI** | gpt-5.5 | User can select any OpenAI model (e.g., GPT-4o, GPT-4, GPT-3.5) |
+| **Anthropic** | claude-opus-4-8 | User can select any Anthropic model (e.g., Claude 3.5 Sonnet, Claude 3 Opus) |
+| **OpenRouter** | openai/gpt-5.5 | User can select any model supported on OpenRouter |
+| **Mistral** | mistral-medium-3-5 | User can select any Mistral model (e.g., Mistral Large, Codestral) |
+| **Groq** | openai/gpt-oss-120b | User can select any model supported on Groq |
 
 ---
 
