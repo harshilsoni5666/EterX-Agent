@@ -63,9 +63,8 @@ The sub-agent system is entirely orchestrated and managed by the AI engine itsel
 
 ### Agent Builder (An AI agent designed to build custom agents)
 
-<p align="center">
-  <video src="https://github.com/harshilsoni5666/EterX-Agent/raw/fix/clearing-files/public/assets/Agent-Builder.mp4" controls width="100%"></video>
-</p>
+![Agent Builder Demo](https://github.com/harshilsoni5666/EterX-Agent/raw/fix/clearing-files/public/assets/Agent-Builder.mp4)
+
 The Agent Builder is a specialized AI agent designed to dynamically configure, write, and deploy custom specialist agents. When you interact with the builder, it acts as a meta-architect—guiding you through the creation of a fully functional, self-contained workspace companion tailored specifically to your work environment.
 
 
