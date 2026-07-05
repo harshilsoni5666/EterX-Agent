@@ -239,7 +239,7 @@ const SteeringFeedCard = ({ log, isCompressed = false }: { log: any; isCompresse
   >
     <div className={`eterx-steering-bubble bg-[#20201F] px-4 py-3 rounded-[18px] rounded-tr-[6px] ml-auto text-[13.5px] text-[#F4F2EE] shadow-[0_4px_16px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(255,255,255,0.025)] leading-[1.56] whitespace-pre-wrap relative border border-white/[0.06] select-text flex flex-row items-end gap-3 ${ isCompressed ? 'max-w-[92%]' : 'max-w-[84%]' }`}>
       <span className="block w-full text-left break-words [word-break:break-word] [overflow-wrap:anywhere]">{log.text}</span>
-      
+
       {/* CornerDownLeft arrow representing steering entry */}
       <div className="shrink-0 mb-1 select-none text-[#8F887E]">
         <CornerDownLeft className="w-[17px] h-[17px]" strokeWidth={2.25} />
@@ -320,6 +320,7 @@ const INITIAL_VISIBLE_GROUPS = 40;
 
 const normalizeTraceText = (value: any) => String(value || '')
   .replace(/<\/?thought>/gi, '')
+  .replace(/^[\s*_`~]+|[\s*_`~]+$/g, '')
   .replace(/\s+/g, ' ')
   .trim()
   .toLowerCase();
@@ -346,7 +347,9 @@ const isInternalStatusThought = (log: any) => {
     /^generation stopped by user\.?$/.test(text) ||
     /^agent stopped\b/.test(text) ||
     /^agent connection failed\b/.test(text) ||
-    /^agent start failed\b/.test(text);
+    /^agent start failed\b/.test(text) ||
+    /^custom agent (?:start|connection) failed\b/.test(text) ||
+    /^failed to send message to\b/.test(text);
 };
 
 const isLikelyAnswerEcho = (candidate: any, answer: any) => {
@@ -393,7 +396,10 @@ const HIDDEN_MODEL_STATUS_PATTERN = /^(?:(?:using|starting|selected)\s+)?(?:mode
 const DASH_ONLY_STATUS_PATTERN = /^[\s\-–—]{2,}$/;
 
 const isHiddenStatusOnlyLog = (log: any) => {
+  if (log?.type === 'work_note_cancel') return true;
   if (log?.type === 'task_plan') return true;
+  // Hide streaming worknote placeholders that were cancelled and not yet replaced
+  if (log?.type === 'work_note' && log?._streamingCancelled === true) return true;
   if (!log || log.type === 'user_action' || log.type === 'answer') return false;
   const values = [log.text, log.secondary, log.modelName, log.model]
     .map(value => String(value || '').trim())
@@ -416,50 +422,10 @@ const formatWorkElapsed = (seconds: number) => {
   return minutes > 0 ? `${ minutes }m ${ rest }s` : `${ rest }s`;
 };
 
-const AnimatedDigit = ({ char }: { char: string }) => {
-  const isDigit = /^[0-9]$/.test(char);
-  if (!isDigit) {
-    return (
-      <span
-        className="inline-block whitespace-pre"
-        style={{ color: 'inherit', WebkitTextFillColor: 'currentcolor' }}
-      >
-        {char}
-      </span>
-    );
-  }
-
-  return (
-    <span
-      className="inline-flex relative overflow-hidden h-[1.35em] justify-center items-center tabular-nums"
-      style={{ color: 'inherit', WebkitTextFillColor: 'currentcolor' }}
-    >
-      <AnimatePresence mode="popLayout">
-        <motion.span
-          key={char}
-          initial={{ y: '100%', opacity: 0 }}
-          animate={{ y: '0%', opacity: 1 }}
-          exit={{ y: '-100%', opacity: 0 }}
-          transition={{ type: 'spring', stiffness: 360, damping: 28, mass: 0.8 }}
-          className="inline-block font-semibold tabular-nums"
-          style={{ color: 'inherit', WebkitTextFillColor: 'currentcolor' }}
-        >
-          {char}
-        </motion.span>
-      </AnimatePresence>
-    </span>
-  );
-};
-
 const RollingTimeDisplay = ({ label }: { label: string }) => {
   return (
-    <span
-      className="inline-flex items-center text-[13.5px] font-semibold tracking-wide"
-      style={{ color: 'inherit', WebkitTextFillColor: 'currentcolor' }}
-    >
-      {label.split('').map((char, index) => (
-        <AnimatedDigit key={index} char={char} />
-      ))}
+    <span className="eterx-text-shimmer eterx-text-shimmer-working font-sans font-semibold text-[13px] tracking-normal">
+      {label}
     </span>
   );
 };
@@ -621,7 +587,7 @@ const ThoughtSequence = ({
     borderRadius: 13,
     border: 'none',
     background: counterBackground,
-    outline: `1px solid ${counterOutline}`,
+    outline: `1px solid ${ counterOutline }`,
     backdropFilter: 'blur(14px)',
     WebkitBackdropFilter: 'blur(14px)',
     boxShadow: counterShadow,
@@ -641,7 +607,7 @@ const ThoughtSequence = ({
       )}
 
       {hasCounter && (
-        <div className={`eterx-process-summary-row ${shouldStickCounter ? 'sticky top-3 z-20' : ''} ${isCollapsedWithAnswer ? 'mb-2' : 'mb-1'} flex w-full items-center overflow-visible py-1.5`}>
+        <div className={`eterx-process-summary-row ${ shouldStickCounter ? 'sticky top-3 z-20' : '' } ${ isCollapsedWithAnswer ? 'mb-2' : 'mb-1' } flex w-full items-center overflow-visible py-1.5`}>
           {isLiveWorkCounter ? (
             <button
               type="button"
@@ -694,7 +660,7 @@ const ThoughtSequence = ({
               >
                 <StepCounterIcon live={isLiveThinking} />
               </span>
-              <span className={`eterx-process-summary-label${isLiveThinking ? ' eterx-text-shimmer eterx-text-shimmer-active' : ''}`} style={{ fontSize: 13, fontWeight: 650, letterSpacing: 0, lineHeight: 1 }}>{actionLabel}</span>
+              <span className={`eterx-process-summary-label${ isLiveThinking ? ' eterx-text-shimmer eterx-text-shimmer-active' : '' }`} style={{ fontSize: 13, fontWeight: 650, letterSpacing: 0, lineHeight: 1 }}>{actionLabel}</span>
               {isOpen
                 ? <ChevronDown style={{ width: 9, height: 9, flexShrink: 0, opacity: 0.6 }} />
                 : <ChevronRight style={{ width: 9, height: 9, flexShrink: 0, opacity: 0.6 }} />
@@ -756,7 +722,7 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [previewUserMessage]);
 
- 
+
 
   useEffect(() => {
     const container = scrollContainerRef.current;
@@ -869,370 +835,379 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
     <>
       <style dangerouslySetInnerHTML={{ __html: `${ liveMotionStyles }\n${ chatFeedSurfaceStyles }` }} />
       <div className={`eterx-chat-feed relative flex-1 min-h-0 w-full overflow-hidden ${ isEmptyNewChatFeed ? 'eterx-chat-feed-empty' : '' }`}>
-      <div
-        className={`eterx-chat-feed-scroll relative h-full w-full flex flex-col overflow-y-auto overflow-x-hidden pb-40 eterx-scrollbar ${ isCompressed ? 'px-4' : 'px-4 sm:px-8' }`}
-        id="chat-container"
-        ref={scrollContainerRef}
-        onScroll={handleScrollWrap}
-        onWheel={(e) => {
-          const container = e.currentTarget;
-          const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
-          if (isThinking && (e.deltaY < 0 || distanceFromBottom > AUTO_FOLLOW_THRESHOLD)) shouldAutoFollowRef.current = false;
-        }}
-        onTouchMove={(e) => {
-          const container = e.currentTarget;
-          const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
-          if (isThinking && distanceFromBottom > AUTO_FOLLOW_THRESHOLD) shouldAutoFollowRef.current = false;
-        }}
-      >
+        <div
+          className={`eterx-chat-feed-scroll relative h-full w-full flex flex-col overflow-y-auto overflow-x-hidden pb-40 eterx-scrollbar ${ isCompressed ? 'px-4' : 'px-4 sm:px-8' }`}
+          id="chat-container"
+          ref={scrollContainerRef}
+          onScroll={handleScrollWrap}
+          onWheel={(e) => {
+            const container = e.currentTarget;
+            const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+            if (isThinking && (e.deltaY < 0 || distanceFromBottom > AUTO_FOLLOW_THRESHOLD)) shouldAutoFollowRef.current = false;
+          }}
+          onTouchMove={(e) => {
+            const container = e.currentTarget;
+            const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+            if (isThinking && distanceFromBottom > AUTO_FOLLOW_THRESHOLD) shouldAutoFollowRef.current = false;
+          }}
+        >
 
 
 
-      {traceLogs.length > 0 && (
-        <div className={`eterx-chat-feed-content w-full mx-auto pb-4 relative ${ isCompressed ? 'max-w-[460px] pt-14' : 'max-w-[660px] pt-16' }`}>
-          {hiddenGroupCount > 0 && (
-            <div className="mb-7 flex justify-center">
-              <button
-                type="button"
-                onClick={() => setHistoryWindowSize(size => size + INITIAL_VISIBLE_GROUPS)}
-                className="rounded-full border border-white/[0.07] bg-white/[0.028] px-3 py-1.5 text-[12px] font-medium text-[#A8A198] transition-colors hover:border-white/[0.12] hover:bg-white/[0.045] hover:text-[#DAD4CA]"
-              >
-                Show previous {hiddenGroupCount} messages
-              </button>
+          {traceLogs.length > 0 && (
+            <div className={`eterx-chat-feed-content w-full mx-auto pb-4 relative ${ isCompressed ? 'max-w-[460px] pt-14' : 'max-w-[660px] pt-16' }`}>
+              {hiddenGroupCount > 0 && (
+                <div className="mb-7 flex justify-center">
+                  <button
+                    type="button"
+                    onClick={() => setHistoryWindowSize(size => size + INITIAL_VISIBLE_GROUPS)}
+                    className="rounded-full border border-white/[0.07] bg-white/[0.028] px-3 py-1.5 text-[12px] font-medium text-[#A8A198] transition-colors hover:border-white/[0.12] hover:bg-white/[0.045] hover:text-[#DAD4CA]"
+                  >
+                    Show previous {hiddenGroupCount} messages
+                  </button>
+                </div>
+              )}
+              {visibleGroups.map((group, visibleGroupIdx) => {
+                const groupIdx = hiddenGroupCount + visibleGroupIdx;
+                const first = group[0];
+                if (first?.type === 'user_action') {
+                  const userText = String(first.text || '');
+                  const { isLong } = getUserQueryPreview(userText);
+                  return (
+                    <div key={`group-${ groupIdx }`} id={`message-${ groupIdx }`} className="eterx-chat-message-group mt-8 mb-6 flex w-full scroll-m-20 justify-end group/user">
+                      <div className="flex w-full justify-end">
+                        <div className={`eterx-user-message-bubble eterx-chat-feed-user-bubble flex min-w-0 flex-col items-end rounded-[18px] border border-white/[0.06] bg-[#20201F] px-4 py-2.5 text-[13.5px] leading-[1.56] text-[#F4F2EE] shadow-[0_4px_18px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(255,255,255,0.025)] selection:bg-[#D98B6A]/25 relative whitespace-pre-wrap select-text ${ isCompressed ? 'max-w-[92%]' : 'max-w-[520px]' }`}>
+                          <UserMessageActions text={userText} onEdit={onEditUserMessage} />
+                          {first.attachments && first.attachments.length > 0 && (
+                            <div className="flex flex-wrap justify-end gap-2.5 mb-3 w-full">
+                              {first.attachments.map((att: any, i: number) => {
+                                const isImage = !!att.preview;
+                                const fileName = att.name || att.file?.name || 'file';
+                                const extension = fileName.split('.').pop()?.toUpperCase() || 'FILE';
+                                const isPdf = extension === 'PDF';
+
+                                if (isImage) {
+                                  return (
+                                    <a key={att.id || i} href={att.preview} target="_blank" rel="noopener noreferrer" className="relative group w-[72px] h-[72px] rounded-[14px] shadow-[0_3px_12px_rgba(0,0,0,0.16)] transition-colors cursor-pointer border border-white/[0.06] shrink-0 hover:border-white/[0.10]">
+                                      <img src={att.preview} alt="attached" className="w-full h-full object-cover rounded-[14px] transition-opacity hover:opacity-90" />
+                                    </a>
+                                  );
+                                }
+
+                                return (
+                                  <div key={att.id || i} className="flex flex-col items-center justify-center gap-1.5 w-[72px] h-[72px] rounded-[14px] bg-white/[0.024] border border-white/[0.055] shadow-[0_3px_12px_rgba(0,0,0,0.12)] shrink-0">
+                                    <div className={`w-[26px] h-[26px] rounded-[7px] flex items-center justify-center shrink-0 ${ isPdf ? 'bg-[#C65D58]' : 'bg-[#596B7B]' }`}>
+                                      <FileText className="w-3.5 h-3.5 text-white" strokeWidth={2.5} />
+                                    </div>
+                                    <span className="text-[10px] font-medium text-[#C8C1B8] truncate max-w-[90%] px-1">{att.name || fileName}</span>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                          <div className={`relative w-full text-left ${ isLong ? 'max-h-[230px] overflow-hidden pb-8' : '' }`}>
+                            <span className="block w-full text-left break-words [word-break:break-word] [overflow-wrap:anywhere]">{userText}</span>
+                            {isLong && (
+                              <button
+                                type="button"
+                                onClick={() => setPreviewUserMessage({ text: userText, index: groupIdx })}
+                                className="eterx-chat-feed-user-fade absolute inset-x-0 bottom-0 flex h-24 items-end justify-center bg-gradient-to-b from-[#20201F]/0 via-[#20201F]/82 to-[#20201F] pb-1.5 text-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/18"
+                                aria-label="Show full prompt"
+                              >
+                                <span className="text-[12.5px] font-medium text-[#A9A197] transition-colors hover:text-[#D2CBC1]">
+                                  Show more
+                                </span>
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                }
+
+                const isThinkingTurn = isThinking && groupIdx === groups.length - 1;
+                const previousUserLog = groups
+                  .slice(0, groupIdx)
+                  .reverse()
+                  .find((candidate) => candidate[0]?.type === 'user_action')?.[0];
+                const turnStartedAtRaw = previousUserLog?.startTime ?? previousUserLog?.timestamp ?? previousUserLog?.endTime;
+                const turnStartedAt = Number.isFinite(Number(turnStartedAtRaw)) ? Number(turnStartedAtRaw) : null;
+
+                // Keep live command rows inside ThoughtSequence so each action renders once in order.
+                const liveCommandLogs = group.filter((l: any) => l.type === 'command' && l.isLive && !isHiddenStatusOnlyLog(l));
+                const standardLogs = group.filter((l: any) => !(l.type === 'command' && l.isLive) && !isHiddenStatusOnlyLog(l));
+
+                let processLogs: any[] = [];
+                let finalAnswer: any = null;
+                let tailLogs: any[] = [];
+
+                // 2. Of the standard logs, identify the final answer
+                let firstAnswerIdx = -1;
+                let lastAnswerIdx = -1;
+                for (let i = 0; i < standardLogs.length; i++) {
+                  if (standardLogs[i].type === 'answer') {
+                    if (firstAnswerIdx === -1) firstAnswerIdx = i;
+                    lastAnswerIdx = i;
+                  }
+                }
+                if (firstAnswerIdx >= 0) {
+                  const lastIdx = lastAnswerIdx;
+                  processLogs = standardLogs.slice(0, lastIdx).filter((l: any) => l.type !== 'answer');
+                  const lastAnswerLog = standardLogs[lastIdx];
+
+                  const answerText = lastAnswerLog?.text || '';
+
+                  finalAnswer = {
+                    type: 'answer',
+                    text: answerText,
+                    isLiveTyping: lastAnswerLog?.isLiveTyping || false,
+                    isStreaming: lastAnswerLog?.isStreaming || false,
+                    wasStreaming: lastAnswerLog?.wasStreaming || false,
+                    answerId: lastAnswerLog?.answerId,
+                    spokenText: lastAnswerLog?.spokenText || '',
+                    timestamp: lastAnswerLog?.timestamp,
+                    startTime: lastAnswerLog?.startTime,
+                    endTime: lastAnswerLog?.endTime
+                  };
+                  tailLogs = standardLogs.slice(lastIdx + 1).filter((l: any) => l.type !== 'answer');
+                } else {
+                  // Only treat user-visible thought logs as a potential final answer.
+                  // Internal stop/status notes and generic work narration should stay out
+                  // of the chat transcript instead of becoming loose assistant text.
+                  const lastThoughtIdx = isThinkingTurn ? -1 : [...standardLogs].reverse().findIndex((l: any) =>
+                    l.type === 'thought' &&
+                    !isInternalStatusThought(l) &&
+                    !isExternalWorkNoteNoise(l.text)
+                  );
+                  const actualLastThoughtIdx = lastThoughtIdx === -1 ? -1 : standardLogs.length - 1 - lastThoughtIdx;
+                  // Everything except the final 'thought' goes into processLogs (including thought_stream)
+                  processLogs = actualLastThoughtIdx === -1 ? standardLogs : standardLogs.slice(0, actualLastThoughtIdx);
+                  finalAnswer = actualLastThoughtIdx === -1 ? null : standardLogs[actualLastThoughtIdx];
+                  tailLogs = actualLastThoughtIdx === -1 ? [] : standardLogs.slice(actualLastThoughtIdx + 1);
+                }
+
+                const displayProcessLogs = processLogs;
+                const displayFinalAnswer = finalAnswer;
+                const answerUpdatedAt = Number(displayFinalAnswer?.endTime ?? displayFinalAnswer?.timestamp ?? 0);
+                const answerRecentlyStreamed = !!displayFinalAnswer &&
+                  Number.isFinite(answerUpdatedAt) &&
+                  answerUpdatedAt > 0 &&
+                  Date.now() - answerUpdatedAt < 5000;
+                const isAnswerActivelyTyping = !!(displayFinalAnswer?.isLiveTyping || displayFinalAnswer?.isStreaming) && isThinkingTurn;
+
+                let lastWorkNoteKey = '';
+                const rawWorkLogs = [...displayProcessLogs, ...tailLogs];
+                const isAskUserInteractionLog = (log: any) =>
+                  log?.type === 'ask_user' &&
+                  typeof log.question === 'string' &&
+                  log.question.trim().length > 0 &&
+                  Number.isFinite(Number(log.timestamp));
+                const askUserKey = (log: any) => {
+                  const responseKey = String(log?.responseKey || '').trim();
+                  if (responseKey) return responseKey;
+                  return `question:${ String(log?.question || '').trim().toLowerCase() }`;
+                };
+                const hasAskUserInteractionLog = rawWorkLogs.some(isAskUserInteractionLog);
+                const preferredAskUserLogs = new Map<string, any>();
+                rawWorkLogs.forEach((log: any) => {
+                  if (!isAskUserInteractionLog(log)) return;
+                  const key = askUserKey(log);
+                  const existing = preferredAskUserLogs.get(key);
+                  const existingAnswered = Boolean(existing?.answeredWith);
+                  const nextAnswered = Boolean(log?.answeredWith);
+                  const existingTime = Number(existing?.answeredAt || existing?.timestamp || 0);
+                  const nextTime = Number(log?.answeredAt || log?.timestamp || 0);
+                  if (!existing || (nextAnswered && !existingAnswered) || (nextAnswered === existingAnswered && nextTime >= existingTime)) {
+                    preferredAskUserLogs.set(key, log);
+                  }
+                });
+                const visibleWorkLogs = hasAskUserInteractionLog
+                  ? rawWorkLogs.filter((log: any) => {
+                    if (log.type !== 'ask_user') return true;
+                    if (!isAskUserInteractionLog(log)) return false;
+                    return preferredAskUserLogs.get(askUserKey(log)) === log;
+                  })
+                  : rawWorkLogs;
+                const hasStructuredWork = [...rawWorkLogs, ...liveCommandLogs].some((l: any) =>
+                  WORKFLOW_COUNT_TYPES.has(l.type) && !HIDDEN_HELPER_TYPES.has(l.type)
+                );
+
+                const segments: { type: 'thoughts' | 'steering' | 'ask_user'; logs?: any[]; log?: any }[] = [];
+                let currentThoughts: any[] = [];
+
+                visibleWorkLogs.forEach(log => {
+                  if (log.type === 'steering_received') {
+                    if (currentThoughts.length > 0) {
+                      segments.push({ type: 'thoughts', logs: currentThoughts });
+                      currentThoughts = [];
+                    }
+                    segments.push({ type: 'steering', log });
+                  } else if (isAskUserInteractionLog(log)) {
+                    if (currentThoughts.length > 0) {
+                      segments.push({ type: 'thoughts', logs: currentThoughts });
+                      currentThoughts = [];
+                    }
+                    segments.push({ type: 'ask_user', log });
+                  } else {
+                    let isValid = true;
+                    if (['progress', 'command', 'exploration'].includes(log.type) && /analyz(?:e|ing) task complexity/i.test(String(log.text || ''))) isValid = false;
+
+                    if (log.type === 'thought_stream') {
+                      if (displayFinalAnswer && isLikelyAnswerEcho(log.text, displayFinalAnswer.text)) isValid = false;
+                      if (hasStructuredWork && isExternalWorkNoteNoise(log.text)) isValid = false;
+                      // Suppress thought_stream if it ended AFTER the answer started (it's a streaming echo)
+                      if (displayFinalAnswer && isValid) {
+                        const thoughtEndTime = Number(log.endTime ?? log.timestamp ?? 0);
+                        const answerStartTime = Number(displayFinalAnswer.startTime ?? displayFinalAnswer.timestamp ?? 0);
+                        if (thoughtEndTime > 0 && answerStartTime > 0 && thoughtEndTime >= answerStartTime) isValid = false;
+                      }
+                    }
+                    if (log.type === 'work_note') {
+                      const text = String(log.text || '').trim().toLowerCase();
+                      if (!text) isValid = false;
+                      else if (hasStructuredWork && isExternalWorkNoteNoise(log.text)) isValid = false;
+                      else {
+                        // Use noteId as primary dedup key to avoid false positives from text comparison
+                        const noteId = String(log.noteId || '').trim();
+                        const key = noteId
+                          ? `${ log.subAgent || '' }::id::${ noteId }`
+                          : `${ log.subAgent || '' }::${ text }`;
+                        if (key === lastWorkNoteKey) isValid = false;
+                        lastWorkNoteKey = key;
+                      }
+                    } else {
+                      lastWorkNoteKey = '';
+                    }
+
+                    if (isValid) {
+                      currentThoughts.push(log);
+                    }
+                  }
+                });
+
+                if (currentThoughts.length > 0 || isThinkingTurn) {
+                  segments.push({ type: 'thoughts', logs: currentThoughts });
+                }
+
+                return (
+                  <div
+                    key={`group-${ groupIdx }`}
+                    id={`message-${ groupIdx }`}
+                    data-live={isThinkingTurn ? 'true' : undefined}
+                    className="eterx-chat-message-group w-full flex flex-col mb-8 scroll-m-20 relative"
+                  >
+                    {segments.map((seg, segIdx) => {
+                      if (seg.type === 'steering') {
+                        return <SteeringFeedCard key={`steer-${ groupIdx }-${ segIdx }`} log={seg.log} isCompressed={isCompressed} />;
+                      }
+                      if (seg.type === 'ask_user') {
+                        return (
+                          <AskUserPrompt
+                            key={`ask-${ groupIdx }-${ segIdx }`}
+                            question={seg.log.question}
+                            mode={seg.log.mode || 'text'}
+                            options={seg.log.options || []}
+                            questions={Array.isArray(seg.log.questions) ? seg.log.questions : undefined}
+                            context={seg.log.context}
+                            defaultValue={seg.log.defaultValue}
+                            urgent={seg.log.urgent}
+                            timestamp={seg.log.timestamp}
+                            responseKey={seg.log.responseKey}
+                            answeredWith={seg.log.answeredWith}
+                            onAnswer={(answer) => {
+                              onAnswerAskUser?.(seg.log.timestamp, answer, seg.log.responseKey);
+                            }}
+                          />
+                        );
+                      }
+
+                      // 'thoughts'
+                      const isLastThoughts = segIdx === segments.length - 1 || segments.slice(segIdx + 1).every(s => s.type !== 'thoughts');
+                      const stepCount = (seg.logs || []).filter((l: any) =>
+                        WORKFLOW_COUNT_TYPES.has(l.type) && !HIDDEN_HELPER_TYPES.has(l.type)
+                      ).length + (isLastThoughts ? liveCommandLogs.length : 0);
+
+                      if (stepCount === 0 && (seg.logs || []).length === 0 && !(isThinkingTurn && isLastThoughts)) return null;
+
+                      return (
+                        <ThoughtSequence
+                          key={`thoughts-${ groupIdx }-${ segIdx }`}
+                          logs={seg.logs || []}
+                          liveLogs={isLastThoughts ? liveCommandLogs : []}
+                          isThinking={isThinkingTurn && isLastThoughts}
+                          isLast={groupIdx === groups.length - 1 && isLastThoughts}
+                          hasAnswer={!!displayFinalAnswer && isLastThoughts}
+                          stepCount={stepCount}
+                          turnStartedAt={turnStartedAt}
+                          turnEndedAt={displayFinalAnswer?.endTime ?? displayFinalAnswer?.timestamp ?? null}
+                          onOpenAgentTeam={onOpenAgentTeam}
+                          isSubAgentTab={isSubAgentTab}
+                        />
+                      );
+                    })}
+
+                    {displayFinalAnswer && (
+                      <div className="eterx-assistant-answer w-full group/assistant mt-0 [&_.professional-thought>*:first-child]:!mt-0">
+                        <div className="relative group/thought">
+                          {/* Live typing uses the same renderer so Mermaid, math, and tables appear as soon as Markdown is complete. */}
+                          {isAnswerActivelyTyping ? (
+                            <div className="eterx-assistant-answer-body eterx-assistant-live-text text-[13.5px] leading-[1.56] text-[#F2F0EC] font-sans relative">
+                              <ProfessionalThought
+                                text={displayFinalAnswer.text}
+                                isLatest={groupIdx === groups.length - 1}
+                                isThinking={isAnswerActivelyTyping}
+                                variant="answer"
+                                updatedAt={displayFinalAnswer.timestamp}
+                                reveal={answerRecentlyStreamed}
+                              />
+                            </div>
+                          ) : (
+                            <div className="eterx-assistant-answer-body text-[13.5px] leading-[1.56] text-[#F2F0EC] font-sans relative">
+                              <ProfessionalThought
+                                text={displayFinalAnswer.text}
+                                isLatest={groupIdx === groups.length - 1}
+                                isThinking={isThinkingTurn}
+                                variant="answer"
+                                reveal={answerRecentlyStreamed}
+                                suffix={
+                                  <div className="inline-flex items-center gap-1.5 ml-2 align-middle mt-[-2px]">
+                                    <div className="flex items-center gap-0 opacity-0 group-hover/thought:opacity-100 transition-opacity duration-200">
+                                      <NakedCopyButton content={displayFinalAnswer.text} />
+                                      {onEditUserMessage && (
+                                        <Tooltip text="Import to chat">
+                                          <button
+                                            type="button"
+                                            onClick={(event) => {
+                                              event.stopPropagation();
+                                              onEditUserMessage(displayFinalAnswer.text);
+                                            }}
+                                            className="rounded-[8px] p-[6px] text-[#746F67] transition-colors hover:bg-white/[0.045] hover:text-[#DAD4CA]"
+                                            aria-label="Import answer to chat"
+                                          >
+                                            <MessageSquarePlus className="w-[15px] h-[15px]" />
+                                          </button>
+                                        </Tooltip>
+                                      )}
+                                    </div>
+                                  </div>
+                                }
+                              />
+                            </div>
+                          )}
+
+                        </div>
+                      </div>
+                    )}
+
+                  </div>
+                );
+              })}
+
+              <div ref={messagesEndRef} className="h-[2px]" />
             </div>
           )}
-          {visibleGroups.map((group, visibleGroupIdx) => {
-            const groupIdx = hiddenGroupCount + visibleGroupIdx;
-            const first = group[0];
-            if (first?.type === 'user_action') {
-              const userText = String(first.text || '');
-              const { isLong } = getUserQueryPreview(userText);
-              return (
-                <div key={`group-${ groupIdx }`} id={`message-${ groupIdx }`} className="eterx-chat-message-group mt-8 mb-6 flex w-full scroll-m-20 justify-end group/user">
-                  <div className="flex w-full justify-end">
-                    <div className={`eterx-user-message-bubble eterx-chat-feed-user-bubble flex min-w-0 flex-col items-end rounded-[18px] border border-white/[0.06] bg-[#20201F] px-4 py-2.5 text-[13.5px] leading-[1.56] text-[#F4F2EE] shadow-[0_4px_18px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(255,255,255,0.025)] selection:bg-[#D98B6A]/25 relative whitespace-pre-wrap select-text ${ isCompressed ? 'max-w-[92%]' : 'max-w-[520px]' }`}>
-                      <UserMessageActions text={userText} onEdit={onEditUserMessage} />
-                      {first.attachments && first.attachments.length > 0 && (
-                        <div className="flex flex-wrap justify-end gap-2.5 mb-3 w-full">
-                          {first.attachments.map((att: any, i: number) => {
-                            const isImage = !!att.preview;
-                            const fileName = att.name || att.file?.name || 'file';
-                            const extension = fileName.split('.').pop()?.toUpperCase() || 'FILE';
-                            const isPdf = extension === 'PDF';
-
-                            if (isImage) {
-                              return (
-                                <a key={att.id || i} href={att.preview} target="_blank" rel="noopener noreferrer" className="relative group w-[72px] h-[72px] rounded-[14px] shadow-[0_3px_12px_rgba(0,0,0,0.16)] transition-colors cursor-pointer border border-white/[0.06] shrink-0 hover:border-white/[0.10]">
-                                  <img src={att.preview} alt="attached" className="w-full h-full object-cover rounded-[14px] transition-opacity hover:opacity-90" />
-                                </a>
-                              );
-                            }
-
-                            return (
-                              <div key={att.id || i} className="flex flex-col items-center justify-center gap-1.5 w-[72px] h-[72px] rounded-[14px] bg-white/[0.024] border border-white/[0.055] shadow-[0_3px_12px_rgba(0,0,0,0.12)] shrink-0">
-                                <div className={`w-[26px] h-[26px] rounded-[7px] flex items-center justify-center shrink-0 ${ isPdf ? 'bg-[#C65D58]' : 'bg-[#596B7B]' }`}>
-                                  <FileText className="w-3.5 h-3.5 text-white" strokeWidth={2.5} />
-                                </div>
-                                <span className="text-[10px] font-medium text-[#C8C1B8] truncate max-w-[90%] px-1">{att.name || fileName}</span>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
-                    <div className={`relative w-full text-left ${ isLong ? 'max-h-[230px] overflow-hidden pb-8' : '' }`}>
-                      <span className="block w-full text-left break-words [word-break:break-word] [overflow-wrap:anywhere]">{userText}</span>
-                      {isLong && (
-                        <button
-                          type="button"
-                          onClick={() => setPreviewUserMessage({ text: userText, index: groupIdx })}
-                          className="eterx-chat-feed-user-fade absolute inset-x-0 bottom-0 flex h-24 items-end justify-center bg-gradient-to-b from-[#20201F]/0 via-[#20201F]/82 to-[#20201F] pb-1.5 text-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/18"
-                          aria-label="Show full prompt"
-                        >
-                          <span className="text-[12.5px] font-medium text-[#A9A197] transition-colors hover:text-[#D2CBC1]">
-                            Show more
-                          </span>
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                  </div>
-                </div>
-              );
-            }
-
-            const isThinkingTurn = isThinking && groupIdx === groups.length - 1;
-            const previousUserLog = groups
-              .slice(0, groupIdx)
-              .reverse()
-              .find((candidate) => candidate[0]?.type === 'user_action')?.[0];
-            const turnStartedAtRaw = previousUserLog?.startTime ?? previousUserLog?.timestamp ?? previousUserLog?.endTime;
-            const turnStartedAt = Number.isFinite(Number(turnStartedAtRaw)) ? Number(turnStartedAtRaw) : null;
-
-            // Keep live command rows inside ThoughtSequence so each action renders once in order.
-            const liveCommandLogs = group.filter((l: any) => l.type === 'command' && l.isLive && !isHiddenStatusOnlyLog(l));
-            const standardLogs = group.filter((l: any) => !(l.type === 'command' && l.isLive) && !isHiddenStatusOnlyLog(l));
-
-            let processLogs: any[] = [];
-            let finalAnswer: any = null;
-            let tailLogs: any[] = [];
-
-            // 2. Of the standard logs, identify the final answer
-            let firstAnswerIdx = -1;
-            let lastAnswerIdx = -1;
-            for (let i = 0; i < standardLogs.length; i++) {
-              if (standardLogs[i].type === 'answer') {
-                if (firstAnswerIdx === -1) firstAnswerIdx = i;
-                lastAnswerIdx = i;
-              }
-            }
-            if (firstAnswerIdx >= 0) {
-              const firstIdx = firstAnswerIdx;
-              const lastIdx = lastAnswerIdx;
-              processLogs = standardLogs.slice(0, firstIdx);
-              const lastAnswerLog = standardLogs[lastIdx];
-
-              const answerText = lastAnswerLog?.text || '';
-
-              finalAnswer = {
-                type: 'answer',
-                text: answerText,
-                isLiveTyping: lastAnswerLog?.isLiveTyping || false,
-                isStreaming: lastAnswerLog?.isStreaming || false,
-                wasStreaming: lastAnswerLog?.wasStreaming || false,
-                answerId: lastAnswerLog?.answerId,
-                spokenText: lastAnswerLog?.spokenText || '',
-                timestamp: lastAnswerLog?.timestamp,
-                startTime: lastAnswerLog?.startTime,
-                endTime: lastAnswerLog?.endTime
-              };
-              tailLogs = standardLogs.slice(lastIdx + 1).filter((l: any) => l.type !== 'answer');
-            } else {
-              // Only treat user-visible thought logs as a potential final answer.
-              // Internal stop/status notes and generic work narration should stay out
-              // of the chat transcript instead of becoming loose assistant text.
-              const lastThoughtIdx = [...standardLogs].reverse().findIndex((l: any) =>
-                l.type === 'thought' &&
-                !isInternalStatusThought(l) &&
-                !isExternalWorkNoteNoise(l.text)
-              );
-              const actualLastThoughtIdx = lastThoughtIdx === -1 ? -1 : standardLogs.length - 1 - lastThoughtIdx;
-              // Everything except the final 'thought' goes into processLogs (including thought_stream)
-              processLogs = actualLastThoughtIdx === -1 ? standardLogs : standardLogs.slice(0, actualLastThoughtIdx);
-              finalAnswer = actualLastThoughtIdx === -1 ? null : standardLogs[actualLastThoughtIdx];
-              tailLogs = actualLastThoughtIdx === -1 ? [] : standardLogs.slice(actualLastThoughtIdx + 1);
-            }
-
-            const displayProcessLogs = processLogs;
-            const displayFinalAnswer = finalAnswer;
-            const answerUpdatedAt = Number(displayFinalAnswer?.endTime ?? displayFinalAnswer?.timestamp ?? 0);
-            const answerRecentlyStreamed = !!displayFinalAnswer?.wasStreaming &&
-              Number.isFinite(answerUpdatedAt) &&
-              answerUpdatedAt > 0 &&
-              Date.now() - answerUpdatedAt < 5000;
-            const isAnswerActivelyTyping = !!(displayFinalAnswer?.isLiveTyping || displayFinalAnswer?.isStreaming) && isThinkingTurn;
-
-            let lastWorkNoteKey = '';
-            const rawWorkLogs = [...displayProcessLogs, ...tailLogs];
-            const isAskUserInteractionLog = (log: any) =>
-              log?.type === 'ask_user' &&
-              typeof log.question === 'string' &&
-              log.question.trim().length > 0 &&
-              Number.isFinite(Number(log.timestamp));
-            const askUserKey = (log: any) => {
-              const responseKey = String(log?.responseKey || '').trim();
-              if (responseKey) return responseKey;
-              return `question:${String(log?.question || '').trim().toLowerCase()}`;
-            };
-            const hasAskUserInteractionLog = rawWorkLogs.some(isAskUserInteractionLog);
-            const preferredAskUserLogs = new Map<string, any>();
-            rawWorkLogs.forEach((log: any) => {
-              if (!isAskUserInteractionLog(log)) return;
-              const key = askUserKey(log);
-              const existing = preferredAskUserLogs.get(key);
-              const existingAnswered = Boolean(existing?.answeredWith);
-              const nextAnswered = Boolean(log?.answeredWith);
-              const existingTime = Number(existing?.answeredAt || existing?.timestamp || 0);
-              const nextTime = Number(log?.answeredAt || log?.timestamp || 0);
-              if (!existing || (nextAnswered && !existingAnswered) || (nextAnswered === existingAnswered && nextTime >= existingTime)) {
-                preferredAskUserLogs.set(key, log);
-              }
-            });
-            const visibleWorkLogs = hasAskUserInteractionLog
-              ? rawWorkLogs.filter((log: any) => {
-                  if (log.type !== 'ask_user') return true;
-                  if (!isAskUserInteractionLog(log)) return false;
-                  return preferredAskUserLogs.get(askUserKey(log)) === log;
-                })
-              : rawWorkLogs;
-            const hasStructuredWork = [...rawWorkLogs, ...liveCommandLogs].some((l: any) =>
-              WORKFLOW_COUNT_TYPES.has(l.type) && !HIDDEN_HELPER_TYPES.has(l.type)
-            );
-
-            const segments: { type: 'thoughts' | 'steering' | 'ask_user'; logs?: any[]; log?: any }[] = [];
-            let currentThoughts: any[] = [];
-
-            visibleWorkLogs.forEach(log => {
-              if (log.type === 'steering_received') {
-                if (currentThoughts.length > 0) {
-                  segments.push({ type: 'thoughts', logs: currentThoughts });
-                  currentThoughts = [];
-                }
-                segments.push({ type: 'steering', log });
-              } else if (isAskUserInteractionLog(log)) {
-                if (currentThoughts.length > 0) {
-                  segments.push({ type: 'thoughts', logs: currentThoughts });
-                  currentThoughts = [];
-                }
-                segments.push({ type: 'ask_user', log });
-              } else {
-                let isValid = true;
-                if (['progress', 'command', 'exploration'].includes(log.type) && /analyz(?:e|ing) task complexity/i.test(String(log.text || ''))) isValid = false;
-                
-                if (log.type === 'thought_stream') {
-                  if (displayFinalAnswer && isLikelyAnswerEcho(log.text, displayFinalAnswer.text)) isValid = false;
-                  if (hasStructuredWork && isExternalWorkNoteNoise(log.text)) isValid = false;
-                }
-                if (log.type === 'work_note') {
-                  const text = String(log.text || '').trim().toLowerCase();
-                  if (!text) isValid = false;
-                  else if (hasStructuredWork && isExternalWorkNoteNoise(log.text)) isValid = false;
-                  else {
-                    const key = `${ log.subAgent || '' }::${ text }`;
-                    if (key === lastWorkNoteKey) isValid = false;
-                    lastWorkNoteKey = key;
-                  }
-                } else {
-                  lastWorkNoteKey = '';
-                }
-                
-                if (isValid) {
-                  currentThoughts.push(log);
-                }
-              }
-            });
-
-            if (currentThoughts.length > 0 || isThinkingTurn) {
-              segments.push({ type: 'thoughts', logs: currentThoughts });
-            }
-
-            return (
-              <div
-                key={`group-${ groupIdx }`}
-                id={`message-${ groupIdx }`}
-                data-live={isThinkingTurn ? 'true' : undefined}
-                className="eterx-chat-message-group w-full flex flex-col mb-8 scroll-m-20 relative"
-              >
-                {segments.map((seg, segIdx) => {
-                  if (seg.type === 'steering') {
-                    return <SteeringFeedCard key={`steer-${groupIdx}-${segIdx}`} log={seg.log} isCompressed={isCompressed} />;
-                  }
-                  if (seg.type === 'ask_user') {
-                    return (
-                      <AskUserPrompt
-                        key={`ask-${ groupIdx }-${ segIdx }`}
-                        question={seg.log.question}
-                        mode={seg.log.mode || 'text'}
-                        options={seg.log.options || []}
-                        questions={Array.isArray(seg.log.questions) ? seg.log.questions : undefined}
-                        context={seg.log.context}
-                        defaultValue={seg.log.defaultValue}
-                        urgent={seg.log.urgent}
-                        timestamp={seg.log.timestamp}
-                        responseKey={seg.log.responseKey}
-                        answeredWith={seg.log.answeredWith}
-                        onAnswer={(answer) => {
-                          onAnswerAskUser?.(seg.log.timestamp, answer, seg.log.responseKey);
-                        }}
-                      />
-                    );
-                  }
-                  
-                  // 'thoughts'
-                  const isLastThoughts = segIdx === segments.length - 1 || segments.slice(segIdx + 1).every(s => s.type !== 'thoughts');
-                  const stepCount = (seg.logs || []).filter((l: any) =>
-                    WORKFLOW_COUNT_TYPES.has(l.type) && !HIDDEN_HELPER_TYPES.has(l.type)
-                  ).length + (isLastThoughts ? liveCommandLogs.length : 0);
-
-                  if (stepCount === 0 && (seg.logs || []).length === 0 && !(isThinkingTurn && isLastThoughts)) return null;
-
-                  return (
-                    <ThoughtSequence
-                      key={`thoughts-${groupIdx}-${segIdx}`}
-                      logs={seg.logs || []}
-                      liveLogs={isLastThoughts ? liveCommandLogs : []}
-                      isThinking={isThinkingTurn && isLastThoughts}
-                      isLast={groupIdx === groups.length - 1 && isLastThoughts}
-                      hasAnswer={!!displayFinalAnswer && isLastThoughts}
-                      stepCount={stepCount}
-                      turnStartedAt={turnStartedAt}
-                      turnEndedAt={displayFinalAnswer?.endTime ?? displayFinalAnswer?.timestamp ?? null}
-                      onOpenAgentTeam={onOpenAgentTeam}
-                      isSubAgentTab={isSubAgentTab}
-                    />
-                  );
-                })}
-
-                {displayFinalAnswer && (
-                  <div className="eterx-assistant-answer w-full group/assistant mt-0 [&_.professional-thought>*:first-child]:!mt-0">
-                    <div className="relative group/thought">
-                      {/* Live typing uses the same renderer so Mermaid, math, and tables appear as soon as Markdown is complete. */}
-                      {isAnswerActivelyTyping ? (
-                        <div className="eterx-assistant-answer-body eterx-assistant-live-text text-[13.5px] leading-[1.56] text-[#F2F0EC] font-sans relative">
-                          <ProfessionalThought
-                            text={displayFinalAnswer.text}
-                            isLatest={groupIdx === groups.length - 1}
-                            isThinking={isAnswerActivelyTyping}
-                            variant="answer"
-                            updatedAt={displayFinalAnswer.timestamp}
-                            reveal={answerRecentlyStreamed}
-                          />
-                        </div>
-                      ) : (
-                        <div className="eterx-assistant-answer-body text-[13.5px] leading-[1.56] text-[#F2F0EC] font-sans relative">
-                          <ProfessionalThought
-                            text={displayFinalAnswer.text}
-                            isLatest={groupIdx === groups.length - 1}
-                            isThinking={isThinkingTurn}
-                            variant="answer"
-                            reveal={answerRecentlyStreamed}
-                            suffix={
-                              <div className="inline-flex items-center gap-1.5 ml-2 align-middle mt-[-2px]">
-                                <div className="flex items-center gap-0 opacity-0 group-hover/thought:opacity-100 transition-opacity duration-200">
-                                  <NakedCopyButton content={displayFinalAnswer.text} />
-                                  {onEditUserMessage && (
-                                    <Tooltip text="Import to chat">
-                                      <button
-                                        type="button"
-                                        onClick={(event) => {
-                                          event.stopPropagation();
-                                          onEditUserMessage(displayFinalAnswer.text);
-                                        }}
-                                        className="rounded-[8px] p-[6px] text-[#746F67] transition-colors hover:bg-white/[0.045] hover:text-[#DAD4CA]"
-                                        aria-label="Import answer to chat"
-                                      >
-                                        <MessageSquarePlus className="w-[15px] h-[15px]" />
-                                      </button>
-                                    </Tooltip>
-                                  )}
-                                </div>
-                              </div>
-                            }
-                          />
-                        </div>
-                      )}
-
-                    </div>
-                  </div>
-                )}
-
-              </div>
-            );
-          })}
-
-          <div ref={messagesEndRef} className="h-[2px]" />
         </div>
-      )}
-      </div>
       </div>
       <AnimatePresence>
         {previewUserMessage && (

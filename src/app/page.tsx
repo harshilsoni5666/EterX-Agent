@@ -2436,6 +2436,7 @@ function DeepWorkUI() {
       if (trace.type === 'work_note_cancel') {
         const subAgent = trace.subAgent || null;
         const noteId = trace.noteId || null;
+        // Mark rather than splice — prevents flash when final work_note follows
         for (let i = logs.length - 1; i >= 0; i--) {
           if (logs[i].type === 'user_action') break;
           if (
@@ -2443,7 +2444,7 @@ function DeepWorkUI() {
             (logs[i].subAgent || null) === subAgent &&
             (!noteId || logs[i].noteId === noteId)
           ) {
-            logs.splice(i, 1);
+            logs[i] = { ...logs[i], _streamingCancelled: true };
             break;
           }
         }
@@ -2463,16 +2464,17 @@ function DeepWorkUI() {
           }
         }
         if (mergeIdx >= 0) {
-          logs[mergeIdx] = { ...logs[mergeIdx], text: trace.text, thoughtId, _traceIdx: trace._traceIdx, timestamp: traceAt, endTime: traceAt };
+          // Preserve the original startTime from when the thought began
+          logs[mergeIdx] = { ...logs[mergeIdx], text: trace.text, thoughtId, _traceIdx: trace._traceIdx, timestamp: traceAt, startTime: logs[mergeIdx].startTime, endTime: trace.endTime ?? traceAt };
         } else {
-          logs.push({ type: 'thought_stream', text: trace.text, subAgent, thoughtId, _traceIdx: trace._traceIdx, timestamp: traceAt, startTime: traceAt, endTime: traceAt });
+          logs.push({ type: 'thought_stream', text: trace.text, subAgent, thoughtId, _traceIdx: trace._traceIdx, timestamp: traceAt, startTime: trace.startTime ?? traceAt, endTime: trace.endTime ?? traceAt });
         }
       } else if (trace.type === 'work_note') {
         const subAgent = trace.subAgent || null;
         const noteId = trace.noteId || null;
+        const incomingIsFinal = trace.isStreaming === false || trace.isDelta === false;
         const noteText = formatVisibleWorkNote(String(trace.text || ''));
         if (!noteText) continue;
-        const incomingIsFinal = trace.isStreaming === false || trace.isDelta === false;
         let mergeIdx = -1;
         let duplicateIdx = -1;
         for (let i = logs.length - 1; i >= 0; i--) {
@@ -2480,6 +2482,11 @@ function DeepWorkUI() {
           if (logs[i].type === 'work_note' && (logs[i].subAgent || null) === subAgent) {
             const existingText = String(logs[i].text || '').trim();
             if (noteId && logs[i].noteId && logs[i].noteId === noteId) {
+              mergeIdx = i;
+              break;
+            }
+            // Merge final note into a streaming-cancelled placeholder
+            if (logs[i]._streamingCancelled && incomingIsFinal) {
               mergeIdx = i;
               break;
             }
@@ -2510,6 +2517,7 @@ function DeepWorkUI() {
             timestamp: traceAt,
             startTime: logs[mergeIdx].startTime || processedLog.startTime,
             endTime: traceAt,
+            _streamingCancelled: undefined,
           };
         } else {
           logs.push({ ...processedLog, type: 'work_note', text: noteText, subAgent, noteId, _traceIdx: trace._traceIdx, startTime: processedLog.startTime, endTime: traceAt });
@@ -2799,6 +2807,9 @@ function DeepWorkUI() {
               if (trace.type === 'work_note_cancel') {
                 const subAgent = trace.subAgent || null;
                 const noteId = trace.noteId || null;
+                // Mark the streaming worknote as cancelled rather than removing it.
+                // This preserves its DOM position so the final permanent work_note
+                // merges into it in-place — preventing the flash/re-animate bug.
                 for (let i = logs.length - 1; i >= 0; i--) {
                   if (logs[i].type === 'user_action') break;
                   if (
@@ -2806,7 +2817,7 @@ function DeepWorkUI() {
                     (logs[i].subAgent || null) === subAgent &&
                     (!noteId || logs[i].noteId === noteId)
                   ) {
-                    logs.splice(i, 1);
+                    logs[i] = { ...logs[i], _streamingCancelled: true };
                     break;
                   }
                 }
@@ -2826,16 +2837,17 @@ function DeepWorkUI() {
                   }
                 }
                 if (mergeIdx >= 0) {
-                  logs[mergeIdx] = { ...logs[mergeIdx], text: trace.text, thoughtId, _traceIdx: trace._traceIdx, timestamp: traceAt, endTime: traceAt };
+                  // Preserve the original startTime from when the thought began
+                  logs[mergeIdx] = { ...logs[mergeIdx], text: trace.text, thoughtId, _traceIdx: trace._traceIdx, timestamp: traceAt, startTime: logs[mergeIdx].startTime, endTime: trace.endTime ?? traceAt };
                 } else {
-                  logs.push({ type: 'thought_stream', text: trace.text, subAgent, thoughtId, _traceIdx: trace._traceIdx, timestamp: traceAt, startTime: traceAt, endTime: traceAt });
+                  logs.push({ type: 'thought_stream', text: trace.text, subAgent, thoughtId, _traceIdx: trace._traceIdx, timestamp: traceAt, startTime: trace.startTime ?? traceAt, endTime: trace.endTime ?? traceAt });
                 }
               } else if (trace.type === 'work_note') {
                 const subAgent = trace.subAgent || null;
                 const noteId = trace.noteId || null;
+                const incomingIsFinal = trace.isStreaming === false || trace.isDelta === false;
                 const noteText = formatVisibleWorkNote(String(trace.text || ''));
                 if (!noteText) continue;
-                const incomingIsFinal = trace.isStreaming === false || trace.isDelta === false;
                 let mergeIdx = -1;
                 let duplicateIdx = -1;
                 for (let i = logs.length - 1; i >= 0; i--) {
@@ -2843,6 +2855,11 @@ function DeepWorkUI() {
                   if (logs[i].type === 'work_note' && (logs[i].subAgent || null) === subAgent) {
                     const existingText = String(logs[i].text || '').trim();
                     if (noteId && logs[i].noteId && logs[i].noteId === noteId) {
+                      mergeIdx = i;
+                      break;
+                    }
+                    // Merge final note into a streaming-cancelled placeholder (same subAgent, no noteId match needed)
+                    if (logs[i]._streamingCancelled && incomingIsFinal) {
                       mergeIdx = i;
                       break;
                     }
@@ -2873,6 +2890,7 @@ function DeepWorkUI() {
                     timestamp: traceAt,
                     startTime: logs[mergeIdx].startTime || timedTrace.startTime,
                     endTime: traceAt,
+                    _streamingCancelled: undefined,
                   };
                 } else {
                   logs.push({ ...timedTrace, type: 'work_note', text: noteText, subAgent, noteId, _traceIdx: trace._traceIdx, startTime: timedTrace.startTime, endTime: traceAt });

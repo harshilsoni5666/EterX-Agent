@@ -1717,22 +1717,16 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     if (isNetworkPaused) return;
     queuedSendRef.current = false;
     if (isThinking) {
-      if (inputValue.trim() && attachments.length === 0) handleSteer();
+      if (hasComposerPayload) handleSteer();
       return;
     }
     notifyAgentFaceSend();
     handleSend();
-  }, [attachments.length, handleSend, handleSteer, hasErroredAttachments, hasPreparingAttachments, inputValue, isNetworkPaused, isThinking]);
+  }, [attachments.length, handleSend, handleSteer, hasComposerPayload, hasErroredAttachments, hasPreparingAttachments, inputValue, isNetworkPaused, isThinking]);
 
   const submitPrompt = useCallback(() => {
     if (isNetworkPaused) {
       onNetworkPausedAction();
-      return;
-    }
-    if (isThinking) {
-      if (inputValue.trim() && attachments.length === 0) {
-        handleSteer();
-      }
       return;
     }
     if (hasPreparingAttachments) {
@@ -1740,11 +1734,17 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       return;
     }
     if (hasErroredAttachments) return;
+    if (isThinking) {
+      if (hasComposerPayload) {
+        handleSteer();
+      }
+      return;
+    }
     if (inputValue.trim() || attachments.length > 0) {
       notifyAgentFaceSend();
     }
     handleSend();
-  }, [attachments.length, handleSend, handleSteer, hasErroredAttachments, hasPreparingAttachments, inputValue, isNetworkPaused, isThinking, onNetworkPausedAction]);
+  }, [attachments.length, handleSend, handleSteer, hasComposerPayload, hasErroredAttachments, hasPreparingAttachments, inputValue, isNetworkPaused, isThinking, onNetworkPausedAction]);
 
   const handleTextareaKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (slashTrigger) {

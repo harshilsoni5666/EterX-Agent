@@ -22,6 +22,12 @@ import { DEFAULT_MAIN_AGENT_ALLOWED_CAPABILITIES, enforceToolCapability } from '
 import { getPathResolverInfo } from './workspace/path_resolver';
 import { createToolExecutionContext, isToolCancellationError } from './cancellation';
 import type { ScopedRuntimeSettings } from './runtime-api-keys';
+import {
+  GEMINI_FAST_FALLBACK_CHAIN,
+  GEMINI_THINK_FALLBACK_CHAIN,
+  resolveModelName,
+  type MainAgentMode,
+} from './model-routing';
 
 // ═══════════════════════════════════════════════════════════════
 // Types
@@ -43,6 +49,7 @@ export interface AgentRunnerConfig {
   agentId: string;
   maxIterations?: number;
   temperature?: number;
+  mode?: MainAgentMode;
   model?: string;
   preferredGeminiApiKey?: string;
   runtimeSettings?: ScopedRuntimeSettings | null;
@@ -50,6 +57,40 @@ export interface AgentRunnerConfig {
   agentSessionId?: string;
   runLocation?: string;
   pinnedContext?: any;
+}
+
+/**
+ * Returns true only for Gemini models that support thinkingBudget.
+ * Only gemini-2.5-pro and gemini-2.5-flash (non-lite) variants support it.
+ * Sending thinkingBudget to any other model causes a 400 INVALID_ARGUMENT.
+ */
+function modelSupportsThinking(modelName: string): boolean {
+  const lower = modelName.toLowerCase();
+  // gemini-2.5-pro and gemini-2.5-flash (not lite) support thinking
+  if (lower.includes('gemini-2.5-pro')) return true;
+  if (lower.includes('gemini-2.5-flash') && !lower.includes('lite')) return true;
+  return false;
+}
+
+function isGoogleGenAIModelName(modelName: string): boolean {
+  return /^(?:models\/)?gemini[-_]/i.test(modelName.trim());
+}
+
+function normalizeGeminiRunnerMode(mode?: MainAgentMode): 'think' | 'fast' {
+  return mode === 'fast' ? 'fast' : 'think';
+}
+
+function resolveGeminiRunnerModel(config: AgentRunnerConfig): string {
+  const requestedModel = String(config.model || '').trim();
+  if (requestedModel && isGoogleGenAIModelName(requestedModel)) return requestedModel;
+
+  const runnerMode = normalizeGeminiRunnerMode(config.mode);
+  const resolved = resolveModelName(runnerMode, config.runtimeSettings);
+  if (isGoogleGenAIModelName(resolved)) return resolved;
+
+  return runnerMode === 'fast'
+    ? GEMINI_FAST_FALLBACK_CHAIN[0]
+    : GEMINI_THINK_FALLBACK_CHAIN[0];
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -328,6 +369,7 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
 
       let consecutiveErrors = 0;
       let totalToolCalls = 0;
+      let generateConfig: any = null; // Hoisted so catch block can inspect/modify it
 
       // ReAct loop
       for (let iteration = 0; iteration < maxIter; iteration++) {
@@ -337,16 +379,22 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
         }
 
         try {
-          const generateConfig: any = {
-            model: config.model || 'gemini-2.5-flash',
+          const resolvedModel = resolveGeminiRunnerModel(config);
+          const supportsThinking = modelSupportsThinking(resolvedModel);
+
+          generateConfig = {
+            model: resolvedModel,
             contents,
             config: {
               systemInstruction,
               temperature: config.temperature ?? 0.4,
-              // Enable thinking/reasoning for deeper agent behavior
-              thinkingConfig: { thinkingBudget: 4096 },
             },
           };
+
+          // Only add thinkingConfig for models that support it
+          if (supportsThinking) {
+            generateConfig.config.thinkingConfig = { thinkingBudget: 4096 };
+          }
 
           // Add tools if we have any
           if (funcDecls.length > 0) {
@@ -484,6 +532,20 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
         } catch (err: any) {
           consecutiveErrors++;
           const errMsg = String(err.message || err);
+
+          // If the model doesn't support thinkingBudget, strip it and retry immediately
+          if (
+            errMsg.toLowerCase().includes('thinking budget is not supported') ||
+            errMsg.toLowerCase().includes('thinkingconfig') ||
+            (errMsg.includes('400') && errMsg.toLowerCase().includes('thinking'))
+          ) {
+            if (generateConfig?.config?.thinkingConfig) {
+              delete generateConfig.config.thinkingConfig;
+              consecutiveErrors = 0;
+              console.warn(`[AgentRunner] thinkingConfig not supported by model "${generateConfig.model}" — retrying without it`);
+              continue;
+            }
+          }
 
           // Detect schema/declaration errors specifically
           if (errMsg.includes('Invalid JSON payload') || errMsg.includes('function_declarations')) {

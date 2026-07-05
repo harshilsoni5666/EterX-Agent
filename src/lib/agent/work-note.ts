@@ -87,33 +87,10 @@ function rewriteInternalRepairNote(value: string): string {
     .replace(/\bwill cause the script to fail\b/gi, 'could affect runtime behavior');
 }
 
-export function formatVisibleWorkNote(value: string, _maxLength = 720): string {
-  let text = removePromptScaffold(String(value || ''))
-    .replace(/\*\*(CLASSIFY|DECOMPOSE|ASSESS|ACT|VERIFY)\*\*/gi, '$1')
-    .replace(/\b(CLASSIFY|DECOMPOSE|ASSESS|ACT|VERIFY)\s*(?:->|:|-)\s*/gi, '')
-    .replace(/^[\s*>\-\u2022]+/, '')
-    .replace(/\s+/g, ' ')
-    .trim();
+export function isFinalAnswerOrRegularText(value: string): boolean {
+  return false;
+}
 
-  if (!text) return '';
-
-  text = rewriteInternalRepairNote(text);
-
-  if (text.startsWith('.')) {
-    text = text.replace(/^\.+/, '').trim();
-  }
-
-  text = text.replace(/^(?:jsx?|tsx?|ts|css|scss|json|md|html|py|sh|ps1)\b\s*[:\-]?\s*(?=\b(to|how|if|whether|for|what)\b)/i, '');
-  text = text.replace(/^(?:\.?\/)?([a-zA-Z0-9_-]+\.(?:jsx?|tsx?|ts|css|scss|json|md|html|py|sh|ps1))\b\s*(?=\b(to|how|if|whether|for|what|show|check|verify)\b)/i, 'Checking $1 ');
-  text = text.replace(/^(?:jsx?|tsx?|ts|css|scss|json|md|html|py|sh|ps1)\b\s*[:\-]?\s*/i, '');
-
-  if (text) {
-    text = text.charAt(0).toUpperCase() + text.slice(1);
-  }
-
-  return text
-    .replace(/^(?:jsx?|tsx?|ts|css|scss|json|md|html|py|sh|ps1)\s*(?=\b(where|which|that|has|is|was|the)\b)/i, 'The file ')
-    .replace(/^(?:in\s+)?(?:jsx?|tsx?|ts|css|scss|json|md|html|py|sh|ps1)\s*[:\-]\s*/i, 'The file ')
-    .replace(/\s+/g, ' ')
-    .trim();
+export function formatVisibleWorkNote(value: string, _maxLength = 720, suppressFinalAnswers = false): string {
+  return value.trim();
 }
