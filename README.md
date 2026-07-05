@@ -57,8 +57,9 @@ The sub-agent system is entirely orchestrated and managed by the AI engine itsel
     *   *Adversarial Debate*: Runs multi-round critique rounds where agents debate findings, write rebuttals, modify their stances, and generate a final synthesis backed by concession-based confidence scores.
 
 <p align="center">
-  <img src="./public/assets/sub-agent.png" width="48%" alt="Sub-Agent Panel" />
-  <img src="./public/assets/sub-agent1.png" width="48%" alt="Sub-Agent Workflow" />
+  <img src="./public/assets/sub-agent.png" width="100%" alt="Sub-Agent Panel" />
+  <br /><br />
+  <img src="./public/assets/sub-agent1.png" width="100%" alt="Sub-Agent Workflow" />
 </p>
 
 ### Agent Builder (An AI agent designed to build custom agents)
