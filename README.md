@@ -64,8 +64,13 @@ The sub-agent system is entirely orchestrated and managed by the AI engine itsel
 ### Agent Builder (An AI agent designed to build custom agents)
 
 <p align="center">
-  <img src="./public/assets/Agent-Builder.webp" width="100%" alt="Agent Builder Demo" />
+  <a href="./public/assets/Agent-Builder.mp4?raw=true">
+    <img src="./public/assets/Agent-Builder-Thumbnail.png" width="100%" alt="Watch Agent Builder walkthrough" style="max-width: 100%; border-radius: 12px; border: 1px solid rgba(255, 255, 255, 0.15); box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);" />
+  </a>
+  <br />
+  <sub>▶ <b><a href="./public/assets/Agent-Builder.mp4?raw=true">Click here to watch the 1080p walkthrough video with full player controls (play/pause/seek)</a></b></sub>
 </p>
+
 
 The Agent Builder is a specialized AI agent designed to dynamically configure, write, and deploy custom specialist agents. When you interact with the builder, it acts as a meta-architect—guiding you through the creation of a fully functional, self-contained workspace companion tailored specifically to your work environment.
 
