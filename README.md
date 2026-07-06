@@ -24,16 +24,16 @@ EterX is an autonomous agent platform that plans, runs tasks, and operates your 
 *   **Intelligent Model Routing**: Automatically selects the best model, balances load across API keys, and routes through fallback chains to prevent service interruption.
 *   **Custom Agent Builder**: Talk to the builder to create specialized agents with custom rules, missions, and tailored tool chains built specifically for your environment.
 
+<p align="center">
+  <video src="https://github.com/user-attachments/assets/54c22cb9-e81d-445d-b66b-c0794e7a671e" controls width="100%"></video>
+</p>
+
 ### Agent-first app support with themes
 A premium, highly integrated interface supporting both custom light and dark themes designed specifically to match your preferred workspace aesthetics. All data runs locally on your machine, ensuring your workspace configurations and memories remain entirely private.
 
 <p align="center">
   <img src="./public/assets/white-theme.png" width="48%" alt="White Theme" />
   <img src="./public/assets/black-theme.png" width="48%" alt="Dark Theme" />
-</p>
-
-<p align="center">
-  <video src="https://github.com/user-attachments/assets/0b4963ce-b9e7-4cb5-8888-a46e3bbd5f9f" controls width="100%"></video>
 </p>
 
 ---
