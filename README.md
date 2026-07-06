@@ -25,7 +25,7 @@ EterX is an autonomous agent platform that plans, runs tasks, and operates your 
 *   **Custom Agent Builder**: Talk to the builder to create specialized agents with custom rules, missions, and tailored tool chains built specifically for your environment.
 
 <p align="center">
-  <video src="https://github.com/user-attachments/assets/54c22cb9-e81d-445d-b66b-c0794e7a671e" controls width="100%"></video>
+  <video src="https://github.com/user-attachments/assets/39f76fd9-f848-482c-945f-028e50276d43" controls width="100%"></video>
 </p>
 
 ### Agent-first app support with themes
