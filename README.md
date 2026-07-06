@@ -28,6 +28,10 @@ EterX is an autonomous agent platform that plans, runs tasks, and operates your 
   <video src="https://github.com/user-attachments/assets/7ba6c169-a58e-46b9-af0e-6f0536f0b0cc" controls width="100%"></video>
 </p>
 
+> [!NOTE]
+> **Performance Context & Resource Optimization:**
+> This entire demo was executed using the **free-tier Google AI Studio API (Gemini)**. Designing and running an advanced autonomous sub-agent swarm within the tight rate-limits of a free API showcases the system's resourcefulness and architectural efficiency. To prevent quota exhaustion, the orchestration engine dynamically staggers execution and handles rate-limit fallbacks automatically. Any delays or latency during execution are a direct result of these API constraints, demonstrating how EterX is built to remain robust and cost-effective under strict resource limits.
+
 ### Agent-first app support with themes
 A premium, highly integrated interface supporting both custom light and dark themes designed specifically to match your preferred workspace aesthetics. All data runs locally on your machine, ensuring your workspace configurations and memories remain entirely private.
 
