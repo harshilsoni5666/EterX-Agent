@@ -32,6 +32,10 @@ A premium, highly integrated interface supporting both custom light and dark the
   <img src="./public/assets/black-theme.png" width="48%" alt="Dark Theme" />
 </p>
 
+<p align="center">
+  <video src="https://github.com/user-attachments/assets/0b4963ce-b9e7-4cb5-8888-a46e3bbd5f9f" controls width="100%"></video>
+</p>
+
 ---
 
 ## Workflow-Overview
