@@ -3044,14 +3044,10 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       <Tooltip text="Stop Agent" side="top">
                         <button
                           onClick={() => { setIsStopping(true); handleStop(); }}
-                          className="eterx-control-button eterx-composer-stop-button w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full bg-[#F2EFEA] text-black hover:bg-white transition-all duration-200 shadow-[0_8px_22px_rgba(242,239,234,0.15),inset_0_1px_0_rgba(255,255,255,0.82)] active:scale-[0.96] group cursor-pointer overflow-hidden relative"
+                          className="eterx-control-button eterx-composer-stop-button w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full bg-[#F2EFEA] text-black hover:bg-[#F2EFEA] transition-all duration-200 shadow-[0_8px_22px_rgba(242,239,234,0.15),inset_0_1px_0_rgba(255,255,255,0.82)] active:scale-[0.96] group cursor-pointer overflow-hidden relative"
                         >
                           <div className="absolute inset-0 bg-gradient-to-t from-black/0 to-black/5" />
-                          <span className="eterx-composer-stop-icon block h-[12px] w-[12px] rounded-[2.5px] bg-current transition-all duration-200 group-hover:hidden" aria-hidden="true" />
-                          <span className="hidden h-[12px] w-[12px] flex-row justify-between items-center gap-[3px] transition-all duration-200 group-hover:flex" aria-hidden="true">
-                            <span className="w-[3.5px] h-[12px] rounded-[1px] bg-current" />
-                            <span className="w-[3.5px] h-[12px] rounded-[1px] bg-current" />
-                          </span>
+                          <span className="eterx-composer-stop-icon block h-[12px] w-[12px] rounded-[2.5px] bg-current transition-all duration-200" aria-hidden="true" />
                         </button>
                       </Tooltip>
                     </motion.div>

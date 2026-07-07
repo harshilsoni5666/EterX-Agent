@@ -772,8 +772,8 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
-    minWidth: 800,
-    minHeight: 600,
+    minWidth: 400,
+    minHeight: 400,
     backgroundColor: initialNativeColors.background,
     title: 'EterX',
     icon: APP_ICON_PATH,
@@ -801,8 +801,8 @@ function createWindow() {
     return {
       action: 'allow',
       overrideBrowserWindowOptions: {
-        minWidth: settingsWindow ? 900 : 800,
-        minHeight: settingsWindow ? 620 : 600,
+        minWidth: settingsWindow ? 900 : 400,
+        minHeight: settingsWindow ? 620 : 400,
         backgroundColor: colors.background,
         title: settingsWindow ? 'Settings' : 'EterX',
         icon: APP_ICON_PATH,

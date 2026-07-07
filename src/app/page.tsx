@@ -7,7 +7,7 @@ import { ChatInput } from '../components/layout/chat-input';
 import { ChatFeed } from '../components/chat/chat-feed';
 import { AlertTriangle, CheckCircle2, ChevronDown, Clock3, Code2, GraduationCap, List, MessageSquare, Pencil, PenTool, SendHorizontal, SquarePen, Search, X, ArrowLeft, Trash, ListTodo, ChevronRight, Monitor, GitFork, Terminal, GitBranch, GitCommit, PlusSquare, Check, FileCode, FileText, MoreHorizontal, Sparkles } from 'lucide-react';
 import { Tooltip } from '../components/ui/tooltip';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence, Reorder } from 'framer-motion';
 import { InteractiveGrid } from '../components/ui/interactive-grid';
 import { GeminiLiveSession, LiveSessionState } from '../lib/live/gemini-live';
 import {
@@ -261,7 +261,12 @@ const WorkMenuStatusIndicator = ({ status }: { status?: string }) => {
   switch (status) {
     case 'working':
     case 'spawning':
-      return <span className="eterx-agent-working-ring" aria-label="Working" />;
+      return (
+        <svg className="animate-spin h-3.5 w-3.5 text-white/80 shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" aria-label="Working">
+          <circle className="opacity-20" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+          <path className="opacity-80" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+        </svg>
+      );
     case 'paused':
       return (
         <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center text-amber-400" aria-label="Paused">
@@ -330,20 +335,8 @@ const SubAgentAvatar = ({
   const displayName = getAgentDisplayName(name);
   const lowerName = displayName.toLowerCase().trim();
   const hasImage = SUB_AGENT_ICON_NAMES.has(lowerName);
-  const tone = getSubAgentStatusTone(status);
   const sizeClass = size === 'md' ? 'h-7 w-7' : size === 'xs' ? 'h-[22px] w-[22px]' : 'h-6 w-6';
   const textClass = size === 'md' ? 'text-[10px]' : 'text-[9px]';
-  const dotClass = tone === 'emerald'
-    ? 'bg-emerald-400 shadow-[0_0_0_2px_rgba(15,15,15,0.95),0_0_10px_rgba(52,211,153,0.45)]'
-    : tone === 'amber'
-      ? 'bg-amber-400 shadow-[0_0_0_2px_rgba(15,15,15,0.95),0_0_10px_rgba(251,191,36,0.38)]'
-      : tone === 'blue'
-        ? 'bg-sky-400 shadow-[0_0_0_2px_rgba(15,15,15,0.95)]'
-        : tone === 'red'
-          ? 'bg-red-400 shadow-[0_0_0_2px_rgba(15,15,15,0.95)]'
-          : tone === 'muted'
-            ? 'bg-white/18 shadow-[0_0_0_2px_rgba(15,15,15,0.95)]'
-            : 'bg-white/32 shadow-[0_0_0_2px_rgba(15,15,15,0.95)]';
 
   return (
     <span className={`relative flex ${ sizeClass } shrink-0 items-center justify-center overflow-hidden rounded-full border border-white/[0.13] bg-[radial-gradient(circle_at_30%_20%,rgba(255,255,255,0.18),rgba(255,255,255,0.04)_42%,rgba(0,0,0,0.18))] shadow-[inset_0_1px_0_rgba(255,255,255,0.18)]`}>
@@ -354,7 +347,6 @@ const SubAgentAvatar = ({
           {getAgentInitials(displayName)}
         </span>
       )}
-      <span className={`absolute bottom-0 right-0 h-1.5 w-1.5 rounded-full ${ dotClass }`} />
     </span>
   );
 };
@@ -1033,6 +1025,8 @@ function DeepWorkUI() {
   const [monitorOpen, setMonitorOpen] = useState(false);
   const [agentTeamOpen, setAgentTeamOpen] = useState(false);
   const [activeSubAgentTab, setActiveSubAgentTab] = useState<string | null>(null);
+  const [subAgentOrder, setSubAgentOrder] = useState<string[]>([]);
+  const [overflowDropdownOpen, setOverflowDropdownOpen] = useState(false);
   const [petWidgetOpen, setPetWidgetOpen] = useState(false);
   const [nativePetAvailable, setNativePetAvailable] = useState(false);
   const canUseMonitor = activeView === 'chat' && !!activeChatId;
@@ -1040,6 +1034,7 @@ function DeepWorkUI() {
   const [networkBannerVisible, setNetworkBannerVisible] = useState(false);
   const closedSidebarDragStartRef = useRef<number | null>(null);
   const closedSidebarDragOpenedRef = useRef(false);
+  const dragConstraintsRef = useRef<HTMLDivElement>(null);
   const selectedAgent = selectedAgentState.agentId;
   const selectedAgentName = selectedAgentState.agentName;
   const networkPausedRef = useRef(false);
@@ -1050,6 +1045,18 @@ function DeepWorkUI() {
   const runningChatsRef = useRef<Set<string>>(new Set());
   const activeViewRef = useRef<ActiveView>('chat');
   const isNetworkPaused = networkPhase === 'offline';
+
+  // Auto-close sidebar on window resize if width is narrow
+  useEffect(() => {
+    const handleResize = () => {
+      if (window.innerWidth < 768) {
+        setSidebarOpen(false);
+      }
+    };
+    window.addEventListener('resize', handleResize);
+    handleResize();
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
   const [workMenuLayouts, setWorkMenuLayouts] = useState<Record<string, { x: number; y: number; width: number; height: number | 'auto' }>>({});
 
@@ -4400,14 +4407,75 @@ function DeepWorkUI() {
     [currentSubAgents]
   );
 
+  useEffect(() => {
+    const names = realSubAgents.map((a: any) => a.name);
+    setSubAgentOrder(prev => {
+      const existing = prev.filter(name => names.includes(name));
+      const brandNew = names.filter(name => !prev.includes(name));
+      return [...existing, ...brandNew];
+    });
+  }, [realSubAgents]);
+
+  const orderedRealSubAgents = useMemo(() => {
+    return [...realSubAgents].sort((a, b) => {
+      const indexA = subAgentOrder.indexOf(a.name);
+      const indexB = subAgentOrder.indexOf(b.name);
+      const finalA = indexA === -1 ? 9999 : indexA;
+      const finalB = indexB === -1 ? 9999 : indexB;
+      return finalA - finalB;
+    });
+  }, [realSubAgents, subAgentOrder]);
+
   const headerSubAgentTabs = useMemo(() => {
     const maxVisibleTabs = activeSubAgentTab ? 3 : 4;
-    if (!activeSubAgentTab) return realSubAgents.slice(0, maxVisibleTabs);
+    if (orderedRealSubAgents.length <= maxVisibleTabs) return orderedRealSubAgents;
 
-    const selected = realSubAgents.find((agent: any) => agent.name === activeSubAgentTab);
-    const remaining = realSubAgents.filter((agent: any) => agent.name !== activeSubAgentTab);
-    return selected ? [selected, ...remaining].slice(0, maxVisibleTabs) : remaining.slice(0, maxVisibleTabs);
-  }, [activeSubAgentTab, realSubAgents]);
+    const activeIndex = orderedRealSubAgents.findIndex((agent: any) => agent.name === activeSubAgentTab);
+    if (activeIndex === -1 || activeIndex < maxVisibleTabs) {
+      return orderedRealSubAgents.slice(0, maxVisibleTabs);
+    }
+
+    const result = orderedRealSubAgents.slice(0, maxVisibleTabs - 1);
+    result.push(orderedRealSubAgents[activeIndex]);
+    return result;
+  }, [activeSubAgentTab, orderedRealSubAgents]);
+
+  const hiddenSubAgents = useMemo(() => {
+    const visibleNames = headerSubAgentTabs.map((a: any) => a.name);
+    return orderedRealSubAgents.filter((agent: any) => !visibleNames.includes(agent.name));
+  }, [orderedRealSubAgents, headerSubAgentTabs]);
+
+  const visibleAgentNames = useMemo(() => {
+    return headerSubAgentTabs.map((agent: any) => agent.name);
+  }, [headerSubAgentTabs]);
+
+  const handleReorderVisible = (newVisibleOrder: string[]) => {
+    setSubAgentOrder(prev => {
+      const currentVisibleNames = headerSubAgentTabs.map((agent: any) => agent.name);
+      const hiddenNames = prev.filter(name => !currentVisibleNames.includes(name));
+      return [...newVisibleOrder, ...hiddenNames];
+    });
+  };
+
+  const handleSelectHiddenAgent = (agentName: string) => {
+    const maxVisibleTabs = activeSubAgentTab ? 3 : 4;
+    setSubAgentOrder(prev => {
+      const visibleNames = prev.slice(0, maxVisibleTabs);
+      const activeIdx = visibleNames.indexOf(activeSubAgentTab || '');
+      const swapTargetIdx = activeIdx !== -1 ? activeIdx : (maxVisibleTabs - 1);
+
+      const newOrder = [...prev];
+      const targetAgentName = newOrder[swapTargetIdx];
+      const hiddenAgentIdx = newOrder.indexOf(agentName);
+
+      if (hiddenAgentIdx !== -1 && swapTargetIdx < newOrder.length) {
+        newOrder[swapTargetIdx] = agentName;
+        newOrder[hiddenAgentIdx] = targetAgentName;
+      }
+      return newOrder;
+    });
+    setActiveSubAgentTab(agentName);
+  };
 
   useEffect(() => {
     if (!activeChatId || !activeSubAgentTab) return;
@@ -4452,7 +4520,7 @@ function DeepWorkUI() {
     };
   }, [activeChatId, activeSubAgentTab]);
 
-  const hiddenHeaderSubAgentCount = Math.max(0, realSubAgents.length - headerSubAgentTabs.length);
+  const hiddenHeaderSubAgentCount = hiddenSubAgents.length;
 
   useEffect(() => {
     if (!activeSubAgentTab) return;
@@ -5038,56 +5106,122 @@ function DeepWorkUI() {
                     onClick={() => setActiveSubAgentTab(null)}
                     role="tab"
                     aria-selected={!activeSubAgentTab}
-                    className={`eterx-agent-tab eterx-agent-tab-main flex items-center gap-2
+                    className={`eterx-agent-tab eterx-agent-tab-main flex items-center gap-2 relative
                     ${ !activeSubAgentTab
                         ? 'eterx-agent-tab-active'
                         : 'eterx-agent-tab-idle'
                       }`}
                   >
-                    <span className="eterx-main-agent-glyph">
-                      <Sparkles className="h-3.5 w-3.5" strokeWidth={2.1} />
-                    </span>
+                    {!activeSubAgentTab && (
+                      <motion.div
+                        layoutId="activeSubAgentTabHighlight"
+                        className="eterx-agent-tab-active-bg"
+                        transition={{ type: 'spring', stiffness: 380, damping: 30 }}
+                      />
+                    )}
                     <span className="eterx-agent-tab-label">Main</span>
                   </button>
-                  {/* Sub-agent tabs */}
-                  {headerSubAgentTabs.map((agent: any) => {
-                    const isActive = activeSubAgentTab === agent.name;
-                    const isClosed = agent.status === 'closed';
-                    const isWorking = agent.status === 'working' || agent.status === 'spawning';
-                    return (
-                      <button
-                        key={agent.name}
-                        type="button"
-                        onClick={() => setActiveSubAgentTab(agent.name)}
-                        role="tab"
-                        aria-selected={isActive}
-                        title={agent.task || agent.currentAction || agent.name}
-                        className={`eterx-agent-tab min-w-0
-                        ${ isActive
-                            ? 'eterx-agent-tab-active'
-                            : isClosed
-                              ? 'eterx-agent-tab-closed'
-                              : 'eterx-agent-tab-idle'
-                          }`}
-                      >
-                        <SubAgentAvatar name={agent.name} status={agent.status} size="xs" />
-                        <span className={`eterx-agent-tab-label min-w-0 truncate ${ isClosed ? 'line-through' : '' }`}>{agent.name}</span>
-                        {isWorking && (
-                          <span className="eterx-agent-working-ring" aria-label="Working" />
-                        )}
-                      </button>
-                    );
-                  })}
+
+                  {/* Drag-to-reorder sub-agent tabs */}
+                  <Reorder.Group
+                    ref={dragConstraintsRef}
+                    axis="x"
+                    values={visibleAgentNames}
+                    onReorder={handleReorderVisible}
+                    className="flex items-center gap-1 min-w-0"
+                    as="div"
+                  >
+                    {headerSubAgentTabs.map((agent: any) => {
+                      const isActive = activeSubAgentTab === agent.name;
+                      const isClosed = agent.status === 'closed';
+                      const isWorking = agent.status === 'working' || agent.status === 'spawning';
+                      return (
+                        <Reorder.Item
+                          dragConstraints={dragConstraintsRef}
+                          dragElastic={0.12}
+                          whileDrag={{
+                            scale: 1.04,
+                            zIndex: 99,
+                            boxShadow: "0 8px 30px rgba(0,0,0,0.6)",
+                          }}
+                          transition={{ type: "spring", stiffness: 500, damping: 40 }}
+                          key={agent.name}
+                          value={agent.name}
+                          as="button"
+                          type="button"
+                          onTap={() => setActiveSubAgentTab(agent.name)}
+                          role="tab"
+                          aria-selected={isActive}
+                          className={`eterx-agent-tab min-w-0 select-none relative
+                          ${ isActive
+                              ? 'eterx-agent-tab-active'
+                              : isClosed
+                                ? 'eterx-agent-tab-closed'
+                                : 'eterx-agent-tab-idle'
+                            }`}
+                        >
+                          {isActive && (
+                            <motion.div
+                              layoutId="activeSubAgentTabHighlight"
+                              className="eterx-agent-tab-active-bg"
+                              transition={{ type: 'spring', stiffness: 380, damping: 30 }}
+                            />
+                          )}
+                          <SubAgentAvatar name={agent.name} status={agent.status} size="xs" />
+                          <span className="eterx-agent-tab-label min-w-0 truncate">{agent.name}</span>
+                          {isWorking && (
+                            <svg className="animate-spin h-3.5 w-3.5 text-white/80 shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" aria-label="Working">
+                              <circle className="opacity-20" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+                              <path className="opacity-80" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                            </svg>
+                          )}
+                        </Reorder.Item>
+                      );
+                    })}
+                  </Reorder.Group>
+
+                  {/* Hidden agents dropdown trigger & menu */}
                   {hiddenHeaderSubAgentCount > 0 && (
-                    <button
-                      type="button"
-                      onClick={() => setAgentTeamOpen(true)}
-                      className="eterx-agent-tab eterx-agent-tab-overflow"
-                      title={`${ hiddenHeaderSubAgentCount } more agents`}
-                    >
-                      <MoreHorizontal className="h-4 w-4" strokeWidth={2.1} />
-                      <span className="text-[11px] font-semibold">+{hiddenHeaderSubAgentCount}</span>
-                    </button>
+                    <div className="relative overflow-visible shrink-0 flex items-center">
+                      <button
+                        type="button"
+                        onClick={() => setOverflowDropdownOpen(!overflowDropdownOpen)}
+                        className={`eterx-agent-tab eterx-agent-tab-overflow flex items-center gap-1.5 transition-all
+                          ${ overflowDropdownOpen 
+                            ? 'border-white/25 bg-white/12 text-white shadow-[0_4px_12px_rgba(255,255,255,0.15)]' 
+                            : 'border-white/12 bg-white/8 text-white/60'
+                          }`}
+                        title={`${ hiddenHeaderSubAgentCount } more agents`}
+                      >
+                        <span className="text-[11px] font-bold">+{hiddenHeaderSubAgentCount}</span>
+                        <ChevronDown className={`h-3.5 w-3.5 transition-transform duration-200 ${ overflowDropdownOpen ? 'rotate-180 text-white' : 'text-white/60' }`} strokeWidth={2.2} />
+                      </button>
+
+                      {overflowDropdownOpen && (
+                        <>
+                          <div className="fixed inset-0 z-40" onClick={() => setOverflowDropdownOpen(false)} />
+                          <div className="absolute right-0 top-[calc(100%+6px)] min-w-[170px] z-50 bg-[#000000]/95 backdrop-blur-xl border border-white/12 rounded-xl shadow-[0_12px_40px_rgba(0,0,0,0.8)] p-1.5 flex flex-col gap-0.5 pointer-events-auto">
+                            <div className="px-2.5 py-1 text-[9px] font-bold text-[#6A6460] uppercase tracking-wider select-none">
+                              Hidden Agents
+                            </div>
+                            {hiddenSubAgents.map((agent: any) => (
+                              <button
+                                key={agent.name}
+                                type="button"
+                                onClick={() => {
+                                  handleSelectHiddenAgent(agent.name);
+                                  setOverflowDropdownOpen(false);
+                                }}
+                                className="w-full text-left px-2.5 py-1.5 text-[12.5px] font-medium text-white/70 hover:text-white hover:bg-white/5 active:scale-[0.98] rounded-lg transition-all flex items-center gap-2"
+                              >
+                                <SubAgentAvatar name={agent.name} status={agent.status} size="xs" />
+                                <span className="truncate flex-1">{agent.name}</span>
+                              </button>
+                            ))}
+                          </div>
+                        </>
+                      )}
+                    </div>
                   )}
                 </div>
               )}

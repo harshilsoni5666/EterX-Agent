@@ -1421,7 +1421,12 @@ const ToolResultPreview = React.memo(({ toolName, args, result }: { toolName: st
           {list.length > 0 ? list.map((item: any, i: number) => {
             const file: string = typeof item === 'string' ? item : item.file || item.filename || item.path || '';
             const line = item.line || item.lineNumber;
-            const content: string = item.content || item.lineContent || item.match || '';
+            const rawContent = item.content ?? item.lineContent ?? item.match ?? '';
+            const content: string = typeof rawContent === 'string'
+              ? rawContent
+              : (typeof rawContent === 'object' && rawContent !== null
+                ? JSON.stringify(rawContent)
+                : String(rawContent));
             return (
               <div key={i} className="rounded-[7px] bg-white/[0.02] border border-white/[0.04] p-2 hover:border-white/[0.07] transition-colors">
                 <div className="flex items-center gap-2 text-[10.5px] mb-1">
@@ -3124,11 +3129,11 @@ const AgentCreatedCard = ({ log, onOpenAgentTeam }: { log: any; onOpenAgentTeam?
             <button
               type="button"
               onClick={() => onOpenAgentTeam?.(name)}
-              className={`w-full flex h-[44px] items-center gap-3 rounded-[12px] px-3.5 bg-white/[0.015] border border-white/[0.06] text-left transition-all hover:bg-white/[0.03] hover:border-white/[0.09] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/16 cursor-pointer group ${ ACTION_CARD_CLASS }`}
+              className={`w-full flex min-h-[33px] items-center gap-2.5 rounded-[9px] px-3 py-1 bg-white/[0.015] border border-white/[0.045] text-left transition-all hover:bg-white/[0.024] hover:border-white/[0.075] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/16 cursor-pointer group ${ ACTION_CARD_CLASS }`}
               aria-label={`View agent ${ name }`}
             >
               {hasImage ? (
-                <span className="flex h-[28px] w-[28px] shrink-0 items-center justify-center overflow-hidden rounded-full border border-white/[0.08] bg-black/10 shadow-[0_2px_8px_rgba(0,0,0,0.12)]">
+                <span className="flex h-[22px] w-[22px] shrink-0 items-center justify-center overflow-hidden rounded-full border border-white/[0.08] bg-black/10 shadow-[0_2px_8px_rgba(0,0,0,0.12)]">
                   <img
                     src={`/icons/sub-agents/${ lowerName }.png`}
                     alt={name}
@@ -3136,9 +3141,9 @@ const AgentCreatedCard = ({ log, onOpenAgentTeam }: { log: any; onOpenAgentTeam?
                   />
                 </span>
               ) : (
-                <SubAgentIdentityIcon name={name} status="spawning" size={28} />
+                <SubAgentIdentityIcon name={name} status="spawning" size={22} />
               )}
-              <span className="text-[13px] font-medium text-[#C8C1B8] group-hover:text-[#E0DAD2] transition-colors">
+              <span className="text-[11.5px] font-medium text-[#C8C1B8] group-hover:text-[#E0DAD2] transition-colors">
                 Created <span className="text-[#E0DAD2]">{name}</span>
               </span>
             </button>
