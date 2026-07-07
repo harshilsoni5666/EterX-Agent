@@ -66,9 +66,9 @@ The sub-agent system is entirely orchestrated and managed by the AI engine itsel
 <p align="center">
   <img src="./public/assets/subagent.png" width="100%" alt="Sub-Agent Panel" />
   <br /><br />
-  <img src="./public/assets/sub-agent2.png" width="100%" alt="Sub-Agent Workflow" />
-  <br /><br />
   <img src="./public/assets/sub-agent3.png" width="100%" alt="Sub-Agent Details" />
+  <br /><br />
+  <img src="./public/assets/sub-agent2.png" width="100%" alt="Sub-Agent Workflow" />
 </p>
 
 ### Agent Builder (An AI agent designed to build custom agents)
