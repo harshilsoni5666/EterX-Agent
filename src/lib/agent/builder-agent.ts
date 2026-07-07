@@ -791,3 +791,116 @@ function normalizeAgentBuilderProfile(value: any, fallbackAgentId: string): Agen
     notes: Array.isArray(value?.notes) ? value.notes.map(String) : [],
   };
 }
+
+// ═══════════════════════════════════════════════════════════════
+// CUSTOM AGENT RUNTIME — Route custom agents through main pipeline
+// ═══════════════════════════════════════════════════════════════
+
+export const CUSTOM_AGENT_RUNTIME = 'custom_agent';
+
+/**
+ * Detect if a context is running a custom agent.
+ */
+export function isCustomAgentRuntimeContext(context: any): boolean {
+  return context?.agentRuntime === CUSTOM_AGENT_RUNTIME && !!context?.customAgentId;
+}
+
+/**
+ * Build pinnedContext for a custom agent run.
+ * Called from /api/chat when agentId is provided.
+ */
+export function buildCustomAgentPinnedContext(agentId: string, agentName: string, pinnedContext: any = null): Record<string, unknown> {
+  return {
+    ...(pinnedContext || {}),
+    agentRuntime: CUSTOM_AGENT_RUNTIME,
+    customAgentId: sanitizeAgentBuilderId(agentId),
+    customAgentName: agentName || agentId,
+  };
+}
+
+/**
+ * Build the runtime prompt injection for a custom agent.
+ * Loads the agent's profile from disk and constructs a prompt that
+ * overrides the main agent's identity to become the custom agent.
+ *
+ * This runs synchronously from cached profile data — the profile
+ * is loaded once in the chat route and cached in pinnedContext.
+ */
+export function buildCustomAgentRuntimePrompt(profile: AgentBuilderProfile): string {
+  if (!profile || !profile.professionalPrompt) {
+    return `--- CUSTOM AGENT ERROR ---\nCustom agent profile is missing or incomplete.\n--- END ---`;
+  }
+
+  const parts: string[] = [];
+
+  parts.push(`
+═══════════════════════════════════════════════════════════════
+CUSTOM AGENT IDENTITY OVERRIDE
+═══════════════════════════════════════════════════════════════
+
+You are NOW operating as the custom agent "${profile.name || profile.agentId}".
+Your ENTIRE identity, behavior, and responses must follow the custom agent profile below.
+You are NOT the default EterX agent for this conversation.
+Introduce yourself as "${profile.name || profile.agentId}" if asked who you are.
+`.trim());
+
+  // Core professional prompt (the agent's soul)
+  parts.push(`\n## Agent Profile: ${profile.name || profile.agentId}\n\n${profile.professionalPrompt}`);
+
+  // Mission
+  if (profile.mission) {
+    parts.push(`\n## Mission\n${profile.mission}`);
+  }
+
+  // Behavior rules
+  if (profile.behaviorRules.length > 0) {
+    parts.push(`\n## Operating Rules\n${profile.behaviorRules.map((r, i) => `${i + 1}. ${r}`).join('\n')}`);
+  }
+
+  // Safety rules
+  if (profile.safetyRules.length > 0) {
+    parts.push(`\n## Safety Rules\n${profile.safetyRules.map((r, i) => `${i + 1}. ${r}`).join('\n')}`);
+  }
+
+  // Response style
+  if (profile.responseStyle) {
+    parts.push(`\n## Response Style\n${profile.responseStyle}`);
+  }
+
+  // Tool use policy
+  if (profile.toolUsePolicy) {
+    parts.push(`\n## Tool Use Policy\n${profile.toolUsePolicy}`);
+  }
+
+  // Completion criteria
+  if (profile.completionCriteria) {
+    parts.push(`\n## Completion Criteria\n${profile.completionCriteria}`);
+  }
+
+  // Scope guard
+  parts.push(`
+## Scope Guard
+You are "${profile.name || profile.agentId}". Stay within your defined mission and capabilities.
+If a request is outside your scope, politely explain what you can help with instead.
+Use ALL tools available to you — you have full access to the main EterX agent toolset.
+`.trim());
+
+  parts.push(`\n═══════════════════════════════════════════════════════════════`);
+
+  return parts.join('\n');
+}
+
+/**
+ * Load a custom agent profile and return it, or null if not found/not ready.
+ */
+export async function loadCustomAgentProfile(agentId: string): Promise<AgentBuilderProfile | null> {
+  try {
+    const profile = await readAgentBuilderProfile(agentId);
+    if (profile.status !== 'ready') return null;
+    if (!profile.professionalPrompt || profile.professionalPrompt.length < 50) return null;
+    return profile;
+  } catch {
+    return null;
+  }
+}
+

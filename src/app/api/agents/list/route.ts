@@ -23,8 +23,22 @@ const resolveAgentDir = (agentId: string) => {
   return { safeId, resolved };
 };
 
-export async function GET(_req: NextRequest) {
+export async function GET(req: NextRequest) {
   try {
+    const agentIdParam = req.nextUrl.searchParams.get('agentId');
+    if (agentIdParam) {
+      const target = resolveAgentDir(agentIdParam);
+      if (!target) {
+        return Response.json({ error: 'Valid agentId is required.' }, { status: 400 });
+      }
+      const profilePath = path.join(target.resolved, 'profile.json');
+      if (!await fs.pathExists(profilePath)) {
+        return Response.json({ error: 'Agent profile not found.' }, { status: 404 });
+      }
+      const profile = await fs.readJson(profilePath);
+      return Response.json({ success: true, profile });
+    }
+
     if (!await fs.pathExists(AGENTS_ROOT)) {
       return Response.json({ agents: [] });
     }
@@ -86,5 +100,92 @@ export async function DELETE(req: NextRequest) {
     return Response.json({ success: true, agentId: target.safeId, deleted: true });
   } catch (err: any) {
     return Response.json({ success: false, error: err.message || 'Failed to delete agent.' }, { status: 500 });
+  }
+}
+
+export async function PUT(req: NextRequest) {
+  try {
+    const originError = rejectCrossOrigin(req);
+    if (originError) return originError;
+
+    const body = await readJsonObject(req);
+    const agentId = body?.agentId || req.nextUrl.searchParams.get('agentId') || '';
+    const status = body?.status || 'ready';
+
+    const target = resolveAgentDir(agentId);
+    if (!target) {
+      return jsonError('Valid agentId is required.', 400);
+    }
+
+    const profilePath = path.join(target.resolved, 'profile.json');
+    if (!await fs.pathExists(profilePath)) {
+      return jsonError('Agent profile not found.', 404);
+    }
+
+    const profile = await fs.readJson(profilePath);
+    profile.status = status;
+    profile.updatedAt = new Date().toISOString();
+
+    await fs.writeJson(profilePath, profile, { spaces: 2 });
+
+    return Response.json({ success: true, agentId: target.safeId, status, profile });
+  } catch (err: any) {
+    return Response.json({ success: false, error: err.message || 'Failed to update agent profile.' }, { status: 500 });
+  }
+}
+
+export async function POST(req: NextRequest) {
+  try {
+    const originError = rejectCrossOrigin(req);
+    if (originError) return originError;
+
+    const body = await readJsonObject(req);
+    const { 
+      agentId, 
+      name, 
+      mission, 
+      professionalPrompt, 
+      behaviorRules = [], 
+      safetyRules = [], 
+      directMainTools = [], 
+      description = '' 
+    } = body;
+
+    const target = resolveAgentDir(agentId);
+    if (!target) {
+      return jsonError('Valid agentId is required.', 400);
+    }
+
+    const agentDir = target.resolved;
+    await fs.ensureDir(agentDir);
+
+    const profilePath = path.join(agentDir, 'profile.json');
+    const now = new Date().toISOString();
+
+    const profile = {
+      agentId: target.safeId,
+      version: 1,
+      createdAt: now,
+      updatedAt: now,
+      status: 'draft',
+      name: name || target.safeId,
+      mission: mission || description || '',
+      professionalPrompt: professionalPrompt || `You are ${name || target.safeId}. Your mission is to: ${mission || description || ''}`,
+      responseStyle: 'Professional, accurate, and direct.',
+      behaviorRules: Array.isArray(behaviorRules) ? behaviorRules : [],
+      safetyRules: Array.isArray(safetyRules) ? safetyRules : [],
+      skills: [],
+      toolUsePolicy: 'Use attached tools purposefully to achieve the mission.',
+      completionCriteria: 'All requirements of the user request have been successfully verified.',
+      directMainTools: Array.isArray(directMainTools) ? directMainTools : [],
+      customTools: [],
+      notes: ['Profile created via Agent Wizard.']
+    };
+
+    await fs.writeJson(profilePath, profile, { spaces: 2 });
+
+    return Response.json({ success: true, agentId: target.safeId, profile });
+  } catch (err: any) {
+    return Response.json({ success: false, error: err.message || 'Failed to create agent profile.' }, { status: 500 });
   }
 }

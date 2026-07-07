@@ -4,6 +4,7 @@ import { normalizeMainAgentMode, normalizeMainAgentThinkingLevel } from '../../.
 import {
   buildAgentBuilderPinnedContext,
   buildAgentBuilderUserRequest,
+  buildCustomAgentPinnedContext,
   getAgentBuilderMode,
   getAgentIdFromBuilderChatId,
   isAgentBuilderChatId,
@@ -62,6 +63,8 @@ export async function POST(req: NextRequest) {
       apiKeys = null,
       modelOverrides = null,
       runLocation = 'local',
+      customAgentId = null,
+      customAgentName = null,
     } = await readJsonObject(req);
     const prompt = cleanString(rawPrompt, MAX_PROMPT_CHARS);
     const chatId = projectId;
@@ -88,12 +91,22 @@ export async function POST(req: NextRequest) {
     const runtimeSettings = buildScopedRuntimeSettings(apiKeys, modelOverrides);
     const isBuilderChat = isAgentBuilderChatId(chatId);
     const builderAgentId = isBuilderChat ? getAgentIdFromBuilderChatId(chatId) : '';
-    const effectivePinnedContext = {
+    const isCustomAgentRun = !isBuilderChat && typeof customAgentId === 'string' && customAgentId.trim().length > 0;
+    let effectivePinnedContext: Record<string, any> = {
       ...(isBuilderChat ? buildAgentBuilderPinnedContext(chatId, safePinnedContext) : safePinnedContext),
       thinkingLevel: safeThinkingLevel,
       agentSessionId: session.sessionId,
       runLocation: typeof runLocation === 'string' ? runLocation : 'local',
     };
+    // Apply custom agent context — this makes the orchestrator load the profile
+    // and Agent.ts inject the custom agent's identity into the system prompt.
+    if (isCustomAgentRun) {
+      effectivePinnedContext = buildCustomAgentPinnedContext(
+        customAgentId,
+        typeof customAgentName === 'string' ? customAgentName : customAgentId,
+        effectivePinnedContext,
+      );
+    }
     const effectivePrompt = isBuilderChat ? buildAgentBuilderUserRequest(builderAgentId, prompt) : prompt;
     const effectiveMode = isBuilderChat ? getAgentBuilderMode(safeMode) : safeMode;
 

@@ -1,6 +1,6 @@
 import React, { useRef, useState, useEffect, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { FileText, X, Check, Activity, CheckCircle2, XCircle, Folder, File as FileIcon, ChevronDown, ChevronRight, Image as ImageIcon, AlertCircle, ListTodo, ArrowUpRight, LaptopMinimal, GitBranch, Search, FolderPlus, FolderOpen, Cloud, CloudOff, ExternalLink, Gauge, Plus, CircleSlash, GitFork, Terminal } from 'lucide-react';
+import { FileText, X, Check, Activity, CheckCircle2, XCircle, Folder, File as FileIcon, ChevronDown, ChevronRight, Image as ImageIcon, AlertCircle, ListTodo, ArrowUpRight, LaptopMinimal, GitBranch, Search, FolderPlus, FolderOpen, Cloud, CloudOff, ExternalLink, Gauge, Plus, CircleSlash, GitFork, Terminal, Bot } from 'lucide-react';
 import { PremiumMic, PremiumSend, PremiumPlus, PremiumAudioLines, PremiumVolume2, PremiumVolumeX, PremiumMicOff } from '../ui/premium-icons';
 import { Tooltip } from '../ui/tooltip';
 import { ConnectorsModal, ConnectorsButton } from './connectors-modal';
@@ -2696,7 +2696,10 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                     if (isThinking) return;
                     setShowAgentMenu(prev => !prev);
                   }}
-                  className={`eterx-agent-button ${ isCompressed ? 'max-w-[160px] px-2.5' : 'max-w-[232px] px-3.5' } flex h-[38px] w-full min-w-0 items-center gap-1.5 rounded-full border border-transparent bg-[#2D2D2D] text-[#F4F4F4] transition-colors duration-150 hover:bg-[#333333] hover:text-white hover:border-transparent active:bg-[#333333] group ${ showAgentMenu ? '!bg-[#333333] !border-transparent !text-white' : '' } ${ isThinking ? 'cursor-not-allowed opacity-70 hover:bg-[#2D2D2D] hover:text-[#F4F4F4] hover:border-transparent active:bg-[#2D2D2D]' : '' }`}
+                  className={`eterx-agent-button ${ isCompressed ? 'max-w-[160px] px-2.5' : 'max-w-[232px] px-3.5' } flex h-[38px] w-full min-w-0 items-center gap-1.5 rounded-full border transition-all duration-150 active:scale-95 group ${ selectedAgent && selectedAgent !== 'coding'
+                      ? 'border-indigo-500/30 bg-indigo-500/5 text-indigo-200 hover:bg-indigo-500/10 hover:border-indigo-500/40 shadow-[0_2px_12px_rgba(99,102,241,0.08)]'
+                      : 'border-transparent bg-[#2D2D2D] text-[#F4F4F4] hover:bg-[#333333]'
+                    } ${ showAgentMenu ? '!bg-indigo-500/15 !border-indigo-500/40 !text-white' : '' } ${ isThinking ? 'cursor-not-allowed opacity-70' : '' }`}
                   aria-label={`Agent: ${ activeAgentDisplay.label }`}
                   aria-haspopup="dialog"
                   aria-expanded={showAgentMenu}
@@ -2710,16 +2713,22 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       transition={{ duration: 0.18 }}
                       className="flex min-w-0 items-center gap-1.5"
                     >
-                      <img
-                        src="/icons/agent-ui/agent.svg"
-                        alt=""
-                        aria-hidden="true"
-                        className="eterx-agent-ui-icon eterx-selector-icon h-[18px] w-[18px] shrink-0 object-contain opacity-90 transition-opacity duration-200"
-                      />
-                      <span className="eterx-selector-label min-w-0 truncate text-[14px] font-semibold tracking-normal transition-colors">
+                      {selectedAgent && selectedAgent !== 'coding' ? (
+                        <Bot className="h-4.5 w-4.5 shrink-0 text-indigo-400" />
+                      ) : (
+                        <img
+                          src="/icons/agent-ui/agent.svg"
+                          alt=""
+                          aria-hidden="true"
+                          className="eterx-agent-ui-icon eterx-selector-icon h-[18px] w-[18px] shrink-0 object-contain opacity-90 transition-opacity duration-200"
+                        />
+                      )}
+                      <span className={`eterx-selector-label min-w-0 truncate text-[14px] font-semibold tracking-normal transition-colors ${ selectedAgent && selectedAgent !== 'coding' ? 'text-indigo-200' : 'text-[#F4F4F4]'
+                        }`}>
                         {activeAgentDisplay.label}
                       </span>
-                      <ChevronDown className={`eterx-selector-chevron h-3.5 w-3.5 shrink-0 text-[#F0F0F0] transition-all duration-200 group-hover:text-white ${ showAgentMenu ? 'rotate-180' : 'group-hover:translate-y-px' }`} strokeWidth={2.1} />
+                      <ChevronDown className={`eterx-selector-chevron h-3.5 w-3.5 shrink-0 transition-all duration-200 ${ selectedAgent && selectedAgent !== 'coding' ? 'text-indigo-400 group-hover:text-indigo-300' : 'text-[#F0F0F0] group-hover:text-white'
+                        } ${ showAgentMenu ? 'rotate-180' : 'group-hover:translate-y-px' }`} strokeWidth={2.1} />
                     </motion.div>
                   </AnimatePresence>
                 </button>
@@ -2747,8 +2756,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                           setShowAgentMenu(false);
                         }}
                         className={`flex w-full items-center gap-2.5 px-3 py-1.5 rounded-[10px] text-left transition-all duration-150 ${ !selectedAgent
-                            ? 'bg-white/[0.08] text-white font-semibold'
-                            : 'text-[#E8E6E3] hover:bg-white/[0.04]'
+                          ? 'bg-white/[0.08] text-white font-semibold'
+                          : 'text-[#E8E6E3] hover:bg-white/[0.04]'
                           }`}
                       >
                         <div className="flex min-w-0 flex-1 flex-col items-start">
@@ -2765,8 +2774,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                           setShowAgentMenu(false);
                         }}
                         className={`flex w-full items-center gap-2.5 px-3 py-1.5 rounded-[10px] text-left transition-all duration-150 ${ selectedAgent === 'coding'
-                            ? 'bg-white/[0.08] text-white font-semibold'
-                            : 'text-[#E8E6E3] hover:bg-white/[0.04]'
+                          ? 'bg-white/[0.08] text-white font-semibold'
+                          : 'text-[#E8E6E3] hover:bg-white/[0.04]'
                           }`}
                       >
                         <div className="flex min-w-0 flex-1 flex-col items-start">
@@ -2792,8 +2801,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                                   setShowAgentMenu(false);
                                 }}
                                 className={`flex min-h-[42px] w-full items-center gap-2.5 rounded-[10px] px-3 py-1.5 text-left transition-all duration-150 ${ selectedAgent === agent.agentId
-                                    ? 'bg-white/[0.08] text-white font-semibold'
-                                    : 'text-[#E8E6E3] hover:bg-white/[0.04]'
+                                  ? 'bg-white/[0.08] text-white font-semibold'
+                                  : 'text-[#E8E6E3] hover:bg-white/[0.04]'
                                   }`}
                               >
                                 <div className="flex min-w-0 flex-1 flex-col items-start">

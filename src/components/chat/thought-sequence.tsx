@@ -1970,6 +1970,60 @@ const getDiffStats = (preview: any, log: any) => {
       }
     }
   }
+
+  // Fallback: extract stats from log tool arguments
+  const args = log?.toolArgs || log?.args;
+  const toolName = log?.tool || log?.name || '';
+  if (added === 0 && removed === 0 && args && toolName) {
+    if (toolName === 'workspace_str_replace') {
+      const oldStr = String(args.old_string || '');
+      const newStr = String(args.new_string || '');
+      if (oldStr || newStr) {
+        removed = oldStr ? oldStr.split(/\r?\n/).length : 0;
+        added = newStr ? newStr.split(/\r?\n/).length : 0;
+      }
+    } else if (toolName === 'replace_file_content') {
+      const targetContent = String(args.TargetContent || '');
+      const replacementContent = String(args.ReplacementContent || '');
+      if (targetContent || replacementContent) {
+        removed = targetContent ? targetContent.split(/\r?\n/).length : 0;
+        added = replacementContent ? replacementContent.split(/\r?\n/).length : 0;
+      }
+    } else if (toolName === 'multi_replace_file_content') {
+      const chunks = Array.isArray(args.ReplacementChunks) ? args.ReplacementChunks : [];
+      chunks.forEach((chunk: any) => {
+        const targetContent = String(chunk.TargetContent || '');
+        const replacementContent = String(chunk.ReplacementContent || '');
+        removed += targetContent ? targetContent.split(/\r?\n/).length : 0;
+        added += replacementContent ? replacementContent.split(/\r?\n/).length : 0;
+      });
+    } else if (toolName === 'workspace_write_file' || toolName === 'write_to_file') {
+      const content = String(args.content || args.CodeContent || '');
+      if (content) {
+        added = content.split(/\r?\n/).length;
+        removed = 0;
+      }
+    } else if (toolName === 'workspace_edit_many_files') {
+      const edits = Array.isArray(args.edits) ? args.edits : [];
+      edits.forEach((edit: any) => {
+        const searchStr = String(edit.search || '');
+        const replaceStr = String(edit.replace || '');
+        if (edit.startLine !== undefined && edit.endLine !== undefined) {
+          removed += Math.max(0, edit.endLine - edit.startLine + 1);
+        } else if (searchStr) {
+          removed += searchStr.split(/\r?\n/).length;
+        }
+        added += replaceStr.split(/\r?\n/).length;
+      });
+    }
+  }
+
+  // Secondary fallback: check log root properties
+  if (added === 0 && removed === 0 && log) {
+    added = numberFrom(log.added, log.additions, log.insertions, log.linesAdded, log.add);
+    removed = numberFrom(log.removed, log.deleted, log.deletions, log.linesRemoved, log.remove);
+  }
+
   if (added === 0 && removed === 0) return null;
   return { added, removed };
 };
@@ -2074,6 +2128,32 @@ const toFileTraceTarget = (candidate: unknown): FileTraceTarget | null => {
   if (cleaned.length > 280) return null;
   if (/^(?:system|true|false|null|undefined)$/i.test(cleaned)) return null;
   if (/^(?:https?:|data:|blob:)/i.test(cleaned)) return null;
+
+  // Strict check: reject code, parameters, or command fragments
+  if (
+    cleaned.includes('"') ||
+    cleaned.includes("'") ||
+    cleaned.includes('=') ||
+    cleaned.includes('{') ||
+    cleaned.includes('}') ||
+    cleaned.includes('(') ||
+    cleaned.includes(')') ||
+    cleaned.includes(';') ||
+    cleaned.includes('<') ||
+    cleaned.includes('>') ||
+    cleaned.includes('[') ||
+    cleaned.includes(']') ||
+    /\s{2,}/.test(cleaned)
+  ) {
+    return null;
+  }
+
+  // Colons are only allowed for Windows drive letters (e.g. C:\)
+  const colonIdx = cleaned.indexOf(':');
+  if (colonIdx >= 0 && colonIdx !== 1) {
+    return null;
+  }
+
   const normalized = cleaned.replace(/^\.?[\\/]+/, '');
   const segments = normalized.split(/[\\/]/).filter(Boolean);
   const filename = segments[segments.length - 1] || normalized;
@@ -2652,7 +2732,8 @@ const ActionChip = ({
   isNested?: boolean, inCard?: boolean
 }) => {
   const isLiveChip = isActiveGroup && isLastChip;
-  const isEdit = log.type === 'file_edit';
+  const isEdit = log.type === 'file_edit' ||
+    ['workspace_write_file', 'workspace_edit_file', 'workspace_str_replace', 'workspace_apply_patch', 'workspace_edit_many_files', 'replace_file_content', 'multi_replace_file_content', 'write_to_file'].includes(log.tool || log.name);
   // workspace_apply_patch logs come in as file_edit with text 'Patching files'
   const isPatch = isEdit && /patch/i.test(String(log.text || ''));
   const { openPanel } = useFilePanelActions();
@@ -2737,7 +2818,15 @@ const ActionChip = ({
   const hasFile = !!fileName && !/^(?:system|file|files?)$/i.test(fileName);
   // Resolve the full path for IDE link
   const fullPath = rawPath || preview?.filepath || preview?.filename || '';
-  const lineContext = hasFile ? getLineContext(subtitle, fileName) : '';
+  const getLineContextRange = () => {
+    const start = log.toolArgs?.startLine ?? log.args?.startLine ?? preview?.startLine;
+    const end = log.toolArgs?.endLine ?? log.args?.endLine ?? preview?.endLine;
+    if (start !== undefined && end !== undefined) {
+      return `#L${ start }-${ end }`;
+    }
+    return hasFile ? getLineContext(subtitle, fileName) : '';
+  };
+  const lineContext = getLineContextRange();
   const diffStats = isEdit ? getDiffStats(preview, log) : null;
   // Past-tense verb for display; live overrides to present tense below
   const meta = useMemo(() => {
@@ -2776,7 +2865,8 @@ const ActionChip = ({
     return { ...base, verbDone: base.verb, verbLive: LIVE_VERBS[base.verb] || base.verb };
   }, [isEdit, log.text, log.type, log.icon, log.iconCategory, preview]);
   const displayVerb = isLiveChip ? (meta.verbLive || meta.verbDone) : (meta.verbDone || (meta as any).verb);
-  const displayVerbLabel = hasFile ? stripTrailingFileName(displayVerb, fileName) : displayVerb;
+  const cleanVerb = displayVerb.replace(/\s+files?$/i, '').trim();
+  const displayVerbLabel = hasFile ? stripTrailingFileName(cleanVerb, fileName) : cleanVerb;
   const isTerminalAction = isTerminalActionLike(log, preview);
   if (isTerminalAction) {
     return (

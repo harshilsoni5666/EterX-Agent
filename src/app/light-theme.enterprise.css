@@ -453,6 +453,7 @@
   background-color: #24221F !important;
   color: #FFFFFF !important;
 }
+
 :root[data-theme="light"] .eterx-composer-popout button[class*="text-black"]:hover {
   background-color: #11100F !important;
   color: #FFFFFF !important;
@@ -563,6 +564,7 @@
   border-radius: inherit !important;
   box-shadow: inset 1px 0 0 rgba(255, 255, 255, 0.035) !important;
 }
+
 .eterx-app-shell[data-sidebar-open="false"] .eterx-main-panel,
 .eterx-main-panel.eterx-main-panel-sidebar-closed {
   border-top-left-radius: 0 !important;
@@ -714,21 +716,17 @@
 }
 
 :root[data-theme="light"] .eterx-composer-shell .eterx-composer-overflow-fade-top {
-  background: linear-gradient(
-    180deg,
-    var(--eterx-composer-fog-solid-top, #FFFFFF) 0%,
-    var(--eterx-composer-fog-strong-top, rgba(255, 255, 255, 0.94)) 56%,
-    var(--eterx-composer-fog-clear-top, rgba(255, 255, 255, 0)) 100%
-  ) !important;
+  background: linear-gradient(180deg,
+      var(--eterx-composer-fog-solid-top, #FFFFFF) 0%,
+      var(--eterx-composer-fog-strong-top, rgba(255, 255, 255, 0.94)) 56%,
+      var(--eterx-composer-fog-clear-top, rgba(255, 255, 255, 0)) 100%) !important;
 }
 
 :root[data-theme="light"] .eterx-composer-shell .eterx-composer-overflow-fade-bottom {
-  background: linear-gradient(
-    0deg,
-    var(--eterx-composer-fog-solid-bottom, #FFFFFF) 0%,
-    var(--eterx-composer-fog-strong-bottom, rgba(255, 255, 255, 0.94)) 56%,
-    var(--eterx-composer-fog-clear-bottom, rgba(255, 255, 255, 0)) 100%
-  ) !important;
+  background: linear-gradient(0deg,
+      var(--eterx-composer-fog-solid-bottom, #FFFFFF) 0%,
+      var(--eterx-composer-fog-strong-bottom, rgba(255, 255, 255, 0.94)) 56%,
+      var(--eterx-composer-fog-clear-bottom, rgba(255, 255, 255, 0)) 100%) !important;
 }
 
 :root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls {
@@ -805,7 +803,7 @@
   overflow: visible !important;
 }
 
-.eterx-app-shell[data-sidebar-open="true"] .eterx-sidebar-shell > div:not(.eterx-sidebar-sheen):not(.eterx-sidebar-resize-handle) {
+.eterx-app-shell[data-sidebar-open="true"] .eterx-sidebar-shell>div:not(.eterx-sidebar-sheen):not(.eterx-sidebar-resize-handle) {
   width: var(--eterx-shell-sidebar-width) !important;
 }
 
@@ -823,6 +821,6 @@
   background: transparent !important;
 }
 
-.eterx-app-shell[data-sidebar-open="true"] .eterx-workspace-shell > * {
+.eterx-app-shell[data-sidebar-open="true"] .eterx-workspace-shell>* {
   pointer-events: auto !important;
 }

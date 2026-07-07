@@ -45,7 +45,7 @@ import { monitorEmitter } from './monitor/emitter';
 import { createToolExecutionContext, isToolCancellationError } from './cancellation';
 import { readTaskTracker, readTaskTrackerMarkdown, trackerToTrace, writeTaskTrackerJson } from './task-tracker-store';
 import { normalizeTimeoutMs, secondsFromTimeoutMs } from './tools/core/terminal_timeout';
-import { buildAgentBuilderRuntimePrompt, isAgentBuilderRuntimeContext, shouldExposeToolToRuntime } from './builder-agent';
+import { buildAgentBuilderRuntimePrompt, isAgentBuilderRuntimeContext, shouldExposeToolToRuntime, isCustomAgentRuntimeContext, buildCustomAgentRuntimePrompt, loadCustomAgentProfile } from './builder-agent';
 import { buildCodingAgentPromptContext, buildCodingAgentRootPrompt, isCodingAgentProfile } from './coding-agent-profile';
 import { CODE_AGENT_TOOLS } from '../code/code-agent-tools';
 import { ensureCodeIndex } from './workspace/code-index';
@@ -1289,6 +1289,9 @@ export class GeminiAgentClient {
     if (isBuilder) {
       dynamicContextParts.push(buildAgentBuilderRuntimePrompt((context as any).agentId || context.projectId));
     }
+    if (isCustomAgentRuntimeContext(context) && (context as any)._customAgentProfile) {
+      dynamicContextParts.push(buildCustomAgentRuntimePrompt((context as any)._customAgentProfile));
+    }
 
     try {
       const wsContext = (context as any).disableWorkspaceContext ? '' : await workspaceIntelligence.getWorkspaceContext();
@@ -1478,6 +1481,9 @@ export class GeminiAgentClient {
     }
     if (isBuilder) {
       dynamicContextParts.push(buildAgentBuilderRuntimePrompt((context as any).agentId || context.projectId));
+    }
+    if (isCustomAgentRuntimeContext(context) && (context as any)._customAgentProfile) {
+      dynamicContextParts.push(buildCustomAgentRuntimePrompt((context as any)._customAgentProfile));
     }
 
     try {
@@ -3701,6 +3707,9 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
     if (isBuilder) {
       dynamicContextParts.push(buildAgentBuilderRuntimePrompt((context as any).agentId || context.projectId));
     }
+    if (isCustomAgentRuntimeContext(context) && (context as any)._customAgentProfile) {
+      dynamicContextParts.push(buildCustomAgentRuntimePrompt((context as any)._customAgentProfile));
+    }
     // Smart Resume Engine: always-active on continuation + contamination guard
     if (wantsSessionContext || globalSessionManager.hasActiveSessionForChat(chatId)) {
       try {
@@ -5350,7 +5359,8 @@ EXTERNAL ACTION NOTE CUE
           tool: call.name,
           name: call.name,
           add: undefined,
-          remove: undefined
+          remove: undefined,
+          toolArgs: args
         };
         trace.push(evt);
         if (onTrace) onTrace(evt);

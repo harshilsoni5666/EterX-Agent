@@ -277,6 +277,14 @@ class AgentRegistry {
         throw new Error('CANCELLED_BY_USER');
       }
 
+      // Enrich custom agent traces
+      if (pinnedContext?.agentRuntime === 'custom_agent' && pinnedContext?.customAgentId) {
+        if (traceEvent && typeof traceEvent === 'object') {
+          traceEvent.customAgentId = pinnedContext.customAgentId;
+          traceEvent.agentName = 'Main';
+        }
+      }
+
       this.appendTrace(execution, traceEvent, !pinnedContext?.disableTaskStore);
     };
 

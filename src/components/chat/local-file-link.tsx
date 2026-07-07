@@ -99,6 +99,11 @@ const getFileExtension = (fileName: string) => {
   return match?.[1] || '';
 };
 
+const COMMON_EXTENSIONLESS_FILES = new Set([
+  'dockerfile', 'makefile', 'license', 'rakefile', 'gemfile', 'procfile',
+  'readme', 'authors', 'copying', 'install', 'todo', 'changelog'
+]);
+
 const getFileIconPath = (fileName: string) => {
   const filename = getLocalFileName(fileName).toLowerCase();
   const ext = getFileExtension(fileName);
@@ -115,6 +120,11 @@ const getFileIconPath = (fileName: string) => {
   if (filename.includes('webpack.config')) return '/icons/files/webpack.svg';
   if (filename.startsWith('.env') || filename === 'settings.json') return '/icons/files/settings.svg';
   if (filename === 'dockerfile' || ext === 'dockerfile') return '/icons/files/docker.svg';
+
+  // If there is no extension and it is not a known extensionless file, treat it as a folder
+  if (!ext && !COMMON_EXTENSIONLESS_FILES.has(filename)) {
+    return '/icons/files/folder.svg';
+  }
 
   switch (ext) {
     case 'tsx':
