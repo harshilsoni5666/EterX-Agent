@@ -665,9 +665,12 @@
 
 /* Lightweight chat composer, matched to sidebar hover density. */
 :root[data-theme="light"] .eterx-composer-shell .eterx-composer-surface:not([data-live="true"]) {
-  --eterx-composer-fog-solid: #FBFAF7;
-  --eterx-composer-fog-strong: rgba(251, 250, 247, 0.94);
-  --eterx-composer-fog-clear: rgba(255, 255, 255, 0);
+  --eterx-composer-fog-solid-top: #FFFFFF;
+  --eterx-composer-fog-strong-top: rgba(255, 255, 255, 0.94);
+  --eterx-composer-fog-clear-top: rgba(255, 255, 255, 0);
+  --eterx-composer-fog-solid-bottom: #FBFAF7;
+  --eterx-composer-fog-strong-bottom: rgba(251, 250, 247, 0.94);
+  --eterx-composer-fog-clear-bottom: rgba(251, 250, 247, 0);
   border-color: rgba(31, 31, 29, 0.115) !important;
   border-radius: 26px !important;
   background:
@@ -681,9 +684,12 @@
 }
 
 :root[data-theme="light"] .eterx-composer-shell .eterx-composer-surface:not([data-live="true"]):hover {
-  --eterx-composer-fog-solid: #F7F6F2;
-  --eterx-composer-fog-strong: rgba(247, 246, 242, 0.94);
-  --eterx-composer-fog-clear: rgba(246, 245, 242, 0);
+  --eterx-composer-fog-solid-top: #FFFFFF;
+  --eterx-composer-fog-strong-top: rgba(255, 255, 255, 0.94);
+  --eterx-composer-fog-clear-top: rgba(255, 255, 255, 0);
+  --eterx-composer-fog-solid-bottom: #F7F6F2;
+  --eterx-composer-fog-strong-bottom: rgba(247, 246, 242, 0.94);
+  --eterx-composer-fog-clear-bottom: rgba(247, 246, 242, 0);
   border-color: rgba(31, 31, 29, 0.15) !important;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.7), rgba(255, 255, 255, 0) 48%),
@@ -691,9 +697,12 @@
 }
 
 :root[data-theme="light"] .eterx-composer-shell .eterx-composer-surface:not([data-live="true"]):focus-within {
-  --eterx-composer-fog-solid: #FFFFFF;
-  --eterx-composer-fog-strong: rgba(255, 255, 255, 0.94);
-  --eterx-composer-fog-clear: rgba(255, 255, 255, 0);
+  --eterx-composer-fog-solid-top: #FFFFFF;
+  --eterx-composer-fog-strong-top: rgba(255, 255, 255, 0.94);
+  --eterx-composer-fog-clear-top: rgba(255, 255, 255, 0);
+  --eterx-composer-fog-solid-bottom: #FFFFFF;
+  --eterx-composer-fog-strong-bottom: rgba(255, 255, 255, 0.94);
+  --eterx-composer-fog-clear-bottom: rgba(255, 255, 255, 0);
   border-color: rgba(31, 31, 29, 0.22) !important;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.82), rgba(255, 255, 255, 0) 48%),
@@ -707,18 +716,18 @@
 :root[data-theme="light"] .eterx-composer-shell .eterx-composer-overflow-fade-top {
   background: linear-gradient(
     180deg,
-    var(--eterx-composer-fog-solid, #FFFFFF) 0%,
-    var(--eterx-composer-fog-strong, rgba(255, 255, 255, 0.94)) 56%,
-    var(--eterx-composer-fog-clear, rgba(255, 255, 255, 0)) 100%
+    var(--eterx-composer-fog-solid-top, #FFFFFF) 0%,
+    var(--eterx-composer-fog-strong-top, rgba(255, 255, 255, 0.94)) 56%,
+    var(--eterx-composer-fog-clear-top, rgba(255, 255, 255, 0)) 100%
   ) !important;
 }
 
 :root[data-theme="light"] .eterx-composer-shell .eterx-composer-overflow-fade-bottom {
   background: linear-gradient(
     0deg,
-    var(--eterx-composer-fog-solid, #FFFFFF) 0%,
-    var(--eterx-composer-fog-strong, rgba(255, 255, 255, 0.94)) 56%,
-    var(--eterx-composer-fog-clear, rgba(255, 255, 255, 0)) 100%
+    var(--eterx-composer-fog-solid-bottom, #FFFFFF) 0%,
+    var(--eterx-composer-fog-strong-bottom, rgba(255, 255, 255, 0.94)) 56%,
+    var(--eterx-composer-fog-clear-bottom, rgba(255, 255, 255, 0)) 100%
   ) !important;
 }
 
@@ -758,7 +767,6 @@
   background: rgba(31, 31, 29, 0.095) !important;
   color: #24221F !important;
   box-shadow: 0 1px 0 rgba(255, 255, 255, 0.7) inset !important;
-  transform: translateY(-1px) !important;
 }
 
 :root[data-theme="light"] .eterx-composer-shell .eterx-composer-send-button,

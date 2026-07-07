@@ -2009,12 +2009,18 @@
 }
 
 :root[data-theme="dark"] .eterx-composer-shell[data-new-chat="true"] .eterx-new-chat-composer-surface {
+  --eterx-composer-fog-solid: #2A2A2A;
+  --eterx-composer-fog-strong: rgba(42, 42, 42, 0.94);
+  --eterx-composer-fog-clear: rgba(42, 42, 42, 0);
   background: #2A2A2A !important;
   border-color: rgba(255, 255, 255, 0.08) !important;
   border-bottom-color: rgba(255, 255, 255, 0.045) !important;
 }
 
 :root[data-theme="light"] .eterx-composer-shell[data-new-chat="true"] .eterx-new-chat-composer-surface {
+  --eterx-composer-fog-solid: #FFFFFF;
+  --eterx-composer-fog-strong: rgba(255, 255, 255, 0.94);
+  --eterx-composer-fog-clear: rgba(255, 255, 255, 0);
   background: rgba(255, 255, 255, 0.98) !important;
   border-color: rgba(54, 73, 96, 0.13) !important;
   border-bottom-color: rgba(54, 73, 96, 0.07) !important;
@@ -5017,9 +5023,12 @@
 }
 
 :root[data-theme="dark"] .eterx-composer-shell .eterx-composer-surface:not([data-live="true"]) {
-  --eterx-composer-fog-solid: #202020;
-  --eterx-composer-fog-strong: rgba(32, 32, 32, 0.94);
-  --eterx-composer-fog-clear: rgba(32, 32, 32, 0);
+  --eterx-composer-fog-solid-top: #282828;
+  --eterx-composer-fog-strong-top: rgba(40, 40, 40, 0.94);
+  --eterx-composer-fog-clear-top: rgba(40, 40, 40, 0);
+  --eterx-composer-fog-solid-bottom: #202020;
+  --eterx-composer-fog-strong-bottom: rgba(32, 32, 32, 0.94);
+  --eterx-composer-fog-clear-bottom: rgba(32, 32, 32, 0);
   border-color: rgba(255, 255, 255, 0.075) !important;
   border-radius: 26px !important;
   background:
@@ -5033,9 +5042,12 @@
 }
 
 :root[data-theme="dark"] .eterx-composer-shell .eterx-composer-surface:not([data-live="true"]):hover {
-  --eterx-composer-fog-solid: #242424;
-  --eterx-composer-fog-strong: rgba(36, 36, 36, 0.94);
-  --eterx-composer-fog-clear: rgba(36, 36, 36, 0);
+  --eterx-composer-fog-solid-top: #2E2E2E;
+  --eterx-composer-fog-strong-top: rgba(46, 46, 46, 0.94);
+  --eterx-composer-fog-clear-top: rgba(46, 46, 46, 0);
+  --eterx-composer-fog-solid-bottom: #242424;
+  --eterx-composer-fog-strong-bottom: rgba(36, 36, 36, 0.94);
+  --eterx-composer-fog-clear-bottom: rgba(36, 36, 36, 0);
   border-color: rgba(255, 255, 255, 0.105) !important;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0) 48%),
@@ -5043,9 +5055,12 @@
 }
 
 :root[data-theme="dark"] .eterx-composer-shell .eterx-composer-surface:not([data-live="true"]):focus-within {
-  --eterx-composer-fog-solid: #242424;
-  --eterx-composer-fog-strong: rgba(36, 36, 36, 0.94);
-  --eterx-composer-fog-clear: rgba(36, 36, 36, 0);
+  --eterx-composer-fog-solid-top: #2F2F2F;
+  --eterx-composer-fog-strong-top: rgba(47, 47, 47, 0.94);
+  --eterx-composer-fog-clear-top: rgba(47, 47, 47, 0);
+  --eterx-composer-fog-solid-bottom: #242424;
+  --eterx-composer-fog-strong-bottom: rgba(36, 36, 36, 0.94);
+  --eterx-composer-fog-clear-bottom: rgba(36, 36, 36, 0);
   border-color: rgba(255, 255, 255, 0.15) !important;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0) 48%),
@@ -5092,7 +5107,6 @@
   background: rgba(255, 255, 255, 0.105) !important;
   color: #F0F0F0 !important;
   box-shadow: 0 1px 0 rgba(255, 255, 255, 0.05) inset !important;
-  transform: translateY(-1px) !important;
 }
 
 :root[data-theme="dark"] .eterx-composer-shell .eterx-composer-send-button,
@@ -5127,18 +5141,18 @@
 :root[data-theme="dark"] .eterx-composer-shell .eterx-composer-overflow-fade-top {
   background: linear-gradient(
     180deg,
-    var(--eterx-composer-fog-solid, #222222) 0%,
-    var(--eterx-composer-fog-strong, rgba(34, 34, 34, 0.94)) 56%,
-    var(--eterx-composer-fog-clear, rgba(34, 34, 34, 0)) 100%
+    var(--eterx-composer-fog-solid-top, #202020) 0%,
+    var(--eterx-composer-fog-strong-top, rgba(32, 32, 32, 0.94)) 56%,
+    var(--eterx-composer-fog-clear-top, rgba(32, 32, 32, 0)) 100%
   ) !important;
 }
 
 :root[data-theme="dark"] .eterx-composer-shell .eterx-composer-overflow-fade-bottom {
   background: linear-gradient(
     0deg,
-    var(--eterx-composer-fog-solid, #222222) 0%,
-    var(--eterx-composer-fog-strong, rgba(34, 34, 34, 0.94)) 56%,
-    var(--eterx-composer-fog-clear, rgba(34, 34, 34, 0)) 100%
+    var(--eterx-composer-fog-solid-bottom, #202020) 0%,
+    var(--eterx-composer-fog-strong-bottom, rgba(32, 32, 32, 0.94)) 56%,
+    var(--eterx-composer-fog-clear-bottom, rgba(32, 32, 32, 0)) 100%
   ) !important;
 }
 

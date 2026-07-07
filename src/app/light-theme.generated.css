@@ -1867,6 +1867,9 @@
 }
 
 :root[data-theme="light"] .eterx-composer-surface {
+  --eterx-composer-fog-solid: #FFFFFF;
+  --eterx-composer-fog-strong: rgba(255, 255, 255, 0.94);
+  --eterx-composer-fog-clear: rgba(255, 255, 255, 0);
   background: #FFFFFF !important;
   border-color: rgba(31, 31, 29, 0.12) !important;
   box-shadow: none !important;
@@ -1919,11 +1922,21 @@
 }
 
 :root[data-theme="light"] .eterx-composer-overflow-fade-top {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(255, 255, 255, 0)) !important;
+  background: linear-gradient(
+    180deg,
+    var(--eterx-composer-fog-solid, #FFFFFF) 0%,
+    var(--eterx-composer-fog-strong, rgba(255, 255, 255, 0.94)) 56%,
+    var(--eterx-composer-fog-clear, rgba(255, 255, 255, 0)) 100%
+  ) !important;
 }
 
 :root[data-theme="light"] .eterx-composer-overflow-fade-bottom {
-  background: linear-gradient(0deg, rgba(255, 255, 255, 0.98), rgba(255, 255, 255, 0)) !important;
+  background: linear-gradient(
+    0deg,
+    var(--eterx-composer-fog-solid, #FFFFFF) 0%,
+    var(--eterx-composer-fog-strong, rgba(255, 255, 255, 0.94)) 56%,
+    var(--eterx-composer-fog-clear, rgba(255, 255, 255, 0)) 100%
+  ) !important;
 }
 
 :root[data-theme="light"] .eterx-chat-controls .eterx-control-button,
