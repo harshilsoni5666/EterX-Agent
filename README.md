@@ -102,81 +102,45 @@ The Agent Builder is a specialized AI agent designed to dynamically configure, w
     *   *Agent-Scoped Code*: Drafts custom scripts to execute specific operations. The builder automatically audits this code to ensure it blocks destructive actions (like file deletion commands, user account modifications, or unsafe script injections).
 *   **Fallback & Error Recovery Design**: The builder automatically structures error handling into the custom agent's instructions. It details fallback chains (e.g., trying directories if file reads fail, or trying alternative editors if text replacement fails) to ensure the newly created agent degrades gracefully instead of failing or entering infinite retry loops.
 *   **Profile Finalization & Validation**: Before deployment, the builder runs a comprehensive audit of the custom agent's configuration. It verifies that the prompt has sufficient depth, that the behavior and safety rules are properly established, and that all attached code tools have passed security reviews.
+## The Tools: What EterX Can Actually Do
 
----
+EterX features **80+ native tool systems** mapped to a capability-based architecture to securely perform local actions, network operations, and cognitive tasks.
 
-## End-to-End Workflow
+### 1. OS Automation & Computer Vision (`host.control`, `host.system`)
+Provides low-level OS access and computer vision control to securely see and interact with any workspace:
+*   **Vision & Mouse Control**: `screen_agent` captures screenshots, runs Windows OCR + UI Automation to locate controls, and drives natural Bezier cursor movements.
+*   **Isolation & Stream**: `computer` runs and isolates windows within sandboxed environments while streaming real-time frames to the dashboard.
+*   **System Utilities**: Tools like `system_monitor`, `clipboard`, `desktop_notify`, `tts`, and system macros automate OS-level events.
 
-EterX is organized around a seamless, end-to-end workflow that connects model configuration, customized personas, and multi-agent execution:
+### 2. Workspace & Code Intelligence (`command.workspace`, `filesystem`)
+A robust code-editing and workspace analysis environment for developers:
+*   **Precise Editing**: `workspace_read_file`, `workspace_write_file`, `workspace_edit_file`, and `workspace_apply_patch` allow high-precision, search-and-replace changes and Git-style diff applications.
+*   **Search & Scans**: `workspace_search_text` (Ripgrep), `workspace_symbol_lookup`, `workspace_file_outline`, and semantic vector search identify codebase architectures.
+*   **Compiles & Runs**: `workspace_run_command`, `workspace_execute_script`, and `workspace_verify_code` handle linting, compile verification, and command execution.
 
-*   **Configure Providers and Models**: Select your preferred AI provider (Google Gemini, OpenAI, Anthropic, OpenRouter, etc.) and pick the specific models you want to use. EterX manages these connections, handles load balancing across multiple API keys, and automatically routes tasks to stable fallback models if a primary model is down.
-*   **Create Tailored Custom Agents**: Use the interactive Agent Builder to design custom agents. You can talk to the builder to establish their mission and behavior rules, and the system will automatically configure a custom chain of tools and helpers specifically for that agent's work environment.
-*   **Delegate Tasks to Collaborative Sub-Agents**: Initiate your workflow and let the main agent break down complex tasks. It can spawn specialized sub-agents in the background that work in parallel and communicate via an inter-agent mailbox system to coordinate and assemble the final output.
-*   **Execute Local Workspace Actions**: Let your agents interact directly with your workspace. They can safely read and edit files, execute commands in isolated local sandboxes, conduct deep multi-angle web research, and use the computer cursor naturally to complete your instructions.
-*   **Retain Memory and Relational Context**: When a workflow finishes, EterX persists the learnings, facts, and project details locally. This feeds into a continuous learning loop, making all future tasks faster and context-aware.
+### 3. Deep Research & Web Scraping (`network.public`)
+Gathers, parses, and synthesizes data directly from public resources:
+*   **Synthesized Research**: `deep_research` runs multiple concurrent queries, scraping matching pages to compile structured markdown reports with source citations.
+*   **Parsing Utilities**: `web_scraper` (via Cheerio DOM parsing), `pdf_parser`, `youtube_transcript`, and `rss_feed` extract clean text content from web layouts, documents, and feeds.
 
----
+### 4. Autonomous Collaboration & Planning (`agent.spawn`, `memory.manage`)
+Multi-agent task delegation and persistent cognitive systems:
+*   **Parallel Sub-Agents**: `spawn_sub_agent` deploys background specialist personas (Mira, Leo, Zara) and hosts Consensus and Debate panels.
+*   **Relational Memories**: `memory_v2` and `synapse-graph` retain project facts, configurations, and long-term user preferences locally.
+*   **Task Orchestration**: `task_decomposer`, `dynamic_tool_creator`, `checkpoint`, and `macro_runner` manage complex execution pipelines.
 
-## The Tools: What EterX Can Actually Do
+### 5. Communication & Messengers (`communication.external`)
+Outbound integrations with collaborative and chat environments:
+*   **Messenger Bots & Clients**: `telegram` (GramJS user session automation), `slack`, `whatsapp`, and `email` allow automated notifications, file transfers, and chat interactions.
 
-EterX ships with **80+ native tools** organized into categories. These are not wrappers — each tool is a purpose-built capability.
+### 6. Office Documents & Structured Data (`filesystem.write`)
+Generates rich data documents, presentations, and analyses:
+*   **Office Generators**: `office_artifact_builder` and `docx_generator` build styled Excel spreadsheets, PowerPoint slides, and Word documents in *Executive*, *Modern*, *Classic*, and *Minimal* layouts.
+*   **Data Analysis**: `csv_analyzer` and `chart_generator` aggregate datasets, run SQL-like filters, and generate plots.
 
-### Computer & Screen Control
-The `screen_agent` tool gives EterX full, real human-like control of your computer:
-- Takes screenshots and **sees** the screen
-- Clicks with natural bezier cursor movement (not robotic straight lines)
-- Types with human-like timing and per-character delays
-- Reads text from the screen using Windows OCR + UI Automation
-- Finds any UI element by name or text, even if coordinates are unknown
-- Waits for visual changes or text to appear before continuing
-- Streams the live screen in real time to the monitor panel
-
-### Code Intelligence & File Operations
-- `workspace_read_file`, `workspace_write_file`, `workspace_edit_file` — file read/write with patch-level precision
-- `smart_refactor` — AI-assisted code restructuring
-- `code_intel`, `workspace_symbol_lookup`, `workspace_file_outline` — understand any codebase structure
-- `workspace_apply_patch` — apply git-style unified diffs to files
-- `workspace_run_command`, `workspace_execute_script`, `workspace_verify_code` — run and verify code in your project
-- `git`, `git_intel` — full git operations and intelligence
-
-### Deep Research
-- `deep_research` — multi-angle parallel research engine: runs several search queries simultaneously, scrapes top results, synthesizes into a structured report with sources
-- `web_search`, `web_scraper`, `pdf_parser`, `youtube_transcript`, `rss_feed` — pull information from any source
-
-### Communication & Messaging
-- `telegram` — send messages, control conversations, interact with the Telegram Bot interface
-- `slack` — post to channels, react to messages, manage Slack workflows
-- `whatsapp` — control WhatsApp via the controller tool
-- `email` — send emails programmatically
-
-### Data & Documents
-- `chart_generator` — generate data visualizations and charts
-- `csv_analyzer` — parse and analyze spreadsheet data
-- `docx_generator` — create Word documents
-- `office_artifact_builder` — build professional Excel spreadsheets, PowerPoint presentations, and office documents
-- `markdown`, `compression`, `diff` — markdown processing, file compression, and comparison
-
-### System & Automation
-- `shell`, `terminal_access`, `background_task`, `terminal_background` — run any terminal command, including long-running background processes with scheduled check-ins
-- `process_manager`, `file_watcher`, `http_server` — manage system processes, watch files for changes, spin up local HTTP servers
-- `sys_automation`, `desktop_control` — OS-level automation
-- `system_monitor` — monitor CPU, memory, disk, and process health
-
-### Intelligence & Self-Improvement
-- `self_improve` — the agent can write and apply improvement patches to its own skill system
-- `memory_v2` — store and recall facts, project context, and session state
-- `task_decomposer` — break large goals into organized, independent subtasks
-- `realtime_verify` — verify information from live web sources before accepting it as fact
-
-### AI Infrastructure
-- `image_gen` — generate images via AI
-- `tts` — text-to-speech output
-- `calculator`, `js_runner`, `regex`, `json_transform` — built-in compute utilities
-- `crypto` — cryptographic operations
-- `database` — interact with databases
-- `network` — make HTTP requests and inspect network responses
-- `api_caller`, `api_hub` — call any external API
-- `api_key_vault` — secure, masked storage for API credentials
+### 7. Utilities & Infrastructure (`secrets.manage`, `tool.utility`)
+Built-in computational utilities supporting the EterX OS runtime:
+*   Includes `browser_control` (automated Chrome), `api_key_vault`, `api_caller`, `crypto` hashing, database clients, JSONPath tools, regular expression builders, and background shell management.
 
 ---
 
@@ -209,25 +173,28 @@ Different models have different parameters (such as thinking/reasoning modes, me
 
 ## Memory Architecture
 
-EterX uses a **multi-tier, locally stored memory system**. Nothing is sent to a cloud memory service.
+EterX uses a **multi-tier, locally stored memory system**. Nothing is sent to any cloud memory service.
 
 ```text
 .workspaces/
-├── memory/
-│   ├── user_memory.json         # Long-term facts about you and your preferences
-│   ├── project_memory/          # Per-project context — what has been done, decisions made
-│   ├── session_memory/          # Active session state for continuation
-│   ├── credential_refs.json     # API key references (no raw keys stored)
-│   └── overlays/                # Self-improvement patches applied over time
-├── dynamic_tools/               # Custom tools the agent created during sessions
-├── temp/screen-agent/           # Temporary files from screen capture and OCR
+├── .memory_v2/
+│   ├── records.json                  # Long-term facts, user preferences, and working memories
+│   ├── credentials.enc.json          # Encrypted API key credentials and references
+│   ├── self_improvement_overlays.json # Active and pending self-improvement patches
+│   └── raw_events.json               # Chronological log of raw cognitive events
+├── .synapse/
+│   └── <chat-id>/
+│       └── graph.json                # Relational concept/fact graph for active session
+├── .checkpoints/                     # System state checkpoints for safe rollbacks
 ├── config/
-│   ├── eterx.config.json        # App settings
-│   └── setup-meta.json          # Installation metadata
-└── backups/                     # Timestamped configuration snapshots
+│   ├── eterx.config.json             # Global application configuration
+│   └── setup-meta.json               # System installation metadata
+├── dynamic_tools/                    # Custom JS/TS tools compiled at runtime
+├── backups/                          # Timestamped configuration and memory archives
+└── temp/screen-agent/                # OCR files and screenshots generated during session
 ```
 
-The `synapse-graph` memory system additionally builds a relational graph of concepts — connecting facts, files, and context together so the agent can recall relevant information even when it is not explicitly referenced.
+The `synapse-graph` memory system builds a relational graph of concepts—connecting facts, files, and context together so the agent can recall relevant information even when it is not explicitly referenced in the current conversation window.
 
 ---
 
@@ -326,22 +293,26 @@ EterX-Agent/
 │   └── lib/
 │       ├── agent/                # Core agent engine
 │       │   ├── Agent.ts          # Main GeminiAgentClient — model routing, tool execution loop
-│       │   ├── tools/            # All 80+ native tools
-│       │   │   ├── core/         # Core tools (shell, search, screen, memory, sub-agents...)
-│       │   │   ├── workspace/    # File and code tools
-│       │   │   ├── research/     # Web scraping, PDF, YouTube, RSS
-│       │   │   ├── automation/   # Agent Builder, process manager, file watcher
-│       │   │   └── communication/# Telegram, Slack, WhatsApp
+│       │   ├── tools/            # Native tool modules
+│       │   │   ├── core/         # Core system tools (shell, search, screen, memory...)
+│       │   │   ├── workspace/    # File and workspace manipulation tools
+│       │   │   ├── research/     # Web scraping, PDF, YouTube, and RSS parsers
+│       │   │   ├── automation/   # Agent Builder, process manager, and servers
+│       │   │   ├── communication/# Chat platform controllers (Telegram, Slack, WhatsApp)
+│       │   │   ├── security/     # Capability-based sandbox and tool policies
+│       │   │   └── shared/       # URL safety helpers and common utilities
 │       │   ├── memory/           # MemoryV2, conversation ledger, synapse graph
 │       │   ├── reasoning/        # Cognitive engine, context intelligence, verification
 │       │   ├── resilience/       # Auto-context compression, error recovery
 │       │   ├── roles/            # Sub-agent orchestration, inter-agent communication
 │       │   ├── hooks/            # Cognitive hooks, velocity monitor
+│       │   ├── browser/          # Chromium/browser control backend
+│       │   ├── computer/         # OS UI automation and virtual screen control
 │       │   └── model-routing.ts  # Universal model registry and fallback chains
 │       ├── code/                 # Code generation runtime
 │       ├── live/                 # Real-time WebSocket communication
 │       └── sandbox/              # Sandboxed command execution
-├── electron/                     # Desktop app wrapper
+├── electron/                     # Desktop app wrapper (main process, package script)
 ├── fastapi_blog/                 # Python FastAPI backend for structured data
 ├── setup/                        # Installation and diagnostic scripts
 └── eterx.js                      # CLI entry point (400+ line command router)
