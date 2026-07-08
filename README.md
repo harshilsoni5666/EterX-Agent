@@ -21,6 +21,7 @@
 EterX is an autonomous agent platform that plans, runs tasks, and operates your computer locally. It takes high-level goals, breaks them down into clear steps, and executes them using specialized tools and helper agents.
 
 *   **Collaborative Swarms**: Spawns parallel background sub-agents that communicate via a built-in mailbox system to tackle complex, independent tasks.
+*   **Synapse Graph**: Builds a local relational memory graph of concepts, files, and context, utilizing an Anchor-EWMA centroid divergence-gated state machine for adaptive context selection.
 *   **Intelligent Model Routing**: Automatically selects the best model, balances load across API keys, and routes through fallback chains to prevent service interruption.
 *   **Custom Agent Builder**: Talk to the builder to create specialized agents with custom rules, missions, and tailored tool chains built specifically for your environment.
 
@@ -70,6 +71,20 @@ The sub-agent system is entirely orchestrated and managed by the AI engine itsel
   <br /><br />
   <img src="./public/assets/sub-agent2.png" width="100%" alt="Sub-Agent Workflow" />
 </p>
+
+### EterX-Synapse Graph (Memory & Context Continuity)
+
+EterX-Synapse is an advanced, local relational memory graph that maintains conversational context and session continuity across long execution horizons. Rather than relying on simple sliding window histories or external embedding APIs, it uses an in-process mathematical engine to evaluate semantic state shifts:
+
+*   **Divergence-Gated State Machine**: Evaluates user query semantic divergence against a running topic centroid vector to transition the session state between *Warmup* (baseline collection), *Continuity* (same topic focus), *Drift* (topic shifting), and *Transition* (major topic change).
+*   **Structured 4-Record Storage**: Implements the PCCA-specified storage structure, representing every context object (turns, tools, code snapshots, patches) as a network of linked Source, Version, State, and Confidence records, along with a Patch edit chain for coding sessions.
+*   **Five-Question Decision Surface**: On every turn, evaluates the active task, semantic proximity, version freshness, confidence thresholds, and token budget constraints to dynamically select the optimal context injection set.
+*   **Anchor-EWMA Centroid Engine**: Automatically updates and maintains the active topic's running centroid vector by blending the original anchor vector intent with an exponentially weighted moving average (EWMA).
+*   **Local Zero-Network TF-IDF Vectorizer**: Performs fast (<2ms), incremental vocabulary vectorization completely locally, eliminating network latency and protecting privacy.
+*   **Graceful Degradation**: Protects agent behavior by automatically bypassing injection and degrading context gracefully when measurement confidence falls below the designated threshold.
+
+> [!NOTE]
+> **Research Citation:** The `EterX-Synapse` architecture, including the Anchor-EWMA centroid updates and the PCCA (Parallel Context Continuity Architecture) specifications, is implemented based on the research paper *EterX-Synapse: Cognitive Context Continuity in Autonomous Agents* by **Harshil Soni**.
 
 ### Agent Builder (An AI agent designed to build custom agents)
 
