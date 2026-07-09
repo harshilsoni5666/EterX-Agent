@@ -6,6 +6,7 @@ import { ConversationIntelligenceEngine } from '../reasoning/conversation-intell
 import { ContextIntelligenceEngine } from '../reasoning/context-intelligence';
 import { PrecisionOutputEngine } from '../reasoning/output-engine';
 import { SemanticWorkingMemory } from '../memory/working-memory';
+import { antiHallucination } from '../anti-hallucination';
 import { ErrorRecoveryEngine } from '../resilience/error-recovery';
 import { ExecutionMonitor } from '../monitor/execution-monitor';
 import { ExecutionVelocityMonitor } from './velocity-monitor';
@@ -178,6 +179,18 @@ export class CognitiveCoreSession {
     filesCreated: string[],
   ): string | null {
     try {
+      // Pre-emptive Anti-Hallucination Gate
+      const ahResult = antiHallucination.verifyFinalAnswer({
+        answer: agentResponse,
+        filesCreated: new Set(filesCreated),
+        commandsRun: toolResultDigest.filter(d => /run|exec|shell/.test(d.tool)).map(d => d.args),
+        toolResultDigest: toolResultDigest.map(d => ({ tool: d.tool, result: d.result })),
+      });
+      if (!ahResult.passed && ahResult.correctionPrompt) {
+        console.log(`[CognitiveCore] 🛡️ Anti-Hallucination gate triggered: found ${ahResult.violations.length} violations.`);
+        return ahResult.correctionPrompt;
+      }
+
       const assessment = this.deepSelfCorrection.assess({
         userMessage,
         agentResponse,

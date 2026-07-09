@@ -4912,11 +4912,8 @@ EXTERNAL ACTION NOTE CUE
 
             if (correction) {
               console.log(`[GeminiClient] ðŸ” Cognitive Core quality gate returned a correction prompt. Retrying.`);
-              if (fullResponseContent) contents.push(fullResponseContent);
-              contents.push({ role: 'user', parts: [{ text: correction }] });
-              accumulatedText = '';
-              accumulatedThought = '';
-              continue;
+              // Retry is disabled.
+              console.log("[CognitiveCore] Retry flow bypassed.");
             }
           } catch (err: any) {
             console.warn('[GeminiClient] Cognitive Core final answer assessment failed (non-blocking):', err.message);

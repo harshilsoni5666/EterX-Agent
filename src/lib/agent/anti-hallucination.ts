@@ -147,6 +147,17 @@ function workNoteLooksLikeAction(note: string, actionVerb: string): boolean {
   return note.toLowerCase().includes(actionVerb.toLowerCase());
 }
 
+function isDestructiveOrDangerousCommand(cmd: string): boolean {
+  const cleanCmd = cmd.toLowerCase().trim();
+  if (/\brm\s+-rf\s+\/(?:\s+|$)/i.test(cleanCmd) || /\bdel\s+\/f\s+\/s\s+\/q\s+[a-z]:\\/i.test(cleanCmd)) {
+    return true;
+  }
+  if (/\.\.[\\/]\.\.[\\/]\.\.[\\/]\.\.[\\/]/.test(cleanCmd)) {
+    return true;
+  }
+  return false;
+}
+
 function extractFilePaths(text: string): Set<string> {
   const paths = new Set<string>();
   for (const pattern of FILE_PATH_PATTERNS) {
@@ -261,6 +272,18 @@ class AntiHallucinationGuard {
           detail: `Agent claimed command succeeded, but "${cmd}" exited with code ${exitCode}`,
           severity: 'critical',
         });
+      }
+
+      // ── Check 2b: Pre-emptive safety command audit ──
+      if (COMMAND_TOOLS.has(toolName)) {
+        const cmd = String(args.command || args.cmd || args.CommandLine || '');
+        if (isDestructiveOrDangerousCommand(cmd)) {
+          violations.push({
+            type: 'fake_command',
+            detail: `Security/Safety check triggered: Prohibited dangerous command pattern detected: "${cmd.substring(0, 100)}"`,
+            severity: 'critical',
+          });
+        }
       }
 
       // ── Check 3: Result has error field but agent note claims success ──
@@ -384,6 +407,22 @@ class AntiHallucinationGuard {
             type: 'unclaimed_action',
             detail: `Agent claimed "I ${claim}" but no supporting tool call or command was found in session evidence`,
             severity: 'warning',
+          });
+        }
+      }
+
+      // ── Check C: Code modification without verification (Missing Verification Gate) ──
+      const editedCodeFiles = Array.from(filesCreated).filter(f => /\.(tsx?|jsx?|py|rs|go)$/i.test(f));
+      if (editedCodeFiles.length > 0) {
+        const hasVerificationEvidence = toolResultDigest.some(d => 
+          /test|lint|compile|tsc|verify|check|run_command|run-script/i.test(d.tool) ||
+          /test|lint|compile|tsc|run/i.test(d.result.toLowerCase())
+        );
+        if (!hasVerificationEvidence) {
+          violations.push({
+            type: 'missing_verification',
+            detail: `You modified code files [${editedCodeFiles.join(', ')}] but have not run any compiler, linter, or tests to verify them. Please run verification.`,
+            severity: 'critical',
           });
         }
       }

@@ -221,6 +221,11 @@ export interface PatchRecord {
   appliedAtTurn: number;
 }
 
+export interface RecordLink {
+  targetId: string;
+  relationType: 'parent' | 'child' | 'patch_of' | 'tool_result_of' | 'caused_by' | 'semantic_ref';
+}
+
 /**
  * A unified structured record combining all four record types.
  * Stored as a single object for O(1) lookup performance.
@@ -231,6 +236,7 @@ export interface StructuredRecord {
   state: StateRecord;
   confidence: ConfidenceRecord;
   patch?: PatchRecord;
+  links?: RecordLink[];
 }
 
 // ─── Cognitive Node ───────────────────────────────────────────────────────────
@@ -430,6 +436,10 @@ export class SynapseGraph {
     this.state.turnCount++;
     const turn = this.state.turnCount;
 
+    if (turn % 15 === 0) {
+      this.coalesceL2Nodes();
+    }
+
     // Track recent messages for grounding check
     this.state.recentUserMessages.push(query);
     if (this.state.recentUserMessages.length > MAX_RECENT_MESSAGES) {
@@ -502,11 +512,19 @@ export class SynapseGraph {
       }
     }
 
+    // Semantic Query Expansion: combine query with active node verified completions
+    let queryVectorForRetrieval = [...queryVector];
+    const activeNodeForExpansion = this.getActiveNode();
+    if (activeNodeForExpansion && activeNodeForExpansion.verifiedCompletions.length > 0) {
+      const expandedText = query + ' ' + activeNodeForExpansion.verifiedCompletions.join(' ');
+      queryVectorForRetrieval = this.vectorizer.vectorize(expandedText);
+    }
+
     // Step 6: Run 5-question decision surface (§4.6)
-    const surface = this.runDecisionSurface(queryVector, turn);
+    const surface = this.runDecisionSurface(queryVectorForRetrieval, turn);
 
     // Step 7: Build injection payload from decision surface
-    const payload = this.buildPayloadFromSurface(surface, divergenceState, omega, confidence, turn, queryVector);
+    const payload = this.buildPayloadFromSurface(surface, divergenceState, omega, confidence, turn, queryVectorForRetrieval);
 
     // Step 8: Decay topology
     this.decayTopology(turn);
@@ -553,6 +571,7 @@ export class SynapseGraph {
     toolName?: string;
     filePath?: string;
     patchInfo?: { prevHash: string; newHash: string; diffSummary: string; rationale: string; dependsOn: string[] };
+    links?: RecordLink[];
   }): StructuredRecord {
     const id = genId('rec');
     const hash = contentHash(opts.content);
@@ -621,6 +640,7 @@ export class SynapseGraph {
         lastInjectedTurn: 0,
         injectionCount: 0,
       },
+      links: opts.links || [],
     };
 
     // Patch record for code edits (§4.5 coding sessions)
@@ -772,6 +792,7 @@ export class SynapseGraph {
       content: r.source.content,
       sourceType: r.source.sourceType as any,
       versionChain: r.version.previousVersionId ? [r.version.previousVersionId] : [],
+      links: r.links,
     }));
 
     // Build archived node summaries for drift injection
@@ -781,12 +802,24 @@ export class SynapseGraph {
       const fwd = activeId ? this.state.edges.get(edgeKey(activeId, nodeId)) : null;
       const rev = activeId ? this.state.edges.get(edgeKey(nodeId, activeId!)) : null;
       const edgeWeight = Math.max(fwd?.weight || 0, rev?.weight || 0, 0.1);
+
+      // Build adjacency list for PageRank
+      const adjacentEdges: Array<{ toNodeId: string; weight: number }> = [];
+      for (const edge of this.state.edges.values()) {
+        if (edge.fromNodeId === nodeId) {
+          adjacentEdges.push({ toNodeId: edge.toNodeId, weight: edge.weight });
+        } else if (edge.toNodeId === nodeId) {
+          adjacentEdges.push({ toNodeId: edge.fromNodeId, weight: edge.weight });
+        }
+      }
+
       archivedSummaries.push({
         nodeId,
         topicSummary: node.topicSummary,
         centroidVector: [...node.centroidState.centroid],
         edgeWeight,
         verifiedCompletions: [...node.verifiedCompletions],
+        adjacentEdges,
       });
     }
 
@@ -821,7 +854,20 @@ export class SynapseGraph {
       : toolName.includes('search') ? 'search_result'
       : 'tool_result';
 
-    this.storeRecord({
+    const links: RecordLink[] = [];
+    let latestUserTurnId: string | null = null;
+    const sortedRecords = [...this.state.records.values()].sort((a, b) => b.source.createdAtTurn - a.source.createdAtTurn);
+    for (const rec of sortedRecords) {
+      if (rec.source.sourceType === 'user_turn') {
+        latestUserTurnId = rec.source.id;
+        break;
+      }
+    }
+    if (latestUserTurnId) {
+      links.push({ targetId: latestUserTurnId, relationType: 'caused_by' });
+    }
+
+    const toolResultRecord = this.storeRecord({
       content: `[${toolName}] ${result.substring(0, 500)}`,
       sourceType,
       tier: 3,
@@ -836,7 +882,16 @@ export class SynapseGraph {
         rationale: (args.rationale || args.reason || '').substring(0, 200),
         dependsOn: [],
       } : undefined,
+      links,
     });
+
+    if (latestUserTurnId) {
+      const userTurnRec = this.state.records.get(latestUserTurnId);
+      if (userTurnRec) {
+        if (!userTurnRec.links) userTurnRec.links = [];
+        userTurnRec.links.push({ targetId: toolResultRecord.source.id, relationType: 'child' });
+      }
+    }
   }
 
   /**
@@ -1000,6 +1055,37 @@ export class SynapseGraph {
       orphans.sort((a, b) => this.state.l2Nodes.get(a)!.lastActiveTurn - this.state.l2Nodes.get(b)!.lastActiveTurn);
       const del = Math.min(orphans.length, this.state.l2Nodes.size - MAX_L2_NODES);
       for (let i = 0; i < del; i++) this.state.l2Nodes.delete(orphans[i]);
+    }
+  }
+
+  private coalesceL2Nodes(): void {
+    const nodes = [...this.state.l2Nodes.values()];
+    if (nodes.length <= 1) return;
+
+    for (let i = 0; i < nodes.length; i++) {
+      for (let j = i + 1; j < nodes.length; j++) {
+        const ni = nodes[i];
+        const nj = nodes[j];
+        const sim = cosineSimilarity(ni.centroidState.centroid, nj.centroidState.centroid);
+        if (sim > 0.85) {
+          const mergedRecords = new Set([...ni.recordIds, ...nj.recordIds]);
+          ni.recordIds = [...mergedRecords].slice(-100);
+
+          const mergedCompletions = new Set([...ni.verifiedCompletions, ...nj.verifiedCompletions]);
+          ni.verifiedCompletions = [...mergedCompletions].slice(-10);
+
+          ni.topicSummary = `${ni.topicSummary} / ${nj.topicSummary}`.substring(0, 120);
+
+          for (const edge of this.state.edges.values()) {
+            if (edge.fromNodeId === nj.nodeId) edge.fromNodeId = ni.nodeId;
+            if (edge.toNodeId === nj.nodeId) edge.toNodeId = ni.nodeId;
+          }
+
+          this.state.l2Nodes.delete(nj.nodeId);
+          console.log(`[SynapseGraph] 💤 Coalesced similar L2 nodes: ${nj.nodeId} into ${ni.nodeId} (similarity: ${sim.toFixed(3)})`);
+          return this.coalesceL2Nodes();
+        }
+      }
     }
   }
 

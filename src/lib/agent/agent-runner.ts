@@ -14,7 +14,8 @@ import path from 'path';
 import fs from 'fs';
 import { GoogleGenAI } from '@google/genai';
 import { apiKeyPool } from './api-key-pool';
-import { readAgentBuilderProfile, type AgentBuilderProfile } from './builder-agent';
+import { readAgentBuilderProfile, type AgentBuilderProfile, readAgentFlowProfile } from './builder-agent';
+import { agentBuilderRunFlowTool } from './tools/automation/agent_builder';
 import { resolveAgentTools, type ResolvedTool } from './tool-injector';
 import { globalToolRegistry, normalizeRegistryToolName } from './tools/registry';
 import { normalizeRegistryToolArgs, validateRegistryToolArgs } from './tools/tool-args';
@@ -284,6 +285,99 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
     messages: Array<{ role: 'user' | 'model'; content: string }>,
     config: AgentRunnerConfig
   ): AsyncGenerator<AgentRunnerEvent> {
+    // 1. Try to load as a Flow first!
+    let isFlow = false;
+    try {
+      const flow = await readAgentFlowProfile(config.agentId);
+      if (flow && flow.steps && flow.steps.length > 0) {
+        isFlow = true;
+      }
+    } catch {}
+
+    if (isFlow) {
+      const userMessage = messages[messages.length - 1]?.content || '';
+      const agentName = config.agentId;
+      yield {
+        type: 'status',
+        text: `Initializing multi-agent flow "${config.agentId}"...`,
+        agentId: config.agentId,
+        agentName,
+        timestamp: Date.now()
+      };
+
+      const eventQueue: AgentRunnerEvent[] = [];
+      const onTrace = (trace: any) => {
+        if (trace?.type === 'status') {
+          eventQueue.push({
+            type: 'status',
+            text: trace.text,
+            agentId: config.agentId,
+            agentName: trace.agentName || agentName,
+            timestamp: Date.now()
+          });
+        } else if (trace?.type === 'tool_call') {
+          eventQueue.push({
+            type: 'tool_call',
+            toolName: trace.toolName,
+            toolArgs: trace.toolArgs,
+            agentName: trace.agentName || agentName,
+            timestamp: Date.now()
+          });
+        }
+      };
+
+      const runPromise = agentBuilderRunFlowTool.execute(
+        { flowId: config.agentId, input: userMessage },
+        {
+          projectId: config.chatId || `flow-${config.agentId}`,
+          runtimeSettings: config.runtimeSettings,
+          _onTrace: onTrace
+        }
+      );
+
+      while (true) {
+        while (eventQueue.length > 0) {
+          yield eventQueue.shift()!;
+        }
+
+        const settled = await Promise.race([
+          runPromise.then(
+            value => ({ status: 'fulfilled' as const, value }),
+            error => ({ status: 'rejected' as const, error }),
+          ),
+          new Promise<null>(resolve => setTimeout(() => resolve(null), 100)),
+        ]);
+
+        if (settled) {
+          while (eventQueue.length > 0) {
+            yield eventQueue.shift()!;
+          }
+
+          if (settled.status === 'rejected') {
+            throw settled.error;
+          }
+
+          const flowResult = settled.value;
+          if (flowResult.success) {
+            yield {
+              type: 'text',
+              text: flowResult.finalOutput,
+              agentName,
+              timestamp: Date.now()
+            };
+          } else {
+            yield {
+              type: 'error',
+              text: flowResult.message || 'Flow execution failed.',
+              timestamp: Date.now()
+            };
+          }
+          break;
+        }
+      }
+      return;
+    }
+
     if (!this.profile) {
       await this.loadAgent(config.agentId);
     }
@@ -317,11 +411,8 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
 
     try {
       const ai = new GoogleGenAI({ apiKey: lease.apiKey });
-      const systemInstruction = this.buildSystemInstruction();
-      const funcDecls = this.buildFunctionDeclarations();
-
-      // Debug: log declaration count and names
-      console.log(`[AgentRunner] ${agentName} — ${funcDecls.length} tools: ${funcDecls.map((d: any) => d.name).join(', ')}`);
+      let systemInstruction = '';
+      let funcDecls: any[] = [];
 
       // Format conversation history
       const contents = messages.map(m => ({
@@ -377,6 +468,9 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
           yield { type: 'status', text: 'Cancelled by user.', timestamp: Date.now() };
           break;
         }
+
+        systemInstruction = this.buildSystemInstruction();
+        funcDecls = this.buildFunctionDeclarations();
 
         try {
           const resolvedModel = resolveGeminiRunnerModel(config);

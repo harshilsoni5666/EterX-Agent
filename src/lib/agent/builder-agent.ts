@@ -263,10 +263,19 @@ You are a specialized Agent Builder — an expert system for designing, configur
    - List the design, then execute it.
 
 4. ADD TOOLS IN REAL TIME — Execute your tool design by calling:
-   - agent_builder_save_profile → save the prompt, mission, rules, everything
-   - agent_builder_attach_main_tool → grant access to existing tools (with @tool_name)
-   - agent_builder_define_tool → create agent-scoped custom tools
-   - agent_builder_finalize → validate and mark the agent as ready
+    - agent_builder_save_profile → save the prompt, mission, rules, everything
+    - agent_builder_attach_main_tool → grant access to existing tools (with @tool_name)
+    - agent_builder_define_tool → create agent-scoped custom tools
+    - agent_builder_finalize → validate and mark the agent as ready
+    - agent_builder_save_flow → save a multi-agent loop/flow profile
+    - agent_builder_run_flow → execute a multi-agent loop/flow
+    - agent_builder_list_flows → list all multi-agent flows
+    - agent_builder_delete_flow → delete a flow by ID
+    - agent_flow_blackboard_set → set a variable in the shared flow memory
+    - agent_flow_blackboard_get → get a variable from the shared flow memory
+    - agent_flow_blackboard_list → view all flow memory variables
+    - agent_tool_load → dynamically load a tool into the active execution context
+    - agent_tool_unload → dynamically unload a tool to optimize context window space
 
 5. REPORT — Tell the user exactly what was built, which tools were attached, and what the agent can do. Include a "try it" example prompt.
 
@@ -694,8 +703,58 @@ TOOL TYPE SELECTION:
   IMPORTANT: Use ONLY flat STRING/NUMBER/BOOLEAN params in inputSchemaJson. No arrays or nested objects.
 - tool_chain → Composition of existing tools. Use for multi-step workflows.
   Example: "research_and_summarize" = web_search → workspace_read_file → workspace_write_file
-- agent_scoped_code → Custom TypeScript. Use ONLY when no existing tool or chain can do it.
-  Security: code is sandboxed per-agent, passes safety validation, never registered globally.
+- agent_scoped_code → Custom JavaScript executed inside a sandboxed V8 execution context. Custom tools of this type are fully executable and can run custom processing, calculations, and dynamically call any other registered system tools using \`await callTool('tool_name', {args})\`!
+
+━━━ MULTI-AGENT FLOW & LOOP ORCHESTRATION ━━━
+Define multi-agent pipelines and loop cycles using flow tools:
+- Design conditional paths, e.g. run a developer agent, then run a reviewer agent, and if reviewer fails the code, loop back to developer.
+- Custom templates like \`{{input}}\` and \`{{stepId.output}}\` resolve dynamically.
+- Branches evaluate condition expressions securely using V8 context.
+- Shared Blackboard Memory: agents can exchange state dynamically during a run by calling the blackboard set/get tools. Condition expressions can access blackboard variables (e.g. \`blackboard.status === 'success'\`).
+
+REFERENCE FLOW JSON STRUCTURE (for agent_builder_save_flow):
+{
+  "flowId": "unique-flow-id",
+  "name": "Human-Readable Name",
+  "description": "Purpose of the flow",
+  "steps": [
+    {
+      "stepId": "step1",
+      "agentId": "content-writer", // Custom agent ID or 'default-1'
+      "promptTemplate": "Write a draft about: {{input}}",
+      "nextStepId": "step2"
+    },
+    {
+      "stepId": "step2",
+      "agentId": "default-1", // Running parallel agents
+      "promptTemplate": "Ignored when parallelAgentIds is set",
+      "parallelAgentIds": ["sentiment-analyst", "fact-checker"],
+      "promptTemplates": [
+        "Analyze sentiment: {{step1.output}}",
+        "Check facts: {{step1.output}}"
+      ],
+      "nextStepId": "step3"
+    },
+    {
+      "stepId": "step3",
+      "agentId": "content-writer",
+      "promptTemplate": "Correct the draft based on: {{step2.output}}",
+      "reflection": { // Built-in self-correction loop
+        "evaluatorAgentId": "editorial-critic",
+        "criteria": "The draft must have zero errors.",
+        "maxRetries": 3
+      },
+      "conditionalBranches": [ // Branch routing
+        {
+          "conditionExpression": "blackboard.status === 'error' || iterationCount > 5",
+          "targetStepId": "step1"
+        }
+      ],
+      "nextStepId": "final_step"
+    }
+  ],
+  "maxIterations": 20
+}
 
 PROMPT ANTI-PATTERNS (things to NEVER do in agent prompts):
 - ❌ "Be helpful" — too vague. Instead: "Answer within 3 paragraphs, cite sources, include confidence."
@@ -885,6 +944,16 @@ If a request is outside your scope, politely explain what you can help with inst
 Use ALL tools available to you — you have full access to the main EterX agent toolset.
 `.trim());
 
+  // Meta-cognitive framework
+  parts.push(`
+## Meta-Cognitive Self-Reflection Loop
+For every turn, you MUST execute your reasoning across four distinct cognitive planes:
+1. GOAL DECOMPOSITION: Break the prompt into discrete steps. Determine precise tool requirements.
+2. DEFENSIVE PREDICTION: Predict potential tool execution failures, path mismatches, or schema errors BEFORE executing any call.
+3. EXECUTION AUDIT: Critically assess tool responses against rules. Make sure files are actually written or searched correctly.
+4. CONTRASTIVE REFINEMENT: Challenge your initial draft response, look for logical gaps, correct typos, and refine for high confidence.
+`.trim());
+
   parts.push(`\n═══════════════════════════════════════════════════════════════`);
 
   return parts.join('\n');
@@ -902,5 +971,130 @@ export async function loadCustomAgentProfile(agentId: string): Promise<AgentBuil
   } catch {
     return null;
   }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// MULTI-AGENT LOOP/FLOW ORCHESTRATOR
+// ═══════════════════════════════════════════════════════════════
+
+export interface AgentFlowStep {
+  stepId: string;
+  agentId: string; // The custom agent or 'default-1' to run (ignored if parallelAgentIds is set)
+  promptTemplate: string; // Prompt template, e.g. "Generate data for: {{input}}" (ignored if promptTemplates is set)
+  parallelAgentIds?: string[]; // Array of agent IDs to run in parallel
+  promptTemplates?: string[]; // Corresponding prompts for parallel agents
+  reflection?: {
+    evaluatorAgentId: string;
+    criteria: string;
+    maxRetries: number;
+  };
+  expectedOutputSchema?: Record<string, unknown>;
+  nextStepId?: string; // Standard sequential flow
+  conditionalBranches?: Array<{
+    conditionExpression: string; // e.g. "output.includes('ERROR')"
+    targetStepId: string;
+  }>;
+}
+
+export interface AgentFlowProfile {
+  flowId: string;
+  name: string;
+  description: string;
+  createdAt: string;
+  updatedAt: string;
+  status: 'draft' | 'ready';
+  steps: AgentFlowStep[];
+  maxIterations?: number; // Cap cycles to prevent infinite runs
+  notes: string[];
+}
+
+const AGENT_FLOWS_ROOT = path.resolve(process.cwd(), '.workspaces', 'agent-builder', 'flows');
+
+export function sanitizeFlowId(value: string): string {
+  return String(value || 'flow')
+    .trim()
+    .replace(/[^a-zA-Z0-9_-]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^[-_]+|[-_]+$/g, '')
+    .slice(0, 96) || 'flow';
+}
+
+export function getAgentFlowProfilePath(flowId: string): string {
+  return resolveUnder(AGENT_FLOWS_ROOT, `${sanitizeFlowId(flowId)}.json`);
+}
+
+export async function readAgentFlowProfile(flowId: string): Promise<AgentFlowProfile> {
+  const now = new Date().toISOString();
+  const filePath = getAgentFlowProfilePath(flowId);
+  if (await fs.pathExists(filePath)) {
+    const saved = await fs.readJson(filePath);
+    return {
+      flowId: sanitizeFlowId(flowId),
+      name: typeof saved.name === 'string' ? saved.name : flowId,
+      description: typeof saved.description === 'string' ? saved.description : '',
+      createdAt: typeof saved.createdAt === 'string' ? saved.createdAt : now,
+      updatedAt: typeof saved.updatedAt === 'string' ? saved.updatedAt : now,
+      status: saved.status === 'ready' ? 'ready' : 'draft',
+      steps: Array.isArray(saved.steps) ? saved.steps : [],
+      maxIterations: typeof saved.maxIterations === 'number' ? saved.maxIterations : 20,
+      notes: Array.isArray(saved.notes) ? saved.notes.map(String) : [],
+    };
+  }
+  return {
+    flowId: sanitizeFlowId(flowId),
+    name: flowId,
+    description: '',
+    createdAt: now,
+    updatedAt: now,
+    status: 'draft',
+    steps: [],
+    maxIterations: 20,
+    notes: [],
+  };
+}
+
+export async function writeAgentFlowProfile(profile: AgentFlowProfile): Promise<string> {
+  const flowId = sanitizeFlowId(profile.flowId);
+  const filePath = getAgentFlowProfilePath(flowId);
+  const normalized: AgentFlowProfile = {
+    flowId,
+    name: profile.name || flowId,
+    description: profile.description || '',
+    createdAt: profile.createdAt || new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    status: profile.status === 'ready' ? 'ready' : 'draft',
+    steps: Array.isArray(profile.steps) ? profile.steps : [],
+    maxIterations: typeof profile.maxIterations === 'number' ? profile.maxIterations : 20,
+    notes: Array.isArray(profile.notes) ? profile.notes.map(String) : [],
+  };
+  await fs.ensureDir(path.dirname(filePath));
+  await writeJsonAtomic(filePath, normalized);
+  return filePath;
+}
+
+export async function listAgentFlowProfiles(): Promise<AgentFlowProfile[]> {
+  if (!(await fs.pathExists(AGENT_FLOWS_ROOT))) return [];
+  const entries = await fs.readdir(AGENT_FLOWS_ROOT);
+  const flows: AgentFlowProfile[] = [];
+  for (const entry of entries) {
+    if (!entry.endsWith('.json')) continue;
+    try {
+      const flowId = entry.replace('.json', '');
+      const flow = await readAgentFlowProfile(flowId);
+      flows.push(flow);
+    } catch {
+      // Ignore corrupted files
+    }
+  }
+  return flows.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
+export async function deleteAgentFlowProfile(flowId: string): Promise<boolean> {
+  const filePath = getAgentFlowProfilePath(flowId);
+  if (await fs.pathExists(filePath)) {
+    await fs.remove(filePath);
+    return true;
+  }
+  return false;
 }
 

@@ -17,7 +17,18 @@ import {
   upsertAgentBuilderProfile,
   validateAgentScopedCode,
   writeAgentBuilderProfile,
+  CUSTOM_AGENT_RUNTIME,
+  loadCustomAgentProfile,
+  AgentFlowProfile,
+  AgentFlowStep,
+  readAgentFlowProfile,
+  writeAgentFlowProfile,
+  listAgentFlowProfiles,
+  deleteAgentFlowProfile,
 } from '../../builder-agent';
+import { createIsolatedClient } from '../../Agent';
+import * as vm from 'vm';
+import { agentToolLoadTool, agentToolUnloadTool } from '../../tool-injector';
 
 const requireBuilderContext = (context: any, argsAgentId?: string) => {
   if (!isAgentBuilderRuntimeContext(context)) {
@@ -320,9 +331,477 @@ export const agentBuilderFinalizeTool: ToolDefinition = {
   },
 };
 
+
+const flowBlackboards: Map<string, Record<string, any>> = new Map();
+
+export function getFlowBlackboard(flowRunId: string): Record<string, any> {
+  if (!flowBlackboards.has(flowRunId)) {
+    flowBlackboards.set(flowRunId, {});
+  }
+  return flowBlackboards.get(flowRunId)!;
+}
+
+export function clearFlowBlackboard(flowRunId: string): void {
+  flowBlackboards.delete(flowRunId);
+}
+
+export const agentFlowBlackboardSetTool: ToolDefinition = {
+  name: 'agent_flow_blackboard_set',
+  description: 'Set a key-value pair in the shared flow blackboard memory. Available only during flow execution.',
+  category: 'automation',
+  inputSchema: z.object({
+    key: z.string().describe('The name of the state variable to set.'),
+    value: z.any().describe('The value to set (can be a string, number, boolean, array, or object).')
+  }),
+  outputSchema: z.object({ success: z.boolean(), message: z.string() }),
+  execute: async (args: any, context: any) => {
+    const flowRunId = context?.flowRunId;
+    if (!flowRunId) {
+      return { success: false, message: 'Blackboard is only available during flow execution.' };
+    }
+    const bb = getFlowBlackboard(flowRunId);
+    bb[args.key] = args.value;
+    return { success: true, message: `Set blackboard key "${args.key}" successfully.` };
+  }
+};
+
+export const agentFlowBlackboardGetTool: ToolDefinition = {
+  name: 'agent_flow_blackboard_get',
+  description: 'Retrieve a value from the shared flow blackboard memory. Available only during flow execution.',
+  category: 'automation',
+  inputSchema: z.object({
+    key: z.string().describe('The state key to retrieve.')
+  }),
+  outputSchema: z.object({ success: z.boolean(), value: z.any(), found: z.boolean() }),
+  execute: async (args: any, context: any) => {
+    const flowRunId = context?.flowRunId;
+    if (!flowRunId) {
+      return { success: false, value: null, found: false };
+    }
+    const bb = getFlowBlackboard(flowRunId);
+    const value = bb[args.key];
+    return { success: true, value, found: value !== undefined };
+  }
+};
+
+export const agentFlowBlackboardListTool: ToolDefinition = {
+  name: 'agent_flow_blackboard_list',
+  description: 'List all variables and values in the shared flow blackboard memory. Available only during flow execution.',
+  category: 'automation',
+  inputSchema: z.object({}),
+  outputSchema: z.object({ success: z.boolean(), blackboard: z.any() }),
+  execute: async (args: any, context: any) => {
+    const flowRunId = context?.flowRunId;
+    if (!flowRunId) {
+      return { success: false, blackboard: {} };
+    }
+    const bb = getFlowBlackboard(flowRunId);
+    return { success: true, blackboard: { ...bb } };
+  }
+};
+
+export const agentBuilderSaveFlowTool: ToolDefinition = {
+  name: 'agent_builder_save_flow',
+  description: 'Save or update a multi-agent flow profile. Allows orchestrating multiple steps, passing inputs, and establishing cyclic execution loops between agents.',
+  category: 'automation',
+  inputSchema: z.object({
+    flowId: z.string().describe('Unique identifier for the multi-agent flow.'),
+    name: z.string().optional().describe('Human-readable name of the flow.'),
+    description: z.string().optional().describe('Clear purpose of this flow.'),
+    steps: z.array(z.object({
+      stepId: z.string().describe('Unique ID for this step, e.g. step1, review_step.'),
+      agentId: z.string().describe('Custom agent ID or "default-1" for general agent to execute this step (ignored if parallelAgentIds is set).'),
+      promptTemplate: z.string().describe('Prompt template. Use {{input}} or {{stepId.output}} for dynamic variables (ignored if promptTemplates is set).'),
+      parallelAgentIds: z.array(z.string()).optional().describe('Array of agent IDs to run in parallel.'),
+      promptTemplates: z.array(z.string()).optional().describe('Array of prompt templates corresponding to the parallel agents.'),
+      reflection: z.object({
+        evaluatorAgentId: z.string().describe('Agent to review/evaluate the step output.'),
+        criteria: z.string().describe('Criteria prompt to check the output against.'),
+        maxRetries: z.number().int().describe('Maximum number of self-correction loops to attempt.')
+      }).optional().describe('Optional self-correction review configuration.'),
+      nextStepId: z.string().optional().describe('Sequential next step ID if no condition is met.'),
+      conditionalBranches: z.array(z.object({
+        conditionExpression: z.string().describe('JS boolean condition, e.g. "output.includes(\'ERROR\')" or "iterationCount < 3".'),
+        targetStepId: z.string().describe('The step ID to route to if this condition evaluates to true.')
+      })).optional().describe('Array of conditional branches to check.')
+    })).describe('Structured list of execution steps.'),
+    maxIterations: z.number().int().optional().describe('Safety limit for total steps run in this flow to avoid infinite cycles (default 20).'),
+    notes: z.array(z.string()).optional().describe('Builder notes.')
+  }),
+  outputSchema: z.object({ success: z.boolean(), message: z.string(), flowPath: z.string().optional(), flow: z.any().optional() }),
+  execute: async (args: any) => {
+    const savedPath = await writeAgentFlowProfile({
+      flowId: args.flowId,
+      name: args.name,
+      description: args.description,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      status: 'ready',
+      steps: args.steps,
+      maxIterations: args.maxIterations || 20,
+      notes: args.notes || []
+    });
+
+    const flow = await readAgentFlowProfile(args.flowId);
+
+    return {
+      success: true,
+      message: `Flow "${args.flowId}" saved successfully.`,
+      flowPath: savedPath,
+      flow
+    };
+  }
+};
+
+export const agentBuilderListFlowsTool: ToolDefinition = {
+  name: 'agent_builder_list_flows',
+  description: 'List all defined multi-agent flow profiles.',
+  category: 'automation',
+  inputSchema: z.object({}),
+  outputSchema: z.object({ success: z.boolean(), flows: z.array(z.any()) }),
+  execute: async () => {
+    const flows = await listAgentFlowProfiles();
+    return { success: true, flows };
+  }
+};
+
+export const agentBuilderDeleteFlowTool: ToolDefinition = {
+  name: 'agent_builder_delete_flow',
+  description: 'Delete a multi-agent flow profile by ID.',
+  category: 'automation',
+  inputSchema: z.object({
+    flowId: z.string().describe('ID of the flow to delete.')
+  }),
+  outputSchema: z.object({ success: z.boolean(), message: z.string() }),
+  execute: async (args: any) => {
+    const deleted = await deleteAgentFlowProfile(args.flowId);
+    return {
+      success: deleted,
+      message: deleted ? `Flow "${args.flowId}" deleted successfully.` : `Flow "${args.flowId}" not found.`
+    };
+  }
+};
+
+function resolveTemplate(template: string, vars: Record<string, string>): string {
+  return template.replace(/\{\{([a-zA-Z0-9_\.]+)\}\}/g, (_, key) => {
+    return vars[key] || '';
+  });
+}
+
+function evaluateCondition(expression: string, vars: Record<string, any>, flowRunId?: string): boolean {
+  try {
+    const blackboard = flowRunId ? getFlowBlackboard(flowRunId) : {};
+    const sandbox = {
+      ...vars,
+      blackboard,
+      output: vars.output || '',
+      iterationCount: vars.iterationCount || 0
+    };
+    vm.createContext(sandbox);
+    const script = new vm.Script(expression);
+    return !!script.runInContext(sandbox, { timeout: 100 });
+  } catch (err) {
+    console.error(`[AgentFlow] Error evaluating condition "${expression}":`, err);
+    return false;
+  }
+}
+
+export const agentBuilderRunFlowTool: ToolDefinition = {
+  name: 'agent_builder_run_flow',
+  description: 'Execute a multi-agent loop/flow profile by stepping through the state machine.',
+  category: 'automation',
+  inputSchema: z.object({
+    flowId: z.string().describe('ID of the flow profile to execute.'),
+    input: z.string().describe('Initial input prompt to feed into the flow.')
+  }),
+  outputSchema: z.object({
+    success: z.boolean(),
+    finalOutput: z.string(),
+    message: z.string(),
+    history: z.array(z.any()).optional(),
+    error: z.string().optional()
+  }),
+  execute: async (args: { flowId: string, input: string }, context: any) => {
+    const flowRunId = `flowrun-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+    try {
+      const flow = await readAgentFlowProfile(args.flowId);
+      if (!flow.steps || flow.steps.length === 0) {
+        return { success: false, finalOutput: '', message: `Flow "${args.flowId}" has no steps.` };
+      }
+
+      // Initialize flow-scoped blackboard
+      getFlowBlackboard(flowRunId);
+
+      const variables: Record<string, string> = {
+        input: args.input,
+        output: '',
+      };
+      const stepIterationCounts: Record<string, number> = {};
+      const history: any[] = [];
+
+      let currentStepId: string | undefined = flow.steps[0].stepId;
+      let totalStepsExecuted = 0;
+      const maxIterations = flow.maxIterations || 20;
+
+      while (currentStepId) {
+        const stepId: string = currentStepId;
+        const step: AgentFlowStep | undefined = flow.steps.find(s => s.stepId === stepId);
+        if (!step) {
+          throw new Error(`Flow step "${stepId}" was not found in profile.`);
+        }
+
+        // Cycle protection
+        stepIterationCounts[stepId] = (stepIterationCounts[stepId] || 0) + 1;
+        totalStepsExecuted++;
+        if (totalStepsExecuted > maxIterations) {
+          throw new Error(`Flow exceeded safety limit of ${maxIterations} total step executions (potential infinite loop).`);
+        }
+
+        // --- Option A: Parallel Execution ---
+        if (step.parallelAgentIds && step.parallelAgentIds.length > 0) {
+          const parallelAgentIds = step.parallelAgentIds;
+          const parallelPrompts = step.promptTemplates || [];
+          console.log(`[AgentFlow: ${args.flowId}] Running step "${stepId}" in parallel with agents: ${parallelAgentIds.join(' · ')} (iteration ${stepIterationCounts[stepId]})...`);
+
+          const promises = parallelAgentIds.map(async (agentId, idx) => {
+            const promptTemplate = parallelPrompts[idx] || step.promptTemplate;
+            const resolvedPrompt = resolveTemplate(promptTemplate, variables);
+
+            const customProfile = await loadCustomAgentProfile(agentId);
+            const stepContext = {
+              ...context,
+              agentRuntime: agentId === 'default-1' ? undefined : CUSTOM_AGENT_RUNTIME,
+              customAgentId: agentId === 'default-1' ? undefined : agentId,
+              customAgentName: agentId === 'default-1' ? undefined : (customProfile?.name || agentId),
+              _customAgentProfile: customProfile || undefined,
+              flowId: args.flowId,
+              flowRunId
+            };
+
+            const client = createIsolatedClient(context?.projectId || 'flow-run', 'think', context?.runtimeSettings);
+            const response = await client.executeMessageLoop(
+              stepContext,
+              resolvedPrompt,
+              [],
+              context?._onTrace
+            );
+
+            return { agentId, prompt: resolvedPrompt, output: response.text || '' };
+          });
+
+          const parallelResults = await Promise.all(promises);
+
+          let combinedOutput = '';
+          parallelResults.forEach((res, idx) => {
+            variables[`${stepId}.${idx}.output`] = res.output;
+            variables[`${stepId}.${res.agentId}.output`] = res.output;
+            combinedOutput += `--- Agent: ${res.agentId} ---\n${res.output}\n\n`;
+          });
+          combinedOutput = combinedOutput.trim();
+          variables[`${stepId}.output`] = combinedOutput;
+          variables['output'] = combinedOutput;
+
+          history.push({
+            stepId,
+            parallel: true,
+            results: parallelResults.map(r => ({ agentId: r.agentId, prompt: r.prompt, output: r.output })),
+            timestamp: Date.now()
+          });
+
+        // --- Option B: Reflection/Correction Loop ---
+        } else if (step.reflection) {
+          let attempts = 0;
+          let currentOutput = '';
+          const maxRetries = step.reflection.maxRetries || 3;
+          let approved = false;
+          let lastCritique = '';
+
+          const basePrompt = resolveTemplate(step.promptTemplate, variables);
+          let currentPrompt = basePrompt;
+
+          while (attempts < maxRetries && !approved) {
+            attempts++;
+
+            if (attempts > 1) {
+              currentPrompt = `${basePrompt}\n\n[SELF-CORRECTION CRITIQUE (Attempt ${attempts - 1}/${maxRetries})]\nThe evaluator rejected your previous output because: "${step.reflection.criteria}"\nEvaluator critique details:\n${lastCritique}\n\nPlease revise your output to address this feedback, and provide a corrected version.`;
+            }
+
+            const customProfile = await loadCustomAgentProfile(step.agentId);
+            const stepContext = {
+              ...context,
+              agentRuntime: step.agentId === 'default-1' ? undefined : CUSTOM_AGENT_RUNTIME,
+              customAgentId: step.agentId === 'default-1' ? undefined : step.agentId,
+              customAgentName: step.agentId === 'default-1' ? undefined : (customProfile?.name || step.agentId),
+              _customAgentProfile: customProfile || undefined,
+              flowId: args.flowId,
+              flowRunId
+            };
+
+            const client = createIsolatedClient(context?.projectId || 'flow-run', 'think', context?.runtimeSettings);
+            console.log(`[AgentFlow: ${args.flowId}] Running step "${stepId}" (attempt ${attempts}/${maxRetries}, iteration ${stepIterationCounts[stepId]})...`);
+            
+            const response = await client.executeMessageLoop(
+              stepContext,
+              currentPrompt,
+              [],
+              context?._onTrace
+            );
+            currentOutput = response.text || '';
+
+            // Run Evaluator Reflection
+            console.log(`[AgentFlow: ${args.flowId}] Running evaluator "${step.reflection.evaluatorAgentId}" for critique against criteria: "${step.reflection.criteria}"...`);
+            
+            const evaluatorProfile = await loadCustomAgentProfile(step.reflection.evaluatorAgentId);
+            const evalContext = {
+              ...context,
+              agentRuntime: step.reflection.evaluatorAgentId === 'default-1' ? undefined : CUSTOM_AGENT_RUNTIME,
+              customAgentId: step.reflection.evaluatorAgentId === 'default-1' ? undefined : step.reflection.evaluatorAgentId,
+              customAgentName: step.reflection.evaluatorAgentId === 'default-1' ? undefined : (evaluatorProfile?.name || step.reflection.evaluatorAgentId),
+              _customAgentProfile: evaluatorProfile || undefined,
+              flowId: args.flowId,
+              flowRunId
+            };
+
+            const evalClient = createIsolatedClient(context?.projectId || 'flow-run-eval', 'think', context?.runtimeSettings);
+            const evaluationPrompt = `
+You are the EVALUATOR for flow step "${stepId}".
+Evaluate the candidate output against these criteria: "${step.reflection.criteria}"
+
+[CANDIDATE OUTPUT]
+${currentOutput}
+
+[INSTRUCTIONS]
+Decide if the candidate output passes the criteria.
+Return your decision starting with either [APPROVED] or [REJECTED].
+Follow with a detailed explanation of why, and suggest specific corrections if rejected.
+`.trim();
+
+            const evalResponse = await evalClient.executeMessageLoop(
+              evalContext,
+              evaluationPrompt,
+              [],
+              context?._onTrace
+            );
+
+            const evalResult = evalResponse.text || '';
+            lastCritique = evalResult;
+
+            if (evalResult.toUpperCase().includes('[APPROVED]')) {
+              approved = true;
+              console.log(`[AgentFlow: ${args.flowId}] Reflection Approved!`);
+            } else {
+              console.log(`[AgentFlow: ${args.flowId}] Reflection Rejected: ${evalResult.substring(0, 100)}...`);
+            }
+
+            history.push({
+              stepId,
+              agentId: step.agentId,
+              attempt: attempts,
+              prompt: currentPrompt,
+              output: currentOutput,
+              evaluatorId: step.reflection.evaluatorAgentId,
+              evaluation: evalResult,
+              approved,
+              timestamp: Date.now()
+            });
+          }
+
+          variables[`${stepId}.output`] = currentOutput;
+          variables['output'] = currentOutput;
+
+        // --- Option C: Standard Single-Agent Step ---
+        } else {
+          const resolvedPrompt = resolveTemplate(step.promptTemplate, variables);
+          const customProfile = await loadCustomAgentProfile(step.agentId);
+          const stepContext = {
+            ...context,
+            agentRuntime: step.agentId === 'default-1' ? undefined : CUSTOM_AGENT_RUNTIME,
+            customAgentId: step.agentId === 'default-1' ? undefined : step.agentId,
+            customAgentName: step.agentId === 'default-1' ? undefined : (customProfile?.name || step.agentId),
+            _customAgentProfile: customProfile || undefined,
+            flowId: args.flowId,
+            flowRunId
+          };
+
+          const client = createIsolatedClient(context?.projectId || 'flow-run', 'think', context?.runtimeSettings);
+          console.log(`[AgentFlow: ${args.flowId}] Running step "${stepId}" with Agent "${step.agentId}" (iteration ${stepIterationCounts[stepId]})...`);
+          
+          const response = await client.executeMessageLoop(
+            stepContext,
+            resolvedPrompt,
+            [],
+            context?._onTrace
+          );
+
+          const outputText = response.text || '';
+          variables[`${stepId}.output`] = outputText;
+          variables['output'] = outputText;
+
+          history.push({
+            stepId,
+            agentId: step.agentId,
+            prompt: resolvedPrompt,
+            output: outputText,
+            timestamp: Date.now()
+          });
+        }
+
+        // Determine next step
+        let routed = false;
+        if (step.conditionalBranches && step.conditionalBranches.length > 0) {
+          for (const branch of step.conditionalBranches) {
+            const varsForCondition = {
+              ...variables,
+              iterationCount: stepIterationCounts[stepId],
+              totalSteps: totalStepsExecuted
+            };
+            if (evaluateCondition(branch.conditionExpression, varsForCondition, flowRunId)) {
+              currentStepId = branch.targetStepId;
+              routed = true;
+              console.log(`[AgentFlow: ${args.flowId}] Condition "${branch.conditionExpression}" passed. Routing to step "${branch.targetStepId}".`);
+              break;
+            }
+          }
+        }
+
+        if (!routed) {
+          currentStepId = step.nextStepId;
+        }
+      }
+
+      return {
+        success: true,
+        finalOutput: variables['output'] || '',
+        message: `Multi-agent flow "${args.flowId}" completed successfully.`,
+        history
+      };
+
+    } catch (err: any) {
+      console.error(`[AgentFlow: ${args.flowId}] Execution error:`, err);
+      return {
+        success: false,
+        finalOutput: '',
+        message: `Flow execution failed: ${err.message}`,
+        error: err.message
+      };
+    } finally {
+      clearFlowBlackboard(flowRunId);
+    }
+  }
+};
+
 export const agentBuilderTools = [
   agentBuilderSaveProfileTool,
   agentBuilderAttachMainTool,
   agentBuilderDefineTool,
   agentBuilderFinalizeTool,
+  agentBuilderSaveFlowTool,
+  agentBuilderListFlowsTool,
+  agentBuilderDeleteFlowTool,
+  agentBuilderRunFlowTool,
+  agentFlowBlackboardSetTool,
+  agentFlowBlackboardGetTool,
+  agentFlowBlackboardListTool,
+  agentToolLoadTool,
+  agentToolUnloadTool,
 ];

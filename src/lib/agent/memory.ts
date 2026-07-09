@@ -375,23 +375,33 @@ export class ContextWindowManager {
 
     console.log(`[ContextManager] ⚠️ Context is ${(estimatedTokens / 1000).toFixed(0)}K tokens. Trimming...`);
 
-    // IMPROVED: Larger tail for long tasks, protects more recent context
     const keepHead = 2;
-    const keepTail = 18; // Was 10 — doubled for better long-task continuity
+    const keepTail = 18;
 
     if (contents.length <= keepHead + keepTail) {
       return contents;
+    }
+
+    // Build set of active keywords from the most recent user turn and active goal
+    const activeKeywords = new Set<string>();
+    const recentTurn = contents.slice(-3);
+    for (const turn of recentTurn) {
+      if (turn.parts) {
+        const text = turn.parts.map((p: any) => p.text || '').join(' ').toLowerCase();
+        const words = text.split(/[^a-zA-Z0-9_\-]+/).filter((w: string) => w.length > 4);
+        for (const w of words) activeKeywords.add(w);
+      }
     }
 
     const trimmed: any[] = [
       ...contents.slice(0, keepHead),
       {
         role: 'user',
-        parts: [{ text: '[SYSTEM] Earlier conversation was summarized to manage context. Recent context is intact. If you loaded any skills via get_skill_guidelines, their content is preserved below.' }]
+        parts: [{ text: '[SYSTEM] Earlier conversation was summarized dynamically based on semantic relevance to manage context. Key technical contexts are intact.' }]
       },
     ];
 
-    // Middle section: smart summarization
+    // Middle section: smart summarization using semantic saliency
     const middle = contents.slice(keepHead, contents.length - keepTail);
     for (const entry of middle) {
       if (entry.role === 'user' && entry.parts) {
@@ -404,8 +414,24 @@ export class ContextWindowManager {
           continue;
         }
 
-        // Handle function responses (tool results)
+        // Check semantic relevance
+        let matchText = textContent;
         const hasFunctionResponse = entry.parts.some((p: any) => p.functionResponse);
+        if (hasFunctionResponse) {
+          matchText += ' ' + entry.parts
+            .filter((p: any) => p.functionResponse)
+            .map((p: any) => {
+              const res = p.functionResponse.response;
+              const out = res ? (typeof res.output === 'object' ? JSON.stringify(res.output) : String(res.output || '')) : '';
+              return p.functionResponse.name + ' ' + out;
+            })
+            .join(' ');
+        }
+        const entryWords = matchText.toLowerCase().split(/[^a-zA-Z0-9_\-]+/);
+        const isSaliencyMatched = entryWords.some((w: string) => activeKeywords.has(w));
+        const limitThreshold = isSaliencyMatched ? 5000 : 1500;
+
+        // Handle function responses (tool results)
         if (hasFunctionResponse) {
           const summarizedParts = entry.parts.map((p: any) => {
             if (p.functionResponse) {
@@ -417,29 +443,15 @@ export class ContextWindowManager {
                 return p; // Keep FULL content
               }
               
-              // Aggressively summarize verbose tools
-              if (this.VERBOSE_TOOLS.has(toolName) && outputStr.length > 800) {
+              // Scale down more aggressively if not saliency-matched
+              const finalLimit = isSaliencyMatched ? limitThreshold : 800;
+              if (outputStr.length > finalLimit) {
                 return {
                   functionResponse: {
                     name: toolName,
                     response: { output: { 
-                      summary: `[${toolName}: ${(outputStr.length / 1024).toFixed(1)}KB output]`,
-                      // Keep first 200 chars of result for key data
-                      preview: outputStr.substring(0, 200)
-                    }},
-                    ...(p.functionResponse.id ? { id: p.functionResponse.id } : {})
-                  }
-                };
-              }
-              
-              // Normal tools: summarize if > 1500 chars (was 500 — too aggressive)
-              if (outputStr.length > 1500) {
-                return {
-                  functionResponse: {
-                    name: toolName,
-                    response: { output: { 
-                      summary: `[${toolName}: ${(outputStr.length / 1024).toFixed(1)}KB]`,
-                      preview: outputStr.substring(0, 400) 
+                      summary: `[${toolName}: ${(outputStr.length / 1024).toFixed(1)}KB, trimmed for token budget]`,
+                      preview: outputStr.substring(0, finalLimit === 800 ? 250 : 600)
                     }},
                     ...(p.functionResponse.id ? { id: p.functionResponse.id } : {})
                   }
@@ -450,11 +462,11 @@ export class ContextWindowManager {
           });
           trimmed.push({ ...entry, parts: summarizedParts });
         } else {
-          // Keep short user messages, summarize long ones
-          if (textContent.length > 1000) {
+          // Keep longer user text if saliency matches
+          if (textContent.length > limitThreshold) {
             trimmed.push({
               role: entry.role,
-              parts: [{ text: textContent.substring(0, 300) + '... [truncated]' }]
+              parts: [{ text: textContent.substring(0, isSaliencyMatched ? 800 : 300) + '... [truncated]' }]
             });
           } else {
             trimmed.push(entry);
@@ -467,7 +479,8 @@ export class ContextWindowManager {
         // Keep function calls intact (they're small and important for context)
         const compactParts = filteredParts.map((p: any) => {
           if (p.functionCall) return p; // Always keep function calls
-          if (p.text && p.text.length > 800) {
+          const textLength = p.text ? p.text.length : 0;
+          if (p.text && textLength > 1000) {
             return { text: p.text.substring(0, 400) + '... [truncated]' };
           }
           return p;
