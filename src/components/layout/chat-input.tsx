@@ -2697,8 +2697,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                     setShowAgentMenu(prev => !prev);
                   }}
                   className={`eterx-agent-button ${ isCompressed ? 'max-w-[160px] px-2.5' : 'max-w-[232px] px-3.5' } flex h-[38px] w-full min-w-0 items-center gap-1.5 rounded-full border transition-all duration-150 active:scale-95 group ${ selectedAgent && selectedAgent !== 'coding'
-                      ? 'border-indigo-500/30 bg-indigo-500/5 text-indigo-200 hover:bg-indigo-500/10 hover:border-indigo-500/40 shadow-[0_2px_12px_rgba(99,102,241,0.08)]'
-                      : 'border-transparent bg-[#2D2D2D] text-[#F4F4F4] hover:bg-[#333333]'
+                    ? 'border-indigo-500/30 bg-indigo-500/5 text-indigo-200 hover:bg-indigo-500/10 hover:border-indigo-500/40 shadow-[0_2px_12px_rgba(99,102,241,0.08)]'
+                    : 'border-transparent bg-[#2D2D2D] text-[#F4F4F4] hover:bg-[#333333]'
                     } ${ showAgentMenu ? '!bg-indigo-500/15 !border-indigo-500/40 !text-white' : '' } ${ isThinking ? 'cursor-not-allowed opacity-70' : '' }`}
                   aria-label={`Agent: ${ activeAgentDisplay.label }`}
                   aria-haspopup="dialog"

@@ -2441,7 +2441,7 @@ const TerminalTraceCard = ({
   const isFailed = exitCode !== undefined && exitCode !== 0;
   const durationLabel = formatTerminalMetaDuration(durationMs);
   const hasOutput = output.trim().length > 0;
-  const [isExpanded, setIsExpanded] = useState(false);
+  const [isExpanded, setIsExpanded] = useState(() => isStreaming);
   const commandIdentity = [
     log?._traceIdx ?? '',
     log?.traceId ?? '',
@@ -2449,9 +2449,16 @@ const TerminalTraceCard = ({
     command,
   ].join('|');
 
+  const lastCommandIdentityRef = useRef(commandIdentity);
+
   useEffect(() => {
-    setIsExpanded(false);
-  }, [commandIdentity]);
+    if (commandIdentity !== lastCommandIdentityRef.current) {
+      lastCommandIdentityRef.current = commandIdentity;
+      setIsExpanded(isStreaming);
+    } else if (isStreaming) {
+      setIsExpanded(true);
+    }
+  }, [commandIdentity, isStreaming]);
 
   const title = inCard
     ? isStreaming ? 'Running' : isFailed ? 'Failed' : 'Ran'
@@ -2789,11 +2796,14 @@ const ActionChip = ({
     if (ownerPreview) return ownerPreview;
     if (log.type === 'command') {
       const cmd = getTerminalCommandText(log, undefined, String(log.secondary || ''));
-      // Search forward from this log first, then try searching all logs
+      // Search forward from this log first
       const forwardResult = findLatestConsoleOutput(searchLogs, cmd.substring(0, 20));
       if (forwardResult) return forwardResult;
-      // Fallback: search all logs (handles reordered or late-arriving console_output)
-      return findLatestConsoleOutput(allLogs, cmd.substring(0, 20));
+      // Fallback: search all logs only if command index was not found (handles reordered or late-arriving console_output)
+      if (myIdx === -1) {
+        return findLatestConsoleOutput(allLogs, cmd.substring(0, 20));
+      }
+      return null;
     }
     if (isEdit) {
       const scopedPreview = searchLogs.find((l: any) => filePreviewMatchesTargets(l, logFileTargets));
