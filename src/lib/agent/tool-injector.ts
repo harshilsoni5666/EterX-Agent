@@ -10,11 +10,171 @@
  * Security: Only tools that pass shouldExposeToolToRuntime() are allowed.
  */
 import { globalToolRegistry, normalizeRegistryToolName } from './tools/registry';
+import { ToolDefinition } from './schemas';
 import type { AgentBuilderDirectTool, AgentBuilderCustomTool, AgentBuilderProfile } from './builder-agent';
-import { isBuilderOnlyToolName } from './builder-agent';
+import { isBuilderOnlyToolName, validateAgentScopedCode } from './builder-agent';
+import * as vm from 'vm';
+import * as path from 'path';
+import * as fs from 'fs-extra';
+import { z } from 'zod';
 import { normalizeRegistryToolArgs, validateRegistryToolArgs } from './tools/tool-args';
 import { enforceToolCapability } from './tools/security/tool_policy';
 import { createToolExecutionContext, isToolCancellationError } from './cancellation';
+
+async function findFilesRecursively(dir: string, maxFiles = 500): Promise<string[]> {
+  const results: string[] = [];
+  const queue = [dir];
+  while (queue.length > 0 && results.length < maxFiles) {
+    const current = queue.shift()!;
+    try {
+      const stats = await fs.stat(current);
+      if (stats.isDirectory()) {
+        const children = await fs.readdir(current);
+        for (const child of children) {
+          if (child === 'node_modules' || child === '.git' || child === '.next') continue;
+          queue.push(path.join(current, child));
+        }
+      } else {
+        results.push(current);
+      }
+    } catch {}
+  }
+  return results;
+}
+
+function getLevenshteinDistance(a: string, b: string): number {
+  const tmp: number[][] = [];
+  for (let i = 0; i <= a.length; i++) {
+    tmp[i] = [i];
+  }
+  for (let j = 0; j <= b.length; j++) {
+    tmp[0][j] = j;
+  }
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      tmp[i][j] = Math.min(
+        tmp[i - 1][j] + 1,
+        tmp[i][j - 1] + 1,
+        tmp[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)
+      );
+    }
+  }
+  return tmp[a.length][b.length];
+}
+
+export async function selfHealPath(wrongPath: string, workspaceRoot: string): Promise<string | null> {
+  const base = path.basename(wrongPath);
+  const files = await findFilesRecursively(workspaceRoot);
+  
+  let bestMatch: string | null = null;
+  let minDistance = Infinity;
+
+  for (const file of files) {
+    const fileBase = path.basename(file);
+    if (fileBase.toLowerCase() === base.toLowerCase()) {
+      return file;
+    }
+    const dist = getLevenshteinDistance(fileBase.toLowerCase(), base.toLowerCase());
+    if (dist < minDistance && dist <= 3) {
+      minDistance = dist;
+      bestMatch = file;
+    }
+  }
+  return bestMatch;
+}
+
+function extractPathKeysAndValues(args: any): { key: string; value: string }[] {
+  if (!args || typeof args !== 'object') return [];
+  const found: { key: string; value: string }[] = [];
+  for (const [key, val] of Object.entries(args)) {
+    if (typeof val === 'string') {
+      const keyLower = key.toLowerCase();
+      if (
+        keyLower.includes('path') ||
+        keyLower.includes('file') ||
+        keyLower.includes('name') ||
+        val.includes('/') ||
+        val.includes('\\') ||
+        /\.[a-zA-Z0-9]{2,4}$/.test(val)
+      ) {
+        found.push({ key, value: val });
+      }
+    }
+  }
+  return found;
+}
+
+function repairMalformedJson(str: string): string | null {
+  let s = str.trim();
+  const jsonBlockMatch = s.match(/```json\s*([\s\S]*?)\s*```/);
+  if (jsonBlockMatch) {
+    s = jsonBlockMatch[1].trim();
+  }
+  s = s.replace(/[\u201c\u201d]/g, '"');
+  s = s.replace(/,\s*}/g, '}').replace(/,\s*]/g, ']');
+  try {
+    JSON.parse(s);
+    return s;
+  } catch {
+    return s;
+  }
+}
+
+export async function runWithSelfHealing(
+  toolName: string,
+  executeFn: (args: any, context: any) => Promise<any>,
+  args: any,
+  context: any
+): Promise<any> {
+  try {
+    return await executeFn(args, context);
+  } catch (err: any) {
+    const errStr = String(err.message || err.code || '').toLowerCase();
+    if (errStr.includes('enoent') || errStr.includes('no such file') || errStr.includes('does not exist') || errStr.includes('not found')) {
+      const workspaceRoot = context?.workspacePath || process.cwd();
+      const paths = extractPathKeysAndValues(args);
+      
+      let healedAny = false;
+      const newArgs = { ...args };
+
+      for (const entry of paths) {
+        const healed = await selfHealPath(entry.value, workspaceRoot);
+        if (healed && healed !== entry.value) {
+          newArgs[entry.key] = healed;
+          healedAny = true;
+          console.log(`[SelfHealing] Auto-repaired parameter "${entry.key}" for tool "${toolName}": "${entry.value}" -> "${healed}"`);
+        }
+      }
+
+      if (healedAny) {
+        console.log(`[SelfHealing] Retrying tool "${toolName}" after auto-healing.`);
+        return await executeFn(newArgs, context);
+      }
+    }
+
+    if (errStr.includes('json') && errStr.includes('parse')) {
+      let healedAny = false;
+      const newArgs = { ...args };
+      for (const [key, val] of Object.entries(args)) {
+        if (typeof val === 'string') {
+          const cleaned = repairMalformedJson(val);
+          if (cleaned && cleaned !== val) {
+            newArgs[key] = cleaned;
+            healedAny = true;
+            console.log(`[SelfHealing] Auto-repaired malformed JSON in parameter "${key}" for tool "${toolName}"`);
+          }
+        }
+      }
+
+      if (healedAny) {
+        console.log(`[SelfHealing] Retrying tool "${toolName}" after JSON correction.`);
+        return await executeFn(newArgs, context);
+      }
+    }
+
+    throw err;
+  }
+}
 
 export interface ResolvedTool {
   name: string;
@@ -58,7 +218,9 @@ export function resolveDirectTool(ref: AgentBuilderDirectTool): ResolvedTool | n
       // We'll use the actual schema from the registry at runtime
     },
     promptGuidance: lines.join('\n'),
-    execute: tool.execute,
+    execute: tool.execute ? async (args: any, context: any) => {
+      return await runWithSelfHealing(tool.name, tool.execute!, args, context);
+    } : undefined,
   };
 }
 
@@ -153,7 +315,7 @@ export function resolveCustomTool(custom: AgentBuilderCustomTool): ResolvedTool 
             const toolExec = createToolExecutionContext(context);
             try {
               toolExec.throwIfCancelled();
-              const result = await realTool.execute(validation.args, toolExec.context);
+              const result = await runWithSelfHealing(stepToolName, realTool.execute, validation.args, toolExec.context);
               toolExec.throwIfCancelled();
               results.push({ tool: step.tool, result });
             } finally {
@@ -171,25 +333,96 @@ export function resolveCustomTool(custom: AgentBuilderCustomTool): ResolvedTool 
     };
   }
 
-  // agent_scoped_code — prompt-only, no execution
+  // agent_scoped_code — executable sandboxed JS tool
   return {
     name: custom.toolName,
     description: custom.description,
     declaration: {
       name: custom.toolName,
       description: custom.description.substring(0, 420),
+      parameters: normalizeInputSchema(custom.inputSchema),
     },
     promptGuidance: [
-      `### Custom Tool: ${custom.toolName} (Agent-Scoped)`,
+      `### Custom Tool: ${custom.toolName} (Agent-Scoped Code)`,
       `**Description**: ${custom.description}`,
       custom.behaviorPrompt ? `**Behavior**: ${custom.behaviorPrompt}` : '',
     ].filter(Boolean).join('\n'),
-    execute: async () => ({
-      success: false,
-      type: 'agent_scoped_code',
-      toolName: custom.toolName,
-      error: 'This agent-scoped code tool is stored for the agent but is not executable until reviewed and promoted into a safe runtime adapter.',
-    }),
+    execute: async (args: any, context: any) => {
+      if (context?.allowDynamicCode === false) {
+        return { success: false, error: 'Dynamic code execution is disabled by security policy.' };
+      }
+
+      const safety = validateAgentScopedCode(custom.code || '');
+      if (!safety.allowed) {
+        return { success: false, error: `Blocked by safety review: ${safety.notes.join(', ')}` };
+      }
+
+      const logs: string[] = [];
+
+      const callTool = async (name: string, toolArgs: any) => {
+        const realTool = globalToolRegistry.getTool(name);
+        if (!realTool?.execute) {
+          throw new Error(`Tool "${name}" not found in registry.`);
+        }
+
+        const normalizedArgs = normalizeRegistryToolArgs(name, toolArgs || {});
+        const validation = validateRegistryToolArgs(realTool, normalizedArgs);
+        if (!validation.success) {
+          throw new Error(`Invalid arguments for tool "${name}": ${validation.error}`);
+        }
+
+        const capabilityDecision = enforceToolCapability(name, validation.args, context);
+        if (!capabilityDecision.allowed) {
+          throw new Error(`Capability blocked for tool "${name}": ${capabilityDecision.reason || 'Permission denied'}`);
+        }
+
+        const toolExec = createToolExecutionContext(context);
+        try {
+          toolExec.throwIfCancelled();
+          const result = await runWithSelfHealing(name, realTool.execute, validation.args, toolExec.context);
+          toolExec.throwIfCancelled();
+          return result;
+        } finally {
+          toolExec.dispose();
+        }
+      };
+
+      const sandbox = {
+        console: {
+          log: (...m: any[]) => logs.push(m.map(String).join(' ')),
+          error: (...m: any[]) => logs.push('ERROR: ' + m.map(String).join(' ')),
+          warn: (...m: any[]) => logs.push('WARN: ' + m.map(String).join(' ')),
+        },
+        args: args || {},
+        callTool,
+        Math,
+        JSON,
+        Date,
+        RegExp,
+        URL,
+        URLSearchParams,
+        Intl,
+        result: undefined as any,
+      };
+
+      try {
+        vm.createContext(sandbox);
+        const wrappedCode = `
+          (async () => {
+            ${custom.code || ''}
+          })()
+        `;
+        const script = new vm.Script(wrappedCode);
+        const promiseResult = script.runInContext(sandbox, { timeout: 5000 });
+        let finalResult = await Promise.resolve(promiseResult);
+        if (sandbox.result !== undefined) {
+          finalResult = sandbox.result;
+        }
+        return { success: true, result: finalResult, logs };
+      } catch (err: any) {
+        return { success: false, error: err.message, logs };
+      }
+    },
   };
 }
 
@@ -229,3 +462,61 @@ export function resolveAgentTools(profile: AgentBuilderProfile): {
 
   return { tools, toolPrompt: promptParts.join('\n\n') };
 }
+
+export const agentToolLoadTool: ToolDefinition = {
+  name: 'agent_tool_load',
+  description: 'Dynamically load an additional tool from the global registry into the active execution context to gain capabilities (e.g. workspace_write_file, web_search, run_command).',
+  category: 'automation',
+  inputSchema: z.object({
+    toolName: z.string().describe('The name of the global tool to load.')
+  }),
+  outputSchema: z.object({ success: z.boolean(), message: z.string() }),
+  execute: async (args: any, context: any) => {
+    const runner = context?.agentRunner;
+    if (!runner) {
+      return { success: false, message: 'Dynamic tool loading is only supported during active custom agent executions.' };
+    }
+    const name = normalizeRegistryToolName(args.toolName);
+    const tool = globalToolRegistry.getTool(name);
+    if (!tool) {
+      return { success: false, message: `Tool "${args.toolName}" was not found in the global registry.` };
+    }
+    if (runner.resolvedTools.some((t: any) => t.name === name)) {
+      return { success: true, message: `Tool "${name}" is already loaded.` };
+    }
+    const resolved = resolveDirectTool({
+      toolName: name,
+      purpose: 'Dynamically loaded capability',
+      whenToUse: 'On demand as requested by reasoning logic',
+      attachedAt: new Date().toISOString()
+    });
+    if (!resolved) {
+      return { success: false, message: `Failed to resolve tool "${name}".` };
+    }
+    runner.resolvedTools.push(resolved);
+    return { success: true, message: `Tool "${name}" has been loaded successfully.` };
+  }
+};
+
+export const agentToolUnloadTool: ToolDefinition = {
+  name: 'agent_tool_unload',
+  description: 'Dynamically unload a tool from the active execution context to optimize token context focus.',
+  category: 'automation',
+  inputSchema: z.object({
+    toolName: z.string().describe('The name of the tool to unload.')
+  }),
+  outputSchema: z.object({ success: z.boolean(), message: z.string() }),
+  execute: async (args: any, context: any) => {
+    const runner = context?.agentRunner;
+    if (!runner) {
+      return { success: false, message: 'Dynamic tool unloading is only supported during active custom agent executions.' };
+    }
+    const name = normalizeRegistryToolName(args.toolName);
+    const index = runner.resolvedTools.findIndex((t: any) => t.name === name);
+    if (index === -1) {
+      return { success: false, message: `Tool "${name}" is not currently loaded.` };
+    }
+    runner.resolvedTools.splice(index, 1);
+    return { success: true, message: `Tool "${name}" has been unloaded successfully.` };
+  }
+};

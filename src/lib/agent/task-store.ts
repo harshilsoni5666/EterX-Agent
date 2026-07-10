@@ -223,7 +223,7 @@ export const taskStore = {
           (log.subAgent || null) === subAgent &&
           (!noteId || log.noteId === noteId)
         ) {
-          task.traceLogs.splice(i, 1);
+          task.traceLogs[i] = { ...log, _streamingCancelled: true };
           break;
         }
       }
@@ -232,13 +232,16 @@ export const taskStore = {
       if (!noteText) return;
       const noteId = timedEvent.noteId || null;
       const subAgent = timedEvent.subAgent || null;
+      const incomingIsFinal = timedEvent.isStreaming === false || timedEvent.isDelta === false;
       let mergeIdx = -1;
       for (let i = task.traceLogs.length - 1; i >= 0; i--) {
         const log = task.traceLogs[i];
         if (log?.type !== 'work_note' || (log.subAgent || null) !== subAgent) continue;
         const sameNote = noteId && log.noteId && log.noteId === noteId;
         const sameText = String(log.text || '').trim() === noteText;
-        if (sameNote || sameText) {
+        // Also merge final note into a streaming-cancelled placeholder
+        const isCancelledPlaceholder = log._streamingCancelled && incomingIsFinal;
+        if (sameNote || sameText || isCancelledPlaceholder) {
           mergeIdx = i;
           break;
         }
@@ -250,6 +253,7 @@ export const taskStore = {
           text: noteText,
           noteId,
           subAgent,
+          _streamingCancelled: undefined,
         };
       } else {
         task.traceLogs.push({ ...timedEvent, text: noteText, noteId, subAgent });

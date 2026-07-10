@@ -1,6 +1,6 @@
 import React, { useRef, useState, useEffect, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { FileText, X, Check, Activity, CheckCircle2, XCircle, Folder, File as FileIcon, ChevronDown, ChevronRight, Image as ImageIcon, AlertCircle, ListTodo, ArrowUpRight, LaptopMinimal, GitBranch, Search, FolderPlus, FolderOpen, Cloud, CloudOff, ExternalLink, Gauge, Plus, CircleSlash, GitFork, Terminal } from 'lucide-react';
+import { FileText, X, Check, Activity, CheckCircle2, XCircle, Folder, File as FileIcon, ChevronDown, ChevronRight, Image as ImageIcon, AlertCircle, ListTodo, ArrowUpRight, LaptopMinimal, GitBranch, Search, FolderPlus, FolderOpen, Cloud, CloudOff, ExternalLink, Gauge, Plus, CircleSlash, GitFork, Terminal, Bot } from 'lucide-react';
 import { PremiumMic, PremiumSend, PremiumPlus, PremiumAudioLines, PremiumVolume2, PremiumVolumeX, PremiumMicOff } from '../ui/premium-icons';
 import { Tooltip } from '../ui/tooltip';
 import { ConnectorsModal, ConnectorsButton } from './connectors-modal';
@@ -355,7 +355,7 @@ const getCenteredPopoutOffset = (rect: DOMRect, menuWidth: number, margin = 16) 
   return Math.round(clampedLeft - desiredLeft);
 };
 
-const VoiceWaveform = ({ volume, isProcessing, cancelVoice, acceptVoice }: { volume: number, isProcessing: boolean, cancelVoice: () => void, acceptVoice: () => void }) => {
+const VoiceWaveform = React.memo(({ volume, isProcessing, cancelVoice, acceptVoice }: { volume: number, isProcessing: boolean, cancelVoice: () => void, acceptVoice: () => void }) => {
   const BAR_COUNT = 64;
   const [volumes, setVolumes] = useState<number[]>(new Array(BAR_COUNT).fill(2));
   const volumeRef = useRef(volume);
@@ -455,7 +455,7 @@ const VoiceWaveform = ({ volume, isProcessing, cancelVoice, acceptVoice }: { vol
       </div>
     </motion.div>
   );
-};
+});
 
 const inputControlButton = "eterx-control-button w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full border border-transparent bg-[#2D2D2D] text-white transition-all duration-150 ease-out active:bg-[#333333] hover:text-white hover:bg-[#333333] hover:border-transparent group relative overflow-hidden";
 const inputControlSheen = "hidden";
@@ -604,7 +604,7 @@ const SLASH_COMMANDS: SlashCommand[] = [
   },
 ];
 
-const PinFolderIcon = ({ className = "" }: { className?: string }) => (
+const PinFolderIcon = React.memo(({ className = "" }: { className?: string }) => (
   <svg viewBox="0 0 36 36" className={className} fill="none" aria-hidden="true">
     <path
       d="M7.05 15.05c0-2.33 1.89-4.22 4.22-4.22h4.86c.86 0 1.7.29 2.38.82l1.1.86c.56.44 1.25.68 1.96.68h3.28c2.28 0 4.12 1.84 4.12 4.12v7.2c0 2.33-1.89 4.22-4.22 4.22H11.27c-2.33 0-4.22-1.89-4.22-4.22v-9.46Z"
@@ -650,9 +650,9 @@ const PinFolderIcon = ({ className = "" }: { className?: string }) => (
       </linearGradient>
     </defs>
   </svg>
-);
+));
 
-const PinFileIcon = ({ className = "" }: { className?: string }) => (
+const PinFileIcon = React.memo(({ className = "" }: { className?: string }) => (
   <svg viewBox="0 0 36 36" className={className} fill="none" aria-hidden="true">
     <path
       d="M12.45 6.45h7.82c.78 0 1.53.31 2.08.87l4.03 4.07c.54.55.84 1.29.84 2.06v13.88a2.42 2.42 0 0 1-2.42 2.42H12.45a2.42 2.42 0 0 1-2.42-2.42V8.87a2.42 2.42 0 0 1 2.42-2.42Z"
@@ -705,16 +705,16 @@ const PinFileIcon = ({ className = "" }: { className?: string }) => (
       </linearGradient>
     </defs>
   </svg>
-);
+));
 
-const ProgressLoader = ({ className = 'h-[18px] w-[18px]' }: { className?: string }) => (
+const ProgressLoader = React.memo(({ className = 'h-[18px] w-[18px]' }: { className?: string }) => (
   <span className={`relative flex shrink-0 items-center justify-center ${ className }`} aria-hidden="true">
     <span className="absolute inset-0 rounded-full border-[2px] border-white/[0.16]" />
     <span className="absolute inset-0 rounded-full border-[2px] border-transparent border-r-white/45 border-t-white/90 animate-[spin_1.15s_linear_infinite] shadow-[0_0_10px_rgba(255,255,255,0.10)]" />
   </span>
-);
+));
 
-const TaskStatusGlyph = ({ status, active }: { status?: string; active?: boolean }) => {
+const TaskStatusGlyph = React.memo(({ status, active }: { status?: string; active?: boolean }) => {
   if (status === 'done') {
     return (
       <motion.span
@@ -734,9 +734,9 @@ const TaskStatusGlyph = ({ status, active }: { status?: string; active?: boolean
   }
 
   return <span className="block h-[18px] w-[18px] rounded-full border-[2px] border-[#A9A9A9]/62" />;
-};
+});
 
-const GeneratingDots = ({ className = '' }: { className?: string }) => (
+const GeneratingDots = React.memo(({ className = '' }: { className?: string }) => (
   <span className={`inline-flex w-[18px] items-center gap-[2px] pl-0.5 align-middle ${ className }`}>
     {[0, 1, 2].map(index => (
       <span
@@ -746,10 +746,10 @@ const GeneratingDots = ({ className = '' }: { className?: string }) => (
       />
     ))}
   </span>
-);
+));
 
 
-const TaskTrackerDock = ({
+const TaskTrackerDock = React.memo(({
   tracker,
   isThinking,
   isCompressed,
@@ -893,7 +893,7 @@ const TaskTrackerDock = ({
       </AnimatePresence>
     </motion.div>
   );
-};
+})
 
 export const ChatInput: React.FC<ChatInputProps> = ({
   inputValue, setInputValue, isThinking, isRecording, handleSend, handleStop, handleSteer = () => { },
@@ -947,7 +947,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const [agentMenuXOffset, setAgentMenuXOffset] = useState(0);
   const [modelMenuXOffset, setModelMenuXOffset] = useState(0);
   const [thinkingMenuSide, setThinkingMenuSide] = useState<'left' | 'right'>('right');
-  const [availableAgents, setAvailableAgents] = useState<Array<{agentId: string; name: string; status: string; mission: string}>>([]);
+  const [availableAgents, setAvailableAgents] = useState<Array<{ agentId: string; name: string; status: string; mission: string }>>([]);
   const agentSelectorRef = useRef<HTMLDivElement>(null);
   const [showThinkingLevels, setShowThinkingLevels] = useState(false);
   const [slashTrigger, setSlashTrigger] = useState<SlashTrigger | null>(null);
@@ -1000,7 +1000,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     return activeWorkspacePath.split(/[/\\]/).filter(Boolean).pop() || activeWorkspacePath;
   }, [activeWorkspacePath]);
 
-  const [recentProjects, setRecentProjects] = useState<Array<{path: string; name: string}>>([]);
+  const [recentProjects, setRecentProjects] = useState<Array<{ path: string; name: string }>>([]);
   useEffect(() => {
     if (openStatusMenu === 'project' && typeof window !== 'undefined') {
       try {
@@ -1032,11 +1032,11 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     } else {
       selectedPath = window.prompt('Paste or type your local project folder path:');
     }
-    
+
     if (selectedPath && selectedPath.trim()) {
       const cleanPath = selectedPath.trim();
       handleWorkspacePathChange(cleanPath);
-      
+
       // Save to recent projects
       if (typeof window !== 'undefined') {
         try {
@@ -1717,22 +1717,16 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     if (isNetworkPaused) return;
     queuedSendRef.current = false;
     if (isThinking) {
-      if (inputValue.trim() && attachments.length === 0) handleSteer();
+      if (hasComposerPayload) handleSteer();
       return;
     }
     notifyAgentFaceSend();
     handleSend();
-  }, [attachments.length, handleSend, handleSteer, hasErroredAttachments, hasPreparingAttachments, inputValue, isNetworkPaused, isThinking]);
+  }, [attachments.length, handleSend, handleSteer, hasComposerPayload, hasErroredAttachments, hasPreparingAttachments, inputValue, isNetworkPaused, isThinking]);
 
   const submitPrompt = useCallback(() => {
     if (isNetworkPaused) {
       onNetworkPausedAction();
-      return;
-    }
-    if (isThinking) {
-      if (inputValue.trim() && attachments.length === 0) {
-        handleSteer();
-      }
       return;
     }
     if (hasPreparingAttachments) {
@@ -1740,11 +1734,17 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       return;
     }
     if (hasErroredAttachments) return;
+    if (isThinking) {
+      if (hasComposerPayload) {
+        handleSteer();
+      }
+      return;
+    }
     if (inputValue.trim() || attachments.length > 0) {
       notifyAgentFaceSend();
     }
     handleSend();
-  }, [attachments.length, handleSend, handleSteer, hasErroredAttachments, hasPreparingAttachments, inputValue, isNetworkPaused, isThinking, onNetworkPausedAction]);
+  }, [attachments.length, handleSend, handleSteer, hasComposerPayload, hasErroredAttachments, hasPreparingAttachments, inputValue, isNetworkPaused, isThinking, onNetworkPausedAction]);
 
   const handleTextareaKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (slashTrigger) {
@@ -1913,8 +1913,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const controlPopoutVerticalClass = 'bottom-[calc(100%+10px)]';
   const selectorPopoutVerticalClass = isNewChatHome ? 'top-[calc(100%+10px)]' : 'bottom-[calc(100%+10px)]';
   const selectorMenuOffset = 8;
-  const agentMenuX = `calc(-50% + ${agentMenuXOffset}px)`;
-  const modelMenuX = `calc(-50% + ${modelMenuXOffset}px)`;
+  const agentMenuX = `calc(-50% + ${ agentMenuXOffset }px)`;
+  const modelMenuX = `calc(-50% + ${ modelMenuXOffset }px)`;
   const thinkingMenuHorizontalClass = thinkingMenuSide === 'right' ? 'left-[calc(100%+8px)]' : 'right-[calc(100%+8px)]';
   const thinkingMenuVerticalClass = 'bottom-0';
   const thinkingMenuOffset = thinkingMenuSide === 'right' ? -8 : 8;
@@ -1938,7 +1938,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
           >
             <div className={`flex items-center ${ isCompressed ? 'gap-3' : 'gap-5 -translate-x-[32px]' }`}>
               <div
-                className={`${ isCompressed ? 'h-[44px] w-[44px]' : 'h-[56px] w-[56px]' } shrink-0 relative group cursor-pointer pointer-events-auto transition-all duration-500 ease-[cubic-bezier(0.2,0.8,0.2,1)] hover:-translate-y-1 hover:scale-105`}
+                className={`${ isCompressed ? 'h-[44px] w-[44px]' : 'h-[56px] w-[56px]' } shrink-0 relative group cursor-pointer pointer-events-auto transition-all duration-500 ease-[cubic-bezier(0.2,0.8,0.2,1)] hover:scale-105`}
                 onMouseEnter={() => {
                   setLogoHoverText(logoHoverPhrases[Math.floor(Math.random() * logoHoverPhrases.length)]);
                   setIsLogoHovered(true);
@@ -1993,7 +1993,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
 
         {slashPanel === 'agents' && (
           <div
-              className="eterx-composer-popout absolute bottom-[calc(100%+12px)] left-1/2 z-40 w-[min(320px,calc(100vw-64px))] select-none overflow-hidden rounded-[20px] border border-white/[0.10] bg-[#1C1C1C] p-1.5 text-[#F2F0EC] shadow-[0_18px_48px_rgba(0,0,0,0.28),inset_0_1px_0_rgba(255,255,255,0.045)]"
+            className="eterx-composer-popout absolute bottom-[calc(100%+12px)] left-1/2 z-40 w-[min(320px,calc(100vw-64px))] select-none overflow-hidden rounded-[20px] border border-white/[0.10] bg-[#1C1C1C] p-1.5 text-[#F2F0EC] shadow-[0_18px_48px_rgba(0,0,0,0.28),inset_0_1px_0_rgba(255,255,255,0.045)]"
             style={{ transform: `translate(calc(-50% + ${ slashPanelOffset.x }px), ${ slashPanelOffset.y }px)` }}
             onClick={(event) => event.stopPropagation()}
           >
@@ -2021,7 +2021,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                     key={agent.id}
                     type="button"
                     onClick={() => openAgentFromPanel(agent.id)}
-                    className={`group flex min-h-[40px] w-full items-center rounded-[13px] px-3 py-2 text-left transition-colors duration-75 ${selectedAgent === agent.id ? 'bg-white/[0.08]' : 'hover:bg-white/[0.055]'}`}
+                    className={`group flex min-h-[40px] w-full items-center rounded-[13px] px-3 py-2 text-left transition-colors duration-75 ${ selectedAgent === agent.id ? 'bg-white/[0.08]' : 'hover:bg-white/[0.055]' }`}
                   >
                     <span className="min-w-0 flex-1">
                       <span className="block truncate text-[13px] font-semibold text-[#F2F0EC] group-hover:text-white">
@@ -2101,51 +2101,51 @@ export const ChatInput: React.FC<ChatInputProps> = ({
             role="listbox"
             aria-label="Slash commands"
           >
-              <div className="max-h-[270px] overflow-y-auto custom-scrollbar">
-                {filteredSlashCommands.length > 0 ? (
-                  filteredSlashCommands.map((command, index) => {
-                    const active = index === slashActiveIndex;
-                    return (
-                      <button
-                        key={command.id}
-                        type="button"
-                        role="option"
-                        aria-selected={active}
-                        onMouseDown={(event) => {
-                          event.preventDefault();
-                          selectSlashCommand(command);
-                        }}
-                        className={`flex min-h-[33px] w-full items-center gap-2.5 rounded-[9px] px-2.5 py-1 text-left transition-colors duration-75 ${ active ? 'bg-white/[0.07] text-white' : 'text-[#D7D4CE] hover:bg-white/[0.045] hover:text-white' }`}
-                      >
-                        <span className="flex h-5 w-5 shrink-0 items-center justify-center">
-                          <img
-                            src={command.iconSrc}
-                            alt=""
-                            aria-hidden="true"
-                            loading="eager"
-                            decoding="sync"
-                            className={`eterx-agent-ui-icon h-[17px] w-[17px] object-contain ${ active ? 'opacity-100' : 'opacity-80' }`}
-                          />
+            <div className="max-h-[270px] overflow-y-auto custom-scrollbar">
+              {filteredSlashCommands.length > 0 ? (
+                filteredSlashCommands.map((command, index) => {
+                  const active = index === slashActiveIndex;
+                  return (
+                    <button
+                      key={command.id}
+                      type="button"
+                      role="option"
+                      aria-selected={active}
+                      onMouseDown={(event) => {
+                        event.preventDefault();
+                        selectSlashCommand(command);
+                      }}
+                      className={`flex min-h-[33px] w-full items-center gap-2.5 rounded-[9px] px-2.5 py-1 text-left transition-colors duration-75 ${ active ? 'bg-white/[0.07] text-white' : 'text-[#D7D4CE] hover:bg-white/[0.045] hover:text-white' }`}
+                    >
+                      <span className="flex h-5 w-5 shrink-0 items-center justify-center">
+                        <img
+                          src={command.iconSrc}
+                          alt=""
+                          aria-hidden="true"
+                          loading="eager"
+                          decoding="sync"
+                          className={`eterx-agent-ui-icon h-[17px] w-[17px] object-contain ${ active ? 'opacity-100' : 'opacity-80' }`}
+                        />
+                      </span>
+                      <span className="flex min-w-0 flex-1 items-baseline gap-2">
+                        <span className="shrink-0 text-[13.5px] font-semibold tracking-normal">
+                          {command.label}
                         </span>
-                        <span className="flex min-w-0 flex-1 items-baseline gap-2">
-                          <span className="shrink-0 text-[13.5px] font-semibold tracking-normal">
-                            {command.label}
-                          </span>
-                          <span className="min-w-0 truncate text-[12.5px] font-medium text-[#8C8984]">
-                            {command.description}
-                          </span>
+                        <span className="min-w-0 truncate text-[12.5px] font-medium text-[#8C8984]">
+                          {command.description}
                         </span>
-                      </button>
-                    );
-                  })
-                ) : (
-                  <div className="flex min-h-[42px] items-center rounded-[12px] px-2.5 text-[13px] font-medium text-[#8C8984]">
-                    No matching commands
-                  </div>
-                )}
-              </div>
+                      </span>
+                    </button>
+                  );
+                })
+              ) : (
+                <div className="flex min-h-[42px] items-center rounded-[12px] px-2.5 text-[13px] font-medium text-[#8C8984]">
+                  No matching commands
+                </div>
+              )}
             </div>
-          )}
+          </div>
+        )}
 
         <motion.div
           animate={liveAnimateState}
@@ -2421,7 +2421,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                     </div>
                   )}
                   {isOverflowing && !isAtTop && (
-                    <div className="eterx-composer-overflow-fade-top absolute -top-1 left-0 right-3 h-10 bg-gradient-to-b from-[#1F1F1F] via-[#1F1F1F]/90 to-transparent pointer-events-none z-10 transition-opacity duration-200" />
+                    <div className="eterx-composer-overflow-fade-top absolute -top-1 left-0 right-3 h-6 bg-gradient-to-b from-[#2F2F2F] via-[#2F2F2F]/90 to-transparent pointer-events-none z-10 transition-opacity duration-200" />
                   )}
                   <motion.textarea
                     ref={textareaRef}
@@ -2459,7 +2459,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                     }}
                   />
                   {isOverflowing && !isAtBottom && (
-                    <div className="eterx-composer-overflow-fade-bottom absolute -bottom-1 left-0 right-3 h-10 bg-gradient-to-t from-[#1F1F1F] via-[#1F1F1F]/90 to-transparent pointer-events-none z-10 transition-opacity duration-200" />
+                    <div className="eterx-composer-overflow-fade-bottom absolute -bottom-1 left-0 right-3 h-6 bg-gradient-to-t from-[#242424] via-[#242424]/90 to-transparent pointer-events-none z-10 transition-opacity duration-200" />
                   )}
                 </div>
               )}
@@ -2474,7 +2474,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                   className={inputControlButton}
                 >
                   <div className={inputControlSheen} />
-                    <PremiumPlus className="eterx-composer-control-icon w-[20px] h-[20px] text-white transition-transform duration-200 ease-out group-hover:scale-[1.04]" strokeWidth={1.85} />
+                  <PremiumPlus className="eterx-composer-control-icon w-[20px] h-[20px] text-white transition-transform duration-200 ease-out group-hover:scale-[1.04]" strokeWidth={1.85} />
                 </button>
               </Tooltip>
               <ConnectorsButton
@@ -2497,7 +2497,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       setOpenPillDrop(null);
                       setShowPinMenu(prev => !prev);
                     }}
-                    className={`${inputControlButton} ${ showPinMenu || pinnedItems.length > 0 ? '!bg-[#333333] !border-transparent !text-white' : '' }`}
+                    className={`${ inputControlButton } ${ showPinMenu || pinnedItems.length > 0 ? '!bg-[#333333] !border-transparent !text-white' : '' }`}
                     aria-haspopup="menu"
                     aria-expanded={showPinMenu}
                   >
@@ -2696,7 +2696,10 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                     if (isThinking) return;
                     setShowAgentMenu(prev => !prev);
                   }}
-                  className={`eterx-agent-button ${ isCompressed ? 'max-w-[160px] px-2.5' : 'max-w-[232px] px-3.5' } flex h-[38px] w-full min-w-0 items-center gap-1.5 rounded-full border border-transparent bg-[#2D2D2D] text-[#F4F4F4] transition-colors duration-150 hover:bg-[#333333] hover:text-white hover:border-transparent active:bg-[#333333] group ${ showAgentMenu ? '!bg-[#333333] !border-transparent !text-white' : '' } ${ isThinking ? 'cursor-not-allowed opacity-70 hover:bg-[#2D2D2D] hover:text-[#F4F4F4] hover:border-transparent active:bg-[#2D2D2D]' : '' }`}
+                  className={`eterx-agent-button ${ isCompressed ? 'max-w-[160px] px-2.5' : 'max-w-[232px] px-3.5' } flex h-[38px] w-full min-w-0 items-center gap-1.5 rounded-full border transition-all duration-150 active:scale-95 group ${ selectedAgent && selectedAgent !== 'coding'
+                    ? 'border-indigo-500/30 bg-indigo-500/5 text-indigo-200 hover:bg-indigo-500/10 hover:border-indigo-500/40 shadow-[0_2px_12px_rgba(99,102,241,0.08)]'
+                    : 'border-transparent bg-[#2D2D2D] text-[#F4F4F4] hover:bg-[#333333]'
+                    } ${ showAgentMenu ? '!bg-indigo-500/15 !border-indigo-500/40 !text-white' : '' } ${ isThinking ? 'cursor-not-allowed opacity-70' : '' }`}
                   aria-label={`Agent: ${ activeAgentDisplay.label }`}
                   aria-haspopup="dialog"
                   aria-expanded={showAgentMenu}
@@ -2710,16 +2713,22 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       transition={{ duration: 0.18 }}
                       className="flex min-w-0 items-center gap-1.5"
                     >
-                      <img
-                        src="/icons/agent-ui/agent.svg"
-                        alt=""
-                        aria-hidden="true"
-                        className="eterx-agent-ui-icon eterx-selector-icon h-[18px] w-[18px] shrink-0 object-contain opacity-90 transition-opacity duration-200"
-                      />
-                      <span className="eterx-selector-label min-w-0 truncate text-[14px] font-semibold tracking-normal transition-colors">
+                      {selectedAgent && selectedAgent !== 'coding' ? (
+                        <Bot className="h-4.5 w-4.5 shrink-0 text-indigo-400" />
+                      ) : (
+                        <img
+                          src="/icons/agent-ui/agent.svg"
+                          alt=""
+                          aria-hidden="true"
+                          className="eterx-agent-ui-icon eterx-selector-icon h-[18px] w-[18px] shrink-0 object-contain opacity-90 transition-opacity duration-200"
+                        />
+                      )}
+                      <span className={`eterx-selector-label min-w-0 truncate text-[14px] font-semibold tracking-normal transition-colors ${ selectedAgent && selectedAgent !== 'coding' ? 'text-indigo-200' : 'text-[#F4F4F4]'
+                        }`}>
                         {activeAgentDisplay.label}
                       </span>
-                      <ChevronDown className={`eterx-selector-chevron h-3.5 w-3.5 shrink-0 text-[#F0F0F0] transition-all duration-200 group-hover:text-white ${ showAgentMenu ? 'rotate-180' : 'group-hover:translate-y-px' }`} strokeWidth={2.1} />
+                      <ChevronDown className={`eterx-selector-chevron h-3.5 w-3.5 shrink-0 transition-all duration-200 ${ selectedAgent && selectedAgent !== 'coding' ? 'text-indigo-400 group-hover:text-indigo-300' : 'text-[#F0F0F0] group-hover:text-white'
+                        } ${ showAgentMenu ? 'rotate-180' : 'group-hover:translate-y-px' }`} strokeWidth={2.1} />
                     </motion.div>
                   </AnimatePresence>
                 </button>
@@ -2746,11 +2755,10 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                           onAgentChange?.(null, 'General');
                           setShowAgentMenu(false);
                         }}
-                        className={`flex w-full items-center gap-2.5 px-3 py-1.5 rounded-[10px] text-left transition-all duration-150 ${
-                          !selectedAgent
-                            ? 'bg-white/[0.08] text-white font-semibold'
-                            : 'text-[#E8E6E3] hover:bg-white/[0.04]'
-                        }`}
+                        className={`flex w-full items-center gap-2.5 px-3 py-1.5 rounded-[10px] text-left transition-all duration-150 ${ !selectedAgent
+                          ? 'bg-white/[0.08] text-white font-semibold'
+                          : 'text-[#E8E6E3] hover:bg-white/[0.04]'
+                          }`}
                       >
                         <div className="flex min-w-0 flex-1 flex-col items-start">
                           <span className="text-[12.5px] font-medium truncate">General</span>
@@ -2765,11 +2773,10 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                           onAgentChange?.('coding', 'Coding');
                           setShowAgentMenu(false);
                         }}
-                        className={`flex w-full items-center gap-2.5 px-3 py-1.5 rounded-[10px] text-left transition-all duration-150 ${
-                          selectedAgent === 'coding'
-                            ? 'bg-white/[0.08] text-white font-semibold'
-                            : 'text-[#E8E6E3] hover:bg-white/[0.04]'
-                        }`}
+                        className={`flex w-full items-center gap-2.5 px-3 py-1.5 rounded-[10px] text-left transition-all duration-150 ${ selectedAgent === 'coding'
+                          ? 'bg-white/[0.08] text-white font-semibold'
+                          : 'text-[#E8E6E3] hover:bg-white/[0.04]'
+                          }`}
                       >
                         <div className="flex min-w-0 flex-1 flex-col items-start">
                           <span className="text-[12.5px] font-medium truncate">Coding</span>
@@ -2793,11 +2800,10 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                                   onAgentChange?.(agent.agentId, agent.name);
                                   setShowAgentMenu(false);
                                 }}
-                                className={`flex min-h-[42px] w-full items-center gap-2.5 rounded-[10px] px-3 py-1.5 text-left transition-all duration-150 ${
-                                  selectedAgent === agent.agentId
-                                    ? 'bg-white/[0.08] text-white font-semibold'
-                                    : 'text-[#E8E6E3] hover:bg-white/[0.04]'
-                                }`}
+                                className={`flex min-h-[42px] w-full items-center gap-2.5 rounded-[10px] px-3 py-1.5 text-left transition-all duration-150 ${ selectedAgent === agent.agentId
+                                  ? 'bg-white/[0.08] text-white font-semibold'
+                                  : 'text-[#E8E6E3] hover:bg-white/[0.04]'
+                                  }`}
                               >
                                 <div className="flex min-w-0 flex-1 flex-col items-start">
                                   <span className="max-w-[158px] truncate text-[12px] font-medium">{agent.name}</span>
@@ -2988,7 +2994,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
               {liveState !== 'idle' && liveState !== 'error' ? (
                 null /* Cancel/Stop is already rendered in the live overlay above */
               ) : (
-                                <AnimatePresence mode="wait">
+                <AnimatePresence mode="wait">
                   {isNetworkPaused ? (
                     <motion.div key="network-paused"
                       initial={{ opacity: 0, scale: 0.8 }}
@@ -3023,7 +3029,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                           className="eterx-control-button eterx-composer-send-button w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full transition-all duration-200 bg-[#F2EFEA] text-black hover:bg-white shadow-[0_8px_22px_rgba(242,239,234,0.15),inset_0_1px_0_rgba(255,255,255,0.82)] active:scale-[0.96] group relative overflow-hidden"
                         >
                           <div className="absolute inset-0 bg-gradient-to-t from-black/0 to-black/5" />
-                          <PremiumSend className="eterx-composer-control-icon w-[20px] h-[20px] text-black group-hover:-translate-y-0.5 group-hover:scale-[1.04] transition-all duration-200 ease-out" strokeWidth={2.05} />
+                          <PremiumSend className="eterx-composer-control-icon w-[20px] h-[20px] text-black group-hover:scale-[1.04] transition-all duration-200 ease-out" strokeWidth={2.05} />
                         </button>
                       </Tooltip>
                     </motion.div>
@@ -3038,10 +3044,10 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       <Tooltip text="Stop Agent" side="top">
                         <button
                           onClick={() => { setIsStopping(true); handleStop(); }}
-                          className="eterx-control-button eterx-composer-stop-button w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full bg-[#F2EFEA] text-black hover:bg-white transition-all duration-200 shadow-[0_8px_22px_rgba(242,239,234,0.15),inset_0_1px_0_rgba(255,255,255,0.82)] active:scale-[0.96] group cursor-pointer overflow-hidden relative"
+                          className="eterx-control-button eterx-composer-stop-button w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full bg-[#F2EFEA] text-black hover:bg-[#F2EFEA] transition-all duration-200 shadow-[0_8px_22px_rgba(242,239,234,0.15),inset_0_1px_0_rgba(255,255,255,0.82)] active:scale-[0.96] group cursor-pointer overflow-hidden relative"
                         >
                           <div className="absolute inset-0 bg-gradient-to-t from-black/0 to-black/5" />
-                          <span className="eterx-composer-stop-icon h-[13px] w-[13px] rounded-[3px] bg-current transition-transform duration-200 ease-out group-hover:scale-[0.92]" aria-hidden="true" />
+                          <span className="eterx-composer-stop-icon block h-[12px] w-[12px] rounded-[2.5px] bg-current transition-all duration-200" aria-hidden="true" />
                         </button>
                       </Tooltip>
                     </motion.div>
@@ -3075,7 +3081,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                           className={`eterx-control-button eterx-composer-send-button w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full transition-all duration-200 bg-[#F2EFEA] text-black hover:bg-white shadow-[0_8px_22px_rgba(242,239,234,0.15),inset_0_1px_0_rgba(255,255,255,0.82)] active:scale-[0.96] group relative overflow-hidden ${ hasErroredAttachments ? 'opacity-60 cursor-not-allowed' : '' }`}
                         >
                           <div className="absolute inset-0 bg-gradient-to-t from-black/0 to-black/5" />
-                          <PremiumSend className="eterx-composer-control-icon w-[20px] h-[20px] text-black group-hover:-translate-y-0.5 group-hover:scale-[1.04] transition-all duration-200 ease-out" strokeWidth={2.05} />
+                          <PremiumSend className="eterx-composer-control-icon w-[20px] h-[20px] text-black group-hover:scale-[1.04] transition-all duration-200 ease-out" strokeWidth={2.05} />
                         </button>
                       </Tooltip>
                     </motion.div>
@@ -3118,8 +3124,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({
               <div className="eterx-new-chat-status-anchor">
                 <button
                   type="button"
-                  className={`eterx-new-chat-status-item ${openStatusMenu === 'project' ? 'is-open' : ''}`}
-                  aria-label={`Workspace ${workspaceName}`}
+                  className={`eterx-new-chat-status-item ${ openStatusMenu === 'project' ? 'is-open' : '' }`}
+                  aria-label={`Workspace ${ workspaceName }`}
                   aria-haspopup="dialog"
                   aria-expanded={openStatusMenu === 'project'}
                   onClick={(event) => toggleStatusMenu(event, 'project')}
@@ -3183,7 +3189,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                             <button
                               key={project.path}
                               type="button"
-                              className={`eterx-status-menu-item ${selected ? 'is-selected' : ''}`}
+                              className={`eterx-status-menu-item ${ selected ? 'is-selected' : '' }`}
                               onClick={() => {
                                 handleWorkspacePathChange(project.path);
                                 setOpenStatusMenu(null);
@@ -3209,7 +3215,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       </button>
                       <button
                         type="button"
-                        className={`eterx-status-menu-item ${!activeWorkspacePath ? 'is-selected' : ''}`}
+                        className={`eterx-status-menu-item ${ !activeWorkspacePath ? 'is-selected' : '' }`}
                         onClick={() => {
                           handleWorkspacePathChange(null);
                           setOpenStatusMenu(null);
@@ -3227,7 +3233,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
               <div className="eterx-new-chat-status-anchor">
                 <button
                   type="button"
-                  className={`eterx-new-chat-status-item ${openStatusMenu === 'run' ? 'is-open' : ''}`}
+                  className={`eterx-new-chat-status-item ${ openStatusMenu === 'run' ? 'is-open' : '' }`}
                   aria-label={runLocation === 'local' ? "Work locally" : "Sandbox"}
                   aria-haspopup="dialog"
                   aria-expanded={openStatusMenu === 'run'}
@@ -3256,7 +3262,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       <div className="eterx-status-menu-label">Start in</div>
                       <button
                         type="button"
-                        className={`eterx-status-menu-item ${runLocation === 'local' ? 'is-selected' : ''}`}
+                        className={`eterx-status-menu-item ${ runLocation === 'local' ? 'is-selected' : '' }`}
                         onClick={() => handleRunLocationChange('local')}
                       >
                         <LaptopMinimal className="eterx-status-menu-icon" strokeWidth={1.95} />
@@ -3269,7 +3275,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       </button>
                       <button
                         type="button"
-                        className={`eterx-status-menu-item ${runLocation === 'sandbox' ? 'is-selected' : ''}`}
+                        className={`eterx-status-menu-item ${ runLocation === 'sandbox' ? 'is-selected' : '' }`}
                         onClick={() => handleRunLocationChange('sandbox')}
                       >
                         <Terminal className="eterx-status-menu-icon" strokeWidth={1.95} />
@@ -3284,8 +3290,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({
               <div className="eterx-new-chat-status-anchor">
                 <button
                   type="button"
-                  className={`eterx-new-chat-status-item ${openStatusMenu === 'branch' ? 'is-open' : ''}`}
-                  aria-label={`Git branch ${branchName}`}
+                  className={`eterx-new-chat-status-item ${ openStatusMenu === 'branch' ? 'is-open' : '' }`}
+                  aria-label={`Git branch ${ branchName }`}
                   aria-haspopup="dialog"
                   aria-expanded={openStatusMenu === 'branch'}
                   onClick={(event) => toggleStatusMenu(event, 'branch')}

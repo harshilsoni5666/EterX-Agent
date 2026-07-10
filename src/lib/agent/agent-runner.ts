@@ -14,7 +14,8 @@ import path from 'path';
 import fs from 'fs';
 import { GoogleGenAI } from '@google/genai';
 import { apiKeyPool } from './api-key-pool';
-import { readAgentBuilderProfile, type AgentBuilderProfile } from './builder-agent';
+import { readAgentBuilderProfile, type AgentBuilderProfile, readAgentFlowProfile } from './builder-agent';
+import { agentBuilderRunFlowTool } from './tools/automation/agent_builder';
 import { resolveAgentTools, type ResolvedTool } from './tool-injector';
 import { globalToolRegistry, normalizeRegistryToolName } from './tools/registry';
 import { normalizeRegistryToolArgs, validateRegistryToolArgs } from './tools/tool-args';
@@ -22,6 +23,12 @@ import { DEFAULT_MAIN_AGENT_ALLOWED_CAPABILITIES, enforceToolCapability } from '
 import { getPathResolverInfo } from './workspace/path_resolver';
 import { createToolExecutionContext, isToolCancellationError } from './cancellation';
 import type { ScopedRuntimeSettings } from './runtime-api-keys';
+import {
+  GEMINI_FAST_FALLBACK_CHAIN,
+  GEMINI_THINK_FALLBACK_CHAIN,
+  resolveModelName,
+  type MainAgentMode,
+} from './model-routing';
 
 // ═══════════════════════════════════════════════════════════════
 // Types
@@ -43,6 +50,7 @@ export interface AgentRunnerConfig {
   agentId: string;
   maxIterations?: number;
   temperature?: number;
+  mode?: MainAgentMode;
   model?: string;
   preferredGeminiApiKey?: string;
   runtimeSettings?: ScopedRuntimeSettings | null;
@@ -50,6 +58,40 @@ export interface AgentRunnerConfig {
   agentSessionId?: string;
   runLocation?: string;
   pinnedContext?: any;
+}
+
+/**
+ * Returns true only for Gemini models that support thinkingBudget.
+ * Only gemini-2.5-pro and gemini-2.5-flash (non-lite) variants support it.
+ * Sending thinkingBudget to any other model causes a 400 INVALID_ARGUMENT.
+ */
+function modelSupportsThinking(modelName: string): boolean {
+  const lower = modelName.toLowerCase();
+  // gemini-2.5-pro and gemini-2.5-flash (not lite) support thinking
+  if (lower.includes('gemini-2.5-pro')) return true;
+  if (lower.includes('gemini-2.5-flash') && !lower.includes('lite')) return true;
+  return false;
+}
+
+function isGoogleGenAIModelName(modelName: string): boolean {
+  return /^(?:models\/)?gemini[-_]/i.test(modelName.trim());
+}
+
+function normalizeGeminiRunnerMode(mode?: MainAgentMode): 'think' | 'fast' {
+  return mode === 'fast' ? 'fast' : 'think';
+}
+
+function resolveGeminiRunnerModel(config: AgentRunnerConfig): string {
+  const requestedModel = String(config.model || '').trim();
+  if (requestedModel && isGoogleGenAIModelName(requestedModel)) return requestedModel;
+
+  const runnerMode = normalizeGeminiRunnerMode(config.mode);
+  const resolved = resolveModelName(runnerMode, config.runtimeSettings);
+  if (isGoogleGenAIModelName(resolved)) return resolved;
+
+  return runnerMode === 'fast'
+    ? GEMINI_FAST_FALLBACK_CHAIN[0]
+    : GEMINI_THINK_FALLBACK_CHAIN[0];
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -243,6 +285,99 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
     messages: Array<{ role: 'user' | 'model'; content: string }>,
     config: AgentRunnerConfig
   ): AsyncGenerator<AgentRunnerEvent> {
+    // 1. Try to load as a Flow first!
+    let isFlow = false;
+    try {
+      const flow = await readAgentFlowProfile(config.agentId);
+      if (flow && flow.steps && flow.steps.length > 0) {
+        isFlow = true;
+      }
+    } catch {}
+
+    if (isFlow) {
+      const userMessage = messages[messages.length - 1]?.content || '';
+      const agentName = config.agentId;
+      yield {
+        type: 'status',
+        text: `Initializing multi-agent flow "${config.agentId}"...`,
+        agentId: config.agentId,
+        agentName,
+        timestamp: Date.now()
+      };
+
+      const eventQueue: AgentRunnerEvent[] = [];
+      const onTrace = (trace: any) => {
+        if (trace?.type === 'status') {
+          eventQueue.push({
+            type: 'status',
+            text: trace.text,
+            agentId: config.agentId,
+            agentName: trace.agentName || agentName,
+            timestamp: Date.now()
+          });
+        } else if (trace?.type === 'tool_call') {
+          eventQueue.push({
+            type: 'tool_call',
+            toolName: trace.toolName,
+            toolArgs: trace.toolArgs,
+            agentName: trace.agentName || agentName,
+            timestamp: Date.now()
+          });
+        }
+      };
+
+      const runPromise = agentBuilderRunFlowTool.execute(
+        { flowId: config.agentId, input: userMessage },
+        {
+          projectId: config.chatId || `flow-${config.agentId}`,
+          runtimeSettings: config.runtimeSettings,
+          _onTrace: onTrace
+        }
+      );
+
+      while (true) {
+        while (eventQueue.length > 0) {
+          yield eventQueue.shift()!;
+        }
+
+        const settled = await Promise.race([
+          runPromise.then(
+            value => ({ status: 'fulfilled' as const, value }),
+            error => ({ status: 'rejected' as const, error }),
+          ),
+          new Promise<null>(resolve => setTimeout(() => resolve(null), 100)),
+        ]);
+
+        if (settled) {
+          while (eventQueue.length > 0) {
+            yield eventQueue.shift()!;
+          }
+
+          if (settled.status === 'rejected') {
+            throw settled.error;
+          }
+
+          const flowResult = settled.value;
+          if (flowResult.success) {
+            yield {
+              type: 'text',
+              text: flowResult.finalOutput,
+              agentName,
+              timestamp: Date.now()
+            };
+          } else {
+            yield {
+              type: 'error',
+              text: flowResult.message || 'Flow execution failed.',
+              timestamp: Date.now()
+            };
+          }
+          break;
+        }
+      }
+      return;
+    }
+
     if (!this.profile) {
       await this.loadAgent(config.agentId);
     }
@@ -276,11 +411,8 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
 
     try {
       const ai = new GoogleGenAI({ apiKey: lease.apiKey });
-      const systemInstruction = this.buildSystemInstruction();
-      const funcDecls = this.buildFunctionDeclarations();
-
-      // Debug: log declaration count and names
-      console.log(`[AgentRunner] ${agentName} — ${funcDecls.length} tools: ${funcDecls.map((d: any) => d.name).join(', ')}`);
+      let systemInstruction = '';
+      let funcDecls: any[] = [];
 
       // Format conversation history
       const contents = messages.map(m => ({
@@ -328,6 +460,7 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
 
       let consecutiveErrors = 0;
       let totalToolCalls = 0;
+      let generateConfig: any = null; // Hoisted so catch block can inspect/modify it
 
       // ReAct loop
       for (let iteration = 0; iteration < maxIter; iteration++) {
@@ -336,17 +469,26 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
           break;
         }
 
+        systemInstruction = this.buildSystemInstruction();
+        funcDecls = this.buildFunctionDeclarations();
+
         try {
-          const generateConfig: any = {
-            model: config.model || 'gemini-2.5-flash',
+          const resolvedModel = resolveGeminiRunnerModel(config);
+          const supportsThinking = modelSupportsThinking(resolvedModel);
+
+          generateConfig = {
+            model: resolvedModel,
             contents,
             config: {
               systemInstruction,
               temperature: config.temperature ?? 0.4,
-              // Enable thinking/reasoning for deeper agent behavior
-              thinkingConfig: { thinkingBudget: 4096 },
             },
           };
+
+          // Only add thinkingConfig for models that support it
+          if (supportsThinking) {
+            generateConfig.config.thinkingConfig = { thinkingBudget: 4096 };
+          }
 
           // Add tools if we have any
           if (funcDecls.length > 0) {
@@ -484,6 +626,20 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
         } catch (err: any) {
           consecutiveErrors++;
           const errMsg = String(err.message || err);
+
+          // If the model doesn't support thinkingBudget, strip it and retry immediately
+          if (
+            errMsg.toLowerCase().includes('thinking budget is not supported') ||
+            errMsg.toLowerCase().includes('thinkingconfig') ||
+            (errMsg.includes('400') && errMsg.toLowerCase().includes('thinking'))
+          ) {
+            if (generateConfig?.config?.thinkingConfig) {
+              delete generateConfig.config.thinkingConfig;
+              consecutiveErrors = 0;
+              console.warn(`[AgentRunner] thinkingConfig not supported by model "${generateConfig.model}" — retrying without it`);
+              continue;
+            }
+          }
 
           // Detect schema/declaration errors specifically
           if (errMsg.includes('Invalid JSON payload') || errMsg.includes('function_declarations')) {

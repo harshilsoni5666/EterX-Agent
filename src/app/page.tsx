@@ -7,7 +7,7 @@ import { ChatInput } from '../components/layout/chat-input';
 import { ChatFeed } from '../components/chat/chat-feed';
 import { AlertTriangle, CheckCircle2, ChevronDown, Clock3, Code2, GraduationCap, List, MessageSquare, Pencil, PenTool, SendHorizontal, SquarePen, Search, X, ArrowLeft, Trash, ListTodo, ChevronRight, Monitor, GitFork, Terminal, GitBranch, GitCommit, PlusSquare, Check, FileCode, FileText, MoreHorizontal, Sparkles } from 'lucide-react';
 import { Tooltip } from '../components/ui/tooltip';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence, Reorder } from 'framer-motion';
 import { InteractiveGrid } from '../components/ui/interactive-grid';
 import { GeminiLiveSession, LiveSessionState } from '../lib/live/gemini-live';
 import {
@@ -77,7 +77,7 @@ const MonitorPanel = dynamic(
 );
 
 const HeaderSidebarOpenIcon = ({ className = "w-[18px] h-[18px]" }: { className?: string }) => (
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className={`${className} transition-colors duration-150`}>
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className={`${ className } transition-colors duration-150`}>
     <rect x="3" y="3" width="18" height="18" rx="5" />
     <path d="M9 3v18" />
     <path className="opacity-0 transition-opacity duration-150 group-hover:opacity-100" d="M13 9l3 3-3 3" strokeLinecap="round" strokeLinejoin="round" />
@@ -89,7 +89,7 @@ const getBasename = (path: string) => path.split(/[/\\]/).pop() || path;
 const isProjectFile = (filepath: string) => {
   if (!filepath) return false;
   const pathLower = filepath.toLowerCase();
-  
+
   // Exclude EterX-Agent internal files
   if (pathLower.includes('page.tsx')) return false;
   if (pathLower.includes('chat-input.tsx')) return false;
@@ -98,7 +98,7 @@ const isProjectFile = (filepath: string) => {
   if (pathLower.includes('walkthrough.md')) return false;
   if (pathLower.includes('task.md')) return false;
   if (pathLower.includes('implementation_plan.md')) return false;
-  
+
   // Other standard excludes
   if (pathLower.includes('.system_generated')) return false;
   if (pathLower.includes('node_modules')) return false;
@@ -109,14 +109,14 @@ const isProjectFile = (filepath: string) => {
   if (pathLower.includes('.temp')) return false;
   if (pathLower.includes('.gitleaks')) return false;
   if (pathLower.endsWith('.log')) return false;
-  
+
   return true;
 };
 
 const getFileIconPath = (filepath: string) => {
   const ext = filepath.split('.').pop()?.toLowerCase();
   const filename = filepath.split('/').pop()?.toLowerCase() || '';
-  
+
   if (filename.startsWith('.git') || filename.includes('git')) {
     return '/icons/files/git.svg';
   }
@@ -150,7 +150,7 @@ const getFileIconPath = (filepath: string) => {
   if (filename.startsWith('.env') || filename === 'settings.json') {
     return '/icons/files/settings.svg';
   }
-  
+
   switch (ext) {
     case 'tsx':
     case 'jsx':
@@ -244,7 +244,7 @@ const WorkMenuSectionButton = ({
       {meta !== undefined && meta !== '' && (
         <span className="eterx-work-menu-section-badge">{meta}</span>
       )}
-      <ChevronDown className={`h-3.5 w-3.5 text-white/34 transition duration-150 group-hover:text-white/64 ${open ? '' : '-rotate-90'}`} />
+      <ChevronDown className={`h-3.5 w-3.5 text-white/34 transition duration-150 group-hover:text-white/64 ${ open ? '' : '-rotate-90' }`} />
     </span>
   </button>
 );
@@ -261,7 +261,12 @@ const WorkMenuStatusIndicator = ({ status }: { status?: string }) => {
   switch (status) {
     case 'working':
     case 'spawning':
-      return <span className="eterx-agent-working-ring" aria-label="Working" />;
+      return (
+        <svg className="animate-spin h-3.5 w-3.5 text-white/80 shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" aria-label="Working">
+          <circle className="opacity-20" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+          <path className="opacity-80" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+        </svg>
+      );
     case 'paused':
       return (
         <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center text-amber-400" aria-label="Paused">
@@ -295,7 +300,7 @@ const getAgentInitials = (name?: string) => {
   const safeName = getAgentDisplayName(name);
   const parts = safeName.split(/[\s_-]+/).filter(Boolean);
   if (parts.length > 1) {
-    return `${parts[0][0] || ''}${parts[1][0] || ''}`.toUpperCase();
+    return `${ parts[0][0] || '' }${ parts[1][0] || '' }`.toUpperCase();
   }
   return safeName.slice(0, 2).toUpperCase();
 };
@@ -330,31 +335,18 @@ const SubAgentAvatar = ({
   const displayName = getAgentDisplayName(name);
   const lowerName = displayName.toLowerCase().trim();
   const hasImage = SUB_AGENT_ICON_NAMES.has(lowerName);
-  const tone = getSubAgentStatusTone(status);
   const sizeClass = size === 'md' ? 'h-7 w-7' : size === 'xs' ? 'h-[22px] w-[22px]' : 'h-6 w-6';
   const textClass = size === 'md' ? 'text-[10px]' : 'text-[9px]';
-  const dotClass = tone === 'emerald'
-    ? 'bg-emerald-400 shadow-[0_0_0_2px_rgba(15,15,15,0.95),0_0_10px_rgba(52,211,153,0.45)]'
-    : tone === 'amber'
-      ? 'bg-amber-400 shadow-[0_0_0_2px_rgba(15,15,15,0.95),0_0_10px_rgba(251,191,36,0.38)]'
-      : tone === 'blue'
-        ? 'bg-sky-400 shadow-[0_0_0_2px_rgba(15,15,15,0.95)]'
-        : tone === 'red'
-          ? 'bg-red-400 shadow-[0_0_0_2px_rgba(15,15,15,0.95)]'
-          : tone === 'muted'
-            ? 'bg-white/18 shadow-[0_0_0_2px_rgba(15,15,15,0.95)]'
-            : 'bg-white/32 shadow-[0_0_0_2px_rgba(15,15,15,0.95)]';
 
   return (
-    <span className={`relative flex ${sizeClass} shrink-0 items-center justify-center overflow-hidden rounded-full border border-white/[0.13] bg-[radial-gradient(circle_at_30%_20%,rgba(255,255,255,0.18),rgba(255,255,255,0.04)_42%,rgba(0,0,0,0.18))] shadow-[inset_0_1px_0_rgba(255,255,255,0.18)]`}>
+    <span className={`relative flex ${ sizeClass } shrink-0 items-center justify-center overflow-hidden rounded-full border border-white/[0.13] bg-[radial-gradient(circle_at_30%_20%,rgba(255,255,255,0.18),rgba(255,255,255,0.04)_42%,rgba(0,0,0,0.18))] shadow-[inset_0_1px_0_rgba(255,255,255,0.18)]`}>
       {hasImage ? (
-        <img src={`/icons/sub-agents/${lowerName}.png`} alt={displayName} className="h-full w-full select-none object-cover" />
+        <img src={`/icons/sub-agents/${ lowerName }.png`} alt={displayName} className="h-full w-full select-none object-cover" />
       ) : (
-        <span className={`${textClass} font-bold leading-none text-white/72`}>
+        <span className={`${ textClass } font-bold leading-none text-white/72`}>
           {getAgentInitials(displayName)}
         </span>
       )}
-      <span className={`absolute bottom-0 right-0 h-1.5 w-1.5 rounded-full ${dotClass}`} />
     </span>
   );
 };
@@ -1033,6 +1025,8 @@ function DeepWorkUI() {
   const [monitorOpen, setMonitorOpen] = useState(false);
   const [agentTeamOpen, setAgentTeamOpen] = useState(false);
   const [activeSubAgentTab, setActiveSubAgentTab] = useState<string | null>(null);
+  const [subAgentOrder, setSubAgentOrder] = useState<string[]>([]);
+  const [overflowDropdownOpen, setOverflowDropdownOpen] = useState(false);
   const [petWidgetOpen, setPetWidgetOpen] = useState(false);
   const [nativePetAvailable, setNativePetAvailable] = useState(false);
   const canUseMonitor = activeView === 'chat' && !!activeChatId;
@@ -1040,6 +1034,7 @@ function DeepWorkUI() {
   const [networkBannerVisible, setNetworkBannerVisible] = useState(false);
   const closedSidebarDragStartRef = useRef<number | null>(null);
   const closedSidebarDragOpenedRef = useRef(false);
+  const dragConstraintsRef = useRef<HTMLDivElement>(null);
   const selectedAgent = selectedAgentState.agentId;
   const selectedAgentName = selectedAgentState.agentName;
   const networkPausedRef = useRef(false);
@@ -1051,6 +1046,18 @@ function DeepWorkUI() {
   const activeViewRef = useRef<ActiveView>('chat');
   const isNetworkPaused = networkPhase === 'offline';
 
+  // Auto-close sidebar on window resize if width is narrow
+  useEffect(() => {
+    const handleResize = () => {
+      if (window.innerWidth < 768) {
+        setSidebarOpen(false);
+      }
+    };
+    window.addEventListener('resize', handleResize);
+    handleResize();
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
   const [workMenuLayouts, setWorkMenuLayouts] = useState<Record<string, { x: number; y: number; width: number; height: number | 'auto' }>>({});
 
   const handleMenuDragStart = useCallback((e: React.MouseEvent) => {
@@ -1058,7 +1065,7 @@ function DeepWorkUI() {
     e.stopPropagation();
     const chatId = activeChatId || 'default';
     const currentLayout = workMenuLayouts[chatId] || { x: 0, y: 0, width: 320, height: 'auto' };
-    
+
     const startX = currentLayout.x;
     const startY = currentLayout.y;
     const startMouseX = e.clientX;
@@ -1067,7 +1074,7 @@ function DeepWorkUI() {
     const handleMouseMove = (moveEvent: MouseEvent) => {
       const dx = moveEvent.clientX - startMouseX;
       const dy = moveEvent.clientY - startMouseY;
-      
+
       let nextX = startX + dx;
       let nextY = startY + dy;
 
@@ -1109,7 +1116,7 @@ function DeepWorkUI() {
     e.stopPropagation();
     const chatId = activeChatId || 'default';
     const currentLayout = workMenuLayouts[chatId] || { x: 0, y: 0, width: 320, height: 'auto' };
-    
+
     const startWidth = currentLayout.width;
     const startX = currentLayout.x;
     const startMouseX = e.clientX;
@@ -1147,7 +1154,7 @@ function DeepWorkUI() {
     if (envDropdownRef.current) {
       startHeight = envDropdownRef.current.offsetHeight;
     }
-    
+
     const currentLayout = workMenuLayouts[chatId] || { x: 0, y: 0, width: 320, height: 'auto' };
     const startMouseY = e.clientY;
 
@@ -1181,7 +1188,7 @@ function DeepWorkUI() {
     if (envDropdownRef.current) {
       startHeight = envDropdownRef.current.offsetHeight;
     }
-    
+
     const currentLayout = workMenuLayouts[chatId] || { x: 0, y: 0, width: 320, height: 'auto' };
     const startWidth = currentLayout.width;
     const startX = currentLayout.x;
@@ -1191,11 +1198,11 @@ function DeepWorkUI() {
     const handleMouseMove = (moveEvent: MouseEvent) => {
       const dx = moveEvent.clientX - startMouseX;
       const dy = moveEvent.clientY - startMouseY;
-      
+
       const nextWidth = Math.max(260, Math.min(600, startWidth - dx));
       const actualDx = startWidth - nextWidth;
       const nextX = startX + actualDx;
-      
+
       const nextHeight = Math.max(150, Math.min(window.innerHeight - 100, startHeight + dy));
 
       setWorkMenuLayouts(prev => ({
@@ -1950,7 +1957,7 @@ function DeepWorkUI() {
     const agentName = agentNameOverride || (message?.to && message.to !== '*' && message.to !== 'Main' ? message.to : message?.from);
     const deliverAfter = Number(message?.deliverAfter || message?.metadata?.deliverAfter || 0) || undefined;
     return {
-      id: `comm_${message?.id || `${at}_${Math.random().toString(36).slice(2, 8)}`}`,
+      id: `comm_${ message?.id || `${ at }_${ Math.random().toString(36).slice(2, 8) }` }`,
       type: 'inter_agent_message',
       text: String(message?.body || message?.text || ''),
       from: message?.from || 'Main',
@@ -1991,7 +1998,7 @@ function DeepWorkUI() {
     return {
       text: match[3].trim(),
       deliverAfterMs,
-      label: `${value}${unit}`,
+      label: `${ value }${ unit }`,
     };
   };
   const systemThoughtLog = (text: string, at = Date.now()) => ({
@@ -2436,6 +2443,7 @@ function DeepWorkUI() {
       if (trace.type === 'work_note_cancel') {
         const subAgent = trace.subAgent || null;
         const noteId = trace.noteId || null;
+        // Mark rather than splice — prevents flash when final work_note follows
         for (let i = logs.length - 1; i >= 0; i--) {
           if (logs[i].type === 'user_action') break;
           if (
@@ -2443,7 +2451,7 @@ function DeepWorkUI() {
             (logs[i].subAgent || null) === subAgent &&
             (!noteId || logs[i].noteId === noteId)
           ) {
-            logs.splice(i, 1);
+            logs[i] = { ...logs[i], _streamingCancelled: true };
             break;
           }
         }
@@ -2463,16 +2471,17 @@ function DeepWorkUI() {
           }
         }
         if (mergeIdx >= 0) {
-          logs[mergeIdx] = { ...logs[mergeIdx], text: trace.text, thoughtId, _traceIdx: trace._traceIdx, timestamp: traceAt, endTime: traceAt };
+          // Preserve the original startTime from when the thought began
+          logs[mergeIdx] = { ...logs[mergeIdx], text: trace.text, thoughtId, _traceIdx: trace._traceIdx, timestamp: traceAt, startTime: logs[mergeIdx].startTime, endTime: trace.endTime ?? traceAt };
         } else {
-          logs.push({ type: 'thought_stream', text: trace.text, subAgent, thoughtId, _traceIdx: trace._traceIdx, timestamp: traceAt, startTime: traceAt, endTime: traceAt });
+          logs.push({ type: 'thought_stream', text: trace.text, subAgent, thoughtId, _traceIdx: trace._traceIdx, timestamp: traceAt, startTime: trace.startTime ?? traceAt, endTime: trace.endTime ?? traceAt });
         }
       } else if (trace.type === 'work_note') {
         const subAgent = trace.subAgent || null;
         const noteId = trace.noteId || null;
+        const incomingIsFinal = trace.isStreaming === false || trace.isDelta === false;
         const noteText = formatVisibleWorkNote(String(trace.text || ''));
         if (!noteText) continue;
-        const incomingIsFinal = trace.isStreaming === false || trace.isDelta === false;
         let mergeIdx = -1;
         let duplicateIdx = -1;
         for (let i = logs.length - 1; i >= 0; i--) {
@@ -2480,6 +2489,11 @@ function DeepWorkUI() {
           if (logs[i].type === 'work_note' && (logs[i].subAgent || null) === subAgent) {
             const existingText = String(logs[i].text || '').trim();
             if (noteId && logs[i].noteId && logs[i].noteId === noteId) {
+              mergeIdx = i;
+              break;
+            }
+            // Merge final note into a streaming-cancelled placeholder
+            if (logs[i]._streamingCancelled && incomingIsFinal) {
               mergeIdx = i;
               break;
             }
@@ -2510,6 +2524,7 @@ function DeepWorkUI() {
             timestamp: traceAt,
             startTime: logs[mergeIdx].startTime || processedLog.startTime,
             endTime: traceAt,
+            _streamingCancelled: undefined,
           };
         } else {
           logs.push({ ...processedLog, type: 'work_note', text: noteText, subAgent, noteId, _traceIdx: trace._traceIdx, startTime: processedLog.startTime, endTime: traceAt });
@@ -2520,7 +2535,7 @@ function DeepWorkUI() {
           continue;
         }
 
-        const responseKey = String(trace.responseKey || (trace.timestamp ? `ask_user_${trace.timestamp}` : '')).trim();
+        const responseKey = String(trace.responseKey || (trace.timestamp ? `ask_user_${ trace.timestamp }` : '')).trim();
         let askIdx = -1;
         for (let i = logs.length - 1; i >= 0; i--) {
           if (logs[i].type === 'user_action') break;
@@ -2799,6 +2814,9 @@ function DeepWorkUI() {
               if (trace.type === 'work_note_cancel') {
                 const subAgent = trace.subAgent || null;
                 const noteId = trace.noteId || null;
+                // Mark the streaming worknote as cancelled rather than removing it.
+                // This preserves its DOM position so the final permanent work_note
+                // merges into it in-place — preventing the flash/re-animate bug.
                 for (let i = logs.length - 1; i >= 0; i--) {
                   if (logs[i].type === 'user_action') break;
                   if (
@@ -2806,7 +2824,7 @@ function DeepWorkUI() {
                     (logs[i].subAgent || null) === subAgent &&
                     (!noteId || logs[i].noteId === noteId)
                   ) {
-                    logs.splice(i, 1);
+                    logs[i] = { ...logs[i], _streamingCancelled: true };
                     break;
                   }
                 }
@@ -2826,16 +2844,17 @@ function DeepWorkUI() {
                   }
                 }
                 if (mergeIdx >= 0) {
-                  logs[mergeIdx] = { ...logs[mergeIdx], text: trace.text, thoughtId, _traceIdx: trace._traceIdx, timestamp: traceAt, endTime: traceAt };
+                  // Preserve the original startTime from when the thought began
+                  logs[mergeIdx] = { ...logs[mergeIdx], text: trace.text, thoughtId, _traceIdx: trace._traceIdx, timestamp: traceAt, startTime: logs[mergeIdx].startTime, endTime: trace.endTime ?? traceAt };
                 } else {
-                  logs.push({ type: 'thought_stream', text: trace.text, subAgent, thoughtId, _traceIdx: trace._traceIdx, timestamp: traceAt, startTime: traceAt, endTime: traceAt });
+                  logs.push({ type: 'thought_stream', text: trace.text, subAgent, thoughtId, _traceIdx: trace._traceIdx, timestamp: traceAt, startTime: trace.startTime ?? traceAt, endTime: trace.endTime ?? traceAt });
                 }
               } else if (trace.type === 'work_note') {
                 const subAgent = trace.subAgent || null;
                 const noteId = trace.noteId || null;
+                const incomingIsFinal = trace.isStreaming === false || trace.isDelta === false;
                 const noteText = formatVisibleWorkNote(String(trace.text || ''));
                 if (!noteText) continue;
-                const incomingIsFinal = trace.isStreaming === false || trace.isDelta === false;
                 let mergeIdx = -1;
                 let duplicateIdx = -1;
                 for (let i = logs.length - 1; i >= 0; i--) {
@@ -2843,6 +2862,11 @@ function DeepWorkUI() {
                   if (logs[i].type === 'work_note' && (logs[i].subAgent || null) === subAgent) {
                     const existingText = String(logs[i].text || '').trim();
                     if (noteId && logs[i].noteId && logs[i].noteId === noteId) {
+                      mergeIdx = i;
+                      break;
+                    }
+                    // Merge final note into a streaming-cancelled placeholder (same subAgent, no noteId match needed)
+                    if (logs[i]._streamingCancelled && incomingIsFinal) {
                       mergeIdx = i;
                       break;
                     }
@@ -2873,6 +2897,7 @@ function DeepWorkUI() {
                     timestamp: traceAt,
                     startTime: logs[mergeIdx].startTime || timedTrace.startTime,
                     endTime: traceAt,
+                    _streamingCancelled: undefined,
                   };
                 } else {
                   logs.push({ ...timedTrace, type: 'work_note', text: noteText, subAgent, noteId, _traceIdx: trace._traceIdx, startTime: timedTrace.startTime, endTime: traceAt });
@@ -2883,7 +2908,7 @@ function DeepWorkUI() {
                   continue;
                 }
 
-                const responseKey = String(trace.responseKey || (trace.timestamp ? `ask_user_${trace.timestamp}` : '')).trim();
+                const responseKey = String(trace.responseKey || (trace.timestamp ? `ask_user_${ trace.timestamp }` : '')).trim();
                 let askIdx = -1;
                 for (let i = logs.length - 1; i >= 0; i--) {
                   if (logs[i].type === 'user_action') break;
@@ -3665,7 +3690,7 @@ function DeepWorkUI() {
         return `- ${ name }${ path ? ` (${ path })` : '' }`;
       }).join('\n') }`
       : '';
-    const body = `${scheduledMessage.text}${attachmentContext}`.trim();
+    const body = `${ scheduledMessage.text }${ attachmentContext }`.trim();
 
     setInputValue('');
     setAttachments([]);
@@ -3680,7 +3705,7 @@ function DeepWorkUI() {
           from: 'Main',
           to: agentName,
           type: 'question',
-          subject: scheduledMessage.deliverAfterMs ? `Scheduled message (${scheduledMessage.label})` : 'Main message',
+          subject: scheduledMessage.deliverAfterMs ? `Scheduled message (${ scheduledMessage.label })` : 'Main message',
           body,
           priority: 'normal',
           deliveryMode: 'defer',
@@ -3692,7 +3717,7 @@ function DeepWorkUI() {
       });
       const data = await res.json().catch(() => null);
       if (!res.ok || !data?.success) {
-        throw new Error(data?.error || `HTTP ${res.status}`);
+        throw new Error(data?.error || `HTTP ${ res.status }`);
       }
 
       const message = data.message ? {
@@ -3704,7 +3729,7 @@ function DeepWorkUI() {
         from: 'Main',
         to: agentName,
         type: 'question',
-        subject: scheduledMessage.deliverAfterMs ? `Scheduled message (${scheduledMessage.label})` : 'Main message',
+        subject: scheduledMessage.deliverAfterMs ? `Scheduled message (${ scheduledMessage.label })` : 'Main message',
         body,
         priority: 'normal',
         deliveryMode: 'defer',
@@ -3720,7 +3745,7 @@ function DeepWorkUI() {
         return [...previousLogs, log];
       }, { touchUpdatedAt: true });
     } catch (error: any) {
-      const failureLog = systemThoughtLog(`Failed to send message to ${agentName}: ${error?.message || 'Unknown error'}`, Date.now());
+      const failureLog = systemThoughtLog(`Failed to send message to ${ agentName }: ${ error?.message || 'Unknown error' }`, Date.now());
       setChatLogsById(chatId, previousLogs => [...previousLogs, failureLog], { touchUpdatedAt: true });
     }
   }, [activeChatId, activeSubAgentTab, attachments, inputValue, isRecording, revealNetworkBanner]);
@@ -3978,7 +4003,7 @@ function DeepWorkUI() {
             const at = Number(event.timestamp || Date.now());
             flushCustomWorkNote();
             appendCustomAgentTrace({
-              id: `custom-ask-${String(event.responseKey || at)}`,
+              id: `custom-ask-${ String(event.responseKey || at) }`,
               ...event,
               type: 'ask_user',
               text: String(event.question || 'Input needed'),
@@ -4115,11 +4140,11 @@ function DeepWorkUI() {
         signal: controller.signal
       });
 
-        if (!response.ok) {
-          let message = `Agent start failed (${ response.status }).`;
-          try {
-            const errorPayload = await response.json();
-            message = errorPayload.error || errorPayload.details || message;
+      if (!response.ok) {
+        let message = `Agent start failed (${ response.status }).`;
+        try {
+          const errorPayload = await response.json();
+          message = errorPayload.error || errorPayload.details || message;
         } catch { }
 
         stopPolling(chatIdToUse!);
@@ -4382,14 +4407,75 @@ function DeepWorkUI() {
     [currentSubAgents]
   );
 
+  useEffect(() => {
+    const names = realSubAgents.map((a: any) => a.name);
+    setSubAgentOrder(prev => {
+      const existing = prev.filter(name => names.includes(name));
+      const brandNew = names.filter(name => !prev.includes(name));
+      return [...existing, ...brandNew];
+    });
+  }, [realSubAgents]);
+
+  const orderedRealSubAgents = useMemo(() => {
+    return [...realSubAgents].sort((a, b) => {
+      const indexA = subAgentOrder.indexOf(a.name);
+      const indexB = subAgentOrder.indexOf(b.name);
+      const finalA = indexA === -1 ? 9999 : indexA;
+      const finalB = indexB === -1 ? 9999 : indexB;
+      return finalA - finalB;
+    });
+  }, [realSubAgents, subAgentOrder]);
+
   const headerSubAgentTabs = useMemo(() => {
     const maxVisibleTabs = activeSubAgentTab ? 3 : 4;
-    if (!activeSubAgentTab) return realSubAgents.slice(0, maxVisibleTabs);
+    if (orderedRealSubAgents.length <= maxVisibleTabs) return orderedRealSubAgents;
 
-    const selected = realSubAgents.find((agent: any) => agent.name === activeSubAgentTab);
-    const remaining = realSubAgents.filter((agent: any) => agent.name !== activeSubAgentTab);
-    return selected ? [selected, ...remaining].slice(0, maxVisibleTabs) : remaining.slice(0, maxVisibleTabs);
-  }, [activeSubAgentTab, realSubAgents]);
+    const activeIndex = orderedRealSubAgents.findIndex((agent: any) => agent.name === activeSubAgentTab);
+    if (activeIndex === -1 || activeIndex < maxVisibleTabs) {
+      return orderedRealSubAgents.slice(0, maxVisibleTabs);
+    }
+
+    const result = orderedRealSubAgents.slice(0, maxVisibleTabs - 1);
+    result.push(orderedRealSubAgents[activeIndex]);
+    return result;
+  }, [activeSubAgentTab, orderedRealSubAgents]);
+
+  const hiddenSubAgents = useMemo(() => {
+    const visibleNames = headerSubAgentTabs.map((a: any) => a.name);
+    return orderedRealSubAgents.filter((agent: any) => !visibleNames.includes(agent.name));
+  }, [orderedRealSubAgents, headerSubAgentTabs]);
+
+  const visibleAgentNames = useMemo(() => {
+    return headerSubAgentTabs.map((agent: any) => agent.name);
+  }, [headerSubAgentTabs]);
+
+  const handleReorderVisible = (newVisibleOrder: string[]) => {
+    setSubAgentOrder(prev => {
+      const currentVisibleNames = headerSubAgentTabs.map((agent: any) => agent.name);
+      const hiddenNames = prev.filter(name => !currentVisibleNames.includes(name));
+      return [...newVisibleOrder, ...hiddenNames];
+    });
+  };
+
+  const handleSelectHiddenAgent = (agentName: string) => {
+    const maxVisibleTabs = activeSubAgentTab ? 3 : 4;
+    setSubAgentOrder(prev => {
+      const visibleNames = prev.slice(0, maxVisibleTabs);
+      const activeIdx = visibleNames.indexOf(activeSubAgentTab || '');
+      const swapTargetIdx = activeIdx !== -1 ? activeIdx : (maxVisibleTabs - 1);
+
+      const newOrder = [...prev];
+      const targetAgentName = newOrder[swapTargetIdx];
+      const hiddenAgentIdx = newOrder.indexOf(agentName);
+
+      if (hiddenAgentIdx !== -1 && swapTargetIdx < newOrder.length) {
+        newOrder[swapTargetIdx] = agentName;
+        newOrder[hiddenAgentIdx] = targetAgentName;
+      }
+      return newOrder;
+    });
+    setActiveSubAgentTab(agentName);
+  };
 
   useEffect(() => {
     if (!activeChatId || !activeSubAgentTab) return;
@@ -4405,7 +4491,7 @@ function DeepWorkUI() {
           agentName,
           limit: '80',
         });
-        const res = await fetch(`/api/agents/comm?${params.toString()}`, { cache: 'no-store' });
+        const res = await fetch(`/api/agents/comm?${ params.toString() }`, { cache: 'no-store' });
         if (!res.ok || cancelled) return;
         const data = await res.json().catch(() => null);
         if (!data?.success || !Array.isArray(data.messages) || cancelled) return;
@@ -4434,7 +4520,7 @@ function DeepWorkUI() {
     };
   }, [activeChatId, activeSubAgentTab]);
 
-  const hiddenHeaderSubAgentCount = Math.max(0, realSubAgents.length - headerSubAgentTabs.length);
+  const hiddenHeaderSubAgentCount = hiddenSubAgents.length;
 
   useEffect(() => {
     if (!activeSubAgentTab) return;
@@ -4521,7 +4607,7 @@ function DeepWorkUI() {
     if (!tracker?.steps || tracker.steps.length === 0) return '';
     const completed = tracker.steps.filter(s => s.status === 'done').length;
     const total = tracker.steps.length;
-    return `${completed}/${total}`;
+    return `${ completed }/${ total }`;
   }, [lastTaskTracker, currentTaskTracker]);
 
   const chatChangeStats = useMemo(() => {
@@ -4530,7 +4616,7 @@ function DeepWorkUI() {
 
     for (const log of traceLogs) {
       if (!log) continue;
-      
+
       // Only process file_edit logs to calculate changes, avoiding duplicate count from file_preview logs
       if (log.type !== 'file_edit') {
         continue;
@@ -4539,7 +4625,7 @@ function DeepWorkUI() {
       const toolName = log.tool || log.name || '';
       const args = log.toolArgs || {};
       const text = String(log.text || log.content || log.secondary || '').toLowerCase();
-      
+
       // Determine file status if we edit or write to a file
       let targetFile = '';
       const argFilename = args.TargetFile || args.targetFile || args.filePath || args.filepath || args.filename || args.fileName || '';
@@ -4569,16 +4655,16 @@ function DeepWorkUI() {
         const key = getBasename(targetFile).toLowerCase();
         let fileStatus: 'MOD' | 'ADD' = 'MOD';
         if (
-          toolName.includes('write_to_file') || 
-          toolName.includes('write_file') || 
+          toolName.includes('write_to_file') ||
+          toolName.includes('write_file') ||
           toolName.includes('create_file') ||
-          text.includes('created file') || 
-          text.includes('new file') || 
+          text.includes('created file') ||
+          text.includes('new file') ||
           text.includes('wrote file')
         ) {
           fileStatus = 'ADD';
         }
-        
+
         const existingStatus = fileStatusMap.get(key);
         // Prefer absolute path if available (contains slashes)
         const pathVal = (targetFile.includes('/') || targetFile.includes('\\')) ? targetFile : (existingStatus?.path || targetFile);
@@ -4650,7 +4736,7 @@ function DeepWorkUI() {
         existing.deletions = file.deletions;
       } else {
         itemsList.push({
-          id: `chat-${file.path}`,
+          id: `chat-${ file.path }`,
           name,
           path: file.path,
           status: file.status,
@@ -4667,8 +4753,8 @@ function DeepWorkUI() {
     // Completely disconnected from executing real git command lines on host.
     // Calculate session uncommitted files dynamically from chatChangeStats
     const filesCount = chatChangeStats?.files?.length || 0;
-    const uncommittedText = filesCount > 0 ? `Uncommitted: ${filesCount} file${filesCount > 1 ? 's' : ''}` : null;
-    
+    const uncommittedText = filesCount > 0 ? `Uncommitted: ${ filesCount } file${ filesCount > 1 ? 's' : '' }` : null;
+
     setGitBranches(prev => {
       const hasCurrent = prev.some(b => b.name === currentBranch);
       const updatedList = hasCurrent ? [...prev] : [...prev, { name: currentBranch, uncommitted: null }];
@@ -4684,10 +4770,10 @@ function DeepWorkUI() {
   const handleCheckoutBranch = async (branchName: string) => {
     setGitError(null);
     setCurrentBranch(branchName);
-    
+
     // Update the uncommitted count immediately for the checked-out branch
     const filesCount = chatChangeStats?.files?.length || 0;
-    const uncommittedText = filesCount > 0 ? `Uncommitted: ${filesCount} file${filesCount > 1 ? 's' : ''}` : null;
+    const uncommittedText = filesCount > 0 ? `Uncommitted: ${ filesCount } file${ filesCount > 1 ? 's' : '' }` : null;
     setGitBranches(prev => {
       const hasBranch = prev.some(b => b.name === branchName);
       const updatedList = hasBranch ? [...prev] : [...prev, { name: branchName, uncommitted: null }];
@@ -4703,9 +4789,9 @@ function DeepWorkUI() {
     setGitError(null);
     const newName = newBranchName.trim();
     setCurrentBranch(newName);
-    
+
     const filesCount = chatChangeStats?.files?.length || 0;
-    const uncommittedText = filesCount > 0 ? `Uncommitted: ${filesCount} file${filesCount > 1 ? 's' : ''}` : null;
+    const uncommittedText = filesCount > 0 ? `Uncommitted: ${ filesCount } file${ filesCount > 1 ? 's' : '' }` : null;
     setGitBranches(prev => {
       const hasBranch = prev.some(b => b.name === newName);
       const updatedList = hasBranch ? [...prev] : [...prev, { name: newName, uncommitted: null }];
@@ -4713,7 +4799,7 @@ function DeepWorkUI() {
         return { ...b, uncommitted: b.name === newName ? uncommittedText : null };
       });
     });
-    
+
     setIsCreatingBranch(false);
     setNewBranchName('');
     setActiveSubmenu(null);
@@ -4883,1083 +4969,1149 @@ function DeepWorkUI() {
       <div className="eterx-workspace-shell flex-1 flex flex-col relative overflow-hidden z-10 transition-colors duration-300">
         {/* Absolute Header (Draggable Region for Electron) */}
         <>
-          <div className={`eterx-main-panel ${!sidebarOpen ? 'eterx-main-panel-sidebar-closed' : ''} flex-1 flex flex-col relative overflow-hidden`}>
-          <div className="eterx-main-header relative z-50 flex h-[var(--eterx-main-header-height)] shrink-0 items-center justify-between gap-4 border-b border-[var(--border)] pl-3 pr-6 [-webkit-app-region:drag]">
-            <div className="flex min-w-0 items-center gap-2 pointer-events-auto [-webkit-app-region:no-drag]">
-              <div id="agent-builder-back-portal" className="flex items-center">
-                {buildingAgentId && (
-                  <button
-                    onClick={() => {
-                      setBuildingAgentId(null);
-                      setActiveChatId(null);
-                      setTraceLogs([]);
-                    }}
-                    className="flex items-center gap-2 px-3 py-1.5 bg-white/[0.05] border border-white/5 hover:border-white/10 hover:bg-white/[0.08] text-[#E8E6E3] hover:text-white transition-all rounded-lg group shadow-sm active:scale-95 mr-2"
-                  >
-                    <ArrowLeft className="w-4 h-4 group-hover:-translate-x-1 transition-transform" />
-                    <span className="text-[13px] font-medium tracking-wide">Back to Agent-Room</span>
-                  </button>
+          <div className={`eterx-main-panel ${ !sidebarOpen ? 'eterx-main-panel-sidebar-closed' : '' } flex-1 flex flex-col relative overflow-hidden`}>
+            <div className="eterx-main-header relative z-50 flex h-[var(--eterx-main-header-height)] shrink-0 items-center justify-between gap-4 border-b border-[var(--border)] pl-3 pr-6 [-webkit-app-region:drag]">
+              <div className="flex min-w-0 items-center gap-2 pointer-events-auto [-webkit-app-region:no-drag]">
+                <div id="agent-builder-back-portal" className="flex items-center">
+                  {buildingAgentId && (
+                    <button
+                      onClick={() => {
+                        setBuildingAgentId(null);
+                        setActiveChatId(null);
+                        setTraceLogs([]);
+                      }}
+                      className="flex items-center gap-2 px-3 py-1.5 bg-white/[0.05] border border-white/5 hover:border-white/10 hover:bg-white/[0.08] text-[#E8E6E3] hover:text-white transition-all rounded-lg group shadow-sm active:scale-95 mr-2"
+                    >
+                      <ArrowLeft className="w-4 h-4 group-hover:-translate-x-1 transition-transform" />
+                      <span className="text-[13px] font-medium tracking-wide">Back to Agent-Room</span>
+                    </button>
+                  )}
+                </div>
+                {!sidebarOpen && activeView === 'chat' && !buildingAgentId && (
+                  <Tooltip text="New chat" side="bottom">
+                    <button
+                      type="button"
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onClick={() => {
+                        createNewChat();
+                        setActiveView('chat');
+                      }}
+                      aria-label="New chat"
+                      className="group flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-transparent bg-transparent text-[var(--sidebar-muted-text)] transition-colors duration-150 hover:bg-[var(--sidebar-toggle-hover-bg)] hover:text-[var(--sidebar-hover-text)] active:bg-[var(--sidebar-toggle-active-bg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--sidebar-focus-ring)]"
+                    >
+                      <SquarePen className="h-[17px] w-[17px]" strokeWidth={2.15} />
+                    </button>
+                  </Tooltip>
                 )}
+                {(() => {
+                  if ((activeView === 'agents' && !buildingAgentId) || activeView === 'channels' || activeView === 'projects') return null;
+                  const activeChat = activeChatId ? chats.find(c => c.id === activeChatId) : null;
+                  const titleText = activeChat ? activeChat.title : DEFAULT_CHAT_TITLE;
+
+                  return (
+                    <div className="relative min-w-0 [-webkit-app-region:no-drag]">
+                      <div
+                        data-open={headerMenuOpen ? 'true' : 'false'}
+                        onClick={() => {
+                          setHeaderMenuOpen(!headerMenuOpen);
+                        }}
+                        className="eterx-thread-tab group flex min-w-0 cursor-pointer items-center gap-2.5 px-3 py-1.5 text-[14px] font-medium transition-all duration-200"
+                      >
+                        <span className="truncate max-w-[400px]">{titleText}</span>
+                        <ChevronDown className={`w-4 h-4 text-[#555350] shrink-0 transition-transform duration-200 ${ headerMenuOpen ? 'rotate-180' : '' }`} />
+                      </div>
+                      <AnimatePresence>
+                        {headerMenuOpen && (
+                          <>
+                            <div className="fixed inset-0 z-40 cursor-default" onClick={(e) => { e.stopPropagation(); setHeaderMenuOpen(false); }}></div>
+                            <motion.div
+                              initial={{ opacity: 0, y: -5, scale: 0.98 }}
+                              animate={{ opacity: 1, y: 0, scale: 1 }}
+                              exit={{ opacity: 0, y: -5, scale: 0.98 }}
+                              transition={{ duration: 0.15, ease: "easeOut" }}
+                              className="absolute left-0 top-[calc(100%+8px)] w-[300px] z-50 bg-[#1A1A1A]/95 backdrop-blur-xl border border-white/10 rounded-xl shadow-[0_8px_30px_rgba(0,0,0,0.4)] p-2 flex flex-col max-h-[400px]"
+                            >
+                              <div className="flex items-center justify-between px-2 mb-2 mt-1 h-6">
+                                {!headerSearchOpen ? (
+                                  <>
+                                    <div className="text-[11px] font-semibold text-[#555350] uppercase tracking-wider">Threads</div>
+                                    <Search
+                                      className="w-3.5 h-3.5 text-[#555350] hover:text-[#E8E6E3] cursor-pointer transition-colors"
+                                      onClick={(e) => { e.stopPropagation(); setHeaderSearchOpen(true); }}
+                                    />
+                                  </>
+                                ) : (
+                                  <motion.div
+                                    initial={{ width: 0, opacity: 0 }}
+                                    animate={{ width: "100%", opacity: 1 }}
+                                    className="flex items-center gap-2 w-full bg-white/5 rounded-md px-2 py-1 h-full"
+                                    onClick={(e) => e.stopPropagation()}
+                                  >
+                                    <Search className="w-3 h-3 text-[#A3A19E]" />
+                                    <input
+                                      type="text"
+                                      autoFocus
+                                      placeholder="Search threads..."
+                                      value={headerSearchQuery}
+                                      onChange={(e) => setHeaderSearchQuery(e.target.value)}
+                                      className="bg-transparent border-none outline-none text-[12px] text-[#E8E6E3] placeholder:text-[#555350] w-full"
+                                    />
+                                    <X
+                                      className="w-3 h-3 text-[#555350] hover:text-[#E8E6E3] cursor-pointer"
+                                      onClick={(e) => { e.stopPropagation(); setHeaderSearchOpen(false); setHeaderSearchQuery(""); }}
+                                    />
+                                  </motion.div>
+                                )}
+                              </div>
+                              <div className="overflow-y-auto custom-scrollbar flex-1 space-y-[2px]">
+                                {(() => {
+                                  const filteredChats = chats.filter(c =>
+                                    c.title &&
+                                    c.title.toLowerCase().includes(headerSearchQuery.toLowerCase())
+                                  );
+
+                                  if (filteredChats.length === 0) {
+                                    return <div className="px-2 py-2 text-[13px] text-[#555350] italic">No threads found</div>;
+                                  }
+
+                                  return filteredChats.map(chat => (
+                                    <div
+                                      key={chat.id}
+                                      onClick={() => {
+                                        loadChat(chat.id);
+                                        setHeaderMenuOpen(false);
+                                      }}
+                                      className={`w-full text-left px-3 py-2 text-[13px] rounded-lg truncate transition-all duration-150 flex items-center group cursor-pointer border border-transparent active:scale-[0.98] ${ activeChatId === chat.id ? 'bg-white/10 text-white font-medium shadow-sm' : 'text-[#A3A19E] hover:bg-white/5 active:bg-white/10 hover:text-[#E8E6E3]' }`}
+                                    >
+                                      {chat.title}
+                                    </div>
+                                  ));
+                                })()}
+                              </div>
+                            </motion.div>
+                          </>
+                        )}
+                      </AnimatePresence>
+                    </div>
+                  );
+                })()}
               </div>
-              {!sidebarOpen && activeView === 'chat' && !buildingAgentId && (
-                <Tooltip text="New chat" side="bottom">
+
+              {/* Sub-Agent Tabs — shown in header when agents are active */}
+              {realSubAgents.length > 0 && activeView === 'chat' && activeChatId && (
+                <div className="eterx-agent-dock pointer-events-auto [-webkit-app-region:no-drag]" role="tablist" aria-label="Agent workspaces">
+                  {/* Main agent tab */}
                   <button
                     type="button"
-                    onMouseDown={(e) => e.stopPropagation()}
-                    onClick={() => {
-                      createNewChat();
-                      setActiveView('chat');
-                    }}
-                    aria-label="New chat"
-                    className="group flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-transparent bg-transparent text-[var(--sidebar-muted-text)] transition-colors duration-150 hover:bg-[var(--sidebar-toggle-hover-bg)] hover:text-[var(--sidebar-hover-text)] active:bg-[var(--sidebar-toggle-active-bg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--sidebar-focus-ring)]"
+                    onClick={() => setActiveSubAgentTab(null)}
+                    role="tab"
+                    aria-selected={!activeSubAgentTab}
+                    className={`eterx-agent-tab eterx-agent-tab-main flex items-center gap-2 relative
+                    ${ !activeSubAgentTab
+                        ? 'eterx-agent-tab-active'
+                        : 'eterx-agent-tab-idle'
+                      }`}
                   >
-                    <SquarePen className="h-[17px] w-[17px]" strokeWidth={2.15} />
+                    {!activeSubAgentTab && (
+                      <motion.div
+                        layoutId="activeSubAgentTabHighlight"
+                        className="eterx-agent-tab-active-bg"
+                        transition={{ type: 'spring', stiffness: 380, damping: 30 }}
+                      />
+                    )}
+                    <span className="eterx-agent-tab-label">Main</span>
                   </button>
-                </Tooltip>
-              )}
-              {(() => {
-                  if ((activeView === 'agents' && !buildingAgentId) || activeView === 'channels' || activeView === 'projects') return null;
-                const activeChat = activeChatId ? chats.find(c => c.id === activeChatId) : null;
-                const titleText = activeChat ? activeChat.title : DEFAULT_CHAT_TITLE;
 
-                return (
-                  <div className="relative min-w-0 [-webkit-app-region:no-drag]">
-                    <div
-                      data-open={headerMenuOpen ? 'true' : 'false'}
-                      onClick={() => {
-                        setHeaderMenuOpen(!headerMenuOpen);
-                      }}
-                      className="eterx-thread-tab group flex min-w-0 cursor-pointer items-center gap-2.5 px-3 py-1.5 text-[14px] font-medium transition-all duration-200"
-                    >
-                      <span className="truncate max-w-[400px]">{titleText}</span>
-                      <ChevronDown className={`w-4 h-4 text-[#555350] shrink-0 transition-transform duration-200 ${ headerMenuOpen ? 'rotate-180' : '' }`} />
-                    </div>
-                    <AnimatePresence>
-                      {headerMenuOpen && (
+                  {/* Drag-to-reorder sub-agent tabs */}
+                  <Reorder.Group
+                    ref={dragConstraintsRef}
+                    axis="x"
+                    values={visibleAgentNames}
+                    onReorder={handleReorderVisible}
+                    className="flex items-center gap-1 min-w-0"
+                    as="div"
+                  >
+                    {headerSubAgentTabs.map((agent: any) => {
+                      const isActive = activeSubAgentTab === agent.name;
+                      const isClosed = agent.status === 'closed';
+                      const isWorking = agent.status === 'working' || agent.status === 'spawning';
+                      return (
+                        <Reorder.Item
+                          dragConstraints={dragConstraintsRef}
+                          dragElastic={0.12}
+                          whileDrag={{
+                            scale: 1.04,
+                            zIndex: 99,
+                            boxShadow: "0 8px 30px rgba(0,0,0,0.6)",
+                          }}
+                          transition={{ type: "spring", stiffness: 500, damping: 40 }}
+                          key={agent.name}
+                          value={agent.name}
+                          as="button"
+                          type="button"
+                          onTap={() => setActiveSubAgentTab(agent.name)}
+                          role="tab"
+                          aria-selected={isActive}
+                          className={`eterx-agent-tab min-w-0 select-none relative
+                          ${ isActive
+                              ? 'eterx-agent-tab-active'
+                              : isClosed
+                                ? 'eterx-agent-tab-closed'
+                                : 'eterx-agent-tab-idle'
+                            }`}
+                        >
+                          {isActive && (
+                            <motion.div
+                              layoutId="activeSubAgentTabHighlight"
+                              className="eterx-agent-tab-active-bg"
+                              transition={{ type: 'spring', stiffness: 380, damping: 30 }}
+                            />
+                          )}
+                          <SubAgentAvatar name={agent.name} status={agent.status} size="xs" />
+                          <span className="eterx-agent-tab-label min-w-0 truncate">{agent.name}</span>
+                          {isWorking && (
+                            <svg className="animate-spin h-3.5 w-3.5 text-white/80 shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" aria-label="Working">
+                              <circle className="opacity-20" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+                              <path className="opacity-80" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                            </svg>
+                          )}
+                        </Reorder.Item>
+                      );
+                    })}
+                  </Reorder.Group>
+
+                  {/* Hidden agents dropdown trigger & menu */}
+                  {hiddenHeaderSubAgentCount > 0 && (
+                    <div className="relative overflow-visible shrink-0 flex items-center">
+                      <button
+                        type="button"
+                        onClick={() => setOverflowDropdownOpen(!overflowDropdownOpen)}
+                        className={`eterx-agent-tab eterx-agent-tab-overflow flex items-center gap-1.5 transition-all
+                          ${ overflowDropdownOpen 
+                            ? 'border-white/25 bg-white/12 text-white shadow-[0_4px_12px_rgba(255,255,255,0.15)]' 
+                            : 'border-white/12 bg-white/8 text-white/60'
+                          }`}
+                        title={`${ hiddenHeaderSubAgentCount } more agents`}
+                      >
+                        <span className="text-[11px] font-bold">+{hiddenHeaderSubAgentCount}</span>
+                        <ChevronDown className={`h-3.5 w-3.5 transition-transform duration-200 ${ overflowDropdownOpen ? 'rotate-180 text-white' : 'text-white/60' }`} strokeWidth={2.2} />
+                      </button>
+
+                      {overflowDropdownOpen && (
                         <>
-                          <div className="fixed inset-0 z-40 cursor-default" onClick={(e) => { e.stopPropagation(); setHeaderMenuOpen(false); }}></div>
+                          <div className="fixed inset-0 z-40" onClick={() => setOverflowDropdownOpen(false)} />
+                          <div className="absolute right-0 top-[calc(100%+6px)] min-w-[170px] z-50 bg-[#000000]/95 backdrop-blur-xl border border-white/12 rounded-xl shadow-[0_12px_40px_rgba(0,0,0,0.8)] p-1.5 flex flex-col gap-0.5 pointer-events-auto">
+                            <div className="px-2.5 py-1 text-[9px] font-bold text-[#6A6460] uppercase tracking-wider select-none">
+                              Hidden Agents
+                            </div>
+                            {hiddenSubAgents.map((agent: any) => (
+                              <button
+                                key={agent.name}
+                                type="button"
+                                onClick={() => {
+                                  handleSelectHiddenAgent(agent.name);
+                                  setOverflowDropdownOpen(false);
+                                }}
+                                className="w-full text-left px-2.5 py-1.5 text-[12.5px] font-medium text-white/70 hover:text-white hover:bg-white/5 active:scale-[0.98] rounded-lg transition-all flex items-center gap-2"
+                              >
+                                <SubAgentAvatar name={agent.name} status={agent.status} size="xs" />
+                                <span className="truncate flex-1">{agent.name}</span>
+                              </button>
+                            ))}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div className="flex shrink-0 items-center gap-1.5 pointer-events-auto [-webkit-app-region:no-drag]">
+                {canUseMonitor && (
+                  <div className="relative">
+                    <button
+                      type="button"
+                      aria-label="Toggle git environment dropdown"
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setEnvDropdownOpen(!envDropdownOpen);
+                      }}
+                      className={`relative eterx-header-icon-button flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-transparent bg-transparent text-[var(--sidebar-muted-text)] transition-colors duration-150 hover:bg-[var(--sidebar-toggle-hover-bg)] hover:text-[var(--sidebar-hover-text)] active:bg-[var(--sidebar-toggle-active-bg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--sidebar-focus-ring)] ${ envDropdownOpen ? 'bg-[var(--sidebar-toggle-hover-bg)] text-[var(--sidebar-hover-text)]' : '' }`}
+                    >
+                      <ListTodo className="h-[17px] w-[17px]" strokeWidth={2.15} />
+                    </button>
+                    <AnimatePresence>
+                      {envDropdownOpen && (() => {
+                        const chatId = activeChatId || 'default';
+                        const layout = workMenuLayouts[chatId] || { x: 0, y: 0, width: 320, height: 'auto' };
+                        return (
                           <motion.div
+                            ref={envDropdownRef}
                             initial={{ opacity: 0, y: -5, scale: 0.98 }}
                             animate={{ opacity: 1, y: 0, scale: 1 }}
                             exit={{ opacity: 0, y: -5, scale: 0.98 }}
                             transition={{ duration: 0.15, ease: "easeOut" }}
-                            className="absolute left-0 top-[calc(100%+8px)] w-[300px] z-50 bg-[#1A1A1A]/95 backdrop-blur-xl border border-white/10 rounded-xl shadow-[0_8px_30px_rgba(0,0,0,0.4)] p-2 flex flex-col max-h-[400px]"
+                            onMouseLeave={() => setActiveSubmenu(null)}
+                            className="eterx-work-menu absolute right-0 top-[calc(100%+10px)] z-[70] flex flex-col"
+                            style={{
+                              transform: `translate(${ layout.x }px, ${ layout.y }px)`,
+                              width: layout.width,
+                              height: layout.height,
+                            }}
+                            onMouseDown={(e) => e.stopPropagation()}
                           >
-                            <div className="flex items-center justify-between px-2 mb-2 mt-1 h-6">
-                              {!headerSearchOpen ? (
-                                <>
-                                  <div className="text-[11px] font-semibold text-[#555350] uppercase tracking-wider">Threads</div>
-                                  <Search
-                                    className="w-3.5 h-3.5 text-[#555350] hover:text-[#E8E6E3] cursor-pointer transition-colors"
-                                    onClick={(e) => { e.stopPropagation(); setHeaderSearchOpen(true); }}
-                                  />
-                                </>
-                              ) : (
-                                <motion.div
-                                  initial={{ width: 0, opacity: 0 }}
-                                  animate={{ width: "100%", opacity: 1 }}
-                                  className="flex items-center gap-2 w-full bg-white/5 rounded-md px-2 py-1 h-full"
-                                  onClick={(e) => e.stopPropagation()}
-                                >
-                                  <Search className="w-3 h-3 text-[#A3A19E]" />
-                                  <input
-                                    type="text"
-                                    autoFocus
-                                    placeholder="Search threads..."
-                                    value={headerSearchQuery}
-                                    onChange={(e) => setHeaderSearchQuery(e.target.value)}
-                                    className="bg-transparent border-none outline-none text-[12px] text-[#E8E6E3] placeholder:text-[#555350] w-full"
-                                  />
-                                  <X
-                                    className="w-3 h-3 text-[#555350] hover:text-[#E8E6E3] cursor-pointer"
-                                    onClick={(e) => { e.stopPropagation(); setHeaderSearchOpen(false); setHeaderSearchQuery(""); }}
-                                  />
-                                </motion.div>
-                              )}
-                            </div>
-                            <div className="overflow-y-auto custom-scrollbar flex-1 space-y-[2px]">
-                              {(() => {
-                                const filteredChats = chats.filter(c =>
-                                  c.title &&
-                                  c.title.toLowerCase().includes(headerSearchQuery.toLowerCase())
-                                );
-
-                                if (filteredChats.length === 0) {
-                                  return <div className="px-2 py-2 text-[13px] text-[#555350] italic">No threads found</div>;
-                                }
-
-                                return filteredChats.map(chat => (
-                                  <div
-                                    key={chat.id}
-                                    onClick={() => {
-                                      loadChat(chat.id);
-                                      setHeaderMenuOpen(false);
-                                    }}
-                                    className={`w-full text-left px-3 py-2 text-[13px] rounded-lg truncate transition-all duration-150 flex items-center group cursor-pointer border border-transparent active:scale-[0.98] ${ activeChatId === chat.id ? 'bg-white/10 text-white font-medium shadow-sm' : 'text-[#A3A19E] hover:bg-white/5 active:bg-white/10 hover:text-[#E8E6E3]' }`}
-                                  >
-                                    {chat.title}
-                                  </div>
-                                ));
-                              })()}
-                            </div>
-                          </motion.div>
-                        </>
-                      )}
-                    </AnimatePresence>
-                  </div>
-                );
-              })()}
-            </div>
-
-            {/* Sub-Agent Tabs — shown in header when agents are active */}
-            {realSubAgents.length > 0 && activeView === 'chat' && activeChatId && (
-              <div className="eterx-agent-dock pointer-events-auto [-webkit-app-region:no-drag]" role="tablist" aria-label="Agent workspaces">
-                {/* Main agent tab */}
-                <button
-                  type="button"
-                  onClick={() => setActiveSubAgentTab(null)}
-                  role="tab"
-                  aria-selected={!activeSubAgentTab}
-                  className={`eterx-agent-tab eterx-agent-tab-main flex items-center gap-2
-                    ${!activeSubAgentTab
-                      ? 'eterx-agent-tab-active'
-                      : 'eterx-agent-tab-idle'
-                    }`}
-                >
-                  <span className="eterx-main-agent-glyph">
-                    <Sparkles className="h-3.5 w-3.5" strokeWidth={2.1} />
-                  </span>
-                  <span className="eterx-agent-tab-label">Main</span>
-                </button>
-                {/* Sub-agent tabs */}
-                {headerSubAgentTabs.map((agent: any) => {
-                  const isActive = activeSubAgentTab === agent.name;
-                  const isClosed = agent.status === 'closed';
-                  const isWorking = agent.status === 'working' || agent.status === 'spawning';
-                  return (
-                    <button
-                      key={agent.name}
-                      type="button"
-                      onClick={() => setActiveSubAgentTab(agent.name)}
-                      role="tab"
-                      aria-selected={isActive}
-                      title={agent.task || agent.currentAction || agent.name}
-                      className={`eterx-agent-tab min-w-0
-                        ${isActive
-                          ? 'eterx-agent-tab-active'
-                          : isClosed
-                            ? 'eterx-agent-tab-closed'
-                            : 'eterx-agent-tab-idle'
-                        }`}
-                    >
-                      <SubAgentAvatar name={agent.name} status={agent.status} size="xs" />
-                      <span className={`eterx-agent-tab-label min-w-0 truncate ${isClosed ? 'line-through' : ''}`}>{agent.name}</span>
-                      {isWorking && (
-                        <span className="eterx-agent-working-ring" aria-label="Working" />
-                      )}
-                    </button>
-                  );
-                })}
-                {hiddenHeaderSubAgentCount > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => setAgentTeamOpen(true)}
-                    className="eterx-agent-tab eterx-agent-tab-overflow"
-                    title={`${hiddenHeaderSubAgentCount} more agents`}
-                  >
-                    <MoreHorizontal className="h-4 w-4" strokeWidth={2.1} />
-                    <span className="text-[11px] font-semibold">+{hiddenHeaderSubAgentCount}</span>
-                  </button>
-                )}
-              </div>
-            )}
-
-            <div className="flex shrink-0 items-center gap-1.5 pointer-events-auto [-webkit-app-region:no-drag]">
-              {canUseMonitor && (
-                <div className="relative">
-                  <button
-                    type="button"
-                    aria-label="Toggle git environment dropdown"
-                    onMouseDown={(e) => e.stopPropagation()}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setEnvDropdownOpen(!envDropdownOpen);
-                    }}
-                    className={`relative eterx-header-icon-button flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-transparent bg-transparent text-[var(--sidebar-muted-text)] transition-colors duration-150 hover:bg-[var(--sidebar-toggle-hover-bg)] hover:text-[var(--sidebar-hover-text)] active:bg-[var(--sidebar-toggle-active-bg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--sidebar-focus-ring)] ${envDropdownOpen ? 'bg-[var(--sidebar-toggle-hover-bg)] text-[var(--sidebar-hover-text)]' : ''}`}
-                  >
-                    <ListTodo className="h-[17px] w-[17px]" strokeWidth={2.15} />
-                  </button>
-                  <AnimatePresence>
-                    {envDropdownOpen && (() => {
-                      const chatId = activeChatId || 'default';
-                      const layout = workMenuLayouts[chatId] || { x: 0, y: 0, width: 320, height: 'auto' };
-                      return (
-                        <motion.div
-                          ref={envDropdownRef}
-                          initial={{ opacity: 0, y: -5, scale: 0.98 }}
-                          animate={{ opacity: 1, y: 0, scale: 1 }}
-                          exit={{ opacity: 0, y: -5, scale: 0.98 }}
-                          transition={{ duration: 0.15, ease: "easeOut" }}
-                          onMouseLeave={() => setActiveSubmenu(null)}
-                          className="eterx-work-menu absolute right-0 top-[calc(100%+10px)] z-[70] flex flex-col"
-                          style={{
-                            transform: `translate(${layout.x}px, ${layout.y}px)`,
-                            width: layout.width,
-                            height: layout.height,
-                          }}
-                          onMouseDown={(e) => e.stopPropagation()}
-                        >
-                          {/* Drag handle */}
-                          <div 
-                            className="eterx-work-menu-drag-bar group/drag"
-                            onMouseDown={handleMenuDragStart}
-                          >
-                            <div className="eterx-work-menu-drag-handle" />
-                          </div>
-
-                          {/* Resize handles */}
-                          <div 
-                            className="eterx-work-menu-resize-l"
-                            onMouseDown={handleMenuResizeLeftStart}
-                          />
-                          <div 
-                            className="eterx-work-menu-resize-b"
-                            onMouseDown={handleMenuResizeBottomStart}
-                          />
-                          <div 
-                            className="eterx-work-menu-resize-corner"
-                            onMouseDown={handleMenuResizeCornerStart}
-                          />
-
-                          <div className="eterx-work-menu-content flex-1 overflow-y-auto custom-scrollbar">
-                        <WorkMenuSectionButton
-                          title="Todo"
-                          meta={todoCounterText || (isThinking ? 'Live' : undefined)}
-                          open={todoSectionOpen}
-                          onMouseEnter={() => setActiveSubmenu(null)}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setTodoSectionOpen(!todoSectionOpen);
-                          }}
-                        />
-
-                        {/* Todo List Container */}
-                        <AnimatePresence initial={false}>
-                          {todoSectionOpen && (
-                            <motion.div
-                              initial={{ height: 0, opacity: 0 }}
-                              animate={{ height: "auto", opacity: 1 }}
-                              exit={{ height: 0, opacity: 0 }}
-                              transition={{ duration: 0.15, ease: "easeOut" }}
-                              className="overflow-hidden"
+                            {/* Drag handle */}
+                            <div
+                              className="eterx-work-menu-drag-bar group/drag"
+                              onMouseDown={handleMenuDragStart}
                             >
-                              <div 
-                                onMouseEnter={() => setActiveSubmenu(null)}
-                                className="eterx-work-menu-list custom-scrollbar mb-1"
-                              >
-                                {(() => {
-                                  const tracker = lastTaskTracker || currentTaskTracker;
-                                  const isGenerating = tracker?.phase === 'generating' || 
-                                                       tracker?.status === 'generating' || 
-                                                       (isThinking && (!tracker || !tracker.steps || tracker.steps.length === 0));
-
-                                   if (isGenerating) {
-                                     return (
-                                      <div className="space-y-1 px-1 py-1">
-                                        {['Preparing steps', 'Checking scope', 'Organizing work'].map((label, index) => (
-                                          <div key={label} className="eterx-work-menu-task-row text-white/58">
-                                            <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full border border-[#A9A9A9]/30 bg-white/[0.02]">
-                                              <span
-                                                className="h-[4px] w-[4px] rounded-full bg-current opacity-60 animate-[eterx-task-dot_2.8s_ease-in-out_infinite]"
-                                                style={{ animationDelay: `${ index * 0.32 }s` }}
-                                              />
-                                            </span>
-                                            <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-white/50">
-                                              {label}
-                                            </span>
-                                          </div>
-                                        ))}
-                                      </div>
-                                    );
-                                  }
-
-                                  if (tracker?.steps && tracker.steps.length > 0) {
-                                    return tracker.steps.map((step) => {
-                                      const activeWorking = step.status === 'in_progress' || (step.status === 'pending' && tracker.activeStepName === step.name);
-                                      return (
-                                        <div
-                                          key={step.id || step.step}
-                                          className="eterx-work-menu-task-row text-white/80"
-                                        >
-                                          <span className="shrink-0">
-                                            <TaskStatusGlyphMini status={step.status} active={activeWorking} />
-                                          </span>
-                                          <span className={`truncate flex-1 ${step.status === 'done' ? 'line-through text-white/45' : activeWorking ? 'text-white font-medium' : 'text-white/70'}`}>
-                                            {step.name || `Task ${step.step}`}
-                                          </span>
-                                        </div>
-                                      );
-                                    });
-                                  }
-
-                                  return (
-                                    <WorkMenuEmptyState label="Nothing to show" />
-                                  );
-                                })()}
-                              </div>
-                            </motion.div>
-                          )}
-                        </AnimatePresence>
-
-                        {/* Divider */}
-                        <div
-                          onMouseEnter={() => setActiveSubmenu(null)}
-                          className="eterx-work-menu-divider"
-                        />
-
-                        {/* Changes Row */}
-                        <button
-                          onMouseEnter={() => setActiveSubmenu(null)}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setEnvDropdownOpen(false);
-                            setMonitorOpen(true);
-                          }}
-                          className="eterx-work-menu-row group"
-                        >
-                          <PlusSquare className="eterx-work-menu-row-icon" />
-                          <span className="flex min-w-0 flex-1 items-center justify-between gap-3">
-                            <span className="truncate text-white/90">Changes</span>
-                            <div className="flex shrink-0 items-center gap-1.5 text-[11px] font-semibold tabular-nums">
-                              <span className="text-[#19C37D]">+{chatChangeStats.additions}</span>
-                              <span className="text-[#EF4444]">-{chatChangeStats.deletions}</span>
+                              <div className="eterx-work-menu-drag-handle" />
                             </div>
-                          </span>
-                        </button>
 
-                        {/* Local Row */}
-                        <div
-                          role="button"
-                          tabIndex={0}
-                          onMouseEnter={() => setActiveSubmenu('local')}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setActiveSubmenu(activeSubmenu === 'local' ? null : 'local');
-                          }}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter' || e.key === ' ') {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              setActiveSubmenu(activeSubmenu === 'local' ? null : 'local');
-                            }
-                          }}
-                          className={`eterx-work-menu-row group relative ${activeSubmenu === 'local' ? 'eterx-work-menu-row-active' : ''}`}
-                        >
-                          <Monitor className="eterx-work-menu-row-icon" />
-                          <span className="flex min-w-0 flex-1 items-center justify-between gap-3">
-                            <span className={`truncate ${activeSubmenu === 'local' ? 'text-white font-medium' : ''}`}>{currentEnv}</span>
-                            <ChevronRight className={`h-3.5 w-3.5 shrink-0 text-white/30 transition-transform ${activeSubmenu === 'local' ? 'text-white' : ''}`} />
-                          </span>
+                            {/* Resize handles */}
+                            <div
+                              className="eterx-work-menu-resize-l"
+                              onMouseDown={handleMenuResizeLeftStart}
+                            />
+                            <div
+                              className="eterx-work-menu-resize-b"
+                              onMouseDown={handleMenuResizeBottomStart}
+                            />
+                            <div
+                              className="eterx-work-menu-resize-corner"
+                              onMouseDown={handleMenuResizeCornerStart}
+                            />
 
-                          {/* Local Submenu Flyout */}
-                          <AnimatePresence>
-                            {activeSubmenu === 'local' && (
-                              <motion.div
-                                initial={{ opacity: 0, x: 5 }}
-                                animate={{ opacity: 1, x: 0 }}
-                                exit={{ opacity: 0, x: 5 }}
-                                transition={{ duration: 0.15 }}
-                                className="eterx-work-menu-flyout absolute right-[calc(100%+10px)] top-0 w-[248px]"
-                                onClick={(e) => e.stopPropagation()}
-                              >
-                                <div className="eterx-work-menu-flyout-label">
-                                  Continue in
-                                </div>
+                            <div className="eterx-work-menu-content flex-1 overflow-y-auto custom-scrollbar">
+                              <WorkMenuSectionButton
+                                title="Todo"
+                                meta={todoCounterText || (isThinking ? 'Live' : undefined)}
+                                open={todoSectionOpen}
+                                onMouseEnter={() => setActiveSubmenu(null)}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setTodoSectionOpen(!todoSectionOpen);
+                                }}
+                              />
 
-                                <button 
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setCurrentEnv('Local');
-                                    setActiveSubmenu(null);
-                                  }}
-                                  className="eterx-work-menu-row group"
-                                >
-                                  <Monitor className="eterx-work-menu-row-icon" />
-                                  <span className="flex min-w-0 flex-1 items-center justify-between gap-3">
-                                    <span className={`truncate ${currentEnv === 'Local' ? 'text-white font-medium' : ''}`}>Work locally</span>
-                                    {currentEnv === 'Local' && <Check className="w-3.5 h-3.5 text-[#19C37D] shrink-0" />}
-                                  </span>
-                                </button>
-
-                                <button 
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setCurrentEnv('Worktree');
-                                    setActiveSubmenu(null);
-                                  }}
-                                  className="eterx-work-menu-row group"
-                                >
-                                  <GitFork className="eterx-work-menu-row-icon" />
-                                  <span className="flex min-w-0 flex-1 items-center justify-between gap-3">
-                                    <span className={`truncate ${currentEnv === 'Worktree' ? 'text-white font-medium' : ''}`}>Handoff to worktree</span>
-                                    {currentEnv === 'Worktree' && <Check className="w-3.5 h-3.5 text-[#19C37D] shrink-0" />}
-                                  </span>
-                                </button>
-
-                                <button 
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setCurrentEnv('Sandbox');
-                                    setActiveSubmenu(null);
-                                  }}
-                                  className="eterx-work-menu-row group"
-                                >
-                                  <Terminal className="eterx-work-menu-row-icon" />
-                                  <span className="flex min-w-0 flex-1 items-center justify-between gap-3">
-                                    <span className={`truncate ${currentEnv === 'Sandbox' ? 'text-white font-medium' : ''}`}>Sandbox</span>
-                                    {currentEnv === 'Sandbox' && <Check className="w-3.5 h-3.5 text-[#19C37D] shrink-0" />}
-                                  </span>
-                                </button>
-                              </motion.div>
-                            )}
-                          </AnimatePresence>
-                        </div>
-
-                        {/* Branch Row */}
-                        <div
-                          role="button"
-                          tabIndex={0}
-                          onMouseEnter={() => setActiveSubmenu('branch')}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setActiveSubmenu(activeSubmenu === 'branch' ? null : 'branch');
-                          }}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter' || e.key === ' ') {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              setActiveSubmenu(activeSubmenu === 'branch' ? null : 'branch');
-                            }
-                          }}
-                          className={`eterx-work-menu-row group relative ${activeSubmenu === 'branch' ? 'eterx-work-menu-row-active' : ''}`}
-                        >
-                          <GitBranch className="eterx-work-menu-row-icon" />
-                          <span className="flex min-w-0 flex-1 items-center justify-between gap-3">
-                            <span className={`truncate font-mono ${activeSubmenu === 'branch' ? 'text-white font-medium' : ''}`}>{currentBranch}</span>
-                            <ChevronRight className={`h-3.5 w-3.5 shrink-0 text-white/30 transition-transform ${activeSubmenu === 'branch' ? 'text-white' : ''}`} />
-                          </span>
-
-                          {/* Branch Submenu Flyout */}
-                          <AnimatePresence>
-                            {activeSubmenu === 'branch' && (
-                              <motion.div
-                                initial={{ opacity: 0, x: 5 }}
-                                animate={{ opacity: 1, x: 0 }}
-                                exit={{ opacity: 0, x: 5 }}
-                                transition={{ duration: 0.15 }}
-                                className="eterx-work-menu-flyout absolute right-[calc(100%+10px)] top-0 w-[276px]"
-                                onClick={(e) => e.stopPropagation()}
-                              >
-                                {gitError && (
-                                  <div className="mb-1.5 rounded-[10px] border border-red-500/20 bg-red-500/10 p-2 text-[11px] text-red-400 break-words">
-                                    {gitError}
-                                  </div>
-                                )}
-
-                                {isCreatingBranch ? (
-                                  <div className="flex flex-col gap-2">
-                                    <div className="eterx-work-menu-flyout-label px-1">
-                                      Create new branch
-                                    </div>
-                                    
-                                    <div className="eterx-work-menu-search">
-                                      <GitBranch className="h-3.5 w-3.5 shrink-0 text-white/34" />
-                                      <input
-                                        type="text"
-                                        placeholder="Branch name"
-                                        autoFocus
-                                        value={newBranchName}
-                                        onChange={(e) => setNewBranchName(e.target.value)}
-                                        className="w-full border-none bg-transparent font-mono text-[12px] text-white/90 outline-none placeholder:text-white/35"
-                                        onKeyDown={(e) => {
-                                          if (e.key === 'Enter') {
-                                            handleCreateBranchSubmit();
-                                          } else if (e.key === 'Escape') {
-                                            setIsCreatingBranch(false);
-                                            setNewBranchName('');
-                                          }
-                                        }}
-                                      />
-                                    </div>
-
-                                    <div className="flex items-center gap-2 justify-end mt-1">
-                                      <button
-                                        onClick={() => {
-                                          setIsCreatingBranch(false);
-                                          setNewBranchName('');
-                                          setGitError(null);
-                                        }}
-                                        className="rounded-[8px] bg-white/[0.055] px-2.5 py-1 text-[11px] font-medium text-white/78 transition-colors hover:bg-white/[0.10] hover:text-white"
-                                      >
-                                        Cancel
-                                      </button>
-                                      <button
-                                        disabled={!newBranchName.trim()}
-                                        onClick={handleCreateBranchSubmit}
-                                        className="rounded-[8px] bg-[#19C37D]/18 px-2.5 py-1 text-[11px] font-semibold text-[#35D291] transition-colors hover:bg-[#19C37D]/28 disabled:text-[#19C37D]/50 disabled:opacity-40 disabled:hover:bg-[#19C37D]/18"
-                                      >
-                                        Create
-                                      </button>
-                                    </div>
-                                  </div>
-                                ) : (
-                                  <>
-                                    <div className="eterx-work-menu-search mb-1.5">
-                                      <Search className="h-3.5 w-3.5 shrink-0 text-white/34" />
-                                      <input
-                                        type="text"
-                                        placeholder="Search branches"
-                                        value={branchSearch}
-                                        onChange={(e) => setBranchSearch(e.target.value)}
-                                        className="w-full border-none bg-transparent text-[12px] text-white/90 outline-none placeholder:text-white/35"
-                                      />
-                                    </div>
-
-                                    <div className="eterx-work-menu-flyout-label">
-                                      Branches
-                                    </div>
-
-                                    <div className="eterx-work-menu-list eterx-work-menu-list-tall custom-scrollbar">
+                              {/* Todo List Container */}
+                              <AnimatePresence initial={false}>
+                                {todoSectionOpen && (
+                                  <motion.div
+                                    initial={{ height: 0, opacity: 0 }}
+                                    animate={{ height: "auto", opacity: 1 }}
+                                    exit={{ height: 0, opacity: 0 }}
+                                    transition={{ duration: 0.15, ease: "easeOut" }}
+                                    className="overflow-hidden"
+                                  >
+                                    <div
+                                      onMouseEnter={() => setActiveSubmenu(null)}
+                                      className="eterx-work-menu-list custom-scrollbar mb-1"
+                                    >
                                       {(() => {
-                                        const filteredBranches = gitBranches.filter(b => 
-                                          b.name.toLowerCase().includes(branchSearch.toLowerCase())
-                                        );
+                                        const tracker = lastTaskTracker || currentTaskTracker;
+                                        const isGenerating = tracker?.phase === 'generating' ||
+                                          tracker?.status === 'generating' ||
+                                          (isThinking && (!tracker || !tracker.steps || tracker.steps.length === 0));
 
-                                        if (filteredBranches.length === 0) {
-                                          return <WorkMenuEmptyState label="No branches found" />;
+                                        if (isGenerating) {
+                                          return (
+                                            <div className="space-y-1 px-1 py-1">
+                                              {['Preparing steps', 'Checking scope', 'Organizing work'].map((label, index) => (
+                                                <div key={label} className="eterx-work-menu-task-row text-white/58">
+                                                  <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full border border-[#A9A9A9]/30 bg-white/[0.02]">
+                                                    <span
+                                                      className="h-[4px] w-[4px] rounded-full bg-current opacity-60 animate-[eterx-task-dot_2.8s_ease-in-out_infinite]"
+                                                      style={{ animationDelay: `${ index * 0.32 }s` }}
+                                                    />
+                                                  </span>
+                                                  <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-white/50">
+                                                    {label}
+                                                  </span>
+                                                </div>
+                                              ))}
+                                            </div>
+                                          );
                                         }
 
-                                        return filteredBranches.map((b) => (
-                                          <button 
-                                            key={b.name}
-                                            onClick={(e) => {
-                                              e.stopPropagation();
-                                              handleCheckoutBranch(b.name);
-                                            }}
-                                            className="eterx-work-menu-row group items-start"
-                                          >
-                                            <GitBranch className="eterx-work-menu-row-icon mt-0.5" />
-                                            <span className="flex min-w-0 flex-1 items-start justify-between gap-3">
-                                              <div className="flex flex-col min-w-0">
-                                                <span className={`truncate font-mono ${currentBranch === b.name ? 'text-white font-medium' : 'text-white/70'}`}>{b.name}</span>
-                                                {b.uncommitted && (
-                                                  <span className="text-[10px] text-white/35">{b.uncommitted}</span>
-                                                )}
+                                        if (tracker?.steps && tracker.steps.length > 0) {
+                                          return tracker.steps.map((step) => {
+                                            const activeWorking = step.status === 'in_progress' || (step.status === 'pending' && tracker.activeStepName === step.name);
+                                            return (
+                                              <div
+                                                key={step.id || step.step}
+                                                className="eterx-work-menu-task-row text-white/80"
+                                              >
+                                                <span className="shrink-0">
+                                                  <TaskStatusGlyphMini status={step.status} active={activeWorking} />
+                                                </span>
+                                                <span className={`truncate flex-1 ${ step.status === 'done' ? 'line-through text-white/45' : activeWorking ? 'text-white font-medium' : 'text-white/70' }`}>
+                                                  {step.name || `Task ${ step.step }`}
+                                                </span>
                                               </div>
-                                              {currentBranch === b.name && (
-                                                <Check className="w-3.5 h-3.5 text-[#19C37D] shrink-0 mt-0.5" />
-                                              )}
-                                            </span>
-                                          </button>
-                                        ));
+                                            );
+                                          });
+                                        }
+
+                                        return (
+                                          <WorkMenuEmptyState label="Nothing to show" />
+                                        );
                                       })()}
                                     </div>
-
-                                    <div className="eterx-work-menu-divider my-1" />
-
-                                    <button 
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        setIsCreatingBranch(true);
-                                      }}
-                                      className="eterx-work-menu-row group text-white/64"
-                                    >
-                                      <PlusSquare className="eterx-work-menu-row-icon" />
-                                      <span className="min-w-0 flex-1 truncate">Create and checkout new branch...</span>
-                                    </button>
-                                  </>
+                                  </motion.div>
                                 )}
-                              </motion.div>
-                            )}
-                          </AnimatePresence>
-                        </div>
+                              </AnimatePresence>
 
-                        {/* Commit/Push Row */}
-                        <button 
-                          onMouseEnter={() => setActiveSubmenu(null)}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setEnvDropdownOpen(false);
-                            setMonitorOpen(true);
-                          }}
-                          className="eterx-work-menu-row group"
-                        >
-                          <GitCommit className="eterx-work-menu-row-icon" />
-                          <span className="min-w-0 flex-1 truncate">Commit or push</span>
-                        </button>
-
-                        {/* Divider */}
-                        <div
-                          onMouseEnter={() => setActiveSubmenu(null)}
-                          className="eterx-work-menu-divider"
-                        />
-
-                        <WorkMenuSectionButton
-                          title="Sources"
-                          meta={workMenuSources.length || undefined}
-                          open={sourcesSectionOpen}
-                          onMouseEnter={() => setActiveSubmenu(null)}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setSourcesSectionOpen(!sourcesSectionOpen);
-                          }}
-                        />
-
-                        {/* Sources List Container */}
-                        <AnimatePresence initial={false}>
-                          {sourcesSectionOpen && (
-                            <motion.div
-                              initial={{ height: 0, opacity: 0 }}
-                              animate={{ height: "auto", opacity: 1 }}
-                              exit={{ height: 0, opacity: 0 }}
-                              transition={{ duration: 0.15, ease: "easeOut" }}
-                              className="overflow-hidden"
-                            >
+                              {/* Divider */}
                               <div
                                 onMouseEnter={() => setActiveSubmenu(null)}
-                                className="eterx-work-menu-list custom-scrollbar"
-                              >
-                                {workMenuSources.length > 0 ? (
-                                  workMenuSources.map((item) => {
-                                    const iconPath = getFileIconPath(item.path);
-                                    return (
-                                      <div
-                                        key={item.id}
-                                        className="eterx-work-menu-row group"
-                                        title={item.path}
-                                      >
-                                        <img
-                                          src={iconPath}
-                                          className="h-4 w-4 shrink-0 object-contain transition-transform duration-100 group-hover:scale-105"
-                                          alt=""
-                                        />
-                                        <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-white/80 group-hover:text-white">
-                                          {item.name}
-                                        </span>
-                                        {((item.additions || 0) > 0 || (item.deletions || 0) > 0) && (
-                                          <div className="ml-1 flex shrink-0 items-center gap-1.5 text-[10.5px] font-semibold tabular-nums">
-                                            {(item.additions || 0) > 0 && <span className="text-[#34D399]">+{item.additions}</span>}
-                                            {(item.deletions || 0) > 0 && <span className="text-[#F87171]">-{item.deletions}</span>}
-                                          </div>
-                                        )}
-                                      </div>
-                                    );
-                                  })
-                                ) : (
-                                  <WorkMenuEmptyState label="No active sources" />
-                                )}
-                              </div>
-                            </motion.div>
-                          )}
-                        </AnimatePresence>
+                                className="eterx-work-menu-divider"
+                              />
 
-                        {/* Divider */}
-                        <div
-                          onMouseEnter={() => setActiveSubmenu(null)}
-                          className="eterx-work-menu-divider"
-                        />
-
-                        <WorkMenuSectionButton
-                          title="Sub-agents"
-                          meta={realSubAgents.length || undefined}
-                          open={subAgentsSectionOpen}
-                          onMouseEnter={() => setActiveSubmenu(null)}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setSubAgentsSectionOpen(!subAgentsSectionOpen);
-                          }}
-                        />
-
-                        {/* Sub-agents Row */}
-                        <AnimatePresence initial={false}>
-                          {subAgentsSectionOpen && (
-                            <motion.div
-                              initial={{ height: 0, opacity: 0 }}
-                              animate={{ height: "auto", opacity: 1 }}
-                              exit={{ height: 0, opacity: 0 }}
-                              transition={{ duration: 0.15, ease: "easeOut" }}
-                              className="overflow-hidden"
-                            >
-                              <div 
+                              {/* Changes Row */}
+                              <button
                                 onMouseEnter={() => setActiveSubmenu(null)}
-                                className="eterx-work-menu-list custom-scrollbar"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setEnvDropdownOpen(false);
+                                  setMonitorOpen(true);
+                                }}
+                                className="eterx-work-menu-row group"
                               >
-                                {realSubAgents.length > 0 ? (
-                                  realSubAgents.map((agent) => {
-                                    const isClosed = agent.status === 'closed';
-                                    return (
-                                      <div
-                                        key={agent.name}
-                                        className="eterx-work-menu-row group"
-                                        onClick={() => {
-                                          handleOpenAgentTeam(agent.name);
-                                          setEnvDropdownOpen(false);
-                                        }}
-                                      >
-                                        <SubAgentAvatar name={agent.name} status={agent.status} size="xs" />
-                                        {/* Agent name */}
-                                        <span className={`truncate flex-1 text-[12px] font-medium ${isClosed ? 'text-white/30 line-through' : 'text-white/75 group-hover:text-white'}`} title={agent.task}>
-                                          {agent.name}
-                                        </span>
-                                        <WorkMenuStatusIndicator status={agent.status} />
+                                <PlusSquare className="eterx-work-menu-row-icon" />
+                                <span className="flex min-w-0 flex-1 items-center justify-between gap-3">
+                                  <span className="truncate text-white/90">Changes</span>
+                                  <div className="flex shrink-0 items-center gap-1.5 text-[11px] font-semibold tabular-nums">
+                                    <span className="text-[#19C37D]">+{chatChangeStats.additions}</span>
+                                    <span className="text-[#EF4444]">-{chatChangeStats.deletions}</span>
+                                  </div>
+                                </span>
+                              </button>
+
+                              {/* Local Row */}
+                              <div
+                                role="button"
+                                tabIndex={0}
+                                onMouseEnter={() => setActiveSubmenu('local')}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setActiveSubmenu(activeSubmenu === 'local' ? null : 'local');
+                                }}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter' || e.key === ' ') {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    setActiveSubmenu(activeSubmenu === 'local' ? null : 'local');
+                                  }
+                                }}
+                                className={`eterx-work-menu-row group relative ${ activeSubmenu === 'local' ? 'eterx-work-menu-row-active' : '' }`}
+                              >
+                                <Monitor className="eterx-work-menu-row-icon" />
+                                <span className="flex min-w-0 flex-1 items-center justify-between gap-3">
+                                  <span className={`truncate ${ activeSubmenu === 'local' ? 'text-white font-medium' : '' }`}>{currentEnv}</span>
+                                  <ChevronRight className={`h-3.5 w-3.5 shrink-0 text-white/30 transition-transform ${ activeSubmenu === 'local' ? 'text-white' : '' }`} />
+                                </span>
+
+                                {/* Local Submenu Flyout */}
+                                <AnimatePresence>
+                                  {activeSubmenu === 'local' && (
+                                    <motion.div
+                                      initial={{ opacity: 0, x: 5 }}
+                                      animate={{ opacity: 1, x: 0 }}
+                                      exit={{ opacity: 0, x: 5 }}
+                                      transition={{ duration: 0.15 }}
+                                      className="eterx-work-menu-flyout absolute right-[calc(100%+10px)] top-0 w-[248px]"
+                                      onClick={(e) => e.stopPropagation()}
+                                    >
+                                      <div className="eterx-work-menu-flyout-label">
+                                        Continue in
                                       </div>
-                                    );
-                                  })
-                                ) : (
-                                  <WorkMenuEmptyState label="No active sub-agents" />
-                                )}
+
+                                      <button
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setCurrentEnv('Local');
+                                          setActiveSubmenu(null);
+                                        }}
+                                        className="eterx-work-menu-row group"
+                                      >
+                                        <Monitor className="eterx-work-menu-row-icon" />
+                                        <span className="flex min-w-0 flex-1 items-center justify-between gap-3">
+                                          <span className={`truncate ${ currentEnv === 'Local' ? 'text-white font-medium' : '' }`}>Work locally</span>
+                                          {currentEnv === 'Local' && <Check className="w-3.5 h-3.5 text-[#19C37D] shrink-0" />}
+                                        </span>
+                                      </button>
+
+                                      <button
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setCurrentEnv('Worktree');
+                                          setActiveSubmenu(null);
+                                        }}
+                                        className="eterx-work-menu-row group"
+                                      >
+                                        <GitFork className="eterx-work-menu-row-icon" />
+                                        <span className="flex min-w-0 flex-1 items-center justify-between gap-3">
+                                          <span className={`truncate ${ currentEnv === 'Worktree' ? 'text-white font-medium' : '' }`}>Handoff to worktree</span>
+                                          {currentEnv === 'Worktree' && <Check className="w-3.5 h-3.5 text-[#19C37D] shrink-0" />}
+                                        </span>
+                                      </button>
+
+                                      <button
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setCurrentEnv('Sandbox');
+                                          setActiveSubmenu(null);
+                                        }}
+                                        className="eterx-work-menu-row group"
+                                      >
+                                        <Terminal className="eterx-work-menu-row-icon" />
+                                        <span className="flex min-w-0 flex-1 items-center justify-between gap-3">
+                                          <span className={`truncate ${ currentEnv === 'Sandbox' ? 'text-white font-medium' : '' }`}>Sandbox</span>
+                                          {currentEnv === 'Sandbox' && <Check className="w-3.5 h-3.5 text-[#19C37D] shrink-0" />}
+                                        </span>
+                                      </button>
+                                    </motion.div>
+                                  )}
+                                </AnimatePresence>
                               </div>
-                            </motion.div>
-                          )}
-                        </AnimatePresence>
-                          </div>
-                        </motion.div>
-                      );
-                    })()}
-                  </AnimatePresence>
+
+                              {/* Branch Row */}
+                              <div
+                                role="button"
+                                tabIndex={0}
+                                onMouseEnter={() => setActiveSubmenu('branch')}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setActiveSubmenu(activeSubmenu === 'branch' ? null : 'branch');
+                                }}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter' || e.key === ' ') {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    setActiveSubmenu(activeSubmenu === 'branch' ? null : 'branch');
+                                  }
+                                }}
+                                className={`eterx-work-menu-row group relative ${ activeSubmenu === 'branch' ? 'eterx-work-menu-row-active' : '' }`}
+                              >
+                                <GitBranch className="eterx-work-menu-row-icon" />
+                                <span className="flex min-w-0 flex-1 items-center justify-between gap-3">
+                                  <span className={`truncate font-mono ${ activeSubmenu === 'branch' ? 'text-white font-medium' : '' }`}>{currentBranch}</span>
+                                  <ChevronRight className={`h-3.5 w-3.5 shrink-0 text-white/30 transition-transform ${ activeSubmenu === 'branch' ? 'text-white' : '' }`} />
+                                </span>
+
+                                {/* Branch Submenu Flyout */}
+                                <AnimatePresence>
+                                  {activeSubmenu === 'branch' && (
+                                    <motion.div
+                                      initial={{ opacity: 0, x: 5 }}
+                                      animate={{ opacity: 1, x: 0 }}
+                                      exit={{ opacity: 0, x: 5 }}
+                                      transition={{ duration: 0.15 }}
+                                      className="eterx-work-menu-flyout absolute right-[calc(100%+10px)] top-0 w-[276px]"
+                                      onClick={(e) => e.stopPropagation()}
+                                    >
+                                      {gitError && (
+                                        <div className="mb-1.5 rounded-[10px] border border-red-500/20 bg-red-500/10 p-2 text-[11px] text-red-400 break-words">
+                                          {gitError}
+                                        </div>
+                                      )}
+
+                                      {isCreatingBranch ? (
+                                        <div className="flex flex-col gap-2">
+                                          <div className="eterx-work-menu-flyout-label px-1">
+                                            Create new branch
+                                          </div>
+
+                                          <div className="eterx-work-menu-search">
+                                            <GitBranch className="h-3.5 w-3.5 shrink-0 text-white/34" />
+                                            <input
+                                              type="text"
+                                              placeholder="Branch name"
+                                              autoFocus
+                                              value={newBranchName}
+                                              onChange={(e) => setNewBranchName(e.target.value)}
+                                              className="w-full border-none bg-transparent font-mono text-[12px] text-white/90 outline-none placeholder:text-white/35"
+                                              onKeyDown={(e) => {
+                                                if (e.key === 'Enter') {
+                                                  handleCreateBranchSubmit();
+                                                } else if (e.key === 'Escape') {
+                                                  setIsCreatingBranch(false);
+                                                  setNewBranchName('');
+                                                }
+                                              }}
+                                            />
+                                          </div>
+
+                                          <div className="flex items-center gap-2 justify-end mt-1">
+                                            <button
+                                              onClick={() => {
+                                                setIsCreatingBranch(false);
+                                                setNewBranchName('');
+                                                setGitError(null);
+                                              }}
+                                              className="rounded-[8px] bg-white/[0.055] px-2.5 py-1 text-[11px] font-medium text-white/78 transition-colors hover:bg-white/[0.10] hover:text-white"
+                                            >
+                                              Cancel
+                                            </button>
+                                            <button
+                                              disabled={!newBranchName.trim()}
+                                              onClick={handleCreateBranchSubmit}
+                                              className="rounded-[8px] bg-[#19C37D]/18 px-2.5 py-1 text-[11px] font-semibold text-[#35D291] transition-colors hover:bg-[#19C37D]/28 disabled:text-[#19C37D]/50 disabled:opacity-40 disabled:hover:bg-[#19C37D]/18"
+                                            >
+                                              Create
+                                            </button>
+                                          </div>
+                                        </div>
+                                      ) : (
+                                        <>
+                                          <div className="eterx-work-menu-search mb-1.5">
+                                            <Search className="h-3.5 w-3.5 shrink-0 text-white/34" />
+                                            <input
+                                              type="text"
+                                              placeholder="Search branches"
+                                              value={branchSearch}
+                                              onChange={(e) => setBranchSearch(e.target.value)}
+                                              className="w-full border-none bg-transparent text-[12px] text-white/90 outline-none placeholder:text-white/35"
+                                            />
+                                          </div>
+
+                                          <div className="eterx-work-menu-flyout-label">
+                                            Branches
+                                          </div>
+
+                                          <div className="eterx-work-menu-list eterx-work-menu-list-tall custom-scrollbar">
+                                            {(() => {
+                                              const filteredBranches = gitBranches.filter(b =>
+                                                b.name.toLowerCase().includes(branchSearch.toLowerCase())
+                                              );
+
+                                              if (filteredBranches.length === 0) {
+                                                return <WorkMenuEmptyState label="No branches found" />;
+                                              }
+
+                                              return filteredBranches.map((b) => (
+                                                <button
+                                                  key={b.name}
+                                                  onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    handleCheckoutBranch(b.name);
+                                                  }}
+                                                  className="eterx-work-menu-row group items-start"
+                                                >
+                                                  <GitBranch className="eterx-work-menu-row-icon mt-0.5" />
+                                                  <span className="flex min-w-0 flex-1 items-start justify-between gap-3">
+                                                    <div className="flex flex-col min-w-0">
+                                                      <span className={`truncate font-mono ${ currentBranch === b.name ? 'text-white font-medium' : 'text-white/70' }`}>{b.name}</span>
+                                                      {b.uncommitted && (
+                                                        <span className="text-[10px] text-white/35">{b.uncommitted}</span>
+                                                      )}
+                                                    </div>
+                                                    {currentBranch === b.name && (
+                                                      <Check className="w-3.5 h-3.5 text-[#19C37D] shrink-0 mt-0.5" />
+                                                    )}
+                                                  </span>
+                                                </button>
+                                              ));
+                                            })()}
+                                          </div>
+
+                                          <div className="eterx-work-menu-divider my-1" />
+
+                                          <button
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              setIsCreatingBranch(true);
+                                            }}
+                                            className="eterx-work-menu-row group text-white/64"
+                                          >
+                                            <PlusSquare className="eterx-work-menu-row-icon" />
+                                            <span className="min-w-0 flex-1 truncate">Create and checkout new branch...</span>
+                                          </button>
+                                        </>
+                                      )}
+                                    </motion.div>
+                                  )}
+                                </AnimatePresence>
+                              </div>
+
+                              {/* Commit/Push Row */}
+                              <button
+                                onMouseEnter={() => setActiveSubmenu(null)}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setEnvDropdownOpen(false);
+                                  setMonitorOpen(true);
+                                }}
+                                className="eterx-work-menu-row group"
+                              >
+                                <GitCommit className="eterx-work-menu-row-icon" />
+                                <span className="min-w-0 flex-1 truncate">Commit or push</span>
+                              </button>
+
+                              {/* Divider */}
+                              <div
+                                onMouseEnter={() => setActiveSubmenu(null)}
+                                className="eterx-work-menu-divider"
+                              />
+
+                              <WorkMenuSectionButton
+                                title="Sources"
+                                meta={workMenuSources.length || undefined}
+                                open={sourcesSectionOpen}
+                                onMouseEnter={() => setActiveSubmenu(null)}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setSourcesSectionOpen(!sourcesSectionOpen);
+                                }}
+                              />
+
+                              {/* Sources List Container */}
+                              <AnimatePresence initial={false}>
+                                {sourcesSectionOpen && (
+                                  <motion.div
+                                    initial={{ height: 0, opacity: 0 }}
+                                    animate={{ height: "auto", opacity: 1 }}
+                                    exit={{ height: 0, opacity: 0 }}
+                                    transition={{ duration: 0.15, ease: "easeOut" }}
+                                    className="overflow-hidden"
+                                  >
+                                    <div
+                                      onMouseEnter={() => setActiveSubmenu(null)}
+                                      className="eterx-work-menu-list custom-scrollbar"
+                                    >
+                                      {workMenuSources.length > 0 ? (
+                                        workMenuSources.map((item) => {
+                                          const iconPath = getFileIconPath(item.path);
+                                          return (
+                                            <div
+                                              key={item.id}
+                                              className="eterx-work-menu-row group"
+                                              title={item.path}
+                                            >
+                                              <img
+                                                src={iconPath}
+                                                className="h-4 w-4 shrink-0 object-contain transition-transform duration-100 group-hover:scale-105"
+                                                alt=""
+                                              />
+                                              <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-white/80 group-hover:text-white">
+                                                {item.name}
+                                              </span>
+                                              {((item.additions || 0) > 0 || (item.deletions || 0) > 0) && (
+                                                <div className="ml-1 flex shrink-0 items-center gap-1.5 text-[10.5px] font-semibold tabular-nums">
+                                                  {(item.additions || 0) > 0 && <span className="text-[#34D399]">+{item.additions}</span>}
+                                                  {(item.deletions || 0) > 0 && <span className="text-[#F87171]">-{item.deletions}</span>}
+                                                </div>
+                                              )}
+                                            </div>
+                                          );
+                                        })
+                                      ) : (
+                                        <WorkMenuEmptyState label="No active sources" />
+                                      )}
+                                    </div>
+                                  </motion.div>
+                                )}
+                              </AnimatePresence>
+
+                              {/* Divider */}
+                              <div
+                                onMouseEnter={() => setActiveSubmenu(null)}
+                                className="eterx-work-menu-divider"
+                              />
+
+                              <WorkMenuSectionButton
+                                title="Sub-agents"
+                                meta={realSubAgents.length || undefined}
+                                open={subAgentsSectionOpen}
+                                onMouseEnter={() => setActiveSubmenu(null)}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setSubAgentsSectionOpen(!subAgentsSectionOpen);
+                                }}
+                              />
+
+                              {/* Sub-agents Row */}
+                              <AnimatePresence initial={false}>
+                                {subAgentsSectionOpen && (
+                                  <motion.div
+                                    initial={{ height: 0, opacity: 0 }}
+                                    animate={{ height: "auto", opacity: 1 }}
+                                    exit={{ height: 0, opacity: 0 }}
+                                    transition={{ duration: 0.15, ease: "easeOut" }}
+                                    className="overflow-hidden"
+                                  >
+                                    <div
+                                      onMouseEnter={() => setActiveSubmenu(null)}
+                                      className="eterx-work-menu-list custom-scrollbar"
+                                    >
+                                      {realSubAgents.length > 0 ? (
+                                        realSubAgents.map((agent) => {
+                                          const isClosed = agent.status === 'closed';
+                                          return (
+                                            <div
+                                              key={agent.name}
+                                              className="eterx-work-menu-row group"
+                                              onClick={() => {
+                                                handleOpenAgentTeam(agent.name);
+                                                setEnvDropdownOpen(false);
+                                              }}
+                                            >
+                                              <SubAgentAvatar name={agent.name} status={agent.status} size="xs" />
+                                              {/* Agent name */}
+                                              <span className={`truncate flex-1 text-[12px] font-medium ${ isClosed ? 'text-white/30 line-through' : 'text-white/75 group-hover:text-white' }`} title={agent.task}>
+                                                {agent.name}
+                                              </span>
+                                              <WorkMenuStatusIndicator status={agent.status} />
+                                            </div>
+                                          );
+                                        })
+                                      ) : (
+                                        <WorkMenuEmptyState label="No active sub-agents" />
+                                      )}
+                                    </div>
+                                  </motion.div>
+                                )}
+                              </AnimatePresence>
+                            </div>
+                          </motion.div>
+                        );
+                      })()}
+                    </AnimatePresence>
+                  </div>
+                )}
+              </div>
+            </div>
+
+
+            <div className={`eterx-new-chat-motion-field absolute bottom-0 left-0 right-0 h-[38vh] pointer-events-none overflow-hidden z-0 flex items-end justify-center ${ showNewChatMotionField ? 'opacity-100 transition-opacity duration-[1000ms] ease-out' : 'opacity-0 transition-opacity duration-[1000ms] ease-in' }`}>
+              <div key="eterx-home-field-new-chat" className="eterx-home-field">
+                <div className="eterx-home-plasma">
+                  <div className="eterx-home-plasma-blob eterx-home-plasma-pink" />
+                  <div className="eterx-home-plasma-blob eterx-home-plasma-emerald" />
+                  <div className="eterx-home-plasma-blob eterx-home-plasma-blue" />
+                  <div className="eterx-home-plasma-blob eterx-home-plasma-lime" />
                 </div>
-              )}
-            </div>
-          </div>
-
-
-          <div className={`eterx-new-chat-motion-field absolute bottom-0 left-0 right-0 h-[38vh] pointer-events-none overflow-hidden z-0 flex items-end justify-center ${ showNewChatMotionField ? 'opacity-100 transition-opacity duration-[1000ms] ease-out' : 'opacity-0 transition-opacity duration-[1000ms] ease-in' }`}>
-            <div key="eterx-home-field-new-chat" className="eterx-home-field">
-              <div className="eterx-home-plasma">
-                <div className="eterx-home-plasma-blob eterx-home-plasma-pink" />
-                <div className="eterx-home-plasma-blob eterx-home-plasma-emerald" />
-                <div className="eterx-home-plasma-blob eterx-home-plasma-blue" />
-                <div className="eterx-home-plasma-blob eterx-home-plasma-lime" />
+                <div className="eterx-home-wave-stage">
+                  <div className="eterx-home-wave-depth eterx-home-wave-depth-back" />
+                  <div className="eterx-home-wave-volume eterx-home-wave-volume-back" />
+                  <div className="eterx-home-lobe eterx-home-lobe-left" />
+                  <div className="eterx-home-lobe eterx-home-lobe-center" />
+                  <div className="eterx-home-wave-volume eterx-home-wave-volume-mid" />
+                  <div className="eterx-home-lobe eterx-home-lobe-right" />
+                  <div className="eterx-home-wave-depth eterx-home-wave-depth-front" />
+                  <div className="eterx-home-wave-volume eterx-home-wave-volume-front" />
+                </div>
               </div>
-              <div className="eterx-home-wave-stage">
-                <div className="eterx-home-wave-depth eterx-home-wave-depth-back" />
-                <div className="eterx-home-wave-volume eterx-home-wave-volume-back" />
-                <div className="eterx-home-lobe eterx-home-lobe-left" />
-                <div className="eterx-home-lobe eterx-home-lobe-center" />
-                <div className="eterx-home-wave-volume eterx-home-wave-volume-mid" />
-                <div className="eterx-home-lobe eterx-home-lobe-right" />
-                <div className="eterx-home-wave-depth eterx-home-wave-depth-front" />
-                <div className="eterx-home-wave-volume eterx-home-wave-volume-front" />
-              </div>
+              <div className="eterx-home-vignette" />
             </div>
-            <div className="eterx-home-vignette" />
-          </div>
-          <div className={`eterx-chat-top-fade pointer-events-none absolute left-0 right-0 top-[var(--eterx-main-header-height)] z-40 h-[48px] ${activeView === 'channels' || activeView === 'projects' ? 'hidden' : ''}`} />
+            <div className={`eterx-chat-top-fade pointer-events-none absolute left-0 right-0 top-[var(--eterx-main-header-height)] z-40 h-[48px] ${ activeView === 'channels' || activeView === 'projects' ? 'hidden' : '' }`} />
 
-          {/* Split Content Area */}
-          <div
-            ref={splitContainerRef}
-            className={`flex-1 flex overflow-hidden w-full relative z-10 ${ isResizingPanels ? 'cursor-col-resize select-none' : '' }`}
-          >
-            {activeView === 'agents' && !buildingAgentId ? (
-              <AgentsView
-                onOpenBuilder={handleOpenAgentBuilder}
-                onUseAgent={handleUseAgentInChat}
-                selectedAgentId={selectedAgent}
-              />
-            ) : activeView === 'channels' ? (
-              <AgentChannelsView />
-            ) : activeView === 'projects' ? (
-              <ProjectsView />
-            ) : (
-              <>
-                {/* Chat Container */}
-                <div
-                  className={`flex flex-col relative h-full min-w-0 ${ hasOpenFiles ? `shrink-0 min-w-[320px] ${ isResizingPanels ? 'transition-none' : 'transition-[width,flex-basis] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]' }` : 'w-full transition-all duration-300' }`}
-                  style={hasOpenFiles ? { width: chatPanelWidth ?? undefined, flexBasis: chatPanelWidth === null ? `${ DEFAULT_CHAT_PANEL_RATIO * 100 }%` : undefined } : undefined}
-                >
-                  <ChatFeed
-                    key={`${activeChatId}-${activeSubAgentTab || 'main'}`}
-                    traceLogs={effectiveDisplayLogs}
-                    isThinking={effectiveIsThinking}
-                    messagesEndRef={messagesEndRef}
-                    setSidebarOpen={setSidebarOpen}
-                    sidebarOpen={sidebarOpen}
-                    handleScroll={handleScroll}
-                    showScrollBottom={showScrollBottom}
-                    isCompressed={isRightPanelVisible}
-                    onAnswerAskUser={handleAnswerAskUser}
-                    onEditUserMessage={setInputValue}
-                    onOpenAgentTeam={handleOpenAgentTeam}
-                    isSubAgentTab={!!activeSubAgentTab}
-                  />
+            {/* Split Content Area */}
+            <div
+              ref={splitContainerRef}
+              className={`flex-1 flex overflow-hidden w-full relative z-10 ${ isResizingPanels ? 'cursor-col-resize select-none' : '' }`}
+            >
+              {activeView === 'agents' && !buildingAgentId ? (
+                <AgentsView
+                  onOpenBuilder={handleOpenAgentBuilder}
+                  onUseAgent={handleUseAgentInChat}
+                  selectedAgentId={selectedAgent}
+                />
+              ) : activeView === 'channels' ? (
+                <AgentChannelsView />
+              ) : activeView === 'projects' ? (
+                <ProjectsView />
+              ) : (
+                <>
+                  {/* Chat Container */}
+                  <div
+                    className={`flex flex-col relative h-full min-w-0 ${ hasOpenFiles ? `shrink-0 min-w-[320px] ${ isResizingPanels ? 'transition-none' : 'transition-[width,flex-basis] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]' }` : 'w-full transition-all duration-300' }`}
+                    style={hasOpenFiles ? { width: chatPanelWidth ?? undefined, flexBasis: chatPanelWidth === null ? `${ DEFAULT_CHAT_PANEL_RATIO * 100 }%` : undefined } : undefined}
+                  >
+                    <ChatFeed
+                      key={`${ activeChatId }-${ activeSubAgentTab || 'main' }`}
+                      traceLogs={effectiveDisplayLogs}
+                      isThinking={effectiveIsThinking}
+                      messagesEndRef={messagesEndRef}
+                      setSidebarOpen={setSidebarOpen}
+                      sidebarOpen={sidebarOpen}
+                      handleScroll={handleScroll}
+                      showScrollBottom={showScrollBottom}
+                      isCompressed={isRightPanelVisible}
+                      onAnswerAskUser={handleAnswerAskUser}
+                      onEditUserMessage={setInputValue}
+                      onOpenAgentTeam={handleOpenAgentTeam}
+                      isSubAgentTab={!!activeSubAgentTab}
+                    />
 
-                  {/* Pending Steering Queue */}
-                  {!activeSubAgentTab && pendingSteering.length > 0 && (
-                    <div className={`px-4 ${ isRightPanelVisible ? 'sm:px-4' : 'sm:px-12' } w-full max-w-[760px] mx-auto flex flex-col gap-2 pb-2`}>
-                      <div className="text-xs text-neutral-500 font-medium px-1 flex items-center gap-1.5">
-                        Pending messages <span className="w-4 h-4 inline-flex items-center justify-center rounded-full bg-neutral-800 text-[10px] text-neutral-400">i</span>
+                    {/* Pending Steering Queue */}
+                    {!activeSubAgentTab && pendingSteering.length > 0 && (
+                      <div className={`px-4 ${ isRightPanelVisible ? 'sm:px-4' : 'sm:px-12' } w-full max-w-[760px] mx-auto flex flex-col gap-2 pb-2`}>
+                        <div className="text-xs text-neutral-500 font-medium px-1 flex items-center gap-1.5">
+                          Pending messages <span className="w-4 h-4 inline-flex items-center justify-center rounded-full bg-neutral-800 text-[10px] text-neutral-400">i</span>
+                        </div>
+                        {pendingSteering.map(msg => (
+                          <div key={msg.id} className="bg-[#242424] rounded-xl py-2.5 px-3.5 flex items-center justify-between gap-3 text-sm text-neutral-200 shadow-sm border border-white/[0.04]">
+                            <span className="truncate">{msg.text}</span>
+                            <button
+                              onClick={() => setPendingSteering(prev => prev.filter(p => p.id !== msg.id))}
+                              className="text-neutral-500 hover:text-red-400 transition-colors p-1 -mr-1"
+                            >
+                              <Trash className="w-4 h-4" />
+                            </button>
+                          </div>
+                        ))}
                       </div>
-                      {pendingSteering.map(msg => (
-                        <div key={msg.id} className="bg-[#242424] rounded-xl py-2.5 px-3.5 flex items-center justify-between gap-3 text-sm text-neutral-200 shadow-sm border border-white/[0.04]">
-                          <span className="truncate">{msg.text}</span>
+                    )}
+
+                    {activeSubAgentTab && (
+                      <div className={`px-4 ${ isRightPanelVisible ? 'sm:px-4' : 'sm:px-12' } w-full max-w-[760px] mx-auto pb-2`}>
+                        <div className="flex min-h-[34px] items-center justify-between gap-3 rounded-[8px] border border-white/[0.07] bg-[#181818]/88 px-3 py-1.5 shadow-[0_8px_24px_rgba(0,0,0,0.18)]">
+                          <span className="flex min-w-0 items-center gap-2">
+                            <MessageSquare className="h-3.5 w-3.5 shrink-0 text-white/48" strokeWidth={2.1} />
+                            <span className="min-w-0 truncate text-[12px] font-semibold text-white/82">{activeSubAgentTab}</span>
+                          </span>
+                          <span className="flex shrink-0 items-center gap-1.5">
+                            <span className={`h-1.5 w-1.5 rounded-full ${ effectiveIsThinking ? 'bg-emerald-300/80' : 'bg-white/28' }`} />
+                            <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-white/38">
+                              {effectiveIsThinking ? 'working' : 'ready'} - deferred
+                            </span>
+                          </span>
+                        </div>
+                      </div>
+                    )}
+
+                    <ChatInput
+                      inputValue={inputValue}
+                      setInputValue={setInputValue}
+                      isThinking={activeSubAgentTab ? false : isThinking}
+                      isRecording={isRecording}
+                      handleSend={activeSubAgentTab ? handleSendSubAgentMessage : handleSend}
+                      handleStop={handleStop}
+                      handleSteer={activeSubAgentTab ? handleSendSubAgentMessage : handleSteer}
+                      toggleSpeech={toggleSpeech}
+                      attachments={attachments}
+                      setAttachments={setAttachments}
+                      greeting={greeting}
+                      traceLogsLength={traceLogs.length}
+                      isProcessingVoice={isProcessingVoice}
+                      audioVolume={audioVolume}
+                      cancelVoice={cancelVoice}
+                      acceptVoice={acceptVoice}
+                      agentMode={agentMode}
+                      onModeChange={setAgentMode}
+                      thinkingLevel={thinkingLevel}
+                      onThinkingLevelChange={setThinkingLevel}
+                      pinnedItems={pinnedItems}
+                      setPinnedItems={setPinnedItems}
+                      liveState={liveState}
+                      liveError={liveError}
+                      onLiveStart={startLiveSession}
+                      onLiveStop={stopLiveSession}
+                      liveOutputText={liveOutputText}
+                      liveInputText={liveInputText}
+                      liveMicVolume={liveMicVolume}
+                      liveModelVolume={liveModelVolume}
+                      liveActiveTool={liveActiveTool}
+                      isMicMuted={liveMicMuted}
+                      onToggleMicMute={toggleLiveMicMute}
+                      isSpeakerMuted={liveSpeakerMuted}
+                      onToggleSpeakerMute={toggleLiveSpeakerMute}
+                      isNetworkPaused={isNetworkPaused}
+                      onNetworkPausedAction={revealNetworkBanner}
+                      isCompressed={isRightPanelVisible}
+                      taskTracker={currentTaskTracker}
+                      activeChatId={activeChatId}
+                      onOpenAgentBuilder={handleOpenAgentBuilder}
+                      selectedAgent={selectedAgent}
+                      selectedAgentName={activeSubAgentTab || selectedAgentName}
+                      composerPlaceholder={activeSubAgentTab ? `Message ${ activeSubAgentTab }` : undefined}
+                      onAgentChange={handleAgentChange}
+                      onOpenPet={openPetWidget}
+                      workspacePath={activeWorkspacePath}
+                      onWorkspacePathChange={handleWorkspacePathChange}
+                      runLocation={activeRunLocation}
+                      onRunLocationChange={handleRunLocationChange}
+                      onOpenAgents={() => {
+                        setBuildingAgentId(null);
+                        setActiveView('agents');
+                      }}
+                      onOpenProjects={() => {
+                        setBuildingAgentId(null);
+                        setActiveView('projects');
+                      }}
+                    />
+
+                    {/* Disclaimer Text */}
+                    {traceLogs.length === 0 && !isThinking && liveState === 'idle' && (
+                      <div className="absolute bottom-6 left-0 right-0 flex flex-col items-center pointer-events-none z-40">
+                        <div className="text-center text-[12px] text-black/60 font-medium tracking-wide mix-blend-overlay">
+                          EterX is an AI Agent and can make Mistakes ; Please Double-Check Its Work.
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {isRightPanelVisible && (
+                    <button
+                      type="button"
+                      role="separator"
+                      aria-label="Resize chat and file panels"
+                      aria-orientation="vertical"
+                      title="Drag to resize panels. Double-click to reset."
+                      onPointerDown={handlePanelResizeStart}
+                      onDoubleClick={resetPanelSplit}
+                      onKeyDown={handlePanelResizeKeyDown}
+                      className={`group relative z-30 flex h-full w-[16px] shrink-0 cursor-col-resize items-center justify-center outline-none transition-opacity duration-200 ${ isResizingPanels ? 'opacity-100' : 'opacity-60 hover:opacity-100 focus-visible:opacity-100' }`}
+                    >
+                      <span className="absolute inset-y-4 left-1/2 w-px -translate-x-1/2 rounded-full bg-white/[0.055] transition-colors duration-200 group-hover:bg-white/[0.14] group-focus-visible:bg-white/[0.18]" />
+                      <span className={`relative flex h-16 w-[9px] items-center justify-center rounded-full border shadow-[0_14px_30px_rgba(0,0,0,0.34)] transition-all duration-200 ${ isResizingPanels ? 'border-white/25 bg-[#303030]' : 'border-white/[0.08] bg-[#1D1D1D]/90 group-hover:border-white/[0.18] group-hover:bg-[#272727]' }`}>
+                        <span className={`h-8 w-[2px] rounded-full transition-colors duration-200 ${ isResizingPanels ? 'bg-white/90' : 'bg-[#777] group-hover:bg-white/80 group-focus-visible:bg-white/90' }`} />
+                      </span>
+                    </button>
+                  )}
+
+                  {/* Right Panel Container */}
+                  {isRightPanelVisible && (
+                    <IdePanel />
+                  )}
+
+                  {/* Agent Team Panel */}
+                  <AnimatePresence>
+                    {agentTeamOpen && (
+                      <motion.aside
+                        initial={{ opacity: 0, y: -8, scale: 0.98 }}
+                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                        exit={{ opacity: 0, y: -8, scale: 0.98 }}
+                        transition={{ duration: 0.16 }}
+                        className="absolute top-[42px] right-4 z-50 w-[320px] max-w-[calc(100vw-2rem)] overflow-hidden rounded-xl border border-white/[0.09] bg-[#151515]/95 shadow-[0_24px_80px_rgba(0,0,0,0.55)] backdrop-blur-xl pointer-events-auto"
+                      >
+                        <div className="flex items-center justify-between border-b border-white/[0.07] px-3 py-2.5">
+                          <div className="min-w-0">
+                            <div className="text-[12px] font-semibold text-white/90">Agent Team</div>
+                            <div className="text-[11px] text-white/42">
+                              {isThinking ? 'Coordinating current work' : 'Latest agent activity'}
+                            </div>
+                          </div>
                           <button
-                            onClick={() => setPendingSteering(prev => prev.filter(p => p.id !== msg.id))}
-                            className="text-neutral-500 hover:text-red-400 transition-colors p-1 -mr-1"
+                            type="button"
+                            onClick={() => setAgentTeamOpen(false)}
+                            className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-white/45 transition-colors hover:bg-white/[0.06] hover:text-white/80"
+                            aria-label="Close agent team"
                           >
-                            <Trash className="w-4 h-4" />
+                            <X className="h-3.5 w-3.5" />
                           </button>
                         </div>
-                      ))}
-                    </div>
-                  )}
+                        <div className="max-h-[420px] overflow-y-auto p-2 space-y-1.5 custom-scrollbar">
+                          {realSubAgents.length === 0 ? (
+                            <div className="rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-3 text-[12px] text-white/48">
+                              No delegated agents are active yet.
+                            </div>
+                          ) : (
+                            realSubAgents.map((agent: any) => {
+                              const status = String(agent.status || 'pending');
+                              const isWorking = status === 'working' || status === 'spawning';
+                              const isPaused = status === 'paused';
+                              const isCompleted = status === 'completed';
+                              const isClosed = status === 'closed';
+                              const isError = status === 'error';
 
-                  {activeSubAgentTab && (
-                    <div className={`px-4 ${ isRightPanelVisible ? 'sm:px-4' : 'sm:px-12' } w-full max-w-[760px] mx-auto pb-2`}>
-                      <div className="flex min-h-[34px] items-center justify-between gap-3 rounded-[8px] border border-white/[0.07] bg-[#181818]/88 px-3 py-1.5 shadow-[0_8px_24px_rgba(0,0,0,0.18)]">
-                        <span className="flex min-w-0 items-center gap-2">
-                          <MessageSquare className="h-3.5 w-3.5 shrink-0 text-white/48" strokeWidth={2.1} />
-                          <span className="min-w-0 truncate text-[12px] font-semibold text-white/82">{activeSubAgentTab}</span>
-                        </span>
-                        <span className="flex shrink-0 items-center gap-1.5">
-                          <span className={`h-1.5 w-1.5 rounded-full ${ effectiveIsThinking ? 'bg-emerald-300/80' : 'bg-white/28' }`} />
-                          <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-white/38">
-                            {effectiveIsThinking ? 'working' : 'ready'} - deferred
-                          </span>
-                        </span>
-                      </div>
-                    </div>
-                  )}
+                              const handleControl = async (action: string) => {
+                                try {
+                                  await fetch('/api/agent/control', {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ action, projectId: activeChatId, agentName: agent.name }),
+                                  });
+                                } catch (err) {
+                                  console.error(`[AgentControl] ${ action } failed:`, err);
+                                }
+                              };
 
-                  <ChatInput
-                    inputValue={inputValue}
-                    setInputValue={setInputValue}
-                    isThinking={activeSubAgentTab ? false : isThinking}
-                    isRecording={isRecording}
-                    handleSend={activeSubAgentTab ? handleSendSubAgentMessage : handleSend}
-                    handleStop={handleStop}
-                    handleSteer={activeSubAgentTab ? handleSendSubAgentMessage : handleSteer}
-                    toggleSpeech={toggleSpeech}
-                    attachments={attachments}
-                    setAttachments={setAttachments}
-                    greeting={greeting}
-                    traceLogsLength={traceLogs.length}
-                    isProcessingVoice={isProcessingVoice}
-                    audioVolume={audioVolume}
-                    cancelVoice={cancelVoice}
-                    acceptVoice={acceptVoice}
-                    agentMode={agentMode}
-                    onModeChange={setAgentMode}
-                    thinkingLevel={thinkingLevel}
-                    onThinkingLevelChange={setThinkingLevel}
-                    pinnedItems={pinnedItems}
-                    setPinnedItems={setPinnedItems}
-                    liveState={liveState}
-                    liveError={liveError}
-                    onLiveStart={startLiveSession}
-                    onLiveStop={stopLiveSession}
-                    liveOutputText={liveOutputText}
-                    liveInputText={liveInputText}
-                    liveMicVolume={liveMicVolume}
-                    liveModelVolume={liveModelVolume}
-                    liveActiveTool={liveActiveTool}
-                    isMicMuted={liveMicMuted}
-                    onToggleMicMute={toggleLiveMicMute}
-                    isSpeakerMuted={liveSpeakerMuted}
-                    onToggleSpeakerMute={toggleLiveSpeakerMute}
-                    isNetworkPaused={isNetworkPaused}
-                    onNetworkPausedAction={revealNetworkBanner}
-                    isCompressed={isRightPanelVisible}
-                    taskTracker={currentTaskTracker}
-                    activeChatId={activeChatId}
-                    onOpenAgentBuilder={handleOpenAgentBuilder}
-                    selectedAgent={selectedAgent}
-                    selectedAgentName={activeSubAgentTab || selectedAgentName}
-                    composerPlaceholder={activeSubAgentTab ? `Message ${activeSubAgentTab}` : undefined}
-                    onAgentChange={handleAgentChange}
-                    onOpenPet={openPetWidget}
-                    workspacePath={activeWorkspacePath}
-                    onWorkspacePathChange={handleWorkspacePathChange}
-                    runLocation={activeRunLocation}
-                    onRunLocationChange={handleRunLocationChange}
-                    onOpenAgents={() => {
-                      setBuildingAgentId(null);
-                      setActiveView('agents');
-                    }}
-                    onOpenProjects={() => {
-                      setBuildingAgentId(null);
-                      setActiveView('projects');
-                    }}
-                  />
+                              const statusBadge = isCompleted
+                                ? { bg: 'bg-emerald-500/10 text-emerald-400', label: 'Done' }
+                                : isPaused
+                                  ? { bg: 'bg-amber-500/10 text-amber-400', label: 'Paused' }
+                                  : isClosed
+                                    ? { bg: 'bg-white/[0.04] text-white/30', label: 'Closed' }
+                                    : isError
+                                      ? { bg: 'bg-red-500/10 text-red-400', label: 'Error' }
+                                      : isWorking
+                                        ? { bg: 'bg-emerald-500/10 text-emerald-400', label: 'Working' }
+                                        : { bg: 'bg-white/[0.04] text-white/40', label: status };
 
-                  {/* Disclaimer Text */}
-                  {traceLogs.length === 0 && !isThinking && liveState === 'idle' && (
-                    <div className="absolute bottom-6 left-0 right-0 flex flex-col items-center pointer-events-none z-40">
-                      <div className="text-center text-[12px] text-black/60 font-medium tracking-wide mix-blend-overlay">
-                        EterX is an AI Agent and can make Mistakes ; Please Double-Check Its Work.
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                {isRightPanelVisible && (
-                  <button
-                    type="button"
-                    role="separator"
-                    aria-label="Resize chat and file panels"
-                    aria-orientation="vertical"
-                    title="Drag to resize panels. Double-click to reset."
-                    onPointerDown={handlePanelResizeStart}
-                    onDoubleClick={resetPanelSplit}
-                    onKeyDown={handlePanelResizeKeyDown}
-                    className={`group relative z-30 flex h-full w-[16px] shrink-0 cursor-col-resize items-center justify-center outline-none transition-opacity duration-200 ${ isResizingPanels ? 'opacity-100' : 'opacity-60 hover:opacity-100 focus-visible:opacity-100' }`}
-                  >
-                    <span className="absolute inset-y-4 left-1/2 w-px -translate-x-1/2 rounded-full bg-white/[0.055] transition-colors duration-200 group-hover:bg-white/[0.14] group-focus-visible:bg-white/[0.18]" />
-                    <span className={`relative flex h-16 w-[9px] items-center justify-center rounded-full border shadow-[0_14px_30px_rgba(0,0,0,0.34)] transition-all duration-200 ${ isResizingPanels ? 'border-white/25 bg-[#303030]' : 'border-white/[0.08] bg-[#1D1D1D]/90 group-hover:border-white/[0.18] group-hover:bg-[#272727]' }`}>
-                      <span className={`h-8 w-[2px] rounded-full transition-colors duration-200 ${ isResizingPanels ? 'bg-white/90' : 'bg-[#777] group-hover:bg-white/80 group-focus-visible:bg-white/90' }`} />
-                    </span>
-                  </button>
-                )}
-
-                {/* Right Panel Container */}
-                {isRightPanelVisible && (
-                  <IdePanel />
-                )}
-
-                {/* Agent Team Panel */}
-                <AnimatePresence>
-                  {agentTeamOpen && (
-                    <motion.aside
-                      initial={{ opacity: 0, y: -8, scale: 0.98 }}
-                      animate={{ opacity: 1, y: 0, scale: 1 }}
-                      exit={{ opacity: 0, y: -8, scale: 0.98 }}
-                      transition={{ duration: 0.16 }}
-                      className="absolute top-[42px] right-4 z-50 w-[320px] max-w-[calc(100vw-2rem)] overflow-hidden rounded-xl border border-white/[0.09] bg-[#151515]/95 shadow-[0_24px_80px_rgba(0,0,0,0.55)] backdrop-blur-xl pointer-events-auto"
-                    >
-                      <div className="flex items-center justify-between border-b border-white/[0.07] px-3 py-2.5">
-                        <div className="min-w-0">
-                          <div className="text-[12px] font-semibold text-white/90">Agent Team</div>
-                          <div className="text-[11px] text-white/42">
-                            {isThinking ? 'Coordinating current work' : 'Latest agent activity'}
-                          </div>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => setAgentTeamOpen(false)}
-                          className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-white/45 transition-colors hover:bg-white/[0.06] hover:text-white/80"
-                          aria-label="Close agent team"
-                        >
-                          <X className="h-3.5 w-3.5" />
-                        </button>
-                      </div>
-                      <div className="max-h-[420px] overflow-y-auto p-2 space-y-1.5 custom-scrollbar">
-                        {realSubAgents.length === 0 ? (
-                          <div className="rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-3 text-[12px] text-white/48">
-                            No delegated agents are active yet.
-                          </div>
-                        ) : (
-                          realSubAgents.map((agent: any) => {
-                            const status = String(agent.status || 'pending');
-                            const isWorking = status === 'working' || status === 'spawning';
-                            const isPaused = status === 'paused';
-                            const isCompleted = status === 'completed';
-                            const isClosed = status === 'closed';
-                            const isError = status === 'error';
-
-                            const handleControl = async (action: string) => {
-                              try {
-                                await fetch('/api/agent/control', {
-                                  method: 'POST',
-                                  headers: { 'Content-Type': 'application/json' },
-                                  body: JSON.stringify({ action, projectId: activeChatId, agentName: agent.name }),
-                                });
-                              } catch (err) {
-                                console.error(`[AgentControl] ${action} failed:`, err);
-                              }
-                            };
-
-                            const statusBadge = isCompleted
-                              ? { bg: 'bg-emerald-500/10 text-emerald-400', label: 'Done' }
-                              : isPaused
-                                ? { bg: 'bg-amber-500/10 text-amber-400', label: 'Paused' }
-                                : isClosed
-                                  ? { bg: 'bg-white/[0.04] text-white/30', label: 'Closed' }
-                                  : isError
-                                    ? { bg: 'bg-red-500/10 text-red-400', label: 'Error' }
-                                    : isWorking
-                                      ? { bg: 'bg-emerald-500/10 text-emerald-400', label: 'Working' }
-                                      : { bg: 'bg-white/[0.04] text-white/40', label: status };
-
-                            return (
-                              <div key={agent.name} className={`rounded-[12px] border border-white/[0.07] bg-[linear-gradient(180deg,rgba(255,255,255,0.055),rgba(255,255,255,0.026))] px-3 py-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] ${isClosed ? 'opacity-45' : ''}`}>
-                                <div className="flex items-center gap-2.5">
-                                  <SubAgentAvatar name={agent.name} status={status} size="md" />
-                                  {/* Name + status */}
-                                  <div className="min-w-0 flex-1">
-                                    <div className="flex items-center gap-2">
-                                      <span className="truncate text-[12px] font-semibold text-white/86">{agent.name}</span>
-                                      <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-[8px] font-semibold uppercase tracking-wider ${statusBadge.bg}`}>
-                                        {statusBadge.label}
-                                      </span>
+                              return (
+                                <div key={agent.name} className={`rounded-[12px] border border-white/[0.07] bg-[linear-gradient(180deg,rgba(255,255,255,0.055),rgba(255,255,255,0.026))] px-3 py-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] ${ isClosed ? 'opacity-45' : '' }`}>
+                                  <div className="flex items-center gap-2.5">
+                                    <SubAgentAvatar name={agent.name} status={status} size="md" />
+                                    {/* Name + status */}
+                                    <div className="min-w-0 flex-1">
+                                      <div className="flex items-center gap-2">
+                                        <span className="truncate text-[12px] font-semibold text-white/86">{agent.name}</span>
+                                        <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-[8px] font-semibold uppercase tracking-wider ${ statusBadge.bg }`}>
+                                          {statusBadge.label}
+                                        </span>
+                                      </div>
+                                      <div className="mt-0.5 line-clamp-1 text-[10.5px] leading-4 text-white/40">
+                                        {agent.currentAction || agent.task || 'Waiting...'}
+                                      </div>
                                     </div>
-                                    <div className="mt-0.5 line-clamp-1 text-[10.5px] leading-4 text-white/40">
-                                      {agent.currentAction || agent.task || 'Waiting...'}
-                                    </div>
+                                    {/* Control buttons */}
+                                    {!isClosed && !isCompleted && (
+                                      <div className="flex shrink-0 items-center gap-1">
+                                        {isWorking && (
+                                          <button
+                                            type="button"
+                                            onClick={() => handleControl('pause')}
+                                            className="flex h-6 w-6 items-center justify-center rounded-md text-white/40 transition-colors hover:bg-amber-500/10 hover:text-amber-400"
+                                            aria-label={`Pause ${ agent.name }`}
+                                            title="Pause"
+                                          >
+                                            <svg viewBox="0 0 10 10" fill="currentColor" className="w-2.5 h-2.5"><rect x="1" y="1" width="3" height="8" rx="0.5" /><rect x="6" y="1" width="3" height="8" rx="0.5" /></svg>
+                                          </button>
+                                        )}
+                                        {isPaused && (
+                                          <button
+                                            type="button"
+                                            onClick={() => handleControl('resume')}
+                                            className="flex h-6 w-6 items-center justify-center rounded-md text-white/40 transition-colors hover:bg-emerald-500/10 hover:text-emerald-400"
+                                            aria-label={`Resume ${ agent.name }`}
+                                            title="Resume"
+                                          >
+                                            <svg viewBox="0 0 10 10" fill="currentColor" className="w-3 h-3"><polygon points="2,1 9,5 2,9" /></svg>
+                                          </button>
+                                        )}
+                                        <button
+                                          type="button"
+                                          onClick={() => handleControl('close')}
+                                          className="flex h-6 w-6 items-center justify-center rounded-md text-white/40 transition-colors hover:bg-red-500/10 hover:text-red-400"
+                                          aria-label={`Close ${ agent.name }`}
+                                          title="Close"
+                                        >
+                                          <X className="w-3 h-3" />
+                                        </button>
+                                      </div>
+                                    )}
                                   </div>
-                                  {/* Control buttons */}
-                                  {!isClosed && !isCompleted && (
-                                    <div className="flex shrink-0 items-center gap-1">
-                                      {isWorking && (
-                                        <button
-                                          type="button"
-                                          onClick={() => handleControl('pause')}
-                                          className="flex h-6 w-6 items-center justify-center rounded-md text-white/40 transition-colors hover:bg-amber-500/10 hover:text-amber-400"
-                                          aria-label={`Pause ${agent.name}`}
-                                          title="Pause"
-                                        >
-                                          <svg viewBox="0 0 10 10" fill="currentColor" className="w-2.5 h-2.5"><rect x="1" y="1" width="3" height="8" rx="0.5" /><rect x="6" y="1" width="3" height="8" rx="0.5" /></svg>
-                                        </button>
-                                      )}
-                                      {isPaused && (
-                                        <button
-                                          type="button"
-                                          onClick={() => handleControl('resume')}
-                                          className="flex h-6 w-6 items-center justify-center rounded-md text-white/40 transition-colors hover:bg-emerald-500/10 hover:text-emerald-400"
-                                          aria-label={`Resume ${agent.name}`}
-                                          title="Resume"
-                                        >
-                                          <svg viewBox="0 0 10 10" fill="currentColor" className="w-3 h-3"><polygon points="2,1 9,5 2,9" /></svg>
-                                        </button>
-                                      )}
-                                      <button
-                                        type="button"
-                                        onClick={() => handleControl('close')}
-                                        className="flex h-6 w-6 items-center justify-center rounded-md text-white/40 transition-colors hover:bg-red-500/10 hover:text-red-400"
-                                        aria-label={`Close ${agent.name}`}
-                                        title="Close"
-                                      >
-                                        <X className="w-3 h-3" />
-                                      </button>
-                                    </div>
-                                  )}
                                 </div>
-                              </div>
-                            );
-                          })
-                        )}
-                      </div>
-                    </motion.aside>
-                  )}
-                </AnimatePresence>
-                {/* Computer Panel */}
-                <AnimatePresence>
-                  {canUseMonitor && monitorOpen && (
-                    <MonitorPanel isOpen={monitorOpen} onClose={() => setMonitorOpen(false)} chatId={activeChatId} defaultWidth={640} />
-                  )}
-                </AnimatePresence>
-              </>
-            )}
-          </div>
+                              );
+                            })
+                          )}
+                        </div>
+                      </motion.aside>
+                    )}
+                  </AnimatePresence>
+                  {/* Computer Panel */}
+                  <AnimatePresence>
+                    {canUseMonitor && monitorOpen && (
+                      <MonitorPanel isOpen={monitorOpen} onClose={() => setMonitorOpen(false)} chatId={activeChatId} defaultWidth={640} />
+                    )}
+                  </AnimatePresence>
+                </>
+              )}
+            </div>
           </div>
         </>
       </div>

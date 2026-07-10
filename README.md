@@ -21,181 +21,180 @@
 EterX is an autonomous agent platform that plans, runs tasks, and operates your computer locally. It takes high-level goals, breaks them down into clear steps, and executes them using specialized tools and helper agents.
 
 *   **Collaborative Swarms**: Spawns parallel background sub-agents that communicate via a built-in mailbox system to tackle complex, independent tasks.
+*   **Synapse Graph**: Builds a local relational memory graph of concepts, files, and context, utilizing an Anchor-EWMA centroid divergence-gated state machine for adaptive context selection. This enables the agent to recall instructions, facts, and code patterns from deep within long conversation histories, executing complex tasks immediately without needing to re-explain or re-understand the details.
 *   **Intelligent Model Routing**: Automatically selects the best model, balances load across API keys, and routes through fallback chains to prevent service interruption.
 *   **Custom Agent Builder**: Talk to the builder to create specialized agents with custom rules, missions, and tailored tool chains built specifically for your environment.
+
+<p align="center">
+  <video src="https://github.com/user-attachments/assets/7ba6c169-a58e-46b9-af0e-6f0536f0b0cc" controls width="100%"></video>
+</p>
+
+> [!NOTE]
+> **Resource Note:** This demo was executed using the free-tier Google AI Studio API (Gemini). Any execution latency is due to free-tier rate-limiting; the platform is engineered with staggered scheduling and fallback queuing to run robustly and cost-effectively under resource constraints.
 
 ### Agent-first app support with themes
 A premium, highly integrated interface supporting both custom light and dark themes designed specifically to match your preferred workspace aesthetics. All data runs locally on your machine, ensuring your workspace configurations and memories remain entirely private.
 
 <p align="center">
-  <img src="./public/assets/white-theme.png" width="48%" alt="White Theme" />
   <img src="./public/assets/black-theme.png" width="48%" alt="Dark Theme" />
+  <img src="./public/assets/white-theme.png" width="48%" alt="White Theme" />
 </p>
 
 ---
 
-## Architecture
+## Workflow-Overview
+### Autonomous Sub-Agent Swarms
 
-### Sub-Agent System
+The sub-agent system is entirely orchestrated and managed by the AI engine itself, rather than being manually controlled by the user. When a complex task is submitted, the primary agent evaluates the goals and autonomously decides how, when, and which sub-agents to deploy:
 
-EterX operates a collaborative multi-agent architecture. For complex or multi-layered projects, the main agent can delegate tasks to parallel sub-agents running independently in the background.
+*   **Self-Directed Swarms**: The primary agent determines if a project requires parallel execution. It autonomously spawns background sub-agents—identified by distinct personas (Einstein, Ada, Turing, Curie, etc.)—to handle independent lanes, staggered at 500ms intervals to prevent environment race conditions. Results are queued and merged without user intervention.
+*   **Automatic Key Isolation**: To avoid service disruptions, the system leases separate API keys from the pool to different sub-agents. This routing is handled entirely by the AI, preventing rate limit conflicts or speed throttling.
+*   **Independent Agent-to-Agent Mailbox**: Sub-agents autonomously check and manage their own mailbox coordination. They decide when to share discoveries, query other sub-agents, or send handoffs and alerts back to the main agent. This features multiple delivery modes:
+    *   *Interrupt*: The sending agent forces the recipient to pause at their next logical boundary to handle high-priority items.
+    *   *Defer*: Messages are queued to be read between tool execution runs.
+    *   *Silent*: Updates are written directly to logs for trace history without affecting agent behavior.
+*   **Interactive Control Override**: While the execution paths are autonomous, you retain override control. You can manually pause sub-agents (safely suspending their loops), resume them, or terminate them instantly via a global emergency stop.
+*   **Dynamic Specialist Deployments**: The agent analyzes code signals and automatically deploys tailored experts as needed:
+    *   *Mira (Security)*: Automatically scans for SQL/XSS vulnerabilities, credentials, and data-handling leaks.
+    *   *Leo (Performance)*: Explores memory leaks (unclosed streams/listeners) and database inefficiencies (N+1 query patterns).
+    *   *Kai (Architecture)*: Assesses module boundaries, state management, and maps circular dependencies.
+    *   *Zara (QA)*: Identifies untested paths and writes Jest/Vitest test suites to verify outputs.
+    *   *Sage (Research)*: Researches with date-aware filters, citations, and source credibility scoring.
+*   **Autonomous Cognitive Panels**: The system determines when high-stakes decisions require diverse perspectives and triggers advanced panels:
+    *   *Consensus Panels*: Spawns Dave (Optimist), Nova (Skeptic), and Sam (Realist) to debate upside opportunities, surface failure risks, and compile actionable realist recommendations.
+    *   *Adversarial Debate*: Runs multi-round critique rounds where agents debate findings, write rebuttals, modify their stances, and generate a final synthesis backed by concession-based confidence scores.
 
-*   **Identifiable Personas**: Sub-agents are loaded as distinct personas named after prominent thinkers and scientists (such as Einstein, Heisenberg, Turing, Ada, and Curie) to make it easy to follow who is performing each task in the workspace logs.
-*   **Parallel Non-Blocking Workflows**: When the main agent delegates work, sub-agents start immediately in the background with a staggered delay (such as 500ms intervals) to prevent startup bottlenecks and environment race conditions. The main agent is never blocked and can continue its own tasks in parallel. Results are saved locally and collected once the sub-agents complete their goals.
-*   **Key Isolation & Throttling Prevention**: To prevent rate limits, each sub-agent is assigned its own client with a different API key leased from the local pool. This prevents parallel agents from conflicting, hitting limits, or getting blocked during high-concurrency tasks.
-*   **Inter-Agent Mailbox (Agent-to-Agent Communication)**: A real-time mailbox system lets agents coordinate. Sub-agents check their mailboxes between tasks to read coordination requests, send questions to the main agent, hand off partial results, or broadcast warnings to the entire swarm. Messages include priorities (low, normal, high, critical) and delivery modes:
-    *   *Interrupt*: Pauses the recipient at their next safe boundary to force a response to critical questions or alerts.
-    *   *Defer*: Delivers the message silently to be processed when the agent is free.
-    *   *Silent*: Logs the data directly to history without disrupting the agent's active execution flow.
-*   **Interactive Control Loops**: You have complete command over the background swarm. Sub-agents can be individually paused (suspending their loops safely using promise resolvers), resumed when needed, or closed (terminated) immediately. A global emergency stop flag can also be triggered to halt all active background agents across all chats instantly.
-*   **Specialized Domain Experts**: EterX can spawn highly focused specialist profiles depending on the requirements:
-    *   **Mira (Security Auditor)**: Audits code security, reviews authorization flows, checks for exposed credentials, evaluates header policies (CORS, CSRF), and assesses unsafe data-handling paths.
-    *   **Leo (Performance Analyst)**: Profiles latency issues, identifies memory leaks (such as unclosed streams or listener buildup), analyzes database query efficiency (like N+1 loops), and implements CPU optimizations.
-    *   **Kai (Architect)**: Analyzes module design, checks for circular dependencies, reviews state management flows, and maps out system boundaries using visual flow diagrams.
-    *   **Zara (QA Tester)**: Tracks bugs, verifies edge cases, identifies untested code paths, and automatically writes test suites (using Jest or Vitest) to check for regressions.
-    *   **Sage (Researcher)**: Conducts deep multi-source research using date-aware search limits and source-credibility filtering to verify claims and resolve conflicting evidence.
-*   **Consensus Panels**: Spawns a three-agent panel composed of an Optimist (Dave) to identify upsides, a Skeptic (Nova) to challenge assumptions and find risks, and a Realist (Sam) to ground suggestions in practical constraints. Together, they debate and synthesize a balanced recommendation.
-*   **Adversarial Debate Panels**: Runs multi-round debate swarms where agents critique each other's work:
-    *   *Round 1*: Agents analyze the task independently.
-    *   *Round 2*: Agents review the opposing analysis, write cross-rebuttals, and revise their initial positions.
-    *   *Round 3*: A confidence score is calculated based on concessions and agreement patterns, and a final synthesis is compiled by the realist or main agent.
+<p align="center">
+  <img src="./public/assets/subagent.png" width="100%" alt="Sub-Agent Panel" />
+  <br /><br />
+  <img src="./public/assets/sub-agent3.png" width="100%" alt="Sub-Agent Details" />
+  <br /><br />
+  <img src="./public/assets/sub-agent2.png" width="100%" alt="Sub-Agent Workflow" />
+</p>
 
----
+### EterX-Synapse Graph (Memory & Context Continuity)
 
-## End-to-End Workflow
+EterX-Synapse is an advanced, local relational memory graph that maintains conversational context and session continuity across long execution horizons. Rather than relying on simple sliding window histories or external embedding APIs, it uses an in-process mathematical engine to evaluate semantic state shifts:
 
-EterX is organized around a seamless, end-to-end workflow that connects model configuration, customized personas, and multi-agent execution:
+*   **Divergence-Gated State Machine**: Evaluates user query semantic divergence against a running topic centroid vector to transition the session state between *Warmup* (baseline collection), *Continuity* (same topic focus), *Drift* (topic shifting), and *Transition* (major topic change).
+*   **Structured 4-Record Storage**: Implements the PCCA-specified storage structure, representing every context object (turns, tools, code snapshots, patches) as a network of linked Source, Version, State, and Confidence records, along with a Patch edit chain for coding sessions.
+*   **Five-Question Decision Surface**: On every turn, evaluates the active task, semantic proximity, version freshness, confidence thresholds, and token budget constraints to dynamically select the optimal context injection set.
+*   **Anchor-EWMA Centroid Engine**: Automatically updates and maintains the active topic's running centroid vector by blending the original anchor vector intent with an exponentially weighted moving average (EWMA).
+*   **Local Zero-Network TF-IDF Vectorizer**: Performs fast (<2ms), incremental vocabulary vectorization completely locally, eliminating network latency and protecting privacy.
+*   **Graceful Degradation**: Protects agent behavior by automatically bypassing injection and degrading context gracefully when measurement confidence falls below the designated threshold.
 
-*   **Configure Providers and Models**: Select your preferred AI provider (Google Gemini, OpenAI, Anthropic, OpenRouter, etc.) and pick the specific models you want to use. EterX manages these connections, handles load balancing across multiple API keys, and automatically routes tasks to stable fallback models if a primary model is down.
-*   **Create Tailored Custom Agents**: Use the interactive Agent Builder to design custom agents. You can talk to the builder to establish their mission and behavior rules, and the system will automatically configure a custom chain of tools and helpers specifically for that agent's work environment.
-*   **Delegate Tasks to Collaborative Sub-Agents**: Initiate your workflow and let the main agent break down complex tasks. It can spawn specialized sub-agents in the background that work in parallel and communicate via an inter-agent mailbox system to coordinate and assemble the final output.
-*   **Execute Local Workspace Actions**: Let your agents interact directly with your workspace. They can safely read and edit files, execute commands in isolated local sandboxes, conduct deep multi-angle web research, and use the computer cursor naturally to complete your instructions.
-*   **Retain Memory and Relational Context**: When a workflow finishes, EterX persists the learnings, facts, and project details locally. This feeds into a continuous learning loop, making all future tasks faster and context-aware.
+> [!NOTE]
+> **Research Citation:** The `EterX-Synapse` architecture, including the Anchor-EWMA centroid updates and the PCCA (Parallel Context Continuity Architecture) specifications, is implemented based on the research paper *EterX-Synapse: Cognitive Context Continuity in Autonomous Agents* by **Harshil Soni**.
 
----
+### Agent Builder (An AI agent designed to build custom agents)
 
-## The Tools: What EterX Can Actually Do
+<p align="center">
+  <video src="https://github.com/user-attachments/assets/69a12760-0d49-44dc-84c7-644d0ed7c7bb" controls width="100%"></video>
+</p>
+The Agent Builder is a specialized AI agent designed to dynamically configure, write, and deploy custom specialist agents. When you interact with the builder, it acts as a meta-architect—guiding you through the creation of a fully functional, self-contained workspace companion tailored specifically to your work environment.
 
-EterX ships with **80+ native tools** organized into categories. These are not wrappers — each tool is a purpose-built capability.
+*   **Self-Profiling Persona Engine**: Based on your requirements, the builder autonomously writes a detailed, expert-level system prompt. It designs the custom agent's identity, core mission, response style, and operating boundaries, ensuring it knows how to handle ambiguities and manage its context window efficiently.
+*   **Built-in Safety & SOUL Rules**: The builder injects a set of inviolable guidelines into the new agent's core instructions. This includes Scope Fidelity (preventing the agent from attempting tasks outside its expertise), Truth over Speed (strictly prohibiting data fabrication), Transparency (requiring explanation of all actions), and Defensive Execution.
+*   **Automatic Workspace Tooling**: Once the prompt is saved, the builder automatically scans EterX's native tool library and attaches the optimal tools required for the custom agent's role (such as file read/write, search, and sandboxed execution), removing any tools that fall outside its safe operating boundary.
+*   **Custom Capabilities Creation**: If existing tools are not enough, the builder can design and compile custom capabilities specifically for that agent:
+    *   *Prompt Macros*: Behavioral rules and thinking patterns tailored for custom inputs (e.g. sentiment scoring or custom sorting rules).
+    *   *Tool Chains*: Composes multiple existing tools into sequenced workflows (e.g., automatically scraping a URL, reading the output, and writing a file as a single operation).
+    *   *Agent-Scoped Code*: Drafts custom scripts to execute specific operations. The builder automatically audits this code to ensure it blocks destructive actions (like file deletion commands, user account modifications, or unsafe script injections).
+*   **Fallback & Error Recovery Design**: The builder automatically structures error handling into the custom agent's instructions. It details fallback chains (e.g., trying directories if file reads fail, or trying alternative editors if text replacement fails) to ensure the newly created agent degrades gracefully instead of failing or entering infinite retry loops.
+*   **Profile Finalization & Validation**: Before deployment, the builder runs a comprehensive audit of the custom agent's configuration. It verifies that the prompt has sufficient depth, that the behavior and safety rules are properly established, and that all attached code tools have passed security reviews.
+## The Tools: What EterX Can Actually Do
 
-### Computer & Screen Control
-The `screen_agent` tool gives EterX full, real human-like control of your computer:
-- Takes screenshots and **sees** the screen
-- Clicks with natural bezier cursor movement (not robotic straight lines)
-- Types with human-like timing and per-character delays
-- Reads text from the screen using Windows OCR + UI Automation
-- Finds any UI element by name or text, even if coordinates are unknown
-- Waits for visual changes or text to appear before continuing
-- Streams the live screen in real time to the monitor panel
+EterX features **80+ native tool systems** mapped to a capability-based architecture to securely perform local actions, network operations, and cognitive tasks.
 
-### Code Intelligence & File Operations
-- `workspace_read_file`, `workspace_write_file`, `workspace_edit_file` — file read/write with patch-level precision
-- `smart_refactor` — AI-assisted code restructuring
-- `code_intel`, `workspace_symbol_lookup`, `workspace_file_outline` — understand any codebase structure
-- `workspace_apply_patch` — apply git-style unified diffs to files
-- `workspace_run_command`, `workspace_execute_script`, `workspace_verify_code` — run and verify code in your project
-- `git`, `git_intel` — full git operations and intelligence
+### 1. OS Automation & Computer Vision (`host.control`, `host.system`)
+Provides low-level OS access and computer vision control to securely see and interact with any workspace:
+*   **Vision & Mouse Control**: `screen_agent` captures screenshots, runs Windows OCR + UI Automation to locate controls, and drives natural Bezier cursor movements.
+*   **Isolation & Stream**: `computer` runs and isolates windows within sandboxed environments while streaming real-time frames to the dashboard.
+*   **System Utilities**: Tools like `system_monitor`, `clipboard`, `desktop_notify`, `tts`, and system macros automate OS-level events.
 
-### Deep Research
-- `deep_research` — multi-angle parallel research engine: runs several search queries simultaneously, scrapes top results, synthesizes into a structured report with sources
-- `web_search`, `web_scraper`, `pdf_parser`, `youtube_transcript`, `rss_feed` — pull information from any source
+### 2. Workspace & Code Intelligence (`command.workspace`, `filesystem`)
+A robust code-editing and workspace analysis environment for developers:
+*   **Precise Editing**: `workspace_read_file`, `workspace_write_file`, `workspace_edit_file`, and `workspace_apply_patch` allow high-precision, search-and-replace changes and Git-style diff applications.
+*   **Search & Scans**: `workspace_search_text` (Ripgrep), `workspace_symbol_lookup`, `workspace_file_outline`, and semantic vector search identify codebase architectures.
+*   **Compiles & Runs**: `workspace_run_command`, `workspace_execute_script`, and `workspace_verify_code` handle linting, compile verification, and command execution.
 
-### Communication & Messaging
-- `telegram` — send messages, control conversations, interact with the Telegram Bot interface
-- `slack` — post to channels, react to messages, manage Slack workflows
-- `whatsapp` — control WhatsApp via the controller tool
-- `email` — send emails programmatically
+### 3. Deep Research & Web Scraping (`network.public`)
+Gathers, parses, and synthesizes data directly from public resources:
+*   **Synthesized Research**: `deep_research` runs multiple concurrent queries, scraping matching pages to compile structured markdown reports with source citations.
+*   **Parsing Utilities**: `web_scraper` (via Cheerio DOM parsing), `pdf_parser`, `youtube_transcript`, and `rss_feed` extract clean text content from web layouts, documents, and feeds.
 
-### Data & Documents
-- `chart_generator` — generate data visualizations and charts
-- `csv_analyzer` — parse and analyze spreadsheet data
-- `docx_generator` — create Word documents
-- `office_artifact_builder` — build professional Excel spreadsheets, PowerPoint presentations, and office documents
-- `markdown`, `compression`, `diff` — markdown processing, file compression, and comparison
+### 4. Autonomous Collaboration & Planning (`agent.spawn`, `memory.manage`)
+Multi-agent task delegation and persistent cognitive systems:
+*   **Parallel Sub-Agents**: `spawn_sub_agent` deploys background specialist personas (Mira, Leo, Zara) and hosts Consensus and Debate panels.
+*   **Relational Memories**: `memory_v2` and `synapse-graph` retain project facts, configurations, and long-term user preferences locally.
+*   **Task Orchestration**: `task_decomposer`, `dynamic_tool_creator`, `checkpoint`, and `macro_runner` manage complex execution pipelines.
 
-### System & Automation
-- `shell`, `terminal_access`, `background_task`, `terminal_background` — run any terminal command, including long-running background processes with scheduled check-ins
-- `process_manager`, `file_watcher`, `http_server` — manage system processes, watch files for changes, spin up local HTTP servers
-- `sys_automation`, `desktop_control` — OS-level automation
-- `system_monitor` — monitor CPU, memory, disk, and process health
+### 5. Communication & Messengers (`communication.external`)
+Outbound integrations with collaborative and chat environments:
+*   **Messenger Bots & Clients**: `telegram` (GramJS user session automation), `slack`, `whatsapp`, and `email` allow automated notifications, file transfers, and chat interactions.
 
-### Intelligence & Self-Improvement
-- `self_improve` — the agent can write and apply improvement patches to its own skill system
-- `memory_v2` — store and recall facts, project context, and session state
-- `task_decomposer` — break large goals into organized, independent subtasks
-- `realtime_verify` — verify information from live web sources before accepting it as fact
+### 6. Office Documents & Structured Data (`filesystem.write`)
+Generates rich data documents, presentations, and analyses:
+*   **Office Generators**: `office_artifact_builder` and `docx_generator` build styled Excel spreadsheets, PowerPoint slides, and Word documents in *Executive*, *Modern*, *Classic*, and *Minimal* layouts.
+*   **Data Analysis**: `csv_analyzer` and `chart_generator` aggregate datasets, run SQL-like filters, and generate plots.
 
-### AI Infrastructure
-- `image_gen` — generate images via AI
-- `tts` — text-to-speech output
-- `calculator`, `js_runner`, `regex`, `json_transform` — built-in compute utilities
-- `crypto` — cryptographic operations
-- `database` — interact with databases
-- `network` — make HTTP requests and inspect network responses
-- `api_caller`, `api_hub` — call any external API
-- `api_key_vault` — secure, masked storage for API credentials
-
----
-
-## Agent Builder
-
-EterX includes a built-in **Agent Builder** system that lets you create and deploy your own custom AI agents.
-
-When operating in Agent Builder mode, the agent can:
-
-1. **Define a mission and professional system prompt** for a custom agent
-2. **Attach existing tools** by reference (e.g., give a custom agent access to `web_search`)
-3. **Define agent-scoped custom tools** — prompt macros, tool chains, or scoped code
-4. **Set behavior rules, safety rules, tool use policies, and completion criteria**
-5. **Finalize and validate** the agent when all requirements are satisfied
-
-The finalized custom agent is saved as a structured profile with a `SYSTEM_PROMPT.md` file, ready to be loaded into any EterX session.
+### 7. Utilities & Infrastructure (`secrets.manage`, `tool.utility`)
+Built-in computational utilities supporting the EterX OS runtime:
+*   Includes `browser_control` (automated Chrome), `api_key_vault`, `api_caller`, `crypto` hashing, database clients, JSONPath tools, regular expression builders, and background shell management.
 
 ---
 
-## Model System
+## Models
 
-EterX does not hardcode any model names. Every model reference is resolved through a **Universal Model Registry** that reads from environment variables and maintains proven-model caching.
+EterX does not depend on any specific models. Any model can be easily connected and the agent can be run on that model easily. All models are fully compatible in EterX.
 
-**Supported providers and their fallback chains:**
+To connect your models:
+1. Open the application **Settings** panel.
+2. Locate the **API Keys** section.
+3. Select your preferred **Provider**.
+4. Input your **API Key** and save to connect.
 
-| Provider | Default Model | Fallback Chain |
-|----------|--------------|----------------|
-| **Gemini (Think)** | gemini-3.5-flash | gemini-3-flash-preview → gemini-2.5-pro → ... |
-| **Gemini (Fast)** | gemini-3.5-flash | gemini-3-flash-preview → gemini-2.5-flash → ... |
-| **OpenAI** | gpt-5.5 | gpt-5.4 → gpt-5.4-mini → gpt-5.4-nano |
-| **Anthropic** | claude-opus-4-8 | claude-sonnet-4-6 → claude-haiku-4-5 → ... |
-| **OpenRouter** | openai/gpt-5.5 | anthropic/claude-opus → google/gemini → ... |
-| **Mistral** | mistral-medium-3-5 | mistral-small → ministral-14b → ... |
-| **Groq** | openai/gpt-oss-120b | llama-3.3-70b → compound → compound-mini |
+### Supported Providers
 
-If a model is deprecated or unavailable, the agent automatically walks the fallback chain without any code changes. You only need to update your `.env.local` file to override.
+| Provider | Available Models |
+|----------|------------------|
+| **Google Gemini** | Select and run the agent on any Gemini model |
+| **OpenAI** | Select and run the agent on any OpenAI model |
+| **Anthropic** | Select and run the agent on any Anthropic model |
+| **OpenRouter** | Select and run the agent on any OpenRouter model |
+| **Mistral** | Select and run the agent on any Mistral model |
+| **Groq** | Select and run the agent on any Groq model |
 
-**Multi-key load balancing:** You can configure multiple API keys per provider. EterX shuffles and rotates them automatically to distribute load and avoid rate limits.
+
+### Dynamic Parameter Configuration
+Different models have different parameters (such as thinking/reasoning modes, medium models, or small models). EterX automatically configures those provider-specific model parameters and exposes them directly in the UI of the application, allowing you to select your preferred configuration and work in real time.
 
 ---
 
 ## Memory Architecture
 
-EterX uses a **multi-tier, locally stored memory system**. Nothing is sent to a cloud memory service.
+EterX uses a **multi-tier, locally stored memory system**. Nothing is sent to any cloud memory service.
 
 ```text
 .workspaces/
-├── memory/
-│   ├── user_memory.json         # Long-term facts about you and your preferences
-│   ├── project_memory/          # Per-project context — what has been done, decisions made
-│   ├── session_memory/          # Active session state for continuation
-│   ├── credential_refs.json     # API key references (no raw keys stored)
-│   └── overlays/                # Self-improvement patches applied over time
-├── dynamic_tools/               # Custom tools the agent created during sessions
-├── temp/screen-agent/           # Temporary files from screen capture and OCR
+├── .memory_v2/
+│   ├── records.json                  # Long-term facts, user preferences, and working memories
+│   ├── credentials.enc.json          # Encrypted API key credentials and references
+│   ├── self_improvement_overlays.json # Active and pending self-improvement patches
+│   └── raw_events.json               # Chronological log of raw cognitive events
+├── .synapse/
+│   └── <chat-id>/
+│       └── graph.json                # Relational concept/fact graph for active session
+├── .checkpoints/                     # System state checkpoints for safe rollbacks
 ├── config/
-│   ├── eterx.config.json        # App settings
-│   └── setup-meta.json          # Installation metadata
-└── backups/                     # Timestamped configuration snapshots
+│   ├── eterx.config.json             # Global application configuration
+│   └── setup-meta.json               # System installation metadata
+├── dynamic_tools/                    # Custom JS/TS tools compiled at runtime
+├── backups/                          # Timestamped configuration and memory archives
+└── temp/screen-agent/                # OCR files and screenshots generated during session
 ```
 
-The `synapse-graph` memory system additionally builds a relational graph of concepts — connecting facts, files, and context together so the agent can recall relevant information even when it is not explicitly referenced.
+The `synapse-graph` memory system builds a relational graph of concepts—connecting facts, files, and context together so the agent can recall relevant information even when it is not explicitly referenced in the current conversation window.
 
 ---
 
@@ -294,22 +293,26 @@ EterX-Agent/
 │   └── lib/
 │       ├── agent/                # Core agent engine
 │       │   ├── Agent.ts          # Main GeminiAgentClient — model routing, tool execution loop
-│       │   ├── tools/            # All 80+ native tools
-│       │   │   ├── core/         # Core tools (shell, search, screen, memory, sub-agents...)
-│       │   │   ├── workspace/    # File and code tools
-│       │   │   ├── research/     # Web scraping, PDF, YouTube, RSS
-│       │   │   ├── automation/   # Agent Builder, process manager, file watcher
-│       │   │   └── communication/# Telegram, Slack, WhatsApp
+│       │   ├── tools/            # Native tool modules
+│       │   │   ├── core/         # Core system tools (shell, search, screen, memory...)
+│       │   │   ├── workspace/    # File and workspace manipulation tools
+│       │   │   ├── research/     # Web scraping, PDF, YouTube, and RSS parsers
+│       │   │   ├── automation/   # Agent Builder, process manager, and servers
+│       │   │   ├── communication/# Chat platform controllers (Telegram, Slack, WhatsApp)
+│       │   │   ├── security/     # Capability-based sandbox and tool policies
+│       │   │   └── shared/       # URL safety helpers and common utilities
 │       │   ├── memory/           # MemoryV2, conversation ledger, synapse graph
 │       │   ├── reasoning/        # Cognitive engine, context intelligence, verification
 │       │   ├── resilience/       # Auto-context compression, error recovery
 │       │   ├── roles/            # Sub-agent orchestration, inter-agent communication
 │       │   ├── hooks/            # Cognitive hooks, velocity monitor
+│       │   ├── browser/          # Chromium/browser control backend
+│       │   ├── computer/         # OS UI automation and virtual screen control
 │       │   └── model-routing.ts  # Universal model registry and fallback chains
 │       ├── code/                 # Code generation runtime
 │       ├── live/                 # Real-time WebSocket communication
 │       └── sandbox/              # Sandboxed command execution
-├── electron/                     # Desktop app wrapper
+├── electron/                     # Desktop app wrapper (main process, package script)
 ├── fastapi_blog/                 # Python FastAPI backend for structured data
 ├── setup/                        # Installation and diagnostic scripts
 └── eterx.js                      # CLI entry point (400+ line command router)

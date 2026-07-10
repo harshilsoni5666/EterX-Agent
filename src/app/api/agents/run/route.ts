@@ -15,7 +15,7 @@
 import { NextRequest } from 'next/server';
 import { AgentRunner } from '../../../../lib/agent/agent-runner';
 import { buildScopedRuntimeSettings } from '../../../../lib/agent/runtime-api-keys';
-import { resolveModelName } from '../../../../lib/agent/model-routing';
+import { resolveModelName, normalizeMainAgentMode } from '../../../../lib/agent/model-routing';
 import {
   attachAgentApiSessionCookie,
   cleanString,
@@ -32,6 +32,8 @@ import {
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
+const isGoogleGenAIModelName = (value: string) => /^(?:models\/)?gemini[-_]/i.test(value.trim());
+
 export async function POST(req: NextRequest) {
   let session: ReturnType<typeof getOrCreateAgentApiSession> | null = null;
   try {
@@ -41,7 +43,7 @@ export async function POST(req: NextRequest) {
     const activeSession = session;
 
     const body = await readJsonObject(req);
-    const { agentId, messages, model, temperature, apiKeys, modelOverrides, runLocation, pinnedContext } = body;
+    const { agentId, messages, model, mode, temperature, apiKeys, modelOverrides, runLocation, pinnedContext } = body;
 
     if (!isSafeAgentId(agentId)) {
       return attachAgentApiSessionCookie(jsonError('A valid agentId is required.', 400), session);
@@ -60,7 +62,17 @@ export async function POST(req: NextRequest) {
     }
 
     const runtimeSettings = buildScopedRuntimeSettings(apiKeys, modelOverrides);
-    const safeModel = cleanString(model, 160) || runtimeSettings.modelOverrides.gemini || resolveModelName('fast', runtimeSettings);
+    const safeMode = normalizeMainAgentMode(mode);
+    // The custom agent runner only supports Gemini via GoogleGenAI.
+    // If the user's selected provider is non-Gemini (mistral/openai/anthropic/groq/openrouter),
+    // we map to the equivalent Gemini mode so the runner always gets a valid Gemini model name.
+    const GEMINI_MODES = new Set<string>(['think', 'fast']);
+    const geminiRunnerMode = GEMINI_MODES.has(safeMode) ? safeMode : 'think';
+    const requestedModel = cleanString(model, 160);
+    const fallbackGeminiModel = resolveModelName(geminiRunnerMode as any, runtimeSettings);
+    const safeModel = requestedModel && isGoogleGenAIModelName(requestedModel)
+      ? requestedModel
+      : fallbackGeminiModel;
     const requestedTemperature = temperature === undefined ? undefined : Number(temperature);
     if (requestedTemperature !== undefined && (!Number.isFinite(requestedTemperature) || requestedTemperature < 0 || requestedTemperature > 2)) {
       return attachAgentApiSessionCookie(jsonError('temperature must be a number between 0 and 2.', 400), session);
@@ -102,6 +114,7 @@ export async function POST(req: NextRequest) {
         try {
           for await (const event of runner.run(normalized.messages!, {
             agentId,
+            mode: geminiRunnerMode as any,
             model: safeModel,
             temperature: safeTemperature,
             preferredGeminiApiKey: runtimeSettings.preferredGeminiApiKey,

@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { createPortal } from 'react-dom';
 import { useFilePanelActions } from '../../contexts/FilePanelContext';
@@ -11,6 +11,7 @@ import {
 // @ts-ignore
 import ReactMarkdown from 'react-markdown';
 import { markdownComponents, normalizeMarkdownForRendering, remarkPlugins, rehypePlugins } from './markdown-renderer';
+import { LocalFileIcon, LocalFileLinkChip, decodeLocalFileHref, isLocalFilePath } from './local-file-link';
 import { AGENT_ICONS, resolveAgentIcon, AgentAssetIcon, SubAgentIdentityIcon } from './agent-icons';
 import { AgentFace } from './agent-face';
 
@@ -51,6 +52,14 @@ const fenceStartPattern = /^ {0,3}(`{3,}|~{3,})/;
 const splitWordsWithSpacing = (value: string) => {
   const matches = value.match(/\S+\s*/g);
   return matches && matches.length > 0 ? matches : value ? [value] : [];
+};
+
+const getReactNodeText = (value: React.ReactNode): string => {
+  if (value === null || value === undefined || typeof value === 'boolean') return '';
+  if (typeof value === 'string' || typeof value === 'number') return String(value);
+  if (Array.isArray(value)) return value.map(getReactNodeText).join('');
+  if (React.isValidElement(value)) return getReactNodeText((value.props as any)?.children);
+  return '';
 };
 
 const hasOpenInlineMarkdown = (value: string) => {
@@ -110,7 +119,7 @@ const isTableSeparatorLine = (line: string) =>
 const isFenceCloseLine = (line: string, openingFence: string) => {
   const char = openingFence[0];
   const escaped = char === '`' ? '`' : '~';
-  const pattern = new RegExp(`^ {0,3}${escaped}{${openingFence.length},}\\s*$`);
+  const pattern = new RegExp(`^ {0,3}${ escaped }{${ openingFence.length },}\\s*$`);
   return pattern.test(line.trimEnd());
 };
 
@@ -293,11 +302,13 @@ const AnswerWriterCursor = () => (
 );
 
 const GhostCodeBlock = ({ inline, className, children, ...props }: any) => {
+  const content = String(children).replace(/\n$/, '');
+
   if (inline) {
+    if (isLocalFilePath(content)) return <LocalFileLinkChip filePath={content.trim()} compact />;
     return <code className="eterx-progressive-ghost-inline-code" {...props}>{children}</code>;
   }
 
-  const content = String(children).replace(/\n$/, '');
   const lineCount = Math.max(1, content.split(/\r?\n/).length);
   const language = /language-([^\s]+)/.exec(className || '')?.[1]?.toLowerCase() || '';
   const diagramLike = language === 'mermaid' || language === 'mmd' || /^(graph|flowchart|sequenceDiagram|classDiagram|stateDiagram|erDiagram|journey|gantt|pie|timeline|mindmap)\b/i.test(content.trim());
@@ -307,7 +318,7 @@ const GhostCodeBlock = ({ inline, className, children, ...props }: any) => {
   return (
     <pre
       className="eterx-progressive-ghost-code"
-      style={{ minHeight: `${minHeight}em` }}
+      style={{ minHeight: `${ minHeight }em` }}
     >
       <code>{content}</code>
     </pre>
@@ -337,92 +348,92 @@ const HubSpotIcon = ({ className }: any) => <svg className={className} viewBox="
 // Verb-only lookup — icon is ALWAYS resolved by resolveAgentIcon (8 premium icons)
 // No Lucide icons stored here — just past-tense display labels
 const VERB_MAP: Record<string, string> = {
-  'Running command':         'Ran',
+  'Running command': 'Ran',
   'Running project command': 'Ran',
-  'Reading file':            'Read',
-  'Scanning directory':      'Listed',
-  'Editing file':            'Edited',
-  'Writing artifact':        'Created',
-  'Searching codebase':      'Searched',
-  'Researching':             'Web searched',
-  'Reading source':          'Scraped',
-  'Deep researching':        'Researched',
-  'Analyzing code':          'Analyzed',
-  'Refactoring code':        'Refactored',
-  'Analyzing workspace':     'Analyzed',
-  'Analyzing files':         'Analyzed',
-  'Verifying code':          'Verified',
-  'Verifying output':        'Verified',
-  'Scaffolding project':     'Scaffolded',
-  'Git operation':           'Git',
-  'Spawning sub-agents':     'Spawned',
-  'Decomposing task':        'Decomposed',
-  'Loading skill':           'Loaded',
-  'API request':             'Called API',
-  'API call':                'Called API',
-  'Network operation':       'Network',
-  'Reading PDF':             'Read PDF',
-  'Generating document':     'Generated',
-  'Generating image':        'Generated',
-  'Generating docs':         'Generated docs',
-  'Generating chart':        'Generated',
-  'Generating speech':       'Generated',
-  'Capturing screen':        'Captured',
-  'Evaluating logic':        'Evaluated',
-  'Monitoring system':       'Monitored',
-  'Managing email':          'Email',
-  'Comparing files':         'Compared',
-  'Patching files':          'Patched',
-  'Transforming data':       'Transformed',
-  'Compressing files':       'Compressed',
-  'Database query':          'Queried',
-  'Calculating':             'Calculated',
-  'Analyzing data':          'Analyzed',
-  'Clipboard':               'Clipboard',
-  'Extracting transcript':   'Extracted',
-  'Reading RSS feed':        'Read feed',
-  'WhatsApp':                'WhatsApp',
-  'Telegram':                'Telegram',
-  'Slack':                   'Slack',
-  'Sending Slack':           'Slack',
-  'Slack message':           'Slack',
-  'GitHub':                  'GitHub',
-  'GitHub push':             'Pushed',
-  'GitHub PR':               'Pull Request',
-  'GitHub issue':            'Issue',
-  'Notion':                  'Notion',
-  'Notion page':             'Notion',
-  'Linear':                  'Linear',
-  'Linear issue':            'Linear',
-  'Jira':                    'Jira',
-  'Jira issue':              'Jira',
-  'Figma':                   'Figma',
-  'Discord':                 'Discord',
-  'Discord message':         'Discord',
-  'Stripe':                  'Stripe',
-  'Vercel':                  'Vercel',
-  'Airtable':                'Airtable',
-  'Postman':                 'Postman',
-  'Trello':                  'Trello',
-  'HubSpot':                 'HubSpot',
-  'Safety check':            'Checked',
-  'Context operation':       'Context',
-  'Saving progress':         'Saved',
-  'Background task':         'Background',
-  'Creating tool':           'Created tool',
-  'Converting markdown':     'Converted',
-  'System automation':       'Automated',
-  'Managing process':        'Process',
-  'HTTP server':             'Server',
-  'Processing text':         'Processed',
-  'Notifying':               'Notified',
-  'Running macro':           'Ran macro',
-  'Executing chain':         'Executed',
-  'Self-improving':          'Improved',
-  'Watching files':          'Watching',
-  'Vault operation':         'Vault',
-  'Managing environment':    'Env',
-  'Scheduled task':          'Scheduled',
+  'Reading file': 'Read',
+  'Scanning directory': 'Listed',
+  'Editing file': 'Edited',
+  'Writing artifact': 'Created',
+  'Searching codebase': 'Searched',
+  'Researching': 'Web searched',
+  'Reading source': 'Scraped',
+  'Deep researching': 'Researched',
+  'Analyzing code': 'Analyzed',
+  'Refactoring code': 'Refactored',
+  'Analyzing workspace': 'Analyzed',
+  'Analyzing files': 'Analyzed',
+  'Verifying code': 'Verified',
+  'Verifying output': 'Verified',
+  'Scaffolding project': 'Scaffolded',
+  'Git operation': 'Git',
+  'Spawning sub-agents': 'Spawned',
+  'Decomposing task': 'Decomposed',
+  'Loading skill': 'Loaded',
+  'API request': 'Called API',
+  'API call': 'Called API',
+  'Network operation': 'Network',
+  'Reading PDF': 'Read PDF',
+  'Generating document': 'Generated',
+  'Generating image': 'Generated',
+  'Generating docs': 'Generated docs',
+  'Generating chart': 'Generated',
+  'Generating speech': 'Generated',
+  'Capturing screen': 'Captured',
+  'Evaluating logic': 'Evaluated',
+  'Monitoring system': 'Monitored',
+  'Managing email': 'Email',
+  'Comparing files': 'Compared',
+  'Patching files': 'Patched',
+  'Transforming data': 'Transformed',
+  'Compressing files': 'Compressed',
+  'Database query': 'Queried',
+  'Calculating': 'Calculated',
+  'Analyzing data': 'Analyzed',
+  'Clipboard': 'Clipboard',
+  'Extracting transcript': 'Extracted',
+  'Reading RSS feed': 'Read feed',
+  'WhatsApp': 'WhatsApp',
+  'Telegram': 'Telegram',
+  'Slack': 'Slack',
+  'Sending Slack': 'Slack',
+  'Slack message': 'Slack',
+  'GitHub': 'GitHub',
+  'GitHub push': 'Pushed',
+  'GitHub PR': 'Pull Request',
+  'GitHub issue': 'Issue',
+  'Notion': 'Notion',
+  'Notion page': 'Notion',
+  'Linear': 'Linear',
+  'Linear issue': 'Linear',
+  'Jira': 'Jira',
+  'Jira issue': 'Jira',
+  'Figma': 'Figma',
+  'Discord': 'Discord',
+  'Discord message': 'Discord',
+  'Stripe': 'Stripe',
+  'Vercel': 'Vercel',
+  'Airtable': 'Airtable',
+  'Postman': 'Postman',
+  'Trello': 'Trello',
+  'HubSpot': 'HubSpot',
+  'Safety check': 'Checked',
+  'Context operation': 'Context',
+  'Saving progress': 'Saved',
+  'Background task': 'Background',
+  'Creating tool': 'Created tool',
+  'Converting markdown': 'Converted',
+  'System automation': 'Automated',
+  'Managing process': 'Process',
+  'HTTP server': 'Server',
+  'Processing text': 'Processed',
+  'Notifying': 'Notified',
+  'Running macro': 'Ran macro',
+  'Executing chain': 'Executed',
+  'Self-improving': 'Improved',
+  'Watching files': 'Watching',
+  'Vault operation': 'Vault',
+  'Managing environment': 'Env',
+  'Scheduled task': 'Scheduled',
 };
 
 // getToolMeta — verb extraction only; icon is always resolved by resolveAgentIcon
@@ -437,7 +448,7 @@ const getToolMeta = (text: string, type: string, _iconName?: string) => {
 const stripTrailingFileName = (value: string, fileName: string) => {
   if (!value || !fileName) return value;
   const escapedFileName = fileName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const stripped = value.replace(new RegExp(`\\s+(?:file\\s+)?${escapedFileName}$`, 'i'), '').trim();
+  const stripped = value.replace(new RegExp(`\\s+(?:file\\s+)?${ escapedFileName }$`, 'i'), '').trim();
   return stripped || value;
 };
 
@@ -448,7 +459,7 @@ const shouldUseTerminalIcon = (log: any, subtitle = '', preview?: any) => {
   const secondary = String(log?.secondary || subtitle || '');
   const command = String(log?.command || preview?.command || '');
   const iconCategory = String(log?.iconCategory || '').toLowerCase();
-  const combined = `${text} ${secondary} ${command}`;
+  const combined = `${ text } ${ secondary } ${ command }`;
 
   if (log?.type === 'file_edit' || preview?.type === 'file_preview') return false;
   if (iconCategory === 'terminal') return true;
@@ -473,7 +484,7 @@ const LIVE_THOUGHT_FRESH_MS = 2400;
 const LIVE_ACTION_SETTLE_MS = 1400;
 const LIVE_FACE_REGULAR_DELAY_MS = 8500;
 const LIVE_FACE_DEEP_WORK_DELAY_MS = 2400;
-const THOUGHT_ELAPSED_TICK_MS = 5000;
+const THOUGHT_ELAPSED_TICK_MS = 1000;
 
 const getLogUpdatedAt = (log: any) =>
   asTimestamp(log?.endTime) ?? asTimestamp(log?.updatedAt) ?? asTimestamp(log?.timestamp) ?? asTimestamp(log?.startTime);
@@ -544,7 +555,6 @@ const useThinkTimer = (isLive: boolean, startedAt?: number, updatedAt?: number) 
 
 const formatThoughtElapsed = (seconds: number) => {
   if (seconds <= 0) return '';
-  if (seconds < 5) return 'under 5s';
   const minutes = Math.floor(seconds / 60);
   const rest = seconds % 60;
   return minutes > 0 ? `${ minutes }m ${ rest }s` : `${ rest }s`;
@@ -643,14 +653,14 @@ export const ProfessionalThought = ({ text, isLatest, isThinking, variant = 'tho
   // "Thinking... 4s" while live → "Thought for 4s" when done
   const elapsedLabel = formatThoughtElapsed(secs);
   const thinkLabel = isLive
-    ? `Thinking${elapsedLabel ? `... ${elapsedLabel}` : ''}`
+    ? `Thinking${ elapsedLabel ? `... ${ elapsedLabel }` : '' }`
     : elapsedLabel
-      ? `Thought for ${elapsedLabel}`
+      ? `Thought for ${ elapsedLabel }`
       : 'Thought';
   const isNote = variant === 'note';
   const revealEnabled = variant === 'answer'
     ? isLatest && (isThinking || reveal)
-    : isNote && isLatest && isThinking;
+    : false; // notes use worknote merge — no progressive reveal to avoid double-animation
   const revealSpeed = isNote ? TEXT_REVEAL_SPEEDS.workNote : TEXT_REVEAL_SPEEDS.answer;
   const progressive = useProgressiveMarkdown(renderText, revealEnabled, revealSpeed);
   const markdownText = revealEnabled ? progressive.text : renderText;
@@ -669,7 +679,11 @@ export const ProfessionalThought = ({ text, isLatest, isThinking, variant = 'tho
     li: ({ node, ...props }: any) => <li className="eterx-answer-list-item pl-1.5 leading-[1.68]" {...props} />,
     strong: ({ node, ...props }: any) => <strong className="eterx-answer-strong font-semibold" {...props} />,
     em: ({ node, ...props }: any) => <em className="eterx-answer-em italic" {...props} />,
-    a: ({ node, ...props }: any) => <a className="eterx-answer-link hover:underline" target="_blank" rel="noopener" {...props} />,
+    a: ({ node, href, children, ...props }: any) => {
+      const localPath = decodeLocalFileHref(href);
+      if (localPath) return <LocalFileLinkChip filePath={localPath} label={getReactNodeText(children)} compact={isNote} />;
+      return <a className="eterx-answer-link hover:underline" target="_blank" rel="noopener" href={href} {...props}>{children}</a>;
+    },
   }), [isNote]);
   const professionalGhostMarkdownComponents = useMemo(() => ({
     ...professionalMarkdownComponents,
@@ -728,7 +742,11 @@ export const ProfessionalThought = ({ text, isLatest, isThinking, variant = 'tho
                     ul: ({ node, ...props }: any) => <ul className="my-3 list-disc space-y-2 pl-6 text-[#D5D3CE]" {...props} />,
                     li: ({ node, ...props }: any) => <li className="pl-1.5 leading-[1.66] marker:text-[#827C73]" {...props} />,
                     strong: ({ node, ...props }: any) => <strong className="font-semibold text-[#F3F2EF]" {...props} />,
-                    a: ({ node, ...props }: any) => <a className="text-[#E2765A] hover:underline" target="_blank" rel="noopener" {...props} />,
+                    a: ({ node, href, children, ...props }: any) => {
+                      const localPath = decodeLocalFileHref(href);
+                      if (localPath) return <LocalFileLinkChip filePath={localPath} label={getReactNodeText(children)} compact />;
+                      return <a className="text-[#E2765A] hover:underline" target="_blank" rel="noopener" href={href} {...props}>{children}</a>;
+                    },
                   }}>{renderText}</ReactMarkdown>
                 </div>
               </motion.div>
@@ -741,10 +759,10 @@ export const ProfessionalThought = ({ text, isLatest, isThinking, variant = 'tho
 
   return (
     <motion.div
-      layout={isNote ? 'position' : false}
-      initial={isNote ? { opacity: 0, y: 4 } : false}
+      layout={false}
+      initial={isNote ? { opacity: 0, y: 3 } : false}
       animate={isNote ? { opacity: 1, y: 0 } : undefined}
-      transition={isNote ? { duration: 0.2, ease: [0.22, 1, 0.36, 1] } : undefined}
+      transition={isNote ? { duration: 0.18, ease: [0.22, 1, 0.36, 1] } : undefined}
       className={`professional-thought eterx-professional-thought relative w-full max-w-full font-sans font-normal selection:bg-[#D98B6A]/20 select-text tracking-normal ${ progressive.isRevealing ? 'eterx-reveal-active' : '' } ${ isNote ? 'eterx-professional-note py-0.5 text-[13.5px] leading-[1.5] text-[#D2CECA]' : 'eterx-professional-answer text-[13.5px] leading-[1.56] text-[#F2F0EC]' }`}
     >
       {revealEnabled ? (
@@ -774,24 +792,15 @@ const WorkNoteBlock = ({ text, isActive = false }: { text: string; isActive?: bo
   if (!note) return null;
 
   return (
-    <motion.div
-      layout={false}
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      transition={{ duration: 0.12, ease: 'easeOut' }}
-      className={`eterx-work-note-block w-full px-1 py-0 text-[13.5px] leading-[1.5] tracking-normal ${isActive ? 'eterx-text-shimmer eterx-text-shimmer-active' : 'text-[#E2DFDA]'}`}
-    >
-      <ReactMarkdown
-        remarkPlugins={remarkPlugins}
-        rehypePlugins={rehypePlugins}
-        components={{
-          ...markdownComponents,
-          p: ({ node, ...props }: any) => <span className="break-words" {...props} />,
-        }}
-      >
-        {note}
-      </ReactMarkdown>
-    </motion.div>
+    <div className="eterx-work-note-block w-full px-1 py-0">
+      <ProfessionalThought
+        text={note}
+        isLatest={isActive}
+        isThinking={isActive}
+        variant="note"
+        reveal={isActive}
+      />
+    </div>
   );
 };
 
@@ -1015,20 +1024,20 @@ const PatchSummaryPanel = ({
   ];
 
   const kindStyle = {
-    created:  { pill: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/25',  bar: 'bg-emerald-500', label: '+new' },
-    modified: { pill: 'bg-sky-500/15 text-sky-300 border-sky-500/25',             bar: 'bg-sky-400',     label: 'edited' },
-    deleted:  { pill: 'bg-red-500/15 text-red-300 border-red-500/25',             bar: 'bg-red-500',     label: 'deleted' },
+    created: { pill: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/25', bar: 'bg-emerald-500', label: '+new' },
+    modified: { pill: 'bg-sky-500/15 text-sky-300 border-sky-500/25', bar: 'bg-sky-400', label: 'edited' },
+    deleted: { pill: 'bg-red-500/15 text-red-300 border-red-500/25', bar: 'bg-red-500', label: 'deleted' },
   };
 
   return (
     <motion.div layout initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }}>
-      <div className={`eterx-patch-summary-panel flex flex-col bg-[#1B1B1A] font-mono shadow-[0_6px_18px_rgba(0,0,0,0.20),inset_0_1px_0_rgba(255,255,255,0.026)] ${flush ? 'mt-1 mb-2' : 'mx-3 mt-1.5 mb-2'} overflow-hidden rounded-[12px] border border-white/[0.07]`}>
+      <div className={`eterx-patch-summary-panel flex flex-col bg-[#1B1B1A] font-mono shadow-[0_6px_18px_rgba(0,0,0,0.20),inset_0_1px_0_rgba(255,255,255,0.026)] ${ flush ? 'mt-1 mb-2' : 'mx-3 mt-1.5 mb-2' } overflow-hidden rounded-[12px] border border-white/[0.07]`}>
         {/* Header */}
         <div className="flex items-center justify-between gap-3 bg-[#20201F] px-3 py-1.5">
           <div className="flex items-center gap-2.5">
-            <span className={`h-2 w-2 rounded-full flex-shrink-0 ${success ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.5)]' : hasErrors ? 'bg-red-400 shadow-[0_0_8px_rgba(248,113,113,0.5)]' : 'bg-amber-400'}`} />
+            <span className={`h-2 w-2 rounded-full flex-shrink-0 ${ success ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.5)]' : hasErrors ? 'bg-red-400 shadow-[0_0_8px_rgba(248,113,113,0.5)]' : 'bg-amber-400' }`} />
             <span className="text-[12px] font-semibold text-[#C8C2BB]">
-              {success ? `Patch applied · ${totalFiles} file${totalFiles !== 1 ? 's' : ''}` : hasErrors ? `Patch errors · ${errors.length}` : 'No changes'}
+              {success ? `Patch applied · ${ totalFiles } file${ totalFiles !== 1 ? 's' : '' }` : hasErrors ? `Patch errors · ${ errors.length }` : 'No changes'}
             </span>
             {/* Stat pills */}
             <div className="flex items-center gap-1.5">
@@ -1050,7 +1059,7 @@ const PatchSummaryPanel = ({
               className="eterx-action-icon-button flex h-6 w-6 items-center justify-center rounded-[6px] border border-white/[0.06] bg-white/[0.028] text-[#9A9389] transition-colors hover:border-white/[0.10] hover:bg-white/[0.05] hover:text-[#DAD4CA]"
               aria-label={expanded ? 'Collapse' : 'Expand'}
             >
-              <ChevronRight className={`h-3 w-3 transition-transform ${expanded ? 'rotate-90' : ''}`} />
+              <ChevronRight className={`h-3 w-3 transition-transform ${ expanded ? 'rotate-90' : '' }`} />
             </button>
           )}
         </div>
@@ -1071,16 +1080,16 @@ const PatchSummaryPanel = ({
                 const name = f.path.replace(/\\/g, '/').split('/').pop() || f.path;
                 return (
                   <div key={i} className="flex items-center gap-0 border-t border-white/[0.045] first:border-t-0">
-                    <div className={`w-[3px] self-stretch shrink-0 ${style.bar}`} />
+                    <div className={`w-[3px] self-stretch shrink-0 ${ style.bar }`} />
                     <div className="flex min-w-0 flex-1 items-center gap-2 px-3 py-[5px]">
                       <span className="min-w-0 flex-1 truncate text-[12px] text-[#94C7E0]" title={f.path}>{name}</span>
-                      <span className={`shrink-0 rounded-[4px] border px-1.5 py-[1px] text-[10px] font-semibold ${style.pill}`}>{style.label}</span>
+                      <span className={`shrink-0 rounded-[4px] border px-1.5 py-[1px] text-[10px] font-semibold ${ style.pill }`}>{style.label}</span>
                     </div>
                   </div>
                 );
               })}
               {hasErrors && errors.map((err, i) => (
-                <div key={`err-${i}`} className="flex items-start gap-0 border-t border-white/[0.045]">
+                <div key={`err-${ i }`} className="flex items-start gap-0 border-t border-white/[0.045]">
                   <div className="w-[3px] self-stretch shrink-0 bg-red-500" />
                   <div className="flex min-w-0 flex-1 items-start gap-2 px-3 py-[5px]">
                     <span className="shrink-0 rounded-[4px] border border-red-500/25 bg-red-500/15 px-1.5 py-[1px] text-[10px] font-semibold text-red-300">error</span>
@@ -1214,7 +1223,7 @@ const ToolResultPreview = React.memo(({ toolName, args, result }: { toolName: st
       <TrpCard>
         {mode && <div className="mb-2 text-[11px] text-[#5E5A55]"><span className="font-medium text-[#7A7470]">Mode — </span>{mode}</div>}
         {details && (
-          <div className={`mb-2.5 rounded-[8px] border px-3 py-2 text-[12px] leading-[1.5] ${detailsCls}`}>{details}</div>
+          <div className={`mb-2.5 rounded-[8px] border px-3 py-2 text-[12px] leading-[1.5] ${ detailsCls }`}>{details}</div>
         )}
         {evidence && (
           <div className="mb-2.5 rounded-[7px] bg-black/25 border border-white/[0.05] px-3 py-2 font-mono text-[11px] text-[#9A9288] leading-snug select-all">{evidence}</div>
@@ -1224,11 +1233,11 @@ const ToolResultPreview = React.memo(({ toolName, args, result }: { toolName: st
             {items.map((item: any, i: number) => {
               const ok = item.passed === true || item.result === true || item.success === true;
               const fail = item.passed === false || item.result === false || item.success === false;
-              const name: string = item.name || item.check || item.label || `Check ${i + 1}`;
+              const name: string = item.name || item.check || item.label || `Check ${ i + 1 }`;
               const msg: string = item.message || item.details || item.error || '';
               return (
                 <div key={i} className="flex items-start gap-2.5 rounded-[7px] bg-white/[0.025] px-2.5 py-1.5">
-                  <span className={`mt-0.5 text-[11px] font-bold shrink-0 ${ok ? 'text-emerald-400' : fail ? 'text-red-400' : 'text-amber-400'}`}>{ok ? '✓' : fail ? '✗' : '·'}</span>
+                  <span className={`mt-0.5 text-[11px] font-bold shrink-0 ${ ok ? 'text-emerald-400' : fail ? 'text-red-400' : 'text-amber-400' }`}>{ok ? '✓' : fail ? '✗' : '·'}</span>
                   <div>
                     <div className="text-[12px] font-medium text-[#C0B8B0]">{name}</div>
                     {msg && <div className="text-[11px] text-[#5E5A55] mt-0.5">{msg}</div>}
@@ -1382,11 +1391,11 @@ const ToolResultPreview = React.memo(({ toolName, args, result }: { toolName: st
             const name: string = item.name || item.relative || item.path || item.filename || '';
             const isDir = item.isDir || item.isDirectory || item.type === 'directory';
             const size: string = typeof item.size === 'number'
-              ? item.size >= 1048576 ? `${(item.size / 1048576).toFixed(1)}M` : `${(item.size / 1024).toFixed(1)}K`
+              ? item.size >= 1048576 ? `${ (item.size / 1048576).toFixed(1) }M` : `${ (item.size / 1024).toFixed(1) }K`
               : '';
             return (
               <div key={i} className="flex items-center gap-2 py-[3px] px-1 rounded-[4px] hover:bg-white/[0.025] font-mono text-[11.5px]">
-                <span className={`shrink-0 text-[9px] ${isDir ? 'text-amber-500/70' : 'text-[#3E3A36]'}`}>{isDir ? '▸' : '·'}</span>
+                <span className={`shrink-0 text-[9px] ${ isDir ? 'text-amber-500/70' : 'text-[#3E3A36]' }`}>{isDir ? '▸' : '·'}</span>
                 <span className="truncate select-all text-[#9A9288]">{name}</span>
                 {!isDir && size && <span className="ml-auto shrink-0 text-[10px] text-[#3E3A36]">{size}</span>}
               </div>
@@ -1412,7 +1421,12 @@ const ToolResultPreview = React.memo(({ toolName, args, result }: { toolName: st
           {list.length > 0 ? list.map((item: any, i: number) => {
             const file: string = typeof item === 'string' ? item : item.file || item.filename || item.path || '';
             const line = item.line || item.lineNumber;
-            const content: string = item.content || item.lineContent || item.match || '';
+            const rawContent = item.content ?? item.lineContent ?? item.match ?? '';
+            const content: string = typeof rawContent === 'string'
+              ? rawContent
+              : (typeof rawContent === 'object' && rawContent !== null
+                ? JSON.stringify(rawContent)
+                : String(rawContent));
             return (
               <div key={i} className="rounded-[7px] bg-white/[0.02] border border-white/[0.04] p-2 hover:border-white/[0.07] transition-colors">
                 <div className="flex items-center gap-2 text-[10.5px] mb-1">
@@ -1488,7 +1502,7 @@ const ToolResultPreview = React.memo(({ toolName, args, result }: { toolName: st
   // Source links
   const linkSources: string[] = Array.isArray(obj.sources) ? obj.sources
     : Array.isArray(obj.urls) ? obj.urls
-    : Array.isArray(obj.links) ? obj.links : [];
+      : Array.isArray(obj.links) ? obj.links : [];
 
   // Detect image assets in arrays
   const findImageAssets = (items: any[]): any[] => {
@@ -1575,7 +1589,7 @@ const ToolResultPreview = React.memo(({ toolName, args, result }: { toolName: st
                         src={src}
                         alt={label}
                         className="w-full h-full object-cover transition-transform duration-200 group-hover:scale-105"
-                        onError={e => { (e.target as HTMLImageElement).parentElement!.innerHTML = `<div class="w-full h-full flex items-center justify-center text-[#3E3A36] text-[9px] font-mono px-1 text-center break-all">${label || src.split('/').pop() || '?'}</div>`; }}
+                        onError={e => { (e.target as HTMLImageElement).parentElement!.innerHTML = `<div class="w-full h-full flex items-center justify-center text-[#3E3A36] text-[9px] font-mono px-1 text-center break-all">${ label || src.split('/').pop() || '?' }</div>`; }}
                       />
                       {(label || role) && (
                         <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 to-transparent pt-4 pb-1.5 px-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -1690,7 +1704,7 @@ const ToolResultPreview = React.memo(({ toolName, args, result }: { toolName: st
 
       {/* Scalar key-value tiles (only if there IS some structured data above or no arrays at all) */}
       {scalarFields.length > 0 && (
-        <div className={`grid grid-cols-2 gap-1.5 ${hasPrimaryText || arrayFields.length > 0 ? 'mt-3 pt-2.5 border-t border-white/[0.05]' : ''}`}>
+        <div className={`grid grid-cols-2 gap-1.5 ${ hasPrimaryText || arrayFields.length > 0 ? 'mt-3 pt-2.5 border-t border-white/[0.05]' : '' }`}>
           {scalarFields.map(([k, v]) => (
             <div key={k} className="flex flex-col gap-0.5 rounded-[6px] bg-white/[0.02] border border-white/[0.04] px-2 py-1.5">
               <span className="text-[9.5px] font-semibold uppercase tracking-widest text-[#4E4A46]">{k.replace(/_/g, ' ')}</span>
@@ -1729,7 +1743,7 @@ const InlineDiffView = ({ filename, diffLines, showExpand = true, flush = false 
     }
   };
   const diffPanel = (
-    <div className={`eterx-inline-diff-panel flex flex-col bg-[#1B1B1A] font-mono text-[#D8D1C8] shadow-[0_6px_18px_rgba(0,0,0,0.20),inset_0_1px_0_rgba(255,255,255,0.026)] ${ full ? 'h-full rounded-none border-0' : `${flush ? 'mt-1 mb-2' : 'mx-3 mt-1.5 mb-2'} overflow-hidden rounded-[12px] border border-white/[0.07]` }`}>
+    <div className={`eterx-inline-diff-panel flex flex-col bg-[#1B1B1A] font-mono text-[#D8D1C8] shadow-[0_6px_18px_rgba(0,0,0,0.20),inset_0_1px_0_rgba(255,255,255,0.026)] ${ full ? 'h-full rounded-none border-0' : `${ flush ? 'mt-1 mb-2' : 'mx-3 mt-1.5 mb-2' } overflow-hidden rounded-[12px] border border-white/[0.07]` }`}>
       {/* Header */}
       <div className="eterx-inline-diff-header flex items-center justify-between gap-3 bg-[#20201F] px-3 py-1.5">
         <div className="flex min-w-0 items-center gap-2.5">
@@ -1825,8 +1839,8 @@ const InlineCodeView = ({
     const simpleNameOnly = filepath === filename && !/[\\/]/.test(filepath);
     const candidates = Array.from(new Set([
       filepath,
-      simpleNameOnly ? `.workspaces/sandbox/${filename}` : '',
-      simpleNameOnly ? `.workspaces\\sandbox\\${filename}` : '',
+      simpleNameOnly ? `.workspaces/sandbox/${ filename }` : '',
+      simpleNameOnly ? `.workspaces\\sandbox\\${ filename }` : '',
     ].filter(Boolean)));
     (async () => {
       for (const candidate of candidates) {
@@ -1872,7 +1886,7 @@ const InlineCodeView = ({
     }
   };
   const codePanel = (
-    <div className={`eterx-inline-code-panel ${created ? 'eterx-inline-code-panel-created' : ''} flex flex-col bg-[#1B1B1A] font-mono text-[#D8D1C8] shadow-[0_6px_18px_rgba(0,0,0,0.20),inset_0_1px_0_rgba(255,255,255,0.026)] ${ full ? 'h-full rounded-none border-0' : `${flush ? 'mt-1 mb-2' : 'mx-3 mt-1.5 mb-2'} overflow-hidden rounded-[12px] border border-white/[0.07]` }`}>
+    <div className={`eterx-inline-code-panel ${ created ? 'eterx-inline-code-panel-created' : '' } flex flex-col bg-[#1B1B1A] font-mono text-[#D8D1C8] shadow-[0_6px_18px_rgba(0,0,0,0.20),inset_0_1px_0_rgba(255,255,255,0.026)] ${ full ? 'h-full rounded-none border-0' : `${ flush ? 'mt-1 mb-2' : 'mx-3 mt-1.5 mb-2' } overflow-hidden rounded-[12px] border border-white/[0.07]` }`}>
       {/* Header */}
       <div className="eterx-inline-code-header flex items-center justify-between gap-3 bg-[#20201F] px-3 py-1.5">
         <div className="flex min-w-0 items-center gap-2.5">
@@ -1903,12 +1917,12 @@ const InlineCodeView = ({
           {/* Inner div expands to content width — all lines share the same horizontal scroll */}
           <div style={{ minWidth: 'max-content' }}>
             {lines.map((l, i) => (
-              <div key={i} className={`eterx-inline-code-row ${created ? 'eterx-inline-code-row-created' : ''} flex items-stretch hover:bg-white/[0.022] group`}>
+              <div key={i} className={`eterx-inline-code-row ${ created ? 'eterx-inline-code-row-created' : '' } flex items-stretch hover:bg-white/[0.022] group`}>
                 {/* Line number — sticky left via position (plain div, no overflow) */}
                 <div className="eterx-inline-code-line-number w-[42px] shrink-0 select-none border-r border-white/[0.045] py-[3px] pr-3 text-right text-[10.5px] text-[#756E64] transition-colors group-hover:text-[#9B948B]">{i + 1}</div>
                 {/* Content — whitespace-pre, no per-line overflow */}
                 <div
-                  className={`eterx-inline-code-content ${created ? 'eterx-inline-code-content-created text-[#B9E7C0]' : 'text-[#CDC5BB]'} px-3 py-[3px] whitespace-pre`}
+                  className={`eterx-inline-code-content ${ created ? 'eterx-inline-code-content-created text-[#B9E7C0]' : 'text-[#CDC5BB]' } px-3 py-[3px] whitespace-pre`}
                   dangerouslySetInnerHTML={{ __html: highlightSyntax(l) }}
                 />
               </div>
@@ -1961,6 +1975,60 @@ const getDiffStats = (preview: any, log: any) => {
       }
     }
   }
+
+  // Fallback: extract stats from log tool arguments
+  const args = log?.toolArgs || log?.args;
+  const toolName = log?.tool || log?.name || '';
+  if (added === 0 && removed === 0 && args && toolName) {
+    if (toolName === 'workspace_str_replace') {
+      const oldStr = String(args.old_string || '');
+      const newStr = String(args.new_string || '');
+      if (oldStr || newStr) {
+        removed = oldStr ? oldStr.split(/\r?\n/).length : 0;
+        added = newStr ? newStr.split(/\r?\n/).length : 0;
+      }
+    } else if (toolName === 'replace_file_content') {
+      const targetContent = String(args.TargetContent || '');
+      const replacementContent = String(args.ReplacementContent || '');
+      if (targetContent || replacementContent) {
+        removed = targetContent ? targetContent.split(/\r?\n/).length : 0;
+        added = replacementContent ? replacementContent.split(/\r?\n/).length : 0;
+      }
+    } else if (toolName === 'multi_replace_file_content') {
+      const chunks = Array.isArray(args.ReplacementChunks) ? args.ReplacementChunks : [];
+      chunks.forEach((chunk: any) => {
+        const targetContent = String(chunk.TargetContent || '');
+        const replacementContent = String(chunk.ReplacementContent || '');
+        removed += targetContent ? targetContent.split(/\r?\n/).length : 0;
+        added += replacementContent ? replacementContent.split(/\r?\n/).length : 0;
+      });
+    } else if (toolName === 'workspace_write_file' || toolName === 'write_to_file') {
+      const content = String(args.content || args.CodeContent || '');
+      if (content) {
+        added = content.split(/\r?\n/).length;
+        removed = 0;
+      }
+    } else if (toolName === 'workspace_edit_many_files') {
+      const edits = Array.isArray(args.edits) ? args.edits : [];
+      edits.forEach((edit: any) => {
+        const searchStr = String(edit.search || '');
+        const replaceStr = String(edit.replace || '');
+        if (edit.startLine !== undefined && edit.endLine !== undefined) {
+          removed += Math.max(0, edit.endLine - edit.startLine + 1);
+        } else if (searchStr) {
+          removed += searchStr.split(/\r?\n/).length;
+        }
+        added += replaceStr.split(/\r?\n/).length;
+      });
+    }
+  }
+
+  // Secondary fallback: check log root properties
+  if (added === 0 && removed === 0 && log) {
+    added = numberFrom(log.added, log.additions, log.insertions, log.linesAdded, log.add);
+    removed = numberFrom(log.removed, log.deleted, log.deletions, log.linesRemoved, log.remove);
+  }
+
   if (added === 0 && removed === 0) return null;
   return { added, removed };
 };
@@ -2002,10 +2070,33 @@ type FileTraceTarget = {
 };
 
 const summarizeFileTraceTargets = (targets: FileTraceTarget[], fallbackCount = 0) => {
-  const names = targets.map(target => target.filename).filter(Boolean);
-  if (names.length === 0) return `${fallbackCount || 'Multiple'} files`;
+  const names = Array.from(new Set(targets.map(target => target.filename).filter(Boolean).map(name => name.trim())));
+  if (names.length === 0) return `${ fallbackCount || 'Multiple' } files`;
   if (names.length <= 3) return names.join(', ');
-  return `${names.slice(0, 3).join(', ')} +${names.length - 3}`;
+  return `${ names.slice(0, 3).join(', ') } +${ names.length - 3 }`;
+};
+
+const dedupeFileTraceTargetsForDisplay = (targets: FileTraceTarget[]) => {
+  const deduped: FileTraceTarget[] = [];
+  const seen = new Map<string, number>();
+
+  targets.forEach((target) => {
+    const key = target.filename.trim().toLowerCase();
+    if (!key) return;
+    const existingIndex = seen.get(key);
+    if (existingIndex === undefined) {
+      seen.set(key, deduped.length);
+      deduped.push(target);
+      return;
+    }
+
+    const existing = deduped[existingIndex];
+    if (!/[\\/]/.test(existing.filepath) && /[\\/]/.test(target.filepath)) {
+      deduped[existingIndex] = target;
+    }
+  });
+
+  return deduped;
 };
 
 const cleanFileTargetString = (value: unknown) =>
@@ -2042,6 +2133,32 @@ const toFileTraceTarget = (candidate: unknown): FileTraceTarget | null => {
   if (cleaned.length > 280) return null;
   if (/^(?:system|true|false|null|undefined)$/i.test(cleaned)) return null;
   if (/^(?:https?:|data:|blob:)/i.test(cleaned)) return null;
+
+  // Strict check: reject code, parameters, or command fragments
+  if (
+    cleaned.includes('"') ||
+    cleaned.includes("'") ||
+    cleaned.includes('=') ||
+    cleaned.includes('{') ||
+    cleaned.includes('}') ||
+    cleaned.includes('(') ||
+    cleaned.includes(')') ||
+    cleaned.includes(';') ||
+    cleaned.includes('<') ||
+    cleaned.includes('>') ||
+    cleaned.includes('[') ||
+    cleaned.includes(']') ||
+    /\s{2,}/.test(cleaned)
+  ) {
+    return null;
+  }
+
+  // Colons are only allowed for Windows drive letters (e.g. C:\)
+  const colonIdx = cleaned.indexOf(':');
+  if (colonIdx >= 0 && colonIdx !== 1) {
+    return null;
+  }
+
   const normalized = cleaned.replace(/^\.?[\\/]+/, '');
   const segments = normalized.split(/[\\/]/).filter(Boolean);
   const filename = segments[segments.length - 1] || normalized;
@@ -2142,7 +2259,7 @@ const filePreviewMatchesTargets = (previewLog: any, targets: FileTraceTarget[]) 
   return targets.some((target) => {
     const path = target.filepath.toLowerCase();
     const name = target.filename.toLowerCase();
-    return previewPath === path || previewPath.endsWith(`\\${name}`) || previewPath.endsWith(`/${name}`) || previewName === name;
+    return previewPath === path || previewPath.endsWith(`\\${ name }`) || previewPath.endsWith(`/${ name }`) || previewName === name;
   });
 };
 
@@ -2155,10 +2272,28 @@ const getLineContext = (subtitle: string, fileName: string) => {
     return value.replace(/:/g, '-');
   }
   const normalizedFile = fileName.toLowerCase();
+  const normalizedText = text.toLowerCase().replace(/\\/g, '/');
+
+  // If the subtitle text is just the filename or a path ending in the filename (without line ranges),
+  // then displaying it again next to the file link is redundant.
+  const isFilePathOnly = normalizedText === normalizedFile ||
+    normalizedText.endsWith('/' + normalizedFile) ||
+    normalizedText.startsWith('./' + normalizedFile);
+  if (isFilePathOnly) {
+    return '';
+  }
+
   if (normalizedFile && text.toLowerCase().includes(normalizedFile)) {
     const afterFile = text.slice(text.toLowerCase().lastIndexOf(normalizedFile) + normalizedFile.length).trim();
     if (afterFile && afterFile.length <= 32) return afterFile;
   }
+
+  // If the subtitle looks like a path (contains slashes) but has no line number match,
+  // it is redundant because we already display the basename of the file.
+  if (text.includes('/') || text.includes('\\')) {
+    return '';
+  }
+
   return text.length <= 42 ? text : '';
 };
 
@@ -2254,7 +2389,7 @@ const shouldRenderThoughtSegment = (log: any, flowLogs: any[], idx: number) => {
 
 const formatTerminalMetaDuration = (durationMs?: number) => {
   if (durationMs === undefined || durationMs === null || !Number.isFinite(durationMs)) return '';
-  return durationMs < 1000 ? `${Math.round(durationMs)}ms` : `${(durationMs / 1000).toFixed(1)}s`;
+  return durationMs < 1000 ? `${ Math.round(durationMs) }ms` : `${ (durationMs / 1000).toFixed(1) }s`;
 };
 
 const findLatestConsoleOutput = (logs: any[], commandSnippet: string) => {
@@ -2306,7 +2441,7 @@ const TerminalTraceCard = ({
   const isFailed = exitCode !== undefined && exitCode !== 0;
   const durationLabel = formatTerminalMetaDuration(durationMs);
   const hasOutput = output.trim().length > 0;
-  const [isExpanded, setIsExpanded] = useState(false);
+  const [isExpanded, setIsExpanded] = useState(() => isStreaming);
   const commandIdentity = [
     log?._traceIdx ?? '',
     log?.traceId ?? '',
@@ -2314,20 +2449,27 @@ const TerminalTraceCard = ({
     command,
   ].join('|');
 
+  const lastCommandIdentityRef = useRef(commandIdentity);
+
   useEffect(() => {
-    setIsExpanded(false);
-  }, [commandIdentity]);
+    if (commandIdentity !== lastCommandIdentityRef.current) {
+      lastCommandIdentityRef.current = commandIdentity;
+      setIsExpanded(isStreaming);
+    } else if (isStreaming) {
+      setIsExpanded(true);
+    }
+  }, [commandIdentity, isStreaming]);
 
   const title = inCard
     ? isStreaming ? 'Running' : isFailed ? 'Failed' : 'Ran'
     : isStreaming ? 'Running command' : isFailed ? 'Command failed' : 'Ran command';
-  const headerLabel = durationLabel && !isStreaming ? `${title} · ${durationLabel}` : title;
+  const headerLabel = durationLabel && !isStreaming ? `${ title } · ${ durationLabel }` : title;
   const rowGridClass = isExpanded
     ? 'grid-cols-[24px_1fr_auto]'   // title fills space → chevron stays at far right
     : 'grid-cols-[24px_auto_minmax(0,1fr)_auto]';
 
   return (
-    <div className={`eterx-terminal-trace w-full ${inCard ? '' : 'my-1.5'}`}>
+    <div className={`eterx-terminal-trace w-full ${ inCard ? '' : 'my-1.5' }`}>
       <button
         type="button"
         onClick={(event) => {
@@ -2335,12 +2477,12 @@ const TerminalTraceCard = ({
           setIsExpanded(open => !open);
         }}
         aria-expanded={isExpanded}
-        className={`eterx-terminal-trace-row group grid min-h-[33px] w-full ${rowGridClass} items-center gap-2 px-1.5 py-1 text-left transition-colors outline-none focus:outline-none focus-visible:outline-none focus-visible:ring-0 ${inCard ? 'hover:bg-white/[0.024]' : 'rounded-[9px] hover:bg-white/[0.024]'}`}
+        className={`eterx-terminal-trace-row group grid min-h-[33px] w-full ${ rowGridClass } items-center gap-2 px-1.5 py-1 text-left transition-colors outline-none focus:outline-none focus-visible:outline-none focus-visible:ring-0 ${ inCard ? 'hover:bg-white/[0.024]' : 'rounded-[9px] hover:bg-white/[0.024]' }`}
       >
         <span className="eterx-action-icon eterx-terminal-icon flex h-6 w-6 shrink-0 items-center justify-center text-[#A39B91]">
           <Terminal className="h-[15px] w-[15px]" strokeWidth={2.1} />
         </span>
-        <span className={`min-w-0 truncate text-[13.5px] font-medium leading-tight tracking-normal ${isStreaming ? 'eterx-text-shimmer eterx-text-shimmer-active' : 'text-[#C8C1B8]'}`}>
+        <span className={`min-w-0 truncate text-[13.5px] font-medium leading-tight tracking-normal ${ isStreaming ? 'eterx-text-shimmer eterx-text-shimmer-active' : 'text-[#C8C1B8]' }`}>
           {headerLabel}
         </span>
         {!isExpanded && (
@@ -2348,7 +2490,7 @@ const TerminalTraceCard = ({
             {command || '(no command)'}
           </span>
         )}
-        <ChevronRight className={`h-3.5 w-3.5 shrink-0 text-[#898176] transition-transform ${isExpanded ? 'rotate-90 text-[#C8C1B8]' : ''}`} />
+        <ChevronRight className={`h-3.5 w-3.5 shrink-0 text-[#898176] transition-transform ${ isExpanded ? 'rotate-90 text-[#C8C1B8]' : '' }`} />
       </button>
       <AnimatePresence initial={false}>
         {isExpanded && (
@@ -2383,15 +2525,16 @@ const FileChangeTraceCard = ({
 }) => {
   const [isExpanded, setIsExpanded] = useState(false);
   const { openPanel } = useFilePanelActions();
-  const primaryTarget = fileTargets[0];
+  const displayFileTargets = useMemo(() => dedupeFileTraceTargetsForDisplay(fileTargets), [fileTargets]);
+  const primaryTarget = displayFileTargets[0] || fileTargets[0];
   const explicitCount = numberFrom(log.fileCount, log.filesCount, log.count);
-  const fileCount = Math.max(fileTargets.length, explicitCount || 0);
+  const fileCount = Math.max(displayFileTargets.length, explicitCount || 0);
   const multiFile = fileCount > 1 || /\bfiles\b/i.test(String(log.text || ''));
   const normalizedVerb = displayVerb.replace(/\s+files?$/i, '').trim() || (isLiveChip ? 'Editing' : 'Edited');
-  const title = `${normalizedVerb} ${multiFile ? 'files' : 'file'}`;
-  const filename = preview?.filename || primaryTarget?.filename || (multiFile ? `${fileCount || 'Multiple'} files` : '');
+  const title = `${ normalizedVerb } ${ multiFile ? 'files' : 'file' }`;
+  const filename = preview?.filename || primaryTarget?.filename || (multiFile ? `${ fileCount || 'Multiple' } files` : '');
   const rawTargetLabel = multiFile
-    ? summarizeFileTraceTargets(fileTargets, fileCount)
+    ? summarizeFileTraceTargets(displayFileTargets, fileCount)
     : filename;
   const targetLabel = /^(?:file|files?)$/i.test(rawTargetLabel) ? '' : rawTargetLabel;
   const previewFilePath = preview?.filepath || primaryTarget?.filepath || '';
@@ -2406,7 +2549,7 @@ const FileChangeTraceCard = ({
   const showDiff = Boolean(isEditPreview && hasDiffPreview);
   // Allow fetching if we have a filepath, even for non-create actions (covers edit with no diff)
   const canFetchCreatedFile = !multiFile && !canPreview && Boolean(previewFilePath || primaryTarget?.filepath);
-  const canShowFileList = !canPreview && (multiFile || !canFetchCreatedFile) && fileTargets.length > 0;
+  const canShowFileList = !canPreview && (multiFile || !canFetchCreatedFile) && displayFileTargets.length > 0;
 
   // Patch result — extract from log.result or log (apply_patch returns filesModified/Created/Deleted)
   const isPatch = /patch/i.test(String(displayVerb || '')) || /patch/i.test(String(log?.text || ''));
@@ -2476,11 +2619,12 @@ const FileChangeTraceCard = ({
       flush
     />
   ) : canShowFileList ? (
-    <div className="eterx-file-change-list-panel mx-3 mt-1.5 mb-2 overflow-hidden rounded-[12px] border border-white/[0.07] bg-[#1B1B1A] font-mono text-[12px] text-[#CDC5BB] shadow-[0_6px_18px_rgba(0,0,0,0.18)]">
-      {fileTargets.slice(0, 10).map((target) => (
-        <div key={target.filepath} className="eterx-file-change-list-row flex min-h-[34px] items-start gap-2 border-t border-white/[0.045] px-3 py-2 first:border-t-0">
-          <span className="eterx-file-change-list-name min-w-0 flex-1 break-words leading-[1.35]">{target.filename}</span>
-          {fileTargets.length === 1 && (
+    <div className="eterx-file-change-list-panel mx-3 mt-1.5 mb-2 overflow-hidden rounded-[12px] border border-white/[0.07] bg-[#1B1B1A] text-[12.5px] text-[#CDC5BB] shadow-[0_6px_18px_rgba(0,0,0,0.18)]">
+      {displayFileTargets.slice(0, 10).map((target) => (
+        <div key={target.filepath} className="eterx-file-change-list-row flex min-h-[36px] items-center gap-2.5 border-t border-white/[0.045] px-3 py-2 first:border-t-0">
+          <LocalFileIcon fileName={target.filename} size="sm" />
+          <span className="eterx-file-change-list-name min-w-0 flex-1 break-words font-medium leading-[1.35] text-[#E2DFDA]">{target.filename}</span>
+          {displayFileTargets.length === 1 && (
             <ChangeStats
               stats={diffStats}
               className="flex shrink-0 items-center gap-1 font-mono text-[11.5px] font-semibold tabular-nums"
@@ -2506,7 +2650,7 @@ const FileChangeTraceCard = ({
 
   if (isExpanded && canExpand) {
     return (
-      <div className={`eterx-file-change-trace eterx-file-change-trace-expanded w-full ${inCard ? '' : 'my-1.5'}`}>
+      <div className={`eterx-file-change-trace eterx-file-change-trace-expanded w-full ${ inCard ? '' : 'my-1.5' }`}>
         <button
           type="button"
           aria-expanded="true"
@@ -2538,11 +2682,11 @@ const FileChangeTraceCard = ({
   }
 
   const collapsedRowClass = inCard
-    ? `eterx-file-change-row eterx-file-change-row--embedded group grid min-h-[33px] w-full grid-cols-[24px_auto_minmax(0,1fr)_auto] items-center gap-2 px-1.5 py-1 text-left transition-colors hover:bg-white/[0.024] ${canExpand ? 'cursor-pointer' : 'cursor-default'}`
-    : `eterx-file-change-row eterx-file-change-row--standalone group grid min-h-[38px] w-full grid-cols-[24px_auto_minmax(0,1fr)_auto] items-center gap-2 px-3 py-1 text-left transition-colors ${ACTION_CARD_CLASS} ${canExpand ? 'cursor-pointer hover:border-white/[0.13] hover:bg-[#181817]/80' : 'cursor-default'}`;
+    ? `eterx-file-change-row eterx-file-change-row--embedded group grid min-h-[33px] w-full grid-cols-[24px_auto_minmax(0,1fr)_auto] items-center gap-2 px-1.5 py-1 text-left transition-colors hover:bg-white/[0.024] ${ canExpand ? 'cursor-pointer' : 'cursor-default' }`
+    : `eterx-file-change-row eterx-file-change-row--standalone group grid min-h-[38px] w-full grid-cols-[24px_auto_minmax(0,1fr)_auto] items-center gap-2 px-3 py-1 text-left transition-colors ${ ACTION_CARD_CLASS } ${ canExpand ? 'cursor-pointer hover:border-white/[0.13] hover:bg-[#181817]/80' : 'cursor-default' }`;
 
   return (
-    <div className={`eterx-file-change-trace w-full ${inCard ? '' : 'my-1.5'}`}>
+    <div className={`eterx-file-change-trace w-full ${ inCard ? '' : 'my-1.5' }`}>
       <div
         role={canExpand ? 'button' : undefined}
         tabIndex={canExpand ? 0 : undefined}
@@ -2559,26 +2703,31 @@ const FileChangeTraceCard = ({
         <span className="eterx-action-icon eterx-file-change-icon flex h-6 w-6 shrink-0 items-center justify-center">
           <AI isLive={isLiveChip} size={15} color={isLiveChip ? ac : '#DAD6CF'} />
         </span>
-        <span className={`eterx-file-change-title min-w-max whitespace-nowrap text-[13.5px] font-medium leading-tight tracking-normal ${isLiveChip ? 'eterx-text-shimmer eterx-text-shimmer-active' : 'text-[#C8C1B8]'}`}>
+        <span className={`eterx-file-change-title min-w-max whitespace-nowrap text-[13.5px] font-medium leading-tight tracking-normal ${ isLiveChip ? 'eterx-text-shimmer eterx-text-shimmer-active' : 'text-[#C8C1B8]' }`}>
           {title}
         </span>
-        <span className="eterx-file-change-detail flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 overflow-visible">
-          {targetLabel && canOpenSingleFile ? (
-            <button
-              type="button"
-              onClick={openSingleFile}
-              className="eterx-file-change-filename min-w-0 overflow-wrap-anywhere break-words text-left font-mono text-[12.75px] font-medium leading-[1.25] text-[#94C7E0] decoration-transparent underline-offset-[3px] transition-colors hover:text-[#B9DCEB] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#94C7E0]/22"
-              aria-label={`Open file: ${filename}`}
-            >
-              {targetLabel}
-            </button>
-          ) : targetLabel ? (
-            <span className="eterx-file-change-filename min-w-0 overflow-wrap-anywhere break-words font-mono text-[12.75px] font-medium leading-[1.25] text-[#94C7E0] decoration-transparent underline-offset-[3px] transition-colors group-hover:underline">{targetLabel}</span>
+        <span className="eterx-file-change-detail flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 overflow-visible">
+          {targetLabel ? (
+            <span className="inline-flex min-w-0 max-w-full items-center gap-2">
+              <LocalFileIcon fileName={filename || targetLabel} size="sm" />
+              {canOpenSingleFile ? (
+                <button
+                  type="button"
+                  onClick={openSingleFile}
+                  className="eterx-file-change-filename min-w-0 overflow-wrap-anywhere break-words text-left text-[13px] font-semibold leading-[1.25] text-[#DDEAF1] decoration-transparent underline-offset-[3px] transition-colors hover:text-white hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#94C7E0]/22"
+                  aria-label={`Open file: ${ filename }`}
+                >
+                  {targetLabel}
+                </button>
+              ) : (
+                <span className="eterx-file-change-filename min-w-0 overflow-wrap-anywhere break-words text-[13px] font-semibold leading-[1.25] text-[#DDEAF1] decoration-transparent underline-offset-[3px] transition-colors group-hover:underline">{targetLabel}</span>
+              )}
+            </span>
           ) : null}
           <ChangeStats stats={diffStats} />
         </span>
         {canExpand ? (
-          <ChevronRight className={`h-3.5 w-3.5 shrink-0 text-[#8F897F] transition-transform ${isExpanded ? 'rotate-90 text-[#C9C5BE]' : ''}`} />
+          <ChevronRight className={`h-3.5 w-3.5 shrink-0 text-[#8F897F] transition-transform ${ isExpanded ? 'rotate-90 text-[#C9C5BE]' : '' }`} />
         ) : (
           <span className="h-3.5 w-3.5 shrink-0" />
         )}
@@ -2595,7 +2744,8 @@ const ActionChip = ({
   isNested?: boolean, inCard?: boolean
 }) => {
   const isLiveChip = isActiveGroup && isLastChip;
-  const isEdit = log.type === 'file_edit';
+  const isEdit = log.type === 'file_edit' ||
+    ['workspace_write_file', 'workspace_edit_file', 'workspace_str_replace', 'workspace_apply_patch', 'workspace_edit_many_files', 'replace_file_content', 'multi_replace_file_content', 'write_to_file'].includes(log.tool || log.name);
   // workspace_apply_patch logs come in as file_edit with text 'Patching files'
   const isPatch = isEdit && /patch/i.test(String(log.text || ''));
   const { openPanel } = useFilePanelActions();
@@ -2612,7 +2762,7 @@ const ActionChip = ({
       const toolName = log.tool || log.name || '';
       if (!EXCLUDED_PREVIEW_TOOLS.has(toolName) && !['workspace_read_file', 'workspace_write_file', 'workspace_edit_file', 'system_shell', 'workspace_run_command'].includes(toolName)) {
         return {
-          id: `inline_result_${log.id}`,
+          id: `inline_result_${ log.id }`,
           type: 'tool_result_preview',
           toolName,
           toolArgs: log.toolArgs || log.args || {},
@@ -2646,11 +2796,14 @@ const ActionChip = ({
     if (ownerPreview) return ownerPreview;
     if (log.type === 'command') {
       const cmd = getTerminalCommandText(log, undefined, String(log.secondary || ''));
-      // Search forward from this log first, then try searching all logs
+      // Search forward from this log first
       const forwardResult = findLatestConsoleOutput(searchLogs, cmd.substring(0, 20));
       if (forwardResult) return forwardResult;
-      // Fallback: search all logs (handles reordered or late-arriving console_output)
-      return findLatestConsoleOutput(allLogs, cmd.substring(0, 20));
+      // Fallback: search all logs only if command index was not found (handles reordered or late-arriving console_output)
+      if (myIdx === -1) {
+        return findLatestConsoleOutput(allLogs, cmd.substring(0, 20));
+      }
+      return null;
     }
     if (isEdit) {
       const scopedPreview = searchLogs.find((l: any) => filePreviewMatchesTargets(l, logFileTargets));
@@ -2669,7 +2822,7 @@ const ActionChip = ({
     return null;
   }, [allLogs, isEdit, log, logFileTargets]);
   const [isExpanded, setIsExpanded] = useState(false);
-  const actionIdentity = `${getStableActionEventId(log)}|${getActionLookupIdentity(log)}`;
+  const actionIdentity = `${ getStableActionEventId(log) }|${ getActionLookupIdentity(log) }`;
   useEffect(() => {
     setIsExpanded(false);
   }, [actionIdentity]);
@@ -2680,7 +2833,15 @@ const ActionChip = ({
   const hasFile = !!fileName && !/^(?:system|file|files?)$/i.test(fileName);
   // Resolve the full path for IDE link
   const fullPath = rawPath || preview?.filepath || preview?.filename || '';
-  const lineContext = hasFile ? getLineContext(subtitle, fileName) : '';
+  const getLineContextRange = () => {
+    const start = log.toolArgs?.startLine ?? log.args?.startLine ?? preview?.startLine;
+    const end = log.toolArgs?.endLine ?? log.args?.endLine ?? preview?.endLine;
+    if (start !== undefined && end !== undefined) {
+      return `#L${ start }-${ end }`;
+    }
+    return hasFile ? getLineContext(subtitle, fileName) : '';
+  };
+  const lineContext = getLineContextRange();
   const diffStats = isEdit ? getDiffStats(preview, log) : null;
   // Past-tense verb for display; live overrides to present tense below
   const meta = useMemo(() => {
@@ -2719,7 +2880,8 @@ const ActionChip = ({
     return { ...base, verbDone: base.verb, verbLive: LIVE_VERBS[base.verb] || base.verb };
   }, [isEdit, log.text, log.type, log.icon, log.iconCategory, preview]);
   const displayVerb = isLiveChip ? (meta.verbLive || meta.verbDone) : (meta.verbDone || (meta as any).verb);
-  const displayVerbLabel = hasFile ? stripTrailingFileName(displayVerb, fileName) : displayVerb;
+  const cleanVerb = displayVerb.replace(/\s+files?$/i, '').trim();
+  const displayVerbLabel = hasFile ? stripTrailingFileName(cleanVerb, fileName) : cleanVerb;
   const isTerminalAction = isTerminalActionLike(log, preview);
   if (isTerminalAction) {
     return (
@@ -2791,7 +2953,7 @@ const ActionChip = ({
           e.preventDefault();
           handleTogglePreview(e);
         }}
-        className={`eterx-action-chip grid min-h-[33px] w-full grid-cols-[24px_auto_minmax(0,1fr)_auto] items-center gap-2 px-1.5 py-1 transition-colors group ${ inCard ? 'rounded-none border-0 bg-transparent hover:bg-white/[0.026]' : preview ? `${ACTION_CARD_CLASS} cursor-pointer hover:border-white/[0.13] hover:bg-[#181817]/80` : `${ACTION_CARD_CLASS} cursor-default hover:bg-[#171716]/70` } ${ preview ? 'cursor-pointer' : 'cursor-default' }`}
+        className={`eterx-action-chip grid min-h-[33px] w-full grid-cols-[24px_auto_minmax(0,1fr)_auto] items-center gap-2 px-1.5 py-1 transition-colors group ${ inCard ? 'rounded-none border-0 bg-transparent hover:bg-white/[0.026]' : preview ? `${ ACTION_CARD_CLASS } cursor-pointer hover:border-white/[0.13] hover:bg-[#181817]/80` : `${ ACTION_CARD_CLASS } cursor-default hover:bg-[#171716]/70` } ${ preview ? 'cursor-pointer' : 'cursor-default' }`}
       >
         {!isThinkChip && (() => {
           // Terminal-style traces can arrive with custom text and older computer categories.
@@ -2801,14 +2963,15 @@ const ActionChip = ({
           return <span className="eterx-action-icon flex h-6 w-6 items-center justify-center shrink-0"><AI isLive={isLiveChip} size={15} color={isLiveChip ? ac : '#DAD6CF'} /></span>;
         })()}
         {isThinkChip && <span className="h-6 w-6 shrink-0" />}
-        <span className={`eterx-action-verb shrink-0 truncate text-[13.5px] font-medium leading-tight tracking-normal ${isLiveChip ? 'eterx-text-shimmer eterx-text-shimmer-active' : 'text-[#C8C1B8]'}`}>{displayVerbLabel}</span>
+        <span className={`eterx-action-verb shrink-0 truncate text-[13.5px] font-medium leading-tight tracking-normal ${ isLiveChip ? 'eterx-text-shimmer eterx-text-shimmer-active' : 'text-[#C8C1B8]' }`}>{displayVerbLabel}</span>
         {hasFile && (
-          <span className="flex min-w-0 items-center gap-1.5">
+          <span className="flex min-w-0 items-center gap-2">
+            <LocalFileIcon fileName={fileName} size="sm" />
             <button
               type="button"
               onClick={(e) => openInIde(e, 'code')}
-              className="eterx-action-file-link min-w-0 truncate text-left text-[13.5px] font-medium leading-tight text-[#94C7E0] transition-colors duration-150 hover:text-[#B9DCEB] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#94C7E0]/22"
-              aria-label={`Open file: ${fileName}`}
+              className="eterx-action-file-link min-w-0 truncate text-left text-[13.5px] font-semibold leading-tight text-[#DDEAF1] transition-colors duration-150 hover:text-white hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#94C7E0]/22"
+              aria-label={`Open file: ${ fileName }`}
             >
               {fileName}
             </button>
@@ -2817,21 +2980,21 @@ const ActionChip = ({
                 type="button"
                 onClick={(e) => openInIde(e, 'diff')}
                 className="eterx-action-diff-chip group/diff relative -my-1 inline-flex h-7 shrink-0 items-center gap-1 rounded-full px-2 font-mono text-[12px] font-semibold tabular-nums leading-none text-[#C8C1B8] transition-colors duration-150 hover:bg-white/[0.052] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/18"
-                aria-label={`Open file: ${fileName}`}
+                aria-label={`Open file: ${ fileName }`}
               >
-                  <ChangeStats
-                    stats={diffStats}
-                    className="inline-flex shrink-0 items-center gap-1"
-                    addedClassName="eterx-action-diff-added text-[#3EE06F]"
-                    removedClassName="eterx-action-diff-removed text-[#FF6D63]"
-                  />
-                  <span className="eterx-action-diff-tooltip pointer-events-none absolute -top-8 left-1/2 z-30 -translate-x-1/2 whitespace-nowrap rounded-full border border-white/[0.08] bg-[#222220]/96 px-2.5 py-1 text-[11px] font-medium text-[#E6DED4] opacity-0 shadow-[0_8px_22px_rgba(0,0,0,0.28)] backdrop-blur-xl transition-opacity duration-150 group-hover/diff:opacity-100">
-                    Open diff
-                  </span>
+                <ChangeStats
+                  stats={diffStats}
+                  className="inline-flex shrink-0 items-center gap-1"
+                  addedClassName="eterx-action-diff-added text-[#3EE06F]"
+                  removedClassName="eterx-action-diff-removed text-[#FF6D63]"
+                />
+                <span className="eterx-action-diff-tooltip pointer-events-none absolute -top-8 left-1/2 z-30 -translate-x-1/2 whitespace-nowrap rounded-full border border-white/[0.08] bg-[#222220]/96 px-2.5 py-1 text-[11px] font-medium text-[#E6DED4] opacity-0 shadow-[0_8px_22px_rgba(0,0,0,0.28)] backdrop-blur-xl transition-opacity duration-150 group-hover/diff:opacity-100">
+                  Open diff
+                </span>
               </button>
             )}
             {lineContext && (
-          <span className="shrink-0 font-mono text-[12px] font-medium leading-tight text-[#857E73]">
+              <span className="shrink-0 font-mono text-[12px] font-medium leading-tight text-[#857E73]">
                 {lineContext}
               </span>
             )}
@@ -2843,7 +3006,7 @@ const ActionChip = ({
         {!hasFile && !subtitle && <span className="min-w-0" />}
         <span className="flex shrink-0 items-center justify-end gap-2 justify-self-end">
           {preview && (
-            <ChevronRight className={`h-3.5 w-3.5 shrink-0 transition-all ${isExpanded ? 'rotate-90 text-[#C8C1B8]' : 'text-[#898176]'} group-hover:text-[#C8C1B8]`} />
+            <ChevronRight className={`h-3.5 w-3.5 shrink-0 transition-all ${ isExpanded ? 'rotate-90 text-[#C8C1B8]' : 'text-[#898176]' } group-hover:text-[#C8C1B8]`} />
           )}
           {hasFile && fullPath.toLowerCase().match(/\.(html|htm)$/) && (
             <button
@@ -2887,21 +3050,21 @@ const SubAgentCard = ({ log, onOpenAgentTeam }: { log: any; onOpenAgentTeam?: (n
   const isFailed = log.type === 'sub_agent_error' || log.agentStatus === 'failed' || log.status === 'error';
   const isWorking = !isComplete && !isFailed && (log.type === 'sub_agent_action' || log.agentStatus === 'running');
   const identityStatus = isComplete ? 'completed' : isFailed ? 'error' : isWorking ? 'working' : 'idle';
-  const durationLabel = log.durationMs ? `${Math.round(log.durationMs / 1000)}s` : null;
-  const stepLabel = log.stepCount ? `${log.stepCount} steps` : null;
+  const durationLabel = log.durationMs ? `${ Math.round(log.durationMs / 1000) }s` : null;
+  const stepLabel = log.stepCount ? `${ log.stepCount } steps` : null;
   const metaText = [durationLabel, stepLabel].filter(Boolean).join(' · ') || (isWorking ? 'Working...' : 'Parallel worker');
   const displayText = log.taskSummary || log.result || log.content || log.text || '';
 
   const statusBadge = isComplete
     ? { bg: 'bg-emerald-500/8 border-emerald-500/15', text: 'text-emerald-400', label: 'Done' }
     : isFailed
-    ? { bg: 'bg-red-500/8 border-red-500/15', text: 'text-red-400', label: 'Error' }
-    : isWorking
-    ? { bg: 'bg-amber-500/8 border-amber-500/15', text: 'text-amber-400', label: 'Working' }
-    : { bg: 'bg-white/[0.035] border-white/[0.07]', text: 'text-[#AFA79C]', label: 'Agent' };
+      ? { bg: 'bg-red-500/8 border-red-500/15', text: 'text-red-400', label: 'Error' }
+      : isWorking
+        ? { bg: 'bg-amber-500/8 border-amber-500/15', text: 'text-amber-400', label: 'Working' }
+        : { bg: 'bg-white/[0.035] border-white/[0.07]', text: 'text-[#AFA79C]', label: 'Agent' };
   return (
     <div className="my-1.5 overflow-hidden">
-      <div className={`w-full flex min-h-[50px] items-center gap-2 rounded-[12px] px-3 py-2.5 transition-colors border ${open ? 'bg-[#181817]/80 border-white/[0.10]' : 'bg-white/[0.012] border-white/[0.045] hover:bg-white/[0.024] hover:border-white/[0.075]'}`}>
+      <div className={`w-full flex min-h-[50px] items-center gap-2 rounded-[12px] px-3 py-2.5 transition-colors border ${ open ? 'bg-[#181817]/80 border-white/[0.10]' : 'bg-white/[0.012] border-white/[0.045] hover:bg-white/[0.024] hover:border-white/[0.075]' }`}>
         <button
           type="button"
           aria-expanded={open}
@@ -2914,12 +3077,12 @@ const SubAgentCard = ({ log, onOpenAgentTeam }: { log: any; onOpenAgentTeam?: (n
           <span className="min-w-0 flex-1 text-left">
             <span className="flex items-center gap-2">
               <span className="truncate text-[13px] font-medium tracking-normal text-[#D8D1C8]">{agentName}</span>
-              <span className={`shrink-0 inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.08em] ${statusBadge.bg} ${statusBadge.text}`}>
+              <span className={`shrink-0 inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.08em] ${ statusBadge.bg } ${ statusBadge.text }`}>
                 {isWorking && <span className="eterx-agent-live-rail !h-[6px] !w-[22px]" aria-hidden="true" />}
                 {statusBadge.label}
               </span>
             </span>
-            <span className={`mt-0.5 block truncate text-[11px] font-medium ${isWorking ? 'text-[#BDB5AA]' : 'text-[#7E766C]'}`}>{metaText}</span>
+            <span className={`mt-0.5 block truncate text-[11px] font-medium ${ isWorking ? 'text-[#BDB5AA]' : 'text-[#7E766C]' }`}>{metaText}</span>
           </span>
 
           <ChevronRight className={`h-3.5 w-3.5 shrink-0 text-[#6F685F] transition-all ${ open ? 'rotate-90 text-[#B6AEA3]' : '' }`} />
@@ -2929,7 +3092,7 @@ const SubAgentCard = ({ log, onOpenAgentTeam }: { log: any; onOpenAgentTeam?: (n
             type="button"
             onClick={() => onOpenAgentTeam(agentName)}
             className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[9px] text-[#756D63] transition-colors hover:bg-white/[0.045] hover:text-[#CFC8BD] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/16"
-            aria-label={`Open ${agentName} in agent team`}
+            aria-label={`Open ${ agentName } in agent team`}
           >
             <ExternalLink className="h-3.5 w-3.5" />
           </button>
@@ -2976,21 +3139,21 @@ const AgentCreatedCard = ({ log, onOpenAgentTeam }: { log: any; onOpenAgentTeam?
             <button
               type="button"
               onClick={() => onOpenAgentTeam?.(name)}
-              className={`w-full flex h-[44px] items-center gap-3 rounded-[12px] px-3.5 bg-white/[0.015] border border-white/[0.06] text-left transition-all hover:bg-white/[0.03] hover:border-white/[0.09] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/16 cursor-pointer group ${ACTION_CARD_CLASS}`}
-              aria-label={`View agent ${name}`}
+              className={`w-full flex min-h-[33px] items-center gap-2.5 rounded-[9px] px-3 py-1 bg-white/[0.015] border border-white/[0.045] text-left transition-all hover:bg-white/[0.024] hover:border-white/[0.075] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/16 cursor-pointer group ${ ACTION_CARD_CLASS }`}
+              aria-label={`View agent ${ name }`}
             >
               {hasImage ? (
-                <span className="flex h-[28px] w-[28px] shrink-0 items-center justify-center overflow-hidden rounded-full border border-white/[0.08] bg-black/10 shadow-[0_2px_8px_rgba(0,0,0,0.12)]">
+                <span className="flex h-[22px] w-[22px] shrink-0 items-center justify-center overflow-hidden rounded-full border border-white/[0.08] bg-black/10 shadow-[0_2px_8px_rgba(0,0,0,0.12)]">
                   <img
-                    src={`/icons/sub-agents/${lowerName}.png`}
+                    src={`/icons/sub-agents/${ lowerName }.png`}
                     alt={name}
                     className="w-full h-full object-cover select-none"
                   />
                 </span>
               ) : (
-                <SubAgentIdentityIcon name={name} status="spawning" size={28} />
+                <SubAgentIdentityIcon name={name} status="spawning" size={22} />
               )}
-              <span className="text-[13px] font-medium text-[#C8C1B8] group-hover:text-[#E0DAD2] transition-colors">
+              <span className="text-[11.5px] font-medium text-[#C8C1B8] group-hover:text-[#E0DAD2] transition-colors">
                 Created <span className="text-[#E0DAD2]">{name}</span>
               </span>
             </button>
@@ -3007,7 +3170,7 @@ const SubAgentActionCard = ({ log }: { log: any }) => {
   const agentName = log.agentName || log.subAgent || 'Sub-agent';
   const actionText = String(log.text || log.currentAction || log.secondary || 'Working').trim();
   const detailText = String(log.secondary && log.secondary !== actionText ? log.secondary : log.task || '').trim();
-  const stepLabel = log.agentStep ? `Step ${log.agentStep}` : 'Delegated step';
+  const stepLabel = log.agentStep ? `Step ${ log.agentStep }` : 'Delegated step';
 
   return (
     <motion.div
@@ -3015,7 +3178,7 @@ const SubAgentActionCard = ({ log }: { log: any }) => {
       initial={{ opacity: 0, y: 4 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.18, ease: 'easeOut' }}
-      className={`my-1.5 flex min-h-[46px] items-center gap-3 px-3 py-2.5 ${ACTION_CARD_CLASS}`}
+      className={`my-1.5 flex min-h-[46px] items-center gap-3 px-3 py-2.5 ${ ACTION_CARD_CLASS }`}
     >
       <SubAgentIdentityIcon name={agentName} status="working" size={32} />
       <span className="min-w-0 flex-1">
@@ -3073,8 +3236,8 @@ const InterAgentCommCard = ({ log, onOpenAgentTeam }: { log: any; onOpenAgentTea
       <button
         type="button"
         onClick={() => onOpenAgentTeam?.(focusAgent)}
-        className={`eterx-agent-comm-card flex min-h-[58px] w-full items-start gap-3 rounded-[8px] px-3 py-2.5 bg-white/[0.012] border border-white/[0.07] text-left transition-colors hover:bg-white/[0.024] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/16 ${ACTION_CARD_CLASS}`}
-        aria-label={`Open ${focusAgent || 'agent team'} in agent team`}
+        className={`eterx-agent-comm-card flex min-h-[58px] w-full items-start gap-3 rounded-[8px] px-3 py-2.5 bg-white/[0.012] border border-white/[0.07] text-left transition-colors hover:bg-white/[0.024] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/16 ${ ACTION_CARD_CLASS }`}
+        aria-label={`Open ${ focusAgent || 'agent team' } in agent team`}
       >
         <span className="eterx-agent-comm-identities mt-0.5 flex shrink-0 items-center gap-1.5">
           <SubAgentIdentityIcon name={fromAgent} status="working" size={28} />
@@ -3090,7 +3253,7 @@ const InterAgentCommCard = ({ log, onOpenAgentTeam }: { log: any; onOpenAgentTea
               {typeIcon[msgType] || <MessageSquare className="h-3.5 w-3.5" />}
               {msgType.replace('_', ' ')}
             </span>
-            <span className={`rounded-[6px] border px-1.5 py-0.5 text-[8.5px] font-semibold uppercase tracking-[0.08em] ${priorityClass}`}>{priority}</span>
+            <span className={`rounded-[6px] border px-1.5 py-0.5 text-[8.5px] font-semibold uppercase tracking-[0.08em] ${ priorityClass }`}>{priority}</span>
             <span className="rounded-[6px] border border-white/[0.065] bg-black/10 px-1.5 py-0.5 text-[8.5px] font-semibold uppercase tracking-[0.08em] text-[#827A70]">{deliveryMode}</span>
             {isScheduled && (
               <span className="rounded-[6px] border border-sky-300/16 bg-sky-400/[0.055] px-1.5 py-0.5 text-[8.5px] font-semibold uppercase tracking-[0.08em] text-sky-100/85">
@@ -3113,7 +3276,7 @@ const SubAgentErrorCard = ({ log }: { log: any }) => {
     <motion.div
       initial={{ opacity: 0, scale: 0.97 }}
       animate={{ opacity: 1, scale: 1 }}
-      className={`my-1.5 flex min-h-[46px] items-center gap-3 rounded-[12px] px-3 py-2.5 ${ACTION_CARD_CLASS}`}
+      className={`my-1.5 flex min-h-[46px] items-center gap-3 rounded-[12px] px-3 py-2.5 ${ ACTION_CARD_CLASS }`}
     >
       <SubAgentIdentityIcon name={agentName} status="error" size={36} />
       <span className="min-w-0 flex-1">
@@ -3141,7 +3304,7 @@ const AskUserTimelineCard = ({ log, isLive }: { log: any; isLive: boolean }) => 
   const answered = Boolean(log.answeredWith);
   const questions = Array.isArray(log.questions) ? log.questions.filter((item: any) => String(item?.question || '').trim()) : [];
   const question = String(log.question || log.secondary || log.text || 'Waiting for user input');
-  const questionLabel = questions.length > 1 ? `${questions.length} questions` : question;
+  const questionLabel = questions.length > 1 ? `${ questions.length } questions` : question;
   const answer = String(log.answeredWith || '');
 
   return (
@@ -3150,7 +3313,7 @@ const AskUserTimelineCard = ({ log, isLive }: { log: any; isLive: boolean }) => 
         type="button"
         onClick={() => setOpen(value => !value)}
         aria-expanded={open}
-        className={`${ACTION_CARD_CLASS} flex min-h-[44px] items-center gap-2.5 px-3 py-2 text-left transition-colors hover:bg-white/[0.028]`}
+        className={`${ ACTION_CARD_CLASS } flex min-h-[44px] items-center gap-2.5 px-3 py-2 text-left transition-colors hover:bg-white/[0.028]`}
       >
         <span className="eterx-action-icon flex h-7 w-7 shrink-0 items-center justify-center text-[#D8D1C8]">
           {answered ? (
@@ -3159,13 +3322,13 @@ const AskUserTimelineCard = ({ log, isLive }: { log: any; isLive: boolean }) => 
             <AgentAssetIcon size={18} color="#DAD6CF" />
           )}
         </span>
-        <span className={`shrink-0 truncate text-[13.5px] font-medium leading-tight tracking-normal ${!answered && isLive ? 'eterx-text-shimmer eterx-text-shimmer-active' : 'text-[#C8C1B8]'}`}>
-          {answered ? 'Asked user' : `Asking user${isLive ? '...' : ''}`}
+        <span className={`shrink-0 truncate text-[13.5px] font-medium leading-tight tracking-normal ${ !answered && isLive ? 'eterx-text-shimmer eterx-text-shimmer-active' : 'text-[#C8C1B8]' }`}>
+          {answered ? 'Asked user' : `Asking user${ isLive ? '...' : '' }`}
         </span>
         <span className="min-w-0 flex-1 truncate text-[12.75px] text-[#918A80]">
           {questionLabel}
         </span>
-        <ChevronRight className={`h-4 w-4 shrink-0 text-[#898176] transition-transform ${open ? 'rotate-90 text-[#C8C1B8]' : ''}`} />
+        <ChevronRight className={`h-4 w-4 shrink-0 text-[#898176] transition-transform ${ open ? 'rotate-90 text-[#C8C1B8]' : '' }`} />
       </button>
       <AnimatePresence>
         {open && (
@@ -3449,14 +3612,14 @@ const LiveWorkingIndicator = ({ logs }: { logs: any[] }) => {
       <AgentFace
         size="work"
         mode={faceMode}
-        actionKey={`live-${faceMode}`}
+        actionKey={`live-${ faceMode }`}
         interactive
         syncWithController={false}
         ariaLabel="EterX active agent face"
       />
       <AnimatePresence mode="wait" initial={false}>
         <motion.span
-          key={`label-${displayLabel}`}
+          key={`label-${ displayLabel }`}
           initial={{ opacity: 0, x: -4 }}
           animate={{ opacity: 1, x: 0 }}
           exit={{ opacity: 0, x: -4 }}
@@ -3482,7 +3645,7 @@ const useElapsed = (active: boolean) => {
     return () => clearInterval(iv);
   }, [active]);
   if (!active) return null;
-  return formatThoughtElapsed(t) || 'under 5s';
+  return formatThoughtElapsed(t) || '0s';
 };
 
 
@@ -3500,7 +3663,7 @@ const SteeringCard = ({ log }: { log: any }) => {
     >
       <div className="bg-[#20201F] px-4 py-3 rounded-[18px] rounded-tr-[6px] ml-auto text-[13.5px] text-[#F4F2EE] shadow-[0_4px_16px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(255,255,255,0.025)] leading-[1.56] whitespace-pre-wrap relative border border-white/[0.06] select-text flex flex-row items-end gap-3 max-w-[84%]">
         <span className="block w-full text-left break-words [word-break:break-word] [overflow-wrap:anywhere]">{log.text}</span>
-        
+
         {/* CornerDownLeft arrow representing steering entry */}
         <div className="shrink-0 mb-1 select-none text-[#8F887E]">
           <CornerDownLeft className="w-[17px] h-[17px]" strokeWidth={2.25} />
@@ -3571,7 +3734,7 @@ const HtmlPreviewCard = ({ log }: { log: any }) => {
 `;
     // Inject interceptor at the top of head
     if (content.includes('<head>')) {
-      content = content.replace('<head>', `<head>${interceptor}`);
+      content = content.replace('<head>', `<head>${ interceptor }`);
     } else {
       content = interceptor + content;
     }
@@ -3660,21 +3823,21 @@ const HtmlPreviewCard = ({ log }: { log: any }) => {
         <div className="hidden md:flex items-center p-0.5 rounded-[8px] bg-black/30 border border-white/[0.05]">
           <button
             onClick={() => setDevice('desktop')}
-            className={`p-1.5 rounded-[7px] transition-colors ${device === 'desktop' ? 'bg-[#DCD6CC] text-[#161514]' : 'text-white/40 hover:bg-white/[0.04] hover:text-white/80'}`}
+            className={`p-1.5 rounded-[7px] transition-colors ${ device === 'desktop' ? 'bg-[#DCD6CC] text-[#161514]' : 'text-white/40 hover:bg-white/[0.04] hover:text-white/80' }`}
             title="Desktop"
           >
             <Monitor className="w-3.5 h-3.5" />
           </button>
           <button
             onClick={() => setDevice('tablet')}
-            className={`p-1.5 rounded-[7px] transition-colors ${device === 'tablet' ? 'bg-[#DCD6CC] text-[#161514]' : 'text-white/40 hover:bg-white/[0.04] hover:text-white/80'}`}
+            className={`p-1.5 rounded-[7px] transition-colors ${ device === 'tablet' ? 'bg-[#DCD6CC] text-[#161514]' : 'text-white/40 hover:bg-white/[0.04] hover:text-white/80' }`}
             title="Tablet"
           >
             <Tablet className="w-3.5 h-3.5" />
           </button>
           <button
             onClick={() => setDevice('mobile')}
-            className={`p-1.5 rounded-[7px] transition-colors ${device === 'mobile' ? 'bg-[#DCD6CC] text-[#161514]' : 'text-white/40 hover:bg-white/[0.04] hover:text-white/80'}`}
+            className={`p-1.5 rounded-[7px] transition-colors ${ device === 'mobile' ? 'bg-[#DCD6CC] text-[#161514]' : 'text-white/40 hover:bg-white/[0.04] hover:text-white/80' }`}
             title="Mobile"
           >
             <Smartphone className="w-3.5 h-3.5" />
@@ -3684,7 +3847,7 @@ const HtmlPreviewCard = ({ log }: { log: any }) => {
         <div className="flex items-center gap-1.5">
           <button
             onClick={handleCopy}
-            className={`flex items-center gap-1 px-2.5 py-1 rounded-[7px] text-[10.5px] font-semibold transition-colors ${copied ? 'text-emerald-300 bg-emerald-500/10' : 'text-[#928B81] hover:text-[#E8E1D7] hover:bg-white/[0.04]'}`}
+            className={`flex items-center gap-1 px-2.5 py-1 rounded-[7px] text-[10.5px] font-semibold transition-colors ${ copied ? 'text-emerald-300 bg-emerald-500/10' : 'text-[#928B81] hover:text-[#E8E1D7] hover:bg-white/[0.04]' }`}
             title="Copy HTML"
           >
             {copied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
@@ -3706,7 +3869,7 @@ const HtmlPreviewCard = ({ log }: { log: any }) => {
           </button>
           <button
             onClick={() => setShowConsole(value => !value)}
-            className={`p-1.5 rounded-[7px] transition-colors relative ${showConsole ? 'text-emerald-300 bg-emerald-500/10' : 'text-[#928B81] hover:text-[#E8E1D7] hover:bg-white/[0.04]'}`}
+            className={`p-1.5 rounded-[7px] transition-colors relative ${ showConsole ? 'text-emerald-300 bg-emerald-500/10' : 'text-[#928B81] hover:text-[#E8E1D7] hover:bg-white/[0.04]' }`}
             title="Toggle Iframe Console"
           >
             <Terminal className="w-3.5 h-3.5" />
@@ -3719,7 +3882,7 @@ const HtmlPreviewCard = ({ log }: { log: any }) => {
             className="p-1.5 rounded-[7px] text-[#928B81] hover:text-[#E8E1D7] hover:bg-white/[0.04] transition-colors"
             title={collapsed ? 'Expand' : 'Collapse'}
           >
-            <ChevronDown className={`w-4 h-4 transition-transform duration-200 ${collapsed ? '-rotate-90' : ''}`} />
+            <ChevronDown className={`w-4 h-4 transition-transform duration-200 ${ collapsed ? '-rotate-90' : '' }`} />
           </button>
         </div>
       </div>
@@ -3783,7 +3946,7 @@ const HtmlPreviewCard = ({ log }: { log: any }) => {
                     {consoleLogs.map((log, index) => (
                       <div
                         key={index}
-                        className={`flex gap-2 px-2 py-0.5 rounded ${log.type === 'error' ? 'bg-red-500/5 text-red-400' : log.type === 'warn' ? 'bg-amber-500/5 text-amber-400' : 'text-zinc-300'}`}
+                        className={`flex gap-2 px-2 py-0.5 rounded ${ log.type === 'error' ? 'bg-red-500/5 text-red-400' : log.type === 'warn' ? 'bg-amber-500/5 text-amber-400' : 'text-zinc-300' }`}
                       >
                         <span className="text-white/20">[{log.type.toUpperCase()}]</span>
                         <span className="whitespace-pre-wrap break-all">{log.text}</span>
@@ -3872,7 +4035,12 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
         segs.push({ kind: 'thought', log, idx });
       }
     }
-    else if (log.type === 'work_note') { flush(idx - 1); segs.push({ kind: 'note', log, idx }); }
+    else if (log.type === 'work_note') {
+      // Skip streaming-cancelled placeholders that were never replaced by a final note
+      if (log._streamingCancelled) { /* intentionally omitted */ }
+      else { flush(idx - 1); segs.push({ kind: 'note', log, idx }); }
+    }
+
     else if (log.type === 'safety_warning') { flush(idx - 1); segs.push({ kind: 'safety', log, idx }); }
     else if (log.type === 'steering_received') { flush(idx - 1); segs.push({ kind: 'steering', log, idx }); }
     else if (log.type === 'sub_agent_answer' || log.type === 'sub_agent_result') { /* hidden */ }
@@ -3991,7 +4159,7 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
         if (seg.kind === 'ask_user') return <AskUserTimelineCard key={`ask-tl-${ seg.idx }`} log={seg.log} isLive={isThinking && isLast && i === segs.length - 1 && !seg.log.answeredWith} />;
         if (seg.kind === 'console') return <TerminalTraceCard key={`console-${ seg.idx }`} log={seg.log} preview={seg.log} isLiveChip={isThinking && isLast && i === segs.length - 1} />;
         if (seg.kind === 'action_group' && prevSeg?.kind === 'note') return null;
-        
+
         const firstIdx = seg.firstIdx ?? seg.lastIdx ?? i;
         const groupKey = `g-${ firstIdx }-${ getActionIdentity(seg.logs[0], firstIdx) }`;
         return <CollapsibleActionGroup key={groupKey} logs={seg.logs} isActiveGroup={isThinking && isLast && i === segs.length - 1} isLast={isLast} allLogs={timelineLogs} />;

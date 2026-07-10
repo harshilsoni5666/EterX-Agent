@@ -18,6 +18,7 @@ import {
 } from './model-routing';
 import type { ScopedRuntimeSettings } from './runtime-api-keys';
 import { DEFAULT_MAIN_AGENT_ALLOWED_CAPABILITIES } from './tools/security/tool_policy';
+import { CUSTOM_AGENT_RUNTIME, loadCustomAgentProfile } from './builder-agent';
 
 /**
  * The Enhanced Orchestrator v2
@@ -458,6 +459,25 @@ export class AgentOrchestrator {
       if (context.allowBrowserControl === false && capability === 'browser.control') return false;
       return true;
     });
+
+    // ═══ CUSTOM AGENT PROFILE LOADING ═══
+    // When a custom agent is selected, load its profile from disk
+    // and attach to context so Agent.ts can inject the identity prompt.
+    if (context.agentRuntime === CUSTOM_AGENT_RUNTIME && pinnedContext?.customAgentId) {
+      try {
+        const customProfile = await loadCustomAgentProfile(pinnedContext.customAgentId);
+        if (customProfile) {
+          (context as any).customAgentId = pinnedContext.customAgentId;
+          (context as any).customAgentName = pinnedContext.customAgentName || customProfile.name || pinnedContext.customAgentId;
+          (context as any)._customAgentProfile = customProfile;
+          console.log(`[Orchestrator] 🤖 Custom agent loaded: "${customProfile.name || pinnedContext.customAgentId}" (${customProfile.directMainTools?.length || 0} tools, prompt: ${(customProfile.professionalPrompt?.length || 0)} chars)`);
+        } else {
+          console.warn(`[Orchestrator] ⚠️ Custom agent "${pinnedContext.customAgentId}" not found or not ready`);
+        }
+      } catch (err: any) {
+        console.error(`[Orchestrator] ❌ Failed to load custom agent profile:`, err?.message);
+      }
+    }
 
     if (shouldHydrateMemory) {
       await this.hydrateContext(context, projectId);

@@ -97,6 +97,26 @@ export interface DivergenceConfig {
 
 // ─── TF-IDF Vectorizer ───────────────────────────────────────────────────────
 
+function splitCamelAndSnake(token: string): string[] {
+  const parts = token.split(/[_-]+/);
+  const result: string[] = [];
+  for (const part of parts) {
+    if (!part) continue;
+    // Split camelCase
+    const camelParts = part.split(/(?=[A-Z])/);
+    for (const cp of camelParts) {
+      if (cp) result.push(cp.toLowerCase());
+    }
+    if (camelParts.length > 1) {
+      result.push(part.toLowerCase());
+    }
+  }
+  if (parts.length > 1) {
+    result.push(token.toLowerCase());
+  }
+  return result;
+}
+
 /**
  * Lightweight in-process TF-IDF vectorizer.
  * Builds vocabulary incrementally from registered documents.
@@ -124,17 +144,40 @@ export class TfIdfVectorizer {
 
   /**
    * Tokenize text into normalized terms, removing stop-words and short tokens.
+   * Performs camelCase/snake_case splitting and hierarchical N-gram extraction.
    */
   tokenize(text: string): string[] {
-    return text
-      .toLowerCase()
-      .replace(/[^a-z0-9_\-./\\]+/g, ' ')
+    const rawTokens = text
+      .replace(/[^a-zA-Z0-9_\-./\\]+/g, ' ')
       .split(/\s+/)
-      .filter(w => w.length > 2 && !STOP_WORDS.has(w));
+      .filter(w => w.length > 2);
+
+    const unigrams: string[] = [];
+    for (const tok of rawTokens) {
+      const lowerTok = tok.toLowerCase();
+      if (STOP_WORDS.has(lowerTok)) continue;
+      const subTokens = splitCamelAndSnake(tok);
+      for (const st of subTokens) {
+        if (st.length > 2 && !STOP_WORDS.has(st)) {
+          unigrams.push(st);
+        }
+      }
+    }
+    const ngrams: string[] = [...unigrams];
+    // Bigrams
+    for (let i = 0; i < unigrams.length - 1; i++) {
+      ngrams.push(`${unigrams[i]} ${unigrams[i + 1]}`);
+    }
+    // Trigrams
+    for (let i = 0; i < unigrams.length - 2; i++) {
+      ngrams.push(`${unigrams[i]} ${unigrams[i + 1]} ${unigrams[i + 2]}`);
+    }
+
+    return ngrams;
   }
 
   /**
-   * Register a new document (e.g., a user turn or tool result).
+   * Register a new document.
    * Updates vocabulary and document frequency counts.
    */
   addDocument(text: string): void {
@@ -177,48 +220,57 @@ export class TfIdfVectorizer {
     }
 
     const vector = new Array<number>(dim).fill(0);
-    const maxTf = Math.max(1, ...tf.values());
+    const dynamicStop = this.getDynamicStopWords();
 
     for (const [term, count] of tf.entries()) {
       const idx = this.vocabulary.get(term);
       if (idx === undefined) continue;
+      if (dynamicStop.has(term)) continue;
 
-      // Augmented TF: 0.5 + 0.5 * (count / maxTf)
-      const augTf = 0.5 + 0.5 * (count / maxTf);
+      // Logarithmic TF
+      const logTf = 1 + Math.log(count);
 
-      // IDF: log(N / df) + 1 (smoothed)
+      // Smoothed IDF
       const df = this.documentFrequency.get(term) || 1;
       const idf = Math.log((this.documentCount + 1) / (df + 1)) + 1;
 
-      vector[idx] = augTf * idf;
+      vector[idx] = logTf * idf;
     }
 
-    return vector;
+    return l2Normalize(vector);
   }
 
   /**
-   * Get the current vocabulary size (= vector dimension).
+   * Get the current vocabulary size.
    */
   getDimension(): number {
     return this.termOrder.length;
   }
 
+  /** Get dynamic stop words (frequency > 70% in corpus) */
+  private getDynamicStopWords(): Set<string> {
+    const dynamicStop = new Set<string>();
+    if (this.documentCount < 5) return dynamicStop;
+    for (const [term, df] of this.documentFrequency.entries()) {
+      if (df / this.documentCount > 0.70) {
+        dynamicStop.add(term);
+      }
+    }
+    return dynamicStop;
+  }
+
   /**
    * Prune vocabulary to maxVocab by removing lowest-DF terms.
-   * This keeps the most informative terms.
    */
   private pruneVocabulary(): void {
     if (this.vocabulary.size <= this.maxVocab * 0.8) return;
 
-    // Sort terms by document frequency descending (most common = most useful for discrimination)
     const sorted = [...this.documentFrequency.entries()]
       .sort((a, b) => b[1] - a[1]);
 
-    // Keep top maxVocab * 0.7 terms (leave room for growth)
     const keepCount = Math.floor(this.maxVocab * 0.7);
     const keepTerms = new Set(sorted.slice(0, keepCount).map(([term]) => term));
 
-    // Rebuild vocabulary
     this.vocabulary.clear();
     this.termOrder = [];
 
@@ -227,7 +279,6 @@ export class TfIdfVectorizer {
       this.termOrder.push(term);
     }
 
-    // Clean DF map
     for (const term of this.documentFrequency.keys()) {
       if (!keepTerms.has(term)) {
         this.documentFrequency.delete(term);
@@ -272,7 +323,6 @@ export class TfIdfVectorizer {
 
 /**
  * Cosine similarity between two dense vectors.
- * Returns value in [-1, 1]. Returns 0 for zero-length vectors.
  */
 export function cosineSimilarity(a: number[], b: number[]): number {
   const len = Math.min(a.length, b.length);
@@ -294,7 +344,6 @@ export function cosineSimilarity(a: number[], b: number[]): number {
 
 /**
  * L2-normalize a vector in place.
- * Returns the same array, mutated.
  */
 export function l2Normalize(v: number[]): number[] {
   let mag = 0;
@@ -311,7 +360,6 @@ export function l2Normalize(v: number[]): number[] {
 
 /**
  * Compute divergence: Ω(t) = 1 - cos(query, centroid).
- * Clamps to [0, 1].
  */
 export function computeDivergence(queryVector: number[], centroidVector: number[]): number {
   const sim = cosineSimilarity(queryVector, centroidVector);
@@ -322,19 +370,13 @@ export function computeDivergence(queryVector: number[], centroidVector: number[
 
 /**
  * The divergence-gated state machine.
- * Maintains turn history for warmup and evaluates Ω(t) against thresholds.
- *
- * States:
- *   Warmup     → First N turns, no gating (building baseline)
- *   Continuity → Ω(t) < θ_drift (same topic, minor variations)
- *   Drift      → θ_drift ≤ Ω(t) < θ_transition (topic shifting, inject summaries)
- *   Transition → Ω(t) ≥ θ_transition (new topic, archive active node)
  */
 export class DivergenceEngine {
   private config: DivergenceConfig;
   private turnCount = 0;
   private warmupComplete = false;
   private earlyWarmupExit = false;
+  private smoothedOmega = 0;
 
   /** Divergence history for adaptive analysis */
   private omegaHistory: number[] = [];
@@ -353,10 +395,6 @@ export class DivergenceEngine {
 
   /**
    * Evaluate the current turn against the active centroid.
-   *
-   * @param queryVector - TF-IDF vector for the current user turn
-   * @param activeCentroid - Current active node's centroid vector
-   * @returns DivergenceResult with state, score, and confidence
    */
   evaluate(queryVector: number[], activeCentroid: number[]): DivergenceResult {
     this.turnCount++;
@@ -365,7 +403,6 @@ export class DivergenceEngine {
     if (!this.warmupComplete) {
       this.warmupVectors.push([...queryVector]);
 
-      // Check for adaptive early exit
       if (this.turnCount >= MIN_WARMUP_TURNS && this.warmupVectors.length >= 2) {
         const omega01 = computeDivergence(
           this.warmupVectors[0],
@@ -373,7 +410,6 @@ export class DivergenceEngine {
         );
 
         if (omega01 >= WARMUP_EXIT_THRESHOLD) {
-          // Turns are about very different things — no point in more warmup
           this.warmupComplete = true;
           this.earlyWarmupExit = true;
           console.log(
@@ -396,21 +432,27 @@ export class DivergenceEngine {
       this.warmupComplete = true;
     }
 
-    // ── Divergence computation ─────────────────────────────────────────────
-    const omega = computeDivergence(queryVector, activeCentroid);
+    // ── Divergence computation & smoothing ──────────────────────────────────
+    const rawOmega = computeDivergence(queryVector, activeCentroid);
+    if (this.turnCount === 1 || this.smoothedOmega === 0) {
+      this.smoothedOmega = rawOmega;
+    } else {
+      const beta = 0.40; // Blend factor for temporal smoothing
+      this.smoothedOmega = beta * rawOmega + (1 - beta) * this.smoothedOmega;
+    }
+
+    const omega = this.smoothedOmega;
     this.omegaHistory.push(omega);
 
-    // Keep history bounded
     if (this.omegaHistory.length > 50) {
       this.omegaHistory = this.omegaHistory.slice(-50);
     }
 
     // ── Confidence estimation ─────────────────────────────────────────────
-    // Based on: vocabulary coverage, turn count, vector magnitude
-    const vocabConfidence = Math.min(1, queryVector.length / 20); // Need ≥20 terms
-    const turnConfidence = Math.min(1, this.turnCount / 5); // Better after 5 turns
+    const vocabConfidence = Math.min(1, queryVector.length / 20);
+    const turnConfidence = Math.min(1, this.turnCount / 5);
     const vectorMag = Math.sqrt(queryVector.reduce((s, v) => s + v * v, 0));
-    const magConfidence = Math.min(1, vectorMag / 2); // Need reasonable magnitude
+    const magConfidence = Math.min(1, vectorMag / 2);
     const confidence = vocabConfidence * 0.3 + turnConfidence * 0.3 + magConfidence * 0.4;
 
     // ── State evaluation ──────────────────────────────────────────────────
@@ -435,7 +477,6 @@ export class DivergenceEngine {
 
   /**
    * Get the trend of divergence over the last N turns.
-   * Returns: 'stable' | 'increasing' | 'decreasing'
    */
   getTrend(window = 5): 'stable' | 'increasing' | 'decreasing' {
     if (this.omegaHistory.length < window) return 'stable';
@@ -455,7 +496,7 @@ export class DivergenceEngine {
   }
 
   /**
-   * Whether the system should gracefully degrade (inject nothing extra).
+   * Whether the system should gracefully degrade.
    */
   shouldDegrade(confidence: number): boolean {
     return confidence < CONFIDENCE_FLOOR;
@@ -476,12 +517,13 @@ export class DivergenceEngine {
   }
 
   /**
-   * Reset engine state (e.g., on new session).
+   * Reset engine state.
    */
   reset(): void {
     this.turnCount = 0;
     this.warmupComplete = false;
     this.earlyWarmupExit = false;
+    this.smoothedOmega = 0;
     this.omegaHistory = [];
     this.warmupVectors = [];
   }
@@ -495,6 +537,7 @@ export class DivergenceEngine {
     earlyWarmupExit: boolean;
     omegaHistory: number[];
     warmupVectors: number[][];
+    smoothedOmega: number;
   } {
     return {
       turnCount: this.turnCount,
@@ -502,6 +545,7 @@ export class DivergenceEngine {
       earlyWarmupExit: this.earlyWarmupExit,
       omegaHistory: [...this.omegaHistory],
       warmupVectors: this.warmupVectors.map(v => [...v]),
+      smoothedOmega: this.smoothedOmega,
     };
   }
 
@@ -514,11 +558,13 @@ export class DivergenceEngine {
     earlyWarmupExit: boolean;
     omegaHistory: number[];
     warmupVectors: number[][];
+    smoothedOmega?: number;
   }): void {
     this.turnCount = state.turnCount;
     this.warmupComplete = state.warmupComplete;
     this.earlyWarmupExit = state.earlyWarmupExit;
     this.omegaHistory = [...state.omegaHistory];
     this.warmupVectors = state.warmupVectors.map(v => [...v]);
+    this.smoothedOmega = state.smoothedOmega ?? (this.omegaHistory.length > 0 ? this.omegaHistory[this.omegaHistory.length - 1] : 0);
   }
 }

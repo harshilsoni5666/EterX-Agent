@@ -45,7 +45,7 @@ import { monitorEmitter } from './monitor/emitter';
 import { createToolExecutionContext, isToolCancellationError } from './cancellation';
 import { readTaskTracker, readTaskTrackerMarkdown, trackerToTrace, writeTaskTrackerJson } from './task-tracker-store';
 import { normalizeTimeoutMs, secondsFromTimeoutMs } from './tools/core/terminal_timeout';
-import { buildAgentBuilderRuntimePrompt, isAgentBuilderRuntimeContext, shouldExposeToolToRuntime } from './builder-agent';
+import { buildAgentBuilderRuntimePrompt, isAgentBuilderRuntimeContext, shouldExposeToolToRuntime, isCustomAgentRuntimeContext, buildCustomAgentRuntimePrompt, loadCustomAgentProfile } from './builder-agent';
 import { buildCodingAgentPromptContext, buildCodingAgentRootPrompt, isCodingAgentProfile } from './coding-agent-profile';
 import { CODE_AGENT_TOOLS } from '../code/code-agent-tools';
 import { ensureCodeIndex } from './workspace/code-index';
@@ -1289,6 +1289,9 @@ export class GeminiAgentClient {
     if (isBuilder) {
       dynamicContextParts.push(buildAgentBuilderRuntimePrompt((context as any).agentId || context.projectId));
     }
+    if (isCustomAgentRuntimeContext(context) && (context as any)._customAgentProfile) {
+      dynamicContextParts.push(buildCustomAgentRuntimePrompt((context as any)._customAgentProfile));
+    }
 
     try {
       const wsContext = (context as any).disableWorkspaceContext ? '' : await workspaceIntelligence.getWorkspaceContext();
@@ -1479,6 +1482,9 @@ export class GeminiAgentClient {
     if (isBuilder) {
       dynamicContextParts.push(buildAgentBuilderRuntimePrompt((context as any).agentId || context.projectId));
     }
+    if (isCustomAgentRuntimeContext(context) && (context as any)._customAgentProfile) {
+      dynamicContextParts.push(buildCustomAgentRuntimePrompt((context as any)._customAgentProfile));
+    }
 
     try {
       const wsContext = (context as any).disableWorkspaceContext ? '' : await workspaceIntelligence.getWorkspaceContext();
@@ -1636,8 +1642,8 @@ export class GeminiAgentClient {
     return `${ compact.slice(0, Math.max(0, maxLength - 3)).trim() }...`;
   }
 
-  private formatVisibleWorkNote(value: string, _maxLength = 720): string {
-    return formatCleanVisibleWorkNote(value);
+  private formatVisibleWorkNote(value: string, _maxLength = 720, suppressFinalAnswers = false): string {
+    return formatCleanVisibleWorkNote(value, _maxLength, suppressFinalAnswers);
   }
 
   private skillText(skill: any): string {
@@ -3701,6 +3707,9 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
     if (isBuilder) {
       dynamicContextParts.push(buildAgentBuilderRuntimePrompt((context as any).agentId || context.projectId));
     }
+    if (isCustomAgentRuntimeContext(context) && (context as any)._customAgentProfile) {
+      dynamicContextParts.push(buildCustomAgentRuntimePrompt((context as any)._customAgentProfile));
+    }
     // Smart Resume Engine: always-active on continuation + contamination guard
     if (wantsSessionContext || globalSessionManager.hasActiveSessionForChat(chatId)) {
       try {
@@ -4634,6 +4643,7 @@ EXTERNAL ACTION NOTE CUE
       // Accumulate the full response parts for function calling
       let accumulatedText = '';
       let accumulatedThought = '';
+      const thoughtStartTime = Date.now();
       let accumulatedWorkNote = '';
       let workNoteEmitted = false;
       let emittedWorkNoteText = '';
@@ -4643,9 +4653,17 @@ EXTERNAL ACTION NOTE CUE
       let fullResponseContent: any = null;
       const workNoteId = `work_${ interactions }`;
       const streamVisibleWorkNote = (): void => {
-        if (!onTrace || workNoteEmitted || !accumulatedWorkNote) return;
-        const noteText = this.formatVisibleWorkNote(accumulatedWorkNote);
-        if (!noteText || noteText === lastStreamedWorkNote) return;
+        if (!onTrace || workNoteEmitted) return;
+        if (!accumulatedWorkNote) {
+          if (workNoteStreamStarted) cancelVisibleWorkNoteStream();
+          return;
+        }
+        const noteText = this.formatVisibleWorkNote(accumulatedWorkNote, 720, true);
+        if (!noteText) {
+          if (workNoteStreamStarted) cancelVisibleWorkNoteStream();
+          return;
+        }
+        if (noteText === lastStreamedWorkNote) return;
         onTrace({ type: 'work_note', text: noteText, isDelta: true, isStreaming: true, noteId: workNoteId });
         workNoteStreamStarted = true;
         lastStreamedWorkNote = noteText;
@@ -4659,9 +4677,9 @@ EXTERNAL ACTION NOTE CUE
         emittedWorkNoteText = '';
       };
       const emitVisibleWorkNote = (noteOverride?: string): boolean => {
-        const noteSource = noteOverride || accumulatedWorkNote;
+        const noteSource = noteOverride || accumulatedText;
         if (!noteSource || workNoteEmitted) return false;
-        const noteText = this.formatVisibleWorkNote(noteSource);
+        const noteText = this.formatVisibleWorkNote(noteSource, 720, false);
         if (!noteText) return false;
         const noteEvt = { type: 'work_note', text: noteText, isDelta: false, isStreaming: false, noteId: workNoteId };
         if (onTrace) onTrace(noteEvt);
@@ -4684,7 +4702,7 @@ EXTERNAL ACTION NOTE CUE
           if (chunk?.usageMetadata) {
             lastUsageMetadata = chunk.usageMetadata;
           }
-          // Instant cancel check during streaming â€” throw so it propagates immediately
+          // Instant cancel check during streaming — throw so it propagates immediately
           if (isCancelled(context.projectId)) throw new Error('CANCELLED_BY_USER');
           const candidates = chunk.candidates;
           if (!candidates || candidates.length === 0) continue;
@@ -4698,14 +4716,17 @@ EXTERNAL ACTION NOTE CUE
             // 1. EXPLICIT THINKING (Native reasoning field)
             if (part.thought && part.text) {
               accumulatedThought += part.text;
-              const thoughtEvt = { type: 'thought_stream', text: accumulatedThought, isDelta: false, thoughtId: `thought_${ interactions }` };
+              const thoughtEvt = { type: 'thought_stream', text: accumulatedThought, isDelta: false, thoughtId: `thought_${ interactions }`, startTime: thoughtStartTime, endTime: Date.now() };
               if (onTrace) onTrace(thoughtEvt);
             }
 
             // 2. TEXT PARTS (Visible work note or final answer)
             if (!part.thought && part.text) {
               accumulatedText += part.text;
-              accumulatedWorkNote = this.formatVisibleWorkNote(accumulatedText);
+              accumulatedWorkNote = this.formatVisibleWorkNote(accumulatedText, 720, true);
+              // Always live-stream so the UI stays responsive during long tool chains.
+              // cancelVisibleWorkNoteStream() (called right before emitting the answer)
+              // removes it cleanly when there are no tool calls — no flash/replace cycle.
               streamVisibleWorkNote();
               if (functionCalls.length > 0) emitVisibleWorkNote();
             }
@@ -4766,11 +4787,11 @@ EXTERNAL ACTION NOTE CUE
       // Keep normal model text separate from native thoughts whenever tools follow.
       // The UI renders this outside the collapsible Think card.
       if (accumulatedThought && functionCalls.length > 0) {
-        trace.push({ type: 'thought_stream', text: accumulatedThought, isDelta: false, thoughtId: `thought_${ interactions }` });
+        trace.push({ type: 'thought_stream', text: accumulatedThought, isDelta: false, thoughtId: `thought_${ interactions }`, startTime: thoughtStartTime, endTime: Date.now() });
       }
 
-      if (functionCalls.length > 0 && (accumulatedWorkNote || emittedWorkNoteText)) {
-        const noteText = this.formatVisibleWorkNote(accumulatedWorkNote || emittedWorkNoteText);
+      if (functionCalls.length > 0 && (accumulatedText || emittedWorkNoteText)) {
+        const noteText = this.formatVisibleWorkNote(accumulatedText || emittedWorkNoteText, 720, false);
         const shouldEmitFinalWorkNote = !!noteText;
         if (shouldEmitFinalWorkNote) {
           const noteEvt = { type: 'work_note', text: noteText, isDelta: false, isStreaming: false, noteId: workNoteId };
@@ -4891,11 +4912,8 @@ EXTERNAL ACTION NOTE CUE
 
             if (correction) {
               console.log(`[GeminiClient] ðŸ” Cognitive Core quality gate returned a correction prompt. Retrying.`);
-              if (fullResponseContent) contents.push(fullResponseContent);
-              contents.push({ role: 'user', parts: [{ text: correction }] });
-              accumulatedText = '';
-              accumulatedThought = '';
-              continue;
+              // Retry is disabled.
+              console.log("[CognitiveCore] Retry flow bypassed.");
             }
           } catch (err: any) {
             console.warn('[GeminiClient] Cognitive Core final answer assessment failed (non-blocking):', err.message);
@@ -4949,6 +4967,10 @@ EXTERNAL ACTION NOTE CUE
           const existingIdx = trace.findIndex(t => t.type === 'answer');
           if (existingIdx >= 0) trace[existingIdx] = answerEvt;
           else trace.push(answerEvt);
+          // Only emit to UI now — after ALL quality gates have cleared.
+          // Emitting earlier caused the "code flash then undo" bug: an intermediate
+          // answer would appear in the chat feed, then be replaced by the real one
+          // after reflection/quality gates forced another loop iteration.
           if (onTrace) onTrace(answerEvt);
 
           // Background learning (non-blocking)
@@ -5334,7 +5356,8 @@ EXTERNAL ACTION NOTE CUE
           tool: call.name,
           name: call.name,
           add: undefined,
-          remove: undefined
+          remove: undefined,
+          toolArgs: args
         };
         trace.push(evt);
         if (onTrace) onTrace(evt);

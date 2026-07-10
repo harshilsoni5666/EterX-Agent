@@ -281,7 +281,7 @@ export const shellTool: ToolDefinition = {
 
       if (context?.runLocation === 'sandbox' && authorization.session) {
         try {
-          const { initializeSandbox, appendSandboxAudit } = require('../../sandbox');
+          const { initializeSandbox, appendSandboxAudit } = require('../../../sandbox');
           await initializeSandbox(authorization.session);
           await appendSandboxAudit(authorization.session, {
             type: 'command.started',
@@ -311,7 +311,7 @@ export const shellTool: ToolDefinition = {
 
       if (context?.runLocation === 'sandbox' && authorization.session) {
         try {
-          const { appendSandboxAudit } = require('../../sandbox');
+          const { appendSandboxAudit } = require('../../../sandbox');
           await appendSandboxAudit(authorization.session, {
             type: 'command.finished',
             command: input.command,
@@ -340,7 +340,7 @@ export const shellTool: ToolDefinition = {
       const executionTime = Date.now() - startTime;
       if (context?.runLocation === 'sandbox' && authorization?.session) {
         try {
-          const { appendSandboxAudit } = require('../../sandbox');
+          const { appendSandboxAudit } = require('../../../sandbox');
           await appendSandboxAudit(authorization.session, {
             type: 'command.finished',
             command: input.command,

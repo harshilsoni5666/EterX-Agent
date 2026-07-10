@@ -150,7 +150,7 @@ export async function buildResumeBrief(opts: ResumeBriefOptions): Promise<Resume
     const overlap = topicOverlap(currentTopics, sessionTopics);
     // If overlap < 10%, the session is about a completely different thing
     // Exception: if message is pure "continue"/"cont" with no topic words, don't flag contamination
-    const isPureContinue = currentTopics.size <= 2;
+    const isPureContinue = isPureContinuationMessage(currentMessage) || currentTopics.size <= 2;
     if (!isPureContinue && overlap < 0.1) {
       isContaminated = true;
       console.warn(`[ResumeEngine] ⚠️ Contamination detected! Session topic mismatch (overlap: ${(overlap * 100).toFixed(0)}%). Session memory BLOCKED.`);
@@ -327,7 +327,30 @@ export async function buildResumeBrief(opts: ResumeBriefOptions): Promise<Resume
 // ─── Detect if message is a pure continuation (no specific new task) ──────────
 
 export function isPureContinuationMessage(msg: string): boolean {
-  const normalized = msg.trim().toLowerCase().replace(/[^a-z0-9\s]/g, '');
+  const normalized = msg.trim().toLowerCase().replace(/[^a-z0-9\s]/g, ' ');
+  const tokens = normalized.split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return true;
+
+  const continuationRoots = ['cont', 'keep', 'work', 'go', 'proc', 'resum', 'next', 'adv', 'kepp', 'dvnc', 'dvc'];
+  let continuationScore = 0;
+  for (const t of tokens) {
+    if (continuationRoots.some(root => t.includes(root))) {
+      continuationScore++;
+    }
+  }
+
+  const newTaskWords = ['create', 'write', 'implement', 'explain', 'python', 'typescript', 'js', 'ts', 'file', 'script', 'code', 'function', 'class', 'wrapper', 'page', 'api', 'route', 'css', 'html', 'json', 'yaml', 'toml', 'readme'];
+  let newTaskScore = 0;
+  for (const t of tokens) {
+    if (newTaskWords.some(w => t.includes(w))) {
+      newTaskScore++;
+    }
+  }
+
+  if (continuationScore > 0 && newTaskScore === 0) {
+    return true;
+  }
+
   const purePatterns = [
     /^(hey\s+)?(continue|cont|go on|keep going|carry on|next|resume|proceed|dont stop|keep working|work more)$/,
     /^(yes|ok|okay)\s+(continue|proceed|go)$/,

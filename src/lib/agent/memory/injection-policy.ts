@@ -144,6 +144,9 @@ export interface RegisteredInput {
 
   /** Version chain: IDs of previous versions (for freshness). */
   versionChain: string[];
+
+  /** Causal DAG record links */
+  links?: Array<{ targetId: string; relationType: string }>;
 }
 
 export interface ArchivedNodeSummary {
@@ -161,6 +164,9 @@ export interface ArchivedNodeSummary {
 
   /** Verified completions (things confirmed done). */
   verifiedCompletions: string[];
+
+  /** Adjacency list for topological activation propagation */
+  adjacentEdges?: Array<{ toNodeId: string; weight: number }>;
 }
 
 export interface InjectionPolicyConfig {
@@ -278,15 +284,50 @@ export class InjectionPolicyEngine {
       }
     }
 
+    // Causal DAG expansion: for any selected item, check its links and pull in related inputs (up to depth 2)
+    const selectedIds = new Set(items.map(i => i.id));
+    const expandedItems: InjectionItem[] = [];
+
+    for (const item of items) {
+      expandedItems.push(item);
+
+      const input = registeredInputs.find(ri => ri.id === item.id);
+      if (input && input.links) {
+        for (const link of input.links) {
+          if (!selectedIds.has(link.targetId)) {
+            const linkedInput = registeredInputs.find(ri => ri.id === link.targetId);
+            if (linkedInput) {
+              const content = `[Causal Context: ${link.relationType} link from ${input.id}] ${linkedInput.content}`;
+              const tokens = this.estimateTokens(content);
+              if (usedTokens + tokens <= budget) {
+                expandedItems.push({
+                  id: `causal_${linkedInput.id}`,
+                  content,
+                  tier: item.tier,
+                  weight: item.weight * 0.75, // slightly lower weight
+                  source: linkedInput.sourceType,
+                  reason: `Causal expansion: ${link.relationType} of ${item.id}`,
+                  estimatedTokens: tokens,
+                  isDriftInjection: item.isDriftInjection,
+                });
+                usedTokens += tokens;
+                selectedIds.add(link.targetId);
+              }
+            }
+          }
+        }
+      }
+    }
+
     // ── Grounding check ───────────────────────────────────────────────────
     const groundingCheck = this.performGroundingCheck(
-      items.filter(i => i.isDriftInjection),
+      expandedItems.filter(i => i.isDriftInjection),
       recentUserMessages,
     );
 
     // If grounding fails, remove drift injections (they're wrong-topic)
     if (!groundingCheck) {
-      const filteredItems = items.filter(i => !i.isDriftInjection);
+      const filteredItems = expandedItems.filter(i => !i.isDriftInjection);
       const filteredTokens = filteredItems.reduce((s, i) => s + i.estimatedTokens, 0);
       return {
         items: filteredItems,
@@ -309,7 +350,7 @@ export class InjectionPolicyEngine {
     }
 
     return {
-      items,
+      items: expandedItems,
       totalTokens: usedTokens,
       state,
       confidence,
@@ -447,18 +488,44 @@ export class InjectionPolicyEngine {
 
   /**
    * Build drift injections from L2 topology.
-   * Implements Eq. 9: S(node_i) = W(edge) × max(0, cos(Q, centroid_i))
+   * Implements Eq. 9 with PageRank-style Spreading Activation.
    */
   private buildDriftInjections(
     queryVector: number[],
     archivedNodes: ArchivedNodeSummary[],
     tokenBudget: number,
   ): InjectionItem[] {
-    // Score each archived node
+    // ── Spreading Activation (PageRank-style propagation)
+    const activation = new Map<string, number>();
+    for (const node of archivedNodes) {
+      activation.set(node.nodeId, node.edgeWeight);
+    }
+
+    const decayFactor = 0.5;
+    const propagation = new Map<string, number>();
+    for (const node of archivedNodes) {
+      const act = activation.get(node.nodeId) || 0;
+      if (act === 0) continue;
+      if (node.adjacentEdges) {
+        for (const adj of node.adjacentEdges) {
+          const propagatedVal = act * adj.weight * decayFactor;
+          propagation.set(adj.toNodeId, (propagation.get(adj.toNodeId) || 0) + propagatedVal);
+        }
+      }
+    }
+
+    // Combine direct and propagated activation
+    for (const [nodeId, propVal] of propagation.entries()) {
+      const current = activation.get(nodeId) || 0;
+      activation.set(nodeId, current + propVal);
+    }
+
+    // Score each archived node combining total activation and cosine similarity
     const scored = archivedNodes
       .map(node => {
         const cosine = cosineSimilarity(queryVector, node.centroidVector);
-        const score = node.edgeWeight * Math.max(0, cosine);
+        const totalActivation = activation.get(node.nodeId) || 0.1;
+        const score = totalActivation * Math.max(0, cosine);
         return { node, score };
       })
       .filter(({ score }) => score >= MIN_REACTIVATION_SCORE)

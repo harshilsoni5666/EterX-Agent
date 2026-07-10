@@ -71,6 +71,13 @@ export interface CentroidState {
   /** Number of update steps applied. */
   updateCount: number;
 
+  /** Multi-modal semantic facets (sub-centroids) */
+  facets?: Array<{
+    centroid: number[];
+    ewma: number[];
+    updateCount: number;
+  }>;
+
   /** History of centroid snapshots for rollback. */
   history: CentroidSnapshot[];
 }
@@ -101,6 +108,13 @@ export class CentroidEngine {
       ewma,
       centroid,
       updateCount: 1,
+      facets: [
+        {
+          centroid: [...centroid],
+          ewma: [...ewma],
+          updateCount: 1,
+        }
+      ],
       history: [
         {
           centroid: [...centroid],
@@ -114,28 +128,101 @@ export class CentroidEngine {
 
   /**
    * Update the centroid with a new query vector.
-   *
-   * Implements:
-   *   EWMA(t) = λ · Q_t + (1-λ) · EWMA(t-1)
-   *   Centroid = normalize(α · anchor + (1-α) · EWMA(t))
-   *
-   * @param state - Current centroid state (mutated in place)
-   * @param queryVector - New query's TF-IDF vector
-   * @param turn - Current turn number
-   * @returns The updated centroid state
+   * Updates matching semantic facets, spawns new facets, and merges collinear ones.
    */
   update(state: CentroidState, queryVector: number[], turn: number): CentroidState {
     const dim = Math.max(state.anchor.length, queryVector.length);
     const { alpha, lambda } = this.config;
 
-    // Ensure all vectors are the same dimension (pad with zeros if vocabulary grew)
+    // Ensure all vectors are the same dimension
     this.padToLength(state.anchor, dim);
     this.padToLength(state.ewma, dim);
     this.padToLength(state.centroid, dim);
     const paddedQuery = [...queryVector];
     this.padToLength(paddedQuery, dim);
 
-    // ── EWMA update (Eq. 3) ───────────────────────────────────────────────
+    // Initialize facets if not present
+    if (!state.facets || state.facets.length === 0) {
+      state.facets = [
+        {
+          centroid: [...state.centroid],
+          ewma: [...state.ewma],
+          updateCount: state.updateCount,
+        }
+      ];
+    }
+
+    // Pad existing facets
+    for (const facet of state.facets) {
+      this.padToLength(facet.centroid, dim);
+      this.padToLength(facet.ewma, dim);
+    }
+
+    // Find best matching facet
+    let bestFacetIdx = 0;
+    let bestSim = -2;
+    for (let i = 0; i < state.facets.length; i++) {
+      const sim = this.cosine(paddedQuery, state.facets[i].centroid);
+      if (sim > bestSim) {
+        bestSim = sim;
+        bestFacetIdx = i;
+      }
+    }
+
+    // If different from existing facets and we have space, create new facet
+    if (bestSim < 0.35 && state.facets.length < 3) {
+      const newFacet = {
+        centroid: l2Normalize([...paddedQuery]),
+        ewma: [...paddedQuery],
+        updateCount: 1,
+      };
+      state.facets.push(newFacet);
+      console.log(`[CentroidEngine] 🚀 Spawned new semantic facet (total facets: ${state.facets.length})`);
+    } else {
+      // Update matched facet
+      const facet = state.facets[bestFacetIdx];
+      for (let i = 0; i < dim; i++) {
+        facet.ewma[i] = lambda * paddedQuery[i] + (1 - lambda) * facet.ewma[i];
+      }
+      const blendedFacet = new Array<number>(dim);
+      for (let i = 0; i < dim; i++) {
+        blendedFacet[i] = alpha * state.anchor[i] + (1 - alpha) * facet.ewma[i];
+      }
+      facet.centroid = l2Normalize(blendedFacet);
+      facet.updateCount++;
+    }
+
+    // Merge highly collinear facets (topic coalescence)
+    if (state.facets.length > 1) {
+      let merged = false;
+      for (let i = 0; i < state.facets.length; i++) {
+        for (let j = i + 1; j < state.facets.length; j++) {
+          const sim = this.cosine(state.facets[i].centroid, state.facets[j].centroid);
+          if (sim > 0.85) {
+            const fi = state.facets[i];
+            const fj = state.facets[j];
+            const total = fi.updateCount + fj.updateCount;
+            const wI = fi.updateCount / total;
+            const wJ = fj.updateCount / total;
+
+            for (let k = 0; k < dim; k++) {
+              fi.ewma[k] = wI * fi.ewma[k] + wJ * fj.ewma[k];
+              fi.centroid[k] = wI * fi.centroid[k] + wJ * fj.centroid[k];
+            }
+            fi.centroid = l2Normalize(fi.centroid);
+            fi.updateCount = total;
+
+            state.facets.splice(j, 1);
+            console.log(`[CentroidEngine] 🤝 Merged collinear facets (remaining: ${state.facets.length})`);
+            merged = true;
+            break;
+          }
+        }
+        if (merged) break;
+      }
+    }
+
+    // ── Global EWMA update for compatibility (Eq. 3) ───────────────────────
     for (let i = 0; i < dim; i++) {
       state.ewma[i] = lambda * paddedQuery[i] + (1 - lambda) * state.ewma[i];
     }
@@ -152,7 +239,6 @@ export class CentroidEngine {
     // ── Degenerate check ──────────────────────────────────────────────────
     const mag = Math.sqrt(normalized.reduce((s, v) => s + v * v, 0));
     if (mag < MIN_CENTROID_MAGNITUDE) {
-      // Centroid collapsed — fall back to anchor
       console.warn('[CentroidEngine] ⚠️ Centroid collapsed. Falling back to anchor.');
       state.centroid = l2Normalize([...state.anchor]);
     } else {
@@ -178,8 +264,6 @@ export class CentroidEngine {
 
   /**
    * Roll back the centroid to a previous turn.
-   * Used when a state transition causes the active node to change.
-   * Returns null if the requested turn isn't in history.
    */
   rollback(state: CentroidState, toTurn: number): CentroidState | null {
     const snapshot = state.history.find(h => h.turn === toTurn);
@@ -187,7 +271,6 @@ export class CentroidEngine {
 
     state.centroid = [...snapshot.centroid];
     state.ewma = [...snapshot.ewma];
-    // Trim history to the rollback point
     state.history = state.history.filter(h => h.turn <= toTurn);
 
     return state;
@@ -195,7 +278,6 @@ export class CentroidEngine {
 
   /**
    * Compute the centroid drift between two states.
-   * Returns the cosine distance (0 = identical, 1 = orthogonal).
    */
   computeDrift(stateA: CentroidState, stateB: CentroidState): number {
     return 1 - this.cosine(stateA.centroid, stateB.centroid);
@@ -209,7 +291,7 @@ export class CentroidEngine {
   }
 
   /**
-   * Get configuration (for inspection/debugging).
+   * Get configuration.
    */
   getConfig(): CentroidConfig {
     return { ...this.config };
@@ -224,6 +306,11 @@ export class CentroidEngine {
       ewma: [...state.ewma],
       centroid: [...state.centroid],
       updateCount: state.updateCount,
+      facets: state.facets ? state.facets.map(f => ({
+        centroid: [...f.centroid],
+        ewma: [...f.ewma],
+        updateCount: f.updateCount,
+      })) : undefined,
       history: state.history.map(h => ({
         centroid: [...h.centroid],
         ewma: [...h.ewma],
@@ -242,6 +329,13 @@ export class CentroidEngine {
       ewma: [...raw.ewma],
       centroid: [...raw.centroid],
       updateCount: raw.updateCount || 0,
+      facets: Array.isArray(raw.facets)
+        ? raw.facets.map((f: any) => ({
+            centroid: [...f.centroid],
+            ewma: [...f.ewma],
+            updateCount: f.updateCount || 0,
+          }))
+        : undefined,
       history: Array.isArray(raw.history)
         ? raw.history.map(h => ({
             centroid: [...h.centroid],

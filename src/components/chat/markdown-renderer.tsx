@@ -16,6 +16,7 @@ import { Check, ChevronDown, Copy, Download, Maximize2, Minimize2, MoreHorizonta
 import { CopyButton } from '../ui/copy-button';
 import { Tooltip } from '../ui/tooltip';
 import { LiveArtifact } from './live-artifact';
+import { LocalFileLinkChip, decodeLocalFileHref, isLocalFilePath, linkifyLocalFilePaths } from './local-file-link';
 
 /** Re-export remark/rehype plugins for use in other components */
 export const remarkPlugins = [remarkGfm, remarkMath];
@@ -156,9 +157,9 @@ const unwrapAccidentalMarkdownFence = (value: string) => {
 
 export const normalizeMarkdownForRendering = (value: string) => {
   if (!value) return '';
-  return repairMarkdownTablesOutsideCode(normalizeLatexOutsideCode(unwrapAccidentalMarkdownFence(value)))
+  return linkifyLocalFilePaths(repairMarkdownTablesOutsideCode(normalizeLatexOutsideCode(unwrapAccidentalMarkdownFence(value)))
     .replace(/\n{3,}(\$\$)/g, '\n\n$1')
-    .replace(/(\$\$)\n{3,}/g, '$1\n\n');
+    .replace(/(\$\$)\n{3,}/g, '$1\n\n'));
 };
 
 const getCurrentTheme = () => {
@@ -1023,6 +1024,10 @@ export const markdownComponents = {
       return <CodeBlock language={language} content={content} {...props} />;
     }
 
+    if (isLocalFilePath(content)) {
+      return <LocalFileLinkChip filePath={content.trim()} compact />;
+    }
+
     return (
       <code className="eterx-markdown-inline-code rounded-md border border-white/[0.08] bg-[#363432] px-1.5 py-0.5 font-mono text-[13.5px] text-[#E2765A]" {...props}>
         {children}
@@ -1030,7 +1035,13 @@ export const markdownComponents = {
     );
   },
   p: ({ ...props }: any) => <p className="mb-4 break-words leading-[1.75] last:mb-0" {...props} />,
-  a: ({ ...props }: any) => <a className="eterx-markdown-link text-[#E2765A] underline-offset-2 hover:underline" target="_blank" rel="noopener noreferrer" {...props} />,
+  a: ({ node, href, children, ...props }: any) => {
+    const localPath = decodeLocalFileHref(href);
+    if (localPath) {
+      return <LocalFileLinkChip filePath={localPath} label={getNodeText(children)} compact />;
+    }
+    return <a className="eterx-markdown-link text-[#E2765A] underline-offset-2 hover:underline" target="_blank" rel="noopener noreferrer" href={href} {...props}>{children}</a>;
+  },
   ul: ({ ...props }: any) => <ul className="eterx-markdown-list mb-4 list-disc space-y-1.5 pl-6 marker:text-[#8C8A88]" {...props} />,
   ol: ({ ...props }: any) => <ol className="eterx-markdown-list mb-4 list-decimal space-y-1.5 pl-6 marker:text-[#8C8A88]" {...props} />,
   li: ({ ...props }: any) => <li className="eterx-markdown-list-item leading-[1.7]" {...props} />,
