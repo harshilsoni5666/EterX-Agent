@@ -230,7 +230,7 @@ export const ConnectorsButton: React.FC<{ connectedCount: number; onToggleAction
   <Tooltip text="Connectors" side="top">
     <button
       onClick={onToggleAction}
-      className="eterx-control-button w-[40px] h-[40px] shrink-0 flex items-center justify-center rounded-full border border-white/[0.18] bg-[#242424]/96 text-white transition-all duration-200 ease-out active:scale-95 active:bg-[#303030] hover:text-white hover:bg-[#2D2D2D] hover:border-white/[0.30] group relative overflow-hidden"
+      className="eterx-control-button w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full border border-transparent bg-transparent text-white transition-all duration-150 ease-out active:scale-95 group relative overflow-hidden"
     >
       <Puzzle className="eterx-composer-control-icon w-[20px] h-[20px] text-white transition-transform duration-200 ease-out group-hover:scale-[1.04]" strokeWidth={1.85} />
     </button>

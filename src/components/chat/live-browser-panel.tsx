@@ -78,6 +78,19 @@ function normalizeBrowserAddress(input: string) {
   return '';
 }
 
+function getProxiedUrl(address: string): string {
+  const normalized = normalizeBrowserAddress(address);
+  if (!normalized) return address;
+  const localMatch = normalized.match(/^https?:\/\/(?:localhost|127\.0\.0\.1|::1|\[::1\]):(\d+)(.*)/i);
+  if (localMatch) {
+    const port = localMatch[1];
+    const rest = localMatch[2] || '/';
+    const cleanRest = rest.startsWith('/') ? rest.substring(1) : rest;
+    return `/api/proxy/${port}/${cleanRest}`;
+  }
+  return normalized;
+}
+
 export const LiveBrowserPanel: React.FC<LiveBrowserPanelProps> = ({
   chatId,
   onClose,
@@ -96,7 +109,7 @@ export const LiveBrowserPanel: React.FC<LiveBrowserPanelProps> = ({
   const [lastActivity, setLastActivity] = useState<string>('Waiting for browser activity...');
   const [isAgentActive, setIsAgentActive] = useState(false);
   const [frameCount, setFrameCount] = useState(0);
-  const [iframeUrl, setIframeUrl] = useState<string | null>(initialBrowserTarget || null);
+  const [iframeUrl, setIframeUrl] = useState<string | null>(initialUrl ? getProxiedUrl(initialUrl) : null);
 
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
@@ -199,7 +212,7 @@ export const LiveBrowserPanel: React.FC<LiveBrowserPanelProps> = ({
     if (!target) return;
     setUrlInput(target);
     setCurrentUrl(target);
-    setIframeUrl(target);
+    setIframeUrl(getProxiedUrl(target));
   };
 
   const frameTimestamp = frame ? new Date(frame.ts).toLocaleTimeString() : null;

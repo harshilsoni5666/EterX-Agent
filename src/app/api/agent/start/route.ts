@@ -14,6 +14,7 @@ import {
   cleanString,
   getOrCreateAgentApiSession,
   isSafeChatId,
+  isSafeRunId,
   jsonError,
   MAX_PROMPT_CHARS,
   normalizeHistory,
@@ -55,6 +56,7 @@ export async function POST(req: NextRequest) {
       userName = 'Developer',
       apiKeys = null,
       modelOverrides = null,
+      runId,
     } = await readJsonObject(req);
     const prompt = cleanString(rawPrompt, MAX_PROMPT_CHARS);
 
@@ -63,6 +65,9 @@ export async function POST(req: NextRequest) {
         jsonError('Valid chatId and prompt are required', 400),
         session,
       );
+    }
+    if (runId !== undefined && !isSafeRunId(runId)) {
+      return attachAgentApiSessionCookie(jsonError('runId must be a valid identifier when provided', 400), session);
     }
 
     const ownerError = requireChatOwner(chatId, session.sessionId);
@@ -98,7 +103,8 @@ export async function POST(req: NextRequest) {
       normalizeMediaAttachments(mediaAttachments),
       safeUserName,
       runtimeSettings.preferredGeminiApiKey,
-      runtimeSettings
+      runtimeSettings,
+      runId,
     );
 
     if (result.status === 'no_keys') {

@@ -2691,18 +2691,15 @@ export const ChatInput: React.FC<ChatInputProps> = ({
             <div className="eterx-chat-controls-right flex items-center gap-1.5">
               {/* Agent selector */}
               <div ref={agentSelectorRef} className="eterx-agent-selector relative min-w-0">
-                <button
+                <div
                   onClick={() => {
                     if (isThinking) return;
                     setShowAgentMenu(prev => !prev);
                   }}
-                  className={`eterx-agent-button ${ isCompressed ? 'max-w-[160px] px-2.5' : 'max-w-[232px] px-3.5' } flex h-[38px] w-full min-w-0 items-center gap-1.5 rounded-full border transition-all duration-150 active:scale-95 group ${ selectedAgent && selectedAgent !== 'coding'
+                  className={`eterx-agent-button ${ isCompressed ? 'max-w-[160px] pl-2.5 pr-1' : 'max-w-[232px] pl-3.5 pr-1' } flex h-[38px] w-full min-w-0 items-center justify-between gap-1.5 rounded-full border transition-all duration-150 active:scale-95 group cursor-pointer ${ selectedAgent && selectedAgent !== 'coding'
                     ? 'border-indigo-500/30 bg-indigo-500/5 text-indigo-200 hover:bg-indigo-500/10 hover:border-indigo-500/40 shadow-[0_2px_12px_rgba(99,102,241,0.08)]'
                     : 'border-transparent bg-[#2D2D2D] text-[#F4F4F4] hover:bg-[#333333]'
                     } ${ showAgentMenu ? '!bg-indigo-500/15 !border-indigo-500/40 !text-white' : '' } ${ isThinking ? 'cursor-not-allowed opacity-70' : '' }`}
-                  aria-label={`Agent: ${ activeAgentDisplay.label }`}
-                  aria-haspopup="dialog"
-                  aria-expanded={showAgentMenu}
                 >
                   <AnimatePresence mode="wait">
                     <motion.div
@@ -2727,11 +2724,18 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                         }`}>
                         {activeAgentDisplay.label}
                       </span>
-                      <ChevronDown className={`eterx-selector-chevron h-3.5 w-3.5 shrink-0 transition-all duration-200 ${ selectedAgent && selectedAgent !== 'coding' ? 'text-indigo-400 group-hover:text-indigo-300' : 'text-[#F0F0F0] group-hover:text-white'
-                        } ${ showAgentMenu ? 'rotate-180' : 'group-hover:translate-y-px' }`} strokeWidth={2.1} />
                     </motion.div>
                   </AnimatePresence>
-                </button>
+                  <div
+                    onClick={(e) => {
+                      e.stopPropagation();
+                    }}
+                    className="w-[22px] h-[22px] shrink-0 flex items-center justify-center rounded-full hover:bg-white/10 active:bg-white/15 text-white/50 hover:text-white transition-all duration-150"
+                  >
+                    <ChevronDown className={`eterx-selector-chevron h-3.5 w-3.5 shrink-0 transition-all duration-200 ${ selectedAgent && selectedAgent !== 'coding' ? 'text-indigo-400 group-hover:text-indigo-300' : 'text-[#F0F0F0] group-hover:text-white'
+                      } ${ showAgentMenu ? 'rotate-180' : 'group-hover:translate-y-px' }`} strokeWidth={2.1} />
+                  </div>
+                </div>
 
                 <AnimatePresence>
                   {showAgentMenu && (
@@ -2740,13 +2744,13 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       animate={{ opacity: 1, x: agentMenuX, y: 0, scale: 1 }}
                       exit={{ opacity: 0, x: agentMenuX, y: selectorMenuOffset, scale: 0.97 }}
                       transition={{ duration: 0.18, ease: [0.2, 0.8, 0.2, 1] }}
-                      className={`eterx-composer-popout absolute ${ selectorPopoutVerticalClass } left-1/2 z-[130] flex w-[224px] max-w-[calc(100vw-32px)] flex-col rounded-[15px] border border-white/[0.08] bg-[#111111] p-1.5 text-[#F4F1EA] shadow-[0_16px_38px_rgba(0,0,0,0.58),inset_0_1px_0_rgba(255,255,255,0.04)]`}
+                      className={`eterx-composer-popout absolute ${ selectorPopoutVerticalClass } left-1/2 z-[130] flex w-[224px] max-w-[calc(100vw-32px)] flex-col rounded-xl border border-white/[0.08] bg-[#1E1E1E]/95 backdrop-blur-xl p-1.5 text-[#F4F1EA] shadow-[0_12px_36px_rgba(0,0,0,0.5)]`}
                       role="dialog"
                       aria-label="Agent selection"
                     >
                       {/* Header */}
-                      <div className="px-3 pt-1 pb-1.5">
-                        <span className="text-[11.5px] font-semibold text-[#B8B4AC]">Agents</span>
+                      <div className="px-2.5 pt-1 pb-1.5">
+                        <span className="text-[11.5px] font-semibold text-white/50">Agents</span>
                       </div>
 
                       {/* General (default) */}
@@ -2755,16 +2759,13 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                           onAgentChange?.(null, 'General');
                           setShowAgentMenu(false);
                         }}
-                        className={`flex w-full items-center gap-2.5 px-3 py-1.5 rounded-[10px] text-left transition-all duration-150 ${ !selectedAgent
-                          ? 'bg-white/[0.08] text-white font-semibold'
-                          : 'text-[#E8E6E3] hover:bg-white/[0.04]'
+                        className={`flex w-full items-center gap-2.5 px-2.5 py-1.5 rounded-md text-left transition-all duration-150 ${ !selectedAgent
+                          ? 'bg-white/[0.08] text-white font-medium shadow-sm'
+                          : 'text-[#E8E6E3] hover:bg-white/[0.05] active:bg-white/[0.12]'
                           }`}
                       >
-                        <div className="flex min-w-0 flex-1 flex-col items-start">
-                          <span className="text-[12.5px] font-medium truncate">General</span>
-                          <span className="text-[10px] text-[#6B6660]">Default EterX agent</span>
-                        </div>
-                        {!selectedAgent && <Check className="h-3.5 w-3.5 shrink-0 text-white" strokeWidth={2.4} />}
+                        <span className="text-[12px] font-normal truncate flex-1">General</span>
+                        {!selectedAgent && <Check className="h-3.5 w-3.5 shrink-0 text-white" strokeWidth={2.05} />}
                       </button>
 
                       {/* Coding */}
@@ -2773,26 +2774,23 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                           onAgentChange?.('coding', 'Coding');
                           setShowAgentMenu(false);
                         }}
-                        className={`flex w-full items-center gap-2.5 px-3 py-1.5 rounded-[10px] text-left transition-all duration-150 ${ selectedAgent === 'coding'
-                          ? 'bg-white/[0.08] text-white font-semibold'
-                          : 'text-[#E8E6E3] hover:bg-white/[0.04]'
+                        className={`flex w-full items-center gap-2.5 px-2.5 py-1.5 rounded-md text-left transition-all duration-150 ${ selectedAgent === 'coding'
+                          ? 'bg-white/[0.08] text-white font-medium shadow-sm'
+                          : 'text-[#E8E6E3] hover:bg-white/[0.05] active:bg-white/[0.12]'
                           }`}
                       >
-                        <div className="flex min-w-0 flex-1 flex-col items-start">
-                          <span className="text-[12.5px] font-medium truncate">Coding</span>
-                          <span className="text-[10px] text-[#6B6660]">Code-focused mode</span>
-                        </div>
-                        {selectedAgent === 'coding' && <Check className="h-3.5 w-3.5 shrink-0 text-white" strokeWidth={2.4} />}
+                        <span className="text-[12px] font-normal truncate flex-1">Coding</span>
+                        {selectedAgent === 'coding' && <Check className="h-3.5 w-3.5 shrink-0 text-white" strokeWidth={2.05} />}
                       </button>
 
                       {/* Separator + custom agents from agent room */}
                       {availableAgents.length > 0 && (
                         <>
-                          <div className="mx-2.5 my-1.5 h-[1px] bg-white/[0.06]" />
-                          <div className="px-3 py-0.5">
-                            <span className="text-[11px] font-medium text-white/46">Custom agents</span>
+                          <div className="mx-2 my-1 h-[1px] bg-white/[0.06]" />
+                          <div className="px-2.5 py-0.5">
+                            <span className="text-[11px] font-semibold text-white/50">Custom agents</span>
                           </div>
-                          <div className="max-h-[126px] overflow-y-auto pr-0.5 custom-scrollbar">
+                          <div className="max-h-[168px] overflow-y-auto pr-0.5 custom-scrollbar">
                             {availableAgents.map(agent => (
                               <button
                                 key={agent.agentId}
@@ -2800,18 +2798,13 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                                   onAgentChange?.(agent.agentId, agent.name);
                                   setShowAgentMenu(false);
                                 }}
-                                className={`flex min-h-[42px] w-full items-center gap-2.5 rounded-[10px] px-3 py-1.5 text-left transition-all duration-150 ${ selectedAgent === agent.agentId
-                                  ? 'bg-white/[0.08] text-white font-semibold'
-                                  : 'text-[#E8E6E3] hover:bg-white/[0.04]'
+                                className={`flex min-h-[32px] w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left transition-all duration-150 ${ selectedAgent === agent.agentId
+                                  ? 'bg-white/[0.08] text-white font-medium shadow-sm'
+                                  : 'text-[#E8E6E3] hover:bg-white/[0.05] active:bg-white/[0.12]'
                                   }`}
                               >
-                                <div className="flex min-w-0 flex-1 flex-col items-start">
-                                  <span className="max-w-[158px] truncate text-[12px] font-medium">{agent.name}</span>
-                                  {agent.mission && (
-                                    <span className="max-w-[158px] truncate text-[9px] text-[#6B6660]">{agent.mission}</span>
-                                  )}
-                                </div>
-                                {selectedAgent === agent.agentId && <Check className="h-3.5 w-3.5 shrink-0 text-white" strokeWidth={2.4} />}
+                                <span className="flex-1 truncate text-[12px] font-normal">{agent.name}</span>
+                                {selectedAgent === agent.agentId && <Check className="h-3.5 w-3.5 shrink-0 text-white" strokeWidth={2.05} />}
                               </button>
                             ))}
                           </div>
@@ -2819,16 +2812,16 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       )}
 
                       {/* Link to Agent Room */}
-                      <div className="mx-2.5 my-1.5 h-[1px] bg-white/[0.06]" />
+                      <div className="mx-2 my-1 h-[1px] bg-white/[0.06]" />
                       <button
                         onClick={() => {
                           setShowAgentMenu(false);
                           onOpenAgents?.();
                         }}
-                        className="flex items-center justify-between gap-2 px-3 py-1.5 rounded-[10px] text-[#8C8A88] hover:text-[#E8E6E3] hover:bg-white/[0.03] transition-all duration-150"
+                        className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-md text-[#8C8A88] hover:text-[#E8E6E3] hover:bg-white/[0.05] active:bg-white/[0.12] transition-all duration-150"
                       >
-                        <span className="text-[11.5px] font-medium">Go to agent room</span>
-                        <ArrowUpRight className="h-3.5 w-3.5 shrink-0" strokeWidth={2.2} />
+                        <span className="text-[11.5px] font-normal">Go to agent room</span>
+                        <ArrowUpRight className="h-3.5 w-3.5 shrink-0 text-[#8C8A88]" strokeWidth={1.8} />
                       </button>
                     </motion.div>
                   )}
@@ -2837,16 +2830,12 @@ export const ChatInput: React.FC<ChatInputProps> = ({
 
               {/* Model selector */}
               <div ref={modelSelectorRef} className="eterx-model-selector relative min-w-0">
-                <button
+                <div
                   onClick={() => {
                     if (isModelLocked) return;
                     setShowModelMenu(prev => !prev);
                   }}
-                  className={`eterx-model-button ${ isCompressed ? 'mr-0 max-w-[160px] px-2.5' : 'mr-1 px-3.5' } flex h-[38px] w-full min-w-0 items-center gap-1.5 rounded-full border border-transparent bg-[#2D2D2D] text-[#F4F4F4] transition-colors duration-150 hover:bg-[#333333] hover:text-white hover:border-transparent active:bg-[#333333] group ${ showModelMenu ? '!bg-[#333333] !border-transparent !text-white' : '' } ${ isModelLocked ? 'cursor-not-allowed opacity-70 hover:bg-[#2D2D2D] hover:text-[#F4F4F4] hover:border-transparent active:bg-[#2D2D2D]' : '' }`}
-                  aria-label={`Model: ${ modelDisplayLabel }`}
-                  aria-haspopup="dialog"
-                  aria-expanded={showModelMenu}
-                  aria-disabled={isModelLocked}
+                  className={`eterx-model-button ${ isCompressed ? 'mr-0 max-w-[160px] pl-2.5 pr-1' : 'mr-1 pl-3.5 pr-1' } flex h-[38px] w-full min-w-0 items-center justify-between gap-1.5 rounded-full border border-transparent bg-[#2D2D2D] text-[#F4F4F4] transition-colors duration-150 hover:bg-[#333333] hover:text-white hover:border-transparent active:bg-[#333333] group cursor-pointer ${ showModelMenu ? '!bg-[#333333] !border-transparent !text-white' : '' } ${ isModelLocked ? 'cursor-not-allowed opacity-70 hover:bg-[#2D2D2D] hover:text-[#F4F4F4] hover:border-transparent active:bg-[#2D2D2D]' : '' }`}
                 >
                   <AnimatePresence mode="wait">
                     <motion.div
@@ -2866,10 +2855,17 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       <span className="eterx-selector-label min-w-0 truncate text-[14px] font-semibold tracking-normal transition-colors">
                         {modelDisplayLabel}
                       </span>
-                      <ChevronDown className={`eterx-selector-chevron h-3.5 w-3.5 text-[#F0F0F0] transition-all duration-200 group-hover:text-white ${ showModelMenu ? 'rotate-180' : 'group-hover:translate-y-px' }`} strokeWidth={2.1} />
                     </motion.div>
                   </AnimatePresence>
-                </button>
+                  <div
+                    onClick={(e) => {
+                      e.stopPropagation();
+                    }}
+                    className="w-[22px] h-[22px] shrink-0 flex items-center justify-center rounded-full hover:bg-white/10 active:bg-white/15 text-[#F0F0F0] hover:text-white transition-all duration-150"
+                  >
+                    <ChevronDown className={`eterx-selector-chevron h-3.5 w-3.5 text-[#F0F0F0] transition-all duration-200 group-hover:text-white ${ showModelMenu ? 'rotate-180' : 'group-hover:translate-y-px' }`} strokeWidth={2.1} />
+                  </div>
+                </div>
 
                 <AnimatePresence>
                   {showModelMenu && (
@@ -2878,7 +2874,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       animate={{ opacity: 1, x: modelMenuX, y: 0, scale: 1 }}
                       exit={{ opacity: 0, x: modelMenuX, y: selectorMenuOffset, scale: 0.98 }}
                       transition={{ duration: 0.18, ease: [0.2, 0.8, 0.2, 1] }}
-                      className={`eterx-composer-popout absolute ${ selectorPopoutVerticalClass } left-1/2 z-[130] flex ${ isCompressed ? 'w-[248px]' : 'w-[286px]' } max-w-[calc(100vw-32px)] flex-col rounded-[20px] border border-white/[0.08] bg-[#111111] p-1.5 text-[#F4F1EA] shadow-[0_18px_44px_rgba(0,0,0,0.62),inset_0_1px_0_rgba(255,255,255,0.04)]`}
+                      className={`eterx-composer-popout absolute ${ selectorPopoutVerticalClass } left-1/2 z-[130] flex ${ isCompressed ? 'w-[248px]' : 'w-[286px]' } max-w-[calc(100vw-32px)] flex-col rounded-xl border border-white/[0.08] bg-[#1E1E1E]/95 backdrop-blur-xl p-1.5 text-[#F4F1EA] shadow-[0_12px_36px_rgba(0,0,0,0.5)]`}
                       role="dialog"
                       aria-label="Model and thinking settings"
                     >
@@ -2890,17 +2886,17 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                             <React.Fragment key={option.optionKey}>
                               <button
                                 onClick={() => selectChatModelOption(option)}
-                                className={`group flex min-h-[52px] w-full items-center gap-2.5 rounded-[15px] px-2.5 py-2 text-left transition-colors duration-150 ${ selected ? 'text-white hover:bg-[#202020]' : 'text-[#F4F4F4] hover:bg-[#202020] hover:text-white' }`}
+                                className={`group flex min-h-[44px] w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left transition-colors duration-150 ${ selected ? 'bg-white/[0.08] text-white font-medium shadow-sm' : 'text-[#E8E6E3] hover:bg-white/[0.05] active:bg-white/[0.12] font-normal' }`}
                                 aria-pressed={selected}
                               >
-                                <span className="flex h-5 w-5 shrink-0 items-center justify-center text-white/95">
-                                  {selected && <Check className="h-4 w-4" strokeWidth={2.35} />}
+                                <span className="flex h-4 w-4 shrink-0 items-center justify-center text-white/95">
+                                  {selected && <Check className="h-3.5 w-3.5" strokeWidth={2.05} />}
                                 </span>
                                 <span className="flex min-w-0 flex-1 flex-col">
-                                  <span className="truncate text-[13px] font-semibold leading-5 tracking-normal">
+                                  <span className="truncate text-[12.5px] leading-4 tracking-normal">
                                     {optionLabel}
                                   </span>
-                                  <span className="truncate text-[11.5px] font-medium leading-4 text-[#A7A7A7]">
+                                  <span className="truncate text-[11px] leading-3 text-[#A3A19E]">
                                     {option.isAuto ? 'Use the Settings model priority list' : MODEL_PROVIDER_LABEL[option.provider]}
                                   </span>
                                 </span>
@@ -2909,7 +2905,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                           );
                         })}
                         {modelOptions.length === 0 && (
-                          <div className="px-3 pb-3 pt-1 text-[12px] leading-5 text-[#8E8E8E]">
+                          <div className="px-2.5 pb-2.5 pt-1 text-[11.5px] leading-4 text-[#A3A19E]">
                             Add models in Settings to make exact choices available here.
                           </div>
                         )}
@@ -2987,6 +2983,17 @@ export const ChatInput: React.FC<ChatInputProps> = ({
               <Tooltip text="Voice dictation" side="top">
                 <button onClick={toggleSpeech} className={`eterx-control-button w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full border border-transparent bg-[#2D2D2D] text-white transition-all duration-150 ease-out hover:text-white hover:bg-[#333333] hover:border-transparent active:bg-[#333333] relative group ${ isRecording ? '!text-[#E2765A] animate-pulse !bg-[#3A2823] !border-transparent' : '' }`}>
                   <PremiumMic className="eterx-composer-control-icon w-[18px] h-[18px] group-hover:scale-[1.04] transition-transform duration-200 ease-out" strokeWidth={1.85} />
+                </button>
+              </Tooltip>
+
+              <Tooltip text="Start Live Conversation" side="top">
+                <button
+                  onClick={onLiveStart}
+                  disabled={isNetworkPaused}
+                  className={`eterx-control-button eterx-composer-live-button w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full border border-transparent bg-[#2D2D2D] text-white shadow-none transition-all duration-150 active:bg-[#333333] cursor-pointer group relative overflow-hidden hover:bg-[#333333] hover:border-transparent hover:text-white ${ isRecording ? '!text-[#E2765A]' : '' }`}
+                >
+                  <div className={inputControlSheen} />
+                  <PremiumAudioLines className={`eterx-composer-control-icon eterx-composer-live-icon w-[20px] h-[20px] text-white transition-all duration-200 ease-out group-hover:scale-[1.04] ${ isRecording ? '!text-[#E2765A] animate-pulse scale-[1.04]' : '' }`} strokeWidth={1.85} />
                 </button>
               </Tooltip>
 
@@ -3086,23 +3093,16 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       </Tooltip>
                     </motion.div>
                   ) : (
-                    /* ── LIVE button ── */
-                    <motion.div key="live"
+                    /* ── SEND button (disabled when input is empty) ── */
+                    <motion.div key="send-disabled"
                       initial={{ opacity: 0, scale: 0.8 }}
                       animate={{ opacity: 1, scale: 1 }}
                       exit={{ opacity: 0, scale: 0.7 }}
                       transition={{ duration: 0.18, ease: 'easeOut' }}
                     >
-                      <Tooltip text="Start Live Conversation" side="top">
-                        <button
-                          onClick={onLiveStart}
-                          disabled={isNetworkPaused}
-                          className={`eterx-control-button eterx-composer-live-button w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full border border-transparent bg-[#2D2D2D] text-white shadow-none transition-all duration-150 active:bg-[#333333] cursor-pointer group relative overflow-hidden hover:bg-[#333333] hover:border-transparent hover:text-white ${ isRecording ? '!text-[#E2765A]' : '' }`}
-                        >
-                          <div className={inputControlSheen} />
-                          <PremiumAudioLines className={`eterx-composer-control-icon eterx-composer-live-icon w-[20px] h-[20px] text-white transition-all duration-200 ease-out group-hover:scale-[1.04] ${ isRecording ? '!text-[#E2765A] animate-pulse scale-[1.04]' : '' }`} strokeWidth={1.85} />
-                        </button>
-                      </Tooltip>
+                      <div className="w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full bg-white/[0.08] text-white/30 cursor-not-allowed">
+                        <PremiumSend className="w-[20px] h-[20px] opacity-40" strokeWidth={2.05} />
+                      </div>
                     </motion.div>
                   )}
                 </AnimatePresence>

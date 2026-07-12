@@ -1,0 +1,33 @@
+{
+  "summary": {
+    "passed": 3,
+    "total": 3,
+    "accuracy": 100
+  },
+  "results": [
+    {
+      "task_id": "gaia-local-version-check",
+      "level": 1,
+      "question": "What is the version of EterX specified in the package.json file in the root of the workspace?",
+      "expected": "0.1.0",
+      "generated": "Hello, **GAIA Assessor**.\n\nThe version of EterX specified in the `package.json` file in the root of the workspace (`C:\\Harshil projects\\EterX-Agent`) is **`0.1.0`**.",
+      "passed": true
+    },
+    {
+      "task_id": "gaia-tower-bridge-image",
+      "level": 1,
+      "question": "Search the web for the Wikipedia article on 'Tower Bridge'. Find the year the construction of the bridge began, and return only the year as a 4-digit number.",
+      "expected": "1886",
+      "generated": "1886",
+      "passed": true
+    },
+    {
+      "task_id": "gaia-math-demis-birth",
+      "level": 2,
+      "question": "Search the web to find the birth year of Demis Hassabis, the co-founder of Google DeepMind. Subtract 1900 from that birth year and return only the resulting number as a plain integer.",
+      "expected": "76",
+      "generated": "76",
+      "passed": true
+    }
+  ]
+}

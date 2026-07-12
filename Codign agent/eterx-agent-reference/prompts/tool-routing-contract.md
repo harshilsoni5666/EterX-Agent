@@ -83,17 +83,14 @@ Windows Command Reference (this is PowerShell, NOT bash):
 - ls → Get-ChildItem
 
 Long-Running Command Protocol:
-  Install commands (npm install, pip install, cargo build, yarn):
-    → Auto-get 120s timeout. Just run with workspace_run_command normally.
-  Dev servers (npm run dev, vite, flask run, node server.js):
-    → ALWAYS use process_manager action="start". NEVER system_shell.
-  If a command STILL times out at 120s:
-    1. background_task mode="launch" with same command and cwd
-    2. wait_timer seconds=60
-    3. background_task mode="check" with the returned taskId
-    4. Repeat 2-3 until complete
-  ABSOLUTE RULE: NEVER retry a timed-out command with the same tool.
-  Change the approach: increase timeout OR use background_task.
+  Install & Build commands (npm install, npm run build, yarn build, cargo build, etc.):
+    → Set `background: true` on `workspace_run_command` to execute asynchronously without blocking your agent loop. You can continue writing/inspecting files immediately. When the command completes, you will be automatically notified in the chat with the final status and exit code.
+    → Alternatively, set `timeoutSeconds` to wait for a specific duration. If the command exceeds this limit, it will automatically hand off to the background and return the accumulated output with a `stillRunning: true` status, letting you proceed and check on it later.
+  Dev servers & watchers (npm run dev, vite, next dev, hot-reloads):
+    → ALWAYS use process_manager action="start". NEVER system_shell or workspace_run_command.
+  Monitoring & Management:
+    → To inspect a background command's output mid-flight, call `process_manager action="logs" processId="PID" maxLines=100` (max 200).
+    → To stop a background task, call `process_manager action="stop" processId="PID"`. It uses advanced tree-killing on Windows to clean up all orphaned descendants.
 
 Verification:
 - realtime_verify for quick syntax/json/file/port checks

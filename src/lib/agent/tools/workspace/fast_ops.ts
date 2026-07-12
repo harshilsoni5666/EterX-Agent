@@ -165,6 +165,12 @@ export const workspaceReadManyFilesTool: ToolDefinition = {
         const numbered = formatNumberedContent(lines, start);
         const truncated = end < (spec.endLine || totalLines) && lines.length >= maxLinesPerFile;
 
+        let finalContent = `[File: ${path.basename(filePath)} | ${totalLines} lines | Showing ${start}-${end}]\n${numbered}${truncated ? `\n...[TRUNCATED at ${maxLinesPerFile} lines]...` : ''}`;
+        const MAX_FILE_CHAR_LIMIT = 80000;
+        if (finalContent.length > MAX_FILE_CHAR_LIMIT) {
+          finalContent = finalContent.substring(0, MAX_FILE_CHAR_LIMIT) + `\n\n⚠️ ...[TRUNCATED: File content exceeded maximum threshold of ${MAX_FILE_CHAR_LIMIT} characters to prevent API payload errors. Use a smaller range.]...`;
+        }
+
         return {
           filename: spec.filename,
           path: filePath,
@@ -172,7 +178,7 @@ export const workspaceReadManyFilesTool: ToolDefinition = {
           totalLines,
           startLine: start,
           endLine: end,
-          content: `[File: ${path.basename(filePath)} | ${totalLines} lines | Showing ${start}-${end}]\n${numbered}${truncated ? `\n...[TRUNCATED at ${maxLinesPerFile} lines]...` : ''}`,
+          content: finalContent,
         };
       } catch (err: any) {
         return { filename: spec.filename, success: false, error: err.message || 'Read failed' };

@@ -5,7 +5,7 @@ import dynamic from 'next/dynamic';
 import { Sidebar } from '../components/layout/sidebar';
 import { ChatInput } from '../components/layout/chat-input';
 import { ChatFeed } from '../components/chat/chat-feed';
-import { AlertTriangle, CheckCircle2, ChevronDown, Clock3, Code2, GraduationCap, List, MessageSquare, Pencil, PenTool, SendHorizontal, SquarePen, Search, X, ArrowLeft, Trash, ListTodo, ChevronRight, Monitor, GitFork, Terminal, GitBranch, GitCommit, PlusSquare, Check, FileCode, FileText, MoreHorizontal, Sparkles } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, ChevronDown, Clock3, Code2, GraduationCap, List, MessageSquare, Pencil, PenTool, SendHorizontal, SquarePen, Search, X, ArrowLeft, Trash, ListTodo, ChevronRight, Monitor, GitFork, Terminal, GitBranch, GitCommit, PlusSquare, Check, FileCode, FileText, MoreHorizontal, Sparkles, Pin, PinOff, Archive, Split, Calendar, ExternalLink, Copy } from 'lucide-react';
 import { Tooltip } from '../components/ui/tooltip';
 import { motion, AnimatePresence, Reorder } from 'framer-motion';
 import { InteractiveGrid } from '../components/ui/interactive-grid';
@@ -974,6 +974,7 @@ function DeepWorkUI() {
   const [chatPanelWidth, setChatPanelWidth] = useState<number | null>(null);
   const [isResizingPanels, setIsResizingPanels] = useState(false);
   const [inputValue, setInputValue] = useState("");
+  const [selectedProjectSection, setSelectedProjectSection] = useState('new-tasks');
   const [pendingSteering, setPendingSteering] = useState<{ id: string, text: string }[]>([]);
   // Per-chat thinking state: Set of chatIds that have running agents
   const [runningChats, setRunningChats] = useState<Set<string>>(new Set());
@@ -993,6 +994,9 @@ function DeepWorkUI() {
   const [cmdPaletteOpen, setCmdPaletteOpen] = useState(false);
   const [showScrollBottom, setShowScrollBottom] = useState(false);
   const [headerMenuOpen, setHeaderMenuOpen] = useState(false);
+  const [chatActionMenuOpen, setChatActionMenuOpen] = useState(false);
+  const [isEditingChatTitle, setIsEditingChatTitle] = useState(false);
+  const [editingTitleText, setEditingTitleText] = useState("");
   const [headerSearchOpen, setHeaderSearchOpen] = useState(false);
   const [headerSearchQuery, setHeaderSearchQuery] = useState("");
   const [activeView, setActiveViewState] = useState<ActiveView>('chat');
@@ -1319,6 +1323,11 @@ function DeepWorkUI() {
   // completed traces from the previous execution until the server creates the
   // fresh run for this send.
   const pollRunStartRef = useRef<Map<string, number>>(new Map());
+  // Server-issued/client-provided run identity. Timestamp guards are not
+  // precise enough when a stopped run and a replacement start within 1 second.
+  const pollRunIdRef = useRef<Map<string, string>>(new Map());
+  // Invalidates in-flight poll callbacks when a poller is restarted or stopped.
+  const pollGenerationRef = useRef<Map<string, number>>(new Map());
   // CRITICAL: Ref for activeChatId so polling closures always see the latest value
   const activeChatIdRef = useRef<string | null>(null);
   const localStorageTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -2224,6 +2233,8 @@ function DeepWorkUI() {
       pollingIntervalsRef.current.delete(chatId);
       pollCursorsRef.current.delete(chatId);
       pollRunStartRef.current.delete(chatId);
+      pollRunIdRef.current.delete(chatId);
+      pollGenerationRef.current.set(chatId, (pollGenerationRef.current.get(chatId) || 0) + 1);
       catchUpPollersRef.current.delete(chatId);
       notifiedChatIdsRef.current.delete(chatId);
       fetch('/api/agent/stop', {
@@ -2679,18 +2690,17 @@ function DeepWorkUI() {
    * - Does NOT update updatedAt (prevents sidebar reordering chaos)
    * - Debounces localStorage writes (prevents data corruption)
    * - Only updates visible traceLogs for the ACTIVE chat
-   */
+  */
   const startPolling = (chatId: string, initialCursor: number = -1, runStartedAfter?: number) => {
+    // A replacement poller gets its own generation. Any old request that
+    // resolves later becomes a no-op instead of clearing the new run's UI.
+    if (pollingIntervalsRef.current.has(chatId)) {
+      stopPolling(chatId, false);
+    }
+    const pollGeneration = (pollGenerationRef.current.get(chatId) || 0) + 1;
+    pollGenerationRef.current.set(chatId, pollGeneration);
     if (typeof runStartedAfter === 'number') {
       pollRunStartRef.current.set(chatId, runStartedAfter);
-    }
-
-    // Don't start duplicate pollers, but do refresh their cursor/guard and
-    // force an immediate catch-up. This handles reconnects and new sends cleanly.
-    if (pollingIntervalsRef.current.has(chatId)) {
-      pollCursorsRef.current.set(chatId, initialCursor);
-      catchUpPollersRef.current.get(chatId)?.();
-      return;
     }
 
     pollCursorsRef.current.set(chatId, initialCursor);
@@ -2723,6 +2733,7 @@ function DeepWorkUI() {
     };
 
     const scheduleNextPoll = () => {
+      if (pollGenerationRef.current.get(chatId) !== pollGeneration) return;
       // UNIFORM SPEED: All chats get the same full-speed polling.
       // No active/background distinction — every agent is a first-class citizen.
       let delay: number;
@@ -2744,7 +2755,7 @@ function DeepWorkUI() {
     const pollOnce = async () => {
 
       // Safety: if we were stopped while waiting, don't run
-      if (!pollingIntervalsRef.current.has(chatId)) return;
+      if (!pollingIntervalsRef.current.has(chatId) || pollGenerationRef.current.get(chatId) !== pollGeneration) return;
       if (networkPausedRef.current) {
         errorBackoff = 0;
         lastHadData = false;
@@ -2756,8 +2767,18 @@ function DeepWorkUI() {
         const cursor = pollCursorsRef.current.get(chatId) ?? -1;
         const data = await fetchAgentPoll(chatId, cursor);
 
+        // The request may have been replaced while awaiting the response.
+        if (!pollingIntervalsRef.current.has(chatId) || pollGenerationRef.current.get(chatId) !== pollGeneration) return;
+
         // Reset error backoff on successful fetch
         errorBackoff = 0;
+
+        const expectedRunId = pollRunIdRef.current.get(chatId);
+        const serverRunId = typeof data.runId === 'string' ? data.runId : '';
+        if (expectedRunId && serverRunId !== expectedRunId) {
+          if (!handleStartPending()) return;
+          return;
+        }
 
         const expectedRunStart = pollRunStartRef.current.get(chatId) || 0;
         const serverRunStart = typeof data.startedAt === 'number' ? data.startedAt : 0;
@@ -3136,7 +3157,7 @@ function DeepWorkUI() {
       }
 
       // Schedule next poll (only if still active)
-      if (pollingIntervalsRef.current.has(chatId)) {
+      if (pollingIntervalsRef.current.has(chatId) && pollGenerationRef.current.get(chatId) === pollGeneration) {
         // Remove old entry before scheduling (setTimeout returns a new ID)
         pollingIntervalsRef.current.delete(chatId);
         scheduleNextPoll();
@@ -3145,6 +3166,7 @@ function DeepWorkUI() {
 
     // Kick off the first poll AND register for visibility catch-up
     catchUpPollersRef.current.set(chatId, () => {
+      if (pollGenerationRef.current.get(chatId) !== pollGeneration) return;
       const existingTimer = pollingIntervalsRef.current.get(chatId);
       if (existingTimer) {
         clearTimeout(existingTimer);
@@ -3160,15 +3182,19 @@ function DeepWorkUI() {
   /**
    * Stop polling for a specific chat.
    */
-  const stopPolling = (chatId: string) => {
+  const stopPolling = (chatId: string, clearRunIdentity: boolean = true) => {
     const timeoutId = pollingIntervalsRef.current.get(chatId);
     if (timeoutId) {
       clearTimeout(timeoutId);
     }
     pollingIntervalsRef.current.delete(chatId);
     pollCursorsRef.current.delete(chatId);
-    pollRunStartRef.current.delete(chatId);
+    if (clearRunIdentity) {
+      pollRunStartRef.current.delete(chatId);
+      pollRunIdRef.current.delete(chatId);
+    }
     catchUpPollersRef.current.delete(chatId);
+    pollGenerationRef.current.set(chatId, (pollGenerationRef.current.get(chatId) || 0) + 1);
   };
 
   useEffect(() => {
@@ -3777,6 +3803,7 @@ function DeepWorkUI() {
     const currentAttachments = [...attachments];
     const userLogAttachments = currentAttachments.map(serializeComposerAttachment);
     const runStartedAt = Date.now();
+    const clientRunId = crypto.randomUUID();
     const userLog = { type: 'user_action', text: promptText, attachments: userLogAttachments, startTime: runStartedAt, endTime: runStartedAt };
     const historySourceLogs = activeChatId ? stripAgentConnectionLogs(traceLogs) : [];
     setInputValue("");
@@ -3868,7 +3895,12 @@ function DeepWorkUI() {
 
     const isBuilderChat = !!chatIdToUse && chatIdToUse.startsWith('agent_builder_');
     const builderAgentId = isBuilderChat ? chatIdToUse!.replace('agent_builder_', '') : null;
-    const isCustomAgentRun = !!selectedAgent && selectedAgent !== 'coding' && !isBuilderChat;
+    const selectedCustomRuntimeId = selectedAgent && selectedAgent !== 'coding' && !isBuilderChat
+      ? selectedAgent
+      : null;
+    // The legacy runner remains in this file only for a staged migration, but
+    // all live custom-agent and flow runs use the shared AgentRegistry below.
+    const isCustomAgentRun = false;
 
     if (isCustomAgentRun) {
       const controller = new AbortController();
@@ -3918,7 +3950,7 @@ function DeepWorkUI() {
         }, { touchUpdatedAt: true });
       };
 
-      const appendCustomAgentStatus = (text: string) => {
+      const appendCustomAgentStatus = (text: string, agentName = selectedAgentName) => {
         const cleanText = normalizeCustomAgentStatus(text);
         if (!shouldShowCustomAgentStatus(cleanText)) return;
         const at = Date.now();
@@ -3926,7 +3958,7 @@ function DeepWorkUI() {
           id: `custom_status_${ at }_${ Math.random().toString(36).slice(2, 8) }`,
           type: 'thought_stream',
           text: cleanText,
-          subAgent: selectedAgentName,
+          subAgent: agentName,
           startTime: at,
           endTime: at,
           timestamp: at,
@@ -3943,6 +3975,8 @@ function DeepWorkUI() {
         pendingCustomText = '';
         if (noteLog) appendCustomAgentTrace(noteLog);
       };
+
+      const customToolTraceKey = (event: any) => `${ String(event?.agentName || selectedAgentName) }:${ String(event?.toolName || '') }`;
 
       const attachmentContext = mediaAttachments.length > 0
         ? `\n\n[Attached files]\n${ mediaAttachments.map(att => `- ${ att.name }${ att.path ? ` (${ att.path })` : '' }`).join('\n') }`
@@ -3967,9 +4001,18 @@ function DeepWorkUI() {
             agentId: selectedAgent,
             chatId: chatIdToUse,
             messages: runnerMessages,
+            mode: runAgentMode,
             apiKeys: readRuntimeApiKeys(),
             modelOverrides: readRuntimeModelOverrides(),
             runLocation: runLocationVal,
+            pinnedContext: {
+              ...(pinnedItems.length > 0 ? { paths: pinnedItems.map(item => item.path) } : {}),
+              ...(activeWorkspacePath ? {
+                paths: [activeWorkspacePath, ...pinnedItems.map(item => item.path)],
+                workspacePath: activeWorkspacePath,
+                isFocusedWorkspace: true,
+              } : {}),
+            },
           }),
           signal: controller.signal,
         });
@@ -3998,7 +4041,7 @@ function DeepWorkUI() {
           if (event.type === 'text') {
             pendingCustomText += String(event.text || '');
           } else if (event.type === 'status') {
-            appendCustomAgentStatus(String(event.text || ''));
+            appendCustomAgentStatus(String(event.text || ''), String(event.agentName || selectedAgentName));
           } else if (event.type === 'ask_user') {
             const at = Number(event.timestamp || Date.now());
             flushCustomWorkNote();
@@ -4014,8 +4057,8 @@ function DeepWorkUI() {
           } else if (event.type === 'tool_call') {
             const at = Date.now();
             flushCustomWorkNote();
-            const actionLog = createCustomToolActionLog(event, selectedAgentName, at);
-            activeCustomToolLogs.set(String(event.toolName || ''), {
+            const actionLog = createCustomToolActionLog(event, String(event.agentName || selectedAgentName), at);
+            activeCustomToolLogs.set(customToolTraceKey(event), {
               id: actionLog.id,
               toolName: String(event.toolName || ''),
               command: actionLog.command ? String(actionLog.command) : undefined,
@@ -4025,7 +4068,7 @@ function DeepWorkUI() {
             appendCustomAgentTrace(actionLog);
           } else if (event.type === 'tool_result') {
             const at = Date.now();
-            const active = activeCustomToolLogs.get(String(event.toolName || ''));
+            const active = activeCustomToolLogs.get(customToolTraceKey(event));
             if (active) {
               updateCustomAgentTrace(active.id, {
                 endTime: at,
@@ -4033,7 +4076,7 @@ function DeepWorkUI() {
                 toolResult: event.toolResult,
               });
               createCustomToolResultLogs(event, active, at).forEach(appendCustomAgentTrace);
-              activeCustomToolLogs.delete(String(event.toolName || ''));
+              activeCustomToolLogs.delete(customToolTraceKey(event));
             }
           } else if (event.type === 'error') {
             const message = String(event.text || 'Custom agent failed.');
@@ -4113,10 +4156,12 @@ function DeepWorkUI() {
     const controller = new AbortController();
     abortControllerRef.current = controller;
 
-    // Reset cursor for this chat so second/third questions always stream from scratch
+    // Register the new run before contacting the server. Polling starts only
+    // after the start response sets the ownership cookie, avoiding a first-run
+    // poll/start race that could create two different browser sessions.
     pollCursorsRef.current.set(chatIdToUse!, -1);
     pollRunStartRef.current.set(chatIdToUse!, runStartedAt);
-    startPolling(chatIdToUse!, -1, runStartedAt);
+    pollRunIdRef.current.set(chatIdToUse!, clientRunId);
     let serverAccepted = false;
     // Also start SSE stream for faster real-time events (optional enhancement)
     try {
@@ -4135,7 +4180,10 @@ function DeepWorkUI() {
           pinnedContext: hasPinnedContext ? requestPinnedContext : null,
           apiKeys: readRuntimeApiKeys(),
           modelOverrides: readRuntimeModelOverrides(),
-          runLocation: runLocationVal
+          runLocation: runLocationVal,
+          customAgentId: selectedCustomRuntimeId,
+          customAgentName: selectedCustomRuntimeId ? selectedAgentName : null,
+          runId: clientRunId,
         }),
         signal: controller.signal
       });
@@ -4158,6 +4206,7 @@ function DeepWorkUI() {
       }
 
       serverAccepted = true;
+      startPolling(chatIdToUse!, -1, runStartedAt);
 
       if (!response.body) throw new Error("No readable stream");
 
@@ -5004,7 +5053,15 @@ function DeepWorkUI() {
                   </Tooltip>
                 )}
                 {(() => {
-                  if ((activeView === 'agents' && !buildingAgentId) || activeView === 'channels' || activeView === 'projects') return null;
+                  if ((activeView === 'agents' && buildingAgentId) || activeView === 'channels') return null;
+                  if (activeView === 'projects' || (activeView === 'agents' && !buildingAgentId)) {
+                    const headerLabel = activeView === 'projects' ? 'Tasks' : 'Agents';
+                    return (
+                      <div className="relative min-w-0 [-webkit-app-region:no-drag] pl-3.5 py-1">
+                        <span className="text-[20px] font-bold text-white tracking-tight select-none">{headerLabel}</span>
+                      </div>
+                    );
+                  }
                   const activeChat = activeChatId ? chats.find(c => c.id === activeChatId) : null;
                   const titleText = activeChat ? activeChat.title : DEFAULT_CHAT_TITLE;
 
@@ -5013,12 +5070,125 @@ function DeepWorkUI() {
                       <div
                         data-open={headerMenuOpen ? 'true' : 'false'}
                         onClick={() => {
-                          setHeaderMenuOpen(!headerMenuOpen);
+                          if (!isEditingChatTitle) {
+                            setHeaderMenuOpen(!headerMenuOpen);
+                          }
                         }}
-                        className="eterx-thread-tab group flex min-w-0 cursor-pointer items-center gap-2.5 px-3 py-1.5 text-[14px] font-medium transition-all duration-200"
+                        className={`eterx-thread-tab flex min-w-0 items-center gap-1.5 pl-3.5 pr-1 py-1 text-[13px] font-medium transition-all duration-200 ${ isEditingChatTitle ? 'cursor-default' : 'cursor-pointer' }`}
                       >
-                        <span className="truncate max-w-[400px]">{titleText}</span>
-                        <ChevronDown className={`w-4 h-4 text-[#555350] shrink-0 transition-transform duration-200 ${ headerMenuOpen ? 'rotate-180' : '' }`} />
+                        {isEditingChatTitle ? (
+                          <input
+                            type="text"
+                            autoFocus
+                            value={editingTitleText}
+                            onClick={(e) => e.stopPropagation()}
+                            onChange={(e) => setEditingTitleText(e.target.value)}
+                            onFocus={(e) => e.target.select()}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                if (editingTitleText.trim() && activeChatId) {
+                                  renameChat(activeChatId, editingTitleText.trim());
+                                }
+                                setIsEditingChatTitle(false);
+                              } else if (e.key === 'Escape') {
+                                setIsEditingChatTitle(false);
+                              }
+                            }}
+                            onBlur={() => {
+                              if (editingTitleText.trim() && activeChatId) {
+                                renameChat(activeChatId, editingTitleText.trim());
+                              }
+                              setIsEditingChatTitle(false);
+                            }}
+                            className="bg-transparent border-none outline-none text-[#E8E6E3] text-[13px] font-medium min-w-[120px] max-w-[400px] py-0 px-0"
+                          />
+                        ) : (
+                          <span className="truncate max-w-[400px] select-none text-[#E8E6E3]">{titleText}</span>
+                        )}
+                        <div
+                          className="relative flex items-center justify-center w-[24px] h-[24px]"
+                        >
+                          <div
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (!isEditingChatTitle) {
+                                setChatActionMenuOpen(!chatActionMenuOpen);
+                              }
+                            }}
+                            className="w-[24px] h-[24px] flex items-center justify-center rounded-full hover:bg-white/10 active:bg-white/15 text-[#555350] hover:text-white transition-all duration-150"
+                          >
+                            <ChevronDown className={`w-3.5 h-3.5 shrink-0 transition-transform duration-200 ${ chatActionMenuOpen ? 'rotate-180 text-white' : '' }`} strokeWidth={1.6} />
+                          </div>
+                          
+                          <AnimatePresence>
+                            {chatActionMenuOpen && (
+                              <>
+                                <div className="fixed inset-0 z-40 cursor-default" onClick={(e) => { e.stopPropagation(); setChatActionMenuOpen(false); }}></div>
+                                <motion.div
+                                  initial={{ opacity: 0, y: -5, scale: 0.98 }}
+                                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                                  exit={{ opacity: 0, y: -5, scale: 0.98 }}
+                                  transition={{ duration: 0.15, ease: "easeOut" }}
+                                  onClick={(e) => e.stopPropagation()}
+                                  className="absolute right-0 top-[calc(100%+8px)] w-[180px] z-50 bg-[#1E1E1E]/95 backdrop-blur-xl border border-white/[0.08] rounded-xl shadow-[0_12px_36px_rgba(0,0,0,0.5)] p-1.5 flex flex-col gap-0.5"
+                                >
+                                  <button
+                                    onClick={() => {
+                                      setChatActionMenuOpen(false);
+                                      if (activeChatId) toggleFavorite(activeChatId);
+                                    }}
+                                    className="flex items-center text-left px-2.5 py-1.5 text-[12px] font-normal text-[#E8E6E3] hover:bg-white/[0.05] rounded-md transition-colors"
+                                  >
+                                    {activeChat?.isFavorite ? (
+                                      <>
+                                        <PinOff className="w-3.5 h-3.5 mr-2.5 shrink-0 text-[#A3A19E]" strokeWidth={1.5} />
+                                        <span>Unpin task</span>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <Pin className="w-3.5 h-3.5 mr-2.5 shrink-0 text-[#A3A19E]" strokeWidth={1.5} />
+                                        <span>Pin task</span>
+                                      </>
+                                    )}
+                                  </button>
+                                  <button
+                                    onClick={() => {
+                                      setChatActionMenuOpen(false);
+                                      if (activeChatId) {
+                                        setEditingTitleText(titleText);
+                                        setIsEditingChatTitle(true);
+                                      }
+                                    }}
+                                    className="flex items-center text-left px-2.5 py-1.5 text-[12px] font-normal text-[#E8E6E3] hover:bg-white/[0.05] rounded-md transition-colors"
+                                  >
+                                    <Pencil className="w-3.5 h-3.5 mr-2.5 shrink-0 text-[#A3A19E]" strokeWidth={1.5} />
+                                    <span>Rename task</span>
+                                  </button>
+                                  
+                                  <div className="my-1 h-px bg-white/[0.06]" />
+
+                                  <button
+                                    onClick={() => setChatActionMenuOpen(false)}
+                                    className="flex items-center text-left px-2.5 py-1.5 text-[12px] font-normal text-[#E8E6E3] hover:bg-white/[0.05] rounded-md transition-colors"
+                                  >
+                                    <Calendar className="w-3.5 h-3.5 mr-2.5 shrink-0 text-[#A3A19E]" strokeWidth={1.5} />
+                                    <span>Schedule task...</span>
+                                  </button>
+                                  
+                                  <div className="my-1 h-px bg-white/[0.06]" />
+
+                                  <button
+                                    onClick={() => setChatActionMenuOpen(false)}
+                                    className="flex items-center text-left px-2.5 py-1.5 text-[12px] font-normal text-[#E8E6E3] hover:bg-white/[0.05] rounded-md transition-colors"
+                                  >
+                                    <ExternalLink className="w-3.5 h-3.5 mr-2.5 shrink-0 text-[#A3A19E]" strokeWidth={1.5} />
+                                    <span>Open in new window</span>
+                                  </button>
+                                </motion.div>
+                              </>
+                            )}
+                          </AnimatePresence>
+                        </div>
                       </div>
                       <AnimatePresence>
                         {headerMenuOpen && (
@@ -5029,15 +5199,17 @@ function DeepWorkUI() {
                               animate={{ opacity: 1, y: 0, scale: 1 }}
                               exit={{ opacity: 0, y: -5, scale: 0.98 }}
                               transition={{ duration: 0.15, ease: "easeOut" }}
-                              className="absolute left-0 top-[calc(100%+8px)] w-[300px] z-50 bg-[#1A1A1A]/95 backdrop-blur-xl border border-white/10 rounded-xl shadow-[0_8px_30px_rgba(0,0,0,0.4)] p-2 flex flex-col max-h-[400px]"
+                              onClick={(e) => e.stopPropagation()}
+                              className="absolute left-0 top-[calc(100%+8px)] w-[300px] z-50 bg-[#1E1E1E]/95 backdrop-blur-xl border border-white/[0.08] rounded-xl shadow-[0_12px_36px_rgba(0,0,0,0.5)] p-1.5 flex flex-col max-h-[400px]"
                             >
-                              <div className="flex items-center justify-between px-2 mb-2 mt-1 h-6">
+                              <div className="flex items-center justify-between px-2.5 mb-2 mt-1 h-6">
                                 {!headerSearchOpen ? (
                                   <>
-                                    <div className="text-[11px] font-semibold text-[#555350] uppercase tracking-wider">Threads</div>
+                                    <div className="text-[11.5px] font-semibold text-white/50">Threads</div>
                                     <Search
-                                      className="w-3.5 h-3.5 text-[#555350] hover:text-[#E8E6E3] cursor-pointer transition-colors"
+                                      className="w-3.5 h-3.5 text-white/40 hover:text-[#E8E6E3] cursor-pointer transition-colors"
                                       onClick={(e) => { e.stopPropagation(); setHeaderSearchOpen(true); }}
+                                      strokeWidth={1.6}
                                     />
                                   </>
                                 ) : (
@@ -5047,18 +5219,19 @@ function DeepWorkUI() {
                                     className="flex items-center gap-2 w-full bg-white/5 rounded-md px-2 py-1 h-full"
                                     onClick={(e) => e.stopPropagation()}
                                   >
-                                    <Search className="w-3 h-3 text-[#A3A19E]" />
+                                    <Search className="w-3 h-3 text-[#A3A19E]" strokeWidth={1.6} />
                                     <input
                                       type="text"
                                       autoFocus
                                       placeholder="Search threads..."
                                       value={headerSearchQuery}
                                       onChange={(e) => setHeaderSearchQuery(e.target.value)}
-                                      className="bg-transparent border-none outline-none text-[12px] text-[#E8E6E3] placeholder:text-[#555350] w-full"
+                                      className="bg-transparent border-none outline-none text-[12px] text-[#E8E6E3] placeholder:text-white/20 w-full font-normal"
                                     />
                                     <X
-                                      className="w-3 h-3 text-[#555350] hover:text-[#E8E6E3] cursor-pointer"
+                                      className="w-3 h-3 text-white/40 hover:text-[#E8E6E3] cursor-pointer"
                                       onClick={(e) => { e.stopPropagation(); setHeaderSearchOpen(false); setHeaderSearchQuery(""); }}
+                                      strokeWidth={1.6}
                                     />
                                   </motion.div>
                                 )}
@@ -5071,7 +5244,7 @@ function DeepWorkUI() {
                                   );
 
                                   if (filteredChats.length === 0) {
-                                    return <div className="px-2 py-2 text-[13px] text-[#555350] italic">No threads found</div>;
+                                    return <div className="px-2.5 py-2 text-[12px] text-white/30 italic">No threads found</div>;
                                   }
 
                                   return filteredChats.map(chat => (
@@ -5081,9 +5254,10 @@ function DeepWorkUI() {
                                         loadChat(chat.id);
                                         setHeaderMenuOpen(false);
                                       }}
-                                      className={`w-full text-left px-3 py-2 text-[13px] rounded-lg truncate transition-all duration-150 flex items-center group cursor-pointer border border-transparent active:scale-[0.98] ${ activeChatId === chat.id ? 'bg-white/10 text-white font-medium shadow-sm' : 'text-[#A3A19E] hover:bg-white/5 active:bg-white/10 hover:text-[#E8E6E3]' }`}
+                                      className={`w-full text-left px-2.5 py-1.5 text-[12px] rounded-md truncate transition-all duration-150 flex items-center group cursor-pointer border border-transparent active:scale-[0.98] ${ activeChatId === chat.id ? 'bg-white/[0.08] text-white font-medium shadow-sm' : 'text-[#A3A19E] hover:bg-white/[0.05] active:bg-white/10 hover:text-[#E8E6E3]' }`}
                                     >
-                                      {chat.title}
+                                      <MessageSquare className="w-3.5 h-3.5 mr-2.5 shrink-0 text-white/40 group-hover:text-white/60 transition-colors" strokeWidth={1.5} />
+                                      <span className="truncate font-normal">{chat.title}</span>
                                     </div>
                                   ));
                                 })()}
@@ -5822,7 +5996,10 @@ function DeepWorkUI() {
               ) : activeView === 'channels' ? (
                 <AgentChannelsView />
               ) : activeView === 'projects' ? (
-                <ProjectsView />
+                <ProjectsView
+                  selectedSection={selectedProjectSection}
+                  setSelectedSection={setSelectedProjectSection}
+                />
               ) : (
                 <>
                   {/* Chat Container */}

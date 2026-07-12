@@ -138,20 +138,23 @@ export const taskDecomposerTool: ToolDefinition = {
 
       // 3. Persist plan to session for cross-message continuity
       try {
-        globalSessionManager.setTaskPlan(
-          steps.map((s: any) => ({
-            name: s.name,
-            status: 'pending' as const,
-            description: [
-              s.description,
-              s.expected_output ? `Expected: ${ s.expected_output }` : '',
-              s.done_when ? `Done when: ${ s.done_when }` : '',
-              Array.isArray(s.tools) && s.tools.length ? `Tools: ${ s.tools.join(', ') }` : '',
-            ].filter(Boolean).join(' | ')
-          }))
-        );
-        globalSessionManager.addAction(`Decomposed task into ${ steps.length } steps: ${ steps.map((s: any) => s.name).join(', ') }`);
-        globalSessionManager.save().catch(() => { });
+        if (chatId) {
+          globalSessionManager.setTaskPlanForChat(
+            chatId,
+            steps.map((s: any) => ({
+              name: s.name,
+              status: 'pending' as const,
+              description: [
+                s.description,
+                s.expected_output ? `Expected: ${ s.expected_output }` : '',
+                s.done_when ? `Done when: ${ s.done_when }` : '',
+                Array.isArray(s.tools) && s.tools.length ? `Tools: ${ s.tools.join(', ') }` : '',
+              ].filter(Boolean).join(' | ')
+            }))
+          );
+          globalSessionManager.addActionForChat(chatId, `Decomposed task into ${ steps.length } steps: ${ steps.map((s: any) => s.name).join(', ') }`);
+          await globalSessionManager.saveForChat(chatId);
+        }
       } catch { /* silent */ }
 
       // Collect unique tools used across all steps

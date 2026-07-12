@@ -33,8 +33,11 @@ export const contextManagerTool: ToolDefinition = {
     key: z.string().optional().describe('Key for facts')
   }),
   outputSchema: z.object({ success: z.boolean(), message: z.string(), data: z.any().optional() }),
-  execute: async (input: any) => {
-    const sid = input.sessionId || 'default';
+  execute: async (input: any, runtimeContext?: any) => {
+    // The executing chat owns this context. A model-provided sessionId must
+    // never be able to redirect state into another running chat.
+    const runtimeChatId = String(runtimeContext?.projectId || runtimeContext?.chatId || runtimeContext?.taskId || '').trim();
+    const sid = runtimeChatId || String(input.sessionId || 'default').trim() || 'default';
 
     if (!contextBuckets.has(sid)) {
       contextBuckets.set(sid, { summary: '', keyFacts: [], recentActions: [], errors: [], updatedAt: Date.now() });
@@ -48,11 +51,17 @@ export const contextManagerTool: ToolDefinition = {
           ctx.summary = input.content.substring(0, 2000);
           ctx.updatedAt = Date.now();
           globalMemoryManager.saveEpisodicMemory(sid, `Context saved: ${input.content.substring(0, 200)}`, 'conversation_summary', 7, ['context']);
-          globalSessionManager.addAction(`Context saved: ${input.content.substring(0, 80)}`);
+          if (runtimeChatId) {
+            globalSessionManager.addActionForChat(runtimeChatId, `Context saved: ${input.content.substring(0, 80)}`);
+          } else {
+            globalSessionManager.addAction(`Context saved: ${input.content.substring(0, 80)}`);
+          }
           return { success: true, message: `Context saved (${input.content.length} chars)` };
         }
         case 'get_context': {
-          const sessionSummary = globalSessionManager.getSessionSummary();
+          const sessionSummary = runtimeChatId
+            ? globalSessionManager.getSessionSummaryForChat(runtimeChatId)
+            : globalSessionManager.getSessionSummary();
           return {
             success: true,
             message: 'Current context (local + session)',
@@ -78,7 +87,11 @@ export const contextManagerTool: ToolDefinition = {
           ctx.recentActions.push(`[${new Date().toISOString()}] ${input.content}`);
           if (ctx.recentActions.length > 30) ctx.recentActions.shift();
           ctx.updatedAt = Date.now();
-          globalSessionManager.addAction(input.content);
+          if (runtimeChatId) {
+            globalSessionManager.addActionForChat(runtimeChatId, input.content);
+          } else {
+            globalSessionManager.addAction(input.content);
+          }
           return { success: true, message: `Action logged (${ctx.recentActions.length} total)` };
         }
         case 'add_error': {

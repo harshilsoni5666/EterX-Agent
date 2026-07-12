@@ -126,25 +126,38 @@ export const workspaceReadTool: ToolDefinition = {
       const rangedLines = lines.slice(start - 1, end);
       const outputLines = rangedLines.slice(0, maxLines);
       
-      const numberedContent = outputLines
-        .map((line: string, idx: number) => `${start + idx}| ${line}`)
-        .join('\n');
-        
-      const truncated = rangedLines.length > maxLines;
-      let content = numberedContent;
-      if (truncated) {
-        content += `\n\n...[TRUNCATED at ${maxLines} lines. File has ${lines.length} total lines. Showing lines ${start}-${start + maxLines - 1}. Use startLine/endLine for specific ranges.]...`;
+      const MAX_CHAR_LIMIT = 150000;
+      let content = '';
+      let lastLineShown = start - 1;
+      let charTruncated = false;
+
+      for (let i = 0; i < outputLines.length; i++) {
+        const lineText = `${start + i}| ${outputLines[i]}\n`;
+        if (content.length + lineText.length > MAX_CHAR_LIMIT) {
+          charTruncated = true;
+          break;
+        }
+        content += lineText;
+        lastLineShown = start + i;
       }
-      const fileInfo = `[File: ${path.basename(filePath)} | ${lines.length} lines | ${(stats.size / 1024).toFixed(1)}KB | Showing lines ${start}-${start + outputLines.length - 1}]`;
+
+      const truncated = (rangedLines.length > maxLines) || charTruncated;
+      if (charTruncated) {
+        content += `\n\n⚠️ ...[TRUNCATED: Content exceeded maximum safety threshold of ${MAX_CHAR_LIMIT} characters to prevent API payload errors. To read the next section of this file, call workspace_read_file with startLine: ${lastLineShown + 1} and endLine: ${end}]...`;
+      } else if (rangedLines.length > maxLines) {
+        content += `\n\n...[TRUNCATED at ${maxLines} lines. File has ${lines.length} total lines. Showing lines ${start}-${start + maxLines - 1}. To read the next section of this file, call workspace_read_file with startLine: ${start + maxLines} and endLine: ${end}]...`;
+      }
+
+      const fileInfo = `[File: ${path.basename(filePath)} | ${lines.length} lines | ${(stats.size / 1024).toFixed(1)}KB | Showing lines ${start}-${lastLineShown}]`;
       
       return {
         content: `${fileInfo}\n${content}`,
         size: stats.size,
         path: filePath,
         totalLines: lines.length,
-        linesShown: outputLines.length,
+        linesShown: lastLineShown - start + 1,
         startLine: start,
-        endLine: start + outputLines.length - 1,
+        endLine: lastLineShown,
       };
     }
 
@@ -162,30 +175,41 @@ export const workspaceReadTool: ToolDefinition = {
     const ranged = await readFileRange(filePath, start, input.endLine, maxLines);
     const outputLines = ranged.lines;
     const totalLines = ranged.totalLines;
-    const truncated = outputLines.length >= maxLines && (!input.endLine || ranged.end < input.endLine);
+    const endLineTarget = input.endLine ?? totalLines;
 
-    const numberedContent = outputLines
-      .map((line, idx) => `${ranged.start + idx}| ${line}`)
-      .join('\n');
+    const MAX_CHAR_LIMIT = 150000;
+    let content = '';
+    let lastLineShown = start - 1;
+    let charTruncated = false;
 
-    let content = numberedContent;
+    for (let i = 0; i < outputLines.length; i++) {
+      const lineText = `${start + i}| ${outputLines[i]}\n`;
+      if (content.length + lineText.length > MAX_CHAR_LIMIT) {
+        charTruncated = true;
+        break;
+      }
+      content += lineText;
+      lastLineShown = start + i;
+    }
 
-    // Truncation notice
-    if (truncated) {
-      content += `\n\n...[TRUNCATED at ${maxLines} lines. File has ${totalLines} total lines. Showing lines ${start}-${start + maxLines - 1}. Use startLine/endLine for specific ranges.]...`;
+    const truncated = (outputLines.length >= maxLines && (!input.endLine || ranged.end < input.endLine)) || charTruncated;
+    if (charTruncated) {
+      content += `\n\n⚠️ ...[TRUNCATED: Content exceeded maximum safety threshold of ${MAX_CHAR_LIMIT} characters to prevent API payload errors. To read the next section of this file, call workspace_read_file with startLine: ${lastLineShown + 1} and endLine: ${endLineTarget}]...`;
+    } else if (truncated) {
+      content += `\n\n...[TRUNCATED at ${maxLines} lines. File has ${totalLines} total lines. Showing lines ${start}-${start + maxLines - 1}. To read the next section of this file, call workspace_read_file with startLine: ${start + maxLines} and endLine: ${endLineTarget}]...`;
     }
 
     // Overall file info
-    const fileInfo = `[File: ${path.basename(filePath)} | ${totalLines} lines | ${(stats.size / 1024).toFixed(1)}KB | Showing lines ${ranged.start}-${ranged.end}]`;
+    const fileInfo = `[File: ${path.basename(filePath)} | ${totalLines} lines | ${(stats.size / 1024).toFixed(1)}KB | Showing lines ${start}-${lastLineShown}]`;
 
     return {
       content: `${fileInfo}\n${content}`,
       size: stats.size,
       path: filePath,
       totalLines,
-      linesShown: outputLines.length,
-      startLine: ranged.start,
-      endLine: ranged.end,
+      linesShown: lastLineShown - start + 1,
+      startLine: start,
+      endLine: lastLineShown,
     };
   }
 };
@@ -327,7 +351,17 @@ export const workspaceListDirectoryTool: ToolDefinition = {
     directory: z.string().optional().describe('Directory path — absolute (C:\\Users\\...\\Desktop) or relative. Default: workspace root'),
     depth: z.number().optional().describe('Maximum depth for recursive listing (default: 1 = current dir only, 2 = one level deep)')
   }),
-  outputSchema: z.object({ files: z.array(z.string()), tree: z.string() }),
+  outputSchema: z.object({
+    files: z.array(z.string()),
+    tree: z.string(),
+    entries: z.array(z.object({
+      name: z.string(),
+      isDir: z.boolean(),
+      size: z.number().optional()
+    })).optional(),
+    path: z.string().optional(),
+    count: z.number().optional()
+  }),
   execute: async (input: { directory?: string; depth?: number }, context?: any) => {
     const walkDir = resolveWorkspaceDirectoryForContext(input.directory, context);
 
@@ -353,7 +387,27 @@ export const workspaceListDirectoryTool: ToolDefinition = {
       items.push(`... [Truncated ${ entries.length - 500 } additional items. Use shell_command with "Get-ChildItem" for full listing]`);
     }
 
-    return { files: entries.map(e => e.name).slice(0, 500), tree: items.join('\n'), path: walkDir, count: entries.length };
+    const entriesInfo = await Promise.all(entries.slice(0, 500).map(async e => {
+      const isDir = e.isDirectory();
+      let size: number | undefined = undefined;
+      if (!isDir) {
+        try {
+          const stats = await fs.stat(path.join(walkDir, e.name));
+          size = stats.size;
+        } catch {
+          // ignore stats errors safely
+        }
+      }
+      return { name: e.name, isDir, size };
+    }));
+
+    return {
+      files: entries.map(e => e.name).slice(0, 500),
+      tree: items.join('\n'),
+      entries: entriesInfo,
+      path: walkDir,
+      count: entries.length
+    };
   }
 };
 

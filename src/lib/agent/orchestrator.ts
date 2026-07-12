@@ -18,7 +18,8 @@ import {
 } from './model-routing';
 import type { ScopedRuntimeSettings } from './runtime-api-keys';
 import { DEFAULT_MAIN_AGENT_ALLOWED_CAPABILITIES } from './tools/security/tool_policy';
-import { CUSTOM_AGENT_RUNTIME, loadCustomAgentProfile } from './builder-agent';
+import { AGENT_FLOW_RUNTIME, CUSTOM_AGENT_RUNTIME, loadCustomAgentProfile } from './builder-agent';
+import { agentBuilderRunFlowTool } from './tools/automation/agent_builder';
 
 /**
  * The Enhanced Orchestrator v2
@@ -524,7 +525,35 @@ export class AgentOrchestrator {
       // PHASE 1: PRIMARY EXECUTION (using isolated or global client)
       // Smart model routing applies the effective mode
       // ═══════════════════════════════════════════════════════
-      if (modelConfig.provider !== 'gemini') {
+      if (context.agentRuntime === AGENT_FLOW_RUNTIME && pinnedContext?.flowId) {
+        const flowTrace = (trace: any) => {
+          const subAgent = trace?.agentName || pinnedContext?.flowName || 'Workflow';
+          if (trace?.type === 'status' || trace?.type === 'progress') {
+            onTrace?.({
+              type: 'work_note',
+              text: trace.text || 'Workflow is running',
+              subAgent,
+              noteId: `flow_${pinnedContext.flowId}_${Date.now()}`,
+              isDelta: false,
+              isStreaming: false,
+              timestamp: Date.now(),
+            });
+            return;
+          }
+          onTrace?.({ ...trace, subAgent });
+        };
+        const flowResult = await agentBuilderRunFlowTool.execute(
+          { flowId: String(pinnedContext.flowId), input: userRequest },
+          {
+            ...context,
+            runtimeSettings,
+            executionApiKey: leasedApiKey || '',
+            _onTrace: flowTrace,
+          },
+        );
+        if (!flowResult.success) throw new Error(flowResult.message || 'Workflow execution failed.');
+        finalAnswer = flowResult.finalOutput || 'Workflow completed without a text response.';
+      } else if (modelConfig.provider !== 'gemini') {
         const routedClient = createIsolatedClient(projectId, effectiveMode, runtimeSettings);
         finalAnswer = (await routedClient.executeMessageLoop(
           context,

@@ -1,46 +1,61 @@
 /* Enterprise light-theme refinements. Keep this after light-theme.generated.css. */
 
 :root[data-theme="light"] {
-  --background: #F5F6F8;
-  --foreground: #252A31;
-  --muted: #EEF1F4;
-  --muted-foreground: #66707D;
-  --border: rgba(36, 49, 66, 0.12);
-  --primary: #263241;
+  --background: #FFFFFF;
+  --foreground: #1F1F1D;
+  --muted: #F4F4F3;
+  --muted-foreground: #77736C;
+  --border: rgba(31, 31, 29, 0.08);
+  --primary: #1F1F1D;
   --primary-foreground: #FFFFFF;
-  --secondary: #E9EDF2;
-  --secondary-foreground: #27313F;
-  --accent: #2F6FED;
+  --secondary: #ECECE9;
+  --secondary-foreground: #1F1F1D;
+  --accent: #516B8A;
   --accent-foreground: #FFFFFF;
   --input-bg: #FFFFFF;
-  --sidebar-bg: #FFFFFF;
-  --sidebar-active-bg: linear-gradient(180deg, #F1F4F7 0%, #EAF0F5 100%);
-  --sidebar-active-border: rgba(44, 58, 75, 0.11);
-  --sidebar-active-text: #27313F;
-  --sidebar-active-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.92);
-  --sidebar-active-fade: rgba(241, 244, 247, 0.96);
-  --sidebar-hover-bg: #F4F6F8;
-  --sidebar-hover-border: rgba(44, 58, 75, 0.08);
-  --sidebar-hover-text: #27313F;
-  --eterx-main-panel-border: rgba(44, 58, 75, 0.13);
-  --info: #2F6FED;
-  --success: #047857;
+  --sidebar-bg: #F7F7F5;
+  --sidebar-active-bg: #EBEBE8;
+  --sidebar-active-border: rgba(31, 31, 29, 0.06);
+  --sidebar-active-text: #1F1F1D;
+  --sidebar-active-shadow: none;
+  --sidebar-active-fade: #EBEBE8;
+  --sidebar-hover-bg: #F2F2EF;
+  --sidebar-hover-border: rgba(31, 31, 29, 0.04);
+  --sidebar-hover-text: #1F1F1D;
+  --eterx-main-panel-border: rgba(31, 31, 29, 0.10);
+  --info: #516B8A;
+  --success: #15803D;
   --destructive: #C93333;
-  --sb-thumb: rgba(58, 72, 91, 0.35);
-  --sb-thumb-hover: rgba(58, 72, 91, 0.55);
-  --sb-thumb-active: rgba(58, 72, 91, 0.75);
+  --sb-thumb: rgba(31, 31, 29, 0.15);
+  --sb-thumb-hover: rgba(31, 31, 29, 0.28);
+  --sb-thumb-active: rgba(31, 31, 29, 0.42);
+
+  /* Terminal ANSI Colors for high-contrast light theme display */
+  --terminal-red: #C93333;
+  --terminal-green: #15803D;
+  --terminal-yellow: #B45309;
+  --terminal-blue: #1D4ED8;
+  --terminal-magenta: #7E22CE;
+  --terminal-cyan: #0F766E;
+  --terminal-white: #1F1F1D;
+  --terminal-gray: #6B7280;
+  --terminal-light-red: #DC2626;
+  --terminal-light-green: #16A34A;
+  --terminal-light-yellow: #D97706;
+  --terminal-light-blue: #2563EB;
+  --terminal-light-magenta: #9333EA;
+  --terminal-light-cyan: #0D9488;
 }
 
 :root[data-theme="light"] body,
 :root[data-theme="light"] .eterx-app-shell {
-  background:
-    linear-gradient(180deg, #F8F9FB 0%, #F4F6F8 58%, #F6F7F9 100%);
-  color: #252A31;
+  background: #F4F4F2;
+  color: #1F1F1D;
   font-weight: 400;
 }
 
 :root[data-theme="light"] .eterx-chat-top-fade {
-  background: linear-gradient(180deg, #F8F9FB 0%, rgba(248, 249, 251, 0.72) 42%, transparent 100%) !important;
+  background: linear-gradient(180deg, #FFFFFF 0%, rgba(255, 255, 255, 0.72) 42%, transparent 100%) !important;
 }
 
 :root[data-theme="dark"] .eterx-chat-top-fade {
@@ -49,7 +64,7 @@
 
 :root[data-theme="light"] .eterx-chat-input-dock-active {
   background:
-    linear-gradient(180deg, rgba(248, 249, 251, 0) 0%, rgba(248, 249, 251, 0.86) 34%, #F8F9FB 100%) !important;
+    linear-gradient(180deg, rgba(255, 255, 255, 0) 0%, rgba(255, 255, 255, 0.86) 34%, #FFFFFF 100%) !important;
 }
 
 :root[data-theme="dark"] .eterx-chat-input-dock-active {
@@ -59,7 +74,7 @@
 
 :root[data-theme="light"] .eterx-sidebar-shell {
   background: var(--sidebar-bg) !important;
-  border-right-color: transparent !important;
+  border-right-color: rgba(31, 31, 29, 0.08) !important;
   box-shadow: none !important;
 }
 
@@ -68,57 +83,57 @@
 }
 
 :root[data-theme="light"] .eterx-sidebar-brand span {
-  color: #2B3138 !important;
+  color: #1F1F1D !important;
   font-weight: 500;
 }
 
 :root[data-theme="light"] .eterx-sidebar-recents {
-  background: #FBFCFD !important;
-  border-color: rgba(40, 52, 68, 0.08) !important;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.96) !important;
+  background: transparent !important;
+  border-color: rgba(31, 31, 29, 0.06) !important;
+  box-shadow: none !important;
 }
 
 :root[data-theme="light"] .eterx-sidebar-profile {
-  background: #FFFFFF !important;
-  border-top-color: rgba(40, 52, 68, 0.08) !important;
+  background: var(--sidebar-bg) !important;
+  border-top-color: rgba(31, 31, 29, 0.08) !important;
 }
 
 :root[data-theme="light"] .eterx-sidebar-profile-card {
-  background: #F9FAFB !important;
-  border-color: rgba(40, 52, 68, 0.09) !important;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.96) !important;
+  background: #ECECE9 !important;
+  border-color: rgba(31, 31, 29, 0.06) !important;
+  box-shadow: none !important;
 }
 
 :root[data-theme="light"] .eterx-sidebar-settings-button {
-  background: #ECEFF2 !important;
-  border-color: rgba(40, 52, 68, 0.08) !important;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.92) !important;
-  color: #25313F !important;
+  background: #E5E5E2 !important;
+  border-color: rgba(31, 31, 29, 0.06) !important;
+  box-shadow: none !important;
+  color: #1F1F1D !important;
   transform: none !important;
 }
 
 :root[data-theme="light"] .eterx-sidebar-settings-button:hover,
 :root[data-theme="light"] .eterx-sidebar-settings-button:active {
-  background: #E4E8EC !important;
-  border-color: rgba(40, 52, 68, 0.11) !important;
-  color: #1F2935 !important;
+  background: #DCDCDA !important;
+  border-color: rgba(31, 31, 29, 0.08) !important;
+  color: #1F1F1D !important;
   transform: none !important;
 }
 
 :root[data-theme="light"] .eterx-sidebar-profile-avatar,
 :root[data-theme="light"] .eterx-sidebar-avatar {
-  background: linear-gradient(135deg, #FFFFFF 0%, #EEF2F6 100%) !important;
-  color: #263241 !important;
-  border-color: rgba(40, 52, 68, 0.11) !important;
-  box-shadow: 0 8px 18px rgba(31, 42, 56, 0.07), inset 0 1px 0 rgba(255, 255, 255, 0.96) !important;
+  background: linear-gradient(135deg, #FFFFFF 0%, #EBEBE9 100%) !important;
+  color: #1F1F1D !important;
+  border-color: rgba(31, 31, 29, 0.10) !important;
+  box-shadow: 0 4px 12px rgba(31, 31, 29, 0.04), inset 0 1px 0 rgba(255, 255, 255, 0.96) !important;
 }
 
 :root[data-theme="light"] .eterx-sidebar-profile-name {
-  color: #263241 !important;
+  color: #1F1F1D !important;
 }
 
 :root[data-theme="light"] .eterx-sidebar-profile-meta {
-  color: #6C7785 !important;
+  color: #77736C !important;
 }
 
 :root[data-theme="light"] .eterx-sidebar-profile-status {
@@ -128,7 +143,7 @@
 
 :root[data-theme="light"] .eterx-sidebar-profile-action,
 :root[data-theme="light"] .eterx-sidebar-profile-icon-button {
-  color: #6C7785 !important;
+  color: #77736C !important;
 }
 
 :root[data-theme="dark"] .eterx-sidebar-shell {
@@ -213,48 +228,52 @@
 }
 
 :root[data-theme="light"] .eterx-composer-surface {
-  background: rgba(255, 255, 255, 0.96) !important;
-  border-color: rgba(54, 73, 96, 0.13) !important;
+  background: rgba(255, 255, 255, 0.98) !important;
+  border-color: rgba(31, 31, 29, 0.12) !important;
   box-shadow:
-    0 20px 54px rgba(32, 44, 61, 0.10),
-    0 1px 2px rgba(32, 44, 61, 0.08),
+    0 12px 36px rgba(31, 31, 29, 0.06),
+    0 1px 2px rgba(31, 31, 29, 0.04),
     inset 0 1px 0 rgba(255, 255, 255, 0.84) !important;
-  -webkit-backdrop-filter: blur(18px) saturate(1.05) !important;
-  backdrop-filter: blur(18px) saturate(1.05) !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+
+:root[data-theme="light"] .ambient-glow-layer {
+  display: none !important;
 }
 
 :root[data-theme="light"] .eterx-composer-textarea {
-  color: #2B3138 !important;
+  color: #1F1F1D !important;
   font-weight: 400 !important;
 }
 
 :root[data-theme="light"] .eterx-composer-textarea::placeholder {
-  color: #8B95A3 !important;
+  color: #8A857D !important;
 }
 
 :root[data-theme="light"] .eterx-control-button,
 :root[data-theme="light"] .eterx-agent-button,
 :root[data-theme="light"] .eterx-model-button {
-  background: #F3F6FA !important;
-  border-color: rgba(54, 73, 96, 0.13) !important;
-  color: #2F3A48 !important;
+  background: #F4F4F3 !important;
+  border-color: rgba(31, 31, 29, 0.08) !important;
+  color: #1F1F1D !important;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.70) !important;
 }
 
 :root[data-theme="light"] .eterx-control-button:hover,
 :root[data-theme="light"] .eterx-agent-button:hover,
 :root[data-theme="light"] .eterx-model-button:hover {
-  background: #EAF0F7 !important;
-  border-color: rgba(47, 111, 237, 0.22) !important;
-  color: #1F2A38 !important;
+  background: #EBEBE9 !important;
+  border-color: rgba(31, 31, 29, 0.12) !important;
+  color: #1F1F1D !important;
 }
 
 :root[data-theme="light"] .eterx-composer-send-button,
 :root[data-theme="light"] .eterx-composer-stop-button {
-  background: #263241 !important;
+  background: #1F1F1D !important;
   color: #FFFFFF !important;
-  border-color: rgba(38, 50, 65, 0.20) !important;
-  box-shadow: 0 10px 24px rgba(38, 50, 65, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.18) !important;
+  border-color: rgba(31, 31, 29, 0.10) !important;
+  box-shadow: 0 4px 12px rgba(31, 31, 29, 0.10), inset 0 1px 0 rgba(255, 255, 255, 0.18) !important;
 }
 
 :root[data-theme="light"] .eterx-composer-send-button svg {
@@ -268,41 +287,49 @@
 }
 
 :root[data-theme="light"] .eterx-chat-feed-user-bubble {
-  background: linear-gradient(180deg, #FFFFFF 0%, #F7FAFD 100%) !important;
-  border-color: rgba(54, 73, 96, 0.12) !important;
-  color: #333A44 !important;
-  box-shadow: 0 8px 24px rgba(32, 44, 61, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.78) !important;
+  background: #F3F3F2 !important;
+  border-color: rgba(31, 31, 29, 0.08) !important;
+  color: #1F1F1D !important;
+  box-shadow: none !important;
   font-weight: 400;
 }
 
 :root[data-theme="light"] .eterx-chat-feed-user-fade {
-  background: linear-gradient(180deg, rgba(247, 250, 253, 0) 0%, rgba(247, 250, 253, 0.88) 58%, #F7FAFD 100%) !important;
+  background: linear-gradient(180deg, rgba(243, 243, 242, 0) 0%, rgba(243, 243, 242, 0.88) 58%, #F3F3F2 100%) !important;
 }
 
 :root[data-theme="light"] .eterx-assistant-answer-body,
-:root[data-theme="light"] .eterx-professional-thought {
-  color: #3B4350 !important;
-  font-weight: 400;
+:root[data-theme="light"] .eterx-professional-thought,
+:root[data-theme="light"] .eterx-professional-answer,
+:root[data-theme="light"] .eterx-answer-paragraph,
+:root[data-theme="light"] .eterx-answer-list-item {
+  color: #1F1F1D !important;
+  font-weight: 430 !important;
+  font-family: var(--font-sans), -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif !important;
 }
 
 :root[data-theme="light"] .eterx-professional-note {
-  color: #5C6675 !important;
+  color: #55514A !important;
 }
 
 :root[data-theme="light"] .eterx-thought-card,
 :root[data-theme="light"] .eterx-live-action-card,
 :root[data-theme="light"] .eterx-action-card {
-  background: rgba(255, 255, 255, 0.84) !important;
-  border-color: rgba(54, 73, 96, 0.11) !important;
-  box-shadow: 0 6px 18px rgba(32, 44, 61, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.74) !important;
+  background: #FFFFFF !important;
+  border-color: rgba(31, 31, 29, 0.08) !important;
+  box-shadow: 0 4px 12px rgba(31, 31, 29, 0.03), inset 0 1px 0 rgba(255, 255, 255, 0.74) !important;
 }
 
 :root[data-theme="light"] .eterx-thought-toggle,
 :root[data-theme="light"] .eterx-action-chip,
 :root[data-theme="light"] .eterx-terminal-trace-row {
-  color: #4B5563 !important;
+  color: #34332F !important;
   outline: none !important;
   box-shadow: none !important;
+}
+
+:root[data-theme="light"] .eterx-terminal-trace-row:hover {
+  background: rgba(31, 31, 29, 0.04) !important;
 }
 
 :root[data-theme="light"] .eterx-terminal-trace-row:focus,
@@ -314,40 +341,56 @@
 
 :root[data-theme="light"] .eterx-action-verb,
 :root[data-theme="light"] .eterx-terminal-trace-row span {
-  color: #4B5563 !important;
+  color: #1F1F1D !important;
   font-weight: 500;
 }
 
 :root[data-theme="light"] .eterx-action-file-link {
-  color: #2F6FED !important;
+  color: #2563EB !important;
 }
 
 :root[data-theme="light"] .eterx-action-diff-chip {
-  color: #4B5563 !important;
+  color: #55514A !important;
+}
+
+:root[data-theme="light"] .eterx-trp-card {
+  background: #FCFCFA !important;
+  border-color: rgba(31, 31, 29, 0.08) !important;
+  color: #1F1F1D !important;
+  box-shadow: 0 4px 16px rgba(31, 31, 29, 0.04) !important;
+}
+
+:root[data-theme="light"] .eterx-trp-card-header {
+  background: #F4F4F1 !important;
+  border-bottom: 1px solid rgba(31, 31, 29, 0.08) !important;
+}
+
+:root[data-theme="light"] .eterx-trp-card-title {
+  color: #55514A !important;
 }
 
 :root[data-theme="light"] .eterx-inline-diff-panel {
   background: #FFFFFF !important;
-  border-color: rgba(54, 73, 96, 0.12) !important;
-  color: #364152 !important;
-  box-shadow: 0 8px 22px rgba(32, 44, 61, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.78) !important;
+  border-color: rgba(31, 31, 29, 0.10) !important;
+  color: #1F1F1D !important;
+  box-shadow: 0 8px 24px rgba(31, 31, 29, 0.05) !important;
 }
 
 :root[data-theme="light"] .eterx-inline-diff-header {
-  background: #F4F7FB !important;
-  border-color: rgba(54, 73, 96, 0.10) !important;
-  color: #5C6675 !important;
+  background: #F5F5F3 !important;
+  border-bottom: 1px solid rgba(31, 31, 29, 0.08) !important;
+  color: #55514A !important;
 }
 
 :root[data-theme="light"] .eterx-inline-diff-scroll {
-  color: #3F4856 !important;
+  color: #1F1F1D !important;
   background: #FFFFFF !important;
 }
 
 :root[data-theme="light"] .eterx-terminal-console {
-  background: #ECECEA !important;
-  border-color: rgba(31, 31, 29, 0.06) !important;
-  color: #202124 !important;
+  background: #F5F5F3 !important;
+  border-color: rgba(31, 31, 29, 0.10) !important;
+  color: #1F1F1D !important;
   box-shadow: none !important;
 }
 
@@ -355,13 +398,13 @@
 :root[data-theme="light"] .eterx-terminal-console-command,
 :root[data-theme="light"] .eterx-terminal-console-footer,
 :root[data-theme="light"] .eterx-terminal-console-output {
-  background: #ECECEA !important;
+  background: #F5F5F3 !important;
   border-color: transparent !important;
-  color: #202124 !important;
+  color: #1F1F1D !important;
 }
 
 :root[data-theme="light"] .eterx-terminal-console-header {
-  color: #66615A !important;
+  color: #77736C !important;
   font-size: 12px !important;
   font-weight: 500 !important;
 }
@@ -369,7 +412,13 @@
 :root[data-theme="light"] .eterx-terminal-console-command span,
 :root[data-theme="light"] .eterx-terminal-console-body,
 :root[data-theme="light"] .eterx-terminal-console-body span {
-  color: #202124 !important;
+  color: #1F1F1D !important;
+}
+
+:root[data-theme="light"] .eterx-terminal-console-footer {
+  background: #EBEBE9 !important;
+  border-top: 1px solid rgba(31, 31, 29, 0.08) !important;
+  color: #77736C !important;
 }
 
 :root[data-theme="light"] .eterx-terminal-console-footer span {
@@ -377,26 +426,26 @@
 }
 
 :root[data-theme="light"] .eterx-inline-diff-line-number {
-  border-right-color: rgba(54, 73, 96, 0.10) !important;
-  color: #9AA3AF !important;
+  border-right-color: rgba(31, 31, 29, 0.08) !important;
+  color: #8A857D !important;
 }
 
 :root[data-theme="light"] .eterx-inline-diff-row-added {
-  background: rgba(16, 185, 129, 0.10) !important;
+  background: rgba(16, 185, 129, 0.08) !important;
 }
 
 :root[data-theme="light"] .eterx-inline-diff-row-removed {
-  background: rgba(239, 68, 68, 0.10) !important;
+  background: rgba(239, 68, 68, 0.08) !important;
 }
 
 :root[data-theme="light"] .eterx-inline-diff-content {
-  color: #344054 !important;
+  color: #1F1F1D !important;
 }
 
 :root[data-theme="light"] .eterx-composer-popout {
   background: rgba(255, 255, 255, 0.98) !important;
-  border-color: rgba(54, 73, 96, 0.12) !important;
-  box-shadow: 0 16px 44px rgba(32, 44, 61, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.82) !important;
+  border-color: rgba(31, 31, 29, 0.12) !important;
+  box-shadow: 0 16px 44px rgba(31, 31, 29, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.82) !important;
   color: #1F1F1D !important;
 }
 
@@ -667,52 +716,41 @@
 
 /* Lightweight chat composer, matched to sidebar hover density. */
 :root[data-theme="light"] .eterx-composer-shell .eterx-composer-surface:not([data-live="true"]) {
-  --eterx-composer-fog-solid-top: #FFFFFF;
-  --eterx-composer-fog-strong-top: rgba(255, 255, 255, 0.94);
-  --eterx-composer-fog-clear-top: rgba(255, 255, 255, 0);
-  --eterx-composer-fog-solid-bottom: #FBFAF7;
-  --eterx-composer-fog-strong-bottom: rgba(251, 250, 247, 0.94);
-  --eterx-composer-fog-clear-bottom: rgba(251, 250, 247, 0);
-  border-color: rgba(31, 31, 29, 0.115) !important;
-  border-radius: 26px !important;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.76), rgba(255, 255, 255, 0) 46%),
-    #FBFAF7 !important;
-  box-shadow:
-    0 1px 0 rgba(255, 255, 255, 0.88) inset,
-    0 18px 42px rgba(31, 31, 29, 0.075) !important;
+  --eterx-composer-fog-solid-top: #F7F7F5;
+  --eterx-composer-fog-strong-top: rgba(247, 247, 245, 0.95);
+  --eterx-composer-fog-clear-top: rgba(247, 247, 245, 0);
+  --eterx-composer-fog-solid-bottom: #F7F7F5;
+  --eterx-composer-fog-strong-bottom: rgba(247, 247, 245, 0.95);
+  --eterx-composer-fog-clear-bottom: rgba(247, 247, 245, 0);
+  border-color: rgba(31, 31, 29, 0.08) !important;
+  border-radius: 28px !important;
+  background: #F7F7F5 !important;
+  box-shadow: 0 8px 24px rgba(31, 31, 29, 0.04) !important;
   -webkit-backdrop-filter: none !important;
   backdrop-filter: none !important;
 }
 
 :root[data-theme="light"] .eterx-composer-shell .eterx-composer-surface:not([data-live="true"]):hover {
-  --eterx-composer-fog-solid-top: #FFFFFF;
-  --eterx-composer-fog-strong-top: rgba(255, 255, 255, 0.94);
-  --eterx-composer-fog-clear-top: rgba(255, 255, 255, 0);
-  --eterx-composer-fog-solid-bottom: #F7F6F2;
-  --eterx-composer-fog-strong-bottom: rgba(247, 246, 242, 0.94);
-  --eterx-composer-fog-clear-bottom: rgba(247, 246, 242, 0);
-  border-color: rgba(31, 31, 29, 0.15) !important;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.7), rgba(255, 255, 255, 0) 48%),
-    #F7F6F2 !important;
+  --eterx-composer-fog-solid-top: #F7F7F5;
+  --eterx-composer-fog-strong-top: rgba(247, 247, 245, 0.95);
+  --eterx-composer-fog-clear-top: rgba(247, 247, 245, 0);
+  --eterx-composer-fog-solid-bottom: #F7F7F5;
+  --eterx-composer-fog-strong-bottom: rgba(247, 247, 245, 0.95);
+  --eterx-composer-fog-clear-bottom: rgba(247, 247, 245, 0);
+  border-color: rgba(31, 31, 29, 0.08) !important;
+  background: #F7F7F5 !important;
 }
 
 :root[data-theme="light"] .eterx-composer-shell .eterx-composer-surface:not([data-live="true"]):focus-within {
-  --eterx-composer-fog-solid-top: #FFFFFF;
-  --eterx-composer-fog-strong-top: rgba(255, 255, 255, 0.94);
-  --eterx-composer-fog-clear-top: rgba(255, 255, 255, 0);
-  --eterx-composer-fog-solid-bottom: #FFFFFF;
-  --eterx-composer-fog-strong-bottom: rgba(255, 255, 255, 0.94);
-  --eterx-composer-fog-clear-bottom: rgba(255, 255, 255, 0);
-  border-color: rgba(31, 31, 29, 0.22) !important;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.82), rgba(255, 255, 255, 0) 48%),
-    #FFFFFF !important;
-  box-shadow:
-    0 0 0 3px rgba(31, 31, 29, 0.035),
-    0 1px 0 rgba(255, 255, 255, 0.92) inset,
-    0 20px 46px rgba(31, 31, 29, 0.09) !important;
+  --eterx-composer-fog-solid-top: #F7F7F5;
+  --eterx-composer-fog-strong-top: rgba(247, 247, 245, 0.95);
+  --eterx-composer-fog-clear-top: rgba(247, 247, 245, 0);
+  --eterx-composer-fog-solid-bottom: #F7F7F5;
+  --eterx-composer-fog-strong-bottom: rgba(247, 247, 245, 0.95);
+  --eterx-composer-fog-clear-bottom: rgba(247, 247, 245, 0);
+  border-color: rgba(31, 31, 29, 0.08) !important;
+  background: #F7F7F5 !important;
+  box-shadow: 0 8px 24px rgba(31, 31, 29, 0.04) !important;
 }
 
 :root[data-theme="light"] .eterx-composer-shell .eterx-composer-overflow-fade-top {
@@ -741,9 +779,10 @@
   height: 38px !important;
   min-height: 38px !important;
   border-color: transparent !important;
-  background: rgba(31, 31, 29, 0.065) !important;
-  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.78) inset !important;
-  color: #24221F !important;
+  background: rgba(31, 31, 29, 0.03) !important;
+  box-shadow: none !important;
+  color: rgba(31, 31, 29, 0.65) !important;
+  transition: all 0.2s cubic-bezier(0.2, 0.8, 0.2, 1) !important;
 }
 
 :root[data-theme="light"] .eterx-composer-shell .eterx-control-button {
@@ -762,16 +801,16 @@
 :root[data-theme="light"] .eterx-composer-shell .eterx-agent-button:focus-visible,
 :root[data-theme="light"] .eterx-composer-shell .eterx-model-button:focus-visible {
   border-color: transparent !important;
-  background: rgba(31, 31, 29, 0.095) !important;
-  color: #24221F !important;
-  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.7) inset !important;
+  background: rgba(31, 31, 29, 0.06) !important;
+  color: #1F1F1D !important;
+  box-shadow: none !important;
 }
 
 :root[data-theme="light"] .eterx-composer-shell .eterx-composer-send-button,
 :root[data-theme="light"] .eterx-composer-shell .eterx-composer-stop-button {
-  background: #24221F !important;
+  background: #1F1F1D !important;
   color: #FFFFFF !important;
-  box-shadow: 0 8px 18px rgba(31, 31, 29, 0.15), inset 0 1px 0 rgba(255, 255, 255, 0.16) !important;
+  box-shadow: 0 8px 18px rgba(31, 31, 29, 0.10), inset 0 1px 0 rgba(255, 255, 255, 0.16) !important;
 }
 
 :root[data-theme="light"] .eterx-composer-shell .eterx-composer-send-button:hover,
@@ -824,3 +863,605 @@
 .eterx-app-shell[data-sidebar-open="true"] .eterx-workspace-shell>* {
   pointer-events: auto !important;
 }
+
+/* Patch Summary Panel overrides in light theme */
+:root[data-theme="light"] .eterx-patch-summary-panel {
+  background: #F5F5F3 !important;
+  border-color: rgba(31, 31, 29, 0.08) !important;
+  box-shadow: 0 4px 12px rgba(31, 31, 29, 0.03) !important;
+}
+
+:root[data-theme="light"] .eterx-patch-summary-panel > div:first-child {
+  background: #EBEBE9 !important;
+  border-bottom: 1px solid rgba(31, 31, 29, 0.06) !important;
+}
+
+:root[data-theme="light"] .eterx-patch-summary-panel span {
+  color: #1F1F1D !important;
+}
+
+:root[data-theme="light"] .eterx-patch-summary-panel .bg-emerald-500\/15 {
+  background: rgba(16, 185, 129, 0.12) !important;
+  color: #15803D !important;
+  border-color: rgba(16, 185, 129, 0.20) !important;
+}
+
+:root[data-theme="light"] .eterx-patch-summary-panel .bg-sky-500\/15 {
+  background: rgba(14, 165, 233, 0.12) !important;
+  color: #0369a1 !important;
+  border-color: rgba(14, 165, 233, 0.20) !important;
+}
+
+:root[data-theme="light"] .eterx-patch-summary-panel .bg-red-500\/15 {
+  background: rgba(239, 68, 68, 0.12) !important;
+  color: #C93333 !important;
+  border-color: rgba(239, 68, 68, 0.20) !important;
+}
+
+:root[data-theme="light"] .eterx-patch-summary-panel .text-emerald-300 {
+  color: #15803D !important;
+}
+
+:root[data-theme="light"] .eterx-patch-summary-panel .text-sky-300 {
+  color: #0369a1 !important;
+}
+
+:root[data-theme="light"] .eterx-patch-summary-panel .text-red-300 {
+  color: #C93333 !important;
+}
+
+:root[data-theme="light"] .eterx-patch-summary-panel button.eterx-action-icon-button {
+  background: rgba(31, 31, 29, 0.05) !important;
+  border-color: rgba(31, 31, 29, 0.08) !important;
+  color: #77736C !important;
+}
+
+:root[data-theme="light"] .eterx-patch-summary-panel button.eterx-action-icon-button:hover {
+  background: rgba(31, 31, 29, 0.08) !important;
+  color: #1F1F1D !important;
+}
+
+:root[data-theme="light"] .eterx-patch-summary-panel .border-t {
+  border-top-color: rgba(31, 31, 29, 0.05) !important;
+}
+
+:root[data-theme="light"] .eterx-patch-summary-panel .text-\[\#94C7E0\] {
+  color: #2563EB !important;
+}
+
+/* Inline Code Panel overrides in light theme */
+:root[data-theme="light"] .eterx-inline-code-panel {
+  background: #FFFFFF !important;
+  border-color: rgba(31, 31, 29, 0.10) !important;
+  color: #1F1F1D !important;
+  box-shadow: 0 8px 24px rgba(31, 31, 29, 0.05) !important;
+}
+
+:root[data-theme="light"] .eterx-inline-code-header {
+  background: #F5F5F3 !important;
+  border-bottom: 1px solid rgba(31, 31, 29, 0.08) !important;
+  color: #1F1F1D !important;
+}
+
+:root[data-theme="light"] .eterx-inline-code-filename {
+  color: #1F1F1D !important;
+}
+
+:root[data-theme="light"] .eterx-inline-code-label {
+  color: #77736C !important;
+}
+
+:root[data-theme="light"] .eterx-inline-code-scroll {
+  background: #FFFFFF !important;
+}
+
+:root[data-theme="light"] .eterx-inline-code-line-number {
+  border-right-color: rgba(31, 31, 29, 0.06) !important;
+  color: #8A857D !important;
+}
+
+:root[data-theme="light"] .eterx-inline-code-content {
+  color: #1F1F1D !important;
+}
+
+:root[data-theme="light"] .eterx-inline-code-row:hover {
+  background-color: rgba(31, 31, 29, 0.035) !important;
+}
+
+/* File Change List Panel overrides in light theme */
+:root[data-theme="light"] .eterx-file-change-list-panel {
+  background: #F5F5F3 !important;
+  border-color: rgba(31, 31, 29, 0.08) !important;
+  color: #1F1F1D !important;
+  box-shadow: none !important;
+}
+
+/* Markdown Code Actions toolbar overrides in light theme */
+:root[data-theme="light"] .eterx-markdown-code-actions {
+  background: rgba(255, 255, 255, 0.94) !important;
+  border-color: rgba(31, 31, 29, 0.12) !important;
+  box-shadow: 0 6px 18px rgba(31, 31, 29, 0.06) !important;
+}
+
+:root[data-theme="light"] .eterx-markdown-code-actions button {
+  color: #34332F !important;
+}
+
+:root[data-theme="light"] .eterx-markdown-code-actions button:hover {
+  background-color: rgba(31, 31, 29, 0.055) !important;
+}
+
+/* Light theme overrides for git/task menu (eterx-work-menu) */
+:root[data-theme="light"] .eterx-work-menu,
+:root[data-theme="light"] .eterx-work-menu-flyout {
+  border: 1px solid rgba(31, 31, 29, 0.12) !important;
+  background: rgba(255, 255, 255, 0.98) !important;
+  color: #1F1F1D !important;
+  box-shadow: 0 16px 44px rgba(31, 31, 29, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.82) !important;
+}
+
+:root[data-theme="light"] .eterx-work-menu-header {
+  border-bottom: 1px solid rgba(31, 31, 29, 0.08) !important;
+  background: linear-gradient(180deg, rgba(31, 31, 29, 0.02), rgba(31, 31, 29, 0.005)) !important;
+}
+
+:root[data-theme="light"] .eterx-work-menu-eyebrow,
+:root[data-theme="light"] .eterx-work-menu-flyout-label {
+  color: #77736C !important;
+}
+
+:root[data-theme="light"] .eterx-work-menu-title {
+  color: #1F1F1D !important;
+}
+
+:root[data-theme="light"] .eterx-work-menu-state,
+:root[data-theme="light"] .eterx-work-menu-section-badge {
+  border: 1px solid rgba(31, 31, 29, 0.12) !important;
+  background: #F4F4F3 !important;
+  color: #55514A !important;
+  box-shadow: none !important;
+}
+
+:root[data-theme="light"] .eterx-work-menu-state:hover,
+:root[data-theme="light"] .eterx-work-menu-section-button:hover .eterx-work-menu-section-badge {
+  background: #EBEBE9 !important;
+  border-color: rgba(31, 31, 29, 0.18) !important;
+  color: #1F1F1D !important;
+}
+
+:root[data-theme="light"] .eterx-work-menu-state-live {
+  border-color: rgba(16, 185, 129, 0.22) !important;
+  background: rgba(16, 185, 129, 0.10) !important;
+  color: #15803D !important;
+}
+
+:root[data-theme="light"] .eterx-work-menu-state-live:hover {
+  background: rgba(16, 185, 129, 0.16) !important;
+  border-color: rgba(16, 185, 129, 0.30) !important;
+  color: #166534 !important;
+}
+
+:root[data-theme="light"] .eterx-work-menu-section-button {
+  color: #1F1F1D !important;
+}
+
+:root[data-theme="light"] .eterx-work-menu-section-button:hover,
+:root[data-theme="light"] .eterx-work-menu-section-button:focus-visible {
+  background: rgba(31, 31, 29, 0.05) !important;
+  color: #1F1F1D !important;
+}
+
+:root[data-theme="light"] .eterx-work-menu-row {
+  color: #34332F !important;
+}
+
+:root[data-theme="light"] .eterx-work-menu-row:hover,
+:root[data-theme="light"] .eterx-work-menu-row:focus-visible {
+  border-color: rgba(31, 31, 29, 0.10) !important;
+  background: rgba(31, 31, 29, 0.05) !important;
+  color: #1F1F1D !important;
+}
+
+:root[data-theme="light"] .eterx-work-menu-row-active {
+  border-color: rgba(31, 31, 29, 0.12) !important;
+  background: rgba(31, 31, 29, 0.065) !important;
+  color: #1F1F1D !important;
+}
+
+:root[data-theme="light"] .eterx-work-menu-row-icon {
+  color: #77736C !important;
+}
+
+:root[data-theme="light"] .eterx-work-menu-row:hover .eterx-work-menu-row-icon,
+:root[data-theme="light"] .eterx-work-menu-row-active .eterx-work-menu-row-icon {
+  color: #1F1F1D !important;
+}
+
+:root[data-theme="light"] .eterx-work-menu-divider {
+  background: rgba(31, 31, 29, 0.08) !important;
+}
+
+:root[data-theme="light"] .eterx-work-menu-empty {
+  color: #77736C !important;
+}
+
+:root[data-theme="light"] .eterx-work-menu-search {
+  border: 1px solid rgba(31, 31, 29, 0.10) !important;
+  background: rgba(31, 31, 29, 0.04) !important;
+}
+
+:root[data-theme="light"] .eterx-work-menu-search:focus-within {
+  border-color: rgba(31, 31, 29, 0.22) !important;
+  background: rgba(31, 31, 29, 0.055) !important;
+}
+
+:root[data-theme="light"] .eterx-work-menu-search input {
+  color: #1F1F1D !important;
+}
+
+:root[data-theme="light"] .eterx-work-menu-search input::placeholder {
+  color: #8A857D !important;
+}
+
+:root[data-theme="light"] .eterx-work-menu-task-row span.line-through {
+  color: #8A857D !important;
+}
+
+:root[data-theme="light"] .eterx-work-menu-task-row span:not(.line-through) {
+  color: #1F1F1D !important;
+}
+
+:root[data-theme="light"] .eterx-work-menu-file-chip {
+  border: 1px solid rgba(37, 99, 235, 0.22) !important;
+  background: rgba(37, 99, 235, 0.10) !important;
+  color: #1D4ED8 !important;
+  box-shadow: none !important;
+}
+
+:root[data-theme="light"] .eterx-work-menu-row:hover .eterx-work-menu-file-chip {
+  background: rgba(37, 99, 235, 0.15) !important;
+  border-color: rgba(37, 99, 235, 0.30) !important;
+  color: #1e40af !important;
+}
+
+:root[data-theme="light"] .eterx-work-menu-file-chip-add {
+  border-color: rgba(16, 185, 129, 0.22) !important;
+  background: rgba(16, 185, 129, 0.10) !important;
+  color: #15803D !important;
+  box-shadow: none !important;
+}
+
+:root[data-theme="light"] .eterx-work-menu-row:hover .eterx-work-menu-file-chip-add {
+  background: rgba(16, 185, 129, 0.15) !important;
+  border-color: rgba(16, 185, 129, 0.30) !important;
+  color: #166534 !important;
+}
+
+/* Light theme overrides for sub-agent tab dock (eterx-agent-dock) */
+:root[data-theme="light"] .eterx-agent-dock {
+  border: 1px solid rgba(31, 31, 29, 0.12) !important;
+  background: rgba(255, 255, 255, 0.94) !important;
+  box-shadow: 0 10px 30px rgba(31, 31, 29, 0.06) !important;
+  -webkit-backdrop-filter: blur(16px) saturate(1.1) !important;
+  backdrop-filter: blur(16px) saturate(1.1) !important;
+}
+
+:root[data-theme="light"] .eterx-agent-dock::before {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.8), transparent 45%) !important;
+}
+
+:root[data-theme="light"] .eterx-agent-tab-active {
+  color: #1F1F1D !important;
+}
+
+:root[data-theme="light"] .eterx-agent-tab-active-bg {
+  border: 1px solid rgba(31, 31, 29, 0.10) !important;
+  background: #F4F4F3 !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.60),
+    0 2px 8px rgba(31, 31, 29, 0.04) !important;
+}
+
+:root[data-theme="light"] .eterx-agent-tab-idle {
+  color: #55514A !important;
+}
+
+:root[data-theme="light"] .eterx-agent-tab-idle:hover {
+  color: #1F1F1D !important;
+  background: rgba(31, 31, 29, 0.05) !important;
+  border-color: rgba(31, 31, 29, 0.08) !important;
+}
+
+:root[data-theme="light"] .eterx-agent-tab-closed {
+  color: #8A857D !important;
+}
+
+:root[data-theme="light"] .eterx-agent-tab-closed:hover {
+  color: #55514A !important;
+  background: rgba(31, 31, 29, 0.035) !important;
+}
+
+:root[data-theme="light"] .eterx-main-agent-glyph {
+  border-color: rgba(31, 31, 29, 0.08) !important;
+}
+
+:root[data-theme="light"] .eterx-agent-tab-active .eterx-main-agent-glyph {
+  color: #1F1F1D !important;
+  background: #FFFFFF !important;
+}
+
+:root[data-theme="light"] .eterx-agent-tab-idle .eterx-main-agent-glyph {
+  color: #55514A !important;
+  background: rgba(31, 31, 29, 0.05) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6) !important;
+}
+
+:root[data-theme="light"] .eterx-agent-tab-overflow {
+  color: #55514A !important;
+  background: rgba(31, 31, 29, 0.05) !important;
+  border: 1px solid rgba(31, 31, 29, 0.08) !important;
+}
+
+:root[data-theme="light"] .eterx-agent-tab-overflow:hover {
+  color: #1F1F1D !important;
+  background: rgba(31, 31, 29, 0.08) !important;
+  border-color: rgba(31, 31, 29, 0.12) !important;
+}
+
+/* Worked summary overrides in light theme */
+:root[data-theme="light"] .eterx-worked-summary-line {
+  background-color: rgba(31, 31, 29, 0.08) !important;
+}
+
+:root[data-theme="light"] .eterx-worked-summary-label {
+  color: #77736C !important;
+}
+
+/* Process summary/actions chip overrides in light theme */
+:root[data-theme="light"] .eterx-process-summary-chip {
+  color: #1F1F1D !important;
+  background-color: #F0EFEA !important;
+  outline: 1px solid rgba(31, 31, 29, 0.12) !important;
+  box-shadow: 
+    inset 0 1px 0 rgba(255, 255, 255, 0.90),
+    0 2px 8px rgba(31, 31, 29, 0.04) !important;
+}
+
+:root[data-theme="light"] .eterx-process-summary-chip:hover {
+  background-color: #ECEBE6 !important;
+  outline-color: rgba(31, 31, 29, 0.18) !important;
+  color: #1F1F1D !important;
+}
+
+:root[data-theme="light"] .eterx-process-summary-chip-live {
+  color: #1F1F1D !important;
+  background-color: #F0EFEA !important;
+  outline: 1px solid rgba(31, 31, 29, 0.12) !important;
+}
+
+/* Color overrides for hardcoded dark theme text colors in light theme */
+:root[data-theme="light"] [class*="text-[#D8D1C8]"],
+:root[data-theme="light"] [class*="text-[#D8D1C7]"],
+:root[data-theme="light"] [class*="text-[#C8C1B8]"],
+:root[data-theme="light"] [class*="text-[#BDB5AB]"],
+:root[data-theme="light"] [class*="text-[#DED6CC]"],
+:root[data-theme="light"] [class*="text-[#E0DAD2]"],
+:root[data-theme="light"] [class*="text-[#DAD6CF]"],
+:root[data-theme="light"] [class*="text-[#C0B8B0]"] {
+  color: #1F1F1D !important;
+}
+
+:root[data-theme="light"] [class*="text-[#8F877C]"],
+:root[data-theme="light"] [class*="text-[#6F685F]"],
+:root[data-theme="light"] [class*="text-[#827A70]"],
+:root[data-theme="light"] [class*="text-[#898176]"],
+:root[data-theme="light"] [class*="text-[#AFA79D]"] {
+  color: #77736C !important;
+}
+
+:root[data-theme="light"] [class*="text-[#7E766C]"],
+:root[data-theme="light"] [class*="text-[#9C948B]"],
+:root[data-theme="light"] [class*="text-[#817970]"],
+:root[data-theme="light"] [class*="text-[#918A80]"],
+:root[data-theme="light"] [class*="text-[#7A7470]"] {
+  color: #55514A !important;
+}
+
+/* Hardcoded hex text colors used inside TrpCard / ObjectCard / Pre / File panel */
+:root[data-theme="light"] [class*="text-[#9A9288]"],
+:root[data-theme="light"] [class*="text-[#C8C0B8]"],
+:root[data-theme="light"] [class*="text-[#BEB7AE]"],
+:root[data-theme="light"] [class*="text-[#B8B0A8]"],
+:root[data-theme="light"] [class*="text-[#D8D0C8]"],
+:root[data-theme="light"] [class*="text-[#E6E0D8]"] {
+  color: #1F1F1D !important;
+}
+
+:root[data-theme="light"] [class*="text-[#4E4A46]"],
+:root[data-theme="light"] [class*="text-[#4E4A46]"] span,
+:root[data-theme="light"] [class*="text-[#5E5A55]"],
+:root[data-theme="light"] [class*="text-[#3E3A36]"] {
+  color: #77736C !important;
+}
+
+:root[data-theme="light"] [class*="text-[#B8A878]"] {
+  color: #B45309 !important; /* amber/brown inline code */
+}
+
+/* Error/warning text overrides */
+:root[data-theme="light"] [class*="text-[#E5B2AD]"],
+:root[data-theme="light"] [class*="text-[#EAB8B3]"] {
+  color: #991B1B !important;
+}
+:root[data-theme="light"] [class*="text-[#A07B76]"] {
+  color: #B91C1C !important;
+}
+
+/* Card borders and backgrounds */
+:root[data-theme="light"] .eterx-action-card,
+:root[data-theme="light"] .eterx-agent-comm-card,
+:root[data-theme="light"] [class*="bg-[#151514]"],
+:root[data-theme="light"] [class*="bg-white/[0.015]"],
+:root[data-theme="light"] [class*="bg-white/[0.012]"],
+:root[data-theme="light"] [class*="bg-white/[0.022]"],
+:root[data-theme="light"] [class*="bg-white/[0.018]"],
+:root[data-theme="light"] [class*="bg-white/[0.02]"] {
+  background-color: #FFFFFF !important;
+  border-color: rgba(31, 31, 29, 0.08) !important;
+}
+
+:root[data-theme="light"] [class*="border-white/[0.045]"],
+:root[data-theme="light"] [class*="border-white/[0.07]"],
+:root[data-theme="light"] [class*="border-white/[0.075]"],
+:root[data-theme="light"] [class*="border-white/[0.055]"],
+:root[data-theme="light"] [class*="border-white/[0.04]"],
+:root[data-theme="light"] [class*="border-white/[0.05]"],
+:root[data-theme="light"] [class*="border-white/[0.06]"] {
+  border-color: rgba(31, 31, 29, 0.08) !important;
+}
+
+:root[data-theme="light"] [class*="hover:border-white/[0.08]"]:hover {
+  border-color: rgba(31, 31, 29, 0.12) !important;
+}
+
+/* Sub-agent status card inner content wrappers */
+:root[data-theme="light"] [class*="bg-white/[0.028]"],
+:root[data-theme="light"] [class*="bg-white/[0.026]"],
+:root[data-theme="light"] [class*="bg-white/[0.035]"],
+:root[data-theme="light"] [class*="bg-black/10"],
+:root[data-theme="light"] [class*="bg-black/20"],
+:root[data-theme="light"] [class*="bg-black/35"] {
+  background-color: #F5F5F3 !important;
+  border-color: rgba(31, 31, 29, 0.10) !important;
+}
+
+/* Inner hover state */
+:root[data-theme="light"] .eterx-action-card:hover,
+:root[data-theme="light"] .eterx-agent-comm-card:hover,
+:root[data-theme="light"] [class*="hover:bg-white/[0.024]"]:hover,
+:root[data-theme="light"] [class*="hover:bg-white/[0.035]"]:hover,
+:root[data-theme="light"] [class*="hover:bg-[#181817]"]:hover,
+:root[data-theme="light"] [class*="hover:bg-[#171716]"]:hover {
+  background-color: #FAFAF8 !important;
+  border-color: rgba(31, 31, 29, 0.12) !important;
+}
+
+:root[data-theme="light"] [class*="border-white/[0.08]"] {
+  border-color: rgba(31, 31, 29, 0.12) !important;
+}
+
+/* TrpCard light theme overrides */
+:root[data-theme="light"] .eterx-trp-card {
+  background-color: #FFFFFF !important;
+  border-color: rgba(31, 31, 29, 0.08) !important;
+  color: #1F1F1D !important;
+  box-shadow: 
+    inset 0 1px 0 rgba(255, 255, 255, 0.90),
+    0 2px 8px rgba(31, 31, 29, 0.03) !important;
+}
+
+:root[data-theme="light"] .eterx-trp-card-header {
+  border-bottom-color: rgba(31, 31, 29, 0.06) !important;
+}
+
+:root[data-theme="light"] .eterx-trp-card-title {
+  color: #55514A !important;
+}
+
+:root[data-theme="light"] .eterx-trp-card [class*="text-[#6A6460]"] {
+  color: #77736C !important;
+}
+
+:root[data-theme="light"] .eterx-trp-card a {
+  color: #1D4ED8 !important; /* blue for links */
+}
+
+:root[data-theme="light"] .eterx-trp-card a:hover {
+  color: #1E40AF !important;
+}
+
+/* Light theme overrides for sidebar chat options button (MoreHorizontal) */
+:root[data-theme="light"] .eterx-sidebar-chat-menu-button {
+  background: #EAEAE7 !important;
+  border: 1px solid rgba(31, 31, 29, 0.06) !important;
+  box-shadow: 0 1px 3px rgba(31, 31, 29, 0.05) !important;
+  color: #55514A !important;
+}
+
+:root[data-theme="light"] .eterx-sidebar-chat-menu-button:hover {
+  background: #DFDFDC !important;
+  border-color: rgba(31, 31, 29, 0.10) !important;
+  box-shadow: 0 3px 8px rgba(31, 31, 29, 0.08) !important;
+  color: #1F1F1D !important;
+}
+
+:root[data-theme="light"] .eterx-sidebar-chat-menu-button:active {
+  background: #D4D4D0 !important;
+  box-shadow: 0 1px 2px rgba(31, 31, 29, 0.06) !important;
+}
+
+:root[data-theme="light"] .eterx-sidebar-chat-menu-button:hover svg {
+  filter: drop-shadow(0 1px 2px rgba(31, 31, 29, 0.12)) !important;
+}
+
+/* User message bubble show more fade override under light theme */
+:root[data-theme="light"] .eterx-chat-feed-user-fade {
+  background: linear-gradient(to bottom, rgba(243, 243, 242, 0) 0%, rgba(243, 243, 242, 0.82) 50%, #F3F3F2 100%) !important;
+}
+
+:root[data-theme="light"] .eterx-chat-feed-user-fade span {
+  color: #77736C !important;
+}
+
+:root[data-theme="light"] .eterx-chat-feed-user-fade span:hover {
+  color: #1F1F1D !important;
+}
+
+/* Universal tailwind gradient variable overrides for light theme */
+:root[data-theme="light"] [class*="from-[#20201F]"] {
+  --tw-gradient-from: #F3F3F2 !important;
+  --tw-gradient-to: rgba(243, 243, 242, 0) !important;
+  --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to) !important;
+}
+
+:root[data-theme="light"] [class*="from-[#202020]"] {
+  --tw-gradient-from: #FFFFFF !important;
+  --tw-gradient-to: rgba(255, 255, 255, 0) !important;
+  --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to) !important;
+}
+
+:root[data-theme="light"] [class*="from-[#2F2F2F]"] {
+  --tw-gradient-from: #FFFFFF !important;
+  --tw-gradient-to: rgba(255, 255, 255, 0) !important;
+  --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to) !important;
+}
+
+:root[data-theme="light"] [class*="from-[#242424]"] {
+  --tw-gradient-from: #FFFFFF !important;
+  --tw-gradient-to: rgba(255, 255, 255, 0) !important;
+  --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to) !important;
+}
+
+:root[data-theme="light"] [class*="from-[#0B0B0C]"],
+:root[data-theme="light"] [class*="from-[#0A0A0B]"] {
+  --tw-gradient-from: #F5F5F3 !important;
+  --tw-gradient-to: rgba(245, 245, 243, 0) !important;
+  --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to) !important;
+}
+
+/* Light theme overrides for user message action buttons (copy/edit) */
+:root[data-theme="light"] .eterx-user-message-action-button {
+  color: #77736C !important;
+}
+
+:root[data-theme="light"] .eterx-user-message-action-button:hover,
+:root[data-theme="light"] .eterx-user-message-action-button:focus-visible {
+  background: rgba(31, 31, 29, 0.065) !important;
+  color: #1F1F1D !important;
+}
+
+:root[data-theme="light"] .eterx-user-message-action-button:active {
+  background: rgba(31, 31, 29, 0.12) !important;
+}

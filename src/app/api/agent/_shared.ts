@@ -3,6 +3,7 @@ import { randomUUID } from 'crypto';
 
 export const MAX_AGENT_ID_LENGTH = 96;
 export const MAX_CHAT_ID_LENGTH = 160;
+export const MAX_RUN_ID_LENGTH = 160;
 export const MAX_PROMPT_CHARS = 200_000;
 export const MAX_MESSAGE_CHARS = 60_000;
 export const MAX_ANSWER_CHARS = 20_000;
@@ -12,6 +13,7 @@ const AGENT_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
 const CHAT_ID_PATTERN = /^[a-zA-Z0-9_.:-]+$/;
 const RESPONSE_KEY_PATTERN = /^[a-zA-Z0-9_.:-]+$/;
 const SESSION_ID_PATTERN = /^[a-zA-Z0-9_.:-]+$/;
+const RUN_ID_PATTERN = /^[a-zA-Z0-9_.:-]+$/;
 const AGENT_SESSION_COOKIE = 'eterx_agent_session';
 const AGENT_SESSION_MAX_AGE = 60 * 60 * 24 * 30;
 const OWNER_RECORD_TTL_MS = AGENT_SESSION_MAX_AGE * 1000;
@@ -154,6 +156,13 @@ export function isSafeChatId(value: unknown): value is string {
     value.length > 0 &&
     value.length <= MAX_CHAT_ID_LENGTH &&
     CHAT_ID_PATTERN.test(value);
+}
+
+export function isSafeRunId(value: unknown): value is string {
+  return typeof value === 'string' &&
+    value.length > 0 &&
+    value.length <= MAX_RUN_ID_LENGTH &&
+    RUN_ID_PATTERN.test(value);
 }
 
 export function isSafeResponseKey(value: unknown): value is string {

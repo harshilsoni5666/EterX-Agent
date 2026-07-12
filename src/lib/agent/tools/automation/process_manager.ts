@@ -15,7 +15,7 @@ const execAsync = promisify(exec);
  * Essential for long-running servers, watch scripts, build processes, etc.
  */
 
-interface ManagedProcess {
+export interface ManagedProcess {
   id: string;
   command: string;
   pid: number;
@@ -28,7 +28,7 @@ interface ManagedProcess {
   process?: ChildProcess;
 }
 
-const managedProcesses: Map<string, ManagedProcess> = new Map();
+export const managedProcesses: Map<string, ManagedProcess> = new Map();
 
 export const processManagerTool: ToolDefinition = {
   name: 'process_manager',
@@ -50,7 +50,8 @@ export const processManagerTool: ToolDefinition = {
     name: z.string().optional().describe('Friendly name for the process (e.g., "dev-server")'),
     cwd: z.string().optional().describe('ABSOLUTE PATH to the working directory for the command. Required for start action. Example: "C:\\\\Users\\\\User\\\\Desktop\\\\my-project"'),
     shellType: z.enum(['default', 'powershell', 'cmd']).optional().default('default').describe('Shell for start action. Use default unless a command specifically needs PowerShell or cmd.'),
-    env: z.string().optional().describe('Optional JSON object string of environment variables, e.g. {"PORT":"3001"}')
+    env: z.string().optional().describe('Optional JSON object string of environment variables, e.g. {"PORT":"3001"}'),
+    maxLines: z.number().optional().describe('Maximum output lines to return for action="logs" (default: 100, max: 200)')
   }),
   outputSchema: z.object({
     success: z.boolean(),
@@ -153,13 +154,22 @@ export const processManagerTool: ToolDefinition = {
 
           try {
             if (proc.process && proc.status === 'running') {
-              proc.process.kill('SIGTERM');
+              if (process.platform === 'win32' && proc.pid) {
+                const { exec } = require('child_process');
+                exec(`taskkill /PID ${proc.pid} /T /F`, { windowsHide: true }, () => {});
+              } else {
+                proc.process.kill('SIGTERM');
+              }
               proc.status = 'stopped';
             }
           } catch (e) {
             // Force kill via shell
             if (proc.pid) {
-              await execAsync(`taskkill /PID ${proc.pid} /F`, { shell: 'powershell.exe' }).catch(() => {});
+              if (process.platform === 'win32') {
+                await execAsync(`taskkill /PID ${proc.pid} /T /F`, { shell: 'powershell.exe' }).catch(() => {});
+              } else {
+                await execAsync(`kill -9 ${proc.pid}`).catch(() => {});
+              }
             }
             proc.status = 'stopped';
           }
@@ -184,12 +194,13 @@ export const processManagerTool: ToolDefinition = {
           const proc = findProcess(input.processId || input.name);
           if (!proc) return { success: false, message: 'Process not found' };
 
-          const recentOutput = proc.output.slice(-20).join('\n');
-          const recentErrors = proc.errors.slice(-10).join('\n');
+          const maxLines = Math.min(input.maxLines || 100, 200);
+          const recentOutput = proc.output.slice(-maxLines).join('\n');
+          const recentErrors = proc.errors.slice(-Math.round(maxLines / 2)).join('\n');
           return {
             success: true,
             message: `Logs for "${proc.id}":`,
-            output: `=== STDOUT (last 20 lines) ===\n${recentOutput}\n\n=== STDERR (last 10 lines) ===\n${recentErrors}`
+            output: `=== STDOUT (last ${maxLines} lines) ===\n${recentOutput}\n\n=== STDERR (last ${Math.round(maxLines / 2)} lines) ===\n${recentErrors}`
           };
         }
 
@@ -214,7 +225,14 @@ export const processManagerTool: ToolDefinition = {
           let killed = 0;
           for (const proc of Array.from(managedProcesses.values())) {
             if (proc.status === 'running' && proc.process) {
-              try { proc.process.kill('SIGTERM'); } catch { }
+              try {
+                if (process.platform === 'win32' && proc.pid) {
+                  const { exec } = require('child_process');
+                  exec(`taskkill /PID ${proc.pid} /T /F`, { windowsHide: true }, () => {});
+                } else {
+                  proc.process.kill('SIGTERM');
+                }
+              } catch { }
               proc.status = 'stopped';
               killed++;
             }

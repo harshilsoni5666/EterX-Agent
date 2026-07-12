@@ -966,8 +966,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             {/* Menu Items */}
             <div className={isOpen ? "space-y-0.5 mt-0" : "space-y-1.5 mt-0"}>
               {[
-                { id: 'search', label: 'Search', icon: PremiumSearch, tooltip: 'Search conversations', onClick: onSearchClick },
-                { id: 'workspace', label: 'Workspace', icon: PremiumDashboard, tooltip: 'Open project workspace', onClick: () => setActiveView('projects'), active: activeView === 'projects' },
+                { id: 'tasks', label: 'Tasks', icon: PremiumCheckSquare, tooltip: 'Manage tasks', onClick: () => setActiveView('projects'), active: activeView === 'projects' },
                 { id: 'agents', label: 'Agents', icon: PremiumAgent, tooltip: 'Manage agents', onClick: () => setActiveView('agents'), active: activeView === 'agents' },
                 { id: 'channels', label: 'Channels', icon: PremiumChannels, tooltip: 'Deploy agents to channels', onClick: () => setActiveView('channels'), active: activeView === 'channels' },
               ].map(item => {

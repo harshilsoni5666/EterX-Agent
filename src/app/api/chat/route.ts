@@ -4,17 +4,22 @@ import { normalizeMainAgentMode, normalizeMainAgentThinkingLevel } from '../../.
 import {
   buildAgentBuilderPinnedContext,
   buildAgentBuilderUserRequest,
+  buildAgentFlowPinnedContext,
   buildCustomAgentPinnedContext,
   getAgentBuilderMode,
   getAgentIdFromBuilderChatId,
   isAgentBuilderChatId,
+  loadCustomAgentProfile,
+  readAgentFlowProfile,
 } from '../../../lib/agent/builder-agent';
 import { buildScopedRuntimeSettings } from '../../../lib/agent/runtime-api-keys';
 import {
   attachAgentApiSessionCookie,
   cleanString,
   getOrCreateAgentApiSession,
+  isSafeAgentId,
   isSafeChatId,
+  isSafeRunId,
   jsonError,
   MAX_PROMPT_CHARS,
   normalizeHistory,
@@ -65,6 +70,7 @@ export async function POST(req: NextRequest) {
       runLocation = 'local',
       customAgentId = null,
       customAgentName = null,
+      runId,
     } = await readJsonObject(req);
     const prompt = cleanString(rawPrompt, MAX_PROMPT_CHARS);
     const chatId = projectId;
@@ -91,7 +97,8 @@ export async function POST(req: NextRequest) {
     const runtimeSettings = buildScopedRuntimeSettings(apiKeys, modelOverrides);
     const isBuilderChat = isAgentBuilderChatId(chatId);
     const builderAgentId = isBuilderChat ? getAgentIdFromBuilderChatId(chatId) : '';
-    const isCustomAgentRun = !isBuilderChat && typeof customAgentId === 'string' && customAgentId.trim().length > 0;
+    const selectedRuntimeId = typeof customAgentId === 'string' ? customAgentId.trim() : '';
+    const isCustomAgentRun = !isBuilderChat && selectedRuntimeId.length > 0;
     let effectivePinnedContext: Record<string, any> = {
       ...(isBuilderChat ? buildAgentBuilderPinnedContext(chatId, safePinnedContext) : safePinnedContext),
       thinkingLevel: safeThinkingLevel,
@@ -101,11 +108,30 @@ export async function POST(req: NextRequest) {
     // Apply custom agent context — this makes the orchestrator load the profile
     // and Agent.ts inject the custom agent's identity into the system prompt.
     if (isCustomAgentRun) {
-      effectivePinnedContext = buildCustomAgentPinnedContext(
-        customAgentId,
-        typeof customAgentName === 'string' ? customAgentName : customAgentId,
-        effectivePinnedContext,
-      );
+      if (!isSafeAgentId(selectedRuntimeId)) {
+        return attachAgentApiSessionCookie(jsonError('The selected agent or flow ID is invalid.', 400), session);
+      }
+
+      const flow = await readAgentFlowProfile(selectedRuntimeId);
+      if (flow.status === 'ready' && flow.steps.length > 0) {
+        effectivePinnedContext = buildAgentFlowPinnedContext(flow.flowId, flow.name, effectivePinnedContext);
+      } else {
+        const profile = await loadCustomAgentProfile(selectedRuntimeId);
+        if (!profile) {
+          return attachAgentApiSessionCookie(
+            jsonError('This custom agent is not ready yet. Open it in Agent Builder and finish setup first.', 409),
+            session,
+          );
+        }
+        effectivePinnedContext = buildCustomAgentPinnedContext(
+          profile.agentId,
+          profile.name || (typeof customAgentName === 'string' ? customAgentName : profile.agentId),
+          effectivePinnedContext,
+        );
+      }
+    }
+    if (runId !== undefined && !isSafeRunId(runId)) {
+      return attachAgentApiSessionCookie(jsonError('runId must be a valid identifier when provided', 400), session);
     }
     const effectivePrompt = isBuilderChat ? buildAgentBuilderUserRequest(builderAgentId, prompt) : prompt;
     const effectiveMode = isBuilderChat ? getAgentBuilderMode(safeMode) : safeMode;
@@ -121,7 +147,8 @@ export async function POST(req: NextRequest) {
       normalizeMediaAttachments(mediaAttachments),
       safeUserName,
       runtimeSettings.preferredGeminiApiKey,
-      runtimeSettings
+      runtimeSettings,
+      runId,
     );
 
     if (startResult.status === 'no_keys') {

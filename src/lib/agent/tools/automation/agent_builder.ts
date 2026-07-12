@@ -523,11 +523,28 @@ export const agentBuilderRunFlowTool: ToolDefinition = {
   }),
   execute: async (args: { flowId: string, input: string }, context: any) => {
     const flowRunId = `flowrun-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+    const emitFlowTrace = (trace: Record<string, any>) => {
+      try {
+        context?._onTrace?.({ ...trace, flowId: args.flowId });
+      } catch {
+        // Timeline reporting must never interrupt execution of a workflow.
+      }
+    };
     try {
       const flow = await readAgentFlowProfile(args.flowId);
-      if (!flow.steps || flow.steps.length === 0) {
-        return { success: false, finalOutput: '', message: `Flow "${args.flowId}" has no steps.` };
+      if (flow.status !== 'ready' || !flow.steps || flow.steps.length === 0) {
+        return { success: false, finalOutput: '', message: `Flow "${args.flowId}" is not ready to run.` };
       }
+
+      const flowMode = typeof context?.selectedModelMode === 'string' ? context.selectedModelMode : 'think';
+      const flowApiKey = String(context?.executionApiKey || '');
+      const createFlowClient = () => createIsolatedClient(flowApiKey, flowMode as any, context?.runtimeSettings);
+      const resolveFlowAgent = async (agentId: string) => {
+        if (agentId === 'default-1') return { profile: null, name: 'General agent' };
+        const profile = await loadCustomAgentProfile(agentId);
+        if (!profile) throw new Error(`Flow agent "${agentId}" is not ready or no longer exists.`);
+        return { profile, name: profile.name || agentId };
+      };
 
       // Initialize flow-scoped blackboard
       getFlowBlackboard(flowRunId);
@@ -544,6 +561,9 @@ export const agentBuilderRunFlowTool: ToolDefinition = {
       const maxIterations = flow.maxIterations || 20;
 
       while (currentStepId) {
+        if (context?.abortSignal?.aborted || context?.signal?.aborted) {
+          throw new Error('Flow cancelled by user.');
+        }
         const stepId: string = currentStepId;
         const step: AgentFlowStep | undefined = flow.steps.find(s => s.stepId === stepId);
         if (!step) {
@@ -567,7 +587,12 @@ export const agentBuilderRunFlowTool: ToolDefinition = {
             const promptTemplate = parallelPrompts[idx] || step.promptTemplate;
             const resolvedPrompt = resolveTemplate(promptTemplate, variables);
 
-            const customProfile = await loadCustomAgentProfile(agentId);
+            const { profile: customProfile, name: stepAgentName } = await resolveFlowAgent(agentId);
+            emitFlowTrace({
+              type: 'status',
+              text: `Step ${stepId}: ${stepAgentName} is working in parallel`,
+              agentName: stepAgentName,
+            });
             const stepContext = {
               ...context,
               agentRuntime: agentId === 'default-1' ? undefined : CUSTOM_AGENT_RUNTIME,
@@ -578,12 +603,12 @@ export const agentBuilderRunFlowTool: ToolDefinition = {
               flowRunId
             };
 
-            const client = createIsolatedClient(context?.projectId || 'flow-run', 'think', context?.runtimeSettings);
+            const client = createFlowClient();
             const response = await client.executeMessageLoop(
               stepContext,
               resolvedPrompt,
               [],
-              context?._onTrace
+              (trace: any) => emitFlowTrace({ ...trace, agentName: stepAgentName })
             );
 
             return { agentId, prompt: resolvedPrompt, output: response.text || '' };
@@ -626,7 +651,7 @@ export const agentBuilderRunFlowTool: ToolDefinition = {
               currentPrompt = `${basePrompt}\n\n[SELF-CORRECTION CRITIQUE (Attempt ${attempts - 1}/${maxRetries})]\nThe evaluator rejected your previous output because: "${step.reflection.criteria}"\nEvaluator critique details:\n${lastCritique}\n\nPlease revise your output to address this feedback, and provide a corrected version.`;
             }
 
-            const customProfile = await loadCustomAgentProfile(step.agentId);
+            const { profile: customProfile, name: stepAgentName } = await resolveFlowAgent(step.agentId);
             const stepContext = {
               ...context,
               agentRuntime: step.agentId === 'default-1' ? undefined : CUSTOM_AGENT_RUNTIME,
@@ -637,21 +662,31 @@ export const agentBuilderRunFlowTool: ToolDefinition = {
               flowRunId
             };
 
-            const client = createIsolatedClient(context?.projectId || 'flow-run', 'think', context?.runtimeSettings);
+            const client = createFlowClient();
             console.log(`[AgentFlow: ${args.flowId}] Running step "${stepId}" (attempt ${attempts}/${maxRetries}, iteration ${stepIterationCounts[stepId]})...`);
+            emitFlowTrace({
+              type: 'status',
+              text: `Step ${stepId}: ${stepAgentName} is preparing attempt ${attempts}`,
+              agentName: stepAgentName,
+            });
             
             const response = await client.executeMessageLoop(
               stepContext,
               currentPrompt,
               [],
-              context?._onTrace
+              (trace: any) => emitFlowTrace({ ...trace, agentName: stepAgentName })
             );
             currentOutput = response.text || '';
 
             // Run Evaluator Reflection
             console.log(`[AgentFlow: ${args.flowId}] Running evaluator "${step.reflection.evaluatorAgentId}" for critique against criteria: "${step.reflection.criteria}"...`);
             
-            const evaluatorProfile = await loadCustomAgentProfile(step.reflection.evaluatorAgentId);
+            const { profile: evaluatorProfile, name: evaluatorName } = await resolveFlowAgent(step.reflection.evaluatorAgentId);
+            emitFlowTrace({
+              type: 'status',
+              text: `Review gate: ${evaluatorName} is checking step ${stepId}`,
+              agentName: evaluatorName,
+            });
             const evalContext = {
               ...context,
               agentRuntime: step.reflection.evaluatorAgentId === 'default-1' ? undefined : CUSTOM_AGENT_RUNTIME,
@@ -662,7 +697,7 @@ export const agentBuilderRunFlowTool: ToolDefinition = {
               flowRunId
             };
 
-            const evalClient = createIsolatedClient(context?.projectId || 'flow-run-eval', 'think', context?.runtimeSettings);
+            const evalClient = createFlowClient();
             const evaluationPrompt = `
 You are the EVALUATOR for flow step "${stepId}".
 Evaluate the candidate output against these criteria: "${step.reflection.criteria}"
@@ -680,7 +715,7 @@ Follow with a detailed explanation of why, and suggest specific corrections if r
               evalContext,
               evaluationPrompt,
               [],
-              context?._onTrace
+              (trace: any) => emitFlowTrace({ ...trace, agentName: evaluatorName })
             );
 
             const evalResult = evalResponse.text || '';
@@ -712,7 +747,7 @@ Follow with a detailed explanation of why, and suggest specific corrections if r
         // --- Option C: Standard Single-Agent Step ---
         } else {
           const resolvedPrompt = resolveTemplate(step.promptTemplate, variables);
-          const customProfile = await loadCustomAgentProfile(step.agentId);
+          const { profile: customProfile, name: stepAgentName } = await resolveFlowAgent(step.agentId);
           const stepContext = {
             ...context,
             agentRuntime: step.agentId === 'default-1' ? undefined : CUSTOM_AGENT_RUNTIME,
@@ -723,14 +758,19 @@ Follow with a detailed explanation of why, and suggest specific corrections if r
             flowRunId
           };
 
-          const client = createIsolatedClient(context?.projectId || 'flow-run', 'think', context?.runtimeSettings);
+          const client = createFlowClient();
           console.log(`[AgentFlow: ${args.flowId}] Running step "${stepId}" with Agent "${step.agentId}" (iteration ${stepIterationCounts[stepId]})...`);
+          emitFlowTrace({
+            type: 'status',
+            text: `Step ${stepId}: ${stepAgentName} is working`,
+            agentName: stepAgentName,
+          });
           
           const response = await client.executeMessageLoop(
             stepContext,
             resolvedPrompt,
             [],
-            context?._onTrace
+            (trace: any) => emitFlowTrace({ ...trace, agentName: stepAgentName })
           );
 
           const outputText = response.text || '';

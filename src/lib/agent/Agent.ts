@@ -1,6 +1,6 @@
 import { autoContextManager } from './resilience/auto-context';
 import { getOrCreateAgentCache, handleAgentCacheNotFound, invalidateAgentCacheForKey } from './agent-cache';
-import { conversationLedger, flushLedgerForChat, clearLedgerForChat } from './memory/conversation-ledger';
+import { getLedgerForChat, flushLedgerForChat, clearLedgerForChat } from './memory/conversation-ledger';
 import { chatBoundary } from './chat-boundary';
 import { antiHallucination } from './anti-hallucination';
 import { GoogleGenAI, Type, ThinkingLevel } from '@google/genai';
@@ -3426,6 +3426,10 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
 
     // === SESSION CONTINUITY: Hydrate from previous messages ===
     const chatId = context.projectId;
+    // Keep a direct ledger reference for the entire run. The legacy singleton
+    // proxy chooses the most recently initialized chat, which is unsafe while
+    // two chats are executing at the same time.
+    const ledger = getLedgerForChat(chatId);
     const shouldUseSessionLoopState = !sessionPersistenceDisabled && wantsSessionContext;
     const sessionHydrated = shouldUseSessionLoopState && globalSessionManager.hasActiveSessionForChat(chatId);
     const sessionState = shouldUseSessionLoopState ? globalSessionManager.hydrateForChat(chatId) : null;
@@ -3445,7 +3449,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
 
     // === CONVERSATION LEDGER: Initialize for this chat ===
     try {
-      await conversationLedger.initialize(context.projectId);
+      await ledger.initialize(chatId);
     } catch { /* ledger is advisory â€” never block the agent */ }
 
     // === CHAT BOUNDARY DETECTION: Detect if this is a new task ===
@@ -3465,7 +3469,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
       if (chatBoundaryDecision.decision === 'new_task' && chatBoundaryDecision.shouldResetSession) {
         // Archive old context to lifetime brain, then reset working state
         try {
-          const ledgerSummary = conversationLedger.buildContextSummary({ maxTokens: 1000 });
+          const ledgerSummary = ledger.buildContextSummary({ maxTokens: 1000 });
           if (ledgerSummary) {
             lifetimeBrain.record({
               chatId: context.projectId,
@@ -3726,8 +3730,9 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
         // Block contaminated memory from bleeding in
         if (resumeResult.isContaminated) {
           console.warn('[GeminiClient] Resume contamination blocked - cross-chat memory excluded');
+        } else {
+          dynamicContextParts.push(resumeResult.brief);
         }
-        dynamicContextParts.push(resumeResult.brief);
       } catch { /* resume engine is advisory */ }
     }
     if (sessionSummary) dynamicContextParts.push(sessionSummary);
@@ -4234,7 +4239,7 @@ EXTERNAL ACTION NOTE CUE
         // Build a compressed summary of what we've done so far from the ledger
         let ledgerSummary = '';
         try {
-          ledgerSummary = conversationLedger.buildContextSummary({
+          ledgerSummary = ledger.buildContextSummary({
             maxTokens: ledgerTokenBudget,
             includeFiles: true,
             includeCommands: true,
@@ -6143,7 +6148,7 @@ EXTERNAL ACTION NOTE CUE
 
         // === CONVERSATION LEDGER: Record to persistent structured log ===
         try {
-          conversationLedger.recordToolCall({
+          ledger.recordToolCall({
             chatId: context.projectId,
             toolName: call.name,
             args: args || {},

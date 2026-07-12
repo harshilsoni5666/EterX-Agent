@@ -907,9 +907,74 @@ const MermaidDiagram = ({ chart }: { chart: string }) => {
   );
 };
 
+// Custom premium soft light theme for Prism code syntax highlighting
+const customLightTheme = {
+  "pre[class*=\"language-\"]": {
+    "color": "#1F1F1D",
+    "background": "none",
+    "textShadow": "none",
+    "fontFamily": "var(--font-mono)",
+    "textAlign": "left",
+    "whiteSpace": "pre",
+    "spacing": "normal",
+    "wordBreak": "normal",
+    "wordSpacing": "normal",
+    "lineHeight": "1.5",
+    "tabSize": "4",
+    "hyphens": "none"
+  },
+  "code[class*=\"language-\"]": {
+    "color": "#1F1F1D",
+    "background": "none",
+    "textShadow": "none",
+    "fontFamily": "var(--font-mono)",
+    "textAlign": "left",
+    "whiteSpace": "pre",
+    "spacing": "normal",
+    "wordBreak": "normal",
+    "wordSpacing": "normal",
+    "lineHeight": "1.5",
+    "tabSize": "4",
+    "hyphens": "none"
+  },
+  "comment": { "color": "#7E7A72", "fontStyle": "italic" },
+  "prolog": { "color": "#7E7A72" },
+  "doctype": { "color": "#7E7A72" },
+  "cdata": { "color": "#7E7A72" },
+  "punctuation": { "color": "#4A463F" },
+  "namespace": { "opacity": "0.7" },
+  "property": { "color": "#9333EA" },
+  "tag": { "color": "#2563EB" },
+  "boolean": { "color": "#D97706" },
+  "number": { "color": "#D97706" },
+  "constant": { "color": "#D97706" },
+  "symbol": { "color": "#D97706" },
+  "deleted": { "color": "#DC2626" },
+  "selector": { "color": "#15803D" },
+  "attr-name": { "color": "#D97706" },
+  "string": { "color": "#15803D" },
+  "char": { "color": "#15803D" },
+  "builtin": { "color": "#2563EB" },
+  "inserted": { "color": "#15803D" },
+  "operator": { "color": "#4A463F" },
+  "entity": { "color": "#2563EB", "cursor": "help" },
+  "url": { "color": "#2563EB" },
+  "variable": { "color": "#1F1F1D" },
+  "atrule": { "color": "#2563EB" },
+  "attr-value": { "color": "#15803D" },
+  "keyword": { "color": "#2563EB", "fontWeight": "600" },
+  "function": { "color": "#7E22CE" },
+  "class-name": { "color": "#9333EA" },
+  "regex": { "color": "#D97706" },
+  "important": { "color": "#2563EB", "fontWeight": "bold" },
+  "bold": { "fontWeight": "bold" },
+  "italic": { "fontStyle": "italic" }
+};
+
 const CodeBlock = ({ language, content, forceSource = false, ...props }: { language: string; content: string; forceSource?: boolean; [key: string]: any }) => {
   const [wrapLines, setWrapLines] = useState(false);
   const [expanded, setExpanded] = useState(false);
+  const theme = useResolvedTheme();
   const lineCount = Math.max(1, content.split(/\r?\n/).length);
   const isLong = lineCount > 32 || content.length > 3200;
   const displayLanguage = language || 'text';
@@ -925,6 +990,8 @@ const CodeBlock = ({ language, content, forceSource = false, ...props }: { langu
   if (!forceSource && isCompactPlainTextBlock(displayLanguage, content)) {
     return <CompactPlainTextBlock content={content} />;
   }
+
+  const highlightStyle = theme === 'light' ? customLightTheme : vscDarkPlus;
 
   return (
     <div
@@ -948,7 +1015,7 @@ const CodeBlock = ({ language, content, forceSource = false, ...props }: { langu
       </div>
       <div className={`eterx-markdown-code-scroll custom-scrollbar overflow-auto ${isLong && !expanded ? 'max-h-[520px]' : ''}`}>
         <SyntaxHighlighter
-          style={vscDarkPlus as any}
+          style={highlightStyle as any}
           language={displayLanguage}
           PreTag="div"
           showLineNumbers={false}

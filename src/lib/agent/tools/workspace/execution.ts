@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { ToolDefinition } from '../../schemas';
-import { exec } from 'child_process';
+import { exec, ChildProcess } from 'child_process';
 import { promisify } from 'util';
 import path from 'path';
 import fs from 'fs-extra';
@@ -15,6 +15,8 @@ import {
   terminalTimeoutNote
 } from '../core/terminal_timeout';
 import { authorizeToolCommand } from '../security/command_broker';
+import { runTerminalCommandWithCheckIn } from '../core/terminal_background';
+import { monitorEmitter } from '../../monitor/emitter';
 
 const execAsync = promisify(exec);
 
@@ -43,7 +45,8 @@ export const workspaceRunCommandTool: ToolDefinition = {
   inputSchema: z.object({
     command: z.string().describe('The command to execute (e.g., "npm test", "ls -la"). Do NOT prefix with "cd path;"'),
     timeoutSeconds: z.number().optional().describe('Optional command timeout in seconds. Default: 30 seconds. Max: 120 seconds. Auto-set to 120s for install/build commands.'),
-    cwd: z.string().optional().describe('Working directory — ABSOLUTE PATH preferred, or relative to workspace root. Default: workspace root')
+    cwd: z.string().optional().describe('Working directory — ABSOLUTE PATH preferred, or relative to workspace root. Default: workspace root'),
+    background: z.boolean().optional().describe('If true, spawns the command in the background as a managed process and returns immediately without blocking. Ideal for build steps, installations, servers, or long tasks.')
   }),
   outputSchema: z.object({
     stdout: z.string(),
@@ -51,9 +54,12 @@ export const workspaceRunCommandTool: ToolDefinition = {
     exitCode: z.number(),
     timedOut: z.boolean().optional(),
     timeoutMs: z.number().optional(),
-    nextActionNote: z.string().optional()
+    processId: z.string().optional(),
+    nextActionNote: z.string().optional(),
+    stillRunning: z.boolean().optional(),
+    backgroundTaskId: z.string().optional()
   }),
-  execute: async (input: { command: string, cwd?: string, timeoutSeconds?: number, timeoutMs?: number }, context: any) => {
+  execute: async (input: { command: string, cwd?: string, timeoutSeconds?: number, timeoutMs?: number, background?: boolean }, context: any) => {
     const runDir = resolveWorkspaceDirectoryForContext(input.cwd, context);
 
     // Smart timeout: auto-detect install/build commands
@@ -88,276 +94,32 @@ export const workspaceRunCommandTool: ToolDefinition = {
       };
     }
 
-    const authorization = await authorizeToolCommand({
-      command: input.command,
-      cwd: runDir,
-      context,
-      timeoutMs,
-      network: context?.networkPolicy === 'deny' ? 'deny' : 'allow',
-    });
-    if (!authorization.allowed) {
+    try {
+      const result = await runTerminalCommandWithCheckIn({
+        command: input.command,
+        cwd: runDir,
+        source: 'workspace_run_command',
+        context,
+        checkInMs: input.background ? 1 : timeoutMs,
+        hardTimeoutMs: undefined // Keep background running up to EterX's 30-minute limit
+      });
+
+      return {
+        stdout: result.output || result.stdout,
+        stderr: result.stderr || '',
+        exitCode: result.exitCode ?? (result.success ? 0 : 1),
+        timedOut: Boolean(result.timedOut),
+        timeoutMs: result.timeoutMs,
+        processId: result.taskId,
+        nextActionNote: result.nextActionNote,
+        stillRunning: Boolean(result.stillRunning),
+        backgroundTaskId: result.backgroundTaskId || result.taskId
+      };
+    } catch (error: any) {
       return {
         stdout: '',
-        stderr: authorization.reason || 'Command blocked by command broker',
-        exitCode: 126,
-      };
-    }
-
-    console.log(`[Tool: workspace_run_command] Executing: ${input.command} in ${authorization.cwd}`);
-    
-    try {
-      const { taskStore } = require('../../task-store');
-      let combinedOutput = '';
-
-      return new Promise(async (resolve) => {
-        const startTime = Date.now();
-        if (context?.runLocation === 'sandbox') {
-          try {
-            if (context?.sandboxGuard) {
-              await context.sandboxGuard.audit({
-                type: 'command.started',
-                command: input.command,
-                cwd: authorization.cwd,
-                timeoutMs,
-              });
-            } else if (authorization.session) {
-              const { initializeSandbox, appendSandboxAudit } = require('../../../sandbox');
-              await initializeSandbox(authorization.session);
-              await appendSandboxAudit(authorization.session, {
-                type: 'command.started',
-                command: input.command,
-                cwd: authorization.cwd,
-                timeoutMs,
-              });
-            }
-          } catch (e) {
-            console.error('Failed to log sandbox command start:', e);
-          }
-        }
-
-        const { spawn } = require('child_process');
-        // Run via shell to get exact command execution semantics
-        const child = spawn(input.command, { 
-          cwd: authorization.cwd, 
-          shell: true,
-          env: authorization.env
-        });
-        let didTimeout = false;
-        let abortedBySignal = false;
-        let settled = false;
-
-        const timeoutNote = () => terminalTimeoutNote(input.command, timeoutMs);
-
-        // Throttle updates to UI — buffer text and flush every 150ms
-        // Send FULL accumulated output each time so the terminal panel always shows everything
-        let UIThrottleBuffer = '';
-        let lastUITick = Date.now();
-
-        const flushToUI = () => {
-          if (UIThrottleBuffer.length > 0) {
-            const consoleEvt = {
-              type: 'console_output',
-              command: input.command,
-              // Full output so terminal never shows partial content (old code sliced to -3000)
-              content: combinedOutput,
-            };
-            // Primary: emit through onTrace callback (reaches UI in real-time)
-            if (context?._onTrace) {
-              context._onTrace(consoleEvt);
-            }
-            // Secondary: also persist to taskStore if chatId is available
-            if (context?.chatId) {
-              taskStore.addTrace(context.chatId, consoleEvt);
-            }
-            UIThrottleBuffer = '';
-            lastUITick = Date.now();
-          }
-        };
-
-        const stopChildTree = () => {
-          if (!child.pid) {
-            child.kill('SIGTERM');
-            return;
-          }
-
-          if (process.platform === 'win32') {
-            const { exec } = require('child_process');
-            exec(`taskkill /PID ${child.pid} /T /F`, { windowsHide: true }, () => {});
-            return;
-          }
-
-          child.kill('SIGTERM');
-          const killTimer = setTimeout(() => {
-            try { child.kill('SIGKILL'); } catch {}
-          }, 2000);
-          killTimer.unref?.();
-        };
-
-        const abortSignal = context?.abortSignal as AbortSignal | undefined;
-        const onAbort = () => {
-          if (settled || abortedBySignal) return;
-          abortedBySignal = true;
-          emitRuntimeTrace(context, {
-            type: 'timer_expired',
-            text: 'Terminal command cancelled',
-            title: 'Terminal command',
-            note: 'Command was stopped because the user cancelled the run.',
-            command: input.command,
-            iconCategory: 'terminal'
-          });
-          stopChildTree();
-        };
-        if (abortSignal?.aborted || context?.isCancelled?.()) onAbort();
-        else abortSignal?.addEventListener('abort', onAbort, { once: true });
-
-        const timeoutTimer = setTimeout(() => {
-          didTimeout = true;
-          emitRuntimeTrace(context, {
-            type: 'timer_expired',
-            text: 'Terminal command: Timer has expired',
-            title: 'Terminal command',
-            note: timeoutNote(),
-            durationMs: timeoutMs,
-            command: input.command,
-            iconCategory: 'terminal'
-          });
-          stopChildTree();
-        }, timeoutMs);
-        timeoutTimer.unref?.();
-
-        const finish = (result: any) => {
-          if (settled) return;
-          settled = true;
-          clearTimeout(timeoutTimer);
-          abortSignal?.removeEventListener('abort', onAbort);
-
-          if (context?.runLocation === 'sandbox') {
-            if (context?.sandboxGuard) {
-              context.sandboxGuard.audit({
-                type: 'command.finished',
-                command: input.command,
-                cwd: authorization.cwd,
-                exitCode: result.exitCode,
-                timedOut: result.timedOut || false,
-                durationMs: Date.now() - startTime,
-              }).catch(() => {});
-            } else if (authorization.session) {
-              const { appendSandboxAudit } = require('../../../sandbox');
-              appendSandboxAudit(authorization.session, {
-                type: 'command.finished',
-                command: input.command,
-                cwd: authorization.cwd,
-                exitCode: result.exitCode,
-                timedOut: result.timedOut || false,
-                durationMs: Date.now() - startTime,
-              }).catch(() => {});
-            }
-          }
-
-          resolve(result);
-        };
-
-        const handleData = (chunk: Buffer) => {
-          const text = chunk.toString();
-          combinedOutput += text;
-          UIThrottleBuffer += text;
-
-          // Cap the internal output length to prevent memory blowouts
-          if (combinedOutput.length > 5 * 1024 * 1024) {
-            combinedOutput = combinedOutput.substring(combinedOutput.length - 2 * 1024 * 1024);
-          }
-
-          if (Date.now() - lastUITick > 150) {
-            flushToUI();
-          }
-        };
-
-        child.stdout.on('data', handleData);
-        child.stderr.on('data', handleData);
-
-        child.on('close', (code: number) => {
-          flushToUI(); // Final flush
-          
-          // Cap output sent back to API to prevent massive 50s API latencies
-          // We keep the LAST 30,000 chars because terminal output usually has the important errors/results at the end.
-          let finalOutput = combinedOutput;
-          if (finalOutput.length > 30000) {
-            finalOutput = `...[TRUNCATED ${finalOutput.length - 30000} chars]...\n` + finalOutput.substring(finalOutput.length - 30000);
-          }
-          
-          if (didTimeout) {
-            const note = timeoutNote();
-            finish({
-              stdout: finalOutput,
-              stderr: note,
-              exitCode: 124,
-              timedOut: true,
-              timeoutMs,
-              nextActionNote: note
-            });
-            return;
-          }
-
-          if (abortedBySignal) {
-            finish({
-              stdout: finalOutput,
-              stderr: 'Command cancelled by user.',
-              exitCode: 130,
-              cancelled: true,
-              timeoutMs,
-            });
-            return;
-          }
-
-          finish({
-            stdout: finalOutput,
-            stderr: '',
-            exitCode: code ?? 0,
-            timeoutMs,
-            // Absolute CWD so agent knows exactly where .workspaces/sandbox/file.py lives
-            cwd: runDir,
-          });
-        });
-
-        child.on('error', (err: any) => {
-          flushToUI();
-          if (didTimeout) {
-            const note = timeoutNote();
-            finish({
-              stdout: combinedOutput,
-              stderr: note,
-              exitCode: 124,
-              timedOut: true,
-              timeoutMs,
-              nextActionNote: note
-            });
-            return;
-          }
-
-          if (abortedBySignal) {
-            finish({
-              stdout: combinedOutput,
-              stderr: 'Command cancelled by user.',
-              exitCode: 130,
-              cancelled: true,
-              timeoutMs,
-            });
-            return;
-          }
-
-          finish({
-            stdout: combinedOutput,
-            stderr: err.message,
-            exitCode: 1,
-            timeoutMs
-          });
-        });
-      });
-    } catch (error: any) {
-      return { 
-        stdout: '', 
-        stderr: error.message, 
-        exitCode: 1 
+        stderr: error.message,
+        exitCode: 1
       };
     }
   }

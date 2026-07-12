@@ -677,7 +677,7 @@ export const ProfessionalThought = ({ text, isLatest, isThinking, variant = 'tho
     ul: ({ node, ...props }: any) => <ul className="eterx-answer-list my-3 list-disc space-y-1.5 pl-6" {...props} />,
     ol: ({ node, ...props }: any) => <ol className="eterx-answer-list my-3 list-decimal space-y-1.5 pl-6" {...props} />,
     li: ({ node, ...props }: any) => <li className="eterx-answer-list-item pl-1.5 leading-[1.68]" {...props} />,
-    strong: ({ node, ...props }: any) => <strong className="eterx-answer-strong font-semibold" {...props} />,
+    strong: ({ node, ...props }: any) => <strong className="eterx-answer-strong font-bold" {...props} />,
     em: ({ node, ...props }: any) => <em className="eterx-answer-em italic" {...props} />,
     a: ({ node, href, children, ...props }: any) => {
       const localPath = decodeLocalFileHref(href);
@@ -741,7 +741,7 @@ export const ProfessionalThought = ({ text, isLatest, isThinking, variant = 'tho
                     ol: ({ node, ...props }: any) => <ol className="my-3 list-decimal space-y-2 pl-6 text-[#D5D3CE]" {...props} />,
                     ul: ({ node, ...props }: any) => <ul className="my-3 list-disc space-y-2 pl-6 text-[#D5D3CE]" {...props} />,
                     li: ({ node, ...props }: any) => <li className="pl-1.5 leading-[1.66] marker:text-[#827C73]" {...props} />,
-                    strong: ({ node, ...props }: any) => <strong className="font-semibold text-[#F3F2EF]" {...props} />,
+                    strong: ({ node, ...props }: any) => <strong className="font-bold text-[#F3F2EF]" {...props} />,
                     a: ({ node, href, children, ...props }: any) => {
                       const localPath = decodeLocalFileHref(href);
                       if (localPath) return <LocalFileLinkChip filePath={localPath} label={getReactNodeText(children)} compact />;
@@ -905,11 +905,21 @@ const ansiToHtml = (text: string): string => {
   if (!text) return '';
   const esc = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const ANSI: Record<string, string> = {
-    '0': '', '1': 'font-weight:700', '31': 'color:#f85149', '32': 'color:#3fb950',
-    '33': 'color:#d29922', '34': 'color:#58a6ff', '35': 'color:#bc8cff',
-    '36': 'color:#56d364', '37': 'color:#e6edf3', '90': 'color:#8b949e',
-    '91': 'color:#ffa198', '92': 'color:#56d364', '93': 'color:#e3b341',
-    '94': 'color:#79c0ff', '95': 'color:#d2a8ff', '96': 'color:#76e3ea',
+    '0': '', '1': 'font-weight:700',
+    '31': 'color:var(--terminal-red, #f85149)',
+    '32': 'color:var(--terminal-green, #3fb950)',
+    '33': 'color:var(--terminal-yellow, #d29922)',
+    '34': 'color:var(--terminal-blue, #58a6ff)',
+    '35': 'color:var(--terminal-magenta, #bc8cff)',
+    '36': 'color:var(--terminal-cyan, #56d364)',
+    '37': 'color:var(--terminal-white, #e6edf3)',
+    '90': 'color:var(--terminal-gray, #8b949e)',
+    '91': 'color:var(--terminal-light-red, #ffa198)',
+    '92': 'color:var(--terminal-light-green, #56d364)',
+    '93': 'color:var(--terminal-light-yellow, #e3b341)',
+    '94': 'color:var(--terminal-light-blue, #79c0ff)',
+    '95': 'color:var(--terminal-light-magenta, #d2a8ff)',
+    '96': 'color:var(--terminal-light-cyan, #76e3ea)',
   };
   return esc.replace(/\x1B\[([0-9;]*)m/g, (_, p) => {
     const style = p.split(';').map((c: string) => ANSI[c] || '').filter(Boolean).join(';');
@@ -1113,11 +1123,11 @@ const TrpCard = React.memo(({ icon, title, badge, children }: {
   badge?: React.ReactNode;
   children: React.ReactNode;
 }) => (
-  <div className="mx-3 mt-1.5 mb-2 overflow-hidden rounded-[11px] border border-white/[0.07] bg-[#191918] text-[#D0C8C0] shadow-[0_4px_16px_rgba(0,0,0,0.24)]">
+  <div className="eterx-trp-card mx-3 mt-1.5 mb-2 overflow-hidden rounded-[11px] border border-white/[0.07] bg-[#191918] text-[#D0C8C0] shadow-[0_4px_16px_rgba(0,0,0,0.24)]">
     {title && (
-      <div className="flex items-center gap-2 border-b border-white/[0.055] px-3.5 py-2.5">
+      <div className="eterx-trp-card-header flex items-center gap-2 border-b border-white/[0.055] px-3.5 py-2.5">
         {icon && <span className="flex h-4 w-4 shrink-0 items-center justify-center text-[#6A6460]">{icon}</span>}
-        <span className="flex-1 text-[11.5px] font-semibold text-[#B0A9A1] tracking-[-0.01em]">{title}</span>
+        <span className="eterx-trp-card-title flex-1 text-[11.5px] font-semibold text-[#B0A9A1] tracking-[-0.01em]">{title}</span>
         {badge && <span className="shrink-0">{badge}</span>}
       </div>
     )}
@@ -1178,6 +1188,52 @@ const TrpMarkdown = React.memo(({ content }: { content: string }) => (
   </div>
 ));
 TrpMarkdown.displayName = 'TrpMarkdown';
+
+const ObjectCard = React.memo(({ item, primaryKey, secondaryKey, metaKeys }: {
+  item: any;
+  primaryKey: string;
+  secondaryKey: string;
+  metaKeys: string[];
+}) => {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <div className="rounded-[7px] bg-white/[0.02] border border-white/[0.04] px-2.5 py-2 hover:border-white/[0.08] transition-colors">
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0 flex-1">
+          {primaryKey && item[primaryKey] != null && (
+            <div className="text-[12px] font-semibold text-[#C0B8B0] leading-tight mb-0.5 truncate select-all">{String(item[primaryKey])}</div>
+          )}
+          {secondaryKey && item[secondaryKey] != null && (
+            <div className="text-[11.5px] text-[#7A7470] leading-snug line-clamp-2 select-text">{String(item[secondaryKey])}</div>
+          )}
+        </div>
+        <button
+          onClick={() => setExpanded(!expanded)}
+          className="shrink-0 text-[10px] font-medium text-[#6B9AB8] hover:text-[#94C7E0] hover:bg-white/[0.04] transition-all px-1.5 py-0.5 rounded border border-white/[0.06] shadow-[0_1px_3px_rgba(0,0,0,0.1)]"
+        >
+          {expanded ? 'Hide Details' : 'Show Details'}
+        </button>
+      </div>
+
+      {metaKeys.length > 0 && !expanded && (
+        <div className="mt-1.5 flex gap-x-2.5 gap-y-0.5 flex-wrap">
+          {metaKeys.map(mk => item[mk] != null && (
+            <span key={mk} className="text-[10px] font-mono text-[#5E5A55] select-text">
+              <span className="text-[#4E4A46] font-medium">{mk}:</span> {String(item[mk])}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {expanded && (
+        <div className="mt-2.5 rounded-[5px] bg-black/35 border border-white/[0.05] p-2 max-h-[200px] overflow-auto eterx-scrollbar font-mono text-[10.5px] leading-[1.5] text-[#9A9288] whitespace-pre select-text">
+          {JSON.stringify(item, null, 2)}
+        </div>
+      )}
+    </div>
+  );
+});
+ObjectCard.displayName = 'ObjectCard';
 
 // ─── Main component ────────────────────────────────────────────────────────
 const ToolResultPreview = React.memo(({ toolName, args, result }: { toolName: string; args: any; result: any }) => {
@@ -1379,20 +1435,20 @@ const ToolResultPreview = React.memo(({ toolName, args, result }: { toolName: st
 
   // ── 7. workspace_list_directory ───────────────────────────────────────────
   if (toolName === 'workspace_list_directory' || toolName === 'list_directory') {
-    const list: any[] = Array.isArray(result) ? result : Array.isArray(result?.files) ? result.files : Array.isArray(result?.entries) ? result.entries : [];
+    const list: any[] = Array.isArray(result) ? result : Array.isArray(result?.entries) ? result.entries : Array.isArray(result?.files) ? result.files : [];
     const dirPath: string = args?.directory || args?.dir || args?.path || '';
-    const dirs = list.filter((i: any) => i.isDir || i.isDirectory || i.type === 'directory').length;
-    const files = list.length - dirs;
     return (
       <TrpCard>
         {dirPath && <div className="mb-2 text-[10.5px] font-mono text-[#4E4A46] truncate select-all">{dirPath}</div>}
         <div className="flex flex-col max-h-[240px] overflow-y-auto eterx-scrollbar">
           {list.length > 0 ? list.map((item: any, i: number) => {
-            const name: string = item.name || item.relative || item.path || item.filename || '';
-            const isDir = item.isDir || item.isDirectory || item.type === 'directory';
-            const size: string = typeof item.size === 'number'
-              ? item.size >= 1048576 ? `${ (item.size / 1048576).toFixed(1) }M` : `${ (item.size / 1024).toFixed(1) }K`
-              : '';
+            const name: string = typeof item === 'string' ? item : (item.name || item.relative || item.path || item.filename || '');
+            const isDir = typeof item === 'string' ? false : !!(item.isDir || item.isDirectory || item.type === 'directory');
+            const size: string = typeof item === 'string'
+              ? ''
+              : typeof item.size === 'number'
+                ? item.size >= 1048576 ? `${ (item.size / 1048576).toFixed(1) }M` : `${ (item.size / 1024).toFixed(1) }K`
+                : '';
             return (
               <div key={i} className="flex items-center gap-2 py-[3px] px-1 rounded-[4px] hover:bg-white/[0.025] font-mono text-[11.5px]">
                 <span className={`shrink-0 text-[9px] ${ isDir ? 'text-amber-500/70' : 'text-[#3E3A36]' }`}>{isDir ? '▸' : '·'}</span>
@@ -1477,13 +1533,22 @@ const ToolResultPreview = React.memo(({ toolName, args, result }: { toolName: st
   const obj: Record<string, any> = typeof result === 'object' && result !== null && !Array.isArray(result) ? result : {};
 
   // Primary message/text
-  const primaryText: string = typeof result === 'string' ? result
-    : obj.message || obj.content || obj.text || obj.output || obj.summary || obj.answer || obj.report || '';
+  const getPrimaryText = () => {
+    if (typeof result === 'string') return result;
+    const candidates = ['message', 'content', 'text', 'output', 'stdout', 'stderr', 'logs', 'response', 'result', 'summary', 'answer', 'report'];
+    for (const key of candidates) {
+      if (typeof obj[key] === 'string' && obj[key].trim().length > 0) {
+        return obj[key];
+      }
+    }
+    return '';
+  };
+  const primaryText = getPrimaryText();
   const hasPrimaryText = primaryText.trim().length > 0;
   const primaryIsMd = hasPrimaryText && /^#{1,3}\s|\*\*|\n#{1,3}\s|\[.+?\]\(.+?\)/.test(primaryText);
 
   // Collect ALL arrays in the result
-  const SKIP_ARRAY_KEYS = new Set(['sources', 'urls', 'links', 'checks', 'items', 'errors']);
+  const SKIP_ARRAY_KEYS = new Set(['sources', 'urls', 'links', 'checks']);
   const arrayFields: Array<{ key: string; items: any[] }> = [];
   for (const [k, v] of Object.entries(obj)) {
     if (Array.isArray(v) && v.length > 0 && !SKIP_ARRAY_KEYS.has(k)) {
@@ -1493,8 +1558,11 @@ const ToolResultPreview = React.memo(({ toolName, args, result }: { toolName: st
   if (rootArr && rootArr.length > 0) arrayFields.push({ key: '', items: rootArr });
 
   // Scalar fields to show as key-value tiles
-  const SKIP_SCALAR = new Set(['success', 'passed', 'ok', 'error', 'message', 'content', 'text',
-    'output', 'summary', 'answer', 'report', '_cached', '_traceIdx', 'timestamp', 'data']);
+  const SKIP_SCALAR = new Set([
+    'success', 'passed', 'ok', 'error', 'message', 'content', 'text',
+    'output', 'stdout', 'stderr', 'logs', 'response', 'result', 'summary',
+    'answer', 'report', '_cached', '_traceIdx', 'timestamp', 'data'
+  ]);
   const scalarFields: [string, any][] = Object.entries(obj).filter(
     ([k, v]) => !SKIP_SCALAR.has(k) && !Array.isArray(v) && typeof v !== 'object' && v !== null && v !== undefined && String(v).trim().length > 0
   );
@@ -1555,10 +1623,13 @@ const ToolResultPreview = React.memo(({ toolName, args, result }: { toolName: st
       {/* Primary text/markdown */}
       {hasPrimaryText && (
         <div className="mb-3 max-h-[280px] overflow-y-auto overflow-x-hidden eterx-scrollbar">
-          {primaryIsMd
-            ? <TrpMarkdown content={primaryText} />
-            : <p className="text-[12.5px] leading-[1.7] text-[#C0B8B0] whitespace-pre-wrap break-words select-text">{primaryText}</p>
-          }
+          {primaryIsMd ? (
+            <TrpMarkdown content={primaryText} />
+          ) : primaryText.includes('\n') || primaryText.length > 80 ? (
+            <pre className="font-mono text-[11px] leading-[1.6] text-[#9A9288] whitespace-pre-wrap break-words select-text rounded-[7px] bg-black/20 border border-white/[0.04] p-2.5 max-h-[240px] overflow-y-auto eterx-scrollbar">{primaryText}</pre>
+          ) : (
+            <p className="text-[12.5px] leading-[1.7] text-[#C0B8B0] whitespace-pre-wrap break-words select-text">{primaryText}</p>
+          )}
         </div>
       )}
 
@@ -1676,23 +1747,7 @@ const ToolResultPreview = React.memo(({ toolName, args, result }: { toolName: st
               )}
               <div className="flex flex-col gap-1.5 max-h-[280px] overflow-y-auto eterx-scrollbar">
                 {items.map((item: any, i: number) => (
-                  <div key={i} className="rounded-[7px] bg-white/[0.02] border border-white/[0.04] px-2.5 py-2 hover:border-white/[0.08] transition-colors">
-                    {primaryKey && item[primaryKey] != null && (
-                      <div className="text-[12px] font-semibold text-[#C0B8B0] leading-tight mb-0.5 truncate">{String(item[primaryKey])}</div>
-                    )}
-                    {secondaryKey && item[secondaryKey] != null && (
-                      <div className="text-[11.5px] text-[#7A7470] leading-snug line-clamp-2">{String(item[secondaryKey])}</div>
-                    )}
-                    {metaKeys.length > 0 && (
-                      <div className="mt-1 flex gap-2 flex-wrap">
-                        {metaKeys.map(mk => item[mk] != null && (
-                          <span key={mk} className="text-[10px] font-mono text-[#4E4A46]">
-                            <span className="text-[#3A3631]">{mk}: </span>{String(item[mk])}
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                  </div>
+                  <ObjectCard key={i} item={item} primaryKey={primaryKey} secondaryKey={secondaryKey} metaKeys={metaKeys} />
                 ))}
               </div>
             </div>

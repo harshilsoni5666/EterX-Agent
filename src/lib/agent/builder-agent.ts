@@ -856,6 +856,7 @@ function normalizeAgentBuilderProfile(value: any, fallbackAgentId: string): Agen
 // ═══════════════════════════════════════════════════════════════
 
 export const CUSTOM_AGENT_RUNTIME = 'custom_agent';
+export const AGENT_FLOW_RUNTIME = 'agent_flow';
 
 /**
  * Detect if a context is running a custom agent.
@@ -874,6 +875,25 @@ export function buildCustomAgentPinnedContext(agentId: string, agentName: string
     agentRuntime: CUSTOM_AGENT_RUNTIME,
     customAgentId: sanitizeAgentBuilderId(agentId),
     customAgentName: agentName || agentId,
+  };
+}
+
+/** True when the shared main-agent pipeline is executing a saved workflow. */
+export function isAgentFlowRuntimeContext(context: any): boolean {
+  return context?.agentRuntime === AGENT_FLOW_RUNTIME && !!context?.flowId;
+}
+
+/**
+ * Keep flow execution inside the normal chat registry. This gives a flow the
+ * same lifecycle, cancellation, workspace policy, transcript, and UI traces
+ * as the General agent instead of starting a second transport.
+ */
+export function buildAgentFlowPinnedContext(flowId: string, flowName: string, pinnedContext: any = null): Record<string, unknown> {
+  return {
+    ...(pinnedContext || {}),
+    agentRuntime: AGENT_FLOW_RUNTIME,
+    flowId: sanitizeFlowId(flowId),
+    flowName: flowName || flowId,
   };
 }
 

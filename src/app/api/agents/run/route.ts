@@ -14,6 +14,7 @@
  */
 import { NextRequest } from 'next/server';
 import { AgentRunner } from '../../../../lib/agent/agent-runner';
+import { readAgentFlowProfile } from '../../../../lib/agent/builder-agent';
 import { buildScopedRuntimeSettings } from '../../../../lib/agent/runtime-api-keys';
 import { resolveModelName, normalizeMainAgentMode } from '../../../../lib/agent/model-routing';
 import {
@@ -81,11 +82,23 @@ export async function POST(req: NextRequest) {
 
     const runner = new AgentRunner();
 
-    // Load the agent (validates it's finalized)
+    // A selection can be either one finalized custom agent or a finalized
+    // multi-agent flow. Flows deliberately have no agent profile, so detect
+    // them before attempting the single-agent loader.
+    let selectedFlow: Awaited<ReturnType<typeof readAgentFlowProfile>> | null = null;
     try {
-      await runner.loadAgent(agentId);
+      const flow = await readAgentFlowProfile(agentId);
+      if (flow.status === 'ready' && flow.steps.length > 0) selectedFlow = flow;
     } catch (err: any) {
-      return attachAgentApiSessionCookie(jsonError(err.message || 'Agent is not ready.', 404), session);
+      // No flow profile exists for this identifier; it may still be an agent.
+    }
+
+    if (!selectedFlow) {
+      try {
+        await runner.loadAgent(agentId);
+      } catch (err: any) {
+        return attachAgentApiSessionCookie(jsonError(err.message || 'Agent or flow is not ready.', 404), session);
+      }
     }
 
     // Stream events back
@@ -169,9 +182,23 @@ export async function GET(req: NextRequest) {
 
   try {
     const runner = new AgentRunner();
+    const flow = await readAgentFlowProfile(agentId);
+    if (flow.status === 'ready' && flow.steps.length > 0) {
+      return Response.json({
+        ready: true,
+        kind: 'flow',
+        agentId: flow.flowId,
+        name: flow.name || flow.flowId,
+        mission: flow.description,
+        toolCount: 0,
+        stepCount: flow.steps.length,
+        status: flow.status,
+      });
+    }
     const profile = await runner.loadAgent(agentId);
     return Response.json({
       ready: true,
+      kind: 'agent',
       agentId: profile.agentId,
       name: profile.name || agentId,
       mission: profile.mission,

@@ -151,7 +151,9 @@ export class SessionStateManager {
   }
 
   private isIsolatedSessionId(projectId?: string | null): boolean {
-    return !!projectId && /^(telegram|whatsapp)-/i.test(projectId);
+    if (!projectId) return false;
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(projectId);
+    return isUuid || /^(telegram|whatsapp)-/i.test(projectId);
   }
 
   private cloneState(state: SessionState): SessionState {
@@ -427,6 +429,27 @@ export class SessionStateManager {
       this.maybeCleanupStaleSessions();
     } catch (err: any) {
       console.warn(`[Session] ⚠️ Failed to save session: ${ err.message }`);
+    }
+  }
+
+  /**
+   * Persist exactly one chat's state without consulting the mutable
+   * process-wide "current project" pointer. Tool calls from concurrent chats
+   * use this path so a save can never write another chat's session snapshot.
+   */
+  public async saveForChat(chatId: string): Promise<void> {
+    if (!chatId) return;
+    try {
+      await fs.ensureDir(SESSION_DIR);
+      const state = this.cloneState(this.getStateForChat(chatId));
+      state.lastActivityAt = Date.now();
+      state.boundChatId = chatId;
+      this.trimStateForRetention(state);
+      this.rememberActiveSession(chatId, state);
+      await writeJsonAtomic(this.getStateFilePath(chatId), { ...state, _projectId: chatId });
+      this.maybeCleanupStaleSessions();
+    } catch (err: any) {
+      console.warn(`[Session] Failed to save isolated chat session: ${err.message}`);
     }
   }
 

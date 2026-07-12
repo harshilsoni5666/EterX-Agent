@@ -52,19 +52,27 @@ function inlineFileNameHeader(filename: string) {
 
 export async function GET(req: NextRequest, { params }: { params: { path: string[] } }) {
   try {
-    const requestedPath = path.join(...params.path);
-    const decodedPath = decodeURIComponent(requestedPath);
+    const parts = params.path.map(p => decodeURIComponent(p));
+    let absolutePath = '';
     
-    let absolutePath = decodedPath;
+    const driveIndex = parts.findIndex(p => p.endsWith(':'));
+    if (driveIndex !== -1) {
+      absolutePath = parts[driveIndex] + path.sep + path.join(...parts.slice(driveIndex + 1));
+    } else {
+      absolutePath = path.join(...parts);
+    }
     
     if (!fs.existsSync(absolutePath)) {
-       if (absolutePath.startsWith('/') && absolutePath[2] === ':') {
-         absolutePath = absolutePath.substring(1);
+       if (!path.isAbsolute(absolutePath)) {
+         const altPath = '/' + absolutePath;
+         if (fs.existsSync(altPath)) {
+           absolutePath = altPath;
+         }
        }
-       
-       if (!fs.existsSync(absolutePath)) {
-          return new NextResponse('Not found', { status: 404 });
-       }
+    }
+    
+    if (!fs.existsSync(absolutePath)) {
+       return new NextResponse('Not found', { status: 404 });
     }
     
     const stats = fs.statSync(absolutePath);

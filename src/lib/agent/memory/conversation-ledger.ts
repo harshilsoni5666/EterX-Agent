@@ -761,8 +761,24 @@ export class ConversationLedger {
             }
           }
 
+          // Check if any positional argument points to an existing file to include its size & mtime in the hash
+          let fileSignatures = '';
+          for (const arg of positionalArgs) {
+            const cleanArg = arg.replace(/^["']|["']$/g, '');
+            if (!cleanArg) continue;
+            try {
+              const resolved = path.isAbsolute(cleanArg) ? cleanArg : path.resolve(process.cwd(), cleanArg);
+              if (fs.pathExistsSync(resolved)) {
+                const stat = fs.lstatSync(resolved);
+                if (stat.isFile()) {
+                  fileSignatures += `_file:${cleanArg}:${stat.mtimeMs}:${stat.size}`;
+                }
+              }
+            } catch {}
+          }
+
           flags.sort();
-          return `cmd:${baseCmd}:${positionalArgs.join(',')}:${flags.join(',')}`;
+          return `cmd:${baseCmd}:${positionalArgs.join(',')}:${flags.join(',')}${fileSignatures}`;
         }
 
         // Skill tools: just the skill name

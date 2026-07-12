@@ -1,4 +1,5 @@
 import { GoogleGenAI } from '@google/genai';
+import { randomUUID } from 'crypto';
 import { AgentOrchestrator } from './orchestrator';
 import { apiKeyPool, type KeyLease } from './api-key-pool';
 import { taskStore } from './task-store';
@@ -43,6 +44,8 @@ interface SteeringMessage {
 
 interface AgentExecution {
   chatId: string;
+  /** Stable client/server run identity. Prevents an old poll response from being applied to a newer run. */
+  runId: string;
   prompt: string;
   status: 'running' | 'completed' | 'failed' | 'stopped';
   startedAt: number;
@@ -212,13 +215,14 @@ class AgentRegistry {
     mediaAttachments: any[] = [],
     userName: string = 'Developer',
     _preferredGeminiApiKey?: string,
-    runtimeSettings?: ScopedRuntimeSettings | null
-  ): { status: 'started' | 'already_running' | 'no_keys'; chatId: string; message: string } {
+    runtimeSettings?: ScopedRuntimeSettings | null,
+    requestedRunId?: string,
+  ): { status: 'started' | 'already_running' | 'no_keys'; chatId: string; runId?: string; message: string } {
 
     // Check if this chat already has a running agent
     const existing = this.executions.get(chatId);
     if (existing && existing.status === 'running') {
-      return { status: 'already_running', chatId, message: 'Agent is already running for this chat' };
+      return { status: 'already_running', chatId, runId: existing.runId, message: 'Agent is already running for this chat' };
     }
 
     const modelConfig = getMainAgentModelConfig(mode, runtimeSettings);
@@ -252,6 +256,7 @@ class AgentRegistry {
     // Create the execution record
     const execution: AgentExecution = {
       chatId,
+      runId: requestedRunId || randomUUID(),
       prompt,
       status: 'running',
       startedAt: Date.now(),
@@ -651,7 +656,7 @@ class AgentRegistry {
     const poolStatus = isExternalProvider ? null : apiKeyPool.getPoolStatus();
     console.log(`[AgentRegistry] Agent started for chat ${ chatId.substring(0, 8) }... | Model: ${ modelConfig.modelName }${ lease ? ` | Key: #${ lease.keyIndex } | Pool: ${ poolStatus?.healthySummary }` : '' }`);
 
-    return { status: 'started', chatId, message: lease ? `Agent started with key #${ lease.keyIndex }` : `Agent started with ${ modelConfig.label }` };
+    return { status: 'started', chatId, runId: execution.runId, message: lease ? `Agent started with key #${ lease.keyIndex }` : `Agent started with ${ modelConfig.label }` };
   }
 
   /**
@@ -663,6 +668,7 @@ class AgentRegistry {
     totalTraces: number;
     maxIndex: number;
     finalAnswer: string;
+    runId?: string;
     startedAt?: number;
     completedAt?: number;
     error?: string;
@@ -692,6 +698,7 @@ class AgentRegistry {
       totalTraces: execution.traceBuffer.length,
       maxIndex,
       finalAnswer: execution.finalAnswer,
+      runId: execution.runId,
       startedAt: execution.startedAt,
       completedAt: execution.completedAt,
       error: execution.error,

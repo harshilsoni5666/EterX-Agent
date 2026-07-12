@@ -289,12 +289,14 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
     let isFlow = false;
     try {
       const flow = await readAgentFlowProfile(config.agentId);
-      if (flow && flow.steps && flow.steps.length > 0) {
+      if (flow?.status === 'ready' && flow.steps && flow.steps.length > 0) {
         isFlow = true;
       }
     } catch {}
 
     if (isFlow) {
+      this.cancelled = false;
+      this.cancelController = new AbortController();
       const userMessage = messages[messages.length - 1]?.content || '';
       const agentName = config.agentId;
       yield {
@@ -323,6 +325,39 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
             agentName: trace.agentName || agentName,
             timestamp: Date.now()
           });
+        } else if (trace?.type === 'tool_result' || trace?.type === 'tool_result_preview') {
+          eventQueue.push({
+            type: 'tool_result',
+            toolName: trace.toolName || trace.tool,
+            toolResult: trace.toolResult ?? trace.result,
+            agentName: trace.agentName || agentName,
+            timestamp: Date.now(),
+          });
+        } else if (['command', 'exploration', 'file_edit', 'communication', 'browser'].includes(trace?.type)) {
+          // The main agent emits rich action traces rather than a literal
+          // `tool_call` event. Normalize them so flows get the same cards in
+          // the custom-agent chat timeline.
+          eventQueue.push({
+            type: 'tool_call',
+            toolName: trace.tool || trace.name || 'workflow_action',
+            toolArgs: {
+              ...(trace.toolArgs || {}),
+              uiActionText: trace.text,
+              uiIcon: trace.icon || trace.iconCategory,
+              filename: trace.filename,
+              command: trace.command,
+              secondary: trace.secondary,
+            },
+            agentName: trace.agentName || agentName,
+            timestamp: Date.now(),
+          });
+        } else if (trace?.type === 'work_note' || trace?.type === 'progress') {
+          eventQueue.push({
+            type: 'status',
+            text: trace.text || 'Working on the flow',
+            agentName: trace.agentName || agentName,
+            timestamp: Date.now(),
+          });
         }
       };
 
@@ -331,6 +366,10 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
         {
           projectId: config.chatId || `flow-${config.agentId}`,
           runtimeSettings: config.runtimeSettings,
+          pinnedContext: config.pinnedContext,
+          runLocation: config.runLocation,
+          abortSignal: this.cancelController?.signal,
+          signal: this.cancelController?.signal,
           _onTrace: onTrace
         }
       );

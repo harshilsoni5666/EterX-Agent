@@ -79,14 +79,14 @@ function nativeThemeColors(theme) {
   if (safeTheme === 'dark') {
     return {
       background: '#0F0F0F',
-      titleBar: '#00000000',
-      titleSymbol: '#d1d1d1',
+      titleBar: '#0F0F0F',
+      titleSymbol: '#D0C8C0',
     };
   }
   return {
-    background: '#FAFAF8',
-    titleBar: '#00000000',
-    titleSymbol: '#111111',
+    background: '#F7F7F5',
+    titleBar: '#F7F7F5',
+    titleSymbol: '#1F1F1D',
   };
 }
 
