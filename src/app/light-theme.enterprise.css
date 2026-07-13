@@ -1464,4 +1464,55 @@
 
 :root[data-theme="light"] .eterx-user-message-action-button:active {
   background: rgba(31, 31, 29, 0.12) !important;
-}
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   Light-theme sidebar overlay mode overrides for narrow windows <960px
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+@media (max-width: 959px) {
+  /* Override the light-theme open sidebar rules to use overlay mode */
+  .eterx-app-shell[data-sidebar-open="true"] .eterx-sidebar-shell {
+    position: fixed !important;
+    top: 0 !important;
+    left: 0 !important;
+    bottom: 0 !important;
+    height: 100dvh !important;
+    z-index: 200 !important;
+    width: var(--eterx-shell-sidebar-width) !important;
+    margin-right: 0 !important;
+    overflow: visible !important;
+    box-shadow: 4px 0 32px rgba(0,0,0,0.18), 1px 0 0 rgba(0,0,0,0.06) !important;
+  }
+
+  .eterx-app-shell[data-sidebar-open="true"] .eterx-sidebar-shell > div:not(.eterx-sidebar-sheen):not(.eterx-sidebar-resize-handle) {
+    width: var(--eterx-shell-sidebar-width) !important;
+  }
+
+  .eterx-app-shell[data-sidebar-open="true"] .eterx-sidebar-resize-handle {
+    display: none !important;
+  }
+
+  .eterx-app-shell[data-sidebar-open="true"] .eterx-workspace-shell {
+    z-index: 1 !important;
+    pointer-events: auto !important;
+    background: inherit !important;
+    margin-left: 0 !important;
+    padding-left: 0 !important;
+  }
+
+  :root[data-theme="light"] .eterx-app-shell[data-sidebar-open="true"] .eterx-workspace-shell {
+    background: inherit !important;
+  }
+
+  .eterx-app-shell[data-sidebar-open="true"] .eterx-workspace-shell > * {
+    pointer-events: auto !important;
+  }
+
+  .eterx-app-shell[data-sidebar-open="true"] .eterx-main-panel {
+    border-radius: 0 !important;
+  }
+
+  .eterx-app-shell[data-sidebar-open="true"] .eterx-main-panel::after {
+    border-radius: 0 !important;
+  }
+}

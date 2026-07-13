@@ -1,4 +1,5 @@
 import React, { useRef, useState, useEffect, useCallback, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { FileText, X, Check, Activity, CheckCircle2, XCircle, Folder, File as FileIcon, ChevronDown, ChevronRight, Image as ImageIcon, AlertCircle, ListTodo, ArrowUpRight, LaptopMinimal, GitBranch, Search, FolderPlus, FolderOpen, Cloud, CloudOff, ExternalLink, Gauge, Plus, CircleSlash, GitFork, Terminal, Bot } from 'lucide-react';
 import { PremiumMic, PremiumSend, PremiumPlus, PremiumAudioLines, PremiumVolume2, PremiumVolumeX, PremiumMicOff } from '../ui/premium-icons';
@@ -181,7 +182,7 @@ const useConnectors = () => {
   useEffect(() => { fetchStatus(); }, [fetchStatus]);
   useEffect(() => {
     let t: NodeJS.Timeout;
-    if (open) t = setInterval(fetchStatus, 2000);
+    if (open) t = setInterval(fetchStatus, 15000); // Connector status rarely changes — 15s is enough
     return () => clearInterval(t);
   }, [open, fetchStatus]);
 
@@ -452,6 +453,19 @@ const getCenteredPopoutOffset = (rect: DOMRect, menuWidth: number, margin = 16) 
   const clampedLeft = Math.min(Math.max(desiredLeft, margin), maxLeft);
   return Math.round(clampedLeft - desiredLeft);
 };
+
+const DocumentPreviewIframe = React.memo(({ src }: { src: string }) => {
+  return (
+    <iframe
+      src={src}
+      className="w-full h-full border-none bg-white rounded-b-[16px]"
+      title="Document Preview"
+      loading="lazy"
+      referrerPolicy="no-referrer"
+    />
+  );
+});
+DocumentPreviewIframe.displayName = 'DocumentPreviewIframe';
 
 const VoiceWaveform = React.memo(({ volume, isProcessing, cancelVoice, acceptVoice }: { volume: number, isProcessing: boolean, cancelVoice: () => void, acceptVoice: () => void }) => {
   const BAR_COUNT = 64;
@@ -1053,6 +1067,61 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const [forceCollapse, setForceCollapse] = useState(false);
   const [showThinkingLevels, setShowThinkingLevels] = useState(false);
   const thinkingTimeoutRef = useRef<any>(null);
+  const [previewImage, setPreviewImage] = useState<string | null>(null);
+  const [zoomScale, setZoomScale] = useState(1);
+  const [panPos, setPanPos] = useState({ x: 0, y: 0 });
+  const [isDragging, setIsDragging] = useState(false);
+  const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
+
+  const [previewDocPath, setPreviewDocPath] = useState<string | null>(null);
+  const [isConvertingDoc, setIsConvertingDoc] = useState(false);
+  const [convertedPdfPath, setConvertedPdfPath] = useState<string | null>(null);
+  const [conversionError, setConversionError] = useState(false);
+
+  useEffect(() => {
+    const handlePreviewDoc = async (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (!detail || !detail.filePath) return;
+
+      const filePath = detail.filePath;
+      setPreviewDocPath(filePath);
+      setConvertedPdfPath(null);
+      setConversionError(false);
+
+      const ext = filePath.split('.').pop()?.toLowerCase();
+      if (ext === 'docx') {
+        setIsConvertingDoc(true);
+        try {
+          const pdfPath = await (window as any).electronAPI.convertDocxToPdf(filePath);
+          if (pdfPath) {
+            setConvertedPdfPath(pdfPath);
+          } else {
+            setConversionError(true);
+          }
+        } catch (err) {
+          console.error('Failed to convert docx:', err);
+          setConversionError(true);
+        } finally {
+          setIsConvertingDoc(false);
+        }
+      }
+    };
+
+    const handlePreviewImage = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (!detail || !detail.previewUrl) return;
+      setZoomScale(1);
+      setPanPos({ x: 0, y: 0 });
+      setPreviewImage(detail.previewUrl);
+    };
+
+    window.addEventListener('eterx-preview-document', handlePreviewDoc);
+    window.addEventListener('eterx-preview-image', handlePreviewImage);
+    return () => {
+      window.removeEventListener('eterx-preview-document', handlePreviewDoc);
+      window.removeEventListener('eterx-preview-image', handlePreviewImage);
+    };
+  }, []);
 
   const handleThinkingMouseEnter = () => {
     if (thinkingTimeoutRef.current) {
@@ -1685,11 +1754,12 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     const newAttachments = validFiles.map((file, index) => {
       const displayName = getAttachmentName(file);
       const localPath = (file as any).path;
+      const isImage = file.type.startsWith('image/') || /\.(png|jpe?g|gif|webp|bmp)$/i.test(displayName);
       return {
         id: `${ Date.now() }-${ index }-${ Math.random().toString(36).slice(2) }`,
         file,
         name: displayName,
-        preview: file.type.startsWith('image/')
+        preview: isImage
           ? (localPath ? buildLocalFilePreviewUrl(localPath) : URL.createObjectURL(file))
           : '',
         uploadStatus: localPath ? 'done' as const : 'uploading' as const,
@@ -2497,15 +2567,15 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       {/* Pinned Folders and Files */}
                       {pinnedItems.map((item) => {
                         const isFolder = item.type === 'folder';
-                        const iconSrc = isFolder 
-                          ? '/icons/agent-ui/folder.png' 
+                        const iconSrc = isFolder
+                          ? '/icons/agent-ui/folder.png'
                           : (item.systemIcon || getFileIconPath(item.path));
-                          
+
                         const getDisplayType = () => {
                           if (isFolder) return 'Folder';
                           const ext = item.path.split('.').pop()?.toLowerCase();
                           if (!ext || ext === item.path.toLowerCase()) return 'File';
-                          
+
                           switch (ext) {
                             case 'ts': return 'TypeScript';
                             case 'tsx': return 'React';
@@ -2532,18 +2602,25 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                         };
 
                         const displayType = getDisplayType();
+                        const ext = item.path.split('.').pop()?.toLowerCase();
+                        const isPreviewable = !isFolder && (ext === 'pdf' || ext === 'docx');
 
                         return (
                           <div
                             key={item.id}
-                            className="relative flex items-center bg-[#1E1E1E]/92 border border-white/[0.08] rounded-[12px] pl-1.5 pr-8 py-1.5 min-w-[125px] max-w-[200px] shadow-sm select-none h-[42px] shrink-0"
+                            onClick={() => {
+                              if (isPreviewable) {
+                                window.dispatchEvent(new CustomEvent('eterx-preview-document', { detail: { filePath: item.path } }));
+                              }
+                            }}
+                            className={`relative flex items-center bg-[#1E1E1E]/92 border border-white/[0.08] rounded-[12px] pl-1.5 pr-8 py-1.5 min-w-[125px] max-w-[200px] shadow-sm select-none h-[42px] shrink-0 ${ isPreviewable ? 'cursor-pointer' : 'cursor-default' }`}
                           >
                             {/* Left Icon Square Box */}
                             <div className="w-[30px] h-[30px] rounded-[8px] bg-black/40 border border-white/[0.05] flex items-center justify-center shrink-0">
                               <img
-                                  src={iconSrc}
-                                  alt=""
-                                  className="w-[18px] h-[18px] object-contain shrink-0"
+                                src={iconSrc}
+                                alt=""
+                                className="w-[18px] h-[18px] object-contain shrink-0"
                               />
                             </div>
 
@@ -2578,22 +2655,69 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                         const extension = displayName.split('.').pop()?.toUpperCase() || 'FILE';
                         const isPreparing = att.uploadStatus === 'uploading';
                         const isErrored = att.uploadStatus === 'error';
-                        
-                        const iconSrc = isImage 
-                          ? att.preview 
-                          : getFileIconPath(displayName);
+
+                        if (isImage) {
+                          return (
+                            <div
+                              key={att.id || i}
+                              className={`relative w-[42px] h-[42px] shrink-0 rounded-[12px] bg-black/40 border ${ isErrored ? 'border-[#E2765A]/45' : 'border-white/[0.08]' } shadow-sm select-none group ${ isPreparing ? 'cursor-default' : 'cursor-pointer' }`}
+                              onClick={() => {
+                                if (isPreparing) return;
+                                if (att.preview) {
+                                  setZoomScale(1);
+                                  setPanPos({ x: 0, y: 0 });
+                                  setPreviewImage(att.preview);
+                                }
+                              }}
+                            >
+                              <img
+                                src={att.preview}
+                                alt={displayName}
+                                className={`w-full h-full object-cover rounded-[12px] ${ isErrored ? 'opacity-40 grayscale' : 'opacity-100' }`}
+                              />
+                              {isPreparing && (
+                                <div className="pointer-events-none absolute inset-0 eterx-surface-shimmer eterx-surface-shimmer-upload rounded-[12px]" />
+                              )}
+                              {isErrored && (
+                                <div className="absolute inset-0 flex items-center justify-center bg-black/28 rounded-[12px]">
+                                  <AlertCircle className="w-4 h-4 text-[#F0B6A7]" strokeWidth={2.2} />
+                                </div>
+                              )}
+                              {/* Delete button (top right) */}
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  removeAttachment(i);
+                                }}
+                                className="absolute top-0.5 right-0.5 w-[15px] h-[15px] flex items-center justify-center rounded-full bg-white text-black transition-colors hover:bg-neutral-200 shrink-0 shadow-md z-10"
+                              >
+                                <X className="w-2.5 h-2.5" strokeWidth={3.5} />
+                              </button>
+                            </div>
+                          );
+                        }
+
+                        // For non-image files, render the card layout
+                        const iconSrc = getFileIconPath(displayName);
+                        const isDocPreviewable = (extension === 'PDF' || extension === 'DOCX') && !isPreparing && !isErrored;
 
                         return (
                           <div
                             key={att.id || i}
-                            className={`relative flex items-center bg-[#1E1E1E]/92 border ${ isErrored ? 'border-[#E2765A]/45' : 'border-white/[0.08]' } rounded-[12px] pl-1.5 pr-8 py-1.5 min-w-[125px] max-w-[200px] shadow-sm select-none h-[42px] shrink-0`}
+                            onClick={() => {
+                              if (isDocPreviewable) {
+                                const targetPath = att.localPath || att.name;
+                                window.dispatchEvent(new CustomEvent('eterx-preview-document', { detail: { filePath: targetPath } }));
+                              }
+                            }}
+                            className={`relative flex items-center bg-[#1E1E1E]/92 border ${ isErrored ? 'border-[#E2765A]/45' : 'border-white/[0.08]' } rounded-[12px] pl-1.5 pr-8 py-1.5 min-w-[125px] max-w-[200px] shadow-sm select-none h-[42px] shrink-0 ${ isDocPreviewable ? 'cursor-pointer' : 'cursor-default' }`}
                           >
                             {/* Left Icon Square Box */}
                             <div className="w-[30px] h-[30px] rounded-[8px] bg-black/40 border border-white/[0.05] flex items-center justify-center shrink-0 overflow-hidden relative">
                               <img
                                 src={iconSrc}
                                 alt=""
-                                className={`${ isImage ? 'w-full h-full object-cover' : 'w-[18px] h-[18px] object-contain' } shrink-0`}
+                                className="w-[18px] h-[18px] object-contain shrink-0"
                               />
                               {isPreparing && (
                                 <div className="pointer-events-none absolute inset-0 eterx-surface-shimmer eterx-surface-shimmer-upload" />
@@ -2720,31 +2844,31 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                   </button>
                 </Tooltip>
 
-                  {showPinMenu && (
-                    <div
-                      style={{ transform: 'translateX(-50%)' }}
-                      className={`eterx-composer-popout eterx-pin-popout absolute ${ controlPopoutVerticalClass } left-1/2 z-[120] flex w-[150px] flex-col rounded-[15px] border border-white/[0.105] bg-[#1A1A1A]/95 backdrop-blur-2xl p-[3px] shadow-[0_16px_34px_rgba(0,0,0,0.58),inset_0_1px_0_rgba(255,255,255,0.055)]`}
-                    >
-                      <span className="eterx-composer-popout-caret pointer-events-none absolute -bottom-[5px] left-1/2 z-0 h-[10px] w-[10px] -translate-x-1/2 rotate-45 border-b border-r border-white/[0.105] bg-[#1A1A1A]/95" />
-                      <button type="button" onClick={handlePinFolder} className="group/menu relative z-10 flex h-[40px] w-full items-center gap-[9px] rounded-[12px] px-[9px] text-left text-white transition-all duration-150 hover:bg-white/[0.095] hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] focus-visible:bg-white/[0.095] focus-visible:outline-none active:scale-[0.99]">
-                        <span className="flex h-[25px] w-[25px] shrink-0 items-center justify-center text-white transition-colors">
-                          <PinFolderIcon className="h-[24px] w-[24px]" />
-                        </span>
-                        <span className="min-w-0 text-[13.5px] font-semibold leading-none tracking-[-0.004em]">
-                          Folder
-                        </span>
-                      </button>
-                      <div className="relative z-10 mx-[9px] h-px bg-white/[0.05]" />
-                      <button type="button" onClick={handlePinFiles} className="group/menu relative z-10 flex h-[40px] w-full items-center gap-[9px] rounded-[12px] px-[9px] text-left text-white transition-all duration-150 hover:bg-white/[0.095] hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] focus-visible:bg-white/[0.095] focus-visible:outline-none active:scale-[0.99]">
-                        <span className="flex h-[25px] w-[25px] shrink-0 items-center justify-center text-white transition-colors">
-                          <PinFileIcon className="h-[24px] w-[24px]" />
-                        </span>
-                        <span className="min-w-0 text-[13.5px] font-semibold leading-none tracking-[-0.004em]">
-                          Files
-                        </span>
-                      </button>
-                    </div>
-                  )}
+                {showPinMenu && (
+                  <div
+                    style={{ transform: 'translateX(-50%)' }}
+                    className={`eterx-composer-popout eterx-pin-popout absolute ${ controlPopoutVerticalClass } left-1/2 z-[120] flex w-[150px] flex-col rounded-[15px] border border-white/[0.105] bg-[#1A1A1A]/95 backdrop-blur-2xl p-[3px] shadow-[0_16px_34px_rgba(0,0,0,0.58),inset_0_1px_0_rgba(255,255,255,0.055)]`}
+                  >
+                    <span className="eterx-composer-popout-caret pointer-events-none absolute -bottom-[5px] left-1/2 z-0 h-[10px] w-[10px] -translate-x-1/2 rotate-45 border-b border-r border-white/[0.105] bg-[#1A1A1A]/95" />
+                    <button type="button" onClick={handlePinFolder} className="group/menu relative z-10 flex h-[40px] w-full items-center gap-[9px] rounded-[12px] px-[9px] text-left text-white transition-all duration-150 hover:bg-white/[0.095] hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] focus-visible:bg-white/[0.095] focus-visible:outline-none active:scale-[0.99]">
+                      <span className="flex h-[25px] w-[25px] shrink-0 items-center justify-center text-white transition-colors">
+                        <PinFolderIcon className="h-[24px] w-[24px]" />
+                      </span>
+                      <span className="min-w-0 text-[13.5px] font-semibold leading-none tracking-[-0.004em]">
+                        Folder
+                      </span>
+                    </button>
+                    <div className="relative z-10 mx-[9px] h-px bg-white/[0.05]" />
+                    <button type="button" onClick={handlePinFiles} className="group/menu relative z-10 flex h-[40px] w-full items-center gap-[9px] rounded-[12px] px-[9px] text-left text-white transition-all duration-150 hover:bg-white/[0.095] hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] focus-visible:bg-white/[0.095] focus-visible:outline-none active:scale-[0.99]">
+                      <span className="flex h-[25px] w-[25px] shrink-0 items-center justify-center text-white transition-colors">
+                        <PinFileIcon className="h-[24px] w-[24px]" />
+                      </span>
+                      <span className="min-w-0 text-[13.5px] font-semibold leading-none tracking-[-0.004em]">
+                        Files
+                      </span>
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -2776,8 +2900,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                         strokeLinejoin="round"
                         className="eterx-agent-ui-icon eterx-selector-icon h-[18px] w-[18px] shrink-0 opacity-90 transition-opacity duration-200 text-[#F4F4F4]"
                       >
-                        <path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96-.44 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24 2.5 2.5 0 0 1 4.44-4.16Z"/>
-                        <path d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96-.44 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24 2.5 2.5 0 0 0-4.44-4.16Z"/>
+                        <path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96-.44 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24 2.5 2.5 0 0 1 4.44-4.16Z" />
+                        <path d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96-.44 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24 2.5 2.5 0 0 0-4.44-4.16Z" />
                       </svg>
                       <span className="eterx-selector-label min-w-0 truncate text-[14px] font-semibold tracking-normal transition-colors text-[#F4F4F4]">
                         {activeAgentDisplay.label}
@@ -2796,7 +2920,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
 
                 {showAgentMenu && (
                   <div
-                    style={{ transform: `translateX(${agentMenuX})` }}
+                    style={{ transform: `translateX(${ agentMenuX })` }}
                     className={`eterx-composer-popout eterx-agent-popout absolute ${ selectorPopoutVerticalClass } left-1/2 z-[130] flex w-[224px] max-w-[calc(100vw-32px)] flex-col rounded-xl border border-white/[0.08] bg-[#1E1E1E]/95 backdrop-blur-xl p-1.5 text-[#F4F1EA] shadow-[0_12px_36px_rgba(0,0,0,0.5)]`}
                     role="dialog"
                     aria-label="Agent selection"
@@ -2928,7 +3052,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
 
                 {showModelMenu && (
                   <div
-                    style={{ transform: `translateX(${modelMenuX})` }}
+                    style={{ transform: `translateX(${ modelMenuX })` }}
                     className={`eterx-composer-popout absolute ${ selectorPopoutVerticalClass } left-1/2 z-[130] flex ${ isCompressed ? 'w-[248px]' : 'w-[286px]' } max-w-[calc(100vw-32px)] flex-col rounded-xl border border-white/[0.08] bg-[#1E1E1E]/95 backdrop-blur-xl p-1.5 text-[#F4F1EA] shadow-[0_12px_36px_rgba(0,0,0,0.5)]`}
                     role="dialog"
                     aria-label="Model and thinking settings"
@@ -3381,6 +3505,170 @@ export const ChatInput: React.FC<ChatInputProps> = ({
           </motion.div>
         )}
       </div>
+
+      {/* Lightbox Preview Modal */}
+      {previewImage && typeof window !== 'undefined' && createPortal(
+        <div
+          onClick={() => {
+            setPreviewImage(null);
+            setZoomScale(1);
+            setPanPos({ x: 0, y: 0 });
+            setIsDragging(false);
+          }}
+          className="fixed inset-0 z-[9999] bg-black/90 backdrop-blur-md flex items-center justify-center select-none cursor-zoom-out"
+        >
+
+          {/* Inner relative container that defines the viewing viewport of the image */}
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="relative max-w-[90vw] max-h-[85vh] flex items-center justify-center overflow-visible"
+          >
+            <img
+              src={previewImage}
+              alt="Preview"
+              style={{
+                transform: `translate(${ panPos.x }px, ${ panPos.y }px) scale(${ zoomScale })`,
+                cursor: zoomScale > 1 ? (isDragging ? 'grabbing' : 'grab') : 'zoom-in',
+                transition: isDragging ? 'none' : 'transform 0.15s ease-out',
+                transformOrigin: 'center center'
+              }}
+              onMouseDown={(e) => {
+                e.preventDefault();
+                if (zoomScale > 1) {
+                  setIsDragging(true);
+                  setDragStart({ x: e.clientX - panPos.x, y: e.clientY - panPos.y });
+                }
+              }}
+              onMouseMove={(e) => {
+                if (isDragging) {
+                  setPanPos({
+                    x: e.clientX - dragStart.x,
+                    y: e.clientY - dragStart.y
+                  });
+                }
+              }}
+              onMouseUp={() => setIsDragging(false)}
+              onMouseLeave={() => setIsDragging(false)}
+              onClick={(e) => {
+                e.stopPropagation();
+                if (zoomScale === 1) {
+                  setZoomScale(2);
+                } else {
+                  setZoomScale(1);
+                  setPanPos({ x: 0, y: 0 });
+                }
+              }}
+              className="max-w-[90vw] max-h-[85vh] object-contain rounded-[14px] shadow-[0_24px_64px_rgba(0,0,0,0.8)] border border-white/10 select-none cursor-pointer block"
+            />
+          </div>
+
+          {/* Zoom Control Bar at bottom of overlay */}
+          <div
+            className="absolute bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-1.5 p-1 bg-[#1A1A1A]/85 backdrop-blur-md border border-white/10 rounded-full shadow-xl z-[10001]"
+          >
+            <button
+              onClick={() => {
+                const nextScale = Math.max(zoomScale - 0.5, 1);
+                setZoomScale(nextScale);
+                if (nextScale <= 1) setPanPos({ x: 0, y: 0 });
+              }}
+              className="w-8 h-8 flex items-center justify-center text-white/80 hover:text-white hover:bg-white/10 rounded-full transition-colors active:scale-95 cursor-pointer text-lg font-semibold"
+              title="Zoom Out"
+            >
+              -
+            </button>
+            <span className="text-[11px] font-semibold text-white/70 min-w-[45px] text-center select-none">
+              {Math.round(zoomScale * 100)}%
+            </span>
+            <button
+              onClick={() => {
+                setZoomScale(s => Math.min(s + 0.5, 4));
+              }}
+              className="w-8 h-8 flex items-center justify-center text-white/80 hover:text-white hover:bg-white/10 rounded-full transition-colors active:scale-95 cursor-pointer text-lg font-semibold"
+              title="Zoom In"
+            >
+              +
+            </button>
+            <div className="w-px h-4 bg-white/10 mx-0.5" />
+            <button
+              onClick={() => {
+                setZoomScale(1);
+                setPanPos({ x: 0, y: 0 });
+              }}
+              className="px-2.5 h-8 flex items-center justify-center text-white/80 hover:text-white hover:bg-white/10 rounded-full transition-colors active:scale-95 cursor-pointer text-[11px] font-semibold"
+              title="Reset Zoom"
+            >
+              Reset
+            </button>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* Global Document Preview Modal */}
+      {previewDocPath && typeof window !== 'undefined' && createPortal(
+        <div
+          onClick={() => {
+            setPreviewDocPath(null);
+            setConvertedPdfPath(null);
+            setIsConvertingDoc(false);
+          }}
+          className="fixed inset-0 z-[10000] bg-black/85 backdrop-blur-md flex items-center justify-center p-8 select-none"
+        >
+
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="relative w-full max-w-[85vw] h-[90vh] bg-[#1E1E1E] border border-white/[0.08] rounded-[16px] shadow-2xl flex flex-col overflow-hidden"
+          >
+            {/* Modal Header */}
+            <div className="flex items-center justify-between px-6 py-4 border-b border-white/[0.08] bg-[#161616]">
+              <div className="flex flex-col min-w-0">
+                <span className="text-[14px] font-bold text-white truncate max-w-[65vw]">
+                  {previewDocPath.split(/[\\/]/).pop()}
+                </span>
+                <span className="text-[10px] text-neutral-400 font-semibold tracking-wide mt-0.5">
+                  Document Preview
+                </span>
+              </div>
+            </div>
+
+            {/* Modal Body */}
+            <div className="flex-1 w-full h-full bg-[#181818] relative flex flex-col">
+              {isConvertingDoc ? (
+                <div className="flex-1 flex flex-col items-center justify-center text-white gap-3.5">
+                  <svg className="animate-spin h-8 w-8 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3"></circle>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                  </svg>
+                  <span className="text-[13.5px] font-medium tracking-normal text-white/70 animate-pulse">Converting Word Document to PDF...</span>
+                </div>
+              ) : conversionError ? (
+                <div className="flex-1 flex flex-col items-center justify-center text-white/80 gap-4 p-6">
+                  <span className="text-[13px] text-[#F0B6A7] font-semibold">Failed to convert Word document to PDF preview.</span>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setPreviewDocPath(null);
+                      if ((window as any).electronAPI?.openExternal) {
+                        (window as any).electronAPI.openExternal(previewDocPath);
+                      }
+                    }}
+                    className="px-4 py-2 bg-white/10 hover:bg-white/25 rounded-lg text-[12px] font-semibold text-white transition-colors cursor-pointer"
+                  >
+                    Open in default application
+                  </button>
+                </div>
+              ) : (
+                <DocumentPreviewIframe
+                  src={`/api/preview/${ (convertedPdfPath || previewDocPath).replace(/\\/g, '/').split('/').filter(Boolean).map(encodeURIComponent).join('/') }`}
+                />
+              )}
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
     </div>
   );
 };

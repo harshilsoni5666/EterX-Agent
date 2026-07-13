@@ -1829,16 +1829,11 @@ function DeepWorkUI() {
             });
           }
 
-          // Reset per-turn display text and buffered commands
-          setLiveInputText('');
-          setLiveOutputText('');
-          setLiveSpokenText('');
-          setLiveCommands([]);
+          // Do not reset live text immediately; it will clear on the next turn send gesture.
+          // This keeps the live answer rendered while SWR loads the updated traceLogs.
           liveCommandsRef.current = [];
         },
         onInterrupted: () => {
-          setLiveOutputText('');
-          setLiveCommands([]);
           liveCommandsRef.current = [];
         },
         onError: (error) => {
@@ -1873,9 +1868,6 @@ function DeepWorkUI() {
     }
 
     setLiveState('idle');
-    setLiveOutputText('');
-    setLiveSpokenText('');
-    setLiveInputText('');
   }, []);
 
   const toggleLiveMicMute = useCallback(() => {
@@ -1895,7 +1887,15 @@ function DeepWorkUI() {
   }, []);
 
   const getLiveTraceLogs = useCallback(() => {
-    if (liveState === 'idle') return [];
+    // Check if the current chat already contains the final answer for the active/latest turn
+    const hasSavedAnswerForCurrentTurn = () => {
+      const lastUserIdx = [...traceLogs].reverse().findIndex(l => l.type === 'user_action');
+      if (lastUserIdx === -1) return false;
+      const actualLastUserIdx = traceLogs.length - 1 - lastUserIdx;
+      return traceLogs.slice(actualLastUserIdx + 1).some(l => l.type === 'answer');
+    };
+
+    if (hasSavedAnswerForCurrentTurn()) return [];
 
     const logs = [];
     if (liveInputText) {
@@ -1903,7 +1903,7 @@ function DeepWorkUI() {
     }
 
     if (liveOutputText) {
-      logs.push({ type: 'answer', text: liveOutputText, spokenText: liveSpokenText, isLive: true, isLiveTyping: true });
+      logs.push({ type: 'answer', text: liveOutputText, spokenText: liveSpokenText, isLive: true, isLiveTyping: liveState !== 'idle' });
     }
 
     // Add any tool commands that happened in this live turn after the text
@@ -1912,7 +1912,7 @@ function DeepWorkUI() {
     }
 
     return logs;
-  }, [liveState, liveInputText, liveOutputText, liveSpokenText, liveCommands]);
+  }, [liveState, liveInputText, liveOutputText, liveSpokenText, liveCommands, traceLogs]);
 
   useEffect(() => {
     setGreeting(getCatchyGreeting());
@@ -2803,11 +2803,27 @@ function DeepWorkUI() {
   };
 
   const mergeServerRunLogs = (existingLogs: any[], traces: any[]) => {
-    const logs = Array.isArray(existingLogs) ? existingLogs : [];
-    const lastUserIdx = logs.reduceRight((found, log, index) =>
-      found === -1 && log.type === 'user_action' ? index : found, -1);
-    const prefix = lastUserIdx >= 0 ? logs.slice(0, lastUserIdx + 1) : [];
-    return [...prefix, ...processServerTraces(traces, logs)];
+    // FLASH FIX: Never rebuild from scratch — only ADD missing traces.
+    // The old approach (prefix + processServerTraces) wiped committed answers
+    // when called with partial trace data (e.g. visibility-change re-sync),
+    // causing the answer bubble to disappear until the next full poll.
+    const logs = Array.isArray(existingLogs) ? [...existingLogs] : [];
+    if (!traces || traces.length === 0) return logs;
+
+    // Build the set of already-known _traceIdx values to skip duplicates
+    const seenIdx = new Set(
+      logs.map((l: any) => l?._traceIdx).filter((x: any) => x !== undefined && x !== null)
+    );
+
+    for (const trace of traces) {
+      if (trace?._traceIdx !== undefined && trace._traceIdx !== null) {
+        if (seenIdx.has(trace._traceIdx)) continue;
+        seenIdx.add(trace._traceIdx);
+      }
+      // Only push truly new traces; don't touch existing committed logs
+      logs.push(withTraceTiming(trace));
+    }
+    return logs;
   };
 
   // Debounced localStorage writer — prevents data corruption from rapid concurrent writes
@@ -2890,7 +2906,10 @@ function DeepWorkUI() {
       } else if (errorBackoff > 0) {
         delay = Math.min(5000, 500 * Math.pow(2, errorBackoff - 1)); // 500ms, 1s, 2s, 4s, 5s cap
       } else {
-        delay = lastHadData ? 150 : 250; // Full speed: 150ms streaming, 250ms idle
+        // PERFORMANCE: Adaptive poll delay.
+        // 200ms when receiving data (barely perceptible vs 150ms), 600ms when idle (60% less CPU).
+        // Error backoff remains unchanged. Network-paused stays at 1s.
+        delay = lastHadData ? 200 : 600;
       }
 
       const timeoutId = setTimeout(pollOnce, delay);
@@ -3186,19 +3205,27 @@ function DeepWorkUI() {
           };
 
           if (isActiveChat) {
-            // Active chat — update visible traceLogs
+            // Synchronous update — compute newLogs from prevLogs and update BOTH
+            // setTraceLogs and setChats in the same render pass.
+            // IMPORTANT: Never use Promise.resolve().then() inside a React state
+            // updater — updaters can be called multiple times (StrictMode/concurrent
+            // mode), each scheduling a microtask with a stale newLogs snapshot that
+            // could write older logs back into `chats` → causes the flash bug.
+            let computedNewLogs: any[] | null = null;
             setTraceLogs(prevLogs => {
-              const newLogs = processTraces(prevLogs);
-
-              // Update chats state (NO updatedAt change, NO localStorage write here)
-              setChats(currentChats => {
-                return currentChats.map(c =>
-                  c.id === chatId ? { ...c, traceLogs: newLogs } : c
-                );
-              });
-
-              return newLogs;
+              computedNewLogs = processTraces(prevLogs);
+              return computedNewLogs;
             });
+            // setChats AFTER setTraceLogs so React can batch them together.
+            // Use a functional update to get fresh chats (avoids stale closure).
+            if (computedNewLogs !== null) {
+              const logsSnapshot = computedNewLogs;
+              setChats(currentChats =>
+                currentChats.map(c =>
+                  c.id === chatId ? { ...c, traceLogs: logsSnapshot } : c
+                )
+              );
+            }
           } else {
             // BACKGROUND chat — only update chats state, DON'T touch traceLogs
             setChats(currentChats => {
@@ -3515,7 +3542,7 @@ function DeepWorkUI() {
     };
 
     reconcileDetachedPollers();
-    const interval = window.setInterval(reconcileDetachedPollers, 3500);
+    const interval = window.setInterval(reconcileDetachedPollers, 8000); // Safety net only — 8s is plenty
     return () => {
       cancelled = true;
       window.clearInterval(interval);
@@ -3868,6 +3895,11 @@ function DeepWorkUI() {
 
     updateInputValue('');
     updateAttachments([]);
+    setLiveInputText('');
+    setLiveOutputText('');
+    setLiveSpokenText('');
+    setLiveCommands([]);
+    liveCommandsRef.current = [];
 
     try {
       const res = await fetch('/api/agents/comm', {
@@ -3956,6 +3988,11 @@ function DeepWorkUI() {
     const historySourceLogs = activeChatId ? stripAgentConnectionLogs(traceLogs) : [];
     updateInputValue("");
     updateAttachments([]);
+    setLiveInputText('');
+    setLiveOutputText('');
+    setLiveSpokenText('');
+    setLiveCommands([]);
+    liveCommandsRef.current = [];
 
     let chatIdToUse = activeChatId;
 
@@ -4501,6 +4538,12 @@ function DeepWorkUI() {
   ];
   // No longer use full-screen initializing state — always show ChatFeed immediately
   const isInitializingChat = false;
+  // FLASH FIX: snapshot the last non-empty live logs so they survive the 1-frame
+  // gap between liveState going 'idle' and the polling loop committing the answer
+  // into traceLogs. Without this, both the live answer AND all live action logs
+  // disappear simultaneously for one render frame, causing the visible flash.
+  const lastLiveLogsSnapshotRef = React.useRef<any[]>([]);
+
   const displayTraceLogs = useMemo(() => {
     const baseLogs = liveState !== 'idle'
       ? traceLogs.filter(l => l.type !== 'thought_stream')
@@ -4517,7 +4560,37 @@ function DeepWorkUI() {
       return true;
     });
 
-    return [...filteredLogs, ...getLiveTraceLogs()];
+    const freshLiveLogs = getLiveTraceLogs();
+
+    // Update snapshot whenever we get non-empty live logs
+    if (freshLiveLogs.length > 0) {
+      lastLiveLogsSnapshotRef.current = freshLiveLogs;
+    }
+
+    // Check if traceLogs already has the committed answer for this turn.
+    // Only then drop the snapshot — otherwise hold it to avoid the flash.
+    const hasCommittedAnswer = (() => {
+      const lastUserIdx = traceLogs.reduceRight((found, l, i) =>
+        found === -1 && l?.type === 'user_action' ? i : found, -1);
+      if (lastUserIdx === -1) return false;
+      return traceLogs.slice(lastUserIdx + 1).some(l => l?.type === 'answer');
+    })();
+
+    // Determine which live logs to append
+    let liveLogs: any[];
+    if (freshLiveLogs.length > 0) {
+      // Fresh live data — use it directly
+      liveLogs = freshLiveLogs;
+    } else if (!hasCommittedAnswer && lastLiveLogsSnapshotRef.current.length > 0) {
+      // Live session ended but traceLogs hasn't committed answer yet — hold snapshot
+      liveLogs = lastLiveLogsSnapshotRef.current;
+    } else {
+      // traceLogs has the answer — safe to drop the snapshot
+      lastLiveLogsSnapshotRef.current = [];
+      liveLogs = [];
+    }
+
+    return [...filteredLogs, ...liveLogs];
   }, [liveState, traceLogs, getLiveTraceLogs]);
 
   const currentSubAgents = useMemo(() => {
@@ -4710,7 +4783,7 @@ function DeepWorkUI() {
     };
 
     syncSubAgentHistory();
-    const intervalId = window.setInterval(syncSubAgentHistory, 2000);
+    const intervalId = window.setInterval(syncSubAgentHistory, 5000); // Sub-agent history — 5s cadence is sufficient
     return () => {
       cancelled = true;
       window.clearInterval(intervalId);
@@ -5118,7 +5191,7 @@ function DeepWorkUI() {
           {/* Responsive backdrop overlay to close sidebar on click-away */}
           <div
             onClick={() => setSidebarOpen(false)}
-            className="fixed inset-0 bg-black/40 md:hidden z-[85] transition-opacity duration-300"
+            className="eterx-sidebar-overlay-backdrop fixed inset-0 bg-black/40 z-[199] transition-opacity duration-300"
           />
           <Sidebar
             isOpen={sidebarOpen}

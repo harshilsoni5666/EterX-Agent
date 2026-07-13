@@ -4,6 +4,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   selectFolder: () => ipcRenderer.invoke('select-folder'),
   selectFiles: () => ipcRenderer.invoke('select-files'),
   getFileIcon: (path) => ipcRenderer.invoke('get-file-icon', path),
+  convertDocxToPdf: (path) => ipcRenderer.invoke('convert-docx-to-pdf', path),
   listFolder: (path) => ipcRenderer.invoke('list-folder', path),
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
   showNotification: (title, body) => ipcRenderer.invoke('show-notification', title, body),

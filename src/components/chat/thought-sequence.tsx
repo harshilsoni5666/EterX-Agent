@@ -270,8 +270,12 @@ const useProgressiveMarkdown = (value: string, enabled: boolean, speed: RevealSp
     setVisibleCount((current) => {
       const previousValue = previousValueRef.current;
       previousValueRef.current = value;
+      // If new value is a continuation (starts with previous), keep existing progress
       if (!previousValue || value.startsWith(previousValue)) return Math.min(current, chunks.length);
-      return Math.min(current, chunks.length);
+      // Genuinely new/different content — but never jump backward for completed answers
+      // Only reset to 0 if current > chunks.length (chunks shrank due to edit)
+      if (current > chunks.length) return chunks.length;
+      return current;
     });
   }, [chunks.length, enabled, reducedMotion, value]);
 

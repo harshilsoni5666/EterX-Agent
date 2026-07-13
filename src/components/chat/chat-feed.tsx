@@ -520,25 +520,28 @@ const useWorkElapsedSeconds = (active: boolean, logs: any[], startedAt?: number 
 const ThoughtSequence = ({
   logs, liveLogs = [], isThinking, isLast, hasAnswer, stepCount, turnStartedAt, turnEndedAt, onOpenAgentTeam, isSubAgentTab = false
 }: { logs: any[], liveLogs?: any[], isThinking: boolean, isLast: boolean, hasAnswer: boolean, stepCount: number, turnStartedAt?: number | null, turnEndedAt?: number | null, onOpenAgentTeam?: (agentName?: string) => void, isSubAgentTab?: boolean }) => {
-  const [open, setOpen] = React.useState(() => isThinking || !hasAnswer);
+  // Start collapsed for completed turns, open for active/no-answer turns
+  const [open, setOpen] = React.useState(false);
   const containerRef = React.useRef<HTMLDivElement>(null);
-  const prevHasAnswer = React.useRef(false);
-  const isLiveThinking = isThinking && !hasAnswer;
+  // Latch: once hasAnswer becomes true, never re-open on a transient false
+  const hasAnswerLatchRef = React.useRef(false);
+  // isLiveThinking: true while the turn is actively thinking regardless of streaming answer
+  const isLiveThinking = isThinking;
 
   React.useEffect(() => {
     if (isLiveThinking) {
       setOpen(true);
       return;
     }
-    if (hasAnswer && !prevHasAnswer.current) {
+    // Answer just arrived for the first time — collapse
+    if (hasAnswer && !hasAnswerLatchRef.current) {
       setOpen(false);
-      prevHasAnswer.current = true;
+      hasAnswerLatchRef.current = true;
+      return;
     }
-    if (!hasAnswer && prevHasAnswer.current) {
+    // Only re-open if we never had an answer (new turn without answer yet)
+    if (!hasAnswer && !hasAnswerLatchRef.current) {
       setOpen(true);
-      prevHasAnswer.current = false;
-    } else if (!hasAnswer) {
-      prevHasAnswer.current = false;
     }
   }, [hasAnswer, isLiveThinking]);
 
@@ -673,10 +676,10 @@ const ThoughtSequence = ({
       <AnimatePresence>
         {isOpen && (
           <motion.div
-            layout
+            layout={false}
             initial={false}
             animate={{ height: 'auto', opacity: 1 }}
-            exit={{ height: 0, opacity: 0, transition: { duration: 0 } }}
+            exit={{ height: 0, opacity: 0, transition: { duration: 0.15, ease: 'easeIn' } }}
             style={{ overflow: 'hidden' }}
             transition={{ duration: 0.18, ease: 'easeOut' }}
             className="mb-1"
@@ -720,6 +723,15 @@ const ChatFeedMessageGroup = React.memo(({
   isSubAgentTab: boolean;
   setPreviewUserMessage: (msg: { text: string; index: number } | null) => void;
 }) => {
+  // Latch ref: once finalAnswer is computed as non-null for this group,
+  // never let a transient polling race blank the answer bubble.
+  const lastKnownAnswerRef = React.useRef<any>(null);
+  // Reset latch when a genuinely new group mounts (groupIdx changes means a new turn)
+  const lastGroupIdxRef = React.useRef(groupIdx);
+  if (lastGroupIdxRef.current !== groupIdx) {
+    lastGroupIdxRef.current = groupIdx;
+    lastKnownAnswerRef.current = null;
+  }
   const first = group[0];
   if (first?.type === 'user_action') {
     const userText = String(first.text || '');
@@ -736,18 +748,36 @@ const ChatFeedMessageGroup = React.memo(({
                   const fileName = att.name || att.file?.name || 'file';
                   const extension = fileName.split('.').pop()?.toUpperCase() || 'FILE';
                   const isPdf = extension === 'PDF';
+                  const isDocPreviewable = extension === 'PDF' || extension === 'DOCX';
 
                   if (isImage) {
                     return (
-                      <a key={att.id || i} href={att.preview} target="_blank" rel="noopener noreferrer" className="relative group w-[72px] h-[72px] rounded-[14px] shadow-[0_3px_12px_rgba(0,0,0,0.16)] transition-colors cursor-pointer border border-white/[0.06] shrink-0 hover:border-white/[0.10]">
+                      <div
+                        key={att.id || i}
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          window.dispatchEvent(new CustomEvent('eterx-preview-image', { detail: { previewUrl: att.preview } }));
+                        }}
+                        className="relative group w-[72px] h-[72px] rounded-[14px] shadow-[0_3px_12px_rgba(0,0,0,0.16)] transition-colors cursor-pointer border border-white/[0.06] shrink-0 hover:border-white/[0.10]"
+                      >
                         <img src={att.preview} alt="attached" className="w-full h-full object-cover rounded-[14px] transition-opacity hover:opacity-90" />
-                      </a>
+                      </div>
                     );
                   }
 
                   return (
-                    <div key={att.id || i} className="flex flex-col items-center justify-center gap-1.5 w-[72px] h-[72px] rounded-[14px] bg-white/[0.024] border border-white/[0.055] shadow-[0_3px_12px_rgba(0,0,0,0.12)] shrink-0">
-                      <div className={`w-[26px] h-[26px] rounded-[7px] flex items-center justify-center shrink-0 ${ isPdf ? 'bg-[#C65D58]' : 'bg-[#596B7B]' }`}>
+                    <div
+                      key={att.id || i}
+                      onClick={() => {
+                        if (isDocPreviewable) {
+                          const targetPath = att.localPath || att.path || att.name;
+                          window.dispatchEvent(new CustomEvent('eterx-preview-document', { detail: { filePath: targetPath } }));
+                        }
+                      }}
+                      className={`flex flex-col items-center justify-center gap-1.5 w-[72px] h-[72px] rounded-[14px] bg-white/[0.024] border border-white/[0.055] shadow-[0_3px_12px_rgba(0,0,0,0.12)] shrink-0 ${ isDocPreviewable ? 'cursor-pointer hover:border-white/[0.10] hover:bg-white/[0.045] transition-all' : 'cursor-default' }`}
+                    >
+                      <div className={`w-[26px] h-[26px] rounded-[7px] flex items-center justify-center shrink-0 ${ isPdf ? 'bg-[#C65D58]' : extension === 'DOCX' ? 'bg-[#2A6B9C]' : 'bg-[#596B7B]' }`}>
                         <FileText className="w-3.5 h-3.5 text-white" strokeWidth={2.5} />
                       </div>
                       <span className="text-[10px] font-medium text-[#C8C1B8] truncate max-w-[90%] px-1">{att.name || fileName}</span>
@@ -777,8 +807,17 @@ const ChatFeedMessageGroup = React.memo(({
     );
   }
 
+  // Bug 9: Empty groups (appended for live thinking indicator) must not
+  // render a blank mb-8 div when the group truly has no content yet.
+  if (group.length === 0 && !isThinkingTurn) return null;
+
   const liveCommandLogs = group.filter((l: any) => l.type === 'command' && l.isLive && !isHiddenStatusOnlyLog(l));
-  const standardLogs = group.filter((l: any) => !(l.type === 'command' && l.isLive) && !isHiddenStatusOnlyLog(l));
+  // thought_stream are internal streaming chunks; exclude them from the rendered log list
+  const standardLogs = group.filter((l: any) =>
+    !(l.type === 'command' && l.isLive) &&
+    l.type !== 'thought_stream' &&
+    !isHiddenStatusOnlyLog(l)
+  );
 
   let processLogs: any[] = [];
   let finalAnswer: any = null;
@@ -813,27 +852,40 @@ const ChatFeedMessageGroup = React.memo(({
     };
     tailLogs = standardLogs.slice(lastIdx + 1).filter((l: any) => l.type !== 'answer');
   } else {
-    const lastThoughtIdx = isThinkingTurn ? -1 : [...standardLogs].reverse().findIndex((l: any) =>
-      l.type === 'thought' &&
-      !isInternalStatusThought(l) &&
-      !isExternalWorkNoteNoise(l.text)
-    );
-    const actualLastThoughtIdx = lastThoughtIdx === -1 ? -1 : standardLogs.length - 1 - lastThoughtIdx;
-    processLogs = actualLastThoughtIdx === -1 ? standardLogs : standardLogs.slice(0, actualLastThoughtIdx);
-    finalAnswer = actualLastThoughtIdx === -1 ? null : standardLogs[actualLastThoughtIdx];
-    tailLogs = actualLastThoughtIdx === -1 ? [] : standardLogs.slice(actualLastThoughtIdx + 1);
+    // No answer log yet — keep all logs in processLogs, no final answer bubble
+    processLogs = standardLogs;
+    finalAnswer = null;
+    tailLogs = [];
   }
 
   const displayProcessLogs = processLogs;
-  const displayFinalAnswer = finalAnswer;
-  const answerUpdatedAt = Number(displayFinalAnswer?.endTime ?? displayFinalAnswer?.timestamp ?? 0);
+  // ANSWER LATCH — never let a transient polling race blank the answer bubble.
+  // Rules:
+  //   1. If finalAnswer is non-null, always save it (update ref).
+  //   2. If finalAnswer is null but we have a cached answer, keep the cached one.
+  //   3. If finalAnswer is non-null but shorter than the cached one AND we're still
+  //      actively thinking, keep the cached (longer) version — the shorter frame is
+  //      a transient mid-stream snapshot.
+  if (finalAnswer !== null) {
+    const cached = lastKnownAnswerRef.current;
+    const newText = finalAnswer.text || '';
+    const cachedText = cached?.text || '';
+    // Only update cache if the new answer is longer, or we're not thinking (settled)
+    if (!isThinkingTurn || newText.length >= cachedText.length) {
+      lastKnownAnswerRef.current = finalAnswer;
+    }
+  }
+  const displayFinalAnswer = finalAnswer ?? lastKnownAnswerRef.current;
+  const answerUpdatedAt = Number(displayFinalAnswer?.startTime ?? displayFinalAnswer?.timestamp ?? 0);
   const answerRecentlyStreamed = !!displayFinalAnswer &&
     Number.isFinite(answerUpdatedAt) &&
     answerUpdatedAt > 0 &&
-    Date.now() - answerUpdatedAt < 5000;
-  const isAnswerActivelyTyping = !!(displayFinalAnswer?.isLiveTyping || displayFinalAnswer?.isStreaming) && isThinkingTurn;
+    Date.now() - answerUpdatedAt < 10000;
+  // Decouple from isThinkingTurn so live class persists through end-of-turn animation
+  const isAnswerActivelyTyping = !!(displayFinalAnswer?.isLiveTyping || displayFinalAnswer?.isStreaming);
 
-  let lastWorkNoteKey = '';
+  // Stable deduplication set for work notes — keyed on noteId or content
+  const seenWorkNoteKeys = new Set<string>();
   const rawWorkLogs = [...displayProcessLogs, ...tailLogs];
   const isAskUserInteractionLog = (log: any) =>
     log?.type === 'ask_user' &&
@@ -908,11 +960,9 @@ const ChatFeedMessageGroup = React.memo(({
           const key = noteId
             ? `${ log.subAgent || '' }::id::${ noteId }`
             : `${ log.subAgent || '' }::${ text }`;
-          if (key === lastWorkNoteKey) isValid = false;
-          lastWorkNoteKey = key;
+          if (seenWorkNoteKeys.has(key)) isValid = false;
+          else seenWorkNoteKeys.add(key);
         }
-      } else {
-        lastWorkNoteKey = '';
       }
 
       if (isValid) {
@@ -1020,6 +1070,43 @@ const ChatFeedMessageGroup = React.memo(({
       )}
     </div>
   );
+}, (prev, next) => {
+  // Always re-render when thinking state changes
+  if (prev.isThinkingTurn !== next.isThinkingTurn || next.isThinkingTurn) return false;
+  if (prev.groupIdx !== next.groupIdx) return false;
+  if (prev.isCompressed !== next.isCompressed) return false;
+  if (prev.isSubAgentTab !== next.isSubAgentTab) return false;
+  if (prev.turnStartedAt !== next.turnStartedAt) return false;
+
+  const prevGroup = prev.group;
+  const nextGroup = next.group;
+  if (prevGroup === nextGroup) return true;
+
+  // CRITICAL: Never skip render if group size changed — a transient null answer
+  // must run through the component so the latch ref updates correctly.
+  if (!prevGroup || !nextGroup || prevGroup.length !== nextGroup.length) return false;
+
+  // Extract answer logs from both groups for comparison
+  const prevAnswer = prevGroup.find((l: any) => l?.type === 'answer');
+  const nextAnswer = nextGroup.find((l: any) => l?.type === 'answer');
+
+  // If answer existence or content changed, always re-render
+  if (!!prevAnswer !== !!nextAnswer) return false;
+  if (prevAnswer && nextAnswer) {
+    if (prevAnswer.text !== nextAnswer.text) return false;
+    if (prevAnswer.isStreaming !== nextAnswer.isStreaming) return false;
+    if (prevAnswer.isLiveTyping !== nextAnswer.isLiveTyping) return false;
+  }
+
+  for (let i = 0; i < prevGroup.length; i++) {
+    const p = prevGroup[i];
+    const n = nextGroup[i];
+    if (p === n) continue;
+    if (!p || !n) return false;
+    if (p.id !== n.id || p.type !== n.type || p.text !== n.text || p.timestamp !== n.timestamp) return false;
+    if (p.secondary !== n.secondary || p.isStreaming !== n.isStreaming || p.isLiveTyping !== n.isLiveTyping) return false;
+  }
+  return true;
 });
 
 export const ChatFeed = React.memo<ChatFeedProps>(({

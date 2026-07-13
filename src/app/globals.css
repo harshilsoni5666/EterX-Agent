@@ -5456,8 +5456,8 @@
 
   .eterx-assistant-answer-body,
   .eterx-professional-thought {
-    font-size: 15px !important;
-    line-height: 1.72 !important;
+    font-size: 13.5px !important;
+    line-height: 1.56 !important;
   }
 
   .eterx-prompt-preview-dialog {
@@ -6289,4 +6289,188 @@
 
 .eterx-composer-shell[data-force-collapse="true"] .eterx-chat-controls {
   flex-wrap: nowrap !important;
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   Sidebar Overlay Mode — activates when window width < 960px
+   Below this breakpoint the sidebar floats on top (like ChatGPT/Codex
+   in smaller windows) rather than pushing the main content area.
+   Above 960px: normal push-layout. No Electron IPC needed.
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+
+/* WIDE WINDOW (≥960px): backdrop never shown — sidebar is a normal flex child */
+@media (min-width: 960px) {
+  .eterx-sidebar-overlay-backdrop {
+    display: none !important;
+    pointer-events: none !important;
+  }
+}
+
+/* NARROW WINDOW (<960px): sidebar overlays, workspace stays full-width */
+@media (max-width: 959px) {
+  /* Sidebar shell: lift out of flex flow and fix to left edge */
+  .eterx-app-shell[data-sidebar-open="true"] .eterx-sidebar-shell {
+    position: fixed !important;
+    top: 0 !important;
+    left: 0 !important;
+    bottom: 0 !important;
+    height: 100dvh !important;
+    z-index: 200 !important;
+    width: var(--eterx-shell-sidebar-width) !important;
+    margin-right: 0 !important;
+    overflow: visible !important;
+    box-shadow: 4px 0 32px rgba(0,0,0,0.38), 1px 0 0 rgba(255,255,255,0.045) !important;
+  }
+
+  /* Inner sidebar div: full width (no extra padding from open-state rule) */
+  .eterx-app-shell[data-sidebar-open="true"] .eterx-sidebar-shell > div:not(.eterx-sidebar-sheen):not(.eterx-sidebar-resize-handle) {
+    width: var(--eterx-shell-sidebar-width) !important;
+  }
+
+  /* Hide the resize handle in overlay mode — no resizing needed */
+  .eterx-app-shell[data-sidebar-open="true"] .eterx-sidebar-resize-handle {
+    display: none !important;
+  }
+
+  /* Workspace: restore normal layout — it should NOT shift or be pointer-events:none */
+  .eterx-app-shell[data-sidebar-open="true"] .eterx-workspace-shell {
+    z-index: 1 !important;
+    pointer-events: auto !important;
+    background: inherit !important;
+    margin-left: 0 !important;
+    padding-left: 0 !important;
+  }
+
+  :root[data-theme="dark"] .eterx-app-shell[data-sidebar-open="true"] .eterx-workspace-shell {
+    background: inherit !important;
+  }
+
+  .eterx-app-shell[data-sidebar-open="true"] .eterx-workspace-shell > * {
+    pointer-events: auto !important;
+  }
+
+  /* Main panel: full rounded corners since sidebar floats above, not beside */
+  .eterx-app-shell[data-sidebar-open="true"] .eterx-main-panel {
+    border-top-left-radius: 0 !important;
+    border-bottom-left-radius: 0 !important;
+    border-top-right-radius: 0 !important;
+    border-bottom-right-radius: 0 !important;
+  }
+
+  .eterx-app-shell[data-sidebar-open="true"] .eterx-main-panel::after {
+    border-radius: 0 !important;
+  }
+
+  /* Workspace padding: remove the 8px left pad added in open-state */
+  .eterx-app-shell[data-sidebar-open="true"] .eterx-workspace-shell {
+    padding-left: 0 !important;
+  }
+
+  /* Backdrop: shown in overlay mode so clicking outside closes sidebar */
+  .eterx-sidebar-overlay-backdrop {
+    display: block !important;
+    pointer-events: auto !important;
+    z-index: 199 !important;
+  }
+
+  /* Dropdowns / popouts: ensure they are not clipped by the main panel */
+  .eterx-composer-popout,
+  .eterx-agent-popout {
+    max-width: calc(100vw - 16px) !important;
+  }
+
+  /* Input bar controls: collapse labels earlier on narrow widths */
+  .eterx-selector-label,
+  .eterx-selector-chevron,
+  .eterx-selector-chevron-wrapper {
+    display: none !important;
+  }
+
+  .eterx-selector-icon {
+    display: block !important;
+    margin: auto !important;
+  }
+
+  .eterx-agent-selector,
+  .eterx-model-selector,
+  .eterx-agent-button,
+  .eterx-model-button {
+    width: 38px !important;
+    max-width: 38px !important;
+    padding-left: 0 !important;
+    padding-right: 0 !important;
+    justify-content: center !important;
+  }
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   PERFORMANCE: GPU compositing & rendering isolation.
+   These rules promote heavy animated elements to their own GPU layer
+   so browser can update them without triggering full page repaints.
+   No visual change — pure painting performance improvement.
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+
+/* Chat feed scroll container — isolate paint so streaming text doesn't
+   trigger repaint of the rest of the window */
+.eterx-chat-feed-scroll {
+  contain: strict;
+  will-change: scroll-position;
+  transform: translateZ(0);
+}
+
+/* Each message group — isolate layout so one group updating doesn't
+   invalidate siblings */
+.eterx-chat-message-group {
+  contain: content;
+}
+
+/* Thought sequence cards — promoted layer for smooth reveal animation */
+.eterx-professional-thought,
+.eterx-professional-note,
+.eterx-professional-answer {
+  will-change: opacity;
+  transform: translateZ(0);
+}
+
+/* Live typing cursor and shimmer — GPU-accelerated animation */
+.eterx-text-shimmer,
+.eterx-live-dot,
+.eterx-reveal-active {
+  will-change: opacity, transform;
+  transform: translateZ(0);
+}
+
+/* Sidebar shell — promoted so it slides without causing main panel repaint */
+.eterx-sidebar-shell {
+  transform: translateZ(0);
+}
+
+/* Main panel — isolated paint boundary */
+.eterx-main-panel {
+  contain: layout style;
+  transform: translateZ(0);
+}
+
+/* Composer surface — isolated so typing doesn't repaint the feed */
+.eterx-composer-surface,
+.eterx-new-chat-motion-field {
+  contain: layout style;
+  transform: translateZ(0);
+}
+
+/* Process summary chip (N actions pill) — GPU layer for sticky animation */
+.eterx-process-summary-chip {
+  will-change: transform, opacity;
+  transform: translateZ(0);
+}
+
+/* User message bubble — isolated so scroll doesn't repaint bubble borders */
+.eterx-user-message-bubble {
+  contain: content;
+  transform: translateZ(0);
+}
+
+/* Chat feed content wrapper */
+.eterx-chat-feed-content {
+  contain: layout;
 }

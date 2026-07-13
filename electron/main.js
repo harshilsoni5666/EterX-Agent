@@ -930,6 +930,39 @@ ipcMain.handle('get-file-icon', async (event, filePath) => {
   }
 });
 
+// IPC: Convert DOCX to PDF using local Word COM Automation
+ipcMain.handle('convert-docx-to-pdf', async (event, docxPath) => {
+  return new Promise((resolve) => {
+    try {
+      if (!docxPath || !fs.existsSync(docxPath)) {
+        return resolve(null);
+      }
+      const tempPdfPath = path.join(app.getPath('temp'), `docx_preview_${Date.now()}.pdf`);
+      const escapedDocx = docxPath.replace(/'/g, "''");
+      const escapedPdf = tempPdfPath.replace(/'/g, "''");
+      
+      const psCommand = `$word = New-Object -ComObject Word.Application; $word.Visible = $false; try { $doc = $word.Documents.Open('${escapedDocx}', $true, $true); $doc.SaveAs('${escapedPdf}', 17); $doc.Close(); } finally { $word.Quit(); }`;
+      
+      const { exec } = require('child_process');
+      exec(`powershell.exe -NoProfile -NonInteractive -Command "${psCommand.replace(/"/g, '\\"')}"`, (err, stdout, stderr) => {
+        if (err) {
+          console.error('Failed to convert docx to pdf via PowerShell:', err, stderr);
+          return resolve(null);
+        }
+        if (fs.existsSync(tempPdfPath)) {
+          resolve(tempPdfPath);
+        } else {
+          resolve(null);
+        }
+      });
+    } catch (err) {
+      console.error('Error during docx conversion:', err);
+      resolve(null);
+    }
+  });
+});
+
+
 // IPC: Native System Notifications
 ipcMain.handle('show-notification', (event, title, body) => {
   const { Notification } = require('electron');
