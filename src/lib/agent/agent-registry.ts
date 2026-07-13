@@ -552,7 +552,7 @@ class AgentRegistry {
 
         // Create TaskStore entry
         if (!pinnedContext?.disableTaskStore) {
-          await taskStore.createTask(chatId, prompt);
+          await taskStore.createTask(chatId, prompt, execution.runId);
         }
 
         // Execute the pipeline with per-chat API key

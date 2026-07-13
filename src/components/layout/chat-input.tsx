@@ -306,7 +306,105 @@ interface ChatInputProps {
   onWorkspacePathChange?: (path: string | null) => void;
   runLocation?: 'local' | 'sandbox';
   onRunLocationChange?: (location: 'local' | 'sandbox') => void;
+  chatModelSelection?: string;
+  onModelSelectionChange?: (selection: string) => void;
 }
+
+const getFileIconPath = (filepath: string) => {
+  const ext = filepath.split('.').pop()?.toLowerCase();
+  const filename = filepath.split(/[/\\]/).pop()?.toLowerCase() || '';
+
+  if (filename.startsWith('.git') || filename.includes('git')) {
+    return '/icons/files/git.svg';
+  }
+  if (filename.includes('eslint')) {
+    return '/icons/files/eslint.svg';
+  }
+  if (filename.includes('prettier')) {
+    return '/icons/files/prettier.svg';
+  }
+  if (filename.includes('tsconfig')) {
+    return '/icons/files/tsconfig.svg';
+  }
+  if (filename === 'package.json') {
+    return '/icons/files/npm.svg';
+  }
+  if (filename === 'yarn.lock') {
+    return '/icons/files/yarn.svg';
+  }
+  if (filename === 'pnpm-lock.yaml') {
+    return '/icons/files/pnpm.svg';
+  }
+  if (filename.includes('next.config')) {
+    return '/icons/files/next.svg';
+  }
+  if (filename.includes('vite.config')) {
+    return '/icons/files/vite.svg';
+  }
+  if (filename.includes('webpack.config')) {
+    return '/icons/files/webpack.svg';
+  }
+  if (filename.startsWith('.env') || filename === 'settings.json') {
+    return '/icons/files/settings.svg';
+  }
+
+  switch (ext) {
+    case 'tsx':
+    case 'jsx':
+      return '/icons/files/react.svg';
+    case 'ts':
+      return '/icons/files/typescript.svg';
+    case 'js':
+      return '/icons/files/javascript.svg';
+    case 'py':
+      return '/icons/files/python.svg';
+    case 'html':
+      return '/icons/files/html.svg';
+    case 'css':
+      return '/icons/files/css.svg';
+    case 'json':
+      return '/icons/files/json.svg';
+    case 'go':
+      return '/icons/files/go.svg';
+    case 'md':
+      return '/icons/files/markdown.svg';
+    case 'sh':
+    case 'bash':
+    case 'zsh':
+      return '/icons/files/console.svg';
+    case 'svg':
+      return '/icons/files/svg.svg';
+    case 'yaml':
+    case 'yml':
+      return '/icons/files/yaml.svg';
+    case 'dockerfile':
+      return '/icons/files/docker.svg';
+    case 'png':
+    case 'jpg':
+    case 'jpeg':
+    case 'gif':
+    case 'webp':
+    case 'ico':
+      return '/icons/files/image.svg';
+    case 'pdf':
+      return '/icons/files/pdf.svg';
+    case 'zip':
+    case 'tar':
+    case 'gz':
+    case 'rar':
+      return '/icons/files/zip.svg';
+    case 'lock':
+      return '/icons/files/lock.svg';
+    case 'sql':
+    case 'db':
+      return '/icons/files/database.svg';
+    case 'sass':
+    case 'scss':
+      return '/icons/files/sass.svg';
+    default:
+      return '/icons/files/document.svg';
+  }
+};
 
 const inferFileExtension = (mimeType: string) => {
   const map: Record<string, string> = {
@@ -924,6 +1022,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   onWorkspacePathChange,
   runLocation: propRunLocation,
   onRunLocationChange,
+  chatModelSelection: propChatModelSelection,
+  onModelSelectionChange,
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -949,7 +1049,27 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const [thinkingMenuSide, setThinkingMenuSide] = useState<'left' | 'right'>('right');
   const [availableAgents, setAvailableAgents] = useState<Array<{ agentId: string; name: string; status: string; mission: string }>>([]);
   const agentSelectorRef = useRef<HTMLDivElement>(null);
+  const composerShellRef = useRef<HTMLDivElement>(null);
+  const [forceCollapse, setForceCollapse] = useState(false);
   const [showThinkingLevels, setShowThinkingLevels] = useState(false);
+  const thinkingTimeoutRef = useRef<any>(null);
+
+  const handleThinkingMouseEnter = () => {
+    if (thinkingTimeoutRef.current) {
+      clearTimeout(thinkingTimeoutRef.current);
+      thinkingTimeoutRef.current = null;
+    }
+    setShowThinkingLevels(true);
+  };
+
+  const handleThinkingMouseLeave = () => {
+    if (thinkingTimeoutRef.current) {
+      clearTimeout(thinkingTimeoutRef.current);
+    }
+    thinkingTimeoutRef.current = setTimeout(() => {
+      setShowThinkingLevels(false);
+    }, 200);
+  };
   const [slashTrigger, setSlashTrigger] = useState<SlashTrigger | null>(null);
   const [slashActiveIndex, setSlashActiveIndex] = useState(0);
   const [slashPanel, setSlashPanel] = useState<SlashPanel>(null);
@@ -1094,6 +1214,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   useEffect(() => {
     if (showAgentMenu) refreshAvailableAgents();
   }, [refreshAvailableAgents, showAgentMenu]);
+
 
   useEffect(() => {
     refreshStoredModelSettings();
@@ -1625,13 +1746,15 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     if ((window as any).electronAPI) {
       const folderPath = await (window as any).electronAPI.selectFolder();
       if (folderPath && !pinnedItems.find(i => i.path === folderPath)) {
+        const sysIcon = await (window as any).electronAPI.getFileIcon(folderPath).catch(() => null);
         setPinnedItems([
           ...pinnedItems,
           {
             id: genId(),
             type: 'folder',
             path: folderPath,
-            name: folderPath.split(/[/\\]/).pop() || 'Folder'
+            name: folderPath.split(/[/\\]/).pop() || 'Folder',
+            systemIcon: sysIcon || undefined
           }
         ]);
       }
@@ -1645,14 +1768,17 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     if ((window as any).electronAPI) {
       const filePaths = await (window as any).electronAPI.selectFiles();
       if (filePaths && filePaths.length > 0) {
-        const newItems = filePaths
-          .filter((fp: string) => !pinnedItems.find(i => i.path === fp))
-          .map((fp: string) => ({
+        const newPaths = filePaths.filter((fp: string) => !pinnedItems.find(i => i.path === fp));
+        const newItems = await Promise.all(newPaths.map(async (fp: string) => {
+          const sysIcon = await (window as any).electronAPI.getFileIcon(fp).catch(() => null);
+          return {
             id: genId(),
             type: 'file',
             path: fp,
-            name: fp.split(/[/\\]/).pop() || 'File'
-          }));
+            name: fp.split(/[/\\]/).pop() || 'File',
+            systemIcon: sysIcon || undefined
+          };
+        }));
 
         if (newItems.length > 0) {
           setPinnedItems([...pinnedItems, ...newItems]);
@@ -1843,14 +1969,37 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     modelName: 'Auto',
     isAuto: true,
   };
-  const selectedModel = storedModelSettings.chatModelSelection === AUTO_MODEL_SELECTION
+  const activeModelSelection = propChatModelSelection !== undefined ? propChatModelSelection : storedModelSettings.chatModelSelection;
+  const selectedModel = activeModelSelection === AUTO_MODEL_SELECTION
     ? autoModelOption
-    : modelOptions.find(option => option.optionKey === storedModelSettings.chatModelSelection) || autoModelOption;
+    : modelOptions.find(option => option.optionKey === activeModelSelection) || autoModelOption;
   const allModelOptions = useMemo(() => [autoModelOption, ...modelOptions], [autoModelOption, modelOptions]);
   const safeThinkingLevel = normalizeMainAgentThinkingLevel(thinkingLevel);
   const selectedThinkingLevel = MAIN_AGENT_THINKING_LEVEL_OPTIONS.find(option => option.id === safeThinkingLevel) || MAIN_AGENT_THINKING_LEVEL_OPTIONS[0];
   const modelDisplayLabel = getModelOptionLabel(selectedModel as ChatModelOption);
+
+  useEffect(() => {
+    const el = composerShellRef.current;
+    if (!el) return;
+
+    const observer = new ResizeObserver((entries) => {
+      for (let entry of entries) {
+        const width = entry.contentRect.width;
+        const isCustomAgent = selectedAgent && selectedAgent !== 'coding';
+        const requiredWidth = isCustomAgent ? 474 : 424;
+
+        setForceCollapse(width < requiredWidth);
+      }
+    });
+
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [selectedAgent]);
+
   const selectChatModelOption = useCallback((option: ChatModelOption) => {
+    if (onModelSelectionChange) {
+      onModelSelectionChange(option.optionKey);
+    }
     if (option.isAuto) {
       window.localStorage.setItem(CHAT_MODEL_SELECTION_STORAGE_KEY, AUTO_MODEL_SELECTION);
       window.localStorage.setItem(MODEL_OVERRIDE_STORAGE_KEY, JSON.stringify({}));
@@ -1896,7 +2045,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     onModeChange(option.id);
     setShowModelMenu(false);
     setShowThinkingLevels(false);
-  }, [agentMode, onModeChange, storedModelSettings.modelEntries, storedModelSettings.modelOverrides]);
+  }, [agentMode, onModeChange, storedModelSettings.modelEntries, storedModelSettings.modelOverrides, onModelSelectionChange]);
   useEffect(() => {
     if (isModelLocked) return;
     if (storedModelSettings.chatModelSelection === AUTO_MODEL_SELECTION) return;
@@ -1980,8 +2129,10 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       </AnimatePresence>
 
       <div
+        ref={composerShellRef}
         className={`eterx-composer-shell w-full ${ shellMaxWidth } flex flex-col pointer-events-auto relative`}
         data-compressed={isCompressed ? 'true' : undefined}
+        data-force-collapse={forceCollapse ? 'true' : undefined}
         data-new-chat={isNewChatHome ? 'true' : undefined}
         onDragStart={handleComposerDragStart}
       >
@@ -2150,89 +2301,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({
         <motion.div
           animate={liveAnimateState}
           transition={liveTransition}
-          className={`eterx-composer-surface w-full ${ composerRadius } flex flex-col ${ attachments.length > 0 ? 'pt-1' : isCompressed ? 'pt-2' : 'pt-2.5' } pb-2 transition-all duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)] overflow-visible relative ${ isNewChatHome ? 'eterx-new-chat-composer-surface' : '' } bg-[#202020] backdrop-blur-[28px] shadow-[0_18px_42px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(255,255,255,0.035)] ${ isRecording ? 'border border-white/[0.20]' : 'border border-white/[0.075] hover:border-white/[0.11] focus-within:border-white/[0.15]' }`}>
+          className={`eterx-composer-surface w-full ${ composerRadius } flex flex-col ${ isCompressed ? 'pt-2' : 'pt-2.5' } pb-2 transition-all duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)] overflow-visible relative ${ isNewChatHome ? 'eterx-new-chat-composer-surface' : '' } bg-[#202020] backdrop-blur-[28px] shadow-[0_18px_42px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(255,255,255,0.035)] ${ isRecording ? 'border border-white/[0.20]' : 'border border-white/[0.075] hover:border-white/[0.11] focus-within:border-white/[0.15]' }`}>
           <input type="file" multiple ref={fileInputRef} onChange={handleFileSelect} className="hidden" />
-
-          <AnimatePresence>
-            {attachments.length > 0 && (
-              <motion.div
-                initial={{ opacity: 0, y: 5, height: 0 }}
-                animate={{ opacity: 1, y: 0, height: 'auto' }}
-                exit={{ opacity: 0, y: 5, height: 0 }}
-                className="relative w-full pt-1"
-              >
-                {/* Horizontal Scrolling Fumes */}
-                <div className="absolute left-0 top-0 bottom-0 w-7 bg-gradient-to-r from-[#202020] to-transparent pointer-events-none z-10 rounded-tl-[32px]" />
-                <div className="absolute right-0 top-0 bottom-0 w-7 bg-gradient-to-l from-[#202020] to-transparent pointer-events-none z-10 rounded-tr-[32px]" />
-
-                <div className="flex items-center gap-3 px-5 pb-3 pt-2 overflow-x-auto w-full [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
-                  {attachments.map((att, i) => {
-                    const isImage = !!att.preview;
-                    const displayName = att.name || att.file.name || 'file';
-                    const extension = displayName.split('.').pop()?.toUpperCase() || 'FILE';
-                    const isPdf = extension === 'PDF';
-                    const isPreparing = att.uploadStatus === 'uploading';
-                    const isErrored = att.uploadStatus === 'error';
-                    const fileSize = formatAttachmentSize(att.file.size);
-
-                    if (isImage) {
-                      return (
-                        <div key={att.id || i} className={`relative group w-[62px] h-[62px] shrink-0 rounded-[18px] shadow-[0_5px_16px_rgba(0,0,0,0.24)] hover:shadow-[0_8px_24px_rgba(0,0,0,0.34)] transition-all cursor-pointer border ${ isErrored ? 'border-[#E2765A]/55' : 'border-white/[0.12] hover:border-white/[0.20]' } overflow-visible`}>
-                          <img src={att.preview} alt={displayName} className={`w-full h-full object-cover rounded-[18px] transition-all ${ isErrored ? 'opacity-45 grayscale' : 'opacity-100' }`} />
-                          {isPreparing && (
-                            <div className="pointer-events-none absolute inset-0 rounded-[18px] eterx-surface-shimmer eterx-surface-shimmer-upload" />
-                          )}
-                          {isErrored && (
-                            <div className="absolute inset-0 flex items-center justify-center rounded-[18px] bg-black/28">
-                              <AlertCircle className="w-5 h-5 text-[#F0B6A7]" strokeWidth={2.2} />
-                            </div>
-                          )}
-                          <div className="pointer-events-none absolute left-1.5 top-1.5 flex h-5 w-5 items-center justify-center rounded-full border border-white/[0.12] bg-black/45 text-white/90 backdrop-blur-md">
-                            <ImageIcon className="h-3 w-3" strokeWidth={2.15} />
-                          </div>
-                          <button
-                            onClick={() => removeAttachment(i)}
-                            className="absolute -top-1.5 -right-1.5 w-[18px] h-[18px] flex items-center justify-center rounded-full border border-transparent bg-[#202020] text-[#D8D5CF] shadow-[0_4px_12px_rgba(0,0,0,0.45)] transition-all hover:scale-110 hover:border-[#E2765A]/70 hover:bg-[#E2765A] hover:text-white z-20"
-                          >
-                            <X className="w-2.5 h-2.5" strokeWidth={3} />
-                          </button>
-                        </div>
-                      );
-                    }
-
-                    return (
-                      <div key={att.id || i} className={`relative group w-[200px] shrink-0 h-[58px] rounded-[16px] bg-[#202020]/82 border ${ isErrored ? 'border-[#E2765A]/45' : 'border-white/[0.095] hover:border-white/[0.17]' } shadow-[inset_0_1px_0_rgba(255,255,255,0.045),0_5px_16px_rgba(0,0,0,0.2)] hover:bg-[#272727]/90 transition-all flex items-center p-2 cursor-pointer overflow-hidden`}>
-                        {isPreparing && (
-                          <div className="pointer-events-none absolute inset-0 eterx-surface-shimmer eterx-surface-shimmer-upload" />
-                        )}
-                        <div className={`w-[40px] h-[40px] rounded-[10px] flex items-center justify-center shrink-0 border border-white/5 ${ isPdf ? 'bg-[#EF4444]' : 'bg-[#007AFF]' }`}>
-                          {isErrored ? (
-                            <AlertCircle className="w-5 h-5 text-white" strokeWidth={2.15} />
-                          ) : (
-                            <FileText className="w-5 h-5 text-white" strokeWidth={2} />
-                          )}
-                        </div>
-
-                        <div className="flex flex-col overflow-hidden ml-3 justify-center h-full w-full pr-1">
-                          <span className="text-[13px] font-medium text-[#E8E6E3] truncate tracking-wide leading-tight">{displayName}</span>
-                          <span className={`text-[11px] font-medium truncate mt-0.5 ${ isErrored ? 'text-[#F0B6A7]' : 'text-[#8C8A88]' }`}>
-                            {isErrored ? 'Attach failed' : isPreparing ? 'Preparing' : (fileSize ? `${ extension } · ${ fileSize }` : extension)}
-                          </span>
-                        </div>
-
-                        <button
-                          onClick={() => removeAttachment(i)}
-                          className="absolute -top-1.5 -right-1.5 w-[18px] h-[18px] flex items-center justify-center rounded-full border border-transparent bg-[#202020] text-[#D8D5CF] shadow-[0_4px_12px_rgba(0,0,0,0.45)] transition-all hover:scale-110 hover:border-[#E2765A]/70 hover:bg-[#E2765A] hover:text-white z-20"
-                        >
-                          <X className="w-2.5 h-2.5" strokeWidth={3} />
-                        </button>
-                      </div>
-                    );
-                  })}
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
 
           <div className={`${ isCompressed ? 'px-4' : 'px-5' } pb-1 min-h-[42px] flex items-center relative z-10`}>
             <AnimatePresence mode="wait">
@@ -2420,6 +2490,146 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       </button>
                     </div>
                   )}
+
+                  {/* Folders, Files, and Attachments rendered in a unified upper row */}
+                  {(pinnedItems.length > 0 || attachments.length > 0) && (
+                    <div className="eterx-pinned-items flex flex-nowrap items-center gap-2 px-0 pt-0.5 pb-2 bg-transparent min-w-0 overflow-x-auto w-full [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
+                      {/* Pinned Folders and Files */}
+                      {pinnedItems.map((item) => {
+                        const isFolder = item.type === 'folder';
+                        const iconSrc = isFolder 
+                          ? '/icons/agent-ui/folder.png' 
+                          : (item.systemIcon || getFileIconPath(item.path));
+                          
+                        const getDisplayType = () => {
+                          if (isFolder) return 'Folder';
+                          const ext = item.path.split('.').pop()?.toLowerCase();
+                          if (!ext || ext === item.path.toLowerCase()) return 'File';
+                          
+                          switch (ext) {
+                            case 'ts': return 'TypeScript';
+                            case 'tsx': return 'React';
+                            case 'js': return 'JavaScript';
+                            case 'jsx': return 'React';
+                            case 'py': return 'Python';
+                            case 'md': return 'Markdown';
+                            case 'json': return 'JSON';
+                            case 'html': return 'HTML';
+                            case 'css': return 'CSS';
+                            case 'yaml':
+                            case 'yml': return 'YAML';
+                            case 'pdf': return 'PDF';
+                            case 'png':
+                            case 'jpg':
+                            case 'jpeg':
+                            case 'gif':
+                            case 'webp': return 'Image';
+                            case 'sh':
+                            case 'bash':
+                            case 'zsh': return 'Shell';
+                            default: return ext.toUpperCase();
+                          }
+                        };
+
+                        const displayType = getDisplayType();
+
+                        return (
+                          <div
+                            key={item.id}
+                            className="relative flex items-center bg-[#1E1E1E]/92 border border-white/[0.08] rounded-[12px] pl-1.5 pr-8 py-1.5 min-w-[125px] max-w-[200px] shadow-sm select-none h-[42px] shrink-0"
+                          >
+                            {/* Left Icon Square Box */}
+                            <div className="w-[30px] h-[30px] rounded-[8px] bg-black/40 border border-white/[0.05] flex items-center justify-center shrink-0">
+                              <img
+                                  src={iconSrc}
+                                  alt=""
+                                  className="w-[18px] h-[18px] object-contain shrink-0"
+                              />
+                            </div>
+
+                            {/* Title and Subtitle */}
+                            <div className="flex flex-col ml-2 overflow-hidden justify-center min-w-0">
+                              <span className="text-[11.5px] font-semibold text-white/90 truncate leading-snug">
+                                {item.name}
+                              </span>
+                              <span className="text-[9px] font-bold text-neutral-400 tracking-wider leading-none mt-0.5">
+                                {displayType}
+                              </span>
+                            </div>
+
+                            {/* Delete button (top right) */}
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setPinnedItems(pinnedItems.filter(i => i.id !== item.id));
+                              }}
+                              className="absolute top-1.5 right-1.5 w-[16px] h-[16px] flex items-center justify-center rounded-full bg-white text-black transition-colors hover:bg-neutral-200 shrink-0"
+                            >
+                              <X className="w-2.5 h-2.5" strokeWidth={3.5} />
+                            </button>
+                          </div>
+                        );
+                      })}
+
+                      {/* File Attachments (Uploaded) */}
+                      {attachments.map((att, i) => {
+                        const isImage = !!att.preview;
+                        const displayName = att.name || att.file.name || 'file';
+                        const extension = displayName.split('.').pop()?.toUpperCase() || 'FILE';
+                        const isPreparing = att.uploadStatus === 'uploading';
+                        const isErrored = att.uploadStatus === 'error';
+                        
+                        const iconSrc = isImage 
+                          ? att.preview 
+                          : getFileIconPath(displayName);
+
+                        return (
+                          <div
+                            key={att.id || i}
+                            className={`relative flex items-center bg-[#1E1E1E]/92 border ${ isErrored ? 'border-[#E2765A]/45' : 'border-white/[0.08]' } rounded-[12px] pl-1.5 pr-8 py-1.5 min-w-[125px] max-w-[200px] shadow-sm select-none h-[42px] shrink-0`}
+                          >
+                            {/* Left Icon Square Box */}
+                            <div className="w-[30px] h-[30px] rounded-[8px] bg-black/40 border border-white/[0.05] flex items-center justify-center shrink-0 overflow-hidden relative">
+                              <img
+                                src={iconSrc}
+                                alt=""
+                                className={`${ isImage ? 'w-full h-full object-cover' : 'w-[18px] h-[18px] object-contain' } shrink-0`}
+                              />
+                              {isPreparing && (
+                                <div className="pointer-events-none absolute inset-0 eterx-surface-shimmer eterx-surface-shimmer-upload" />
+                              )}
+                              {isErrored && (
+                                <div className="absolute inset-0 flex items-center justify-center bg-black/28">
+                                  <AlertCircle className="w-4 h-4 text-[#F0B6A7]" strokeWidth={2.2} />
+                                </div>
+                              )}
+                            </div>
+
+                            {/* Title and Subtitle */}
+                            <div className="flex flex-col ml-2 overflow-hidden justify-center min-w-0">
+                              <span className="text-[11.5px] font-semibold text-white/90 truncate leading-snug">
+                                {displayName}
+                              </span>
+                              <span className={`text-[9px] font-bold tracking-wider leading-none mt-0.5 ${ isErrored ? 'text-[#F0B6A7]' : 'text-neutral-400' }`}>
+                                {isErrored ? 'Failed' : isPreparing ? 'Preparing' : extension}
+                              </span>
+                            </div>
+
+                            {/* Delete button (top right) */}
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                removeAttachment(i);
+                              }}
+                              className="absolute top-1.5 right-1.5 w-[16px] h-[16px] flex items-center justify-center rounded-full bg-white text-black transition-colors hover:bg-neutral-200 shrink-0"
+                            >
+                              <X className="w-2.5 h-2.5" strokeWidth={3.5} />
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                   {isOverflowing && !isAtTop && (
                     <div className="eterx-composer-overflow-fade-top absolute -top-1 left-0 right-3 h-6 bg-gradient-to-b from-[#2F2F2F] via-[#2F2F2F]/90 to-transparent pointer-events-none z-10 transition-opacity duration-200" />
                   )}
@@ -2510,14 +2720,10 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                   </button>
                 </Tooltip>
 
-                <AnimatePresence>
                   {showPinMenu && (
-                    <motion.div
-                      initial={{ opacity: 0, x: '-50%', y: 8, scale: 0.96 }}
-                      animate={{ opacity: 1, x: '-50%', y: 0, scale: 1 }}
-                      exit={{ opacity: 0, x: '-50%', y: 8, scale: 0.96 }}
-                      transition={{ duration: 0.18, ease: 'easeOut' }}
-                      className={`eterx-composer-popout absolute ${ controlPopoutVerticalClass } left-1/2 z-[120] flex w-[150px] flex-col rounded-[15px] border border-white/[0.105] bg-[#1A1A1A]/95 backdrop-blur-2xl p-[3px] shadow-[0_16px_34px_rgba(0,0,0,0.58),inset_0_1px_0_rgba(255,255,255,0.055)]`}
+                    <div
+                      style={{ transform: 'translateX(-50%)' }}
+                      className={`eterx-composer-popout eterx-pin-popout absolute ${ controlPopoutVerticalClass } left-1/2 z-[120] flex w-[150px] flex-col rounded-[15px] border border-white/[0.105] bg-[#1A1A1A]/95 backdrop-blur-2xl p-[3px] shadow-[0_16px_34px_rgba(0,0,0,0.58),inset_0_1px_0_rgba(255,255,255,0.055)]`}
                     >
                       <span className="eterx-composer-popout-caret pointer-events-none absolute -bottom-[5px] left-1/2 z-0 h-[10px] w-[10px] -translate-x-1/2 rotate-45 border-b border-r border-white/[0.105] bg-[#1A1A1A]/95" />
                       <button type="button" onClick={handlePinFolder} className="group/menu relative z-10 flex h-[40px] w-full items-center gap-[9px] rounded-[12px] px-[9px] text-left text-white transition-all duration-150 hover:bg-white/[0.095] hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] focus-visible:bg-white/[0.095] focus-visible:outline-none active:scale-[0.99]">
@@ -2537,155 +2743,9 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                           Files
                         </span>
                       </button>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-              </div>
-
-              {/* Folders and Files Pills */}
-              <AnimatePresence>
-                {(() => {
-                  const folders = pinnedItems.filter(i => i.type === 'folder');
-                  const files = pinnedItems.filter(i => i.type === 'file');
-
-                  return (
-                    <div className={`eterx-pinned-items flex min-w-0 items-center gap-1.5 ${ isCompressed ? `ml-0 max-w-[180px] ${ openPillDrop ? 'overflow-visible' : 'overflow-hidden' }` : 'ml-1.5 flex-wrap' }`}>
-                      {/* FOLDERS PILL */}
-                      {folders.length > 0 && (
-                        <motion.div
-                          initial={{ opacity: 0, width: 0, scale: 0.9 }}
-                          animate={{ opacity: 1, width: 'auto', scale: 1 }}
-                          exit={{ opacity: 0, width: 0, scale: 0.9 }}
-                          className="flex items-center h-[34px] group relative"
-                        >
-                          <div className="flex items-center gap-2 px-3 h-full bg-[#202020]/82 border border-white/[0.10] rounded-full shadow-[inset_0_1px_0_rgba(255,255,255,0.04),0_4px_10px_rgba(0,0,0,0.16)] hover:bg-[#2A2A2A]/86 hover:border-white/[0.16] transition-colors cursor-pointer"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              if (folders.length > 1) {
-                                setShowPinMenu(false);
-                                setOpenPillDrop(openPillDrop === 'folders' ? null : 'folders');
-                              }
-                            }}
-                          >
-                            <Folder className="w-[14px] h-[14px] text-white/72 shrink-0" strokeWidth={2.5} />
-                            <span className={`text-[12px] font-medium text-white truncate tracking-wide ${ isCompressed ? 'max-w-[62px]' : 'max-w-[120px]' }`}>
-                              {folders.length === 1 ? folders[0].name : `${ folders.length } folders`}
-                            </span>
-                            <button onClick={(e) => {
-                              e.stopPropagation();
-                              if (folders.length === 1) {
-                                setPinnedItems(pinnedItems.filter(i => i.type !== 'folder'));
-                              } else {
-                                // Clicking X on a multi-item pill removes all of them
-                                setPinnedItems(pinnedItems.filter(i => i.type !== 'folder'));
-                                setOpenPillDrop(null);
-                              }
-                            }} className="ml-0.5 p-0.5 text-[#F0F0F0] hover:text-[#E2765A] rounded-full transition-colors shrink-0">
-                              <X className="w-3.5 h-3.5" strokeWidth={2.5} />
-                            </button>
-                          </div>
-
-                          {/* Folder Click Menu */}
-                          <AnimatePresence>
-                            {openPillDrop === 'folders' && folders.length > 1 && (
-                              <motion.div
-                                initial={{ opacity: 0, y: 10, scale: 0.95 }}
-                                animate={{ opacity: 1, y: 0, scale: 1 }}
-                                exit={{ opacity: 0, y: 10, scale: 0.95 }}
-                                transition={{ duration: 0.2 }}
-                                className={`eterx-composer-popout absolute ${ pillPopoutVerticalClass } left-0 flex flex-col bg-[#1A1A1A]/95 backdrop-blur-2xl border border-white/10 rounded-[13px] shadow-[0_12px_30px_rgba(0,0,0,0.64),inset_0_1px_0_rgba(255,255,255,0.04)] z-50 p-1 w-max max-w-[220px] max-h-[300px] overflow-y-auto custom-scrollbar overflow-x-hidden`}
-                              >
-                                {folders.map(f => (
-                                  <div key={f.id} className="flex items-center px-2 py-1.5 hover:bg-white/5 rounded-[8px] group/item transition-colors">
-                                    <div className="flex items-center gap-2 overflow-hidden min-w-0 pr-2">
-                                      <Folder className="w-3.5 h-3.5 text-white/70 shrink-0" />
-                                      <span className="text-[11px] text-[#E8E6E3] truncate">{f.name}</span>
-                                    </div>
-                                    <button onClick={(e) => {
-                                      e.stopPropagation();
-                                      const newItems = pinnedItems.filter(i => i.id !== f.id);
-                                      setPinnedItems(newItems);
-                                      if (newItems.filter(i => i.type === 'folder').length <= 1) setOpenPillDrop(null);
-                                    }} className="ml-auto flex-shrink-0 text-[#F0F0F0] hover:text-[#E2765A] opacity-0 group-hover/item:opacity-100 transition-opacity">
-                                      <X className="w-3 h-3" />
-                                    </button>
-                                  </div>
-                                ))}
-                              </motion.div>
-                            )}
-                          </AnimatePresence>
-                        </motion.div>
-                      )}
-
-                      {/* FILES PILL */}
-                      {files.length > 0 && (
-                        <motion.div
-                          initial={{ opacity: 0, width: 0, scale: 0.9 }}
-                          animate={{ opacity: 1, width: 'auto', scale: 1 }}
-                          exit={{ opacity: 0, width: 0, scale: 0.9 }}
-                          className="flex items-center h-[34px] group relative"
-                        >
-                          <div className="flex items-center gap-2 px-3 h-full bg-[#202020]/82 border border-white/[0.10] rounded-full shadow-[inset_0_1px_0_rgba(255,255,255,0.04),0_4px_10px_rgba(0,0,0,0.16)] hover:bg-[#2A2A2A]/86 hover:border-white/[0.16] transition-colors cursor-pointer"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              if (files.length > 1) {
-                                setShowPinMenu(false);
-                                setOpenPillDrop(openPillDrop === 'files' ? null : 'files');
-                              }
-                            }}
-                          >
-                            <FileIcon className="w-[14px] h-[14px] text-[#FCD34D] shrink-0" strokeWidth={2.5} />
-                            <span className={`text-[12px] font-medium text-white truncate tracking-wide ${ isCompressed ? 'max-w-[62px]' : 'max-w-[120px]' }`}>
-                              {files.length === 1 ? files[0].name : `${ files.length } files`}
-                            </span>
-                            <button onClick={(e) => {
-                              e.stopPropagation();
-                              if (files.length === 1) {
-                                setPinnedItems(pinnedItems.filter(i => i.type !== 'file'));
-                              } else {
-                                setPinnedItems(pinnedItems.filter(i => i.type !== 'file'));
-                                setOpenPillDrop(null);
-                              }
-                            }} className="ml-0.5 p-0.5 text-[#F0F0F0] hover:text-[#E2765A] rounded-full transition-colors shrink-0">
-                              <X className="w-3.5 h-3.5" strokeWidth={2.5} />
-                            </button>
-                          </div>
-
-                          {/* Files Click Menu */}
-                          <AnimatePresence>
-                            {openPillDrop === 'files' && files.length > 1 && (
-                              <motion.div
-                                initial={{ opacity: 0, y: 10, scale: 0.95 }}
-                                animate={{ opacity: 1, y: 0, scale: 1 }}
-                                exit={{ opacity: 0, y: 10, scale: 0.95 }}
-                                transition={{ duration: 0.2 }}
-                                className={`eterx-composer-popout absolute ${ pillPopoutVerticalClass } left-0 flex flex-col bg-[#1A1A1A]/95 backdrop-blur-2xl border border-white/10 rounded-[13px] shadow-[0_12px_30px_rgba(0,0,0,0.64),inset_0_1px_0_rgba(255,255,255,0.04)] z-50 p-1 w-max max-w-[220px] max-h-[300px] overflow-y-auto custom-scrollbar overflow-x-hidden`}
-                              >
-                                {files.map(f => (
-                                  <div key={f.id} className="flex items-center px-2 py-1.5 hover:bg-white/5 rounded-[8px] group/item transition-colors">
-                                    <div className="flex items-center gap-2 overflow-hidden min-w-0 pr-2">
-                                      <FileIcon className="w-3.5 h-3.5 text-[#FCD34D] shrink-0" />
-                                      <span className="text-[11px] text-[#E8E6E3] truncate">{f.name}</span>
-                                    </div>
-                                    <button onClick={(e) => {
-                                      e.stopPropagation();
-                                      const newItems = pinnedItems.filter(i => i.id !== f.id);
-                                      setPinnedItems(newItems);
-                                      if (newItems.filter(i => i.type === 'file').length === 0) setOpenPillDrop(null);
-                                    }} className="ml-auto flex-shrink-0 text-[#F0F0F0] hover:text-[#E2765A] opacity-0 group-hover/item:opacity-100 transition-opacity">
-                                      <X className="w-3 h-3" />
-                                    </button>
-                                  </div>
-                                ))}
-                              </motion.div>
-                            )}
-                          </AnimatePresence>
-                        </motion.div>
-                      )}
                     </div>
-                  );
-                })()}
-              </AnimatePresence>
+                  )}
+              </div>
             </div>
 
             <div className="eterx-chat-controls-right flex items-center gap-1.5">
@@ -2696,10 +2756,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                     if (isThinking) return;
                     setShowAgentMenu(prev => !prev);
                   }}
-                  className={`eterx-agent-button ${ isCompressed ? 'max-w-[160px] pl-2.5 pr-1' : 'max-w-[232px] pl-3.5 pr-1' } flex h-[38px] w-full min-w-0 items-center justify-between gap-1.5 rounded-full border transition-all duration-150 active:scale-95 group cursor-pointer ${ selectedAgent && selectedAgent !== 'coding'
-                    ? 'border-indigo-500/30 bg-indigo-500/5 text-indigo-200 hover:bg-indigo-500/10 hover:border-indigo-500/40 shadow-[0_2px_12px_rgba(99,102,241,0.08)]'
-                    : 'border-transparent bg-[#2D2D2D] text-[#F4F4F4] hover:bg-[#333333]'
-                    } ${ showAgentMenu ? '!bg-indigo-500/15 !border-indigo-500/40 !text-white' : '' } ${ isThinking ? 'cursor-not-allowed opacity-70' : '' }`}
+                  className={`eterx-agent-button ${ isCompressed ? 'max-w-[160px] pl-2.5 pr-1' : 'max-w-[232px] pl-3.5 pr-1' } flex h-[38px] w-full min-w-0 items-center justify-between gap-1.5 rounded-full border border-transparent bg-[#2D2D2D] text-[#F4F4F4] transition-colors duration-150 hover:bg-[#333333] hover:text-white hover:border-transparent active:bg-[#333333] group cursor-pointer ${ showAgentMenu ? '!bg-[#333333] !border-transparent !text-white' : '' } ${ isThinking ? 'cursor-not-allowed opacity-70 hover:bg-[#2D2D2D] hover:text-[#F4F4F4] hover:border-transparent active:bg-[#2D2D2D]' : '' }`}
                 >
                   <AnimatePresence mode="wait">
                     <motion.div
@@ -2710,18 +2767,19 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       transition={{ duration: 0.18 }}
                       className="flex min-w-0 items-center gap-1.5"
                     >
-                      {selectedAgent && selectedAgent !== 'coding' ? (
-                        <Bot className="h-4.5 w-4.5 shrink-0 text-indigo-400" />
-                      ) : (
-                        <img
-                          src="/icons/agent-ui/agent.svg"
-                          alt=""
-                          aria-hidden="true"
-                          className="eterx-agent-ui-icon eterx-selector-icon h-[18px] w-[18px] shrink-0 object-contain opacity-90 transition-opacity duration-200"
-                        />
-                      )}
-                      <span className={`eterx-selector-label min-w-0 truncate text-[14px] font-semibold tracking-normal transition-colors ${ selectedAgent && selectedAgent !== 'coding' ? 'text-indigo-200' : 'text-[#F4F4F4]'
-                        }`}>
+                      <svg
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        className="eterx-agent-ui-icon eterx-selector-icon h-[18px] w-[18px] shrink-0 opacity-90 transition-opacity duration-200 text-[#F4F4F4]"
+                      >
+                        <path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96-.44 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24 2.5 2.5 0 0 1 4.44-4.16Z"/>
+                        <path d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96-.44 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24 2.5 2.5 0 0 0-4.44-4.16Z"/>
+                      </svg>
+                      <span className="eterx-selector-label min-w-0 truncate text-[14px] font-semibold tracking-normal transition-colors text-[#F4F4F4]">
                         {activeAgentDisplay.label}
                       </span>
                     </motion.div>
@@ -2730,102 +2788,96 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                     onClick={(e) => {
                       e.stopPropagation();
                     }}
-                    className="w-[22px] h-[22px] shrink-0 flex items-center justify-center rounded-full hover:bg-white/10 active:bg-white/15 text-white/50 hover:text-white transition-all duration-150"
+                    className="eterx-selector-chevron-wrapper w-[22px] h-[22px] shrink-0 flex items-center justify-center rounded-full hover:bg-white/10 active:bg-white/15 text-[#F0F0F0] hover:text-white transition-all duration-150"
                   >
-                    <ChevronDown className={`eterx-selector-chevron h-3.5 w-3.5 shrink-0 transition-all duration-200 ${ selectedAgent && selectedAgent !== 'coding' ? 'text-indigo-400 group-hover:text-indigo-300' : 'text-[#F0F0F0] group-hover:text-white'
-                      } ${ showAgentMenu ? 'rotate-180' : 'group-hover:translate-y-px' }`} strokeWidth={2.1} />
+                    <ChevronDown className={`eterx-selector-chevron h-3.5 w-3.5 shrink-0 transition-all duration-200 text-[#F0F0F0] group-hover:text-white ${ showAgentMenu ? 'rotate-180' : 'group-hover:translate-y-px' }`} strokeWidth={2.1} />
                   </div>
                 </div>
 
-                <AnimatePresence>
-                  {showAgentMenu && (
-                    <motion.div
-                      initial={{ opacity: 0, x: agentMenuX, y: selectorMenuOffset, scale: 0.97 }}
-                      animate={{ opacity: 1, x: agentMenuX, y: 0, scale: 1 }}
-                      exit={{ opacity: 0, x: agentMenuX, y: selectorMenuOffset, scale: 0.97 }}
-                      transition={{ duration: 0.18, ease: [0.2, 0.8, 0.2, 1] }}
-                      className={`eterx-composer-popout absolute ${ selectorPopoutVerticalClass } left-1/2 z-[130] flex w-[224px] max-w-[calc(100vw-32px)] flex-col rounded-xl border border-white/[0.08] bg-[#1E1E1E]/95 backdrop-blur-xl p-1.5 text-[#F4F1EA] shadow-[0_12px_36px_rgba(0,0,0,0.5)]`}
-                      role="dialog"
-                      aria-label="Agent selection"
+                {showAgentMenu && (
+                  <div
+                    style={{ transform: `translateX(${agentMenuX})` }}
+                    className={`eterx-composer-popout eterx-agent-popout absolute ${ selectorPopoutVerticalClass } left-1/2 z-[130] flex w-[224px] max-w-[calc(100vw-32px)] flex-col rounded-xl border border-white/[0.08] bg-[#1E1E1E]/95 backdrop-blur-xl p-1.5 text-[#F4F1EA] shadow-[0_12px_36px_rgba(0,0,0,0.5)]`}
+                    role="dialog"
+                    aria-label="Agent selection"
+                  >
+                    {/* Header */}
+                    <div className="px-2.5 pt-1 pb-1.5">
+                      <span className="text-[11.5px] font-semibold text-white/50">Agents</span>
+                    </div>
+
+                    {/* General (default) */}
+                    <button
+                      onClick={() => {
+                        onAgentChange?.(null, 'General');
+                        setShowAgentMenu(false);
+                      }}
+                      className={`flex w-full items-center gap-2.5 px-2.5 py-1.5 rounded-md text-left transition-all duration-150 ${ !selectedAgent
+                        ? 'bg-white/[0.08] text-white font-medium shadow-sm'
+                        : 'text-[#E8E6E3] hover:bg-white/[0.05] active:bg-white/[0.12]'
+                        }`}
                     >
-                      {/* Header */}
-                      <div className="px-2.5 pt-1 pb-1.5">
-                        <span className="text-[11.5px] font-semibold text-white/50">Agents</span>
-                      </div>
+                      <span className="text-[12px] font-normal truncate flex-1">General</span>
+                      {!selectedAgent && <Check className="h-3.5 w-3.5 shrink-0 text-white" strokeWidth={2.05} />}
+                    </button>
 
-                      {/* General (default) */}
-                      <button
-                        onClick={() => {
-                          onAgentChange?.(null, 'General');
-                          setShowAgentMenu(false);
-                        }}
-                        className={`flex w-full items-center gap-2.5 px-2.5 py-1.5 rounded-md text-left transition-all duration-150 ${ !selectedAgent
-                          ? 'bg-white/[0.08] text-white font-medium shadow-sm'
-                          : 'text-[#E8E6E3] hover:bg-white/[0.05] active:bg-white/[0.12]'
-                          }`}
-                      >
-                        <span className="text-[12px] font-normal truncate flex-1">General</span>
-                        {!selectedAgent && <Check className="h-3.5 w-3.5 shrink-0 text-white" strokeWidth={2.05} />}
-                      </button>
+                    {/* Coding */}
+                    <button
+                      onClick={() => {
+                        onAgentChange?.('coding', 'Coding');
+                        setShowAgentMenu(false);
+                      }}
+                      className={`flex w-full items-center gap-2.5 px-2.5 py-1.5 rounded-md text-left transition-all duration-150 ${ selectedAgent === 'coding'
+                        ? 'bg-white/[0.08] text-white font-medium shadow-sm'
+                        : 'text-[#E8E6E3] hover:bg-white/[0.05] active:bg-white/[0.12]'
+                        }`}
+                    >
+                      <span className="text-[12px] font-normal truncate flex-1">Coding</span>
+                      {selectedAgent === 'coding' && <Check className="h-3.5 w-3.5 shrink-0 text-white" strokeWidth={2.05} />}
+                    </button>
 
-                      {/* Coding */}
-                      <button
-                        onClick={() => {
-                          onAgentChange?.('coding', 'Coding');
-                          setShowAgentMenu(false);
-                        }}
-                        className={`flex w-full items-center gap-2.5 px-2.5 py-1.5 rounded-md text-left transition-all duration-150 ${ selectedAgent === 'coding'
-                          ? 'bg-white/[0.08] text-white font-medium shadow-sm'
-                          : 'text-[#E8E6E3] hover:bg-white/[0.05] active:bg-white/[0.12]'
-                          }`}
-                      >
-                        <span className="text-[12px] font-normal truncate flex-1">Coding</span>
-                        {selectedAgent === 'coding' && <Check className="h-3.5 w-3.5 shrink-0 text-white" strokeWidth={2.05} />}
-                      </button>
+                    {/* Separator + custom agents from agent room */}
+                    {availableAgents.length > 0 && (
+                      <>
+                        <div className="mx-2 my-1 h-[1px] bg-white/[0.06]" />
+                        <div className="px-2.5 py-0.5">
+                          <span className="text-[11px] font-semibold text-white/50">Custom agents</span>
+                        </div>
+                        <div className="max-h-[136px] overflow-y-auto pr-0.5 custom-scrollbar">
+                          {availableAgents.map(agent => (
+                            <button
+                              key={agent.agentId}
+                              onClick={() => {
+                                onAgentChange?.(agent.agentId, agent.name);
+                                setShowAgentMenu(false);
+                              }}
+                              className={`flex min-h-[32px] w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left transition-all duration-150 ${ selectedAgent === agent.agentId
+                                ? 'bg-white/[0.08] text-white font-medium shadow-sm'
+                                : 'text-[#E8E6E3] hover:bg-white/[0.05] active:bg-white/[0.12]'
+                                }`}
+                            >
+                              <span className="flex-1 truncate text-[12px] font-normal">{agent.name}</span>
+                              {selectedAgent === agent.agentId && <Check className="h-3.5 w-3.5 shrink-0 text-white" strokeWidth={2.05} />}
+                            </button>
+                          ))}
+                        </div>
+                      </>
+                    )}
 
-                      {/* Separator + custom agents from agent room */}
-                      {availableAgents.length > 0 && (
-                        <>
-                          <div className="mx-2 my-1 h-[1px] bg-white/[0.06]" />
-                          <div className="px-2.5 py-0.5">
-                            <span className="text-[11px] font-semibold text-white/50">Custom agents</span>
-                          </div>
-                          <div className="max-h-[168px] overflow-y-auto pr-0.5 custom-scrollbar">
-                            {availableAgents.map(agent => (
-                              <button
-                                key={agent.agentId}
-                                onClick={() => {
-                                  onAgentChange?.(agent.agentId, agent.name);
-                                  setShowAgentMenu(false);
-                                }}
-                                className={`flex min-h-[32px] w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left transition-all duration-150 ${ selectedAgent === agent.agentId
-                                  ? 'bg-white/[0.08] text-white font-medium shadow-sm'
-                                  : 'text-[#E8E6E3] hover:bg-white/[0.05] active:bg-white/[0.12]'
-                                  }`}
-                              >
-                                <span className="flex-1 truncate text-[12px] font-normal">{agent.name}</span>
-                                {selectedAgent === agent.agentId && <Check className="h-3.5 w-3.5 shrink-0 text-white" strokeWidth={2.05} />}
-                              </button>
-                            ))}
-                          </div>
-                        </>
-                      )}
-
-                      {/* Link to Agent Room */}
-                      <div className="mx-2 my-1 h-[1px] bg-white/[0.06]" />
-                      <button
-                        onClick={() => {
-                          setShowAgentMenu(false);
-                          onOpenAgents?.();
-                        }}
-                        className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-md text-[#8C8A88] hover:text-[#E8E6E3] hover:bg-white/[0.05] active:bg-white/[0.12] transition-all duration-150"
-                      >
-                        <span className="text-[11.5px] font-normal">Go to agent room</span>
-                        <ArrowUpRight className="h-3.5 w-3.5 shrink-0 text-[#8C8A88]" strokeWidth={1.8} />
-                      </button>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
+                    {/* Link to Agent Room */}
+                    <div className="mx-2 my-1 h-[1px] bg-white/[0.06]" />
+                    <button
+                      onClick={() => {
+                        setShowAgentMenu(false);
+                        onOpenAgents?.();
+                      }}
+                      className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-md text-[#8C8A88] hover:text-[#E8E6E3] hover:bg-white/[0.05] active:bg-white/[0.12] transition-all duration-150"
+                    >
+                      <span className="text-[11.5px] font-normal">Go to agent room</span>
+                      <ArrowUpRight className="h-3.5 w-3.5 shrink-0 text-[#8C8A88]" strokeWidth={1.8} />
+                    </button>
+                  </div>
+                )}
               </div>
 
               {/* Model selector */}
@@ -2846,12 +2898,19 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       transition={{ duration: 0.2, ease: "easeOut" }}
                       className="flex min-w-0 items-center gap-1.5"
                     >
-                      <img
-                        src="/icons/agent-ui/commands/model.svg"
-                        alt=""
-                        aria-hidden="true"
-                        className="eterx-agent-ui-icon eterx-selector-icon h-[18px] w-[18px] shrink-0 object-contain opacity-90 transition-opacity duration-200"
-                      />
+                      <svg
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        className="eterx-agent-ui-icon eterx-selector-icon h-[18px] w-[18px] shrink-0 opacity-90 transition-opacity duration-200 text-[#F4F4F4]"
+                      >
+                        <path d="m12 3-10 5 10 5 10-5-10-5Z" />
+                        <path d="m2 17 10 5 10-5" />
+                        <path d="m2 12 10 5 10-5" />
+                      </svg>
                       <span className="eterx-selector-label min-w-0 truncate text-[14px] font-semibold tracking-normal transition-colors">
                         {modelDisplayLabel}
                       </span>
@@ -2861,123 +2920,114 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                     onClick={(e) => {
                       e.stopPropagation();
                     }}
-                    className="w-[22px] h-[22px] shrink-0 flex items-center justify-center rounded-full hover:bg-white/10 active:bg-white/15 text-[#F0F0F0] hover:text-white transition-all duration-150"
+                    className="eterx-selector-chevron-wrapper w-[22px] h-[22px] shrink-0 flex items-center justify-center rounded-full hover:bg-white/10 active:bg-white/15 text-[#F0F0F0] hover:text-white transition-all duration-150"
                   >
                     <ChevronDown className={`eterx-selector-chevron h-3.5 w-3.5 text-[#F0F0F0] transition-all duration-200 group-hover:text-white ${ showModelMenu ? 'rotate-180' : 'group-hover:translate-y-px' }`} strokeWidth={2.1} />
                   </div>
                 </div>
 
-                <AnimatePresence>
-                  {showModelMenu && (
-                    <motion.div
-                      initial={{ opacity: 0, x: modelMenuX, y: selectorMenuOffset, scale: 0.98 }}
-                      animate={{ opacity: 1, x: modelMenuX, y: 0, scale: 1 }}
-                      exit={{ opacity: 0, x: modelMenuX, y: selectorMenuOffset, scale: 0.98 }}
-                      transition={{ duration: 0.18, ease: [0.2, 0.8, 0.2, 1] }}
-                      className={`eterx-composer-popout absolute ${ selectorPopoutVerticalClass } left-1/2 z-[130] flex ${ isCompressed ? 'w-[248px]' : 'w-[286px]' } max-w-[calc(100vw-32px)] flex-col rounded-xl border border-white/[0.08] bg-[#1E1E1E]/95 backdrop-blur-xl p-1.5 text-[#F4F1EA] shadow-[0_12px_36px_rgba(0,0,0,0.5)]`}
-                      role="dialog"
-                      aria-label="Model and thinking settings"
-                    >
-                      <div className={modelOptions.length > 3 ? 'max-h-[168px] overflow-y-auto pr-1 eterx-scrollbar' : ''}>
-                        {allModelOptions.map((option) => {
-                          const selected = option.optionKey === selectedModel.optionKey;
-                          const optionLabel = getModelOptionLabel(option);
-                          return (
-                            <React.Fragment key={option.optionKey}>
-                              <button
-                                onClick={() => selectChatModelOption(option)}
-                                className={`group flex min-h-[44px] w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left transition-colors duration-150 ${ selected ? 'bg-white/[0.08] text-white font-medium shadow-sm' : 'text-[#E8E6E3] hover:bg-white/[0.05] active:bg-white/[0.12] font-normal' }`}
-                                aria-pressed={selected}
-                              >
-                                <span className="flex h-4 w-4 shrink-0 items-center justify-center text-white/95">
-                                  {selected && <Check className="h-3.5 w-3.5" strokeWidth={2.05} />}
+                {showModelMenu && (
+                  <div
+                    style={{ transform: `translateX(${modelMenuX})` }}
+                    className={`eterx-composer-popout absolute ${ selectorPopoutVerticalClass } left-1/2 z-[130] flex ${ isCompressed ? 'w-[248px]' : 'w-[286px]' } max-w-[calc(100vw-32px)] flex-col rounded-xl border border-white/[0.08] bg-[#1E1E1E]/95 backdrop-blur-xl p-1.5 text-[#F4F1EA] shadow-[0_12px_36px_rgba(0,0,0,0.5)]`}
+                    role="dialog"
+                    aria-label="Model and thinking settings"
+                  >
+                    <div className={modelOptions.length > 3 ? 'max-h-[168px] overflow-y-auto pr-1 eterx-scrollbar' : ''}>
+                      {allModelOptions.map((option) => {
+                        const selected = option.optionKey === selectedModel.optionKey;
+                        const optionLabel = getModelOptionLabel(option);
+                        return (
+                          <React.Fragment key={option.optionKey}>
+                            <button
+                              onClick={() => selectChatModelOption(option)}
+                              className={`group flex min-h-[44px] w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left transition-colors duration-150 ${ selected ? 'bg-white/[0.08] text-white font-medium shadow-sm' : 'text-[#E8E6E3] hover:bg-white/[0.05] active:bg-white/[0.12] font-normal' }`}
+                              aria-pressed={selected}
+                            >
+                              <span className="flex h-4 w-4 shrink-0 items-center justify-center text-white/95">
+                                {selected && <Check className="h-3.5 w-3.5" strokeWidth={2.05} />}
+                              </span>
+                              <span className="flex min-w-0 flex-1 flex-col">
+                                <span className="truncate text-[12.5px] leading-4 tracking-normal">
+                                  {optionLabel}
                                 </span>
-                                <span className="flex min-w-0 flex-1 flex-col">
-                                  <span className="truncate text-[12.5px] leading-4 tracking-normal">
-                                    {optionLabel}
-                                  </span>
-                                  <span className="truncate text-[11px] leading-3 text-[#A3A19E]">
-                                    {option.isAuto ? 'Use the Settings model priority list' : MODEL_PROVIDER_LABEL[option.provider]}
-                                  </span>
+                                <span className="truncate text-[11px] leading-3 text-[#A3A19E]">
+                                  {option.isAuto ? 'Use the Settings model priority list' : MODEL_PROVIDER_LABEL[option.provider]}
                                 </span>
-                              </button>
-                            </React.Fragment>
-                          );
-                        })}
-                        {modelOptions.length === 0 && (
-                          <div className="px-2.5 pb-2.5 pt-1 text-[11.5px] leading-4 text-[#A3A19E]">
-                            Add models in Settings to make exact choices available here.
+                              </span>
+                            </button>
+                          </React.Fragment>
+                        );
+                      })}
+                      {modelOptions.length === 0 && (
+                        <div className="px-2.5 pb-2.5 pt-1 text-[11.5px] leading-4 text-[#A3A19E]">
+                          Add models in Settings to make exact choices available here.
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="mx-2 my-1.5 h-px bg-white/[0.09]" />
+
+                    <div className="px-0.5 pb-0.5">
+                      <div
+                        className="relative"
+                        onMouseEnter={handleThinkingMouseEnter}
+                        onMouseLeave={handleThinkingMouseLeave}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => setShowThinkingLevels(prev => !prev)}
+                          onFocus={handleThinkingMouseEnter}
+                          className={`flex min-h-[46px] w-full items-center gap-2.5 rounded-[15px] px-2.5 py-1.5 text-left text-white transition-colors duration-150 hover:bg-[#242424] ${ showThinkingLevels ? 'bg-[#242424]' : '' }`}
+                          aria-expanded={showThinkingLevels}
+                        >
+                          <span className="h-5 w-5 shrink-0" />
+                          <span className="flex min-w-0 flex-1 flex-col">
+                            <span className="truncate text-[13px] font-semibold leading-5 tracking-normal">
+                              Thinking level
+                            </span>
+                            <span className="truncate text-[12px] font-medium leading-4 text-[#E7E7E7]">
+                              {selectedThinkingLevel.label}
+                            </span>
+                          </span>
+                          <ChevronRight className={`h-3.5 w-3.5 shrink-0 text-white transition-transform duration-150 ${ showThinkingLevels ? 'rotate-90' : '' }`} strokeWidth={2.2} />
+                        </button>
+
+                        {showThinkingLevels && (
+                          <div
+                            onMouseEnter={handleThinkingMouseEnter}
+                            onMouseLeave={handleThinkingMouseLeave}
+                            className={`eterx-composer-popout absolute ${ thinkingMenuVerticalClass } ${ thinkingMenuHorizontalClass } z-[140] w-[188px] max-w-[calc(100vw-44px)] overflow-hidden rounded-[18px] border border-white/[0.08] bg-[#111111] p-1.5 shadow-[0_18px_44px_rgba(0,0,0,0.62),inset_0_1px_0_rgba(255,255,255,0.04)]`}
+                          >
+                            {MAIN_AGENT_THINKING_LEVEL_OPTIONS.map(option => {
+                              const selected = option.id === safeThinkingLevel;
+                              return (
+                                <button
+                                  key={option.id}
+                                  type="button"
+                                  onClick={() => {
+                                    onThinkingLevelChange(option.id);
+                                    setShowThinkingLevels(false);
+                                  }}
+                                  className={`flex min-h-[42px] w-full items-center gap-2.5 rounded-[14px] px-2.5 py-1.5 text-left transition-colors duration-150 ${ selected ? 'text-white hover:bg-[#202020]' : 'text-[#F4F4F4] hover:bg-[#202020] hover:text-white' }`}
+                                >
+                                  <span className="flex h-5 w-5 shrink-0 items-center justify-center text-white/95">
+                                    {selected && <Check className="h-4 w-4" strokeWidth={2.35} />}
+                                  </span>
+                                  <span className="min-w-0 flex-1">
+                                    <span className="block truncate text-[13px] font-semibold leading-5">
+                                      {option.label}
+                                    </span>
+                                  </span>
+                                </button>
+                              );
+                            })}
                           </div>
                         )}
                       </div>
-
-                      <div className="mx-2 my-1.5 h-px bg-white/[0.09]" />
-
-                      <div className="px-0.5 pb-0.5">
-                        <div
-                          className="relative"
-                          onMouseEnter={() => setShowThinkingLevels(true)}
-                          onMouseLeave={() => setShowThinkingLevels(false)}
-                        >
-                          <button
-                            type="button"
-                            onClick={() => setShowThinkingLevels(prev => !prev)}
-                            onFocus={() => setShowThinkingLevels(true)}
-                            className={`flex min-h-[46px] w-full items-center gap-2.5 rounded-[15px] px-2.5 py-1.5 text-left text-white transition-colors duration-150 hover:bg-[#242424] ${ showThinkingLevels ? 'bg-[#242424]' : '' }`}
-                            aria-expanded={showThinkingLevels}
-                          >
-                            <span className="h-5 w-5 shrink-0" />
-                            <span className="flex min-w-0 flex-1 flex-col">
-                              <span className="truncate text-[13px] font-semibold leading-5 tracking-normal">
-                                Thinking level
-                              </span>
-                              <span className="truncate text-[12px] font-medium leading-4 text-[#E7E7E7]">
-                                {selectedThinkingLevel.label}
-                              </span>
-                            </span>
-                            <ChevronRight className={`h-3.5 w-3.5 shrink-0 text-white transition-transform duration-150 ${ showThinkingLevels ? 'rotate-90' : '' }`} strokeWidth={2.2} />
-                          </button>
-
-                          <AnimatePresence initial={false}>
-                            {showThinkingLevels && (
-                              <motion.div
-                                initial={{ opacity: 0, x: thinkingMenuOffset, scale: 0.98 }}
-                                animate={{ opacity: 1, x: 0, scale: 1 }}
-                                exit={{ opacity: 0, x: thinkingMenuOffset, scale: 0.98 }}
-                                transition={{ duration: 0.16, ease: 'easeOut' }}
-                                className={`eterx-composer-popout absolute ${ thinkingMenuVerticalClass } ${ thinkingMenuHorizontalClass } z-[140] w-[188px] max-w-[calc(100vw-44px)] overflow-hidden rounded-[18px] border border-white/[0.08] bg-[#111111] p-1.5 shadow-[0_18px_44px_rgba(0,0,0,0.62),inset_0_1px_0_rgba(255,255,255,0.04)]`}
-                              >
-                                {MAIN_AGENT_THINKING_LEVEL_OPTIONS.map(option => {
-                                  const selected = option.id === safeThinkingLevel;
-                                  return (
-                                    <button
-                                      key={option.id}
-                                      type="button"
-                                      onClick={() => {
-                                        onThinkingLevelChange(option.id);
-                                        setShowThinkingLevels(false);
-                                      }}
-                                      className={`flex min-h-[42px] w-full items-center gap-2.5 rounded-[14px] px-2.5 py-1.5 text-left transition-colors duration-150 ${ selected ? 'text-white hover:bg-[#202020]' : 'text-[#F4F4F4] hover:bg-[#202020] hover:text-white' }`}
-                                    >
-                                      <span className="flex h-5 w-5 shrink-0 items-center justify-center text-white/95">
-                                        {selected && <Check className="h-4 w-4" strokeWidth={2.35} />}
-                                      </span>
-                                      <span className="min-w-0 flex-1">
-                                        <span className="block truncate text-[13px] font-semibold leading-5">
-                                          {option.label}
-                                        </span>
-                                      </span>
-                                    </button>
-                                  );
-                                })}
-                              </motion.div>
-                            )}
-                          </AnimatePresence>
-                        </div>
-                      </div>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
+                    </div>
+                  </div>
+                )}
               </div>
 
               <Tooltip text="Voice dictation" side="top">

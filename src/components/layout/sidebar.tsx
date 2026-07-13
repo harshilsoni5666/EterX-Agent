@@ -468,7 +468,7 @@ interface SidebarProps {
   isThinking?: boolean;
 }
 
-export const Sidebar: React.FC<SidebarProps> = ({
+export const Sidebar = React.memo<SidebarProps>(({
   isOpen, setIsOpen, createNewChat, chats, activeChatId, loadChat, deleteChat, deleteChats, renameChat, toggleFavorite, onSearchClick, activeView, setActiveView, runningChats, unreadChats, onSettingsClick, isThinking
 }) => {
   const [menuState, setMenuState] = React.useState<{ id: string, x: number, y: number, dropUp: boolean } | null>(null);
@@ -905,7 +905,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
         <div className="relative z-10 flex flex-col h-full w-full overflow-hidden">
           {/* Header containing Branding + Toggle */}
-          <div className="h-[var(--eterx-shell-topbar-height)] px-3 tracking-tight flex items-center justify-start [-webkit-app-region:drag]">
+          <div className="eterx-sidebar-topbar h-[var(--eterx-shell-topbar-height)] px-3 tracking-tight flex items-center justify-start [-webkit-app-region:drag]">
             <Tooltip text={isOpen ? "Close sidebar" : "Open sidebar"} side="right">
               <button
                 type="button"
@@ -1410,4 +1410,4 @@ export const Sidebar: React.FC<SidebarProps> = ({
       )}
     </>
   );
-};
+});

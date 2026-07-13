@@ -30,6 +30,7 @@ const MAX_FINAL_ANSWER_CHARS = 100000;
 export interface PersistedTask {
   taskId: string;
   chatId: string;
+  runId?: string;
   prompt: string;
   status: 'running' | 'completed' | 'failed' | 'stopped';
   traceLogs: any[];
@@ -180,12 +181,13 @@ export const taskStore = {
   /**
    * Create a new task entry when a chat request starts.
    */
-  async createTask(chatId: string, prompt: string): Promise<string> {
+  async createTask(chatId: string, prompt: string, runId?: string): Promise<string> {
     const taskId = `task_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
     
     const task: PersistedTask = {
       taskId,
       chatId,
+      runId,
       prompt,
       status: 'running',
       traceLogs: [],
@@ -356,6 +358,7 @@ export const taskStore = {
     totalTraces: number;
     maxIndex: number;
     finalAnswer: string;
+    runId?: string;
     startedAt?: number;
     completedAt?: number;
     error?: string;
@@ -387,6 +390,7 @@ export const taskStore = {
       totalTraces: sourceTraces.length,
       maxIndex,
       finalAnswer: task.finalAnswer,
+      runId: task.runId,
       startedAt: task.startedAt,
       completedAt: task.completedAt,
       error: task.status === 'failed' ? task.finalAnswer : undefined,

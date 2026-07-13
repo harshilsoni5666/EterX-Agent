@@ -918,6 +918,18 @@ ipcMain.handle('list-folder', async (event, folderPath) => {
   } catch { return []; }
 });
 
+// IPC: Get native OS file icon
+ipcMain.handle('get-file-icon', async (event, filePath) => {
+  try {
+    if (!filePath) return null;
+    const icon = await app.getFileIcon(filePath, { size: 'large' });
+    return icon.toDataURL();
+  } catch (err) {
+    console.error('Failed to get file icon:', err);
+    return null;
+  }
+});
+
 // IPC: Native System Notifications
 ipcMain.handle('show-notification', (event, title, body) => {
   const { Notification } = require('electron');

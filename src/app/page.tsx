@@ -935,6 +935,7 @@ export interface PinnedItem {
   type: 'file' | 'folder';
   path: string;
   name: string;
+  systemIcon?: string;
 }
 
 const SPLIT_CHAT_WIDTH_KEY = 'eterx_split_chat_width';
@@ -971,9 +972,116 @@ function DeepWorkUI() {
   const isRightPanelVisible = hasOpenFiles;
   const splitContainerRef = useRef<HTMLDivElement>(null);
   const latestChatPanelWidthRef = useRef<number | null>(null);
+  const chatScrollPositionsRef = useRef<Record<string, number>>({});
   const [chatPanelWidth, setChatPanelWidth] = useState<number | null>(null);
   const [isResizingPanels, setIsResizingPanels] = useState(false);
   const [inputValue, setInputValue] = useState("");
+  // Interface for all composer state elements saved per-chat
+  interface ChatComposerState {
+    inputValue: string;
+    runLocation: 'local' | 'sandbox';
+    selectedAgent: SelectedAgentState;
+    agentMode: MainAgentMode;
+    thinkingLevel: MainAgentThinkingLevel;
+    attachments: ComposerAttachment[];
+    pinnedItems: PinnedItem[];
+    chatModelSelection: string;
+  }
+
+  const [activeModelSelection, setActiveModelSelection] = useState<string>(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem(CHAT_MODEL_SELECTION_STORAGE_KEY) || AUTO_MODEL_SELECTION;
+    }
+    return AUTO_MODEL_SELECTION;
+  });
+
+  const [composerStates, setComposerStates] = useState<Record<string, ChatComposerState>>(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        return JSON.parse(localStorage.getItem('eterx_chat_composer_states') || '{}');
+      } catch {
+        return {};
+      }
+    }
+    return {};
+  });
+
+  const updateComposerState = useCallback((updater: (prev: ChatComposerState) => ChatComposerState) => {
+    const key = activeChatIdRef.current || 'new_chat';
+    setComposerStates(prevStates => {
+      const defaultState: ChatComposerState = {
+        inputValue: '',
+        runLocation: 'local',
+        selectedAgent: { agentId: null, agentName: 'General' },
+        agentMode: 'think',
+        thinkingLevel: 'low',
+        attachments: [],
+        pinnedItems: [],
+        chatModelSelection: AUTO_MODEL_SELECTION,
+      };
+      const currentState = prevStates[key] || defaultState;
+      const nextState = updater(currentState);
+      const nextStates = { ...prevStates, [key]: nextState };
+      try { localStorage.setItem('eterx_chat_composer_states', JSON.stringify(nextStates)); } catch {}
+      return nextStates;
+    });
+  }, []);
+
+  const applyComposerState = useCallback((state?: ChatComposerState) => {
+    const defaultState: ChatComposerState = {
+      inputValue: '',
+      runLocation: 'local',
+      selectedAgent: { agentId: null, agentName: 'General' },
+      agentMode: 'think',
+      thinkingLevel: 'low',
+      attachments: [],
+      pinnedItems: [],
+      chatModelSelection: AUTO_MODEL_SELECTION,
+    };
+    const target = state || defaultState;
+    setInputValue(target.inputValue);
+    setActiveRunLocation(target.runLocation);
+    setSelectedAgentState(target.selectedAgent);
+    setAgentMode(target.agentMode);
+    setThinkingLevelState(target.thinkingLevel);
+    setAttachments(target.attachments);
+    setPinnedItems(target.pinnedItems);
+    setActiveModelSelection(target.chatModelSelection);
+  }, []);
+
+  const updateInputValue = useCallback((value: string | ((prev: string) => string)) => {
+    setInputValue(prev => {
+      const resolved = typeof value === 'function' ? value(prev) : value;
+      updateComposerState(state => ({ ...state, inputValue: resolved }));
+      return resolved;
+    });
+  }, [updateComposerState]);
+
+  const updateAttachments = useCallback((value: ComposerAttachment[] | ((prev: ComposerAttachment[]) => ComposerAttachment[])) => {
+    setAttachments(prev => {
+      const resolved = typeof value === 'function' ? value(prev) : value;
+      updateComposerState(state => ({ ...state, attachments: resolved }));
+      return resolved;
+    });
+  }, [updateComposerState]);
+
+  const updatePinnedItems = useCallback((value: PinnedItem[] | ((prev: PinnedItem[]) => PinnedItem[])) => {
+    setPinnedItems(prev => {
+      const resolved = typeof value === 'function' ? value(prev) : value;
+      updateComposerState(state => ({ ...state, pinnedItems: resolved }));
+      return resolved;
+    });
+  }, [updateComposerState]);
+
+  const handleAgentModeChange = useCallback((mode: MainAgentMode) => {
+    setAgentMode(mode);
+    updateComposerState(state => ({ ...state, agentMode: mode }));
+  }, [updateComposerState]);
+
+  const handleModelSelectionChange = useCallback((selection: string) => {
+    setActiveModelSelection(selection);
+    updateComposerState(state => ({ ...state, chatModelSelection: selection }));
+  }, [updateComposerState]);
   const [selectedProjectSection, setSelectedProjectSection] = useState('new-tasks');
   const [pendingSteering, setPendingSteering] = useState<{ id: string, text: string }[]>([]);
   // Per-chat thinking state: Set of chatIds that have running agents
@@ -983,6 +1091,7 @@ function DeepWorkUI() {
   const [greeting, setGreeting] = useState("Initializing...");
 
   const [chats, setChats] = useState<ChatSession[]>([]);
+  const nonBuilderChats = useMemo(() => chats.filter(c => !c.id.startsWith('agent_builder_')), [chats]);
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
   const [buildingAgentId, setBuildingAgentId] = useState<string | null>(null);
 
@@ -1406,10 +1515,11 @@ function DeepWorkUI() {
   const setThinkingLevel = useCallback((level: MainAgentThinkingLevel) => {
     const safeLevel = normalizeMainAgentThinkingLevel(level);
     setThinkingLevelState(safeLevel);
+    updateComposerState(state => ({ ...state, thinkingLevel: safeLevel }));
     try {
       localStorage.setItem(MAIN_AGENT_THINKING_LEVEL_STORAGE_KEY, safeLevel);
     } catch { }
-  }, []);
+  }, [updateComposerState]);
 
   const handleAgentChange = useCallback((agentId: string | null, agentName: string) => {
     const next: SelectedAgentState = {
@@ -1417,10 +1527,11 @@ function DeepWorkUI() {
       agentName: agentId?.trim() ? (agentName?.trim() || agentId.trim()) : 'General',
     };
     setSelectedAgentState(next);
+    updateComposerState(state => ({ ...state, selectedAgent: next }));
     try {
       localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, JSON.stringify(next));
     } catch { }
-  }, []);
+  }, [updateComposerState]);
 
   const resizeChatPanelBy = useCallback((delta: number) => {
     const container = splitContainerRef.current;
@@ -2089,7 +2200,15 @@ function DeepWorkUI() {
           localStorage.removeItem('eterx_active_workspace_path');
         }
       }
-      setActiveRunLocation(chat.runLocation || 'local');
+      const storedState = composerStates[id];
+      applyComposerState(storedState || (chat.runLocation ? {
+        inputValue: '',
+        runLocation: chat.runLocation,
+        selectedAgent: { agentId: null, agentName: 'General' },
+        agentMode: 'think',
+        thinkingLevel: 'low',
+        attachments: [],
+      } : undefined));
       clearUnreadChat(id);
       if (window.innerWidth < 768) setSidebarOpen(false);
 
@@ -2132,7 +2251,14 @@ function DeepWorkUI() {
 
       setTimeout(() => {
         const container = document.getElementById('chat-container');
-        if (container) container.scrollTop = container.scrollHeight;
+        if (container) {
+          const savedScroll = chatScrollPositionsRef.current[id];
+          if (savedScroll !== undefined) {
+            container.scrollTop = savedScroll;
+          } else {
+            container.scrollTop = container.scrollHeight;
+          }
+        }
       }, 50);
     }
   };
@@ -2157,6 +2283,7 @@ function DeepWorkUI() {
 
   const handleRunLocationChange = useCallback((location: 'local' | 'sandbox') => {
     setActiveRunLocation(location);
+    updateComposerState(state => ({ ...state, runLocation: location }));
     if (activeChatId) {
       setChats(prev => {
         const updated = prev.map(chat => chat.id === activeChatId ? { ...chat, runLocation: location } : chat);
@@ -2204,16 +2331,28 @@ function DeepWorkUI() {
     }
   }, [handleAgentChange]);
 
-  const createNewChat = () => {
+  const createNewChat = useCallback(() => {
     activeChatIdRef.current = null;
     setActiveChatId(null);
     setMonitorOpen(false);
     setTraceLogs([]);
-    setInputValue('');
+    const storedState = composerStates['new_chat'];
+    applyComposerState(storedState);
     setBuildingAgentId(null);
-  };
+    setTimeout(() => {
+      const container = document.getElementById('chat-container');
+      if (container) {
+        const savedScroll = chatScrollPositionsRef.current['new_chat'];
+        if (savedScroll !== undefined) {
+          container.scrollTop = savedScroll;
+        } else {
+          container.scrollTop = container.scrollHeight;
+        }
+      }
+    }, 50);
+  }, [composerStates, applyComposerState]);
 
-  const deleteChats = (ids: string[]) => {
+  const deleteChats = useCallback((ids: string[]) => {
     const idsToDelete = [...new Set(ids)].filter(Boolean);
     if (idsToDelete.length === 0) return;
 
@@ -2272,13 +2411,13 @@ function DeepWorkUI() {
       setTraceLogs([]);
       setBuildingAgentId(null);
     }
-  };
+  }, [activeChatId]);
 
-  const deleteChat = (id: string) => {
+  const deleteChat = useCallback((id: string) => {
     deleteChats([id]);
-  };
+  }, [deleteChats]);
 
-  const renameChat = (id: string, newTitle: string) => {
+  const renameChat = useCallback((id: string, newTitle: string) => {
     setChats(prev => {
       const updated = prev.map(c =>
         c.id === id ? { ...c, title: newTitle, updatedAt: Date.now() } : c
@@ -2287,9 +2426,9 @@ function DeepWorkUI() {
       localStorage.setItem('eterx_chats', JSON.stringify(stripChatsForStorage(sorted)));
       return sorted;
     });
-  };
+  }, []);
 
-  const toggleFavorite = (id: string) => {
+  const toggleFavorite = useCallback((id: string) => {
     setChats(prev => {
       const updated = prev.map(c =>
         c.id === id ? { ...c, isFavorite: !c.isFavorite } : c
@@ -2298,7 +2437,7 @@ function DeepWorkUI() {
       localStorage.setItem('eterx_chats', JSON.stringify(stripChatsForStorage(sorted)));
       return sorted;
     });
-  };
+  }, []);
 
   const fetchGeneratedTitle = async (history: any[], currentTitle?: string, mode: MainAgentMode = agentMode): Promise<string | null> => {
     const res = await fetch('/api/chat/title', {
@@ -2343,9 +2482,11 @@ function DeepWorkUI() {
 
   const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
     const { scrollTop, scrollHeight, clientHeight } = e.currentTarget;
+    const key = activeChatId || 'new_chat';
+    chatScrollPositionsRef.current[key] = scrollTop;
     const next = scrollHeight - scrollTop - clientHeight > 100;
     setShowScrollBottom(prev => prev === next ? prev : next);
-  }, []);
+  }, [activeChatId]);
 
   const handleAnswerAskUser = useCallback((timestamp: number, answer: string, responseKey?: string) => {
     const answeredWith = String(answer || '').trim();
@@ -2559,6 +2700,11 @@ function DeepWorkUI() {
           }
         }
 
+        const existingAsk = existingLogs.find((l: any) =>
+          l.type === 'ask_user' &&
+          (responseKey ? l.responseKey === responseKey : String(l.question || '').trim() === question)
+        );
+
         const nextAskLog = {
           ...processedLog,
           ...trace,
@@ -2568,14 +2714,16 @@ function DeepWorkUI() {
           timestamp: Number(trace.timestamp || processedLog.timestamp || traceAt),
           startTime: processedLog.startTime,
           endTime: traceAt,
+          answeredWith: existingAsk?.answeredWith || trace.answeredWith,
+          answeredAt: existingAsk?.answeredAt || trace.answeredAt,
         };
 
         if (askIdx >= 0) {
           logs[askIdx] = {
             ...logs[askIdx],
             ...nextAskLog,
-            answeredWith: logs[askIdx].answeredWith,
-            answeredAt: logs[askIdx].answeredAt,
+            answeredWith: nextAskLog.answeredWith || logs[askIdx].answeredWith,
+            answeredAt: nextAskLog.answeredAt || logs[askIdx].answeredAt,
           };
         } else {
           logs.push(nextAskLog);
@@ -2659,7 +2807,7 @@ function DeepWorkUI() {
     const lastUserIdx = logs.reduceRight((found, log, index) =>
       found === -1 && log.type === 'user_action' ? index : found, -1);
     const prefix = lastUserIdx >= 0 ? logs.slice(0, lastUserIdx + 1) : [];
-    return [...prefix, ...processServerTraces(traces, prefix)];
+    return [...prefix, ...processServerTraces(traces, logs)];
   };
 
   // Debounced localStorage writer — prevents data corruption from rapid concurrent writes
@@ -3462,7 +3610,7 @@ function DeepWorkUI() {
   const handleSteer = async () => {
     if (!inputValue.trim()) return;
     const steerMessage = inputValue.trim();
-    setInputValue('');
+    updateInputValue('');
     await sendSteeringMessage(steerMessage);
   };
 
@@ -3718,8 +3866,8 @@ function DeepWorkUI() {
       : '';
     const body = `${ scheduledMessage.text }${ attachmentContext }`.trim();
 
-    setInputValue('');
-    setAttachments([]);
+    updateInputValue('');
+    updateAttachments([]);
 
     try {
       const res = await fetch('/api/agents/comm', {
@@ -3806,8 +3954,8 @@ function DeepWorkUI() {
     const clientRunId = crypto.randomUUID();
     const userLog = { type: 'user_action', text: promptText, attachments: userLogAttachments, startTime: runStartedAt, endTime: runStartedAt };
     const historySourceLogs = activeChatId ? stripAgentConnectionLogs(traceLogs) : [];
-    setInputValue("");
-    setAttachments([]);
+    updateInputValue("");
+    updateAttachments([]);
 
     let chatIdToUse = activeChatId;
 
@@ -3993,7 +4141,7 @@ function DeepWorkUI() {
       ];
 
       try {
-        const runLocationVal = typeof window !== 'undefined' ? (window.localStorage.getItem('eterx_run_location') || 'local') : 'local';
+        const runLocationVal = activeRunLocation;
         const response = await fetch('/api/agents/run', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -4949,6 +5097,8 @@ function DeepWorkUI() {
 
   return (
     <div data-active-view={activeView} data-sidebar-open={sidebarOpen ? 'true' : 'false'} className="eterx-app-shell flex h-screen font-sans overflow-hidden selection:bg-[#E2765A]/30 transition-colors relative">
+      {/* Global Window Drag Bar */}
+      <div className="eterx-window-drag-bar pointer-events-none absolute top-0 left-0 right-[150px] h-[var(--eterx-shell-topbar-height)] z-[999] [-webkit-app-region:drag]" />
       <NetworkStatusBanner
         phase={networkPhase}
         visible={networkBannerVisible}
@@ -4964,11 +5114,17 @@ function DeepWorkUI() {
       />
 
       {sidebarOpen && (
-        <Sidebar
-          isOpen={sidebarOpen}
+        <>
+          {/* Responsive backdrop overlay to close sidebar on click-away */}
+          <div
+            onClick={() => setSidebarOpen(false)}
+            className="fixed inset-0 bg-black/40 md:hidden z-[85] transition-opacity duration-300"
+          />
+          <Sidebar
+            isOpen={sidebarOpen}
           setIsOpen={setSidebarOpen}
           createNewChat={createNewChat}
-          chats={chats.filter(c => !c.id.startsWith('agent_builder_'))}
+          chats={nonBuilderChats}
           activeChatId={activeChatId}
           loadChat={loadChat}
           deleteChat={deleteChat}
@@ -4983,6 +5139,7 @@ function DeepWorkUI() {
           onSettingsClick={openSettingsWindow}
           isThinking={isThinking}
         />
+        </>
       )}
 
       <SettingsPanel isOpen={isSettingsOpen} initialTab="models" onClose={() => setIsSettingsOpen(false)} />
@@ -5001,17 +5158,6 @@ function DeepWorkUI() {
               </button>
             </Tooltip>
           </div>
-          <button
-            type="button"
-            aria-label="Open sidebar"
-            title="Open sidebar"
-            onClick={handleClosedSidebarHandleClick}
-            onPointerDown={handleClosedSidebarHandlePointerDown}
-            onPointerMove={handleClosedSidebarHandlePointerMove}
-            onPointerUp={handleClosedSidebarHandlePointerEnd}
-            onPointerCancel={handleClosedSidebarHandlePointerEnd}
-            className="eterx-sidebar-closed-edge-handle"
-          />
         </>
       )}
 
@@ -6018,7 +6164,7 @@ function DeepWorkUI() {
                       showScrollBottom={showScrollBottom}
                       isCompressed={isRightPanelVisible}
                       onAnswerAskUser={handleAnswerAskUser}
-                      onEditUserMessage={setInputValue}
+                      onEditUserMessage={updateInputValue}
                       onOpenAgentTeam={handleOpenAgentTeam}
                       isSubAgentTab={!!activeSubAgentTab}
                     />
@@ -6062,7 +6208,7 @@ function DeepWorkUI() {
 
                     <ChatInput
                       inputValue={inputValue}
-                      setInputValue={setInputValue}
+                      setInputValue={updateInputValue}
                       isThinking={activeSubAgentTab ? false : isThinking}
                       isRecording={isRecording}
                       handleSend={activeSubAgentTab ? handleSendSubAgentMessage : handleSend}
@@ -6070,7 +6216,7 @@ function DeepWorkUI() {
                       handleSteer={activeSubAgentTab ? handleSendSubAgentMessage : handleSteer}
                       toggleSpeech={toggleSpeech}
                       attachments={attachments}
-                      setAttachments={setAttachments}
+                      setAttachments={updateAttachments}
                       greeting={greeting}
                       traceLogsLength={traceLogs.length}
                       isProcessingVoice={isProcessingVoice}
@@ -6078,11 +6224,11 @@ function DeepWorkUI() {
                       cancelVoice={cancelVoice}
                       acceptVoice={acceptVoice}
                       agentMode={agentMode}
-                      onModeChange={setAgentMode}
+                      onModeChange={handleAgentModeChange}
                       thinkingLevel={thinkingLevel}
                       onThinkingLevelChange={setThinkingLevel}
                       pinnedItems={pinnedItems}
-                      setPinnedItems={setPinnedItems}
+                      setPinnedItems={updatePinnedItems}
                       liveState={liveState}
                       liveError={liveError}
                       onLiveStart={startLiveSession}
@@ -6111,6 +6257,8 @@ function DeepWorkUI() {
                       onWorkspacePathChange={handleWorkspacePathChange}
                       runLocation={activeRunLocation}
                       onRunLocationChange={handleRunLocationChange}
+                      chatModelSelection={activeModelSelection}
+                      onModelSelectionChange={handleModelSelectionChange}
                       onOpenAgents={() => {
                         setBuildingAgentId(null);
                         setActiveView('agents');

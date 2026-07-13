@@ -5341,7 +5341,7 @@
     max-width: min(86vw, 320px);
     border-top-right-radius: 28px !important;
     border-bottom-right-radius: 28px !important;
-    z-index: 90;
+    z-index: 100 !important;
   }
 
   .eterx-chat-top-fade {
@@ -6165,4 +6165,128 @@
 }
 .eterx-scheduled-chat-input-container .eterx-composer-surface {
   border-radius: 18px !important;
+}
+
+/* Responsive adjustments for narrow/minimized window sizes */
+@container (max-width: 530px) {
+  .eterx-selector-label,
+  .eterx-selector-chevron,
+  .eterx-selector-chevron-wrapper {
+    display: none !important;
+  }
+  .eterx-selector-icon {
+    display: block !important;
+    margin: auto !important;
+  }
+  .eterx-agent-selector,
+  .eterx-model-selector,
+  .eterx-agent-button,
+  .eterx-model-button {
+    width: 38px !important;
+    max-width: 38px !important;
+    padding-left: 0 !important;
+    padding-right: 0 !important;
+    justify-content: center !important;
+  }
+  .eterx-chat-controls {
+    flex-wrap: nowrap !important;
+  }
+}
+
+@container (max-width: 380px) {
+  .eterx-agent-selector,
+  .eterx-model-selector,
+  .eterx-agent-button,
+  .eterx-model-button {
+    width: 34px !important;
+    max-width: 34px !important;
+  }
+}
+
+/* Draggable regions for Electron frame */
+.eterx-main-header {
+  -webkit-app-region: drag !important;
+  pointer-events: auto !important;
+}
+.eterx-main-header * {
+  -webkit-app-region: no-drag;
+}
+
+.eterx-sidebar-topbar {
+  -webkit-app-region: drag !important;
+  pointer-events: auto !important;
+}
+.eterx-sidebar-topbar * {
+  -webkit-app-region: no-drag;
+}
+
+.eterx-window-drag-bar {
+  -webkit-app-region: drag !important;
+}
+
+.eterx-agent-popout {
+  max-height: min(350px, 70vh) !important;
+  overflow-y: auto !important;
+  scrollbar-width: thin !important;
+  scrollbar-color: rgba(255, 255, 255, 0.16) transparent !important;
+}
+
+/* Custom scrollbar styling for webkit */
+.eterx-agent-popout::-webkit-scrollbar {
+  display: block !important;
+  width: 5px !important;
+}
+.eterx-agent-popout::-webkit-scrollbar-track {
+  background: transparent !important;
+}
+.eterx-agent-popout::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.18) !important;
+  border-radius: 99px !important;
+}
+.eterx-agent-popout::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.28) !important;
+}
+
+/* Premium scrollbar styling for .custom-scrollbar */
+.custom-scrollbar {
+  scrollbar-width: thin !important;
+  scrollbar-color: rgba(255, 255, 255, 0.16) transparent !important;
+}
+
+.custom-scrollbar::-webkit-scrollbar {
+  display: block !important;
+  width: 5px !important;
+  height: 5px !important;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent !important;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.18) !important;
+  border-radius: 99px !important;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.28) !important;
+}
+
+/* Smart Boundary Detector styling overrides */
+.eterx-composer-shell[data-force-collapse="true"] .eterx-selector-label,
+.eterx-composer-shell[data-force-collapse="true"] .eterx-selector-chevron,
+.eterx-composer-shell[data-force-collapse="true"] .eterx-selector-chevron-wrapper {
+  display: none !important;
+}
+
+.eterx-composer-shell[data-force-collapse="true"] .eterx-agent-selector,
+.eterx-composer-shell[data-force-collapse="true"] .eterx-model-selector,
+.eterx-composer-shell[data-force-collapse="true"] .eterx-agent-button,
+.eterx-composer-shell[data-force-collapse="true"] .eterx-model-button {
+  width: 38px !important;
+  max-width: 38px !important;
+  padding-left: 0 !important;
+  padding-right: 0 !important;
+  justify-content: center !important;
+}
+
+.eterx-composer-shell[data-force-collapse="true"] .eterx-chat-controls {
+  flex-wrap: nowrap !important;
 }

@@ -297,9 +297,6 @@ const useProgressiveMarkdown = (value: string, enabled: boolean, speed: RevealSp
   };
 };
 
-const AnswerWriterCursor = () => (
-  <span className="eterx-answer-writer-cursor" aria-hidden="true" />
-);
 
 const GhostCodeBlock = ({ inline, className, children, ...props }: any) => {
   const content = String(children).replace(/\n$/, '');
@@ -560,7 +557,7 @@ const formatThoughtElapsed = (seconds: number) => {
   return minutes > 0 ? `${ minutes }m ${ rest }s` : `${ rest }s`;
 };
 
-export const ProfessionalThought = ({ text, isLatest, isThinking, variant = 'thought', suffix, startedAt, updatedAt, reveal = false }: { text: string, isLatest: boolean, isThinking: boolean, variant?: 'thought' | 'answer' | 'note', suffix?: React.ReactNode, startedAt?: number, updatedAt?: number, reveal?: boolean }) => {
+export const ProfessionalThought = React.memo(({ text, isLatest, isThinking, variant = 'thought', suffix, startedAt, updatedAt, reveal = false }: { text: string, isLatest: boolean, isThinking: boolean, variant?: 'thought' | 'answer' | 'note', suffix?: React.ReactNode, startedAt?: number, updatedAt?: number, reveal?: boolean }) => {
   const [open, setOpen] = useState(false);
   const [thoughtCanScroll, setThoughtCanScroll] = useState(false);
   const thoughtScrollRef = useRef<HTMLDivElement>(null);
@@ -700,7 +697,6 @@ export const ProfessionalThought = ({ text, isLatest, isThinking, variant = 'tho
       >
         {value}
       </ReactMarkdown>
-      {withWriter && <AnswerWriterCursor />}
     </>
   );
 
@@ -784,7 +780,7 @@ export const ProfessionalThought = ({ text, isLatest, isThinking, variant = 'tho
       `}</style>
     </motion.div>
   );
-};
+});
 
 // VS Code GitHub Dark — clean single-pass syntax highlighter
 const WorkNoteBlock = ({ text, isActive = false }: { text: string; isActive?: boolean }) => {
