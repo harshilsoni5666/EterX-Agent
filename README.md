@@ -212,9 +212,11 @@ The `synapse-graph` memory system builds a relational graph of concepts—connec
 
 ### Desktop Installer (Recommended)
 
-Install the platform package for the user's operating system: the Windows NSIS `.exe`, Linux AppImage or `.deb`, or macOS `.dmg`. The packaged desktop app includes its own Electron and Next.js runtime—users do **not** need Node.js, npm, or Git.
+This repository is private. Install the platform package shared through the private release: the Windows NSIS `.exe`, Linux AppImage or `.deb`, or macOS `.dmg`. The packaged desktop app includes its own Electron and Next.js runtime—users do **not** need Node.js, npm, or Git.
 
 On first launch EterX creates its working data under the user's application-data folder, starts its local server automatically, and opens the desktop app. API keys are configured from **Settings → API Keys**.
+
+> Do not use an anonymous `raw.githubusercontent.com/... | iex` command for this private repository. GitHub correctly rejects it with `404` or `401` because the user is not authenticated. Share the built installer through a private GitHub Release, your organization’s software portal, or another authenticated download channel.
 
 For release builds:
 
@@ -224,27 +226,16 @@ npm run desktop:build:linux  # AppImage and .deb
 npm run desktop:build:mac    # dmg and zip (build on macOS for signing/notarization)
 ```
 
-### Source Install (No Git Required)
+### Private Source Install (Developers)
 
-**Windows (PowerShell):**
+For development, download the source ZIP from the private repository while signed in to GitHub, extract it, then run the following from the extracted EterX folder:
+
 ```powershell
-irm https://raw.githubusercontent.com/harshilsoni5666/EterX-agent-/main/install.ps1 | iex
+node .\setup.js --auto --no-doctor
+node .\eterx.js desktop
 ```
 
-**Linux / macOS:**
-```bash
-curl -fsSL https://raw.githubusercontent.com/harshilsoni5666/EterX-agent-/main/install.sh | bash
-```
-
-> These fallback scripts download a source archive, install Node.js when needed, then set up dependencies and local storage. They do not install or run Git.
-
-### Manual Install
-
-```bash
-# Download and extract the source ZIP from the project release or repository page.
-cd EterX-agent-
-node setup.js
-```
+The `install.ps1` and `install.sh` files can be used after downloading the private source archive locally. They install Node.js when required, install all declared npm libraries, initialize EterX storage, and guide API-key setup without using Git.
 
 ### API Key Setup
 
