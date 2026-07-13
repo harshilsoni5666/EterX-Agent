@@ -210,7 +210,21 @@ The `synapse-graph` memory system builds a relational graph of concepts—connec
 
 ## Installation
 
-### One-Command Install (Recommended)
+### Desktop Installer (Recommended)
+
+Install the platform package for the user's operating system: the Windows NSIS `.exe`, Linux AppImage or `.deb`, or macOS `.dmg`. The packaged desktop app includes its own Electron and Next.js runtime—users do **not** need Node.js, npm, or Git.
+
+On first launch EterX creates its working data under the user's application-data folder, starts its local server automatically, and opens the desktop app. API keys are configured from **Settings → API Keys**.
+
+For release builds:
+
+```bash
+npm run desktop:build:win    # Windows NSIS installer
+npm run desktop:build:linux  # AppImage and .deb
+npm run desktop:build:mac    # dmg and zip (build on macOS for signing/notarization)
+```
+
+### Source Install (No Git Required)
 
 **Windows (PowerShell):**
 ```powershell
@@ -222,12 +236,12 @@ irm https://raw.githubusercontent.com/harshilsoni5666/EterX-agent-/main/install.
 curl -fsSL https://raw.githubusercontent.com/harshilsoni5666/EterX-agent-/main/install.sh | bash
 ```
 
-> The installer handles Node.js, Git, dependencies, API key configuration, local storage setup, desktop shortcuts, and launch.
+> These fallback scripts download a source archive, install Node.js when needed, then set up dependencies and local storage. They do not install or run Git.
 
 ### Manual Install
 
 ```bash
-git clone https://github.com/harshilsoni5666/EterX-agent-.git
+# Download and extract the source ZIP from the project release or repository page.
 cd EterX-agent-
 node setup.js
 ```

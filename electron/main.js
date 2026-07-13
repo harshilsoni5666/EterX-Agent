@@ -1,5 +1,7 @@
 const path = require('path');
 const fs = require('fs');
+const net = require('net');
+const { spawn } = require('child_process');
 
 // Attempt to read Google API Key from Next.js local environment variables to unlock Chromium's Speech Engine
 try {
@@ -19,7 +21,6 @@ try {
 
 const http = require('http');
 const https = require('https');
-const { pathToFileURL } = require('url');
 const { app, BrowserWindow, ipcMain, dialog, shell, screen, Menu } = require('electron');
 // Disable HTTP Cache globally in development to prevent aggressive cache storage of stylesheets and scripts
 app.commandLine.appendSwitch('disable-http-cache');
@@ -41,7 +42,18 @@ const PET_WINDOW_SIZES = {
 let activeBootId = 0;
 let bootRetryTimer = null;
 
-const APP_ICON_PATH = path.join(__dirname, '../public/logo.png');
+// A production install contains the Next.js standalone server as an application
+// resource.  It is copied to userData once per app version before launch so the
+// agent can keep using its normal local workspace paths without ever trying to
+// write into Program Files, an .app bundle, or app.asar.
+let packagedRuntimeRoot = null;
+let packagedServer = null;
+let packagedServerUrl = null;
+let isQuitting = false;
+
+const APP_ICON_PATH = app.isPackaged
+  ? path.join(process.resourcesPath, 'runtime', 'public', 'logo.png')
+  : path.join(__dirname, '../public/logo.png');
 const NATIVE_THEME_FILE = 'eterx-native-theme.json';
 const NATIVE_FRAME_HEIGHT = 38;
 const nativeThemedWindows = new Set();
@@ -432,13 +444,151 @@ function getPetWindowHtml() {
 function getAppTarget() {
   if (process.env.ELECTRON_URL) return process.env.ELECTRON_URL;
 
-  const packagedIndex = path.join(app.getAppPath(), 'out', 'index.html');
-  if (app.isPackaged && fs.existsSync(packagedIndex)) {
-    return pathToFileURL(packagedIndex).toString();
-  }
+  if (app.isPackaged && packagedServerUrl) return packagedServerUrl;
 
   const port = process.env.ETERX_PORT || process.env.PORT || '3000';
   return `http://localhost:${port}`;
+}
+
+function readEnvFile(filePath) {
+  const values = {};
+  try {
+    const content = fs.readFileSync(filePath, 'utf8');
+    for (const rawLine of content.split(/\r?\n/)) {
+      const line = rawLine.trim();
+      if (!line || line.startsWith('#')) continue;
+      const separator = line.indexOf('=');
+      if (separator <= 0) continue;
+      const key = line.slice(0, separator).trim();
+      let value = line.slice(separator + 1).trim();
+      if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+        value = value.slice(1, -1);
+      }
+      if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) values[key] = value;
+    }
+  } catch {
+    // A missing config file is normal on the first launch.
+  }
+  return values;
+}
+
+function isPortAvailable(port) {
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.once('error', () => resolve(false));
+    server.once('listening', () => server.close(() => resolve(true)));
+    server.listen(port, '127.0.0.1');
+  });
+}
+
+async function findAvailablePort(startPort) {
+  for (let port = startPort; port < startPort + 40; port += 1) {
+    if (await isPortAvailable(port)) return port;
+  }
+  throw new Error(`No free local port found from ${startPort} to ${startPort + 39}.`);
+}
+
+function linkRuntimeDataDirectory(runtimeRoot, dataRoot, name) {
+  const target = path.join(dataRoot, name);
+  const link = path.join(runtimeRoot, name);
+  fs.mkdirSync(target, { recursive: true });
+
+  try {
+    const existing = fs.lstatSync(link);
+    if (existing.isSymbolicLink()) return;
+    fs.rmSync(link, { recursive: true, force: true });
+  } catch {
+    // The runtime has no local data directory yet.
+  }
+
+  try {
+    fs.symlinkSync(target, link, process.platform === 'win32' ? 'junction' : 'dir');
+  } catch (error) {
+    // A writable fallback still lets the app start if the platform disallows
+    // links. It is retained for this runtime version.
+    console.warn(`[EterX] Could not link persistent ${name} directory:`, error.message);
+    fs.mkdirSync(link, { recursive: true });
+  }
+}
+
+function preparePackagedRuntime() {
+  if (!app.isPackaged) return null;
+  if (packagedRuntimeRoot && fs.existsSync(packagedRuntimeRoot)) return packagedRuntimeRoot;
+
+  const sourceRoot = path.join(process.resourcesPath, 'runtime');
+  const serverEntry = path.join(sourceRoot, 'server.js');
+  if (!fs.existsSync(serverEntry)) {
+    throw new Error(`Bundled runtime is missing: ${serverEntry}`);
+  }
+
+  const version = String(app.getVersion() || '0.0.0').replace(/[^a-zA-Z0-9._-]/g, '_');
+  const runtimeRoot = path.join(app.getPath('userData'), 'runtime', version);
+  const markerPath = path.join(runtimeRoot, '.eterx-runtime-version');
+  const marker = `${version}\n`;
+
+  if (!fs.existsSync(path.join(runtimeRoot, 'server.js')) || !fs.existsSync(markerPath) || fs.readFileSync(markerPath, 'utf8') !== marker) {
+    const stagingRoot = `${runtimeRoot}.staging-${process.pid}-${Date.now()}`;
+    fs.rmSync(stagingRoot, { recursive: true, force: true });
+    fs.mkdirSync(path.dirname(runtimeRoot), { recursive: true });
+    fs.cpSync(sourceRoot, stagingRoot, { recursive: true, force: true });
+    fs.writeFileSync(path.join(stagingRoot, '.eterx-runtime-version'), marker, 'utf8');
+    fs.rmSync(runtimeRoot, { recursive: true, force: true });
+    fs.renameSync(stagingRoot, runtimeRoot);
+  }
+
+  const dataRoot = path.join(app.getPath('userData'), 'data');
+  linkRuntimeDataDirectory(runtimeRoot, dataRoot, '.workspaces');
+  linkRuntimeDataDirectory(runtimeRoot, dataRoot, '.temp');
+  packagedRuntimeRoot = runtimeRoot;
+  return runtimeRoot;
+}
+
+async function startPackagedServer() {
+  if (!app.isPackaged || process.env.ELECTRON_URL) return null;
+  if (packagedServer && !packagedServer.killed) return packagedServerUrl;
+
+  const runtimeRoot = preparePackagedRuntime();
+  const startPort = Number(process.env.ETERX_PORT || process.env.PORT || 3000);
+  const port = await findAvailablePort(Number.isInteger(startPort) && startPort > 0 ? startPort : 3000);
+  const persistentEnv = readEnvFile(path.join(app.getPath('userData'), 'data', '.env.local'));
+  const env = {
+    ...process.env,
+    ...persistentEnv,
+    ELECTRON_RUN_AS_NODE: '1',
+    NODE_ENV: 'production',
+    HOSTNAME: '127.0.0.1',
+    PORT: String(port),
+    ETERX_PORT: String(port),
+    ETERX_APP_ROOT: runtimeRoot,
+    ETERX_DATA_DIR: path.join(app.getPath('userData'), 'data'),
+  };
+
+  packagedServerUrl = `http://127.0.0.1:${port}`;
+  packagedServer = spawn(process.execPath, [path.join(runtimeRoot, 'server.js')], {
+    cwd: runtimeRoot,
+    env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
+  });
+
+  packagedServer.stdout.on('data', (chunk) => console.log(`[EterX server] ${String(chunk).trim()}`));
+  packagedServer.stderr.on('data', (chunk) => {
+    const message = String(chunk).trim();
+    if (message) console.error(`[EterX server] ${message}`);
+  });
+  packagedServer.once('error', (error) => console.error('[EterX] Bundled server failed to start:', error));
+  packagedServer.once('exit', (code, signal) => {
+    if (!isQuitting) console.error(`[EterX] Bundled server exited (${code ?? 'unknown'}${signal ? `, ${signal}` : ''}).`);
+    packagedServer = null;
+  });
+
+  return packagedServerUrl;
+}
+
+function stopPackagedServer() {
+  if (!packagedServer || packagedServer.killed) return;
+  try { packagedServer.kill(); } catch {}
+  packagedServer = null;
 }
 
 function isHttpTarget(target) {
@@ -1007,7 +1157,7 @@ ipcMain.on('pet-reply', (_event, message) => {
   }
 });
 
-app.on('ready', () => {
+app.on('ready', async () => {
   const { session } = require('electron');
   Menu.setApplicationMenu(null);
   
@@ -1028,13 +1178,26 @@ app.on('ready', () => {
     return false;
   });
 
+  try {
+    await startPackagedServer();
+  } catch (error) {
+    console.error('[EterX] Could not prepare bundled server:', error);
+  }
+
   createWindow();
 });
 
 app.on('window-all-closed', function () {
   if (process.platform !== 'darwin') {
+    isQuitting = true;
+    stopPackagedServer();
     app.quit();
   }
+});
+
+app.on('before-quit', () => {
+  isQuitting = true;
+  stopPackagedServer();
 });
 
 app.on('activate', function () {

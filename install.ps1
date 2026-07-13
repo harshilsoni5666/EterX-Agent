@@ -1,114 +1,92 @@
-# ═══════════════════════════════════════════════
-# EterX Agent — One-Line Installer (Windows PowerShell)
-# Usage: irm https://raw.githubusercontent.com/harshilsoni5666/EterX-agent-/main/install.ps1 | iex
-# ═══════════════════════════════════════════════
+# EterX Agent source installer (Windows PowerShell)
+#
+# End users should normally install the EterX-<version>-win-<arch>.exe produced
+# by `npm run desktop:build:win`. This script is the no-Git fallback for people
+# who intentionally install from source.
 
-$ErrorActionPreference = "Stop"
-$REPO = "https://github.com/harshilsoni5666/EterX-agent-.git"
-$INSTALL_DIR = if ($env:ETERX_DIR) { $env:ETERX_DIR } else { "$env:USERPROFILE\EterX" }
+[CmdletBinding()]
+param(
+    [string]$InstallDir = $(if ($env:ETERX_DIR) { $env:ETERX_DIR } else { Join-Path $env:USERPROFILE 'EterX' }),
+    [string]$ArchiveUrl = $(if ($env:ETERX_ARCHIVE_URL) { $env:ETERX_ARCHIVE_URL } else { 'https://github.com/harshilsoni5666/EterX-agent-/archive/refs/heads/main.zip' })
+)
 
-function Invoke-Native {
-    param(
-        [Parameter(Mandatory = $true)][string]$FilePath,
-        [Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments
-    )
+$ErrorActionPreference = 'Stop'
 
-    $oldPreference = $ErrorActionPreference
-    $ErrorActionPreference = "Continue"
+function Write-Status([string]$Message) {
+    Write-Host "  $Message" -ForegroundColor Cyan
+}
+
+function Test-SourceInstall([string]$Path) {
+    return (Test-Path (Join-Path $Path 'package.json')) -and (Test-Path (Join-Path $Path 'setup.js'))
+}
+
+function Ensure-Node {
     try {
-        $output = & $FilePath @Arguments 2>&1
-        $exitCode = $LASTEXITCODE
-    } finally {
-        $ErrorActionPreference = $oldPreference
-    }
-
-    foreach ($line in $output) {
-        if ($null -ne $line -and "$line".Trim().Length -gt 0) {
-            Write-Host "  $line" -ForegroundColor DarkGray
+        $version = (& node --version 2>$null).Trim()
+        if ($version) {
+            Write-Host "  Node.js $version found" -ForegroundColor Green
+            return
         }
+    } catch {}
+
+    Write-Status 'Node.js was not found. Installing the LTS release with winget...'
+    if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
+        throw 'Node.js is required for a source install. Install Node.js 20+ from https://nodejs.org, then run this script again.'
     }
 
-    if ($exitCode -ne 0) {
-        throw "$FilePath $($Arguments -join ' ') failed with exit code $exitCode"
+    & winget install --id OpenJS.NodeJS.LTS --exact --accept-source-agreements --accept-package-agreements
+    if ($LASTEXITCODE -ne 0) { throw 'Node.js installation failed.' }
+    $env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' + [Environment]::GetEnvironmentVariable('PATH', 'User')
+    if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
+        throw 'Node.js was installed but is not available in this terminal. Open a new PowerShell window and run the script again.'
     }
 }
 
-Write-Host ""
-Write-Host "    ███████╗████████╗███████╗██████╗ ██╗  ██╗" -ForegroundColor Cyan
-Write-Host "    ██╔════╝╚══██╔══╝██╔════╝██╔══██╗╚██╗██╔╝" -ForegroundColor Cyan
-Write-Host "    █████╗     ██║   █████╗  ██████╔╝ ╚███╔╝ " -ForegroundColor Cyan
-Write-Host "    ██╔══╝     ██║   ██╔══╝  ██╔══██╗ ██╔██╗ " -ForegroundColor Cyan
-Write-Host "    ███████╗   ██║   ███████╗██║  ██║██╔╝ ██╗" -ForegroundColor Cyan
-Write-Host "    ╚══════╝   ╚═╝   ╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝" -ForegroundColor Cyan
-Write-Host ""
-Write-Host "    ⚡ The Autonomous AI Agent System" -ForegroundColor Magenta
-Write-Host ""
+function Install-SourceArchive {
+    if (Test-SourceInstall $InstallDir) {
+        Write-Status "Using existing source installation: $InstallDir"
+        return
+    }
 
-# ── Check Node.js ──
-$nodeExists = $null
-try { $nodeExists = node --version 2>$null } catch {}
-
-if ($nodeExists) {
-    Write-Host "  ✔ Node.js $nodeExists" -ForegroundColor Green
-} else {
-    Write-Host "  ⚠ Node.js not found. Installing..." -ForegroundColor Yellow
+    $staging = Join-Path ([System.IO.Path]::GetTempPath()) ("eterx-source-" + [Guid]::NewGuid().ToString('N'))
+    $archive = Join-Path $staging 'eterx.zip'
     try {
-        winget install OpenJS.NodeJS.LTS --accept-source-agreements --accept-package-agreements
-        $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("PATH", "User")
-        Write-Host "  ✔ Node.js installed" -ForegroundColor Green
-    } catch {
-        Write-Host "  ✖ Auto-install failed. Download from https://nodejs.org" -ForegroundColor Red
-        exit 1
+        New-Item -ItemType Directory -Path $staging -Force | Out-Null
+        Write-Status 'Downloading the EterX source archive (no Git required)...'
+        Invoke-WebRequest -Uri $ArchiveUrl -OutFile $archive -UseBasicParsing
+        Expand-Archive -LiteralPath $archive -DestinationPath $staging -Force
+
+        $source = Get-ChildItem -LiteralPath $staging -Directory |
+            Where-Object { Test-SourceInstall $_.FullName } |
+            Select-Object -First 1
+        if (-not $source) { throw 'The downloaded archive does not contain a valid EterX source installation.' }
+
+        New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+        Get-ChildItem -LiteralPath $source.FullName -Force | Copy-Item -Destination $InstallDir -Recurse -Force
+        Write-Host "  Source installed at $InstallDir" -ForegroundColor Green
+    } finally {
+        Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 
-# ── Check Git ──
-$gitExists = $null
-try { $gitExists = git --version 2>$null } catch {}
+Write-Host ''
+Write-Host '  EterX Agent source setup' -ForegroundColor Magenta
+Write-Host '  For the one-click desktop app, use the EterX installer executable.' -ForegroundColor DarkGray
+Write-Host ''
 
-if ($gitExists) {
-    Write-Host "  ✔ $gitExists" -ForegroundColor Green
-} else {
-    Write-Host "  ⚠ Git not found. Installing..." -ForegroundColor Yellow
-    try {
-        winget install Git.Git --accept-source-agreements --accept-package-agreements
-        $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("PATH", "User")
-        Write-Host "  ✔ Git installed" -ForegroundColor Green
-    } catch {
-        Write-Host "  ✖ Auto-install failed. Download from https://git-scm.com" -ForegroundColor Red
-        exit 1
-    }
+Ensure-Node
+Install-SourceArchive
+Set-Location -LiteralPath $InstallDir
+$hadEnv = Test-Path '.env.local'
+
+Write-Status 'Installing application dependencies and local workspace...'
+& node setup.js --auto --no-doctor
+if ($LASTEXITCODE -ne 0) { throw 'EterX setup failed. See .workspaces\setup.log for details.' }
+
+if (-not $hadEnv -and $env:ETERX_SKIP_API -ne '1') {
+    Write-Status 'Opening the optional API-key setup...'
+    & node setup.js --api
 }
 
-# ── Clone or Update ──
-if (Test-Path "$INSTALL_DIR\.git") {
-    Write-Host "  ℹ Existing install found at $INSTALL_DIR" -ForegroundColor Cyan
-    Set-Location $INSTALL_DIR
-
-    if ($env:ETERX_UPDATE -eq "1") {
-        Write-Host "  ℹ ETERX_UPDATE=1 set. Pulling updates..." -ForegroundColor Cyan
-        Invoke-Native git pull --rebase
-        Write-Host "  ✔ Repository updated" -ForegroundColor Green
-    } else {
-        Write-Host "  ℹ Skipping code update. Set ETERX_UPDATE=1 to update source files." -ForegroundColor Cyan
-    }
-} else {
-    Write-Host "  ℹ Cloning EterX to $INSTALL_DIR..." -ForegroundColor Cyan
-    Invoke-Native git clone $REPO $INSTALL_DIR
-    Set-Location $INSTALL_DIR
-    Write-Host "  ✔ Repository cloned" -ForegroundColor Green
-}
-
-# ── Run Setup ──
-Write-Host ""
-Write-Host "  ℹ Starting EterX setup wizard..." -ForegroundColor Cyan
-Write-Host ""
-$hadEnv = Test-Path ".env.local"
-node setup.js --auto --no-doctor
-
-if (-not $hadEnv -and $env:ETERX_SKIP_API -ne "1") {
-    Write-Host ""
-    Write-Host "  ℹ Add API keys now. Press Enter to skip any optional key." -ForegroundColor Cyan
-    Write-Host ""
-    node setup.js --api
-}
+Write-Host ''
+Write-Host '  EterX source installation is ready.' -ForegroundColor Green

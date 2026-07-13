@@ -78,7 +78,7 @@ async function runDoctor(projectRoot) {
   softCheck('Node.js 20+ (recommended)', node.major >= 20, 'Upgrade for best performance');
 
   const git = checkGit();
-  softCheck('Git installed', git.installed, 'Install from https://git-scm.com');
+  softCheck('Git installed (optional source-update support)', git.installed, 'Only needed when updating a source checkout with Git');
 
   const ram = os.totalmem() / (1024 ** 3);
   check(`RAM ≥ 4 GB (${ram.toFixed(1)} GB)`, ram >= 4, 'EterX needs at least 4 GB');
@@ -93,7 +93,6 @@ async function runDoctor(projectRoot) {
   const criticalFiles = [
     ['package.json', 'Re-clone the repository'],
     ['node_modules', 'Run: eterx repair'],
-    ['.env.local', 'Run: eterx setup'],
     ['next.config.mjs', 'Re-clone the repository'],
     ['electron/main.js', 'Re-clone the repository'],
   ];
@@ -106,7 +105,8 @@ async function runDoctor(projectRoot) {
     ['tsconfig.json', 'TypeScript config missing'],
     ['.workspaces', 'Run: eterx setup'],
     ['public/logo.png', 'Logo file missing'],
-    ['banner.png', 'Banner file missing'],
+    ['public/assets/banner.png', 'Banner file missing'],
+    ['.env.local', 'Configure a provider in Settings → API Keys or run: eterx setup'],
     ['setup.js', 'Installer missing — re-clone'],
     ['eterx.js', 'CLI entry missing — re-clone'],
     ['setup/providers.js', 'Provider registry missing'],
@@ -184,7 +184,7 @@ async function runDoctor(projectRoot) {
   header(`${icons.brain} Agent Core`);
 
   const agentFiles = [
-    'src/lib/agent/gemini.ts',
+    'src/lib/agent/Agent.ts',
     'src/lib/agent/engines.ts',
     'src/lib/agent/memory.ts',
     'src/lib/agent/session.ts',

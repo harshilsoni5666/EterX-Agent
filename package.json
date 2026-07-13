@@ -10,6 +10,9 @@
     "dev": "next dev",
     "desktop": "concurrently -k \"npm run dev\" \"electron .\"",
     "desktop:build": "npm run build && electron-builder",
+    "desktop:build:win": "npm run build && electron-builder --win",
+    "desktop:build:linux": "npm run build && electron-builder --linux",
+    "desktop:build:mac": "npm run build && electron-builder --mac",
     "build": "next build",
     "start": "next start",
     "test": "npm run test:ci",
@@ -100,6 +103,61 @@
     "zod": "^3.25.76",
     "zod-to-json-schema": "^3.25.1",
     "zustand": "^5.0.12"
+  },
+  "build": {
+    "appId": "com.eterx.agent",
+    "productName": "EterX",
+    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
+    "asar": true,
+    "files": [
+      "electron/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": ".next/standalone",
+        "to": "runtime"
+      },
+      {
+        "from": ".next/static",
+        "to": "runtime/.next/static"
+      },
+      {
+        "from": "public",
+        "to": "runtime/public"
+      },
+      {
+        "from": "src",
+        "to": "runtime/src"
+      },
+      {
+        "from": "package.json",
+        "to": "runtime/package.json"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64", "arm64"]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "EterX"
+    },
+    "linux": {
+      "target": ["AppImage", "deb"],
+      "category": "Development"
+    },
+    "mac": {
+      "target": ["dmg", "zip"],
+      "category": "public.app-category.developer-tools"
+    }
   },
   "devDependencies": {
     "@types/cheerio": "^0.22.35",
