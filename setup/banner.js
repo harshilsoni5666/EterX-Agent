@@ -30,8 +30,17 @@ function writeOut(text) {
   }
 }
 
-// ── Icons ──
-const icons = {
+const isUnicodeSupported = () => {
+  if (process.platform !== 'win32') return true;
+  return Boolean(process.env.WT_SESSION) || // Windows Terminal
+         process.env.TERM_PROGRAM === 'vscode' ||
+         process.env.TERM === 'xterm-256color' ||
+         process.env.TERM === 'alacritty';
+};
+
+const unicode = isUnicodeSupported();
+
+const icons = unicode ? {
   check: '✔', cross: '✖', warn: '⚠', info: 'ℹ', arrow: '→', bullet: '●',
   star: '★', lightning: '⚡', gear: '⚙', key: '🔑', lock: '🔒', unlock: '🔓',
   rocket: '🚀', globe: '🌐', disk: '💾', folder: '📁', file: '📄', terminal: '💻',
@@ -40,25 +49,42 @@ const icons = {
   party: '🎉', heart: '❤️', diamond: '💎', bolt: '⚡', pin: '📌',
   send: '📤', receive: '📥', refresh: '🔄', trash: '🗑️', tools: '🛠️',
   api: '🔌', model: '🤖', speed: '⏱️', health: '💊', doctor: '🩺',
-};
-
-const BANNER = `
-${c.brightCyan}${c.bold}
-    ███████╗████████╗███████╗██████╗ ██╗  ██╗
-    ██╔════╝╚══██╔══╝██╔════╝██╔══██╗╚██╗██╔╝
-    █████╗     ██║   █████╗  ██████╔╝ ╚███╔╝ 
-    ██╔══╝     ██║   ██╔══╝  ██╔══██╗ ██╔██╗ 
-    ███████╗   ██║   ███████╗██║  ██║██╔╝ ██╗
-    ╚══════╝   ╚═╝   ╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝
-${c.reset}
-${c.brightMagenta}${c.bold}    ${icons.lightning} The Autonomous AI Agent System${c.reset}
-${c.dim}    Built by Harshil Soni ${icons.diamond}${c.reset}
-`;
-
-function showBanner() {
+} : {
+  check: '√', cross: 'x', warn: '!', info: 'i', arrow: '->', bullet: '*',
+  star: '*', lightning: 'i', gear: '*', key: 'K', lock: 'L', unlock: 'U',
+  rocket: '>', globe: 'W', disk: 'D', folder: 'F', file: 'f', terminal: 'T',
+  brain: 'B', link: 'L', shield: 'S', chart: 'C', clock: 'T', sparkle: '*',
+  package: 'P', search: 'S', wrench: 'W', fire: 'F', trophy: 'T',
+  party: 'P', heart: 'H', diamond: 'D', bolt: 'B', pin: 'P',
+  send: 'S', receive: 'R', refresh: 'R', trash: 'T', tools: 'T',
+  api: 'A', model: 'M', speed: 'S', health: 'H', doctor: 'D',
+};function showBanner() {
   console.clear();
-  console.log(BANNER);
-  console.log(`${c.gray}${'━'.repeat(52)}${c.reset}\n`);
+  const cols = process.stdout.columns || 80;
+  
+  if (cols >= 54) {
+    const indent = cols >= 60 ? '    ' : '  ';
+    const lines = [
+      '███████╗████████╗███████╗██████╗ ██╗  ██╗',
+      '██╔════╝╚══██╔══╝██╔════╝██╔══██╗╚██╗██╔╝',
+      '█████╗     ██║   █████╗  ██████╔╝ ╚███╔╝ ',
+      '██╔══╝     ██║   ██╔══╝  ██╔══██╗ ██╔██╗ ',
+      '███████╗   ██║   ███████╗██║  ██║██╔╝ ██╗',
+      '╚══════╝   ╚═╝   ╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝'
+    ];
+    console.log(`${c.brightCyan}${c.bold}`);
+    lines.forEach(l => console.log(indent + l));
+    console.log(c.reset);
+    console.log(`${indent}${c.brightMagenta}${c.bold}The Autonomous AI Agent${c.reset}`);
+    console.log(`${indent}${c.gray}✦ Built by ${c.reset}${c.bold}Harshil Soni${c.reset}\n`);
+  } else {
+    console.log(`\n  ${c.brightCyan}${c.bold}██ EterX Agent ██${c.reset}`);
+    console.log(`  ${c.brightMagenta}${c.bold}The Autonomous AI Agent${c.reset}`);
+    console.log(`  ${c.gray}✦ Built by ${c.reset}${c.bold}Harshil Soni${c.reset}\n`);
+  }
+  
+  const separatorWidth = Math.min(cols - 4, 52);
+  console.log(`  ${c.gray}${'━'.repeat(separatorWidth >= 10 ? separatorWidth : 10)}${c.reset}\n`);
 }
 
 function ok(msg) { console.log(`  ${c.brightGreen}${icons.check}${c.reset} ${msg}`); }
@@ -79,7 +105,7 @@ function keyValue(key, value, keyWidth = 28) {
 }
 
 function spinner(msg) {
-  const frames = ['⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏'];
+  const frames = unicode ? ['⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏'] : ['|', '/', '-', '\\'];
   let i = 0;
   const animated = !!process.stdout.isTTY && process.env.CI !== 'true';
   if (!animated) {

@@ -30,6 +30,7 @@ function runNpm(args, projectRoot, spin) {
 
     let lastProgressMsg = '';
     let lastProgressTime = Date.now();
+    let lastPrintedPkg = '';
     
     const hints = [
       'Resolving dependency graph...',
@@ -75,21 +76,27 @@ function runNpm(args, projectRoot, spin) {
         if (cleanLine.includes('reify:') || cleanLine.includes('extract:')) {
           const parts = cleanLine.split(':');
           const pkg = parts[parts.length - 1].trim();
-          if (pkg && pkg.length < 40) {
-            spin.update(`Downloading & extracting: ${c.brightCyan}${pkg}${c.reset}`);
+          if (pkg && pkg.length > 0 && pkg.length < 50 && pkg !== lastPrintedPkg && !pkg.includes(' ') && !pkg.includes('\\')) {
+            lastPrintedPkg = pkg;
+            process.stdout.write(`\r\x1b[K  ${c.gray}↳${c.reset} Installing ${c.brightCyan}${pkg}${c.reset}...\n`);
+            spin.update(`Downloading & extracting packages`);
             lastProgressTime = Date.now();
           }
         } else if (cleanLine.includes('tarball:')) {
           const pkg = cleanLine.substring(cleanLine.indexOf('tarball:') + 8).trim();
-          if (pkg && pkg.length < 40) {
-            spin.update(`Fetching: ${c.brightCyan}${pkg}${c.reset}`);
+          if (pkg && pkg.length < 50 && pkg !== lastPrintedPkg && !pkg.includes(' ')) {
+            lastPrintedPkg = pkg;
+            process.stdout.write(`\r\x1b[K  ${c.gray}↳${c.reset} Fetching ${c.brightCyan}${pkg}${c.reset}...\n`);
+            spin.update(`Downloading & extracting packages`);
             lastProgressTime = Date.now();
           }
         } else if (cleanLine.includes('build:')) {
           const parts = cleanLine.split(':');
           const pkg = parts[parts.length - 1].trim();
-          if (pkg && pkg.length < 40) {
-            spin.update(`Building native modules: ${c.brightCyan}${pkg}${c.reset}`);
+          if (pkg && pkg.length < 50 && pkg !== lastPrintedPkg) {
+            lastPrintedPkg = pkg;
+            process.stdout.write(`\r\x1b[K  ${c.gray}↳${c.reset} Building ${c.brightCyan}${pkg}${c.reset}...\n`);
+            spin.update(`Downloading & extracting packages`);
             lastProgressTime = Date.now();
           }
         } else if (cleanLine.includes('added') && cleanLine.includes('packages')) {
@@ -133,12 +140,10 @@ async function installDependencies(projectRoot) {
   const quietNetworkArgs = ['--no-audit', '--fund=false'];
   const plans = hasLockfile
     ? [
-      ['ci', ...quietNetworkArgs],
       ['ci', '--legacy-peer-deps', ...quietNetworkArgs],
       ['install', '--legacy-peer-deps', ...quietNetworkArgs],
     ]
     : [
-      ['install', ...quietNetworkArgs],
       ['install', '--legacy-peer-deps', ...quietNetworkArgs],
     ];
 
@@ -318,7 +323,7 @@ function createDesktopShortcut(projectRoot, platform) {
     } else if (platform === 'linux') {
       const desktopFile = `[Desktop Entry]
 Name=EterX Agent
-Comment=The Autonomous AI Agent System
+Comment=The Autonomous AI Agent
 Exec=node ${path.join(projectRoot, 'setup', 'launcher.js')}
 Icon=${path.join(projectRoot, 'public', 'logo.png')}
 Terminal=false
