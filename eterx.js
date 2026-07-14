@@ -60,7 +60,8 @@ switch (cmd) {
     launchWithBanner(`${i.rocket} Starting EterX Web App...`, 'dev'); break;
 
   case 'desktop': case 'app': case 'd':
-    launchWithBanner(`${i.terminal} Starting EterX Desktop...`, 'desktop'); break;
+    const isProd = extraArgs.includes('--prod') || extraArgs.includes('-p');
+    launchWithBanner(`${i.terminal} Starting EterX Desktop...`, isProd ? 'desktop:prod' : 'desktop'); break;
 
   case 'telegram': case 'tg': case 'bot': case 't':
     launchWithBanner(`${i.globe} Starting EterX Telegram Bot...`, 'telegram-dev'); break;
@@ -246,7 +247,8 @@ function showInteractiveMenu() {
 
   console.log(`  ${c.bold}${i.rocket} Launch${c.reset}`);
   console.log(`    ${c.cyan}eterx start${c.reset}        ${i.globe} Web app  ${c.dim}(localhost:3000)${c.reset}`);
-  console.log(`    ${c.cyan}eterx desktop${c.reset}      ${i.terminal} Desktop app  ${c.dim}(Electron)${c.reset}`);
+  console.log(`    ${c.cyan}eterx desktop${c.reset}      ${i.terminal} Desktop app  ${c.dim}(Electron Dev)${c.reset}`);
+  console.log(`    ${c.cyan}eterx desktop -p${c.reset}   ${i.terminal} Desktop app  ${c.dim}(Electron Prod - GPU optimized)${c.reset}`);
   console.log(`    ${c.cyan}eterx telegram${c.reset}     ${i.globe} Telegram bot`);
   console.log(`    ${c.cyan}eterx open${c.reset}         ${i.globe} Open in browser`);
   console.log();

@@ -7,11 +7,8 @@ const path = require('path');
 const { ok, warn, fail, info, line, c, spinner } = require('./banner');
 const { getProjectRoot } = require('./detect');
 
-function runNpm(args, projectRoot) {
+function runNpm(args, projectRoot, spin) {
   const label = `npm ${args.join(' ')}`;
-  console.log();
-
-  const spin = spinner(`Initializing dependency installation...`);
   
   let logStream;
   try {
@@ -32,6 +29,31 @@ function runNpm(args, projectRoot) {
     });
 
     let lastProgressMsg = '';
+    let lastProgressTime = Date.now();
+    
+    const hints = [
+      'Resolving dependency graph...',
+      'Fetching package tarballs...',
+      'Downloading package files...',
+      'Linking modules to node_modules...',
+      'Extracting files...',
+      'Almost done, finalizing installation...'
+    ];
+    let hintIndex = 0;
+    
+    const intervalId = setInterval(() => {
+      if (Date.now() - lastProgressTime > 8000) {
+        spin.update(`${hints[hintIndex++ % hints.length]} (still working)`);
+        lastProgressTime = Date.now();
+      }
+    }, 8000);
+
+    const cleanup = () => {
+      clearInterval(intervalId);
+      if (logStream) {
+        try { logStream.end(); } catch (e) {}
+      }
+    };
     
     const handleData = (data) => {
       const text = data.toString();
@@ -55,17 +77,20 @@ function runNpm(args, projectRoot) {
           const pkg = parts[parts.length - 1].trim();
           if (pkg && pkg.length < 40) {
             spin.update(`Downloading & extracting: ${c.brightCyan}${pkg}${c.reset}`);
+            lastProgressTime = Date.now();
           }
         } else if (cleanLine.includes('tarball:')) {
           const pkg = cleanLine.substring(cleanLine.indexOf('tarball:') + 8).trim();
           if (pkg && pkg.length < 40) {
             spin.update(`Fetching: ${c.brightCyan}${pkg}${c.reset}`);
+            lastProgressTime = Date.now();
           }
         } else if (cleanLine.includes('build:')) {
           const parts = cleanLine.split(':');
           const pkg = parts[parts.length - 1].trim();
           if (pkg && pkg.length < 40) {
             spin.update(`Building native modules: ${c.brightCyan}${pkg}${c.reset}`);
+            lastProgressTime = Date.now();
           }
         } else if (cleanLine.includes('added') && cleanLine.includes('packages')) {
           lastProgressMsg = cleanLine;
@@ -79,21 +104,21 @@ function runNpm(args, projectRoot) {
     proc.stderr.on('data', handleData);
 
     proc.on('error', (err) => {
-      spin.fail(`Failed to execute: ${label}`);
+      cleanup();
       if (logStream) {
         logStream.write(`Process error: ${err.message}\n`);
-        logStream.end();
       }
       resolve(false);
     });
 
     proc.on('close', (code) => {
-      if (logStream) logStream.end();
+      cleanup();
       if (code === 0) {
-        spin.stop(lastProgressMsg || `${label} completed successfully.`);
+        if (lastProgressMsg) {
+          spin.update(lastProgressMsg);
+        }
         resolve(true);
       } else {
-        spin.fail(`Dependency install failed (code ${code}). Check .workspaces/setup.log for details.`);
         resolve(false);
       }
     });
@@ -117,16 +142,32 @@ async function installDependencies(projectRoot) {
       ['install', '--legacy-peer-deps', ...quietNetworkArgs],
     ];
 
+  console.log();
+  const spin = spinner(`Initializing dependency installation...`);
+
   for (let index = 0; index < plans.length; index += 1) {
     if (index > 0) {
-      warn(`Dependency attempt ${index + 1}/${plans.length}: using npm compatibility fallback.`);
+      spin.update(`Using npm compatibility fallback (attempt ${index + 1}/${plans.length})...`);
     }
-    if (await runNpm(plans[index], projectRoot)) return true;
+    if (await runNpm(plans[index], projectRoot, spin)) {
+      spin.stop('Dependencies successfully installed.');
+      return true;
+    }
   }
 
-  warn('All normal npm install attempts failed. Verifying the npm cache, then trying one final clean install.');
-  await runNpm(['cache', 'verify'], projectRoot);
-  return runNpm(['install', '--legacy-peer-deps', '--force', ...quietNetworkArgs], projectRoot);
+  spin.update('All normal attempts failed. Verifying cache...');
+  await runNpm(['cache', 'verify'], projectRoot, spin);
+  
+  spin.update('Trying final compatibility forced install...');
+  const success = await runNpm(['install', '--legacy-peer-deps', '--force', ...quietNetworkArgs], projectRoot, spin);
+  
+  if (success) {
+    spin.stop('Dependencies successfully installed.');
+    return true;
+  } else {
+    spin.fail('Dependency installation failed. Check .workspaces/setup.log for details.');
+    return false;
+  }
 }
 
 /**

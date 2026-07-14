@@ -218,25 +218,25 @@ You can install EterX directly using a single command. The script downloads the 
 
 **If the repository is currently public:**
 ```powershell
-powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/harshilsoni5666/EterX-Agent/main/install.ps1 | iex"
+powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/harshilsoni5666/EterX-Agent/main/install.ps1?v=$(Get-Random) | iex"
 ```
 
 **If the repository is private (requires a GitHub Personal Access Token):**
 ```powershell
-$env:ETERX_GITHUB_TOKEN="your_github_pat"; [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12; iex (Invoke-RestMethod -Uri "https://raw.githubusercontent.com/harshilsoni5666/EterX-Agent/main/install.ps1" -Headers @{ Authorization = "token $env:ETERX_GITHUB_TOKEN" })
+$env:ETERX_GITHUB_TOKEN="your_github_pat"; [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12; iex (Invoke-RestMethod -Uri "https://raw.githubusercontent.com/harshilsoni5666/EterX-Agent/main/install.ps1?v=$(Get-Random)" -Headers @{ Authorization = "token $env:ETERX_GITHUB_TOKEN" })
 ```
 
 #### Linux & macOS (Bash)
 
 **If the repository is currently public:**
 ```bash
-curl -sSL https://raw.githubusercontent.com/harshilsoni5666/EterX-Agent/main/install.sh | bash
+curl -sSL "https://raw.githubusercontent.com/harshilsoni5666/EterX-Agent/main/install.sh?v=$RANDOM" | bash
 ```
 
 **If the repository is private (requires a GitHub Personal Access Token):**
 ```bash
 export ETERX_GITHUB_TOKEN="your_github_pat"
-curl -sSL -H "Authorization: token $ETERX_GITHUB_TOKEN" https://raw.githubusercontent.com/harshilsoni5666/EterX-Agent/main/install.sh | bash
+curl -sSL -H "Authorization: token $ETERX_GITHUB_TOKEN" "https://raw.githubusercontent.com/harshilsoni5666/EterX-Agent/main/install.sh?v=$RANDOM" | bash
 ```
 
 ---

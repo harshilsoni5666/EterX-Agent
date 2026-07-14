@@ -144,7 +144,7 @@ archive_url() {
 prepare_install_directory() {
   if has_source "$INSTALL_DIR"; then
     if [ -d "$INSTALL_DIR/.git" ] && command -v git >/dev/null 2>&1; then
-      step "Existing installation is a Git repository. Pulling latest changes..."
+      step "Existing installation is a Git repository. Syncing with remote branch..."
       (
         cd "$INSTALL_DIR" || exit 1
         # Configure git token if available for authenticated pull
@@ -154,12 +154,15 @@ prepare_install_directory() {
           local authed_url="${remote_url/https:\/\//https://${ETERX_GITHUB_TOKEN}@}"
           git remote set-url origin "$authed_url"
         fi
+        git fetch --all
+        git checkout "$BRANCH"
+        git reset --hard "origin/$BRANCH"
         git pull
       ) && {
         good "Successfully updated source at $INSTALL_DIR."
         return 0
       }
-      warn "Git pull failed; continuing with existing source."
+      warn "Git sync failed; continuing with existing source."
     fi
     good "Using existing EterX source: $INSTALL_DIR"
     return 0
@@ -289,13 +292,7 @@ install_source() {
 run_setup() {
   cd "$INSTALL_DIR" || return 1
   step 'Installing all EterX libraries and initializing local storage...'
-  if node ./setup.js --auto --no-doctor; then return 0; fi
-
-  warn 'Normal setup failed. Verifying npm cache and trying a compatibility install...'
-  npm cache verify || true
-  npm install --legacy-peer-deps --force --no-audit --fund=false || return 1
-  npm rebuild || true
-  node ./setup.js --auto --no-doctor
+  NODE_NO_WARNINGS=1 node ./setup.js --auto --no-doctor
 }
 
 launch_eterx() {

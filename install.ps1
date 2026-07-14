@@ -186,7 +186,7 @@ function Prepare-InstallDirectory {
     if (Test-EterXSource $InstallDir) {
         if (Test-Path (Join-Path $InstallDir '.git')) {
             try {
-                Write-Step 'Existing installation is a Git repository. Pulling latest changes...'
+                Write-Step 'Existing installation is a Git repository. Syncing with remote branch...'
                 Push-Location $InstallDir
                 
                 # Configure git token if available for authenticated pull
@@ -196,12 +196,15 @@ function Prepare-InstallDirectory {
                     & git remote set-url origin $authedUrl
                 }
                 
+                & git fetch --all
+                & git checkout $Branch
+                & git reset --hard "origin/$Branch"
                 & git pull
                 Pop-Location
                 Write-Good "Successfully updated source at $InstallDir."
                 return $true
             } catch {
-                Write-Warn "Git pull failed: $($_.Exception.Message)"
+                Write-Warn "Git sync failed: $($_.Exception.Message)"
             }
         }
         Write-Good "Using existing EterX source: $InstallDir"
@@ -304,16 +307,9 @@ function Invoke-EterXSetup {
     Push-Location $InstallDir
     try {
         Write-Step 'Installing all EterX libraries and creating local storage...'
+        $env:NODE_NO_WARNINGS = '1'
         & node .\setup.js --auto --no-doctor
-        if ($LASTEXITCODE -eq 0) { return }
-
-        Write-Warn 'The normal installer failed. Running cache verification and a compatibility install...'
-        & npm cache verify
-        & npm install --legacy-peer-deps --force --no-audit --fund=false
-        if ($LASTEXITCODE -ne 0) { throw 'The compatibility npm install failed.' }
-        & npm rebuild
-        & node .\setup.js --auto --no-doctor
-        if ($LASTEXITCODE -ne 0) { throw 'EterX setup failed after all recovery attempts.' }
+        if ($LASTEXITCODE -ne 0) { throw 'EterX setup failed.' }
     } finally {
         Pop-Location
     }

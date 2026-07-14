@@ -9,6 +9,7 @@
   "scripts": {
     "dev": "next dev",
     "desktop": "concurrently -k \"npm run dev\" \"electron .\"",
+    "desktop:prod": "npm run build && concurrently -k \"npm run start\" \"electron .\"",
     "desktop:build": "npm run build && electron-builder",
     "desktop:build:win": "npm run build && electron-builder --win",
     "desktop:build:linux": "npm run build && electron-builder --linux",
