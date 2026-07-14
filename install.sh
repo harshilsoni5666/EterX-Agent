@@ -147,6 +147,17 @@ prepare_install_directory() {
       step "Existing installation is a Git repository. Syncing with remote branch..."
       (
         cd "$INSTALL_DIR" || exit 1
+
+        # Check and update remote URL if it differs from REPO_URL
+        local current_url
+        current_url=$(git remote get-url origin | sed 's/\.git$//' | tr -d '[:space:]')
+        local target_url
+        target_url=$(echo "$REPO_URL" | sed 's/\.git$//' | tr -d '[:space:]')
+        if [ "$current_url" != "$target_url" ]; then
+          step "Updating remote URL from '$current_url' to '$REPO_URL'..."
+          git remote set-url origin "$REPO_URL"
+        fi
+
         # Configure git token if available for authenticated pull
         local remote_url
         remote_url="$(git remote get-url origin)"

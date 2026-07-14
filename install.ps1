@@ -189,6 +189,14 @@ function Prepare-InstallDirectory {
                 Write-Step 'Existing installation is a Git repository. Syncing with remote branch...'
                 Push-Location $InstallDir
                 
+                # Check and update remote URL if it differs from RepoUrl
+                $currentUrl = (& git remote get-url origin).Trim() -replace '\.git$', ''
+                $targetUrl = $RepoUrl.Trim() -replace '\.git$', ''
+                if ($currentUrl -ne $targetUrl) {
+                    Write-Step "Updating remote URL from '$currentUrl' to target repository '$targetUrl'..."
+                    & git remote set-url origin $RepoUrl
+                }
+
                 # Configure git token if available for authenticated pull
                 $url = & git remote get-url origin
                 if ($env:ETERX_GITHUB_TOKEN -and $url -match 'github\.com' -and $url -notmatch '@github\.com') {
