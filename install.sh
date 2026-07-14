@@ -295,6 +295,18 @@ run_setup() {
     step 'Clearing Next.js compilation cache...'
     rm -rf "$INSTALL_DIR/.next"
   fi
+  
+  local runtime_cache="$HOME/.config/EterX/runtime"
+  if [ "$(uname -s)" = "Darwin" ]; then
+    runtime_cache="$HOME/Library/Application Support/EterX/runtime"
+  fi
+  if [ -d "$runtime_cache" ]; then
+    step 'Clearing Electron desktop runtime cache...'
+    rm -rf "$runtime_cache"
+  fi
+
+  rm -rf "$INSTALL_DIR/node_modules/.cache"
+
   step 'Installing all EterX libraries and initializing local storage...'
   NODE_NO_WARNINGS=1 node ./setup.js --auto --no-doctor
 }

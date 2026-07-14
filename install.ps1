@@ -317,6 +317,15 @@ function Invoke-EterXSetup {
             Write-Step 'Clearing Next.js compilation cache...'
             Remove-Item -Path $nextCache -Recurse -Force -ErrorAction SilentlyContinue
         }
+        $runtimeCache = Join-Path $env:APPDATA 'EterX\runtime'
+        if (Test-Path $runtimeCache) {
+            Write-Step 'Clearing Electron desktop runtime cache...'
+            Remove-Item -Path $runtimeCache -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        $npmCache = Join-Path $InstallDir 'node_modules\.cache'
+        if (Test-Path $npmCache) {
+            Remove-Item -Path $npmCache -Recurse -Force -ErrorAction SilentlyContinue
+        }
         Write-Step 'Installing all EterX libraries and creating local storage...'
         $env:NODE_NO_WARNINGS = '1'
         & node .\setup.js --auto --no-doctor
