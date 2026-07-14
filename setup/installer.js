@@ -7,6 +7,45 @@ const path = require('path');
 const { ok, warn, fail, info, line, c, spinner } = require('./banner');
 const { getProjectRoot } = require('./detect');
 
+const isUnicodeSupported = () => {
+  if (process.platform !== 'win32') return true;
+  return Boolean(process.env.WT_SESSION) || // Windows Terminal
+         process.env.TERM_PROGRAM === 'vscode' ||
+         process.env.TERM === 'xterm-256color' ||
+         process.env.TERM === 'alacritty';
+};
+const unicode = isUnicodeSupported();
+
+const packages = [
+  { name: 'next', label: 'Next.js Web Server Core', status: 'pending', pct: 0 },
+  { name: 'react', label: 'React UI Renderer Engine', status: 'pending', pct: 0 },
+  { name: 'electron', label: 'Electron Desktop Wrapper', status: 'pending', pct: 0 },
+  { name: '@google/genai', label: 'Google Gemini AI Client', status: 'pending', pct: 0 },
+  { name: 'openai', label: 'OpenAI API Connector', status: 'pending', pct: 0 },
+  { name: '@anthropic-ai/sdk', label: 'Anthropic Claude API Connector', status: 'pending', pct: 0 },
+  { name: 'framer-motion', label: 'GPU-Accelerated Transition Engine', status: 'pending', pct: 0 },
+  { name: 'playwright-core', label: 'Isolated Browser Automator Engine', status: 'pending', pct: 0 },
+];
+
+function redrawProgress(firstDraw = false) {
+  if (!firstDraw) {
+    process.stdout.write(`\x1b[${packages.length}A`);
+  }
+  packages.forEach(p => {
+    if (!firstDraw) {
+      process.stdout.write('\r\x1b[K');
+    }
+    let icon = c.gray + (unicode ? '○' : '*') + ' [Waiting] ' + c.reset;
+    if (p.status === 'downloading') {
+      const pctStr = `${p.pct}%`.padStart(4);
+      icon = `${c.brightYellow}${unicode ? '🔄' : 'o'} [${pctStr}] ` + c.reset;
+    } else if (p.status === 'done') {
+      icon = c.brightGreen + (unicode ? '✔' : '√') + ' [ Done  ] ' + c.reset;
+    }
+    process.stdout.write(`    ${icon} ${c.bold}${p.name.padEnd(18)}${c.reset} ${c.dim}${p.label}${c.reset}\n`);
+  });
+}
+
 function runNpm(args, projectRoot, spin) {
   const label = `npm ${args.join(' ')}`;
   
@@ -30,27 +69,24 @@ function runNpm(args, projectRoot, spin) {
 
     let lastProgressMsg = '';
     let lastProgressTime = Date.now();
-    let lastPrintedPkg = '';
     
-    const hints = [
-      'Resolving dependency graph...',
-      'Fetching package tarballs...',
-      'Downloading package files...',
-      'Linking modules to node_modules...',
-      'Extracting files...',
-      'Almost done, finalizing installation...'
-    ];
-    let hintIndex = 0;
-    
-    const intervalId = setInterval(() => {
-      if (Date.now() - lastProgressTime > 8000) {
-        spin.update(`${hints[hintIndex++ % hints.length]} (still working)`);
-        lastProgressTime = Date.now();
+    // Smooth countdown timer to simulate download updates in real-time like Steam/Play Store
+    const progressInterval = setInterval(() => {
+      let updated = false;
+      packages.forEach(p => {
+        if (p.status === 'downloading' && p.pct < 95) {
+          p.pct += Math.floor(Math.random() * 3) + 1;
+          if (p.pct > 95) p.pct = 95;
+          updated = true;
+        }
+      });
+      if (updated) {
+        redrawProgress();
       }
-    }, 8000);
+    }, 150);
 
     const cleanup = () => {
-      clearInterval(intervalId);
+      clearInterval(progressInterval);
       if (logStream) {
         try { logStream.end(); } catch (e) {}
       }
@@ -65,39 +101,35 @@ function runNpm(args, projectRoot, spin) {
         const cleanLine = lineText.trim();
         if (!cleanLine) continue;
 
-        // Filter out deprecated warnings and noise from main terminal UI
         if (cleanLine.toLowerCase().includes('deprecated') || 
             cleanLine.toLowerCase().includes('warn') || 
             cleanLine.toLowerCase().includes('deprecationwarning')) {
           continue;
         }
 
-        // Update spinner message based on active package stages
+        // Trigger active downloading progress based on npm logs
         if (cleanLine.includes('reify:') || cleanLine.includes('extract:')) {
           const parts = cleanLine.split(':');
           const pkg = parts[parts.length - 1].trim();
-          if (pkg && pkg.length > 0 && pkg.length < 50 && pkg !== lastPrintedPkg && !pkg.includes(' ') && !pkg.includes('\\')) {
-            lastPrintedPkg = pkg;
-            process.stdout.write(`\r\x1b[K  ${c.gray}↳${c.reset} Installing ${c.brightCyan}${pkg}${c.reset}...\n`);
-            spin.update(`Downloading & extracting packages`);
-            lastProgressTime = Date.now();
+          if (pkg) {
+            const matched = packages.find(p => pkg.startsWith(p.name) || p.name.startsWith(pkg) || pkg.includes(p.name));
+            if (matched && matched.status !== 'done') {
+              matched.status = 'downloading';
+              if (matched.pct < 20) matched.pct = 20;
+              redrawProgress();
+              lastProgressTime = Date.now();
+            }
           }
         } else if (cleanLine.includes('tarball:')) {
           const pkg = cleanLine.substring(cleanLine.indexOf('tarball:') + 8).trim();
-          if (pkg && pkg.length < 50 && pkg !== lastPrintedPkg && !pkg.includes(' ')) {
-            lastPrintedPkg = pkg;
-            process.stdout.write(`\r\x1b[K  ${c.gray}↳${c.reset} Fetching ${c.brightCyan}${pkg}${c.reset}...\n`);
-            spin.update(`Downloading & extracting packages`);
-            lastProgressTime = Date.now();
-          }
-        } else if (cleanLine.includes('build:')) {
-          const parts = cleanLine.split(':');
-          const pkg = parts[parts.length - 1].trim();
-          if (pkg && pkg.length < 50 && pkg !== lastPrintedPkg) {
-            lastPrintedPkg = pkg;
-            process.stdout.write(`\r\x1b[K  ${c.gray}↳${c.reset} Building ${c.brightCyan}${pkg}${c.reset}...\n`);
-            spin.update(`Downloading & extracting packages`);
-            lastProgressTime = Date.now();
+          if (pkg) {
+            const matched = packages.find(p => pkg.startsWith(p.name) || p.name.startsWith(pkg) || pkg.includes(p.name));
+            if (matched && matched.status === 'pending') {
+              matched.status = 'downloading';
+              matched.pct = 10;
+              redrawProgress();
+              lastProgressTime = Date.now();
+            }
           }
         } else if (cleanLine.includes('added') && cleanLine.includes('packages')) {
           lastProgressMsg = cleanLine;
@@ -121,9 +153,6 @@ function runNpm(args, projectRoot, spin) {
     proc.on('close', (code) => {
       cleanup();
       if (code === 0) {
-        if (lastProgressMsg) {
-          spin.update(lastProgressMsg);
-        }
         resolve(true);
       } else {
         resolve(false);
@@ -148,29 +177,41 @@ async function installDependencies(projectRoot) {
     ];
 
   console.log();
-  const spin = spinner(`Initializing dependency installation...`);
+  console.log(`  ${c.bold}${c.brightMagenta}Installing Libraries (Real-time Packages Download):${c.reset}`);
+  packages.forEach(p => {
+    p.status = 'pending';
+    p.pct = 0;
+  });
+  redrawProgress(true); // first draw
 
+  let success = false;
   for (let index = 0; index < plans.length; index += 1) {
-    if (index > 0) {
-      spin.update(`Using npm compatibility fallback (attempt ${index + 1}/${plans.length})...`);
-    }
-    if (await runNpm(plans[index], projectRoot, spin)) {
-      spin.stop('Dependencies successfully installed.');
-      return true;
+    if (await runNpm(plans[index], projectRoot, null)) {
+      success = true;
+      break;
     }
   }
 
-  spin.update('All normal attempts failed. Verifying cache...');
-  await runNpm(['cache', 'verify'], projectRoot, spin);
-  
-  spin.update('Trying final compatibility forced install...');
-  const success = await runNpm(['install', '--legacy-peer-deps', '--force', ...quietNetworkArgs], projectRoot, spin);
-  
+  if (!success) {
+    // Try final forced install
+    if (await runNpm(['install', '--legacy-peer-deps', '--force', ...quietNetworkArgs], projectRoot, null)) {
+      success = true;
+    }
+  }
+
+  // Complete all progress indicators
+  packages.forEach(p => {
+    p.status = 'done';
+    p.pct = 100;
+  });
+  redrawProgress();
+
+  console.log();
   if (success) {
-    spin.stop('Dependencies successfully installed.');
+    ok('Dependencies successfully installed.');
     return true;
   } else {
-    spin.fail('Dependency installation failed. Check .workspaces/setup.log for details.');
+    fail('Dependency installation failed. Check .workspaces/setup.log for details.');
     return false;
   }
 }
