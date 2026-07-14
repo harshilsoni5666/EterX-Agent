@@ -111,7 +111,7 @@ ensure_node() {
   if [ -n "$url" ]; then
     staging="$(mktemp -d "${TMPDIR:-/tmp}/eterx-node.XXXXXX")"
     archive="$staging/node.tar.gz"
-    if curl --fail --location --retry 3 "$url" -o "$archive"; then
+    if curl --fail --location --retry 3 --progress-bar "$url" -o "$archive"; then
       mkdir -p "$staging/extract"
       if tar -xf "$archive" -C "$staging/extract" --strip-components=1; then
         target_node="$INSTALL_DIR/node"
@@ -246,11 +246,11 @@ try_archive_download() {
   if [ -n "${ETERX_GITHUB_TOKEN:-}" ] && [[ "$REPO_URL" =~ github\.com[:/]([^/]+/[^/.]+)(\.git)?$ ]]; then
     local repo="${BASH_REMATCH[1]}"
     url="https://api.github.com/repos/$repo/zipball/$BRANCH"
-    curl --fail --location --retry 3 --header "Authorization: Bearer ${ETERX_GITHUB_TOKEN}" --header 'Accept: application/vnd.github+json' --header 'User-Agent: EterX-Installer' "$url" -o "$archive" || {
+    curl --fail --location --retry 3 --progress-bar --header "Authorization: Bearer ${ETERX_GITHUB_TOKEN}" --header 'Accept: application/vnd.github+json' --header 'User-Agent: EterX-Installer' "$url" -o "$archive" || {
       rm -rf -- "$staging"; return 1;
     }
   else
-    curl --fail --location --retry 3 "$url" -o "$archive" || { rm -rf -- "$staging"; return 1; }
+    curl --fail --location --retry 3 --progress-bar "$url" -o "$archive" || { rm -rf -- "$staging"; return 1; }
   fi
 
   if ! extract_zip "$archive" "$staging"; then
@@ -311,8 +311,24 @@ launch_eterx() {
   good 'EterX is launching. Add your API key in Settings → API Keys if this is your first run.'
 }
 
-printf '\n  \033[0;35mEterX — automatic source installer\033[0m\n'
-printf '  \033[0;90mSource → dependencies → recovery → desktop launch\033[0m\n\n'
+printf '\033[0;36m'
+printf '                ███████╗████████╗███████╗██████╗ ██╗  ██╗\n'
+printf '                ██╔════╝╚══██╔══╝██╔════╝██╔══██╗╚██╗██╔╝\n'
+printf '                █████╗     ██║   █████╗  ██████╔╝ ╚███╔╝ \n'
+printf '                ██╔══╝     ██║   ██╔══╝  ██╔══██╗ ██╔██╗ \n'
+printf '                ███████╗   ██║   ███████╗██║  ██║██╔╝ ██╗\n'
+printf '                ╚══════╝   ╚═╝   ╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝\n'
+printf '\033[0m'
+printf '\n                    \033[0;35m⚡ The Autonomous AI Agent System\033[0m\n'
+printf '                    \033[0;90mBuilt by Harshil Soni 💎\033[0m\n'
+printf '  \033[0;90m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n'
+printf '  \033[0;33mDestination Path :\033[0m %s\n' "$INSTALL_DIR"
+printf '  \033[0;90mRequired Modules :\033[0m\n'
+printf '    - Core Engine & Local Workspace Storage\n'
+printf '    - Next.js & React UI Modules\n'
+printf '    - Electron Native Windows Wrapper\n'
+printf '    - Gemini & Universal AI Provider Router\n'
+printf '  \033[0;90m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n\n'
 
 ensure_node && install_source && run_setup && launch_eterx || {
   fail 'Installation could not finish. Fix the reported prerequisite, then run the same command again.'

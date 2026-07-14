@@ -43,6 +43,65 @@ function Refresh-ProcessPath {
     $env:Path = $parts -join ';'
 }
 
+function Download-WithProgress([string]$Url, [string]$OutFile, [string]$Label, [hashtable]$Headers) {
+    try {
+        [void][Reflection.Assembly]::LoadWithPartialName("System.Net.Http")
+    } catch {}
+    
+    $httpClient = New-Object System.Net.Http.HttpClient
+    if ($Headers) {
+        foreach ($key in $Headers.Keys) {
+            $httpClient.DefaultRequestHeaders.TryAddWithoutValidation($key, $Headers[$key]) | Out-Null
+        }
+    }
+    if (-not ($Headers -and $Headers.ContainsKey('User-Agent'))) {
+        $httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("EterX-Installer") | Out-Null
+    }
+
+    try {
+        $responseTask = $httpClient.GetAsync($Url, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead)
+        $response = $responseTask.Result
+        $response.EnsureSuccessStatusCode() | Out-Null
+        
+        $totalBytes = $response.Content.Headers.ContentLength
+        if ($null -eq $totalBytes) { $totalBytes = 0 }
+        
+        $inputStream = $response.Content.ReadAsStreamAsync().Result
+        $outputStream = [System.IO.File]::Create($OutFile)
+        $buffer = New-Object byte[] 65536
+        
+        $bytesRead = 0
+        $totalRead = 0
+        $width = 25
+        
+        while (($bytesRead = $inputStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+            $outputStream.Write($buffer, 0, $bytesRead)
+            $totalRead += $bytesRead
+            
+            if ($totalBytes -gt 0) {
+                $pct = [Math]::Round(($totalRead / $totalBytes) * 100)
+                $filled = [Math]::Min($width, [Math]::Round(($totalRead / $totalBytes) * $width))
+                $empty = $width - $filled
+                $bar = ("█" * $filled) + ("░" * $empty)
+                
+                $mbRead = [Math]::Round($totalRead / 1MB, 1)
+                $mbTotal = [Math]::Round($totalBytes / 1MB, 1)
+                
+                Write-Host -NoNewline "`r  [EterX] $Label [$bar] $pct% ($mbRead MB / $mbTotal MB)   "
+            } else {
+                $mbRead = [Math]::Round($totalRead / 1MB, 1)
+                Write-Host -NoNewline "`r  [EterX] $Label [Downloading...] ($mbRead MB)   "
+            }
+        }
+        
+        $outputStream.Close()
+        $inputStream.Close()
+        Write-Host ""
+    } finally {
+        $httpClient.Dispose()
+    }
+}
+
 function Get-NodeMajor {
     try {
         $version = (& node --version 2>$null).Trim()
@@ -82,7 +141,7 @@ function Ensure-Node {
         $nodeZip = Join-Path $nodeStaging 'node.zip'
         
         $nodeUrl = 'https://nodejs.org/dist/v20.15.1/node-v20.15.1-win-x64.zip'
-        Invoke-WebRequest -Uri $nodeUrl -OutFile $nodeZip -UseBasicParsing
+        Download-WithProgress -Url $nodeUrl -OutFile $nodeZip -Label 'Portable Node.js'
         Expand-Archive -LiteralPath $nodeZip -DestinationPath $nodeStaging -Force
         
         $extractedNodeDir = Get-ChildItem -Path $nodeStaging -Directory | Where-Object { $_.Name -like 'node-*' } | Select-Object -First 1
@@ -218,7 +277,7 @@ function Try-ArchiveDownload {
         }
 
         Write-Step 'Downloading the complete EterX source archive...'
-        Invoke-WebRequest -Uri $url -Headers $headers -OutFile $archive -UseBasicParsing
+        Download-WithProgress -Url $url -OutFile $archive -Label 'Source Archive' -Headers $headers
         Expand-Archive -LiteralPath $archive -DestinationPath $staging -Force
         $source = Get-ChildItem -LiteralPath $staging -Directory |
             Where-Object { Test-EterXSource $_.FullName } |
@@ -272,10 +331,25 @@ function Start-EterX {
     Write-Good 'EterX is launching. Add your API key in Settings → API Keys if this is your first run.'
 }
 
-Write-Host ''
-Write-Host '  EterX — automatic source installer' -ForegroundColor Magenta
-Write-Host '  Source → dependencies → recovery → desktop launch' -ForegroundColor DarkGray
-Write-Host ''
+Write-Host ""
+Write-Host "                ███████╗████████╗███████╗██████╗ ██╗  ██╗" -ForegroundColor Cyan
+Write-Host "                ██╔════╝╚══██╔══╝██╔════╝██╔══██╗╚██╗██╔╝" -ForegroundColor Cyan
+Write-Host "                █████╗     ██║   █████╗  ██████╔╝ ╚███╔╝ " -ForegroundColor Cyan
+Write-Host "                ██╔══╝     ██║   ██╔══╝  ██╔══██╗ ██╔██╗ " -ForegroundColor Cyan
+Write-Host "                ███████╗   ██║   ███████╗██║  ██║██╔╝ ██╗" -ForegroundColor Cyan
+Write-Host "                ╚══════╝   ╚═╝   ╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "                    ⚡ The Autonomous AI Agent System" -ForegroundColor Magenta
+Write-Host "                    Built by Harshil Soni 💎" -ForegroundColor DarkGray
+Write-Host "  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Gray
+Write-Host "  Destination Path : $InstallDir" -ForegroundColor Yellow
+Write-Host "  Required Modules :" -ForegroundColor Gray
+Write-Host "    - Core Engine & Local Workspace Storage" -ForegroundColor DarkGray
+Write-Host "    - Next.js & React UI Modules" -ForegroundColor DarkGray
+Write-Host "    - Electron Native Windows Wrapper" -ForegroundColor DarkGray
+Write-Host "    - Gemini & Universal AI Provider Router" -ForegroundColor DarkGray
+Write-Host "  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Gray
+Write-Host ""
 
 try {
     Ensure-Node

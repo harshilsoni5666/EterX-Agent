@@ -4,35 +4,96 @@
 const { execSync, spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
-const { ok, warn, fail, info, line } = require('./banner');
+const { ok, warn, fail, info, line, c, spinner } = require('./banner');
 const { getProjectRoot } = require('./detect');
 
 function runNpm(args, projectRoot) {
   const label = `npm ${args.join(' ')}`;
   console.log();
-  info(`Running ${label}`);
-  line();
+
+  const spin = spinner(`Initializing dependency installation...`);
+  
+  let logStream;
+  try {
+    const logDir = path.join(projectRoot, '.workspaces');
+    if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
+    logStream = fs.createWriteStream(path.join(logDir, 'setup.log'), { flags: 'a' });
+    logStream.write(`\n[${new Date().toISOString()}] Running: ${label}\n`);
+  } catch (e) {
+    // ignore
+  }
 
   return new Promise((resolve) => {
     const proc = spawn('npm', args, {
       cwd: projectRoot,
-      stdio: 'inherit',
+      stdio: ['ignore', 'pipe', 'pipe'],
       shell: process.platform === 'win32',
       env: { ...process.env, NODE_ENV: 'development' },
     });
 
+    let lastProgressMsg = '';
+    
+    const handleData = (data) => {
+      const text = data.toString();
+      if (logStream) logStream.write(text);
+
+      const lines = text.split(/\r?\n/);
+      for (const lineText of lines) {
+        const cleanLine = lineText.trim();
+        if (!cleanLine) continue;
+
+        // Filter out deprecated warnings and noise from main terminal UI
+        if (cleanLine.toLowerCase().includes('deprecated') || 
+            cleanLine.toLowerCase().includes('warn') || 
+            cleanLine.toLowerCase().includes('deprecationwarning')) {
+          continue;
+        }
+
+        // Update spinner message based on active package stages
+        if (cleanLine.includes('reify:') || cleanLine.includes('extract:')) {
+          const parts = cleanLine.split(':');
+          const pkg = parts[parts.length - 1].trim();
+          if (pkg && pkg.length < 40) {
+            spin.update(`Downloading & extracting: ${c.brightCyan}${pkg}${c.reset}`);
+          }
+        } else if (cleanLine.includes('tarball:')) {
+          const pkg = cleanLine.substring(cleanLine.indexOf('tarball:') + 8).trim();
+          if (pkg && pkg.length < 40) {
+            spin.update(`Fetching: ${c.brightCyan}${pkg}${c.reset}`);
+          }
+        } else if (cleanLine.includes('build:')) {
+          const parts = cleanLine.split(':');
+          const pkg = parts[parts.length - 1].trim();
+          if (pkg && pkg.length < 40) {
+            spin.update(`Building native modules: ${c.brightCyan}${pkg}${c.reset}`);
+          }
+        } else if (cleanLine.includes('added') && cleanLine.includes('packages')) {
+          lastProgressMsg = cleanLine;
+        } else if (cleanLine.includes('audited') && cleanLine.includes('packages')) {
+          lastProgressMsg = cleanLine;
+        }
+      }
+    };
+
+    proc.stdout.on('data', handleData);
+    proc.stderr.on('data', handleData);
+
     proc.on('error', (err) => {
-      fail(`${label} could not start: ${err.message}`);
+      spin.fail(`Failed to execute: ${label}`);
+      if (logStream) {
+        logStream.write(`Process error: ${err.message}\n`);
+        logStream.end();
+      }
       resolve(false);
     });
 
     proc.on('close', (code) => {
-      line();
+      if (logStream) logStream.end();
       if (code === 0) {
-        ok(`${label} completed`);
+        spin.stop(lastProgressMsg || `${label} completed successfully.`);
         resolve(true);
       } else {
-        fail(`${label} exited with code ${code}`);
+        spin.fail(`Dependency install failed (code ${code}). Check .workspaces/setup.log for details.`);
         resolve(false);
       }
     });
