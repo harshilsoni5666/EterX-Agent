@@ -44,13 +44,28 @@ function runNpm(args, projectRoot) {
  */
 async function installDependencies(projectRoot) {
   const hasLockfile = fs.existsSync(path.join(projectRoot, 'package-lock.json'));
-  const baseArgs = hasLockfile ? ['ci'] : ['install'];
-  const installed = await runNpm(baseArgs, projectRoot);
-  if (installed) return true;
+  const quietNetworkArgs = ['--no-audit', '--fund=false'];
+  const plans = hasLockfile
+    ? [
+      ['ci', ...quietNetworkArgs],
+      ['ci', '--legacy-peer-deps', ...quietNetworkArgs],
+      ['install', '--legacy-peer-deps', ...quietNetworkArgs],
+    ]
+    : [
+      ['install', ...quietNetworkArgs],
+      ['install', '--legacy-peer-deps', ...quietNetworkArgs],
+    ];
 
-  warn('Standard dependency setup failed. Retrying with --legacy-peer-deps for compatibility.');
-  warn('This keeps setup moving on machines where npm blocks peer dependency mismatches.');
-  return runNpm([...baseArgs, '--legacy-peer-deps'], projectRoot);
+  for (let index = 0; index < plans.length; index += 1) {
+    if (index > 0) {
+      warn(`Dependency attempt ${index + 1}/${plans.length}: using npm compatibility fallback.`);
+    }
+    if (await runNpm(plans[index], projectRoot)) return true;
+  }
+
+  warn('All normal npm install attempts failed. Verifying the npm cache, then trying one final clean install.');
+  await runNpm(['cache', 'verify'], projectRoot);
+  return runNpm(['install', '--legacy-peer-deps', '--force', ...quietNetworkArgs], projectRoot);
 }
 
 /**

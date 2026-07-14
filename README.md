@@ -210,13 +210,38 @@ The `synapse-graph` memory system builds a relational graph of concepts—connec
 
 ## Installation
 
-### Desktop Installer (Recommended)
+### One-Click Bootstrap Install (Recommended)
 
-This repository is private. Install the platform package shared through the private release: the Windows NSIS `.exe`, Linux AppImage or `.deb`, or macOS `.dmg`. The packaged desktop app includes its own Electron and Next.js runtime—users do **not** need Node.js, npm, or Git.
+You can install EterX directly using a single command. The script downloads the complete source, verifies or automatically installs dependencies (with a portable Node.js fallback if package managers fail), initializes storage, and launches EterX.
 
-On first launch EterX creates its working data under the user's application-data folder, starts its local server automatically, and opens the desktop app. API keys are configured from **Settings → API Keys**.
+#### Windows (PowerShell)
 
-> Do not use an anonymous `raw.githubusercontent.com/... | iex` command for this private repository. GitHub correctly rejects it with `404` or `401` because the user is not authenticated. Share the built installer through a private GitHub Release, your organization’s software portal, or another authenticated download channel.
+**If the repository is currently public:**
+```powershell
+powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/harshilsoni5666/EterX-Agent/main/install.ps1 | iex"
+```
+
+**If the repository is private (requires a GitHub Personal Access Token):**
+```powershell
+$env:ETERX_GITHUB_TOKEN="your_github_pat"; [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12; iex (Invoke-RestMethod -Uri "https://raw.githubusercontent.com/harshilsoni5666/EterX-Agent/main/install.ps1" -Headers @{ Authorization = "token $env:ETERX_GITHUB_TOKEN" })
+```
+
+#### Linux & macOS (Bash)
+
+**If the repository is currently public:**
+```bash
+curl -sSL https://raw.githubusercontent.com/harshilsoni5666/EterX-Agent/main/install.sh | bash
+```
+
+**If the repository is private (requires a GitHub Personal Access Token):**
+```bash
+export ETERX_GITHUB_TOKEN="your_github_pat"
+curl -sSL -H "Authorization: token $ETERX_GITHUB_TOKEN" https://raw.githubusercontent.com/harshilsoni5666/EterX-Agent/main/install.sh | bash
+```
+
+---
+
+### Desktop Package Build (Offline distribution)
 
 For release builds:
 
@@ -235,7 +260,7 @@ node .\setup.js --auto --no-doctor
 node .\eterx.js desktop
 ```
 
-The `install.ps1` and `install.sh` files can be used after downloading the private source archive locally. They install Node.js when required, install all declared npm libraries, initialize EterX storage, and guide API-key setup without using Git.
+The `install.ps1` and `install.sh` files can also be run locally from within the repository. They automatically update git-cloned repositories, install Node.js (including portable Node.js fallbacks) when required, install all declared npm libraries, initialize EterX storage, and guide API-key setup.
 
 ### API Key Setup
 

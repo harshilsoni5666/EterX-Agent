@@ -1,92 +1,289 @@
-# EterX Agent source installer (Windows PowerShell)
+# EterX public-source bootstrap installer for Windows.
 #
-# End users should normally install the EterX-<version>-win-<arch>.exe produced
-# by `npm run desktop:build:win`. This script is the no-Git fallback for people
-# who intentionally install from source.
+# When this repository is public, users can run this directly from the README.
+# It downloads the complete source tree, installs Node/npm dependencies with
+# several recovery paths, initializes EterX, and launches the desktop app.
 
 [CmdletBinding()]
 param(
     [string]$InstallDir = $(if ($env:ETERX_DIR) { $env:ETERX_DIR } else { Join-Path $env:USERPROFILE 'EterX' }),
-    [string]$ArchiveUrl = $(if ($env:ETERX_ARCHIVE_URL) { $env:ETERX_ARCHIVE_URL } else { 'https://github.com/harshilsoni5666/EterX-agent-/archive/refs/heads/main.zip' })
+    [string]$RepoUrl = $(if ($env:ETERX_REPO_URL) { $env:ETERX_REPO_URL } else { 'https://github.com/harshilsoni5666/EterX-Agent.git' }),
+    [string]$Branch = $(if ($env:ETERX_BRANCH) { $env:ETERX_BRANCH } else { 'main' }),
+    [string]$ArchiveUrl = $env:ETERX_ARCHIVE_URL,
+    [switch]$NoLaunch,
+    [switch]$Force
 )
 
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
 
-function Write-Status([string]$Message) {
-    Write-Host "  $Message" -ForegroundColor Cyan
+function Write-Step([string]$Message) {
+    Write-Host "  [EterX] $Message" -ForegroundColor Cyan
 }
 
-function Test-SourceInstall([string]$Path) {
-    return (Test-Path (Join-Path $Path 'package.json')) -and (Test-Path (Join-Path $Path 'setup.js'))
+function Write-Good([string]$Message) {
+    Write-Host "  [EterX] $Message" -ForegroundColor Green
+}
+
+function Write-Warn([string]$Message) {
+    Write-Host "  [EterX] $Message" -ForegroundColor Yellow
+}
+
+function Test-EterXSource([string]$Path) {
+    return (Test-Path (Join-Path $Path 'package.json')) -and
+        (Test-Path (Join-Path $Path 'setup.js')) -and
+        (Test-Path (Join-Path $Path 'eterx.js')) -and
+        (Test-Path (Join-Path $Path 'src'))
+}
+
+function Refresh-ProcessPath {
+    $machine = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+    $user = [Environment]::GetEnvironmentVariable('Path', 'User')
+    $parts = @($machine, $user, $env:Path) | Where-Object { $_ } | Select-Object -Unique
+    $env:Path = $parts -join ';'
+}
+
+function Get-NodeMajor {
+    try {
+        $version = (& node --version 2>$null).Trim()
+        if ($version -match '^v?(\d+)') { return [int]$Matches[1] }
+    } catch {}
+    return 0
 }
 
 function Ensure-Node {
-    try {
-        $version = (& node --version 2>$null).Trim()
-        if ($version) {
-            Write-Host "  Node.js $version found" -ForegroundColor Green
-            return
-        }
-    } catch {}
-
-    Write-Status 'Node.js was not found. Installing the LTS release with winget...'
-    if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
-        throw 'Node.js is required for a source install. Install Node.js 20+ from https://nodejs.org, then run this script again.'
-    }
-
-    & winget install --id OpenJS.NodeJS.LTS --exact --accept-source-agreements --accept-package-agreements
-    if ($LASTEXITCODE -ne 0) { throw 'Node.js installation failed.' }
-    $env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' + [Environment]::GetEnvironmentVariable('PATH', 'User')
-    if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
-        throw 'Node.js was installed but is not available in this terminal. Open a new PowerShell window and run the script again.'
-    }
-}
-
-function Install-SourceArchive {
-    if (Test-SourceInstall $InstallDir) {
-        Write-Status "Using existing source installation: $InstallDir"
+    $major = Get-NodeMajor
+    if ($major -ge 20) {
+        Write-Good "Node.js $(& node --version) is ready."
         return
     }
 
-    $staging = Join-Path ([System.IO.Path]::GetTempPath()) ("eterx-source-" + [Guid]::NewGuid().ToString('N'))
-    $archive = Join-Path $staging 'eterx.zip'
+    Write-Step 'Node.js 20+ is required. Trying the Windows package manager...'
+    if (Get-Command winget -ErrorAction SilentlyContinue) {
+        foreach ($id in @('OpenJS.NodeJS.LTS', 'OpenJS.NodeJS')) {
+            try {
+                & winget install --id $id --exact --accept-source-agreements --accept-package-agreements --silent
+                Refresh-ProcessPath
+                if ((Get-NodeMajor) -ge 20) {
+                    Write-Good "Installed Node.js $(& node --version)."
+                    return
+                }
+            } catch {
+                Write-Warn "Node install attempt with $id did not finish. Trying the next option..."
+            }
+        }
+    }
+
+    # Fallback: Portable Node.js download
     try {
-        New-Item -ItemType Directory -Path $staging -Force | Out-Null
-        Write-Status 'Downloading the EterX source archive (no Git required)...'
-        Invoke-WebRequest -Uri $ArchiveUrl -OutFile $archive -UseBasicParsing
-        Expand-Archive -LiteralPath $archive -DestinationPath $staging -Force
+        Write-Step 'Package manager failed. Downloading portable Node.js LTS...'
+        $nodeStaging = Join-Path ([IO.Path]::GetTempPath()) ("eterx-node-" + [Guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $nodeStaging -Force | Out-Null
+        $nodeZip = Join-Path $nodeStaging 'node.zip'
+        
+        $nodeUrl = 'https://nodejs.org/dist/v20.15.1/node-v20.15.1-win-x64.zip'
+        Invoke-WebRequest -Uri $nodeUrl -OutFile $nodeZip -UseBasicParsing
+        Expand-Archive -LiteralPath $nodeZip -DestinationPath $nodeStaging -Force
+        
+        $extractedNodeDir = Get-ChildItem -Path $nodeStaging -Directory | Where-Object { $_.Name -like 'node-*' } | Select-Object -First 1
+        if ($extractedNodeDir) {
+            $targetNodeDir = Join-Path $InstallDir 'node'
+            if (Test-Path $targetNodeDir) { Remove-Item -LiteralPath $targetNodeDir -Recurse -Force -ErrorAction SilentlyContinue }
+            New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+            Move-Item -Path $extractedNodeDir.FullName -Destination $targetNodeDir -Force
+            
+            $env:Path = "$targetNodeDir;" + $env:Path
+            if ((Get-NodeMajor) -ge 20) {
+                Write-Good "Portable Node.js configured at $targetNodeDir."
+                return
+            }
+        }
+    } catch {
+        Write-Warn "Portable Node.js download failed: $($_.Exception.Message)"
+    }
 
-        $source = Get-ChildItem -LiteralPath $staging -Directory |
-            Where-Object { Test-SourceInstall $_.FullName } |
-            Select-Object -First 1
-        if (-not $source) { throw 'The downloaded archive does not contain a valid EterX source installation.' }
+    throw 'Could not install Node.js automatically. Install Node.js 20+ from https://nodejs.org, then run this command again.'
+}
 
-        New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
-        Get-ChildItem -LiteralPath $source.FullName -Force | Copy-Item -Destination $InstallDir -Recurse -Force
-        Write-Host "  Source installed at $InstallDir" -ForegroundColor Green
+function Get-ArchiveUrl {
+    if ($ArchiveUrl) { return $ArchiveUrl }
+    $base = $RepoUrl -replace '\.git$', ''
+    return "$base/archive/refs/heads/$Branch.zip"
+}
+
+function Get-GitHubApiArchiveUrl {
+    try {
+        $uri = [Uri]$RepoUrl
+        if ($uri.Host -notmatch '(^|\.)github\.com$') { return $null }
+        $repo = $uri.AbsolutePath.Trim('/').Replace('.git', '')
+        if (-not $repo.Contains('/')) { return $null }
+        return "https://api.github.com/repos/$repo/zipball/$Branch"
+    } catch {
+        return $null
+    }
+}
+
+function Prepare-InstallDirectory {
+    if (Test-EterXSource $InstallDir) {
+        if (Test-Path (Join-Path $InstallDir '.git')) {
+            try {
+                Write-Step 'Existing installation is a Git repository. Pulling latest changes...'
+                Push-Location $InstallDir
+                
+                # Configure git token if available for authenticated pull
+                $url = & git remote get-url origin
+                if ($env:ETERX_GITHUB_TOKEN -and $url -match 'github\.com' -and $url -notmatch '@github\.com') {
+                    $authedUrl = $url -replace 'https://', "https://$($env:ETERX_GITHUB_TOKEN)@"
+                    & git remote set-url origin $authedUrl
+                }
+                
+                & git pull
+                Pop-Location
+                Write-Good "Successfully updated source at $InstallDir."
+                return $true
+            } catch {
+                Write-Warn "Git pull failed: $($_.Exception.Message)"
+            }
+        }
+        Write-Good "Using existing EterX source: $InstallDir"
+        return $true
+    }
+
+    if (Test-Path $InstallDir) {
+        $items = @(Get-ChildItem -LiteralPath $InstallDir -Force -ErrorAction SilentlyContinue)
+        if ($items.Count -gt 0) {
+            if (-not $Force -and $env:ETERX_FORCE -ne '1') {
+                throw "Install directory already contains unrelated files: $InstallDir. Choose ETERX_DIR or set ETERX_FORCE=1 to replace it."
+            }
+            Write-Warn "Replacing incomplete installation at $InstallDir..."
+            Remove-Item -LiteralPath $InstallDir -Recurse -Force
+        }
+    }
+    return $false
+}
+
+function Copy-SourceToInstall([string]$SourcePath) {
+    if (-not (Test-EterXSource $SourcePath)) {
+        throw 'Downloaded source is incomplete: package.json, setup.js, eterx.js, or src is missing.'
+    }
+    New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+    Get-ChildItem -LiteralPath $SourcePath -Force | Copy-Item -Destination $InstallDir -Recurse -Force
+    if (-not (Test-EterXSource $InstallDir)) { throw 'Source copy did not complete correctly.' }
+    Write-Good "Complete EterX source installed at $InstallDir"
+}
+
+function Try-GitDownload {
+    if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+        Write-Warn 'Git is not available; using the archive download fallback.'
+        return $false
+    }
+
+    $url = $RepoUrl
+    if ($env:ETERX_GITHUB_TOKEN -and $url -match 'github\.com') {
+        $url = $url -replace 'https://', "https://$($env:ETERX_GITHUB_TOKEN)@"
+    }
+
+    $staging = Join-Path ([IO.Path]::GetTempPath()) ("eterx-git-" + [Guid]::NewGuid().ToString('N'))
+    try {
+        Write-Step 'Downloading the complete EterX source with Git...'
+        & git clone --depth 1 --branch $Branch $url $staging
+        if ($LASTEXITCODE -ne 0 -or -not (Test-EterXSource $staging)) {
+            throw 'Git clone did not return a complete source tree.'
+        }
+        Copy-SourceToInstall $staging
+        return $true
+    } catch {
+        Write-Warn "Git download failed: $($_.Exception.Message)"
+        return $false
     } finally {
         Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 
-Write-Host ''
-Write-Host '  EterX Agent source setup' -ForegroundColor Magenta
-Write-Host '  For the one-click desktop app, use the EterX installer executable.' -ForegroundColor DarkGray
-Write-Host ''
+function Try-ArchiveDownload {
+    $staging = Join-Path ([IO.Path]::GetTempPath()) ("eterx-archive-" + [Guid]::NewGuid().ToString('N'))
+    $archive = Join-Path $staging 'eterx.zip'
+    try {
+        New-Item -ItemType Directory -Path $staging -Force | Out-Null
+        $headers = @{ 'User-Agent' = 'EterX-Installer' }
+        $url = Get-ArchiveUrl
 
-Ensure-Node
-Install-SourceArchive
-Set-Location -LiteralPath $InstallDir
-$hadEnv = Test-Path '.env.local'
+        # A token lets the same script fetch a private GitHub source archive.
+        # It is never printed or written to disk.
+        if ($env:ETERX_GITHUB_TOKEN) {
+            $apiUrl = Get-GitHubApiArchiveUrl
+            if ($apiUrl) { $url = $apiUrl }
+            $headers['Authorization'] = "Bearer $($env:ETERX_GITHUB_TOKEN)"
+            $headers['Accept'] = 'application/vnd.github+json'
+        }
 
-Write-Status 'Installing application dependencies and local workspace...'
-& node setup.js --auto --no-doctor
-if ($LASTEXITCODE -ne 0) { throw 'EterX setup failed. See .workspaces\setup.log for details.' }
+        Write-Step 'Downloading the complete EterX source archive...'
+        Invoke-WebRequest -Uri $url -Headers $headers -OutFile $archive -UseBasicParsing
+        Expand-Archive -LiteralPath $archive -DestinationPath $staging -Force
+        $source = Get-ChildItem -LiteralPath $staging -Directory |
+            Where-Object { Test-EterXSource $_.FullName } |
+            Select-Object -First 1
+        if (-not $source) { throw 'The source archive was downloaded but did not contain EterX.' }
+        Copy-SourceToInstall $source.FullName
+        return $true
+    } catch {
+        Write-Warn "Archive download failed: $($_.Exception.Message)"
+        return $false
+    } finally {
+        Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
 
-if (-not $hadEnv -and $env:ETERX_SKIP_API -ne '1') {
-    Write-Status 'Opening the optional API-key setup...'
-    & node setup.js --api
+function Install-Source {
+    if (Prepare-InstallDirectory) { return }
+    if (Try-GitDownload) { return }
+    if (Try-ArchiveDownload) { return }
+    throw 'EterX source could not be downloaded. Check internet access, repository visibility, or set ETERX_GITHUB_TOKEN for private access.'
+}
+
+function Invoke-EterXSetup {
+    Push-Location $InstallDir
+    try {
+        Write-Step 'Installing all EterX libraries and creating local storage...'
+        & node .\setup.js --auto --no-doctor
+        if ($LASTEXITCODE -eq 0) { return }
+
+        Write-Warn 'The normal installer failed. Running cache verification and a compatibility install...'
+        & npm cache verify
+        & npm install --legacy-peer-deps --force --no-audit --fund=false
+        if ($LASTEXITCODE -ne 0) { throw 'The compatibility npm install failed.' }
+        & npm rebuild
+        & node .\setup.js --auto --no-doctor
+        if ($LASTEXITCODE -ne 0) { throw 'EterX setup failed after all recovery attempts.' }
+    } finally {
+        Pop-Location
+    }
+}
+
+function Start-EterX {
+    if ($NoLaunch -or $env:ETERX_NO_LAUNCH -eq '1') {
+        Write-Good 'Installation complete. Launch skipped by request.'
+        return
+    }
+
+    Write-Step 'Launching EterX desktop...'
+    $node = (Get-Command node -ErrorAction Stop).Source
+    Start-Process -FilePath $node -ArgumentList @('eterx.js', 'desktop') -WorkingDirectory $InstallDir
+    Write-Good 'EterX is launching. Add your API key in Settings → API Keys if this is your first run.'
 }
 
 Write-Host ''
-Write-Host '  EterX source installation is ready.' -ForegroundColor Green
+Write-Host '  EterX — automatic source installer' -ForegroundColor Magenta
+Write-Host '  Source → dependencies → recovery → desktop launch' -ForegroundColor DarkGray
+Write-Host ''
+
+try {
+    Ensure-Node
+    Install-Source
+    Invoke-EterXSetup
+    Start-EterX
+} catch {
+    Write-Host "`n  [EterX] Installation could not finish: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host '  Keep this window open, fix the reported prerequisite, then run the same command again.' -ForegroundColor Yellow
+    throw
+}
