@@ -207,8 +207,14 @@ function Prepare-InstallDirectory {
                 Write-Warn "Git sync failed: $($_.Exception.Message)"
             }
         }
-        Write-Good "Using existing EterX source: $InstallDir"
-        return $true
+        Write-Step 'Existing non-Git installation detected. Updating source files to the latest version...'
+        if (Try-ArchiveDownload) {
+            Write-Good 'Source files successfully updated!'
+            return $true
+        } else {
+            Write-Warn 'Could not update source files; continuing with existing source.'
+            return $true
+        }
     }
 
     if (Test-Path $InstallDir) {
@@ -306,6 +312,11 @@ function Install-Source {
 function Invoke-EterXSetup {
     Push-Location $InstallDir
     try {
+        $nextCache = Join-Path $InstallDir '.next'
+        if (Test-Path $nextCache) {
+            Write-Step 'Clearing Next.js compilation cache...'
+            Remove-Item -Path $nextCache -Recurse -Force -ErrorAction SilentlyContinue
+        }
         Write-Step 'Installing all EterX libraries and creating local storage...'
         $env:NODE_NO_WARNINGS = '1'
         & node .\setup.js --auto --no-doctor
@@ -327,24 +338,49 @@ function Start-EterX {
     Write-Good 'EterX is launching. Add your API key in Settings → API Keys if this is your first run.'
 }
 
+$width = 80
+try {
+    if ($Host.UI.RawUI.WindowSize.Width) {
+        $width = $Host.UI.RawUI.WindowSize.Width
+    }
+} catch {}
+
 Write-Host ""
-Write-Host "                ███████╗████████╗███████╗██████╗ ██╗  ██╗" -ForegroundColor Cyan
-Write-Host "                ██╔════╝╚══██╔══╝██╔════╝██╔══██╗╚██╗██╔╝" -ForegroundColor Cyan
-Write-Host "                █████╗     ██║   █████╗  ██████╔╝ ╚███╔╝ " -ForegroundColor Cyan
-Write-Host "                ██╔══╝     ██║   ██╔══╝  ██╔══██╗ ██╔██╗ " -ForegroundColor Cyan
-Write-Host "                ███████╗   ██║   ███████╗██║  ██║██╔╝ ██╗" -ForegroundColor Cyan
-Write-Host "                ╚══════╝   ╚═╝   ╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝" -ForegroundColor Cyan
-Write-Host ""
-Write-Host "                    ⚡ The Autonomous AI Agent System" -ForegroundColor Magenta
-Write-Host "                    Built by Harshil Soni 💎" -ForegroundColor DarkGray
-Write-Host "  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Gray
+if ($width -ge 65) {
+    Write-Host "                ███████╗████████╗███████╗██████╗ ██╗  ██╗" -ForegroundColor Cyan
+    Write-Host "                ██╔════╝╚══██╔══╝██╔════╝██╔══██╗╚██╗██╔╝" -ForegroundColor Cyan
+    Write-Host "                █████╗     ██║   █████╗  ██████╔╝ ╚███╔╝ " -ForegroundColor Cyan
+    Write-Host "                ██╔══╝     ██║   ██╔══╝  ██╔══██╗ ██╔██╗ " -ForegroundColor Cyan
+    Write-Host "                ███████╗   ██║   ███████╗██║  ██║██╔╝ ██╗" -ForegroundColor Cyan
+    Write-Host "                ╚══════╝   ╚═╝   ╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "                    The Autonomous AI Agent" -ForegroundColor Magenta
+    Write-Host "                    ✦ Built by Harshil Soni" -ForegroundColor Gray
+} elseif ($width -ge 52) {
+    Write-Host "  ███████╗████████╗███████╗██████╗ ██╗  ██╗" -ForegroundColor Cyan
+    Write-Host "  ██╔════╝╚══██╔══╝██╔════╝██╔══██╗╚██╗██╔╝" -ForegroundColor Cyan
+    Write-Host "  █████╗     ██║   █████╗  ██████╔╝ ╚███╔╝ " -ForegroundColor Cyan
+    Write-Host "  ██╔══╝     ██║   ██╔══╝  ██╔══██╗ ██╔██╗ " -ForegroundColor Cyan
+    Write-Host "  ███████╗   ██║   ███████╗██║  ██║██╔╝ ██╗" -ForegroundColor Cyan
+    Write-Host "  ╚══════╝   ╚═╝   ╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "    The Autonomous AI Agent" -ForegroundColor Magenta
+    Write-Host "    ✦ Built by Harshil Soni" -ForegroundColor Gray
+} else {
+    Write-Host "  EterX Agent" -ForegroundColor Cyan
+    Write-Host "  The Autonomous AI Agent" -ForegroundColor Magenta
+    Write-Host "  ✦ Built by Harshil Soni" -ForegroundColor Gray
+}
+$sepLen = [Math]::Min($width - 4, 60)
+if ($sepLen -lt 10) { $sepLen = 10 }
+Write-Host "  $('━' * $sepLen)" -ForegroundColor Gray
 Write-Host "  Destination Path : $InstallDir" -ForegroundColor Yellow
 Write-Host "  Required Modules :" -ForegroundColor Gray
 Write-Host "    - Core Engine & Local Workspace Storage" -ForegroundColor DarkGray
 Write-Host "    - Next.js & React UI Modules" -ForegroundColor DarkGray
 Write-Host "    - Electron Native Windows Wrapper" -ForegroundColor DarkGray
 Write-Host "    - Gemini & Universal AI Provider Router" -ForegroundColor DarkGray
-Write-Host "  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Gray
+Write-Host "  $('━' * $sepLen)" -ForegroundColor Gray
 Write-Host ""
 
 try {

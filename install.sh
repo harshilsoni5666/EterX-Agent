@@ -291,6 +291,10 @@ install_source() {
 
 run_setup() {
   cd "$INSTALL_DIR" || return 1
+  if [ -d "$INSTALL_DIR/.next" ]; then
+    step 'Clearing Next.js compilation cache...'
+    rm -rf "$INSTALL_DIR/.next"
+  fi
   step 'Installing all EterX libraries and initializing local storage...'
   NODE_NO_WARNINGS=1 node ./setup.js --auto --no-doctor
 }
@@ -308,24 +312,61 @@ launch_eterx() {
   good 'EterX is launching. Add your API key in Settings → API Keys if this is your first run.'
 }
 
-printf '\033[0;36m'
-printf '                ███████╗████████╗███████╗██████╗ ██╗  ██╗\n'
-printf '                ██╔════╝╚══██╔══╝██╔════╝██╔══██╗╚██╗██╔╝\n'
-printf '                █████╗     ██║   █████╗  ██████╔╝ ╚███╔╝ \n'
-printf '                ██╔══╝     ██║   ██╔══╝  ██╔══██╗ ██╔██╗ \n'
-printf '                ███████╗   ██║   ███████╗██║  ██║██╔╝ ██╗\n'
-printf '                ╚══════╝   ╚═╝   ╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝\n'
-printf '\033[0m'
-printf '\n                    \033[0;35m⚡ The Autonomous AI Agent System\033[0m\n'
-printf '                    \033[0;90mBuilt by Harshil Soni 💎\033[0m\n'
-printf '  \033[0;90m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n'
+cols=$(tput cols 2>/dev/null || echo 80)
+if [ "$cols" -ge 65 ]; then
+  printf '\033[0;36m'
+  printf '                ███████╗████████╗███████╗██████╗ ██╗  ██╗\n'
+  printf '                ██╔════╝╚══██╔══╝██╔════╝██╔══██╗╚██╗██╔╝\n'
+  printf '                █████╗     ██║   █████╗  ██████╔╝ ╚███╔╝ \n'
+  printf '                ██╔══╝     ██║   ██╔══╝  ██╔══██╗ ██╔██╗ \n'
+  printf '                ███████╗   ██║   ███████╗██║  ██║██╔╝ ██╗\n'
+  printf '                ╚══════╝   ╚═╝   ╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝\n'
+  printf '\033[0m'
+  printf '\n                    \033[0;35mThe Autonomous AI Agent\033[0m\n'
+  printf '                    \033[0;90m✦ Built by\033[0m \033[1;37mHarshil Soni\033[0m\n'
+elif [ "$cols" -ge 52 ]; then
+  printf '\033[0;36m'
+  printf '  ███████╗████████╗███████╗██████╗ ██╗  ██╗\n'
+  printf '  ██╔════╝╚══██╔══╝██╔════╝██╔══██╗╚██╗██╔╝\n'
+  printf '  █████╗     ██║   █████╗  ██████╔╝ ╚███╔╝ \n'
+  printf '  ██╔══╝     ██║   ██╔══╝  ██╔══██╗ ██╔██╗ \n'
+  printf '  ███████╗   ██║   ███████╗██║  ██║██╔╝ ██╗\n'
+  printf '  ╚══════╝   ╚═╝   ╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝\n'
+  printf '\033[0m'
+  printf '\n    \033[0;35mThe Autonomous AI Agent\033[0m\n'
+  printf '    \033[0;90m✦ Built by\033[0m \033[1;37mHarshil Soni\033[0m\n'
+else
+  printf '  \033[0;36mEterX Agent\033[0m\n'
+  printf '  \033[0;35mThe Autonomous AI Agent\033[0m\n'
+  printf '  \033[0;90m✦ Built by\033[0m \033[1;37mHarshil Soni\033[0m\n'
+fi
+
+# Dynamically size the separators
+sep_len=$((cols - 4))
+if [ "$sep_len" -gt 60 ]; then
+  sep_len=60
+elif [ "$sep_len" -lt 10 ]; then
+  sep_len=10
+fi
+
+sep_bar=""
+i=1
+while [ "$i" -le "$sep_len" ] 2>/dev/null; do
+  sep_bar="${sep_bar}━"
+  i=$((i + 1))
+done
+if [ -z "$sep_bar" ]; then
+  sep_bar="━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+fi
+
+printf '  \033[0;90m%s\033[0m\n' "$sep_bar"
 printf '  \033[0;33mDestination Path :\033[0m %s\n' "$INSTALL_DIR"
 printf '  \033[0;90mRequired Modules :\033[0m\n'
 printf '    - Core Engine & Local Workspace Storage\n'
 printf '    - Next.js & React UI Modules\n'
 printf '    - Electron Native Windows Wrapper\n'
 printf '    - Gemini & Universal AI Provider Router\n'
-printf '  \033[0;90m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n\n'
+printf '  \033[0;90m%s\033[0m\n\n' "$sep_bar"
 
 ensure_node && install_source && run_setup && launch_eterx || {
   fail 'Installation could not finish. Fix the reported prerequisite, then run the same command again.'
