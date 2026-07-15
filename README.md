@@ -14,7 +14,7 @@
   <img src="https://img.shields.io/badge/Tools-80%2B%20Native%20Tools-green" alt="Tools">
 </p>
 
-
+> 📖 Looking for setup instructions? Check out the **[Install Guide](INSTALL.md)**. For security policies, see **[SECURITY.md](SECURITY.md)**.
 
 ## About EterX Agent
 
