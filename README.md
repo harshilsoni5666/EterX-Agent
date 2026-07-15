@@ -16,6 +16,24 @@
 
 
 
+## Installation
+
+The fastest way to get EterX running is through the bootstrap installer. It handles everything — downloading the source, installing dependencies, and starting the agent.
+
+**Windows (PowerShell)**
+```powershell
+powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/harshilsoni5666/EterX-Agent/main/install.ps1 | iex"
+```
+
+**Linux & macOS (Bash)**
+```bash
+curl -sSL "https://raw.githubusercontent.com/harshilsoni5666/EterX-Agent/main/install.sh" | bash
+```
+
+For development builds, desktop packaging, post-install API setup, and data directory details, see the [Install Guide](./INSTALL.md).
+
+---
+
 ## About EterX Agent
 
 EterX is an autonomous agent platform that plans, runs tasks, and operates your computer locally. It takes high-level goals, breaks them down into clear steps, and executes them using specialized tools and helper agents.
