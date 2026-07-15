@@ -1,13 +1,6 @@
 # EterX-Agent
 
-<p align="center">
-  <a href="./README.md">README</a> &nbsp;•&nbsp;
-  <a href="./INSTALL.md">Install</a> &nbsp;•&nbsp;
-  <b>Security</b> &nbsp;•&nbsp;
-  <a href="./LICENSE">License</a>
-</p>
 
----
 
 ## Security Policy
 
