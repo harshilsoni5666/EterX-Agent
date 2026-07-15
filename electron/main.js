@@ -1,7 +1,15 @@
 const path = require('path');
 const fs = require('fs');
 const net = require('net');
+const crypto = require('crypto');
 const { spawn } = require('child_process');
+
+function logToFile(msg) {
+  try {
+    const logPath = path.join(app.getPath('userData'), 'eterx-desktop.log');
+    fs.appendFileSync(logPath, `[${new Date().toISOString()}] ${msg}\n`, 'utf8');
+  } catch (e) {}
+}
 
 // Attempt to read Google API Key from Next.js local environment variables to unlock Chromium's Speech Engine
 try {
@@ -21,17 +29,27 @@ try {
 
 const http = require('http');
 const https = require('https');
-const { app, BrowserWindow, ipcMain, dialog, shell, screen, Menu } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, screen, Menu, nativeImage, safeStorage } = require('electron');
 // Disable HTTP Cache globally in development to prevent aggressive cache storage of stylesheets and scripts
 app.commandLine.appendSwitch('disable-http-cache');
 app.setName('EterX');
-app.setAppUserModelId('EterX');
+app.setAppUserModelId('com.eterx.agent');
+
+// Keep installed-app state out of the source folder, Desktop, and roaming
+// profile. Local AppData is the standard Windows location for machine-local
+// runtime copies, logs, cache, encrypted credentials, and agent work data.
+const LEGACY_USER_DATA_PATH = app.getPath('userData');
+if (process.platform === 'win32' && process.env.LOCALAPPDATA) {
+  const localUserData = path.join(process.env.LOCALAPPDATA, 'EterX');
+  app.setPath('userData', localUserData);
+  app.setPath('sessionData', path.join(localUserData, 'session'));
+}
 Menu.setApplicationMenu(null);
 
 let mainWindow;
 let petWindow;
 let latestPetStatus = null;
-const DEFAULT_BOOT_TIMEOUT_MS = 120000;
+const DEFAULT_BOOT_TIMEOUT_MS = 45000;
 const MIN_SPLASH_MS = 3600;
 const DEFAULT_PET_WINDOW_SIZE = 'normal';
 const PET_WINDOW_SIZES = {
@@ -41,6 +59,7 @@ const PET_WINDOW_SIZES = {
 };
 let activeBootId = 0;
 let bootRetryTimer = null;
+let bootFailureCount = 0;
 
 // A production install contains the Next.js standalone server as an application
 // resource.  It is copied to userData once per app version before launch so the
@@ -52,9 +71,43 @@ let packagedServerUrl = null;
 let isQuitting = false;
 
 const APP_ICON_PATH = app.isPackaged
-  ? path.join(process.resourcesPath, 'runtime', 'public', 'logo.png')
+  ? path.join(process.resourcesPath, 'icon.ico')
   : path.join(__dirname, '../public/logo.png');
 const NATIVE_THEME_FILE = 'eterx-native-theme.json';
+const SECURE_RUNTIME_SETTINGS_FILE = 'eterx-runtime-settings.bin';
+const SECURE_RUNTIME_SETTINGS_PROVIDERS = new Set([
+  'gemini', 'mistral', 'openrouter', 'anthropic', 'openai', 'groq', 'tavily', 'github',
+]);
+const SECURE_RUNTIME_MODEL_PROVIDERS = new Set([
+  'gemini', 'mistral', 'openrouter', 'anthropic', 'openai', 'groq',
+]);
+const DESKTOP_RUNTIME_SETTING_ENV_KEYS = new Set([
+  'GEMINI_API_KEY',
+  'MISTRAL_API_KEY',
+  'MISTRAL_AI_API_KEY',
+  'MISTRALAI_API_KEY',
+  'OPENROUTER_API_KEY',
+  'VITE_OPENROUTER_API_KEY',
+  'ANTHROPIC_API_KEY',
+  'OPENAI_API_KEY',
+  'GROQ_API_KEY',
+  'TAVILY_API_KEY',
+  'VITE_TAVILY_API_KEY',
+  'GITHUB_TOKEN',
+  'ETERX_THINK_MODEL',
+  'GEMINI_THINK_MODEL',
+  'MISTRAL_MODEL',
+  'MISTRAL_MODEL_NAME',
+  'OPENAI_MODEL',
+  'OPENAI_MODEL_NAME',
+  'OPENROUTER_MODEL',
+  'OPENROUTER_MODEL_NAME',
+  'ANTHROPIC_MODEL',
+  'ANTHROPIC_MODEL_NAME',
+  'CLAUDE_MODEL',
+  'GROQ_MODEL',
+  'GROQ_MODEL_NAME',
+]);
 const NATIVE_FRAME_HEIGHT = 38;
 const nativeThemedWindows = new Set();
 
@@ -64,6 +117,158 @@ function normalizeNativeTheme(theme) {
 
 function nativeThemePath() {
   return path.join(app.getPath('userData'), NATIVE_THEME_FILE);
+}
+
+function getSplashIconDataUrl() {
+  try {
+    const icon = nativeImage.createFromPath(APP_ICON_PATH);
+    return icon.isEmpty() ? '' : icon.toDataURL();
+  } catch {
+    return '';
+  }
+}
+
+function secureRuntimeSettingsPath() {
+  return path.join(app.getPath('userData'), SECURE_RUNTIME_SETTINGS_FILE);
+}
+
+function secureStorageAvailable() {
+  try {
+    return safeStorage.isEncryptionAvailable();
+  } catch {
+    return false;
+  }
+}
+
+function normalizeSecureRuntimeSettings(raw) {
+  const source = raw && typeof raw === 'object' ? raw : {};
+  const apiKeys = {};
+  const modelOverrides = {};
+
+  for (const [provider, value] of Object.entries(source.apiKeys || {})) {
+    if (!SECURE_RUNTIME_SETTINGS_PROVIDERS.has(provider) || typeof value !== 'string') continue;
+    const key = value.trim();
+    if (key && key.length <= 40_000) apiKeys[provider] = key;
+  }
+
+  for (const [provider, value] of Object.entries(source.modelOverrides || {})) {
+    if (!SECURE_RUNTIME_MODEL_PROVIDERS.has(provider) || typeof value !== 'string') continue;
+    const model = value.trim();
+    if (model && model.length <= 220 && !/[\r\n\t]/.test(model)) modelOverrides[provider] = model;
+  }
+
+  return { apiKeys, modelOverrides };
+}
+
+function readSecureRuntimeSettings() {
+  if (!secureStorageAvailable()) return { available: false, apiKeys: {}, modelOverrides: {} };
+
+  try {
+    const encrypted = fs.readFileSync(secureRuntimeSettingsPath());
+    const decoded = safeStorage.decryptString(encrypted);
+    return { available: true, ...normalizeSecureRuntimeSettings(JSON.parse(decoded)) };
+  } catch {
+    return { available: true, apiKeys: {}, modelOverrides: {} };
+  }
+}
+
+function writeSecureRuntimeSettings(raw) {
+  if (!secureStorageAvailable()) {
+    return { ok: false, available: false, error: 'OS secure storage is unavailable.' };
+  }
+
+  const settings = normalizeSecureRuntimeSettings(raw);
+  const serialized = JSON.stringify(settings);
+  const target = secureRuntimeSettingsPath();
+  const temporary = `${target}.tmp-${process.pid}`;
+
+  try {
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(temporary, safeStorage.encryptString(serialized), { mode: 0o600 });
+    fs.rmSync(target, { force: true });
+    fs.renameSync(temporary, target);
+    return { ok: true, available: true, ...settings };
+  } catch (error) {
+    try { fs.rmSync(temporary, { force: true }); } catch {}
+    return { ok: false, available: true, error: error?.message || 'Failed to save secure settings.' };
+  }
+}
+
+function clearSecureRuntimeSettings() {
+  try {
+    fs.rmSync(secureRuntimeSettingsPath(), { force: true });
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: error?.message || 'Failed to clear secure settings.' };
+  }
+}
+
+function secureRuntimeSettingsEnvironment(settings) {
+  const providerEnvironment = {
+    gemini: 'GEMINI_API_KEY',
+    mistral: 'MISTRAL_API_KEY',
+    openrouter: 'OPENROUTER_API_KEY',
+    anthropic: 'ANTHROPIC_API_KEY',
+    openai: 'OPENAI_API_KEY',
+    groq: 'GROQ_API_KEY',
+    tavily: 'TAVILY_API_KEY',
+    github: 'GITHUB_TOKEN',
+  };
+  const modelEnvironment = {
+    gemini: 'ETERX_THINK_MODEL',
+    mistral: 'MISTRAL_MODEL',
+    openrouter: 'OPENROUTER_MODEL',
+    anthropic: 'ANTHROPIC_MODEL',
+    openai: 'OPENAI_MODEL',
+    groq: 'GROQ_MODEL',
+  };
+  const env = {};
+
+  for (const [provider, key] of Object.entries(settings.apiKeys || {})) {
+    const name = providerEnvironment[provider];
+    if (name && key) env[name] = key;
+  }
+  for (const [provider, model] of Object.entries(settings.modelOverrides || {})) {
+    const name = modelEnvironment[provider];
+    if (name && model) env[name] = model;
+  }
+
+  return env;
+}
+
+function removeDesktopRuntimeSettingEnvironment(env) {
+  for (const name of Object.keys(env)) {
+    const normalized = name.toUpperCase();
+    const baseName = normalized.replace(/_\d+$/, '');
+    if (DESKTOP_RUNTIME_SETTING_ENV_KEYS.has(normalized) || DESKTOP_RUNTIME_SETTING_ENV_KEYS.has(baseName)) {
+      delete env[name];
+    }
+  }
+  return env;
+}
+
+function migrateLegacyUserData() {
+  if (process.platform !== 'win32') return;
+
+  const currentUserData = app.getPath('userData');
+  if (!LEGACY_USER_DATA_PATH || path.resolve(LEGACY_USER_DATA_PATH) === path.resolve(currentUserData)) return;
+  if (!fs.existsSync(LEGACY_USER_DATA_PATH)) return;
+
+  // Migrate only durable user-owned state. The old runtime and browser cache
+  // are deliberately excluded so a new install always starts from its own
+  // verified packaged resources.
+  const candidates = ['data', NATIVE_THEME_FILE, SECURE_RUNTIME_SETTINGS_FILE];
+  for (const name of candidates) {
+    const source = path.join(LEGACY_USER_DATA_PATH, name);
+    const destination = path.join(currentUserData, name);
+    if (!fs.existsSync(source) || fs.existsSync(destination)) continue;
+    try {
+      fs.mkdirSync(path.dirname(destination), { recursive: true });
+      fs.cpSync(source, destination, { recursive: true, force: false, dereference: true });
+    } catch (error) {
+      console.warn(`[EterX] Could not migrate legacy ${name}:`, error?.message || error);
+    }
+  }
 }
 
 function readNativeTheme() {
@@ -511,6 +716,27 @@ function linkRuntimeDataDirectory(runtimeRoot, dataRoot, name) {
   }
 }
 
+function getPackagedRuntimeSignature(sourceRoot) {
+  const hash = crypto.createHash('sha256');
+  const signatureFiles = [
+    path.join(sourceRoot, 'server.js'),
+    path.join(sourceRoot, '.next', 'BUILD_ID'),
+    path.join(sourceRoot, '.next', 'server', 'app-paths-manifest.json'),
+  ];
+
+  for (const file of signatureFiles) {
+    try {
+      hash.update(file);
+      hash.update(fs.readFileSync(file));
+    } catch {
+      // A missing optional build file still produces a stable signature from
+      // the remaining runtime contents.
+    }
+  }
+
+  return `${app.getVersion()}:${hash.digest('hex')}`;
+}
+
 function preparePackagedRuntime() {
   if (!app.isPackaged) return null;
   if (packagedRuntimeRoot && fs.existsSync(packagedRuntimeRoot)) return packagedRuntimeRoot;
@@ -524,7 +750,7 @@ function preparePackagedRuntime() {
   const version = String(app.getVersion() || '0.0.0').replace(/[^a-zA-Z0-9._-]/g, '_');
   const runtimeRoot = path.join(app.getPath('userData'), 'runtime', version);
   const markerPath = path.join(runtimeRoot, '.eterx-runtime-version');
-  const marker = `${version}\n`;
+  const marker = `${getPackagedRuntimeSignature(sourceRoot)}\n`;
 
   if (!fs.existsSync(path.join(runtimeRoot, 'server.js')) || !fs.existsSync(markerPath) || fs.readFileSync(markerPath, 'utf8') !== marker) {
     const stagingRoot = `${runtimeRoot}.staging-${process.pid}-${Date.now()}`;
@@ -551,7 +777,8 @@ async function startPackagedServer() {
   const startPort = Number(process.env.ETERX_PORT || process.env.PORT || 3000);
   const port = await findAvailablePort(Number.isInteger(startPort) && startPort > 0 ? startPort : 3000);
   const persistentEnv = readEnvFile(path.join(app.getPath('userData'), 'data', '.env.local'));
-  const env = {
+  const secureSettings = readSecureRuntimeSettings();
+  const env = removeDesktopRuntimeSettingEnvironment({
     ...process.env,
     ...persistentEnv,
     ELECTRON_RUN_AS_NODE: '1',
@@ -561,7 +788,8 @@ async function startPackagedServer() {
     ETERX_PORT: String(port),
     ETERX_APP_ROOT: runtimeRoot,
     ETERX_DATA_DIR: path.join(app.getPath('userData'), 'data'),
-  };
+  });
+  Object.assign(env, secureRuntimeSettingsEnvironment(secureSettings));
 
   packagedServerUrl = `http://127.0.0.1:${port}`;
   packagedServer = spawn(process.execPath, [path.join(runtimeRoot, 'server.js')], {
@@ -571,15 +799,28 @@ async function startPackagedServer() {
     windowsHide: true,
   });
 
-  packagedServer.stdout.on('data', (chunk) => console.log(`[EterX server] ${String(chunk).trim()}`));
+  packagedServer.stdout.on('data', (chunk) => {
+    const message = String(chunk).trim();
+    console.log(`[EterX server] ${message}`);
+    logToFile(`[EterX server] ${message}`);
+  });
   packagedServer.stderr.on('data', (chunk) => {
     const message = String(chunk).trim();
-    if (message) console.error(`[EterX server] ${message}`);
+    if (message) {
+      console.error(`[EterX server] ${message}`);
+      logToFile(`[EterX server ERR] ${message}`);
+    }
   });
-  packagedServer.once('error', (error) => console.error('[EterX] Bundled server failed to start:', error));
+  packagedServer.once('error', (error) => {
+    console.error('[EterX] Bundled server failed to start:', error);
+    logToFile(`[EterX] Bundled server failed to start: ${error.message || error}`);
+  });
   packagedServer.once('exit', (code, signal) => {
-    if (!isQuitting) console.error(`[EterX] Bundled server exited (${code ?? 'unknown'}${signal ? `, ${signal}` : ''}).`);
+    const exitMsg = `Bundled server exited (${code ?? 'unknown'}${signal ? `, ${signal}` : ''}).`;
+    if (!isQuitting) console.error(`[EterX] ${exitMsg}`);
+    logToFile(`[EterX] ${exitMsg}`);
     packagedServer = null;
+    packagedServerUrl = null;
   });
 
   return packagedServerUrl;
@@ -589,6 +830,7 @@ function stopPackagedServer() {
   if (!packagedServer || packagedServer.killed) return;
   try { packagedServer.kill(); } catch {}
   packagedServer = null;
+  packagedServerUrl = null;
 }
 
 function isHttpTarget(target) {
@@ -622,6 +864,9 @@ async function waitForHttpTarget(target) {
 
   while (Date.now() - start < timeoutMs) {
     if (await requestTarget(target)) return;
+    if (app.isPackaged && !process.env.ELECTRON_URL && !packagedServer) {
+      throw new Error('The bundled EterX runtime stopped before it became ready.');
+    }
     await delay(450);
   }
 
@@ -713,7 +958,7 @@ async function showSplashScreen() {
 
   applySplashWindowTheme(theme);
   await mainWindow.loadFile(path.join(__dirname, 'splash.html'), {
-    query: { theme },
+    query: { theme, icon: getSplashIconDataUrl() },
   });
   if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
     mainWindow.show();
@@ -879,7 +1124,6 @@ function closePetWindow() {
 
 async function bootApp(options = {}) {
   const { showSplash = false, retryOnFailure = false } = options;
-  const target = getAppTarget();
   const startedAt = Date.now();
   const bootId = ++activeBootId;
 
@@ -889,6 +1133,12 @@ async function bootApp(options = {}) {
     if (showSplash) {
       await showSplashScreen();
     }
+
+    if (app.isPackaged && !process.env.ELECTRON_URL && (!packagedServer || packagedServer.killed)) {
+      await startPackagedServer();
+    }
+
+    const target = getAppTarget();
 
     if (isHttpTarget(target)) {
       await waitForHttpTarget(target);
@@ -903,10 +1153,13 @@ async function bootApp(options = {}) {
       await playSplashExit();
       applyNativeWindowTheme(readNativeTheme());
       await mainWindow.loadURL(target);
+      bootFailureCount = 0;
     }
   } catch (error) {
     console.error('[EterX] Startup failed:', error);
-    if (retryOnFailure && isHttpTarget(target)) {
+    bootFailureCount += 1;
+    const target = getAppTarget();
+    if (retryOnFailure && isHttpTarget(target) && bootFailureCount < 3) {
       await showSplashScreen().catch(() => {});
       scheduleBootRetry(1200);
       return;
@@ -941,6 +1194,12 @@ function createWindow() {
     }
   });
   registerNativeThemedWindow(mainWindow);
+  mainWindow.webContents.on('before-input-event', (event, input) => {
+    if ((input.control && input.shift && input.key.toLowerCase() === 'i') || input.key === 'F12') {
+      mainWindow.webContents.toggleDevTools();
+      event.preventDefault();
+    }
+  });
   mainWindow.setMenuBarVisibility(false);
   mainWindow.setAutoHideMenuBar(true);
 
@@ -1135,6 +1394,15 @@ ipcMain.on('native-theme-set', (_event, theme) => {
   applyNativeWindowTheme(theme);
 });
 
+// API keys are kept out of the browser-origin localStorage when running as a
+// desktop app. Electron encrypts this payload with the operating system's
+// credential store, then injects it into the local runtime on the next launch.
+ipcMain.handle('secure-runtime-settings-get', () => readSecureRuntimeSettings());
+
+ipcMain.handle('secure-runtime-settings-save', (_event, settings) => writeSecureRuntimeSettings(settings));
+
+ipcMain.handle('secure-runtime-settings-clear', () => clearSecureRuntimeSettings());
+
 ipcMain.handle('pet-window-open', async (_event, status) => {
   await openPetWindow(status);
 });
@@ -1160,6 +1428,8 @@ ipcMain.on('pet-reply', (_event, message) => {
 app.on('ready', async () => {
   const { session } = require('electron');
   Menu.setApplicationMenu(null);
+
+  migrateLegacyUserData();
   
   session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
     const allowedPermissions = ['media', 'microphone', 'audioCapture', 'notifications'];

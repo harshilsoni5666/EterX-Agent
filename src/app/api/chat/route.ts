@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { agentRegistry } from '../../../lib/agent/agent-registry';
-import { normalizeMainAgentMode, normalizeMainAgentThinkingLevel } from '../../../lib/agent/model-routing';
+import { getMainAgentModelConfig, normalizeMainAgentMode, normalizeModelThinkingCapabilities, normalizeThinkingLevelForModel } from '../../../lib/agent/model-routing';
 import {
   buildAgentBuilderPinnedContext,
   buildAgentBuilderUserRequest,
@@ -63,6 +63,7 @@ export async function POST(req: NextRequest) {
       projectId = 'default_project', 
       mode = 'think', 
       thinkingLevel = 'low',
+      modelThinkingCapability = null,
       pinnedContext = null, 
       userName = 'Developer',
       apiKeys = null,
@@ -88,13 +89,20 @@ export async function POST(req: NextRequest) {
     }
 
     const safeMode = normalizeMainAgentMode(mode);
-    const safeThinkingLevel = normalizeMainAgentThinkingLevel(thinkingLevel);
     const safeUserId = cleanString(userId, 120) || 'default_user';
     const safeUserName = cleanString(userName, 120) || 'Developer';
     const safePinnedContext = pinnedContext && typeof pinnedContext === 'object' && !Array.isArray(pinnedContext)
       ? pinnedContext
       : {};
     const runtimeSettings = buildScopedRuntimeSettings(apiKeys, modelOverrides);
+    const selectedModelConfig = getMainAgentModelConfig(safeMode, runtimeSettings);
+    const safeModelThinkingCapability = normalizeModelThinkingCapabilities(modelThinkingCapability);
+    const safeThinkingLevel = normalizeThinkingLevelForModel(
+      thinkingLevel,
+      selectedModelConfig.provider,
+      selectedModelConfig.modelName,
+      safeModelThinkingCapability,
+    );
     const isBuilderChat = isAgentBuilderChatId(chatId);
     const builderAgentId = isBuilderChat ? getAgentIdFromBuilderChatId(chatId) : '';
     const selectedRuntimeId = typeof customAgentId === 'string' ? customAgentId.trim() : '';
@@ -102,6 +110,7 @@ export async function POST(req: NextRequest) {
     let effectivePinnedContext: Record<string, any> = {
       ...(isBuilderChat ? buildAgentBuilderPinnedContext(chatId, safePinnedContext) : safePinnedContext),
       thinkingLevel: safeThinkingLevel,
+      ...(safeModelThinkingCapability ? { modelThinkingCapability: safeModelThinkingCapability } : {}),
       agentSessionId: session.sessionId,
       runLocation: typeof runLocation === 'string' ? runLocation : 'local',
     };

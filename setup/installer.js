@@ -177,7 +177,7 @@ async function installDependencies(projectRoot) {
     ];
 
   console.log();
-  console.log(`  ${c.bold}${c.brightMagenta}Installing Libraries (Real-time Packages Download):${c.reset}`);
+  console.log(`  ${c.bold}${c.brightMagenta}Installing Libraries:${c.reset}`);
   packages.forEach(p => {
     p.status = 'pending';
     p.pct = 0;

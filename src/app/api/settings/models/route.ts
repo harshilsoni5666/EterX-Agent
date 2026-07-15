@@ -5,6 +5,10 @@ import {
   getRuntimeApiKey,
   type RuntimeApiKeyProvider,
 } from '../../../../lib/agent/runtime-api-keys';
+import {
+  normalizeModelThinkingCapabilities,
+  type ModelThinkingCapabilities,
+} from '../../../../lib/agent/model-routing';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -17,6 +21,7 @@ type ProviderModel = {
   inputTokenLimit?: number;
   outputTokenLimit?: number;
   capabilities?: string[];
+  thinking?: ModelThinkingCapabilities;
 };
 
 type ProviderModelResult = {
@@ -46,6 +51,27 @@ const withTimeout = async <T,>(promise: Promise<T>, ms = MODEL_FETCH_TIMEOUT_MS)
 const trimModels = (models: ProviderModel[]) =>
   models
     .filter(model => model.id);
+
+/** Normalize live model metadata without assuming a provider-specific schema. */
+const readThinkingCapabilities = (model: any, parameter: ModelThinkingCapabilities['parameter']) => {
+  const reasoning = model?.reasoning || model?.capabilities?.reasoning || {};
+  const thinking = model?.thinking || model?.thinkingConfig || model?.capabilities?.thinking || {};
+  return normalizeModelThinkingCapabilities({
+    levels: reasoning.supported_efforts
+      || reasoning.supportedEfforts
+      || thinking.supported_levels
+      || thinking.supportedLevels
+      || thinking.supported_thinking_levels
+      || model?.supported_reasoning_efforts
+      || model?.supportedThinkingLevels,
+    defaultLevel: reasoning.default_effort
+      || reasoning.defaultEffort
+      || thinking.default_level
+      || thinking.defaultLevel
+      || model?.default_reasoning_effort,
+    parameter,
+  });
+};
 
 const providerError = (provider: RuntimeApiKeyProvider, error: unknown): ProviderModelResult => ({
   provider,
@@ -77,6 +103,7 @@ async function fetchGeminiModels(): Promise<ProviderModelResult> {
           ...(model.supportedGenerationMethods || []),
           model.thinking ? 'thinking' : undefined,
         ].filter(Boolean),
+        thinking: readThinkingCapabilities(model, 'thinkingLevel') || undefined,
       })));
     return { provider: 'gemini', connected: true, source: 'live', models };
   } catch (error) {
@@ -100,6 +127,7 @@ async function fetchOpenAIModels(): Promise<ProviderModelResult> {
         id: String(model.id || ''),
         name: String(model.id || ''),
         description: model.owned_by ? `Owned by ${ model.owned_by }` : undefined,
+        thinking: readThinkingCapabilities(model, 'reasoning_effort') || undefined,
       }))
       .sort((a: ProviderModel, b: ProviderModel) => a.id.localeCompare(b.id)));
     return { provider: 'openai', connected: true, source: 'live', models };
@@ -131,6 +159,7 @@ async function fetchOpenRouterModels(): Promise<ProviderModelResult> {
         model.architecture?.instruct_type,
         ...(model.supported_parameters || []),
       ].filter(Boolean),
+      thinking: readThinkingCapabilities(model, 'reasoning') || undefined,
     })));
     return { provider: 'openrouter', connected: true, source: 'live', models };
   } catch (error) {
@@ -158,6 +187,7 @@ async function fetchGroqModels(): Promise<ProviderModelResult> {
         name: String(model.id || ''),
         description: model.owned_by ? `Owned by ${ model.owned_by }` : undefined,
         contextLength: model.context_window,
+        thinking: readThinkingCapabilities(model, 'reasoning_effort') || undefined,
       }))
       .sort((a: ProviderModel, b: ProviderModel) => a.id.localeCompare(b.id)));
     return { provider: 'groq', connected: true, source: 'live', models };
@@ -181,9 +211,10 @@ async function fetchMistralModels(): Promise<ProviderModelResult> {
       id: String(model.id || ''),
       name: model.name || model.id,
       description: model.description,
-      capabilities: Object.entries(model.capabilities || {})
-        .filter(([, enabled]) => Boolean(enabled))
-        .map(([name]) => name),
+        capabilities: Object.entries(model.capabilities || {})
+          .filter(([, enabled]) => Boolean(enabled))
+          .map(([name]) => name),
+        thinking: readThinkingCapabilities(model, 'reasoning_effort') || undefined,
     })));
     return { provider: 'mistral', connected: true, source: 'live', models };
   } catch (error) {
@@ -211,7 +242,8 @@ async function fetchAnthropicModels(): Promise<ProviderModelResult> {
       description: [
         model.type ? `Type: ${ model.type }` : undefined,
         model.created_at ? `Created ${ model.created_at }` : undefined,
-      ].filter(Boolean).join(' | ') || undefined,
+        ].filter(Boolean).join(' | ') || undefined,
+        thinking: readThinkingCapabilities(model, 'output_config.effort') || undefined,
     })));
     return { provider: 'anthropic', connected: true, source: 'live', models };
   } catch (error) {

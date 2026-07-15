@@ -147,9 +147,9 @@ function createStartMenuEntry(projectRoot) {
 
       const batPath = path.join(projectRoot, 'EterX.bat');
       const shortcutPath = path.join(menuDir, 'EterX Agent.lnk');
-      const iconPath = path.join(projectRoot, 'public', 'logo.png');
+      const iconPath = path.join(projectRoot, 'public', 'icon.ico');
 
-      const ps = `$s=(New-Object -COM WScript.Shell).CreateShortcut('${shortcutPath.replace(/'/g, "''")}');$s.TargetPath='${batPath.replace(/'/g, "''")}';$s.WorkingDirectory='${projectRoot.replace(/'/g, "''")}';$s.Description='EterX AI Agent';$s.Save()`;
+      const ps = `$s=(New-Object -COM WScript.Shell).CreateShortcut('${shortcutPath.replace(/'/g, "''")}');$s.TargetPath='${batPath.replace(/'/g, "''")}';$s.WorkingDirectory='${projectRoot.replace(/'/g, "''")}';$s.IconLocation='${iconPath.replace(/'/g, "''")},0';$s.Description='EterX AI Agent';$s.Save()`;
       execSync(`powershell -Command "${ps}"`, { stdio: 'ignore' });
       ok('Start Menu entry created');
       return true;

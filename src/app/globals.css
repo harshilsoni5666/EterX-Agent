@@ -6293,8 +6293,7 @@
 
 /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
    Sidebar Overlay Mode — activates when window width < 960px
-   Below this breakpoint the sidebar floats on top (like ChatGPT/Codex
-   in smaller windows) rather than pushing the main content area.
+   Below this breakpoint the sidebar floats on top  rather than pushing the main content area.
    Above 960px: normal push-layout. No Electron IPC needed.
    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
 

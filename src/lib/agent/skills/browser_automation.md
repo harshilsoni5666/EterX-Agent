@@ -29,7 +29,7 @@ The Browser Automation skill provides practical guidance for building reliable w
 - **Codegen** - `playwright codegen` records your actions and generates scripts
 - **Async-first** - Python async/await for high-throughput scraping
 
-## Codex Browser Control Contract
+##  Browser Control Contract
 
 Use this contract for live browser/computer-use tasks, not only scripted scraping:
 

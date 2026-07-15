@@ -32,14 +32,22 @@ const i = {
   restore: '📥', upgrade: '⬆️', uninstall: '🗑️',
 };
 
-const MINI_BANNER = `
-${c.brightCyan}${c.bold}  ███████╗████████╗███████╗██████╗ ██╗  ██╗${c.reset}
-${c.cyan}  ██╔════╝╚══██╔══╝██╔════╝██╔══██╗╚██╗██╔╝${c.reset}
-${c.cyan}  █████╗     ██║   █████╗  ██████╔╝ ╚███╔╝${c.reset}
-${c.cyan}  ██╔══╝     ██║   ██╔══╝  ██╔══██╗ ██╔██╗${c.reset}
-${c.cyan}  ███████╗   ██║   ███████╗██║  ██║██╔╝ ██╗${c.reset}
-${c.brightCyan}${c.bold}  ╚══════╝   ╚═╝   ╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝${c.reset}
-`;
+Object.defineProperty(global, 'MINI_BANNER', {
+  get() {
+    const cols = process.stdout.columns || 80;
+    if (cols >= 50) {
+      const indent = cols >= 54 ? '  ' : '';
+      return `${c.brightCyan}${c.bold}${indent}  ███████╗████████╗███████╗██████╗ ██╗  ██╗${c.reset}\n` +
+             `${c.cyan}${indent}  ██╔════╝╚══██╔══╝██╔════╝██╔══██╗╚██╗██╔╝${c.reset}\n` +
+             `${c.cyan}${indent}  █████╗     ██║   █████╗  ██████╔╝ ╚███╔╝${c.reset}\n` +
+             `${c.cyan}${indent}  ██╔══╝     ██║   ██╔══╝  ██╔══██╗ ██╔██╗${c.reset}\n` +
+             `${c.cyan}${indent}  ███████╗   ██║   ███████╗██║  ██║██╔╝ ██╗${c.reset}\n` +
+             `${c.brightCyan}${c.bold}${indent}  ╚══════╝   ╚═╝   ╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝${c.reset}\n`;
+    } else {
+      return `\n  ${c.brightCyan}${c.bold}██ EterX Agent ██${c.reset}\n`;
+    }
+  }
+});
 
 const cmd = (process.argv[2] || '').toLowerCase();
 const extraArgs = process.argv.slice(3);
@@ -248,22 +256,12 @@ function showInteractiveMenu() {
   console.log(`  ${c.bold}${i.rocket} Launch${c.reset}`);
   console.log(`    ${c.cyan}eterx start${c.reset}        ${i.globe} Web app  ${c.dim}(localhost:3000)${c.reset}`);
   console.log(`    ${c.cyan}eterx desktop${c.reset}      ${i.terminal} Desktop app  ${c.dim}(Electron Dev)${c.reset}`);
-  console.log(`    ${c.cyan}eterx desktop -p${c.reset}   ${i.terminal} Desktop app  ${c.dim}(Electron Prod - GPU optimized)${c.reset}`);
+  console.log(`    ${c.cyan}eterx desktop -p${c.reset}   ${i.terminal} Desktop app  ${c.dim}(Electron Prod)${c.reset}`);
   console.log(`    ${c.cyan}eterx telegram${c.reset}     ${i.globe} Telegram bot`);
   console.log(`    ${c.cyan}eterx open${c.reset}         ${i.globe} Open in browser`);
   console.log();
   console.log(`  ${c.bold}${i.gear} Setup${c.reset}`);
-  console.log(`    ${c.cyan}eterx setup${c.reset}        ${i.sparkle} Full setup wizard`);
   console.log(`    ${c.cyan}eterx setup --auto${c.reset} ${i.gear} Automatic no-prompt setup`);
-  console.log(`    ${c.cyan}eterx api${c.reset}          ${i.api} Quick API key setup`);
-  console.log(`    ${c.cyan}eterx config${c.reset}       ${i.key} Change API keys`);
-  console.log(`    ${c.cyan}eterx add-key${c.reset}      ${i.key} Quick-add one key`);
-  console.log();
-  console.log(`  ${c.bold}${i.doctor} Diagnostics${c.reset}`);
-  console.log(`    ${c.cyan}eterx doctor${c.reset}       ${i.doctor} Deep diagnosis  ${c.dim}(30+ checks)${c.reset}`);
-  console.log(`    ${c.cyan}eterx health${c.reset}       ${i.health} Live API key test`);
-  console.log(`    ${c.cyan}eterx benchmark${c.reset}    ${i.speed} Speed-test providers`);
-  console.log(`    ${c.cyan}eterx providers${c.reset}    ${i.model} List all providers`);
   console.log();
   console.log(`  ${c.bold}${i.wrench} Manage${c.reset}`);
   console.log(`    ${c.cyan}eterx status${c.reset}       ${i.chart} Config & update status`);
@@ -317,9 +315,7 @@ function openInBrowser() {
 // ═══════════════════════════════════════════
 function runDoctor() {
   console.log(MINI_BANNER);
-  console.log(`  ${c.bold}${c.brightCyan}  ━━━ ${i.doctor} EterX Doctor ━━━${c.reset}\n`);
-  const { runDoctor: doctor } = require('./setup/doctor');
-  doctor(ROOT);
+  console.log(`  ${c.brightYellow}${i.info} Diagnostics and checks are now managed natively in the desktop Settings panel.${c.reset}\n`);
 }
 
 // ═══════════════════════════════════════════
@@ -327,9 +323,7 @@ function runDoctor() {
 // ═══════════════════════════════════════════
 function runBenchmark() {
   console.log(MINI_BANNER);
-  console.log(`  ${c.bold}${c.brightCyan}  ━━━ ${i.speed} Provider Speed Test ━━━${c.reset}\n`);
-  const { runBenchmark: bench } = require('./setup/benchmark');
-  bench(ROOT);
+  console.log(`  ${c.brightYellow}${i.info} API benchmarking is managed natively in the desktop Settings panel.${c.reset}\n`);
 }
 
 // ═══════════════════════════════════════════
@@ -337,9 +331,7 @@ function runBenchmark() {
 // ═══════════════════════════════════════════
 function runProviders() {
   console.log(MINI_BANNER);
-  console.log(`  ${c.bold}${c.brightCyan}  ━━━ ${i.model} Provider Registry ━━━${c.reset}\n`);
-  const { listProviders } = require('./setup/provider-manager');
-  listProviders(ROOT);
+  console.log(`  ${c.brightYellow}${i.info} Model providers are managed natively in the desktop Settings panel.${c.reset}\n`);
 }
 
 // ═══════════════════════════════════════════

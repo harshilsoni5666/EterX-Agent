@@ -13,9 +13,11 @@ import { GeminiLiveSession, LiveSessionState } from '../lib/live/gemini-live';
 import {
   MAIN_AGENT_MODEL_OPTIONS,
   MAIN_AGENT_THINKING_LEVEL_STORAGE_KEY,
+  normalizeModelThinkingCapabilities,
   normalizeMainAgentThinkingLevel,
   type MainAgentMode,
   type MainAgentThinkingLevel,
+  type ModelThinkingCapabilities,
 } from '../lib/agent/model-routing';
 import {
   AUTO_MODEL_SELECTION,
@@ -25,6 +27,8 @@ import {
   MODEL_OVERRIDE_STORAGE_KEY,
   MODEL_PROVIDER_MODE,
   MODEL_SELECTOR_STORAGE_KEY,
+  MODEL_THINKING_CAPABILITIES_STORAGE_KEY,
+  modelEntryKey,
   composeApiKeysForSelection,
   normalizeModelSelectorEntries,
   parseModelEntryKey,
@@ -744,6 +748,18 @@ const readRuntimeChatModelSelection = () => {
   return window.localStorage.getItem(CHAT_MODEL_SELECTION_STORAGE_KEY) || AUTO_MODEL_SELECTION;
 };
 
+const readRuntimeModelThinkingCapability = (): ModelThinkingCapabilities | null => {
+  if (typeof window === 'undefined') return null;
+  const entry = parseModelEntryKey(readRuntimeChatModelSelection());
+  if (!entry) return null;
+  try {
+    const raw = JSON.parse(window.localStorage.getItem(MODEL_THINKING_CAPABILITIES_STORAGE_KEY) || '{}');
+    return normalizeModelThinkingCapabilities(raw?.[modelEntryKey(entry.provider, entry.modelId)]);
+  } catch {
+    return null;
+  }
+};
+
 const readRuntimeApiKeys = (): Record<string, string> => {
   const baseKeys = readRuntimeBaseApiKeys();
   return composeApiKeysForSelection(
@@ -849,84 +865,27 @@ const sortChats = (chats: ChatSession[]) => {
 
 const getCatchyGreeting = () => {
   const hour = new Date().getHours();
-
-  if (hour >= 5 && hour < 12) {
-    const greetings = [
-
-      "Morning looks nominal.",
-      "Fresh canvas awaits us.",
-      "The early bird builds.",
-      "First light, first breakthrough.",
-
-      "Morning clarity is engaged.",
-      "Let us lead today.",
-
-      "Hand over, Drink coffee!",
-      "New day, elegant solutions.",
-
-      "Morning co-pilot is online.",
-      "Let's set the pace.",
-      "Lets work hard!",
-    ];
-    return greetings[Math.floor(Math.random() * greetings.length)];
-  }
-
-  if (hour >= 12 && hour < 17) {
-    const greetings = [
-
-      "Decent Afternoon!.",
-
-
-      "Engines at cruise altitude.",
-
-      "Steady hands build empires.",
-      "I am ready!",
-      "Afternoon work.",
-      "Let's build something beautiful.",
-
-      "Your ideas, my execution.",
-      "Just type!",
-      "Give me to work on.",
-      ".Lets Start!",
-    ];
-    return greetings[Math.floor(Math.random() * greetings.length)];
-  }
-
-  if (hour >= 17 && hour < 22) {
-    const greetings = [
-      "Evening aesthetic .",
-
-
-      "Sun never sets for us!",
-
-
-
-      "Best ideas come tonight.",
-
-
-      "Helloooo.",
-      "Hell yeah!",
-      "Pass it to me.",
-      "Please give me work!",
-      "Evening belongs to you.",
-    ];
-    return greetings[Math.floor(Math.random() * greetings.length)];
-  }
-
+  
+  // Base greetings that are always in the rotation pool
   const greetings = [
-    "Hey black owl.",
     "brhhhhh.",
-    "Zero distractions, maximum work.",
-
-    "Late night, sharp focus.",
-
-    "The night is yours.",
-
-    "Its time to work!.",
-    "Code sleeps for nobody.",
-
-    "Moonlight productivity is active.",
+    "Helloooo.",
+    "It's time to work!",
+    "Let's start!",
   ];
+
+  // Dynamically inject a time-appropriate greeting
+  if (hour >= 5 && hour < 12) {
+    greetings.push("Good morning!");
+  } else if (hour >= 12 && hour < 17) {
+    greetings.push("Good afternoon!");
+  } else if (hour >= 17 && hour < 22) {
+    greetings.push("Good evening!");
+  } else {
+    // Night time (10 PM to 5 AM)
+    greetings.push("Hey black owl!");
+  }
+
   return greetings[Math.floor(Math.random() * greetings.length)];
 };
 
@@ -4362,6 +4321,7 @@ function DeepWorkUI() {
           projectId: chatIdToUse,
           mode: runAgentMode,
           thinkingLevel: runThinkingLevel,
+          modelThinkingCapability: readRuntimeModelThinkingCapability(),
           pinnedContext: hasPinnedContext ? requestPinnedContext : null,
           apiKeys: readRuntimeApiKeys(),
           modelOverrides: readRuntimeModelOverrides(),

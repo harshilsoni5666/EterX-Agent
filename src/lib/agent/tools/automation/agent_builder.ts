@@ -26,7 +26,6 @@ import {
   listAgentFlowProfiles,
   deleteAgentFlowProfile,
 } from '../../builder-agent';
-import { createIsolatedClient } from '../../Agent';
 import * as vm from 'vm';
 import { agentToolLoadTool, agentToolUnloadTool } from '../../tool-injector';
 
@@ -538,6 +537,7 @@ export const agentBuilderRunFlowTool: ToolDefinition = {
 
       const flowMode = typeof context?.selectedModelMode === 'string' ? context.selectedModelMode : 'think';
       const flowApiKey = String(context?.executionApiKey || '');
+      const { createIsolatedClient } = await import('../../Agent');
       const createFlowClient = () => createIsolatedClient(flowApiKey, flowMode as any, context?.runtimeSettings);
       const resolveFlowAgent = async (agentId: string) => {
         if (agentId === 'default-1') return { profile: null, name: 'General agent' };

@@ -11,7 +11,8 @@ import fs from 'fs-extra';
 import path from 'path';
 import {
   getMainAgentModelConfig,
-  normalizeMainAgentThinkingLevel,
+  normalizeModelThinkingCapabilities,
+  normalizeThinkingLevelForModel,
   resolveModelName,
   type MainAgentMode,
   type MainAgentThinkingLevel,
@@ -488,10 +489,17 @@ export class AgentOrchestrator {
     const complexity = pinnedContext?.forceFastMode ? 'standard' : this.classifyComplexity(userRequest);
     const effectiveMode = pinnedContext?.forceFastMode ? 'fast' : this.resolveOptimalMode(mode, complexity);
     const modelConfig = getMainAgentModelConfig(effectiveMode, runtimeSettings);
-    const selectedThinkingLevel = normalizeMainAgentThinkingLevel(pinnedContext?.thinkingLevel);
+    const modelThinkingCapability = normalizeModelThinkingCapabilities(pinnedContext?.modelThinkingCapability);
+    const selectedThinkingLevel = normalizeThinkingLevelForModel(
+      pinnedContext?.thinkingLevel,
+      modelConfig.provider,
+      modelConfig.modelName,
+      modelThinkingCapability,
+    );
     context.selectedModelMode = effectiveMode;
     context.selectedModelName = resolveModelName(effectiveMode, runtimeSettings);
     context.selectedThinkingLevel = selectedThinkingLevel;
+    (context as any).modelThinkingCapability = modelThinkingCapability;
 
     // Auto-route to optimal model based on complexity
     if (effectiveMode !== mode) {

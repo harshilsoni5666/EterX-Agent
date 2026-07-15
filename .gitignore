@@ -13,6 +13,7 @@
 /out/
 /dist
 /build
+/desktop-runtime/
 *.tsbuildinfo
 
 # =========================

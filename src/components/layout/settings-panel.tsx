@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { MAIN_AGENT_MODEL_OPTIONS, type MainAgentMode, type MainAgentProvider } from '../../lib/agent/model-routing';
+import { MAIN_AGENT_MODEL_OPTIONS, normalizeModelThinkingCapabilities, type MainAgentMode, type MainAgentProvider, type ModelThinkingCapabilities } from '../../lib/agent/model-routing';
 import {
   AUTO_MODEL_SELECTION,
   CHAT_MODEL_SELECTION_STORAGE_KEY,
@@ -12,6 +12,7 @@ import {
   MODEL_PROVIDER_MODE,
   MODEL_PROVIDER_ORDER,
   MODEL_SELECTOR_STORAGE_KEY,
+  MODEL_THINKING_CAPABILITIES_STORAGE_KEY,
   composeApiKeysForSelection,
   entriesToModelCatalog,
   ensureModelSelectorEntry,
@@ -354,6 +355,7 @@ type ModelDirectoryProvider = {
     inputTokenLimit?: number;
     outputTokenLimit?: number;
     capabilities?: string[];
+    thinking?: ModelThinkingCapabilities;
   }>;
   error?: string;
 };
@@ -464,8 +466,9 @@ const OFFICIAL_PROVIDER_GUIDE: Record<string, {
     docsUrl: 'docs.mistral.ai/models',
     families: [
       { name: 'Mistral Medium 3.5', id: 'mistral-medium-3-5', note: 'Frontier multimodal model optimized for agentic and coding use cases' },
-      { name: 'Mistral Small 4', id: 'mistral-small-2603', note: 'Efficient hybrid instruct, reasoning, and coding model' },
+      { name: 'Mistral Medium (latest)', id: 'mistral-medium-2508', note: 'Proven medium-tier model' },
       { name: 'Mistral Large 3', id: 'mistral-large-2512', note: 'High-capability open-weight multimodal model' },
+      { name: 'Mistral Small 4', id: 'mistral-small-2603', note: 'Efficient hybrid instruct, reasoning, and coding model' },
       { name: 'Ministral 3 14B', id: 'ministral-14b-2512', note: 'Vision-capable efficient generalist model' },
       { name: 'Codestral', id: 'codestral-2508', note: 'Code completion and developer workflow model' },
     ],
@@ -476,10 +479,10 @@ const OFFICIAL_PROVIDER_GUIDE: Record<string, {
     endpoint: 'GET /v1/models',
     docsUrl: 'docs.anthropic.com',
     families: [
+      { name: 'Claude Sonnet 5', id: 'claude-sonnet-5', note: 'Balanced speed, intelligence, and extended thinking' },
+      { name: 'Claude Fable 5', id: 'claude-fable-5', note: 'Preview frontier model for high-autonomy coding' },
       { name: 'Claude Opus 4.8', id: 'claude-opus-4-8', note: 'Most capable Claude model for complex reasoning and agentic coding' },
-      { name: 'Claude Sonnet 4.6', id: 'claude-sonnet-4-6', note: 'Balanced speed, intelligence, and extended thinking' },
-      { name: 'Claude Haiku 4.5', id: 'claude-haiku-4-5-20251001', note: 'Fastest near-frontier Claude model' },
-      { name: 'Claude Opus 4.7', id: 'claude-opus-4-7', note: 'Previous Opus fallback for high autonomy work' },
+      { name: 'Claude Sonnet 4.6', id: 'claude-sonnet-4-6', note: 'Previous Sonnet fallback' },
     ],
   },
   openai: {
@@ -488,11 +491,12 @@ const OFFICIAL_PROVIDER_GUIDE: Record<string, {
     endpoint: 'GET /v1/models',
     docsUrl: 'platform.openai.com/docs/models',
     families: [
-      { name: 'GPT-5.5', id: 'gpt-5.5', note: 'Flagship model for complex reasoning, coding, and professional workflows' },
-      { name: 'GPT-5.4', id: 'gpt-5.4', note: 'More affordable model for coding and professional work' },
-      { name: 'GPT-5.4 mini', id: 'gpt-5.4-mini', note: 'Fast option for coding, computer use, and sub-agents' },
-      { name: 'GPT-5.4 nano', id: 'gpt-5.4-nano', note: 'Lowest latency and cost' },
-      { name: 'GPT Image / Realtime / Transcribe', note: 'Specialized image, speech, and realtime model families' },
+      { name: 'GPT-5.6 Luna Pro', id: 'gpt-5.6-luna-pro', note: 'Flagship model for complex reasoning, coding, and professional workflows' },
+      { name: 'GPT-5.6 Luna', id: 'gpt-5.6-luna', note: 'More affordable flagship model for coding' },
+      { name: 'GPT-5.6 Terra Pro', id: 'gpt-5.6-terra-pro', note: 'Fast option for coding, computer use, and sub-agents' },
+      { name: 'GPT-5.6 Terra', id: 'gpt-5.6-terra', note: 'Low latency fallback model' },
+      { name: 'GPT-5.5', id: 'gpt-5.5', note: 'Stable 5-series model' },
+      { name: 'GPT-4o', id: 'gpt-4o', note: 'Stable legacy fallback model' },
     ],
   },
   openrouter: {
@@ -501,10 +505,12 @@ const OFFICIAL_PROVIDER_GUIDE: Record<string, {
     endpoint: 'GET /api/v1/models',
     docsUrl: 'openrouter.ai/docs',
     families: [
-      { name: 'GPT-5.5', id: 'openai/gpt-5.5', note: 'OpenAI flagship through OpenRouter' },
-      { name: 'Claude Opus 4.8', id: 'anthropic/claude-opus-4.8', note: 'Anthropic flagship through OpenRouter' },
+      { name: 'GPT-5.6 Luna', id: 'openai/gpt-5.6-luna', note: 'OpenAI flagship through OpenRouter' },
+      { name: 'GPT-5.6 Terra', id: 'openai/gpt-5.6-terra', note: 'OpenAI fast model through OpenRouter' },
+      { name: 'Claude Sonnet 5', id: 'anthropic/claude-sonnet-5', note: 'Anthropic flagship through OpenRouter' },
+      { name: 'Claude Fable 5', id: 'anthropic/claude-fable-5', note: 'Anthropic preview flagship through OpenRouter' },
       { name: 'Gemini 3.5 Flash', id: 'google/gemini-3.5-flash', note: 'Google Gemini routed through OpenRouter' },
-      { name: 'Mistral Medium 3.5', id: 'mistralai/mistral-medium-3-5', note: 'Mistral frontier model through OpenRouter' },
+      { name: 'Grok 4.5', id: 'x-ai/grok-4.5', note: 'xAI flagship through OpenRouter' },
       { name: 'Full OpenRouter catalog', note: 'Live endpoint loads hundreds of provider models automatically' },
     ],
   },
@@ -514,11 +520,8 @@ const OFFICIAL_PROVIDER_GUIDE: Record<string, {
     endpoint: 'GET /openai/v1/models',
     docsUrl: 'console.groq.com/docs/models',
     families: [
-      { name: 'GPT OSS 120B', id: 'openai/gpt-oss-120b', note: 'Production open-weight reasoning model with Groq low-latency inference' },
-      { name: 'GPT OSS 20B', id: 'openai/gpt-oss-20b', note: 'Production fast model for lower-cost agent and chat work' },
       { name: 'Llama 3.3 70B Versatile', id: 'llama-3.3-70b-versatile', note: 'Production Llama model with a large context window' },
       { name: 'Llama 3.1 8B Instant', id: 'llama-3.1-8b-instant', note: 'Production ultra-fast small model for quick tasks' },
-      { name: 'Compound Mini', id: 'groq/compound-mini', note: 'Groq system model for fast agentic answers' },
     ],
   },
 };
@@ -1228,6 +1231,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
   const [modelOverrides, setModelOverrides] = useState<ModelOverrides>({});
   const [modelCatalog, setModelCatalog] = useState<ModelCatalog>({});
   const [modelEntries, setModelEntries] = useState<ModelSelectorEntry[]>([]);
+  const [modelThinkingCapabilities, setModelThinkingCapabilities] = useState<Record<string, ModelThinkingCapabilities>>({});
   const [modelApiKeys, setModelApiKeys] = useState<Record<string, string>>({});
   const [selectedConnectionProvider, setSelectedConnectionProvider] = useState<MainAgentProvider>('gemini');
   const [selectedApiProviderValue, setSelectedApiProviderValue] = useState<MainAgentProvider>('gemini');
@@ -1392,9 +1396,11 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
       const savedModelCatalog = localStorage.getItem(MODEL_CATALOG_STORAGE_KEY);
       const savedModelEntries = localStorage.getItem(MODEL_SELECTOR_STORAGE_KEY);
       const savedModelApiKeys = localStorage.getItem(MODEL_API_KEYS_STORAGE_KEY);
+      const savedThinkingCapabilities = localStorage.getItem(MODEL_THINKING_CAPABILITIES_STORAGE_KEY);
       const parsedModelOverrides = savedModelOverrides ? JSON.parse(savedModelOverrides) : {};
       const parsedModelCatalog = savedModelCatalog ? JSON.parse(savedModelCatalog) : {};
       const parsedModelApiKeys = savedModelApiKeys ? JSON.parse(savedModelApiKeys) : {};
+      const parsedThinkingCapabilities = savedThinkingCapabilities ? JSON.parse(savedThinkingCapabilities) : {};
       const migratedEntries = normalizeModelSelectorEntries(
         savedModelEntries ? JSON.parse(savedModelEntries) : [],
         parsedModelCatalog,
@@ -1416,6 +1422,15 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
               .map(([key, value]) => [key, typeof value === 'string' ? value.trim() : ''])
               .filter(([, value]) => Boolean(value)),
           )
+          : {},
+      );
+      setModelThinkingCapabilities(
+        parsedThinkingCapabilities && typeof parsedThinkingCapabilities === 'object'
+          ? Object.fromEntries(
+            Object.entries(parsedThinkingCapabilities as Record<string, unknown>)
+              .map(([key, value]) => [key, normalizeModelThinkingCapabilities(value)] as const)
+              .filter(([, value]) => Boolean(value)),
+          ) as Record<string, ModelThinkingCapabilities>
           : {},
       );
       localStorage.setItem(MODEL_SELECTOR_STORAGE_KEY, JSON.stringify(normalizedEntries));
@@ -1651,6 +1666,21 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
     });
   }, []);
 
+  const saveModelThinkingCapability = useCallback((provider: MainAgentProvider, modelId: string) => {
+    const liveCapability = modelDirectory[provider]?.models.find(model => model.id === modelId)?.thinking;
+    if (!liveCapability) return;
+    const key = modelEntryKey(provider, modelId);
+    setModelThinkingCapabilities(previous => {
+      const next = { ...previous, [key]: liveCapability };
+      localStorage.setItem(MODEL_THINKING_CAPABILITIES_STORAGE_KEY, JSON.stringify(next));
+      broadcastEterxSettingsUpdate({
+        type: 'model-thinking-capabilities-updated',
+        thinkingCapabilities: next,
+      });
+      return next;
+    });
+  }, [modelDirectory]);
+
   const updateModelApiKey = useCallback((modelKey: string, value: string) => {
     if (!parseModelEntryKey(modelKey)) return;
     setModelApiKeys(prev => {
@@ -1690,10 +1720,11 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
 
     const nextEntries = ensureModelSelectorEntry(modelEntries, cleanProvider, cleanModelId);
     saveModelEntries(nextEntries);
+    saveModelThinkingCapability(cleanProvider, cleanModelId);
     if (activate) selectCatalogModel(cleanProvider, cleanModelId);
     setHasChanges(true);
     keysChangedRef.current = true;
-  }, [modelEntries, saveModelEntries, selectCatalogModel]);
+  }, [modelEntries, saveModelEntries, saveModelThinkingCapability, selectCatalogModel]);
 
   const removeModelFromSelector = useCallback((provider: string, modelId: string) => {
     const cleanProvider = String(provider || '').trim();
@@ -1703,6 +1734,14 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
     const removedKey = modelEntryKey(cleanProvider, cleanModelId);
     const nextEntries = removeModelSelectorEntry(modelEntries, cleanProvider, cleanModelId);
     saveModelEntries(nextEntries);
+    setModelThinkingCapabilities(previous => {
+      if (!(removedKey in previous)) return previous;
+      const next = { ...previous };
+      delete next[removedKey];
+      localStorage.setItem(MODEL_THINKING_CAPABILITIES_STORAGE_KEY, JSON.stringify(next));
+      broadcastEterxSettingsUpdate({ type: 'model-thinking-capabilities-updated', thinkingCapabilities: next });
+      return next;
+    });
     const nextModelKeys = { ...modelApiKeys };
     delete nextModelKeys[removedKey];
     setModelApiKeys(nextModelKeys);

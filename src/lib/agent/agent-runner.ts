@@ -67,10 +67,13 @@ export interface AgentRunnerConfig {
  */
 function modelSupportsThinking(modelName: string): boolean {
   const lower = modelName.toLowerCase();
-  // gemini-2.5-pro and gemini-2.5-flash (not lite) support thinking
-  if (lower.includes('gemini-2.5-pro')) return true;
-  if (lower.includes('gemini-2.5-flash') && !lower.includes('lite')) return true;
-  return false;
+  if (lower.includes('lite')) return false;
+  // gemini-2.5, gemini-3, gemini-3.1, gemini-3.5 models support thinking
+  return (
+    lower.includes('gemini-2.5') ||
+    lower.includes('gemini-3.') ||
+    lower.includes('gemini-3-')
+  );
 }
 
 function isGoogleGenAIModelName(modelName: string): boolean {
@@ -526,7 +529,12 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
 
           // Only add thinkingConfig for models that support it
           if (supportsThinking) {
-            generateConfig.config.thinkingConfig = { thinkingBudget: 4096 };
+            const level = config.pinnedContext?.thinkingLevel || config.pinnedContext?.selectedThinkingLevel || 'medium';
+            let budget = 2048;
+            if (level === 'low') budget = 1024;
+            else if (level === 'high') budget = 4096;
+            else if (level === 'max') budget = 8192;
+            generateConfig.config.thinkingConfig = { thinkingBudget: budget };
           }
 
           // Add tools if we have any

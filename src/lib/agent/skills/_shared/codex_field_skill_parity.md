@@ -1,6 +1,6 @@
-﻿# Codex Field Skill Parity Guide
+﻿#  Field Skill Parity Guide
 
-Apply this guide with the domain skill that was loaded. It mirrors the practical operating standards from the strongest local Codex skills: use the right artifact workflow, inspect real outputs, and deliver only the useful final result.
+Apply this guide with the domain skill that was loaded. It mirrors the practical operating standards from the strongest local  skills: use the right artifact workflow, inspect real outputs, and deliver only the useful final result.
 
 ## Field Routing
 

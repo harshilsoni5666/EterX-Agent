@@ -30,7 +30,7 @@ async function checkKeys() {
       const ai = new GoogleGenAI({ apiKey: key });
       // Call a very small model query
       const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
+        model: 'gemini-3.5-flash',
         contents: 'hi',
       });
       console.log(`🟢 ${keyLabel}: VALID (Result: "${response.text?.trim()}")`);

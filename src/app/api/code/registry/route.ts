@@ -5,7 +5,7 @@ import path from 'path';
 export const dynamic = 'force-dynamic';
 
 /**
- * Claude Code Skill & Command Registry — reads DIRECTLY from code/ folder
+ *  Code Skill & Command Registry — reads DIRECTLY from code/ folder
  * 
  * Instead of importing one-by-one, this scans the actual code/ directory
  * to discover ALL available commands, skills, and tools.
@@ -29,15 +29,15 @@ interface SkillEntry {
 function extractFromFile(filePath: string): { description: string; prompt: string } {
   try {
     const content = fs.readFileSync(filePath, 'utf-8');
-    
+
     // Extract description from: description: 'xxx' or description: "xxx"
     const descMatch = content.match(/description[:\s]*['"`]([^'"`]+)['"`]/);
     const description = descMatch?.[1] || '';
-    
+
     // Extract prompt content (look for template literals with instructions)
     const promptMatch = content.match(/(?:PROMPT|prompt|getPromptContent|MARKDOWN)\s*=\s*`([\s\S]*?)`/);
     const prompt = promptMatch?.[1]?.substring(0, 2000) || '';
-    
+
     return { description, prompt };
   } catch {
     return { description: '', prompt: '' };
@@ -46,7 +46,7 @@ function extractFromFile(filePath: string): { description: string; prompt: strin
 
 export async function GET(req: NextRequest) {
   const codeBase = path.resolve(process.cwd(), 'code/src');
-  
+
   if (!fs.existsSync(codeBase)) {
     return NextResponse.json({ error: 'code/ folder not found', registry: null });
   }
@@ -65,7 +65,7 @@ export async function GET(req: NextRequest) {
     for (const entry of entries) {
       const name = entry.name.replace(/\.(ts|tsx|js|jsx)$/, '');
       let filePath: string;
-      
+
       if (entry.isDirectory()) {
         // Check for index.ts/index.js inside the directory
         const indexTs = path.join(cmdDir, entry.name, 'index.ts');
@@ -76,14 +76,14 @@ export async function GET(req: NextRequest) {
       } else {
         continue;
       }
-      
+
       if (!filePath) continue;
-      
+
       const { description, prompt } = extractFromFile(filePath);
       registry.commands.push({
         name,
         type: 'command',
-        source: `commands/${entry.name}`,
+        source: `commands/${ entry.name }`,
         description,
         prompt: prompt.substring(0, 500),
       });
@@ -97,15 +97,15 @@ export async function GET(req: NextRequest) {
     for (const entry of entries) {
       if (!entry.isFile() || (!entry.name.endsWith('.ts') && !entry.name.endsWith('.tsx'))) continue;
       if (entry.name === 'index.ts') continue;
-      
+
       const name = entry.name.replace(/\.(ts|tsx)$/, '');
       const filePath = path.join(skillsDir, entry.name);
       const { description, prompt } = extractFromFile(filePath);
-      
+
       registry.skills.push({
         name,
         type: 'skill',
-        source: `skills/bundled/${entry.name}`,
+        source: `skills/bundled/${ entry.name }`,
         description,
         prompt: prompt.substring(0, 500),
       });
@@ -118,19 +118,19 @@ export async function GET(req: NextRequest) {
     const entries = fs.readdirSync(toolsDir, { withFileTypes: true });
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
-      
+
       // Look for the main tool file (ToolName.ts or ToolName.tsx)
       const toolFiles = fs.readdirSync(path.join(toolsDir, entry.name));
-      const mainFile = toolFiles.find(f => 
-        f.endsWith('.ts') && !f.includes('test') && !f.includes('spec') && 
+      const mainFile = toolFiles.find(f =>
+        f.endsWith('.ts') && !f.includes('test') && !f.includes('spec') &&
         !f.includes('constants') && !f.includes('prompt') && !f.includes('utils')
       );
-      
+
       if (!mainFile) continue;
-      
+
       const filePath = path.join(toolsDir, entry.name, mainFile);
       const { description } = extractFromFile(filePath);
-      
+
       // Also check for prompt.ts which contains the tool's system prompt
       const promptFile = path.join(toolsDir, entry.name, 'prompt.ts');
       let toolPrompt = '';
@@ -138,11 +138,11 @@ export async function GET(req: NextRequest) {
         const { prompt } = extractFromFile(promptFile);
         toolPrompt = prompt;
       }
-      
+
       registry.tools.push({
         name: entry.name,
         type: 'tool',
-        source: `tools/${entry.name}`,
+        source: `tools/${ entry.name }`,
         description,
         prompt: toolPrompt.substring(0, 500),
       });

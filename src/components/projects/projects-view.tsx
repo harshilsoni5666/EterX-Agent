@@ -6,12 +6,15 @@ import { ChevronDown, Plus, Mic, ArrowUp, Check, ChevronRight, ChevronLeft } fro
 import { PremiumSend } from '../ui/premium-icons';
 import {
   MAIN_AGENT_MODEL_OPTIONS,
-  MAIN_AGENT_THINKING_LEVEL_OPTIONS,
+  doesModelSupportThinking as modelSupportsThinking,
+  getModelThinkingOptions,
   getMainAgentModelConfig,
+  normalizeModelThinkingCapabilities,
   normalizeMainAgentThinkingLevel,
   type MainAgentProvider,
   type MainAgentMode,
   type MainAgentThinkingLevel,
+  type ModelThinkingCapabilities,
 } from '../../lib/agent/model-routing';
 import {
   AUTO_MODEL_SELECTION,
@@ -20,6 +23,7 @@ import {
   MODEL_CATALOG_STORAGE_KEY,
   MODEL_OVERRIDE_STORAGE_KEY,
   MODEL_SELECTOR_STORAGE_KEY,
+  MODEL_THINKING_CAPABILITIES_STORAGE_KEY,
   MODEL_PROVIDER_MODE,
   modelEntryKey,
   normalizeModelSelectorEntries,
@@ -35,6 +39,7 @@ type StoredModelSettings = {
   modelCatalog: Partial<Record<MainAgentProvider, string[]>>;
   modelEntries: ModelSelectorEntry[];
   modelApiKeys: Record<string, string>;
+  thinkingCapabilities: Record<string, ModelThinkingCapabilities>;
   chatModelSelection: string;
 };
 
@@ -102,6 +107,21 @@ const readStringArrayRecord = (storageKey: string): Record<string, string[]> => 
   }
 };
 
+const readThinkingCapabilityRecord = (): Record<string, ModelThinkingCapabilities> => {
+  if (typeof window === 'undefined') return {};
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(MODEL_THINKING_CAPABILITIES_STORAGE_KEY) || '{}');
+    if (!parsed || typeof parsed !== 'object') return {};
+    return Object.fromEntries(
+      Object.entries(parsed as Record<string, unknown>)
+        .map(([key, value]) => [key, normalizeModelThinkingCapabilities(value)] as const)
+        .filter(([, value]) => Boolean(value)),
+    ) as Record<string, ModelThinkingCapabilities>;
+  } catch {
+    return {};
+  }
+};
+
 const readStoredModelSettings = (): StoredModelSettings => {
   const apiKeys = readStringRecord(MODEL_API_KEY_STORAGE_KEY) as Partial<Record<MainAgentProvider, string>>;
   const modelOverrides = readStringRecord(MODEL_OVERRIDE_STORAGE_KEY) as Partial<Record<MainAgentProvider, string>>;
@@ -120,6 +140,7 @@ const readStoredModelSettings = (): StoredModelSettings => {
     .filter(entry => entry.modelId);
   const modelEntries = normalizeModelSelectorEntries([...normalizeModelSelectorEntries(savedEntries, modelCatalog), ...overrideEntries], modelCatalog);
   const modelApiKeys = readStringRecord(MODEL_API_KEYS_STORAGE_KEY);
+  const thinkingCapabilities = readThinkingCapabilityRecord();
   const chatModelSelection = typeof window !== 'undefined'
     ? (window.localStorage.getItem(CHAT_MODEL_SELECTION_STORAGE_KEY) || AUTO_MODEL_SELECTION)
     : AUTO_MODEL_SELECTION;
@@ -130,6 +151,7 @@ const readStoredModelSettings = (): StoredModelSettings => {
     modelCatalog,
     modelEntries,
     modelApiKeys,
+    thinkingCapabilities,
     chatModelSelection,
   };
 };
@@ -157,13 +179,13 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
   const [showModelMenu, setShowModelMenu] = useState(false);
   const [showThinkingLevels, setShowThinkingLevels] = useState(false);
   const modelSelectorRef = useRef<HTMLDivElement>(null);
-  
+
   const [scheduleMode, setScheduleMode] = useState('manual');
-  
+
   // Manual scheduler reference states
   const [taskTitle, setTaskTitle] = useState("");
   const [taskDescription, setTaskDescription] = useState("");
-  
+
   // Recurrence state loaded from default localStorage
   const [recurrence, setRecurrence] = useState(() => {
     if (typeof window !== 'undefined') {
@@ -171,23 +193,23 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
     }
     return 'daily';
   });
-  
+
   const [priority, setPriority] = useState('medium');
   const [formModel, setFormModel] = useState(AUTO_MODEL_SELECTION);
   const [triggerTime, setTriggerTime] = useState('09:00');
-  
+
   // Custom manual inputs
   const [customTimeVal, setCustomTimeVal] = useState('9:00');
   const [customTimePeriod, setCustomTimePeriod] = useState<'AM' | 'PM'>('AM');
   const [customRepeatVal, setCustomRepeatVal] = useState('');
   const [showCustomRepeatForm, setShowCustomRepeatForm] = useState(false);
-  
+
   // Sources (attached file/folder pins) real state
   const [attachedPins, setAttachedPins] = useState<{ id: string; name: string; type: string; path: string }[]>([]);
-  
+
   const [activePopover, setActivePopover] = useState<string | null>(null);
   const [showSourceMenu, setShowSourceMenu] = useState(false);
-  
+
   const detailsRef = useRef<HTMLDivElement>(null);
   const frequencyRef = useRef<HTMLDivElement>(null);
   const sourceMenuRef = useRef<HTMLDivElement>(null);
@@ -233,7 +255,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
       const h = parseInt(hStr, 10);
       const period = h >= 12 ? 'PM' : 'AM';
       const displayHour = h % 12 === 0 ? 12 : h % 12;
-      setCustomTimeVal(`${displayHour}:${mStr}`);
+      setCustomTimeVal(`${ displayHour }:${ mStr }`);
       setCustomTimePeriod(period);
     }
   }, [activePopover, triggerTime]);
@@ -258,13 +280,13 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
         setShowThinkingLevels(false);
       }
       if (
-        (activePopover === 'model' || activePopover === 'priority') && 
+        (activePopover === 'model' || activePopover === 'priority') &&
         detailsRef.current && !detailsRef.current.contains(e.target as Node)
       ) {
         setActivePopover(null);
       }
       if (
-        (activePopover === 'repeat' || activePopover === 'time') && 
+        (activePopover === 'repeat' || activePopover === 'time') &&
         frequencyRef.current && !frequencyRef.current.contains(e.target as Node)
       ) {
         setActivePopover(null);
@@ -294,7 +316,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
   }, [storedModelSettings.modelEntries]);
 
   const fallbackModelConfig = useMemo(() => getMainAgentModelConfig(agentMode), [agentMode]);
-  
+
   const autoModelOption = useMemo<ChatModelOption>(() => ({
     optionKey: AUTO_MODEL_SELECTION,
     id: fallbackModelConfig.id,
@@ -311,6 +333,24 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
       : modelOptions.find(option => option.optionKey === storedModelSettings.chatModelSelection) || autoModelOption;
   }, [modelOptions, autoModelOption, storedModelSettings.chatModelSelection]);
 
+  const getThinkingTarget = useCallback((option: ChatModelOption) => option.isAuto
+    ? { provider: fallbackModelConfig.provider, modelName: fallbackModelConfig.modelName, capabilities: undefined }
+    : {
+      provider: option.provider,
+      modelName: option.modelId || option.modelName,
+      capabilities: storedModelSettings.thinkingCapabilities[option.optionKey],
+    }, [fallbackModelConfig, storedModelSettings.thinkingCapabilities]);
+
+  const doesModelSupportThinking = useCallback((option: ChatModelOption): boolean => {
+    const target = getThinkingTarget(option);
+    return modelSupportsThinking(target.provider, target.modelName, target.capabilities);
+  }, [getThinkingTarget]);
+
+  const getThinkingLevelOptions = useCallback((option: ChatModelOption) => {
+    const target = getThinkingTarget(option);
+    return getModelThinkingOptions(target.provider, target.modelName, target.capabilities);
+  }, [getThinkingTarget]);
+
   // Set default model on catalog load
   useEffect(() => {
     setFormModel(selectedModel.optionKey);
@@ -318,10 +358,10 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
 
   const allModelOptions = useMemo(() => [autoModelOption, ...modelOptions], [autoModelOption, modelOptions]);
   const safeThinkingLevel = useMemo(() => normalizeMainAgentThinkingLevel(thinkingLevel), [thinkingLevel]);
-  
+  const activeThinkingOptions = useMemo(() => getThinkingLevelOptions(selectedModel), [selectedModel, getThinkingLevelOptions]);
   const selectedThinkingLevel = useMemo(() => {
-    return MAIN_AGENT_THINKING_LEVEL_OPTIONS.find(option => option.id === safeThinkingLevel) || MAIN_AGENT_THINKING_LEVEL_OPTIONS[0];
-  }, [safeThinkingLevel]);
+    return activeThinkingOptions.find(option => option.id === safeThinkingLevel) || activeThinkingOptions[1] || activeThinkingOptions[0];
+  }, [activeThinkingOptions, safeThinkingLevel]);
 
   const getModelOptionLabel = useCallback((option: ChatModelOption) => option.label, []);
   const modelDisplayLabel = getModelOptionLabel(selectedModel);
@@ -381,7 +421,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
   const getRecurrenceLabel = (value: string) => {
     if (value === 'none') return 'None';
     if (value.startsWith('custom:')) {
-      return `Custom (${value.split(':')[1]})`;
+      return `Custom (${ value.split(':')[1] })`;
     }
     switch (value) {
       case 'hourly': return 'Hourly';
@@ -410,8 +450,8 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
         const period = hour >= 12 ? 'PM' : 'AM';
         const displayHour = hour % 12 === 0 ? 12 : hour % 12;
         const displayMin = min.toString().padStart(2, '0');
-        const val = `${hour.toString().padStart(2, '0')}:${displayMin}`;
-        const label = `${displayHour}:${displayMin} ${period}`;
+        const val = `${ hour.toString().padStart(2, '0') }:${ displayMin }`;
+        const label = `${ displayHour }:${ displayMin } ${ period }`;
         options.push({ value: val, label });
       }
     }
@@ -424,7 +464,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
     const h = parseInt(hStr, 10);
     const period = h >= 12 ? 'PM' : 'AM';
     const displayHour = h % 12 === 0 ? 12 : h % 12;
-    return `${displayHour}:${mStr} ${period}`;
+    return `${ displayHour }:${ mStr } ${ period }`;
   }, [triggerTime]);
 
   // Form validation condition: True if title and instructions are entered
@@ -481,17 +521,17 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
   const isCustomRepeatValid = useMemo(() => {
     const val = customRepeatVal.trim().toLowerCase();
     if (!val) return false;
-    
+
     // Check interval pattern
     const intervalRegex = /^\d+\s*(min|mins|minute|minutes|hour|hours|day|days|week|weeks)$/i;
     if (intervalRegex.test(val)) return true;
-    
+
     // Check cron structure (5 fields)
     const cronParts = val.split(/\s+/);
     if (cronParts.length === 5) {
       return cronParts.every(part => /^[0-9\*\/\,\-]+$/.test(part));
     }
-    
+
     return false;
   }, [customRepeatVal]);
 
@@ -499,10 +539,10 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
     <div className="eterx-agents-view flex-1 w-full h-full flex flex-col px-5 py-5 md:px-8 md:pt-6 md:pb-6 overflow-hidden relative z-20 bg-transparent select-none">
       {/* Main Content split layout stretching to very top */}
       <div className="flex flex-col md:flex-row gap-6 flex-1 min-h-0 w-full">
-        
+
         {/* Left Side: suggestions & chat input (84% width) */}
         <div className="flex flex-col gap-3 flex-1 min-h-0 w-full md:max-w-[84%]">
-          <motion.div 
+          <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.3 }}
@@ -520,7 +560,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                   >
                     <img src="/logo.png" alt="App Logo" className="w-12 h-12 object-contain opacity-90 select-none pointer-events-none" />
                   </motion.div>
-                  
+
                   <motion.p
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
@@ -575,7 +615,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                               className="flex items-center gap-1.5 text-[11.5px] font-semibold text-[#F4F4F4] bg-[#2D2D2D] hover:bg-[#333333] px-3 py-1 rounded-full cursor-pointer select-none transition-colors mr-2.5 group relative"
                             >
                               <span className="truncate max-w-[120px]">{modelDisplayLabel}</span>
-                              <ChevronDown className={`w-3.5 h-3.5 text-white/40 group-hover:text-white/60 transition-transform duration-200 ${showModelMenu ? 'rotate-180' : ''}`} strokeWidth={1.8} />
+                              <ChevronDown className={`w-3.5 h-3.5 text-white/40 group-hover:text-white/60 transition-transform duration-200 ${ showModelMenu ? 'rotate-180' : '' }`} strokeWidth={1.8} />
                             </button>
 
                             <AnimatePresence>
@@ -617,66 +657,70 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                                     })}
                                   </div>
 
-                                  <div className="mx-2 my-1.5 h-px bg-white/[0.09]" />
+                                  {doesModelSupportThinking(selectedModel) && (
+                                    <>
+                                      <div className="mx-2 my-1.5 h-px bg-white/[0.09]" />
 
-                                  <div className="px-0.5 pb-0.5 relative">
-                                    <div
-                                      className="relative"
-                                      onMouseEnter={() => setShowThinkingLevels(true)}
-                                      onMouseLeave={() => setShowThinkingLevels(false)}
-                                    >
-                                      <button
-                                        type="button"
-                                        onClick={() => setShowThinkingLevels(prev => !prev)}
-                                        className={`flex min-h-[44px] w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-white transition-colors duration-150 hover:bg-[#242424] ${ showThinkingLevels ? 'bg-[#242424]' : '' }`}
-                                      >
-                                        <span className="flex min-w-0 flex-1 flex-col font-sans font-semibold">
-                                          <span className="truncate text-[12.5px] leading-5 tracking-normal">
-                                            Thinking level
-                                          </span>
-                                          <span className="truncate text-[11px] font-medium leading-4 text-white/50">
-                                            {selectedThinkingLevel.label}
-                                          </span>
-                                        </span>
-                                        <ChevronRight className={`h-3.5 w-3.5 shrink-0 text-white/50 transition-transform duration-150 ${ showThinkingLevels ? 'rotate-90' : '' }`} strokeWidth={2.2} />
-                                      </button>
-
-                                      <AnimatePresence>
-                                        {showThinkingLevels && (
-                                          <motion.div
-                                            initial={{ opacity: 0, x: -10, scale: 0.98 }}
-                                            animate={{ opacity: 1, x: 0, scale: 1 }}
-                                            exit={{ opacity: 0, x: -10, scale: 0.98 }}
-                                            transition={{ duration: 0.15 }}
-                                            className="absolute bottom-0 right-[calc(100%+8px)] z-[140] w-[180px] overflow-hidden rounded-xl border border-white/[0.08] bg-[#111111] p-1.5 shadow-[0_18px_44px_rgba(0,0,0,0.62)]"
-                                            onClick={(e) => e.stopPropagation()}
+                                      <div className="px-0.5 pb-0.5 relative">
+                                        <div
+                                          className="relative"
+                                          onMouseEnter={() => setShowThinkingLevels(true)}
+                                          onMouseLeave={() => setShowThinkingLevels(false)}
+                                        >
+                                          <button
+                                            type="button"
+                                            onClick={() => setShowThinkingLevels(prev => !prev)}
+                                            className={`flex min-h-[44px] w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-white transition-colors duration-150 hover:bg-[#242424] ${ showThinkingLevels ? 'bg-[#242424]' : '' }`}
                                           >
-                                            {MAIN_AGENT_THINKING_LEVEL_OPTIONS.map((level) => {
-                                              const isLevelSelected = level.id === thinkingLevel;
-                                              return (
-                                                <button
-                                                  type="button"
-                                                  key={level.id}
-                                                  onClick={() => selectThinkingLevel(level.id)}
-                                                  className={`flex min-h-[38px] w-full items-center gap-2 rounded-md px-2 py-1 text-left text-white transition-all hover:bg-white/[0.05] ${ isLevelSelected ? 'bg-white/[0.08] font-medium' : 'font-normal' }`}
-                                                >
-                                                  <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center">
-                                                    {isLevelSelected && <Check className="h-3 w-3 text-white" strokeWidth={2.2} />}
-                                                  </span>
-                                                  <span className="text-[12px] font-sans">{level.label}</span>
-                                                </button>
-                                              );
-                                            })}
-                                          </motion.div>
-                                        )}
-                                      </AnimatePresence>
-                                    </div>
-                                  </div>
+                                            <span className="flex min-w-0 flex-1 flex-col font-sans font-semibold">
+                                              <span className="truncate text-[12.5px] leading-5 tracking-normal">
+                                                Thinking level
+                                              </span>
+                                              <span className="truncate text-[11px] font-medium leading-4 text-white/50">
+                                                {selectedThinkingLevel.label}
+                                              </span>
+                                            </span>
+                                            <ChevronRight className={`h-3.5 w-3.5 shrink-0 text-white/50 transition-transform duration-150 ${ showThinkingLevels ? 'rotate-90' : '' }`} strokeWidth={2.2} />
+                                          </button>
+
+                                          <AnimatePresence>
+                                            {showThinkingLevels && (
+                                              <motion.div
+                                                initial={{ opacity: 0, x: -10, scale: 0.98 }}
+                                                animate={{ opacity: 1, x: 0, scale: 1 }}
+                                                exit={{ opacity: 0, x: -10, scale: 0.98 }}
+                                                transition={{ duration: 0.15 }}
+                                                className="absolute bottom-0 right-[calc(100%+8px)] z-[140] w-[180px] overflow-hidden rounded-xl border border-white/[0.08] bg-[#111111] p-1.5 shadow-[0_18px_44px_rgba(0,0,0,0.62)]"
+                                                onClick={(e) => e.stopPropagation()}
+                                              >
+                                                {activeThinkingOptions.map((level) => {
+                                                  const isLevelSelected = level.id === thinkingLevel;
+                                                  return (
+                                                    <button
+                                                      type="button"
+                                                      key={level.id}
+                                                      onClick={() => selectThinkingLevel(level.id)}
+                                                      className={`flex min-h-[38px] w-full items-center gap-2 rounded-md px-2 py-1 text-left text-white transition-all hover:bg-white/[0.05] ${ isLevelSelected ? 'bg-white/[0.08] font-medium' : 'font-normal' }`}
+                                                    >
+                                                      <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center">
+                                                        {isLevelSelected && <Check className="h-3 w-3 text-white" strokeWidth={2.2} />}
+                                                      </span>
+                                                      <span className="text-[12px] font-sans">{level.label}</span>
+                                                    </button>
+                                                  );
+                                                })}
+                                              </motion.div>
+                                            )}
+                                          </AnimatePresence>
+                                        </div>
+                                      </div>
+                                    </>
+                                  )}
                                 </motion.div>
                               )}
                             </AnimatePresence>
                           </div>
-                          
+
                           <button
                             type="button"
                             className="w-7 h-7 flex items-center justify-center rounded-full hover:bg-white/5 text-white/40 hover:text-white/70 transition-all cursor-pointer mr-1"
@@ -700,11 +744,11 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
             ) : (
               /* Manual Mode layout: Structured scheduler form without vertical scrollbars */
               <div className="flex-1 w-full flex flex-col justify-between text-left max-w-[520px] mx-auto py-1 select-text">
-                
+
                 {/* Form Fields Container */}
                 <form className="w-full flex flex-col flex-1 justify-between gap-4">
                   <div className="flex flex-col gap-4 w-full">
-                    
+
                     {/* Task Title (Borderless transparent) */}
                     <div className="w-full">
                       <input
@@ -731,7 +775,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                     <div className="flex flex-col gap-1 w-full">
                       <span className="text-[12px] font-semibold text-white/35 pl-1 mb-1 select-none">Details</span>
                       <div ref={detailsRef} className="w-full bg-white/[0.015] border border-white/[0.03] rounded-[16px] p-0.5 flex flex-col relative select-none">
-                        
+
                         {/* Details - Model Row */}
                         <div className="relative">
                           <button
@@ -765,11 +809,10 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                                       setFormModel(option.optionKey);
                                       setActivePopover(null);
                                     }}
-                                    className={`flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-[12px] text-left transition-colors cursor-pointer ${
-                                      option.optionKey === formModel 
-                                        ? 'bg-white/[0.08] text-white font-medium shadow-sm' 
+                                    className={`flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-[12px] text-left transition-colors cursor-pointer ${ option.optionKey === formModel
+                                        ? 'bg-white/[0.08] text-white font-medium shadow-sm'
                                         : 'text-white/70 hover:bg-white/[0.04] hover:text-white'
-                                    }`}
+                                      }`}
                                   >
                                     <span className="truncate">{option.label}</span>
                                     {option.optionKey === formModel && <Check className="w-3.5 h-3.5 text-white" strokeWidth={2.2} />}
@@ -814,11 +857,10 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                                       setPriority(lvl);
                                       setActivePopover(null);
                                     }}
-                                    className={`flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-[12px] text-left transition-colors cursor-pointer ${
-                                      priority === lvl 
-                                        ? 'bg-white/[0.08] text-white font-medium shadow-sm' 
+                                    className={`flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-[12px] text-left transition-colors cursor-pointer ${ priority === lvl
+                                        ? 'bg-white/[0.08] text-white font-medium shadow-sm'
                                         : 'text-white/70 hover:bg-white/[0.04] hover:text-white'
-                                    }`}
+                                      }`}
                                   >
                                     <span>{getPriorityLabel(lvl)}</span>
                                     {priority === lvl && <Check className="w-3.5 h-3.5 text-white" strokeWidth={2.2} />}
@@ -836,7 +878,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                     <div className="flex flex-col gap-1 w-full">
                       <span className="text-[12px] font-semibold text-white/35 pl-1 mb-1 select-none">Frequency</span>
                       <div ref={frequencyRef} className="w-full bg-white/[0.015] border border-white/[0.03] rounded-[16px] p-0.5 flex flex-col relative select-none">
-                        
+
                         {/* Frequency - Repeat Row */}
                         <div className="relative">
                           <button
@@ -873,7 +915,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                                       </button>
                                       <span className="text-[10px] font-bold text-white/35 tracking-wider uppercase">Custom Repeat</span>
                                     </div>
-                                    
+
                                     <div className="flex flex-col gap-1 mt-1">
                                       <div className="flex items-center gap-1">
                                         <input
@@ -881,33 +923,31 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                                           placeholder="e.g., 3 days, 2 hours, 15 mins"
                                           value={customRepeatVal}
                                           onChange={(e) => setCustomRepeatVal(e.target.value)}
-                                          className={`flex-1 min-w-0 bg-[#0A0A0A]/60 border rounded-lg px-2.5 py-1 text-[11px] text-white focus:outline-none transition-colors text-center ${
-                                            customRepeatVal.trim() === ""
+                                          className={`flex-1 min-w-0 bg-[#0A0A0A]/60 border rounded-lg px-2.5 py-1 text-[11px] text-white focus:outline-none transition-colors text-center ${ customRepeatVal.trim() === ""
                                               ? "border-white/[0.08] focus:border-white/20"
                                               : isCustomRepeatValid
                                                 ? "border-emerald-500/30 focus:border-emerald-500/50"
                                                 : "border-rose-500/30 focus:border-rose-500/50"
-                                          }`}
+                                            }`}
                                         />
                                         <button
                                           type="button"
                                           disabled={!isCustomRepeatValid}
                                           onClick={() => {
                                             if (isCustomRepeatValid) {
-                                              handleSetRecurrence(`custom:${customRepeatVal.trim()}`);
+                                              handleSetRecurrence(`custom:${ customRepeatVal.trim() }`);
                                               setActivePopover(null);
                                             }
                                           }}
-                                          className={`px-3 py-1 font-semibold text-[11px] rounded-lg transition-all text-center ${
-                                            isCustomRepeatValid
+                                          className={`px-3 py-1 font-semibold text-[11px] rounded-lg transition-all text-center ${ isCustomRepeatValid
                                               ? 'bg-white text-black hover:bg-white/90 active:scale-[0.98] cursor-pointer'
                                               : 'bg-white/5 text-white/20 cursor-not-allowed'
-                                          }`}
+                                            }`}
                                         >
                                           Apply
                                         </button>
                                       </div>
-                                      
+
                                       {/* Real-time silent inline indicator text if wrong */}
                                       {customRepeatVal.trim() !== "" && !isCustomRepeatValid && (
                                         <span className="text-[9px] text-rose-400 font-medium pl-1 mt-0.5">Invalid format</span>
@@ -927,18 +967,17 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                                             handleSetRecurrence(opt);
                                             setActivePopover(null);
                                           }}
-                                          className={`flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-[12px] text-left transition-colors cursor-pointer ${
-                                            isSelected 
-                                              ? 'bg-white/[0.08] text-white font-medium shadow-sm' 
+                                          className={`flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-[12px] text-left transition-colors cursor-pointer ${ isSelected
+                                              ? 'bg-white/[0.08] text-white font-medium shadow-sm'
                                               : 'text-[#E8E6E3] hover:bg-white/[0.04] hover:text-white'
-                                          }`}
+                                            }`}
                                         >
                                           <span>{getRecurrenceLabel(opt)}</span>
                                           {isSelected && <Check className="w-3.5 h-3.5 text-white" strokeWidth={2.2} />}
                                         </button>
                                       );
                                     })}
-                                    
+
                                     <button
                                       type="button"
                                       onClick={() => setShowCustomRepeatForm(true)}
@@ -999,9 +1038,8 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                                             type="button"
                                             key={p}
                                             onClick={() => setCustomTimePeriod(p as 'AM' | 'PM')}
-                                            className={`px-2 py-0.5 rounded text-[10px] font-bold transition-all cursor-pointer ${
-                                              active ? 'bg-white text-black font-extrabold shadow-sm' : 'text-white/60 hover:text-white'
-                                            }`}
+                                            className={`px-2 py-0.5 rounded text-[10px] font-bold transition-all cursor-pointer ${ active ? 'bg-white text-black font-extrabold shadow-sm' : 'text-white/60 hover:text-white'
+                                              }`}
                                           >
                                             {p}
                                           </button>
@@ -1021,7 +1059,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                                       if (customTimePeriod === 'AM' && h === 12) h = 0;
                                       const hFormatted = h.toString().padStart(2, '0');
                                       const mFormatted = m.toString().padStart(2, '0');
-                                      setTriggerTime(`${hFormatted}:${mFormatted}`);
+                                      setTriggerTime(`${ hFormatted }:${ mFormatted }`);
                                       setActivePopover(null);
                                     }}
                                     className="w-full py-1.5 bg-white text-black font-semibold text-[11px] rounded-lg hover:bg-white/90 active:scale-[0.98] transition-all cursor-pointer text-center"
@@ -1043,11 +1081,10 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                                           setTriggerTime(opt.value);
                                           setActivePopover(null);
                                         }}
-                                        className={`flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-[12px] text-left transition-colors cursor-pointer ${
-                                          isSelected 
-                                            ? 'bg-white/[0.08] text-white font-medium shadow-sm' 
+                                        className={`flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-[12px] text-left transition-colors cursor-pointer ${ isSelected
+                                            ? 'bg-white/[0.08] text-white font-medium shadow-sm'
                                             : 'text-[#E8E6E3] hover:bg-white/[0.04] hover:text-white'
-                                        }`}
+                                          }`}
                                       >
                                         <span>{opt.label}</span>
                                         {isSelected && <Check className="w-3.5 h-3.5 text-white" strokeWidth={2.2} />}
@@ -1144,11 +1181,10 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                       onClick={(e) => {
                         e.preventDefault();
                       }}
-                      className={`px-6 py-2.5 rounded-xl font-semibold text-[12.5px] transition-all duration-200 select-none ${
-                        isFormValid
+                      className={`px-6 py-2.5 rounded-xl font-semibold text-[12.5px] transition-all duration-200 select-none ${ isFormValid
                           ? 'bg-white text-black hover:bg-white/90 active:scale-[0.98] cursor-pointer shadow-[0_4px_16px_rgba(255,255,255,0.15)]'
                           : 'bg-white/5 text-white/30 border border-white/[0.04] cursor-not-allowed shadow-none'
-                      }`}
+                        }`}
                     >
                       Schedule Task
                     </button>
@@ -1179,11 +1215,10 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                       type="button"
                       key={mode}
                       onClick={() => setScheduleMode(mode)}
-                      className={`group flex min-h-[36px] w-full items-center justify-center px-3 py-1.5 rounded-lg text-[12px] text-center transition-all duration-150 cursor-pointer border border-transparent relative select-none ${
-                        isActive
+                      className={`group flex min-h-[36px] w-full items-center justify-center px-3 py-1.5 rounded-lg text-[12px] text-center transition-all duration-150 cursor-pointer border border-transparent relative select-none ${ isActive
                           ? 'text-white font-semibold'
                           : 'text-[#E8E6E3] hover:bg-white/[0.03] hover:text-white font-normal'
-                      }`}
+                        }`}
                     >
                       {isActive && (
                         <motion.div
@@ -1210,11 +1245,10 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                       type="button"
                       key={item.id}
                       onClick={() => setSelectedSection(item.id)}
-                      className={`group flex min-h-[38px] w-full items-center justify-center px-3 py-1.5 rounded-lg text-[12px] text-center transition-all duration-150 cursor-pointer border border-transparent relative select-none ${
-                        isActive
+                      className={`group flex min-h-[38px] w-full items-center justify-center px-3 py-1.5 rounded-lg text-[12px] text-center transition-all duration-150 cursor-pointer border border-transparent relative select-none ${ isActive
                           ? 'text-white font-semibold'
                           : 'text-[#E8E6E3] hover:bg-white/[0.03] hover:text-white font-normal'
-                      }`}
+                        }`}
                     >
                       {isActive && (
                         <motion.div
@@ -1231,7 +1265,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
             </div>
           </motion.div>
         </div>
-        
+
       </div>
     </div>
   );

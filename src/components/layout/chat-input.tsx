@@ -9,12 +9,15 @@ import { AgentFace } from '../chat/agent-face';
 import { notifyAgentFaceFiles, notifyAgentFaceInputChange, notifyAgentFaceSend } from '../chat/agent-face-controller';
 import {
   MAIN_AGENT_MODEL_OPTIONS,
-  MAIN_AGENT_THINKING_LEVEL_OPTIONS,
+  doesModelSupportThinking as modelSupportsThinking,
+  getModelThinkingOptions,
   getMainAgentModelConfig,
+  normalizeModelThinkingCapabilities,
   normalizeMainAgentThinkingLevel,
   type MainAgentProvider,
   type MainAgentMode,
   type MainAgentThinkingLevel,
+  type ModelThinkingCapabilities,
 } from '../../lib/agent/model-routing';
 import {
   AUTO_MODEL_SELECTION,
@@ -24,6 +27,7 @@ import {
   MODEL_OVERRIDE_STORAGE_KEY,
   MODEL_PROVIDER_MODE,
   MODEL_SELECTOR_STORAGE_KEY,
+  MODEL_THINKING_CAPABILITIES_STORAGE_KEY,
   entriesToModelCatalog,
   ensureModelSelectorEntry,
   modelEntryKey,
@@ -40,6 +44,7 @@ type StoredModelSettings = {
   modelCatalog: Partial<Record<MainAgentProvider, string[]>>;
   modelEntries: ModelSelectorEntry[];
   modelApiKeys: Record<string, string>;
+  thinkingCapabilities: Record<string, ModelThinkingCapabilities>;
   chatModelSelection: string;
 };
 
@@ -107,6 +112,21 @@ const readStringArrayRecord = (storageKey: string): Record<string, string[]> => 
   }
 };
 
+const readThinkingCapabilityRecord = (): Record<string, ModelThinkingCapabilities> => {
+  if (typeof window === 'undefined') return {};
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(MODEL_THINKING_CAPABILITIES_STORAGE_KEY) || '{}');
+    if (!parsed || typeof parsed !== 'object') return {};
+    return Object.fromEntries(
+      Object.entries(parsed as Record<string, unknown>)
+        .map(([key, value]) => [key, normalizeModelThinkingCapabilities(value)] as const)
+        .filter(([, value]) => Boolean(value)),
+    ) as Record<string, ModelThinkingCapabilities>;
+  } catch {
+    return {};
+  }
+};
+
 const readStoredModelSettings = (): StoredModelSettings => {
   const apiKeys = readStringRecord(MODEL_API_KEY_STORAGE_KEY) as Partial<Record<MainAgentProvider, string>>;
   const modelOverrides = readStringRecord(MODEL_OVERRIDE_STORAGE_KEY) as Partial<Record<MainAgentProvider, string>>;
@@ -125,6 +145,7 @@ const readStoredModelSettings = (): StoredModelSettings => {
     .filter(entry => entry.modelId);
   const modelEntries = normalizeModelSelectorEntries([...normalizeModelSelectorEntries(savedEntries, modelCatalog), ...overrideEntries], modelCatalog);
   const modelApiKeys = readStringRecord(MODEL_API_KEYS_STORAGE_KEY);
+  const thinkingCapabilities = readThinkingCapabilityRecord();
   const chatModelSelection = typeof window !== 'undefined'
     ? (window.localStorage.getItem(CHAT_MODEL_SELECTION_STORAGE_KEY) || AUTO_MODEL_SELECTION)
     : AUTO_MODEL_SELECTION;
@@ -135,6 +156,7 @@ const readStoredModelSettings = (): StoredModelSettings => {
     modelCatalog,
     modelEntries,
     modelApiKeys,
+    thinkingCapabilities,
     chatModelSelection,
   };
 };
@@ -1152,6 +1174,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     modelCatalog: {},
     modelEntries: [],
     modelApiKeys: {},
+    thinkingCapabilities: {},
     chatModelSelection: AUTO_MODEL_SELECTION,
   }));
   const connectors = useConnectors();
@@ -2043,9 +2066,31 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const selectedModel = activeModelSelection === AUTO_MODEL_SELECTION
     ? autoModelOption
     : modelOptions.find(option => option.optionKey === activeModelSelection) || autoModelOption;
+  
+  const getThinkingTarget = useCallback((option: ChatModelOption) => option.isAuto
+    ? { provider: fallbackModelConfig.provider, modelName: fallbackModelConfig.modelName, capabilities: undefined }
+    : {
+      provider: option.provider,
+      modelName: option.modelId || option.modelName,
+      capabilities: storedModelSettings.thinkingCapabilities[option.optionKey],
+    }, [fallbackModelConfig, storedModelSettings.thinkingCapabilities]);
+
+  const doesModelSupportThinking = useCallback((option: ChatModelOption): boolean => {
+    const target = getThinkingTarget(option);
+    return modelSupportsThinking(target.provider, target.modelName, target.capabilities);
+  }, [getThinkingTarget]);
+
+  const getThinkingLevelOptions = useCallback((option: ChatModelOption) => {
+    const target = getThinkingTarget(option);
+    return getModelThinkingOptions(target.provider, target.modelName, target.capabilities);
+  }, [getThinkingTarget]);
+
   const allModelOptions = useMemo(() => [autoModelOption, ...modelOptions], [autoModelOption, modelOptions]);
   const safeThinkingLevel = normalizeMainAgentThinkingLevel(thinkingLevel);
-  const selectedThinkingLevel = MAIN_AGENT_THINKING_LEVEL_OPTIONS.find(option => option.id === safeThinkingLevel) || MAIN_AGENT_THINKING_LEVEL_OPTIONS[0];
+  const activeThinkingOptions = useMemo(() => getThinkingLevelOptions(selectedModel), [selectedModel, getThinkingLevelOptions]);
+  const selectedThinkingLevel = useMemo(() => {
+    return activeThinkingOptions.find(option => option.id === safeThinkingLevel) || activeThinkingOptions[1] || activeThinkingOptions[0];
+  }, [activeThinkingOptions, safeThinkingLevel]);
   const modelDisplayLabel = getModelOptionLabel(selectedModel as ChatModelOption);
 
   useEffect(() => {
@@ -3090,66 +3135,70 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       )}
                     </div>
 
-                    <div className="mx-2 my-1.5 h-px bg-white/[0.09]" />
+                    {doesModelSupportThinking(selectedModel) && (
+                      <>
+                        <div className="mx-2 my-1.5 h-px bg-white/[0.09]" />
 
-                    <div className="px-0.5 pb-0.5">
-                      <div
-                        className="relative"
-                        onMouseEnter={handleThinkingMouseEnter}
-                        onMouseLeave={handleThinkingMouseLeave}
-                      >
-                        <button
-                          type="button"
-                          onClick={() => setShowThinkingLevels(prev => !prev)}
-                          onFocus={handleThinkingMouseEnter}
-                          className={`flex min-h-[46px] w-full items-center gap-2.5 rounded-[15px] px-2.5 py-1.5 text-left text-white transition-colors duration-150 hover:bg-[#242424] ${ showThinkingLevels ? 'bg-[#242424]' : '' }`}
-                          aria-expanded={showThinkingLevels}
-                        >
-                          <span className="h-5 w-5 shrink-0" />
-                          <span className="flex min-w-0 flex-1 flex-col">
-                            <span className="truncate text-[13px] font-semibold leading-5 tracking-normal">
-                              Thinking level
-                            </span>
-                            <span className="truncate text-[12px] font-medium leading-4 text-[#E7E7E7]">
-                              {selectedThinkingLevel.label}
-                            </span>
-                          </span>
-                          <ChevronRight className={`h-3.5 w-3.5 shrink-0 text-white transition-transform duration-150 ${ showThinkingLevels ? 'rotate-90' : '' }`} strokeWidth={2.2} />
-                        </button>
-
-                        {showThinkingLevels && (
+                        <div className="px-0.5 pb-0.5">
                           <div
+                            className="relative"
                             onMouseEnter={handleThinkingMouseEnter}
                             onMouseLeave={handleThinkingMouseLeave}
-                            className={`eterx-composer-popout absolute ${ thinkingMenuVerticalClass } ${ thinkingMenuHorizontalClass } z-[140] w-[188px] max-w-[calc(100vw-44px)] overflow-hidden rounded-[18px] border border-white/[0.08] bg-[#111111] p-1.5 shadow-[0_18px_44px_rgba(0,0,0,0.62),inset_0_1px_0_rgba(255,255,255,0.04)]`}
                           >
-                            {MAIN_AGENT_THINKING_LEVEL_OPTIONS.map(option => {
-                              const selected = option.id === safeThinkingLevel;
-                              return (
-                                <button
-                                  key={option.id}
-                                  type="button"
-                                  onClick={() => {
-                                    onThinkingLevelChange(option.id);
-                                    setShowThinkingLevels(false);
-                                  }}
-                                  className={`flex min-h-[42px] w-full items-center gap-2.5 rounded-[14px] px-2.5 py-1.5 text-left transition-colors duration-150 ${ selected ? 'text-white hover:bg-[#202020]' : 'text-[#F4F4F4] hover:bg-[#202020] hover:text-white' }`}
-                                >
-                                  <span className="flex h-5 w-5 shrink-0 items-center justify-center text-white/95">
-                                    {selected && <Check className="h-4 w-4" strokeWidth={2.35} />}
-                                  </span>
-                                  <span className="min-w-0 flex-1">
-                                    <span className="block truncate text-[13px] font-semibold leading-5">
-                                      {option.label}
-                                    </span>
-                                  </span>
-                                </button>
-                              );
-                            })}
+                            <button
+                              type="button"
+                              onClick={() => setShowThinkingLevels(prev => !prev)}
+                              onFocus={handleThinkingMouseEnter}
+                              className={`flex min-h-[46px] w-full items-center gap-2.5 rounded-[15px] px-2.5 py-1.5 text-left text-white transition-colors duration-150 hover:bg-[#242424] ${ showThinkingLevels ? 'bg-[#242424]' : '' }`}
+                              aria-expanded={showThinkingLevels}
+                            >
+                              <span className="h-5 w-5 shrink-0" />
+                              <span className="flex min-w-0 flex-1 flex-col">
+                                <span className="truncate text-[13px] font-semibold leading-5 tracking-normal">
+                                  Thinking level
+                                </span>
+                                <span className="truncate text-[12px] font-medium leading-4 text-[#E7E7E7]">
+                                  {selectedThinkingLevel.label}
+                                </span>
+                              </span>
+                              <ChevronRight className={`h-3.5 w-3.5 shrink-0 text-white transition-transform duration-150 ${ showThinkingLevels ? 'rotate-90' : '' }`} strokeWidth={2.2} />
+                            </button>
+
+                            {showThinkingLevels && (
+                              <div
+                                onMouseEnter={handleThinkingMouseEnter}
+                                onMouseLeave={handleThinkingMouseLeave}
+                                className={`eterx-composer-popout absolute ${ thinkingMenuVerticalClass } ${ thinkingMenuHorizontalClass } z-[140] w-[188px] max-w-[calc(100vw-44px)] overflow-hidden rounded-[18px] border border-white/[0.08] bg-[#111111] p-1.5 shadow-[0_18px_44px_rgba(0,0,0,0.62),inset_0_1px_0_rgba(255,255,255,0.04)]`}
+                              >
+                                {activeThinkingOptions.map(option => {
+                                  const selected = option.id === safeThinkingLevel;
+                                  return (
+                                    <button
+                                      key={option.id}
+                                      type="button"
+                                      onClick={() => {
+                                        onThinkingLevelChange(option.id);
+                                        setShowThinkingLevels(false);
+                                      }}
+                                      className={`flex min-h-[42px] w-full items-center gap-2.5 rounded-[14px] px-2.5 py-1.5 text-left transition-colors duration-150 ${ selected ? 'text-white hover:bg-[#202020]' : 'text-[#F4F4F4] hover:bg-[#202020] hover:text-white' }`}
+                                    >
+                                      <span className="flex h-5 w-5 shrink-0 items-center justify-center text-white/95">
+                                        {selected && <Check className="h-4 w-4" strokeWidth={2.35} />}
+                                      </span>
+                                      <span className="min-w-0 flex-1">
+                                        <span className="block truncate text-[13px] font-semibold leading-5">
+                                          {option.label}
+                                        </span>
+                                      </span>
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            )}
                           </div>
-                        )}
-                      </div>
-                    </div>
+                        </div>
+                      </>
+                    )}
                   </div>
                 )}
               </div>

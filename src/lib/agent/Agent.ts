@@ -38,11 +38,27 @@ import { globalSessionManager } from './session';
 import { toolResultCompactor } from './memory/tool-result-compactor';
 import { awaitIfPaused, isCancelled } from './roles/sub_agent';
 import { interAgentMailbox } from './roles/inter_agent_comm';
-import { MAIN_AGENT_MODE_CONFIG, type MainAgentMode, type MainAgentProvider, type MainAgentThinkingLevel, resolveModelName, isModelDeprecatedError, getFallbackChain } from './model-routing';
+import {
+  MAIN_AGENT_MODE_CONFIG,
+  getAnthropicThinkingBudget,
+  getModelThinkingOptions,
+  isAnthropicAdaptiveThinkingModel,
+  normalizeThinkingLevelForModel,
+  toAnthropicEffort,
+  toMistralReasoningEffort,
+  toOpenAIReasoningEffort,
+  type MainAgentMode,
+  type MainAgentProvider,
+  type MainAgentThinkingLevel,
+  resolveModelName,
+  isModelDeprecatedError,
+  getFallbackChain,
+} from './model-routing';
 import { lifetimeBrain } from './memory/lifetime';
 import { getSynapseGraphForChat } from './memory/synapse-graph';
 import { monitorEmitter } from './monitor/emitter';
 import { createToolExecutionContext, isToolCancellationError } from './cancellation';
+
 import { readTaskTracker, readTaskTrackerMarkdown, trackerToTrace, writeTaskTrackerJson } from './task-tracker-store';
 import { normalizeTimeoutMs, secondsFromTimeoutMs } from './tools/core/terminal_timeout';
 import { buildAgentBuilderRuntimePrompt, isAgentBuilderRuntimeContext, shouldExposeToolToRuntime, isCustomAgentRuntimeContext, buildCustomAgentRuntimePrompt, loadCustomAgentProfile } from './builder-agent';
@@ -400,10 +416,12 @@ export class GeminiAgentClient {
             contents,
             config: {
               systemInstruction,
-              thinkingConfig: {
-                thinkingLevel: 'minimal' as any,
-                includeThoughts: false,
-              },
+              ...(getModelThinkingOptions('gemini', this.modelName).length > 0 ? {
+                thinkingConfig: {
+                  thinkingLevel: 'minimal' as any,
+                  includeThoughts: false,
+                }
+              } : {}),
             },
           }),
           new Promise<never>((_, reject) => setTimeout(() => reject(new Error('TELEGRAM_FAST_TIMEOUT')), timeoutMs)),
@@ -1348,16 +1366,39 @@ export class GeminiAgentClient {
     let lastAnswer = '';
     const maxLoopIterations = 240;
 
+    const selectedThinkingLevel = normalizeThinkingLevelForModel(
+      (context as any).selectedThinkingLevel || 'low',
+      this.activeProvider,
+      this.mistralModelName,
+    );
+    const supportsThinking = getModelThinkingOptions(this.activeProvider, this.mistralModelName).length > 0;
+
     for (let interactions = 1; interactions <= maxLoopIterations; interactions++) {
       if (isCancelled(context.projectId)) throw new Error('CANCELLED_BY_USER');
 
-      const response = await client.chat.completions.create({
+      const params: any = {
         model: this.mistralModelName,
         messages,
         tools,
         tool_choice: 'auto',
-        temperature: this.resolveTemperature(adaptiveLearning.classifyTask(message), interactions),
-      } as any);
+      };
+
+      if (supportsThinking) {
+        if (this.activeProvider === 'mistral') {
+          params.reasoning_effort = toMistralReasoningEffort(selectedThinkingLevel);
+        } else if (this.activeProvider === 'openrouter') {
+          params.reasoning = {
+            effort: selectedThinkingLevel === 'off' ? 'none' : selectedThinkingLevel,
+            exclude: true,
+          };
+        } else {
+          params.reasoning_effort = toOpenAIReasoningEffort(selectedThinkingLevel);
+        }
+      } else {
+        params.temperature = this.resolveTemperature(adaptiveLearning.classifyTask(message), interactions);
+      }
+
+      const response = await client.chat.completions.create(params);
 
       const assistantMessage = response.choices?.[0]?.message as any;
       if (!assistantMessage) throw new Error('Mistral returned no assistant message.');
@@ -1542,17 +1583,42 @@ export class GeminiAgentClient {
     const maxTokens = positiveIntEnv('ANTHROPIC_MAX_TOKENS', 8192);
     const system = this.generateSystemPrompt(context, dynamicContextParts.join('\n\n'));
 
+    const selectedThinkingLevel = normalizeThinkingLevelForModel(
+      (context as any).selectedThinkingLevel || 'low',
+      'anthropic',
+      this.mistralModelName,
+    );
+    const supportsThinking = getModelThinkingOptions('anthropic', this.mistralModelName).length > 0;
+
     for (let interactions = 1; interactions <= maxLoopIterations; interactions++) {
       if (isCancelled(context.projectId)) throw new Error('CANCELLED_BY_USER');
 
-      const response = await client.messages.create({
+      const params: any = {
         model: this.mistralModelName,
         max_tokens: maxTokens,
         system,
         messages,
         tools,
-        temperature: this.resolveTemperature(adaptiveLearning.classifyTask(message), interactions),
-      } as any);
+      };
+
+      if (supportsThinking) {
+        if (isAnthropicAdaptiveThinkingModel(this.mistralModelName)) {
+          // Claude's current models use effort/adaptive thinking.  Sending the
+          // old budget_tokens payload to Sonnet 5 causes a 400 response.
+          params.output_config = { effort: toAnthropicEffort(selectedThinkingLevel) };
+        } else {
+          const budget = getAnthropicThinkingBudget(selectedThinkingLevel);
+          if (budget > 0) {
+            params.thinking = { type: 'enabled', budget_tokens: budget };
+            params.max_tokens = Math.max(maxTokens, budget + 2048);
+          }
+        }
+        params.temperature = 1.0;
+      } else {
+        params.temperature = this.resolveTemperature(adaptiveLearning.classifyTask(message), interactions);
+      }
+
+      const response = await client.messages.create(params);
 
       const contentBlocks = Array.isArray((response as any).content) ? (response as any).content : [];
       const contentText = this.extractAnthropicContent(contentBlocks).trim();
@@ -3922,7 +3988,11 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
 
     const isGemmaModel = this.modelName.toLowerCase().includes('gemma');
     const plannerToolsDisabled = !!(context as any).disablePlannerTools;
-    const selectedThinkingLevel = ((context as any).selectedThinkingLevel || 'low') as MainAgentThinkingLevel;
+    const selectedThinkingLevel = normalizeThinkingLevelForModel(
+      (context as any).selectedThinkingLevel || 'low',
+      'gemini',
+      this.modelName,
+    );
 
     // Auto-detect if this is a direct conversational question or greeting without file interactions
     const mentionsFile = /\b\w+\.(?:ts|tsx|js|jsx|py|json|md|html|css|sh|ps1|yml|yaml|toml|txt)\b/i.test(message) ||
@@ -3931,13 +4001,15 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
       (intent.primaryIntent === 'educate_explain' && !/\b(write|create|make|edit|run|execute|install|delete|test|build|scaffold|add|remove|implement|patch|fix)\b/i.test(message)) ||
       /^(thanks?|ok|okay|cool|hello|hi|yes|no|correct|right|sure|fine)$/i.test(message.trim().replace(/[.,!]/g, ''))) && !mentionsFile;
 
-    const thinkingLevel = (lightweightTelegramMode || isDirectAnswer)
-      ? ThinkingLevel.LOW
-      : selectedThinkingLevel === 'high'
-        ? ThinkingLevel.HIGH
-        : ThinkingLevel.MEDIUM;
+    const thinkingLevel = selectedThinkingLevel === 'minimal'
+      ? ThinkingLevel.MINIMAL
+      : selectedThinkingLevel === 'low'
+        ? ThinkingLevel.LOW
+        : selectedThinkingLevel === 'high'
+          ? ThinkingLevel.HIGH
+          : ThinkingLevel.MEDIUM;
     const includeThoughts = !lightweightTelegramMode && !isDirectAnswer;
-    if (!isGemmaModel) {
+    if (getModelThinkingOptions('gemini', this.modelName).length > 0) {
       config.thinkingConfig = {
         thinkingLevel,
         includeThoughts,
@@ -4315,6 +4387,7 @@ EXTERNAL ACTION NOTE CUE
       //           (which would lose all tool call progress and context)
       // ZERO-LATENCY: Fire the API stream immediately â€” no pre-scan overhead
       // Keep the same thinking policy on follow-up tool turns.
+      let currentModel = this.modelName;
       const visibleProgressCue = buildVisibleProgressCue(interactions);
       // When cache is active, baseSystemInstruction is already the dynamic suffix;
       // the cached content holds the static rules + tools so we must NOT override
@@ -4333,11 +4406,11 @@ EXTERNAL ACTION NOTE CUE
           ? `${ baseSystemInstruction }${ visibleProgressCue }`
           : baseSystemInstruction;
       }
-      if (!isGemmaModel) {
-        // ADAPTIVE THINKING: Escalate reasoning depth as task complexity reveals itself
-        const dynamicThinkingLevel = interactions > 20
+      if (getModelThinkingOptions('gemini', currentModel).length > 0) {
+        // Preserve the exact composer level for all tool-loop turns.
+        const dynamicThinkingLevel = false
           ? 'HIGH' as any  // Deep into complex work — maximum reasoning
-          : interactions > 8 && thinkingLevel === ThinkingLevel.LOW
+          : false
             ? ThinkingLevel.MEDIUM  // Task proving harder than expected
             : thinkingLevel;
         config.thinkingConfig = { thinkingLevel: dynamicThinkingLevel, includeThoughts };
@@ -4352,7 +4425,6 @@ EXTERNAL ACTION NOTE CUE
       const maxStreamAttempts = lightweightTelegramMode
         ? Math.min(Math.max(configuredMaxStreamAttempts, 1), 4)
         : Math.min(Math.max(configuredMaxStreamAttempts, 1), 8);
-      let currentModel = this.modelName;
       let lastStreamError = '';
       let streamConnectTimeouts = 0;
       let activeStreamAbortController: AbortController | null = null;

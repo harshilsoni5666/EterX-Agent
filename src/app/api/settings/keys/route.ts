@@ -3,6 +3,7 @@ import { apiKeyPool } from '../../../../lib/agent/api-key-pool';
 import {
   applyRuntimeApiKeys,
   applyRuntimeModelOverrides,
+  getRuntimeApiKeyValues,
   getRuntimeApiKeyStatus,
   getRuntimeModelOverrides,
 } from '../../../../lib/agent/runtime-api-keys';
@@ -46,8 +47,18 @@ export async function POST(req: NextRequest) {
 export async function GET() {
   try {
     const pool = apiKeyPool.getPoolStatus();
+    const providerStatus = getRuntimeApiKeyStatus();
+    const providers = Object.entries(providerStatus).map(([provider, accepted]) => ({
+      provider,
+      accepted,
+      count: getRuntimeApiKeyValues(provider as keyof typeof providerStatus).length,
+      ...(accepted ? {} : { reason: 'No key supplied' }),
+    }));
+    const acceptedCount = providers.reduce((total, provider) => total + provider.count, 0);
+
     return NextResponse.json({
       ok: true,
+      acceptedCount,
       pool: {
         totalKeys: pool.totalKeys,
         availableKeys: pool.availableKeys,
@@ -55,7 +66,7 @@ export async function GET() {
         retiredKeys: pool.retiredKeys,
         healthySummary: pool.healthySummary,
       },
-      providers: getRuntimeApiKeyStatus(),
+      providers,
       modelOverrides: getRuntimeModelOverrides(),
     });
   } catch (error: any) {

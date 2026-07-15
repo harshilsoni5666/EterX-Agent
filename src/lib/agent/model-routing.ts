@@ -23,7 +23,24 @@ import {
 
 export type MainAgentProvider = 'gemini' | 'mistral' | 'openai' | 'openrouter' | 'anthropic' | 'groq';
 export type MainAgentMode = 'think' | 'fast' | 'mistral' | 'openai' | 'openrouter' | 'anthropic' | 'groq';
-export type MainAgentThinkingLevel = 'low' | 'high';
+/**
+ * A provider-neutral value persisted by the composer.  Individual providers
+ * expose only the values that their selected model actually accepts.
+ */
+export type MainAgentThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
+export type ModelThinkingOption = {
+  id: MainAgentThinkingLevel;
+  label: string;
+};
+
+/** Capability metadata returned by a provider's live model catalog. */
+export type ModelThinkingCapabilities = {
+  levels: MainAgentThinkingLevel[];
+  defaultLevel?: MainAgentThinkingLevel;
+  parameter?: 'thinkingLevel' | 'reasoning_effort' | 'reasoning' | 'output_config.effort';
+  source?: 'provider';
+};
 
 export type MainAgentModelConfig = {
   id: MainAgentMode;
@@ -42,9 +59,7 @@ export const GEMINI_THINK_FALLBACK_CHAIN: readonly string[] = [
   'gemini-3-pro-preview',
   'gemini-3.1-pro-preview',
   'gemini-3.1-flash-lite',
-  'gemini-2.5-flash',
   'gemini-2.5-pro',
-  'gemini-2.5-flash-lite',
   'gemini-2.0-flash',
 ];
 
@@ -52,47 +67,49 @@ export const GEMINI_FAST_FALLBACK_CHAIN: readonly string[] = [
   'gemini-3.5-flash',
   'gemini-3-flash-preview',
   'gemini-3.1-flash-lite',
-  'gemini-2.5-flash',
-  'gemini-2.5-flash-lite',
+  'gemini-2.0-flash-lite',
+  'gemini-2.0-flash',
 ];
 
 export const MISTRAL_FALLBACK_CHAIN: readonly string[] = [
   'mistral-medium-3-5',
-  'mistral-small-2603',
+  'mistral-medium-2508',
   'mistral-large-2512',
+  'mistral-small-2603',
   'ministral-14b-2512',
   'ministral-8b-2512',
+  'codestral-2508',
 ];
 
 export const OPENAI_FALLBACK_CHAIN: readonly string[] = [
+  'gpt-5.6-luna-pro',
+  'gpt-5.6-luna',
+  'gpt-5.6-terra-pro',
+  'gpt-5.6-terra',
   'gpt-5.5',
-  'gpt-5.4',
-  'gpt-5.4-mini',
-  'gpt-5.4-nano',
+  'gpt-4o',
+  'gpt-4o-mini',
 ];
 
 export const OPENROUTER_FALLBACK_CHAIN: readonly string[] = [
-  'openai/gpt-5.5',
-  'openai/gpt-5.4',
-  'anthropic/claude-opus-4.8',
-  'anthropic/claude-sonnet-4.6',
+  'openai/gpt-5.6-luna',
+  'openai/gpt-5.6-terra',
+  'anthropic/claude-sonnet-5',
+  'anthropic/claude-fable-5',
   'google/gemini-3.5-flash',
-  'google/gemini-3-flash-preview',
-  'mistralai/mistral-medium-3-5',
+  'x-ai/grok-4.5',
 ];
 
 export const ANTHROPIC_FALLBACK_CHAIN: readonly string[] = [
+  'claude-sonnet-5',
+  'claude-fable-5',
   'claude-opus-4-8',
   'claude-sonnet-4-6',
-  'claude-haiku-4-5-20251001',
-  'claude-opus-4-7',
 ];
 
 export const GROQ_FALLBACK_CHAIN: readonly string[] = [
-  'openai/gpt-oss-120b',
   'llama-3.3-70b-versatile',
-  'groq/compound',
-  'groq/compound-mini',
+  'llama-3.1-8b-instant',
 ];
 
 // ─── Proven model cache — survives the entire process lifetime ────────────────
@@ -259,7 +276,7 @@ export const MAIN_AGENT_MODE_CONFIG: Record<MainAgentMode, MainAgentModelConfig>
   openai: {
     id: 'openai',
     provider: 'openai',
-    label: 'GPT-5.5',
+    label: 'GPT-5.6 Luna',
     compactLabel: 'OpenAI',
     get modelName() { return resolveModelName('openai'); },
     selectable: true,
@@ -275,7 +292,7 @@ export const MAIN_AGENT_MODE_CONFIG: Record<MainAgentMode, MainAgentModelConfig>
   anthropic: {
     id: 'anthropic',
     provider: 'anthropic',
-    label: 'Claude Opus 4.8',
+    label: 'Claude Sonnet 5',
     compactLabel: 'Claude',
     get modelName() { return resolveModelName('anthropic'); },
     selectable: true,
@@ -294,10 +311,186 @@ export const MAIN_AGENT_MODEL_OPTIONS = Object.values(MAIN_AGENT_MODE_CONFIG).fi
 
 export const MAIN_AGENT_THINKING_LEVEL_STORAGE_KEY = 'eterx-thinking-level';
 
-export const MAIN_AGENT_THINKING_LEVEL_OPTIONS: Array<{ id: MainAgentThinkingLevel; label: string }> = [
+export const MAIN_AGENT_THINKING_LEVEL_OPTIONS: ModelThinkingOption[] = [
+  { id: 'off', label: 'Off' },
+  { id: 'minimal', label: 'Minimal' },
   { id: 'low', label: 'Low' },
+  { id: 'medium', label: 'Medium' },
   { id: 'high', label: 'High' },
+  { id: 'xhigh', label: 'Extra high' },
+  { id: 'max', label: 'Max' },
 ];
+
+const thinkingOptions = (...levels: MainAgentThinkingLevel[]): ModelThinkingOption[] =>
+  levels.map(id => MAIN_AGENT_THINKING_LEVEL_OPTIONS.find(option => option.id === id)!);
+
+const isOpenAIReasoningModel = (model: string) =>
+  /(?:^|[/:_-])(?:o1|o3|o4)(?:$|[/:_-])|gpt-5|luna|terra/i.test(model);
+
+const isClaudeEffortModel = (model: string) =>
+  /(?:claude-(?:fable|mythos|sonnet-5|opus-4-(?:6|7|8)))/i.test(model);
+
+const isClaudeXHighModel = (model: string) =>
+  /(?:claude-(?:fable|mythos|sonnet-5|opus-4-(?:7|8)))/i.test(model);
+
+const isMistralReasoningModel = (model: string) =>
+  /(?:mistral-small(?:-latest)?|mistral-medium-3-5)/i.test(model);
+
+/**
+ * Returns the exact thinking choices for a concrete provider/model pair.
+ * Keep this registry client-safe: both composer UIs and server adapters use it.
+ */
+export function getModelThinkingOptions(
+  provider: MainAgentProvider,
+  modelName: string,
+  discovered?: ModelThinkingCapabilities | null,
+): ModelThinkingOption[] {
+  if (discovered?.levels?.length) {
+    return discovered.levels
+      .map(level => MAIN_AGENT_THINKING_LEVEL_OPTIONS.find(option => option.id === level))
+      .filter((option): option is ModelThinkingOption => Boolean(option));
+  }
+  const model = String(modelName || '').trim().toLowerCase();
+  if (!model) return [];
+
+  if (provider === 'gemini') {
+    if (model.includes('gemini-3.1-flash-lite')) return thinkingOptions('minimal', 'high');
+    if (model.includes('gemini-3.5') || model.includes('gemini-3-flash')) {
+      return thinkingOptions('minimal', 'low', 'medium', 'high');
+    }
+    if (model.includes('gemini-3.1-pro')) return thinkingOptions('low', 'medium', 'high');
+    if (model.includes('gemini-3-pro')) return thinkingOptions('low', 'high');
+    if (model.includes('gemini-2.5')) return thinkingOptions('low', 'medium', 'high');
+    if (model.includes('gemini-2.0-flash-thinking')) return thinkingOptions('low', 'medium', 'high');
+    return [];
+  }
+
+  if (provider === 'mistral') {
+    // Mistral exposes two API values: "none" and "high".
+    return isMistralReasoningModel(model) ? thinkingOptions('off', 'high') : [];
+  }
+
+  if (provider === 'anthropic') {
+    if (!model.includes('claude')) return [];
+    return isClaudeXHighModel(model)
+      ? thinkingOptions('low', 'medium', 'high', 'xhigh', 'max')
+      : isClaudeEffortModel(model)
+        ? thinkingOptions('low', 'medium', 'high', 'max')
+        : thinkingOptions('low', 'medium', 'high', 'max');
+  }
+
+  if (provider === 'openai') {
+    return isOpenAIReasoningModel(model)
+      ? thinkingOptions('minimal', 'low', 'medium', 'high', 'xhigh')
+      : [];
+  }
+
+  if (provider === 'openrouter') {
+    // OpenRouter normalizes this under its `reasoning` object.  We can infer
+    // the common vendor families from the selected exact model id; unknown
+    // models intentionally do not show a control rather than receive an
+    // unsupported parameter.
+    if (model.includes('claude')) {
+      return isClaudeXHighModel(model)
+        ? thinkingOptions('low', 'medium', 'high', 'xhigh', 'max')
+        : thinkingOptions('low', 'medium', 'high', 'max');
+    }
+    if (model.includes('gemini')) {
+      return getModelThinkingOptions('gemini', model.replace(/^google\//, ''));
+    }
+    if (isOpenAIReasoningModel(model) || model.includes('grok')) {
+      return thinkingOptions('minimal', 'low', 'medium', 'high', 'xhigh', 'max');
+    }
+  }
+
+  return [];
+}
+
+export function doesModelSupportThinking(
+  provider: MainAgentProvider,
+  modelName: string,
+  discovered?: ModelThinkingCapabilities | null,
+): boolean {
+  return getModelThinkingOptions(provider, modelName, discovered).length > 0;
+}
+
+export function normalizeModelThinkingCapabilities(value: unknown): ModelThinkingCapabilities | null {
+  if (!value || typeof value !== 'object') return null;
+  const source = value as Record<string, unknown>;
+  const rawLevels = Array.isArray(source.levels)
+    ? source.levels
+    : Array.isArray(source.supported_efforts)
+      ? source.supported_efforts
+      : Array.isArray(source.supportedThinkingLevels)
+        ? source.supportedThinkingLevels
+        : [];
+  const levels = Array.from(new Set(rawLevels
+    .map(level => normalizeMainAgentThinkingLevel(level))
+    .filter(level => level !== 'medium' || rawLevels.some(raw => String(raw).toLowerCase() === 'medium'))));
+  if (levels.length === 0) return null;
+
+  const rawDefault = source.defaultLevel ?? source.default_effort ?? source.defaultThinkingLevel;
+  const defaultLevel = rawDefault === undefined ? undefined : normalizeMainAgentThinkingLevel(rawDefault);
+  const parameter = source.parameter === 'thinkingLevel' || source.parameter === 'reasoning_effort' || source.parameter === 'reasoning' || source.parameter === 'output_config.effort'
+    ? source.parameter
+    : undefined;
+  return { levels, ...(defaultLevel && levels.includes(defaultLevel) ? { defaultLevel } : {}), ...(parameter ? { parameter } : {}), source: 'provider' };
+}
+
+/**
+ * Converts a saved/legacy selection to one the current exact model accepts.
+ * This prevents a selection from one provider leaking into the next provider.
+ */
+export function normalizeThinkingLevelForModel(
+  value: unknown,
+  provider: MainAgentProvider,
+  modelName: string,
+  discovered?: ModelThinkingCapabilities | null,
+): MainAgentThinkingLevel {
+  const requested = normalizeMainAgentThinkingLevel(value);
+  const options = getModelThinkingOptions(provider, modelName, discovered);
+  if (options.some(option => option.id === requested)) return requested;
+  return options.find(option => option.id === 'medium')?.id
+    || options.find(option => option.id === 'low')?.id
+    || options[0]?.id
+    || requested;
+}
+
+/** Provider adapters use this to turn the persisted level into API values. */
+export function toOpenAIReasoningEffort(level: MainAgentThinkingLevel): 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' {
+  if (level === 'off') return 'none';
+  if (level === 'max') return 'xhigh';
+  return level === 'minimal' || level === 'low' || level === 'medium' || level === 'high' || level === 'xhigh'
+    ? level
+    : 'medium';
+}
+
+export function toMistralReasoningEffort(level: MainAgentThinkingLevel): 'none' | 'high' {
+  return level === 'high' ? 'high' : 'none';
+}
+
+export function toAnthropicEffort(level: MainAgentThinkingLevel): 'low' | 'medium' | 'high' | 'xhigh' | 'max' {
+  if (level === 'minimal' || level === 'off') return 'low';
+  return level === 'low' || level === 'medium' || level === 'high' || level === 'xhigh' || level === 'max'
+    ? level
+    : 'medium';
+}
+
+export function getAnthropicThinkingBudget(level: MainAgentThinkingLevel): number {
+  switch (level) {
+    case 'off': return 0;
+    case 'minimal': return 1024;
+    case 'low': return 2048;
+    case 'medium': return 4096;
+    case 'high': return 8192;
+    case 'xhigh': return 16384;
+    case 'max': return 32768;
+  }
+}
+
+export function isAnthropicAdaptiveThinkingModel(modelName: string): boolean {
+  return /(?:claude-(?:fable|mythos|sonnet-5|opus-4-(?:6|7|8)))/i.test(modelName);
+}
 
 export function normalizeMainAgentMode(value: unknown): MainAgentMode {
   if (typeof value !== 'string') return 'think';
@@ -315,6 +508,11 @@ export function getMainAgentModelConfig(mode: unknown, runtimeSettings?: ScopedR
 }
 
 export function normalizeMainAgentThinkingLevel(value: unknown): MainAgentThinkingLevel {
+  if (value === 'off' || value === 'none' || value === 'disabled') return 'off';
+  if (value === 'minimal') return 'minimal';
   if (value === 'high' || value === 'enterprise' || value === 'extended') return 'high';
-  return 'low';
+  if (value === 'xhigh' || value === 'extra-high' || value === 'extra_high') return 'xhigh';
+  if (value === 'max' || value === 'full') return 'max';
+  if (value === 'low' || value === 'minimal') return 'low';
+  return 'medium';
 }

@@ -8,6 +8,7 @@ export type ModelSelectorEntry = {
 export const MODEL_OVERRIDE_STORAGE_KEY = 'eterx_model_overrides';
 export const MODEL_CATALOG_STORAGE_KEY = 'eterx_model_catalog';
 export const MODEL_SELECTOR_STORAGE_KEY = 'eterx_model_selector_entries';
+export const MODEL_THINKING_CAPABILITIES_STORAGE_KEY = 'eterx_model_thinking_capabilities';
 export const MODEL_API_KEYS_STORAGE_KEY = 'eterx_model_api_keys';
 export const CHAT_MODEL_SELECTION_STORAGE_KEY = 'eterx_chat_model_selection';
 export const AUTO_MODEL_SELECTION = 'auto';

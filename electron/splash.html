@@ -380,7 +380,7 @@
     <main class="boot" aria-label="Starting EterX">
       <div class="welcome-stack" aria-hidden="true">
         <div class="splash-icon">
-          <img src="../public/logo.png" alt="" draggable="false" />
+          <img id="splash-logo" alt="" draggable="false" />
         </div>
         <h1 class="headline">Welcome to EterX</h1>
         <div class="status-pill">
@@ -401,6 +401,11 @@
       });
 
       var helpButton = document.querySelector('.top-help');
+      var splashLogo = document.getElementById('splash-logo');
+      var splashIcon = new URLSearchParams(window.location.search).get('icon');
+      if (splashLogo && splashIcon) {
+        splashLogo.src = splashIcon;
+      }
       if (helpButton) {
         helpButton.addEventListener('click', function () {
           var isOpen = document.body.classList.toggle('help-open');

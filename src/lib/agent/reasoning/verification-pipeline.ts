@@ -5,7 +5,7 @@
  *
  * WHAT THIS DOES:
  * After every significant action, automatically verifies the result.
- * This is what makes Claude Code feel "alive" — it never claims
+ * This is what makes  Code feel "alive" — it never claims
  * success without proof.
  *
  * VERIFICATION CHAIN:
