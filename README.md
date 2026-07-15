@@ -215,25 +215,7 @@ The `synapse-graph` memory system builds a relational graph of concepts—connec
 
 ---
 
-## Install
 
-EterX can be installed quickly using our automated bootstrap scripts. For custom packaging or development builds, please see our dedicated guides.
-
-### Quick Start (Bootstrap Install)
-
-#### Windows (PowerShell)
-```powershell
-powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/harshilsoni5666/EterX-Agent/main/install.ps1 | iex"
-```
-
-#### Linux & macOS (Bash)
-```bash
-curl -sSL "https://raw.githubusercontent.com/harshilsoni5666/EterX-Agent/main/install.sh" | bash
-```
-
-For more detailed setup options, developers' checkouts, or desktop standalone packaging instructions, please see the [Complete Install Guide](INSTALL.md).
-
----
 
 ## CLI Reference
 
