@@ -2,63 +2,84 @@
 
 ## Overview
 
-EterX-Agent is a locally-running autonomous agent that has direct access to your system — it can execute commands, read and write files, control browsers, and interact with APIs on your behalf. Because of that level of access, security is something I take seriously.
+EterX-Agent runs locally on your machine and has direct access to your system — it can execute commands, read and write files, control browsers, and call external APIs on your behalf. That level of access is what makes it useful, and it is also why I want to be clear about how to handle security concerns and general issues responsibly.
 
-This document explains what versions are supported, how to safely configure the agent, and how to privately report any vulnerabilities you find.
+This document is for anyone who finds a bug, experiences unexpected behavior, or discovers a security vulnerability. Whatever you are dealing with, there is a right place to report it, and I will take it seriously.
 
 ---
 
 ## Supported Versions
 
-I actively maintain only the latest code on the `main` branch. Older snapshots and previous branches are not patched.
+I maintain only the latest code on the `main` branch. Older versions are not patched or updated.
 
 | Version | Supported |
 |---------|-----------|
 | Latest (main branch) | Yes |
 | All previous versions | No |
 
-If you are running an older version, update to the latest before reporting a bug or vulnerability.
+If you are on an older version, please update before reporting an issue — it may already be resolved.
+
+---
+
+## Reporting a Bug or General Issue
+
+If something is not working the way you expect, or you have run into a crash, unexpected behavior, or any other problem that is not a security concern, please open a GitHub Issue.
+
+When you open an issue, it helps a lot if you include:
+
+- A description of what happened and what you expected to happen
+- The steps that led to the problem
+- Your operating system and Node.js version
+- Any relevant error messages or logs from the terminal
+
+There is no strict format required. Write it however feels natural — I will follow up if I need more information.
+
+I genuinely appreciate every report. Finding and fixing bugs is a shared effort, and the people who take the time to report them make the project meaningfully better for everyone.
 
 ---
 
 ## Safe Usage Guidelines
 
-EterX has a lot of system-level access by design. That makes it powerful, but it also means you should be deliberate about how you set it up.
+Because EterX operates with elevated system access, how you configure it matters.
 
 ### External Inputs
 
-If you connect EterX to a messaging platform like Telegram, treat every incoming message as untrusted input by default. The agent supports a pairing policy (`dmPolicy="pairing"`) that blocks unknown senders from issuing commands. Do not change this to an open policy unless you are running in a fully isolated environment and understand the risk.
+If you connect EterX to a messaging platform like Telegram, treat all incoming messages as untrusted by default. The agent supports a pairing policy (`dmPolicy="pairing"`) that blocks unrecognized senders from issuing commands. I recommend keeping this setting unless you are running in a fully isolated environment.
 
-Do not add wildcard (`*`) permissions to public channels or group chats under normal use.
+Avoid setting your policy to open or adding wildcard permissions to public channels unless you fully understand what that grants.
 
 ### Multi-User or Remote Deployments
 
-If more than one person is sending requests to the agent, or if the agent is exposed over a network, run it inside an isolated environment such as a Docker container. Keep the sandbox configuration restrictive — in particular, avoid giving sandboxed sessions access to your host credentials, local file system, or high-privilege shell commands.
+If the agent is accessible by more than one person, or exposed over a network, run it inside an isolated container such as Docker. Keep the environment restrictive — sandboxed sessions should not have access to your host credentials, local file system, or high-privilege commands.
 
 ### API Keys and Credentials
 
-API keys are stored locally in `.env.local` or under `%LOCALAPPDATA%\EterX` on Windows. These files are already excluded from git via the default `.gitignore`, but double-check before committing if you have made any local changes to the ignore rules.
+API keys are stored locally in `.env.local` or under `%LOCALAPPDATA%\EterX` on Windows. The default `.gitignore` excludes these files, but please verify this before pushing any changes to a public repository.
 
-Never share or publish your `.env.local` file.
+Never share your `.env.local` file or commit it anywhere.
 
 ---
 
-## Reporting a Vulnerability
+## Reporting a Security Vulnerability
 
-If you find a security issue in EterX-Agent, please do not open a public GitHub issue. Public issues expose the vulnerability before a fix is ready, which puts other users at risk.
+If you believe you have found a security vulnerability — something that could expose user data, allow unauthorized command execution, or be exploited by an attacker — please do not open a public GitHub Issue. Disclosing a vulnerability publicly before a fix exists puts everyone using the project at risk.
 
-Instead, send me a private email at **harshilsoni5666@gmail.com** with the following information:
+Instead, please email me directly at **harshilsoni5666@gmail.com**. I will treat your report with complete confidentiality.
+
+Please include:
 
 - A clear description of the vulnerability
-- Steps to reproduce it
-- The potential impact or what an attacker could do with it
-- Any proof-of-concept code or screenshots if relevant
+- The steps needed to reproduce it
+- What impact it could have — what an attacker could do with it
+- Any supporting code, logs, or screenshots if you have them
 
-I will respond within 48 hours to acknowledge the report. Depending on severity, I will either push a patch directly or provide interim mitigation guidance while a proper fix is prepared.
+You do not need to have a full proof of concept or a perfect write-up. If you have found something that looks wrong, reach out and we can figure it out together.
 
-I do not currently have a formal bug bounty program, but I will credit you in the release notes if you want to be acknowledged.
+I will acknowledge your email within 48 hours. Depending on the severity, I will either ship a patch directly or share interim guidance while a fix is being prepared. If you would like to be credited in the release notes, just let me know — I am happy to do that.
 
 ---
+
+Thank you for helping make EterX-Agent better and safer. Whether it is a bug report or a vulnerability disclosure, I appreciate you taking the time.
 
 Harshil Soni  
 Developer, EterX-Agent  
