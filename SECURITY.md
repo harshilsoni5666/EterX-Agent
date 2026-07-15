@@ -1,47 +1,65 @@
-# EterX-Agent
+# Security Policy
 
+## Overview
 
+EterX-Agent is a locally-running autonomous agent that has direct access to your system — it can execute commands, read and write files, control browsers, and interact with APIs on your behalf. Because of that level of access, security is something I take seriously.
 
-## Security Policy
-
-We take the security of EterX-Agent seriously. As a locally-running autonomous agent with system execution capabilities, maintaining safe default configurations and a secure operating environment is our highest priority.
-
-### Supported Versions
-
-Only the latest version of EterX-Agent on the `main` branch is actively supported with security updates and bug fixes.
-
-| Version | Supported |
-| ------- | --------- |
-| Current (main) | 🟢 Yes |
-| All older versions | 🔴 No |
+This document explains what versions are supported, how to safely configure the agent, and how to privately report any vulnerabilities you find.
 
 ---
 
-## Safety & Execution Guidelines
+## Supported Versions
 
-EterX-Agent features a capability-based architecture designed to protect your host system. However, because it can run commands and automate browser/OS tasks, please observe the following security guidelines:
+I actively maintain only the latest code on the `main` branch. Older snapshots and previous branches are not patched.
 
-### 1. External Inputs as Untrusted
-When EterX is integrated with communication channels (like Telegram, Slack, or WhatsApp), treat inbound messages as **untrusted inputs**. 
-* **DM Pairing:** By default, EterX operates under a pairing policy (`dmPolicy="pairing"`). Unknown senders cannot execute commands or query the agent without explicit authorization.
-* **Avoid Open Access:** Do not set your default DM policy to `"open"` or add wildcard (`"*"`) permissions to public channels unless the agent is running in a fully isolated sandbox.
+| Version | Supported |
+|---------|-----------|
+| Latest (main branch) | Yes |
+| All previous versions | No |
 
-### 2. Sandbox Configurations
-If you deploy EterX to handle requests in group chats or allow multi-user access:
-* Configure non-main sessions to run inside isolated sandboxes (such as Docker or safe virtual environments).
-* Keep sandbox policies restrictive. By default, restrict access to host file editing, local credential access, and high-privilege commands.
+If you are running an older version, update to the latest before reporting a bug or vulnerability.
 
-### 3. API Key Management
-* API keys are stored locally on your machine in `.env.local` or under `%LOCALAPPDATA%\EterX` (on Windows). 
-* Never commit `.env.local` or memory directories (`.workspaces`) to git. A default `.gitignore` is provided to prevent accidental exposure.
+---
+
+## Safe Usage Guidelines
+
+EterX has a lot of system-level access by design. That makes it powerful, but it also means you should be deliberate about how you set it up.
+
+### External Inputs
+
+If you connect EterX to a messaging platform like Telegram, treat every incoming message as untrusted input by default. The agent supports a pairing policy (`dmPolicy="pairing"`) that blocks unknown senders from issuing commands. Do not change this to an open policy unless you are running in a fully isolated environment and understand the risk.
+
+Do not add wildcard (`*`) permissions to public channels or group chats under normal use.
+
+### Multi-User or Remote Deployments
+
+If more than one person is sending requests to the agent, or if the agent is exposed over a network, run it inside an isolated environment such as a Docker container. Keep the sandbox configuration restrictive — in particular, avoid giving sandboxed sessions access to your host credentials, local file system, or high-privilege shell commands.
+
+### API Keys and Credentials
+
+API keys are stored locally in `.env.local` or under `%LOCALAPPDATA%\EterX` on Windows. These files are already excluded from git via the default `.gitignore`, but double-check before committing if you have made any local changes to the ignore rules.
+
+Never share or publish your `.env.local` file.
 
 ---
 
 ## Reporting a Vulnerability
 
-If you discover a security vulnerability in EterX-Agent, please **do not open a public issue**. Instead, report it privately to the maintainers:
+If you find a security issue in EterX-Agent, please do not open a public GitHub issue. Public issues expose the vulnerability before a fix is ready, which puts other users at risk.
 
-* **Email:** Send a detailed report to **harshilsoni5666@gmail.com**.
-* **Content:** Please include a detailed description of the vulnerability, steps to reproduce, and any potential impact or proof of concept.
+Instead, send me a private email at **harshilsoni5666@gmail.com** with the following information:
 
-We will acknowledge receipt of your vulnerability report within 48 hours and work to provide a patch or mitigation guidelines as quickly as possible.
+- A clear description of the vulnerability
+- Steps to reproduce it
+- The potential impact or what an attacker could do with it
+- Any proof-of-concept code or screenshots if relevant
+
+I will respond within 48 hours to acknowledge the report. Depending on severity, I will either push a patch directly or provide interim mitigation guidance while a proper fix is prepared.
+
+I do not currently have a formal bug bounty program, but I will credit you in the release notes if you want to be acknowledged.
+
+---
+
+Harshil Soni  
+Developer, EterX-Agent  
+harshilsoni5666@gmail.com
