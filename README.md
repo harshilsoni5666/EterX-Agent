@@ -15,9 +15,10 @@
 </p>
 
 <p align="center">
-  <b>Overview</b> &nbsp;•&nbsp;
+  <b>README</b> &nbsp;•&nbsp;
   <a href="./INSTALL.md">Install</a> &nbsp;•&nbsp;
-  <a href="./SECURITY.md">Security</a>
+  <a href="./SECURITY.md">Security</a> &nbsp;•&nbsp;
+  <a href="./LICENSE">License</a>
 </p>
 
 ---
