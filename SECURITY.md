@@ -10,7 +10,7 @@ This document is for anyone who finds a bug, experiences unexpected behavior, or
 
 I will be straightforward: I am a solo developer, and dedicated security hardening has not been a primary focus of this project so far. The guidelines in this document reflect reasonable practices I am aware of, but I have not conducted formal security audits or penetration testing on EterX-Agent.
 
-If you have a security background and you see something I have missed — whether it is a design decision, an unsafe default, or a pattern that could be improved — I genuinely want to hear it. This is not false modesty. If you have recommendations, please reach out. I will read them carefully and take them seriously.
+If you have a security background and you see something I have missed — whether it is a design decision, an unsafe default, or a pattern that could be improved — I genuinely want to hear it.  If you have recommendations, please reach out. I will read them carefully and take them seriously.
 
 The goal is to build something that people can trust to run on their machines. Getting there requires input from people who know more than I do in certain areas, and I am open to that.
 
