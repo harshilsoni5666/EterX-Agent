@@ -13,7 +13,7 @@ type ReferenceEval = {
 };
 
 const repoRoot = process.cwd();
-const referenceRoot = path.join(repoRoot, 'Codign agent', 'eterx-agent-reference');
+const referenceRoot = path.join(repoRoot, 'coding-agent', 'eterx-agent-reference');
 const evalPath = path.join(referenceRoot, 'evals', 'sample-evals.json');
 
 function walkFiles(root: string, extensions: Set<string>): string[] {

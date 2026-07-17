@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Plus, ArrowUp } from 'lucide-react';
+import { Plus, ArrowUp, SendHorizontal, Download, CheckCircle2, Upload } from 'lucide-react';
 import { PremiumEdit, PremiumSettings } from '../ui/premium-icons';
 import { Tooltip } from '../ui/tooltip';
 
@@ -116,6 +117,161 @@ export const AgentsView = ({
   const [newAgentName, setNewAgentName] = useState("");
   const [generatedId, setGeneratedId] = useState("");
 
+  // Download, Import & Setup Notice state
+  const [setupNoticeAgent, setSetupNoticeAgent] = useState<{ id: string; name: string } | null>(null);
+  const [downloadToastName, setDownloadToastName] = useState<string | null>(null);
+  const [importToastName, setImportToastName] = useState<string | null>(null);
+  const fileInputRef = React.useRef<HTMLInputElement | null>(null);
+
+  const handleDownloadAgent = async (agent: Agent, isReady: boolean) => {
+    if (!isReady) {
+      setSetupNoticeAgent({ id: agent.id, name: agent.name });
+      setTimeout(() => setSetupNoticeAgent(prev => (prev?.id === agent.id ? null : prev)), 4000);
+      return;
+    }
+
+    // Real-time full agent package export
+    try {
+      let serverProfile: any = null;
+      try {
+        const res = await fetch(`/api/agents/list?agentId=${encodeURIComponent(agent.id)}`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.success && data.profile) {
+            serverProfile = data.profile;
+          }
+        }
+      } catch { }
+
+      const configData = {
+        version: "1.0",
+        type: "eterx-agent-package",
+        exportedAt: new Date().toISOString(),
+        agent: {
+          id: agent.id,
+          name: agent.name,
+          description: agent.description,
+          accessType: agent.accessType,
+          toolCount: agent.toolCount || 0,
+          isSetup: true,
+          status: 'ready',
+          profile: serverProfile || {
+            name: agent.name,
+            mission: agent.description,
+            professionalPrompt: `You are ${agent.name}. Mission: ${agent.description}`,
+            behaviorRules: [],
+            safetyRules: [],
+            directMainTools: [],
+            customTools: []
+          },
+          builderMessages: agent.builderMessages || []
+        }
+      };
+
+      const blob = new Blob([JSON.stringify(configData, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${agent.name.toLowerCase().replace(/[^a-z0-9]/g, '-')}-agent.eterx.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+
+      setDownloadToastName(agent.name);
+      setTimeout(() => setDownloadToastName(prev => (prev === agent.name ? null : prev)), 3500);
+    } catch (e) {
+      console.error('Download failed', e);
+    }
+  };
+
+  const handleTriggerImportFile = () => {
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+      fileInputRef.current.click();
+    }
+  };
+
+  const handleImportAgentFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    try {
+      const text = await file.text();
+      const pkg = JSON.parse(text);
+
+      const agentData = pkg?.agent || (pkg?.id ? pkg : null);
+      if (!agentData || !agentData.name) {
+        alert('Invalid agent package file format.');
+        return;
+      }
+
+      const random4 = Math.floor(1000 + Math.random() * 9000);
+      const shortName = String(agentData.name).substring(0, 4).toLowerCase().replace(/[^a-z0-9]/g, 'a').padEnd(4, 'x');
+      const newAgentId = `eterxagent-${random4}-${shortName}`;
+
+      const name = agentData.name;
+      const description = agentData.description || agentData.profile?.mission || 'Imported custom agent.';
+      const accessType = agentData.accessType || 'Agent Decides';
+      const toolCount = agentData.toolCount || agentData.profile?.directMainTools?.length || 0;
+      const profile = agentData.profile || {};
+
+      // 1. Write profile to server backend
+      try {
+        await fetch('/api/agents/list', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            agentId: newAgentId,
+            name,
+            mission: description,
+            professionalPrompt: profile.professionalPrompt || `You are ${name}. Mission: ${description}`,
+            behaviorRules: profile.behaviorRules || [],
+            safetyRules: profile.safetyRules || [],
+            directMainTools: profile.directMainTools || [],
+            description
+          })
+        });
+
+        await fetch('/api/agents/list', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ agentId: newAgentId, status: 'ready' })
+        });
+      } catch (err) {
+        console.warn('Server sync skipped for import:', err);
+      }
+
+      // 2. Add to local state with isSetup: true (ready to use immediately!)
+      const newAgent: Agent = {
+        id: newAgentId,
+        name,
+        description,
+        accessType,
+        isSetup: true,
+        toolCount,
+        builderMessages: agentData.builderMessages || []
+      };
+
+      setAgents(prev => {
+        const next = [newAgent, ...prev.filter(a => a.id !== newAgentId)];
+        try { localStorage.setItem('eterx_agents', JSON.stringify(next)); } catch { }
+        return next;
+      });
+
+      try {
+        window.dispatchEvent(new CustomEvent('eterx_agents_updated'));
+      } catch { }
+
+      // 3. Show import toast
+      setImportToastName(name);
+      setTimeout(() => setImportToastName(prev => (prev === name ? null : prev)), 4000);
+    } catch (err) {
+      console.error('Failed to import agent file:', err);
+      alert('Failed to parse agent file. Please select a valid .eterx.json or .json file.');
+    }
+  };
+
   // Settings modal state
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [settingsAgent, setSettingsAgent] = useState<Agent | null>(null);
@@ -179,6 +335,76 @@ export const AgentsView = ({
   return (
     <div className="eterx-agents-view flex-1 w-full h-full flex flex-col px-5 py-5 md:px-8 md:pt-6 md:pb-6 overflow-hidden relative z-20 bg-transparent">
       
+      {/* Outermost Notification Toasts — Rendered directly into document.body via Portal */}
+      {typeof document !== 'undefined' && createPortal(
+        <div className="fixed top-5 left-1/2 -translate-x-1/2 z-[99999] pointer-events-none flex flex-col items-center gap-2">
+          <AnimatePresence>
+            {setupNoticeAgent && (
+              <motion.div
+                key="setup-notice"
+                initial={{ opacity: 0, y: -16, scale: 0.96 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: -12, scale: 0.96 }}
+                className="pointer-events-auto flex items-center gap-3 px-4 py-2 rounded-full bg-[#1C1C1B]/95 border border-white/[0.16] text-white shadow-[0_24px_50px_rgba(0,0,0,0.85)] backdrop-blur-2xl whitespace-nowrap"
+              >
+                <span className="text-[12px] font-medium text-[#EDEBE7]">
+                  Setup required to download <strong className="font-semibold text-white">{setupNoticeAgent.name}</strong>
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const id = setupNoticeAgent.id;
+                    setSetupNoticeAgent(null);
+                    onOpenBuilder(id);
+                  }}
+                  className="text-[11.5px] font-semibold text-black bg-white hover:bg-[#E8E6E3] px-3 py-0.5 rounded-full transition-colors cursor-pointer"
+                >
+                  Setup now →
+                </button>
+              </motion.div>
+            )}
+            {downloadToastName && (
+              <motion.div
+                key="download-notice"
+                initial={{ opacity: 0, y: -16, scale: 0.96 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: -12, scale: 0.96 }}
+                className="pointer-events-auto flex items-center gap-2.5 px-4 py-2 rounded-full bg-[#181817]/95 border border-white/[0.16] text-white shadow-[0_24px_50px_rgba(0,0,0,0.85)] backdrop-blur-2xl whitespace-nowrap"
+              >
+                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                <span className="text-[12px] font-medium text-[#F0EDE8]">
+                  Downloaded package for <strong className="font-semibold text-white">{downloadToastName}</strong>
+                </span>
+              </motion.div>
+            )}
+            {importToastName && (
+              <motion.div
+                key="import-notice"
+                initial={{ opacity: 0, y: -16, scale: 0.96 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: -12, scale: 0.96 }}
+                className="pointer-events-auto flex items-center gap-2.5 px-4 py-2 rounded-full bg-[#181817]/95 border border-white/[0.16] text-white shadow-[0_24px_50px_rgba(0,0,0,0.85)] backdrop-blur-2xl whitespace-nowrap"
+              >
+                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                <span className="text-[12px] font-medium text-[#F0EDE8]">
+                  Successfully imported & configured <strong className="font-semibold text-white">{importToastName}</strong>
+                </span>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>,
+        document.body
+      )}
+
+      {/* Hidden file input for agent import */}
+      <input
+        type="file"
+        ref={fileInputRef}
+        onChange={handleImportAgentFile}
+        accept=".json,.eterx"
+        className="hidden"
+      />
+
       {/* Agents container stretching to the very top */}
       <div className="flex flex-col gap-3 flex-1 min-h-0">
         <motion.div 
@@ -190,18 +416,29 @@ export const AgentsView = ({
           {/* Header internal row matching style and spacing of ProjectsView */}
           <div className="w-full flex items-center justify-between shrink-0 pl-1 pr-1 pb-1.5 border-b border-white/[0.03]">
             <span className="text-[13px] font-semibold text-[#A3A19E] tracking-normal">Library</span>
-            <button 
-              onClick={() => setIsCreating(true)}
-              className="eterx-agents-primary-button flex h-7 shrink-0 items-center gap-1.5 px-3 bg-white text-black font-semibold text-[11px] rounded-full hover:bg-[#E8E6E3] transition-all duration-300 active:scale-95 group cursor-pointer"
-            >
-              <Plus className="w-3 h-3 text-black" strokeWidth={2.8} />
-              New agent
-            </button>
+            <div className="flex items-center gap-2">
+              <button 
+                type="button"
+                onClick={handleTriggerImportFile}
+                className="flex h-7 shrink-0 items-center gap-1.5 px-3 bg-white/[0.06] text-white font-semibold text-[11px] rounded-full border border-white/[0.12] hover:bg-white/[0.12] hover:border-white/[0.22] transition-all duration-200 active:scale-95 cursor-pointer"
+              >
+                <Upload className="w-3 h-3 text-white" strokeWidth={2.4} />
+                Import agent
+              </button>
+              <button 
+                type="button"
+                onClick={() => setIsCreating(true)}
+                className="eterx-agents-primary-button flex h-7 shrink-0 items-center gap-1.5 px-3 bg-white text-black font-semibold text-[11px] rounded-full hover:bg-[#E8E6E3] transition-all duration-300 active:scale-95 group cursor-pointer"
+              >
+                <Plus className="w-3 h-3 text-black" strokeWidth={2.8} />
+                New agent
+              </button>
+            </div>
           </div>
 
           {/* Scrollable list grid */}
           <div className="flex-1 overflow-y-auto custom-scrollbar pr-0.5 flex flex-col gap-2">
-            {agents.map((agent) => {
+            {agents.filter(a => a.id !== 'default-1').map((agent) => {
               const isDefaultAgent = agent.id === 'default-1';
               const isReady = isDefaultAgent || agent.isSetup !== false;
               const useLabel = isDefaultAgent ? 'Use General' : 'Use in chat';
@@ -286,6 +523,25 @@ export const AgentsView = ({
                     </div>
 
                     <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 sm:flex-nowrap">
+                      {/* Professional Download Button */}
+                      <Tooltip text={isReady ? "Download Agent Package" : "Setup required to download"} side="top">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDownloadAgent(agent, isReady);
+                          }}
+                          className={`relative flex items-center justify-center w-[34px] h-[34px] rounded-full border transition-colors duration-150 ${
+                            isReady
+                              ? 'bg-white/[0.06] text-[#E5E3DF] border-white/[0.1] hover:bg-white/[0.12] hover:text-white'
+                              : 'bg-white/[0.03] text-white/40 border-white/[0.06] hover:bg-white/[0.07] hover:text-white/70'
+                          }`}
+                          aria-label={`Download ${agent.name}`}
+                        >
+                          <Download className="w-3.5 h-3.5" strokeWidth={1.9} />
+                        </button>
+                      </Tooltip>
+
                       <button
                         type="button"
                         onClick={(e) => {

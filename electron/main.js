@@ -143,6 +143,7 @@ function secureStorageAvailable() {
 function normalizeSecureRuntimeSettings(raw) {
   const source = raw && typeof raw === 'object' ? raw : {};
   const apiKeys = {};
+  const modelApiKeys = {};
   const modelOverrides = {};
 
   for (const [provider, value] of Object.entries(source.apiKeys || {})) {
@@ -151,24 +152,31 @@ function normalizeSecureRuntimeSettings(raw) {
     if (key && key.length <= 40_000) apiKeys[provider] = key;
   }
 
+  for (const [modelKey, value] of Object.entries(source.modelApiKeys || {})) {
+    const provider = String(modelKey || '').split('::', 1)[0];
+    if (!SECURE_RUNTIME_SETTINGS_PROVIDERS.has(provider) || typeof value !== 'string') continue;
+    const key = value.trim();
+    if (key && key.length <= 40_000) modelApiKeys[modelKey] = key;
+  }
+
   for (const [provider, value] of Object.entries(source.modelOverrides || {})) {
     if (!SECURE_RUNTIME_MODEL_PROVIDERS.has(provider) || typeof value !== 'string') continue;
     const model = value.trim();
     if (model && model.length <= 220 && !/[\r\n\t]/.test(model)) modelOverrides[provider] = model;
   }
 
-  return { apiKeys, modelOverrides };
+  return { apiKeys, modelApiKeys, modelOverrides };
 }
 
 function readSecureRuntimeSettings() {
-  if (!secureStorageAvailable()) return { available: false, apiKeys: {}, modelOverrides: {} };
+  if (!secureStorageAvailable()) return { available: false, apiKeys: {}, modelApiKeys: {}, modelOverrides: {} };
 
   try {
     const encrypted = fs.readFileSync(secureRuntimeSettingsPath());
     const decoded = safeStorage.decryptString(encrypted);
     return { available: true, ...normalizeSecureRuntimeSettings(JSON.parse(decoded)) };
   } catch {
-    return { available: true, apiKeys: {}, modelOverrides: {} };
+    return { available: true, apiKeys: {}, modelApiKeys: {}, modelOverrides: {} };
   }
 }
 
@@ -224,9 +232,21 @@ function secureRuntimeSettingsEnvironment(settings) {
   };
   const env = {};
 
+  const providerKeyPools = {};
   for (const [provider, key] of Object.entries(settings.apiKeys || {})) {
+    if (!providerKeyPools[provider]) providerKeyPools[provider] = [];
+    providerKeyPools[provider].push(key);
+  }
+  for (const [modelKey, key] of Object.entries(settings.modelApiKeys || {})) {
+    const provider = String(modelKey || '').split('::', 1)[0];
+    if (!providerKeyPools[provider]) providerKeyPools[provider] = [];
+    providerKeyPools[provider].push(key);
+  }
+
+  for (const [provider, keys] of Object.entries(providerKeyPools)) {
     const name = providerEnvironment[provider];
-    if (name && key) env[name] = key;
+    const keyPool = Array.from(new Set(keys.filter(Boolean))).join('\n');
+    if (name && keyPool) env[name] = keyPool;
   }
   for (const [provider, model] of Object.entries(settings.modelOverrides || {})) {
     const name = modelEnvironment[provider];

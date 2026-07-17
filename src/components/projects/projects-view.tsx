@@ -2,8 +2,28 @@
 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ChevronDown, Plus, Mic, ArrowUp, Check, ChevronRight, ChevronLeft } from 'lucide-react';
+import { ChevronDown, Plus, Mic, ArrowUp, Check, ChevronRight, ChevronLeft, Calendar, Clock, Bot, Play, Trash2, ExternalLink, AlertCircle, CheckCircle2, Loader2 } from 'lucide-react';
 import { PremiumSend } from '../ui/premium-icons';
+
+export interface ScheduledTaskItem {
+  id: string;
+  title: string;
+  description: string;
+  model: string;
+  agentId: string | null;
+  agentName: string;
+  priority: 'low' | 'medium' | 'high';
+  recurrence: string;
+  triggerTime: string;
+  dateOption: 'today' | 'tomorrow' | 'custom';
+  customDate?: string;
+  sources: Array<{ id: string; name: string; type: string; path: string }>;
+  createdAt: number;
+  scheduledTimestamp: number;
+  status: 'scheduled' | 'queued' | 'running' | 'completed' | 'failed';
+  executedAt?: number;
+  chatId?: string;
+}
 import {
   MAIN_AGENT_MODEL_OPTIONS,
   doesModelSupportThinking as modelSupportsThinking,
@@ -32,6 +52,14 @@ import {
 
 const MODEL_API_KEY_STORAGE_KEY = 'eterx_api_keys';
 const SETTINGS_CHANNEL = 'eterx-settings';
+
+const syncRuntimeModelOverrides = (modelOverrides: Record<string, string>) => {
+  void fetch('/api/settings/keys', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ modelOverrides }),
+  }).catch(() => {});
+};
 
 type StoredModelSettings = {
   apiKeys: Partial<Record<MainAgentProvider, string>>;
@@ -198,6 +226,32 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
   const [formModel, setFormModel] = useState(AUTO_MODEL_SELECTION);
   const [triggerTime, setTriggerTime] = useState('09:00');
 
+  // Agent selector state
+  const [formAgent, setFormAgent] = useState<{ id: string | null; name: string }>({ id: null, name: 'General' });
+  const [availableAgents, setAvailableAgents] = useState<Array<{ id: string | null; name: string }>>([
+    { id: null, name: 'General' },
+    { id: 'coding', name: 'Coding' },
+  ]);
+
+  // Date selector state
+  const [dateOption, setDateOption] = useState<'today' | 'tomorrow' | 'custom'>('today');
+  const [customDateVal, setCustomDateVal] = useState<string>(() => {
+    const d = new Date();
+    return d.toISOString().split('T')[0];
+  });
+
+  // Scheduled tasks storage state
+  const [scheduledTasks, setScheduledTasks] = useState<ScheduledTaskItem[]>(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        return JSON.parse(localStorage.getItem('eterx_scheduled_tasks') || '[]');
+      } catch {
+        return [];
+      }
+    }
+    return [];
+  });
+
   // Custom manual inputs
   const [customTimeVal, setCustomTimeVal] = useState('9:00');
   const [customTimePeriod, setCustomTimePeriod] = useState<'AM' | 'PM'>('AM');
@@ -209,6 +263,174 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
 
   const [activePopover, setActivePopover] = useState<string | null>(null);
   const [showSourceMenu, setShowSourceMenu] = useState(false);
+
+  // Load custom agents
+  useEffect(() => {
+    try {
+      const custom = JSON.parse(localStorage.getItem('eterx_agents') || '[]');
+      const formatted = custom
+        .filter((a: any) => a.id !== 'default-1' && a.isSetup !== false)
+        .map((a: any) => ({ id: a.id as string, name: a.name as string }));
+      setAvailableAgents([
+        { id: null, name: 'General' },
+        { id: 'coding', name: 'Coding' },
+        ...formatted,
+      ]);
+    } catch { }
+  }, []);
+
+  // Listen for background task updates
+  useEffect(() => {
+    const handleSync = () => {
+      try {
+        const tasks = JSON.parse(localStorage.getItem('eterx_scheduled_tasks') || '[]');
+        setScheduledTasks(tasks);
+      } catch { }
+    };
+    window.addEventListener('eterx_scheduled_tasks_updated', handleSync);
+    return () => window.removeEventListener('eterx_scheduled_tasks_updated', handleSync);
+  }, []);
+
+  const saveTasksState = useCallback((next: ScheduledTaskItem[]) => {
+    setScheduledTasks(next);
+    try {
+      localStorage.setItem('eterx_scheduled_tasks', JSON.stringify(next));
+      window.dispatchEvent(new CustomEvent('eterx_scheduled_tasks_updated'));
+    } catch { }
+  }, []);
+
+  const computeScheduledTimestamp = useCallback((
+    timeStr: string,
+    dateOpt: 'today' | 'tomorrow' | 'custom',
+    customDateStr?: string
+  ): number => {
+    const now = new Date();
+    let targetDate = new Date();
+
+    if (dateOpt === 'tomorrow') {
+      targetDate.setDate(now.getDate() + 1);
+    } else if (dateOpt === 'custom' && customDateStr) {
+      const [y, m, d] = customDateStr.split('-').map(Number);
+      if (y && m && d) {
+        targetDate = new Date(y, m - 1, d);
+      }
+    }
+
+    const [hStr, mStr] = timeStr.split(':');
+    const h = parseInt(hStr || '9', 10);
+    const m = parseInt(mStr || '0', 10);
+
+    targetDate.setHours(h, m, 0, 0);
+    return targetDate.getTime();
+  }, []);
+
+  const getDateDisplayLabel = useCallback((opt: 'today' | 'tomorrow' | 'custom', customVal: string) => {
+    if (opt === 'today') return 'Today';
+    if (opt === 'tomorrow') return 'Tomorrow';
+    if (customVal) {
+      try {
+        const [y, m, d] = customVal.split('-').map(Number);
+        const dateObj = new Date(y, m - 1, d);
+        return dateObj.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+      } catch {
+        return customVal;
+      }
+    }
+    return 'Set date...';
+  }, []);
+
+  const formatScheduledTimeLabel = useCallback((t: ScheduledTaskItem) => {
+    const dLabel = getDateDisplayLabel(t.dateOption, t.customDate || '');
+    const [hStr, mStr] = (t.triggerTime || '09:00').split(':');
+    let h = parseInt(hStr || '9', 10);
+    const m = parseInt(mStr || '0', 10);
+    const period = h >= 12 ? 'PM' : 'AM';
+    const displayHour = h % 12 === 0 ? 12 : h % 12;
+    const timeFormatted = `${displayHour}:${m.toString().padStart(2, '0')} ${period}`;
+    return `${dLabel} at ${timeFormatted}`;
+  }, [getDateDisplayLabel]);
+
+  // Task lists filtered & sorted per specification
+  const myListTasks = useMemo(() => {
+    return scheduledTasks
+      .filter(t => t.status === 'scheduled')
+      .sort((a, b) => b.createdAt - a.createdAt);
+  }, [scheduledTasks]);
+
+  const queueTasks = useMemo(() => {
+    const priorityWeight: Record<string, number> = { high: 3, medium: 2, low: 1 };
+    return scheduledTasks
+      .filter(t => t.status === 'queued' || t.status === 'running')
+      .sort((a, b) => {
+        const weightDiff = (priorityWeight[b.priority] || 1) - (priorityWeight[a.priority] || 1);
+        if (weightDiff !== 0) return weightDiff;
+        return a.scheduledTimestamp - b.scheduledTimestamp;
+      });
+  }, [scheduledTasks]);
+
+  const completedTasks = useMemo(() => {
+    return scheduledTasks
+      .filter(t => t.status === 'completed' || t.status === 'failed')
+      .sort((a, b) => (b.executedAt || b.createdAt) - (a.executedAt || a.createdAt));
+  }, [scheduledTasks]);
+
+  const handleScheduleTaskSubmit = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!taskTitle.trim()) return;
+
+    const scheduledTs = computeScheduledTimestamp(triggerTime, dateOption, customDateVal);
+
+    const newTask: ScheduledTaskItem = {
+      id: `task_${Date.now()}_${Math.floor(Math.random() * 10000)}`,
+      title: taskTitle.trim(),
+      description: taskDescription.trim(),
+      model: formModel,
+      agentId: formAgent.id,
+      agentName: formAgent.name,
+      priority: priority as 'low' | 'medium' | 'high',
+      recurrence,
+      triggerTime,
+      dateOption,
+      customDate: customDateVal,
+      sources: [...attachedPins],
+      createdAt: Date.now(),
+      scheduledTimestamp: scheduledTs,
+      status: 'scheduled',
+    };
+
+    saveTasksState([newTask, ...scheduledTasks]);
+
+    // Reset form fields
+    setTaskTitle('');
+    setTaskDescription('');
+    setAttachedPins([]);
+
+    // Automatically switch to 'my-list' tab so user immediately sees their new task!
+    setSelectedSection('my-list');
+  };
+
+  const handleDeleteTask = useCallback((id: string) => {
+    saveTasksState(scheduledTasks.filter(t => t.id !== id));
+  }, [saveTasksState, scheduledTasks]);
+
+  const handleRunTaskNow = useCallback((id: string) => {
+    const updated = scheduledTasks.map(t => {
+      if (t.id === id) {
+        return {
+          ...t,
+          status: 'queued' as const,
+          scheduledTimestamp: Date.now(),
+        };
+      }
+      return t;
+    });
+    saveTasksState(updated);
+    const target = updated.find(t => t.id === id);
+    if (target) {
+      window.dispatchEvent(new CustomEvent('eterx_trigger_scheduled_task', { detail: { task: target } }));
+    }
+    setSelectedSection('queue');
+  }, [saveTasksState, scheduledTasks, setSelectedSection]);
 
   const detailsRef = useRef<HTMLDivElement>(null);
   const frequencyRef = useRef<HTMLDivElement>(null);
@@ -280,13 +502,13 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
         setShowThinkingLevels(false);
       }
       if (
-        (activePopover === 'model' || activePopover === 'priority') &&
+        (activePopover === 'model' || activePopover === 'agent' || activePopover === 'priority') &&
         detailsRef.current && !detailsRef.current.contains(e.target as Node)
       ) {
         setActivePopover(null);
       }
       if (
-        (activePopover === 'repeat' || activePopover === 'time') &&
+        (activePopover === 'repeat' || activePopover === 'time' || activePopover === 'date') &&
         frequencyRef.current && !frequencyRef.current.contains(e.target as Node)
       ) {
         setActivePopover(null);
@@ -377,6 +599,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
           chatModelSelection: AUTO_MODEL_SELECTION,
         }));
         emitModelSettingsUpdate({ chatModelSelection: AUTO_MODEL_SELECTION, modelOverrides: {} });
+        syncRuntimeModelOverrides({});
       } else {
         window.localStorage.setItem(CHAT_MODEL_SELECTION_STORAGE_KEY, option.optionKey);
         const nextOverrides = {
@@ -390,6 +613,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
           chatModelSelection: option.optionKey,
         }));
         emitModelSettingsUpdate({ chatModelSelection: option.optionKey, modelOverrides: nextOverrides });
+        syncRuntimeModelOverrides(nextOverrides);
       }
       setShowModelMenu(false);
     }
@@ -412,11 +636,11 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
   };
 
   const menuItems = useMemo(() => [
-    { id: 'new-tasks', label: 'New tasks' },
-    { id: 'my-list', label: 'My List' },
-    { id: 'queue', label: 'Queue' },
-    { id: 'completed', label: 'Completed' },
-  ], []);
+    { id: 'new-tasks', label: 'New tasks', count: 0 },
+    { id: 'my-list', label: 'My List', count: myListTasks.length },
+    { id: 'queue', label: 'Queue', count: queueTasks.length },
+    { id: 'completed', label: 'Completed', count: completedTasks.length },
+  ], [myListTasks.length, queueTasks.length, completedTasks.length]);
 
   const getRecurrenceLabel = (value: string) => {
     if (value === 'none') return 'None';
@@ -442,21 +666,67 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
     }
   };
 
-  // Generate 15-minute interval time options dynamically for the full day
-  const timeOptions = useMemo(() => {
+  // Continuous real-time system clock state
+  const [nowClock, setNowClock] = useState(() => new Date());
+
+  useEffect(() => {
+    const timer = setInterval(() => setNowClock(new Date()), 10000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const todayStr = useMemo(() => {
+    const d = nowClock;
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }, [nowClock]);
+
+  const isSelectedDateToday = useMemo(() => {
+    if (dateOption === 'today') return true;
+    if (dateOption === 'tomorrow') return false;
+    if (dateOption === 'custom' && customDateVal) {
+      return customDateVal === todayStr;
+    }
+    return true;
+  }, [dateOption, customDateVal, todayStr]);
+
+  // Generate 15-minute interval time options dynamically (omit past times if date is today)
+  const filteredTimeOptions = useMemo(() => {
     const options = [];
+    const currentMins = nowClock.getHours() * 60 + nowClock.getMinutes();
+
     for (let hour = 0; hour < 24; hour++) {
       for (let min of [0, 15, 30, 45]) {
+        const optionMins = hour * 60 + min;
+        if (isSelectedDateToday && optionMins < currentMins) {
+          continue;
+        }
         const period = hour >= 12 ? 'PM' : 'AM';
         const displayHour = hour % 12 === 0 ? 12 : hour % 12;
         const displayMin = min.toString().padStart(2, '0');
-        const val = `${ hour.toString().padStart(2, '0') }:${ displayMin }`;
-        const label = `${ displayHour }:${ displayMin } ${ period }`;
+        const val = `${hour.toString().padStart(2, '0')}:${displayMin}`;
+        const label = `${displayHour}:${displayMin} ${period}`;
         options.push({ value: val, label });
       }
     }
     return options;
-  }, []);
+  }, [nowClock, isSelectedDateToday]);
+
+  // Auto-advance triggerTime to next available future slot if selected time has passed today
+  useEffect(() => {
+    if (isSelectedDateToday) {
+      const [hStr, mStr] = triggerTime.split(':');
+      const h = parseInt(hStr || '0', 10);
+      const m = parseInt(mStr || '0', 10);
+      const selMins = h * 60 + m;
+      const curMins = nowClock.getHours() * 60 + nowClock.getMinutes();
+
+      if (selMins < curMins && filteredTimeOptions.length > 0) {
+        setTriggerTime(filteredTimeOptions[0].value);
+      }
+    }
+  }, [isSelectedDateToday, triggerTime, nowClock, filteredTimeOptions]);
 
   // Format the current selected triggerTime to AM/PM display string
   const timeDisplayLabel = useMemo(() => {
@@ -630,7 +900,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                                   aria-label="Model settings"
                                   onClick={(e) => e.stopPropagation()}
                                 >
-                                  <div className={allModelOptions.length > 4 ? 'max-h-[168px] overflow-y-auto pr-1 eterx-scrollbar' : ''}>
+                                  <div className="max-h-[280px] overflow-y-auto pr-1 custom-scrollbar">
                                     {allModelOptions.map((option) => {
                                       const selected = option.optionKey === selectedModel.optionKey;
                                       const optionLabel = getModelOptionLabel(option);
@@ -741,7 +1011,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                   </div>
                 </div>
               </>
-            ) : (
+            ) : (selectedSection === 'new-tasks' || selectedSection === 'new_tasks' || !selectedSection) ? (
               /* Manual Mode layout: Structured scheduler form without vertical scrollbars */
               <div className="flex-1 w-full flex flex-col justify-between text-left max-w-[520px] mx-auto py-1 select-text">
 
@@ -816,6 +1086,56 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                                   >
                                     <span className="truncate">{option.label}</span>
                                     {option.optionKey === formModel && <Check className="w-3.5 h-3.5 text-white" strokeWidth={2.2} />}
+                                  </button>
+                                ))}
+                              </motion.div>
+                            )}
+                          </AnimatePresence>
+                        </div>
+
+                        {/* Separator Line */}
+                        <div className="h-px bg-white/[0.03] mx-3.5" />
+
+                        {/* Details - Agent Row */}
+                        <div className="relative">
+                          <button
+                            type="button"
+                            onClick={() => setActivePopover(prev => prev === 'agent' ? null : 'agent')}
+                            className="w-full flex items-center justify-between px-3.5 py-2 hover:bg-white/[0.02] transition-colors cursor-pointer"
+                          >
+                            <span className="text-[12.5px] text-white/50 font-medium">Agent</span>
+                            <div className="flex items-center gap-1">
+                              <span className="text-[12.5px] text-white/90 font-medium">
+                                {formAgent.name}
+                              </span>
+                              <ChevronDown className="w-3.5 h-3.5 text-white/40" />
+                            </div>
+                          </button>
+
+                          <AnimatePresence>
+                            {activePopover === 'agent' && (
+                              <motion.div
+                                initial={{ opacity: 0, y: 4, scale: 0.99 }}
+                                animate={{ opacity: 1, y: 0, scale: 1 }}
+                                exit={{ opacity: 0, y: 4, scale: 0.99 }}
+                                transition={{ duration: 0.12 }}
+                                className="absolute right-3.5 bottom-[calc(100%+4px)] z-[130] flex w-[200px] flex-col rounded-xl border border-white/[0.08] bg-[#161616]/95 backdrop-blur-xl p-1 shadow-[0_12px_36px_rgba(0,0,0,0.5)] max-h-[180px] overflow-y-auto eterx-scrollbar"
+                              >
+                                {availableAgents.map((ag) => (
+                                  <button
+                                    type="button"
+                                    key={ag.id || 'general'}
+                                    onClick={() => {
+                                      setFormAgent(ag);
+                                      setActivePopover(null);
+                                    }}
+                                    className={`flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-[12px] text-left transition-colors cursor-pointer ${ (formAgent.id === ag.id)
+                                        ? 'bg-white/[0.08] text-white font-medium shadow-sm'
+                                        : 'text-white/70 hover:bg-white/[0.04] hover:text-white'
+                                      }`}
+                                  >
+                                    <span className="truncate">{ag.name}</span>
+                                    {(formAgent.id === ag.id) && <Check className="w-3.5 h-3.5 text-white" strokeWidth={2.2} />}
                                   </button>
                                 ))}
                               </motion.div>
@@ -1070,7 +1390,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
 
                                 {/* Scrollable pre-set list underneath */}
                                 <div className="flex-1 overflow-y-auto pr-0.5 eterx-scrollbar max-h-[130px] mt-1">
-                                  {timeOptions.map((opt) => {
+                                  {filteredTimeOptions.map((opt) => {
                                     const isSelected = opt.value === triggerTime;
                                     return (
                                       <button
@@ -1100,6 +1420,79 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
 
                         {/* Separator Line */}
                         <div className="h-px bg-white/[0.03] mx-3.5" />
+
+                        {/* Frequency - Date Row */}
+                        <div className="relative">
+                          <button
+                            type="button"
+                            onClick={() => setActivePopover(prev => prev === 'date' ? null : 'date')}
+                            className="w-full flex items-center justify-between px-3.5 py-2.5 hover:bg-white/[0.02] transition-colors cursor-pointer"
+                          >
+                            <span className="text-[12.5px] text-white/50 font-medium">Date</span>
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-[12.5px] font-semibold text-white/90">
+                                {getDateDisplayLabel(dateOption, customDateVal)}
+                              </span>
+                              <ChevronDown className="w-3.5 h-3.5 text-white/40" />
+                            </div>
+                          </button>
+
+                          <AnimatePresence>
+                            {activePopover === 'date' && (
+                              <motion.div
+                                initial={{ opacity: 0, y: 4, scale: 0.99 }}
+                                animate={{ opacity: 1, y: 0, scale: 1 }}
+                                exit={{ opacity: 0, y: 4, scale: 0.99 }}
+                                transition={{ duration: 0.12 }}
+                                className="absolute right-3.5 bottom-[calc(100%+4px)] z-[130] flex w-[200px] flex-col rounded-xl border border-white/[0.08] bg-[#161616]/95 backdrop-blur-xl p-1.5 shadow-[0_12px_36px_rgba(0,0,0,0.5)] select-none text-left"
+                              >
+                                {['today', 'tomorrow'].map((opt) => (
+                                  <button
+                                    type="button"
+                                    key={opt}
+                                    onClick={() => {
+                                      setDateOption(opt as 'today' | 'tomorrow');
+                                      setActivePopover(null);
+                                    }}
+                                    className={`flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-[12px] text-left transition-colors cursor-pointer ${ dateOption === opt
+                                        ? 'bg-white/[0.08] text-white font-medium shadow-sm'
+                                        : 'text-[#E8E6E3] hover:bg-white/[0.04] hover:text-white'
+                                      }`}
+                                  >
+                                    <span>{opt === 'today' ? 'Today' : 'Tomorrow'}</span>
+                                    {dateOption === opt && <Check className="w-3.5 h-3.5 text-white" strokeWidth={2.2} />}
+                                  </button>
+                                ))}
+
+                                <div className="my-1 h-px bg-white/[0.06]" />
+
+                                <div className="flex flex-col gap-1 px-1 py-0.5">
+                                  <span className="text-[10px] font-semibold text-white/40 tracking-wider uppercase">Set Custom Date</span>
+                                  <input
+                                    type="date"
+                                    min={todayStr}
+                                    value={customDateVal}
+                                    onChange={(e) => {
+                                      setCustomDateVal(e.target.value);
+                                      setDateOption('custom');
+                                    }}
+                                    className="w-full bg-[#0A0A0A]/60 border border-white/[0.1] rounded-lg px-2.5 py-1 text-[12px] text-white focus:outline-none focus:border-white/30 transition-colors"
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      if (customDateVal) setDateOption('custom');
+                                      setActivePopover(null);
+                                    }}
+                                    className="mt-1 w-full py-1.5 bg-white text-black font-semibold text-[11px] rounded-lg hover:bg-white/90 active:scale-[0.98] transition-all cursor-pointer text-center"
+                                  >
+                                    Apply Date
+                                  </button>
+                                </div>
+                              </motion.div>
+                            )}
+                          </AnimatePresence>
+                        </div>
 
                         {/* Frequency - Sources Row (Pins attachment match chat composer) */}
                         <div className="w-full flex items-center justify-between px-3.5 py-2 rounded-b-xl relative">
@@ -1178,9 +1571,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                     <button
                       type="submit"
                       disabled={!isFormValid}
-                      onClick={(e) => {
-                        e.preventDefault();
-                      }}
+                      onClick={handleScheduleTaskSubmit}
                       className={`px-6 py-2.5 rounded-xl font-semibold text-[12.5px] transition-all duration-200 select-none ${ isFormValid
                           ? 'bg-white text-black hover:bg-white/90 active:scale-[0.98] cursor-pointer shadow-[0_4px_16px_rgba(255,255,255,0.15)]'
                           : 'bg-white/5 text-white/30 border border-white/[0.04] cursor-not-allowed shadow-none'
@@ -1190,6 +1581,224 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                     </button>
                   </div>
                 </form>
+              </div>
+            ) : selectedSection === 'my-list' ? (
+              /* My List View */
+              <div className="flex-1 w-full flex flex-col gap-3 overflow-hidden text-left p-1 select-text">
+                <div className="flex items-center justify-between pb-2 border-b border-white/[0.04] shrink-0">
+                  <span className="text-[14px] font-bold text-white tracking-normal flex items-center gap-2">
+                    My List <span className="text-[11.5px] font-semibold text-white/40 bg-white/[0.06] px-2 py-0.5 rounded-full">{myListTasks.length}</span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedSection('new-tasks')}
+                    className="flex items-center gap-1.5 px-3 py-1 bg-white hover:bg-[#E8E6E3] text-black rounded-full text-[11px] font-semibold transition-all cursor-pointer shadow-sm active:scale-95"
+                  >
+                    <Plus className="w-3 h-3 text-black" strokeWidth={2.8} />
+                    New task
+                  </button>
+                </div>
+
+                <div className="flex-1 overflow-y-auto pr-1 eterx-scrollbar flex flex-col gap-2.5">
+                  {myListTasks.length === 0 ? (
+                    <div className="flex-1 flex flex-col items-center justify-center text-center py-16 text-white/35 text-[13px]">
+                      No scheduled tasks in My List. Click "New task" to schedule one.
+                    </div>
+                  ) : (
+                    myListTasks.map((t) => (
+                      <div key={t.id} className="w-full bg-[#141414]/90 border border-white/[0.06] hover:border-white/[0.12] rounded-xl p-4 flex flex-col gap-2.5 transition-colors shadow-sm text-left">
+                        <div className="flex items-start justify-between gap-3">
+                          <span className="text-[14.5px] font-bold text-white leading-snug">{t.title}</span>
+                          <span className={`px-2 py-0.5 rounded-md text-[10px] font-semibold capitalize tracking-wider ${
+                            t.priority === 'high' ? 'bg-rose-500/15 text-rose-300 border border-rose-500/20' :
+                            t.priority === 'medium' ? 'bg-amber-500/15 text-amber-300 border border-amber-500/20' :
+                            'bg-white/10 text-white/70 border border-white/10'
+                          }`}>
+                            {t.priority}
+                          </span>
+                        </div>
+
+                        {t.description && (
+                          <p className="text-[12.5px] text-white/70 leading-relaxed max-h-[60px] overflow-hidden truncate">
+                            {t.description}
+                          </p>
+                        )}
+
+                        <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                          <span className="px-2.5 py-0.5 rounded-full bg-white/[0.05] border border-white/[0.08] text-[11px] text-white/80 font-medium">
+                            Agent: <strong className="text-white font-semibold">{t.agentName}</strong>
+                          </span>
+                          <span className="px-2.5 py-0.5 rounded-full bg-white/[0.05] border border-white/[0.08] text-[11px] text-white/80 font-medium">
+                            Model: {t.model}
+                          </span>
+                          <span className="px-2.5 py-0.5 rounded-full bg-white/[0.05] border border-white/[0.08] text-[11px] text-white/80 font-medium">
+                            Scheduled: {formatScheduledTimeLabel(t)}
+                          </span>
+                          <span className="px-2.5 py-0.5 rounded-full bg-white/[0.05] border border-white/[0.08] text-[11px] text-white/80 font-medium">
+                            Repeat: {getRecurrenceLabel(t.recurrence)}
+                          </span>
+                          {t.sources && t.sources.length > 0 && (
+                            <span className="px-2.5 py-0.5 rounded-full bg-white/[0.05] border border-white/[0.08] text-[11px] text-white/80 font-medium">
+                              Sources: {t.sources.length}
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="flex items-center justify-end gap-2 pt-2 border-t border-white/[0.03]">
+                          <button
+                            type="button"
+                            onClick={() => handleRunTaskNow(t.id)}
+                            className="px-3 py-1 bg-white text-black hover:bg-[#E8E6E3] rounded-lg text-[11.5px] font-semibold transition-colors cursor-pointer active:scale-95"
+                          >
+                            Run Now →
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteTask(t.id)}
+                            className="px-2.5 py-1 bg-white/5 hover:bg-rose-500/20 text-white/50 hover:text-rose-300 rounded-lg text-[11.5px] transition-colors cursor-pointer"
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            ) : selectedSection === 'queue' ? (
+              /* Queue View — Sorted by ascending scheduled execution time (next task at top!) */
+              <div className="flex-1 w-full flex flex-col gap-3 overflow-hidden text-left p-1 select-text">
+                <div className="flex items-center justify-between pb-2 border-b border-white/[0.04] shrink-0">
+                  <span className="text-[14px] font-bold text-white tracking-normal flex items-center gap-2">
+                    Queue <span className="text-[11.5px] font-semibold text-white/40 bg-white/[0.06] px-2 py-0.5 rounded-full">{queueTasks.length}</span>
+                  </span>
+                  <span className="text-[11.5px] text-white/40">Sorted by priority & execution time</span>
+                </div>
+
+                <div className="flex-1 overflow-y-auto pr-1 eterx-scrollbar flex flex-col gap-2.5">
+                  {queueTasks.length === 0 ? (
+                    <div className="flex-1 flex flex-col items-center justify-center text-center py-16 text-white/35 text-[13px]">
+                      No tasks currently queued or running.
+                    </div>
+                  ) : (
+                    queueTasks.map((t) => (
+                      <div key={t.id} className="w-full bg-[#141414]/90 border border-white/[0.06] rounded-xl p-4 flex flex-col gap-2.5 shadow-sm text-left">
+                        <div className="flex items-start justify-between gap-3">
+                          <span className="text-[14.5px] font-bold text-white leading-snug">{t.title}</span>
+                          <span className={`px-2.5 py-0.5 rounded-full text-[10.5px] font-semibold capitalize tracking-wider flex items-center gap-1.5 ${
+                            t.status === 'running'
+                              ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/20'
+                              : 'bg-amber-500/15 text-amber-300 border border-amber-500/20'
+                          }`}>
+                            {t.status === 'running' ? (
+                              <Loader2 className="w-3 h-3 text-emerald-400 animate-spin" />
+                            ) : (
+                              <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+                            )}
+                            {t.status === 'running' ? 'Running' : 'Queued'}
+                          </span>
+                        </div>
+
+                        {t.description && (
+                          <p className="text-[12.5px] text-white/70 leading-relaxed max-h-[60px] overflow-hidden truncate">
+                            {t.description}
+                          </p>
+                        )}
+
+                        <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                          <span className="px-2.5 py-0.5 rounded-full bg-white/[0.05] border border-white/[0.08] text-[11px] text-white/80 font-medium">
+                            Agent: <strong className="text-white font-semibold">{t.agentName}</strong>
+                          </span>
+                          <span className="px-2.5 py-0.5 rounded-full bg-white/[0.05] border border-white/[0.08] text-[11px] text-white/80 font-medium">
+                            Model: {t.model}
+                          </span>
+                          <span className="px-2.5 py-0.5 rounded-full bg-white/[0.05] border border-white/[0.08] text-[11px] text-white/80 font-medium">
+                            Execution Time: {formatScheduledTimeLabel(t)}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center justify-end gap-2 pt-2 border-t border-white/[0.03]">
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteTask(t.id)}
+                            className="px-2.5 py-1 bg-white/5 hover:bg-rose-500/20 text-white/50 hover:text-rose-300 rounded-lg text-[11.5px] transition-colors cursor-pointer"
+                          >
+                            Cancel Task
+                          </button>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            ) : (
+              /* Completed View */
+              <div className="flex-1 w-full flex flex-col gap-3 overflow-hidden text-left p-1 select-text">
+                <div className="flex items-center justify-between pb-2 border-b border-white/[0.04] shrink-0">
+                  <span className="text-[14px] font-bold text-white tracking-normal flex items-center gap-2">
+                    Completed <span className="text-[11.5px] font-semibold text-white/40 bg-white/[0.06] px-2 py-0.5 rounded-full">{completedTasks.length}</span>
+                  </span>
+                </div>
+
+                <div className="flex-1 overflow-y-auto pr-1 eterx-scrollbar flex flex-col gap-2.5">
+                  {completedTasks.length === 0 ? (
+                    <div className="flex-1 flex flex-col items-center justify-center text-center py-16 text-white/35 text-[13px]">
+                      No completed tasks yet.
+                    </div>
+                  ) : (
+                    completedTasks.map((t) => (
+                      <div key={t.id} className="w-full bg-[#141414]/90 border border-white/[0.06] rounded-xl p-4 flex flex-col gap-2.5 shadow-sm text-left">
+                        <div className="flex items-start justify-between gap-3">
+                          <span className="text-[14.5px] font-bold text-white leading-snug">{t.title}</span>
+                          <span className={`px-2.5 py-0.5 rounded-full text-[10.5px] font-semibold capitalize tracking-wider flex items-center gap-1.5 ${
+                            t.status === 'completed'
+                              ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/20'
+                              : 'bg-rose-500/15 text-rose-300 border border-rose-500/20'
+                          }`}>
+                            {t.status === 'completed' ? 'Completed' : 'Failed'}
+                          </span>
+                        </div>
+
+                        {t.description && (
+                          <p className="text-[12.5px] text-white/70 leading-relaxed max-h-[60px] overflow-hidden truncate">
+                            {t.description}
+                          </p>
+                        )}
+
+                        <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                          <span className="px-2.5 py-0.5 rounded-full bg-white/[0.05] border border-white/[0.08] text-[11px] text-white/80 font-medium">
+                            Agent: <strong className="text-white font-semibold">{t.agentName}</strong>
+                          </span>
+                          <span className="px-2.5 py-0.5 rounded-full bg-white/[0.05] border border-white/[0.08] text-[11px] text-white/80 font-medium">
+                            Model: {t.model}
+                          </span>
+                          {t.executedAt && (
+                            <span className="px-2.5 py-0.5 rounded-full bg-white/[0.05] border border-white/[0.08] text-[11px] text-white/80 font-medium">
+                              Executed: {new Date(t.executedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="flex items-center justify-end gap-2 pt-2 border-t border-white/[0.03]">
+                          <button
+                            type="button"
+                            onClick={() => handleRunTaskNow(t.id)}
+                            className="px-3 py-1 bg-white/10 hover:bg-white/20 text-white rounded-lg text-[11.5px] font-semibold transition-colors cursor-pointer"
+                          >
+                            Run Again
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteTask(t.id)}
+                            className="px-2.5 py-1 bg-white/5 hover:bg-rose-500/20 text-white/50 hover:text-rose-300 rounded-lg text-[11.5px] transition-colors cursor-pointer"
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
               </div>
             )}
           </motion.div>
@@ -1245,7 +1854,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                       type="button"
                       key={item.id}
                       onClick={() => setSelectedSection(item.id)}
-                      className={`group flex min-h-[38px] w-full items-center justify-center px-3 py-1.5 rounded-lg text-[12px] text-center transition-all duration-150 cursor-pointer border border-transparent relative select-none ${ isActive
+                      className={`group flex min-h-[38px] w-full items-center justify-between px-3 py-1.5 rounded-lg text-[12px] transition-all duration-150 cursor-pointer border border-transparent relative select-none ${ isActive
                           ? 'text-white font-semibold'
                           : 'text-[#E8E6E3] hover:bg-white/[0.03] hover:text-white font-normal'
                         }`}
@@ -1257,7 +1866,16 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                           transition={{ type: "spring", stiffness: 380, damping: 30 }}
                         />
                       )}
-                      <span className="relative z-10 truncate text-center">{item.label}</span>
+                      <span className="relative z-10 truncate">{item.label}</span>
+                      {item.count > 0 && (
+                        <span className={`relative z-10 min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-bold flex items-center justify-center shrink-0 ml-1.5 transition-colors ${
+                          isActive
+                            ? 'bg-white text-black font-extrabold shadow-sm'
+                            : 'bg-white/10 text-white/70 border border-white/10'
+                        }`}>
+                          {item.count}
+                        </span>
+                      )}
                     </button>
                   );
                 })}

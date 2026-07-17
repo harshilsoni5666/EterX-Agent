@@ -18,8 +18,27 @@ export async function POST(req: NextRequest) {
     if (originError) return originError;
 
     const body = await req.json().catch(() => ({}));
-    const result = applyRuntimeApiKeys(body?.apiKeys || body);
-    const modelOverrides = applyRuntimeModelOverrides(body?.modelOverrides);
+    const hasExplicitApiKeys = Boolean(body && typeof body === 'object' && Object.prototype.hasOwnProperty.call(body, 'apiKeys'));
+    const hasModelOverrides = Boolean(body && typeof body === 'object' && Object.prototype.hasOwnProperty.call(body, 'modelOverrides'));
+    const currentProviderStatus = getRuntimeApiKeyStatus();
+    const result = hasExplicitApiKeys
+      ? applyRuntimeApiKeys(body.apiKeys)
+      : {
+          acceptedCount: Object.keys(currentProviderStatus)
+            .reduce((total, provider) => total + getRuntimeApiKeyValues(provider as keyof typeof currentProviderStatus).length, 0),
+          rejectedCount: 0,
+          providers: Object.entries(currentProviderStatus).map(([provider, accepted]) => ({
+            provider: provider as keyof typeof currentProviderStatus,
+            accepted,
+            count: getRuntimeApiKeyValues(provider as keyof typeof currentProviderStatus).length,
+            ...(accepted ? {} : { reason: 'No key configured in Settings' }),
+          })),
+        };
+    const modelOverrides = hasModelOverrides
+      ? applyRuntimeModelOverrides(body.modelOverrides)
+      : Object.entries(getRuntimeModelOverrides())
+        .filter(([, model]) => Boolean(model))
+        .map(([provider, model]) => ({ provider: provider as any, accepted: true, model }));
     const pool = apiKeyPool.getPoolStatus();
 
     return NextResponse.json({

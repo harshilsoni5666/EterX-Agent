@@ -65,7 +65,7 @@ export function isCodingAgentProfile(value: unknown): boolean {
 }
 
 function getReferenceRoot(): string {
-  return path.resolve(process.cwd(), 'Codign agent', 'eterx-agent-reference');
+  return path.resolve(process.cwd(), 'coding-agent', 'eterx-agent-reference');
 }
 
 async function buildCacheKey(referenceRoot: string): Promise<string> {

@@ -19,7 +19,7 @@
       "@/*": ["./src/*"]
     }
   },
-  "include": ["telegram-bot.ts", "src/lib/agent/**/*.ts"],
+  "include": ["src/bot/telegram-bot.ts", "src/lib/agent/**/*.ts"],
   "exclude": [
     "node_modules",
     ".git",

@@ -1,7 +1,4 @@
-/**
- * EterX Terminal UI — Enterprise-Grade Console Output
- * Rich icons, progress bars, section dividers, animated spinners, and color theming.
- */
+// CLI terminal helpers, styles, and spinner routines.
 
 const c = {
   reset: '\x1b[0m', bold: '\x1b[1m', dim: '\x1b[2m', italic: '\x1b[3m', underline: '\x1b[4m',

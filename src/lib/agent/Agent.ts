@@ -39,6 +39,7 @@ import { toolResultCompactor } from './memory/tool-result-compactor';
 import { awaitIfPaused, isCancelled } from './roles/sub_agent';
 import { interAgentMailbox } from './roles/inter_agent_comm';
 import {
+  recordProvenModel,
   MAIN_AGENT_MODE_CONFIG,
   getAnthropicThinkingBudget,
   getModelThinkingOptions,
@@ -252,6 +253,7 @@ export class GeminiAgentClient {
   private fallbackModel = resolveModelName('fast');
   private activeProvider: MainAgentProvider = 'gemini';
   private mistralModelName = MAIN_AGENT_MODE_CONFIG.mistral.modelName;
+  private activeMode: MainAgentMode = 'think';
   private readonly geminiHttpTimeoutMs = positiveIntEnv('GEMINI_HTTP_TIMEOUT_MS', 300_000);
   private runtimeSettings?: ScopedRuntimeSettings | null;
   private providerKeyCursor: Partial<Record<MainAgentProvider, number>> = {};
@@ -296,6 +298,68 @@ export class GeminiAgentClient {
     this.currentKeyIndex = (this.currentKeyIndex + 1) % this.apiKeys.length;
     this.initializeClient();
     console.log(`[GeminiClient] Rotated API route to index ${ this.currentKeyIndex }/${ this.apiKeys.length - 1 }`);
+  }
+
+  private formatTraceErrorMessage(provider: string, errorMsg: string, keyIndex: number, poolType: string): string {
+    const lower = errorMsg.toLowerCase();
+    let reason = 'API error';
+    if (lower.includes('429') || lower.includes('quota') || lower.includes('rate limit') || lower.includes('resource_exhausted')) {
+      reason = 'Rate limit reached';
+    } else if (lower.includes('key') || lower.includes('403') || lower.includes('forbidden') || lower.includes('auth') || lower.includes('invalid')) {
+      reason = 'Authentication failed';
+    } else if (lower.includes('503') || lower.includes('unavailable') || lower.includes('500') || lower.includes('demand')) {
+      reason = 'Server overloaded / Temporary outage';
+    } else if (lower.includes('404') || lower.includes('not found')) {
+      reason = 'Model not found';
+    } else if (lower.includes('timeout') || lower.includes('deadline')) {
+      reason = 'Request timeout';
+    }
+
+    const providerName = provider.charAt(0).toUpperCase() + provider.slice(1);
+    const poolLabel = poolType === 'custom pool' ? 'custom pool' : 'provider api key';
+    return `${providerName} API Key ${keyIndex + 1} (${poolLabel}) failed: ${reason}. Rotating keys...`;
+  }
+
+  private getProviderKeyInfo(provider: MainAgentProvider): { apiKey: string; index: number; poolType: string } {
+    const runtimeProvider = provider === 'gemini' ? 'gemini' : provider as RuntimeApiKeyProvider;
+    const scopedKeys = getScopedRuntimeApiKeyValues(this.runtimeSettings, runtimeProvider);
+    const isCustom = !!(this.runtimeSettings?.apiKeys?.[runtimeProvider]?.length);
+    const poolType = isCustom ? 'custom pool' : 'system pool';
+
+    if (scopedKeys.length > 0) {
+      const cursor = this.providerKeyCursor[provider] || 0;
+      const index = cursor % scopedKeys.length;
+      const apiKey = scopedKeys[index] || scopedKeys[0];
+      
+      // Advance cursor
+      this.providerKeyCursor[provider] = (cursor + 1) % scopedKeys.length;
+      
+      return { apiKey, index, poolType };
+    }
+
+    const systemKey = getRuntimeApiKey(runtimeProvider);
+    return { apiKey: systemKey, index: 0, poolType: 'system pool' };
+  }
+
+  private createMistralClientWithKey(apiKey: string): OpenAI {
+    const baseURL = this.activeProvider === 'openai'
+      ? (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1')
+      : this.activeProvider === 'openrouter'
+        ? (process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1')
+        : this.activeProvider === 'groq'
+          ? (process.env.GROQ_BASE_URL || 'https://api.groq.com/openai/v1')
+          : (process.env.MISTRAL_BASE_URL || process.env.MISTRAL_API_BASE_URL || 'https://api.mistral.ai/v1');
+
+    return new OpenAI({
+      apiKey,
+      baseURL,
+      defaultHeaders: this.activeProvider === 'openrouter'
+        ? {
+          'HTTP-Referer': process.env.OPENROUTER_HTTP_REFERER || 'http://localhost:3000',
+          'X-Title': 'EterX Agent',
+        }
+        : undefined,
+    });
   }
 
   private resolveModelForMode(mode: MainAgentMode): string {
@@ -460,6 +524,7 @@ export class GeminiAgentClient {
    * Think = gemini-3.5-flash, Fast = gemini-3.5-flash
    */
   public setMode(mode: MainAgentMode): void {
+    this.activeMode = mode;
     const modeConfig = MAIN_AGENT_MODE_CONFIG[mode] || MAIN_AGENT_MODE_CONFIG.think;
     if (modeConfig.provider !== 'gemini') {
       this.activeProvider = modeConfig.provider;
@@ -715,6 +780,9 @@ export class GeminiAgentClient {
   private createAnthropicClient(): Anthropic {
     return new Anthropic({
       apiKey: this.getAnthropicApiKey(),
+      defaultHeaders: {
+        'anthropic-beta': 'prompt-caching-2024-07-31',
+      },
     });
   }
 
@@ -1344,10 +1412,17 @@ export class GeminiAgentClient {
       ].join('\n'));
     }
 
-    const client = this.createMistralClient();
+    let keyInfo = this.getProviderKeyInfo(this.activeProvider);
+    if (!keyInfo.apiKey) {
+      throw new Error(`Missing ${this.activeProvider.toUpperCase()} API key. Add it in Settings > API Keys before using this provider.`);
+    }
+    let client = this.createMistralClientWithKey(keyInfo.apiKey);
+    const staticSystemPrompt = this.generateCacheableSystemPrompt();
+    const dynamicSystemSuffix = this.buildDynamicSystemSuffix(context, dynamicContextParts.join('\n\n'));
+    const systemContent = `${staticSystemPrompt}\n\n━━━ DYNAMIC SYSTEM CONTEXT ━━━\n${dynamicSystemSuffix}`;
     const tools = this.buildMistralTools(isBuilder, context);
     const messages: any[] = [
-      { role: 'system', content: this.generateSystemPrompt(context, dynamicContextParts.join('\n\n')) },
+      { role: 'system', content: systemContent },
       ...this.convertHistoryToMistralMessages(history),
       {
         role: 'user',
@@ -1398,7 +1473,38 @@ export class GeminiAgentClient {
         params.temperature = this.resolveTemperature(adaptiveLearning.classifyTask(message), interactions);
       }
 
-      const response = await client.chat.completions.create(params);
+      let response;
+      let apiAttempts = 0;
+      const maxApiAttempts = 3;
+      while (apiAttempts < maxApiAttempts) {
+        try {
+          response = await client.chat.completions.create(params);
+          break;
+        } catch (err: any) {
+          apiAttempts++;
+          const errorMsg = err.message || '';
+          if (apiAttempts >= maxApiAttempts || err.message === 'CANCELLED_BY_USER' || errorMsg.includes('CANCELLED_BY_USER')) {
+            throw err;
+          }
+          const traceMsg = this.formatTraceErrorMessage(this.activeProvider, errorMsg, keyInfo.index, keyInfo.poolType);
+          console.warn(`[OpenAI/Mistral] ${traceMsg}`);
+          if (onTrace) {
+            onTrace({
+              type: 'progress',
+              text: traceMsg,
+            });
+          }
+          keyInfo = this.getProviderKeyInfo(this.activeProvider);
+          client = this.createMistralClientWithKey(keyInfo.apiKey);
+        }
+      }
+
+      if (!response) {
+        throw new Error('API returned no response.');
+      }
+
+      // Record successful model call
+      recordProvenModel(this.activeMode, this.mistralModelName);
 
       const assistantMessage = response.choices?.[0]?.message as any;
       if (!assistantMessage) throw new Error('Mistral returned no assistant message.');
@@ -1560,7 +1666,16 @@ export class GeminiAgentClient {
       ].join('\n'));
     }
 
-    const client = this.createAnthropicClient();
+    let keyInfo = this.getProviderKeyInfo('anthropic');
+    if (!keyInfo.apiKey) {
+      throw new Error('Missing Anthropic API key. Add it in Settings > API Keys before using this provider.');
+    }
+    let client = new Anthropic({
+      apiKey: keyInfo.apiKey,
+      defaultHeaders: {
+        'anthropic-beta': 'prompt-caching-2024-07-31',
+      },
+    });
     const tools = this.buildAnthropicTools(isBuilder, context);
     const messages: any[] = [
       ...this.convertHistoryToAnthropicMessages(history),
@@ -1581,7 +1696,20 @@ export class GeminiAgentClient {
     let lastAnswer = '';
     const maxLoopIterations = 240;
     const maxTokens = positiveIntEnv('ANTHROPIC_MAX_TOKENS', 8192);
-    const system = this.generateSystemPrompt(context, dynamicContextParts.join('\n\n'));
+    // Generate static and dynamic system prompts for caching
+    const staticSystemPrompt = this.generateCacheableSystemPrompt();
+    const dynamicSystemSuffix = this.buildDynamicSystemSuffix(context, dynamicContextParts.join('\n\n'));
+    const systemBlocks = [
+      {
+        type: 'text',
+        text: staticSystemPrompt,
+        cache_control: { type: 'ephemeral' }
+      },
+      {
+        type: 'text',
+        text: dynamicSystemSuffix
+      }
+    ];
 
     const selectedThinkingLevel = normalizeThinkingLevelForModel(
       (context as any).selectedThinkingLevel || 'low',
@@ -1596,10 +1724,21 @@ export class GeminiAgentClient {
       const params: any = {
         model: this.mistralModelName,
         max_tokens: maxTokens,
-        system,
+        system: systemBlocks,
         messages,
-        tools,
       };
+
+      if (tools && tools.length > 0) {
+        params.tools = tools.map((tool, idx) => {
+          if (idx === tools.length - 1) {
+            return {
+              ...tool,
+              cache_control: { type: 'ephemeral' }
+            };
+          }
+          return tool;
+        });
+      }
 
       if (supportsThinking) {
         if (isAnthropicAdaptiveThinkingModel(this.mistralModelName)) {
@@ -1618,7 +1757,68 @@ export class GeminiAgentClient {
         params.temperature = this.resolveTemperature(adaptiveLearning.classifyTask(message), interactions);
       }
 
-      const response = await client.messages.create(params);
+      // Strip any existing cache_control from previous messages to stay within the 4-breakpoint limit
+      for (const msg of messages) {
+        if (Array.isArray(msg.content)) {
+          for (const block of msg.content) {
+            if (block && typeof block === 'object') {
+              delete block.cache_control;
+            }
+          } 
+        }
+      }
+
+      // Add cache_control to the last message's last content block
+      if (messages.length > 0) {
+        const lastMsg = messages[messages.length - 1];
+        if (typeof lastMsg.content === 'string') {
+          lastMsg.content = [{ type: 'text', text: lastMsg.content }];
+        }
+        if (Array.isArray(lastMsg.content) && lastMsg.content.length > 0) {
+          const lastBlock = lastMsg.content[lastMsg.content.length - 1];
+          if (lastBlock && typeof lastBlock === 'object') {
+            lastBlock.cache_control = { type: 'ephemeral' };
+          }
+        }
+      }
+
+      let response;
+      let apiAttempts = 0;
+      const maxApiAttempts = 3;
+      while (apiAttempts < maxApiAttempts) {
+        try {
+          response = await client.messages.create(params);
+          break;
+        } catch (err: any) {
+          apiAttempts++;
+          const errorMsg = err.message || '';
+          if (apiAttempts >= maxApiAttempts || err.message === 'CANCELLED_BY_USER' || errorMsg.includes('CANCELLED_BY_USER')) {
+            throw err;
+          }
+          const traceMsg = this.formatTraceErrorMessage('anthropic', errorMsg, keyInfo.index, keyInfo.poolType);
+          console.warn(`[Anthropic] ${traceMsg}`);
+          if (onTrace) {
+            onTrace({
+              type: 'progress',
+              text: traceMsg,
+            });
+          }
+          keyInfo = this.getProviderKeyInfo('anthropic');
+          client = new Anthropic({
+            apiKey: keyInfo.apiKey,
+            defaultHeaders: {
+              'anthropic-beta': 'prompt-caching-2024-07-31',
+            },
+          });
+        }
+      }
+
+      if (!response) {
+        throw new Error('API returned no response.');
+      }
+
+      // Record successful model call
+      recordProvenModel('anthropic', this.mistralModelName);
 
       const contentBlocks = Array.isArray((response as any).content) ? (response as any).content : [];
       const contentText = this.extractAnthropicContent(contentBlocks).trim();
@@ -2980,6 +3180,13 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
     mediaFiles: AgentMediaFile[] = [],
     imageBackupParts: any[] = []
   ): Promise<{ text: string, trace: any[] }> {
+    // Reset transient model fallbacks/swaps from previous error runs
+    if (this.activeProvider === 'gemini') {
+      this.modelName = this.resolveModelForMode(this.activeMode === 'fast' ? 'fast' : 'think');
+      this.fallbackModel = this.resolveModelForMode('fast');
+    } else {
+      this.mistralModelName = this.resolveModelForMode(this.activeMode);
+    }
     const cognitiveSession = cognitiveCore.createCognitiveCoreSession();
     const reflectionEngine = new AgentReflectionEngine();
     const telegramFastDirect = (context as any).source === 'telegram'
@@ -3083,12 +3290,14 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
         ) {
           console.error(`[GeminiClient] ðŸ”¥ API/Network Error encountered: ${ errorMsg.substring(0, 200) }`);
 
+          const isCustom = !!(this.runtimeSettings?.apiKeys?.['gemini']?.length);
+          const poolType = isCustom ? 'custom pool' : 'system pool';
+          const traceMsg = this.formatTraceErrorMessage('gemini', errorMsg, this.currentKeyIndex, poolType);
+          console.warn(`[GeminiClient] ${traceMsg}`);
           if (onTrace) {
             onTrace({
               type: 'progress',
-              text: errorMsg.includes('429') || errorMsg.includes('quota')
-                ? 'Trying another route'
-                : 'Reconnecting to model',
+              text: traceMsg,
             });
           }
 
@@ -3110,7 +3319,11 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
           } else if (errorMsg.includes('429') || errorMsg.includes('quota')) {
             if (this.apiKeys.length === 1) {
               console.warn(`[GeminiClient] ðŸš¦ Rate limited (1 key). Retrying immediately with preserved state. [${ survivorState ? survivorState.interactions + ' iters preserved' : 'fresh start' }]`);
-              if (onTrace) onTrace({ type: 'progress', text: 'Trying another route' });
+              const isCustom = !!(this.runtimeSettings?.apiKeys?.['gemini']?.length);
+              const poolType = isCustom ? 'custom pool' : 'provider api key';
+              const traceMsg = `Gemini API Key 1 (${poolType}) failed: Rate limit reached. Retrying immediately with preserved state...`;
+              console.warn(`[GeminiClient] ${traceMsg}`);
+              if (onTrace) onTrace({ type: 'progress', text: traceMsg });
               attempts++;
               continue;
             } else {
@@ -4555,6 +4768,7 @@ EXTERNAL ACTION NOTE CUE
           ]);
           _cleanupRef.cleanup?.(); // cleanup on success
           console.log(`[GeminiClient] 🟢 Live connection working! Streaming started successfully for model: ${ currentModel }`);
+          recordProvenModel(this.activeMode, currentModel);
           activeStreamAbortController = attemptAbortController;
           if (onTrace && lightweightTelegramMode && streamAttempts > 1) {
             onTrace({ type: 'progress', text: 'Connected; continuing' });
@@ -4627,7 +4841,15 @@ EXTERNAL ACTION NOTE CUE
           if (onTrace && lightweightTelegramMode) {
             onTrace({
               type: 'progress',
-              text: isRateLimit ? 'Trying another route' : isServerError ? 'Model busy; retrying' : isConnectTimeout ? 'Connection stalled; reconnecting' : isTimeout ? 'Model timeout; retrying' : 'Retrying model request',
+              text: isRateLimit
+                ? 'Rate limit reached - rotating key'
+                : isServerError
+                  ? 'Gemini server overloaded - retrying connection'
+                  : isConnectTimeout
+                    ? 'Connection stalled - reconnecting'
+                    : isTimeout
+                      ? 'Request timeout - retrying request'
+                      : 'Connection failed - retrying',
             });
           }
 

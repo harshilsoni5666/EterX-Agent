@@ -60,7 +60,7 @@ function gradeAnswer(generated: string, expected: string): boolean {
 async function runGaiaBenchmark() {
   const { AgentOrchestrator } = await import('../src/lib/agent/orchestrator');
   const { apiKeyPool } = await import('../src/lib/agent/api-key-pool');
-  const { buildScopedRuntimeSettings } = await import('../src/lib/agent/runtime-api-keys');
+  const { applyRuntimeApiKeys, applyRuntimeModelOverrides, buildScopedRuntimeSettings } = await import('../src/lib/agent/runtime-api-keys');
 
   console.log('==================================================');
   console.log('🤖 EterX GAIA Agent Benchmark Runner');
@@ -95,10 +95,11 @@ async function runGaiaBenchmark() {
   apiKeyPool.setRuntimeKeys(uniqueKeys);
 
   const defaultModel = process.env.ETERX_THINK_MODEL || process.env.GEMINI_THINK_MODEL || 'gemma-4-31b-it';
-  const runtimeSettings = buildScopedRuntimeSettings(
-    { gemini: uniqueKeys },
-    { gemini: defaultModel }
-  );
+  // The benchmark is a CLI setup path; seed the same runtime gateway used by
+  // production before constructing the agent. Normal API routes never do this.
+  applyRuntimeApiKeys({ gemini: uniqueKeys });
+  applyRuntimeModelOverrides({ gemini: defaultModel });
+  const runtimeSettings = buildScopedRuntimeSettings();
 
   // Load GAIA tasks (check metadata.jsonl first, then sample tasks)
   let metadataPath = path.join(repoRoot, 'gaia', 'metadata.jsonl');

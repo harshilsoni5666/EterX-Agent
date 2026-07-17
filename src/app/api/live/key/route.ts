@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { apiKeyPool } from '../../../../lib/agent/api-key-pool';
-import { applyRuntimeApiKeys, applyRuntimeModelOverrides } from '../../../../lib/agent/runtime-api-keys';
 import { rejectCrossOrigin } from '../../agent/_shared';
 
 export const dynamic = 'force-dynamic';
@@ -8,8 +7,8 @@ export const dynamic = 'force-dynamic';
 /**
  * POST /api/live/key — Lease an API key for a Gemini Live session.
  * 
- * The client calls this before connecting to the Live API WebSocket.
- * Returns a key from the pool, leased under a unique live session ID.
+ * The client calls this before connecting to the Live API WebSocket. Credentials
+ * are configured only by Settings and never accepted by this endpoint.
  */
 export async function POST(req: NextRequest) {
   try {
@@ -18,12 +17,7 @@ export async function POST(req: NextRequest) {
 
     const body = await req.json().catch(() => ({}));
     const chatId = body.chatId || `live_${Date.now()}`;
-    const runtimeKeyResult = applyRuntimeApiKeys(body.apiKeys);
-    applyRuntimeModelOverrides(body.modelOverrides);
-    
-    const lease = runtimeKeyResult.preferredGeminiApiKey
-      ? apiKeyPool.leaseSpecificKey(chatId, runtimeKeyResult.preferredGeminiApiKey, 'main_agent') || apiKeyPool.leaseKey(chatId, 'main_agent')
-      : apiKeyPool.leaseKey(chatId, 'main_agent');
+    const lease = apiKeyPool.leaseKey(chatId, 'main_agent');
     
     if (!lease) {
       return NextResponse.json(

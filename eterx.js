@@ -1,10 +1,5 @@
 #!/usr/bin/env node
-/**
- * ╔═══════════════════════════════════════╗
- * ║          EterX Agent CLI              ║
- * ║    The single command for everything  ║
- * ╚═══════════════════════════════════════╝
- */
+// EterX Agent Command-Line Interface (CLI)
 const { spawn, execSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');

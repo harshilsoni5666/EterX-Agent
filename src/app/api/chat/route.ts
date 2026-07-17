@@ -66,8 +66,6 @@ export async function POST(req: NextRequest) {
       modelThinkingCapability = null,
       pinnedContext = null, 
       userName = 'Developer',
-      apiKeys = null,
-      modelOverrides = null,
       runLocation = 'local',
       customAgentId = null,
       customAgentName = null,
@@ -94,7 +92,7 @@ export async function POST(req: NextRequest) {
     const safePinnedContext = pinnedContext && typeof pinnedContext === 'object' && !Array.isArray(pinnedContext)
       ? pinnedContext
       : {};
-    const runtimeSettings = buildScopedRuntimeSettings(apiKeys, modelOverrides);
+    const runtimeSettings = buildScopedRuntimeSettings();
     const selectedModelConfig = getMainAgentModelConfig(safeMode, runtimeSettings);
     const safeModelThinkingCapability = normalizeModelThinkingCapabilities(modelThinkingCapability);
     const safeThinkingLevel = normalizeThinkingLevelForModel(

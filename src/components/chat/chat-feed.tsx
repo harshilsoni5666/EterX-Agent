@@ -518,8 +518,8 @@ const useWorkElapsedSeconds = (active: boolean, logs: any[], startedAt?: number 
 };
 
 const ThoughtSequence = ({
-  logs, liveLogs = [], isThinking, isLast, hasAnswer, stepCount, turnStartedAt, turnEndedAt, onOpenAgentTeam, isSubAgentTab = false
-}: { logs: any[], liveLogs?: any[], isThinking: boolean, isLast: boolean, hasAnswer: boolean, stepCount: number, turnStartedAt?: number | null, turnEndedAt?: number | null, onOpenAgentTeam?: (agentName?: string) => void, isSubAgentTab?: boolean }) => {
+  logs, liveLogs = [], isThinking, isLast, hasAnswer, stepCount, turnStartedAt, turnEndedAt, onOpenAgentTeam, isSubAgentTab = false, groupIdx = 0
+}: { logs: any[], liveLogs?: any[], isThinking: boolean, isLast: boolean, hasAnswer: boolean, stepCount: number, turnStartedAt?: number | null, turnEndedAt?: number | null, onOpenAgentTeam?: (agentName?: string) => void, isSubAgentTab?: boolean, groupIdx?: number }) => {
   // Start collapsed for completed turns, open for active/no-answer turns
   const [open, setOpen] = React.useState(false);
   const containerRef = React.useRef<HTMLDivElement>(null);
@@ -527,6 +527,11 @@ const ThoughtSequence = ({
   const hasAnswerLatchRef = React.useRef(false);
   // isLiveThinking: true while the turn is actively thinking regardless of streaming answer
   const isLiveThinking = isThinking;
+
+  // Reset latch when this component's group index changes (new conversation turn)
+  React.useEffect(() => {
+    hasAnswerLatchRef.current = false;
+  }, [groupIdx]);
 
   React.useEffect(() => {
     if (isLiveThinking) {
@@ -602,7 +607,7 @@ const ThoughtSequence = ({
       {showWorkedSummary && (
         <div className="eterx-worked-summary mb-2 flex w-full items-center gap-4 pt-1">
           <div className="eterx-worked-summary-line h-px flex-1 bg-white/[0.08]" />
-          <span className="eterx-worked-summary-label shrink-0 py-[1px] text-center text-[14.5px] font-medium leading-[1.35] tracking-normal text-[#8F8B85]">
+          <span className="eterx-worked-summary-label shrink-0 py-[1px] text-center text-[12px] font-medium leading-[1.35] tracking-normal text-[#8F8B85]">
             {`Worked for ${ workElapsedLabel }`}
           </span>
           <div className="eterx-worked-summary-line h-px flex-1 bg-white/[0.08]" />
@@ -1026,6 +1031,7 @@ const ChatFeedMessageGroup = React.memo(({
             turnEndedAt={displayFinalAnswer?.endTime ?? displayFinalAnswer?.timestamp ?? null}
             onOpenAgentTeam={onOpenAgentTeam}
             isSubAgentTab={isSubAgentTab}
+            groupIdx={groupIdx}
           />
         );
       })}
@@ -1071,8 +1077,8 @@ const ChatFeedMessageGroup = React.memo(({
     </div>
   );
 }, (prev, next) => {
-  // Always re-render when thinking state changes
-  if (prev.isThinkingTurn !== next.isThinkingTurn || next.isThinkingTurn) return false;
+  // Re-render only when thinking state CHANGES, not on every parent render while thinking is true
+  if (prev.isThinkingTurn !== next.isThinkingTurn) return false;
   if (prev.groupIdx !== next.groupIdx) return false;
   if (prev.isCompressed !== next.isCompressed) return false;
   if (prev.isSubAgentTab !== next.isSubAgentTab) return false;
@@ -1113,6 +1119,69 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
   traceLogs, isThinking, messagesEndRef, setSidebarOpen, sidebarOpen, handleScroll: externalHandleScroll, showScrollBottom, isCompressed = false, onOpenAgentTeam, onAnswerAskUser, onEditUserMessage, isSubAgentTab = false
 }) => {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+
+  const groups = useMemo(() => {
+    const nextGroups: any[][] = [];
+    let currentGroup: any[] = [];
+
+    traceLogs.forEach(log => {
+      if (log.type === 'user_action') {
+        if (currentGroup.length > 0) nextGroups.push(currentGroup);
+        nextGroups.push([log]);
+        currentGroup = [];
+      } else {
+        currentGroup.push(log);
+      }
+    });
+    if (currentGroup.length > 0) nextGroups.push(currentGroup);
+
+    // If the agent is currently thinking and the last recorded log is the user's prompt,
+    // append an empty group so the UI instantly renders the Agent's "Thinking" container
+    // before the first stream chunk arrives.
+    if (isThinking && nextGroups.length > 0 && nextGroups[nextGroups.length - 1][0]?.type === 'user_action') {
+      nextGroups.push([]);
+    }
+
+    return nextGroups;
+  }, [traceLogs, isThinking]);
+
+  const [activeTurnIdx, setActiveTurnIdx] = useState<number>(0);
+
+
+
+  const userTurns = useMemo(() => {
+    const ERROR_PATTERNS = ['agent stopped', 'execution failed', 'agent execution', '*agent', 'error:', 'failed:'];
+    const isErrorText = (t: string) => ERROR_PATTERNS.some(p => t.toLowerCase().startsWith(p));
+    return groups.map((g, idx) => {
+      if (g[0]?.type === 'user_action') {
+        const nextGroup = groups[idx + 1] || [];
+        const answerLog = [...nextGroup].reverse().find((l: any) => l.type === 'answer' && l.text && !isErrorText(l.text));
+        const fallbackLog = [...nextGroup].reverse().find((l: any) => l.text && l.type !== 'user_action' && !isErrorText(l.text));
+        const firstAttachment = g[0]?.attachments?.[0];
+        const attachmentName = firstAttachment?.name || firstAttachment?.file?.name || null;
+        return {
+          idx,
+          userText: g[0]?.text || 'User request',
+          assistantText: answerLog?.text || fallbackLog?.text || '',
+          attachmentName
+        };
+      }
+      return null;
+    }).filter(Boolean) as Array<{ idx: number; userText: string; assistantText: string; attachmentName: string | null }>;
+  }, [groups]);
+
+  useEffect(() => {
+    if (userTurns.length > 0) {
+      setActiveTurnIdx(userTurns.length - 1);
+    }
+  }, [userTurns.length]);
+
+  useEffect(() => {
+    const activeEl = document.getElementById(`dash-${activeTurnIdx}`);
+    if (activeEl) {
+      activeEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  }, [activeTurnIdx]);
   const previewScrollRef = useRef<HTMLDivElement>(null);
   const prevTraceActivityRef = useRef('');
   const shouldAutoFollowRef = useRef(true);
@@ -1150,6 +1219,13 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
       shouldAutoFollowRef.current = true;
     }
   }, [showScrollBottom]);
+
+  // Reset auto-follow on every new agent run so the feed always scrolls to show new output
+  useEffect(() => {
+    if (isThinking) {
+      shouldAutoFollowRef.current = true;
+    }
+  }, [isThinking]);
 
   useEffect(() => {
     const hasTraceActivity = traceActivitySignature !== prevTraceActivityRef.current;
@@ -1211,33 +1287,32 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
       const latestContainer = latestScrollContainerRef.current;
       if (!latestContainer) return;
       externalHandleScroll({ currentTarget: latestContainer } as React.UIEvent<HTMLDivElement>);
+
+      const containerRect = latestContainer.getBoundingClientRect();
+      const containerCenter = containerRect.top + containerRect.height / 2;
+      let closestIdx = -1;
+      let minDistance = Infinity;
+
+      userTurns.forEach((turn, k) => {
+        const el = document.getElementById(`message-${turn.idx}`);
+        if (el) {
+          const rect = el.getBoundingClientRect();
+          const elCenter = rect.top + rect.height / 2;
+          const distance = Math.abs(elCenter - containerCenter);
+          if (distance < minDistance) {
+            minDistance = distance;
+            closestIdx = k;
+          }
+        }
+      });
+
+      if (closestIdx !== -1) {
+        setActiveTurnIdx(closestIdx);
+      }
     });
   };
 
-  const groups = useMemo(() => {
-    const nextGroups: any[][] = [];
-    let currentGroup: any[] = [];
 
-    traceLogs.forEach(log => {
-      if (log.type === 'user_action') {
-        if (currentGroup.length > 0) nextGroups.push(currentGroup);
-        nextGroups.push([log]);
-        currentGroup = [];
-      } else {
-        currentGroup.push(log);
-      }
-    });
-    if (currentGroup.length > 0) nextGroups.push(currentGroup);
-
-    // If the agent is currently thinking and the last recorded log is the user's prompt,
-    // append an empty group so the UI instantly renders the Agent's "Thinking" container
-    // before the first stream chunk arrives.
-    if (isThinking && nextGroups.length > 0 && nextGroups[nextGroups.length - 1][0]?.type === 'user_action') {
-      nextGroups.push([]);
-    }
-
-    return nextGroups;
-  }, [traceLogs, isThinking]);
 
   const hiddenGroupCount = Math.max(0, groups.length - historyWindowSize);
   const visibleGroups = hiddenGroupCount > 0 ? groups.slice(hiddenGroupCount) : groups;
@@ -1246,9 +1321,52 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
   return (
     <>
       <style dangerouslySetInnerHTML={{ __html: `${ liveMotionStyles }\n${ chatFeedSurfaceStyles }` }} />
-      <div className={`eterx-chat-feed relative flex-1 min-h-0 w-full overflow-hidden ${ isEmptyNewChatFeed ? 'eterx-chat-feed-empty' : '' }`}>
+      <div className="relative flex-1 min-h-0 w-full flex flex-col">
+        {userTurns.length > 2 && (
+          <div className="absolute left-2 top-[44%] -translate-y-1/2 flex flex-col gap-[3px] z-[60] py-3">
+            {userTurns.map((turn, k) => (
+              <div key={turn.idx} className="group relative flex items-center py-2 cursor-pointer" onClick={() => {
+                    const el = document.getElementById(`message-${turn.idx}`);
+                    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    setActiveTurnIdx(k);
+                  }}>
+                <div
+                  id={`dash-${k}`}
+                  className={`h-[2px] transition-all duration-200 ${
+                    activeTurnIdx === k
+                      ? 'bg-[#F4F2EE] w-[22px]'
+                      : 'bg-white/30 w-[14px] group-hover:w-[22px] group-hover:bg-white/55'
+                  }`}
+                  aria-label={`Go to turn ${k + 1}`}
+                />
+                
+                {/* Popover */}
+                <div className="absolute left-8 top-1/2 -translate-y-1/2 w-[290px] rounded-xl border border-white/[0.06] bg-[#1C1C1B] backdrop-blur-2xl px-3 pt-2.5 pb-2.5 shadow-[0_12px_36px_rgba(0,0,0,0.6)] opacity-0 pointer-events-none group-hover:opacity-100 z-[70]">
+                  <p className="text-[12.5px] font-semibold text-[#EDEBE7] leading-[1.4] tracking-[-0.01em] mb-1" style={{display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical',overflow:'hidden'}}>
+                    {turn.userText}
+                  </p>
+                  {turn.assistantText && (
+                    <p className="text-[11px] text-[#6E6A64] leading-[1.55]" style={{display:'-webkit-box',WebkitLineClamp:3,WebkitBoxOrient:'vertical',overflow:'hidden'}}>
+                      {turn.assistantText}
+                    </p>
+                  )}
+                  {turn.attachmentName && (
+                    <div className="mt-2 inline-flex items-center rounded-lg bg-white/[0.05] border border-white/[0.05] px-2 py-0.5 max-w-full">
+                      <span className="text-[10.5px] font-medium text-[#A09A93] truncate">{turn.attachmentName}</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className={`eterx-chat-feed relative flex-1 min-h-0 w-full overflow-hidden ${ isEmptyNewChatFeed ? 'eterx-chat-feed-empty' : '' }`}>
         <div
-          className={`eterx-chat-feed-scroll relative h-full w-full flex flex-col overflow-y-auto overflow-x-hidden pb-40 eterx-scrollbar ${ isCompressed ? 'px-4' : 'px-4 sm:px-8' }`}
+          className={`eterx-chat-feed-scroll relative h-full w-full flex flex-col overflow-y-auto overflow-x-hidden pb-40 eterx-scrollbar ${
+            userTurns.length > 2 
+              ? (isCompressed ? 'pl-11 pr-4' : 'pl-11 sm:pl-14 pr-4 sm:pr-8') 
+              : (isCompressed ? 'px-4' : 'px-4 sm:px-8')
+          }`}
           id="chat-container"
           ref={scrollContainerRef}
           onScroll={handleScrollWrap}
@@ -1309,6 +1427,7 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
               <div ref={messagesEndRef} className="h-[2px]" />
             </div>
           )}
+        </div>
         </div>
       </div>
       <AnimatePresence>

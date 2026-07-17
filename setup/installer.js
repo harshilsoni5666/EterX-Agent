@@ -17,14 +17,14 @@ const isUnicodeSupported = () => {
 const unicode = isUnicodeSupported();
 
 const packages = [
-  { name: 'next', label: 'Next.js Web Server Core', status: 'pending', pct: 0 },
-  { name: 'react', label: 'React UI Renderer Engine', status: 'pending', pct: 0 },
-  { name: 'electron', label: 'Electron Desktop Wrapper', status: 'pending', pct: 0 },
-  { name: '@google/genai', label: 'Google Gemini AI Client', status: 'pending', pct: 0 },
-  { name: 'openai', label: 'OpenAI API Connector', status: 'pending', pct: 0 },
-  { name: '@anthropic-ai/sdk', label: 'Anthropic Claude API Connector', status: 'pending', pct: 0 },
-  { name: 'framer-motion', label: 'GPU-Accelerated Transition Engine', status: 'pending', pct: 0 },
-  { name: 'playwright-core', label: 'Isolated Browser Automator Engine', status: 'pending', pct: 0 },
+  { name: 'next', label: 'Next.js', status: 'pending', pct: 0 },
+  { name: 'react', label: 'React UI library', status: 'pending', pct: 0 },
+  { name: 'electron', label: 'Electron desktop runtime', status: 'pending', pct: 0 },
+  { name: '@google/genai', label: 'Google Gemini SDK', status: 'pending', pct: 0 },
+  { name: 'openai', label: 'OpenAI SDK', status: 'pending', pct: 0 },
+  { name: '@anthropic-ai/sdk', label: 'Anthropic SDK', status: 'pending', pct: 0 },
+  { name: 'framer-motion', label: 'Framer Motion animations', status: 'pending', pct: 0 },
+  { name: 'playwright-core', label: 'Playwright automation', status: 'pending', pct: 0 },
 ];
 
 function redrawProgress(firstDraw = false) {

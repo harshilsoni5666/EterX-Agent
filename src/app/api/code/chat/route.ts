@@ -424,12 +424,12 @@ export async function POST(req: NextRequest) {
     return new Response(JSON.stringify({ error: 'Invalid JSON body' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
   }
 
-  const { prompt, history, workspacePath, apiKeys, modelOverrides } = body;
+  const { prompt, history, workspacePath } = body;
   if (!prompt || typeof prompt !== 'string' || !prompt.trim()) {
     return new Response(JSON.stringify({ error: 'Prompt is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
   }
 
-  const runtimeSettings = buildScopedRuntimeSettings(apiKeys, modelOverrides);
+  const runtimeSettings = buildScopedRuntimeSettings();
 
   const loadedToolNames = getCodingAgentToolNames();
   if (workspacePath) {

@@ -298,7 +298,6 @@ EterX-Agent/
 │       ├── live/                 # Real-time WebSocket communication
 │       └── sandbox/              # Sandboxed command execution
 ├── electron/                     # Desktop app wrapper (main process, package script)
-├── fastapi_blog/                 # Python FastAPI backend for structured data
 ├── setup/                        # Installation and diagnostic scripts
 └── eterx.js                      # CLI entry point (400+ line command router)
 ```

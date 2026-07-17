@@ -44,6 +44,9 @@ import {
 } from '../lib/agent/custom-agent-trace-adapter';
 import { formatVisibleWorkNote } from '../lib/agent/work-note';
 import { FilePanelProvider, useGlobalFilePanel } from '../contexts/FilePanelContext';
+import { isProjectFile, getFileIconPath } from '../lib/utils/file-icon-utils';
+import { WorkMenuSectionButton, WorkMenuEmptyState, WorkMenuStatusIndicator } from '../components/layout/WorkMenuHelpers';
+import { FloatingPetMonitor, PetThinkingLabel, getLatestPetMonitorText } from '../components/chat/FloatingPetMonitor';
 
 const CommandPalette = dynamic(
   () => import('../components/layout/command-palette').then(mod => mod.CommandPalette),
@@ -90,129 +93,6 @@ const HeaderSidebarOpenIcon = ({ className = "w-[18px] h-[18px]" }: { className?
 
 const getBasename = (path: string) => path.split(/[/\\]/).pop() || path;
 
-const isProjectFile = (filepath: string) => {
-  if (!filepath) return false;
-  const pathLower = filepath.toLowerCase();
-
-  // Exclude EterX-Agent internal files
-  if (pathLower.includes('page.tsx')) return false;
-  if (pathLower.includes('chat-input.tsx')) return false;
-  if (pathLower.includes('route.ts')) return false;
-  if (pathLower.includes('system')) return false;
-  if (pathLower.includes('walkthrough.md')) return false;
-  if (pathLower.includes('task.md')) return false;
-  if (pathLower.includes('implementation_plan.md')) return false;
-
-  // Other standard excludes
-  if (pathLower.includes('.system_generated')) return false;
-  if (pathLower.includes('node_modules')) return false;
-  if (pathLower.includes('.next')) return false;
-  if (pathLower.includes('.git/')) return false;
-  if (pathLower.includes('.git\\')) return false;
-  if (pathLower.includes('.vscode')) return false;
-  if (pathLower.includes('.temp')) return false;
-  if (pathLower.includes('.gitleaks')) return false;
-  if (pathLower.endsWith('.log')) return false;
-
-  return true;
-};
-
-const getFileIconPath = (filepath: string) => {
-  const ext = filepath.split('.').pop()?.toLowerCase();
-  const filename = filepath.split('/').pop()?.toLowerCase() || '';
-
-  if (filename.startsWith('.git') || filename.includes('git')) {
-    return '/icons/files/git.svg';
-  }
-  if (filename.includes('eslint')) {
-    return '/icons/files/eslint.svg';
-  }
-  if (filename.includes('prettier')) {
-    return '/icons/files/prettier.svg';
-  }
-  if (filename.includes('tsconfig')) {
-    return '/icons/files/tsconfig.svg';
-  }
-  if (filename === 'package.json') {
-    return '/icons/files/npm.svg';
-  }
-  if (filename === 'yarn.lock') {
-    return '/icons/files/yarn.svg';
-  }
-  if (filename === 'pnpm-lock.yaml') {
-    return '/icons/files/pnpm.svg';
-  }
-  if (filename.includes('next.config')) {
-    return '/icons/files/next.svg';
-  }
-  if (filename.includes('vite.config')) {
-    return '/icons/files/vite.svg';
-  }
-  if (filename.includes('webpack.config')) {
-    return '/icons/files/webpack.svg';
-  }
-  if (filename.startsWith('.env') || filename === 'settings.json') {
-    return '/icons/files/settings.svg';
-  }
-
-  switch (ext) {
-    case 'tsx':
-    case 'jsx':
-      return '/icons/files/react.svg';
-    case 'ts':
-      return '/icons/files/typescript.svg';
-    case 'js':
-      return '/icons/files/javascript.svg';
-    case 'py':
-      return '/icons/files/python.svg';
-    case 'html':
-      return '/icons/files/html.svg';
-    case 'css':
-      return '/icons/files/css.svg';
-    case 'json':
-      return '/icons/files/json.svg';
-    case 'go':
-      return '/icons/files/go.svg';
-    case 'md':
-      return '/icons/files/markdown.svg';
-    case 'sh':
-    case 'bash':
-    case 'zsh':
-      return '/icons/files/console.svg';
-    case 'svg':
-      return '/icons/files/svg.svg';
-    case 'yaml':
-    case 'yml':
-      return '/icons/files/yaml.svg';
-    case 'dockerfile':
-      return '/icons/files/docker.svg';
-    case 'png':
-    case 'jpg':
-    case 'jpeg':
-    case 'gif':
-    case 'webp':
-    case 'ico':
-      return '/icons/files/image.svg';
-    case 'pdf':
-      return '/icons/files/pdf.svg';
-    case 'zip':
-    case 'tar':
-    case 'gz':
-    case 'rar':
-      return '/icons/files/zip.svg';
-    case 'lock':
-      return '/icons/files/lock.svg';
-    case 'sql':
-    case 'db':
-      return '/icons/files/database.svg';
-    case 'sass':
-    case 'scss':
-      return '/icons/files/sass.svg';
-    default:
-      return '/icons/files/document.svg';
-  }
-};
-
 type WorkMenuSourceItem = {
   id: string;
   name: string;
@@ -223,73 +103,7 @@ type WorkMenuSourceItem = {
   deletions?: number;
 };
 
-const WorkMenuSectionButton = ({
-  title,
-  meta,
-  open,
-  onClick,
-  onMouseEnter,
-}: {
-  title: string;
-  meta?: string | number;
-  open: boolean;
-  onClick: (event: React.MouseEvent<HTMLButtonElement>) => void;
-  onMouseEnter?: () => void;
-}) => (
-  <button
-    type="button"
-    aria-expanded={open}
-    onMouseEnter={onMouseEnter}
-    onClick={onClick}
-    className="eterx-work-menu-section-button group"
-  >
-    <span className="min-w-0 truncate">{title}</span>
-    <span className="flex shrink-0 items-center gap-2">
-      {meta !== undefined && meta !== '' && (
-        <span className="eterx-work-menu-section-badge">{meta}</span>
-      )}
-      <ChevronDown className={`h-3.5 w-3.5 text-white/34 transition duration-150 group-hover:text-white/64 ${ open ? '' : '-rotate-90' }`} />
-    </span>
-  </button>
-);
 
-const WorkMenuEmptyState = ({ label, detail }: { label: string; detail?: string }) => (
-  <div className="eterx-work-menu-empty">
-    <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-white/14" />
-    <span className="min-w-0 flex-1 truncate">{label}</span>
-    {detail && <span className="hidden shrink-0 text-white/28 sm:inline">{detail}</span>}
-  </div>
-);
-
-const WorkMenuStatusIndicator = ({ status }: { status?: string }) => {
-  switch (status) {
-    case 'working':
-    case 'spawning':
-      return (
-        <svg className="animate-spin h-3.5 w-3.5 text-white/80 shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" aria-label="Working">
-          <circle className="opacity-20" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
-          <path className="opacity-80" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-        </svg>
-      );
-    case 'paused':
-      return (
-        <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center text-amber-400" aria-label="Paused">
-          <svg viewBox="0 0 10 10" fill="currentColor" className="h-2.5 w-2.5">
-            <rect x="1" y="1" width="3" height="8" rx="0.5" />
-            <rect x="6" y="1" width="3" height="8" rx="0.5" />
-          </svg>
-        </span>
-      );
-    case 'completed':
-      return <span className="h-2 w-2 shrink-0 rounded-full bg-emerald-400/80" aria-label="Completed" />;
-    case 'error':
-      return <span className="h-2 w-2 shrink-0 rounded-full bg-red-400/80" aria-label="Error" />;
-    case 'closed':
-      return <span className="h-2 w-2 shrink-0 rounded-full bg-white/15" aria-label="Closed" />;
-    default:
-      return <span className="h-2 w-2 shrink-0 rounded-full bg-white/20" aria-label="Idle" />;
-  }
-};
 
 const SUB_AGENT_ICON_NAMES = new Set([
   'einstein', 'heisenberg', 'sam', 'dario', 'elon',
@@ -487,192 +301,7 @@ const NetworkStatusBanner = ({
   );
 };
 
-const getPetLogText = (log: any) => {
-  const raw = log?.text || log?.command || log?.summary || log?.message || '';
-  return String(raw).replace(/\s+/g, ' ').trim();
-};
 
-const getLatestPetMonitorText = (logs: any[], isThinking: boolean) => {
-  if (isThinking) return 'Thinking';
-  for (let i = logs.length - 1; i >= 0; i--) {
-    const log = logs[i];
-    if (!log || log.type === 'user_action' || log.type === 'task_plan') continue;
-    const text = getPetLogText(log);
-    if (text) return text;
-  }
-  return isThinking ? 'Thinking' : '';
-};
-
-const PetThinkingLabel = ({ className = '' }: { className?: string }) => (
-  <span className={`eterx-pet-thinking-label inline-flex items-baseline gap-[3px] ${ className }`}>
-    <span>Thinking</span>
-    <span className="eterx-pet-thinking-dots inline-flex w-[22px] items-baseline justify-start gap-[2px]" aria-hidden="true">
-      <span />
-      <span />
-      <span />
-    </span>
-  </span>
-);
-
-const FloatingPetMonitor = ({
-  open,
-  isThinking,
-  title,
-  logs,
-  onClose,
-  onReply,
-}: {
-  open: boolean;
-  isThinking: boolean;
-  title: string;
-  logs: any[];
-  onClose: () => void;
-  onReply: (message: string) => void;
-}) => {
-  const [position, setPosition] = useState({ x: 28, y: 82 });
-  const [replyOpen, setReplyOpen] = useState(false);
-  const [replyText, setReplyText] = useState('');
-  const dragFrameRef = useRef<number | null>(null);
-
-  const latestText = useMemo(() => getLatestPetMonitorText(logs, isThinking), [isThinking, logs]);
-
-  const displayTitle = title?.trim() || 'EterX agent';
-  const previewText = isThinking ? 'Thinking' : latestText;
-
-  const startDrag = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0) return;
-    const target = event.target as HTMLElement | null;
-    if (target?.closest('button,input,textarea')) return;
-
-    event.preventDefault();
-    const startX = event.clientX;
-    const startY = event.clientY;
-    const origin = position;
-
-    const handleMove = (moveEvent: PointerEvent) => {
-      const next = {
-        x: Math.max(8, Math.min(window.innerWidth - 96, origin.x + moveEvent.clientX - startX)),
-        y: Math.max(8, Math.min(window.innerHeight - 64, origin.y + moveEvent.clientY - startY)),
-      };
-
-      if (dragFrameRef.current !== null) window.cancelAnimationFrame(dragFrameRef.current);
-      dragFrameRef.current = window.requestAnimationFrame(() => {
-        setPosition(next);
-        dragFrameRef.current = null;
-      });
-    };
-
-    const stopDrag = () => {
-      if (dragFrameRef.current !== null) {
-        window.cancelAnimationFrame(dragFrameRef.current);
-        dragFrameRef.current = null;
-      }
-      window.removeEventListener('pointermove', handleMove);
-      window.removeEventListener('pointerup', stopDrag);
-      window.removeEventListener('pointercancel', stopDrag);
-    };
-
-    window.addEventListener('pointermove', handleMove);
-    window.addEventListener('pointerup', stopDrag);
-    window.addEventListener('pointercancel', stopDrag);
-  }, [position]);
-
-  useEffect(() => {
-    return () => {
-      if (dragFrameRef.current !== null) window.cancelAnimationFrame(dragFrameRef.current);
-    };
-  }, []);
-
-  const submitReply = useCallback(() => {
-    const message = replyText.trim();
-    if (!message) return;
-    onReply(message);
-    setReplyText('');
-    setReplyOpen(false);
-  }, [onReply, replyText]);
-
-  if (!open || !isThinking) return null;
-
-  return (
-    <div
-      className={`eterx-pet-monitor group fixed z-[9998] w-[326px] max-w-[calc(100vw-24px)] select-none rounded-[24px] border border-white/[0.16] bg-[#171717]/96 text-[#F2F0EC] shadow-[0_18px_54px_rgba(0,0,0,0.36),inset_0_1px_0_rgba(255,255,255,0.055)] backdrop-blur-2xl ${ replyOpen ? 'p-3' : 'px-4 py-3.5' }`}
-      style={{ left: position.x, top: position.y }}
-      onPointerDown={startDrag}
-    >
-      <button
-        type="button"
-        onClick={onClose}
-        aria-label="Close pet monitor"
-        className="eterx-pet-close absolute -left-2 -top-2 flex h-8 w-8 items-center justify-center rounded-full border border-white/[0.16] bg-[#1F1F1F] text-white/72 opacity-0 shadow-[0_10px_26px_rgba(0,0,0,0.28)] transition-all duration-100 hover:bg-[#2A2A2A] hover:text-white group-hover:opacity-100 focus:opacity-100"
-      >
-        <X className="h-4 w-4" strokeWidth={2.3} />
-      </button>
-
-      <div className="flex min-w-0 items-start gap-3">
-        <div className="min-w-0 flex-1 pt-0.5">
-          {replyOpen ? (
-            <div>
-              <div className="eterx-pet-title truncate text-[13px] font-semibold leading-5 text-[#A8A39B]">
-                {displayTitle}
-              </div>
-              <div className="eterx-pet-status mt-1 line-clamp-2 text-[15px] font-semibold leading-5 text-[#F2F0EC]">
-                <PetThinkingLabel />
-              </div>
-            </div>
-          ) : (
-            <div className="eterx-pet-status text-[20px] font-semibold leading-7 text-[#F2F0EC]">
-              <PetThinkingLabel />
-            </div>
-          )}
-        </div>
-
-        <span className="eterx-pet-spinner mt-1 h-[15px] w-[15px] shrink-0 rounded-full border-2 border-white/35 border-t-white animate-spin" />
-      </div>
-
-      {!replyOpen && (
-        <button
-          type="button"
-          onClick={() => setReplyOpen(true)}
-          className="eterx-pet-reply-button absolute bottom-3 right-4 hidden rounded-full border border-white/[0.10] bg-white/[0.055] px-4 py-1.5 text-[15px] font-medium text-[#E8E5DF] transition-colors hover:bg-white/[0.10] hover:text-white group-hover:block"
-        >
-          Reply
-        </button>
-      )}
-
-      {replyOpen && (
-        <div className="eterx-pet-reply-area mt-3 border-t border-white/[0.08] pt-3">
-          <div className="flex items-center gap-2">
-            <input
-              value={replyText}
-              onChange={(event) => setReplyText(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') {
-                  event.preventDefault();
-                  submitReply();
-                }
-                if (event.key === 'Escape') {
-                  event.preventDefault();
-                  setReplyOpen(false);
-                }
-              }}
-              autoFocus
-              placeholder="Reply"
-              className="eterx-pet-reply-input h-10 min-w-0 flex-1 select-text rounded-[10px] border border-[#6EA8FF]/70 bg-[#151515] px-3 text-[15px] font-medium text-white outline-none placeholder:text-[#8C8984] focus:border-[#8AB4FF]"
-            />
-            <button
-              type="button"
-              onClick={submitReply}
-              disabled={!replyText.trim()}
-              className="eterx-pet-reply-submit h-10 shrink-0 rounded-full bg-[#B8B4AC] px-4 text-[15px] font-semibold text-[#202020] transition-colors hover:bg-[#D8D4CC] disabled:cursor-default disabled:opacity-45"
-            >
-              Reply
-            </button>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-};
 
 const serializeComposerAttachment = (att: ComposerAttachment) => {
   const fileName = att.name || att.file?.name || 'file';
@@ -986,6 +615,34 @@ function DeepWorkUI() {
     });
   }, []);
 
+  const clearDraftComposerState = useCallback((targetChatId?: string | null) => {
+    setInputValue('');
+    setAttachments([]);
+    setComposerStates(prevStates => {
+      const keysToClear = Array.from(new Set(['new_chat', targetChatId || activeChatIdRef.current || ''])).filter(Boolean);
+      const nextStates = { ...prevStates };
+      for (const k of keysToClear) {
+        const existing = nextStates[k] || {
+          inputValue: '',
+          runLocation: 'local',
+          selectedAgent: { agentId: null, agentName: 'General' },
+          agentMode: 'think',
+          thinkingLevel: 'low',
+          attachments: [],
+          pinnedItems: [],
+          chatModelSelection: AUTO_MODEL_SELECTION,
+        };
+        nextStates[k] = {
+          ...existing,
+          inputValue: '',
+          attachments: [],
+        };
+      }
+      try { localStorage.setItem('eterx_chat_composer_states', JSON.stringify(nextStates)); } catch {}
+      return nextStates;
+    });
+  }, []);
+
   const applyComposerState = useCallback((state?: ChatComposerState) => {
     const defaultState: ChatComposerState = {
       inputValue: '',
@@ -1004,8 +661,11 @@ function DeepWorkUI() {
     setAgentMode(target.agentMode);
     setThinkingLevelState(target.thinkingLevel);
     setAttachments(target.attachments);
-    setPinnedItems(target.pinnedItems);
-    setActiveModelSelection(target.chatModelSelection);
+    setPinnedItems(target.pinnedItems ?? []);
+    // Guard: if chatModelSelection is missing (old stored state), keep current selection
+    if (target.chatModelSelection) {
+      setActiveModelSelection(target.chatModelSelection);
+    }
   }, []);
 
   const updateInputValue = useCallback((value: string | ((prev: string) => string)) => {
@@ -1115,6 +775,8 @@ function DeepWorkUI() {
   const networkRestoreTimerRef = useRef<number | null>(null);
   const networkBannerVisibleRef = useRef(false);
   const runningChatsRef = useRef<Set<string>>(new Set());
+  // Tracks chats that were explicitly stopped — prevents reconcile from re-adding them during the cleanup window
+  const stoppingChatsRef = useRef<Set<string>>(new Set());
   const activeViewRef = useRef<ActiveView>('chat');
   const isNetworkPaused = networkPhase === 'offline';
 
@@ -1433,6 +1095,44 @@ function DeepWorkUI() {
     });
   }, []);
 
+  useEffect(() => {
+    if (activeChatId && activeView === 'chat') {
+      clearUnreadChat(activeChatId);
+    }
+  }, [activeChatId, activeView, clearUnreadChat]);
+
+  // Real-time scheduled tasks background runner
+  useEffect(() => {
+    const checkTasks = () => {
+      try {
+        const raw = localStorage.getItem('eterx_scheduled_tasks');
+        if (!raw) return;
+        const tasks: any[] = JSON.parse(raw);
+        const now = Date.now();
+        let updated = false;
+
+        tasks.forEach(task => {
+          if (task.status === 'scheduled' && now >= task.scheduledTimestamp) {
+            task.status = 'queued';
+            updated = true;
+            window.dispatchEvent(new CustomEvent('eterx_trigger_scheduled_task', { detail: { task } }));
+          }
+        });
+
+        if (updated) {
+          localStorage.setItem('eterx_scheduled_tasks', JSON.stringify(tasks));
+          window.dispatchEvent(new CustomEvent('eterx_scheduled_tasks_updated'));
+        }
+      } catch { }
+    };
+
+    checkTasks();
+    const interval = setInterval(checkTasks, 5000);
+    return () => clearInterval(interval);
+  }, []);
+
+
+
   const revealNetworkBanner = useCallback(() => {
     if (!networkPausedRef.current) return;
     if (networkDismissedOutageRef.current === networkOutageIdRef.current) return;
@@ -1718,7 +1418,7 @@ function DeepWorkUI() {
       const res = await fetch('/api/live/key', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chatId: activeChatId || `live_${ Date.now() }`, apiKeys: readRuntimeApiKeys(), modelOverrides: readRuntimeModelOverrides() })
+        body: JSON.stringify({ chatId: activeChatId || `live_${ Date.now() }` })
       });
 
       if (!res.ok) {
@@ -2089,12 +1789,18 @@ function DeepWorkUI() {
   });
 
   const removeRunningChat = (chatId: string) => {
+    // Mark as stopping so reconcileDetachedPollers won't re-add during the cleanup race window
+    stoppingChatsRef.current.add(chatId);
+    setTimeout(() => stoppingChatsRef.current.delete(chatId), 4000);
     setRunningChats(prev => {
       if (!prev.has(chatId)) return prev;
       const next = new Set(prev);
       next.delete(chatId);
       return next;
     });
+    if (activeChatIdRef.current === chatId) {
+      clearUnreadChat(chatId);
+    }
   };
 
   const setChatLogsById = (
@@ -2167,6 +1873,8 @@ function DeepWorkUI() {
         agentMode: 'think',
         thinkingLevel: 'low',
         attachments: [],
+        pinnedItems: [],
+        chatModelSelection: AUTO_MODEL_SELECTION,
       } : undefined));
       clearUnreadChat(id);
       if (window.innerWidth < 768) setSidebarOpen(false);
@@ -2183,8 +1891,8 @@ function DeepWorkUI() {
       // ALL pollers run at the same speed — no restart needed on chat switch.
       // Just check if this chat has an active agent that isn't being polled yet.
       if (pollingIntervalsRef.current.has(id)) {
-        // Already polling — just mark as running for UI
-        setRunningChats(prev => new Set(prev).add(id));
+        // Already polling — the poller itself manages runningChats lifecycle.
+        // Do NOT blindly re-add here; it creates a race with removeRunningChat.
       } else {
         // No poller — check server for a running agent
         fetchAgentPoll(id, -1, 5000)
@@ -2405,9 +2113,7 @@ function DeepWorkUI() {
       body: JSON.stringify({
         history,
         currentTitle: currentTitle || DEFAULT_CHAT_TITLE,
-        mode,
-        apiKeys: readRuntimeApiKeys(),
-        modelOverrides: readRuntimeModelOverrides()
+        mode
       })
     });
 
@@ -3460,6 +3166,8 @@ function DeepWorkUI() {
       for (const chatId of ids) {
         if (cancelled) return;
         if (pollingIntervalsRef.current.has(chatId)) continue;
+        // Skip chats being explicitly stopped — avoids re-adding them during the cleanup race window
+        if (stoppingChatsRef.current.has(chatId)) continue;
 
         try {
           const data = await fetchAgentPoll(chatId, -1, 5000);
@@ -3506,10 +3214,12 @@ function DeepWorkUI() {
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [activeChatId, runningChats]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [activeChatId]); // eslint-disable-line react-hooks/exhaustive-deps — intentionally excludes runningChats to prevent self-reinforcing re-fire loop
 
   const handleStop = () => {
     if (!activeChatId) return;
+    // Guard: only stop if the chat is actually running — prevents double-stop log spam and spurious API calls
+    if (!runningChatsRef.current.has(activeChatId)) return;
 
     // === HARD KILL: Complete disconnect for this chat ===
 
@@ -3535,11 +3245,16 @@ function DeepWorkUI() {
     // 5. Clear notification tracking (so future runs can notify again)
     notifiedChatIdsRef.current.delete(activeChatId);
 
-    // 6. Append stopped message to chat
-    updateActiveChatLogs(prev => [
-      ...stripAgentConnectionLogs(prev),
-      systemThoughtLog("\n\n*Generation stopped by user.*")
-    ]);
+    // 6. Clear streaming flags on the last answer log so live-typing animation doesn't persist
+    updateActiveChatLogs(prev => {
+      const cleared = prev.map((log, i, arr) => {
+        if (i === arr.length - 1 && log.type === 'answer' && (log.isStreaming || log.isLiveTyping)) {
+          return { ...log, isStreaming: false, isLiveTyping: false };
+        }
+        return log;
+      });
+      return [...stripAgentConnectionLogs(cleared), systemThoughtLog("\n\n*Generation stopped by user.*")];
+    });
   };
 
   // Remove pending steering messages when they appear in traceLogs
@@ -3852,8 +3567,7 @@ function DeepWorkUI() {
       : '';
     const body = `${ scheduledMessage.text }${ attachmentContext }`.trim();
 
-    updateInputValue('');
-    updateAttachments([]);
+    clearDraftComposerState(activeChatId);
     setLiveInputText('');
     setLiveOutputText('');
     setLiveSpokenText('');
@@ -3915,12 +3629,13 @@ function DeepWorkUI() {
     }
   }, [activeChatId, activeSubAgentTab, attachments, inputValue, isRecording, revealNetworkBanner]);
 
-  const handleSend = async () => {
+  const handleSend = async (overridePrompt?: string) => {
     if (isRecording && mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
       mediaRecorderRef.current.stop();
       setIsRecording(false);
     }
-    if (!inputValue.trim() && attachments.length === 0) return;
+    const promptText = (typeof overridePrompt === 'string' ? overridePrompt : inputValue).trim();
+    if (!promptText && attachments.length === 0) return;
     if (isThinking) return;
     if (networkPausedRef.current) {
       revealNetworkBanner();
@@ -3936,7 +3651,6 @@ function DeepWorkUI() {
       }
     } catch { }
 
-    const promptText = inputValue;
     const runAgentMode = readRuntimeAgentMode(agentMode);
     const runThinkingLevel = thinkingLevel;
     const currentAttachments = [...attachments];
@@ -3945,8 +3659,7 @@ function DeepWorkUI() {
     const clientRunId = crypto.randomUUID();
     const userLog = { type: 'user_action', text: promptText, attachments: userLogAttachments, startTime: runStartedAt, endTime: runStartedAt };
     const historySourceLogs = activeChatId ? stripAgentConnectionLogs(traceLogs) : [];
-    updateInputValue("");
-    updateAttachments([]);
+    clearDraftComposerState(activeChatId);
     setLiveInputText('');
     setLiveOutputText('');
     setLiveSpokenText('');
@@ -4146,8 +3859,6 @@ function DeepWorkUI() {
             chatId: chatIdToUse,
             messages: runnerMessages,
             mode: runAgentMode,
-            apiKeys: readRuntimeApiKeys(),
-            modelOverrides: readRuntimeModelOverrides(),
             runLocation: runLocationVal,
             pinnedContext: {
               ...(pinnedItems.length > 0 ? { paths: pinnedItems.map(item => item.path) } : {}),
@@ -4323,8 +4034,6 @@ function DeepWorkUI() {
           thinkingLevel: runThinkingLevel,
           modelThinkingCapability: readRuntimeModelThinkingCapability(),
           pinnedContext: hasPinnedContext ? requestPinnedContext : null,
-          apiKeys: readRuntimeApiKeys(),
-          modelOverrides: readRuntimeModelOverrides(),
           runLocation: runLocationVal,
           customAgentId: selectedCustomRuntimeId,
           customAgentName: selectedCustomRuntimeId ? selectedAgentName : null,
@@ -4409,6 +4118,104 @@ function DeepWorkUI() {
     }
   };
 
+  // Automated real-time agent execution when scheduled task triggers
+  useEffect(() => {
+    const handleTriggerTask = (e: CustomEvent<{ task: any }>) => {
+      const task = e.detail?.task;
+      if (!task || !task.id) return;
+
+      // Mark task status as running
+      try {
+        const raw = localStorage.getItem('eterx_scheduled_tasks');
+        if (raw) {
+          const tasks: any[] = JSON.parse(raw);
+          const target = tasks.find((t: any) => t.id === task.id);
+          if (target && target.status !== 'completed') {
+            target.status = 'running';
+            localStorage.setItem('eterx_scheduled_tasks', JSON.stringify(tasks));
+            window.dispatchEvent(new CustomEvent('eterx_scheduled_tasks_updated'));
+          }
+        }
+      } catch { }
+
+      const taskChatId = crypto.randomUUID();
+      const taskPrompt = task.description || task.title;
+
+      // Create and register real ChatSession so task run appears in Sidebar Recents!
+      const newChatSession: ChatSession = {
+        id: taskChatId,
+        title: task.title || fallbackTitleFromPrompt(taskPrompt),
+        updatedAt: Date.now(),
+        traceLogs: [],
+        workspacePath: activeWorkspacePath,
+        runLocation: activeRunLocation,
+      };
+
+      setChats(prev => {
+        const updated = [newChatSession, ...prev.filter(c => c.id !== taskChatId)];
+        try {
+          localStorage.setItem('eterx_chats', JSON.stringify(stripChatsForStorage(updated)));
+        } catch { }
+        return updated;
+      });
+
+      // Apply agent & model preferences
+      if (task.agentId) {
+        handleAgentChange(task.agentId, task.agentName || 'General');
+      }
+      const resolvedModel = task.model || AUTO_MODEL_SELECTION;
+      setActiveModelSelection(resolvedModel);
+
+      activeChatIdRef.current = taskChatId;
+      setActiveChatId(taskChatId);
+
+      // Save model + agent + prompt into this chat's composer state so it persists when opened
+      updateComposerState(state => ({
+        ...state,
+        inputValue: taskPrompt,
+        chatModelSelection: resolvedModel,
+        selectedAgent: {
+          agentId: task.agentId || null,
+          agentName: task.agentName || 'General',
+        },
+      }));
+      setInputValue(taskPrompt);
+
+      // Trigger auto-send to agent so chat runs live and updates sidebar
+      setTimeout(() => {
+        handleSend(taskPrompt);
+      }, 100);
+
+      // Monitor completion: wait until task has actually started running, then mark completed when done!
+      let hasStartedRunning = false;
+      const checkInterval = setInterval(() => {
+        const isRunning = runningChatsRef.current?.has(taskChatId);
+        if (isRunning) {
+          hasStartedRunning = true;
+        } else if (hasStartedRunning) {
+          clearInterval(checkInterval);
+          try {
+            const raw = localStorage.getItem('eterx_scheduled_tasks');
+            if (raw) {
+              const tasks: any[] = JSON.parse(raw);
+              const target = tasks.find((t: any) => t.id === task.id);
+              if (target) {
+                target.status = 'completed';
+                target.executedAt = Date.now();
+                target.chatId = taskChatId;
+                localStorage.setItem('eterx_scheduled_tasks', JSON.stringify(tasks));
+                window.dispatchEvent(new CustomEvent('eterx_scheduled_tasks_updated'));
+              }
+            }
+          } catch { }
+        }
+      }, 1000);
+    };
+
+    window.addEventListener('eterx_trigger_scheduled_task', handleTriggerTask as EventListener);
+    return () => window.removeEventListener('eterx_trigger_scheduled_task', handleTriggerTask as EventListener);
+  }, [handleAgentChange, handleSend, setActiveModelSelection, updateComposerState]);
+
   // ═══════════════════════════════════════════════════════════════
   // STARTUP REHYDRATION: On page load, check for running agents
   // ═══════════════════════════════════════════════════════════════
@@ -4425,7 +4232,7 @@ function DeepWorkUI() {
             const data = await fetchAgentPoll(chat.id, -1, 5000);
 
             if (data.status === 'running') {
-              console.log(`[Rehydrate] 🔄 Found running agent for chat "${ chat.title }" (${ chat.id.substring(0, 8) }...)`);
+              console.log(`[Rehydrate] Found running agent for chat "${ chat.title }" (${ chat.id.substring(0, 8) }...)`);
               setRunningChats(prev => new Set(prev).add(chat.id));
 
               // If this is the active chat, load live traces
@@ -4469,7 +4276,7 @@ function DeepWorkUI() {
           .then(data => {
             if (data.status === 'running' && !pollingIntervalsRef.current.has(activeChatId!)) {
               // Agent is running but we're not polling! Restart polling.
-              console.log('[Visibility] 🔄 Reconnecting to running agent...');
+              console.log('[Visibility] Reconnecting to running agent...');
               setRunningChats(prev => new Set(prev).add(activeChatId!));
 
               if (data.traces && data.traces.length > 0) {
@@ -6280,6 +6087,7 @@ function DeepWorkUI() {
                       isCompressed={isRightPanelVisible}
                       taskTracker={currentTaskTracker}
                       activeChatId={activeChatId}
+                      buildingAgentId={buildingAgentId}
                       onOpenAgentBuilder={handleOpenAgentBuilder}
                       selectedAgent={selectedAgent}
                       selectedAgentName={activeSubAgentTab || selectedAgentName}

@@ -175,6 +175,12 @@ export async function getOrCreateAgentCache(
     clearEntry(existing);
     store.delete(key);
     console.log(`[AgentCache] 🔄 Stale/changed cache invalidated for model ${modelName}`);
+    try {
+      await ai.caches.delete(existing.name);
+      console.log(`[AgentCache] 🗑️ Deleted stale/changed cache on Google servers: ${existing.name}`);
+    } catch (e: any) {
+      console.warn(`[AgentCache] ⚠️ Failed to delete stale cache on Google servers: ${e.message || e}`);
+    }
   }
 
   // ── Create new cache ──

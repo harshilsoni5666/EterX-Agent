@@ -981,7 +981,7 @@
 
   /* Modern scrollbar classes that fallback to global styled values */
   .eterx-scrollbar,
-  .custom-scrollbar,
+  
   .eterx-modern-scrollbar,
   .eterx-prompt-preview-scroll,
   .eterx-action-scroll,
@@ -2487,6 +2487,17 @@
   z-index: 2;
 }
 
+.eterx-user-message-actions::after {
+  content: '';
+  position: absolute;
+  top: -10px;
+  bottom: -10px;
+  left: 100%;
+  width: 16px;
+  background: transparent;
+  pointer-events: auto;
+}
+
 .eterx-user-message-action-button {
   background: transparent;
   transition: background-color 140ms ease, color 140ms ease, opacity 140ms ease;
@@ -2549,6 +2560,19 @@
     top: auto;
     margin-right: 0;
     transform: none;
+  }
+  .eterx-user-message-actions::after {
+    display: none !important;
+  }
+  .eterx-user-message-actions::before {
+    content: '';
+    position: absolute;
+    top: 100%;
+    left: -10px;
+    right: -10px;
+    height: 12px;
+    background: transparent;
+    pointer-events: auto;
   }
 
   .eterx-user-message-action-button {
@@ -3841,9 +3865,12 @@
 }
 
 .eterx-markdown-inline-code {
-  background: var(--eterx-md-inline-code-bg) !important;
-  border-color: var(--eterx-md-border) !important;
-  color: var(--eterx-md-accent) !important;
+  background: transparent !important;
+  border: none !important;
+  color: var(--eterx-md-strong) !important;
+  font-family: var(--font-mono) !important;
+  font-weight: 700 !important;
+  padding: 0 !important;
   white-space: break-spaces;
 }
 
@@ -6247,27 +6274,7 @@
   background: rgba(255, 255, 255, 0.28) !important;
 }
 
-/* Premium scrollbar styling for .custom-scrollbar */
-.custom-scrollbar {
-  scrollbar-width: thin !important;
-  scrollbar-color: rgba(255, 255, 255, 0.16) transparent !important;
-}
 
-.custom-scrollbar::-webkit-scrollbar {
-  display: block !important;
-  width: 5px !important;
-  height: 5px !important;
-}
-.custom-scrollbar::-webkit-scrollbar-track {
-  background: transparent !important;
-}
-.custom-scrollbar::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.18) !important;
-  border-radius: 99px !important;
-}
-.custom-scrollbar::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.28) !important;
-}
 
 /* Smart Boundary Detector styling overrides */
 .eterx-composer-shell[data-force-collapse="true"] .eterx-selector-label,
@@ -6465,7 +6472,7 @@
 
 /* User message bubble — isolated so scroll doesn't repaint bubble borders */
 .eterx-user-message-bubble {
-  contain: content;
+  contain: layout;
   transform: translateZ(0);
 }
 
@@ -6473,3 +6480,4 @@
 .eterx-chat-feed-content {
   contain: layout;
 }
+

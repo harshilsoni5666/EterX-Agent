@@ -44,7 +44,7 @@ export async function POST(req: NextRequest) {
     const activeSession = session;
 
     const body = await readJsonObject(req);
-    const { agentId, messages, model, mode, temperature, apiKeys, modelOverrides, runLocation, pinnedContext } = body;
+    const { agentId, messages, model, mode, temperature, runLocation, pinnedContext } = body;
 
     if (!isSafeAgentId(agentId)) {
       return attachAgentApiSessionCookie(jsonError('A valid agentId is required.', 400), session);
@@ -62,7 +62,7 @@ export async function POST(req: NextRequest) {
       return attachAgentApiSessionCookie(jsonError(normalized.error || 'Invalid messages payload.', 400), session);
     }
 
-    const runtimeSettings = buildScopedRuntimeSettings(apiKeys, modelOverrides);
+    const runtimeSettings = buildScopedRuntimeSettings();
     const safeMode = normalizeMainAgentMode(mode);
     // The custom agent runner only supports Gemini via GoogleGenAI.
     // If the user's selected provider is non-Gemini (mistral/openai/anthropic/groq/openrouter),

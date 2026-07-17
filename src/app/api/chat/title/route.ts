@@ -191,8 +191,8 @@ export async function POST(req: NextRequest) {
   try {
     const originError = rejectCrossOrigin(req);
     if (originError) return originError;
-    const { history, currentTitle, mode, apiKeys, modelOverrides } = await readJsonObject(req);
-    const runtimeSettings = buildScopedRuntimeSettings(apiKeys, modelOverrides);
+    const { history, currentTitle, mode } = await readJsonObject(req);
+    const runtimeSettings = buildScopedRuntimeSettings();
     const safeHistory = Array.isArray(history) ? history : [];
     const latestUserText = getLatestUserText(safeHistory);
     const safeMode = normalizeMainAgentMode(mode);

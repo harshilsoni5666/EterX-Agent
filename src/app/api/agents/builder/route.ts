@@ -47,7 +47,7 @@ export async function POST(req: NextRequest) {
     const originError = rejectCrossOrigin(req);
     if (originError) return originError;
 
-    const { messages, agentId = 'standalone-builder', apiKeys = null, modelOverrides = null } = await readJsonObject(req);
+    const { messages, agentId = 'standalone-builder' } = await readJsonObject(req);
     const safeAgentId = cleanString(agentId, 96) || 'standalone-builder';
     if (!isSafeAgentId(safeAgentId)) {
       return jsonError('A valid agentId is required.', 400);
@@ -58,7 +58,7 @@ export async function POST(req: NextRequest) {
       return jsonError(normalized.error || 'Messages array is required.', 400);
     }
 
-    const runtimeSettings = buildScopedRuntimeSettings(apiKeys, modelOverrides);
+    const runtimeSettings = buildScopedRuntimeSettings();
 
     // Use our global API key pool to perfectly load balance without hitting 429s!
     apiKeyPool.initialize();

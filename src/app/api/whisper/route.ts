@@ -1,7 +1,15 @@
 import { NextResponse } from 'next/server';
+import { getRuntimeApiKey } from '../../../lib/agent/runtime-api-keys';
+import { rejectCrossOrigin } from '../agent/_shared';
 
 export async function POST(request: Request) {
   try {
+    const originError = rejectCrossOrigin(request as any);
+    if (originError) return originError;
+    const apiKey = getRuntimeApiKey('groq');
+    if (!apiKey) {
+      return NextResponse.json({ error: 'Configure a Groq API key in Settings before transcribing audio.' }, { status: 503 });
+    }
     const formData = await request.formData();
     const file = formData.get('file') as File | null;
 
@@ -47,7 +55,7 @@ export async function POST(request: Request) {
     const groqResponse = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${process.env.GROQ_API_KEY}`
+        'Authorization': `Bearer ${apiKey}`
       },
       body: groqForm
     });

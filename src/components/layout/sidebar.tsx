@@ -383,13 +383,13 @@ const lightweightSidebarCss = `
   }
 
   .eterx-sidebar-shell .eterx-sidebar-unread-dot {
-    width: 10px;
-    height: 10px;
+    width: 6px;
+    height: 6px;
     border-radius: 999px;
     background: var(--sidebar-unread-dot);
     box-shadow:
-      0 0 0 3px var(--sidebar-unread-dot-ring),
-      0 0 12px color-mix(in srgb, var(--sidebar-unread-dot) 38%, transparent);
+      0 0 0 2px var(--sidebar-unread-dot-ring),
+      0 0 6px color-mix(in srgb, var(--sidebar-unread-dot) 40%, transparent);
   }
 
   .eterx-sidebar-shell .eterx-sidebar-running-indicator {

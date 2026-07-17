@@ -6,7 +6,8 @@ import { useFilePanelActions } from '../../contexts/FilePanelContext';
 import {
   ChevronRight, ChevronDown, Monitor, ShieldHalf, Copy, CheckCircle, Maximize2, CornerDownLeft,
   RefreshCw, ExternalLink, Check, Globe, Smartphone, Tablet, Terminal, ArrowRight,
-  Search, FileText, Calculator, Database, Hash, Cpu, FolderOpen, AlertTriangle, MessageSquare
+  Search, FileText, Calculator, Database, Hash, Cpu, FolderOpen, AlertTriangle, MessageSquare,
+  Key
 } from 'lucide-react';
 // @ts-ignore
 import ReactMarkdown from 'react-markdown';
@@ -2791,6 +2792,8 @@ const FileChangeTraceCard = ({
   );
 };
 
+const isApiKeyTrace = (text: string) => /^(?:gemini|openai|anthropic|mistral|groq|openrouter)\s+api\s+key/i.test(text);
+
 const ActionChip = ({
   log, isLastChip, isActiveGroup, allLogs,
   isNested = false, inCard = false
@@ -2974,6 +2977,24 @@ const ActionChip = ({
       activeTabMode: preferredMode,
     });
   };
+
+  if (log.type === 'progress') {
+    const isKey = isApiKeyTrace(String(log.text || ''));
+    return (
+      <div className="eterx-worked-summary my-2.5 flex w-full items-center gap-3 pt-1">
+        <div className="eterx-worked-summary-line h-px flex-1 bg-white/[0.06]" />
+        <span className="eterx-worked-summary-label flex shrink-0 items-center gap-1.5 py-[1px] text-center text-[12px] font-medium leading-[1.35] tracking-normal text-[#8F8B85]">
+          {isKey ? (
+            <Key className="h-3.5 w-3.5 text-[#E2765A]" />
+          ) : (
+            <Terminal className="h-3.5 w-3.5 text-[#A9A196]" />
+          )}
+          {displayVerbLabel}
+        </span>
+        <div className="eterx-worked-summary-line h-px flex-1 bg-white/[0.06]" />
+      </div>
+    );
+  }
 
   if (isEdit) {
     return (
@@ -3430,7 +3451,8 @@ const CollapsibleActionGroup = ({
   if (visibleLogs.length === 0) return null;
   const terminalOnly = visibleLogs.length === 1 && isTerminalActionLike(visibleLogs[0]);
   const fileChangeOnly = visibleLogs.length === 1 && visibleLogs[0]?.type === 'file_edit';
-  const useStandaloneRows = terminalOnly || fileChangeOnly;
+  const progressOnly = visibleLogs.every(l => l?.type === 'progress');
+  const useStandaloneRows = terminalOnly || fileChangeOnly || progressOnly;
 
   return (
     <motion.div
@@ -3446,7 +3468,7 @@ const CollapsibleActionGroup = ({
           initial={{ opacity: 0, x: -4 }}
           animate={{ opacity: 1, x: 0 }}
           transition={{ duration: 0.18, delay: i * 0.03, ease: 'easeOut' }}
-          className={i > 0 ? ACTION_ROW_DIVIDER_CLASS : ''}
+          className={i > 0 && !progressOnly ? ACTION_ROW_DIVIDER_CLASS : ''}
         >
           <ActionChip
             log={log}
@@ -3496,7 +3518,7 @@ const LiveWorkingIndicator = ({ logs }: { logs: any[] }) => {
         ? { mode: 'thinking', label: 'Working' }
         : { mode: 'idle', label: 'Working' };
     }
-    if (['command', 'exploration', 'file_edit', 'communication', 'progress', 'browser'].includes(last.type)) {
+    if (['command', 'exploration', 'file_edit', 'communication', 'browser'].includes(last.type)) {
       const meta = getToolMeta(last.text, last.type, last.icon);
       const fileName = (last.filename || '').split(/[\\/]/).pop() || '';
       const LIVE_VERBS: Record<string, string> = {
@@ -4027,10 +4049,11 @@ const HtmlPreviewCard = ({ log }: { log: any }) => {
 export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showLiveIndicator = false, onOpenAgentTeam, isSubAgentTab = false }: { logs: any[], liveLogs?: any[], isThinking: boolean, isLast: boolean, showLiveIndicator?: boolean, onOpenAgentTeam?: (agentName?: string) => void, isSubAgentTab?: boolean }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const NOISE_PATTERN = /reconnect|retrying|stalled|stream interrupted|model error|fallback|cancelled/i;
+
   const isFlowLog = (l: any) =>
     ['thought_stream', 'work_note', 'command', 'exploration', 'file_edit', 'progress', 'browser', 'safety_warning', 'communication', 'sub_agent_answer', 'sub_agent_result', 'sub_agent_spawn', 'sub_agent_action', 'sub_agent_complete', 'sub_agent_error', 'inter_agent_comm', 'file_preview', 'console_output', 'ask_user', 'tool_result_preview'].includes(l.type) &&
     !(['progress', 'command', 'exploration'].includes(l.type) && /analyz(?:e|ing) task complexity/i.test(String(l.text || ''))) &&
-    !(l.type === 'progress' && NOISE_PATTERN.test(String(l.text || ''))) &&
+    !(l.type === 'progress' && NOISE_PATTERN.test(String(l.text || '')) && !isApiKeyTrace(String(l.text || ''))) &&
     // Filter out spawning announcement commands that have spawnedAgents (shown separately as agent cards)
     !(l.spawnedAgents && Array.isArray(l.spawnedAgents) && l.spawnedAgents.length > 0 && l.type === 'command');
   const flowLogs = logs.filter(isFlowLog);

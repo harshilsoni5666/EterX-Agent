@@ -1,6 +1,7 @@
 import { GoogleGenAI, ThinkingLevel } from '@google/genai';
 import OpenAI from 'openai';
 import { getMainAgentModelConfig, normalizeMainAgentMode, type MainAgentMode } from './model-routing';
+import { getRuntimeApiKey } from './runtime-api-keys';
 import { globalToolRegistry, normalizeRegistryToolName } from './tools/registry';
 
 /**
@@ -695,23 +696,20 @@ function cleanJsonText(rawText: string): string {
 export class TaskPlannerClient {
   private ai: GoogleGenAI | null = null;
   private mistral: OpenAI | null = null;
+  private geminiApiKey = '';
+  private mistralApiKey = '';
 
-  constructor() {
-    let apiKey = '';
-    for (const [key, value] of Object.entries(process.env)) {
-      if (typeof value === 'string' && value.startsWith('AIza')) {
-        apiKey = value;
-        break;
-      }
-    }
+  private getGeminiClient(): GoogleGenAI | null {
+    const apiKey = getRuntimeApiKey('gemini');
     if (!apiKey) {
-      apiKey = process.env.GEMINI_API_KEY || process.env.VITE_OPENROUTER_API_KEY || '';
+      console.warn('[TaskPlanner] No Gemini key is configured in Settings. Will use task-aware fallback decomposition.');
+      return null;
     }
-    if (!apiKey) {
-      console.warn('[TaskPlanner] No API key found. Will use task-aware fallback decomposition.');
-      return;
+    if (!this.ai || this.geminiApiKey !== apiKey) {
+      this.ai = new GoogleGenAI({ apiKey });
+      this.geminiApiKey = apiKey;
     }
-    this.ai = new GoogleGenAI({ apiKey });
+    return this.ai;
   }
 
   private maxSteps(options?: TaskPlanningOptions): number {
@@ -822,16 +820,17 @@ export class TaskPlannerClient {
   }
 
   private getMistralClient(): OpenAI | null {
-    const apiKey = process.env.MISTRAL_API_KEY || process.env.MISTRAL_AI_API_KEY || process.env.MISTRALAI_API_KEY || '';
+    const apiKey = getRuntimeApiKey('mistral');
     if (!apiKey) {
-      console.warn('[TaskPlanner] No Mistral API key found. Will use fallback decomposition.');
+      console.warn('[TaskPlanner] No Mistral key is configured in Settings. Will use fallback decomposition.');
       return null;
     }
-    if (!this.mistral) {
+    if (!this.mistral || this.mistralApiKey !== apiKey) {
       this.mistral = new OpenAI({
         apiKey,
-        baseURL: process.env.MISTRAL_BASE_URL || process.env.MISTRAL_API_BASE_URL || 'https://api.mistral.ai/v1',
+        baseURL: 'https://api.mistral.ai/v1',
       });
+      this.mistralApiKey = apiKey;
     }
     return this.mistral;
   }
@@ -855,7 +854,7 @@ export class TaskPlannerClient {
       try {
         const response = await this.withTimeout(
           client.chat.completions.create({
-            model: process.env.MISTRAL_MODEL || process.env.MISTRAL_MODEL_NAME || modelConfig.modelName,
+            model: modelConfig.modelName,
             messages: [
               { role: 'system', content: PLANNER_SYSTEM_PROMPT },
               { role: 'user', content: prompt },
@@ -872,7 +871,8 @@ export class TaskPlannerClient {
       }
     }
 
-    if (!this.ai) {
+    const gemini = this.getGeminiClient();
+    if (!gemini) {
       console.warn('[TaskPlanner] No API client available. Using fallback.');
       return this.fallbackDecompose(task, context, options);
     }
@@ -882,7 +882,7 @@ export class TaskPlannerClient {
       try {
         console.log(`[TaskPlanner] Trying model: ${modelName}...`);
         const response = await this.withTimeout(
-          this.ai.models.generateContent({
+          gemini.models.generateContent({
             model: modelName,
             contents: [{ role: 'user', parts: [{ text: prompt }] }],
             config: {

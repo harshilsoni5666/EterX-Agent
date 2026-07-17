@@ -1,10 +1,5 @@
 #!/usr/bin/env node
-/**
- * ╔══════════════════════════════════════════════════╗
- * ║       EterX Agent — Setup & Configuration        ║
- * ║       One command. Full agent. Ready to go.       ║
- * ╚══════════════════════════════════════════════════╝
- */
+// EterX bootstrap installer and update script
 const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');

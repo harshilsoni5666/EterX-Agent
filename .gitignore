@@ -81,3 +81,17 @@ chunk_log*.txt
 
 # Allow config example
 # !.env.example
+
+# =========================
+# 🔹 Temporary Research and Local Path Clutter
+# =========================
+research_*.md
+dataset_path.txt
+image.png
+
+# =========================
+# 🔹 Developer Caches
+# =========================
+/pip/
+/Microsoft/
+

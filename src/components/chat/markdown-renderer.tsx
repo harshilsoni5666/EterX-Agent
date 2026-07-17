@@ -1096,7 +1096,7 @@ export const markdownComponents = {
     }
 
     return (
-      <code className="eterx-markdown-inline-code rounded-md border border-white/[0.08] bg-[#363432] px-1.5 py-0.5 font-mono text-[13.5px] text-[#E2765A]" {...props}>
+      <code className="eterx-markdown-inline-code font-mono" {...props}>
         {children}
       </code>
     );

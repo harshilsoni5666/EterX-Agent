@@ -3,6 +3,7 @@ import {
   applyRuntimeApiKeys,
   applyRuntimeModelOverrides,
   getRuntimeApiKey,
+  getRuntimeApiKeyValues,
   type RuntimeApiKeyProvider,
 } from '../../../../lib/agent/runtime-api-keys';
 import {
@@ -82,7 +83,7 @@ const providerError = (provider: RuntimeApiKeyProvider, error: unknown): Provide
 });
 
 async function fetchGeminiModels(): Promise<ProviderModelResult> {
-  const apiKey = getRuntimeApiKey('gemini');
+  const apiKey = getRuntimeApiKeyValues('gemini')[0];
   if (!apiKey) return { provider: 'gemini', connected: false, source: 'unavailable', models: [], error: 'Missing Gemini API key' };
 
   try {
@@ -112,7 +113,7 @@ async function fetchGeminiModels(): Promise<ProviderModelResult> {
 }
 
 async function fetchOpenAIModels(): Promise<ProviderModelResult> {
-  const apiKey = getRuntimeApiKey('openai');
+  const apiKey = getRuntimeApiKeyValues('openai')[0];
   if (!apiKey) return { provider: 'openai', connected: false, source: 'unavailable', models: [], error: 'Missing OpenAI API key' };
 
   try {
@@ -137,7 +138,7 @@ async function fetchOpenAIModels(): Promise<ProviderModelResult> {
 }
 
 async function fetchOpenRouterModels(): Promise<ProviderModelResult> {
-  const apiKey = getRuntimeApiKey('openrouter');
+  const apiKey = getRuntimeApiKeyValues('openrouter')[0];
 
   try {
     const headers: Record<string, string> = {};
@@ -168,7 +169,7 @@ async function fetchOpenRouterModels(): Promise<ProviderModelResult> {
 }
 
 async function fetchGroqModels(): Promise<ProviderModelResult> {
-  const apiKey = getRuntimeApiKey('groq');
+  const apiKey = getRuntimeApiKeyValues('groq')[0];
   if (!apiKey) return { provider: 'groq', connected: false, source: 'unavailable', models: [], error: 'Missing Groq API key' };
 
   try {
@@ -197,7 +198,7 @@ async function fetchGroqModels(): Promise<ProviderModelResult> {
 }
 
 async function fetchMistralModels(): Promise<ProviderModelResult> {
-  const apiKey = getRuntimeApiKey('mistral');
+  const apiKey = getRuntimeApiKeyValues('mistral')[0];
   if (!apiKey) return { provider: 'mistral', connected: false, source: 'unavailable', models: [], error: 'Missing Mistral API key' };
 
   try {
@@ -223,7 +224,7 @@ async function fetchMistralModels(): Promise<ProviderModelResult> {
 }
 
 async function fetchAnthropicModels(): Promise<ProviderModelResult> {
-  const apiKey = getRuntimeApiKey('anthropic');
+  const apiKey = getRuntimeApiKeyValues('anthropic')[0];
   if (!apiKey) return { provider: 'anthropic', connected: false, source: 'unavailable', models: [], error: 'Missing Anthropic API key' };
 
   try {

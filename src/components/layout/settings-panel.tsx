@@ -1242,6 +1242,24 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
   const [eggQuoteIndex] = useState(0);
   const keysChangedRef = useRef(false);
 
+  const persistDesktopRuntimeSettings = useCallback(async (
+    nextApiKeys: Record<string, string>,
+    nextModelApiKeys: Record<string, string>,
+    nextModelOverrides: ModelOverrides,
+  ) => {
+    const desktopApi = (window as any)?.electronAPI;
+    if (typeof desktopApi?.saveSecureRuntimeSettings !== 'function') return;
+    try {
+      await desktopApi.saveSecureRuntimeSettings({
+        apiKeys: nextApiKeys,
+        modelApiKeys: nextModelApiKeys,
+        modelOverrides: nextModelOverrides,
+      });
+    } catch (error) {
+      console.warn('Could not persist encrypted desktop API settings:', error);
+    }
+  }, []);
+
   const eggQuotes = [
     { line1: "BE A MAN.", line2: "FACE DARKNESS" },
     { line1: "NOT AVAILABLE.", line2: "ONLY DARK." },
@@ -1337,58 +1355,12 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
     await syncApiKeys(composed, false, modelOverrides);
   }, [apiKeys, modelApiKeys, modelEntries, modelOverrides, syncApiKeys]);
 
+  // Load non-sensitive preferences from localStorage and credentials only from
+  // the encrypted Electron store. Existing browser-stored keys are migrated
+  // once, immediately removed, and never read by normal runtime features.
   useEffect(() => {
-    return () => {
-      if (keysChangedRef.current) {
-        keysChangedRef.current = false;
-        try {
-          const savedKeys = localStorage.getItem('eterx_api_keys');
-          const savedModelApiKeys = localStorage.getItem(MODEL_API_KEYS_STORAGE_KEY);
-          const savedModelEntries = localStorage.getItem(MODEL_SELECTOR_STORAGE_KEY);
-          const savedModelOverrides = localStorage.getItem(MODEL_OVERRIDE_STORAGE_KEY);
-
-          const parsedKeys = savedKeys ? JSON.parse(savedKeys) : {};
-          const parsedModelApiKeys = savedModelApiKeys ? JSON.parse(savedModelApiKeys) : {};
-          const parsedModelEntries = savedModelEntries ? JSON.parse(savedModelEntries) : [];
-          const parsedModelOverrides = savedModelOverrides ? JSON.parse(savedModelOverrides) : {};
-
-          const selection = localStorage.getItem(CHAT_MODEL_SELECTION_STORAGE_KEY) || AUTO_MODEL_SELECTION;
-          const composed = composeApiKeysForSelection(parsedKeys, parsedModelApiKeys, parsedModelEntries, selection);
-
-          const cleanKeys = Object.fromEntries(
-            Object.entries(composed)
-              .map(([k, v]) => [k, String(v || '').trim()])
-              .filter(([, v]) => Boolean(v)),
-          );
-          const cleanOverrides = Object.fromEntries(
-            Object.entries(parsedModelOverrides)
-              .map(([provider, model]) => [provider, String(model || '').trim()])
-              .filter(([provider, model]) => isModelProvider(provider) && Boolean(model)),
-          );
-          if (Object.keys(cleanKeys).length > 0 || Object.keys(cleanOverrides).length > 0) {
-            const body = JSON.stringify({ apiKeys: cleanKeys, modelOverrides: cleanOverrides });
-            if (navigator.sendBeacon) {
-              navigator.sendBeacon('/api/settings/keys', body);
-            } else {
-              fetch('/api/settings/keys', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body,
-                keepalive: true
-              }).catch(() => {});
-            }
-          }
-        } catch (e) {
-          console.error('Failed to sync settings on unmount:', e);
-        }
-      }
-    };
-  }, []);
-
-
-  // Load settings from localStorage
-  useEffect(() => {
-    try {
+    const loadSettings = async () => {
+      try {
       const saved = localStorage.getItem('eterx_settings');
       if (saved) setSettings({ ...DEFAULT_SETTINGS, ...JSON.parse(saved) });
       const savedKeys = localStorage.getItem('eterx_api_keys');
@@ -1399,7 +1371,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
       const savedThinkingCapabilities = localStorage.getItem(MODEL_THINKING_CAPABILITIES_STORAGE_KEY);
       const parsedModelOverrides = savedModelOverrides ? JSON.parse(savedModelOverrides) : {};
       const parsedModelCatalog = savedModelCatalog ? JSON.parse(savedModelCatalog) : {};
-      const parsedModelApiKeys = savedModelApiKeys ? JSON.parse(savedModelApiKeys) : {};
+      const legacyModelApiKeys = savedModelApiKeys ? JSON.parse(savedModelApiKeys) : {};
       const parsedThinkingCapabilities = savedThinkingCapabilities ? JSON.parse(savedThinkingCapabilities) : {};
       const migratedEntries = normalizeModelSelectorEntries(
         savedModelEntries ? JSON.parse(savedModelEntries) : [],
@@ -1412,6 +1384,22 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
       });
       const normalizedEntries = normalizeModelSelectorEntries(migratedEntries, parsedModelCatalog);
       const normalizedCatalog = entriesToModelCatalog(normalizedEntries) as ModelCatalog;
+      const desktopApi = (window as any)?.electronAPI;
+      const secureSettings = typeof desktopApi?.getSecureRuntimeSettings === 'function'
+        ? await desktopApi.getSecureRuntimeSettings()
+        : null;
+      const secureApiKeys = secureSettings?.available && secureSettings.apiKeys && typeof secureSettings.apiKeys === 'object'
+        ? secureSettings.apiKeys
+        : null;
+      const secureModelApiKeys = secureSettings?.available && secureSettings.modelApiKeys && typeof secureSettings.modelApiKeys === 'object'
+        ? secureSettings.modelApiKeys
+        : null;
+      const secureModelOverrides = secureSettings?.available && secureSettings.modelOverrides && typeof secureSettings.modelOverrides === 'object'
+        ? secureSettings.modelOverrides
+        : null;
+      const parsedApiKeys = secureApiKeys || (savedKeys ? JSON.parse(savedKeys) : {});
+      const parsedModelApiKeys = secureModelApiKeys || legacyModelApiKeys;
+      const effectiveModelOverrides = secureModelOverrides || parsedModelOverrides;
       setModelOverrides(parsedModelOverrides);
       setModelEntries(normalizedEntries);
       setModelCatalog(normalizedCatalog);
@@ -1435,12 +1423,36 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
       );
       localStorage.setItem(MODEL_SELECTOR_STORAGE_KEY, JSON.stringify(normalizedEntries));
       localStorage.setItem(MODEL_CATALOG_STORAGE_KEY, JSON.stringify(normalizedCatalog));
-      if (savedKeys) {
-        const parsedKeys = JSON.parse(savedKeys);
-        setApiKeys(parsedKeys);
+      setModelOverrides(effectiveModelOverrides);
+      setApiKeys(parsedApiKeys);
+
+      const usingLegacyBrowserKeys = !secureApiKeys && Boolean(savedKeys || savedModelApiKeys);
+      if (usingLegacyBrowserKeys) {
+        localStorage.removeItem('eterx_api_keys');
+        localStorage.removeItem(MODEL_API_KEYS_STORAGE_KEY);
+        await persistDesktopRuntimeSettings(parsedApiKeys, parsedModelApiKeys, effectiveModelOverrides);
       }
-    } catch { }
-  }, [isOpen]);
+
+      const selection = localStorage.getItem(CHAT_MODEL_SELECTION_STORAGE_KEY) || AUTO_MODEL_SELECTION;
+      const configuredKeys = composeApiKeysForSelection(parsedApiKeys, parsedModelApiKeys, normalizedEntries, selection);
+      const configuredOverrides = Object.fromEntries(
+        Object.entries(effectiveModelOverrides)
+          .map(([provider, model]) => [provider, String(model || '').trim()])
+          .filter(([provider, model]) => isModelProvider(provider) && Boolean(model)),
+      );
+      if (Object.keys(configuredKeys).length > 0 || Object.keys(configuredOverrides).length > 0) {
+        await fetch('/api/settings/keys', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ apiKeys: configuredKeys, modelOverrides: configuredOverrides }),
+        });
+      }
+      } catch (error) {
+        console.warn('Could not load runtime settings:', error);
+      }
+    };
+    void loadSettings();
+  }, [persistDesktopRuntimeSettings]);
 
   // Fetch active provider key connection status when panel opens
   useEffect(() => {
@@ -1507,15 +1519,13 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
 
   const updateApiKey = useCallback((name: string, value: string) => {
     const trimmed = value.trim();
-    setApiKeys(prev => {
-      const next = { ...prev, [name]: trimmed };
-      localStorage.setItem('eterx_api_keys', JSON.stringify(next));
-      broadcastEterxSettingsUpdate({ type: 'api-keys-updated', apiKeys: next });
-      return next;
-    });
+    const next = { ...apiKeys, [name]: trimmed };
+    setApiKeys(next);
+    void persistDesktopRuntimeSettings(next, modelApiKeys, modelOverrides);
+    broadcastEterxSettingsUpdate({ type: 'api-keys-updated' });
     setHasChanges(true);
     keysChangedRef.current = true;
-  }, [performSync]);
+  }, [apiKeys, modelApiKeys, modelOverrides, persistDesktopRuntimeSettings]);
 
   // Close on escape
   useEffect(() => {
@@ -1683,18 +1693,16 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
 
   const updateModelApiKey = useCallback((modelKey: string, value: string) => {
     if (!parseModelEntryKey(modelKey)) return;
-    setModelApiKeys(prev => {
-      const next = { ...prev };
-      const cleanValue = value.trim();
-      if (cleanValue) next[modelKey] = cleanValue;
-      else delete next[modelKey];
-      localStorage.setItem(MODEL_API_KEYS_STORAGE_KEY, JSON.stringify(next));
-      broadcastEterxSettingsUpdate({ type: 'model-api-keys-updated', modelApiKeys: next });
-      return next;
-    });
+    const next = { ...modelApiKeys };
+    const cleanValue = value.trim();
+    if (cleanValue) next[modelKey] = cleanValue;
+    else delete next[modelKey];
+    setModelApiKeys(next);
+    void persistDesktopRuntimeSettings(apiKeys, next, modelOverrides);
+    broadcastEterxSettingsUpdate({ type: 'model-api-keys-updated' });
     setHasChanges(true);
     keysChangedRef.current = true;
-  }, []);
+  }, [apiKeys, modelApiKeys, modelOverrides, persistDesktopRuntimeSettings]);
 
   const selectCatalogModel = useCallback((provider: string, modelId: string) => {
     if (!isModelProvider(provider)) return;
@@ -1706,12 +1714,13 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
     }
     setModelOverrides(next);
     localStorage.setItem(MODEL_OVERRIDE_STORAGE_KEY, JSON.stringify(next));
+    void persistDesktopRuntimeSettings(apiKeys, modelApiKeys, next);
     broadcastEterxSettingsUpdate({ type: 'model-overrides-updated', modelOverrides: next });
     const nextMode = PROVIDER_MODE[provider];
     if (nextMode) updateSetting('agentMode', nextMode);
     setHasChanges(true);
     keysChangedRef.current = true;
-  }, [modelOverrides, updateSetting]);
+  }, [apiKeys, modelApiKeys, modelOverrides, persistDesktopRuntimeSettings, updateSetting]);
 
   const addModelToSelector = useCallback((provider: string, modelId: string, activate = true) => {
     const cleanProvider = String(provider || '').trim();
@@ -1745,7 +1754,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
     const nextModelKeys = { ...modelApiKeys };
     delete nextModelKeys[removedKey];
     setModelApiKeys(nextModelKeys);
-    localStorage.setItem(MODEL_API_KEYS_STORAGE_KEY, JSON.stringify(nextModelKeys));
+    void persistDesktopRuntimeSettings(apiKeys, nextModelKeys, modelOverrides);
     if (localStorage.getItem(CHAT_MODEL_SELECTION_STORAGE_KEY) === removedKey) {
       localStorage.setItem(CHAT_MODEL_SELECTION_STORAGE_KEY, AUTO_MODEL_SELECTION);
     }
@@ -1755,7 +1764,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
     }
     setHasChanges(true);
     keysChangedRef.current = true;
-  }, [modelApiKeys, modelEntries, modelOverrides, saveModelEntries, selectCatalogModel]);
+  }, [apiKeys, modelApiKeys, modelEntries, modelOverrides, persistDesktopRuntimeSettings, saveModelEntries, selectCatalogModel]);
 
   if ((!isOpen && !showBatmanEgg) || typeof document === 'undefined') return null;
 
@@ -2289,7 +2298,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
                                     Add a model ID or choose one from provider discovery to make it available in chat.
                                   </div>
                                 ) : (
-                                  <div className={modelEntries.length > 3 ? 'max-h-[172px] overflow-y-auto pr-1 eterx-scrollbar' : ''}>
+                                  <div className="max-h-[280px] overflow-y-auto pr-1 custom-scrollbar">
                                     {modelEntries.map(entry => {
                                       const selected = modelOverrides[entry.provider] === entry.modelId;
                                       const entryProviderLabel = PROVIDER_LABEL[entry.provider] || entry.provider;
@@ -2716,7 +2725,6 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
                                     localStorage.removeItem(MODEL_OVERRIDE_STORAGE_KEY);
                                     localStorage.removeItem(MODEL_CATALOG_STORAGE_KEY);
                                     localStorage.removeItem(MODEL_SELECTOR_STORAGE_KEY);
-                                    localStorage.removeItem(MODEL_API_KEYS_STORAGE_KEY);
                                     localStorage.removeItem(CHAT_MODEL_SELECTION_STORAGE_KEY);
                                     setSettings(DEFAULT_SETTINGS);
                                     setApiKeys({});
@@ -2732,6 +2740,18 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
                                     setModelDirectory({});
                                     setModelDirectoryStatus('idle');
                                     setModelDirectoryUpdatedAt(null);
+                                    void (async () => {
+                                      try {
+                                        await (window as any)?.electronAPI?.clearSecureRuntimeSettings?.();
+                                        await fetch('/api/settings/keys', {
+                                          method: 'POST',
+                                          headers: { 'Content-Type': 'application/json' },
+                                          body: JSON.stringify({ apiKeys: {}, modelOverrides: {} }),
+                                        });
+                                      } catch (error) {
+                                        console.warn('Could not clear runtime credentials:', error);
+                                      }
+                                    })();
                                   }
                                 }}
                                 className="rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-1.5 text-[12px] font-medium text-red-400 transition-colors hover:bg-red-500/20"
@@ -2742,7 +2762,13 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
                             <SettingsStackRow title="Export all settings" description="Download the complete local configuration as a JSON file.">
                               <SoftButton
                                 onClick={() => {
-                                  const data = JSON.stringify({ settings, apiKeys, modelOverrides, modelCatalog, modelEntries, modelApiKeys }, null, 2);
+                                  const data = JSON.stringify({
+                                    settings,
+                                    modelOverrides,
+                                    modelCatalog,
+                                    modelEntries,
+                                    note: 'API keys are intentionally excluded from exports. Re-enter them in Settings on the destination machine.',
+                                  }, null, 2);
                                   const blob = new Blob([data], { type: 'application/json' });
                                   const url = URL.createObjectURL(blob);
                                   const a = document.createElement('a');
