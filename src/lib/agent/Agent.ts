@@ -780,6 +780,7 @@ export class GeminiAgentClient {
   private createAnthropicClient(): Anthropic {
     return new Anthropic({
       apiKey: this.getAnthropicApiKey(),
+      baseURL: process.env.ANTHROPIC_BASE_URL || undefined,
       defaultHeaders: {
         'anthropic-beta': 'prompt-caching-2024-07-31',
       },
@@ -1672,6 +1673,7 @@ export class GeminiAgentClient {
     }
     let client = new Anthropic({
       apiKey: keyInfo.apiKey,
+      baseURL: process.env.ANTHROPIC_BASE_URL || undefined,
       defaultHeaders: {
         'anthropic-beta': 'prompt-caching-2024-07-31',
       },
