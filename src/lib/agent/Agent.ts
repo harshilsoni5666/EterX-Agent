@@ -1744,6 +1744,7 @@ export class GeminiAgentClient {
         if (isAnthropicAdaptiveThinkingModel(this.mistralModelName)) {
           // Claude's current models use effort/adaptive thinking.  Sending the
           // old budget_tokens payload to Sonnet 5 causes a 400 response.
+          params.thinking = { type: 'adaptive' };
           params.output_config = { effort: toAnthropicEffort(selectedThinkingLevel) };
         } else {
           const budget = getAnthropicThinkingBudget(selectedThinkingLevel);
