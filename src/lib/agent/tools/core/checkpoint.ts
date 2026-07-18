@@ -2,15 +2,26 @@ import { z } from 'zod';
 import { ToolDefinition } from '../../schemas';
 import path from 'path';
 import fs from 'fs-extra';
+import { getPlanEngine } from '../../plan-execution-engine';
 
 /**
- * Task Checkpoint Tool v1.0
- * 
- * Enables the agent to save progress checkpoints during long-running tasks.
- * When the user says "continue" after an interruption, the agent can read
- * the checkpoint and resume exactly where it left off.
- * 
- * MUCH smarter than the old "restart from scratch" approach.
+ * Task Checkpoint Tool v2.0
+ *
+ * Two responsibilities:
+ *
+ * 1. CHECKPOINT — Save/load progress checkpoints for long-running tasks
+ *    so the agent can resume after interruptions.
+ *
+ * 2. PLAN CONTROL — When a task plan is active, the model uses this tool
+ *    to control plan progression with its own intelligence:
+ *      - advance: Mark the current step done and move to the next
+ *      - skip: Skip the current step (with a reason)
+ *      - activate N: Jump to step N
+ *      - complete: Mark the entire plan done
+ *
+ *    The model decides WHEN a step is done — not regex, not keyword
+ *    matching. The model reads the plan state context injected into
+ *    its prompt and uses its reasoning to determine progress.
  */
 
 const CHECKPOINT_DIR = path.resolve(process.cwd(), '.workspaces', '.checkpoints');
@@ -36,31 +47,198 @@ async function writeJsonAtomic(filePath: string, data: unknown): Promise<void> {
   await fs.move(tmpPath, filePath, { overwrite: true });
 }
 
+const planStepSchema = z.object({
+  step: z.number().int().describe('Step number (1-indexed)'),
+  name: z.string().describe('Short title of the step'),
+  description: z.string().optional().describe('Action description'),
+  done_when: z.string().describe('Concrete verification condition'),
+  depends_on: z.array(z.number().int()).optional().describe('Step numbers this step depends on'),
+  tools: z.array(z.string()).optional().describe('List of tools likely needed'),
+  step_type: z.enum(['inspect', 'research', 'configure', 'edit', 'create', 'run', 'verify', 'communicate', 'deliver']).optional().describe('Type of task step'),
+  expected_output: z.string().optional().describe('Expected deliverable/result'),
+  risk: z.enum(['low', 'medium', 'high']).optional().describe('Risk classification'),
+  artifacts: z.array(z.string()).optional().describe('Paths to files produced/edited'),
+});
+
 export const checkpointTool: ToolDefinition = {
   name: 'task_checkpoint',
-  description: `Save or load a task progress checkpoint. Use this on long tasks to persist your progress so you can resume later if interrupted.
+  description: `Control task plan progression and save/load checkpoints.
 
-SAVE: Call after completing major milestones (e.g., "Created 3/5 files", "Downloaded dataset")
-LOAD: Call at the start of a continuation ("continue", "keep going") to see where you left off
+PLAN CONTROL (use when a task plan is active):
+  - action: "advance" — Mark the current plan step done. Include why done_when is satisfied and concrete evidence when available.
+  - action: "skip" — Skip the current step (requires reason). Use when a step is unnecessary or blocked.
+  - action: "fail" — Record that the current step failed and explain the cause.
+  - action: "activate" — Jump to a specific step number (set stepNumber). Use to work on steps out of order.
+  - action: "revise" — Replace unfinished work with revisedSteps when evidence changes the best approach. Completed work is preserved.
+  - action: "complete" — Finish after all important steps are terminal. Unfinished steps require force=true and justification.
 
-This is your insurance against interruption — save checkpoints every 3-5 tool calls on complex tasks.`,
+CHECKPOINT (use on long tasks without a plan):
+  - action: "save" — Persist progress so you can resume later if interrupted
+  - action: "load" — Retrieve last checkpoint when continuing a previous task
+  - action: "clear" — Delete the checkpoint
+
+When a plan is active, prefer plan control actions over checkpoint save/load.`,
   category: 'core',
   inputSchema: z.object({
-    action: z.enum(['save', 'load', 'clear']).describe('save: store checkpoint, load: retrieve last checkpoint, clear: delete checkpoint'),
-    taskSummary: z.string().optional().describe('Brief description of what has been done so far (for save action)'),
-    nextSteps: z.array(z.string()).optional().describe('Array of remaining steps to complete (for save action)'),
-    filesCreated: z.array(z.string()).optional().describe('Files created/modified so far (for save action)'),
-    metadata: z.record(z.string(), z.any()).optional().describe('Any extra context to persist (URLs, API keys, data)')
+    action: z.enum(['save', 'load', 'clear', 'advance', 'skip', 'fail', 'activate', 'revise', 'complete']).describe(
+      'Plan control: advance, skip, fail, activate, revise, complete. Checkpoint: save, load, clear.'
+    ),
+    reason: z.string().optional().describe('Reason for skip/fail/complete action'),
+    stepNumber: z.number().int().optional().describe('Step number to activate (for "activate" action)'),
+    summary: z.string().optional().describe('Completion summary (for "complete" action)'),
+    evidence: z.array(z.string()).optional().describe('Concrete evidence supporting step or plan completion'),
+    force: z.boolean().optional().describe('Explicitly complete despite unfinished steps; requires justification'),
+    revisedGoal: z.string().optional().describe('Updated goal for a revised plan'),
+    revisedSteps: z.array(planStepSchema).optional().describe('Replacement plan steps for intelligent replanning'),
+    taskSummary: z.string().optional().describe('Brief description of progress (for checkpoint save)'),
+    nextSteps: z.array(z.string()).optional().describe('Remaining steps (for checkpoint save)'),
+    filesCreated: z.array(z.string()).optional().describe('Files created/modified (for checkpoint save)'),
+    metadata: z.record(z.string(), z.any()).optional().describe('Extra context to persist'),
   }),
   outputSchema: z.object({
     success: z.boolean(),
     checkpoint: z.any().optional(),
-    message: z.string()
+    message: z.string(),
+    activeStep: z.any().optional(),
+    planCompleted: z.boolean().optional(),
   }),
   execute: async (input: any, context?: any) => {
-    await fs.ensureDir(CHECKPOINT_DIR);
-    // Chat-scoped checkpoint: each chat gets its own file
     const chatId = context?.projectId || context?.chatId || 'default';
+    const planEngine = getPlanEngine(chatId);
+
+    // ── Plan Control Actions ──
+    if (['advance', 'skip', 'fail', 'activate', 'revise', 'complete'].includes(input.action)) {
+      if (!planEngine.hasActivePlan()) {
+        return {
+          success: false,
+          message: `No active plan. Use task_decomposer first to create a plan, or use "save"/"load" for checkpoints.`,
+        };
+      }
+
+      let result;
+      switch (input.action) {
+        case 'advance':
+          result = planEngine.executeAction({ type: 'advance', reason: input.reason || '', evidence: input.evidence });
+          break;
+        case 'skip':
+          result = planEngine.executeAction({ type: 'skip', reason: input.reason || 'Skipped by model' });
+          break;
+        case 'fail':
+          if (!String(input.reason || '').trim()) return { success: false, message: 'reason is required for "fail" action.' };
+          result = planEngine.executeAction({ type: 'fail', reason: input.reason });
+          break;
+        case 'activate':
+          if (!input.stepNumber) {
+            return { success: false, message: 'stepNumber is required for "activate" action.' };
+          }
+          result = planEngine.executeAction({ type: 'activate', stepNumber: input.stepNumber });
+          break;
+        case 'revise':
+          result = planEngine.executeAction({ type: 'revise', reason: input.reason || '', steps: input.revisedSteps || [], goal: input.revisedGoal });
+          break;
+        case 'complete':
+          result = planEngine.executeAction({ type: 'complete', summary: input.summary || input.reason || 'Plan completed', force: Boolean(input.force), evidence: input.evidence });
+          break;
+        default:
+          return { success: false, message: 'Unknown plan action.' };
+      }
+
+      // Sync with session manager and task tracker
+      try {
+        const { globalSessionManager } = require('../../session');
+        const { readTaskTracker, writeTaskTrackerJson } = require('../../task-tracker-store');
+        if (chatId) {
+          const planState = planEngine.serialize();
+
+          // Sync plan engine state → task tracker JSON
+          const tracker = readTaskTracker(chatId);
+          if (tracker && planState) {
+            const data = JSON.parse(JSON.stringify(tracker.data));
+            for (const engineStep of planState.steps) {
+              const trackerStep = data.steps?.find((s: any) => s.step === engineStep.step);
+              if (trackerStep) {
+                if (engineStep.status === 'done') trackerStep.status = 'done';
+                else if (engineStep.status === 'skipped') trackerStep.status = 'skipped';
+                else if (engineStep.status === 'active') trackerStep.status = 'in_progress';
+              }
+            }
+            data.updatedAt = Date.now();
+            if (result.planCompleted) data.status = 'completed';
+            writeTaskTrackerJson(chatId, data).catch(() => {});
+          }
+
+          // Sync plan engine state → session manager
+          if (planState) {
+            globalSessionManager.setExecutionPlanForChat(chatId, planState);
+            globalSessionManager.setTaskPlanForChat(
+              chatId,
+              planState.steps.map((s: any) => ({
+                name: s.name,
+                status: s.status === 'done' ? 'done' as const : 'pending' as const,
+                description: s.description,
+              }))
+            );
+          }
+        }
+      } catch { /* sync is advisory */ }
+
+      // Emit UI-compatible trace so the task dock updates
+      const emitTrace = typeof context?._onTrace === 'function' ? context._onTrace : null;
+      if (emitTrace) {
+        const planState = planEngine.serialize();
+        if (planState) {
+          const steps = planState.steps;
+          const completedSteps = steps.filter(s => s.status === 'done').length;
+          const activeStep = steps.find(s => s.status === 'active') || steps.find(s => s.status === 'ready') || null;
+          emitTrace({
+            type: 'task_plan',
+            text: result.planCompleted ? 'Task plan complete' : 'Task plan updated',
+            phase: result.planCompleted ? 'complete' : 'progress',
+            goal: planState.goal,
+            status: planState.status,
+            complexity: 'moderate',
+            estimatedMinutes: 0,
+            completedSteps,
+            totalSteps: steps.length,
+            activeStepId: activeStep?.id || null,
+            activeStepName: activeStep?.name || null,
+            updatedAt: Date.now(),
+            steps: steps.map(s => ({
+              id: s.id,
+              step: s.step,
+              name: s.name,
+              description: s.description,
+              tools: s.tools,
+              done_when: s.done_when,
+              depends_on: s.depends_on,
+              priority: s.priority,
+              step_type: s.step_type,
+              expected_output: s.expected_output,
+              risk: s.risk,
+              artifacts: s.artifacts,
+              status: s.status === 'active' ? 'in_progress' : s.status === 'ready' ? 'pending' : s.status,
+              completedAt: s.completedAt,
+            })),
+          });
+        }
+      }
+
+      return {
+        success: result.success,
+        message: result.message,
+        activeStep: result.activeStep ? {
+          step: result.activeStep.step,
+          name: result.activeStep.name,
+          step_type: result.activeStep.step_type,
+          done_when: result.activeStep.done_when,
+          tools: result.activeStep.tools,
+        } : null,
+        planCompleted: result.planCompleted,
+      };
+    }
+
+    // ── Legacy Checkpoint Actions ──
+    await fs.ensureDir(CHECKPOINT_DIR);
     const safeChatId = chatId.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 64);
     const checkpointFile = resolveUnder(CHECKPOINT_DIR, `${safeChatId || 'default'}.json`);
 
@@ -74,12 +252,13 @@ This is your insurance against interruption — save checkpoints every 3-5 tool 
             metadata: input.metadata || {},
             savedAt: Date.now(),
             savedAtISO: new Date().toISOString(),
-            toolCallsCompleted: true
+            // Also persist plan engine state if active
+            planState: planEngine.hasActivePlan() ? planEngine.serialize() : null,
           };
 
           await writeJsonAtomic(checkpointFile, checkpoint);
           console.log(`[Tool: task_checkpoint] 💾 Checkpoint saved: ${input.taskSummary?.substring(0, 60)}`);
-          
+
           return {
             success: true,
             message: `Checkpoint saved. ${input.nextSteps?.length || 0} steps remaining. Resume with "continue".`
@@ -97,7 +276,6 @@ This is your insurance against interruption — save checkpoints every 3-5 tool 
           const checkpoint = await fs.readJson(checkpointFile);
           const ageMinutes = ((Date.now() - checkpoint.savedAt) / 60000).toFixed(1);
 
-          // If checkpoint is older than 24 hours, it's probably stale
           if (Date.now() - checkpoint.savedAt > 24 * 60 * 60 * 1000) {
             return {
               success: false,
@@ -105,8 +283,20 @@ This is your insurance against interruption — save checkpoints every 3-5 tool 
             };
           }
 
+          // Restore plan engine state if available
+          if (checkpoint.planState) {
+            try {
+              planEngine.restore(checkpoint.planState);
+              try {
+                const { globalSessionManager } = require('../../session');
+                globalSessionManager.setExecutionPlanForChat(chatId, planEngine.serialize());
+              } catch { }
+              console.log(`[Tool: task_checkpoint] 📋 Plan engine state restored from checkpoint.`);
+            } catch { /* plan restore is advisory */ }
+          }
+
           console.log(`[Tool: task_checkpoint] 📋 Loaded checkpoint (${ageMinutes} min old): ${checkpoint.taskSummary?.substring(0, 60)}`);
-          
+
           return {
             success: true,
             checkpoint,
@@ -122,7 +312,7 @@ This is your insurance against interruption — save checkpoints every 3-5 tool 
         }
 
         default:
-          return { success: false, message: 'Unknown action. Use save, load, or clear.' };
+          return { success: false, message: 'Unknown action. Use save, load, clear, advance, skip, activate, or complete.' };
       }
     } catch (err: any) {
       return { success: false, message: `Checkpoint error: ${err.message}` };

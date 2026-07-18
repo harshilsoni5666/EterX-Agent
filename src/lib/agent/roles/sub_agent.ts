@@ -588,11 +588,11 @@ export class SubAgentSpawner {
         (trace) => {
           // Check per-agent close flag first
           if (isAgentClosed(context.projectId, name)) {
-            throw new Error('CANCELLED_BY_USER');
+            return;
           }
           // Check cancellation on every trace event for this specific chat
           if (isCancelled(context.projectId)) {
-            throw new Error('CANCELLED_BY_USER');
+            return;
           }
 
           // Check pause — if paused, this blocks until resumed

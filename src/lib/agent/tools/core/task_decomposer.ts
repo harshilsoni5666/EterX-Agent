@@ -4,6 +4,9 @@ import { globalTaskPlanner } from '../../task_planner';
 import { normalizeMainAgentMode } from '../../model-routing';
 import { globalSessionManager } from '../../session';
 import { trackerToTrace, writeTaskTracker, type TaskTrackerData } from '../../task-tracker-store';
+import { getPlanEngine } from '../../plan-execution-engine';
+
+/** Singleton plan execution engine — shared with the agent loop and governor. */
 
 /**
  * Task Decomposer v3 — API-Powered Deep Step Protocol Engine
@@ -156,6 +159,16 @@ export const taskDecomposerTool: ToolDefinition = {
           await globalSessionManager.saveForChat(chatId);
         }
       } catch { /* silent */ }
+
+      // 4. Load plan into the evidence-based execution engine
+      try {
+        const planEngine = getPlanEngine(chatId);
+        planEngine.loadPlan(input.complexTask, steps);
+        if (chatId) globalSessionManager.setExecutionPlanForChat(chatId, planEngine.serialize());
+        console.log(`[Tool: task_decomposer] ✅ PlanExecutionEngine loaded (${steps.length} steps in causal graph)`);
+      } catch (engineErr: any) {
+        console.warn(`[Tool: task_decomposer] PlanExecutionEngine load failed: ${engineErr.message}`);
+      }
 
       // Collect unique tools used across all steps
       const allTools = [...new Set(steps.flatMap((s: any) => Array.isArray(s.tools) ? s.tools : []))];

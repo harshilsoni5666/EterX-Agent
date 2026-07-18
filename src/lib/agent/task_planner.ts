@@ -1,6 +1,6 @@
 import { GoogleGenAI, ThinkingLevel } from '@google/genai';
 import OpenAI from 'openai';
-import { getMainAgentModelConfig, normalizeMainAgentMode, type MainAgentMode } from './model-routing';
+import { getMainAgentModelConfig, normalizeMainAgentMode, resolveModelName, type MainAgentMode } from './model-routing';
 import { getRuntimeApiKey } from './runtime-api-keys';
 import { globalToolRegistry, normalizeRegistryToolName } from './tools/registry';
 
@@ -12,7 +12,15 @@ import { globalToolRegistry, normalizeRegistryToolName } from './tools/registry'
  * to a task-aware plan when the model is unavailable or returns low-quality JSON.
  */
 
-const PLANNER_MODELS = ['gemini-3.5-flash'];
+/** Resolve planner fallback models dynamically instead of hardcoding a model name. */
+function getPlannerFallbackModels(): string[] {
+  try {
+    return [resolveModelName('fast')];
+  } catch {
+    return ['gemini-2.0-flash'];
+  }
+}
+
 const MAX_ALLOWED_STEPS = 20;
 const DEFAULT_MAX_STEPS = 15;
 
@@ -877,7 +885,7 @@ export class TaskPlannerClient {
       return this.fallbackDecompose(task, context, options);
     }
 
-    const plannerModels = Array.from(new Set([modelConfig.modelName, ...PLANNER_MODELS]));
+    const plannerModels = Array.from(new Set([modelConfig.modelName, ...getPlannerFallbackModels()]));
     for (const modelName of plannerModels) {
       try {
         console.log(`[TaskPlanner] Trying model: ${modelName}...`);

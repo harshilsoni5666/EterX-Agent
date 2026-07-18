@@ -155,9 +155,50 @@ const unwrapAccidentalMarkdownFence = (value: string) => {
   return inner;
 };
 
+const SYSTEM_TAGS = [
+  'thought',
+  'deep_work_action',
+  'plan',
+  'work_note',
+  'workspace_note',
+  'search',
+  'execute',
+  'thinking',
+  'reflection',
+  'analysis',
+  'boltAction',
+  'boltArtifact',
+  'artifact',
+  'task_tracker',
+  'status',
+  'read_file',
+  'write_file',
+  'run_command'
+];
+
+const SYSTEM_TAGS_PATTERN = new RegExp(
+  `<(${SYSTEM_TAGS.join('|')})(?:\\s[^>]*)?(?:\\/>|>[\\s\\S]*?(?:<\\/\\1>|$))`,
+  'gi'
+);
+
+const stripSystemTagsOutsideCode = (value: string) =>
+  value.split(CODE_FENCE_SPLIT).map((chunk) => {
+    // Preserve code blocks completely
+    if (/^(```|~~~|`)/.test(chunk)) return chunk;
+    
+    // Strip fully formed or streaming system tags and their contents
+    let processed = chunk.replace(SYSTEM_TAGS_PATTERN, '');
+
+    // Anti-Flicker: Strip incomplete HTML/XML tags at the very end of the stream
+    // Matches `<` optionally followed by `/`, then a letter, then any non-`>` chars until EOF.
+    processed = processed.replace(/<\/?(?:[A-Za-z_][^>]*)?$/, '');
+    
+    return processed;
+  }).join('');
+
 export const normalizeMarkdownForRendering = (value: string) => {
   if (!value) return '';
-  return linkifyLocalFilePaths(repairMarkdownTablesOutsideCode(normalizeLatexOutsideCode(unwrapAccidentalMarkdownFence(value)))
+  return linkifyLocalFilePaths(repairMarkdownTablesOutsideCode(normalizeLatexOutsideCode(stripSystemTagsOutsideCode(unwrapAccidentalMarkdownFence(value))))
     .replace(/\n{3,}(\$\$)/g, '\n\n$1')
     .replace(/(\$\$)\n{3,}/g, '$1\n\n'));
 };

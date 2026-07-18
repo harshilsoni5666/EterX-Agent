@@ -1752,7 +1752,7 @@
 [data-theme="light"] .eterx-chat-input-dock-active::before {
   content: "";
   position: absolute;
-  inset: auto 0 0 0;
+  inset: auto var(--chat-feed-sb-size, var(--sb-size, 0px)) 0 0;
   height: min(260px, 30vh);
   pointer-events: none;
   z-index: -1;
@@ -2015,13 +2015,11 @@
 }
 
 .eterx-chat-top-fade {
-  right: calc(var(--chat-feed-sb-size, var(--sb-size)) + 4px) !important;
+  right: var(--chat-feed-sb-size, var(--sb-size, 0px)) !important;
 }
 
-.eterx-chat-input-dock-active {
-  right: calc(var(--chat-feed-sb-size, var(--sb-size)) + 4px) !important;
-  width: auto !important;
-}
+
+
 
 .eterx-chat-feed-scroll {
   --sb-size: var(--chat-feed-sb-size);
@@ -5158,7 +5156,7 @@
 :root[data-theme="dark"] .eterx-chat-input-dock-active::before {
   content: "";
   position: absolute;
-  inset: auto 0 0 0;
+  inset: auto var(--chat-feed-sb-size, var(--sb-size, 0px)) 0 0;
   height: min(170px, 22vh);
   pointer-events: none;
   z-index: -1;
@@ -6495,4 +6493,3 @@
 .eterx-chat-feed-content {
   contain: layout;
 }
-

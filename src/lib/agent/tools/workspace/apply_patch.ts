@@ -50,6 +50,41 @@ interface FileOperation {
   newFileContent?: string[];   // For add operations
 }
 
+interface PatchChange {
+  path: string;
+  action: 'modified' | 'created' | 'deleted';
+  additions: number;
+  deletions: number;
+  hunks: number;
+  diff: string;
+  readback?: string;
+}
+
+interface PreparedOperation {
+  operation: FileOperation;
+  resolvedPath: string;
+  existed: boolean;
+  beforeContent: string;
+  afterContent: string | null;
+  change: PatchChange;
+}
+
+function buildOperationDiff(operation: FileOperation, beforeContent: string): string {
+  if (operation.type === 'add') {
+    return (operation.newFileContent || []).map(line => `+${line}`).join('\n');
+  }
+  if (operation.type === 'delete') {
+    return beforeContent.replace(/\r\n/g, '\n').split('\n').map(line => `-${line}`).join('\n');
+  }
+  return operation.hunks.map((hunk, index) => [
+    `@@ hunk ${index + 1} @@`,
+    ...hunk.contextBefore.map(line => ` ${line}`),
+    ...hunk.removedLines.map(line => `-${line}`),
+    ...hunk.addedLines.map(line => `+${line}`),
+    ...hunk.contextAfter.map(line => ` ${line}`),
+  ].join('\n')).join('\n');
+}
+
 /**
  * Parse a *** Begin Patch / *** End Patch block into structured FileOperations.
  */
@@ -256,6 +291,17 @@ function applyHunk(
   }
 
   // Build the replacement: contextBefore (kept) + addedLines (new) — removedLines are dropped
+  const duplicateExact = findContextMatch(fileLines, expectedBlock, matchPos + 1, false);
+  const duplicateFuzzy = duplicateExact === -1
+    ? findContextMatch(fileLines, expectedBlock, matchPos + 1, true)
+    : duplicateExact;
+  if (expectedBlock.length > 0 && duplicateFuzzy !== -1) {
+    throw new Error(
+      `Patch context is ambiguous: the same block also matches at line ${duplicateFuzzy + 1}. ` +
+      `Include more unique context lines around this change.`
+    );
+  }
+
   const beforeMatch = fileLines.slice(0, matchPos);
   const afterMatch = fileLines.slice(matchPos + expectedBlock.length);
 
@@ -265,7 +311,7 @@ function applyHunk(
     if (!postPos) {
       const postPosFuzzy = findContextMatch(afterMatch, hunk.contextAfter, 0, true) === 0;
       if (!postPosFuzzy) {
-        console.warn(`[apply_patch] Post-context validation failed — applying anyway (context may have shifted)`);
+        throw new Error('Patch post-context does not match the current file. Read the latest surrounding lines and retry.');
       }
     }
   }
@@ -287,7 +333,7 @@ function applyHunk(
  * Apply all operations from a parsed patch.
  * Returns a summary of what was done.
  */
-async function applyOperations(
+async function applyOperationsLegacy(
   operations: FileOperation[],
   context?: any
 ): Promise<{ filesModified: string[]; filesCreated: string[]; filesDeleted: string[]; errors: string[] }> {
@@ -413,6 +459,167 @@ async function applyOperations(
   return result;
 }
 
+async function applyOperations(
+  operations: FileOperation[],
+  context?: any
+): Promise<{ filesModified: string[]; filesCreated: string[]; filesDeleted: string[]; errors: string[]; changes: PatchChange[]; rolledBack: boolean }> {
+  const emptyResult = { filesModified: [] as string[], filesCreated: [] as string[], filesDeleted: [] as string[], errors: [] as string[], changes: [] as PatchChange[], rolledBack: false };
+  const prepared: PreparedOperation[] = [];
+  const seenPaths = new Set<string>();
+
+  // Resolve and calculate the entire patch before touching the filesystem.
+  for (const operation of operations) {
+    let resolvedPath: string;
+    try {
+      resolvedPath = resolveWorkspacePathForContext(operation.filePath, context);
+    } catch (error: any) {
+      emptyResult.errors.push(`${operation.filePath}: ${error.message}`);
+      continue;
+    }
+
+    const absolutePath = path.resolve(resolvedPath);
+    const pathKey = process.platform === 'win32' ? absolutePath.toLowerCase() : absolutePath;
+    if (seenPaths.has(pathKey)) {
+      emptyResult.errors.push(`Duplicate file operation for ${operation.filePath}. Combine changes for a file under one patch header.`);
+      continue;
+    }
+    seenPaths.add(pathKey);
+
+    const protection = checkEterXProtection(resolvedPath);
+    if (protection.blocked) {
+      emptyResult.errors.push(`BLOCKED: ${resolvedPath} - ${protection.reason}`);
+      continue;
+    }
+
+    try {
+      const existed = await fse.pathExists(resolvedPath);
+      if (operation.type === 'add' && existed) throw new Error('File already exists. Use *** Update File instead.');
+      if (operation.type !== 'add' && !existed) throw new Error('File not found. Use *** Add File for new files.');
+
+      const beforeContent = existed ? await fs.readFile(resolvedPath, 'utf-8') : '';
+      let afterContent: string | null = null;
+      let appliedHunks = 0;
+
+      if (operation.type === 'add') {
+        afterContent = (operation.newFileContent || []).join('\n');
+      } else if (operation.type === 'update') {
+        let fileLines = beforeContent.replace(/\r\n/g, '\n').split('\n');
+        let searchFrom = 0;
+        for (let hunkIndex = 0; hunkIndex < operation.hunks.length; hunkIndex++) {
+          const hunk = operation.hunks[hunkIndex];
+          if (hunk.removedLines.length === 0 && hunk.addedLines.length === 0) continue;
+          try {
+            const applied = applyHunk(fileLines, hunk, searchFrom);
+            fileLines = applied.lines;
+            searchFrom = applied.nextSearchFrom;
+            appliedHunks++;
+          } catch (error: any) {
+            throw new Error(`Hunk ${hunkIndex + 1}: ${error.message}`);
+          }
+        }
+        if (appliedHunks === 0) throw new Error('Update contains no changed lines.');
+        afterContent = fileLines.join(beforeContent.includes('\r\n') ? '\r\n' : '\n');
+        if (afterContent === beforeContent) throw new Error('Patch produced no content change.');
+      }
+
+      const action: PatchChange['action'] = operation.type === 'add' ? 'created' : operation.type === 'delete' ? 'deleted' : 'modified';
+      const diff = buildOperationDiff(operation, beforeContent);
+      const stats = operation.type === 'add'
+        ? { additions: operation.newFileContent?.length || 0, deletions: 0 }
+        : operation.type === 'delete'
+          ? { additions: 0, deletions: beforeContent ? beforeContent.replace(/\r\n/g, '\n').split('\n').length : 0 }
+          : {
+              additions: operation.hunks.reduce((sum, hunk) => sum + hunk.addedLines.length, 0),
+              deletions: operation.hunks.reduce((sum, hunk) => sum + hunk.removedLines.length, 0),
+            };
+      prepared.push({
+        operation,
+        resolvedPath,
+        existed,
+        beforeContent,
+        afterContent,
+        change: {
+          path: resolvedPath,
+          action,
+          additions: stats.additions,
+          deletions: stats.deletions,
+          hunks: appliedHunks,
+          diff,
+          readback: afterContent === null ? undefined : buildEditReadback(afterContent, 0, 12).slice(0, 2400),
+        },
+      });
+    } catch (error: any) {
+      emptyResult.errors.push(`${operation.type} failed for ${operation.filePath}: ${error.message}`);
+    }
+  }
+
+  if (emptyResult.errors.length > 0 || prepared.length !== operations.length) return emptyResult;
+
+  // Commit as one transaction and restore already-written targets on failure.
+  const committed: PreparedOperation[] = [];
+  const temporaryPaths = new Set<string>();
+  try {
+    for (const item of prepared) {
+      const existsNow = await fse.pathExists(item.resolvedPath);
+      if (item.existed !== existsNow) {
+        throw new Error(`${item.operation.filePath} changed after patch validation (existence mismatch).`);
+      }
+      if (existsNow) {
+        const currentContent = await fs.readFile(item.resolvedPath, 'utf-8');
+        if (currentContent !== item.beforeContent) {
+          throw new Error(`${item.operation.filePath} changed after patch validation. Read it again and retry.`);
+        }
+      }
+      await fse.ensureDir(path.dirname(item.resolvedPath));
+      if (item.afterContent === null) {
+        await fs.unlink(item.resolvedPath);
+      } else {
+        const tempPath = `${item.resolvedPath}.patch_tmp_${process.pid}_${Date.now()}`;
+        temporaryPaths.add(tempPath);
+        await fs.writeFile(tempPath, item.afterContent, 'utf-8');
+        await fse.move(tempPath, item.resolvedPath, { overwrite: true });
+        temporaryPaths.delete(tempPath);
+      }
+      committed.push(item);
+    }
+  } catch (error: any) {
+    const rollbackErrors: string[] = [];
+    for (const tempPath of temporaryPaths) {
+      try { await fs.unlink(tempPath); } catch { /* best effort */ }
+    }
+    for (const item of [...committed].reverse()) {
+      try {
+        if (item.existed) await fs.writeFile(item.resolvedPath, item.beforeContent, 'utf-8');
+        else if (await fse.pathExists(item.resolvedPath)) await fs.unlink(item.resolvedPath);
+      } catch (rollbackError: any) {
+        rollbackErrors.push(`${item.resolvedPath}: ${rollbackError.message}`);
+      }
+    }
+    return {
+      ...emptyResult,
+      rolledBack: true,
+      errors: [`Patch commit failed and was rolled back: ${error.message}`, ...rollbackErrors.map(message => `Rollback warning: ${message}`)],
+    };
+  }
+
+  const result = { ...emptyResult, changes: prepared.map(item => item.change) };
+  for (const item of prepared) {
+    if (item.change.action === 'created') result.filesCreated.push(item.resolvedPath);
+    else if (item.change.action === 'deleted') result.filesDeleted.push(item.resolvedPath);
+    else result.filesModified.push(item.resolvedPath);
+    try {
+      editTracker.recordEdit({
+        filePath: item.resolvedPath,
+        beforeContent: item.beforeContent,
+        afterContent: item.afterContent || '',
+        toolName: 'workspace_apply_patch',
+        editType: item.operation.type === 'update' ? 'patch' : item.operation.type,
+      });
+    } catch { /* tracker is best-effort */ }
+  }
+  return result;
+}
+
 export const workspaceApplyPatchTool: ToolDefinition = {
   name: 'workspace_apply_patch',
   description: 'Apply precise structural edits to files using a patch format. Supports adding new files, updating existing files with context-matched hunks, and deleting files. The most reliable way to edit code — uses context lines to locate exact positions.\n\nFormat:\n*** Begin Patch\n*** Update File: path/to/file.ts\n context line (space prefix)\n-removed line\n+added line\n*** Add File: path/to/new.ts\n+content line\n*** Delete File: path/to/old.ts\n*** End Patch',
@@ -433,6 +640,18 @@ export const workspaceApplyPatchTool: ToolDefinition = {
     filesCreated: z.array(z.string()),
     filesDeleted: z.array(z.string()),
     errors: z.array(z.string()),
+    changes: z.array(z.object({
+      path: z.string(),
+      action: z.enum(['modified', 'created', 'deleted']),
+      additions: z.number(),
+      deletions: z.number(),
+      hunks: z.number(),
+      diff: z.string(),
+      readback: z.string().optional(),
+    })).optional(),
+    rolledBack: z.boolean().optional(),
+    readbacks: z.record(z.string()).optional(),
+    summary: z.string().optional(),
   }),
   execute: async (input: { patch: string }, context?: any) => {
     if (!input.patch || typeof input.patch !== 'string' || input.patch.trim().length < 10) {
@@ -466,13 +685,11 @@ export const workspaceApplyPatchTool: ToolDefinition = {
       const totalChanges = result.filesModified.length + result.filesCreated.length + result.filesDeleted.length;
       const success = totalChanges > 0 && result.errors.length === 0;
 
-      // Auto-readback: show first changed region for each modified file
+      // Keep the compatibility map, but key it by full path so duplicate
+      // basenames in different directories never hide each other in the UI.
       const readbacks: Record<string, string> = {};
-      for (const modFile of result.filesModified.slice(0, 5)) {
-        try {
-          const modContent = await fs.readFile(modFile, 'utf-8');
-          readbacks[path.basename(modFile)] = buildEditReadback(modContent, 0, 8).slice(0, 600);
-        } catch { /* best effort */ }
+      for (const change of result.changes) {
+        if (change.readback) readbacks[change.path] = change.readback;
       }
 
       return {
@@ -481,10 +698,12 @@ export const workspaceApplyPatchTool: ToolDefinition = {
         filesCreated: result.filesCreated,
         filesDeleted: result.filesDeleted,
         errors: result.errors,
+        changes: result.changes,
+        rolledBack: result.rolledBack,
         readbacks,
         summary: success
           ? `Applied patch: ${result.filesModified.length} modified, ${result.filesCreated.length} created, ${result.filesDeleted.length} deleted`
-          : `Patch had errors: ${result.errors.join('; ')}`,
+          : `${result.rolledBack ? 'Patch rolled back' : 'Patch rejected'}: ${result.errors.join('; ')}`,
       };
     } catch (err: any) {
       return {

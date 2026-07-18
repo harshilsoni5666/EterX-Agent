@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { GoogleGenAI } from '@google/genai';
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
-import { getMainAgentModelConfig, normalizeMainAgentMode } from '../../../../lib/agent/model-routing';
+import { getMainAgentModelConfig, normalizeMainAgentMode, isOpenAIReasoningModel, isAnthropicAdaptiveThinkingModel } from '../../../../lib/agent/model-routing';
 import {
   buildScopedRuntimeSettings,
   getScopedRuntimeApiKey,
@@ -93,13 +93,19 @@ async function generateTitleWithProvider(
     const apiKey = getScopedRuntimeApiKey(runtimeSettings, 'anthropic');
     if (!apiKey) throw new Error('Missing Anthropic API key');
 
-    const client = new Anthropic({ apiKey });
-    const result = await client.messages.create({
+    const client = new Anthropic({
+      apiKey,
+      baseURL: process.env.ANTHROPIC_BASE_URL || undefined,
+    });
+    const params: any = {
       model: modelName,
       messages: [{ role: 'user', content: prompt }],
-      temperature: 0.2,
       max_tokens: 24,
-    } as any);
+    };
+    if (!isAnthropicAdaptiveThinkingModel(modelName)) {
+      params.temperature = 0.2;
+    }
+    const result = await client.messages.create(params);
     const titleText = Array.isArray((result as any).content)
       ? (result as any).content
         .map((part: any) => part?.type === 'text' ? String(part.text || '') : '')
@@ -146,7 +152,6 @@ async function generateTitleWithProvider(
         throw err;
       }
     }
-
     const candidates = result.candidates || [];
     const titleText = candidates[0]?.content?.parts?.find(p => 'text' in p)?.text;
     return cleanTitle(titleText, safeHistory);
@@ -178,12 +183,18 @@ async function generateTitleWithProvider(
       }
       : undefined,
   });
-  const result = await client.chat.completions.create({
+  const isReasoning = isOpenAIReasoningModel(modelName) && provider === 'openai';
+  const completionsParams: any = {
     model: modelName,
     messages: [{ role: 'user', content: prompt }],
-    temperature: 0.2,
-    max_tokens: 24,
-  });
+  };
+  if (isReasoning) {
+    completionsParams.max_completion_tokens = 24;
+  } else {
+    completionsParams.temperature = 0.2;
+    completionsParams.max_tokens = 24;
+  }
+  const result = await client.chat.completions.create(completionsParams);
   return cleanTitle(result.choices?.[0]?.message?.content, safeHistory);
 }
 

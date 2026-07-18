@@ -1,5 +1,6 @@
 import fs from 'fs-extra';
 import path from 'path';
+import type { PlanState } from './plan-execution-engine';
 
 /**
  * SessionStateManager v2 — Persistent Session Continuity + Self-Review Engine
@@ -91,6 +92,8 @@ export interface SessionState {
   lastAgentOutput: string;
   /** Current task plan steps (from task_decomposer or tracker) */
   taskPlanSteps: Array<{ name: string; status: 'pending' | 'done'; description?: string }>;
+  /** Full model-driven execution state for exact restart/resume continuity */
+  executionPlanState: PlanState | null;
   /** Timestamp of last activity */
   lastActivityAt: number;
   /** Session creation timestamp */
@@ -121,6 +124,7 @@ const EMPTY_STATE: SessionState = {
   actionSummary: [],
   lastAgentOutput: '',
   taskPlanSteps: [],
+  executionPlanState: null,
   lastActivityAt: Date.now(),
   createdAt: Date.now(),
   messageCount: 0,
@@ -166,6 +170,7 @@ export class SessionStateManager {
       toolCallCounts: { ...state.toolCallCounts },
       actionSummary: [...state.actionSummary],
       taskPlanSteps: [...state.taskPlanSteps],
+      executionPlanState: state.executionPlanState ? JSON.parse(JSON.stringify(state.executionPlanState)) : null,
       toolResultDigest: [...state.toolResultDigest],
     };
   }
@@ -200,6 +205,14 @@ export class SessionStateManager {
     state.fileRecords = state.fileRecords.slice(-80); // Keep 80 for rich file history
     state.actionSummary = state.actionSummary.slice(-15);
     state.taskPlanSteps = state.taskPlanSteps.slice(0, 20);
+    if (state.executionPlanState) {
+      state.executionPlanState.steps = state.executionPlanState.steps.slice(0, 30).map(step => ({
+        ...step,
+        trace: Array.isArray(step.trace) ? step.trace.slice(-40) : [],
+      }));
+      state.executionPlanState.revisionHistory = (state.executionPlanState.revisionHistory || []).slice(-20);
+      state.executionPlanState.actionHistory = (state.executionPlanState.actionHistory || []).slice(-100);
+    }
   }
 
   private maybeCleanupStaleSessions(): void {
@@ -265,6 +278,7 @@ export class SessionStateManager {
         actionSummary: Array.isArray(data.actionSummary) ? data.actionSummary : [],
         lastAgentOutput: data.lastAgentOutput || '',
         taskPlanSteps: Array.isArray(data.taskPlanSteps) ? data.taskPlanSteps : [],
+        executionPlanState: data.executionPlanState || null,
         lastActivityAt: Date.now(),
         createdAt: data.createdAt || Date.now(),
         messageCount: data.messageCount || 0,
@@ -337,6 +351,7 @@ export class SessionStateManager {
           actionSummary: Array.isArray(data.actionSummary) ? data.actionSummary : [],
           lastAgentOutput: data.lastAgentOutput || '',
           taskPlanSteps: Array.isArray(data.taskPlanSteps) ? data.taskPlanSteps : [],
+          executionPlanState: data.executionPlanState || null,
           lastActivityAt: Date.now(),
           createdAt: data.createdAt || Date.now(),
           messageCount: data.messageCount || 0,
@@ -557,6 +572,7 @@ export class SessionStateManager {
         actionSummary: [],
         lastAgentOutput: '',
         taskPlanSteps: [],
+        executionPlanState: null,
         lastActivityAt: Date.now(),
         createdAt: Date.now(),
         messageCount: 0,
@@ -719,6 +735,13 @@ export class SessionStateManager {
   public setTaskPlanForChat(chatId: string, steps: Array<{ name: string; status: 'pending' | 'done'; description?: string }>): void {
     const state = this.getOrCreateStateForChat(chatId);
     state.taskPlanSteps = steps.slice(0, 20); // Cap at 20 steps
+    this.rememberActiveSession(chatId, state);
+    this.debouncedSave();
+  }
+
+  public setExecutionPlanForChat(chatId: string, planState: PlanState | null): void {
+    const state = this.getOrCreateStateForChat(chatId);
+    state.executionPlanState = planState ? JSON.parse(JSON.stringify(planState)) : null;
     this.rememberActiveSession(chatId, state);
     this.debouncedSave();
   }

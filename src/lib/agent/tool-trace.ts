@@ -19,6 +19,8 @@ export type DiffLine = {
   content: string;
   oldLine?: number;
   newLine?: number;
+  isGap?: boolean;
+  skipped?: number;
 };
 
 const PATH_KEYS = [
@@ -416,7 +418,25 @@ export function buildLineDiffPreview(before: string, after: string): {
     }
   });
 
-  const compacted = diffLines.filter((_, index) => visible.has(index));
+  const visibleIndexes = Array.from(visible).sort((a, b) => a - b);
+  const compacted: DiffLine[] = [];
+  let previousIndex = -1;
+  for (const index of visibleIndexes) {
+    if (previousIndex >= 0 && index > previousIndex + 1) {
+      const skipped = index - previousIndex - 1;
+      const firstSkipped = diffLines[previousIndex + 1];
+      compacted.push({
+        type: 'context',
+        content: `${skipped} unchanged line${skipped === 1 ? '' : 's'}`,
+        oldLine: firstSkipped?.oldLine,
+        newLine: firstSkipped?.newLine,
+        isGap: true,
+        skipped,
+      });
+    }
+    compacted.push(diffLines[index]);
+    previousIndex = index;
+  }
   return {
     diffLines: compacted,
     added: compacted.filter(line => line.type === 'added').length,

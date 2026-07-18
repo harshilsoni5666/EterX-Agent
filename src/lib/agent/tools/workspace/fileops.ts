@@ -118,7 +118,44 @@ export const workspaceReadTool: ToolDefinition = {
       }
 
       const stats = await fs.stat(filePath);
-      const rawContent = await fs.readFile(filePath, 'utf-8');
+      const ext = filePath.split('.').pop()?.toLowerCase();
+      let rawContent = '';
+      if (ext === 'docx') {
+        const AdmZip = require('adm-zip');
+        const zip = new AdmZip(filePath);
+        const xmlContent = zip.readAsText('word/document.xml', 'utf8');
+        if (xmlContent) {
+          const paragraphRegex = /<w:p\b[^>]*>(.*?)<\/w:p>/g;
+          const textRegex = /<w:t\b[^>]*>(.*?)<\/w:t>/g;
+          const paragraphs: string[] = [];
+          let match;
+          while ((match = paragraphRegex.exec(xmlContent)) !== null) {
+            const pContent = match[1];
+            const textMatches = pContent.match(textRegex);
+            if (textMatches) {
+              const pText = textMatches
+                .map(tMatch => tMatch.replace(/<[^>]+>/g, ''))
+                .join('')
+                .replace(/&amp;/g, '&')
+                .replace(/&lt;/g, '<')
+                .replace(/&gt;/g, '>')
+                .replace(/&quot;/g, '"')
+                .replace(/&apos;/g, "'");
+              paragraphs.push(pText);
+            }
+          }
+          rawContent = paragraphs.join('\n');
+        } else {
+          rawContent = '[Error: Empty or invalid DOCX document.xml]';
+        }
+      } else if (ext === 'pdf') {
+        const pdfParse = require('pdf-parse');
+        const dataBuffer = await fs.readFile(filePath);
+        const pdfData = await pdfParse(dataBuffer);
+        rawContent = pdfData.text || '';
+      } else {
+        rawContent = await fs.readFile(filePath, 'utf-8');
+      }
       const lines = rawContent.split('\n');
       const start = Math.max(1, input.startLine || 1);
       const end = input.endLine ?? lines.length;

@@ -62,12 +62,12 @@
   background: linear-gradient(180deg, #0F0F0F 0%, rgba(15, 15, 15, 0.82) 44%, rgba(15, 15, 15, 0) 100%) !important;
 }
 
-:root[data-theme="light"] .eterx-chat-input-dock-active {
+:root[data-theme="light"] .eterx-chat-input-dock-active::before {
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0) 0%, rgba(255, 255, 255, 0.86) 34%, #FFFFFF 100%) !important;
 }
 
-:root[data-theme="dark"] .eterx-chat-input-dock-active {
+:root[data-theme="dark"] .eterx-chat-input-dock-active::before {
   background:
     linear-gradient(180deg, rgba(15, 15, 15, 0) 0%, #0F0F0F 32%, #0F0F0F 100%) !important;
 }

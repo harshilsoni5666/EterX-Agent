@@ -279,7 +279,7 @@ class AgentRegistry {
     const onTrace = (traceEvent: any) => {
       // Check per-chat cancellation
       if (execution.cancelled) {
-        throw new Error('CANCELLED_BY_USER');
+        return;
       }
 
       // Enrich custom agent traces

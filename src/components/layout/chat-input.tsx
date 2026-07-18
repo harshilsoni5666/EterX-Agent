@@ -929,7 +929,7 @@ const TaskTrackerDock = React.memo(({
       animate={{ opacity: 1, y: 0, scale: 1 }}
       exit={{ opacity: 0, y: 8, scale: 0.992 }}
       transition={{ duration: 0.2, ease: [0.2, 0.8, 0.2, 1] }}
-      className={`relative z-0 mx-auto -mb-2 w-[calc(100%-20px)] ${ isCompressed ? 'max-w-[424px]' : 'max-w-[600px]' } translate-y-2 overflow-hidden rounded-t-[18px] border border-b-0 border-white/[0.09] bg-[#202020] shadow-[0_-8px_22px_rgba(0,0,0,0.16),inset_0_1px_0_rgba(255,255,255,0.04)]`}
+      className="relative z-0 mx-auto -mb-2 w-full translate-y-2 overflow-hidden rounded-t-[20px] border border-b-0 border-white/[0.09] bg-[#202020] shadow-[0_-8px_22px_rgba(0,0,0,0.16),inset_0_1px_0_rgba(255,255,255,0.04)]"
     >
       <button
         type="button"
@@ -988,43 +988,23 @@ const TaskTrackerDock = React.memo(({
                     {steps.map((step) => {
                       const active = step.id === activeStep?.id || step.step === activeStep?.step;
                       const activeWorking = active && !isComplete && (isThinking || step.status === 'in_progress');
-                      const detail = step.expected_output || step.done_when || step.description || '';
+                      const description = step.description || '';
+                      const criteria = step.expected_output || step.done_when || '';
                       const tools = Array.isArray(step.tools) ? step.tools.filter(Boolean) : [];
                       const artifacts = Array.isArray(step.artifacts) ? step.artifacts.filter(Boolean) : [];
-                      const meta = [
-                        step.step_type,
-                        step.risk && step.risk !== 'low' ? `${ step.risk } risk` : '',
-                      ].filter(Boolean).join(' · ');
                       return (
                         <div
                           key={step.id || step.step}
-                          className="relative flex items-start gap-2.5 rounded-[10px] px-2.5 py-2 transition-colors hover:bg-white/[0.018]"
+                          className="relative flex items-center gap-2.5 rounded-[10px] px-2.5 py-1.5 transition-colors hover:bg-white/[0.018]"
                         >
-                          <span className="relative z-10 mt-0.5 shrink-0">
+                          <span className="relative z-10 shrink-0">
                             <TaskStatusGlyph status={step.status} active={activeWorking} />
                           </span>
-                          <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                            <span className="flex min-w-0 items-center gap-1.5">
-                              <span className={`block min-w-0 truncate text-[12.5px] font-semibold leading-5 ${ activeWorking ? 'eterx-text-shimmer eterx-text-shimmer-working' : 'text-[#D9D6CE]' }`}>
-                                {step.name || `Task ${ step.step }`}
-                              </span>
-                              {activeWorking && <GeneratingDots className="shrink-0 text-[#CFCFCF]" />}
+                          <span className="flex min-w-0 flex-1 items-center gap-1.5">
+                            <span className={`block min-w-0 truncate text-[12.5px] font-semibold leading-5 ${ activeWorking ? 'eterx-text-shimmer eterx-text-shimmer-working' : 'text-[#D9D6CE]' }`}>
+                              {step.name || `Task ${ step.step }`}
                             </span>
-                            {meta && (
-                              <span className="block truncate text-[10px] font-medium uppercase leading-3 tracking-normal text-white/38">
-                                {meta}
-                              </span>
-                            )}
-                            {detail && (
-                              <span className="block max-h-[32px] overflow-hidden text-[11px] leading-4 text-[#A4A19A]">
-                                {detail}
-                              </span>
-                            )}
-                            {(tools.length > 0 || artifacts.length > 0) && (
-                              <span className="block truncate text-[10px] leading-3 text-white/36">
-                                {[tools.slice(0, 3).join(' · '), artifacts.slice(0, 2).join(' · ')].filter(Boolean).join(' | ')}
-                              </span>
-                            )}
+                            {activeWorking && <GeneratingDots className="shrink-0 text-[#CFCFCF]" />}
                           </span>
                         </div>
                       );
@@ -2150,7 +2130,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     onOpenProjects();
   }, [onOpenProjects]);
   const shellMaxWidth = isCompressed ? 'max-w-[460px]' : 'max-w-[660px]';
-  const inputSidePadding = isCompressed ? 'px-4' : 'px-4 sm:px-8';
+  const inputSidePadding = isCompressed ? 'px-11' : 'px-11 sm:px-14';
   const composerRadius = isCompressed ? 'rounded-[24px]' : 'rounded-[26px]';
   const modelOptions = useMemo<ChatModelOption[]>(() => {
     return storedModelSettings.modelEntries.map(entry => {

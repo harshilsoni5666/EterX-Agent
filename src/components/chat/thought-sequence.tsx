@@ -604,7 +604,7 @@ export const ProfessionalThought = React.memo(({ text, isLatest, isThinking, var
 
   const renderText = useMemo(() => {
     if (!text) return '';
-    let f = text.replace(/!\[.*?\]\(\/absolute.*?\.png\)/gi, '').replace(/<\/?thought>/gi, '');
+    let f = text.replace(/!\[.*?\]\(\/absolute.*?\.png\)/gi, '');
     f = f.replace(/([^\n])(#{1,6}\s)/g, '$1\n\n$2').replace(/([.!?:])(\s*\n)(#{1,6}\s)/g, '$1\n\n$3');
     return normalizeMarkdownForRendering(f.trim());
   }, [text]);
@@ -1009,30 +1009,64 @@ const InlineConsole = ({ command, content, exitCode, durationMs }: { command: st
 };
 
 // ─── Patch Summary Panel — shown for workspace_apply_patch results ────────────
+type PatchChangeDetail = {
+  path: string;
+  action: 'modified' | 'created' | 'deleted';
+  additions?: number;
+  deletions?: number;
+  hunks?: number;
+  diff?: string;
+  readback?: string;
+};
+
+const patchDiffLines = (diff = '') => diff
+  .split('\n')
+  .map(line => line.startsWith('@@')
+    ? { type: 'context' as const, content: line.replace(/^@@\s*|\s*@@$/g, '') || 'Next change', isGap: true }
+    : {
+        type: line.startsWith('+') ? 'added' as const : line.startsWith('-') ? 'removed' as const : 'unchanged' as const,
+        content: /^[+\- ]/.test(line) ? line.slice(1) : line,
+      });
+
 const PatchSummaryPanel = ({
   filesModified = [],
   filesCreated = [],
   filesDeleted = [],
   errors = [],
+  changes = [],
+  rolledBack = false,
   flush = false,
 }: {
   filesModified?: string[];
   filesCreated?: string[];
   filesDeleted?: string[];
   errors?: string[];
+  changes?: PatchChangeDetail[];
+  rolledBack?: boolean;
   flush?: boolean;
 }) => {
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(true);
+  const [selectedPath, setSelectedPath] = useState(changes[0]?.path || '');
+  useEffect(() => {
+    if (!selectedPath && changes[0]?.path) setSelectedPath(changes[0].path);
+  }, [changes, selectedPath]);
   const totalFiles = filesModified.length + filesCreated.length + filesDeleted.length;
   const hasErrors = errors.length > 0;
   const success = totalFiles > 0 && !hasErrors;
 
-  type FileEntry = { path: string; kind: 'modified' | 'created' | 'deleted' };
+  type FileEntry = { path: string; kind: 'modified' | 'created' | 'deleted'; detail?: PatchChangeDetail };
+  const detailByPath = new Map(changes.map(change => [change.path.replace(/\\/g, '/').toLowerCase(), change]));
+  const withDetail = (filePath: string, kind: FileEntry['kind']): FileEntry => ({
+    path: filePath,
+    kind,
+    detail: detailByPath.get(filePath.replace(/\\/g, '/').toLowerCase()),
+  });
   const allFiles: FileEntry[] = [
-    ...filesCreated.map(p => ({ path: p, kind: 'created' as const })),
-    ...filesModified.map(p => ({ path: p, kind: 'modified' as const })),
-    ...filesDeleted.map(p => ({ path: p, kind: 'deleted' as const })),
+    ...filesCreated.map(p => withDetail(p, 'created')),
+    ...filesModified.map(p => withDetail(p, 'modified')),
+    ...filesDeleted.map(p => withDetail(p, 'deleted')),
   ];
+  const selectedFile = allFiles.find(file => file.path === selectedPath) || allFiles.find(file => Boolean(file.detail?.diff));
 
   const kindStyle = {
     created: { pill: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/25', bar: 'bg-emerald-500', label: '+new' },
@@ -1044,14 +1078,17 @@ const PatchSummaryPanel = ({
     <motion.div layout initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }}>
       <div className={`eterx-patch-summary-panel flex flex-col bg-[#1B1B1A] font-mono shadow-[0_6px_18px_rgba(0,0,0,0.20),inset_0_1px_0_rgba(255,255,255,0.026)] ${ flush ? 'mt-1 mb-2' : 'mx-3 mt-1.5 mb-2' } overflow-hidden rounded-[12px] border border-white/[0.07]`}>
         {/* Header */}
-        <div className="flex items-center justify-between gap-3 bg-[#20201F] px-3 py-1.5">
-          <div className="flex items-center gap-2.5">
+        <div className="flex flex-wrap items-center justify-between gap-2 bg-[#20201F] px-3 py-2">
+          <div className="flex min-w-0 flex-wrap items-center gap-2.5">
             <span className={`h-2 w-2 rounded-full flex-shrink-0 ${ success ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.5)]' : hasErrors ? 'bg-red-400 shadow-[0_0_8px_rgba(248,113,113,0.5)]' : 'bg-amber-400' }`} />
             <span className="text-[12px] font-semibold text-[#C8C2BB]">
               {success ? `Patch applied · ${ totalFiles } file${ totalFiles !== 1 ? 's' : '' }` : hasErrors ? `Patch errors · ${ errors.length }` : 'No changes'}
             </span>
             {/* Stat pills */}
-            <div className="flex items-center gap-1.5">
+            <div className="flex flex-wrap items-center gap-1.5">
+              {rolledBack && (
+                <span className="rounded-[5px] border border-amber-500/25 bg-amber-500/15 px-1.5 py-[1px] text-[10.5px] font-semibold text-amber-300">rolled back</span>
+              )}
               {filesCreated.length > 0 && (
                 <span className="rounded-[5px] border px-1.5 py-[1px] text-[10.5px] font-semibold bg-emerald-500/15 text-emerald-300 border-emerald-500/25">+{filesCreated.length} new</span>
               )}
@@ -1088,15 +1125,36 @@ const PatchSummaryPanel = ({
             >
               {allFiles.map((f, i) => {
                 const style = kindStyle[f.kind];
-                const name = f.path.replace(/\\/g, '/').split('/').pop() || f.path;
+                const pathParts = f.path.replace(/\\/g, '/').split('/');
+                const name = pathParts.pop() || f.path;
+                const parentPath = pathParts.slice(-3).join('/');
                 return (
-                  <div key={i} className="flex items-center gap-0 border-t border-white/[0.045] first:border-t-0">
+                  <button
+                    type="button"
+                    key={`${f.kind}-${f.path}-${i}`}
+                    className={`group flex w-full items-center gap-0 border-t border-white/[0.045] text-left first:border-t-0 hover:bg-white/[0.025] ${selectedFile?.path === f.path ? 'bg-white/[0.035]' : ''}`}
+                    onClick={() => {
+                      if (f.kind === 'deleted') return;
+                      setSelectedPath(f.path);
+                    }}
+                    title={f.kind === 'deleted' ? f.path : `Show changes in ${f.path}`}
+                  >
                     <div className={`w-[3px] self-stretch shrink-0 ${ style.bar }`} />
                     <div className="flex min-w-0 flex-1 items-center gap-2 px-3 py-[5px]">
-                      <span className="min-w-0 flex-1 truncate text-[12px] text-[#94C7E0]" title={f.path}>{name}</span>
+                      <span className="flex min-w-0 flex-1 flex-col leading-tight">
+                        <span className="truncate text-[12px] font-medium text-[#A9D2E5]">{name}</span>
+                        {parentPath ? <span className="mt-0.5 truncate text-[9.5px] text-[#69645E]">{parentPath}</span> : null}
+                      </span>
+                      {f.detail && (f.detail.additions || f.detail.deletions) ? (
+                        <span className="flex shrink-0 items-center gap-1.5 font-mono text-[10px] tabular-nums">
+                          <span className="text-emerald-300">+{f.detail.additions || 0}</span>
+                          <span className="text-red-300">−{f.detail.deletions || 0}</span>
+                        </span>
+                      ) : null}
                       <span className={`shrink-0 rounded-[4px] border px-1.5 py-[1px] text-[10px] font-semibold ${ style.pill }`}>{style.label}</span>
+                      {f.kind !== 'deleted' ? <ChevronRight className={`h-3 w-3 shrink-0 text-[#716B64] transition-transform ${selectedFile?.path === f.path ? 'rotate-90 text-[#B2AAA0]' : ''}`} /> : null}
                     </div>
-                  </div>
+                  </button>
                 );
               })}
               {hasErrors && errors.map((err, i) => (
@@ -1108,6 +1166,17 @@ const PatchSummaryPanel = ({
                   </div>
                 </div>
               ))}
+              {selectedFile?.detail?.diff && selectedFile.kind !== 'deleted' ? (
+                <div className="border-t border-white/[0.055] bg-[#151514] px-2 pb-1 pt-0.5">
+                  <InlineDiffView
+                    filename={selectedFile.path.replace(/\\/g, '/').split('/').pop() || selectedFile.path}
+                    filepath={selectedFile.path}
+                    diffLines={patchDiffLines(selectedFile.detail.diff)}
+                    showExpand
+                    flush
+                  />
+                </div>
+              ) : null}
             </motion.div>
           )}
         </AnimatePresence>
@@ -1783,13 +1852,77 @@ const ToolResultPreview = React.memo(({ toolName, args, result }: { toolName: st
 });
 ToolResultPreview.displayName = 'ToolResultPreview';
 
-const InlineDiffView = ({ filename, diffLines, showExpand = true, flush = false }: { filename: string, diffLines: any[], showExpand?: boolean, flush?: boolean }) => {
+const InlineMissingDiffView = ({
+  filename,
+  filepath = '',
+  stats,
+}: {
+  filename: string;
+  filepath?: string;
+  stats?: { added: number; removed: number } | null;
+}) => {
+  const parentPath = filepath ? filepath.replace(/\\/g, '/').split('/').slice(0, -1).slice(-3).join('/') : '';
+  return (
+    <motion.div layout initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }}>
+      <div className="mx-3 mb-2 mt-1.5 overflow-hidden rounded-[12px] border border-amber-400/[0.12] bg-[#1B1B1A] shadow-[0_6px_18px_rgba(0,0,0,0.18)]">
+        <div className="flex items-center justify-between gap-3 bg-[#20201F] px-3 py-2">
+          <span className="flex min-w-0 flex-col leading-tight">
+            <span className="truncate font-mono text-[12px] font-semibold text-[#A9D2E5]">{filename}</span>
+            {parentPath ? <span className="mt-0.5 truncate font-mono text-[9.5px] text-[#6D6861]">{parentPath}</span> : null}
+          </span>
+          <ChangeStats stats={stats} className="flex shrink-0 items-center gap-1 font-mono text-[11px] font-semibold tabular-nums" />
+        </div>
+        <div className="flex items-start gap-2.5 border-t border-white/[0.045] px-3 py-3 text-[11.5px] leading-relaxed text-[#AAA298]">
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-300/80" />
+          <div>
+            <div className="font-semibold text-[#D3CCC2]">Detailed diff was not saved for this earlier edit.</div>
+            <div className="mt-0.5 text-[#7F786F]">The full file is intentionally hidden. New edits show only exact red and green change hunks.</div>
+          </div>
+        </div>
+      </div>
+    </motion.div>
+  );
+};
+
+const InlineDiffView = ({ filename, filepath = '', diffLines, showExpand = true, flush = false }: { filename: string, filepath?: string, diffLines: any[], showExpand?: boolean, flush?: boolean }) => {
   const [full, setFull] = useState(false);
+  const { openPanel } = useFilePanelActions();
   const scrollRef = useRef<HTMLDivElement>(null);
   const atBottomRef = useRef(false);
   const [atBottom, setAtBottom] = useState(false);
   const added = diffLines.filter(l => l.type === 'added').length;
   const removed = diffLines.filter(l => l.type === 'removed').length;
+  const changeRegions = useMemo(() => {
+    let count = 0;
+    let inChange = false;
+    for (const line of diffLines) {
+      if (line.type === 'added' || line.type === 'removed') {
+        if (!inChange) count++;
+        inChange = true;
+      } else {
+        inChange = false;
+      }
+    }
+    return count;
+  }, [diffLines]);
+  const parentPath = filepath
+    ? filepath.replace(/\\/g, '/').split('/').slice(0, -1).slice(-3).join('/')
+    : '';
+  const openFileDiff = (event: React.MouseEvent) => {
+    event.stopPropagation();
+    if (!filepath) return;
+    openPanel({
+      filename,
+      filepath,
+      diffLines,
+      isEdit: true,
+      linesAdded: added,
+      linesRemoved: removed,
+      added,
+      removed,
+      activeTabMode: 'diff',
+    });
+  };
   const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
     const el = e.currentTarget;
     const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 20;
@@ -1803,7 +1936,10 @@ const InlineDiffView = ({ filename, diffLines, showExpand = true, flush = false 
       {/* Header */}
       <div className="eterx-inline-diff-header flex items-center justify-between gap-3 bg-[#20201F] px-3 py-1.5">
         <div className="flex min-w-0 items-center gap-2.5">
-          <span className="eterx-inline-diff-filename min-w-0 break-words text-[12px] font-medium text-[#94C7E0] underline-offset-[3px] hover:underline">{filename}</span>
+          <button type="button" onClick={openFileDiff} disabled={!filepath} className="flex min-w-0 flex-col text-left leading-tight disabled:cursor-default">
+            <span className="eterx-inline-diff-filename truncate text-[12px] font-semibold text-[#A9D2E5]">{filename}</span>
+            {parentPath ? <span className="mt-0.5 truncate text-[9.5px] text-[#6D6861]">{parentPath}</span> : null}
+          </button>
           <ChangeStats
             stats={{ added, removed }}
             className="flex shrink-0 items-center gap-1 font-mono text-[11px] font-semibold tabular-nums"
@@ -1812,9 +1948,20 @@ const InlineDiffView = ({ filename, diffLines, showExpand = true, flush = false 
           />
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
-          <IconCopyButton content={diffLines.filter(l => l.type !== 'removed').map(l => l.content).join('\n')} label="Copy diff output" />
+          <IconCopyButton
+            content={diffLines.map(line => line.isGap
+              ? `@@ ${line.content || `${line.skipped || 0} lines hidden`} @@`
+              : `${line.type === 'added' ? '+' : line.type === 'removed' ? '-' : ' '}${line.content}`
+            ).join('\n')}
+            label="Copy visible diff"
+          />
           {showExpand && !full && <button onClick={(e) => { e.stopPropagation(); setFull(true); }} className="eterx-action-icon-button flex h-7 w-7 items-center justify-center rounded-[8px] border border-white/[0.06] bg-white/[0.028] text-[#9A9389] transition-colors hover:border-white/[0.10] hover:bg-white/[0.05] hover:text-[#DAD4CA]" aria-label="Expand diff"><Maximize2 className="h-3.5 w-3.5" /></button>}
         </div>
+      </div>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-white/[0.04] bg-[#1D1D1C] px-3 py-1.5 text-[9.5px] font-medium text-[#777169]">
+        <span>{changeRegions} change region{changeRegions === 1 ? '' : 's'}</span>
+        <span className="inline-flex items-center gap-1"><span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />Added</span>
+        <span className="inline-flex items-center gap-1"><span className="h-1.5 w-1.5 rounded-full bg-red-500" />Removed</span>
       </div>
       {/* Single unified scroll container — horizontal + vertical together */}
       <div className={`relative min-h-0 ${ full ? 'flex-1' : '' }`}>
@@ -1828,6 +1975,14 @@ const InlineDiffView = ({ filename, diffLines, showExpand = true, flush = false 
             {diffLines.map((l, i) => {
               const isAdd = l.type === 'added';
               const isDel = l.type === 'removed';
+              if (l.isGap) {
+                return (
+                  <div key={`gap-${i}`} className="eterx-inline-diff-gap flex min-h-[30px] items-center border-y border-white/[0.045] bg-[#171716] text-[10px] text-[#716B63]">
+                    <div className="w-[45px] shrink-0 border-r border-white/[0.045] py-2 text-center text-[#514D48]">•••</div>
+                    <div className="px-4 py-2 italic">{l.skipped ? `${l.skipped} unchanged line${l.skipped === 1 ? '' : 's'} hidden` : l.content || 'Next change'}</div>
+                  </div>
+                );
+              }
               return (
                 <div key={i} className={`eterx-inline-diff-row flex items-stretch ${ isAdd ? 'eterx-inline-diff-row-added bg-[#18301D]/35' : isDel ? 'eterx-inline-diff-row-removed bg-[#321B1A]/35' : 'eterx-inline-diff-row-context hover:bg-white/[0.022]'
                   }`}>
@@ -2577,13 +2732,22 @@ const FileChangeTraceCard = ({
   inCard?: boolean;
 }) => {
   const [isExpanded, setIsExpanded] = useState(false);
-  const { openPanel } = useFilePanelActions();
   const displayFileTargets = useMemo(() => dedupeFileTraceTargetsForDisplay(fileTargets), [fileTargets]);
   const primaryTarget = displayFileTargets[0] || fileTargets[0];
   const explicitCount = numberFrom(log.fileCount, log.filesCount, log.count);
   const fileCount = Math.max(displayFileTargets.length, explicitCount || 0);
   const multiFile = fileCount > 1 || /\bfiles\b/i.test(String(log.text || ''));
-  const normalizedVerb = displayVerb.replace(/\s+files?$/i, '').trim() || (isLiveChip ? 'Editing' : 'Edited');
+  const resultSaysEdit = preview?.type === 'file_preview' && Boolean(
+    preview?.isEdit ||
+    (Array.isArray(preview?.diffLines) && preview.diffLines.length > 0) ||
+    normalizeChangeCount(diffStats?.removed) > 0 ||
+    log?.toolArgs?.overwrite ||
+    log?.args?.overwrite
+  );
+  const baseVerb = displayVerb.replace(/\s+files?$/i, '').trim() || (isLiveChip ? 'Editing' : 'Edited');
+  const normalizedVerb = !isLiveChip && resultSaysEdit && /^(?:creat|writ|generat)/i.test(baseVerb)
+    ? 'Edited'
+    : baseVerb;
   const title = `${ normalizedVerb } ${ multiFile ? 'files' : 'file' }`;
   const filename = preview?.filename || primaryTarget?.filename || (multiFile ? `${ fileCount || 'Multiple' } files` : '');
   const rawTargetLabel = multiFile
@@ -2593,7 +2757,7 @@ const FileChangeTraceCard = ({
   const previewFilePath = preview?.filepath || primaryTarget?.filepath || '';
   const previewContent = getPreviewContent(preview);
   const hasDiffPreview = Array.isArray(preview?.diffLines) && preview.diffLines.length > 0;
-  const isEditPreview = preview?.type === 'file_preview' && Boolean(preview?.isEdit);
+  const isEditPreview = resultSaysEdit;
   const isCreateAction = /^(?:creat|generat|scaffold|writ)/i.test(displayVerb);
   const canPreview = preview?.type === 'file_preview' && (
     (isEditPreview && (hasDiffPreview || previewContent.length > 0 || Boolean(previewFilePath))) ||
@@ -2607,20 +2771,33 @@ const FileChangeTraceCard = ({
   // Patch result — extract from log.result or log (apply_patch returns filesModified/Created/Deleted)
   const isPatch = /patch/i.test(String(displayVerb || '')) || /patch/i.test(String(log?.text || ''));
   const patchResult = useMemo(() => {
-    const src = preview?.patchResult ?? log?.result ?? log;
-    const hasData = Array.isArray(src?.filesModified) || Array.isArray(src?.filesCreated) || Array.isArray(src?.filesDeleted);
+    const raw = preview?.patchResult ?? preview?.result ?? log?.toolResult ?? log?.result ?? log;
+    let src = raw;
+    if (typeof raw === 'string') {
+      try { src = JSON.parse(raw); } catch { src = {}; }
+    }
+    const structuredChanges = Array.isArray(src?.changes) ? src.changes as PatchChangeDetail[] : [];
+    const hasData = Array.isArray(src?.filesModified) || Array.isArray(src?.filesCreated) || Array.isArray(src?.filesDeleted) || structuredChanges.length > 0;
     if (!hasData) return null;
     return {
-      filesModified: (src?.filesModified ?? []) as string[],
-      filesCreated: (src?.filesCreated ?? []) as string[],
-      filesDeleted: (src?.filesDeleted ?? []) as string[],
+      filesModified: (src?.filesModified ?? structuredChanges.filter(change => change.action === 'modified').map(change => change.path)) as string[],
+      filesCreated: (src?.filesCreated ?? structuredChanges.filter(change => change.action === 'created').map(change => change.path)) as string[],
+      filesDeleted: (src?.filesDeleted ?? structuredChanges.filter(change => change.action === 'deleted').map(change => change.path)) as string[],
       errors: (src?.errors ?? []) as string[],
+      changes: structuredChanges,
+      rolledBack: Boolean(src?.rolledBack),
     };
   }, [log, preview]);
-  const isPatchWithResult = Boolean(isPatch && patchResult);
+  const isPatchWithResult = Boolean(patchResult && (isPatch || patchResult.changes.length > 0));
+  const structuredStats = patchResult?.changes.length
+    ? patchResult.changes.reduce((total, change) => ({
+        added: total.added + (Number(change.additions) || 0),
+        removed: total.removed + (Number(change.deletions) || 0),
+      }), { added: 0, removed: 0 })
+    : null;
+  const effectiveStats = structuredStats || diffStats;
 
   const canExpand = isPatchWithResult || canPreview || canFetchCreatedFile || canShowFileList;
-  const canOpenSingleFile = !multiFile && Boolean(previewFilePath || primaryTarget?.filepath);
   const agentEntry = resolveAgentIcon(displayVerb, log.text, log.iconCategory);
   const { Icon: AI, color: ac } = agentEntry;
 
@@ -2631,33 +2808,14 @@ const FileChangeTraceCard = ({
     }
   };
 
-  const openSingleFile = (event: React.MouseEvent) => {
-    event.stopPropagation();
-    const filepath = previewFilePath || primaryTarget?.filepath || '';
-    if (!filepath) return;
-    openPanel({
-      filename,
-      filepath,
-      content: previewContent || undefined,
-      diffLines: preview?.diffLines,
-      isEdit: true,
-      linesAdded: diffStats?.added,
-      linesRemoved: diffStats?.removed,
-      added: diffStats?.added,
-      removed: diffStats?.removed,
-      lineCount: preview?.lineCount,
-      totalLines: preview?.totalLines ?? preview?.lineCount,
-      truncated: preview?.truncated,
-      activeTabMode: hasDiffPreview ? 'diff' : 'code',
-    });
-  };
-
   const previewPanel = isPatchWithResult && patchResult ? (
     <PatchSummaryPanel
       filesModified={patchResult.filesModified}
       filesCreated={patchResult.filesCreated}
       filesDeleted={patchResult.filesDeleted}
       errors={patchResult.errors}
+      changes={patchResult.changes}
+      rolledBack={patchResult.rolledBack}
       flush
     />
   ) : canFetchCreatedFile ? (
@@ -2679,7 +2837,7 @@ const FileChangeTraceCard = ({
           <span className="eterx-file-change-list-name min-w-0 flex-1 break-words font-medium leading-[1.35] text-[#E2DFDA]">{target.filename}</span>
           {displayFileTargets.length === 1 && (
             <ChangeStats
-              stats={diffStats}
+              stats={effectiveStats}
               className="flex shrink-0 items-center gap-1 font-mono text-[11.5px] font-semibold tabular-nums"
             />
           )}
@@ -2687,7 +2845,9 @@ const FileChangeTraceCard = ({
       ))}
     </div>
   ) : showDiff ? (
-    <InlineDiffView filename={filename} diffLines={preview.diffLines} showExpand={false} flush />
+    <InlineDiffView filename={filename} filepath={previewFilePath} diffLines={preview.diffLines} showExpand={false} flush />
+  ) : isEditPreview ? (
+    <InlineMissingDiffView filename={filename} filepath={previewFilePath} stats={effectiveStats} />
   ) : (
     <InlineCodeView
       filename={filename}
@@ -2763,21 +2923,10 @@ const FileChangeTraceCard = ({
           {targetLabel ? (
             <span className="inline-flex min-w-0 max-w-full items-center gap-2">
               <LocalFileIcon fileName={filename || targetLabel} size="sm" />
-              {canOpenSingleFile ? (
-                <button
-                  type="button"
-                  onClick={openSingleFile}
-                  className="eterx-file-change-filename min-w-0 overflow-wrap-anywhere break-words text-left text-[13px] font-semibold leading-[1.25] text-[#DDEAF1] decoration-transparent underline-offset-[3px] transition-colors hover:text-white hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#94C7E0]/22"
-                  aria-label={`Open file: ${ filename }`}
-                >
-                  {targetLabel}
-                </button>
-              ) : (
-                <span className="eterx-file-change-filename min-w-0 overflow-wrap-anywhere break-words text-[13px] font-semibold leading-[1.25] text-[#DDEAF1] decoration-transparent underline-offset-[3px] transition-colors group-hover:underline">{targetLabel}</span>
-              )}
+              <span className="eterx-file-change-filename min-w-0 overflow-wrap-anywhere break-words text-[13px] font-semibold leading-[1.25] text-[#DDEAF1] decoration-transparent underline-offset-[3px] transition-colors group-hover:text-white">{targetLabel}</span>
             </span>
           ) : null}
-          <ChangeStats stats={diffStats} />
+          <ChangeStats stats={effectiveStats} />
         </span>
         {canExpand ? (
           <ChevronRight className={`h-3.5 w-3.5 shrink-0 text-[#8F897F] transition-transform ${ isExpanded ? 'rotate-90 text-[#C9C5BE]' : '' }`} />
@@ -2842,11 +2991,16 @@ const ActionChip = ({
         return getActionLookupIdentity(candidate) === lookupIdentity;
       });
     const searchLogs = myIdx !== -1 ? allLogs.slice(myIdx) : allLogs;
-    const findOwnerPreview = (items: any[]) => items.find((l: any) =>
-      (l?.type === 'file_preview' || l?.type === 'tool_result_preview') &&
-      ownerIdentities.length > 0 &&
-      ownerIdentities.includes(String(l.ownerTraceId || ''))
-    );
+    const findOwnerPreview = (items: any[]) => {
+      const candidates = items.filter((item: any) =>
+        (item?.type === 'file_preview' || item?.type === 'tool_result_preview') &&
+        ownerIdentities.length > 0 &&
+        ownerIdentities.includes(String(item.ownerTraceId || ''))
+      );
+      return candidates.find((item: any) => item?.type === 'file_preview' && Array.isArray(item?.diffLines) && item.diffLines.length > 0)
+        || candidates.find((item: any) => item?.type === 'file_preview' && item?.isEdit)
+        || candidates[0];
+    };
     const ownerPreview = findOwnerPreview(searchLogs) || findOwnerPreview(allLogs);
     if (ownerPreview) return ownerPreview;
     if (log.type === 'command') {
@@ -2861,10 +3015,17 @@ const ActionChip = ({
       return null;
     }
     if (isEdit) {
-      const scopedPreview = searchLogs.find((l: any) => filePreviewMatchesTargets(l, logFileTargets));
+      const chooseBestFilePreview = (items: any[]) => {
+        const matches = items.filter((item: any) => filePreviewMatchesTargets(item, logFileTargets));
+        return matches.find((item: any) => Array.isArray(item?.diffLines) && item.diffLines.length > 0)
+          || matches.find((item: any) => item?.isEdit)
+          || matches[0]
+          || null;
+      };
+      const scopedPreview = chooseBestFilePreview(searchLogs);
       if (scopedPreview) return scopedPreview;
       return logFileTargets.length > 0
-        ? allLogs.find((l: any) => filePreviewMatchesTargets(l, logFileTargets)) || null
+        ? chooseBestFilePreview(allLogs)
         : null;
     }
     if (log.type === 'exploration' && (log.text === 'Reading file' || log.text?.toLowerCase().includes('read'))) {
@@ -2898,6 +3059,14 @@ const ActionChip = ({
   };
   const lineContext = getLineContextRange();
   const diffStats = isEdit ? getDiffStats(preview, log) : null;
+  const previewHasDiff = preview?.type === 'file_preview' && Array.isArray(preview?.diffLines) && preview.diffLines.length > 0;
+  const requestedOverwrite = Boolean(log?.toolArgs?.overwrite ?? log?.args?.overwrite);
+  const previewLooksEdited = preview?.type === 'file_preview' && Boolean(
+    preview?.isEdit ||
+    previewHasDiff ||
+    requestedOverwrite ||
+    normalizeChangeCount(diffStats?.removed) > 0
+  );
   // Past-tense verb for display; live overrides to present tense below
   const meta = useMemo(() => {
     if (isEdit) {
@@ -2913,8 +3082,8 @@ const ActionChip = ({
       if (isScaffold) return { icon: null, verbDone: 'Scaffolded', verbLive: 'Scaffolding', color: '#E8E6E3' };
       if (preview) return {
         icon: null,
-        verbDone: preview.isEdit ? 'Edited' : isGenerate ? 'Generated' : 'Created',
-        verbLive: preview.isEdit ? 'Editing' : isGenerate ? 'Generating' : 'Creating',
+        verbDone: previewLooksEdited ? 'Edited' : isGenerate ? 'Generated' : 'Created',
+        verbLive: previewLooksEdited ? 'Editing' : isGenerate ? 'Generating' : 'Creating',
         color: '#E8E6E3',
       };
       return { icon: null, verbDone: isCreate ? 'Created' : 'Edited', verbLive: isCreate ? 'Creating' : 'Editing', color: '#E8E6E3' };
@@ -2933,7 +3102,7 @@ const ActionChip = ({
       'Queried': 'Querying', 'Compared': 'Comparing',
     };
     return { ...base, verbDone: base.verb, verbLive: LIVE_VERBS[base.verb] || base.verb };
-  }, [isEdit, log.text, log.type, log.icon, log.iconCategory, preview]);
+  }, [isEdit, log.text, log.type, log.icon, log.iconCategory, preview, previewLooksEdited]);
   const displayVerb = isLiveChip ? (meta.verbLive || meta.verbDone) : (meta.verbDone || (meta as any).verb);
   const cleanVerb = displayVerb.replace(/\s+files?$/i, '').trim();
   const displayVerbLabel = hasFile ? stripTrailingFileName(cleanVerb, fileName) : cleanVerb;
@@ -3101,8 +3270,10 @@ const ActionChip = ({
           >
             {preview.type === 'console_output'
               ? <InlineConsole command={preview.command || subtitle} content={preview.output || preview.content} exitCode={preview.exitCode} durationMs={preview.durationMs} />
-              : preview.type === 'file_preview' && preview.isEdit && Array.isArray(preview.diffLines) && preview.diffLines.length > 0
-                ? <InlineDiffView filename={preview.filename || fileName} diffLines={preview.diffLines} />
+              : preview.type === 'file_preview' && previewLooksEdited && previewHasDiff
+                ? <InlineDiffView filename={preview.filename || fileName} filepath={preview.filepath || fullPath} diffLines={preview.diffLines} />
+                : preview.type === 'file_preview' && previewLooksEdited
+                  ? <InlineMissingDiffView filename={preview.filename || fileName} filepath={preview.filepath || fullPath} stats={diffStats} />
                 : preview.type === 'file_preview'
                   ? <InlineCodeView filename={preview.filename || fileName} content={getPreviewContent(preview)} filepath={preview.filepath || fullPath} fetchFull={Boolean(preview.filepath || fullPath)} />
                   : preview.type === 'tool_result_preview'
@@ -3457,7 +3628,7 @@ const CollapsibleActionGroup = ({
       initial={{ opacity: 0, y: 5 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
-      className={useStandaloneRows ? 'w-full' : ACTION_CARD_CLASS}
+    className={useStandaloneRows ? 'w-full' : ACTION_CARD_CLASS}
     >
       {visibleLogs.map((log, i) => (
         <motion.div
@@ -4256,7 +4427,7 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
     }
   }, [segs.length, isThinking]);
   return (
-    <div ref={containerRef} className="eterx-thinking-process-stack w-full flex flex-col gap-1 py-0">
+    <div ref={containerRef} className="eterx-thinking-process-stack w-full flex flex-col gap-2 py-0">
       {segs.map((seg, i) => {
         const nextSeg = segs[i + 1];
         const prevSeg = segs[i - 1];

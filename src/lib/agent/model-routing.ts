@@ -82,16 +82,23 @@ export const MISTRAL_FALLBACK_CHAIN: readonly string[] = [
 ];
 
 export const OPENAI_FALLBACK_CHAIN: readonly string[] = [
+  'gpt-5.6-sol',
   'gpt-5.6-luna-pro',
   'gpt-5.6-luna',
   'gpt-5.6-terra-pro',
   'gpt-5.6-terra',
   'gpt-5.5',
+  'o3-pro',
+  'o3',
+  'o4-mini',
+  'gpt-5.4-pro',
+  'gpt-5.4-mini',
   'gpt-4o',
   'gpt-4o-mini',
 ];
 
 export const OPENROUTER_FALLBACK_CHAIN: readonly string[] = [
+  'openai/gpt-5.6-sol',
   'openai/gpt-5.6-luna',
   'openai/gpt-5.6-terra',
   'anthropic/claude-sonnet-5',
@@ -103,7 +110,9 @@ export const OPENROUTER_FALLBACK_CHAIN: readonly string[] = [
 export const ANTHROPIC_FALLBACK_CHAIN: readonly string[] = [
   'claude-sonnet-5',
   'claude-fable-5',
+  'claude-mythos-5',
   'claude-opus-4-8',
+  'claude-haiku-4-5',
   'claude-sonnet-4-6',
 ];
 
@@ -324,8 +333,8 @@ export const MAIN_AGENT_THINKING_LEVEL_OPTIONS: ModelThinkingOption[] = [
 const thinkingOptions = (...levels: MainAgentThinkingLevel[]): ModelThinkingOption[] =>
   levels.map(id => MAIN_AGENT_THINKING_LEVEL_OPTIONS.find(option => option.id === id)!);
 
-const isOpenAIReasoningModel = (model: string) =>
-  /(?:^|[/:_-])(?:o1|o3|o4)(?:$|[/:_-])|gpt-5|luna|terra/i.test(model);
+export const isOpenAIReasoningModel = (model: string) =>
+  /(?:^|[/:_-])(?:o1|o3|o4)(?:$|[/:_-])|gpt-5|luna|terra|sol/i.test(model);
 
 const isClaudeEffortModel = (model: string) =>
   /(?:claude-(?:fable|mythos|sonnet-5|opus-4-(?:6|7|8)))/i.test(model);
@@ -354,14 +363,14 @@ export function getModelThinkingOptions(
   if (!model) return [];
 
   if (provider === 'gemini') {
-    if (model.includes('gemini-3.1-flash-lite')) return thinkingOptions('minimal', 'high');
+    if (model.includes('gemini-3.1-flash-lite')) return thinkingOptions('off', 'minimal', 'high');
     if (model.includes('gemini-3.5') || model.includes('gemini-3-flash')) {
-      return thinkingOptions('minimal', 'low', 'medium', 'high');
+      return thinkingOptions('off', 'minimal', 'low', 'medium', 'high');
     }
-    if (model.includes('gemini-3.1-pro')) return thinkingOptions('low', 'medium', 'high');
-    if (model.includes('gemini-3-pro')) return thinkingOptions('low', 'high');
-    if (model.includes('gemini-2.5')) return thinkingOptions('low', 'medium', 'high');
-    if (model.includes('gemini-2.0-flash-thinking')) return thinkingOptions('low', 'medium', 'high');
+    if (model.includes('gemini-3.1-pro')) return thinkingOptions('off', 'low', 'medium', 'high');
+    if (model.includes('gemini-3-pro')) return thinkingOptions('off', 'low', 'high');
+    if (model.includes('gemini-2.5')) return thinkingOptions('off', 'low', 'medium', 'high');
+    if (model.includes('gemini-2.0-flash-thinking')) return thinkingOptions('off', 'low', 'medium', 'high');
     return [];
   }
 
@@ -373,15 +382,15 @@ export function getModelThinkingOptions(
   if (provider === 'anthropic') {
     if (!model.includes('claude')) return [];
     return isClaudeXHighModel(model)
-      ? thinkingOptions('low', 'medium', 'high', 'xhigh', 'max')
+      ? thinkingOptions('off', 'low', 'medium', 'high', 'xhigh', 'max')
       : isClaudeEffortModel(model)
-        ? thinkingOptions('low', 'medium', 'high', 'max')
-        : thinkingOptions('low', 'medium', 'high', 'max');
+        ? thinkingOptions('off', 'low', 'medium', 'high', 'max')
+        : [];
   }
 
   if (provider === 'openai') {
     return isOpenAIReasoningModel(model)
-      ? thinkingOptions('minimal', 'low', 'medium', 'high', 'xhigh')
+      ? thinkingOptions('off', 'minimal', 'low', 'medium', 'high', 'xhigh')
       : [];
   }
 
@@ -392,14 +401,16 @@ export function getModelThinkingOptions(
     // unsupported parameter.
     if (model.includes('claude')) {
       return isClaudeXHighModel(model)
-        ? thinkingOptions('low', 'medium', 'high', 'xhigh', 'max')
-        : thinkingOptions('low', 'medium', 'high', 'max');
+        ? thinkingOptions('off', 'low', 'medium', 'high', 'xhigh', 'max')
+        : isClaudeEffortModel(model)
+          ? thinkingOptions('off', 'low', 'medium', 'high', 'max')
+          : [];
     }
     if (model.includes('gemini')) {
       return getModelThinkingOptions('gemini', model.replace(/^google\//, ''));
     }
     if (isOpenAIReasoningModel(model) || model.includes('grok')) {
-      return thinkingOptions('minimal', 'low', 'medium', 'high', 'xhigh', 'max');
+      return thinkingOptions('off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max');
     }
   }
 
@@ -490,6 +501,11 @@ export function getAnthropicThinkingBudget(level: MainAgentThinkingLevel): numbe
 
 export function isAnthropicAdaptiveThinkingModel(modelName: string): boolean {
   return /(?:claude-(?:fable|mythos|sonnet-5|opus-4-(?:6|7|8)))/i.test(modelName);
+}
+
+export function isOpenAIMiniReasoningModel(modelName: string): boolean {
+  const name = modelName.toLowerCase();
+  return name.includes('mini') && (name.includes('gpt-5') || name.includes('o3') || name.includes('o4') || name.includes('o1'));
 }
 
 export function normalizeMainAgentMode(value: unknown): MainAgentMode {

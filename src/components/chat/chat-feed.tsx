@@ -592,92 +592,17 @@ const ThoughtSequence = ({
   const counterOutline = 'rgba(255,255,255,0.14)';
   const counterShadow = 'inset 0 1px 0 rgba(255,255,255,0.075), 0 8px 24px rgba(0,0,0,0.22)';
   const compactCounterStyle: React.CSSProperties = {
-    padding: '4px 8px 4px 6px',
-    borderRadius: 13,
-    border: 'none',
-    background: counterBackground,
-    outline: `1px solid ${ counterOutline }`,
-    backdropFilter: 'blur(14px)',
-    WebkitBackdropFilter: 'blur(14px)',
-    boxShadow: counterShadow,
-    color: counterColor,
+    padding: '4px 8px 4px 6px', borderRadius: 13, border: 'none', background: counterBackground,
+    outline: `1px solid ${ counterOutline }`, backdropFilter: 'blur(14px)', WebkitBackdropFilter: 'blur(14px)',
+    boxShadow: counterShadow, color: counterColor,
   };
 
   return (
     <div className="relative" ref={containerRef}>
-      {showWorkedSummary && (
-        <div className="eterx-worked-summary mb-2 flex w-full items-center gap-4 pt-1">
-          <div className="eterx-worked-summary-line h-px flex-1 bg-white/[0.08]" />
-          <span className="eterx-worked-summary-label shrink-0 py-[1px] text-center text-[12px] font-medium leading-[1.35] tracking-normal text-[#8F8B85]">
-            {`Worked for ${ workElapsedLabel }`}
-          </span>
-          <div className="eterx-worked-summary-line h-px flex-1 bg-white/[0.08]" />
-        </div>
-      )}
-
-      {hasCounter && (
-        <div className={`eterx-process-summary-row ${ shouldStickCounter ? 'sticky top-3 z-20' : '' } ${ isCollapsedWithAnswer ? 'mb-2' : 'mb-1' } flex w-full items-center overflow-visible py-1.5`}>
-          {isLiveWorkCounter ? (
-            <button
-              type="button"
-              onClick={toggleOpen}
-              aria-expanded={isOpen}
-              className="eterx-process-summary-chip eterx-process-summary-chip-live group inline-flex min-h-[36px] shrink-0 items-center gap-1.5 rounded-full bg-[#1C1C1C] px-3 py-[6px] text-[13px] font-semibold leading-[1.35] tracking-normal text-[#C9C6C0] outline outline-1 outline-white/[0.12] shadow-[inset_0_-1px_0_rgba(255,255,255,0.12)] transition-all duration-150 hover:bg-[#262626] hover:outline-white/[0.2] hover:shadow-[inset_0_-2px_0_rgba(255,255,255,0.68)] hover:text-[#E8E6E3]"
-            >
-              <span className="eterx-process-summary-label inline-flex items-center pb-[1px] leading-[1.35] text-[#C9C6C0] group-hover:text-[#E8E6E3]">
-                <span className="eterx-text-shimmer eterx-text-shimmer-working mr-1">
-                  Working for
-                </span>
-                <RollingTimeDisplay label={workElapsedLabel} />
-              </span>
-              {isOpen
-                ? <ChevronDown className="h-3 w-3 opacity-55 transition-opacity group-hover:opacity-80" />
-                : <ChevronRight className="h-3 w-3 opacity-55 transition-opacity group-hover:opacity-80" />
-              }
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={toggleOpen}
-              aria-expanded={isOpen}
-              className="eterx-process-summary-chip inline-flex h-[30px] items-center gap-1.5 transition-all duration-200"
-              style={{
-                ...compactCounterStyle,
-                cursor: 'pointer',
-                position: 'relative',
-                zIndex: 1,
-              }}
-              onMouseEnter={e => {
-                (e.currentTarget as HTMLElement).style.color = '#C2BFBA';
-                (e.currentTarget as HTMLElement).style.background = counterHoverBackground;
-              }}
-              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = counterColor; (e.currentTarget as HTMLElement).style.background = counterBackground; }}
-            >
-              <span
-                className="eterx-process-summary-icon"
-                style={{
-                  display: 'inline-flex',
-                  width: 20,
-                  height: 20,
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  borderRadius: 8,
-                  color: 'inherit',
-                  background: 'rgba(255,255,255,0.055)',
-                  outline: '1px solid rgba(255,255,255,0.12)',
-                }}
-              >
-                <StepCounterIcon live={isLiveThinking} />
-              </span>
-              <span className={`eterx-process-summary-label${ isLiveThinking ? ' eterx-text-shimmer eterx-text-shimmer-active' : '' }`} style={{ fontSize: 13, fontWeight: 650, letterSpacing: 0, lineHeight: 1 }}>{actionLabel}</span>
-              {isOpen
-                ? <ChevronDown style={{ width: 9, height: 9, flexShrink: 0, opacity: 0.6 }} />
-                : <ChevronRight style={{ width: 9, height: 9, flexShrink: 0, opacity: 0.6 }} />
-              }
-            </button>
-          )}
-        </div>
-      )}
+      {showWorkedSummary && <div className="eterx-worked-summary mb-2 flex w-full items-center gap-4 pt-1"><div className="eterx-worked-summary-line h-px flex-1 bg-white/[0.08]" /><span className="eterx-worked-summary-label shrink-0 py-[1px] text-center text-[12px] font-medium leading-[1.35] tracking-normal text-[#8F8B85]">{`Worked for ${ workElapsedLabel }`}</span><div className="eterx-worked-summary-line h-px flex-1 bg-white/[0.08]" /></div>}
+      {hasCounter && <div className={`eterx-process-summary-row ${ shouldStickCounter ? 'sticky top-3 z-20' : '' } ${ isCollapsedWithAnswer ? 'mb-2' : 'mb-1' } flex w-full items-center overflow-visible py-1.5`}>
+        {isLiveWorkCounter ? <button type="button" onClick={toggleOpen} aria-expanded={isOpen} className="eterx-process-summary-chip eterx-process-summary-chip-live group inline-flex min-h-[36px] shrink-0 items-center gap-1.5 rounded-full bg-[#1C1C1C] px-3 py-[6px] text-[13px] font-semibold leading-[1.35] tracking-normal text-[#C9C6C0] outline outline-1 outline-white/[0.12] shadow-[inset_0_-1px_0_rgba(255,255,255,0.12)] transition-all duration-150 hover:bg-[#262626] hover:outline-white/[0.2] hover:text-[#E8E6E3]"><span className="eterx-process-summary-label inline-flex items-center pb-[1px] leading-[1.35] text-[#C9C6C0]"><span className="eterx-text-shimmer eterx-text-shimmer-working mr-1">Working for</span><RollingTimeDisplay label={workElapsedLabel} /></span>{isOpen ? <ChevronDown className="h-3 w-3 opacity-55" /> : <ChevronRight className="h-3 w-3 opacity-55" />}</button> : <button type="button" onClick={toggleOpen} aria-expanded={isOpen} className="eterx-process-summary-chip inline-flex h-[30px] items-center gap-1.5 transition-all duration-200" style={{ ...compactCounterStyle, cursor: 'pointer', position: 'relative', zIndex: 1 }} onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = '#C2BFBA'; (e.currentTarget as HTMLElement).style.background = counterHoverBackground; }} onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = counterColor; (e.currentTarget as HTMLElement).style.background = counterBackground; }}><span className="eterx-process-summary-icon" style={{ display: 'inline-flex', width: 20, height: 20, alignItems: 'center', justifyContent: 'center', borderRadius: 8, color: 'inherit', background: 'rgba(255,255,255,0.055)', outline: '1px solid rgba(255,255,255,0.12)' }}><StepCounterIcon live={isLiveThinking} /></span><span className={`eterx-process-summary-label${ isLiveThinking ? ' eterx-text-shimmer eterx-text-shimmer-active' : '' }`} style={{ fontSize: 13, fontWeight: 650, letterSpacing: 0, lineHeight: 1 }}>{actionLabel}</span>{isOpen ? <ChevronDown style={{ width: 9, height: 9, flexShrink: 0, opacity: 0.6 }} /> : <ChevronRight style={{ width: 9, height: 9, flexShrink: 0, opacity: 0.6 }} />}</button>}
+      </div>}
 
       <AnimatePresence>
         {isOpen && (
@@ -1367,9 +1292,7 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
         <div className={`eterx-chat-feed relative flex-1 min-h-0 w-full overflow-hidden ${ isEmptyNewChatFeed ? 'eterx-chat-feed-empty' : '' }`}>
         <div
           className={`eterx-chat-feed-scroll relative h-full w-full flex flex-col overflow-y-auto overflow-x-hidden pb-40 eterx-scrollbar ${
-            userTurns.length > 2 
-              ? (isCompressed ? 'pl-11 pr-4' : 'pl-11 sm:pl-14 pr-4 sm:pr-8') 
-              : (isCompressed ? 'px-4' : 'px-4 sm:px-8')
+            isCompressed ? 'px-11' : 'px-11 sm:px-14'
           }`}
           id="chat-container"
           ref={scrollContainerRef}

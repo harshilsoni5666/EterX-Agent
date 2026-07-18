@@ -154,13 +154,68 @@ export const workspaceReadManyFilesTool: ToolDefinition = {
           };
         }
 
-        const startLine = spec.startLine || 1;
-        const { lines, totalLines, start, end } = await readTargetedLines(
-          filePath,
-          startLine,
-          spec.endLine,
-          maxLinesPerFile,
-        );
+        const ext = filePath.split('.').pop()?.toLowerCase();
+        let totalLines = 0;
+        let start = spec.startLine || 1;
+        let end = spec.endLine || 1;
+        let lines: string[] = [];
+
+        if (ext === 'docx' || ext === 'pdf') {
+          let rawContent = '';
+          if (ext === 'docx') {
+            const AdmZip = require('adm-zip');
+            const zip = new AdmZip(filePath);
+            const xmlContent = zip.readAsText('word/document.xml', 'utf8');
+            if (xmlContent) {
+              const paragraphRegex = /<w:p\b[^>]*>(.*?)<\/w:p>/g;
+              const textRegex = /<w:t\b[^>]*>(.*?)<\/w:t>/g;
+              const paragraphs: string[] = [];
+              let match;
+              while ((match = paragraphRegex.exec(xmlContent)) !== null) {
+                const pContent = match[1];
+                const textMatches = pContent.match(textRegex);
+                if (textMatches) {
+                  const pText = textMatches
+                    .map(tMatch => tMatch.replace(/<[^>]+>/g, ''))
+                    .join('')
+                    .replace(/&amp;/g, '&')
+                    .replace(/&lt;/g, '<')
+                    .replace(/&gt;/g, '>')
+                    .replace(/&quot;/g, '"')
+                    .replace(/&apos;/g, "'");
+                  paragraphs.push(pText);
+                }
+              }
+              rawContent = paragraphs.join('\n');
+            } else {
+              rawContent = '[Error: Empty or invalid DOCX document.xml]';
+            }
+          } else {
+            const pdfParse = require('pdf-parse');
+            const dataBuffer = await fs.readFile(filePath);
+            const pdfData = await pdfParse(dataBuffer);
+            rawContent = pdfData.text || '';
+          }
+
+          const allLines = rawContent.split('\n');
+          totalLines = allLines.length;
+          start = Math.max(1, spec.startLine || 1);
+          end = spec.endLine ?? allLines.length;
+          lines = allLines.slice(start - 1, end).slice(0, maxLinesPerFile);
+          end = start - 1 + lines.length;
+        } else {
+          const startLine = spec.startLine || 1;
+          const readResult = await readTargetedLines(
+            filePath,
+            startLine,
+            spec.endLine,
+            maxLinesPerFile,
+          );
+          lines = readResult.lines;
+          totalLines = readResult.totalLines;
+          start = readResult.start;
+          end = readResult.end;
+        }
 
         const numbered = formatNumberedContent(lines, start);
         const truncated = end < (spec.endLine || totalLines) && lines.length >= maxLinesPerFile;
@@ -209,6 +264,11 @@ export const workspaceEditManyFilesTool: ToolDefinition = {
     success: z.boolean(),
     applied: z.number(),
     results: z.array(z.any()),
+    fileCount: z.number().optional(),
+    filesModified: z.array(z.string()).optional(),
+    changes: z.array(z.any()).optional(),
+    rolledBack: z.boolean().optional(),
+    error: z.string().optional(),
   }),
   execute: async (input: { edits: Array<{ filename: string; search?: string; replace: string; replaceAll?: boolean; replace_all?: boolean; startLine?: number; endLine?: number }>; atomic?: boolean }, context?: any) => {
     const atomic = input.atomic !== false;
@@ -256,20 +316,7 @@ export const workspaceEditManyFilesTool: ToolDefinition = {
         throw new Error(`Edit for ${edit.filename} needs search or startLine/endLine`);
       }
 
-      await fs.writeFile(filePath, content, 'utf-8');
-      const beforeForDiff = originals.get(filePath) || '';
       latest.set(filePath, content);
-
-      // Record in universal edit tracker
-      try {
-        editTracker.recordEdit({
-          filePath,
-          beforeContent: beforeForDiff,
-          afterContent: content,
-          toolName: 'workspace_edit_many_files',
-          editType: 'multi',
-        });
-      } catch { /* tracker is best-effort */ }
 
       const diff = buildCompactDiff(
         edit.search || '',
@@ -280,22 +327,82 @@ export const workspaceEditManyFilesTool: ToolDefinition = {
       return { filename: edit.filename, path: filePath, success: true, diff };
     };
 
+    let commitAttempted = false;
+    let committedCount = 0;
     try {
       for (const edit of input.edits) {
         results.push(await applyOne(edit));
       }
-      return { success: true, applied: results.length, results };
-    } catch (err: any) {
-      if (atomic) {
-        for (const [filePath, original] of originals.entries()) {
-          try { await fs.writeFile(filePath, original, 'utf-8'); } catch { /* best effort */ }
+
+      const committed: string[] = [];
+      const temporaryPaths = new Set<string>();
+      try {
+        commitAttempted = true;
+        for (const [filePath, content] of latest.entries()) {
+          const currentContent = await fs.readFile(filePath, 'utf-8');
+          if (currentContent !== originals.get(filePath)) {
+            throw new Error(`${filePath} changed after batch validation. Read it again and retry.`);
+          }
+          const tempPath = `${filePath}.edit_many_tmp_${process.pid}_${Date.now()}`;
+          temporaryPaths.add(tempPath);
+          await fs.writeFile(tempPath, content, 'utf-8');
+          await fse.move(tempPath, filePath, { overwrite: true });
+          temporaryPaths.delete(tempPath);
+          committed.push(filePath);
+          committedCount = committed.length;
         }
+      } catch (commitError) {
+        for (const tempPath of temporaryPaths) {
+          try { await fs.unlink(tempPath); } catch { /* best effort */ }
+        }
+        if (atomic) {
+          for (const filePath of [...committed].reverse()) {
+            try { await fs.writeFile(filePath, originals.get(filePath) || '', 'utf-8'); } catch { /* best effort */ }
+          }
+        }
+        throw commitError;
       }
+
+      const changes = Array.from(latest.entries()).map(([filePath, content]) => {
+        const beforeContent = originals.get(filePath) || '';
+        const diff = buildCompactDiff(beforeContent, content, 6000);
+        const diffLines = diff.split('\n');
+        return {
+          path: filePath,
+          action: 'modified' as const,
+          additions: diffLines.filter(line => line.startsWith('+') && !line.startsWith('+++')).length,
+          deletions: diffLines.filter(line => line.startsWith('-') && !line.startsWith('---')).length,
+          diff,
+        };
+      });
+
+      for (const change of changes) {
+        try {
+          editTracker.recordEdit({
+            filePath: change.path,
+            beforeContent: originals.get(change.path) || '',
+            afterContent: latest.get(change.path) || '',
+            toolName: 'workspace_edit_many_files',
+            editType: 'multi',
+          });
+        } catch { /* tracker is best-effort */ }
+      }
+
+      return {
+        success: true,
+        applied: results.length,
+        fileCount: changes.length,
+        filesModified: changes.map(change => change.path),
+        results,
+        changes,
+        rolledBack: false,
+      };
+    } catch (err: any) {
       return {
         success: false,
-        applied: results.length,
+        applied: atomic ? 0 : committedCount,
         error: err.message || 'Batch edit failed',
-        rolledBack: atomic,
+        rolledBack: atomic && commitAttempted && committedCount > 0,
         results,
       };
     }

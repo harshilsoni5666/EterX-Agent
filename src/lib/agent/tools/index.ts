@@ -86,6 +86,7 @@ import { workspaceEditSessionTool } from './workspace/edit_session';
 // ==========================================
 import { webScraperTool } from './research/scraper';
 import { pdfParserTool } from './research/pdf';
+import { docxParserTool } from './research/docx';
 import { youtubeTranscriptTool } from './research/youtube';
 import { rssFeedTool } from './research/rss';
 
@@ -131,7 +132,7 @@ export function bootstrapTools() {
     workspaceRunCommandTool, workspaceExecuteScriptTool, workspaceVerifyCodeTool,
     csvAnalyzerTool, docxGeneratorTool, officeArtifactBuilderTool, compressionTool,
     codeGeneratorTool, diffTool, markdownTool,
-    webScraperTool, pdfParserTool, youtubeTranscriptTool, rssFeedTool,
+    webScraperTool, pdfParserTool, docxParserTool, youtubeTranscriptTool, rssFeedTool,
     processManagerTool, fileWatcherTool, httpServerTool,
     ...agentBuilderTools,
     whatsappControllerTool, telegramUserControllerTool, slackControllerTool,

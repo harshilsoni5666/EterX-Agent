@@ -54,6 +54,9 @@ export class ToolResultCompactor {
         case 'workspace_search_text':
         case 'workspace_semantic_search':
           return this.compactSearchText(args, result);
+
+        case 'workspace_apply_patch':
+          return this.compactPatchResult(result);
         
         case 'workspace_list_directory':
         case 'workspace_find_files':
@@ -73,6 +76,25 @@ export class ToolResultCompactor {
       // Fallback to generic compaction
       return this.compactGeneric(result);
     }
+  }
+
+  /** Preserve the complete multi-file manifest while bounding heavy previews. */
+  private compactPatchResult(result: any): any {
+    if (!result || typeof result !== 'object') return result;
+    const changes = Array.isArray(result.changes)
+      ? result.changes.map((change: any) => ({
+          ...change,
+          diff: typeof change?.diff === 'string' ? change.diff.slice(0, 6000) : change?.diff,
+          readback: typeof change?.readback === 'string' ? change.readback.slice(0, 1200) : change?.readback,
+        }))
+      : [];
+    return {
+      ...result,
+      changes,
+      readbacks: undefined,
+      _compacted: true,
+      _compactionStrategy: 'multi-file patch manifest',
+    };
   }
 
   /** Compact file read output — keep structure: imports, exports, class/function signatures */

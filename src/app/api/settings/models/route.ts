@@ -117,7 +117,10 @@ async function fetchOpenAIModels(): Promise<ProviderModelResult> {
   if (!apiKey) return { provider: 'openai', connected: false, source: 'unavailable', models: [], error: 'Missing OpenAI API key' };
 
   try {
-    const res = await withTimeout(fetch('https://api.openai.com/v1/models', {
+    const baseUrl = process.env.OPENAI_BASE_URL
+      ? process.env.OPENAI_BASE_URL.replace(/\/+$/, '')
+      : 'https://api.openai.com/v1';
+    const res = await withTimeout(fetch(`${baseUrl}/models`, {
       cache: 'no-store',
       headers: { Authorization: `Bearer ${ apiKey }` },
     }));
@@ -143,7 +146,10 @@ async function fetchOpenRouterModels(): Promise<ProviderModelResult> {
   try {
     const headers: Record<string, string> = {};
     if (apiKey) headers.Authorization = `Bearer ${ apiKey }`;
-    const res = await withTimeout(fetch('https://openrouter.ai/api/v1/models?output_modalities=all', {
+    const baseUrl = process.env.OPENROUTER_BASE_URL
+      ? process.env.OPENROUTER_BASE_URL.replace(/\/+$/, '')
+      : 'https://openrouter.ai/api/v1';
+    const res = await withTimeout(fetch(`${baseUrl}/models?output_modalities=all`, {
       cache: 'no-store',
       headers,
     }));
@@ -173,7 +179,10 @@ async function fetchGroqModels(): Promise<ProviderModelResult> {
   if (!apiKey) return { provider: 'groq', connected: false, source: 'unavailable', models: [], error: 'Missing Groq API key' };
 
   try {
-    const res = await withTimeout(fetch('https://api.groq.com/openai/v1/models', {
+    const baseUrl = process.env.GROQ_BASE_URL
+      ? process.env.GROQ_BASE_URL.replace(/\/+$/, '')
+      : 'https://api.groq.com/openai/v1';
+    const res = await withTimeout(fetch(`${baseUrl}/models`, {
       cache: 'no-store',
       headers: {
         Authorization: `Bearer ${ apiKey }`,
@@ -202,7 +211,10 @@ async function fetchMistralModels(): Promise<ProviderModelResult> {
   if (!apiKey) return { provider: 'mistral', connected: false, source: 'unavailable', models: [], error: 'Missing Mistral API key' };
 
   try {
-    const res = await withTimeout(fetch('https://api.mistral.ai/v1/models', {
+    const baseUrl = (process.env.MISTRAL_BASE_URL || process.env.MISTRAL_API_BASE_URL)
+      ? (process.env.MISTRAL_BASE_URL || process.env.MISTRAL_API_BASE_URL)!.replace(/\/+$/, '')
+      : 'https://api.mistral.ai/v1';
+    const res = await withTimeout(fetch(`${baseUrl}/models`, {
       cache: 'no-store',
       headers: { Authorization: `Bearer ${ apiKey }` },
     }));
@@ -228,7 +240,10 @@ async function fetchAnthropicModels(): Promise<ProviderModelResult> {
   if (!apiKey) return { provider: 'anthropic', connected: false, source: 'unavailable', models: [], error: 'Missing Anthropic API key' };
 
   try {
-    const res = await withTimeout(fetch('https://api.anthropic.com/v1/models', {
+    const baseUrl = process.env.ANTHROPIC_BASE_URL
+      ? process.env.ANTHROPIC_BASE_URL.replace(/\/+$/, '')
+      : 'https://api.anthropic.com';
+    const res = await withTimeout(fetch(`${baseUrl}/v1/models`, {
       cache: 'no-store',
       headers: {
         'x-api-key': apiKey,
