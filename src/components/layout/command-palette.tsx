@@ -119,7 +119,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ isOpen, onClose,
               </div>
             </div>
 
-            <div className="p-2 overflow-y-auto max-h-[420px] custom-scrollbar flex flex-col gap-4">
+            <div className="p-2 overflow-y-auto max-h-[420px] eterx-scrollbar flex flex-col gap-4">
               {/* Actions Section */}
               <div className="flex flex-col gap-1">
                 <div className="flex items-center justify-between px-3 mb-1">

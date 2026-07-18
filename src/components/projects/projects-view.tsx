@@ -900,7 +900,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                                   aria-label="Model settings"
                                   onClick={(e) => e.stopPropagation()}
                                 >
-                                  <div className="max-h-[280px] overflow-y-auto pr-1 custom-scrollbar">
+                                  <div className="max-h-[280px] overflow-y-auto pr-1 eterx-scrollbar">
                                     {allModelOptions.map((option) => {
                                       const selected = option.optionKey === selectedModel.optionKey;
                                       const optionLabel = getModelOptionLabel(option);

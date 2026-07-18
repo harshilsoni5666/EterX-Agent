@@ -437,7 +437,7 @@ export const AgentsView = ({
           </div>
 
           {/* Scrollable list grid */}
-          <div className="flex-1 overflow-y-auto custom-scrollbar pr-0.5 flex flex-col gap-2">
+          <div className="flex-1 overflow-y-auto eterx-scrollbar pr-0.5 flex flex-col gap-2">
             {agents.filter(a => a.id !== 'default-1').map((agent) => {
               const isDefaultAgent = agent.id === 'default-1';
               const isReady = isDefaultAgent || agent.isSetup !== false;
@@ -679,7 +679,7 @@ export const AgentsView = ({
                 </button>
               </div>
 
-              <div className="flex flex-col gap-4 overflow-y-auto custom-scrollbar pr-1 max-h-[50vh]">
+              <div className="flex flex-col gap-4 overflow-y-auto eterx-scrollbar pr-1 max-h-[50vh]">
                 <div className="flex items-center gap-3">
                   <div className="w-10 h-10 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center text-white font-bold text-lg">
                     {settingsAgent.name.charAt(0).toUpperCase()}

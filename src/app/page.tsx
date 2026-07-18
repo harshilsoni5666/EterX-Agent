@@ -5,7 +5,7 @@ import dynamic from 'next/dynamic';
 import { Sidebar } from '../components/layout/sidebar';
 import { ChatInput } from '../components/layout/chat-input';
 import { ChatFeed } from '../components/chat/chat-feed';
-import { AlertTriangle, CheckCircle2, ChevronDown, Clock3, Code2, GraduationCap, List, MessageSquare, Pencil, PenTool, SendHorizontal, SquarePen, Search, X, ArrowLeft, Trash, ListTodo, ChevronRight, Monitor, GitFork, Terminal, GitBranch, GitCommit, PlusSquare, Check, FileCode, FileText, MoreHorizontal, Sparkles, Pin, PinOff, Archive, Split, Calendar, ExternalLink, Copy } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, ChevronDown, Clock3, Code2, GraduationCap, List, MessageSquare, Pencil, PenTool, SendHorizontal, SquarePen, Search, X, ArrowLeft, Trash, ListTodo, ChevronRight, Monitor, GitFork, Terminal, GitBranch, GitCommit, PlusSquare, Check, FileCode, FileText, MoreHorizontal, Sparkles, Pin, PinOff, Archive, Split, Calendar, ExternalLink, Copy, ChevronLeft, History, RefreshCw, Plus } from 'lucide-react';
 import { Tooltip } from '../components/ui/tooltip';
 import { motion, AnimatePresence, Reorder } from 'framer-motion';
 import { InteractiveGrid } from '../components/ui/interactive-grid';
@@ -738,6 +738,13 @@ function DeepWorkUI() {
   const [activeRunLocation, setActiveRunLocation] = useState<'local' | 'sandbox'>('local');
   const [pinnedItems, setPinnedItems] = useState<PinnedItem[]>([]);
   const [envDropdownOpen, setEnvDropdownOpen] = useState(false);
+  const [isHeaderGitRepo, setIsHeaderGitRepo] = useState(false);
+  const [githubDropdownOpen, setGithubDropdownOpen] = useState(false);
+  const githubDropdownRef = useRef<HTMLDivElement | null>(null);
+  const [recentCommits, setRecentCommits] = useState<Array<{ hash: string; msg: string }>>([]);
+  const [gitStatusList, setGitStatusList] = useState<Array<{ status: string; path: string }>>([]);
+  const [hoveredSubmenu, setHoveredSubmenu] = useState<'branch' | 'commits' | 'status' | null>(null);
+  const [isCommitsLoading, setIsCommitsLoading] = useState(false);
   const envDropdownRef = useRef<HTMLDivElement | null>(null);
   const [activeSubmenu, setActiveSubmenu] = useState<'local' | 'branch' | 'todo' | null>(null);
   const [currentBranch, setCurrentBranch] = useState('safe-hardening');
@@ -779,6 +786,82 @@ function DeepWorkUI() {
   const stoppingChatsRef = useRef<Set<string>>(new Set());
   const activeViewRef = useRef<ActiveView>('chat');
   const isNetworkPaused = networkPhase === 'offline';
+
+  // Poll Git repository status, active branch, and list of branches
+  useEffect(() => {
+    let active = true;
+    const checkGitStatus = () => {
+      if (!activeWorkspacePath) {
+        if (active) {
+          setIsHeaderGitRepo(false);
+          setCurrentBranch('main');
+          setGitBranches([{ name: 'main', uncommitted: null }]);
+        }
+        return;
+      }
+      
+      // Get current active branch name
+      fetch('/api/code/execute', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ command: 'git branch --show-current', cwd: activeWorkspacePath }),
+      })
+        .then(r => r.json())
+        .then(data => {
+          if (!active) return;
+          if (data.stdout?.trim() && !data.stdout.includes('Sandbox') && !data.stdout.includes(' ') && !data.stdout.includes('error:')) {
+            const activeBranch = data.stdout.trim();
+            setCurrentBranch(activeBranch);
+            setIsHeaderGitRepo(true);
+            
+            // Get all local branches
+            fetch('/api/code/execute', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ command: 'git branch', cwd: activeWorkspacePath }),
+            })
+              .then(r2 => r2.json())
+              .then(data2 => {
+                if (!active) return;
+                if (data2.stdout) {
+                  const list = data2.stdout
+                    .split('\n')
+                    .map((b: string) => {
+                      let cleaned = b.trim();
+                      if (cleaned.startsWith('*')) {
+                        cleaned = cleaned.substring(1).trim();
+                      }
+                      return cleaned;
+                    })
+                    .filter((b: string) => {
+                      return b && !b.includes(' ') && !b.includes('Sandbox') && !b.includes('error:') && !b.includes('fatal:');
+                    })
+                    .map((name: string) => ({ name, uncommitted: null }));
+                  if (list.length > 0) {
+                    setGitBranches(list);
+                  }
+                }
+              })
+              .catch(() => {});
+          } else {
+            setIsHeaderGitRepo(false);
+            setCurrentBranch('main');
+          }
+        })
+        .catch(() => {
+          if (!active) return;
+          setIsHeaderGitRepo(false);
+          setCurrentBranch('main');
+        });
+    };
+
+    checkGitStatus();
+    const interval = setInterval(checkGitStatus, 4000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [activeWorkspacePath]);
 
   // Auto-close sidebar on window resize if width is narrow
   useEffect(() => {
@@ -4808,6 +4891,22 @@ function DeepWorkUI() {
     setGitError(null);
     setCurrentBranch(branchName);
 
+    if (activeWorkspacePath) {
+      try {
+        const response = await fetch('/api/code/execute', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ command: `git checkout ${branchName}`, cwd: activeWorkspacePath }),
+        });
+        const data = await response.json();
+        if (data.stderr && data.stderr.includes('error:')) {
+          setGitError(data.stderr);
+        }
+      } catch (err) {
+        console.error('Failed to checkout branch:', err);
+      }
+    }
+
     // Update the uncommitted count immediately for the checked-out branch
     const filesCount = chatChangeStats?.files?.length || 0;
     const uncommittedText = filesCount > 0 ? `Uncommitted: ${ filesCount } file${ filesCount > 1 ? 's' : '' }` : null;
@@ -4827,6 +4926,22 @@ function DeepWorkUI() {
     const newName = newBranchName.trim();
     setCurrentBranch(newName);
 
+    if (activeWorkspacePath) {
+      try {
+        const response = await fetch('/api/code/execute', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ command: `git checkout -b ${newName}`, cwd: activeWorkspacePath }),
+        });
+        const data = await response.json();
+        if (data.stderr && data.stderr.includes('error:')) {
+          setGitError(data.stderr);
+        }
+      } catch (err) {
+        console.error('Failed to create branch:', err);
+      }
+    }
+
     const filesCount = chatChangeStats?.files?.length || 0;
     const uncommittedText = filesCount > 0 ? `Uncommitted: ${ filesCount } file${ filesCount > 1 ? 's' : '' }` : null;
     setGitBranches(prev => {
@@ -4841,6 +4956,61 @@ function DeepWorkUI() {
     setNewBranchName('');
     setActiveSubmenu(null);
   };
+
+  const loadRecentCommits = useCallback(() => {
+    if (!activeWorkspacePath) return;
+    setIsCommitsLoading(true);
+    fetch('/api/code/execute', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command: 'git log -n 5 --oneline', cwd: activeWorkspacePath }),
+    })
+      .then(r => r.json())
+      .then(data => {
+        if (data.stdout) {
+          const parsed = data.stdout
+            .split('\n')
+            .filter(Boolean)
+            .map((line: string) => {
+              const parts = line.split(' ');
+              const hash = parts[0];
+              const msg = parts.slice(1).join(' ');
+              return { hash, msg };
+            });
+          setRecentCommits(parsed);
+        }
+        setIsCommitsLoading(false);
+      })
+      .catch(() => {
+        setIsCommitsLoading(false);
+      });
+  }, [activeWorkspacePath]);
+
+  const loadGitStatus = useCallback(() => {
+    if (!activeWorkspacePath) return;
+    fetch('/api/code/execute', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command: 'git status -s', cwd: activeWorkspacePath }),
+    })
+      .then(r => r.json())
+      .then(data => {
+        if (data.stdout) {
+          const parsed = data.stdout
+            .split('\n')
+            .filter(Boolean)
+            .map((line: string) => {
+              const status = line.substring(0, 2).trim();
+              const path = line.substring(3).trim();
+              return { status, path };
+            });
+          setGitStatusList(parsed);
+        } else {
+          setGitStatusList([]);
+        }
+      })
+      .catch(() => setGitStatusList([]));
+  }, [activeWorkspacePath]);
 
   useEffect(() => {
     fetchGitInfo();
@@ -5222,7 +5392,7 @@ function DeepWorkUI() {
                                   </motion.div>
                                 )}
                               </div>
-                              <div className="overflow-y-auto custom-scrollbar flex-1 space-y-[2px]">
+                              <div className="overflow-y-auto eterx-scrollbar flex-1 space-y-[2px]">
                                 {(() => {
                                   const filteredChats = chats.filter(c =>
                                     c.title &&
@@ -5387,6 +5557,233 @@ function DeepWorkUI() {
               )}
 
               <div className="flex shrink-0 items-center gap-1.5 pointer-events-auto [-webkit-app-region:no-drag]">
+                {isHeaderGitRepo && !!activeChatId && (
+                  <div className="relative group">
+                    <button
+                      type="button"
+                      aria-label={`Git branch ${currentBranch}`}
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setGithubDropdownOpen(!githubDropdownOpen);
+                        setEnvDropdownOpen(false);
+                      }}
+                      className={`relative flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-transparent bg-transparent text-[var(--sidebar-muted-text)] transition-colors duration-150 hover:bg-[var(--sidebar-toggle-hover-bg)] hover:text-[var(--sidebar-hover-text)] active:bg-[var(--sidebar-toggle-active-bg)] focus-visible:outline-none ${ githubDropdownOpen ? 'text-white bg-[var(--sidebar-toggle-hover-bg)]' : '' }`}
+                    >
+                      <svg viewBox="0 0 16 16" className="h-[17px] w-[17px] fill-current">
+                        <path fillRule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z" />
+                      </svg>
+                    </button>
+                    {/* Tooltip on hover */}
+                    {!githubDropdownOpen && (
+                      <div className="absolute right-0 top-[calc(100%+8px)] hidden group-hover:block z-[90] bg-[#1E1E1E]/95 border border-white/[0.08] backdrop-blur-xl rounded-md px-2 py-1 text-[11px] font-semibold text-white/90 whitespace-nowrap shadow-lg select-none pointer-events-none">
+                        Branch: {currentBranch}
+                      </div>
+                    )}
+                    <AnimatePresence>
+                      {githubDropdownOpen && (
+                        <>
+                          <div className="fixed inset-0 z-40" onClick={() => { setGithubDropdownOpen(false); setHoveredSubmenu(null); }} />
+                          <motion.div
+                            ref={githubDropdownRef}
+                            initial={{ opacity: 0, y: 8, scale: 0.98 }}
+                            animate={{ opacity: 1, y: 0, scale: 1 }}
+                            exit={{ opacity: 0, y: 8, scale: 0.98 }}
+                            transition={{ duration: 0.15, ease: "easeOut" }}
+                            className="absolute right-0 top-[calc(100%+10px)] z-50 flex w-[236px] flex-col rounded-xl border border-white/[0.08] bg-[#1A1A1A]/95 backdrop-blur-2xl p-1.5 shadow-[0_16px_40px_rgba(0,0,0,0.68),inset_0_1px_0_rgba(255,255,255,0.04)] text-[#F4F1EA]"
+                            onClick={(e) => e.stopPropagation()}
+                            onMouseLeave={() => setHoveredSubmenu(null)}
+                          >
+                            <div
+                              className="px-2.5 py-1 text-[9px] font-bold text-[#6A6460] tracking-wider select-none mb-1"
+                              onMouseEnter={() => setHoveredSubmenu(null)}
+                            >
+                              Git Workspace
+                            </div>
+
+                            {/* Branch Selection (Submenu) */}
+                            <div className="relative">
+                              <button
+                                type="button"
+                                className={`w-full text-left px-2.5 py-1.5 text-[12px] font-semibold rounded-lg transition-all flex items-center justify-between ${ hoveredSubmenu === 'branch' ? 'text-white bg-white/5' : 'text-white/75 hover:text-white hover:bg-white/5' }`}
+                                onMouseEnter={() => {
+                                  setHoveredSubmenu('branch');
+                                  fetchGitInfo();
+                                }}
+                              >
+                                <div className="flex items-center gap-2 truncate pr-1">
+                                  <GitBranch className="h-3.5 w-3.5 text-white/75" />
+                                  <span className="truncate">Branch: {currentBranch}</span>
+                                </div>
+                                <ChevronLeft className="h-3.5 w-3.5 text-white/40" />
+                              </button>
+                            </div>
+
+                            {/* Create Branch Form */}
+                            {isCreatingBranch ? (
+                              <form
+                                onSubmit={(e) => {
+                                  e.preventDefault();
+                                  handleCreateBranchSubmit();
+                                }}
+                                className="flex items-center gap-2 border border-white/10 rounded-lg px-2.5 py-1 bg-white/[0.02] mt-1 mx-0.5"
+                                onMouseEnter={() => setHoveredSubmenu(null)}
+                              >
+                                <GitBranch className="h-3.5 w-3.5 text-white/50" />
+                                <input
+                                  autoFocus
+                                  value={newBranchName}
+                                  onChange={(e) => setNewBranchName(e.target.value)}
+                                  placeholder="Branch name..."
+                                  className="bg-transparent text-[12px] text-white placeholder-white/30 outline-none w-full font-medium"
+                                  onBlur={() => {
+                                    if (!newBranchName.trim()) {
+                                      setIsCreatingBranch(false);
+                                    }
+                                  }}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Escape') {
+                                      setIsCreatingBranch(false);
+                                      setNewBranchName('');
+                                    }
+                                  }}
+                                />
+                              </form>
+                            ) : (
+                              <button
+                                type="button"
+                                className="w-full text-left px-2.5 py-1.5 text-[12px] font-semibold text-white/75 hover:text-white hover:bg-white/5 rounded-lg transition-all flex items-center gap-2"
+                                onMouseEnter={() => setHoveredSubmenu(null)}
+                                onClick={() => {
+                                  setIsCreatingBranch(true);
+                                  setNewBranchName('');
+                                }}
+                              >
+                                <Plus className="h-3.5 w-3.5 text-white/75" />
+                                <span>Create Branch</span>
+                              </button>
+                            )}
+
+                            <div className="h-px bg-white/[0.06] my-1.5 mx-1" onMouseEnter={() => setHoveredSubmenu(null)} />
+                            
+                            {/* Recent Commits (Submenu Button) */}
+                            <div className="relative">
+                              <button
+                                type="button"
+                                className={`w-full text-left px-2.5 py-1.5 text-[12px] font-semibold rounded-lg transition-all flex items-center justify-between ${ hoveredSubmenu === 'commits' ? 'text-white bg-white/5' : 'text-white/75 hover:text-white hover:bg-white/5' }`}
+                                onMouseEnter={() => {
+                                  setHoveredSubmenu('commits');
+                                  loadRecentCommits();
+                                }}
+                              >
+                                <div className="flex items-center gap-2">
+                                  <Clock3 className="h-3.5 w-3.5" />
+                                  <span>Recent Commits</span>
+                                </div>
+                                <ChevronLeft className="h-3.5 w-3.5 text-white/40" />
+                              </button>
+                            </div>
+
+                            {/* Floating Side Submenu Panel */}
+                            <AnimatePresence>
+                              {hoveredSubmenu && (
+                                <motion.div
+                                  initial={{ opacity: 0, x: 6, scale: 0.98 }}
+                                  animate={{ opacity: 1, x: 0, scale: 1 }}
+                                  exit={{ opacity: 0, x: 6, scale: 0.98 }}
+                                  transition={{ duration: 0.15, ease: "easeOut" }}
+                                  onMouseEnter={() => setHoveredSubmenu(hoveredSubmenu)}
+                                  onMouseLeave={() => setHoveredSubmenu(null)}
+                                  className="absolute right-full mr-0.5 top-0 z-50 flex w-[245px] flex-col rounded-xl border border-white/[0.08] bg-[#1A1A1A]/95 backdrop-blur-2xl p-1.5 shadow-[0_16px_40px_rgba(0,0,0,0.68),inset_0_1px_0_rgba(255,255,255,0.04)] text-[#F4F1EA] pointer-events-auto"
+                                >
+                                  {hoveredSubmenu === 'branch' && (
+                                    <>
+                                      <div className="px-2.5 py-1 text-[9px] font-bold text-[#6A6460] tracking-wider select-none mb-1">
+                                        Select Branch
+                                      </div>
+                                      <div className="flex flex-col gap-0.5 max-h-[220px] overflow-y-auto eterx-scrollbar">
+                                        {gitBranches.map(b => {
+                                          const isCurrent = b.name === currentBranch;
+                                          return (
+                                            <button
+                                              key={b.name}
+                                              type="button"
+                                              className={`group/item flex items-center justify-between px-2.5 py-1.5 text-[12px] font-semibold rounded-lg transition-colors leading-none ${ isCurrent ? 'bg-white/[0.08] text-white' : 'text-white/60 hover:text-white hover:bg-white/5' }`}
+                                              onClick={() => {
+                                                handleCheckoutBranch(b.name);
+                                                setGithubDropdownOpen(false);
+                                                setHoveredSubmenu(null);
+                                              }}
+                                            >
+                                              <span className="truncate pr-1 text-left">{b.name}</span>
+                                              {isCurrent && <Check className="h-3 w-3 shrink-0" />}
+                                            </button>
+                                          );
+                                        })}
+                                      </div>
+                                    </>
+                                  )}
+
+                                  {hoveredSubmenu === 'commits' && (
+                                    <>
+                                      <div className="px-2.5 py-1 flex items-center justify-between mb-1 select-none">
+                                        <span className="text-[9px] font-bold text-[#6A6460] tracking-wider">
+                                          Commit History
+                                        </span>
+                                        <button
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            loadRecentCommits();
+                                          }}
+                                          className="p-1 rounded hover:bg-white/5 text-white/40 hover:text-white transition-colors"
+                                          title="Refresh commits"
+                                        >
+                                          <RefreshCw className={`h-3 w-3 ${isCommitsLoading ? 'animate-spin' : ''}`} />
+                                        </button>
+                                      </div>
+                                      
+                                      {isCommitsLoading ? (
+                                        <div className="flex flex-col items-center justify-center py-6 select-none">
+                                          <RefreshCw className="h-4 w-4 animate-spin text-white/40" />
+                                          <span className="text-[10px] text-white/30 mt-2 font-medium">Loading commits...</span>
+                                        </div>
+                                      ) : recentCommits.length === 0 ? (
+                                        <div className="px-2.5 py-2 text-[11px] text-white/40 font-medium text-center">No commits found</div>
+                                      ) : (
+                                        <div className="flex flex-col gap-0.5 max-h-[220px] overflow-y-auto eterx-scrollbar">
+                                          {recentCommits.map((c, idx) => (
+                                            <button
+                                              key={idx}
+                                              type="button"
+                                              onClick={() => {
+                                                navigator.clipboard.writeText(c.hash);
+                                                alert(`Copied hash ${c.hash} to clipboard!`);
+                                              }}
+                                              className="text-left px-2 py-1.5 rounded-lg hover:bg-white/5 transition-all flex items-center gap-2"
+                                              title="Click to copy hash"
+                                            >
+                                              <span className="text-[10px] font-mono font-bold text-white/50 bg-white/[0.04] px-1.5 py-0.5 rounded border border-white/[0.06] shrink-0 leading-none">
+                                                {c.hash}
+                                              </span>
+                                              <span className="text-[11.5px] text-white/80 truncate font-semibold flex-1 leading-none">
+                                                {c.msg}
+                                              </span>
+                                            </button>
+                                          ))}
+                                        </div>
+                                      )}
+                                    </>
+                                  )}
+                                </motion.div>
+                              )}
+                            </AnimatePresence>
+                          </motion.div>
+                        </>
+                      )}
+                    </AnimatePresence>
+                  </div>
+                )}
                 {canUseMonitor && (
                   <div className="relative">
                     <button
@@ -5443,7 +5840,7 @@ function DeepWorkUI() {
                               onMouseDown={handleMenuResizeCornerStart}
                             />
 
-                            <div className="eterx-work-menu-content flex-1 overflow-y-auto custom-scrollbar">
+                            <div className="eterx-work-menu-content flex-1 overflow-y-auto eterx-scrollbar">
                               <WorkMenuSectionButton
                                 title="Todo"
                                 meta={todoCounterText || (isThinking ? 'Live' : undefined)}
@@ -5467,7 +5864,7 @@ function DeepWorkUI() {
                                   >
                                     <div
                                       onMouseEnter={() => setActiveSubmenu(null)}
-                                      className="eterx-work-menu-list custom-scrollbar mb-1"
+                                      className="eterx-work-menu-list eterx-scrollbar mb-1"
                                     >
                                       {(() => {
                                         const tracker = lastTaskTracker || currentTaskTracker;
@@ -5741,7 +6138,7 @@ function DeepWorkUI() {
                                             Branches
                                           </div>
 
-                                          <div className="eterx-work-menu-list eterx-work-menu-list-tall custom-scrollbar">
+                                          <div className="eterx-work-menu-list eterx-work-menu-list-tall eterx-scrollbar">
                                             {(() => {
                                               const filteredBranches = gitBranches.filter(b =>
                                                 b.name.toLowerCase().includes(branchSearch.toLowerCase())
@@ -5839,7 +6236,7 @@ function DeepWorkUI() {
                                   >
                                     <div
                                       onMouseEnter={() => setActiveSubmenu(null)}
-                                      className="eterx-work-menu-list custom-scrollbar"
+                                      className="eterx-work-menu-list eterx-scrollbar"
                                     >
                                       {workMenuSources.length > 0 ? (
                                         workMenuSources.map((item) => {
@@ -5904,7 +6301,7 @@ function DeepWorkUI() {
                                   >
                                     <div
                                       onMouseEnter={() => setActiveSubmenu(null)}
-                                      className="eterx-work-menu-list custom-scrollbar"
+                                      className="eterx-work-menu-list eterx-scrollbar"
                                     >
                                       {realSubAgents.length > 0 ? (
                                         realSubAgents.map((agent) => {
@@ -6170,7 +6567,7 @@ function DeepWorkUI() {
                             <X className="h-3.5 w-3.5" />
                           </button>
                         </div>
-                        <div className="max-h-[420px] overflow-y-auto p-2 space-y-1.5 custom-scrollbar">
+                        <div className="max-h-[420px] overflow-y-auto p-2 space-y-1.5 eterx-scrollbar">
                           {realSubAgents.length === 0 ? (
                             <div className="rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-3 text-[12px] text-white/48">
                               No delegated agents are active yet.

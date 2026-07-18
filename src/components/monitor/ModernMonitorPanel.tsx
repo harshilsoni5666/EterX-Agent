@@ -519,7 +519,7 @@ function TerminalStage({ events }: { events: MonitorEvent[] }) {
   }
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto rounded-[20px] border border-white/[0.09] bg-[#090909] p-4 font-mono text-xs custom-scrollbar">
+    <div className="min-h-0 flex-1 overflow-y-auto rounded-[20px] border border-white/[0.09] bg-[#090909] p-4 font-mono text-xs eterx-scrollbar">
       {terminalEvents.map(event => (
         <div key={event.id} className="mb-3 last:mb-0">
           {event.type === 'terminal_cmd' ? (
@@ -557,7 +557,7 @@ function ListStage({
   }
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto rounded-[20px] border border-white/[0.09] bg-[#101010] p-3 custom-scrollbar">
+    <div className="min-h-0 flex-1 overflow-y-auto rounded-[20px] border border-white/[0.09] bg-[#101010] p-3 eterx-scrollbar">
       <div className="space-y-2">
         {filtered.map(event => {
           const EventIcon = EVENT_ICON[event.type] || Activity;

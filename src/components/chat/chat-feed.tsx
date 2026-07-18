@@ -206,7 +206,7 @@ const UserMessageActions = ({ text, onEdit }: { text: string; onEdit?: (text: st
   };
 
   return (
-    <div className="eterx-user-message-actions absolute right-full top-1/2 mr-2 flex -translate-y-1/2 shrink-0 items-center gap-0.5 opacity-0 pointer-events-none transition-opacity duration-150 group-hover/user:opacity-100 group-hover/user:pointer-events-auto focus-within:opacity-100 focus-within:pointer-events-auto">
+    <div className="eterx-user-message-actions absolute right-full top-1/2 mr-2 flex -translate-y-1/2 shrink-0 items-center gap-0.5 opacity-0 pointer-events-none transition-opacity duration-150 group-hover/user:opacity-100 group-hover/user:pointer-events-auto group-hover/steer:opacity-100 group-hover/steer:pointer-events-auto focus-within:opacity-100 focus-within:pointer-events-auto">
       <UserMessageActionButton label="Copy message" onClick={handleCopy}>
         <Copy className="h-[18px] w-[18px]" strokeWidth={2.15} />
       </UserMessageActionButton>
@@ -230,7 +230,7 @@ const UserMessageActions = ({ text, onEdit }: { text: string; onEdit?: (text: st
 // chat feed whenever the user sends a live steering message while the
 // agent is running. Feels native to the conversation thread.
 // ════════════════════════════════════════════════════════════════════
-const SteeringFeedCard = ({ log, isCompressed = false }: { log: any; isCompressed?: boolean }) => (
+const SteeringFeedCard = ({ log, isCompressed = false, onEdit }: { log: any; isCompressed?: boolean; onEdit?: (text: string) => void }) => (
   <motion.div
     initial={{ opacity: 0, x: 20, y: 10, scale: 0.95 }}
     animate={{ opacity: 1, x: 0, y: 0, scale: 1 }}
@@ -238,6 +238,7 @@ const SteeringFeedCard = ({ log, isCompressed = false }: { log: any; isCompresse
     className="flex justify-end w-full my-3 relative z-10 group/steer"
   >
     <div className={`eterx-steering-bubble bg-[#20201F] px-4 py-3 rounded-[18px] rounded-tr-[6px] ml-auto text-[13.5px] text-[#F4F2EE] shadow-[0_4px_16px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(255,255,255,0.025)] leading-[1.56] whitespace-pre-wrap relative border border-white/[0.06] select-text flex flex-row items-end gap-3 ${ isCompressed ? 'max-w-[92%]' : 'max-w-[84%]' }`}>
+      <UserMessageActions text={log.text} onEdit={onEdit} />
       <span className="block w-full text-left break-words [word-break:break-word] [overflow-wrap:anywhere]">{log.text}</span>
 
       {/* CornerDownLeft arrow representing steering entry */}
@@ -359,7 +360,7 @@ const isLikelyAnswerEcho = (candidate: any, answer: any) => {
   if (left === right) return true;
   const shorter = left.length < right.length ? left : right;
   const longer = left.length < right.length ? right : left;
-  return shorter.length > 80 && longer.includes(shorter);
+  return (shorter.length >= 25 && longer.includes(shorter)) || (shorter.length > 80 && longer.includes(shorter));
 };
 
 const getUserQueryPreview = (value: any) => {
@@ -518,8 +519,8 @@ const useWorkElapsedSeconds = (active: boolean, logs: any[], startedAt?: number 
 };
 
 const ThoughtSequence = ({
-  logs, liveLogs = [], isThinking, isLast, hasAnswer, stepCount, turnStartedAt, turnEndedAt, onOpenAgentTeam, isSubAgentTab = false, groupIdx = 0
-}: { logs: any[], liveLogs?: any[], isThinking: boolean, isLast: boolean, hasAnswer: boolean, stepCount: number, turnStartedAt?: number | null, turnEndedAt?: number | null, onOpenAgentTeam?: (agentName?: string) => void, isSubAgentTab?: boolean, groupIdx?: number }) => {
+  logs, liveLogs = [], isThinking, isLast, hasAnswer, stepCount, turnStartedAt, turnEndedAt, onOpenAgentTeam, isSubAgentTab = false, groupIdx = 0, onEditUserMessage
+}: { logs: any[], liveLogs?: any[], isThinking: boolean, isLast: boolean, hasAnswer: boolean, stepCount: number, turnStartedAt?: number | null, turnEndedAt?: number | null, onOpenAgentTeam?: (agentName?: string) => void, isSubAgentTab?: boolean, groupIdx?: number, onEditUserMessage?: (text: string) => void }) => {
   // Start collapsed for completed turns, open for active/no-answer turns
   const [open, setOpen] = React.useState(false);
   const containerRef = React.useRef<HTMLDivElement>(null);
@@ -697,6 +698,7 @@ const ThoughtSequence = ({
               showLiveIndicator={isLiveThinking && isLast && liveLogs.length === 0}
               onOpenAgentTeam={onOpenAgentTeam}
               isSubAgentTab={isSubAgentTab}
+              onEditUserMessage={onEditUserMessage}
             />
           </motion.div>
         )}
@@ -960,6 +962,7 @@ const ChatFeedMessageGroup = React.memo(({
         const text = String(log.text || '').trim().toLowerCase();
         if (!text) isValid = false;
         else if (hasStructuredWork && isExternalWorkNoteNoise(log.text)) isValid = false;
+        else if (displayFinalAnswer && isLikelyAnswerEcho(log.text, displayFinalAnswer.text)) isValid = false;
         else {
           const noteId = String(log.noteId || '').trim();
           const key = noteId
@@ -988,7 +991,7 @@ const ChatFeedMessageGroup = React.memo(({
     >
       {segments.map((seg, segIdx) => {
         if (seg.type === 'steering') {
-          return <SteeringFeedCard key={`steer-${ groupIdx }-${ segIdx }`} log={seg.log} isCompressed={isCompressed} />;
+          return <SteeringFeedCard key={`steer-${ groupIdx }-${ segIdx }`} log={seg.log} isCompressed={isCompressed} onEdit={onEditUserMessage} />;
         }
         if (seg.type === 'ask_user') {
           return (
@@ -1032,6 +1035,7 @@ const ChatFeedMessageGroup = React.memo(({
             onOpenAgentTeam={onOpenAgentTeam}
             isSubAgentTab={isSubAgentTab}
             groupIdx={groupIdx}
+            onEditUserMessage={onEditUserMessage}
           />
         );
       })}

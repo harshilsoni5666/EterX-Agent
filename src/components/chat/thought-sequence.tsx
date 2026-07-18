@@ -2437,9 +2437,6 @@ const isActionContextLog = (log: any) =>
 const shouldRenderThoughtSegment = (log: any, flowLogs: any[], idx: number) => {
   const text = normalizeTimelineText(log?.text);
   if (!text) return false;
-
-  const hasActions = flowLogs.some(isActionContextLog);
-  if (hasActions) return false;
   return true;
 };
 
@@ -3730,7 +3727,77 @@ const useElapsed = (active: boolean) => {
 // SteeringCard — rendered when the user sends a live steering message
 // while the agent is running. Shows immediately in the timeline.
 // ═══════════════════════════════════════════════════════════════════
-const SteeringCard = ({ log }: { log: any }) => {
+const copyTextToClipboard = async (text: string) => {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch (err) {
+    console.error('Failed to copy:', err);
+    return false;
+  }
+};
+
+const EditMessageIcon = ({ className = '' }: { className?: string }) => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.15" strokeLinecap="round" strokeLinejoin="round" className={className}>
+    <path d="M12 20h9" />
+    <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
+  </svg>
+);
+
+const UserMessageActionButton = ({
+  children,
+  onClick,
+  label,
+}: {
+  children: React.ReactNode;
+  onClick: (event: React.MouseEvent) => void;
+  label: string;
+}) => {
+  return (
+    <button
+      type="button"
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick(e);
+      }}
+      aria-label={label}
+      className="eterx-user-message-action-button relative isolate grid h-8 w-8 place-items-center rounded-full text-[#736E67] outline-none focus-visible:ring-2 focus-visible:ring-white/18"
+    >
+      <span className="pointer-events-none relative z-10 grid h-6 w-6 place-items-center rounded-full">
+        {children}
+      </span>
+    </button>
+  );
+};
+
+const UserMessageActions = ({ text, onEdit }: { text: string; onEdit?: (text: string) => void }) => {
+  const handleCopy = async (event: React.MouseEvent) => {
+    event.stopPropagation();
+    const didCopy = await copyTextToClipboard(text);
+    if (!didCopy) return;
+  };
+
+  return (
+    <div className="eterx-user-message-actions absolute right-full top-1/2 mr-2 flex -translate-y-1/2 shrink-0 items-center gap-0.5 opacity-0 pointer-events-none transition-opacity duration-150 group-hover/steer:opacity-100 group-hover/steer:pointer-events-auto focus-within:opacity-100 focus-within:pointer-events-auto">
+      <UserMessageActionButton label="Copy message" onClick={handleCopy}>
+        <Copy className="h-[18px] w-[18px]" strokeWidth={2.15} />
+      </UserMessageActionButton>
+      {onEdit && (
+        <UserMessageActionButton
+          label="Edit message"
+          onClick={(event) => {
+            event.stopPropagation();
+            onEdit(text);
+          }}
+        >
+          <EditMessageIcon className="h-[18px] w-[18px]" />
+        </UserMessageActionButton>
+      )}
+    </div>
+  );
+};
+
+const SteeringCard = ({ log, onEdit }: { log: any; onEdit?: (text: string) => void }) => {
   return (
     <motion.div
       initial={{ opacity: 0, x: 20, y: 10, scale: 0.95 }}
@@ -3739,6 +3806,7 @@ const SteeringCard = ({ log }: { log: any }) => {
       className="flex justify-end w-full my-3 relative z-10 group/steer"
     >
       <div className="bg-[#20201F] px-4 py-3 rounded-[18px] rounded-tr-[6px] ml-auto text-[13.5px] text-[#F4F2EE] shadow-[0_4px_16px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(255,255,255,0.025)] leading-[1.56] whitespace-pre-wrap relative border border-white/[0.06] select-text flex flex-row items-end gap-3 max-w-[84%]">
+        <UserMessageActions text={log.text} onEdit={onEdit} />
         <span className="block w-full text-left break-words [word-break:break-word] [overflow-wrap:anywhere]">{log.text}</span>
 
         {/* CornerDownLeft arrow representing steering entry */}
@@ -4046,7 +4114,7 @@ const HtmlPreviewCard = ({ log }: { log: any }) => {
 };
 
 
-export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showLiveIndicator = false, onOpenAgentTeam, isSubAgentTab = false }: { logs: any[], liveLogs?: any[], isThinking: boolean, isLast: boolean, showLiveIndicator?: boolean, onOpenAgentTeam?: (agentName?: string) => void, isSubAgentTab?: boolean }) => {
+export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showLiveIndicator = false, onOpenAgentTeam, isSubAgentTab = false, onEditUserMessage }: { logs: any[], liveLogs?: any[], isThinking: boolean, isLast: boolean, showLiveIndicator?: boolean, onOpenAgentTeam?: (agentName?: string) => void, isSubAgentTab?: boolean, onEditUserMessage?: (text: string) => void }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const NOISE_PATTERN = /reconnect|retrying|stalled|stream interrupted|model error|fallback|cancelled/i;
 
@@ -4054,6 +4122,7 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
     ['thought_stream', 'work_note', 'command', 'exploration', 'file_edit', 'progress', 'browser', 'safety_warning', 'communication', 'sub_agent_answer', 'sub_agent_result', 'sub_agent_spawn', 'sub_agent_action', 'sub_agent_complete', 'sub_agent_error', 'inter_agent_comm', 'file_preview', 'console_output', 'ask_user', 'tool_result_preview'].includes(l.type) &&
     !(['progress', 'command', 'exploration'].includes(l.type) && /analyz(?:e|ing) task complexity/i.test(String(l.text || ''))) &&
     !(l.type === 'progress' && NOISE_PATTERN.test(String(l.text || '')) && !isApiKeyTrace(String(l.text || ''))) &&
+    !(l.type === 'work_note' && (l._connection || String(l.text || '').endsWith('is starting'))) &&
     // Filter out spawning announcement commands that have spawnedAgents (shown separately as agent cards)
     !(l.spawnedAgents && Array.isArray(l.spawnedAgents) && l.spawnedAgents.length > 0 && l.type === 'command');
   const flowLogs = logs.filter(isFlowLog);
@@ -4221,7 +4290,7 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
         }
         if (seg.kind === 'note') return <WorkNoteBlock key={`n-${ seg.idx }`} text={seg.log.text} isActive={isThinking && isLast && i === segs.length - 1} />;
         if (seg.kind === 'safety') return <SafetyBanner key={`sf-${ seg.idx }`} log={seg.log} />;
-        if (seg.kind === 'steering') return <SteeringCard key={`steer-${ seg.idx }`} log={seg.log} />;
+        if (seg.kind === 'steering') return <SteeringCard key={`steer-${ seg.idx }`} log={seg.log} onEdit={onEditUserMessage} />;
         if (seg.kind === 'subagent') return null;
         if (seg.kind === 'comm') {
           return isSubAgentTab ? <InterAgentCommCard key={`comm-${ seg.idx }`} log={seg.log} onOpenAgentTeam={onOpenAgentTeam} /> : null;

@@ -863,7 +863,7 @@ const MermaidDiagram = ({ chart }: { chart: string }) => {
         </div>
       )}
 
-      <div className="eterx-mermaid-stage custom-scrollbar overflow-auto">
+      <div className="eterx-mermaid-stage eterx-scrollbar overflow-auto">
         {svg ? (
           <div
             className="eterx-mermaid-canvas mx-auto"
@@ -896,7 +896,7 @@ const MermaidDiagram = ({ chart }: { chart: string }) => {
               <button type="button" className="eterx-mermaid-popout-button" onClick={() => runAction(downloadPng)}>Download PNG</button>
               <button type="button" className="eterx-mermaid-popout-close" aria-label="Close large diagram view" onClick={() => setPreviewOpen(false)}>Close</button>
             </div>
-            <div className="eterx-mermaid-popout-stage custom-scrollbar">
+            <div className="eterx-mermaid-popout-stage eterx-scrollbar">
               <div className="eterx-mermaid-popout-canvas" dangerouslySetInnerHTML={{ __html: svg }} />
             </div>
           </div>
@@ -1013,7 +1013,7 @@ const CodeBlock = ({ language, content, forceSource = false, ...props }: { langu
           className="eterx-markdown-copy-button h-8 w-8 border border-white/[0.08] bg-white/[0.035] text-[#8C8A88] hover:bg-white/[0.07] hover:text-[#E8E6E3]"
         />
       </div>
-      <div className={`eterx-markdown-code-scroll custom-scrollbar overflow-auto ${isLong && !expanded ? 'max-h-[520px]' : ''}`}>
+      <div className={`eterx-markdown-code-scroll eterx-scrollbar overflow-auto ${isLong && !expanded ? 'max-h-[520px]' : ''}`}>
         <SyntaxHighlighter
           style={highlightStyle as any}
           language={displayLanguage}
@@ -1140,7 +1140,7 @@ export const markdownComponents = {
   },
   hr: ({ ...props }: any) => <hr className="eterx-markdown-hr my-6 border-white/10" {...props} />,
   table: ({ ...props }: any) => (
-    <div className="eterx-markdown-table-wrap custom-scrollbar my-5 overflow-x-auto rounded-2xl border border-white/[0.08] shadow-sm">
+    <div className="eterx-markdown-table-wrap eterx-scrollbar my-5 overflow-x-auto rounded-2xl border border-white/[0.08] shadow-sm">
       <table className="eterx-markdown-table w-full min-w-[620px] border-collapse text-[14px]" {...props} />
     </div>
   ),

@@ -352,7 +352,7 @@ export const CodeChat: React.FC<CodeChatProps> = ({ workspacePath, activeFile, o
   return (
     <div className="flex flex-col h-full bg-[#050505]">
       {/* Messages */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto custom-scrollbar">
+      <div ref={scrollRef} className="flex-1 overflow-y-auto eterx-scrollbar">
         {messages.length === 0 ? (
           <EmptyState
             workspacePath={workspacePath}
@@ -578,7 +578,7 @@ const ThinkingBlock: React.FC<{ text: string }> = ({ text }) => {
         {expanded ? <ChevronDown className="w-3 h-3 text-[#555350] ml-auto" /> : <ChevronRight className="w-3 h-3 text-[#555350] ml-auto" />}
       </div>
       {expanded && (
-        <div className="mt-2 text-[11px] text-[#555350] leading-relaxed max-h-[150px] overflow-y-auto custom-scrollbar whitespace-pre-wrap pl-5">
+        <div className="mt-2 text-[11px] text-[#555350] leading-relaxed max-h-[150px] overflow-y-auto eterx-scrollbar whitespace-pre-wrap pl-5">
           {text}
         </div>
       )}
@@ -700,7 +700,7 @@ const ToolExecutionBlock: React.FC<{ execution: ToolExecution }> = ({ execution 
           {hasReadback && (
             <div>
               <div className="text-[9px] text-[#555350] uppercase tracking-wider mb-1 font-medium">Verified Result</div>
-              <pre className="text-[10px] text-[#777] leading-[15px] max-h-[100px] overflow-y-auto custom-scrollbar whitespace-pre-wrap font-mono bg-black/30 rounded-lg p-2 border border-white/[0.03]">
+              <pre className="text-[10px] text-[#777] leading-[15px] max-h-[100px] overflow-y-auto eterx-scrollbar whitespace-pre-wrap font-mono bg-black/30 rounded-lg p-2 border border-white/[0.03]">
                 {parsedResult.readback}
               </pre>
             </div>
@@ -710,7 +710,7 @@ const ToolExecutionBlock: React.FC<{ execution: ToolExecution }> = ({ execution 
           {hasReadbacks && Object.entries(parsedResult.readbacks).map(([fileName, content]) => (
             <div key={fileName}>
               <div className="text-[9px] text-[#555350] uppercase tracking-wider mb-1 font-medium">{fileName}</div>
-              <pre className="text-[10px] text-[#777] leading-[15px] max-h-[80px] overflow-y-auto custom-scrollbar whitespace-pre-wrap font-mono bg-black/30 rounded-lg p-2 border border-white/[0.03]">
+              <pre className="text-[10px] text-[#777] leading-[15px] max-h-[80px] overflow-y-auto eterx-scrollbar whitespace-pre-wrap font-mono bg-black/30 rounded-lg p-2 border border-white/[0.03]">
                 {String(content)}
               </pre>
             </div>
@@ -718,7 +718,7 @@ const ToolExecutionBlock: React.FC<{ execution: ToolExecution }> = ({ execution 
 
           {/* Raw result for non-edit tools */}
           {!hasDiff && !hasReadback && !hasReadbacks && execution.result && (
-            <pre className="text-[10px] text-[#555350] leading-[15px] max-h-[120px] overflow-y-auto custom-scrollbar whitespace-pre-wrap font-mono bg-black/30 rounded-lg p-2.5 border border-white/[0.03]">
+            <pre className="text-[10px] text-[#555350] leading-[15px] max-h-[120px] overflow-y-auto eterx-scrollbar whitespace-pre-wrap font-mono bg-black/30 rounded-lg p-2.5 border border-white/[0.03]">
               {execution.result.substring(0, 1500)}
             </pre>
           )}

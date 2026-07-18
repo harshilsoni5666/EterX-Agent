@@ -249,7 +249,7 @@ const FolderPicker: React.FC<{ onSelect: (path: string) => void }> = ({ onSelect
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto custom-scrollbar">
+      <div className="flex-1 overflow-y-auto eterx-scrollbar">
         <div className="max-w-lg mx-auto px-6 py-8">
           {/* Logo section */}
           <motion.div
@@ -418,7 +418,7 @@ const FolderPicker: React.FC<{ onSelect: (path: string) => void }> = ({ onSelect
               </div>
 
               {/* Folder list */}
-              <div className="space-y-0.5 max-h-[350px] overflow-y-auto custom-scrollbar">
+              <div className="space-y-0.5 max-h-[350px] overflow-y-auto eterx-scrollbar">
                 {folders.length === 0 ? (
                   <div className="text-center py-6">
                     <FolderOpen className="w-8 h-8 text-[#333] mx-auto mb-2" />

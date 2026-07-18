@@ -481,7 +481,9 @@ const OFFICIAL_PROVIDER_GUIDE: Record<string, {
     families: [
       { name: 'Claude Sonnet 5', id: 'claude-sonnet-5', note: 'Balanced speed, intelligence, and extended thinking' },
       { name: 'Claude Fable 5', id: 'claude-fable-5', note: 'Preview frontier model for high-autonomy coding' },
+      { name: 'Claude Mythos 5', id: 'claude-mythos-5', note: 'Approved customer preview model via Project Glasswing' },
       { name: 'Claude Opus 4.8', id: 'claude-opus-4-8', note: 'Most capable Claude model for complex reasoning and agentic coding' },
+      { name: 'Claude Haiku 4.5', id: 'claude-haiku-4-5', note: 'Fastest 4.5-series model with high intelligence' },
       { name: 'Claude Sonnet 4.6', id: 'claude-sonnet-4-6', note: 'Previous Sonnet fallback' },
     ],
   },
@@ -491,11 +493,17 @@ const OFFICIAL_PROVIDER_GUIDE: Record<string, {
     endpoint: 'GET /v1/models',
     docsUrl: 'platform.openai.com/docs/models',
     families: [
-      { name: 'GPT-5.6 Luna Pro', id: 'gpt-5.6-luna-pro', note: 'Flagship model for complex reasoning, coding, and professional workflows' },
+      { name: 'GPT-5.6 Sol', id: 'gpt-5.6-sol', note: 'Flagship model for complex professional reasoning, coding, and general tasks' },
+      { name: 'GPT-5.6 Luna Pro', id: 'gpt-5.6-luna-pro', note: 'Affordable high-context flagship model' },
       { name: 'GPT-5.6 Luna', id: 'gpt-5.6-luna', note: 'More affordable flagship model for coding' },
       { name: 'GPT-5.6 Terra Pro', id: 'gpt-5.6-terra-pro', note: 'Fast option for coding, computer use, and sub-agents' },
       { name: 'GPT-5.6 Terra', id: 'gpt-5.6-terra', note: 'Low latency fallback model' },
       { name: 'GPT-5.5', id: 'gpt-5.5', note: 'Stable 5-series model' },
+      { name: 'OpenAI o3-pro', id: 'o3-pro', note: 'Flagship deep reasoning model' },
+      { name: 'OpenAI o3', id: 'o3', note: 'Standard deep reasoning model' },
+      { name: 'OpenAI o4-mini', id: 'o4-mini', note: 'High-speed mini reasoning model' },
+      { name: 'GPT-5.4 Pro', id: 'gpt-5.4-pro', note: 'Precision coding model' },
+      { name: 'GPT-5.4 mini', id: 'gpt-5.4-mini', note: 'Strongest mini model for computer/agent use' },
       { name: 'GPT-4o', id: 'gpt-4o', note: 'Stable legacy fallback model' },
     ],
   },
@@ -2298,7 +2306,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
                                     Add a model ID or choose one from provider discovery to make it available in chat.
                                   </div>
                                 ) : (
-                                  <div className="max-h-[280px] overflow-y-auto pr-1 custom-scrollbar">
+                                  <div className="max-h-[280px] overflow-y-auto pr-1 eterx-scrollbar">
                                     {modelEntries.map(entry => {
                                       const selected = modelOverrides[entry.provider] === entry.modelId;
                                       const entryProviderLabel = PROVIDER_LABEL[entry.provider] || entry.provider;

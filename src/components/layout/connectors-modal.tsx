@@ -162,7 +162,7 @@ export const ConnectorsModal: React.FC<ConnectorsModalProps> = ({ open, onClose,
             </div>
 
             {/* Grid */}
-            <div className="eterx-connectors-grid flex-1 overflow-y-auto p-6 grid grid-cols-2 gap-3 content-start custom-scrollbar">
+            <div className="eterx-connectors-grid flex-1 overflow-y-auto p-6 grid grid-cols-2 gap-3 content-start eterx-scrollbar">
               {filtered.map(connector => {
                 const isConnected = !!connectedApps[connector.id];
                 return (

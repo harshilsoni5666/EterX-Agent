@@ -2307,18 +2307,19 @@
   top: calc(100% + 8px);
   z-index: 260 !important;
   display: flex;
-  width: min(280px, calc(100vw - 48px));
-  max-height: min(420px, calc(100dvh - 220px));
+  width: min(290px, calc(100vw - 48px));
+  max-height: min(480px, calc(100dvh - 220px));
   flex-direction: column;
   overflow: hidden;
   border: 1px solid var(--eterx-status-popout-border) !important;
-  border-radius: 16px;
+  border-radius: 12px;
   background: var(--eterx-status-popout-bg) !important;
   color: var(--eterx-status-popout-text);
-  box-shadow: 0 18px 46px rgba(0, 0, 0, 0.36), inset 0 1px 0 rgba(255, 255, 255, 0.055) !important;
-  -webkit-backdrop-filter: blur(22px) saturate(1.08);
-  backdrop-filter: blur(22px) saturate(1.08);
-  padding: 5px;
+  box-shadow: 0 20px 48px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.08) !important;
+  -webkit-backdrop-filter: blur(24px) saturate(1.1);
+  backdrop-filter: blur(24px) saturate(1.1);
+  padding: 6px;
+  font-family: 'Inter', system-ui, -apple-system, sans-serif !important;
 }
 
 .eterx-status-popout-project {
@@ -2335,22 +2336,39 @@
   width: min(230px, calc(100vw - 48px));
 }
 
-
-
 :root[data-theme="light"] body .eterx-status-popout {
-  box-shadow: 0 12px 32px rgba(32, 44, 61, 0.08), 0 4px 12px rgba(32, 44, 61, 0.04) !important;
+  box-shadow: 0 16px 36px rgba(32, 44, 61, 0.09), 0 4px 16px rgba(32, 44, 61, 0.04), inset 0 1px 0 rgba(255, 255, 255, 0.6) !important;
 }
 
 .eterx-status-search {
   display: flex;
-  height: 32px;
+  height: 34px;
   align-items: center;
   gap: 8px;
-  border-radius: 9px;
-  background: var(--eterx-status-search-bg);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.18);
   color: var(--eterx-status-popout-muted);
   padding: 0 9px;
   margin-bottom: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.eterx-status-search:focus-within {
+  border-color: rgba(255, 255, 255, 0.16);
+  background: rgba(0, 0, 0, 0.25);
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.03);
+}
+
+:root[data-theme="light"] .eterx-status-search {
+  background: rgba(0, 0, 0, 0.04);
+  border-color: rgba(0, 0, 0, 0.05);
+}
+
+:root[data-theme="light"] .eterx-status-search:focus-within {
+  background: rgba(0, 0, 0, 0.02);
+  border-color: rgba(0, 0, 0, 0.15);
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.02);
 }
 
 .eterx-status-search input {
@@ -2360,49 +2378,75 @@
   background: transparent;
   color: var(--eterx-status-popout-text);
   font-size: 13px;
-  font-weight: 540;
+  font-weight: 500;
   outline: 0;
 }
 
 .eterx-status-search input::placeholder {
   color: var(--eterx-status-popout-muted);
-  opacity: 1;
+  opacity: 0.65;
 }
 
 .eterx-status-menu-section {
-  margin-top: 6px;
+  margin-top: 2px;
   overflow-y: auto;
 }
 
+/* Custom Scrollbar for Folder list */
+.eterx-status-menu-section::-webkit-scrollbar {
+  width: 5px;
+}
+.eterx-status-menu-section::-webkit-scrollbar-track {
+  background: transparent;
+}
+.eterx-status-menu-section::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 99px;
+  transition: background 0.15s ease;
+}
+.eterx-status-menu-section::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+:root[data-theme="light"] .eterx-status-menu-section::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.08);
+}
+:root[data-theme="light"] .eterx-status-menu-section::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.18);
+}
+
 .eterx-status-menu-label {
-  padding: 7px 9px 3px;
+  padding: 4px 8px 3px;
   color: var(--eterx-status-popout-muted);
   font-size: 11px;
   font-weight: 600;
-  line-height: 1;
+  letter-spacing: 0.01em;
 }
 
 .eterx-status-menu-item {
   display: flex;
-  min-height: 34px;
+  min-height: 36px;
   width: 100%;
   align-items: center;
-  gap: 9px;
+  gap: 8px;
   border: 0;
   border-radius: 8px;
   background: transparent;
   color: var(--eterx-status-popout-text);
   cursor: pointer;
-  padding: 5px 9px;
+  padding: 6px 8px;
   text-align: left;
-  font-size: 12.5px;
-  font-weight: 550;
-  letter-spacing: 0;
-  transition: background-color 140ms ease, color 140ms ease, opacity 140ms ease;
+  font-size: 13px;
+  font-weight: 500;
+  transition: all 0.2s cubic-bezier(0.25, 0.8, 0.25, 1);
 }
 
 .eterx-status-menu-item:hover,
-.eterx-status-menu-item:focus-visible,
+.eterx-status-menu-item:focus-visible {
+  background: var(--eterx-status-popout-hover);
+  transform: translateX(2px);
+  outline: 0;
+}
+
 .eterx-status-menu-item.is-selected {
   background: var(--eterx-status-popout-hover);
   outline: 0;
@@ -2410,33 +2454,38 @@
 
 .eterx-status-menu-item.is-disabled {
   cursor: not-allowed;
-  opacity: 0.45;
+  opacity: 0.4;
 }
 
 .eterx-status-menu-icon {
-  height: 18px;
-  width: 18px;
+  height: 16px;
+  width: 16px;
   flex: 0 0 auto;
   color: var(--eterx-status-popout-muted);
+  transition: transform 0.2s ease, color 0.2s ease;
 }
 
 .eterx-status-menu-item:hover .eterx-status-menu-icon,
-.eterx-status-menu-item:focus-visible .eterx-status-menu-icon,
+.eterx-status-menu-item:focus-visible .eterx-status-menu-icon {
+  color: currentColor;
+  transform: scale(1.05);
+}
+
 .eterx-status-menu-item.is-selected .eterx-status-menu-icon {
   color: currentColor;
 }
 
 .eterx-status-menu-rule {
   height: 1px;
-  margin: 7px 6px;
+  margin: 4px 6px;
   background: var(--eterx-status-popout-border);
 }
 
 .eterx-status-empty {
-  padding: 12px 10px;
+  padding: 12px 8px;
   color: var(--eterx-status-popout-muted);
-  font-size: 13px;
-  font-weight: 540;
+  font-size: 12.5px;
+  font-weight: 500;
 }
 
 .eterx-chat-input-dock,
@@ -6169,19 +6218,7 @@
   pointer-events: auto !important;
 }
 
-/* Hide scrollbar universally on all composer popouts (Agent selector, model options, folders/files attachment popups, goal text, status popups, etc.) */
-.eterx-composer-popout::-webkit-scrollbar,
-.eterx-composer-popout *::-webkit-scrollbar {
-  display: none !important;
-  width: 0 !important;
-  height: 0 !important;
-}
 
-.eterx-composer-popout,
-.eterx-composer-popout * {
-  scrollbar-width: none !important;
-  -ms-overflow-style: none !important;
-}
 
 /* EterX Scheduled Tasks Chat Input Resizing Overrides */
 .eterx-scheduled-chat-input-container .eterx-composer-popout {
@@ -6251,28 +6288,6 @@
   -webkit-app-region: drag !important;
 }
 
-.eterx-agent-popout {
-  max-height: min(350px, 70vh) !important;
-  overflow-y: auto !important;
-  scrollbar-width: thin !important;
-  scrollbar-color: rgba(255, 255, 255, 0.16) transparent !important;
-}
-
-/* Custom scrollbar styling for webkit */
-.eterx-agent-popout::-webkit-scrollbar {
-  display: block !important;
-  width: 5px !important;
-}
-.eterx-agent-popout::-webkit-scrollbar-track {
-  background: transparent !important;
-}
-.eterx-agent-popout::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.18) !important;
-  border-radius: 99px !important;
-}
-.eterx-agent-popout::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.28) !important;
-}
 
 
 

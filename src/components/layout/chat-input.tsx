@@ -984,7 +984,7 @@ const TaskTrackerDock = React.memo(({
                 <div className="relative">
                   <div className="pointer-events-none absolute inset-x-0 top-0 z-20 h-5 bg-gradient-to-b from-[#202020] to-transparent" />
                   <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 h-6 bg-gradient-to-t from-[#202020] to-transparent" />
-                  <div className="relative max-h-[176px] space-y-0.5 overflow-y-auto py-1 pr-1 custom-scrollbar">
+                  <div className="relative max-h-[176px] space-y-0.5 overflow-y-auto py-1 pr-1 eterx-scrollbar">
                     {steps.map((step) => {
                       const active = step.id === activeStep?.id || step.step === activeStep?.step;
                       const activeWorking = active && !isComplete && (isThinking || step.status === 'in_progress');
@@ -1093,6 +1093,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const [showAgentMenu, setShowAgentMenu] = useState(false);
   const [openStatusMenu, setOpenStatusMenu] = useState<StatusRailMenu>(null);
   const [projectSearch, setProjectSearch] = useState('');
+  const [activeProjectSubmenu, setActiveProjectSubmenu] = useState<'new_project' | null>(null);
   const [agentMenuXOffset, setAgentMenuXOffset] = useState(0);
   const [modelMenuXOffset, setModelMenuXOffset] = useState(0);
   const [thinkingMenuSide, setThinkingMenuSide] = useState<'left' | 'right'>('right');
@@ -1221,7 +1222,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   }, [onWorkspacePathChange]);
 
   const workspaceName = useMemo(() => {
-    if (!activeWorkspacePath) return 'Local Project';
+    if (!activeWorkspacePath) return 'Choose project';
     return activeWorkspacePath.split(/[/\\]/).filter(Boolean).pop() || activeWorkspacePath;
   }, [activeWorkspacePath]);
 
@@ -1273,6 +1274,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
             ...parsed.filter((p: any) => p.path !== cleanPath)
           ].slice(0, 8);
           localStorage.setItem('eterx_recent_projects', JSON.stringify(updated));
+          setRecentProjects(updated);
         } catch { }
       }
     }
@@ -2014,8 +2016,104 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const isEmptyHome = traceLogsLength === 0 && liveState === 'idle';
   const isNewChatHome = isEmptyHome && !activeChatId;
   const [branchName, setBranchName] = useState('main');
+  const [branchesList, setBranchesList] = useState<string[]>([]);
+  const [isCreatingBranch, setIsCreatingBranch] = useState(false);
+  const [newBranchName, setNewBranchName] = useState('');
+  const [isGitRepo, setIsGitRepo] = useState(false);
+
+  const loadBranchesList = useCallback(() => {
+    if (!activeWorkspacePath) {
+      setBranchesList(['main']);
+      return;
+    }
+    fetch('/api/code/execute', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command: 'git branch', cwd: activeWorkspacePath }),
+    })
+      .then(r => r.json())
+      .then(data => {
+        if (data.stdout) {
+          const list = data.stdout
+            .split('\n')
+            .map((b: string) => {
+              let cleaned = b.trim();
+              if (cleaned.startsWith('*')) {
+                cleaned = cleaned.substring(1).trim();
+              }
+              return cleaned;
+            })
+            .filter((b: string) => {
+              return b && !b.includes(' ') && !b.includes('Sandbox') && !b.includes('error:') && !b.includes('fatal:');
+            });
+          setBranchesList(list.length > 0 ? list : ['main']);
+        } else {
+          setBranchesList(['main']);
+        }
+      })
+      .catch(() => setBranchesList(['main']));
+  }, [activeWorkspacePath]);
+
+  useEffect(() => {
+    if (openStatusMenu === 'branch') {
+      loadBranchesList();
+      setIsCreatingBranch(false);
+      setNewBranchName('');
+    }
+  }, [openStatusMenu, loadBranchesList]);
+
+  const handleSwitchBranch = useCallback((targetBranch: string) => {
+    if (!activeWorkspacePath || !targetBranch || targetBranch.includes(' ') || targetBranch.includes('Sandbox') || targetBranch.includes('error:')) {
+      return;
+    }
+    fetch('/api/code/execute', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command: `git checkout ${targetBranch}`, cwd: activeWorkspacePath }),
+    })
+      .then(r => r.json())
+      .then(data => {
+        if (data.stderr && data.stderr.includes('error:')) {
+          alert(`Git error: ${data.stderr}`);
+        } else {
+          setBranchName(targetBranch);
+        }
+      })
+      .catch(err => console.error('Failed to switch branch:', err));
+  }, [activeWorkspacePath]);
+
+  const submitCreateBranch = useCallback((name: string) => {
+    if (!activeWorkspacePath) return;
+    const cleanName = name.trim();
+    if (!cleanName || cleanName.includes(' ')) return;
+    
+    fetch('/api/code/execute', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command: `git checkout -b ${cleanName}`, cwd: activeWorkspacePath }),
+    })
+      .then(r => r.json())
+      .then(data => {
+        if (data.stderr && data.stderr.includes('error:')) {
+          alert(`Git error: ${data.stderr}`);
+        } else {
+          setBranchName(cleanName);
+          setIsCreatingBranch(false);
+          setNewBranchName('');
+          loadBranchesList();
+          setOpenStatusMenu(null);
+        }
+      })
+      .catch(err => {
+        console.error('Failed to create branch:', err);
+        setIsCreatingBranch(false);
+        setNewBranchName('');
+      });
+  }, [activeWorkspacePath, loadBranchesList]);
+
   useEffect(() => {
     if (!activeWorkspacePath) {
+      setIsGitRepo(false);
       setBranchName('main');
       return;
     }
@@ -2026,13 +2124,18 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     })
       .then(r => r.json())
       .then(data => {
-        if (data.stdout?.trim()) {
+        if (data.stdout?.trim() && !data.stdout.includes('Sandbox') && !data.stdout.includes(' ') && !data.stdout.includes('error:')) {
           setBranchName(data.stdout.trim());
+          setIsGitRepo(true);
         } else {
+          setIsGitRepo(false);
           setBranchName('main');
         }
       })
-      .catch(() => setBranchName('main'));
+      .catch(() => {
+        setIsGitRepo(false);
+        setBranchName('main');
+      });
   }, [activeWorkspacePath]);
   const toggleStatusMenu = useCallback((event: React.MouseEvent, menu: Exclude<StatusRailMenu, null>) => {
     event.stopPropagation();
@@ -2299,7 +2402,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
               </button>
             </div>
 
-            <div className="max-h-[214px] overflow-y-auto px-1 pb-1 custom-scrollbar">
+            <div className="max-h-[214px] overflow-y-auto pr-1 pb-1 eterx-scrollbar">
               {storedAgents.length > 0 ? (
                 storedAgents.map(agent => (
                   <button
@@ -2374,7 +2477,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                 onChange={(event) => setGoalDraft(event.target.value)}
                 onInput={syncGoalTextareaHeight}
                 placeholder="Write the goal for this chat..."
-                className="block min-h-[86px] w-full resize-none rounded-[16px] border border-white/[0.08] bg-[#1D1D1D] px-3.5 py-3 text-[13.5px] font-medium leading-5 text-[#F2F0EC] outline-none placeholder:text-[#716E69] focus:border-white/[0.16] custom-scrollbar select-text"
+                className="block min-h-[86px] w-full resize-none rounded-[16px] border border-white/[0.08] bg-[#1D1D1D] px-3.5 py-3 text-[13.5px] font-medium leading-5 text-[#F2F0EC] outline-none placeholder:text-[#716E69] focus:border-white/[0.16] eterx-scrollbar select-text"
               />
             </div>
           </div>
@@ -2386,7 +2489,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
             role="listbox"
             aria-label="Slash commands"
           >
-            <div className="max-h-[270px] overflow-y-auto custom-scrollbar">
+            <div className="max-h-[270px] overflow-y-auto eterx-scrollbar">
               {filteredSlashCommands.length > 0 ? (
                 filteredSlashCommands.map((command, index) => {
                   const active = index === slashActiveIndex;
@@ -2846,7 +2949,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                     onDrop={handleDrop}
                     onScroll={handleTextareaScroll}
                     placeholder={composerPlaceholder || (isThinking ? "Send guidance to the running agent" : isNewChatHome ? "What should EterX work on?" : "Message EterX")}
-                    className={`eterx-composer-textarea w-full appearance-none border-0 bg-transparent shadow-none outline-none ring-0 text-[14.5px] font-normal text-[#F0F0F0] placeholder:text-[#8B8984] focus:border-0 focus:outline-none focus:ring-0 placeholder:font-normal min-h-[26px] max-h-[400px] resize-none leading-[1.45] selection:bg-white/15 transition-colors duration-200 relative z-0 py-1 ${ isOverflowing ? 'overflow-y-auto custom-scrollbar pr-2' : 'overflow-hidden' }`}
+                    className={`eterx-composer-textarea w-full appearance-none border-0 bg-transparent shadow-none outline-none ring-0 text-[14.5px] font-normal text-[#F0F0F0] placeholder:text-[#8B8984] focus:border-0 focus:outline-none focus:ring-0 placeholder:font-normal min-h-[26px] max-h-[400px] resize-none leading-[1.45] selection:bg-white/15 transition-colors duration-200 relative z-0 py-1 ${ isOverflowing ? 'overflow-y-auto eterx-scrollbar pr-2' : 'overflow-hidden' }`}
                     style={{
                       caretColor: '#F0F0F0',
                       height: '26px',
@@ -3032,7 +3135,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                           <div className="px-2.5 py-0.5">
                             <span className="text-[11px] font-semibold text-white/50">Custom agents</span>
                           </div>
-                          <div className="max-h-[136px] overflow-y-auto pr-0.5 custom-scrollbar">
+                          <div className="max-h-[136px] overflow-y-auto pr-1 eterx-scrollbar">
                             {availableAgents.map(agent => (
                               <button
                                 key={agent.agentId}
@@ -3123,7 +3226,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                     role="dialog"
                     aria-label="Model and thinking settings"
                   >
-                    <div className={`overflow-y-auto pr-1 custom-scrollbar ${ isNewChatHome ? 'max-h-[min(180px,calc(100vh-420px))]' : 'max-h-[min(280px,40vh)]' }`}>
+                    <div className={`overflow-y-auto pr-1 eterx-scrollbar ${ isNewChatHome ? 'max-h-[min(180px,calc(100vh-420px))]' : 'max-h-[min(280px,40vh)]' }`}>
                       {allModelOptions.map((option) => {
                         const selected = option.optionKey === selectedModel.optionKey;
                         const optionLabel = getModelOptionLabel(option);
@@ -3224,7 +3327,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                 )}
               </div>
 
-              <Tooltip text="Voice dictation" side="top">
+               <Tooltip text="Voice dictation" side="top">
                 <button onClick={toggleSpeech} className={`eterx-control-button w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full border border-transparent bg-[#2D2D2D] text-white transition-all duration-150 ease-out hover:text-white hover:bg-[#333333] hover:border-transparent active:bg-[#333333] relative group ${ isRecording ? '!text-[#E2765A] animate-pulse !bg-[#3A2823] !border-transparent' : '' }`}>
                   <PremiumMic className="eterx-composer-control-icon w-[18px] h-[18px] group-hover:scale-[1.04] transition-transform duration-200 ease-out" strokeWidth={1.85} />
                 </button>
@@ -3389,16 +3492,17 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       role="dialog"
                       aria-label="Workspace folder selector"
                       onClick={(event) => event.stopPropagation()}
+                      onMouseLeave={() => setActiveProjectSubmenu(null)}
                     >
                       <label className="eterx-status-search">
                         <Search className="h-4 w-4 shrink-0" strokeWidth={2} />
                         <input
                           value={projectSearch}
                           onChange={(event) => setProjectSearch(event.target.value)}
-                          placeholder="Search or paste folder path..."
+                          placeholder="Search projects"
                         />
                       </label>
-                      <div className="eterx-status-menu-section max-h-[150px] overflow-y-auto">
+                      <div className="eterx-status-menu-section max-h-[280px] overflow-y-auto eterx-scrollbar" onMouseEnter={() => setActiveProjectSubmenu(null)}>
                         {looksLikePath && (
                           <button
                             type="button"
@@ -3415,6 +3519,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                                   ...parsed.filter((p: any) => p.path !== pathVal)
                                 ].slice(0, 8);
                                 localStorage.setItem('eterx_recent_projects', JSON.stringify(updated));
+                                setRecentProjects(updated);
                               } catch { }
                               setProjectSearch('');
                               setOpenStatusMenu(null);
@@ -3433,17 +3538,15 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                             <button
                               key={project.path}
                               type="button"
+                              title={project.path}
                               className={`eterx-status-menu-item ${ selected ? 'is-selected' : '' }`}
                               onClick={() => {
                                 handleWorkspacePathChange(project.path);
                                 setOpenStatusMenu(null);
                               }}
                             >
-                              <FolderOpen className="eterx-status-menu-icon" strokeWidth={1.95} />
-                              <div className="min-w-0 flex-1 text-left">
-                                <div className="truncate text-[13px] font-medium leading-none mb-0.5">{project.name}</div>
-                                <div className="truncate text-[10px] text-white/40 font-mono leading-none">{project.path}</div>
-                              </div>
+                              <Folder className="eterx-status-menu-icon" strokeWidth={1.95} />
+                              <span className="min-w-0 flex-1 truncate text-left text-[13px] font-medium">{project.name}</span>
                               {selected && <Check className="h-4 w-4 shrink-0" strokeWidth={2.35} />}
                             </button>
                           );
@@ -3451,24 +3554,52 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                           <div className="eterx-status-empty text-xs py-4 text-center text-white/30">No recent folders found</div>
                         )}
                       </div>
+                      
                       <div className="eterx-status-menu-rule" />
-                      <button type="button" className="eterx-status-menu-item" onClick={handleSelectFolderDialog}>
-                        <FolderPlus className="eterx-status-menu-icon" strokeWidth={1.95} />
-                        <span className="min-w-0 flex-1 truncate">Browse system folder</span>
-                        <ChevronRight className="h-4 w-4 shrink-0 opacity-65" strokeWidth={2.1} />
-                      </button>
-                      <button
-                        type="button"
-                        className={`eterx-status-menu-item ${ !activeWorkspacePath ? 'is-selected' : '' }`}
-                        onClick={() => {
-                          handleWorkspacePathChange(null);
-                          setOpenStatusMenu(null);
-                        }}
+                      
+                      <div
+                        className="relative flex items-center justify-between eterx-status-menu-item group cursor-pointer"
+                        onMouseEnter={() => setActiveProjectSubmenu('new_project')}
                       >
-                        <CircleSlash className="eterx-status-menu-icon" strokeWidth={1.95} />
-                        <span className="min-w-0 flex-1 truncate">Use default local project</span>
-                        {!activeWorkspacePath && <Check className="h-4 w-4 shrink-0" strokeWidth={2.35} />}
-                      </button>
+                        <div className="flex items-center gap-2.5">
+                          <Plus className="eterx-status-menu-icon" strokeWidth={1.95} />
+                          <span className="min-w-0 flex-1 truncate text-left text-[13px] font-medium text-[#F4F1EA]">New project</span>
+                        </div>
+                        <ChevronRight className="h-4 w-4 shrink-0 opacity-65 text-[#F4F1EA]" strokeWidth={2.1} />
+                        
+                        {activeProjectSubmenu === 'new_project' && (
+                          <div
+                            className="absolute left-[calc(100%+8px)] bottom-0 z-[140] w-[210px] rounded-xl border border-white/[0.08] bg-[#1E1E1E]/95 backdrop-blur-xl p-1.5 shadow-[0_12px_36px_rgba(0,0,0,0.5)] flex flex-col gap-0.5"
+                            onClick={(e) => e.stopPropagation()}
+                            onMouseLeave={() => setActiveProjectSubmenu(null)}
+                          >
+                            <button
+                              type="button"
+                              className="eterx-status-menu-item"
+                              onClick={() => {
+                                handleSelectFolderDialog();
+                                setActiveProjectSubmenu(null);
+                                setOpenStatusMenu(null);
+                              }}
+                            >
+                              <Plus className="eterx-status-menu-icon" strokeWidth={1.95} />
+                              <span className="min-w-0 flex-1 truncate text-left text-[13px] font-medium">Start from scratch</span>
+                            </button>
+                            <button
+                              type="button"
+                              className="eterx-status-menu-item"
+                              onClick={() => {
+                                handleSelectFolderDialog();
+                                setActiveProjectSubmenu(null);
+                                setOpenStatusMenu(null);
+                              }}
+                            >
+                              <Folder className="eterx-status-menu-icon" strokeWidth={1.95} />
+                              <span className="min-w-0 flex-1 truncate text-left text-[13px] font-medium">Use an existing folder</span>
+                            </button>
+                          </div>
+                        )}
+                      </div>
                     </motion.div>
                   )}
                 </AnimatePresence>
@@ -3531,46 +3662,102 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                 </AnimatePresence>
               </div>
 
-              <div className="eterx-new-chat-status-anchor">
-                <button
-                  type="button"
-                  className={`eterx-new-chat-status-item ${ openStatusMenu === 'branch' ? 'is-open' : '' }`}
-                  aria-label={`Git branch ${ branchName }`}
-                  aria-haspopup="dialog"
-                  aria-expanded={openStatusMenu === 'branch'}
-                  onClick={(event) => toggleStatusMenu(event, 'branch')}
-                >
-                  <GitBranch className="eterx-new-chat-status-icon" strokeWidth={1.9} />
-                  <span>{branchName}</span>
-                  <ChevronDown className="eterx-new-chat-status-chevron" strokeWidth={2.1} />
-                </button>
-                <AnimatePresence>
-                  {openStatusMenu === 'branch' && (
-                    <motion.div
-                      initial={{ opacity: 0, y: 8, scale: 0.98 }}
-                      animate={{ opacity: 1, y: 0, scale: 1 }}
-                      exit={{ opacity: 0, y: 8, scale: 0.98 }}
-                      transition={{ duration: 0.16, ease: 'easeOut' }}
-                      className="eterx-composer-popout eterx-status-popout eterx-status-popout-branch"
-                      role="dialog"
-                      aria-label="Branch menu"
-                      onClick={(event) => event.stopPropagation()}
-                    >
-                      <div className="eterx-status-menu-label">Branch</div>
-                      <button type="button" className="eterx-status-menu-item is-selected" onClick={() => setOpenStatusMenu(null)}>
-                        <GitBranch className="eterx-status-menu-icon" strokeWidth={1.95} />
-                        <span className="min-w-0 flex-1 truncate">{branchName}</span>
-                        <Check className="h-4 w-4 shrink-0" strokeWidth={2.35} />
-                      </button>
-                      <button type="button" className="eterx-status-menu-item" onClick={openProjectsFromRail}>
-                        <Plus className="eterx-status-menu-icon" strokeWidth={2.05} />
-                        <span className="min-w-0 flex-1 truncate">Manage branches</span>
-                        <ChevronRight className="h-4 w-4 shrink-0 opacity-65" strokeWidth={2.1} />
-                      </button>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-              </div>
+              {isGitRepo && (
+                <div className="eterx-new-chat-status-anchor">
+                  <button
+                    type="button"
+                    className={`eterx-new-chat-status-item ${ openStatusMenu === 'branch' ? 'is-open' : '' }`}
+                    aria-label={`Git branch ${ branchName }`}
+                    aria-haspopup="dialog"
+                    aria-expanded={openStatusMenu === 'branch'}
+                    onClick={(event) => toggleStatusMenu(event, 'branch')}
+                  >
+                    <GitBranch className="eterx-new-chat-status-icon" strokeWidth={1.9} />
+                    <span>{branchName}</span>
+                    <ChevronDown className="eterx-new-chat-status-chevron" strokeWidth={2.1} />
+                  </button>
+                  <AnimatePresence>
+                    {openStatusMenu === 'branch' && (
+                      <motion.div
+                        initial={{ opacity: 0, y: 8, scale: 0.98 }}
+                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                        exit={{ opacity: 0, y: 8, scale: 0.98 }}
+                        transition={{ duration: 0.16, ease: 'easeOut' }}
+                        className="eterx-composer-popout eterx-status-popout eterx-status-popout-branch"
+                        role="dialog"
+                        aria-label="Branch menu"
+                        onClick={(event) => event.stopPropagation()}
+                      >
+                        <div className="eterx-status-menu-label">Branch</div>
+                        <div className="eterx-status-menu-section max-h-[200px] overflow-y-auto eterx-scrollbar">
+                          {branchesList.map(b => {
+                            const isCurrent = b === branchName;
+                            return (
+                              <button
+                                key={b}
+                                type="button"
+                                className={`eterx-status-menu-item ${ isCurrent ? 'is-selected' : '' }`}
+                                onClick={() => {
+                                  handleSwitchBranch(b);
+                                  setOpenStatusMenu(null);
+                                }}
+                              >
+                                <GitBranch className="eterx-status-menu-icon" strokeWidth={1.95} />
+                                <span className="min-w-0 flex-1 truncate text-left">{b}</span>
+                                {isCurrent && <Check className="h-4 w-4 shrink-0" strokeWidth={2.35} />}
+                              </button>
+                            );
+                          })}
+                        </div>
+                        <div className="eterx-status-menu-rule" />
+                        {isCreatingBranch ? (
+                          <form
+                            onSubmit={(e) => {
+                              e.preventDefault();
+                              if (newBranchName.trim()) {
+                                submitCreateBranch(newBranchName.trim());
+                              }
+                            }}
+                            className="eterx-status-search mx-1 mb-1 mt-1"
+                          >
+                            <GitBranch className="h-4 w-4 shrink-0 opacity-60" strokeWidth={1.9} />
+                            <input
+                              autoFocus
+                              value={newBranchName}
+                              onChange={(e) => setNewBranchName(e.target.value)}
+                              placeholder="New branch name..."
+                              className="w-full bg-transparent text-[12.5px] outline-none text-white placeholder-white/30 font-medium"
+                              onBlur={() => {
+                                if (!newBranchName.trim()) {
+                                  setIsCreatingBranch(false);
+                                }
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Escape') {
+                                  setIsCreatingBranch(false);
+                                  setNewBranchName('');
+                                }
+                              }}
+                            />
+                          </form>
+                        ) : (
+                          <button
+                            type="button"
+                            className="eterx-status-menu-item"
+                            onClick={() => {
+                              setIsCreatingBranch(true);
+                              setNewBranchName('');
+                            }}
+                          >
+                            <Plus className="eterx-status-menu-icon text-[#E2765A]" strokeWidth={2.05} />
+                            <span className="min-w-0 flex-1 truncate text-[#E2765A] font-semibold text-left">Create new branch</span>
+                          </button>
+                        )}
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
+              )}
             </div>
           </motion.div>
         )}
