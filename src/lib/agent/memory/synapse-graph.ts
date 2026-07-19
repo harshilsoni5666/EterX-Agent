@@ -40,6 +40,12 @@ import {
 } from './divergence';
 import { CentroidEngine, type CentroidState } from './centroid';
 import {
+  adaptiveResonanceBudget,
+  selectContextByResonance,
+  type ResonanceSelectionResult,
+} from './context-resonance';
+import { distillEvidence } from './evidence-distiller';
+import {
   InjectionPolicyEngine,
   type InjectionPayload,
   type RegisteredInput,
@@ -184,6 +190,12 @@ export interface ConfidenceRecord {
 
   /** How many times this has been injected. */
   injectionCount: number;
+
+  /** Number of later tool actions that reused this record's evidence. */
+  usefulInjectionCount: number;
+
+  /** Last turn where downstream action overlapped this evidence. */
+  lastUsefulTurn: number;
 }
 
 /**
@@ -278,6 +290,10 @@ interface DecisionSurface {
   budgetFitting: StructuredRecord[];
   /** The final ranked set after all 5 filters. */
   finalSet: StructuredRecord[];
+  /** Explainable resonance score for each selected record. */
+  resonanceScores: Map<string, { score: number; reason: string }>;
+  /** Selection telemetry used by benchmarks and debug surfaces. */
+  resonance: ResonanceSelectionResult;
 }
 
 // ─── Graph State ──────────────────────────────────────────────────────────────
@@ -320,7 +336,17 @@ export interface ProcessTurnResult {
     budgetFitCount: number;
     finalCount: number;
     totalRecords: number;
+    meanUtility: number;
+    diversity: number;
+    tokenBudget: number;
   };
+}
+
+export interface ReasoningPulseResult {
+  renderedContext: string;
+  payload: InjectionPayload;
+  selectedNewEvidence: number;
+  processingTimeMs: number;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -361,6 +387,7 @@ export class SynapseGraph {
   private persistTimer: ReturnType<typeof setTimeout> | null = null;
   private persistPending = false;
   private graphFilePath: string | null = null;
+  private lastSynapseState: SynapseState = 'Warmup';
 
   constructor() {
     this.divergenceEngine = new DivergenceEngine();
@@ -521,10 +548,21 @@ export class SynapseGraph {
     }
 
     // Step 6: Run 5-question decision surface (§4.6)
-    const surface = this.runDecisionSurface(queryVectorForRetrieval, turn);
+    this.lastSynapseState = divergenceState;
+    const surface = this.runDecisionSurface(queryVectorForRetrieval, turn, divergenceState);
 
     // Step 7: Build injection payload from decision surface
-    const payload = this.buildPayloadFromSurface(surface, divergenceState, omega, confidence, turn, queryVectorForRetrieval);
+    const tokenBudget = adaptiveResonanceBudget(divergenceState, this.state.records.size);
+    const payload = this.buildPayloadFromSurface(
+      surface,
+      divergenceState,
+      omega,
+      Math.max(confidence, divergenceState === 'Warmup' ? 0.65 : 0),
+      turn,
+      queryVectorForRetrieval,
+      tokenBudget,
+    );
+    this.markPayloadInjected(payload, turn);
 
     // Step 8: Decay topology
     this.decayTopology(turn);
@@ -551,7 +589,59 @@ export class SynapseGraph {
         budgetFitCount: surface.budgetFitting.length,
         finalCount: surface.finalSet.length,
         totalRecords: this.state.records.size,
+        meanUtility: surface.resonance.meanUtility,
+        diversity: surface.resonance.diversity,
+        tokenBudget,
       },
+    };
+  }
+
+  /**
+   * Produce a delta context pulse after tools add new evidence. This does not
+   * advance the conversation turn or duplicate the current user message.
+   * Records already injected during this turn are suppressed, so long-running
+   * ReAct loops receive new evidence without repeatedly growing their prompt.
+   */
+  public refreshReasoningContext(query: string): ReasoningPulseResult {
+    const t0 = performance.now();
+    const turn = Math.max(1, this.state.turnCount);
+    const queryVector = this.vectorizer.vectorize(query);
+    const activeNode = this.getActiveNode();
+    const state: SynapseState = activeNode ? this.lastSynapseState : 'Warmup';
+    const surface = this.runDecisionSurface(queryVector, turn, state);
+    const tokenBudget = Math.min(2200, adaptiveResonanceBudget(state, this.state.records.size));
+    const fullPayload = this.buildPayloadFromSurface(
+      surface,
+      state,
+      0,
+      0.8,
+      turn,
+      queryVector,
+      tokenBudget,
+    );
+    const items = fullPayload.items.filter(item => {
+      const sourceId = item.id.startsWith('causal_') ? item.id.slice('causal_'.length) : item.id;
+      const record = this.state.records.get(sourceId);
+      return !record || record.confidence.lastInjectedTurn < turn;
+    });
+    const payload: InjectionPayload = {
+      ...fullPayload,
+      items,
+      totalTokens: items.reduce((sum, item) => sum + item.estimatedTokens, 0),
+      debug: {
+        ...fullPayload.debug,
+        budgetUsed: items.reduce((sum, item) => sum + item.estimatedTokens, 0),
+        tier1Count: items.filter(item => item.tier === 1).length,
+        tier2Count: items.filter(item => item.tier === 2).length,
+        tier3Count: items.filter(item => item.tier === 3).length,
+      },
+    };
+    this.markPayloadInjected(payload, turn);
+    return {
+      renderedContext: this.injectionEngine.renderPayload(payload),
+      payload,
+      selectedNewEvidence: items.length,
+      processingTimeMs: performance.now() - t0,
     };
   }
 
@@ -639,6 +729,8 @@ export class SynapseGraph {
         injectionReason: '',
         lastInjectedTurn: 0,
         injectionCount: 0,
+        usefulInjectionCount: 0,
+        lastUsefulTurn: 0,
       },
       links: opts.links || [],
     };
@@ -696,7 +788,7 @@ export class SynapseGraph {
    * For each turn, answer 5 questions to build the injection set.
    * All operations are O(n) over records with early termination.
    */
-  private runDecisionSurface(queryVector: number[], turn: number): DecisionSurface {
+  private runDecisionSurface(queryVector: number[], turn: number, state: SynapseState): DecisionSurface {
     const activeNode = this.getActiveNode();
     const activeTask = activeNode?.topicSummary || '(initializing)';
 
@@ -714,10 +806,21 @@ export class SynapseGraph {
       const sim = rVec.length > 0 && queryVector.length > 0 ? cosineSimilarity(queryVector, rVec) : 0;
       return { record: r, similarity: sim };
     });
+    const semanticScores = new Map(scored.map(item => [item.record.source.id, item.similarity]));
+    const currentUserTurnIds = new Set(
+      candidates
+        .filter(record => record.source.sourceType === 'user_turn' && record.source.createdAtTurn === turn)
+        .map(record => record.source.id),
+    );
 
     // Q2 answer: records with similarity > 0.15
     const semanticMatches = scored
-      .filter(s => s.similarity > 0.15)
+      // Fresh tool evidence is causally attached to the current user turn.
+      // Preserve it even when terse output has weak lexical overlap.
+      .filter(s => s.similarity > 0.15 || (
+        s.record.source.createdAtTurn >= turn - 1 &&
+        (s.record.links?.some(link => link.relationType === 'caused_by' && currentUserTurnIds.has(link.targetId)) || false)
+      ))
       .sort((a, b) => b.similarity - a.similarity)
       .slice(0, 30)
       .map(s => s.record);
@@ -737,29 +840,38 @@ export class SynapseGraph {
       freshRecords.includes(r) && confidentRecords.includes(r),
     );
 
-    // Sort by: tier ASC (system first), then confidence DESC, then recency DESC
-    const sorted = intersected.sort((a, b) => {
-      if (a.source.tier !== b.source.tier) return a.source.tier - b.source.tier;
-      if (b.confidence.confidence !== a.confidence.confidence) return b.confidence.confidence - a.confidence.confidence;
-      return b.source.createdAtTurn - a.source.createdAtTurn;
-    });
-
-    // Enforce token budget (8000 tokens default)
-    const budget = 8000;
-    let usedTokens = 0;
-    const budgetFitting: StructuredRecord[] = [];
-    for (const record of sorted) {
-      const tokens = estimateTokens(record.source.content);
-      if (usedTokens + tokens > budget) continue;
-      budgetFitting.push(record);
-      usedTokens += tokens;
-    }
-
-    // Also include ALL tier-1 records (system rules always included)
-    const tier1 = candidates.filter(r =>
-      r.source.tier === 1 && !budgetFitting.includes(r),
+    // Context Resonance: select a diverse, evidence-rich set rather than a
+    // simple recency top-k. Tier-1 rules participate as mandatory candidates.
+    const tier1 = candidates.filter(record => record.source.tier === 1);
+    const resonanceCandidates = [...tier1, ...intersected.filter(record => record.source.tier !== 1)];
+    const budget = adaptiveResonanceBudget(state, candidates.length);
+    const resonance = selectContextByResonance(
+      resonanceCandidates.map(record => ({
+        id: record.source.id,
+        content: record.source.content,
+        tier: record.source.tier,
+        semanticSimilarity: record.source.tier === 1 ? 1 : (semanticScores.get(record.source.id) || 0),
+        confidence: record.confidence.confidence,
+        freshness: Math.max(0, 1 - Math.max(0, turn - record.source.createdAtTurn) / 40),
+        causalSupport: Math.max(
+          Math.min(1, (record.links?.length || 0) / 4),
+          Math.min(1, (record.confidence.usefulInjectionCount || 0) / Math.max(1, record.confidence.injectionCount || 1)),
+        ),
+        validated: record.confidence.validated || record.state.state === 'validated' || record.state.state === 'required',
+        injectionCount: record.confidence.injectionCount,
+        estimatedTokens: estimateTokens(record.source.content),
+      })),
+      state,
+      budget,
     );
-    const finalSet = [...tier1, ...budgetFitting];
+    const byId = new Map(candidates.map(record => [record.source.id, record]));
+    const budgetFitting = resonance.selected
+      .map(item => byId.get(item.candidate.id))
+      .filter((record): record is StructuredRecord => !!record);
+    const finalSet = budgetFitting;
+    const resonanceScores = new Map(
+      resonance.selected.map(item => [item.candidate.id, { score: item.selectionScore, reason: item.reason }]),
+    );
 
     return {
       activeTask,
@@ -768,6 +880,8 @@ export class SynapseGraph {
       confidentRecords,
       budgetFitting,
       finalSet,
+      resonanceScores,
+      resonance,
     };
   }
 
@@ -780,6 +894,7 @@ export class SynapseGraph {
     confidence: number,
     turn: number,
     queryVector: number[],
+    tokenBudget: number,
   ): InjectionPayload {
     // Convert StructuredRecords to RegisteredInputs for the injection engine
     const registeredInputs: RegisteredInput[] = surface.finalSet.map(r => ({
@@ -793,6 +908,8 @@ export class SynapseGraph {
       sourceType: r.source.sourceType as any,
       versionChain: r.version.previousVersionId ? [r.version.previousVersionId] : [],
       links: r.links,
+      resonanceScore: surface.resonanceScores.get(r.source.id)?.score,
+      resonanceReason: surface.resonanceScores.get(r.source.id)?.reason,
     }));
 
     // Build archived node summaries for drift injection
@@ -827,7 +944,19 @@ export class SynapseGraph {
       state, confidence, queryVector, omega, turn,
       registeredInputs, archivedSummaries,
       this.state.recentUserMessages,
+      tokenBudget,
     );
+  }
+
+  private markPayloadInjected(payload: InjectionPayload, turn: number): void {
+    for (const item of payload.items) {
+      const sourceId = item.id.startsWith('causal_') ? item.id.slice('causal_'.length) : item.id;
+      const record = this.state.records.get(sourceId);
+      if (!record) continue;
+      record.confidence.lastInjectedTurn = turn;
+      record.confidence.injectionCount++;
+      record.confidence.injectionReason = item.reason;
+    }
   }
 
   // ── Public API for Tool Results ─────────────────────────────────────────────
@@ -847,9 +976,18 @@ export class SynapseGraph {
     const isFileWrite = /write|create|edit|patch|apply/.test(toolName);
     const isPatch = /patch|edit|str_replace|apply_patch/.test(toolName);
 
-    this.vectorizer.addDocument(`${toolName}: ${result.substring(0, 200)}`);
+    const activeQuery = this.state.recentUserMessages[this.state.recentUserMessages.length - 1] || '';
+    const distilled = distillEvidence(result, `${activeQuery} ${toolName}`, 700);
+    this.vectorizer.addDocument(`${toolName}: ${distilled.text}`);
 
-    const sourceType: SourceType = isPatch ? 'code_patch'
+    const verificationIntent = /\b(verify|test|lint|typecheck|build|compile|check)\b/i.test(
+      `${toolName} ${String(args.command || args.script || args.checkType || '')}`,
+    );
+    const verificationSucceeded = verificationIntent && distilled.status === 'success';
+    const verificationFailed = verificationIntent && (distilled.status === 'failure' || distilled.status === 'mixed');
+
+    const sourceType: SourceType = verificationSucceeded ? 'validated_completion'
+      : isPatch ? 'code_patch'
       : isFileWrite ? 'file_snapshot'
       : toolName.includes('search') ? 'search_result'
       : 'tool_result';
@@ -868,11 +1006,11 @@ export class SynapseGraph {
     }
 
     const toolResultRecord = this.storeRecord({
-      content: `[${toolName}] ${result.substring(0, 500)}`,
+      content: `[${toolName}; status=${distilled.status}; originalChars=${distilled.originalChars}] ${distilled.text}`,
       sourceType,
       tier: 3,
       turn: effectiveTurn,
-      tags: [toolName, ...this.extractTags(result.substring(0, 200))],
+      tags: [toolName, distilled.status, ...this.extractTags(distilled.text), ...distilled.preservedExactTokens.slice(0, 5)],
       toolName,
       filePath,
       patchInfo: isPatch && filePath ? {
@@ -884,6 +1022,7 @@ export class SynapseGraph {
       } : undefined,
       links,
     });
+    this.applyInjectionUtilityFeedback(toolName, args, distilled.text);
 
     if (latestUserTurnId) {
       const userTurnRec = this.state.records.get(latestUserTurnId);
@@ -891,6 +1030,41 @@ export class SynapseGraph {
         if (!userTurnRec.links) userTurnRec.links = [];
         userTurnRec.links.push({ targetId: toolResultRecord.source.id, relationType: 'child' });
       }
+    }
+
+    if (verificationSucceeded) {
+      toolResultRecord.state.state = 'validated';
+      toolResultRecord.state.changedBy = toolName;
+      toolResultRecord.confidence.validated = true;
+      toolResultRecord.confidence.confidence = 0.96;
+      this.promoteRecentEvidenceFromVerification(toolResultRecord.source.id, toolName, filePath);
+    } else if (verificationFailed) {
+      toolResultRecord.confidence.confidence = 0.90;
+      toolResultRecord.confidence.injectionReason = `${toolName} is authoritative failure evidence`;
+      this.degradeRecentEvidenceFromFailedVerification(toolResultRecord.source.id, toolName, filePath);
+    }
+  }
+
+  /**
+   * Lightweight Hebbian feedback: context that co-activates with a concrete
+   * downstream action becomes slightly more trustworthy. Injection without
+   * later use is already handled by repetition fatigue in Context Resonance.
+   */
+  private applyInjectionUtilityFeedback(toolName: string, args: Record<string, any>, resultDigest: string): void {
+    const actionTags = new Set(this.extractTags(`${toolName} ${JSON.stringify(args)} ${resultDigest}`));
+    const actionPath = String(args.filename || args.path || args.file || '').replace(/\\/g, '/').toLowerCase();
+    for (const record of this.state.records.values()) {
+      if (record.confidence.lastInjectedTurn !== this.state.turnCount) continue;
+      let overlap = 0;
+      for (const tag of record.source.tags) if (actionTags.has(tag.toLowerCase())) overlap++;
+      const recordPath = String(record.source.filePath || '').replace(/\\/g, '/').toLowerCase();
+      const samePath = !!actionPath && !!recordPath && (actionPath === recordPath || actionPath.endsWith(recordPath) || recordPath.endsWith(actionPath));
+      if (!samePath && overlap < 2) continue;
+
+      record.confidence.usefulInjectionCount = (record.confidence.usefulInjectionCount || 0) + 1;
+      record.confidence.lastUsefulTurn = this.state.turnCount;
+      record.confidence.confidence = Math.min(0.98, record.confidence.confidence + (samePath ? 0.025 : 0.012));
+      record.confidence.injectionReason = `Downstream utility observed via ${toolName}${samePath ? ' on the same path' : ''}`;
     }
   }
 
@@ -1092,14 +1266,101 @@ export class SynapseGraph {
   // ── Record GC ───────────────────────────────────────────────────────────────
 
   private gcRecords(): void {
-    // Remove oldest superseded/rejected records first
+    const targetSize = Math.floor(MAX_RECORDS * 0.84);
+    let remainingToRemove = Math.max(0, this.state.records.size - targetSize);
+
+    // Phase 1: remove invalid historical versions first.
     const removable = [...this.state.records.entries()]
       .filter(([, r]) => r.version.isSuperseded || r.state.state === 'rejected' || r.state.state === 'reverted')
       .sort(([, a], [, b]) => a.source.createdAtTurn - b.source.createdAtTurn);
 
-    const removeCount = Math.min(removable.length, this.state.records.size - Math.floor(MAX_RECORDS * 0.7));
+    const removeCount = Math.min(removable.length, remainingToRemove);
     for (let i = 0; i < removeCount; i++) {
       this.state.records.delete(removable[i][0]);
+    }
+    remainingToRemove -= removeCount;
+    if (remainingToRemove <= 0) return;
+
+    // Phase 2: bounded plasticity. Durable rules, validated evidence, recent
+    // work, and records owned by the active topic are protected. The lowest
+    // utility old observations are retired; their durable outcomes already
+    // live in verifiedCompletions and the Lifetime Brain.
+    const activeRecordIds = new Set((this.getActiveNode()?.recordIds || []).slice(-30));
+    const recentRecordIds = new Set(
+      [...this.state.records.values()]
+        .sort((a, b) => b.source.createdAtTurn - a.source.createdAtTurn || b.source.createdAt - a.source.createdAt)
+        .slice(0, 120)
+        .map(record => record.source.id),
+    );
+    const lowUtility = [...this.state.records.entries()]
+      .filter(([, record]) => {
+        if (record.source.tier === 1 || record.source.sourceType === 'system_rule') return false;
+        if (record.confidence.validated || record.state.state === 'validated' || record.state.state === 'required') return false;
+        if (activeRecordIds.has(record.source.id)) return false;
+        if (recentRecordIds.has(record.source.id)) return false;
+        return true;
+      })
+      .map(([id, record]) => ({
+        id,
+        record,
+        utility:
+          record.confidence.confidence * 0.55 +
+          Math.min(1, record.confidence.injectionCount / 8) * 0.15 +
+          Math.max(0, 1 - (this.state.turnCount - record.source.createdAtTurn) / 120) * 0.30,
+      }))
+      .sort((a, b) => a.utility - b.utility || a.record.source.createdAtTurn - b.record.source.createdAtTurn);
+
+    for (const item of lowUtility.slice(0, remainingToRemove)) {
+      this.state.records.delete(item.id);
+      for (const node of [...this.state.l1Nodes.values(), ...this.state.l2Nodes.values()]) {
+        const index = node.recordIds.indexOf(item.id);
+        if (index >= 0) node.recordIds.splice(index, 1);
+      }
+    }
+
+  }
+
+  private recentMutableRecords(filePath?: string): StructuredRecord[] {
+    const mutableTypes = new Set<SourceType>(['file_snapshot', 'file_patch', 'code_patch', 'batch_update', 'generated_draft']);
+    return [...this.state.records.values()]
+      .filter(record => mutableTypes.has(record.source.sourceType))
+      .filter(record => !record.version.isSuperseded && record.state.state !== 'reverted' && record.state.state !== 'rejected')
+      .filter(record => !filePath || !record.source.filePath || record.source.filePath === filePath)
+      .sort((a, b) => b.source.createdAtTurn - a.source.createdAtTurn || b.source.createdAt - a.source.createdAt)
+      .slice(0, 20);
+  }
+
+  private promoteRecentEvidenceFromVerification(verificationRecordId: string, toolName: string, filePath?: string): void {
+    const candidates = this.recentMutableRecords(filePath);
+
+    for (const record of candidates) {
+      record.state.state = 'validated';
+      record.state.changedAtTurn = this.state.turnCount;
+      record.state.changedBy = toolName;
+      record.confidence.validated = true;
+      record.confidence.confidence = Math.max(record.confidence.confidence, 0.92);
+      record.links = record.links || [];
+      if (!record.links.some(link => link.targetId === verificationRecordId)) {
+        record.links.push({ targetId: verificationRecordId, relationType: 'semantic_ref' });
+      }
+    }
+
+    const node = this.getActiveNode();
+    if (node) {
+      node.verifiedCompletions.push(`${toolName} validated ${candidates.length} recent change record(s)`.substring(0, 120));
+      node.verifiedCompletions = node.verifiedCompletions.slice(-10);
+    }
+  }
+
+  private degradeRecentEvidenceFromFailedVerification(verificationRecordId: string, toolName: string, filePath?: string): void {
+    for (const record of this.recentMutableRecords(filePath).slice(0, 12)) {
+      if (record.confidence.validated) continue;
+      record.confidence.confidence = Math.min(record.confidence.confidence, 0.55);
+      record.confidence.injectionReason = `${toolName} produced failure evidence; treat this change as unverified`;
+      record.links = record.links || [];
+      if (!record.links.some(link => link.targetId === verificationRecordId)) {
+        record.links.push({ targetId: verificationRecordId, relationType: 'semantic_ref' });
+      }
     }
   }
 
@@ -1142,11 +1403,12 @@ export class SynapseGraph {
 
   private exportState(): Record<string, any> {
     return {
-      version: 2,
+      version: 3,
       chatId: this.state.chatId,
       projectId: this.state.projectId,
       activeNodeId: this.state.activeNodeId,
       turnCount: this.state.turnCount,
+      lastSynapseState: this.lastSynapseState,
       recentUserMessages: [...this.state.recentUserMessages],
       l1Nodes: Object.fromEntries([...this.state.l1Nodes.entries()].map(([id, n]) => [id, this.serializeNode(n)])),
       l2Nodes: Object.fromEntries([...this.state.l2Nodes.entries()].map(([id, n]) => [id, this.serializeNode(n)])),
@@ -1164,6 +1426,9 @@ export class SynapseGraph {
     this.state.projectId = raw.projectId || '';
     this.state.activeNodeId = raw.activeNodeId || null;
     this.state.turnCount = raw.turnCount || 0;
+    this.lastSynapseState = ['Warmup', 'Continuity', 'Drift', 'Transition'].includes(raw.lastSynapseState)
+      ? raw.lastSynapseState
+      : 'Warmup';
     this.state.recentUserMessages = raw.recentUserMessages || [];
 
     this.state.l1Nodes = new Map();
@@ -1172,6 +1437,10 @@ export class SynapseGraph {
     if (raw.l2Nodes) for (const [id, n] of Object.entries(raw.l2Nodes)) this.state.l2Nodes.set(id, this.deserializeNode(n as any));
     this.state.edges = new Map(Object.entries(raw.edges || {}));
     this.state.records = new Map(Object.entries(raw.records || {}));
+    for (const record of this.state.records.values()) {
+      record.confidence.usefulInjectionCount = record.confidence.usefulInjectionCount || 0;
+      record.confidence.lastUsefulTurn = record.confidence.lastUsefulTurn || 0;
+    }
     this.state.latestVersionIndex = new Map(Object.entries(raw.latestVersionIndex || {}));
     this.state.patchChains = new Map(Object.entries(raw.patchChains || {}).map(([k, v]) => [k, v as string[]]));
 

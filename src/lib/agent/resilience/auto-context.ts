@@ -29,6 +29,7 @@
 import path from 'path';
 import fs from 'fs-extra';
 import { lifetimeBrain } from '../memory/lifetime';
+import { distillEvidence } from '../memory/evidence-distiller';
 
 const CONTEXT_DIR = path.resolve(process.cwd(), '.workspaces', '.context');
 const SNAPSHOT_FILE = path.join(CONTEXT_DIR, 'context_snapshots.json');
@@ -94,13 +95,8 @@ function compressFunctionResponse(
 
   if (outputStr.length <= maxLength) return part;
 
-  const isSuccess = !response.output?.error;
-  const head = outputStr.substring(0, maxLength * 0.7);
-  const tail = tier === 'ultra' ? '' : outputStr.slice(-(maxLength * 0.3));
-
-  const compressed = tier === 'ultra'
-    ? `${isSuccess ? 'SUCCESS' : 'FAILED'}. Key result: ${head}…[${tier} compressed]`
-    : `${head}…[${tier} compressed, ${(outputStr.length / 1024).toFixed(0)}KB total]${tail}`;
+  const digest = distillEvidence(outputStr, toolName, maxLength);
+  const compressed = `${digest.text}\n[${tier} evidence compaction; status=${digest.status}; ${digest.originalChars}→${digest.compactedChars} chars]`;
 
   return {
     functionResponse: {
@@ -296,6 +292,91 @@ export interface ContextHealth {
   shouldCompress: boolean;
 }
 
+export interface ProviderMessageCompactionResult {
+  originalTokens: number;
+  compactedTokens: number;
+  messagesCompacted: number;
+}
+
+function isProtectedProviderText(text: string): boolean {
+  const lower = text.toLowerCase();
+  return lower.includes('[current user request') ||
+    lower.includes('current request guard') ||
+    lower.includes('system prompt') ||
+    lower.includes('task plan') ||
+    lower.includes('context resonance capsule');
+}
+
+function compactProviderContent(content: any, maxChars: number): { content: any; changed: boolean } {
+  if (typeof content === 'string') {
+    if (content.length <= maxChars || isProtectedProviderText(content)) return { content, changed: false };
+    return { content: distillEvidence(content, '', maxChars).text, changed: true };
+  }
+  if (!Array.isArray(content)) return { content, changed: false };
+
+  let changed = false;
+  const next = content.map((block: any) => {
+    if (!block || typeof block !== 'object') return block;
+    // Tool-use/function-call blocks are protocol state and must remain exact.
+    if (block.type === 'tool_use' || block.type === 'image' || block.type === 'document') return block;
+    if (block.type === 'tool_result') {
+      const compacted = compactProviderContent(block.content, maxChars);
+      if (!compacted.changed) return block;
+      changed = true;
+      return { ...block, content: compacted.content };
+    }
+    if (block.type === 'text' && typeof block.text === 'string' && !isProtectedProviderText(block.text) && block.text.length > maxChars) {
+      changed = true;
+      return { ...block, text: distillEvidence(block.text, '', maxChars).text };
+    }
+    return block;
+  });
+  return { content: next, changed };
+}
+
+/**
+ * Provider-neutral in-place compaction for OpenAI/Mistral and Anthropic chat
+ * messages. It preserves roles, tool call IDs, tool-use blocks, and recent
+ * turns, changing only oversized evidence content in older messages.
+ */
+export function compactProviderMessagesInPlace(
+  messages: any[],
+  targetTokenBudget = 120_000,
+  protectedTailMessages = 10,
+): ProviderMessageCompactionResult {
+  const originalTokens = estimateTokens(JSON.stringify(messages));
+  if (originalTokens <= targetTokenBudget) {
+    return { originalTokens, compactedTokens: originalTokens, messagesCompacted: 0 };
+  }
+
+  const protectedStart = Math.max(0, messages.length - protectedTailMessages);
+  let messagesCompacted = 0;
+  const firstPassLimit = originalTokens > targetTokenBudget * 1.5 ? 900 : 2200;
+  for (let index = 0; index < protectedStart; index++) {
+    const message = messages[index];
+    if (!message || message.role === 'system') continue;
+    const result = compactProviderContent(message.content, firstPassLimit);
+    if (!result.changed) continue;
+    messages[index] = { ...message, content: result.content };
+    messagesCompacted++;
+  }
+
+  let compactedTokens = estimateTokens(JSON.stringify(messages));
+  if (compactedTokens > targetTokenBudget) {
+    for (let index = 0; index < protectedStart; index++) {
+      const message = messages[index];
+      if (!message || message.role === 'system') continue;
+      const result = compactProviderContent(message.content, 420);
+      if (!result.changed) continue;
+      messages[index] = { ...message, content: result.content };
+      messagesCompacted++;
+    }
+    compactedTokens = estimateTokens(JSON.stringify(messages));
+  }
+
+  return { originalTokens, compactedTokens, messagesCompacted };
+}
+
 export function checkContextHealth(
   contents: any[],
   modelContextWindow = 1_000_000 // Gemini 2.5 Flash: 1M tokens
@@ -470,4 +551,5 @@ export const autoContextManager = {
   saveSnapshot: saveMilestoneSnapshot,
   getLastSnapshot,
   estimateTokens: estimateContentsTokens,
+  compactProviderMessagesInPlace,
 };

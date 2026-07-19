@@ -1954,9 +1954,10 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       }
       return;
     }
-    if (inputValue.trim() || attachments.length > 0) {
-      notifyAgentFaceSend();
-    }
+    // Never invoke the send handler for an empty composer. This can happen
+    // when Enter is pressed while the UI is transitioning between states.
+    if (!hasComposerPayload) return;
+    notifyAgentFaceSend();
     handleSend();
   }, [attachments.length, handleSend, handleSteer, hasComposerPayload, hasErroredAttachments, hasPreparingAttachments, inputValue, isNetworkPaused, isThinking, onNetworkPausedAction]);
 

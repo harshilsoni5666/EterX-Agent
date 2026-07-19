@@ -3617,6 +3617,7 @@ const CollapsibleActionGroup = ({
 }) => {
   const visibleLogs = logs.filter(Boolean);
   if (visibleLogs.length === 0) return null;
+  const [open, setOpen] = useState(true);
   const terminalOnly = visibleLogs.length === 1 && isTerminalActionLike(visibleLogs[0]);
   const fileChangeOnly = visibleLogs.length === 1 && visibleLogs[0]?.type === 'file_edit';
   const progressOnly = visibleLogs.every(l => l?.type === 'progress');
@@ -3630,24 +3631,39 @@ const CollapsibleActionGroup = ({
       transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
     className={useStandaloneRows ? 'w-full' : ACTION_CARD_CLASS}
     >
-      {visibleLogs.map((log, i) => (
-        <motion.div
-          key={getActionIdentity(log, i)}
-          initial={{ opacity: 0, x: -4 }}
-          animate={{ opacity: 1, x: 0 }}
-          transition={{ duration: 0.18, delay: i * 0.03, ease: 'easeOut' }}
-          className={i > 0 && !progressOnly ? ACTION_ROW_DIVIDER_CLASS : ''}
+      {!useStandaloneRows && visibleLogs.length > 1 && (
+        <button
+          type="button"
+          aria-expanded={open}
+          onClick={() => setOpen(value => !value)}
+          className="flex w-full items-center gap-2 border-b border-white/[0.06] px-3 py-2 text-left text-[12px] font-medium text-white/60 transition-colors hover:bg-white/[0.035] hover:text-white/85 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30"
         >
-          <ActionChip
-            log={log}
-            isLastChip={isLast && i === visibleLogs.length - 1}
-            isActiveGroup={isActiveGroup}
-            allLogs={allLogs}
-            isNested={i > 0}
-            inCard={!useStandaloneRows}
-          />
-        </motion.div>
-      ))}
+          <ChevronDown className={`h-3.5 w-3.5 transition-transform ${open ? '' : '-rotate-90'}`} aria-hidden="true" />
+          <span>{visibleLogs.length} actions</span>
+          <span className="ml-auto text-[10px] text-white/35">{open ? 'Hide' : 'Show'}</span>
+        </button>
+      )}
+      <AnimatePresence initial={false}>
+        {(open || useStandaloneRows || visibleLogs.length === 1) && visibleLogs.map((log, i) => (
+          <motion.div
+            key={getActionIdentity(log, i)}
+            initial={{ opacity: 0, x: -4 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, height: 0 }}
+            transition={{ duration: 0.18, delay: i * 0.03, ease: 'easeOut' }}
+            className={i > 0 && !progressOnly ? ACTION_ROW_DIVIDER_CLASS : ''}
+          >
+            <ActionChip
+              log={log}
+              isLastChip={isLast && i === visibleLogs.length - 1}
+              isActiveGroup={isActiveGroup}
+              allLogs={allLogs}
+              isNested={i > 0}
+              inCard={!useStandaloneRows}
+            />
+          </motion.div>
+        ))}
+      </AnimatePresence>
     </motion.div>
   );
 };

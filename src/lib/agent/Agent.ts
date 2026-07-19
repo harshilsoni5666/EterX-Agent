@@ -59,6 +59,7 @@ import {
 } from './model-routing';
 import { lifetimeBrain } from './memory/lifetime';
 import { getSynapseGraphForChat } from './memory/synapse-graph';
+import { federateDynamicContextParts } from './memory/context-federation';
 import { monitorEmitter } from './monitor/emitter';
 import { createToolExecutionContext, isToolCancellationError } from './cancellation';
 
@@ -1424,6 +1425,9 @@ export class GeminiAgentClient {
       maxToolCalls: isTelegram ? 40 : 120,
     });
 
+    const federated = federateDynamicContextParts(dynamicContextParts, userVisibleMessage);
+    dynamicContextParts.splice(0, dynamicContextParts.length, ...federated.parts);
+
     return {
       dynamicContextParts,
       callHistory,
@@ -1498,6 +1502,15 @@ export class GeminiAgentClient {
       const evolvedRules = neuralPlasticity.getEvolvedPrompt();
       if (evolvedRules) dynamicContextParts.push(evolvedRules);
     } catch { /* adaptive rules are optional */ }
+  }
+
+  private getSynapseReasoningPulse(context: ProjectContext, query: string): string {
+    if ((context as any).disableLongTermMemory) return '';
+    try {
+      return getSynapseGraphForChat(context.projectId).refreshReasoningContext(query).renderedContext;
+    } catch {
+      return '';
+    }
   }
 
   private async executeMistralToolCall(
@@ -1635,6 +1648,14 @@ export class GeminiAgentClient {
       executionGovernor?.recordTool(canonicalToolName, effectiveArgs, output);
       evidenceLedger?.recordTool(canonicalToolName, effectiveArgs, output);
       this.recordPlanToolResult(canonicalToolName, effectiveArgs, output, context.projectId);
+      try {
+        const graph = getSynapseGraphForChat(context.projectId);
+        graph.registerToolResult(
+          canonicalToolName,
+          effectiveArgs,
+          typeof output === 'string' ? output : JSON.stringify(output).substring(0, 500),
+        );
+      } catch { /* context resonance is advisory */ }
       return output;
     };
 
@@ -1789,6 +1810,8 @@ export class GeminiAgentClient {
             if (planCtx) contextParts.push(planCtx);
           }
         } catch { /* advisory */ }
+        const resonancePulse = this.getSynapseReasoningPulse(context, userVisibleMessage);
+        if (resonancePulse) contextParts.push(resonancePulse);
         const govGuidance = executionGovernor.buildGuidance();
         if (govGuidance) contextParts.push(govGuidance);
         if (executionGovernor.isBudgetExhausted() || executionGovernor.isTimedOut()) {
@@ -1804,6 +1827,15 @@ export class GeminiAgentClient {
           messages.push({ role: 'user', content: `[SYSTEM - WORKING MEMORY]\n${contextParts.join('\n')}\nContinue to the next pending step. Do NOT repeat completed tool calls.` });
           messages.push({ role: 'assistant', content: 'Understood. Continuing.' });
         }
+      }
+
+      if (interactions % 3 === 0) {
+        try {
+          const compacted = autoContextManager.compactProviderMessagesInPlace(messages);
+          if (compacted.messagesCompacted > 0) {
+            console.log(`[AutoContext] Provider messages compacted ${compacted.originalTokens}→${compacted.compactedTokens} tokens.`);
+          }
+        } catch { /* provider context compaction is advisory */ }
       }
 
       const currentThinkingLevel = normalizeThinkingLevelForModel(
@@ -2195,6 +2227,8 @@ export class GeminiAgentClient {
             if (planCtx) contextParts.push(planCtx);
           }
         } catch { /* advisory */ }
+        const resonancePulse = this.getSynapseReasoningPulse(context, userVisibleMessage);
+        if (resonancePulse) contextParts.push(resonancePulse);
         const govGuidance = executionGovernor.buildGuidance();
         if (govGuidance) contextParts.push(govGuidance);
         if (executionGovernor.isBudgetExhausted() || executionGovernor.isTimedOut()) {
@@ -2210,6 +2244,15 @@ export class GeminiAgentClient {
           messages.push({ role: 'user', content: `[SYSTEM - WORKING MEMORY]\n${contextParts.join('\n')}\nContinue to the next pending step. Do NOT repeat completed tool calls.` });
           messages.push({ role: 'assistant', content: [{ type: 'text', text: 'Understood. Continuing.' }] });
         }
+      }
+
+      if (interactions % 3 === 0) {
+        try {
+          const compacted = autoContextManager.compactProviderMessagesInPlace(messages);
+          if (compacted.messagesCompacted > 0) {
+            console.log(`[AutoContext] Anthropic messages compacted ${compacted.originalTokens}→${compacted.compactedTokens} tokens.`);
+          }
+        } catch { /* provider context compaction is advisory */ }
       }
 
       const currentThinkingLevel = normalizeThinkingLevelForModel(
@@ -4766,7 +4809,8 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
       console.warn('[GeminiClient] Cognitive Core prompt enhancement failed (non-blocking):', err.message);
     }
 
-    const dynamicContext = dynamicContextParts.join('\n\n');
+    const federatedDynamicContext = federateDynamicContextParts(dynamicContextParts, userVisibleMessage);
+    const dynamicContext = federatedDynamicContext.parts.join('\n\n');
 
     // ── CONTEXT CACHING: skip for telegram / builder / Gemma ──
     // Desktop Gemini chats: cache the static ~53K-token system prompt + tools once
@@ -5208,7 +5252,8 @@ EXTERNAL ACTION NOTE CUE
         }
         // Prefer plan engine context over legacy tracker when both exist
         const effectiveTrackerState = planEngineContext || trackerState;
-        const contextInjection = [effectiveTrackerState, toolHistory, metaContext, sessionHealthStr].filter(Boolean).join('\n');
+        const resonancePulse = this.getSynapseReasoningPulse(context, userVisibleMessage);
+        const contextInjection = [effectiveTrackerState, toolHistory, metaContext, sessionHealthStr, resonancePulse].filter(Boolean).join('\n');
 
         if (contextInjection) {
           contents.push({

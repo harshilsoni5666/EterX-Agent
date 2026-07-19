@@ -971,8 +971,13 @@ const ChatFeedMessageGroup = React.memo(({
             <div className={`eterx-assistant-answer-body ${ isAnswerActivelyTyping ? 'eterx-assistant-live-text' : '' } text-[13.5px] leading-[1.56] text-[#F2F0EC] font-sans relative`}>
               <ProfessionalThought
                 text={displayFinalAnswer.text}
-                isLatest={isThinkingTurn}
-                isThinking={isAnswerActivelyTyping || isThinkingTurn}
+                // A completed answer must stay in the answer surface even if
+                // a late trace event keeps the turn marked as active. Using
+                // the turn flag here made direct answers look like thoughts
+                // and incorrectly showed the thinking treatment around
+                // citations and other answer markdown.
+                isLatest={isAnswerActivelyTyping}
+                isThinking={isAnswerActivelyTyping}
                 variant="answer"
                 updatedAt={isAnswerActivelyTyping ? displayFinalAnswer.timestamp : undefined}
                 reveal={answerRecentlyStreamed}

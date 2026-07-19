@@ -97,9 +97,17 @@ EterX-Synapse is an advanced, local relational memory graph that maintains conve
 *   **Divergence-Gated State Machine**: Evaluates user query semantic divergence against a running topic centroid vector to transition the session state between *Warmup* (baseline collection), *Continuity* (same topic focus), *Drift* (topic shifting), and *Transition* (major topic change).
 *   **Structured 4-Record Storage**: Implements the PCCA-specified storage structure, representing every context object (turns, tools, code snapshots, patches) as a network of linked Source, Version, State, and Confidence records, along with a Patch edit chain for coding sessions.
 *   **Five-Question Decision Surface**: On every turn, evaluates the active task, semantic proximity, version freshness, confidence thresholds, and token budget constraints to dynamically select the optimal context injection set.
+*   **Context Resonance Router**: Selects a budgeted, diverse evidence set using semantic fit, confidence, freshness, causal support, validation, and repetition fatigue. State-conditioned weights adapt retrieval across Warmup, Continuity, Drift, and Transition.
+*   **Closed-Loop Reasoning Pulses**: New tool results are linked to the current objective and can be injected into the very next reasoning iteration across provider loops. Evidence already injected during the turn is suppressed to prevent context amplification.
+*   **Loss-Aware Evidence Distillation**: Long tool output and old provider messages are compacted around exact errors, decisions, paths, identifiers, numeric values, and query-relevant evidence instead of blunt truncation.
+*   **Verification-Weighted Memory**: Successful checks promote the recent mutation chain to validated evidence; failed checks remain authoritative failure records and reduce trust in unverified changes.
+*   **Federated Memory Attention**: Agent Memory, Memory V2, Lifetime Brain, adaptive rules, and Synapse are merged into one provenance-labeled, deduplicated memory channel instead of independently consuming the prompt.
+*   **Online Synaptic Utility Feedback**: Recalled evidence that materially overlaps a later tool action gains retrieval strength; repeatedly injected but unused evidence decays through fatigue without changing model weights.
 *   **Anchor-EWMA Centroid Engine**: Automatically updates and maintains the active topic's running centroid vector by blending the original anchor vector intent with an exponentially weighted moving average (EWMA).
 *   **Local Zero-Network TF-IDF Vectorizer**: Performs fast (<2ms), incremental vocabulary vectorization completely locally, eliminating network latency and protecting privacy.
 *   **Graceful Degradation**: Protects agent behavior by automatically bypassing injection and degrading context gracefully when measurement confidence falls below the designated threshold.
+
+See [Context Resonance](./docs/context-resonance.md) for the scoring equation, provider-neutral runtime path, safety boundaries, reproducible synthetic benchmark, related work, and external validation plan.
 
 > [!NOTE]
 > **Research Citation:** The `EterX-Synapse` architecture, including the Anchor-EWMA centroid updates and the PCCA (Parallel Context Continuity Architecture) specifications, is implemented based on the research paper *EterX-Synapse: Cognitive Context Continuity in Autonomous Agents* by **Harshil Soni**.
