@@ -1,6 +1,7 @@
 import fs from 'fs-extra';
 import path from 'path';
 import type { PlanState } from './plan-execution-engine';
+import { getEterxWorkspaceDir } from './storage-paths';
 
 /**
  * SessionStateManager v2 — Persistent Session Continuity + Self-Review Engine
@@ -13,7 +14,7 @@ import type { PlanState } from './plan-execution-engine';
  * - Edit history: tracks what was modified, not just what was created
  */
 
-const SESSION_DIR = path.resolve(process.cwd(), '.workspaces', '.session');
+const SESSION_DIR = getEterxWorkspaceDir('.session');
 const STATE_FILE = path.join(SESSION_DIR, 'state.json'); // Legacy fallback
 const SESSION_TIMEOUT_MS = 72 * 60 * 60 * 1000;           // 72 hours idle — up from 24h
 const LONG_TASK_TIMEOUT_MS = 30 * 24 * 60 * 60 * 1000;    // 30 days for long-task mode (effectively never)

@@ -31,6 +31,7 @@
 import fs from 'fs-extra';
 import path from 'path';
 import crypto from 'crypto';
+import { getEterxWorkspaceDir } from '../storage-paths';
 
 import {
   DivergenceEngine,
@@ -54,7 +55,7 @@ import {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const SYNAPSE_DIR = path.resolve(process.cwd(), '.workspaces', '.synapse');
+const SYNAPSE_DIR = getEterxWorkspaceDir('.synapse');
 const EDGE_GROWTH_BETA = 0.15;
 const EDGE_DECAY_GAMMA = 0.95;
 const EDGE_PRUNE_THRESHOLD = 0.10;

@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'fs-extra';
 import path from 'path';
+import { getEterxWorkspaceDir } from '../storage-paths';
 
 export type MemoryV2Scope =
   | 'raw'
@@ -112,7 +113,7 @@ interface MemoryV2State {
   }>;
 }
 
-const BASE_DIR = path.resolve(process.cwd(), '.workspaces', '.memory_v2');
+const BASE_DIR = getEterxWorkspaceDir('.memory_v2');
 const RECORDS_FILE = path.join(BASE_DIR, 'records.json');
 const CREDENTIALS_FILE = path.join(BASE_DIR, 'credentials.enc.json');
 const IMPROVEMENTS_FILE = path.join(BASE_DIR, 'self_improvement_overlays.json');

@@ -6286,6 +6286,39 @@
   -webkit-app-region: drag !important;
 }
 
+/* Top bar action buttons */
+.eterx-topbar-btn {
+  height: 28px !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  padding-left: 12px !important;
+  padding-right: 12px !important;
+  border-radius: 8px !important;
+  font-weight: 500 !important;
+  transition: all 150ms ease-in-out !important;
+}
+
+.eterx-topbar-btn:hover {
+  background: rgba(0, 0, 0, 0.05) !important;
+  color: var(--sidebar-strong-text, #1F1F1D) !important;
+}
+
+:root[data-theme="dark"] .eterx-topbar-btn:hover {
+  background: rgba(255, 255, 255, 0.08) !important;
+  color: rgba(255, 255, 255, 0.9) !important;
+}
+
+/* Dropdown custom theme shades */
+:root[data-theme="dark"] {
+  --eterx-dropdown-bg: #222220 !important;
+  --eterx-dropdown-border: rgba(255, 255, 255, 0.08) !important;
+}
+
+:root[data-theme="light"] {
+  --eterx-dropdown-bg: #F5F3EF !important;
+  --eterx-dropdown-border: rgba(0, 0, 0, 0.12) !important;
+}
 
 
 

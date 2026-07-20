@@ -1273,6 +1273,13 @@ export const ChatInput: React.FC<ChatInputProps> = ({
         activeClass: 'border-white/[0.16] bg-white/[0.055] text-white hover:bg-white/[0.08] hover:border-white/[0.24]',
       };
     }
+    if (selectedAgent === 'autonomous') {
+      return {
+        label: 'Autonomous',
+        description: 'Fully autonomous agent execution',
+        activeClass: 'border-white/[0.16] bg-white/[0.055] text-white hover:bg-white/[0.08] hover:border-white/[0.24]',
+      };
+    }
     if (selectedAgent === 'coding') {
       return {
         label: 'Coding',
@@ -2292,7 +2299,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     <div className={`eterx-chat-input-dock ${ !isEmptyHome ? 'eterx-chat-input-dock-active' : '' } absolute left-0 flex flex-col items-center z-30 right-0 w-full ${ isEmptyHome
       ? `top-[45%] -translate-y-1/2 ${ inputSidePadding }`
       : `top-auto bottom-0 ${ isCompressed ? 'pb-4 pt-8' : 'pb-5 pt-10' } ${ inputSidePadding } bg-[linear-gradient(180deg,rgba(15,15,15,0)_0%,#0F0F0F_32%,#0F0F0F_100%)]`
-      }`} onDragStart={handleComposerDragStart}>
+    }`} onDragStart={handleComposerDragStart}>
 
       <AnimatePresence>
         {traceLogsLength === 0 && !isThinking && liveState === 'idle' && (
@@ -3070,7 +3077,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                   {showAgentMenu && (
                     <div
                       style={{ transform: `translateX(${ agentMenuX })` }}
-                      className={`eterx-composer-popout eterx-agent-popout absolute ${ selectorPopoutVerticalClass } left-1/2 z-[130] flex w-[224px] max-w-[calc(100vw-32px)] flex-col rounded-xl border border-white/[0.08] bg-[#1E1E1E]/95 backdrop-blur-xl p-1.5 text-[#F4F1EA] shadow-[0_12px_36px_rgba(0,0,0,0.5)]`}
+                      className={`eterx-composer-popout eterx-agent-popout absolute ${ selectorPopoutVerticalClass } left-1/2 z-[130] flex w-[224px] max-h-[280px] overflow-y-auto eterx-scrollbar max-w-[calc(100vw-32px)] flex-col rounded-xl border border-white/[0.08] bg-[#1E1E1E]/95 backdrop-blur-xl p-1.5 text-[#F4F1EA] shadow-[0_12px_36px_rgba(0,0,0,0.5)]`}
                       role="dialog"
                       aria-label="Agent selection"
                     >
@@ -3094,6 +3101,21 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                         {!selectedAgent && <Check className="h-3.5 w-3.5 shrink-0 text-white" strokeWidth={2.05} />}
                       </button>
 
+                      {/* Autonomous */}
+                      <button
+                        onClick={() => {
+                          onAgentChange?.('autonomous', 'Autonomous');
+                          setShowAgentMenu(false);
+                        }}
+                        className={`flex w-full items-center gap-2.5 px-2.5 py-1.5 rounded-md text-left transition-all duration-150 ${ selectedAgent === 'autonomous'
+                          ? 'bg-white/[0.08] text-white font-medium shadow-sm'
+                          : 'text-[#E8E6E3] hover:bg-white/[0.05] active:bg-white/[0.12]'
+                          }`}
+                      >
+                        <span className="text-[12px] font-normal truncate flex-1">Autonomous</span>
+                        {selectedAgent === 'autonomous' && <Check className="h-3.5 w-3.5 shrink-0 text-white" strokeWidth={2.05} />}
+                      </button>
+
                       {/* Coding */}
                       <button
                         onClick={() => {
@@ -3105,8 +3127,11 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                           : 'text-[#E8E6E3] hover:bg-white/[0.05] active:bg-white/[0.12]'
                           }`}
                       >
-                        <span className="text-[12px] font-normal truncate flex-1">Coding</span>
-                        {selectedAgent === 'coding' && <Check className="h-3.5 w-3.5 shrink-0 text-white" strokeWidth={2.05} />}
+                        <span className="text-[12px] font-normal text-[#E8E6E3] flex-1">Coding</span>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <span className="text-[9px] px-1.5 py-0.5 rounded bg-[#E2765A]/8 border border-[#E2765A]/15 text-[#E2765A]/80 leading-none font-semibold uppercase tracking-wider scale-95 origin-right">Coming soon</span>
+                          {selectedAgent === 'coding' && <Check className="h-3.5 w-3.5 shrink-0 text-white" strokeWidth={2.05} />}
+                        </div>
                       </button>
 
                       {/* Separator + custom agents from agent room */}

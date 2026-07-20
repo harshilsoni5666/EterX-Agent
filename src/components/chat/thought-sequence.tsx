@@ -3985,6 +3985,7 @@ const UserMessageActions = ({ text, onEdit }: { text: string; onEdit?: (text: st
 };
 
 const SteeringCard = ({ log, onEdit }: { log: any; onEdit?: (text: string) => void }) => {
+  const isProxy = Boolean(log._autonomyProxy);
   return (
     <motion.div
       initial={{ opacity: 0, x: 20, y: 10, scale: 0.95 }}
@@ -3992,9 +3993,11 @@ const SteeringCard = ({ log, onEdit }: { log: any; onEdit?: (text: string) => vo
       transition={{ type: 'spring', stiffness: 450, damping: 24 }}
       className="flex justify-end w-full my-3 relative z-10 group/steer"
     >
-      <div className="bg-[#20201F] px-4 py-3 rounded-[18px] rounded-tr-[6px] ml-auto text-[13.5px] text-[#F4F2EE] shadow-[0_4px_16px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(255,255,255,0.025)] leading-[1.56] whitespace-pre-wrap relative border border-white/[0.06] select-text flex flex-row items-end gap-3 max-w-[84%]">
-        <UserMessageActions text={log.text} onEdit={onEdit} />
-        <span className="block w-full text-left break-words [word-break:break-word] [overflow-wrap:anywhere]">{log.text}</span>
+      <div className={`${isProxy ? 'bg-[#121416] border-[#34383D]' : 'bg-[#20201F] border-white/[0.06]'} px-4 py-3 rounded-[18px] rounded-tr-[6px] ml-auto text-[13.5px] text-[#F4F2EE] shadow-[0_4px_16px_rgba(0,0,0,0.22),inset_0_1px_0_rgba(255,255,255,0.025)] leading-[1.56] whitespace-pre-wrap relative border select-text flex flex-row items-end gap-3 max-w-[84%]`}>
+        <UserMessageActions text={log.text} onEdit={isProxy ? undefined : onEdit} />
+        <span className="block w-full text-left break-words [word-break:break-word] [overflow-wrap:anywhere]">
+          {log.text}
+        </span>
 
         {/* CornerDownLeft arrow representing steering entry */}
         <div className="shrink-0 mb-1 select-none text-[#8F887E]">
@@ -4369,7 +4372,7 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
         segs.push({ kind: 'thought', log, idx });
       }
     }
-    else if (log.type === 'work_note') {
+    else if (log.type === 'work_note' || log.type === 'autonomy_proxy_status') {
       // Skip streaming-cancelled placeholders that were never replaced by a final note
       if (log._streamingCancelled) { /* intentionally omitted */ }
       else { flush(idx - 1); segs.push({ kind: 'note', log, idx }); }
@@ -4480,7 +4483,9 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
         if (seg.kind === 'steering') return <SteeringCard key={`steer-${ seg.idx }`} log={seg.log} onEdit={onEditUserMessage} />;
         if (seg.kind === 'subagent') return null;
         if (seg.kind === 'comm') {
-          return isSubAgentTab ? <InterAgentCommCard key={`comm-${ seg.idx }`} log={seg.log} onOpenAgentTeam={onOpenAgentTeam} /> : null;
+          return isSubAgentTab
+            ? <InterAgentCommCard key={`comm-${ seg.idx }`} log={seg.log} onOpenAgentTeam={onOpenAgentTeam} />
+            : null;
         }
         if (seg.kind === 'subagent_action') return null;
         if (seg.kind === 'subagent_spawn') return <AgentCreatedCard key={`ss-${ seg.idx }`} log={seg.log} onOpenAgentTeam={onOpenAgentTeam} />;

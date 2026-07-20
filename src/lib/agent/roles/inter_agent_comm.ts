@@ -1,5 +1,6 @@
 import path from 'path';
 import fs from 'fs-extra';
+import { getEterxWorkspaceDir } from '../storage-paths';
 
 /**
  * Inter-Agent Communication Protocol v1.0
@@ -15,7 +16,7 @@ import fs from 'fs-extra';
  * - Supports broadcast (to all agents) and direct (to specific agent)
  */
 
-const MAILBOX_DIR = path.resolve(process.cwd(), '.workspaces', 'agents', 'mailbox');
+const MAILBOX_DIR = getEterxWorkspaceDir('agents', 'mailbox');
 
 // ═══════════════════════════════════════════════════════════════
 // Types

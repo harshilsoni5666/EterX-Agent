@@ -2,8 +2,9 @@ import { MemoryEntry, ProjectContext } from '../schemas';
 import crypto from 'node:crypto';
 import fs from 'fs-extra';
 import path from 'path';
+import { getEterxWorkspaceDir } from '../storage-paths';
 
-const MEMORY_DIR = path.resolve(process.cwd(), '.workspaces', '.memory');
+const MEMORY_DIR = getEterxWorkspaceDir('.memory');
 const STORE_FILE = path.join(MEMORY_DIR, 'memory_store.json');
 const PREFS_FILE = path.join(MEMORY_DIR, 'user_preferences.json');
 const ERROR_LOG_FILE = path.join(MEMORY_DIR, 'error_log.json');

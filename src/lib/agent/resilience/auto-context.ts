@@ -30,8 +30,9 @@ import path from 'path';
 import fs from 'fs-extra';
 import { lifetimeBrain } from '../memory/lifetime';
 import { distillEvidence } from '../memory/evidence-distiller';
+import { getEterxWorkspaceDir } from '../storage-paths';
 
-const CONTEXT_DIR = path.resolve(process.cwd(), '.workspaces', '.context');
+const CONTEXT_DIR = getEterxWorkspaceDir('.context');
 const SNAPSHOT_FILE = path.join(CONTEXT_DIR, 'context_snapshots.json');
 
 async function writeJsonAtomic(filePath: string, data: unknown): Promise<void> {

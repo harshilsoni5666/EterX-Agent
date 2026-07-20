@@ -6,6 +6,7 @@ import { enforceToolCapability } from './tools/security/tool_policy';
 import { createToolExecutionContext, isToolCancellationError } from './cancellation';
 import path from 'path';
 import fs from 'fs-extra';
+import { getEterxWorkspaceDir } from './storage-paths';
 
 /**
  * Dynamic Skill Generator — Runtime Tool Factory
@@ -26,7 +27,7 @@ import fs from 'fs-extra';
  * - Agent does repetitive API calls → creates a "fetch_stock_price" tool
  */
 
-const DYNAMIC_TOOLS_DIR = path.resolve(process.cwd(), '.workspaces', 'dynamic_tools');
+const DYNAMIC_TOOLS_DIR = getEterxWorkspaceDir('dynamic_tools');
 const MAX_DYNAMIC_TOOL_CODE_LENGTH = 10_000;
 
 function isPathInside(parent: string, candidate: string): boolean {
@@ -565,7 +566,7 @@ class WorkspaceIntelligence {
     if (this.profile) return this.profile;
 
     // Try loading from cache
-    const cachePath = path.join(process.cwd(), '.workspaces', 'workspace_profile.json');
+    const cachePath = getEterxWorkspaceDir('workspace_profile.json');
     if (await fs.pathExists(cachePath)) {
       try {
         const cached = await fs.readJson(cachePath);

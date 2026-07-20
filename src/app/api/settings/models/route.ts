@@ -7,6 +7,7 @@ import {
   type RuntimeApiKeyProvider,
 } from '../../../../lib/agent/runtime-api-keys';
 import {
+  getModelThinkingOptions,
   normalizeModelThinkingCapabilities,
   type ModelThinkingCapabilities,
 } from '../../../../lib/agent/model-routing';
@@ -18,6 +19,10 @@ type ProviderModel = {
   id: string;
   name: string;
   description?: string;
+  baseModelId?: string;
+  version?: string;
+  lifecycle?: string;
+  deprecationDate?: string;
   contextLength?: number;
   inputTokenLimit?: number;
   outputTokenLimit?: number;
@@ -87,21 +92,37 @@ async function fetchGeminiModels(): Promise<ProviderModelResult> {
   if (!apiKey) return { provider: 'gemini', connected: false, source: 'unavailable', models: [], error: 'Missing Gemini API key' };
 
   try {
-    const res = await withTimeout(fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${ encodeURIComponent(apiKey) }&pageSize=1000`, {
-      cache: 'no-store',
-    }));
-    if (!res.ok) throw new Error(`Gemini models request failed (${ res.status })`);
-    const data = await res.json();
-    const models = trimModels((data.models || [])
+    const rawModels: any[] = [];
+    let pageToken = '';
+    // models.list is paginated even when pageSize=1000. Keep discovery the
+    // source of truth rather than silently dropping later model pages.
+    for (let page = 0; page < 20; page++) {
+      const token = pageToken ? `&pageToken=${ encodeURIComponent(pageToken) }` : '';
+      const res = await withTimeout(fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${ encodeURIComponent(apiKey) }&pageSize=1000${ token }`, {
+        cache: 'no-store',
+      }));
+      if (!res.ok) throw new Error(`Gemini models request failed (${ res.status })`);
+      const data = await res.json();
+      rawModels.push(...(Array.isArray(data.models) ? data.models : []));
+      pageToken = String(data.nextPageToken || '');
+      if (!pageToken) break;
+    }
+
+    const models = trimModels(rawModels
       .filter((model: any) => Array.isArray(model.supportedGenerationMethods) && model.supportedGenerationMethods.includes('generateContent'))
       .map((model: any) => ({
-        id: String(model.name || '').replace(/^models\//, ''),
+        id: String(model.baseModelId || model.name || '').replace(/^models\//, ''),
         name: model.displayName || String(model.name || '').replace(/^models\//, ''),
         description: model.description,
+        baseModelId: model.baseModelId,
+        version: model.version,
+        lifecycle: model.lifecycle,
+        deprecationDate: model.deprecationDate,
         inputTokenLimit: model.inputTokenLimit,
         outputTokenLimit: model.outputTokenLimit,
         capabilities: [
           ...(model.supportedGenerationMethods || []),
+          model.inputTokenLimit ? 'text-input' : undefined,
           model.thinking ? 'thinking' : undefined,
         ].filter(Boolean),
         thinking: readThinkingCapabilities(model, 'thinkingLevel') || undefined,
@@ -252,15 +273,33 @@ async function fetchAnthropicModels(): Promise<ProviderModelResult> {
     }));
     if (!res.ok) throw new Error(`Anthropic models request failed (${ res.status })`);
     const data = await res.json();
-    const models = trimModels((data.data || []).map((model: any) => ({
-      id: String(model.id || ''),
-      name: model.display_name || model.id,
-      description: [
-        model.type ? `Type: ${ model.type }` : undefined,
-        model.created_at ? `Created ${ model.created_at }` : undefined,
+    const models = trimModels((data.data || []).map((model: any) => {
+      const capabilities = model.capabilities && typeof model.capabilities === 'object'
+        ? Object.entries(model.capabilities)
+          .filter(([, value]) => Boolean((value as any)?.supported ?? value))
+          .map(([key]) => key)
+        : undefined;
+      return {
+        id: String(model.id || ''),
+        name: model.display_name || model.id,
+        description: [
+          model.type ? `Type: ${ model.type }` : undefined,
+          model.created_at ? `Created ${ model.created_at }` : undefined,
+          model.max_input_tokens ? `Input ${ model.max_input_tokens }` : undefined,
+          model.max_tokens ? `Output ${ model.max_tokens }` : undefined,
         ].filter(Boolean).join(' | ') || undefined,
-        thinking: readThinkingCapabilities(model, 'output_config.effort') || undefined,
-    })));
+        contextLength: Number(model.max_input_tokens) || undefined,
+        inputTokenLimit: Number(model.max_input_tokens) || undefined,
+        outputTokenLimit: Number(model.max_tokens) || undefined,
+        capabilities,
+        thinking: readThinkingCapabilities(model, 'output_config.effort') || (() => {
+          const levels = getModelThinkingOptions('anthropic', String(model.id || '')).map(option => option.id);
+          return levels.length > 0
+            ? { levels, defaultLevel: levels.includes('high') ? 'high' : levels[0], parameter: 'output_config.effort', source: 'provider' as const }
+            : undefined;
+        })(),
+      };
+    }));
     return { provider: 'anthropic', connected: true, source: 'live', models };
   } catch (error) {
     return providerError('anthropic', error);

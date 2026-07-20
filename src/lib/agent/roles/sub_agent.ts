@@ -3,6 +3,7 @@ import path from 'path';
 import fs from 'fs-extra';
 import { apiKeyPool, KeyLease } from '../api-key-pool';
 import { interAgentMailbox } from './inter_agent_comm';
+import { getEterxWorkspaceDir } from '../storage-paths';
 
 /**
  * Sub-Agent Spawner v5 — Parallel API Keys, Fire-and-Forget, Non-Blocking
@@ -29,7 +30,7 @@ const AGENT_NAMES = [
 
 export type SubAgentName = typeof AGENT_NAMES[number];
 
-const AGENTS_DIR = path.resolve(process.cwd(), '.workspaces', 'agents');
+const AGENTS_DIR = getEterxWorkspaceDir('agents');
 
 function isPathInside(parent: string, candidate: string): boolean {
   const relative = path.relative(parent, candidate);

@@ -34,8 +34,9 @@
 import fs from 'fs-extra';
 import path from 'path';
 import crypto from 'crypto';
+import { getEterxWorkspaceDir } from '../storage-paths';
 
-const BRAIN_DIR = path.resolve(process.cwd(), '.workspaces', '.brain');
+const BRAIN_DIR = getEterxWorkspaceDir('.brain');
 const EVENTS_FILE = path.join(BRAIN_DIR, 'lifetime_events.jsonl');
 const INDEX_FILE = path.join(BRAIN_DIR, 'lifetime_index.json');
 const ARCHIVE_DIR = path.join(BRAIN_DIR, 'archive');

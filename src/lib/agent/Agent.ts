@@ -3,7 +3,7 @@ import { getOrCreateAgentCache, handleAgentCacheNotFound, invalidateAgentCacheFo
 import { getLedgerForChat, flushLedgerForChat, clearLedgerForChat } from './memory/conversation-ledger';
 import { chatBoundary } from './chat-boundary';
 import { antiHallucination } from './anti-hallucination';
-import { GoogleGenAI, Type, ThinkingLevel } from '@google/genai';
+import { GoogleGenAI, Type } from '@google/genai';
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
 import { globalToolRegistry } from './tools/registry';
@@ -42,6 +42,7 @@ import {
   recordProvenModel,
   MAIN_AGENT_MODE_CONFIG,
   getAnthropicThinkingBudget,
+  getGeminiThinkingConfig,
   getModelThinkingOptions,
   isAnthropicAdaptiveThinkingModel,
   isOpenAIMiniReasoningModel,
@@ -62,6 +63,7 @@ import { getSynapseGraphForChat } from './memory/synapse-graph';
 import { federateDynamicContextParts } from './memory/context-federation';
 import { monitorEmitter } from './monitor/emitter';
 import { createToolExecutionContext, isToolCancellationError } from './cancellation';
+import { reviewAutonomousCompletion } from './autonomy/user-proxy-runtime';
 
 import { readTaskTracker, readTaskTrackerMarkdown, trackerToTrace, writeTaskTrackerJson } from './task-tracker-store';
 import { normalizeTimeoutMs, secondsFromTimeoutMs } from './tools/core/terminal_timeout';
@@ -538,12 +540,10 @@ export class GeminiAgentClient {
             contents,
             config: {
               systemInstruction,
-              ...(getModelThinkingOptions('gemini', this.modelName).length > 0 ? {
-                thinkingConfig: {
-                  thinkingLevel: 'minimal' as any,
-                  includeThoughts: false,
-                }
-              } : {}),
+              ...(() => {
+                const thinkingConfig = getGeminiThinkingConfig('minimal', this.modelName, false);
+                return thinkingConfig ? { thinkingConfig } : {};
+              })(),
             },
           }),
           new Promise<never>((_, reject) => setTimeout(() => reject(new Error('TELEGRAM_FAST_TIMEOUT')), timeoutMs)),
@@ -673,6 +673,24 @@ export class GeminiAgentClient {
     ]).has(String(mimeType || '').toLowerCase());
   }
 
+  /** Files API uploads for audio/video/documents may remain PROCESSING. */
+  private async waitForGeminiFileReady(uploadedFile: any): Promise<any> {
+    let current = uploadedFile;
+    const state = () => String(current?.state || '').toUpperCase();
+    if (!current?.name || state() !== 'PROCESSING') {
+      if (state() === 'FAILED') throw new Error('Gemini Files API processing failed.');
+      return current;
+    }
+
+    for (let attempt = 0; attempt < 60; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      current = await this.ai.files.get({ name: current.name });
+      if (state() === 'ACTIVE') return current;
+      if (state() === 'FAILED') throw new Error('Gemini Files API processing failed.');
+    }
+    throw new Error('Timed out waiting for Gemini Files API processing.');
+  }
+
   private compactToolOutputForModel(value: any, depth = 0): any {
     if (value === null || value === undefined) return value;
     if (typeof value === 'string') {
@@ -726,10 +744,10 @@ export class GeminiAgentClient {
           text: isImage ? 'Preparing image' : traceLabel,
           percent: 8,
         });
-        const uploadedMedia = await this.ai.files.upload({
+        const uploadedMedia = await this.waitForGeminiFileReady(await this.ai.files.upload({
           file: file.path,
           config: { mimeType },
-        });
+        }));
         if (uploadedMedia?.uri) {
           file.fileUri = uploadedMedia.uri;
           parts.push({
@@ -827,6 +845,33 @@ export class GeminiAgentClient {
     });
   }
 
+  private async buildOpenAIUserContent(text: string, mediaFiles: AgentMediaFile[]): Promise<any[]> {
+    const content: any[] = [{ type: 'text', text }];
+    for (const file of mediaFiles || []) {
+      const mimeType = String(file.mimeType || '').toLowerCase();
+      if (!mimeType.startsWith('image/')) {
+        content.push({
+          type: 'text',
+          text: `Attached file: ${file.name || pathLib.basename(file.path || 'file')} (${mimeType || 'unknown type'}). This Chat Completions adapter supports image inputs directly; use workspace tools to read other local files.`,
+        });
+        continue;
+      }
+
+      try {
+        let base64 = String((file as any).data || (file as any).inlineData?.data || '').trim();
+        if (!base64 && file.path && await fsExtra.pathExists(file.path)) {
+          base64 = (await fsExtra.readFile(file.path)).toString('base64');
+        }
+        if (!base64) continue;
+        const dataUrl = base64.startsWith('data:') ? base64 : `data:${mimeType};base64,${base64}`;
+        content.push({ type: 'image_url', image_url: { url: dataUrl, detail: 'auto' } });
+      } catch (error: any) {
+        console.warn(`[OpenAI] Failed to prepare image attachment ${file.name || file.path}:`, error?.message || error);
+      }
+    }
+    return content;
+  }
+
   private getAnthropicApiKey(): string {
     const apiKey = getScopedRuntimeApiKey(this.runtimeSettings, 'anthropic');
     if (!apiKey) {
@@ -918,6 +963,13 @@ export class GeminiAgentClient {
     return (history || [])
       .map((entry: any) => {
         const role = entry?.role === 'model' || entry?.role === 'assistant' ? 'assistant' : 'user';
+        const rawContent = entry?.anthropicContent || entry?.content;
+        if (Array.isArray(rawContent) && rawContent.some((part: any) => part?.type)) {
+          return { role, content: rawContent };
+        }
+        if (Array.isArray(entry?.parts) && entry.parts.some((part: any) => part?.type)) {
+          return { role, content: entry.parts };
+        }
         const content = Array.isArray(entry?.parts)
           ? entry.parts.map((part: any) => part?.text || '').filter(Boolean).join('\n')
           : String(entry?.content || entry?.text || '');
@@ -1233,11 +1285,46 @@ export class GeminiAgentClient {
     return finalized;
   }
 
+  private drainLiveSteering(projectId: string, onTrace?: (t: any) => void): Array<{ id?: string; text: string; metadata?: Record<string, any> }> {
+    try {
+      const registry = (globalThis as any).__eterxAgentRegistry;
+      const raw: any[] = typeof registry?.drainSteeringQueue === 'function'
+        ? registry.drainSteeringQueue(projectId)
+        : typeof registry?.getAndClearSteeringQueue === 'function'
+          ? registry.getAndClearSteeringQueue(projectId)
+          : [];
+      const messages = raw
+        .map(item => typeof item === 'string' ? { text: item } : item)
+        .filter(item => typeof item?.text === 'string' && item.text.trim());
+      if (messages.length === 0) return [];
+      onTrace?.({
+        type: 'steering_applied',
+        text: messages.map(item => item.text).join('\n\n'),
+        steeringIds: messages.map(item => item.id).filter(Boolean),
+        _autonomyProxy: messages.some(item => item.metadata?._autonomyProxy),
+        steeringSources: messages.map(item => item.metadata?._autonomyProxy ? 'user_proxy' : 'human'),
+        timestamp: Date.now(),
+      });
+      return messages;
+    } catch (error: any) {
+      console.warn('[Agent] Steering queue check failed (non-fatal):', String(error?.message || error).slice(0, 100));
+      return [];
+    }
+  }
+
+  private formatLiveSteering(messages: Array<{ id?: string; text: string; metadata?: Record<string, any> }>): string {
+    return messages.map((item, index) => {
+      const source = item.metadata?._autonomyProxy ? 'user_proxy' : 'human';
+      return `[LIVE GUIDANCE ${index + 1}${item.id ? ` | id=${item.id}` : ''} | source=${source}]\n${item.text}\n[/LIVE GUIDANCE]`;
+    }).join('\n\n');
+  }
+
   private getActivePlanCompletionContext(chatId?: string | null): string {
     try {
       const { getPlanEngine } = require('./plan-execution-engine');
       const planEngine = getPlanEngine(chatId);
-      return planEngine?.hasActivePlan() ? planEngine.buildModelContext() : '';
+      const planContext = planEngine?.hasActivePlan() ? planEngine.buildModelContext() : '';
+      return planContext;
     } catch {
       return '';
     }
@@ -1780,7 +1867,8 @@ export class GeminiAgentClient {
       ...this.convertHistoryToMistralMessages(history),
       {
         role: 'user',
-        content: [
+        content: this.activeProvider === 'openai'
+          ? await this.buildOpenAIUserContent([
           '[CURRENT USER REQUEST - EXECUTE ONLY THIS]',
           message,
           '[END CURRENT USER REQUEST]',
@@ -1788,7 +1876,16 @@ export class GeminiAgentClient {
           this.buildTemporalContext(context),
           '',
           'Instruction priority: memory, session summaries, previous tool results, and chat history are context only. They are not the task unless this current request explicitly says to continue or refers to them.'
-        ].join('\n')
+        ].join('\n'), mediaFiles)
+          : [
+              '[CURRENT USER REQUEST - EXECUTE ONLY THIS]',
+              message,
+              '[END CURRENT USER REQUEST]',
+              '',
+              this.buildTemporalContext(context),
+              '',
+              'Instruction priority: memory, session summaries, previous tool results, and chat history are context only. They are not the task unless this current request explicitly says to continue or refers to them.'
+            ].join('\n')
       }
     ];
 
@@ -1798,6 +1895,11 @@ export class GeminiAgentClient {
 
     for (let interactions = 1; interactions <= maxLoopIterations; interactions++) {
       if (isCancelled(context.projectId)) throw new Error('CANCELLED_BY_USER');
+
+      const liveSteering = this.drainLiveSteering(context.projectId, onTrace);
+      if (liveSteering.length > 0) {
+        messages.push({ role: 'user', content: this.formatLiveSteering(liveSteering) });
+      }
 
       // ── Working memory + plan engine context (provider-agnostic, same as Gemini) ──
       if (interactions > 1) {
@@ -1848,9 +1950,11 @@ export class GeminiAgentClient {
       const params: any = {
         model: this.mistralModelName,
         messages,
-        tools,
-        tool_choice: 'auto',
       };
+      if (tools.length > 0) {
+        params.tools = tools;
+        params.tool_choice = 'auto';
+      }
       // These providers document this flag. The runtime owns a shared local
       // workspace, so one model-issued tool call per turn is the safe default.
       if (this.activeProvider === 'openai' || this.activeProvider === 'mistral') {
@@ -1871,11 +1975,7 @@ export class GeminiAgentClient {
             params.max_completion_tokens = positiveIntEnv('OPENAI_MAX_TOKENS', 8192);
             delete params.max_tokens;
             delete params.temperature;
-            if (tools && tools.length > 0) {
-              params.reasoning_effort = 'none';
-            } else {
-              params.reasoning_effort = toOpenAIReasoningEffort(currentThinkingLevel);
-            }
+            params.reasoning_effort = toOpenAIReasoningEffort(currentThinkingLevel);
           } else {
             params.reasoning_effort = toOpenAIReasoningEffort(currentThinkingLevel);
           }
@@ -1924,6 +2024,15 @@ export class GeminiAgentClient {
               }
               if (delta.content) {
                 accumulatedContent += delta.content;
+                if (this.activeProvider === 'openai') {
+                  onTrace?.({
+                    type: 'answer',
+                    text: accumulatedContent,
+                    isDelta: false,
+                    isStreaming: true,
+                  });
+                  streamStarted = true;
+                }
               }
               if (Array.isArray(delta.tool_calls)) {
                 for (const tc of delta.tool_calls) {
@@ -2019,6 +2128,17 @@ export class GeminiAgentClient {
           continue;
         }
         const finalText = this.finalizeEvidenceBoundAnswer(contentText || lastAnswer || 'Done.', evidenceLedger, toolCallCounts, context.projectId);
+        const proxyDecision = await reviewAutonomousCompletion(context.projectId, finalText);
+        if (proxyDecision.action !== 'approve_completion') {
+          messages.push({ role: 'assistant', content: contentText || lastAnswer || 'I believe the task is complete.' });
+          continue;
+        }
+        const lateSteering = this.drainLiveSteering(context.projectId, onTrace);
+        if (lateSteering.length > 0) {
+          messages.push({ role: 'assistant', content: contentText || lastAnswer || finalText });
+          messages.push({ role: 'user', content: this.formatLiveSteering(lateSteering) });
+          continue;
+        }
         const answerEvt = { type: 'answer', text: finalText };
         trace.push(answerEvt);
         onTrace?.(answerEvt);
@@ -2130,10 +2250,23 @@ export class GeminiAgentClient {
     const anthropicMediaBlocks: any[] = [];
     if (mediaFiles && mediaFiles.length > 0) {
       const fs = require('fs');
+      const maxAttachmentBytes = positiveIntEnv('ANTHROPIC_MAX_ATTACHMENT_BYTES', 10 * 1024 * 1024);
+      const textMimeTypes = new Set([
+        'text/plain', 'text/markdown', 'text/csv', 'text/html', 'text/xml',
+        'application/json', 'application/xml',
+      ]);
       for (const file of mediaFiles) {
         if (!file.path || !fs.existsSync(file.path)) continue;
         const mimeType = String(file.mimeType || 'application/octet-stream').toLowerCase();
         try {
+          const fileSize = fs.statSync(file.path).size;
+          if (fileSize > maxAttachmentBytes) {
+            onTrace?.({
+              type: 'progress',
+              text: `Attachment ${ file.name || file.path } was skipped because it exceeds the Anthropic limit of ${ Math.round(maxAttachmentBytes / (1024 * 1024)) } MB.`,
+            });
+            continue;
+          }
           const buffer = fs.readFileSync(file.path);
           const base64Data = buffer.toString('base64');
           
@@ -2158,6 +2291,16 @@ export class GeminiAgentClient {
                 media_type: 'application/pdf',
                 data: base64Data
               }
+            });
+          } else if (textMimeTypes.has(mimeType)) {
+            anthropicMediaBlocks.push({
+              type: 'text',
+              text: `[Attached file: ${ file.name || 'unnamed file' }]\n${ buffer.toString('utf8') }`,
+            });
+          } else {
+            onTrace?.({
+              type: 'progress',
+              text: `Attachment ${ file.name || file.path } was skipped because Anthropic does not support MIME type ${ mimeType } in this request.`,
             });
           }
         } catch (err: any) {
@@ -2209,12 +2352,16 @@ export class GeminiAgentClient {
       {
         type: 'text',
         text: dynamicSystemSuffix,
-        ...(cacheEnabled ? { cache_control: { type: 'ephemeral' } } : {})
       }
     ];
 
     for (let interactions = 1; interactions <= maxLoopIterations; interactions++) {
       if (isCancelled(context.projectId)) throw new Error('CANCELLED_BY_USER');
+
+      const liveSteering = this.drainLiveSteering(context.projectId, onTrace);
+      if (liveSteering.length > 0) {
+        messages.push({ role: 'user', content: [{ type: 'text', text: this.formatLiveSteering(liveSteering) }] });
+      }
 
       // ── Working memory + plan engine context (provider-agnostic, same as Gemini/Mistral) ──
       if (interactions > 1) {
@@ -2350,6 +2497,7 @@ export class GeminiAgentClient {
             if (event.type === 'content_block_delta') {
               const delta = event.delta as any;
               if (delta.type === 'thinking_delta' && delta.thinking) {
+                streamStarted = true;
                 accumulatedThought += delta.thinking;
                 if (onTrace) {
                   onTrace({
@@ -2362,8 +2510,19 @@ export class GeminiAgentClient {
                   });
                 }
               } else if (delta.type === 'text_delta' && delta.text) {
+                streamStarted = true;
                 accumulatedText += delta.text;
+                onTrace?.({
+                  type: 'answer',
+                  text: accumulatedText,
+                  isDelta: true,
+                  isStreaming: true,
+                  noteId,
+                });
               }
+            } else if ((event as any).type === 'error') {
+              const streamError = (event as any).error;
+              throw new Error(streamError?.message || 'Anthropic stream error');
             }
           }
 
@@ -2458,6 +2617,17 @@ export class GeminiAgentClient {
           continue;
         }
         const finalText = this.finalizeEvidenceBoundAnswer(contentText || lastAnswer || 'Done.', evidenceLedger, toolCallCounts, context.projectId);
+        const proxyDecision = await reviewAutonomousCompletion(context.projectId, finalText);
+        if (proxyDecision.action !== 'approve_completion') {
+          messages.push({ role: 'assistant', content: contentBlocks });
+          continue;
+        }
+        const lateSteering = this.drainLiveSteering(context.projectId, onTrace);
+        if (lateSteering.length > 0) {
+          messages.push({ role: 'assistant', content: contentBlocks });
+          messages.push({ role: 'user', content: [{ type: 'text', text: this.formatLiveSteering(lateSteering) }] });
+          continue;
+        }
         const answerEvt = { type: 'answer', text: finalText };
         trace.push(answerEvt);
         onTrace?.(answerEvt);
@@ -2901,6 +3071,7 @@ export class GeminiAgentClient {
         if (context?.disableSubAgents && tool.name === 'spawn_sub_agent') {
           return false;
         }
+        if ((context as any).isUserProxy && tool.name !== 'spawn_sub_agent') return false;
         if (context?.disablePlannerTools && telegramHiddenTools.has(tool.name)) {
           return false;
         }
@@ -3408,6 +3579,7 @@ export class GeminiAgentClient {
     const isBuilderPromptContext = isAgentBuilderRuntimeContext(context);
     const availableTools = globalToolRegistry.getAllTools()
       .filter(t => !((context as any).disableSubAgents && t.name === 'spawn_sub_agent'))
+      .filter(t => !(context as any).isUserProxy || t.name === 'spawn_sub_agent')
       .filter(t => !((context as any).disablePlannerTools && telegramHiddenTools.has(t.name)))
       .filter(t => shouldExposeToolToRuntime(t.name, isBuilderPromptContext))
       .filter(t => enforceToolCapability(t.name, {}, context).allowed);
@@ -3847,6 +4019,11 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
       this.fallbackModel = this.resolveModelForMode('fast');
     } else {
       this.mistralModelName = this.resolveModelForMode(this.activeMode);
+    }
+    const selectedModelName = String((context as any).selectedModelName || '').trim();
+    const selectedModelProvider = String((context as any).selectedModelProvider || '').trim();
+    if (selectedModelName && selectedModelProvider === 'openai' && this.activeProvider === 'openai') {
+      this.mistralModelName = selectedModelName;
     }
     const cognitiveSession = cognitiveCore.createCognitiveCoreSession();
     const reflectionEngine = new AgentReflectionEngine();
@@ -4588,10 +4765,10 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
           if (onTrace) onTrace({ type: 'progress', text: 'Processing document...', percent: 5 });
           const fs = require('fs');
           if (!fs.existsSync(meta.path)) continue;
-          const uploadedMedia = await this.ai.files.upload({
+          const uploadedMedia = await this.waitForGeminiFileReady(await this.ai.files.upload({
             file: meta.path,
             config: { mimeType: meta.mimeType || 'application/octet-stream' }
-          });
+          }));
           if (uploadedMedia && uploadedMedia.uri) {
             initialUserParts.push({ fileData: { fileUri: uploadedMedia.uri, mimeType: uploadedMedia.mimeType } });
             console.log(`[GeminiClient] \u{1F4C4} Document uploaded: ${ uploadedMedia.name }`);
@@ -4869,20 +5046,9 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
       (intent.primaryIntent === 'educate_explain' && !/\b(write|create|make|edit|run|execute|install|delete|test|build|scaffold|add|remove|implement|patch|fix)\b/i.test(message)) ||
       /^(thanks?|ok|okay|cool|hello|hi|yes|no|correct|right|sure|fine)$/i.test(message.trim().replace(/[.,!]/g, ''))) && !mentionsFile;
 
-    const thinkingLevel = selectedThinkingLevel === 'minimal'
-      ? ThinkingLevel.MINIMAL
-      : selectedThinkingLevel === 'low'
-        ? ThinkingLevel.LOW
-        : selectedThinkingLevel === 'high'
-          ? ThinkingLevel.HIGH
-          : ThinkingLevel.MEDIUM;
     const includeThoughts = !lightweightTelegramMode && !isDirectAnswer;
-    if (getModelThinkingOptions('gemini', this.modelName).length > 0) {
-      config.thinkingConfig = {
-        thinkingLevel,
-        includeThoughts,
-      };
-    }
+    const initialThinkingConfig = getGeminiThinkingConfig(selectedThinkingLevel, this.modelName, includeThoughts);
+    if (initialThinkingConfig) config.thinkingConfig = initialThinkingConfig as any;
 
     // === UNLIMITED ITERATIONS â€” agent works until done or user stops ===
     const maxLoopIterations = Math.min(
@@ -5057,6 +5223,25 @@ EXTERNAL ACTION NOTE CUE
       // === LIVE STEERING: Drain user mid-run feedback ===
       // Messages are queued by POST /api/agent/steer and injected here at
       // the start of each ReAct iteration â€” never mid-tool-call, never disruptive.
+      const unifiedSteering = this.drainLiveSteering(context.projectId, onTrace);
+      if (unifiedSteering.length > 0) {
+        const steeringText = this.formatLiveSteering(unifiedSteering);
+        const lastContent = contents[contents.length - 1];
+        if (lastContent?.role === 'user' && Array.isArray(lastContent.parts)) {
+          lastContent.parts.push({ text: steeringText });
+        } else {
+          contents.push({ role: 'user', parts: [{ text: steeringText }] });
+        }
+        trace.push({
+          type: 'steering_applied',
+          text: unifiedSteering.map(item => item.text).join('\n\n'),
+          steeringIds: unifiedSteering.map(item => item.id).filter(Boolean),
+          _autonomyProxy: unifiedSteering.some(item => item.metadata?._autonomyProxy),
+          timestamp: Date.now(),
+        });
+      }
+      // Compatibility fallback for older registry instances. Current
+      // registries are atomically drained above, so this path remains idle.
       try {
         const __reg = (globalThis as any).__eterxAgentRegistry;
         if (__reg && typeof __reg.peekSteeringQueue === 'function' && typeof __reg.consumeSteeringQueue === 'function') {
@@ -5295,12 +5480,9 @@ EXTERNAL ACTION NOTE CUE
       }
       if (getModelThinkingOptions('gemini', currentModel).length > 0) {
         // Preserve the exact composer level for all tool-loop turns.
-        const dynamicThinkingLevel = false
-          ? 'HIGH' as any  // Deep into complex work — maximum reasoning
-          : false
-            ? ThinkingLevel.MEDIUM  // Task proving harder than expected
-            : thinkingLevel;
-        config.thinkingConfig = { thinkingLevel: dynamicThinkingLevel, includeThoughts };
+        const dynamicThinkingLevel: MainAgentThinkingLevel = selectedThinkingLevel;
+        const dynamicThinkingConfig = getGeminiThinkingConfig(dynamicThinkingLevel, currentModel, includeThoughts);
+        if (dynamicThinkingConfig) config.thinkingConfig = dynamicThinkingConfig as any;
       }
 
       let stream: any = null;
@@ -5948,6 +6130,21 @@ EXTERNAL ACTION NOTE CUE
             accumulatedText = '';
             accumulatedThought = '';
             continue; // Force the model to try again and fix its formatting/answer
+          }
+          const proxyDecision = await reviewAutonomousCompletion(chatId, cleanText);
+          if (proxyDecision.action !== 'approve_completion') {
+            if (fullResponseContent) contents.push(fullResponseContent);
+            accumulatedText = '';
+            accumulatedThought = '';
+            continue;
+          }
+          const lateSteering = this.drainLiveSteering(chatId, onTrace);
+          if (lateSteering.length > 0) {
+            if (fullResponseContent) contents.push(fullResponseContent);
+            contents.push({ role: 'user', parts: [{ text: this.formatLiveSteering(lateSteering) }] });
+            accumulatedText = '';
+            accumulatedThought = '';
+            continue;
           }
           loopAccumulatedText = cleanText;
           const answerEvt = { type: 'answer', text: cleanText };

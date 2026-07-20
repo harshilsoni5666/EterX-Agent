@@ -27,10 +27,11 @@
 import fs from 'fs-extra';
 import path from 'path';
 import crypto from 'crypto';
+import { getEterxWorkspaceDir } from '../storage-paths';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const SESSION_DIR = path.resolve(process.cwd(), '.workspaces', '.session');
+const SESSION_DIR = getEterxWorkspaceDir('.session');
 const MAX_ENTRIES = 3_000;
 const FLUSH_DEBOUNCE_MS = 1_500;
 const MAX_KEY_FACTS = 5;

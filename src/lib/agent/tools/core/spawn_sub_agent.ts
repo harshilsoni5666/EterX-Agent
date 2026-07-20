@@ -74,6 +74,18 @@ WHEN TO USE SPECIALIST: focused security, performance, architecture, QA, or rese
     maxAgents?: number,
     agentName?: string
   }, context: any) => {
+    if (context?.isUserProxy) {
+      if (input.mode !== 'specialist') {
+        return { mode: input.mode, agents: [], message: 'User Proxy may only create one temporary specialist.' };
+      }
+      if (context._userProxyHelperUsed) {
+        return { mode: input.mode, agents: [], message: 'User Proxy specialist allowance has already been used.' };
+      }
+      if (!input.tasks || input.tasks.length !== 1) {
+        return { mode: input.mode, agents: [], message: 'User Proxy must provide exactly one focused specialist task.' };
+      }
+      context._userProxyHelperUsed = true;
+    }
     const decision = enforceToolCapability('spawn_sub_agent', input, context);
     if (!decision.allowed) {
       return { mode: input.mode || 'blocked', agents: [], message: decision.reason || 'Sub-agent spawning is not allowed' };

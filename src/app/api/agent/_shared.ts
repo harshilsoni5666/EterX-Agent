@@ -123,6 +123,9 @@ export function ensureChatOwner(chatId: string, sessionId: string): boolean {
 }
 
 export function requireChatOwner(chatId: string, sessionId: string) {
+  if (!ensureChatOwner(chatId, sessionId)) {
+    return jsonError('This browser session does not own this chat.', 403);
+  }
   return null;
 }
 

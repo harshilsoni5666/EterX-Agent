@@ -56,19 +56,17 @@ export type MainAgentModelConfig = {
 export const GEMINI_THINK_FALLBACK_CHAIN: readonly string[] = [
   'gemini-3.5-flash',
   'gemini-3-flash-preview',
-  'gemini-3-pro-preview',
   'gemini-3.1-pro-preview',
   'gemini-3.1-flash-lite',
   'gemini-2.5-pro',
-  'gemini-2.0-flash',
 ];
 
 export const GEMINI_FAST_FALLBACK_CHAIN: readonly string[] = [
   'gemini-3.5-flash',
   'gemini-3-flash-preview',
   'gemini-3.1-flash-lite',
-  'gemini-2.0-flash-lite',
-  'gemini-2.0-flash',
+  'gemini-2.5-flash',
+  'gemini-2.5-flash-lite',
 ];
 
 export const MISTRAL_FALLBACK_CHAIN: readonly string[] = [
@@ -83,11 +81,10 @@ export const MISTRAL_FALLBACK_CHAIN: readonly string[] = [
 
 export const OPENAI_FALLBACK_CHAIN: readonly string[] = [
   'gpt-5.6-sol',
-  'gpt-5.6-luna-pro',
   'gpt-5.6-luna',
-  'gpt-5.6-terra-pro',
   'gpt-5.6-terra',
   'gpt-5.5',
+  'gpt-5.5-pro',
   'o3-pro',
   'o3',
   'o4-mini',
@@ -112,8 +109,9 @@ export const ANTHROPIC_FALLBACK_CHAIN: readonly string[] = [
   'claude-fable-5',
   'claude-mythos-5',
   'claude-opus-4-8',
-  'claude-haiku-4-5',
+  'claude-opus-4-6',
   'claude-sonnet-4-6',
+  'claude-haiku-4-5',
 ];
 
 export const GROQ_FALLBACK_CHAIN: readonly string[] = [
@@ -285,7 +283,7 @@ export const MAIN_AGENT_MODE_CONFIG: Record<MainAgentMode, MainAgentModelConfig>
   openai: {
     id: 'openai',
     provider: 'openai',
-    label: 'GPT-5.6 Luna',
+    label: 'GPT-5.6 Sol',
     compactLabel: 'OpenAI',
     get modelName() { return resolveModelName('openai'); },
     selectable: true,
@@ -337,7 +335,7 @@ export const isOpenAIReasoningModel = (model: string) =>
   /(?:^|[/:_-])(?:o1|o3|o4)(?:$|[/:_-])|gpt-5|luna|terra|sol/i.test(model);
 
 const isClaudeEffortModel = (model: string) =>
-  /(?:claude-(?:fable|mythos|sonnet-5|opus-4-(?:6|7|8)))/i.test(model);
+  /(?:claude-(?:fable|mythos|sonnet-5|sonnet-4-6|opus-4-(?:6|7|8)))/i.test(model);
 
 const isClaudeXHighModel = (model: string) =>
   /(?:claude-(?:fable|mythos|sonnet-5|opus-4-(?:7|8)))/i.test(model);
@@ -363,14 +361,17 @@ export function getModelThinkingOptions(
   if (!model) return [];
 
   if (provider === 'gemini') {
-    if (model.includes('gemini-3.1-flash-lite')) return thinkingOptions('off', 'minimal', 'high');
+    // Gemini 3 uses thinkingLevel. "minimal" is the lowest effort; these
+    // models do not provide a true thinking-off setting.
+    if (model.includes('gemini-3.1-flash-lite')) return thinkingOptions('minimal', 'low', 'medium', 'high');
     if (model.includes('gemini-3.5') || model.includes('gemini-3-flash')) {
-      return thinkingOptions('off', 'minimal', 'low', 'medium', 'high');
+      return thinkingOptions('minimal', 'low', 'medium', 'high');
     }
-    if (model.includes('gemini-3.1-pro')) return thinkingOptions('off', 'low', 'medium', 'high');
-    if (model.includes('gemini-3-pro')) return thinkingOptions('off', 'low', 'high');
-    if (model.includes('gemini-2.5')) return thinkingOptions('off', 'low', 'medium', 'high');
-    if (model.includes('gemini-2.0-flash-thinking')) return thinkingOptions('off', 'low', 'medium', 'high');
+    if (model.includes('gemini-3.1-pro')) return thinkingOptions('low', 'medium', 'high');
+    // Gemini 2.5 uses thinkingBudget, not thinkingLevel.
+    if (model.includes('gemini-2.5-pro')) return thinkingOptions('low', 'medium', 'high');
+    if (model.includes('gemini-2.5-flash-lite')) return [];
+    if (model.includes('gemini-2.5-flash')) return thinkingOptions('off', 'low', 'medium', 'high');
     return [];
   }
 
@@ -390,7 +391,7 @@ export function getModelThinkingOptions(
 
   if (provider === 'openai') {
     return isOpenAIReasoningModel(model)
-      ? thinkingOptions('off', 'minimal', 'low', 'medium', 'high', 'xhigh')
+      ? thinkingOptions('off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max')
       : [];
   }
 
@@ -423,6 +424,38 @@ export function doesModelSupportThinking(
   discovered?: ModelThinkingCapabilities | null,
 ): boolean {
   return getModelThinkingOptions(provider, modelName, discovered).length > 0;
+}
+
+/**
+ * Build the Gemini thinking config for the selected model family.
+ * Gemini 3 uses thinkingLevel; Gemini 2.5 uses thinkingBudget.
+ */
+export function getGeminiThinkingConfig(
+  level: MainAgentThinkingLevel,
+  modelName: string,
+  includeThoughts: boolean,
+): Record<string, unknown> | null {
+  const model = String(modelName || '').toLowerCase();
+  if (!getModelThinkingOptions('gemini', model).length) return null;
+
+  if (model.includes('gemini-2.5')) {
+    if (model.includes('gemini-2.5-pro')) {
+      const thinkingBudget = level === 'low' ? 4096 : level === 'high' ? 32768 : 16384;
+      return { thinkingBudget, includeThoughts };
+    }
+    if (level === 'off') return { thinkingBudget: 0, includeThoughts };
+    const thinkingBudget = level === 'low' ? 1024 : level === 'high' ? 24576 : 8192;
+    return { thinkingBudget, includeThoughts };
+  }
+
+  const thinkingLevel = level === 'minimal'
+    ? 'minimal'
+    : level === 'low'
+      ? 'low'
+      : level === 'high'
+        ? 'high'
+        : 'medium';
+  return { thinkingLevel, includeThoughts };
 }
 
 export function normalizeModelThinkingCapabilities(value: unknown): ModelThinkingCapabilities | null {
@@ -500,7 +533,7 @@ export function getAnthropicThinkingBudget(level: MainAgentThinkingLevel): numbe
 }
 
 export function isAnthropicAdaptiveThinkingModel(modelName: string): boolean {
-  return /(?:claude-(?:fable|mythos|sonnet-5|opus-4-(?:6|7|8)))/i.test(modelName);
+  return /(?:claude-(?:fable|mythos|sonnet-5|sonnet-4-6|opus-4-(?:6|7|8)))/i.test(modelName);
 }
 
 export function isOpenAIMiniReasoningModel(modelName: string): boolean {

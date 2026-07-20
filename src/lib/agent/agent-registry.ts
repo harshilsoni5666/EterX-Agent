@@ -6,6 +6,7 @@ import { taskStore } from './task-store';
 import { getMainAgentModelConfig, type MainAgentMode } from './model-routing';
 import type { ScopedRuntimeSettings } from './runtime-api-keys';
 import { flushLedgerForChat } from './memory/conversation-ledger';
+import { observeUserProxy, startUserProxyRuntime, stopUserProxyRuntime, pauseUserProxyRuntime, resumeUserProxyRuntime, setUserProxyIntervention, type ProxyInterventionLevel } from './autonomy/user-proxy-runtime';
 
 // Ensure tools are bootstrapped
 import './tools/index';
@@ -40,6 +41,7 @@ interface SteeringMessage {
   text: string;
   createdAt: number;
   updatedAt?: number;
+  metadata?: Record<string, any>;
 }
 
 interface AgentExecution {
@@ -82,7 +84,19 @@ class AgentRegistry {
   private cleanupTimer: NodeJS.Timeout | null = null;
   private lastTaskStoreCleanupAt = 0;
 
+  private findExecution(runtimeId: string): AgentExecution | undefined {
+    const direct = this.executions.get(runtimeId);
+    if (direct) return direct;
+    for (const execution of this.executions.values()) {
+      if (execution.orchestratorProjectId === runtimeId) return execution;
+    }
+    return undefined;
+  }
+
   constructor() {
+    // Any persisted `running` task belongs to a previous process after a
+    // desktop restart. Convert it before the UI can rehydrate it as live.
+    taskStore.recoverOrphanedRunningTasks().catch(() => {});
     // Start periodic cleanup
     this.cleanupTimer = setInterval(() => this.cleanup(), CLEANUP_INTERVAL);
     this.cleanupTimer.unref?.();
@@ -291,6 +305,9 @@ class AgentRegistry {
       }
 
       this.appendTrace(execution, traceEvent, !pinnedContext?.disableTaskStore);
+      if (execution.orchestratorProjectId) {
+        observeUserProxy(execution.orchestratorProjectId, traceEvent);
+      }
     };
 
     onTrace({
@@ -561,6 +578,25 @@ class AgentRegistry {
           ? `telegram-${ pinnedContext.telegram.chatId }`
           : chatId;
         execution.orchestratorProjectId = projectId;
+        const autonomyEnabled = pinnedContext?.agentRuntime === 'autonomy_v1' || pinnedContext?.autonomy?.enabled === true;
+        const proxyLease = autonomyEnabled && !isExternalProvider
+          ? apiKeyPool.leaseSubAgentKey(chatId, 'user_proxy')
+          : null;
+        startUserProxyRuntime({
+          context: {
+            ...(pinnedContext || {}),
+            projectId,
+            selectedModelMode: mode,
+          } as any,
+          objective: prompt,
+          mode,
+          apiKey: isExternalProvider ? projectId : (proxyLease?.apiKey || lease?.apiKey || ''),
+          runtimeSettings,
+          history,
+          attachments: mediaAttachments,
+          onTrace,
+          steer: (message, metadata) => this.addSteeringMessage(chatId, message, undefined, metadata),
+        });
         const response = await orchestrator.executePipeline(
           userId,
           projectId,
@@ -641,6 +677,7 @@ class AgentRegistry {
         }
 
       } finally {
+        if (execution.orchestratorProjectId) stopUserProxyRuntime(execution.orchestratorProjectId);
         // ALWAYS release ALL keys associated with this chat (main agent + ANY dynamically named sub-agents)
         if (!isExternalProvider) apiKeyPool.releaseKey(chatId);
         apiKeyPool.releaseLeasesWithPrefix(`${ chatId }_sub_`);
@@ -743,15 +780,17 @@ class AgentRegistry {
    * Also immediately emits a steering_received trace to the buffer so the UI
    * can show the user that their steering was acknowledged instantly.
    */
-  public addSteeringMessage(chatId: string, message: string, steeringId?: string): boolean {
-    const execution = this.executions.get(chatId);
+  public addSteeringMessage(chatId: string, message: string, steeringId?: string, metadata?: Record<string, any>): boolean {
+    const execution = this.findExecution(chatId);
     if (!execution || execution.status !== 'running') return false;
 
-    const trimmedMessage = message.substring(0, 8000);
+    const trimmedMessage = message.trim().substring(0, 8000);
+    if (!trimmedMessage) return false;
     const queuedMessage: SteeringMessage = {
       id: steeringId || `steer_${ Date.now() }_${ Math.random().toString(36).slice(2, 8) }`,
       text: trimmedMessage,
       createdAt: Date.now(),
+      metadata,
     };
     execution.steeringQueue.push(queuedMessage);
     if (execution.steeringQueue.length > MAX_STEERING_QUEUE) {
@@ -767,6 +806,7 @@ class AgentRegistry {
       steeringId: queuedMessage.id,
       steeringIds: [queuedMessage.id],
       timestamp: Date.now(),
+      ...(metadata || {}),
     });
 
     console.log(`[AgentRegistry] 🧭 Steering message queued for chat ${ chatId.substring(0, 8) }...: "${ trimmedMessage.substring(0, 60) }"`);
@@ -778,18 +818,23 @@ class AgentRegistry {
    * Called by the ReAct loop at the start of each iteration.
    */
   public getAndClearSteeringQueue(chatId: string): SteeringMessage[] {
-    const execution = this.executions.get(chatId);
+    const execution = this.findExecution(chatId);
     if (!execution || execution.steeringQueue.length === 0) return [];
     const messages = [...execution.steeringQueue];
     execution.steeringQueue = [];
     return messages;
   }
 
+  /** Atomically drains all pending guidance at a safe model boundary. */
+  public drainSteeringQueue(chatId: string): SteeringMessage[] {
+    return this.getAndClearSteeringQueue(chatId);
+  }
+
   /**
    * Peek at the pending steering messages without dequeuing them.
    */
   public peekSteeringQueue(chatId: string): SteeringMessage[] {
-    const execution = this.executions.get(chatId);
+    const execution = this.findExecution(chatId);
     if (!execution) return [];
     return [...execution.steeringQueue];
   }
@@ -798,7 +843,7 @@ class AgentRegistry {
    * Remove the first N messages from the steering queue.
    */
   public consumeSteeringQueue(chatId: string, count: number): void {
-    const execution = this.executions.get(chatId);
+    const execution = this.findExecution(chatId);
     if (!execution || count <= 0) return;
     execution.steeringQueue.splice(0, count);
   }
@@ -809,6 +854,14 @@ class AgentRegistry {
   public isRunning(chatId: string): boolean {
     const execution = this.executions.get(chatId);
     return execution?.status === 'running';
+  }
+
+  public controlUserProxy(chatId: string, action: 'pause' | 'resume' | 'intervention', level?: ProxyInterventionLevel): boolean {
+    const execution = this.findExecution(chatId);
+    const projectId = execution?.orchestratorProjectId || chatId;
+    if (action === 'pause') return pauseUserProxyRuntime(projectId);
+    if (action === 'resume') return resumeUserProxyRuntime(projectId);
+    return level ? setUserProxyIntervention(projectId, level) : false;
   }
 
   /**

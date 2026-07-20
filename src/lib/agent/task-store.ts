@@ -1,5 +1,6 @@
 import fs from 'fs-extra';
 import path from 'path';
+import { getEterxWorkspaceDir } from './storage-paths';
 
 /**
  * TaskStore — Persistent Server-Side Task State
@@ -20,7 +21,7 @@ import path from 'path';
  * Storage: .workspaces/.tasks/{chatId}.json
  */
 
-const TASKS_DIR = path.resolve(process.cwd(), '.workspaces', '.tasks');
+const TASKS_DIR = getEterxWorkspaceDir('.tasks');
 const MAX_TASK_CACHE_ENTRIES = 80;
 const MAX_RUNNING_TRACE_LOGS = 700;
 const MAX_COMPLETED_TRACE_LOGS = 350;
@@ -46,6 +47,7 @@ const DEBOUNCE_MS = 500;
 
 // In-memory cache for fast reads
 const taskCache: Map<string, PersistedTask> = new Map();
+let orphanRecoveryPromise: Promise<void> | null = null;
 
 async function ensureDir() {
   await fs.ensureDir(TASKS_DIR);
@@ -178,6 +180,38 @@ function scheduleDiskWrite(chatId: string): void {
 }
 
 export const taskStore = {
+  /**
+   * A desktop close kills the Node process. No in-memory execution can exist
+   * after restart, so persisted running tasks must never be presented as live.
+   */
+  async recoverOrphanedRunningTasks(): Promise<void> {
+    if (orphanRecoveryPromise) return orphanRecoveryPromise;
+    orphanRecoveryPromise = (async () => {
+      try {
+        if (!(await fs.pathExists(TASKS_DIR))) return;
+        const files = await fs.readdir(TASKS_DIR);
+        for (const file of files) {
+          if (!file.endsWith('.json')) continue;
+          const taskPath = resolveUnder(TASKS_DIR, file);
+          try {
+            const task = await fs.readJson(taskPath) as PersistedTask;
+            if (task.status !== 'running') continue;
+            task.status = 'failed';
+            task.finalAnswer = 'Agent interrupted because EterX was closed or restarted. Previous activity is preserved above.';
+            task.completedAt = Date.now();
+            task.lastUpdatedAt = Date.now();
+            trimTask(task, true);
+            await writeJsonAtomic(taskPath, task);
+          } catch (error: any) {
+            console.warn(`[TaskStore] Could not recover orphaned task ${file}: ${error?.message || error}`);
+          }
+        }
+      } catch (error: any) {
+        console.warn(`[TaskStore] Could not scan for orphaned tasks: ${error?.message || error}`);
+      }
+    })();
+    return orphanRecoveryPromise;
+  },
   /**
    * Create a new task entry when a chat request starts.
    */
@@ -363,6 +397,7 @@ export const taskStore = {
     completedAt?: number;
     error?: string;
   }> {
+    await this.recoverOrphanedRunningTasks();
     const task = await this.getTask(chatId);
     if (!task) {
       return { status: 'idle', traces: [], totalTraces: 0, maxIndex: -1, finalAnswer: '' };

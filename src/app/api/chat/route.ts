@@ -62,6 +62,7 @@ export async function POST(req: NextRequest) {
       userId = 'default_user', 
       projectId = 'default_project', 
       mode = 'think', 
+      selectedModel = null,
       thinkingLevel = 'low',
       modelThinkingCapability = null,
       pinnedContext = null, 
@@ -94,6 +95,17 @@ export async function POST(req: NextRequest) {
       : {};
     const runtimeSettings = buildScopedRuntimeSettings();
     const selectedModelConfig = getMainAgentModelConfig(safeMode, runtimeSettings);
+    const requestedModelProvider = selectedModel && typeof selectedModel === 'object'
+      ? String((selectedModel as any).provider || '').trim()
+      : '';
+    const requestedModelName = selectedModel && typeof selectedModel === 'object'
+      ? String((selectedModel as any).modelId || (selectedModel as any).modelName || '').trim()
+      : '';
+    const exactModelName = requestedModelProvider === 'openai'
+      && requestedModelProvider === selectedModelConfig.provider
+      && requestedModelName.length > 0
+      ? requestedModelName.slice(0, 200)
+      : '';
     const safeModelThinkingCapability = normalizeModelThinkingCapabilities(modelThinkingCapability);
     const safeThinkingLevel = normalizeThinkingLevelForModel(
       thinkingLevel,
@@ -108,6 +120,7 @@ export async function POST(req: NextRequest) {
     let effectivePinnedContext: Record<string, any> = {
       ...(isBuilderChat ? buildAgentBuilderPinnedContext(chatId, safePinnedContext) : safePinnedContext),
       thinkingLevel: safeThinkingLevel,
+      ...(exactModelName ? { selectedModelName: exactModelName, selectedModelProvider: requestedModelProvider } : {}),
       ...(safeModelThinkingCapability ? { modelThinkingCapability: safeModelThinkingCapability } : {}),
       agentSessionId: session.sessionId,
       runLocation: typeof runLocation === 'string' ? runLocation : 'local',

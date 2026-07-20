@@ -3,9 +3,11 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import dynamic from 'next/dynamic';
 import { Sidebar } from '../components/layout/sidebar';
+import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
+import { applyEterxTheme, broadcastEterxSettingsUpdate } from '../components/theme/theme-bridge';
 import { ChatInput } from '../components/layout/chat-input';
 import { ChatFeed } from '../components/chat/chat-feed';
-import { AlertTriangle, CheckCircle2, ChevronDown, Clock3, Code2, GraduationCap, List, MessageSquare, Pencil, PenTool, SendHorizontal, SquarePen, Search, X, ArrowLeft, Trash, ListTodo, ChevronRight, Monitor, GitFork, Terminal, GitBranch, GitCommit, PlusSquare, Check, FileCode, FileText, MoreHorizontal, Sparkles, Pin, PinOff, Archive, Split, Calendar, ExternalLink, Copy, ChevronLeft, History, RefreshCw, Plus } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, ChevronDown, Sun, Moon, Clock3, Code2, GraduationCap, List, MessageSquare, Pencil, PenTool, SendHorizontal, SquarePen, Search, X, ArrowLeft, ListTodo, ChevronRight, Monitor, GitFork, Terminal, GitBranch, GitCommit, PlusSquare, Check, FileCode, FileText, MoreHorizontal, Sparkles, Pin, PinOff, Archive, Split, Calendar, ExternalLink, Copy, ChevronLeft, History, RefreshCw, Plus, Pause, Play, SlidersHorizontal, ShieldCheck, Minus, ArrowUp, Mic } from 'lucide-react';
 import { Tooltip } from '../components/ui/tooltip';
 import { motion, AnimatePresence, Reorder } from 'framer-motion';
 import { InteractiveGrid } from '../components/ui/interactive-grid';
@@ -30,6 +32,8 @@ import {
   MODEL_THINKING_CAPABILITIES_STORAGE_KEY,
   modelEntryKey,
   composeApiKeysForSelection,
+  entriesToModelCatalog,
+  ensureModelSelectorEntry,
   normalizeModelSelectorEntries,
   parseModelEntryKey,
   pickAutoModelEntry,
@@ -328,6 +332,7 @@ const SELECTED_AGENT_STORAGE_KEY = 'eterx_selected_agent';
 const SETTINGS_STORAGE_KEY = 'eterx_settings';
 const SETTINGS_CHANNEL = 'eterx-settings';
 const API_KEY_STORAGE_KEY = 'eterx_api_keys';
+const ACTIVE_CHAT_STORAGE_KEY = 'eterx_active_chat';
 
 const readStoredMainAgentMode = (): MainAgentMode | null => {
   if (typeof window === 'undefined') return null;
@@ -582,6 +587,7 @@ function DeepWorkUI() {
     }
     return AUTO_MODEL_SELECTION;
   });
+  const [proxyModelEntries, setProxyModelEntries] = useState(() => readRuntimeModelEntries());
 
   const [composerStates, setComposerStates] = useState<Record<string, ChatComposerState>>(() => {
     if (typeof window !== 'undefined') {
@@ -701,8 +707,51 @@ function DeepWorkUI() {
     setActiveModelSelection(selection);
     updateComposerState(state => ({ ...state, chatModelSelection: selection }));
   }, [updateComposerState]);
+
+  const handleProxyModelSelectionChange = useCallback((selection: string) => {
+    const option = [
+      { optionKey: AUTO_MODEL_SELECTION, provider: 'auto' as const, modelId: '' },
+      ...proxyModelEntries.map(entry => ({
+        optionKey: modelEntryKey(entry.provider, entry.modelId),
+        provider: entry.provider,
+        modelId: entry.modelId,
+      })),
+    ].find(candidate => candidate.optionKey === selection);
+    if (!option) return;
+
+    if (option.optionKey === AUTO_MODEL_SELECTION) {
+      window.localStorage.setItem(CHAT_MODEL_SELECTION_STORAGE_KEY, AUTO_MODEL_SELECTION);
+      window.localStorage.setItem(MODEL_OVERRIDE_STORAGE_KEY, JSON.stringify({}));
+      handleModelSelectionChange(AUTO_MODEL_SELECTION);
+      window.dispatchEvent(new CustomEvent('eterx-settings-updated', { detail: { type: 'model-selection-updated' } }));
+      return;
+    }
+
+    const nextEntries = ensureModelSelectorEntry(proxyModelEntries, option.provider, option.modelId);
+    const nextOverrides = { [option.provider]: option.modelId };
+    window.localStorage.setItem(CHAT_MODEL_SELECTION_STORAGE_KEY, option.optionKey);
+    window.localStorage.setItem(MODEL_SELECTOR_STORAGE_KEY, JSON.stringify(nextEntries));
+    window.localStorage.setItem(MODEL_CATALOG_STORAGE_KEY, JSON.stringify(entriesToModelCatalog(nextEntries)));
+    window.localStorage.setItem(MODEL_OVERRIDE_STORAGE_KEY, JSON.stringify(nextOverrides));
+    setProxyModelEntries(nextEntries);
+    setAgentMode(MODEL_PROVIDER_MODE[option.provider]);
+    handleModelSelectionChange(option.optionKey);
+    window.dispatchEvent(new CustomEvent('eterx-settings-updated', { detail: { type: 'model-selection-updated' } }));
+  }, [handleModelSelectionChange, proxyModelEntries]);
+
+  useEffect(() => {
+    const refreshProxyModels = () => setProxyModelEntries(readRuntimeModelEntries());
+    window.addEventListener('storage', refreshProxyModels);
+    window.addEventListener('focus', refreshProxyModels);
+    window.addEventListener('eterx-settings-updated', refreshProxyModels);
+    return () => {
+      window.removeEventListener('storage', refreshProxyModels);
+      window.removeEventListener('focus', refreshProxyModels);
+      window.removeEventListener('eterx-settings-updated', refreshProxyModels);
+    };
+  }, []);
   const [selectedProjectSection, setSelectedProjectSection] = useState('new-tasks');
-  const [pendingSteering, setPendingSteering] = useState<{ id: string, text: string }[]>([]);
+  const [pendingSteering, setPendingSteering] = useState<{ id: string, text: string, chatId: string }[]>([]);
   // Per-chat thinking state: Set of chatIds that have running agents
   const [runningChats, setRunningChats] = useState<Set<string>>(new Set());
   const [unreadChatIds, setUnreadChatIds] = useState<Set<string>>(new Set());
@@ -734,6 +783,20 @@ function DeepWorkUI() {
     agentId: null,
     agentName: 'General',
   });
+  const [proxyEnabled, setProxyEnabled] = useState(true);
+  const [proxyIntervention, setProxyIntervention] = useState<'minimal' | 'normal' | 'high'>('normal');
+  const [proxyDropdownOpen, setProxyDropdownOpen] = useState(false);
+  const [showProxyChat, setShowProxyChat] = useState(false);
+  const [proxyChatInput, setProxyChatInput] = useState('');
+  const [showProxyModelMenu, setShowProxyModelMenu] = useState(false);
+  const [proxyChatMessages, setProxyChatMessages] = useState<Array<{ sender: 'user' | 'proxy'; text: string; time: string }>>([]);
+  const [proxyChatWindow, setProxyChatWindow] = useState({ x: 0, y: 0, width: 330, height: 420 });
+  const proxyWindowInteractionRef = useRef<{
+    type: 'drag' | 'resize';
+    startX: number;
+    startY: number;
+    startWindow: typeof proxyChatWindow;
+  } | null>(null);
   const [activeWorkspacePath, setActiveWorkspacePath] = useState<string | null>(null);
   const [activeRunLocation, setActiveRunLocation] = useState<'local' | 'sandbox'>('local');
   const [pinnedItems, setPinnedItems] = useState<PinnedItem[]>([]);
@@ -761,6 +824,8 @@ function DeepWorkUI() {
   const [sourcesSectionOpen, setSourcesSectionOpen] = useState(true);
   const [subAgentsSectionOpen, setSubAgentsSectionOpen] = useState(true);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [settingsInitialTab, setSettingsInitialTab] = useState<string>('models');
+  const [topbarThemeOpen, setTopbarThemeOpen] = useState(false);
   const [monitorOpen, setMonitorOpen] = useState(false);
   const [agentTeamOpen, setAgentTeamOpen] = useState(false);
   const [activeSubAgentTab, setActiveSubAgentTab] = useState<string | null>(null);
@@ -1054,25 +1119,38 @@ function DeepWorkUI() {
     setActiveViewState(view);
   }, []);
 
-  const openSettingsWindow = useCallback(() => {
+  const handleThemeChange = useCallback((newTheme: 'light' | 'dark') => {
+    console.log('[ThemeChange] Changing theme to:', newTheme);
     try {
-      const saved = window.localStorage.getItem(SETTINGS_STORAGE_KEY);
+      const saved = localStorage.getItem(SETTINGS_STORAGE_KEY);
       const settings = saved ? JSON.parse(saved) : {};
-      const requested = settings.theme === 'dark' || settings.theme === 'system' ? settings.theme : 'light';
-      const resolved = requested === 'system'
-        ? (window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
-        : requested;
-      (window as any).electronAPI?.setNativeTheme?.(resolved);
-    } catch {
-      // Native theme sync is only needed for Electron popout polish.
+      settings.theme = newTheme;
+      localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+      
+      // Direct DOM manipulation to ensure instant update
+      const root = document.documentElement;
+      root.setAttribute('data-theme', newTheme);
+      root.classList.toggle('dark', newTheme === 'dark');
+      root.classList.toggle('light', newTheme === 'light');
+      root.style.colorScheme = newTheme;
+      
+      // Sync natively
+      (window as any).electronAPI?.setNativeTheme?.(newTheme);
+      
+      applyEterxTheme(newTheme);
+      broadcastEterxSettingsUpdate(settings);
+      
+      window.dispatchEvent(new StorageEvent('storage', { key: SETTINGS_STORAGE_KEY }));
+    } catch (err) {
+      console.error('[ThemeChange] Error changing theme:', err);
     }
-    const opened = window.open(
-      '/settings?tab=models',
-      'eterx-settings',
-      'width=1440,height=960,resizable=yes,scrollbars=yes',
-    );
-    if (!opened) setIsSettingsOpen(true);
+    setTopbarThemeOpen(false);
   }, []);
+
+  const openSettingsWindow = useCallback((tab?: string) => {
+    if (tab) setSettingsInitialTab(tab);
+    setIsSettingsOpen(true);
+  }, [setSettingsInitialTab, setIsSettingsOpen]);
 
   useEffect(() => {
     const applyStoredAgentMode = () => {
@@ -1145,6 +1223,7 @@ function DeepWorkUI() {
   const activeChatIdRef = useRef<string | null>(null);
   const localStorageTimerRef = useRef<NodeJS.Timeout | null>(null);
   const pendingLocalStorageWrite = useRef(false);
+  const restoredActiveChatRef = useRef(false);
   const panelResizeCleanupRef = useRef<(() => void) | null>(null);
   // Keep ref synced with state
   activeChatIdRef.current = activeChatId;
@@ -1269,11 +1348,105 @@ function DeepWorkUI() {
       agentName: agentId?.trim() ? (agentName?.trim() || agentId.trim()) : 'General',
     };
     setSelectedAgentState(next);
+    if (next.agentId === 'autonomous' || next.agentId === null) {
+      setActiveSubAgentTab(null);
+    }
     updateComposerState(state => ({ ...state, selectedAgent: next }));
     try {
       localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, JSON.stringify(next));
     } catch { }
   }, [updateComposerState]);
+
+  const updateProxyControl = useCallback(async (action: 'pause' | 'resume' | 'intervention', level?: 'minimal' | 'normal' | 'high') => {
+    if (!activeChatId) return false;
+    try {
+      const response = await fetch('/api/agent/proxy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chatId: activeChatId, action, level }),
+      });
+      return response.ok && Boolean((await response.json().catch(() => ({}))).success);
+    } catch {
+      return false;
+    }
+  }, [activeChatId]);
+
+  const handleProxyToggle = useCallback(async () => {
+    const nextEnabled = !proxyEnabled;
+    setProxyEnabled(nextEnabled);
+    if (activeChatId) {
+      const ok = await updateProxyControl(nextEnabled ? 'resume' : 'pause');
+      if (!ok) setProxyEnabled(!nextEnabled);
+    }
+  }, [activeChatId, proxyEnabled, updateProxyControl]);
+
+  const handleProxyInterventionChange = useCallback(async (level: 'minimal' | 'normal' | 'high') => {
+    const previous = proxyIntervention;
+    setProxyIntervention(level);
+    if (activeChatId) {
+      const ok = await updateProxyControl('intervention', level);
+      if (!ok) setProxyIntervention(previous);
+    }
+  }, [activeChatId, proxyIntervention, updateProxyControl]);
+
+  const handleSendProxyMessage = useCallback(() => {
+    if (!proxyChatInput.trim()) return;
+    const userMsg = {
+      sender: 'user' as const,
+      text: proxyChatInput,
+      time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    };
+    setProxyChatMessages(prev => [...prev, userMsg]);
+    setProxyChatInput('');
+
+    setTimeout(() => {
+      setProxyChatMessages(prev => [...prev, {
+        sender: 'proxy',
+        text: "I received your message! I'm continuing to monitor the execution flow and will keep you posted.",
+        time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      }]);
+    }, 1000);
+  }, [proxyChatInput]);
+
+  const handleProxyWindowPointerMove = useCallback((event: PointerEvent) => {
+    const interaction = proxyWindowInteractionRef.current;
+    if (!interaction) return;
+    const dx = event.clientX - interaction.startX;
+    const dy = event.clientY - interaction.startY;
+    if (interaction.type === 'drag') {
+      setProxyChatWindow(current => ({ ...current, x: interaction.startWindow.x + dx, y: interaction.startWindow.y + dy }));
+    } else {
+      setProxyChatWindow(current => ({
+        ...current,
+        width: Math.max(280, Math.min(560, interaction.startWindow.width + dx)),
+        height: Math.max(320, Math.min(720, interaction.startWindow.height + dy)),
+      }));
+    }
+  }, []);
+
+  const handleProxyWindowPointerUp = useCallback(() => {
+    proxyWindowInteractionRef.current = null;
+  }, []);
+
+  useEffect(() => {
+    window.addEventListener('pointermove', handleProxyWindowPointerMove);
+    window.addEventListener('pointerup', handleProxyWindowPointerUp);
+    return () => {
+      window.removeEventListener('pointermove', handleProxyWindowPointerMove);
+      window.removeEventListener('pointerup', handleProxyWindowPointerUp);
+    };
+  }, [handleProxyWindowPointerMove, handleProxyWindowPointerUp]);
+
+  const startProxyWindowInteraction = useCallback((type: 'drag' | 'resize', event: React.PointerEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    proxyWindowInteractionRef.current = {
+      type,
+      startX: event.clientX,
+      startY: event.clientY,
+      startWindow: proxyChatWindow,
+    };
+  }, [proxyChatWindow]);
 
   const resizeChatPanelBy = useCallback((delta: number) => {
     const container = splitContainerRef.current;
@@ -1668,14 +1841,34 @@ function DeepWorkUI() {
   }, [headerMenuOpen]);
 
   useEffect(() => {
+    if (restoredActiveChatRef.current) return;
+    restoredActiveChatRef.current = true;
     try {
       const saved = localStorage.getItem('eterx_chats');
       if (saved) {
         const parsed = JSON.parse(saved);
-        setChats(sortChats(parsed));
+        const restoredChats = sortChats(parsed);
+        setChats(restoredChats);
+
+        const savedActiveChatId = localStorage.getItem(ACTIVE_CHAT_STORAGE_KEY);
+        const restoredActiveChat = restoredChats.find(chat => chat.id === savedActiveChatId);
+        if (restoredActiveChat) {
+          activeChatIdRef.current = restoredActiveChat.id;
+          setActiveChatId(restoredActiveChat.id);
+          setTraceLogs(restoredActiveChat.traceLogs || []);
+          setActiveWorkspacePath(restoredActiveChat.workspacePath || null);
+          applyComposerState(composerStates[restoredActiveChat.id]);
+        }
       }
     } catch (e) { }
-  }, []);
+  }, [applyComposerState, composerStates]);
+
+  useEffect(() => {
+    try {
+      if (activeChatId) localStorage.setItem(ACTIVE_CHAT_STORAGE_KEY, activeChatId);
+      else localStorage.removeItem(ACTIVE_CHAT_STORAGE_KEY);
+    } catch { }
+  }, [activeChatId]);
 
   // ═══════════════════════════════════════════════════════════════
   // ALWAYS-ON POLLING: Agents and UI run at FULL SPEED at ALL TIMES.
@@ -1939,6 +2132,7 @@ function DeepWorkUI() {
     if (chat) {
       activeChatIdRef.current = id;
       setActiveChatId(id);
+      try { localStorage.setItem(ACTIVE_CHAT_STORAGE_KEY, id); } catch { }
       setTraceLogs(chat.traceLogs || []);
       setActiveWorkspacePath(chat.workspacePath || null);
       if (typeof window !== 'undefined') {
@@ -3324,6 +3518,7 @@ function DeepWorkUI() {
 
     // 4. Clear all running state for this chat
     removeRunningChat(activeChatId);
+    setPendingSteering(prev => prev.filter(message => message.chatId !== activeChatId));
 
     // 5. Clear notification tracking (so future runs can notify again)
     notifiedChatIdsRef.current.delete(activeChatId);
@@ -3347,16 +3542,24 @@ function DeepWorkUI() {
     const lastUserIdx = traceLogs.reduceRight((found, l, i) => found === -1 && l.type === 'user_action' ? i : found, -1);
     const currentTurnLogs = lastUserIdx >= 0 ? traceLogs.slice(lastUserIdx) : traceLogs;
 
+    const receivedIds = new Set(
+      currentTurnLogs
+        .filter(l => l.type === 'steering_received')
+        .map(l => String(l.steeringId || ''))
+        .filter(Boolean)
+    );
     const receivedTexts = new Set(
       currentTurnLogs
         .filter(l => l.type === 'steering_received')
         .map(l => l.text)
     );
 
-    if (receivedTexts.size > 0) {
-      setPendingSteering(prev => prev.filter(p => !receivedTexts.has(p.text)));
+    if (receivedIds.size > 0 || receivedTexts.size > 0) {
+      setPendingSteering(prev => prev.filter(p =>
+        p.chatId !== activeChatId || (!receivedIds.has(p.id) && !receivedTexts.has(p.text))
+      ));
     }
-  }, [traceLogs, pendingSteering.length]);
+  }, [activeChatId, traceLogs, pendingSteering.length]);
 
   /**
    * handleSteer - sends a live steering comment to the running agent.
@@ -3371,23 +3574,31 @@ function DeepWorkUI() {
       return;
     }
 
-    const newSteering = { id: Date.now().toString(), text: steerMessage };
+    const newSteering = { id: crypto.randomUUID(), text: steerMessage, chatId: activeChatId };
     setPendingSteering(prev => [...prev, newSteering]);
 
     try {
       const res = await fetch('/api/agent/steer', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chatId: activeChatId, message: steerMessage }),
+        body: JSON.stringify({ chatId: activeChatId, message: steerMessage, id: newSteering.id }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         console.warn('[handleSteer] Steer failed:', err.reason || res.status);
+        setPendingSteering(prev => prev.filter(item => item.id !== newSteering.id));
+        if (activeChatIdRef.current === newSteering.chatId) {
+          updateInputValue(current => current.trim() ? current : steerMessage);
+        }
       } else {
         console.log('[handleSteer] Steering message sent:', steerMessage.substring(0, 60));
       }
     } catch (e: any) {
       console.warn('[handleSteer] Network error:', e?.message);
+      setPendingSteering(prev => prev.filter(item => item.id !== newSteering.id));
+      if (activeChatIdRef.current === newSteering.chatId) {
+        updateInputValue(current => current.trim() ? current : steerMessage);
+      }
     }
   }, [activeChatId, revealNetworkBanner]);
 
@@ -3835,7 +4046,7 @@ function DeepWorkUI() {
 
     const isBuilderChat = !!chatIdToUse && chatIdToUse.startsWith('agent_builder_');
     const builderAgentId = isBuilderChat ? chatIdToUse!.replace('agent_builder_', '') : null;
-    const selectedCustomRuntimeId = selectedAgent && selectedAgent !== 'coding' && !isBuilderChat
+    const selectedCustomRuntimeId = selectedAgent && selectedAgent !== 'coding' && selectedAgent !== 'autonomous' && !isBuilderChat
       ? selectedAgent
       : null;
     // The legacy runner remains in this file only for a staged migration, but
@@ -4083,6 +4294,16 @@ function DeepWorkUI() {
       ...(pinnedItems.length > 0 ? { paths: pinnedItems.map(p => p.path) } : {}),
       ...(isBuilderChat ? { agentRuntime: 'agent_builder', agentId: builderAgentId } : {}),
       ...(selectedAgent === 'coding' && !isBuilderChat ? { agentRuntime: 'main_coding_agent', agentProfile: 'eterx-code' } : {}),
+      ...(selectedAgent === 'autonomous' && !isBuilderChat ? {
+        agentRuntime: 'autonomy_v1',
+        autonomy: {
+          enabled: proxyEnabled,
+          collaboration: 'user_proxy',
+          initiative: 'high',
+          verification: 'adaptive',
+          intervention: proxyIntervention,
+        },
+      } : {}),
       ...(activeWorkspacePath ? {
         paths: [activeWorkspacePath, ...(pinnedItems.length > 0 ? pinnedItems.map(p => p.path) : [])],
         workspacePath: activeWorkspacePath,
@@ -4676,9 +4897,10 @@ function DeepWorkUI() {
   }, [traceLogs, activeSubAgentTab, currentSubAgents]);
 
   // Which logs to show in ChatFeed — main or sub-agent
-  const effectiveDisplayLogs = activeSubAgentTab ? subAgentDisplayLogs : displayTraceLogs;
+  const autonomousSelected = selectedAgent === 'autonomous';
+  const effectiveDisplayLogs = activeSubAgentTab && !autonomousSelected ? subAgentDisplayLogs : displayTraceLogs;
   // Compute effective thinking state
-  const effectiveIsThinking = activeSubAgentTab
+  const effectiveIsThinking = activeSubAgentTab && !autonomousSelected
     ? currentSubAgents.some(a => a.name === activeSubAgentTab && a.status === 'working')
     : isThinking && (!currentSubAgents.some(a => a.name === 'Main' && a.status === 'paused'));
   const currentTaskTracker = useMemo<TaskTrackerState | null>(() => {
@@ -5107,8 +5329,129 @@ function DeepWorkUI() {
 
   return (
     <div data-active-view={activeView} data-sidebar-open={sidebarOpen ? 'true' : 'false'} className="eterx-app-shell flex h-screen font-sans overflow-hidden selection:bg-[#E2765A]/30 transition-colors relative">
-      {/* Global Window Drag Bar */}
-      <div className="eterx-window-drag-bar pointer-events-none absolute top-0 left-0 right-[150px] h-[var(--eterx-shell-topbar-height)] z-[999] [-webkit-app-region:drag]" />
+      {/* Global Window Drag Bar (Independent Layer) */}
+      <div className="pointer-events-none absolute top-0 left-0 right-[150px] h-[var(--eterx-shell-topbar-height)] z-[998] [-webkit-app-region:drag]" />
+      
+      {/* Global Top Bar UI Container */}
+      <div className="pointer-events-none absolute top-0 left-0 right-[150px] h-[var(--eterx-shell-topbar-height)] z-[999] flex items-center">
+        {/* Drag spacer — pointer-events-none so sidebar toggle clicks pass through */}
+        <div className={`shrink-0 pointer-events-none transition-all duration-300 ${sidebarOpen ? 'w-[256px]' : 'w-[56px]'}`} />
+        
+        {/* Action buttons — API | Models | Theme | Help | Updates */}
+        <div className="pointer-events-auto flex items-center [-webkit-app-region:no-drag]">
+          {/* API */}
+          <button type="button"
+            onClick={() => { setSettingsInitialTab('api'); setIsSettingsOpen(true); }}
+            className="eterx-topbar-btn px-[10px] h-full text-[13px] font-normal tracking-[0.01em] cursor-pointer select-none outline-none bg-transparent border-0 transition-colors duration-150"
+            style={{ color: 'var(--sidebar-muted-text, #9A9590)' }}>
+            API
+          </button>
+          
+          {/* Models */}
+          <button type="button"
+            onClick={() => { setSettingsInitialTab('models'); setIsSettingsOpen(true); }}
+            className="eterx-topbar-btn px-[10px] h-full text-[13px] font-normal tracking-[0.01em] cursor-pointer select-none outline-none bg-transparent border-0 transition-colors duration-150"
+            style={{ color: 'var(--sidebar-muted-text, #9A9590)' }}>
+            Models
+          </button>
+          
+          {/* Theme toggle — light/dark dropdown (Powered by Radix UI Portal) */}
+          <div className="relative flex items-center">
+            <DropdownMenu.Root open={topbarThemeOpen} onOpenChange={setTopbarThemeOpen}>
+              <DropdownMenu.Trigger asChild>
+                <button type="button"
+                  className="eterx-topbar-btn px-[10px] h-full text-[13px] font-normal tracking-[0.01em] cursor-pointer select-none outline-none bg-transparent border-0 transition-colors duration-150"
+                  style={{ color: 'var(--sidebar-muted-text, #9A9590)' }}>
+                  Theme
+                </button>
+              </DropdownMenu.Trigger>
+              <DropdownMenu.Portal>
+                <DropdownMenu.Content
+                  align="end"
+                  sideOffset={6}
+                  className="w-[110px] flex flex-col gap-[2px] rounded-[10px] p-[4px] z-[9999]"
+                  style={{
+                    background: 'var(--eterx-dropdown-bg, var(--sidebar-bg, #F0EDE8))',
+                    border: '1px solid var(--eterx-dropdown-border, var(--sidebar-border, rgba(0,0,0,0.1)))',
+                    boxShadow: '0 4px 16px rgba(0,0,0,0.12), 0 1px 4px rgba(0,0,0,0.06)',
+                  }}
+                >
+                  {([
+                    { value: 'light', label: 'Light', icon: Sun },
+                    { value: 'dark', label: 'Dark', icon: Moon },
+                  ] as const).map(({ value, label, icon: Icon }) => {
+                    const currentTheme = (() => {
+                      try {
+                        return document.documentElement.getAttribute('data-theme') || 'light';
+                      } catch {
+                        return 'light';
+                      }
+                    })();
+                    const isActive = currentTheme === value;
+                    return (
+                      <DropdownMenu.Item
+                        key={value}
+                        asChild
+                        onSelect={(e) => {
+                          e.preventDefault();
+                          handleThemeChange(value as 'light' | 'dark');
+                          setTopbarThemeOpen(false);
+                        }}
+                      >
+                        <button
+                          type="button"
+                          className="flex items-center justify-between gap-[8px] w-full px-[8px] py-[6px] text-[12px] font-medium rounded-[6px] text-left transition-all duration-150 outline-none border-0 cursor-pointer pointer-events-auto"
+                          style={{
+                            background: isActive ? 'var(--sidebar-hover-bg, rgba(0,0,0,0.06))' : 'transparent',
+                            color: 'var(--sidebar-strong-text, currentColor)',
+                            opacity: isActive ? 1 : 0.65,
+                          }}
+                          onMouseEnter={e => {
+                            if (!isActive) {
+                              e.currentTarget.style.background = 'var(--sidebar-hover-bg, rgba(0,0,0,0.03))';
+                              e.currentTarget.style.opacity = '0.9';
+                            }
+                          }}
+                          onMouseLeave={e => {
+                            if (!isActive) {
+                              e.currentTarget.style.background = 'transparent';
+                              e.currentTarget.style.opacity = '0.65';
+                            }
+                          }}
+                        >
+                          <div className="flex items-center gap-[6px]">
+                            <Icon size={14} strokeWidth={isActive ? 2 : 1.5} />
+                            <span>{label}</span>
+                          </div>
+                          {isActive && <Check size={14} strokeWidth={2.5} />}
+                        </button>
+                      </DropdownMenu.Item>
+                    );
+                  })}
+                </DropdownMenu.Content>
+              </DropdownMenu.Portal>
+            </DropdownMenu.Root>
+          </div>
+          
+          {/* Help */}
+          <button type="button"
+            onClick={() => {}}
+            className="eterx-topbar-btn px-[10px] h-full text-[13px] font-normal tracking-[0.01em] cursor-pointer select-none outline-none bg-transparent border-0 transition-colors duration-150"
+            style={{ color: 'var(--sidebar-muted-text, #9A9590)' }}>
+            Help
+          </button>
+          
+          {/* Updates */}
+          <button type="button"
+            onClick={() => { setSettingsInitialTab('general'); setIsSettingsOpen(true); }}
+            className="eterx-topbar-btn px-[10px] h-full text-[13px] font-normal tracking-[0.01em] cursor-pointer select-none outline-none bg-transparent border-0 transition-colors duration-150"
+            style={{ color: 'var(--sidebar-muted-text, #9A9590)' }}>
+            Updates
+          </button>
+        </div>
+        {/* Right drag fill */}
+        <div className="flex-1" />
+      </div>
       <NetworkStatusBanner
         phase={networkPhase}
         visible={networkBannerVisible}
@@ -5152,7 +5495,7 @@ function DeepWorkUI() {
         </>
       )}
 
-      <SettingsPanel isOpen={isSettingsOpen} initialTab="models" onClose={() => setIsSettingsOpen(false)} />
+      <SettingsPanel isOpen={isSettingsOpen} initialTab={settingsInitialTab as any} onClose={() => setIsSettingsOpen(false)} />
       {!sidebarOpen && (
         <>
           <div className="eterx-sidebar-closed-toggle-shell">
@@ -5428,7 +5771,7 @@ function DeepWorkUI() {
               </div>
 
               {/* Sub-Agent Tabs — shown in header when agents are active */}
-              {realSubAgents.length > 0 && activeView === 'chat' && activeChatId && (
+              {realSubAgents.length > 0 && activeView === 'chat' && activeChatId && !autonomousSelected && (
                 <div className="eterx-agent-dock pointer-events-auto [-webkit-app-region:no-drag]" role="tablist" aria-label="Agent workspaces">
                   {/* Main agent tab */}
                   <button
@@ -6247,16 +6590,14 @@ function DeepWorkUI() {
                                               className="eterx-work-menu-row group"
                                               title={item.path}
                                             >
-                                              <img
-                                                src={iconPath}
-                                                className="h-4 w-4 shrink-0 object-contain transition-transform duration-100 group-hover:scale-105"
-                                                alt=""
-                                              />
-                                              <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-white/80 group-hover:text-white">
-                                                {item.name}
-                                              </span>
+                                              <img src={iconPath} alt="" className="eterx-work-menu-row-icon object-contain" />
+                                              <span className="min-w-0 flex-1 truncate">{item.name}</span>
+                                              {item.isPinned && <Pin className="h-3 w-3 shrink-0 text-white/30" />}
+                                              {item.status && (
+                                                <span className="shrink-0 text-[9px] font-semibold text-white/35">{item.status}</span>
+                                              )}
                                               {((item.additions || 0) > 0 || (item.deletions || 0) > 0) && (
-                                                <div className="ml-1 flex shrink-0 items-center gap-1.5 text-[10.5px] font-semibold tabular-nums">
+                                                <div className="flex shrink-0 items-center gap-1 text-[10px] font-medium">
                                                   {(item.additions || 0) > 0 && <span className="text-[#34D399]">+{item.additions}</span>}
                                                   {(item.deletions || 0) > 0 && <span className="text-[#F87171]">-{item.deletions}</span>}
                                                 </div>
@@ -6289,7 +6630,6 @@ function DeepWorkUI() {
                                 }}
                               />
 
-                              {/* Sub-agents Row */}
                               <AnimatePresence initial={false}>
                                 {subAgentsSectionOpen && (
                                   <motion.div
@@ -6341,7 +6681,6 @@ function DeepWorkUI() {
               </div>
             </div>
 
-
             <div className={`eterx-new-chat-motion-field absolute bottom-0 left-0 right-0 h-[38vh] pointer-events-none overflow-hidden z-0 flex items-end justify-center ${ showNewChatMotionField ? 'opacity-100 transition-opacity duration-[1000ms] ease-out' : 'opacity-0 transition-opacity duration-[1000ms] ease-in' }`}>
               <div key="eterx-home-field-new-chat" className="eterx-home-field">
                 <div className="eterx-home-plasma">
@@ -6387,11 +6726,311 @@ function DeepWorkUI() {
                 <>
                   {/* Chat Container */}
                   <div
-                    className={`flex flex-col relative h-full min-w-0 ${ hasOpenFiles ? `shrink-0 min-w-[320px] ${ isResizingPanels ? 'transition-none' : 'transition-[width,flex-basis] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]' }` : 'w-full transition-all duration-300' }`}
+                    className={`flex flex-col relative h-full min-w-0 ${ sidebarOpen && autonomousSelected && activeChatId ? '[&_.eterx-chat-feed-content]:-translate-x-[80px] [&_.eterx-chat-input-dock]:-translate-x-[80px]' : '' } ${ hasOpenFiles ? `shrink-0 min-w-[320px] ${ isResizingPanels ? 'transition-none' : 'transition-[width,flex-basis] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]' }` : 'w-full transition-all duration-300' }`}
                     style={hasOpenFiles ? { width: chatPanelWidth ?? undefined, flexBasis: chatPanelWidth === null ? `${ DEFAULT_CHAT_PANEL_RATIO * 100 }%` : undefined } : undefined}
                   >
+                    {autonomousSelected && activeChatId && (
+                      <div className="pointer-events-none absolute right-6 top-1/2 z-30 w-[200px] -translate-y-1/2 transition-all duration-300 ease-in-out">
+                        <div className="pointer-events-auto flex h-fit flex-col gap-2 rounded-[20px] border border-white/[0.10] bg-[#252525]/95 px-3 pb-3 pt-3 shadow-[0_18px_44px_rgba(0,0,0,0.34),inset_0_1px_0_rgba(255,255,255,0.04)] backdrop-blur-xl select-none">
+                          {/* Professional Header */}
+                          <div className="pt-0.5 pb-1 shrink-0 flex items-center justify-center w-full">
+                            <span className="text-[13.5px] font-semibold tracking-wide text-white/90">Proxy-Agent</span>
+                          </div>
+
+                          {/* Toggle Button */}
+                          <button
+                            type="button"
+                            onClick={handleProxyToggle}
+                            className="w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-[12px] font-medium transition-all duration-200 border border-white/[0.08] bg-white/[0.04] text-white/80 hover:bg-white/[0.08] hover:text-white active:bg-white/[0.12] shrink-0"
+                          >
+                            {proxyEnabled ? (
+                              <>
+                                <Pause className="h-3 w-3 text-white/60" />
+                                <span>Pause Proxy</span>
+                              </>
+                            ) : (
+                              <>
+                                <Play className="h-3 w-3 text-white/60" />
+                                <span>Resume Proxy</span>
+                              </>
+                            )}
+                          </button>
+
+                          {/* Intervention Row (with hover pop-out to the left) */}
+                          <div className="group relative flex flex-col gap-1.5 shrink-0">
+                            <div className="w-full flex items-baseline justify-between rounded-xl border border-white/[0.08] bg-white/[0.03] px-3 py-2 text-[12px] font-medium text-white/85 hover:bg-white/[0.06] hover:border-white/[0.14] cursor-pointer transition-all">
+                              <span className="text-white/50">Intervention</span>
+                              <div className="flex items-center gap-1.5">
+                                <span className="capitalize text-white/90 font-semibold">
+                                  {proxyIntervention}
+                                </span>
+                                <ChevronRight className="h-3.5 w-3.5 text-white/30 group-hover:text-white/60 transition-colors" />
+                              </div>
+                            </div>
+
+                            {/* Pop-out Dropdown to the Left (pr-2 connects hover hit area across the 8px visual gap) */}
+                            <div className="pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100 absolute right-full top-1/2 -translate-y-1/2 z-50 w-[158px] pr-2 transition-all duration-200 translate-x-2 group-hover:translate-x-0">
+                              <div className="rounded-2xl border border-white/[0.08] bg-[#252525] shadow-2xl p-1.5 flex flex-col gap-1 w-full">
+                                {(['minimal', 'normal', 'high'] as const).map((level) => {
+                                  const isSelected = proxyIntervention === level;
+                                  const subtitle = level === 'minimal' ? 'Observe more' : level === 'normal' ? 'Balanced' : 'Intervene';
+                                  return (
+                                    <button
+                                      key={level}
+                                      type="button"
+                                      onClick={() => handleProxyInterventionChange(level)}
+                                      className={`w-full flex flex-col items-start rounded-xl px-2.5 py-1 text-left transition-colors relative pr-6 ${
+                                        isSelected
+                                          ? 'bg-white/[0.08] text-white'
+                                          : 'text-white/50 hover:bg-white/[0.04] hover:text-white/85'
+                                      }`}
+                                    >
+                                      <span className="text-[12px] font-medium capitalize">{level}</span>
+                                      <span className="text-[9.5px] text-white/30 font-normal leading-normal">{subtitle}</span>
+                                      {isSelected && (
+                                        <span className="absolute right-2 top-1/2 -translate-y-1/2">
+                                          <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                                        </span>
+                                      )}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Talk with proxy Button */}
+                          <button
+                            type="button"
+                            onClick={() => setShowProxyChat(!showProxyChat)}
+                            className={`w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-[12px] font-medium transition-all duration-200 border shrink-0 ${
+                              showProxyChat
+                                ? 'bg-white/[0.08] border-white/[0.14] text-white'
+                                : 'border-white/[0.08] bg-white/[0.04] text-white/80 hover:bg-white/[0.08] hover:text-white active:bg-white/[0.12]'
+                            }`}
+                          >
+                            <MessageSquare className="h-3 w-3 text-white/60" />
+                            <span>Talk with proxy</span>
+                          </button>
+                        </div>
+
+                        {/* Floating Chat Container */}
+                        {showProxyChat && (() => {
+                          const modelOptions = proxyModelEntries.map(entry => {
+                            const mode = MODEL_PROVIDER_MODE[entry.provider];
+                            return {
+                              optionKey: modelEntryKey(entry.provider, entry.modelId),
+                              id: mode,
+                              provider: entry.provider,
+                              label: entry.modelId,
+                              compactLabel: entry.modelId,
+                              modelName: entry.modelId,
+                              modelId: entry.modelId,
+                              isAuto: false,
+                            };
+                          });
+                          const autoModelOption = {
+                            optionKey: AUTO_MODEL_SELECTION,
+                            id: 'auto',
+                            provider: 'auto',
+                            label: 'Auto',
+                            compactLabel: 'Auto',
+                            modelName: 'Auto',
+                            isAuto: true,
+                          };
+                          const modelProviderLabels: Record<string, string> = {
+                            gemini: 'Google Gemini',
+                            mistral: 'Mistral',
+                            openai: 'OpenAI',
+                            openrouter: 'OpenRouter',
+                            groq: 'Groq',
+                            anthropic: 'Anthropic',
+                          };
+                          const allModelOptions = [autoModelOption, ...modelOptions];
+                          const selectedModel = allModelOptions.find(option => option.optionKey === activeModelSelection) || autoModelOption;
+
+                          return (
+                            <div
+                              className="pointer-events-auto absolute right-[calc(100%+12px)] bottom-0 rounded-[24px] border border-white/[0.14] bg-[#181818]/[0.98] shadow-[0_20px_60px_rgba(0,0,0,0.48),inset_0_1px_0_rgba(255,255,255,0.05)] flex flex-col overflow-visible transition-[box-shadow] duration-200"
+                              style={{
+                                width: proxyChatWindow.width,
+                                height: proxyChatWindow.height,
+                                transform: `translate(${proxyChatWindow.x}px, ${proxyChatWindow.y}px)`,
+                              }}
+                            >
+                              {/* Header */}
+                              <div
+                                onPointerDown={(event) => startProxyWindowInteraction('drag', event)}
+                                className="flex min-h-[56px] cursor-grab items-center justify-between rounded-t-[24px] border-b border-white/[0.06] bg-gradient-to-b from-white/[0.025] to-transparent px-5 py-3 shrink-0 active:cursor-grabbing select-none touch-none"
+                              >
+                                <div className="flex items-center">
+                                  <span className="text-[13px] font-semibold tracking-[-0.01em] text-white/80">Talk with Proxy-Agent</span>
+                                </div>
+                                <button
+                                  type="button"
+                                  onPointerDown={(event) => event.stopPropagation()}
+                                  onClick={() => setShowProxyChat(false)}
+                                  className="h-7 w-7 rounded-full flex items-center justify-center hover:bg-white/[0.07] text-white/35 hover:text-white/80 transition-colors"
+                                >
+                                  <Minus className="h-3.5 w-3.5" />
+                                </button>
+                              </div>
+
+                              {/* Message Feed */}
+                              <div className="flex-1 min-h-0 overflow-y-auto p-4 flex flex-col gap-3 eterx-scrollbar bg-transparent">
+                                {proxyChatMessages.length === 0 ? (
+                                  <div className="flex-1 flex flex-col items-center justify-center text-center p-4">
+                                    <span className="text-[15px] font-semibold text-white/60">
+                                      Tell me your goals!
+                                    </span>
+                                  </div>
+                                ) : (
+                                  proxyChatMessages.map((msg, idx) => (
+                                    <div
+                                      key={idx}
+                                      className={`flex flex-col max-w-[80%] ${
+                                        msg.sender === 'user' ? 'self-end items-end' : 'self-start items-start'
+                                      }`}
+                                    >
+                                      <div
+                                        className={`rounded-xl px-3 py-2 text-[11.5px] leading-relaxed break-words ${
+                                          msg.sender === 'user'
+                                            ? 'bg-emerald-500/[0.15] border border-emerald-500/20 text-emerald-100'
+                                            : 'bg-[#2d2d2d] border border-white/[0.04] text-white/85'
+                                        }`}
+                                      >
+                                        {msg.text}
+                                      </div>
+                                      <span className="text-[8.5px] text-white/20 mt-1 px-1">
+                                        {msg.time}
+                                      </span>
+                                    </div>
+                                  ))
+                                )}
+                              </div>
+
+                              {/* Redesigned Input Form matching the upload */}
+                              <form
+                                onSubmit={(e) => {
+                                  e.preventDefault();
+                                  handleSendProxyMessage();
+                                }}
+                                className="p-3 bg-transparent rounded-b-[24px] shrink-0"
+                              >
+                                <div className="rounded-2xl border border-white/[0.08] bg-[#2d2d2d] flex flex-col p-2 gap-2">
+                                  <textarea
+                                    value={proxyChatInput}
+                                    onChange={(e) => setProxyChatInput(e.target.value)}
+                                    onKeyDown={(e) => {
+                                      if (e.key === 'Enter' && !e.shiftKey) {
+                                        e.preventDefault();
+                                        handleSendProxyMessage();
+                                      }
+                                    }}
+                                    placeholder="Do anything"
+                                    className="w-full bg-transparent text-white text-[12px] outline-none placeholder-white/30 resize-none h-[28px] px-1"
+                                  />
+                                  <div className="flex items-center justify-between mt-0.5 px-0.5">
+                                    <div className="flex items-center gap-1">
+                                      <button
+                                        type="button"
+                                        className="h-7 w-7 rounded-full flex items-center justify-center text-white/40 hover:text-white/80 hover:bg-white/[0.06] active:bg-white/[0.12] transition-colors focus:outline-none"
+                                      >
+                                        <Plus className="h-4 w-4" />
+                                      </button>
+                                    </div>
+                                    <div className="flex items-center gap-1.5">
+                                      {/* Model selector — matches the main chat composer */}
+                                      <div className="eterx-model-selector relative min-w-0">
+                                        <div
+                                          onClick={() => setShowProxyModelMenu(!showProxyModelMenu)}
+                                          className={`eterx-model-button mr-0 flex h-[32px] min-w-0 max-w-[142px] items-center justify-between gap-1 rounded-full border border-transparent bg-[#2D2D2D] px-3 text-[#F4F4F4] transition-colors hover:bg-[#333333] hover:text-white active:bg-[#333333] group cursor-pointer ${showProxyModelMenu ? '!bg-[#333333] !text-white' : ''}`}
+                                        >
+                                          <span className="eterx-selector-label min-w-0 truncate text-[13px] font-medium tracking-normal text-white/60">
+                                            {selectedModel.label}
+                                          </span>
+                                          <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[#F0F0F0] transition-all duration-150 hover:bg-white/10 hover:text-white">
+                                            <ChevronDown className={`eterx-selector-chevron h-3.5 w-3.5 text-[#F0F0F0] transition-all duration-200 group-hover:text-white ${showProxyModelMenu ? 'rotate-180' : 'group-hover:translate-y-px'}`} strokeWidth={2.1} />
+                                          </span>
+                                        </div>
+
+                                        {/* Dropdown Menu */}
+                                        {showProxyModelMenu && (
+                                          <div className="eterx-composer-popout eterx-scrollbar absolute bottom-[calc(100%+8px)] right-0 z-[130] flex max-h-[184px] w-[232px] max-w-[calc(100vw-24px)] flex-col overflow-y-auto rounded-xl border border-white/[0.08] bg-[#1E1E1E]/95 p-1 text-[#F4F1EA] shadow-[0_12px_36px_rgba(0,0,0,0.5)] backdrop-blur-xl">
+                                            {allModelOptions.map((option) => {
+                                              const isCurrent = option.optionKey === selectedModel.optionKey;
+                                              return (
+                                                <button
+                                                  key={option.optionKey}
+                                                  type="button"
+                                                  onClick={() => {
+                                                    handleProxyModelSelectionChange(option.optionKey);
+                                                    setShowProxyModelMenu(false);
+                                                  }}
+                                                  className={`group flex min-h-[36px] w-full items-center gap-2 rounded-md px-2 py-1 text-left transition-colors ${
+                                                    isCurrent
+                                                      ? 'bg-white/[0.08] text-[#F4F4F4] font-normal shadow-sm'
+                                                      : 'text-[#D0D0D0] hover:bg-white/[0.05] active:bg-white/[0.12]'
+                                                  }`}
+                                                  aria-pressed={isCurrent}
+                                                >
+                                                  <span className="flex h-4 w-4 shrink-0 items-center justify-center text-white/95">
+                                                    {isCurrent && <Check className="h-3.5 w-3.5" strokeWidth={2.05} />}
+                                                  </span>
+                                                  <span className="flex min-w-0 flex-1 flex-col">
+                                                    <span className="truncate text-[12px] leading-4">{option.label}</span>
+                                                    <span className="truncate text-[10px] leading-3 text-[#A3A19E]">
+                                                      {option.isAuto ? 'Use the Settings model priority list' : modelProviderLabels[option.provider] || option.provider}
+                                                    </span>
+                                                  </span>
+                                                </button>
+                                              );
+                                            })}
+                                            {allModelOptions.length === 1 && (
+                                              <div className="px-2 pb-2 pt-1 text-[10.5px] leading-4 text-[#A3A19E]">
+                                                Add models in Settings to make exact choices available here.
+                                              </div>
+                                            )}
+                                          </div>
+                                        )}
+                                      </div>
+
+                                      {/* Speech (Mic) Icon */}
+                                      <button
+                                        type="button"
+                                        className="h-7 w-7 rounded-full flex items-center justify-center text-white/40 hover:text-white/80 hover:bg-white/[0.06] active:bg-white/[0.12] transition-colors focus:outline-none"
+                                      >
+                                        <Mic className="h-4 w-4" />
+                                      </button>
+                                      {/* Send button */}
+                                      <button
+                                        type="submit"
+                                        className="h-7 w-7 rounded-full bg-white/10 hover:bg-white/20 text-white/80 flex items-center justify-center transition-colors focus:outline-none"
+                                      >
+                                        <ArrowUp className="h-4 w-4" />
+                                      </button>
+                                    </div>
+                                  </div>
+                                </div>
+                              </form>
+                              <div
+                                role="separator"
+                                aria-label="Resize proxy chat"
+                                onPointerDown={(event) => startProxyWindowInteraction('resize', event)}
+                                className="absolute bottom-2 right-2 z-20 h-5 w-5 cursor-nwse-resize flex items-end justify-end opacity-40 transition-opacity hover:opacity-100 touch-none"
+                                title="Resize proxy chat"
+                              >
+                                <svg width="12" height="12" viewBox="0 0 12 12" fill="none" className="text-white/60">
+                                  <path d="M2 10 C 6 10, 10 6, 10 2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                                </svg>
+                              </div>
+                            </div>
+                          );
+                        })()}
+                      </div>
+                    )}
+
                     <ChatFeed
-                      key={`${ activeChatId }-${ activeSubAgentTab || 'main' }`}
                       traceLogs={effectiveDisplayLogs}
                       isThinking={effectiveIsThinking}
                       messagesEndRef={messagesEndRef}
@@ -6407,20 +7046,14 @@ function DeepWorkUI() {
                     />
 
                     {/* Pending Steering Queue */}
-                    {!activeSubAgentTab && pendingSteering.length > 0 && (
+                    {!activeSubAgentTab && pendingSteering.some(message => message.chatId === activeChatId) && (
                       <div className={`px-4 ${ isRightPanelVisible ? 'sm:px-4' : 'sm:px-12' } w-full max-w-[760px] mx-auto flex flex-col gap-2 pb-2`}>
                         <div className="text-xs text-neutral-500 font-medium px-1 flex items-center gap-1.5">
                           Pending messages <span className="w-4 h-4 inline-flex items-center justify-center rounded-full bg-neutral-800 text-[10px] text-neutral-400">i</span>
                         </div>
-                        {pendingSteering.map(msg => (
-                          <div key={msg.id} className="bg-[#242424] rounded-xl py-2.5 px-3.5 flex items-center justify-between gap-3 text-sm text-neutral-200 shadow-sm border border-white/[0.04]">
+                        {pendingSteering.filter(message => message.chatId === activeChatId).map(msg => (
+                          <div key={msg.id} className="bg-[#242424] rounded-xl py-2.5 px-3.5 flex items-center gap-3 text-sm text-neutral-200 shadow-sm border border-white/[0.04]">
                             <span className="truncate">{msg.text}</span>
-                            <button
-                              onClick={() => setPendingSteering(prev => prev.filter(p => p.id !== msg.id))}
-                              className="text-neutral-500 hover:text-red-400 transition-colors p-1 -mr-1"
-                            >
-                              <Trash className="w-4 h-4" />
-                            </button>
                           </div>
                         ))}
                       </div>

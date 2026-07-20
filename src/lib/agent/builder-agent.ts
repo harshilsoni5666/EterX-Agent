@@ -2,6 +2,7 @@ import fs from 'fs-extra';
 import path from 'path';
 import { globalToolRegistry } from './tools/registry';
 import type { MainAgentMode } from './model-routing';
+import { getEterxWorkspaceDir } from './storage-paths';
 
 export const AGENT_BUILDER_RUNTIME = 'agent_builder';
 
@@ -51,7 +52,7 @@ export interface AgentBuilderProfile {
   notes: string[];
 }
 
-const AGENT_BUILDER_ROOT = path.resolve(process.cwd(), '.workspaces', 'agent-builder', 'agents');
+const AGENT_BUILDER_ROOT = getEterxWorkspaceDir('agent-builder', 'agents');
 const BUILDER_TOOL_PREFIX = 'agent_builder_';
 const GLOBAL_DYNAMIC_TOOL_NAMES = new Set(['create_dynamic_tool']);
 
@@ -1028,7 +1029,7 @@ export interface AgentFlowProfile {
   notes: string[];
 }
 
-const AGENT_FLOWS_ROOT = path.resolve(process.cwd(), '.workspaces', 'agent-builder', 'flows');
+const AGENT_FLOWS_ROOT = getEterxWorkspaceDir('agent-builder', 'flows');
 
 export function sanitizeFlowId(value: string): string {
   return String(value || 'flow')

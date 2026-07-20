@@ -61,6 +61,7 @@ type RuntimeProjectContext = ProjectContext & {
   disableWorkspaceInit?: boolean;
   forceFastMode?: boolean;
   agentRuntime?: string;
+  autonomy?: { enabled?: boolean; verification?: 'adaptive' | 'strict' | 'light'; initiative?: 'balanced' | 'high' | 'maximum'; maxRecoveryAttempts?: number; collaboration?: 'auto' | 'solo' | 'human_partner' | 'cognitive_team' };
   agentId?: string;
   selectedModelMode?: MainAgentMode;
   selectedModelName?: string;
@@ -426,6 +427,7 @@ export class AgentOrchestrator {
       context.disableWorkspaceInit = !!pinnedContext.disableWorkspaceInit;
       context.forceFastMode = !!pinnedContext.forceFastMode;
       context.agentRuntime = pinnedContext.agentRuntime;
+      context.autonomy = pinnedContext.autonomy;
       context.agentId = pinnedContext.agentId;
       context.source = pinnedContext.source;
       context.telegram = pinnedContext.telegram;
@@ -487,8 +489,20 @@ export class AgentOrchestrator {
 
     const startTime = Date.now();
     const complexity = pinnedContext?.forceFastMode ? 'standard' : this.classifyComplexity(userRequest);
-    const effectiveMode = pinnedContext?.forceFastMode ? 'fast' : this.resolveOptimalMode(mode, complexity);
-    const modelConfig = getMainAgentModelConfig(effectiveMode, runtimeSettings);
+    const hasExplicitModel = String(pinnedContext?.selectedModelProvider || '').trim() === 'openai'
+      && typeof pinnedContext?.selectedModelName === 'string'
+      && pinnedContext.selectedModelName.trim().length > 0;
+    const effectiveMode = pinnedContext?.forceFastMode
+      ? 'fast'
+      : hasExplicitModel
+        ? mode
+        : this.resolveOptimalMode(mode, complexity);
+    const resolvedModelConfig = getMainAgentModelConfig(effectiveMode, runtimeSettings);
+    const explicitProvider = String(pinnedContext?.selectedModelProvider || '').trim();
+    const explicitModel = String(pinnedContext?.selectedModelName || '').trim();
+    const modelConfig = hasExplicitModel && explicitProvider === resolvedModelConfig.provider
+      ? { ...resolvedModelConfig, modelName: explicitModel }
+      : resolvedModelConfig;
     const modelThinkingCapability = normalizeModelThinkingCapabilities(pinnedContext?.modelThinkingCapability);
     const selectedThinkingLevel = normalizeThinkingLevelForModel(
       pinnedContext?.thinkingLevel,
@@ -497,7 +511,7 @@ export class AgentOrchestrator {
       modelThinkingCapability,
     );
     context.selectedModelMode = effectiveMode;
-    context.selectedModelName = resolveModelName(effectiveMode, runtimeSettings);
+    context.selectedModelName = modelConfig.modelName;
     context.selectedThinkingLevel = selectedThinkingLevel;
     (context as any).modelThinkingCapability = modelThinkingCapability;
 

@@ -1,5 +1,6 @@
 import path from 'path';
 import fs from 'fs-extra';
+import { getEterxWorkspaceDir } from './storage-paths';
 
 /**
  * ═══════════════════════════════════════════════════════════════
@@ -14,7 +15,7 @@ import fs from 'fs-extra';
  * 6. Conversation Compressor — Summarize long conversations intelligently
  */
 
-const LEARNING_DIR = path.resolve(process.cwd(), '.workspaces', 'learning');
+const LEARNING_DIR = getEterxWorkspaceDir('learning');
 
 function isPathInside(parent: string, candidate: string): boolean {
   const relative = path.relative(parent, candidate);
@@ -712,6 +713,10 @@ export class ConversationCompressor {
       if (!entry.parts) return entry;
 
       const newParts = entry.parts.map((part: any) => {
+        // Gemini thought signatures are positional opaque state. Never
+        // truncate or reconstruct a part that carries one.
+        if (part.thoughtSignature || part.thought_signature) return part;
+
         // Compress long tool responses
         if (part.functionResponse) {
           const output = part.functionResponse.response?.output;

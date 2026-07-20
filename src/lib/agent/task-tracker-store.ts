@@ -1,7 +1,8 @@
 import fs from 'fs-extra';
 import path from 'path';
+import { getEterxWorkspaceDir } from './storage-paths';
 
-const TASKS_DIR = path.resolve(process.cwd(), '.workspaces', '.tasks');
+const TASKS_DIR = getEterxWorkspaceDir('.tasks');
 
 function isPathInside(parent: string, candidate: string): boolean {
   const relative = path.relative(parent, candidate);

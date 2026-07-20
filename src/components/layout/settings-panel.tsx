@@ -646,15 +646,15 @@ const SettingsStackRow: React.FC<{
   tall?: boolean;
   info?: string;
 }> = ({ title, description, children, tall, info }) => (
-  <div className={`flex items-center justify-between gap-6 border-b border-white/[0.07] px-5 last:border-b-0 ${tall ? 'py-5' : 'py-4'}`}>
-    <div className="min-w-0 flex-1">
-      <div className="flex items-center gap-2 text-[13.5px] font-medium leading-tight text-[#F1F1F1]">
+  <div className={`flex ${tall ? 'flex-col items-start gap-3' : 'items-center justify-between gap-6'} border-b border-white/[0.07] px-5 last:border-b-0 ${tall ? 'py-4' : 'py-3.5'}`}>
+    <div className={`min-w-0 ${tall ? 'w-full' : 'flex-1'}`}>
+      <div className="flex items-center gap-2 text-[13px] font-medium leading-tight text-[#F1F1F1]">
         <span>{title}</span>
         {info && <InfoHint text={info} />}
       </div>
-      {description && <div className="mt-1.5 max-w-[520px] text-[13px] leading-relaxed text-[#A7A7A7]">{description}</div>}
+      {description && <div className="mt-1 max-w-full text-[12px] leading-relaxed text-[#A7A7A7]">{description}</div>}
     </div>
-    {children && <div className="flex shrink-0 items-center justify-end gap-2">{children}</div>}
+    {children && <div className={`flex ${tall ? 'w-full' : 'shrink-0'} items-center justify-end gap-2`}>{children}</div>}
   </div>
 );
 
@@ -1785,10 +1785,10 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             transition={{ duration: 0.2 }}
-            className="eterx-settings-panel fixed inset-0 z-[99999] flex items-center justify-center bg-[#151515]"
+            className="eterx-settings-panel fixed inset-0 z-[99999] flex items-center justify-center"
           >
             {/* Backdrop */}
-            {!standalone && <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={handleClose} />}
+            {!standalone && <div className="absolute inset-0 bg-black/40 backdrop-blur-[3px]" onClick={handleClose} />}
 
             {/* Panel */}
             <motion.div
@@ -1796,7 +1796,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, y: standalone ? 0 : 10, scale: standalone ? 1 : 0.98 }}
               transition={{ duration: 0.3, ease: [0.2, 0.8, 0.2, 1] }}
-              className={`${ standalone ? 'h-screen w-screen rounded-none border-0' : 'h-[min(980px,calc(100vh-24px))] w-[min(1760px,calc(100vw-24px))] rounded-md border border-white/[0.08]' } relative overflow-hidden flex flex-col bg-[#151515] shadow-[0_25px_80px_rgba(0,0,0,0.7)]`}
+              className={`${ standalone ? 'h-screen w-screen rounded-none border-0' : 'h-[min(640px,calc(100vh-40px))] w-[min(900px,calc(100vw-40px))] rounded-[12px] border border-white/[0.08]' } relative overflow-hidden flex flex-col bg-[#151515] shadow-[0_20px_60px_rgba(0,0,0,0.55)]`}
             >
               {/* Glass Background */}
               <div className="absolute inset-0 bg-[#151515]" />
@@ -1804,8 +1804,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
               <div className="relative flex min-h-0 flex-1 flex-col sm:flex-row">
 
               {/* ─── Sidebar Tabs ─── */}
-              <div className="relative z-10 w-full sm:w-[300px] shrink-0 overflow-hidden border-b border-white/[0.08] bg-[#1D1D1D] sm:border-b-0 sm:border-t flex flex-col">
-                <div className="flex h-11 shrink-0 items-center px-3">
+              <div className="relative z-10 w-full sm:w-[200px] shrink-0 overflow-hidden border-b border-white/[0.08] bg-[#1D1D1D] sm:border-b-0 sm:border-t flex flex-col">
+                <div className="flex h-9 shrink-0 items-center px-2">
                   <button onClick={handleClose} className="inline-flex h-9 items-center gap-2 rounded-md px-2 text-[#A7A7A7] transition-colors hover:bg-white/[0.05] hover:text-[#F1F1F1]">
                     <span className="grid h-5 w-5 shrink-0 place-items-center">
                       <ChevronRight className="h-4 w-4 rotate-180" />
@@ -1818,7 +1818,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
                     <button
                       key={tab.id}
                       onClick={() => setActiveTab(tab.id)}
-                      className={`flex h-10 shrink-0 items-center gap-3 rounded-lg px-3 text-left text-[14.5px] font-medium leading-none transition-colors sm:w-full ${ activeTab === tab.id
+                      className={`flex h-8 shrink-0 items-center gap-2.5 rounded-lg px-2.5 text-left text-[13px] font-medium leading-none transition-colors sm:w-full ${ activeTab === tab.id
                         ? 'bg-[#313131] text-[#F5F5F5]'
                         : 'text-[#F0F0F0] hover:bg-white/[0.045]'
                         }`}
@@ -1833,12 +1833,12 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
               </div>
 
               {/* ─── Content ─── */}
-              <div className="relative z-20 flex-1 flex flex-col min-w-0 overflow-hidden border-l border-t border-white/[0.08] bg-[#151515] sm:-ml-[1px] sm:rounded-l-[26px]">
+              <div className="relative z-20 flex-1 flex flex-col min-w-0 overflow-hidden border-l border-t border-white/[0.08] bg-[#151515]">
                 {/* Header */}
-                <div className="h-11 shrink-0 border-b border-white/[0.075] bg-[#151515]" />
+                <div className="h-9 shrink-0 border-b border-white/[0.075] bg-[#151515]" />
 
                 {/* Scrollable Body */}
-                <div className="flex-1 overflow-y-auto eterx-scrollbar px-4 py-16">
+                <div className="flex-1 overflow-y-auto eterx-scrollbar px-6 py-8">
                   <AnimatePresence mode="wait">
                     <motion.div
                       key={activeTab}
@@ -1846,9 +1846,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
                       animate={{ opacity: 1, x: 0 }}
                       exit={{ opacity: 0, x: -10 }}
                       transition={{ duration: 0.2 }}
-                      className="mx-auto w-full max-w-[672px] pb-16"
+                      className="mx-auto w-full max-w-[560px] pb-8"
                     >
-                      <h3 className="mb-14 text-[26px] font-semibold leading-tight tracking-[-0.01em] text-[#F4F4F4]">{tabs.find(t => t.id === activeTab)?.label}</h3>
+                      <h3 className="mb-6 text-[22px] font-semibold leading-tight tracking-[-0.01em] text-[#F4F4F4]">{tabs.find(t => t.id === activeTab)?.label}</h3>
 
                       {/* ═══ GENERAL TAB ═══ */}
                       {activeTab === 'general' && (
@@ -2409,7 +2409,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
                                 providerLabel={selectedApiPoolEntry.isProviderPool ? `${selectedApiProviderLabel} provider pool` : selectedApiPoolEntry.label}
                                 value={selectedApiPoolValue}
                                 sync={selectedApiPoolEntry.isProviderPool ? selectedApiProviderSync : undefined}
-                                minRows={10}
+                                minRows={3}
                                 onChange={(nextValue) => {
                                   if (selectedApiPoolEntry.isProviderPool) {
                                     updateApiKey(selectedApiProvider, nextValue);
@@ -2459,7 +2459,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
                                 providerLabel="Tavily search"
                                 value={apiKeys.tavily || ''}
                                 sync={providerSync('tavily')}
-                                minRows={10}
+                                minRows={3}
                                 onChange={(nextValue) => updateApiKey('tavily', nextValue)}
                               />
                             </SettingsStackRow>
@@ -2469,7 +2469,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
                                 providerLabel="GitHub"
                                 value={apiKeys.github || ''}
                                 sync={providerSync('github')}
-                                minRows={10}
+                                minRows={3}
                                 onChange={(nextValue) => updateApiKey('github', nextValue)}
                               />
                             </SettingsStackRow>

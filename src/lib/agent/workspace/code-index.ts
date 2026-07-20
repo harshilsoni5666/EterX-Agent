@@ -4,8 +4,9 @@ import crypto from 'crypto';
 import { createReadStream } from 'fs';
 import * as readline from 'readline';
 import { runRgFiles, isRgAvailable } from '../tools/shared/rg';
+import { getEterxWorkspaceDir } from '../storage-paths';
 
-const INDEX_ROOT = path.resolve(process.cwd(), '.workspaces', '.code-index');
+const INDEX_ROOT = getEterxWorkspaceDir('.code-index');
 const CODE_EXTENSIONS = new Set([
   'ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs', 'py', 'rs', 'go', 'java', 'kt', 'cs',
   'cpp', 'c', 'h', 'hpp', 'swift', 'rb', 'php', 'vue', 'svelte', 'css', 'scss',

@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import fs from 'fs-extra';
 import path from 'path';
+import { getEterxWorkspaceDir } from '../../../../lib/agent/storage-paths';
 
-const CONNECTORS_FILE = path.resolve(process.cwd(), '.workspaces', '.connectors.json');
+const CONNECTORS_FILE = path.join(getEterxWorkspaceDir(), '.connectors.json');
 
 /**
  * GET /api/connectors/status
