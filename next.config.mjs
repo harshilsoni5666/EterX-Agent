@@ -3,10 +3,16 @@ const nextConfig = {
   // Electron starts the generated server directly in production.  A standalone
   // build keeps the desktop installer self-contained instead of requiring a
   // system Node.js installation or a separate `next start` process.
-  output: 'standalone',
+  output: process.env.ETERX_BUILD_TARGET === 'source' ? undefined : 'standalone',
   experimental: {
     serverComponentsExternalPackages: ['cheerio', 'undici', 'fs-extra', 'pdf-parse', 'mathjs', 'playwright-core'],
     optimizePackageImports: ['lucide-react'],
+    // Runtime workspaces can contain browser profiles, junctions, virtual
+    // environments, and user projects. They are durable data, never build
+    // inputs, so file tracing must not traverse them during install/update.
+    outputFileTracingExcludes: {
+      '*': ['**/.workspaces/**', '**\\.workspaces\\**', '**/.temp/**', '**/dist/**', '**/desktop-runtime/**', '**/gaia/**'],
+    },
   },
   webpack: (config, { isServer }) => {
     config.resolve.alias = {

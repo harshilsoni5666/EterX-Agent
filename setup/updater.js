@@ -2,6 +2,7 @@
  * EterX — Self-Updater, Backup/Restore & Version Management
  */
 const { execSync, spawn } = require('child_process');
+const os = require('os');
 const fs = require('fs');
 const path = require('path');
 const { ok, warn, fail, info, spinner, c } = require('./banner');
@@ -15,8 +16,8 @@ async function checkForUpdates(projectRoot) {
   try {
     const gitDir = path.join(projectRoot, '.git');
     if (!fs.existsSync(gitDir)) {
-      info('Not a git repo — updates must be manual');
-      return { available: false };
+      info('Source-bootstrap installation detected — the installer will replace application code safely.');
+      return { available: true, sourceBootstrap: true, behind: null };
     }
 
     const s = spinner('Checking for updates...');
@@ -47,6 +48,9 @@ async function checkForUpdates(projectRoot) {
  * Pull latest updates and re-install
  */
 async function performUpgrade(projectRoot) {
+  if (!fs.existsSync(path.join(projectRoot, '.git'))) {
+    return launchBootstrapUpgrade(projectRoot);
+  }
   // 1. Backup first
   info('Creating backup before upgrade...');
   await backupConfig(projectRoot);
@@ -85,6 +89,40 @@ async function performUpgrade(projectRoot) {
 
   ok('Upgrade complete!');
   return true;
+}
+
+function launchBootstrapUpgrade(projectRoot) {
+  try {
+    if (process.platform === 'win32') {
+      const source = path.join(projectRoot, 'install.ps1');
+      if (!fs.existsSync(source)) throw new Error('install.ps1 is missing');
+      const updaterScript = path.join(os.tmpdir(), `eterx-update-${Date.now()}.ps1`);
+      fs.copyFileSync(source, updaterScript);
+      const child = spawn('powershell.exe', [
+        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', updaterScript,
+        '-InstallDir', projectRoot, '-WaitForPid', String(process.pid), '-NoLaunch',
+      ], { detached: true, stdio: 'inherit', windowsHide: false });
+      child.unref();
+    } else {
+      const source = path.join(projectRoot, 'install.sh');
+      if (!fs.existsSync(source)) throw new Error('install.sh is missing');
+      const updaterScript = path.join(os.tmpdir(), `eterx-update-${Date.now()}.sh`);
+      fs.copyFileSync(source, updaterScript);
+      fs.chmodSync(updaterScript, 0o755);
+      const command = `while kill -0 ${process.pid} 2>/dev/null; do sleep 1; done; ETERX_INSTALL_DIR="$1" sh "$2"; code=$?; rm -f -- "$2"; exit $code`;
+      const child = spawn('sh', ['-c', command, 'eterx-updater', projectRoot, updaterScript], {
+        detached: true,
+        stdio: 'inherit',
+      });
+      child.unref();
+    }
+    ok('The transactional updater is starting. This terminal will continue showing its progress.');
+    info('Your current installation and user data remain available until the replacement passes setup checks.');
+    return true;
+  } catch (error) {
+    fail(`Could not start the source updater: ${error.message}`);
+    return false;
+  }
 }
 
 /**

@@ -36,7 +36,7 @@ function registerAutoStartWindows(projectRoot, enable) {
 
     const batPath = path.join(projectRoot, 'EterX.bat');
     if (!fs.existsSync(batPath)) {
-      const batContent = `@echo off\ntitle EterX Agent\ncd /d "${projectRoot}"\nnode setup\\launcher.js --no-electron\n`;
+      const batContent = `@echo off\ntitle EterX Agent\ncd /d "${projectRoot}"\nnode setup\\launcher.js --production --no-electron\n`;
       fs.writeFileSync(batPath, batContent);
     }
 
@@ -73,7 +73,7 @@ After=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=${projectRoot}
-ExecStart=${nodePathResolved} ${path.join(projectRoot, 'setup', 'launcher.js')} --no-electron
+ExecStart=${nodePathResolved} ${path.join(projectRoot, 'setup', 'launcher.js')} --production --no-electron
 Restart=on-failure
 RestartSec=5
 Environment=NODE_ENV=production
@@ -117,6 +117,7 @@ function registerAutoStartMacOS(projectRoot, enable) {
   <array>
     <string>${nodePathResolved}</string>
     <string>${path.join(projectRoot, 'setup', 'launcher.js')}</string>
+    <string>--production</string>
     <string>--no-electron</string>
   </array>
   <key>WorkingDirectory</key><string>${projectRoot}</string>

@@ -18,7 +18,21 @@
 
 ## Installation
 
-The fastest way to get EterX running is through the bootstrap installer. It handles everything — downloading the source, installing dependencies, and starting the agent.
+### Windows desktop app (recommended)
+
+Build or download the signed release installer named `EterX-<version>-windows-x64.exe`. It provides a branded Windows installer with an install-location choice, Start Menu/Desktop shortcuts, uninstaller, automatic background updates, and a visible **Settings → Updates** control.
+
+For a local release build:
+
+```powershell
+npm run desktop:build:win
+```
+
+The installer is written to `dist/` and installs the complete app. Chats, workspaces, browser data, preferences, logs, and encrypted desktop settings are kept separately in `%LOCALAPPDATA%\EterX`, so uninstalling or updating the app does not erase user data.
+
+### One-command source install
+
+The source bootstrap is for developers and users who want the GitHub version. It detects Node.js, installs the per-user runtime when necessary, downloads and verifies the app into a staging directory, preserves existing data, installs all libraries, builds production code, creates shortcuts, and rolls back automatically if setup fails.
 
 **Windows (PowerShell)**
 ```powershell
@@ -30,7 +44,7 @@ powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.c
 curl -sSL "https://raw.githubusercontent.com/harshilsoni5666/EterX-Agent/main/install.sh" | bash
 ```
 
-For development builds, desktop packaging, post-install API setup, and data directory details, see the [Install Guide](./INSTALL.md).
+After a source install, use `eterx update` (or `eterx upgrade`) to download and apply a new version without removing configuration or workspaces. Use `eterx repair` if dependencies are damaged; it safely closes only running EterX processes before replacing locked files.
 
 ---
 
@@ -263,7 +277,8 @@ eterx providers       # List all providers and their status
 ### Management
 ```bash
 eterx status          # View config and update status
-eterx upgrade         # Pull latest and reinstall
+eterx update          # Transactionally download and apply the latest source release
+eterx upgrade         # Alias for `eterx update`
 eterx backup          # Backup config and memory
 eterx restore         # Restore from backup
 eterx repair          # Fix broken installation

@@ -1,6 +1,14 @@
 {
-  "name": "EterX",
+  "name": "eterx",
   "version": "0.1.0",
+  "description": "EterX autonomous AI agent desktop application",
+  "author": "Harshil Soni",
+  "license": "MIT",
+  "homepage": "https://github.com/harshilsoni5666/EterX-Agent",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/harshilsoni5666/EterX-Agent.git"
+  },
   "private": true,
   "main": "electron/main.js",
   "bin": {
@@ -15,7 +23,7 @@
     "desktop:build:win": "npm run build && npm run desktop:prepare-runtime && electron-builder --win",
     "desktop:build:linux": "npm run build && npm run desktop:prepare-runtime && electron-builder --linux",
     "desktop:build:mac": "npm run build && npm run desktop:prepare-runtime && electron-builder --mac",
-    "build": "next build",
+    "build": "node scripts/build-production.mjs",
     "start": "next start",
     "test": "npm run test:ci",
     "test:ci": "npm run test:reference-evals && npm run test:workspace-tools && npm run test:execution-governor && npm run test:context-resonance && npx tsc --noEmit --pretty false",
@@ -72,6 +80,7 @@
     "d3-color": "^3.1.0",
     "d3-scale": "^4.0.2",
     "docx": "^8.5.0",
+    "electron-updater": "^6.8.9",
     "framer-motion": "^11.18.2",
     "fs-extra": "^11.3.4",
     "googlethis": "^1.8.0",
@@ -109,24 +118,34 @@
     "zod-to-json-schema": "^3.25.1",
     "zustand": "^5.0.12"
   },
-    "build": {
-      "appId": "com.eterx.agent",
-      "productName": "EterX",
-      "directories": {
+  "build": {
+    "appId": "com.eterx.agent",
+    "productName": "EterX",
+    "directories": {
       "buildResources": "public"
+    },
+    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "harshilsoni5666",
+        "repo": "EterX-Agent",
+        "releaseType": "release"
+      }
+    ],
+    "generateUpdatesFilesForAllChannels": true,
+    "compression": "normal",
+    "asar": true,
+    "files": [
+      "electron/**/*",
+      "package.json",
+      "!node_modules/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "desktop-runtime",
+        "to": "runtime"
       },
-      "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
-      "asar": true,
-      "files": [
-        "electron/**/*",
-        "package.json",
-        "!node_modules/**/*"
-      ],
-      "extraResources": [
-        {
-          "from": "desktop-runtime",
-          "to": "runtime"
-        },
       {
         "from": ".next/static",
         "to": "runtime/.next/static"
@@ -135,26 +154,22 @@
         "from": "public",
         "to": "runtime/public"
       },
-        {
-          "from": "src",
-          "to": "runtime/src"
-        },
-        {
-          "from": "coding-agent",
-          "to": "runtime/coding-agent"
-        },
-        {
-          "from": "package.json",
-          "to": "runtime/package.json"
-        },
-        {
+      {
+        "from": "src",
+        "to": "runtime/src"
+      },
+      {
+        "from": "coding-agent",
+        "to": "runtime/coding-agent"
+      },
+      {
         "from": "public/icon.ico",
-          "to": "icon.ico"
-        }
-      ],
-      "win": {
-        "icon": "public/icon.ico",
-        "target": [
+        "to": "icon.ico"
+      }
+    ],
+    "win": {
+      "icon": "public/icon.ico",
+      "target": [
         {
           "target": "nsis",
           "arch": ["x64"]
@@ -163,22 +178,37 @@
     },
     "nsis": {
       "oneClick": false,
+      "perMachine": false,
+      "allowElevation": true,
       "allowToChangeInstallationDirectory": true,
-        "createDesktopShortcut": true,
-        "createStartMenuShortcut": true,
-        "shortcutName": "EterX",
-        "installerIcon": "public/icon.ico",
-        "uninstallerIcon": "public/icon.ico",
-        "installerHeaderIcon": "public/icon.ico"
-      },
-      "linux": {
-        "target": ["AppImage", "deb"],
-        "category": "Development",
-        "icon": "public/icon.png"
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "EterX",
+      "uninstallDisplayName": "EterX ${version}",
+      "runAfterFinish": true,
+      "deleteAppDataOnUninstall": false,
+      "differentialPackage": true,
+      "installerIcon": "public/icon.ico",
+      "uninstallerIcon": "public/icon.ico",
+      "installerHeaderIcon": "public/icon.ico"
+    },
+    "linux": {
+      "target": ["AppImage", "deb"],
+      "category": "Development",
+      "icon": "public/logo.png",
+      "executableName": "eterx",
+      "desktop": {
+        "Name": "EterX",
+        "Comment": "Autonomous AI Agent",
+        "Categories": "Development;Utility;"
+      }
     },
     "mac": {
       "target": ["dmg", "zip"],
-      "category": "public.app-category.developer-tools"
+      "category": "public.app-category.developer-tools",
+      "icon": "public/icon.icns",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false
     }
   },
   "devDependencies": {

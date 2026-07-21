@@ -1,7 +1,7 @@
 /**
  * EterX — Dependency Installer & Environment Generator
  */
-const { execSync, spawn } = require('child_process');
+const { execFileSync, execSync, spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const { ok, warn, fail, info, line, c, spinner } = require('./banner');
@@ -16,37 +16,52 @@ const isUnicodeSupported = () => {
 };
 const unicode = isUnicodeSupported();
 
-const packages = [
-  { name: 'next', label: 'Next.js', status: 'pending', pct: 0 },
-  { name: 'react', label: 'React UI library', status: 'pending', pct: 0 },
-  { name: 'electron', label: 'Electron desktop runtime', status: 'pending', pct: 0 },
-  { name: '@google/genai', label: 'Google Gemini SDK', status: 'pending', pct: 0 },
-  { name: 'openai', label: 'OpenAI SDK', status: 'pending', pct: 0 },
-  { name: '@anthropic-ai/sdk', label: 'Anthropic SDK', status: 'pending', pct: 0 },
-  { name: 'framer-motion', label: 'Framer Motion animations', status: 'pending', pct: 0 },
-  { name: 'playwright-core', label: 'Playwright automation', status: 'pending', pct: 0 },
+const criticalPackages = [
+  ['next', 'Next.js application runtime'],
+  ['react', 'React user interface'],
+  ['electron', 'Electron desktop runtime'],
+  ['electron-updater', 'Desktop update client'],
+  ['@google/genai', 'Google Gemini SDK'],
+  ['openai', 'OpenAI SDK'],
+  ['@anthropic-ai/sdk', 'Anthropic SDK'],
+  ['playwright-core', 'Browser automation runtime'],
 ];
 
-function redrawProgress(firstDraw = false) {
-  if (!firstDraw) {
-    process.stdout.write(`\x1b[${packages.length}A`);
-  }
-  packages.forEach(p => {
-    if (!firstDraw) {
-      process.stdout.write('\r\x1b[K');
-    }
-    let icon = c.gray + (unicode ? '○' : '*') + ' [Waiting] ' + c.reset;
-    if (p.status === 'downloading') {
-      const pctStr = `${p.pct}%`.padStart(4);
-      icon = `${c.brightYellow}${unicode ? '🔄' : 'o'} [${pctStr}] ` + c.reset;
-    } else if (p.status === 'done') {
-      icon = c.brightGreen + (unicode ? '✔' : '√') + ' [ Done  ] ' + c.reset;
-    }
-    process.stdout.write(`    ${icon} ${c.bold}${p.name.padEnd(18)}${c.reset} ${c.dim}${p.label}${c.reset}\n`);
-  });
+function progressLine(percent, label, final = false) {
+  const width = Math.max(18, Math.min(38, (process.stdout.columns || 80) - 36));
+  const filled = Math.round((percent / 100) * width);
+  const bar = `${c.brightGreen}${'#'.repeat(filled)}${c.gray}${'-'.repeat(width - filled)}${c.reset}`;
+  const text = `  [${bar}] ${String(percent).padStart(3)}%  ${label}`;
+  if (process.stdout.isTTY) process.stdout.write(`\r\x1b[K${text}${final ? '\n' : ''}`);
+  else if (final || percent === 0) console.log(text);
 }
 
-function runNpm(args, projectRoot, spin) {
+function stopRunningApplication(projectRoot) {
+  if (process.platform !== 'win32') return 0;
+  const escapedRoot = projectRoot.replace(/'/g, "''");
+  const script = [
+    `$root=[IO.Path]::GetFullPath('${escapedRoot}').TrimEnd('\\')+'\\'`,
+    '$count=0',
+    'Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | ForEach-Object {',
+    '  $exe=[string]$_.ExecutablePath; $cmd=[string]$_.CommandLine',
+    '  $owned=$exe.StartsWith($root,[StringComparison]::OrdinalIgnoreCase) -or (($cmd.IndexOf($root,[StringComparison]::OrdinalIgnoreCase) -ge 0) -and ($cmd -match "electron|next[\\\\/]dist|setup[\\\\/]launcher"))',
+    `  if($owned -and $_.ProcessId -ne ${process.pid}) { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue; $count++ }`,
+    '}',
+    '$count',
+  ].join('; ');
+  try {
+    const output = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15000,
+    }).trim();
+    const count = Number.parseInt(output, 10) || 0;
+    if (count > 0) warn(`Closed ${count} running EterX process(es) so locked libraries can be repaired.`);
+    return count;
+  } catch {
+    return 0;
+  }
+}
+
+function runNpm(args, projectRoot, displayLabel) {
   const label = `npm ${args.join(' ')}`;
   
   let logStream;
@@ -60,33 +75,25 @@ function runNpm(args, projectRoot, spin) {
   }
 
   return new Promise((resolve) => {
-    const proc = spawn('npm', args, {
+    const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+    const proc = spawn(npmCommand, args, {
       cwd: projectRoot,
       stdio: ['ignore', 'pipe', 'pipe'],
-      shell: process.platform === 'win32',
+      shell: false,
       env: { ...process.env, NODE_ENV: 'development' },
     });
 
-    let lastProgressMsg = '';
-    let lastProgressTime = Date.now();
-    
-    // Smooth countdown timer to simulate download updates in real-time like Steam/Play Store
-    const progressInterval = setInterval(() => {
-      let updated = false;
-      packages.forEach(p => {
-        if (p.status === 'downloading' && p.pct < 95) {
-          p.pct += Math.floor(Math.random() * 3) + 1;
-          if (p.pct > 95) p.pct = 95;
-          updated = true;
-        }
-      });
-      if (updated) {
-        redrawProgress();
-      }
-    }, 150);
+    const startedAt = Date.now();
+    const frames = ['|', '/', '-', '\\'];
+    let frame = 0;
+    progressLine(0, displayLabel || 'Resolving dependency graph');
+    const progressInterval = process.stdout.isTTY ? setInterval(() => {
+      const elapsed = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
+      progressLine(0, `${frames[frame++ % frames.length]} ${displayLabel || 'Installing libraries'} (${elapsed}s)`);
+    }, 120) : null;
 
     const cleanup = () => {
-      clearInterval(progressInterval);
+      if (progressInterval) clearInterval(progressInterval);
       if (logStream) {
         try { logStream.end(); } catch (e) {}
       }
@@ -96,47 +103,6 @@ function runNpm(args, projectRoot, spin) {
       const text = data.toString();
       if (logStream) logStream.write(text);
 
-      const lines = text.split(/\r?\n/);
-      for (const lineText of lines) {
-        const cleanLine = lineText.trim();
-        if (!cleanLine) continue;
-
-        if (cleanLine.toLowerCase().includes('deprecated') || 
-            cleanLine.toLowerCase().includes('warn') || 
-            cleanLine.toLowerCase().includes('deprecationwarning')) {
-          continue;
-        }
-
-        // Trigger active downloading progress based on npm logs
-        if (cleanLine.includes('reify:') || cleanLine.includes('extract:')) {
-          const parts = cleanLine.split(':');
-          const pkg = parts[parts.length - 1].trim();
-          if (pkg) {
-            const matched = packages.find(p => pkg.startsWith(p.name) || p.name.startsWith(pkg) || pkg.includes(p.name));
-            if (matched && matched.status !== 'done') {
-              matched.status = 'downloading';
-              if (matched.pct < 20) matched.pct = 20;
-              redrawProgress();
-              lastProgressTime = Date.now();
-            }
-          }
-        } else if (cleanLine.includes('tarball:')) {
-          const pkg = cleanLine.substring(cleanLine.indexOf('tarball:') + 8).trim();
-          if (pkg) {
-            const matched = packages.find(p => pkg.startsWith(p.name) || p.name.startsWith(pkg) || pkg.includes(p.name));
-            if (matched && matched.status === 'pending') {
-              matched.status = 'downloading';
-              matched.pct = 10;
-              redrawProgress();
-              lastProgressTime = Date.now();
-            }
-          }
-        } else if (cleanLine.includes('added') && cleanLine.includes('packages')) {
-          lastProgressMsg = cleanLine;
-        } else if (cleanLine.includes('audited') && cleanLine.includes('packages')) {
-          lastProgressMsg = cleanLine;
-        }
-      }
     };
 
     proc.stdout.on('data', handleData);
@@ -153,8 +119,10 @@ function runNpm(args, projectRoot, spin) {
     proc.on('close', (code) => {
       cleanup();
       if (code === 0) {
+        progressLine(100, `${displayLabel || 'Libraries'} complete`, true);
         resolve(true);
       } else {
+        if (process.stdout.isTTY) process.stdout.write('\r\x1b[K');
         resolve(false);
       }
     });
@@ -177,43 +145,122 @@ async function installDependencies(projectRoot) {
     ];
 
   console.log();
-  console.log(`  ${c.bold}${c.brightMagenta}Installing Libraries:${c.reset}`);
-  packages.forEach(p => {
-    p.status = 'pending';
-    p.pct = 0;
-  });
-  redrawProgress(true); // first draw
+  console.log(`  ${c.bold}${c.brightMagenta}Installing the complete dependency set${c.reset}`);
 
   let success = false;
   for (let index = 0; index < plans.length; index += 1) {
-    if (await runNpm(plans[index], projectRoot, null)) {
+    const attempt = plans.length > 1 ? `Dependency install (attempt ${index + 1}/${plans.length + 1})` : 'Dependency install';
+    if (await runNpm(plans[index], projectRoot, attempt)) {
       success = true;
       break;
     }
   }
 
   if (!success) {
-    // Try final forced install
-    if (await runNpm(['install', '--legacy-peer-deps', '--force', ...quietNetworkArgs], projectRoot, null)) {
+    warn('Normal installation attempts failed. Verifying npm cache before recovery.');
+    try { execSync('npm cache verify', { cwd: projectRoot, stdio: 'ignore', timeout: 120000 }); } catch {}
+    if (await runNpm(['install', '--legacy-peer-deps', ...quietNetworkArgs], projectRoot, 'Dependency recovery')) {
       success = true;
     }
   }
 
-  // Complete all progress indicators
-  packages.forEach(p => {
-    p.status = 'done';
-    p.pct = 100;
-  });
-  redrawProgress();
-
   console.log();
   if (success) {
-    ok('Dependencies successfully installed.');
+    let valid = true;
+    for (const [packageName, label] of criticalPackages) {
+      try {
+        const manifest = path.join(projectRoot, 'node_modules', ...packageName.split('/'), 'package.json');
+        if (!fs.existsSync(manifest)) throw new Error('manifest not found');
+        const version = JSON.parse(fs.readFileSync(manifest, 'utf8')).version || 'installed';
+        ok(`${packageName.padEnd(20)} ${version.padEnd(12)} ${c.dim}${label}${c.reset}`);
+      } catch {
+        valid = false;
+        fail(`${packageName} is missing after npm completed`);
+      }
+    }
+    if (!valid) return false;
+    ok('All required libraries are installed and verified.');
     return true;
   } else {
     fail('Dependency installation failed. Check .workspaces/setup.log for details.');
     return false;
   }
+}
+
+async function buildApplication(projectRoot, options = {}) {
+  const buildLog = path.join(projectRoot, '.workspaces', 'setup.log');
+  const temporaryBuildLog = path.join(projectRoot, '.eterx-build.log');
+  const workspacePath = path.join(projectRoot, '.workspaces');
+  let detachedWorkspaceTarget = null;
+  try {
+    const workspaceStat = fs.lstatSync(workspacePath);
+    if (workspaceStat.isSymbolicLink()) {
+      detachedWorkspaceTarget = fs.realpathSync(workspacePath);
+      fs.unlinkSync(workspacePath);
+    }
+  } catch {}
+
+  const restoreWorkspaceLink = () => {
+    if (!detachedWorkspaceTarget) return;
+    if (fs.existsSync(workspacePath)) {
+      // Some server modules initialize harmless temp/config files while Next
+      // evaluates routes. Merge those into durable data before recreating the
+      // junction; never replace or delete the durable target itself.
+      fs.cpSync(workspacePath, detachedWorkspaceTarget, { recursive: true, force: true });
+      fs.rmSync(workspacePath, { recursive: true, force: true });
+    }
+    fs.symlinkSync(detachedWorkspaceTarget, workspacePath, process.platform === 'win32' ? 'junction' : 'dir');
+  };
+
+  return new Promise((resolve) => {
+    progressLine(0, 'Compiling the production application');
+    const nextCli = path.join(projectRoot, 'node_modules', 'next', 'dist', 'bin', 'next');
+    const proc = spawn(process.execPath, [nextCli, 'build'], {
+      cwd: projectRoot,
+      shell: false,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: {
+        ...process.env,
+        NODE_ENV: 'production',
+        NEXT_TELEMETRY_DISABLED: '1',
+        ETERX_BUILD_TARGET: options.target === 'desktop' ? 'desktop' : 'source',
+      },
+    });
+    const logStream = fs.createWriteStream(detachedWorkspaceTarget ? temporaryBuildLog : buildLog, { flags: 'a' });
+    const startedAt = Date.now();
+    const frames = ['|', '/', '-', '\\'];
+    let frame = 0;
+    const timer = process.stdout.isTTY ? setInterval(() => {
+      progressLine(0, `${frames[frame++ % frames.length]} Compiling production app (${Math.round((Date.now() - startedAt) / 1000)}s)`);
+    }, 120) : null;
+    const capture = (chunk) => logStream.write(chunk);
+    proc.stdout.on('data', capture);
+    proc.stderr.on('data', capture);
+    proc.on('error', (error) => logStream.write(`\nBuild process error: ${error.message}\n`));
+    proc.on('close', (code) => {
+      if (timer) clearInterval(timer);
+      logStream.end(() => {
+        try {
+          restoreWorkspaceLink();
+          if (detachedWorkspaceTarget && fs.existsSync(temporaryBuildLog)) {
+            fs.appendFileSync(buildLog, fs.readFileSync(temporaryBuildLog));
+            fs.unlinkSync(temporaryBuildLog);
+          }
+        } catch (error) {
+          fail(`Could not reconnect the user data directory: ${error.message}`);
+          return resolve(false);
+        }
+        if (code === 0) {
+          progressLine(100, 'Production application compiled', true);
+          resolve(true);
+        } else {
+          if (process.stdout.isTTY) process.stdout.write('\r\x1b[K');
+          fail(`Production build failed (exit ${code}). See .workspaces/setup.log.`);
+          resolve(false);
+        }
+      });
+    });
+  });
 }
 
 /**
@@ -349,7 +396,7 @@ function createDesktopShortcut(projectRoot, platform) {
   try {
     if (platform === 'win32') {
       // Create a .bat launcher in the project root
-      const batContent = `@echo off\ntitle EterX Agent\ncd /d "${projectRoot}"\nnode setup\\launcher.js\n`;
+      const batContent = `@echo off\nsetlocal\ntitle EterX Agent\ncd /d "${projectRoot}"\nnode setup\\launcher.js --production\nif errorlevel 1 pause\n`;
       fs.writeFileSync(path.join(projectRoot, 'EterX.bat'), batContent);
       ok('Created EterX.bat launcher');
 
@@ -357,7 +404,8 @@ function createDesktopShortcut(projectRoot, platform) {
       try {
         const desktop = path.join(process.env.USERPROFILE || '', 'Desktop');
         const shortcutPath = path.join(desktop, 'EterX Agent.lnk');
-        const ps = `$s=(New-Object -COM WScript.Shell).CreateShortcut('${shortcutPath.replace(/'/g, "''")}');$s.TargetPath='${path.join(projectRoot, 'EterX.bat').replace(/'/g, "''")}';$s.WorkingDirectory='${projectRoot.replace(/'/g, "''")}';$s.Description='EterX AI Agent';$s.Save()`;
+        const iconPath = path.join(projectRoot, 'public', 'icon.ico');
+        const ps = `$s=(New-Object -COM WScript.Shell).CreateShortcut('${shortcutPath.replace(/'/g, "''")}');$s.TargetPath='${path.join(projectRoot, 'EterX.bat').replace(/'/g, "''")}';$s.WorkingDirectory='${projectRoot.replace(/'/g, "''")}';$s.IconLocation='${iconPath.replace(/'/g, "''")},0';$s.Description='EterX AI Agent';$s.Save()`;
         execSync(`powershell -Command "${ps}"`, { stdio: 'ignore' });
         ok('Desktop shortcut created');
       } catch { warn('Could not create desktop shortcut (non-critical)'); }
@@ -365,7 +413,7 @@ function createDesktopShortcut(projectRoot, platform) {
       const desktopFile = `[Desktop Entry]
 Name=EterX Agent
 Comment=The Autonomous AI Agent
-Exec=node ${path.join(projectRoot, 'setup', 'launcher.js')}
+Exec=node "${path.join(projectRoot, 'setup', 'launcher.js')}" --production
 Icon=${path.join(projectRoot, 'public', 'logo.png')}
 Terminal=false
 Type=Application
@@ -387,6 +435,8 @@ Categories=Development;AI;
 
 module.exports = {
   installDependencies,
+  buildApplication,
+  stopRunningApplication,
   installProviderPackages,
   generateEnvFile,
   setupLocalStorage,

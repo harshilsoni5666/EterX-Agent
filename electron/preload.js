@@ -16,6 +16,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getSecureRuntimeSettings: () => ipcRenderer.invoke('secure-runtime-settings-get'),
   saveSecureRuntimeSettings: (settings) => ipcRenderer.invoke('secure-runtime-settings-save', settings),
   clearSecureRuntimeSettings: () => ipcRenderer.invoke('secure-runtime-settings-clear'),
+  getUpdateState: () => ipcRenderer.invoke('desktop-update-get-state'),
+  checkForUpdates: () => ipcRenderer.invoke('desktop-update-check'),
+  installUpdate: () => ipcRenderer.invoke('desktop-update-install'),
+  onUpdateState: (callback) => {
+    const listener = (_event, state) => callback(state);
+    ipcRenderer.on('desktop-update-state', listener);
+    return () => ipcRenderer.removeListener('desktop-update-state', listener);
+  },
   openPetWindow: (status) => ipcRenderer.invoke('pet-window-open', status),
   updatePetWindow: (status) => ipcRenderer.send('pet-window-status', status),
   closePetWindow: () => ipcRenderer.send('pet-window-close'),

@@ -332,6 +332,7 @@ type Tab =
   | 'worktrees'
   | 'browser'
   | 'computer'
+  | 'updates'
   | 'archives';
 
 type LegacyTab = 'agent' | 'advanced' | 'account' | 'connections';
@@ -364,6 +365,13 @@ type ModelDirectory = Record<string, ModelDirectoryProvider>;
 type ModelOverrides = Record<string, string>;
 type ModelCatalog = Record<string, string[]>;
 type ProviderModelOption = { id: string; label: string; source: 'selected' | 'saved' | 'official' | 'live' };
+type DesktopUpdateState = {
+  status: 'idle' | 'development' | 'checking' | 'downloading' | 'current' | 'ready' | 'error';
+  currentVersion: string;
+  availableVersion?: string | null;
+  percent: number;
+  message: string;
+};
 
 const splitApiKeyPool = (value: string | undefined) =>
   String(value || '')
@@ -558,6 +566,7 @@ const normalizeSettingsTab = (tab: any): Tab => {
     'worktrees',
     'browser',
     'computer',
+    'updates',
     'archives'
   ];
 
@@ -712,10 +721,11 @@ const SegmentedControl = <T extends string,>({
   </div>
 );
 
-const SoftButton: React.FC<{ children: React.ReactNode; onClick?: () => void }> = ({ children, onClick }) => (
+const SoftButton: React.FC<{ children: React.ReactNode; onClick?: () => void; disabled?: boolean }> = ({ children, onClick, disabled = false }) => (
   <button
     onClick={onClick}
-    className="rounded-lg bg-[#303030] px-3 py-1.5 text-[12.5px] font-medium text-[#F2F2F2] transition-colors hover:bg-[#393939]"
+    disabled={disabled}
+    className="rounded-lg bg-[#303030] px-3 py-1.5 text-[12.5px] font-medium text-[#F2F2F2] transition-colors hover:bg-[#393939] disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:bg-[#303030]"
   >
     {children}
   </button>
@@ -1270,6 +1280,12 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
   const [eggQuoteIndex] = useState(0);
   const [defaultPermsActive, setDefaultPermsActive] = useState(true);
   const [fullAccessActive, setFullAccessActive] = useState(true);
+  const [updateState, setUpdateState] = useState<DesktopUpdateState>({
+    status: 'development',
+    currentVersion: 'development',
+    percent: 0,
+    message: 'Desktop updates are available in the installed application.',
+  });
 
   const handleToggleDefaultPerms = useCallback((v: boolean) => {
     if (!v) {
@@ -1290,6 +1306,17 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
   }, []);
 
   const keysChangedRef = useRef(false);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const desktopApi = (window as any)?.electronAPI;
+    let unsubscribe: undefined | (() => void);
+    if (typeof desktopApi?.getUpdateState === 'function') {
+      desktopApi.getUpdateState().then((state: DesktopUpdateState) => state && setUpdateState(state)).catch(() => {});
+      if (typeof desktopApi.onUpdateState === 'function') unsubscribe = desktopApi.onUpdateState(setUpdateState);
+    }
+    return () => unsubscribe?.();
+  }, [isOpen]);
 
   const persistDesktopRuntimeSettings = useCallback(async (
     nextApiKeys: Record<string, string>,
@@ -1596,6 +1623,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
     { id: 'environments', label: 'Environments', icon: 'environments' },
     { id: 'browser', label: 'Browser', icon: 'browser' },
     { id: 'computer', label: 'Computer use', icon: 'computer' },
+    { id: 'updates', label: 'Updates', icon: 'updates' },
   ];
 
   const providerKeyCount = (provider: string) => {
@@ -2616,6 +2644,59 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
                               </SoftButton>
                             </SettingsStackRow>
                           </SettingsStack>
+                        </div>
+                      )}
+
+                      {/* ═══ UPDATES TAB ═══ */}
+                      {activeTab === 'updates' && (
+                        <div>
+                          <SectionHeader title="Application updates" />
+                          <div className="mb-5 rounded-xl border border-white/[0.07] bg-white/[0.025] p-5">
+                            <div className="flex items-start justify-between gap-5">
+                              <div>
+                                <div className="text-[15px] font-semibold text-[#F1F1F1]">EterX {updateState.currentVersion}</div>
+                                <div className={`mt-1.5 text-[13px] leading-relaxed ${updateState.status === 'error' ? 'text-red-400' : 'text-[#9A9A9A]'}`}>
+                                  {updateState.message}
+                                </div>
+                              </div>
+                              <span className={`shrink-0 rounded-full border px-2.5 py-1 text-[11px] font-medium ${
+                                updateState.status === 'ready' ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-400' :
+                                updateState.status === 'error' ? 'border-red-500/25 bg-red-500/10 text-red-400' :
+                                'border-white/[0.08] bg-white/[0.04] text-[#B8B8B8]'
+                              }`}>
+                                {updateState.status === 'current' ? 'Up to date' : updateState.status === 'ready' ? 'Ready' : updateState.status}
+                              </span>
+                            </div>
+
+                            {(updateState.status === 'downloading' || updateState.status === 'ready') && (
+                              <div className="mt-5">
+                                <div className="mb-2 flex justify-between text-[11px] text-[#777]">
+                                  <span>{updateState.availableVersion ? `Version ${updateState.availableVersion}` : 'Update package'}</span>
+                                  <span>{Math.round(updateState.percent)}%</span>
+                                </div>
+                                <div className="h-1.5 overflow-hidden rounded-full bg-white/[0.07]">
+                                  <div className="h-full rounded-full bg-[#D9D9D9] transition-[width] duration-300" style={{ width: `${Math.max(0, Math.min(100, updateState.percent))}%` }} />
+                                </div>
+                              </div>
+                            )}
+                          </div>
+
+                          <div className="flex gap-3">
+                            {updateState.status === 'ready' ? (
+                              <SoftButton onClick={() => void (window as any)?.electronAPI?.installUpdate?.()}>Restart and install</SoftButton>
+                            ) : (
+                              <SoftButton
+                                disabled={updateState.status === 'checking' || updateState.status === 'downloading' || updateState.status === 'development'}
+                                onClick={() => void (window as any)?.electronAPI?.checkForUpdates?.()}
+                              >
+                                {updateState.status === 'checking' ? 'Checking…' : updateState.status === 'downloading' ? 'Downloading…' : 'Check for updates'}
+                              </SoftButton>
+                            )}
+                          </div>
+
+                          <p className="mt-5 text-[12px] leading-relaxed text-[#666]">
+                            Updates download in the background and replace only application files. Your chats, workspaces, encrypted API settings, browser profiles, and preferences remain in the device data directory.
+                          </p>
                         </div>
                       )}
 

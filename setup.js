@@ -5,7 +5,7 @@ const fs = require('fs');
 const { spawn } = require('child_process');
 const { showBanner, ok, warn, fail, info, step, line, c } = require('./setup/banner');
 const { getSystemInfo, getProjectRoot } = require('./setup/detect');
-const { installDependencies, setupLocalStorage, createDesktopShortcut } = require('./setup/installer');
+const { installDependencies, buildApplication, stopRunningApplication, setupLocalStorage, createDesktopShortcut } = require('./setup/installer');
 const { createStartMenuEntry, registerCLI } = require('./setup/autostart');
 const { checkForUpdates, performUpgrade, backupConfig, restoreConfig, getVersion, getCommitHash } = require('./setup/updater');
 const { initLog, patchConsoleForLogging } = require('./setup/logger');
@@ -13,6 +13,7 @@ const { initLog, patchConsoleForLogging } = require('./setup/logger');
 const ROOT = getProjectRoot();
 const args = process.argv.slice(2);
 const flag = args.find(arg => arg.startsWith('--')) || '';
+const isSourceInstall = args.includes('--source-install');
 
 async function main() {
   initLog();
@@ -77,6 +78,15 @@ async function autoSetup(options = {}) {
     process.exit(1);
   }
 
+  if (isSourceInstall) {
+    step('Building Production Application');
+    const buildOk = await buildApplication(ROOT);
+    if (!buildOk) {
+      fail('The production build failed. The bootstrap installer will restore the previous version.');
+      process.exit(1);
+    }
+  }
+
   step('Environment');
   ensureAutoEnvFile(ROOT);
 
@@ -94,6 +104,9 @@ async function autoSetup(options = {}) {
   fs.writeFileSync(metaPath, JSON.stringify({
     installedAt: new Date().toISOString(),
     mode: 'auto',
+    distribution: isSourceInstall ? 'source-bootstrap' : 'developer',
+    installRoot: ROOT,
+    dataRoot: fs.realpathSync(path.join(ROOT, '.workspaces')),
     version: getVersion(ROOT),
     commit: getCommitHash(ROOT),
     platform: process.platform,
@@ -186,6 +199,7 @@ async function showStatus() {
 async function repair() {
   showBanner();
   step('Repairing Installation');
+  stopRunningApplication(ROOT);
   setupLocalStorage(ROOT);
   const ok2 = await installDependencies(ROOT);
   if (ok2) ok('Repair complete');
