@@ -55,21 +55,23 @@
 }
 
 :root[data-theme="light"] .eterx-chat-top-fade {
-  background: linear-gradient(180deg, #FFFFFF 0%, rgba(255, 255, 255, 0.72) 42%, transparent 100%) !important;
+  background: linear-gradient(180deg, #FFFFFF 0%, rgba(255, 255, 255, 0.25) 15%, transparent 100%) !important;
+  height: 20px !important;
 }
 
 :root[data-theme="dark"] .eterx-chat-top-fade {
-  background: linear-gradient(180deg, #0F0F0F 0%, rgba(15, 15, 15, 0.82) 44%, rgba(15, 15, 15, 0) 100%) !important;
+  background: linear-gradient(180deg, #0F0F0F 0%, rgba(15, 15, 15, 0.25) 15%, transparent 100%) !important;
+  height: 20px !important;
 }
 
 :root[data-theme="light"] .eterx-chat-input-dock-active::before {
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0) 0%, rgba(255, 255, 255, 0.86) 34%, #FFFFFF 100%) !important;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0) 0%, rgba(255, 255, 255, 0.45) 40%, #FFFFFF 100%) !important;
+  height: 90px !important;
 }
 
 :root[data-theme="dark"] .eterx-chat-input-dock-active::before {
-  background:
-    linear-gradient(180deg, rgba(15, 15, 15, 0) 0%, #0F0F0F 32%, #0F0F0F 100%) !important;
+  background: linear-gradient(180deg, rgba(15, 15, 15, 0) 0%, rgba(15, 15, 15, 0.5) 40%, #0F0F0F 100%) !important;
+  height: 90px !important;
 }
 
 :root[data-theme="light"] .eterx-sidebar-shell {
@@ -276,8 +278,19 @@
   box-shadow: 0 4px 12px rgba(31, 31, 29, 0.10), inset 0 1px 0 rgba(255, 255, 255, 0.18) !important;
 }
 
-:root[data-theme="light"] .eterx-composer-send-button svg {
+:root[data-theme="light"] .eterx-chat-controls .eterx-composer-send-button .eterx-composer-control-icon,
+:root[data-theme="light"] .eterx-chat-controls .eterx-composer-send-button:hover .eterx-composer-control-icon,
+:root[data-theme="light"] .eterx-chat-controls .eterx-composer-send-button:focus-visible .eterx-composer-control-icon,
+:root[data-theme="light"] .eterx-chat-controls .eterx-composer-send-button:active .eterx-composer-control-icon,
+:root[data-theme="light"] .eterx-chat-controls .eterx-composer-stop-button .eterx-composer-control-icon,
+:root[data-theme="light"] .eterx-chat-controls .eterx-composer-stop-button:hover .eterx-composer-control-icon,
+:root[data-theme="light"] .eterx-chat-controls .eterx-composer-stop-button:focus-visible .eterx-composer-control-icon,
+:root[data-theme="light"] .eterx-chat-controls .eterx-composer-stop-button:active .eterx-composer-control-icon,
+:root[data-theme="light"] .eterx-composer-send-button svg,
+:root[data-theme="light"] .eterx-composer-send-button:hover svg {
   color: #FFFFFF !important;
+  opacity: 1 !important;
+  filter: none !important;
   background: transparent !important;
 }
 
@@ -570,6 +583,9 @@
 
 :root[data-theme="light"] .eterx-home-greeting {
   background-image: linear-gradient(90deg, #52606F 0%, #1F2A38 50%, #7A8796 100%) !important;
+  background-clip: text !important;
+  -webkit-background-clip: text !important;
+  color: transparent !important;
   filter: none !important;
 }
 
@@ -1515,4 +1531,361 @@
   .eterx-app-shell[data-sidebar-open="true"] .eterx-main-panel::after {
     border-radius: 0 !important;
   }
+}
+
+/* Connectors Modal Light Theme Overrides */
+:root[data-theme="light"] .eterx-connectors-overlay {
+  background: rgba(31, 31, 29, 0.35) !important;
+  backdrop-filter: blur(12px) !important;
+}
+
+:root[data-theme="light"] .eterx-connectors-panel {
+  background: #FFFFFF !important;
+  border: 1px solid rgba(31, 31, 29, 0.08) !important;
+  box-shadow: 0 32px 80px rgba(0, 0, 0, 0.16) !important;
+}
+
+:root[data-theme="light"] .eterx-connectors-header {
+  border-bottom-color: rgba(31, 31, 29, 0.07) !important;
+}
+
+:root[data-theme="light"] .eterx-connectors-title {
+  color: #1F1F1D !important;
+}
+
+:root[data-theme="light"] .eterx-connectors-header p {
+  color: #77736C !important;
+}
+
+:root[data-theme="light"] .eterx-connectors-search-icon {
+  color: #98938A !important;
+}
+
+:root[data-theme="light"] .eterx-connectors-search-input {
+  background: #F4F4F2 !important;
+  border: 1px solid rgba(31, 31, 29, 0.07) !important;
+  color: #1F1F1D !important;
+}
+
+:root[data-theme="light"] .eterx-connectors-search-input::placeholder {
+  color: #98938A !important;
+}
+
+:root[data-theme="light"] .eterx-connectors-close {
+  color: #77736C !important;
+}
+
+:root[data-theme="light"] .eterx-connectors-close:hover {
+  color: #1F1F1D !important;
+  background: rgba(31, 31, 29, 0.06) !important;
+}
+
+:root[data-theme="light"] .eterx-connectors-tabs {
+  border-bottom-color: rgba(31, 31, 29, 0.05) !important;
+}
+
+:root[data-theme="light"] .eterx-connectors-tab {
+  color: #77736C !important;
+}
+
+:root[data-theme="light"] .eterx-connectors-tab:hover {
+  color: #1F1F1D !important;
+  background: rgba(31, 31, 29, 0.04) !important;
+}
+
+:root[data-theme="light"] .eterx-connectors-tab[data-active="true"] {
+  background: rgba(31, 31, 29, 0.06) !important;
+  color: #1F1F1D !important;
+}
+
+:root[data-theme="light"] .eterx-connectors-card {
+  background: #FBFBFA !important;
+  border-color: rgba(31, 31, 29, 0.07) !important;
+}
+
+:root[data-theme="light"] .eterx-connectors-card[data-connected="true"] {
+  border-color: rgba(16, 185, 129, 0.25) !important;
+}
+
+:root[data-theme="light"] .eterx-connectors-card:hover {
+  background: #F7F7F5 !important;
+  border-color: rgba(31, 31, 29, 0.12) !important;
+}
+
+:root[data-theme="light"] .eterx-connectors-card[data-connected="true"]:hover {
+  border-color: rgba(16, 185, 129, 0.4) !important;
+}
+
+:root[data-theme="light"] .eterx-connectors-logo {
+  border-color: rgba(31, 31, 29, 0.08) !important;
+}
+
+:root[data-theme="light"] .eterx-connectors-name {
+  color: #1F1F1D !important;
+}
+
+:root[data-theme="light"] .eterx-connectors-desc {
+  color: #77736C !important;
+}
+
+:root[data-theme="light"] .eterx-connectors-action {
+  color: #1F1F1D !important;
+  border-color: rgba(31, 31, 29, 0.12) !important;
+}
+
+:root[data-theme="light"] .eterx-connectors-action:hover:not(:disabled) {
+  background: rgba(31, 31, 29, 0.05) !important;
+  color: #1F1F1D !important;
+}
+
+:root[data-theme="light"] .eterx-connectors-action:disabled {
+  color: #A3A19E !important;
+  border-color: rgba(31, 31, 29, 0.06) !important;
+}
+
+:root[data-theme="light"] .eterx-connectors-action-connected {
+  color: #059669 !important;
+  border-color: rgba(16, 185, 129, 0.3) !important;
+}
+
+:root[data-theme="light"] .eterx-connectors-action-connected:hover {
+  color: #DC2626 !important;
+  background: rgba(220, 38, 38, 0.08) !important;
+  border-color: rgba(220, 38, 38, 0.2) !important;
+}
+
+/* User Turns Timeline Navigation Light Theme Overrides */
+:root[data-theme="light"] .eterx-chat-turns-dash {
+  background-color: rgba(31, 31, 29, 0.22) !important;
+}
+
+:root[data-theme="light"] .eterx-chat-turns-dash.bg-\[\#F4F2EE\] {
+  background-color: #1F1F1D !important;
+}
+
+:root[data-theme="light"] .group:hover .eterx-chat-turns-dash:not(.bg-\[\#F4F2EE\]) {
+  background-color: rgba(31, 31, 29, 0.45) !important;
+}
+
+:root[data-theme="light"] .eterx-chat-turns-popover {
+  background: #FFFFFF !important;
+  border-color: rgba(31, 31, 29, 0.08) !important;
+  box-shadow: 0 12px 36px rgba(31, 31, 29, 0.08) !important;
+  backdrop-filter: blur(24px) !important;
+}
+
+:root[data-theme="light"] .eterx-chat-turns-usertext {
+  color: #1F1F1D !important;
+}
+
+:root[data-theme="light"] .eterx-chat-turns-assistanttext {
+  color: #77736C !important;
+}
+
+:root[data-theme="light"] .eterx-chat-turns-attachment {
+  background: rgba(31, 31, 29, 0.04) !important;
+  border-color: rgba(31, 31, 29, 0.05) !important;
+}
+
+:root[data-theme="light"] .eterx-chat-turns-attachment-name {
+  color: #77736C !important;
+}
+
+/* Proxy-Agent UI Light Theme Overrides */
+:root[data-theme="light"] .eterx-proxy-card {
+  background: rgba(255, 255, 255, 0.96) !important;
+  border-color: rgba(31, 31, 29, 0.1) !important;
+  box-shadow: 0 18px 44px rgba(31, 31, 29, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.8) !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-title {
+  color: #1F1F1D !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-button {
+  background: rgba(31, 31, 29, 0.04) !important;
+  border-color: rgba(31, 31, 29, 0.08) !important;
+  color: #1F1F1D !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-button svg {
+  color: #77736C !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-button:hover {
+  background: rgba(31, 31, 29, 0.07) !important;
+  color: #000000 !important;
+  border-color: rgba(31, 31, 29, 0.12) !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-button:hover svg {
+  color: #1F1F1D !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-intervention-row {
+  background: rgba(31, 31, 29, 0.03) !important;
+  border-color: rgba(31, 31, 29, 0.08) !important;
+  color: #1F1F1D !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-intervention-row span:first-child {
+  color: #77736C !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-intervention-row span:last-child {
+  color: #1F1F1D !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-intervention-row svg {
+  color: #98938A !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-intervention-row:hover {
+  background: rgba(31, 31, 29, 0.06) !important;
+  border-color: rgba(31, 31, 29, 0.12) !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-popout {
+  background: #FFFFFF !important;
+  border-color: rgba(31, 31, 29, 0.08) !important;
+  box-shadow: 0 12px 32px rgba(31, 31, 29, 0.08) !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-popout-item {
+  color: #77736C !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-popout-item span:first-child {
+  color: #1F1F1D !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-popout-item span:nth-child(2) {
+  color: #98938A !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-popout-item:hover {
+  background: rgba(31, 31, 29, 0.04) !important;
+  color: #1F1F1D !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-popout-item[class*="bg-white"] {
+  background: rgba(31, 31, 29, 0.06) !important;
+  color: #1F1F1D !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-chat-window {
+  background: rgba(255, 255, 255, 0.98) !important;
+  border-color: rgba(31, 31, 29, 0.12) !important;
+  box-shadow: 0 16px 44px rgba(31, 31, 29, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.8) !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-chat-header {
+  border-bottom-color: rgba(31, 31, 29, 0.07) !important;
+  background: linear-gradient(to bottom, rgba(31, 31, 29, 0.015), transparent) !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-chat-header span {
+  color: #1F1F1D !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-chat-header button {
+  color: #77736C !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-chat-header button:hover {
+  background: rgba(31, 31, 29, 0.06) !important;
+  color: #1F1F1D !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-chat-fade-top {
+  background: linear-gradient(to bottom, #FFFFFF, transparent) !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-chat-fade-bottom {
+  background: linear-gradient(to top, #FFFFFF, transparent) !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-message-bubble {
+  color: #1F1F1D !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-message-bubble[class*="bg-[#242424]"] {
+  background: #F3F3F2 !important;
+  border-color: rgba(31, 31, 29, 0.08) !important;
+  color: #1F1F1D !important;
+  box-shadow: none !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-message-bubble + span {
+  color: #98938A !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-input-wrapper {
+  background: #F4F4F2 !important;
+  border-color: rgba(31, 31, 29, 0.08) !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-textarea {
+  color: #1F1F1D !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-textarea::placeholder {
+  color: #98938A !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-input-wrapper button {
+  color: #77736C !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-input-wrapper button:hover {
+  background: rgba(31, 31, 29, 0.06) !important;
+  color: #1F1F1D !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-input-wrapper .eterx-model-button {
+  background: rgba(31, 31, 29, 0.05) !important;
+  color: #1F1F1D !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-input-wrapper .eterx-model-button:hover {
+  background: rgba(31, 31, 29, 0.08) !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-input-wrapper .eterx-selector-label {
+  color: #77736C !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-input-wrapper .eterx-selector-chevron svg {
+  color: #77736C !important;
+}
+
+/* Sidebar Brand Logo Text Light Theme Override */
+:root[data-theme="light"] .eterx-sidebar-brand-text {
+  color: #706F6C !important;
+}
+
+/* Settings Back to App Button Light Theme Override */
+:root[data-theme="light"] .eterx-settings-back-button {
+  color: #605E5B !important;
+}
+
+:root[data-theme="light"] .eterx-settings-back-button:hover {
+  background-color: rgba(31, 31, 29, 0.045) !important;
+  color: #1F1F1D !important;
+}
+
+/* Settings Coming Soon Label Light Theme Override */
+:root[data-theme="light"] .eterx-settings-coming-soon {
+  color: #98938A !important;
+}
+
+/* File Change and Action Diff additions and deletions light theme overrides */
+:root[data-theme="light"] .eterx-file-change-added,
+:root[data-theme="light"] .eterx-action-diff-added {
+  color: #0B9F52 !important;
+}
+
+:root[data-theme="light"] .eterx-file-change-removed,
+:root[data-theme="light"] .eterx-action-diff-removed {
+  color: #D64545 !important;
 }

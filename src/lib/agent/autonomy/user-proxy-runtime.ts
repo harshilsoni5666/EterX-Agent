@@ -5,7 +5,7 @@ import type { MainAgentMode } from '../model-routing';
 import type { ScopedRuntimeSettings } from '../runtime-api-keys';
 
 type TraceFn = (trace: any) => void;
-type ProxyAction = 'observe' | 'steer' | 'redirect' | 'challenge' | 'request_real_user' | 'approve_completion';
+type ProxyAction = 'observe' | 'steer' | 'redirect' | 'challenge' | 'request_real_user' | 'interrupt_main' | 'stop_main' | 'approve_completion';
 
 type ProxyDecision = {
   action: ProxyAction;
@@ -20,6 +20,15 @@ type ProxyDecision = {
   reviewCadence?: 'quiet' | 'normal' | 'close';
   attentionSignals?: string[];
   contractUpdate?: Partial<Pick<TaskContract, 'requiredDeliverables' | 'forbiddenActions' | 'safetyConstraints' | 'completionConditions'>>;
+  completionBoundaryPassed?: boolean;
+  managerDirectiveId?: string;
+  managerNotice?: string;
+  situationUpdate?: Partial<{
+    progress: string;
+    activeStrategy: string;
+    unresolvedRisks: string[];
+    nextExpectedBoundary: string;
+  }>;
 };
 
 type TaskContract = {
@@ -51,6 +60,33 @@ type DeliverableEvidence = {
   evidenceEventIds: number[];
 };
 
+export type ProxyManagerDirective = {
+  id: string;
+  message: string;
+  target: 'proxy' | 'main' | 'both';
+  timing: 'now' | 'when_relevant' | 'before_completion' | 'after_current';
+  intent: 'goal' | 'constraint' | 'correction' | 'preference' | 'follow_up';
+  rationale?: string;
+  requestedAction?: 'advise_proxy' | 'steer_adaptively' | 'interrupt_main' | 'stop_main';
+  urgency?: 'low' | 'normal' | 'high' | 'critical';
+  expiresAt?: number;
+  activationCondition?: string;
+  scope?: 'current_step' | 'current_task' | 'next_task' | 'persistent_mandate';
+  supersedesDirectiveId?: string;
+  createdAt: number;
+  status: 'active' | 'pending' | 'delivered' | 'rejected' | 'expired';
+  disposition?: string;
+  deliveredAt?: number;
+};
+
+type ProxyCoordinationEvent = {
+  id: string;
+  kind: 'manager_request' | 'proxy_acknowledgement' | 'proxy_deferral' | 'proxy_delivery' | 'proxy_rejection' | 'supervisor_notice' | 'main_interrupted' | 'main_stopped' | 'outcome';
+  directiveId?: string;
+  message: string;
+  timestamp: number;
+};
+
 type ProxyState = {
   version: 2;
   projectId: string;
@@ -70,11 +106,20 @@ type ProxyState = {
   actionCounts: Record<string, number>;
   lastGoalGap: string;
   lastDecisionAt: number;
+  lastReviewedEventId: number;
   lastInterventionEventId: number;
   helperUsed: boolean;
   adaptivePolicy: {
     cadence: 'quiet' | 'normal' | 'close';
     attentionSignals: string[];
+  };
+  managerDirectives: ProxyManagerDirective[];
+  coordinationEvents: ProxyCoordinationEvent[];
+  situationModel: {
+    progress: string;
+    activeStrategy: string;
+    unresolvedRisks: string[];
+    nextExpectedBoundary: string;
   };
   updatedAt: number;
 };
@@ -85,10 +130,14 @@ type RuntimeOptions = {
   mode: MainAgentMode;
   apiKey: string;
   runtimeSettings?: ScopedRuntimeSettings | null;
+  fallbackMode?: MainAgentMode;
+  fallbackApiKey?: string;
+  fallbackRuntimeSettings?: ScopedRuntimeSettings | null;
   history?: any[];
   attachments?: Array<{ name?: string; path?: string; mimeType?: string }>;
   onTrace?: TraceFn;
   steer: (message: string, metadata?: Record<string, any>) => boolean;
+  stopMain: (reason: string, metadata?: Record<string, any>) => boolean;
 };
 
 export type ProxyInterventionLevel = 'minimal' | 'normal' | 'high';
@@ -96,7 +145,7 @@ export type ProxyInterventionLevel = 'minimal' | 'normal' | 'high';
 const runtimes = new Map<string, UserProxyRuntime>();
 const AUTONOMY_RUNTIME = 'autonomy_v1';
 const MAX_EVENTS = 120;
-const MAX_INTERVENTIONS = 8;
+const MAX_INTERVENTIONS = 24;
 const INITIAL_SILENCE_MS = 12_000;
 const MIN_REVIEW_INTERVAL_MS = 22_000;
 const PERIODIC_REVIEW_MS = 55_000;
@@ -179,7 +228,7 @@ function extractDecision(raw: string): ProxyDecision {
   if (!match) return { action: 'observe', reason: 'No structured intervention decision.' };
   try {
     const parsed = JSON.parse(match[0]);
-    const actions = new Set<ProxyAction>(['observe', 'steer', 'redirect', 'challenge', 'request_real_user', 'approve_completion']);
+    const actions = new Set<ProxyAction>(['observe', 'steer', 'redirect', 'challenge', 'request_real_user', 'interrupt_main', 'stop_main', 'approve_completion']);
     const severity = new Set(['low', 'medium', 'high', 'critical']).has(parsed.severity) ? parsed.severity : undefined;
     return {
       action: actions.has(parsed.action) ? parsed.action : 'observe',
@@ -197,6 +246,14 @@ function extractDecision(raw: string): ProxyDecision {
       attentionSignals: Array.isArray(parsed.attentionSignals)
         ? unique(parsed.attentionSignals.map((item: any) => String(item)), 10)
         : [],
+      managerDirectiveId: compact(parsed.managerDirectiveId, 160),
+      managerNotice: compact(parsed.managerNotice, 1200),
+      situationUpdate: parsed.situationUpdate && typeof parsed.situationUpdate === 'object' ? {
+        progress: compact(parsed.situationUpdate.progress, 1400),
+        activeStrategy: compact(parsed.situationUpdate.activeStrategy, 1000),
+        unresolvedRisks: Array.isArray(parsed.situationUpdate.unresolvedRisks) ? unique(parsed.situationUpdate.unresolvedRisks, 8) : undefined,
+        nextExpectedBoundary: compact(parsed.situationUpdate.nextExpectedBoundary, 700),
+      } : undefined,
       contractUpdate: parsed.contractUpdate && typeof parsed.contractUpdate === 'object'
         ? {
           requiredDeliverables: Array.isArray(parsed.contractUpdate.requiredDeliverables) ? unique(parsed.contractUpdate.requiredDeliverables, 20) : undefined,
@@ -258,6 +315,7 @@ export class UserProxyRuntime {
       actionCounts: {},
       lastGoalGap: contract.goal,
       lastDecisionAt: 0,
+      lastReviewedEventId: 0,
       lastInterventionEventId: 0,
       helperUsed: false,
       adaptivePolicy: {
@@ -266,6 +324,9 @@ export class UserProxyRuntime {
           : (options.context as any)?.autonomy?.intervention === 'high' ? 'close' : 'normal',
         attentionSignals: [],
       },
+      managerDirectives: [],
+      coordinationEvents: [],
+      situationModel: { progress: '', activeStrategy: '', unresolvedRisks: [], nextExpectedBoundary: '' },
       updatedAt: Date.now(),
     };
     this.state = this.restoreCompatibleState(freshState);
@@ -282,6 +343,10 @@ export class UserProxyRuntime {
       timestamp: Date.now(),
     });
     this.schedulePersist();
+    if (this.state.managerDirectives.some(item => item.status === 'active')) {
+      this.reviewScore = CADENCE_SETTINGS[this.state.adaptivePolicy.cadence].scoreThreshold;
+      this.scheduleReview('proxy_manager_directive');
+    }
   }
 
   stop(): void {
@@ -314,8 +379,124 @@ export class UserProxyRuntime {
     this.schedulePersist();
   }
 
+  receiveManagerDirective(input: Omit<ProxyManagerDirective, 'id' | 'createdAt' | 'status'>): { accepted: boolean; status: ProxyManagerDirective['status']; id?: string } {
+    const message = compact(input.message, 2400);
+    if (!message || this.stopped) return { accepted: false, status: 'pending' };
+    const duplicate = this.state.managerDirectives.slice(-8).find(item =>
+      (item.status === 'active' || item.status === 'pending') && messageSimilarity(item.message, message) >= 0.82,
+    );
+    if (duplicate) return { accepted: true, status: duplicate.status, id: duplicate.id };
+
+    const directive: ProxyManagerDirective = {
+      ...input,
+      id: `pm_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      message,
+      createdAt: Date.now(),
+      status: input.timing === 'now' ? 'active' : 'pending',
+      expiresAt: input.expiresAt || (Date.now() + (input.timing === 'after_current' ? 24 * 60 * 60_000 : 30 * 60_000)),
+    };
+    if (directive.supersedesDirectiveId) {
+      const superseded = this.state.managerDirectives.find(item => item.id === directive.supersedesDirectiveId && (item.status === 'active' || item.status === 'pending'));
+      if (superseded) {
+        superseded.status = 'rejected';
+        superseded.disposition = `Superseded by ${directive.id}.`;
+        this.addCoordinationEvent('proxy_rejection', superseded.disposition, superseded.id);
+      }
+    }
+    this.state.managerDirectives.push(directive);
+    this.state.managerDirectives.splice(0, Math.max(0, this.state.managerDirectives.length - 24));
+    this.addCoordinationEvent('manager_request', `Proxy Manager requested ${directive.requestedAction || 'adaptive supervision'}: ${directive.message}`, directive.id);
+
+    const directEmergencySteer = directive.timing === 'now' &&
+      directive.requestedAction === 'interrupt_main' &&
+      (directive.urgency === 'high' || directive.urgency === 'critical') &&
+      (directive.target === 'main' || directive.target === 'both');
+    if (directEmergencySteer) {
+      const accepted = this.options.steer(directive.message, {
+        _autonomyProxy: true,
+        _proxyManager: true,
+        proxyAction: 'interrupt_main',
+        proxyManagerDirectiveId: directive.id,
+        proxyManagerIntent: directive.intent,
+        proxyReason: directive.rationale,
+        proxySeverity: directive.urgency,
+        interruptMain: true,
+      });
+      directive.status = accepted ? 'delivered' : 'rejected';
+      directive.deliveredAt = accepted ? Date.now() : undefined;
+      directive.disposition = accepted
+        ? 'Urgent correction was injected directly at Main\'s next model boundary and mirrored into Proxy supervision.'
+        : 'Main was not available for urgent steering.';
+      this.addCoordinationEvent(accepted ? 'main_interrupted' : 'proxy_rejection', directive.disposition, directive.id);
+    }
+
+    // The user-facing manager never bypasses the runtime Proxy. The supervisor
+    // owns timing and may deliver, defer, or reject the request after comparing
+    // it with live Main evidence. This prevents conversational suggestions from
+    // becoming noisy direct injections.
+    if (directive.target === 'proxy' || directive.target === 'both') {
+      this.state.adaptivePolicy.attentionSignals = unique([
+        directive.timing === 'now' ? directive.message : (directive.activationCondition || directive.message),
+        ...this.state.adaptivePolicy.attentionSignals,
+      ], 10);
+    }
+    if (directive.timing === 'now' && !directEmergencySteer) {
+      this.addCoordinationEvent('proxy_acknowledgement', 'Runtime Proxy accepted the request for contextual review.', directive.id);
+      this.reviewScore = Math.max(this.reviewScore, CADENCE_SETTINGS[this.state.adaptivePolicy.cadence].scoreThreshold);
+      this.scheduleReview('proxy_manager_directive');
+    } else {
+      this.addCoordinationEvent('proxy_deferral', `Runtime Proxy staged this request for ${directive.timing.replace(/_/g, ' ')}${directive.activationCondition ? `: ${directive.activationCondition}` : '.'}`, directive.id);
+    }
+    this.options.onTrace?.({
+      type: 'autonomy_proxy_status',
+      phase: 'manager_directive',
+      text: directive.status === 'pending' ? 'Proxy Manager queued guidance for the completion boundary' : 'Proxy Manager updated the autonomy loop',
+      _autonomyProxy: true,
+      _proxyManager: true,
+      timestamp: Date.now(),
+    });
+    this.schedulePersist();
+    return { accepted: true, status: directive.status, id: directive.id };
+  }
+
+  private addCoordinationEvent(kind: ProxyCoordinationEvent['kind'], message: string, directiveId?: string): void {
+    this.state.coordinationEvents.push({
+      id: `pc_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      kind,
+      directiveId,
+      message: compact(message, 1200),
+      timestamp: Date.now(),
+    });
+    this.state.coordinationEvents = this.state.coordinationEvents.slice(-40);
+  }
+
+  getManagerSnapshot(): Record<string, any> {
+    return {
+      status: this.paused ? 'paused' : this.state.status,
+      objective: this.state.objective,
+      contract: this.state.contract,
+      mainPhase: this.mainPhase,
+      lastGoalGap: this.state.lastGoalGap,
+      situationModel: this.state.situationModel,
+      interventionLevel: this.state.adaptivePolicy.cadence === 'quiet' ? 'minimal' : this.state.adaptivePolicy.cadence === 'close' ? 'high' : 'normal',
+      recentEvents: this.state.events.slice(-18).map(event => ({ id: event.id, kind: event.kind, type: event.type, text: event.text, failed: event.failed, risk: event.risk, timestamp: event.timestamp })),
+      recentInterventions: this.state.interventions.slice(-6),
+      managerDirectives: this.state.managerDirectives.slice(-10),
+      coordinationEvents: this.state.coordinationEvents.slice(-16),
+    };
+  }
+
   observe(trace: any): void {
     if (this.stopped || this.paused || !trace) return;
+
+    const now = Date.now();
+    for (const directive of this.state.managerDirectives) {
+      if ((directive.status === 'active' || directive.status === 'pending') && directive.expiresAt && directive.expiresAt < now) {
+        directive.status = 'expired';
+        directive.disposition = 'Expired before a safe and useful delivery boundary appeared.';
+        this.addCoordinationEvent('proxy_rejection', directive.disposition, directive.id);
+      }
+    }
 
     if (trace.type === 'steering_applied' && this.pendingGuidance) {
       const lastGuidance = this.state.interventions[this.state.interventions.length - 1]?.message || '';
@@ -323,16 +504,23 @@ export class UserProxyRuntime {
         this.pendingGuidance = false;
         this.state.status = 'watching';
       }
+      const directiveId = compact(trace.proxyManagerDirectiveId || trace.metadata?.proxyManagerDirectiveId, 160);
+      if (directiveId) {
+        const directive = this.state.managerDirectives.find(item => item.id === directiveId);
+        if (directive) {
+          directive.status = 'delivered';
+          directive.deliveredAt = Date.now();
+          this.addCoordinationEvent('outcome', 'Main consumed the supervisor guidance at a model boundary.', directive.id);
+        }
+      }
     }
     if (trace._autonomyProxy) return;
 
     const traceType = String(trace.type || '');
-    if (
-      traceType === 'thought_stream' ||
-      (traceType === 'work_note' && (trace.isStreaming === true || trace.isDelta === true)) ||
-      (traceType === 'answer' && (trace.isStreaming === true || trace.isDelta === true))
-    ) {
+    if (traceType === 'answer' && (trace.isStreaming === true || trace.isDelta === true)) {
       this.mainPhase = 'composing';
+    } else if (traceType === 'thought_stream' || traceType === 'work_note') {
+      this.mainPhase = 'working';
     } else if (['tool_call', 'action', 'command'].includes(traceType)) {
       this.mainPhase = 'acting';
     } else if (['error'].includes(traceType)) {
@@ -350,11 +538,22 @@ export class UserProxyRuntime {
     this.state.events.push(event);
     if (this.state.events.length > MAX_EVENTS) this.state.events = this.state.events.slice(-MAX_EVENTS);
     this.updateWorldModel(event);
+    const conditionalDirective = this.state.managerDirectives.find(item =>
+      item.status === 'pending' && item.timing === 'when_relevant' && item.expiresAt && item.expiresAt > Date.now(),
+    );
+    if (conditionalDirective) {
+      // Telemetry is the wake-up signal; the model decides semantic relevance.
+      // No brittle string matcher is allowed to turn the condition into guidance.
+      this.reviewScore = Math.max(this.reviewScore, CADENCE_SETTINGS[this.state.adaptivePolicy.cadence].scoreThreshold);
+    }
     this.reviewScore += this.eventScore(event);
     this.schedulePersist();
 
     if (this.pendingGuidance || Date.now() < this.humanOverrideUntil) return;
-    if (Date.now() - this.startedAt < INITIAL_SILENCE_MS && !event.risk) return;
+    const initialSilence = this.state.adaptivePolicy.cadence === 'quiet'
+      ? INITIAL_SILENCE_MS * 1.5
+      : this.state.adaptivePolicy.cadence === 'close' ? 4_000 : INITIAL_SILENCE_MS;
+    if (Date.now() - this.startedAt < initialSilence && !event.risk) return;
 
     const eventsAfterIntervention = event.id - this.state.lastInterventionEventId;
     if (eventsAfterIntervention < MIN_EVENTS_AFTER_INTERVENTION && !event.risk) return;
@@ -371,9 +570,6 @@ export class UserProxyRuntime {
 
   async reviewCompletion(candidate: string): Promise<ProxyDecision> {
     if (this.stopped || this.paused) return { action: 'approve_completion', reason: 'Proxy inactive.' };
-    if (this.state.interventions.length >= MAX_INTERVENTIONS) {
-      return { action: 'approve_completion', reason: 'Proxy intervention budget exhausted.' };
-    }
     if (this.reviewTimer) {
       clearTimeout(this.reviewTimer);
       this.reviewTimer = null;
@@ -390,6 +586,12 @@ export class UserProxyRuntime {
 
     this.state.status = 'reviewing';
     this.mainPhase = 'completion_review';
+    for (const directive of this.state.managerDirectives) {
+      if (directive.status === 'pending' && directive.timing === 'before_completion') {
+        directive.status = 'active';
+        this.addCoordinationEvent('proxy_acknowledgement', 'Completion boundary reached; runtime Proxy activated the staged concept for semantic review.', directive.id);
+      }
+    }
     let decision: ProxyDecision;
     try {
       decision = await this.runReview('completion_candidate', candidate);
@@ -406,6 +608,24 @@ export class UserProxyRuntime {
     this.applyAdaptiveUpdates(decision);
 
     if (decision.action === 'approve_completion' || decision.action === 'observe' || decision.optionalImprovement) {
+      const followUp = this.state.managerDirectives.find(item => item.status === 'pending' && item.timing === 'after_current');
+      if (followUp) {
+        followUp.status = 'active';
+        const followUpDecision: ProxyDecision = {
+          action: 'steer',
+          message: followUp.message,
+          reason: followUp.rationale || 'The user explicitly scheduled this instruction after the current task was complete.',
+          remainingGoalGap: followUp.message,
+          confidence: 1,
+          severity: 'high',
+          evidenceEventIds: [],
+          completionBoundaryPassed: true,
+          managerDirectiveId: followUp.id,
+        };
+        this.applyDecision(followUpDecision, true);
+        this.schedulePersist();
+        return followUpDecision;
+      }
       this.state.status = 'complete';
       this.options.onTrace?.({
         type: 'autonomy_proxy_status',
@@ -429,8 +649,42 @@ export class UserProxyRuntime {
   private restoreCompatibleState(freshState: ProxyState): ProxyState {
     try {
       const saved = fs.readJsonSync(statePathFor(freshState.projectId));
-      if (saved?.version !== 2 || saved?.objectiveSignature !== freshState.objectiveSignature) return freshState;
-      if (saved?.status === 'complete') return freshState;
+      if (saved?.version !== 2) return freshState;
+      if (saved?.objectiveSignature !== freshState.objectiveSignature || saved?.status === 'complete') {
+        const carried = (Array.isArray(saved.managerDirectives) ? saved.managerDirectives : [])
+          .filter((item: ProxyManagerDirective) =>
+            (item.status === 'active' || item.status === 'pending') &&
+            (item.scope === 'next_task' || item.scope === 'persistent_mandate') &&
+            (!item.expiresAt || item.expiresAt > Date.now()),
+          )
+          .map((item: ProxyManagerDirective) => ({
+            ...item,
+            status: 'active' as const,
+            timing: item.scope === 'next_task' ? 'now' as const : 'when_relevant' as const,
+            disposition: item.scope === 'next_task'
+              ? 'Activated at the start of the requested next task.'
+              : 'Persistent supervisory mandate carried into the new task.',
+          }));
+        if (carried.length === 0) return freshState;
+        return {
+          ...freshState,
+          managerDirectives: carried.slice(-12),
+          coordinationEvents: [
+            ...(Array.isArray(saved.coordinationEvents) ? saved.coordinationEvents.slice(-8) : []),
+            ...carried.map((item: ProxyManagerDirective) => ({
+              id: `pc_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+              kind: 'proxy_acknowledgement' as const,
+              directiveId: item.id,
+              message: item.disposition || 'Supervisory mandate carried into the new task.',
+              timestamp: Date.now(),
+            })),
+          ].slice(-40),
+          adaptivePolicy: {
+            ...freshState.adaptivePolicy,
+            attentionSignals: unique(carried.map((item: ProxyManagerDirective) => item.activationCondition || item.message), 10),
+          },
+        };
+      }
       return {
         ...freshState,
         events: Array.isArray(saved.events) ? saved.events.slice(-MAX_EVENTS) : [],
@@ -439,15 +693,22 @@ export class UserProxyRuntime {
         actionCounts: saved.actionCounts && typeof saved.actionCounts === 'object' ? saved.actionCounts : {},
         lastGoalGap: compact(saved.lastGoalGap || freshState.lastGoalGap, 1600),
         lastDecisionAt: Number(saved.lastDecisionAt || 0),
+        lastReviewedEventId: Number(saved.lastReviewedEventId || 0),
         lastInterventionEventId: Number(saved.lastInterventionEventId || 0),
         helperUsed: saved.helperUsed === true,
         adaptivePolicy: {
-          cadence: ['quiet', 'normal', 'close'].includes(saved?.adaptivePolicy?.cadence)
-            ? saved.adaptivePolicy.cadence
-            : 'normal',
+          cadence: freshState.adaptivePolicy.cadence,
           attentionSignals: Array.isArray(saved?.adaptivePolicy?.attentionSignals)
             ? unique(saved.adaptivePolicy.attentionSignals, 10)
             : [],
+        },
+        managerDirectives: Array.isArray(saved.managerDirectives) ? saved.managerDirectives.slice(-24) : [],
+        coordinationEvents: Array.isArray(saved.coordinationEvents) ? saved.coordinationEvents.slice(-40) : [],
+        situationModel: {
+          progress: compact(saved?.situationModel?.progress, 1400),
+          activeStrategy: compact(saved?.situationModel?.activeStrategy, 1000),
+          unresolvedRisks: Array.isArray(saved?.situationModel?.unresolvedRisks) ? unique(saved.situationModel.unresolvedRisks, 8) : [],
+          nextExpectedBoundary: compact(saved?.situationModel?.nextExpectedBoundary, 700),
         },
         status: saved.status || 'watching',
       };
@@ -566,18 +827,26 @@ export class UserProxyRuntime {
   }
 
   private scheduleReview(trigger: string): void {
-    if (this.reviewPromise || this.reviewTimer || this.stopped || this.pendingGuidance) return;
-    if (this.state.interventions.length >= MAX_INTERVENTIONS) return;
+    if (this.reviewPromise || this.reviewTimer || this.stopped || this.pendingGuidance || this.mainPhase === 'composing' || this.mainPhase === 'completion_review') return;
     const elapsed = Date.now() - this.state.lastDecisionAt;
-    const delay = Math.max(0, CADENCE_SETTINGS[this.state.adaptivePolicy.cadence].minIntervalMs - elapsed);
+    const urgent = trigger !== 'material_execution_checkpoint';
+    // Do not arm a delayed background review that can wake while Main is
+    // silently composing a response. Non-urgent reviews wait for the next
+    // observable execution boundary once cadence permits; urgent evidence is
+    // reviewed immediately.
+    if (!urgent && elapsed < CADENCE_SETTINGS[this.state.adaptivePolicy.cadence].minIntervalMs) return;
+    const delay = 0;
     this.reviewTimer = setTimeout(() => {
       this.reviewTimer = null;
-      if (this.stopped || this.reviewPromise || this.pendingGuidance || Date.now() < this.humanOverrideUntil) return;
+      if (this.stopped || this.reviewPromise || this.pendingGuidance || this.mainPhase === 'composing' || this.mainPhase === 'completion_review' || (trigger !== 'proxy_manager_directive' && Date.now() < this.humanOverrideUntil)) return;
       this.reviewPromise = this.runReview(trigger)
         .then(decision => {
           this.applyAdaptiveUpdates(decision);
           if (this.isGroundedDecision(decision, false)) this.applyDecision(decision, false);
-          else this.state.status = 'watching';
+          else {
+            this.state.status = 'watching';
+            if (trigger === 'proxy_manager_directive') this.settleObservedManagerDirective(decision);
+          }
           return decision;
         })
         .catch(() => {
@@ -597,7 +866,9 @@ export class UserProxyRuntime {
     this.state.lastDecisionAt = Date.now();
     this.state.status = 'reviewing';
 
-    const recent = this.state.events.slice(-24).map(event =>
+    const evidenceWindow = this.state.events.slice(-24);
+    const reviewThroughEventId = evidenceWindow.reduce((highest, event) => Math.max(highest, event.id), this.state.lastReviewedEventId);
+    const recent = evidenceWindow.map(event =>
       `#${event.id} [${event.kind}/${event.type}${event.tool ? `/${event.tool}` : ''}${event.failed ? '/FAILED' : ''}${event.risk ? '/RISK' : ''}${event.repeated ? '/REPEATED' : ''}] ${event.text}`,
     ).join('\n') || '(No material evidence yet.)';
     const prior = this.state.interventions.slice(-5).map(item =>
@@ -614,6 +885,10 @@ export class UserProxyRuntime {
       'Use intelligent counterfactual judgment, not fixed patterns: predict what a capable Main will naturally do next. Before speaking, compare the expected benefit of intervention with the cost of interrupting flow. If Main is likely to handle the issue correctly without you, observe—even if you can imagine an improvement.',
       'Questions are expensive. Infer ordinary implementation details, use available evidence, and trust Main on routine choices. Ask for real-user involvement only when the information or authority is genuinely human-exclusive and the outcome materially depends on it.',
       'Intervene only for: a concrete safety/constraint violation; repeated or blocked execution Main is not correcting; a materially wrong strategy; an unresolved decision requiring the real user; or a required completion gap.',
+      'You are Main\'s runtime supervisor, not merely an adviser. You may steer Main at a model boundary, redirect its strategy, or interrupt it. Use stop_main only for a critical active safety/authority violation or an explicit user-authorized stop request carried by an active Proxy Manager directive. Never stop merely because progress is imperfect, slow, or uncertain.',
+      'Proxy Manager directives are user-facing requests to you, not commands injected straight into Main. Semantically decide whether to absorb them into your mandate, deliver now, defer to a natural boundary, or reject them as redundant/harmful. When acting on one, return its exact managerDirectiveId. Prefer one consolidated high-value instruction over repeated incremental coaching.',
+      'A pending when_relevant directive is dormant supervisory memory. Compare its activationCondition with the evolving situation, but do not mention or deliver it until it has real present value. A before_completion directive activates only during completion review. An after_current directive remains isolated from the current objective. This lets one compressed user concept guide later work without repeated side-agent model calls.',
+      'The coordination history is two-way memory. Use it to avoid duplicate guidance and to tell whether Main consumed earlier supervision. Silence remains correct when the expected value of intervention is negative.',
       'Do not intervene for optional polish, style preference, speculative improvement, ordinary planning, one recoverable tool failure, or activity that Main is already correcting. Silence is the normal action.',
       'The task contract began as a conservative machine-extracted seed, not a fixed truth. Semantically refine it only from the current goal and relevant prior-user context. Do not turn optional ideas into required deliverables.',
       'Omit contractUpdate unless the seed is materially wrong. When correcting it, return the complete corrected requiredDeliverables and completionConditions. Explicit forbiddenActions and safetyConstraints may be strengthened but never weakened.',
@@ -624,17 +899,21 @@ export class UserProxyRuntime {
       `TASK CONTRACT:\n${JSON.stringify(this.state.contract, null, 2)}`,
       'The priorUserContext field is reference context only. Treat it as part of the task only when the current goal explicitly continues or refers to it.',
       `CURRENT GOAL GAP (may be stale; revise from evidence):\n${this.state.lastGoalGap || '(unknown)'}`,
+      `COMPACT SITUATION MODEL FROM PRIOR REVIEWS:\n${JSON.stringify(this.state.situationModel, null, 2)}`,
       `DELIVERABLE EVIDENCE:\n${deliverables}`,
       `REVIEW TRIGGER: ${trigger}`,
       `CURRENT MAIN PHASE: ${this.mainPhase}. When this is composing, all visible answer text is partial and Main may already be producing exactly what is needed.`,
+      `USER-SELECTED INTERVENTION POSTURE: ${this.state.adaptivePolicy.cadence === 'quiet' ? 'MINIMAL — remain silent unless evidence shows a serious safety, constraint, blockage, or required-completion failure' : this.state.adaptivePolicy.cadence === 'close' ? 'HIGH — inspect material uncertainty and deviations earlier, while still requiring evidence and avoiding optional-polish interruptions' : 'NORMAL — balance flow protection with timely intervention on consequential gaps'}. This posture changes initiative, never the truthfulness or safety standard.`,
       `RECENT MAIN EVIDENCE:\n${recent}`,
       `PRIOR PROXY GUIDANCE (do not repeat or paraphrase):\n${prior}`,
+      `USER-APPROVED PROXY MANAGER DIRECTIVES:\n${this.state.managerDirectives.filter(item => item.status === 'active' || item.status === 'pending').slice(-10).map(item => `- [id=${item.id}; status=${item.status}; timing=${item.timing}; target=${item.target}; intent=${item.intent}; requested=${item.requestedAction || 'adaptive'}; urgency=${item.urgency || 'normal'}] ${item.message}`).join('\n') || '(none)'}`,
+      `PROXY COORDINATION HISTORY:\n${this.state.coordinationEvents.slice(-12).map(item => `- [${item.kind}${item.directiveId ? `/${item.directiveId}` : ''}] ${item.message}`).join('\n') || '(none)'}`,
       completionCandidate ? `MAIN'S PROPOSED FINAL ANSWER:\n${compact(completionCandidate, 5000)}` : '',
       completionCandidate
         ? 'Approve unless a required, consequential gap is supported by specific event evidence or explicitly admitted in the final answer. Optional improvements must never block completion.'
         : 'Choose observe unless intervention is necessary now. If visibility is insufficient, record visibilityGap and observe; do not nag Main for information it is likely still gathering.',
       'Return exactly one JSON object:',
-      '{"action":"observe|steer|redirect|challenge|request_real_user|approve_completion","message":"one short natural user-like instruction, blank for observe/approve","reason":"private rationale including the counterfactual necessity test","remainingGoalGap":"concrete remaining gap or blank","confidence":0.0,"severity":"low|medium|high|critical","evidenceEventIds":[1],"visibilityGap":"missing telemetry, if any","optionalImprovement":false,"reviewCadence":"quiet|normal|close","attentionSignals":["task-specific signal"],"contractUpdate":null}',
+      '{"action":"observe|steer|redirect|challenge|request_real_user|interrupt_main|stop_main|approve_completion","message":"one short natural user-like instruction, blank for observe/approve","reason":"private rationale including the counterfactual necessity test","remainingGoalGap":"concrete remaining gap or blank","confidence":0.0,"severity":"low|medium|high|critical","evidenceEventIds":[1],"managerDirectiveId":"matching active directive id or blank","managerNotice":"only a consequential concise update worth surfacing to Proxy Manager, otherwise blank","visibilityGap":"missing telemetry, if any","optionalImprovement":false,"reviewCadence":"quiet|normal|close","attentionSignals":["task-specific signal"],"situationUpdate":{"progress":"durable compact progress summary","activeStrategy":"Main current strategy","unresolvedRisks":[],"nextExpectedBoundary":"next meaningful checkpoint"},"contractUpdate":null}',
     ].filter(Boolean).join('\n\n');
 
     const { createIsolatedClient } = await import('../Agent');
@@ -655,19 +934,42 @@ export class UserProxyRuntime {
       selectedThinkingLevel: 'low',
       runtimeSettings: this.options.runtimeSettings,
     };
-    const response = await client.executeMessageLoop(proxyContext, prompt, [], undefined, []);
+    let response: any;
+    try {
+      response = await client.executeMessageLoop(proxyContext, prompt, [], undefined, []);
+    } catch (error) {
+      // A user-selected Proxy model is a preference, not a single point of
+      // failure. Quietly fall back to the configured runtime priority so Main
+      // is never disturbed just because the selected Proxy model is unavailable.
+      const selectedOverrides = JSON.stringify(this.options.runtimeSettings?.modelOverrides || {});
+      const fallbackOverrides = JSON.stringify(this.options.fallbackRuntimeSettings?.modelOverrides || {});
+      if (!this.options.fallbackApiKey || !this.options.fallbackMode || selectedOverrides === fallbackOverrides) throw error;
+      const fallbackClient = createIsolatedClient(this.options.fallbackApiKey, this.options.fallbackMode, this.options.fallbackRuntimeSettings || null);
+      response = await fallbackClient.executeMessageLoop({
+        ...proxyContext,
+        selectedModelMode: this.options.fallbackMode,
+        runtimeSettings: this.options.fallbackRuntimeSettings || null,
+      }, prompt, [], undefined, []);
+    }
     this.state.helperUsed = Boolean(proxyContext._userProxyHelperUsed);
-    return extractDecision(response.text);
+    const decision = extractDecision(response.text);
+    this.state.lastReviewedEventId = reviewThroughEventId;
+    if (decision.managerNotice) this.addCoordinationEvent('supervisor_notice', decision.managerNotice, decision.managerDirectiveId);
+    return decision;
   }
 
   private isGroundedDecision(decision: ProxyDecision, completionReview: boolean, completionCandidate = ''): boolean {
     if (decision.action === 'observe' || decision.action === 'approve_completion') return false;
     if (decision.optionalImprovement) return false;
     const confidence = decision.confidence ?? 0;
-    if (confidence < (completionReview ? 0.74 : 0.7)) return false;
+    const postureOffset = this.state.adaptivePolicy.cadence === 'quiet' ? 0.1 : this.state.adaptivePolicy.cadence === 'close' ? -0.05 : 0;
+    if (confidence < Math.max(0.62, (completionReview ? 0.74 : 0.7) + postureOffset)) return false;
     if (!compact(decision.message, 1600)) return false;
     const knownIds = new Set(this.state.events.map(event => event.id));
     const evidenceIds = decision.evidenceEventIds || [];
+    const managerDirective = decision.managerDirectiveId
+      ? this.state.managerDirectives.find(item => item.id === decision.managerDirectiveId && (item.status === 'active' || item.status === 'pending'))
+      : undefined;
     const hasEvidence = evidenceIds.some(id => {
       if (!knownIds.has(id)) return false;
       const event = this.state.events.find(item => item.id === id);
@@ -675,14 +977,42 @@ export class UserProxyRuntime {
     });
     const candidateAdmitsGap = completionReview &&
       /\b(not completed|not created|not finished|not verified|could not|couldn't|unable to|failed to|still missing|remains incomplete)\b/i.test(completionCandidate);
-    if (!hasEvidence && !candidateAdmitsGap && decision.action !== 'request_real_user') return false;
+    const pendingCanActivate = managerDirective?.status !== 'pending' ||
+      managerDirective.timing === 'when_relevant' ||
+      (completionReview && managerDirective.timing === 'before_completion');
+    if (managerDirective?.status === 'pending' && !pendingCanActivate) return false;
+    const userAuthorizedSupervisorAction = Boolean(managerDirective && managerDirective.target !== 'proxy' && pendingCanActivate);
+    if (!hasEvidence && !candidateAdmitsGap && !userAuthorizedSupervisorAction && decision.action !== 'request_real_user') return false;
+    if (decision.action === 'stop_main') {
+      const explicitStop = managerDirective?.requestedAction === 'stop_main' && managerDirective.urgency === 'critical';
+      if (!explicitStop && !((decision.confidence ?? 0) >= 0.92 && decision.severity === 'critical' && hasEvidence)) return false;
+    }
     return true;
+  }
+
+  private settleObservedManagerDirective(decision: ProxyDecision): void {
+    const directive = decision.managerDirectiveId
+      ? this.state.managerDirectives.find(item => item.id === decision.managerDirectiveId)
+      : [...this.state.managerDirectives].reverse().find(item => item.status === 'active');
+    if (!directive) return;
+    directive.status = 'delivered';
+    directive.deliveredAt = Date.now();
+    directive.disposition = decision.reason || 'Absorbed into the runtime Proxy mandate without interrupting Main.';
+    this.addCoordinationEvent('proxy_delivery', directive.disposition, directive.id);
   }
 
   private applyAdaptiveUpdates(decision: ProxyDecision): void {
     if (decision.reviewCadence) this.state.adaptivePolicy.cadence = decision.reviewCadence;
     if (decision.attentionSignals?.length) {
       this.state.adaptivePolicy.attentionSignals = unique(decision.attentionSignals, 10);
+    }
+    if (decision.situationUpdate) {
+      this.state.situationModel = {
+        progress: decision.situationUpdate.progress || this.state.situationModel.progress,
+        activeStrategy: decision.situationUpdate.activeStrategy || this.state.situationModel.activeStrategy,
+        unresolvedRisks: decision.situationUpdate.unresolvedRisks || this.state.situationModel.unresolvedRisks,
+        nextExpectedBoundary: decision.situationUpdate.nextExpectedBoundary || this.state.situationModel.nextExpectedBoundary,
+      };
     }
     const update = decision.contractUpdate;
     if (!update) return;
@@ -733,6 +1063,31 @@ export class UserProxyRuntime {
       timestamp: Date.now(),
     });
     this.state.lastInterventionEventId = this.eventCounter;
+    const directive = decision.managerDirectiveId
+      ? this.state.managerDirectives.find(item => item.id === decision.managerDirectiveId)
+      : undefined;
+    if (directive) {
+      directive.status = 'active';
+      directive.disposition = decision.reason || `Runtime Proxy chose ${decision.action}.`;
+    }
+    if (decision.action === 'stop_main') {
+      const stopped = this.options.stopMain(message, {
+        _autonomyProxy: true,
+        _proxyManager: Boolean(directive),
+        proxyManagerDirectiveId: directive?.id,
+        proxyReason: decision.reason,
+        proxySeverity: decision.severity,
+      });
+      if (directive) {
+        directive.status = stopped ? 'delivered' : 'rejected';
+        directive.deliveredAt = stopped ? Date.now() : undefined;
+      }
+      this.pendingGuidance = false;
+      this.state.status = stopped ? 'stopped' : 'watching';
+      this.addCoordinationEvent(stopped ? 'main_stopped' : 'proxy_rejection', stopped ? message : 'Main was already inactive; stop request was not applied.', directive?.id);
+      this.schedulePersist();
+      return;
+    }
     this.pendingGuidance = true;
     this.state.status = decision.action === 'request_real_user' ? 'needs_user' : 'waiting_for_main';
     const accepted = this.options.steer(message, {
@@ -741,8 +1096,16 @@ export class UserProxyRuntime {
       proxyReason: decision.reason,
       proxySeverity: decision.severity,
       proxyEvidenceEventIds: evidenceEventIds,
+      proxyManagerDirectiveId: directive?.id,
+      proxyManagerIntent: directive?.intent,
+      interruptMain: decision.action === 'interrupt_main',
       completionReview,
     });
+    if (accepted && directive) {
+      directive.status = 'delivered';
+      directive.deliveredAt = Date.now();
+      this.addCoordinationEvent(decision.action === 'interrupt_main' ? 'main_interrupted' : 'proxy_delivery', message, directive.id);
+    }
     if (!accepted) {
       this.pendingGuidance = false;
       this.state.status = 'watching';
@@ -820,4 +1183,38 @@ export function setUserProxyIntervention(projectId: string, level: ProxyInterven
   if (!runtime) return false;
   runtime.setIntervention(level);
   return true;
+}
+
+export function getUserProxyManagerSnapshot(projectId: string): Record<string, any> | null {
+  const live = runtimes.get(projectId)?.getManagerSnapshot();
+  if (live) return live;
+  try {
+    const saved = fs.readJsonSync(statePathFor(projectId));
+    if (!saved || saved.version !== 2) return null;
+    return {
+      status: saved.status || 'stopped',
+      objective: compact(saved.objective, 6000),
+      contract: saved.contract || null,
+      mainPhase: 'complete',
+      lastGoalGap: compact(saved.lastGoalGap, 1800),
+      situationModel: saved.situationModel || null,
+      interventionLevel: saved?.adaptivePolicy?.cadence === 'quiet' ? 'minimal' : saved?.adaptivePolicy?.cadence === 'close' ? 'high' : 'normal',
+      recentEvents: Array.isArray(saved.events) ? saved.events.slice(-18) : [],
+      recentInterventions: Array.isArray(saved.interventions) ? saved.interventions.slice(-6) : [],
+      managerDirectives: Array.isArray(saved.managerDirectives) ? saved.managerDirectives.slice(-10) : [],
+      coordinationEvents: Array.isArray(saved.coordinationEvents) ? saved.coordinationEvents.slice(-16) : [],
+      persisted: true,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function deliverUserProxyManagerDirective(
+  projectId: string,
+  directive: Omit<ProxyManagerDirective, 'id' | 'createdAt' | 'status'>,
+): { accepted: boolean; status: ProxyManagerDirective['status']; id?: string } {
+  const runtime = runtimes.get(projectId);
+  if (!runtime) return { accepted: false, status: 'pending' };
+  return runtime.receiveManagerDirective(directive);
 }

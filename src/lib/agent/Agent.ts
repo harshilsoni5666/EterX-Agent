@@ -31,7 +31,7 @@ import {
 } from './next_gen';
 import {
   adaptiveLearning, intentClassifier, sessionPersistence,
-  ConversationCompressor, initializeAdaptiveIntelligence, outputOptimizer,
+  ConversationCompressor, initializeAdaptiveIntelligence,
   neuralPlasticity
 } from './adaptive';
 import { globalSessionManager } from './session';
@@ -1319,6 +1319,36 @@ export class GeminiAgentClient {
     }).join('\n\n');
   }
 
+  /**
+   * Preserve a fully generated completion candidate when guidance causes the
+   * loop to continue. The UI merges later answers into this same turn, so the
+   * user sees the completed response immediately instead of watching it vanish
+   * during Proxy review or late steering.
+   */
+  private emitAutonomyCompletionCheckpoint(
+    text: string,
+    trace: any[],
+    onTrace?: (t: any) => void,
+    boundaryFollowUp = false,
+  ): void {
+    const cleanText = String(text || '').trim();
+    if (!cleanText) return;
+    const previous = [...trace].reverse().find(item => item?.type === 'answer');
+    if (previous?._autonomyCheckpoint && previous.text === cleanText) return;
+    const event = {
+      type: 'answer',
+      text: cleanText,
+      isStreaming: false,
+      _autonomyCheckpoint: true,
+      _autonomyBoundaryFollowUp: boundaryFollowUp,
+      timestamp: Date.now(),
+    };
+    const existingIdx = trace.findIndex(item => item?.type === 'answer');
+    if (existingIdx >= 0) trace[existingIdx] = event;
+    else trace.push(event);
+    onTrace?.(event);
+  }
+
   private getActivePlanCompletionContext(chatId?: string | null): string {
     try {
       const { getPlanEngine } = require('./plan-execution-engine');
@@ -1503,10 +1533,11 @@ export class GeminiAgentClient {
 
     // ── Execution tracking ──
     const isTelegram = (context as any).source === 'telegram' || !!(context as any).forceFastMode;
-    const hydratedLoop = sessionPersistenceDisabled ? null : globalSessionManager.hydrateForChat(context.projectId);
-    const callHistory = hydratedLoop?.callHistory || new Set<string>();
-    const toolCallCounts = hydratedLoop?.toolCallCounts || new Map<string, number>();
-    const taskDecomposerUsed = Boolean(hydratedLoop?.taskDecomposerUsed);
+    // Conversation continuity is supplied through history, memory, and plans.
+    // Tool dedupe and evidence counters belong to this user turn.
+    const callHistory = new Set<string>();
+    const toolCallCounts = new Map<string, number>();
+    const taskDecomposerUsed = false;
     const evidenceLedger = new RuntimeEvidenceLedger(String(context.projectId || 'agent'));
     const executionGovernor = new ExecutionGovernor({
       maxToolCalls: isTelegram ? 40 : 120,
@@ -1993,8 +2024,6 @@ export class GeminiAgentClient {
           let accumulatedReasoning = '';
           const thoughtStartTime = Date.now();
           const thoughtId = `thought_${ interactions }`;
-          const noteId = `mistral_work_stream_${ interactions }`;
-          let streamStarted = false;
           const toolCallsAccumulated = new Map<number, any>();
 
           const stream: any = await client.chat.completions.create({
@@ -2024,15 +2053,6 @@ export class GeminiAgentClient {
               }
               if (delta.content) {
                 accumulatedContent += delta.content;
-                if (this.activeProvider === 'openai') {
-                  onTrace?.({
-                    type: 'answer',
-                    text: accumulatedContent,
-                    isDelta: false,
-                    isStreaming: true,
-                  });
-                  streamStarted = true;
-                }
               }
               if (Array.isArray(delta.tool_calls)) {
                 for (const tc of delta.tool_calls) {
@@ -2053,11 +2073,11 @@ export class GeminiAgentClient {
             }
           }
 
-          if (streamStarted && onTrace) {
-            onTrace({ type: 'work_note_cancel', noteId });
-          }
-
           const finalToolCalls = Array.from(toolCallsAccumulated.values());
+          // Response text has different semantics depending on the response
+          // boundary: alongside tool calls it is a progress note; without tool
+          // calls it is the answer. Do not expose it as an answer until this is
+          // known, especially for fast/low-reasoning models.
           response = {
             choices: [
               {
@@ -2130,9 +2150,11 @@ export class GeminiAgentClient {
         const finalText = this.finalizeEvidenceBoundAnswer(contentText || lastAnswer || 'Done.', evidenceLedger, toolCallCounts, context.projectId);
         const proxyDecision = await reviewAutonomousCompletion(context.projectId, finalText);
         if (proxyDecision.action !== 'approve_completion') {
+          this.emitAutonomyCompletionCheckpoint(finalText, trace, onTrace, proxyDecision.completionBoundaryPassed === true);
           messages.push({ role: 'assistant', content: contentText || lastAnswer || 'I believe the task is complete.' });
           continue;
         }
+        this.emitAutonomyCompletionCheckpoint(finalText, trace, onTrace);
         const lateSteering = this.drainLiveSteering(context.projectId, onTrace);
         if (lateSteering.length > 0) {
           messages.push({ role: 'assistant', content: contentText || lastAnswer || finalText });
@@ -2153,7 +2175,7 @@ export class GeminiAgentClient {
         lastAnswer = contentText;
         const noteText = this.formatVisibleWorkNote(contentText);
         if (noteText) {
-          const noteEvt = { type: 'work_note', text: noteText, isDelta: false, isStreaming: false, noteId: `mistral_work_${ interactions }` };
+          const noteEvt = { type: 'work_note', text: noteText, isDelta: false, isStreaming: false, noteId: `mistral_work_stream_${ interactions }` };
           trace.push(noteEvt);
           onTrace?.(noteEvt);
         }
@@ -2485,8 +2507,6 @@ export class GeminiAgentClient {
           let accumulatedThought = '';
           const thoughtStartTime = Date.now();
           const thoughtId = `thought_${ interactions }`;
-          const noteId = `anthropic_work_stream_${ interactions }`;
-          let streamStarted = false;
 
           const runner = client.messages.stream(params);
 
@@ -2497,7 +2517,6 @@ export class GeminiAgentClient {
             if (event.type === 'content_block_delta') {
               const delta = event.delta as any;
               if (delta.type === 'thinking_delta' && delta.thinking) {
-                streamStarted = true;
                 accumulatedThought += delta.thinking;
                 if (onTrace) {
                   onTrace({
@@ -2510,15 +2529,7 @@ export class GeminiAgentClient {
                   });
                 }
               } else if (delta.type === 'text_delta' && delta.text) {
-                streamStarted = true;
                 accumulatedText += delta.text;
-                onTrace?.({
-                  type: 'answer',
-                  text: accumulatedText,
-                  isDelta: true,
-                  isStreaming: true,
-                  noteId,
-                });
               }
             } else if ((event as any).type === 'error') {
               const streamError = (event as any).error;
@@ -2527,10 +2538,6 @@ export class GeminiAgentClient {
           }
 
           response = await runner.finalMessage();
-
-          if (streamStarted && onTrace) {
-            onTrace({ type: 'work_note_cancel', noteId });
-          }
 
           if (response && response.stop_reason === 'refusal') {
             const explanation = (response as any).stop_details?.explanation || 'No explanation provided.';
@@ -2619,9 +2626,11 @@ export class GeminiAgentClient {
         const finalText = this.finalizeEvidenceBoundAnswer(contentText || lastAnswer || 'Done.', evidenceLedger, toolCallCounts, context.projectId);
         const proxyDecision = await reviewAutonomousCompletion(context.projectId, finalText);
         if (proxyDecision.action !== 'approve_completion') {
+          this.emitAutonomyCompletionCheckpoint(finalText, trace, onTrace, proxyDecision.completionBoundaryPassed === true);
           messages.push({ role: 'assistant', content: contentBlocks });
           continue;
         }
+        this.emitAutonomyCompletionCheckpoint(finalText, trace, onTrace);
         const lateSteering = this.drainLiveSteering(context.projectId, onTrace);
         if (lateSteering.length > 0) {
           messages.push({ role: 'assistant', content: contentBlocks });
@@ -2642,7 +2651,7 @@ export class GeminiAgentClient {
         lastAnswer = contentText;
         const noteText = this.formatVisibleWorkNote(contentText);
         if (noteText) {
-          const noteEvt = { type: 'work_note', text: noteText, isDelta: false, isStreaming: false, noteId: `anthropic_work_${ interactions }` };
+          const noteEvt = { type: 'work_note', text: noteText, isDelta: false, isStreaming: false, noteId: `anthropic_work_stream_${ interactions }` };
           trace.push(noteEvt);
           onTrace?.(noteEvt);
         }
@@ -3662,17 +3671,11 @@ CORE IDENTITY
 - Work like a principal engineer on a deadline: focused, efficient, zero fluff.
 
 WORK NOTES
-Visible work notes are concise status updates - what you found, what you are doing, what you will verify.
-- 1-4 sentences max. Match the note to the immediate tool call.
-- Use natural first person: "I found...", "Checking...", "That failed, so I am..."
-- Never promise outcomes before tools prove them. Report the current step, not the whole victory.
-- Never write synthetic AI language: "neural", "orchestrating", "calibrating", "synthesizing deep context".
-- Examples:
-"The branch push succeeded and now tracks origin/ui-updates-and-agent. I’m doing a normal non-force push of the same commit to origin/main next, as requested."
-"I’ll inspect the current branch, remotes, and full status first. Since you asked for all uncommitted changes, I’ll stage the whole working tree after confirming where it will be pushed."
-"Everything is staged. I’m committing the full staged tree now, then I’ll push the current branch. After that I’ll attempt a normal non-force push of this same commit to main because you mentioned main."
-
-
+Work notes are ordinary user-facing communication during execution, generated from the current request, observed evidence, and the next action.
+- Communicate before the first meaningful action group in each user turn, then again when the work meaningfully changes direction, reaches a milestone, fails, recovers, or moves into verification.
+- Choose the wording naturally for the live situation. First person is welcome when it helps communicate ownership or intent, but no perspective, opening, sentence shape, or house style is mandatory.
+- Keep private reasoning private. Share only the decisions, observations, actions, and evidence that help the user follow the work.
+- Never claim an outcome before the relevant tool evidence exists.
 TRUTHFUL EXECUTION
 - Intellectual honesty over pleasing the user. Never invent data, paths, calculations, or successful matches.
 - Verify inputs exist before claiming facts. If a metric cannot be computed from available data, say what is missing.
@@ -4560,15 +4563,13 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
         }
       } catch { }
     }
-    // Keep persistent state (skills, files) but reset per-message dedup state
-    // so the agent can re-use tools like web_search across different messages.
-    // EXCEPTION: If we have survivor state (resuming after 429), restore it instead.
-    const callHistory = survivorState?.callHistory ?? (sessionHydrated && sessionState?.callHistory ? new Set<string>(sessionState.callHistory) : new Set<string>());
-    // BUG FIX: sessionState.toolCallCounts is already a Map from hydrateForChat().
-    // Object.entries() on a Map returns nothing — use Map constructor directly.
-    const toolCallCounts = survivorState?.toolCallCounts ?? (sessionHydrated && sessionState?.toolCallCounts ? new Map<string, number>(sessionState.toolCallCounts) : new Map<string, number>());
+    // Conversation and plan continuity remain available separately, while a
+    // new user turn starts with clean dedupe, evidence, and tool counters.
+    // Internal retry state is restored through survivorState.
+    const callHistory = survivorState?.callHistory ?? new Set<string>();
+    const toolCallCounts = survivorState?.toolCallCounts ?? new Map<string, number>();
     const loadedSkills = survivorState?.loadedSkills ?? (sessionHydrated && sessionState?.loadedSkills ? new Set<string>(sessionState.loadedSkills) : new Set<string>());
-    const writtenFiles = survivorState?.writtenFiles ?? (sessionHydrated && sessionState?.writtenFiles ? new Set<string>(sessionState.writtenFiles) : new Set<string>());
+    const writtenFiles = survivorState?.writtenFiles ?? new Set<string>();
     const evidenceLedger = new RuntimeEvidenceLedger(String(context.projectId || chatId || 'agent'));
     const executionGovernor = new ExecutionGovernor();
     let interactions = survivorState?.interactions ?? 0;
@@ -4690,16 +4691,6 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
     if (intentHint) intelligenceSignals.push(`[Intent: ${ intent.primaryIntent } | Scope: ${ intent.scope } | Urgency: ${ intent.urgency }]`);
     if (routingHint) intelligenceSignals.push(`[Route: ${ queryAnalysis.strategy } | ~${ queryAnalysis.estimatedSteps } steps]`);
     if (knowledgeContext) intelligenceSignals.push(knowledgeContext);
-
-    // === OUTPUT OPTIMIZATION: Get format hints ===
-    const formatHints = lightweightTelegramMode
-      ? { shouldHaveCode: false, shouldHaveTable: false, suggestedStructure: '' }
-      : outputOptimizer.suggestFormat(message, intent.primaryIntent.split('_')[0]);
-    let formatStr = '';
-    if (formatHints.shouldHaveCode) formatStr += 'Include code blocks. ';
-    if (formatHints.shouldHaveTable) formatStr += 'Use tables for data/comparison. ';
-    if (formatHints.suggestedStructure) formatStr += `\nSuggested Structure:\n${ formatHints.suggestedStructure }`;
-    if (formatStr) intelligenceSignals.push(`[FORMAT HINT]: ${ formatStr }`);
 
     // Build the contents array â€” this is our conversation history
     // CRITICAL: If resuming from survivor state, reuse the FULL context (don't rebuild from scratch!)
@@ -5075,39 +5066,13 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
         .map(entry => entry.tool)
         .filter(Boolean)
         .join(', ');
-      const recentContext = recentTools ? ` Recent completed tool phase: ${ recentTools }. Use this context to decide whether a new external note is genuinely useful.` : '';
+      const recentContext = recentTools ? ` Recent action evidence came from: ${ recentTools }.` : '';
 
       return `
 
-EXTERNAL ACTION NOTE CUE
-- Decide intelligently whether this response begins a new action phase.
-- If a new action phase is starting, write exactly one  external work note as ordinary assistant text, then call the related tool(s) immediately.
-- If this is a continuation of the same phase, call the next tool(s) without a new note.
-- If you are ready to answer without tools, ignore this cue and answer normally.
-- This is guidance, not a formatting trap: choose the cadence intelligently from the actual work.
-- Do not create a 1 note : 1 action rhythm. One external note should usually cover 2-4 related action rows; aim for roughly 25-35% of action turns to have notes.
-- Create a new note only for a real phase change: inspect -> edit, edit -> verify, setup -> generate, failure -> recovery, research -> build.
-- The note should sound like a real Codex intermediary update: calm, concrete, first-person, and tied to the exact next action.
-- Use the formula: "I found/saw/need X. I'm going to do Y." or "X is now in place. Next I'm checking Y."
-- Mention what you just saw, what changed, or what you will do next. Do not write a tool title.
-- Keep it realistic and polished. Prefer one sentence; use two short sentences for major phase changes, failed commands, or verification handoffs.
-- Long notes are not needed. Never turn a work note into a full plan.
-- Never start with dangling code/file fragments such as "tsx\` where" or "json\`:". Convert them into complete sentences with the file name.
-- Convert action labels into natural narration:
-  - Reading/checking: "I need to see how this is wired, so I'm opening the relevant file now."
-  - Editing/fixing: "I found the broken path. I'm patching it in the smallest place."
-  - Terminal/setup: "The repo is ready for setup, so I'm running the install step and watching the output."
-  - Verification: "The change is in place. Next I'm running a focused check."
-  - Recovery: "That route failed in this environment, so I'm switching to the local fallback."
-  - Error fixing: "Hero.tsx is missing its closing brace. I'm patching that structure before verifying again."
-- Strong : "I found the actual issue: the first visible note is coming from the Gemini prompt path. I'm tightening that prompt now."
-- Strong : "The patch is in place. Next I'm running TypeScript so this doesn't ship with a hidden runtime issue."
-- Strong : "That command timed out, so I'm checking whether it left a process behind before moving on."
-- Weak style to avoid: "Initializing the Nike 2026 project using the artifacts builder."
-- Weak style to avoid: "Executing multi-step project initialization using PowerShell compatible chaining."
-- Weak style to avoid: "Synthesizing deep context for enterprise autonomous execution."
-- Weak style to avoid: "tsx\`: the component function is missing its closing brace."
-- Do not expose chain-of-thought, private reasoning, hidden analysis, or labels like CLASSIFY/DECOMPOSE/ASSESS.${ recentContext }
+USER-FACING PROGRESS CONTEXT
+This is execution boundary ${ iteration }. Before using tools, decide whether the user needs a progress update based on the current request, the evidence already observed, and the action about to happen.${ recentContext }
+The first meaningful action group in a user turn needs an update. Later boundaries need one when the state of the work has materially changed. Generate the wording freely from the live situation. First person is available whenever it communicates ownership or intent naturally; it is not a mandatory template. Keep private reasoning private.
 `;
     };
 
@@ -5802,35 +5767,9 @@ EXTERNAL ACTION NOTE CUE
       let accumulatedWorkNote = '';
       let workNoteEmitted = false;
       let emittedWorkNoteText = '';
-      let workNoteStreamStarted = false;
-      let lastStreamedWorkNote = '';
       let functionCalls: any[] = [];
       let fullResponseContent: any = null;
       const workNoteId = `work_${ interactions }`;
-      const streamVisibleWorkNote = (): void => {
-        if (!onTrace || workNoteEmitted) return;
-        if (!accumulatedWorkNote) {
-          if (workNoteStreamStarted) cancelVisibleWorkNoteStream();
-          return;
-        }
-        const noteText = this.formatVisibleWorkNote(accumulatedWorkNote, 720, true);
-        if (!noteText) {
-          if (workNoteStreamStarted) cancelVisibleWorkNoteStream();
-          return;
-        }
-        if (noteText === lastStreamedWorkNote) return;
-        onTrace({ type: 'work_note', text: noteText, isDelta: true, isStreaming: true, noteId: workNoteId });
-        workNoteStreamStarted = true;
-        lastStreamedWorkNote = noteText;
-        emittedWorkNoteText = noteText;
-      };
-      const cancelVisibleWorkNoteStream = (): void => {
-        if (!workNoteStreamStarted || workNoteEmitted || !onTrace) return;
-        onTrace({ type: 'work_note_cancel', noteId: workNoteId });
-        workNoteStreamStarted = false;
-        lastStreamedWorkNote = '';
-        emittedWorkNoteText = '';
-      };
       const emitVisibleWorkNote = (noteOverride?: string): boolean => {
         const noteSource = noteOverride || accumulatedText;
         if (!noteSource || workNoteEmitted) return false;
@@ -5878,11 +5817,9 @@ EXTERNAL ACTION NOTE CUE
             // 2. TEXT PARTS (Visible work note or final answer)
             if (!part.thought && part.text) {
               accumulatedText += part.text;
-              accumulatedWorkNote = this.formatVisibleWorkNote(accumulatedText, 720, true);
-              // Always live-stream so the UI stays responsive during long tool chains.
-              // cancelVisibleWorkNoteStream() (called right before emitting the answer)
-              // removes it cleanly when there are no tool calls — no flash/replace cycle.
-              streamVisibleWorkNote();
+              accumulatedWorkNote = accumulatedText;
+              // The response boundary determines whether this text is progress
+              // or the final answer; a tool call establishes an action turn.
               if (functionCalls.length > 0) emitVisibleWorkNote();
             }
 
@@ -5986,8 +5923,6 @@ EXTERNAL ACTION NOTE CUE
 
       // If no function calls, we're done â€” emit final answer
       if (functionCalls.length === 0) {
-        cancelVisibleWorkNoteStream();
-
         noToolCallStreak++;
 
         if (accumulatedText) {
@@ -6087,14 +6022,10 @@ EXTERNAL ACTION NOTE CUE
             console.warn('[GeminiClient] Cognitive Core final answer assessment failed (non-blocking):', err.message);
           }
 
-          // === COGNITIVE CORE DEBLOAT ===
+          // Preserve the model's context-aware answer wording. Reliability
+          // gates may append evidence caveats, but regex rewriting must not
+          // impose a canned voice or damage intentional prose/code.
           let cleanText = finalText;
-          try {
-            cleanText = cognitiveSession.deBloatResponse(finalText);
-          } catch (err: any) {
-            console.warn('[GeminiClient] Cognitive Core deBloatResponse failed (non-blocking):', err.message);
-          }
-
           const toolsUsedList = Array.from(callHistory).map(s => s.split(':')[0]);
           cleanText = this.finalizeEvidenceBoundAnswer(cleanText, evidenceLedger, toolCallCounts, chatId);
 
@@ -6133,11 +6064,13 @@ EXTERNAL ACTION NOTE CUE
           }
           const proxyDecision = await reviewAutonomousCompletion(chatId, cleanText);
           if (proxyDecision.action !== 'approve_completion') {
+            this.emitAutonomyCompletionCheckpoint(cleanText, trace, onTrace, proxyDecision.completionBoundaryPassed === true);
             if (fullResponseContent) contents.push(fullResponseContent);
             accumulatedText = '';
             accumulatedThought = '';
             continue;
           }
+          this.emitAutonomyCompletionCheckpoint(cleanText, trace, onTrace);
           const lateSteering = this.drainLiveSteering(chatId, onTrace);
           if (lateSteering.length > 0) {
             if (fullResponseContent) contents.push(fullResponseContent);

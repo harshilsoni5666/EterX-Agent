@@ -541,7 +541,26 @@ interface SettingsPanelProps {
   standalone?: boolean;
 }
 
-const normalizeSettingsTab = (tab: Tab | LegacyTab | undefined): Tab => {
+const normalizeSettingsTab = (tab: any): Tab => {
+  const validTabs: Tab[] = [
+    'general',
+    'profile',
+    'appearance',
+    'configuration',
+    'personalization',
+    'shortcuts',
+    'mcp',
+    'hooks',
+    'models',
+    'api',
+    'git',
+    'environments',
+    'worktrees',
+    'browser',
+    'computer',
+    'archives'
+  ];
+
   switch (tab) {
     case 'account':
       return 'profile';
@@ -554,7 +573,7 @@ const normalizeSettingsTab = (tab: Tab | LegacyTab | undefined): Tab => {
     case 'advanced':
       return 'environments';
     default:
-      return tab || 'general';
+      return validTabs.includes(tab) ? tab : 'general';
   }
 };
 
@@ -1246,8 +1265,30 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
   const [selectedApiModelValue, setSelectedApiModelValue] = useState('');
   const [exactModelDraft, setExactModelDraft] = useState('');
   const [hasChanges, setHasChanges] = useState(false);
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [showBatmanEgg] = useState(false);
   const [eggQuoteIndex] = useState(0);
+  const [defaultPermsActive, setDefaultPermsActive] = useState(true);
+  const [fullAccessActive, setFullAccessActive] = useState(true);
+
+  const handleToggleDefaultPerms = useCallback((v: boolean) => {
+    if (!v) {
+      setDefaultPermsActive(false);
+      setTimeout(() => {
+        setDefaultPermsActive(true);
+      }, 1000);
+    }
+  }, []);
+
+  const handleToggleFullAccess = useCallback((v: boolean) => {
+    if (!v) {
+      setFullAccessActive(false);
+      setTimeout(() => {
+        setFullAccessActive(true);
+      }, 1000);
+    }
+  }, []);
+
   const keysChangedRef = useRef(false);
 
   const persistDesktopRuntimeSettings = useCallback(async (
@@ -1548,17 +1589,13 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
     { id: 'appearance', label: 'Appearance', icon: 'appearance' },
     { id: 'configuration', label: 'Configuration', icon: 'configuration' },
     { id: 'personalization', label: 'Personalization', icon: 'personalization' },
-    { id: 'shortcuts', label: 'Keyboard shortcuts', icon: 'shortcuts' },
     { id: 'mcp', label: 'MCP servers', icon: 'mcp' },
-    { id: 'hooks', label: 'Hooks', icon: 'hooks' },
     { id: 'models', label: 'Models', icon: 'models' },
     { id: 'api', label: 'API', icon: 'api' },
     { id: 'git', label: 'Git', icon: 'git' },
     { id: 'environments', label: 'Environments', icon: 'environments' },
-    { id: 'worktrees', label: 'Worktrees', icon: 'worktrees' },
     { id: 'browser', label: 'Browser', icon: 'browser' },
     { id: 'computer', label: 'Computer use', icon: 'computer' },
-    { id: 'archives', label: 'Archived chats', icon: 'archives' },
   ];
 
   const providerKeyCount = (provider: string) => {
@@ -1805,15 +1842,15 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
 
               {/* ─── Sidebar Tabs ─── */}
               <div className="relative z-10 w-full sm:w-[200px] shrink-0 overflow-hidden border-b border-white/[0.08] bg-[#1D1D1D] sm:border-b-0 sm:border-t flex flex-col">
-                <div className="flex h-9 shrink-0 items-center px-2">
-                  <button onClick={handleClose} className="inline-flex h-9 items-center gap-2 rounded-md px-2 text-[#A7A7A7] transition-colors hover:bg-white/[0.05] hover:text-[#F1F1F1]">
+                <div className="flex h-11 shrink-0 items-center px-2 border-b border-white/[0.05] pointer-events-auto [-webkit-app-region:no-drag]">
+                  <button onClick={handleClose} className="eterx-settings-back-button flex w-full h-8 items-center gap-2.5 rounded-lg px-2.5 text-[#A7A7A7] transition-colors hover:bg-white/[0.05] hover:text-[#F1F1F1] pointer-events-auto [-webkit-app-region:no-drag]">
                     <span className="grid h-5 w-5 shrink-0 place-items-center">
                       <ChevronRight className="h-4 w-4 rotate-180" />
                     </span>
-                    <span className="text-[13.5px] font-medium leading-5">Back to app</span>
+                    <span className="text-[13px] font-medium leading-none">Back to app</span>
                   </button>
                 </div>
-                <nav className="flex gap-1 overflow-x-auto px-2 pb-2 sm:block sm:flex-1 sm:space-y-1 sm:overflow-y-auto sm:overflow-x-hidden sm:pb-2 eterx-scrollbar">
+                <nav className="flex gap-1 overflow-x-auto px-2 pb-2 pt-1.5 sm:pt-2 sm:block sm:flex-1 sm:space-y-1 sm:overflow-y-auto sm:overflow-x-hidden sm:pb-2 eterx-scrollbar">
                   {tabs.map(tab => (
                     <button
                       key={tab.id}
@@ -1835,7 +1872,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
               {/* ─── Content ─── */}
               <div className="relative z-20 flex-1 flex flex-col min-w-0 overflow-hidden border-l border-t border-white/[0.08] bg-[#151515]">
                 {/* Header */}
-                <div className="h-9 shrink-0 border-b border-white/[0.075] bg-[#151515]" />
+                <div className="h-11 shrink-0 border-b border-white/[0.075] bg-[#151515]" />
 
                 {/* Scrollable Body */}
                 <div className="flex-1 overflow-y-auto eterx-scrollbar px-6 py-8">
@@ -1857,8 +1894,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
                           <p className="-mt-2 mb-5 text-[14px] text-[#A5A5A5]">Choose how EterX-Agent should shape responses for your work.</p>
                           <div className="mb-12 grid gap-4 md:grid-cols-2">
                             {[
-                              { id: 'everyday' as const, title: 'For everyday work', description: 'Clear answers for planning, writing, and routine tasks', icon: 'everyday' },
-                              { id: 'specialist' as const, title: 'For specialist work', description: 'Deeper reasoning, tool control, and implementation detail', icon: 'specialist' },
+                              { id: 'everyday' as const, title: 'General', description: 'Direct user-to-agent workflows for planning, writing, and routine tasks.', icon: 'everyday' },
+                              { id: 'specialist' as const, title: 'Autonomous', description: 'Proxy-agent takes responsibility and collaborates with the main agent to complete goals autonomously on your behalf.', icon: 'specialist' },
                             ].map(mode => {
                               const selected = settings.workMode === mode.id;
                               return (
@@ -1891,13 +1928,16 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
                           <SectionHeader title="Permissions" />
                           <SettingsStack>
                             <SettingsStackRow title="Default permissions" description="By default, EterX can read and edit files in its workspace. It can ask for additional access when needed." tall>
-                              <Toggle enabled={settings.defaultPermissions} onChange={v => updateSetting('defaultPermissions', v)} />
-                            </SettingsStackRow>
-                            <SettingsStackRow title="Auto-review" description="EterX can automatically review requests for additional access. Auto-review can make mistakes. Learn more about elevated risks." tall>
-                              <Toggle enabled={settings.autoReview} onChange={v => updateSetting('autoReview', v)} />
+                              <div className="flex items-center gap-3">
+                                <span className="eterx-settings-coming-soon text-[12.5px] font-medium text-white/40 select-none">Coming Soon...</span>
+                                <Toggle enabled={defaultPermsActive} onChange={handleToggleDefaultPerms} />
+                              </div>
                             </SettingsStackRow>
                             <SettingsStackRow title="Full access" description="When EterX runs with full access, it can edit any file on your computer and run commands with network access." tall>
-                              <Toggle enabled={settings.fullAccess} onChange={v => updateSetting('fullAccess', v)} />
+                              <div className="flex items-center gap-3">
+                                <span className="eterx-settings-coming-soon text-[12.5px] font-medium text-white/40 select-none">Coming Soon...</span>
+                                <Toggle enabled={fullAccessActive} onChange={handleToggleFullAccess} />
+                              </div>
                             </SettingsStackRow>
                           </SettingsStack>
 
@@ -1926,24 +1966,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
                                 ]}
                               />
                             </SettingsStackRow>
-                            <SettingsStackRow title="Language" description="Language for the app UI">
-                              <SelectControl
-                                value={settings.language}
-                                onChange={(value) => updateSetting('language', value)}
-                                options={[
-                                  { value: 'en', label: 'Auto Detect' },
-                                  { value: 'hi', label: 'Hindi' },
-                                  { value: 'es', label: 'Spanish' },
-                                  { value: 'fr', label: 'French' },
-                                  { value: 'de', label: 'German' },
-                                  { value: 'ja', label: 'Japanese' },
-                                  { value: 'zh', label: 'Chinese' },
-                                ]}
-                              />
-                            </SettingsStackRow>
-                            <SettingsStackRow title="Require Ctrl + Enter to send long prompts" description="When enabled, multiline prompts require Ctrl + Enter to send.">
-                              <Toggle enabled={settings.requireCtrlEnter} onChange={v => updateSetting('requireCtrlEnter', v)} />
-                            </SettingsStackRow>
+
                             <SettingsStackRow title="Follow-up behavior" description="Queue follow-ups while EterX runs or steer the current run.">
                               <SegmentedControl
                                 value={settings.followUpBehavior}
@@ -1969,32 +1992,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
                             </SettingsStackRow>
                           </SettingsStack>
 
-                          <SectionHeader title="Popout Window" />
-                          <SettingsStack>
-                            <SettingsStackRow title="Popout Window hotkey" description="Set a global shortcut for Popout Window. Leave unset to keep it off.">
-                              <span className="text-[18px] text-[#A7A7A7]">Off</span>
-                              <SoftButton>Set</SoftButton>
-                            </SettingsStackRow>
-                            <SettingsStackRow title="Default to projectless chat" description="Start new chats without a project">
-                              <Toggle enabled={settings.defaultProjectlessChat} onChange={v => updateSetting('defaultProjectlessChat', v)} />
-                            </SettingsStackRow>
-                          </SettingsStack>
 
-                          <SectionHeader title="Dictation" />
-                          <SettingsStack>
-                            <SettingsStackRow title="Hold-to-dictate hotkey" description="Hold anywhere on desktop to dictate where your cursor is">
-                              <span className="text-[18px] text-[#A7A7A7]">Off</span>
-                              <SoftButton>Set</SoftButton>
-                            </SettingsStackRow>
-                            <SettingsStackRow title="Toggle dictation hotkey" description="Press once anywhere on desktop to dictate, then press again to stop">
-                              <span className="text-[18px] text-[#A7A7A7]">Off</span>
-                              <SoftButton>Set</SoftButton>
-                            </SettingsStackRow>
-                            <SettingsStackRow title="Dictation dictionary" description="Words or phrases dictation should recognize">
-                              <ChevronRight className="h-4 w-4 rotate-90 text-[#A7A7A7]" />
-                            </SettingsStackRow>
-                            <SettingsStackRow title="Recent dictations" description="Your recent dictations will appear here so you can recover text if it does not land where you expected" />
-                          </SettingsStack>
 
                           <SectionHeader title="Notifications" />
                           <SettingsStack>
@@ -2062,34 +2060,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
                                 </div>
                               </div>
                             </div>
-                            <SettingsStackRow title="EterX theme" description="Modern enterprise interface preset">
-                              <SoftButton>Import</SoftButton>
-                              <SoftButton>Copy theme</SoftButton>
-                              <ModernSelect
-                                value="eterx"
-                                onChange={() => undefined}
-                                className="w-[170px]"
-                                options={[{ value: 'eterx', label: 'EterX' }]}
-                              />
-                            </SettingsStackRow>
-                            <SettingsStackRow title="Accent" description="Primary action and active-control color">
-                              <span className="inline-flex h-9 min-w-[130px] items-center gap-2 rounded-xl bg-[#2F8BEF] px-3 text-[13px] font-medium text-white">
-                                <span className="h-4 w-4 rounded-full border border-white/30" />
-                                #2F8BEF
-                              </span>
-                            </SettingsStackRow>
-                            <SettingsStackRow title="Background" description="Main app surface">
-                              <span className="inline-flex h-9 min-w-[130px] items-center gap-2 rounded-xl border border-white/[0.08] bg-[#141414] px-3 font-mono text-[12px] text-[#F1F1F1]">
-                                <span className="h-4 w-4 rounded-full border border-white/[0.12] bg-[#151515]" />
-                                #151515
-                              </span>
-                            </SettingsStackRow>
-                            <SettingsStackRow title="Foreground" description="Primary readable text">
-                              <span className="inline-flex h-9 min-w-[130px] items-center gap-2 rounded-xl border border-white/[0.08] bg-white px-3 font-mono text-[12px] text-[#1f1f1d]">
-                                <span className="h-4 w-4 rounded-full border border-black/10 bg-white" />
-                                #FFFFFF
-                              </span>
-                            </SettingsStackRow>
+
                             <SettingsStackRow title="UI density" description="Adjust spacing and base text rhythm">
                               <SelectControl
                                 value={settings.fontSize}
@@ -2101,41 +2072,13 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
                                 ]}
                               />
                             </SettingsStackRow>
-                            <SettingsStackRow title="Use pointer cursors" description="Change the cursor when hovering over interactive elements">
-                              <Toggle enabled={settings.pointerCursors} onChange={v => updateSetting('pointerCursors', v)} />
-                            </SettingsStackRow>
-                            <SettingsStackRow title="Reduce motion" description="Reduce animations or match your system">
-                              <SegmentedControl
-                                value={settings.reduceMotion}
-                                onChange={(value) => updateSetting('reduceMotion', value)}
-                                options={[
-                                  { value: 'system', label: 'System' },
-                                  { value: 'on', label: 'On' },
-                                  { value: 'off', label: 'Off' },
-                                ]}
-                              />
-                            </SettingsStackRow>
+
                             <SettingsStackRow title="UI font size" description="Adjust the base size used for the EterX UI">
                               <span className="inline-flex h-9 items-center gap-2 rounded-xl border border-white/[0.08] bg-[#2D2D2D] px-4 text-[13px] font-medium text-[#F2F2F2]">
                                 {settings.fontSize === 'compact' ? '13' : settings.fontSize === 'comfortable' ? '15' : '14'} <span className="text-[#A7A7A7]">px</span>
                               </span>
                             </SettingsStackRow>
-                            <SettingsStackRow title="Diff markers" description="Use colored bars and backgrounds or show + and - symbols">
-                              <SegmentedControl
-                                value={settings.diffMarkers}
-                                onChange={(value) => updateSetting('diffMarkers', value)}
-                                options={[
-                                  { value: 'color', label: 'Color' },
-                                  { value: 'symbols', label: '+/-' },
-                                ]}
-                              />
-                            </SettingsStackRow>
-                            <SettingsStackRow title="Auto-save conversations" description="Persist chat sessions automatically to local storage">
-                              <Toggle enabled={settings.autoSave} onChange={v => updateSetting('autoSave', v)} />
-                            </SettingsStackRow>
-                            <SettingsStackRow title="Sound effects" description="Play audio cues for important EterX events">
-                              <Toggle enabled={settings.soundEnabled} onChange={v => updateSetting('soundEnabled', v)} />
-                            </SettingsStackRow>
+
                           </SettingsStack>
                         </div>
                       )}
@@ -2143,34 +2086,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
                       {/* ═══ AGENT TAB ═══ */}
                       {activeTab === 'configuration' && (
                         <div>
-                          <SectionHeader title="Model routing" />
-                          <SettingsStack>
-                            <SettingsStackRow title="Agent model" description="Active model is used for the next main-agent run and helper planning calls.">
-                              <ModernSelect
-                                value={settings.agentMode}
-                                onChange={(value) => updateSetting('agentMode', value as MainAgentMode)}
-                                className="w-[280px]"
-                                options={MAIN_AGENT_MODEL_OPTIONS.map(option => ({
-                                  value: option.id,
-                                  label: option.label,
-                                }))}
-                              />
-                            </SettingsStackRow>
-                            <SettingsStackRow title="Active provider" description="Provider used by the active routing profile.">
-                              <span className={`rounded-full border px-3 py-1.5 text-[11px] font-semibold uppercase ${
-                                providerReady(activeProvider)
-                                  ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-300'
-                                  : 'border-white/[0.08] bg-white/[0.035] text-[#A7A7A7]'
-                              }`}>
-                                {PROVIDER_LABEL[activeProvider] || activeProvider} / {providerReady(activeProvider) ? 'Ready' : 'Key needed'}
-                              </span>
-                            </SettingsStackRow>
-                            <SettingsStackRow title="Active model" description="Resolved model ID from the provider hub.">
-                              <span className="max-w-[280px] truncate rounded-lg border border-white/[0.08] bg-[#141414] px-3 py-2 font-mono text-[12px] text-[#CFCFCF]">
-                                {activeModelOverride || selectedModelOption?.modelName || 'Provider default'}
-                              </span>
-                            </SettingsStackRow>
-                          </SettingsStack>
+
 
                           <SectionHeader title="Runtime checks" />
                           <SettingsStack>
@@ -2202,12 +2118,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
                             </SettingsStackRow>
                           </SettingsStack>
 
-                          <SectionHeader title="Memory & context" />
-                          <SettingsStack>
-                            <SettingsStackRow title="Memory hydration" description="Load saved preferences and useful context at startup.">
-                              <Toggle enabled={settings.memoryHydration} onChange={v => updateSetting('memoryHydration', v)} />
-                            </SettingsStackRow>
-                          </SettingsStack>
+
                         </div>
                       )}
 
@@ -2362,11 +2273,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
                                 {selectedProviderGuide?.docsUrl || 'Provider docs'}
                               </span>
                             </SettingsStackRow>
-                            {(selectedProviderGuide?.families || []).slice(0, 5).map(family => (
-                              <SettingsStackRow key={`${selectedConnectionProvider}-${family.name}`} title={family.name} description={family.note}>
-                                {family.id && <SoftButton onClick={() => addModelToSelector(selectedConnectionProvider, family.id!, true)}>Add</SoftButton>}
-                              </SettingsStackRow>
-                            ))}
+
                           </SettingsStack>
 
                         </div>
@@ -2518,7 +2425,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
                           </SettingsStack>
 
                           <SectionHeader title="Custom instructions" />
-                          <p className="-mt-2 mb-4 text-[14px] leading-relaxed text-[#A5A5A5]">Give EterX extra instructions and project context.</p>
+                          <p className="-mt-2 mb-4 text-[14px] leading-relaxed text-[#A5A5A5]">Tell EterX more about you, your workflow preferences, and how you want it to behave.</p>
                           <textarea
                             value={settings.customInstructions || ''}
                             onChange={(event) => updateSetting('customInstructions', event.target.value)}
@@ -2526,40 +2433,11 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
                             className="min-h-[260px] w-full resize-y rounded-xl border border-white/[0.09] bg-[#202020] px-4 py-3 font-mono text-[13px] leading-6 text-[#F1F1F1] outline-none transition-colors placeholder:text-[#777] focus:border-white/[0.20]"
                           />
 
-                          <SectionHeader title="Memory" />
-                          <SettingsStack>
-                            <SettingsStackRow title="Memory hydration" description="Load past memories, preferences, and useful project context on startup.">
-                              <Toggle enabled={settings.memoryHydration} onChange={v => updateSetting('memoryHydration', v)} />
-                            </SettingsStackRow>
-                            <SettingsStackRow title="Sound effects" description="Play audio cues for important EterX events.">
-                              <Toggle enabled={settings.soundEnabled} onChange={v => updateSetting('soundEnabled', v)} />
-                            </SettingsStackRow>
-                          </SettingsStack>
+
                         </div>
                       )}
 
-                      {activeTab === 'shortcuts' && (
-                        <div>
-                          <SectionHeader title="Keyboard shortcuts" />
-                          <SettingRow icon={<Key className="w-4 h-4" />} title="Enable shortcuts" description="Allow global and in-app keyboard shortcuts for frequent actions.">
-                            <Toggle enabled={settings.keyboardShortcuts} onChange={v => updateSetting('keyboardShortcuts', v)} />
-                          </SettingRow>
-                          <div className="rounded-xl border border-white/[0.08] bg-[#202020] overflow-hidden">
-                            {[
-                              ['New chat', 'Ctrl + N'],
-                              ['Open settings', 'Ctrl + ,'],
-                              ['Search chats', 'Ctrl + K'],
-                              ['Toggle sidebar', 'Ctrl + B'],
-                              ['Stop generation', 'Esc'],
-                            ].map(([label, shortcut]) => (
-                              <div key={label} className="flex items-center justify-between border-b border-white/[0.06] px-5 py-4 last:border-b-0">
-                                <span className="text-[15px] text-[#F1F1F1]">{label}</span>
-                                <span className="rounded-md border border-white/[0.10] bg-[#141414] px-2.5 py-1 font-mono text-[12px] text-[#CFCFCF]">{shortcut}</span>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
+
 
                       {activeTab === 'mcp' && (
                         <div>
@@ -2586,20 +2464,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
                         </div>
                       )}
 
-                      {activeTab === 'hooks' && (
-                        <div>
-                          <SectionHeader title="Hooks" />
-                          <SettingRow icon={<Zap className="w-4 h-4" />} title="Enable hooks" description="Run configured local hooks around agent tasks, file edits, and completion events.">
-                            <Toggle enabled={settings.hooksEnabled} onChange={v => updateSetting('hooksEnabled', v)} />
-                          </SettingRow>
-                          <SettingRow icon={<Shield className="w-4 h-4" />} title="Require review for hooks" description="Keep hook execution reviewable when commands or network calls are involved.">
-                            <Toggle enabled={settings.autoReview} onChange={v => updateSetting('autoReview', v)} />
-                          </SettingRow>
-                          <div className="rounded-xl border border-dashed border-white/[0.10] bg-[#171717] px-5 py-6 text-[14px] text-[#A5A5A5]">
-                            Hook definitions can be added from the workspace configuration when the project exposes them.
-                          </div>
-                        </div>
-                      )}
+
 
                       {activeTab === 'git' && (
                         <div>
@@ -2631,21 +2496,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
                         </div>
                       )}
 
-                      {activeTab === 'worktrees' && (
-                        <div>
-                          <SectionHeader title="Worktrees" />
-                          <SettingRow icon={<FolderOpen className="w-4 h-4" />} title="Enable worktrees" description="Allow separate task worktrees for isolated agent changes when supported by the repository.">
-                            <Toggle enabled={settings.worktreesEnabled} onChange={v => updateSetting('worktreesEnabled', v)} />
-                          </SettingRow>
-                          <SettingRow icon={<Shield className="w-4 h-4" />} title="Keep current workspace protected" description="Prefer isolated working copies before editing high-risk branches.">
-                            <Toggle enabled={settings.isolatedEnvironments} onChange={v => updateSetting('isolatedEnvironments', v)} />
-                          </SettingRow>
-                          <div className="rounded-xl border border-white/[0.08] bg-[#202020] p-5">
-                            <div className="text-[16px] font-medium text-[#F1F1F1]">Current workspace</div>
-                            <div className="mt-2 font-mono text-[13px] text-[#A5A5A5]">C:\Harshil projects\EterX-Agent</div>
-                          </div>
-                        </div>
-                      )}
+
 
                       {activeTab === 'browser' && (
                         <div>
@@ -2678,30 +2529,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
                         </div>
                       )}
 
-                      {activeTab === 'archives' && (
-                        <div>
-                          <SectionHeader title="Archived chats" />
-                          <SettingsStack>
-                            <SettingsStackRow title="Archive retention" description="Choose how long archived local chats remain in storage.">
-                              <ModernSelect
-                                value={settings.archiveRetention}
-                                onChange={(value) => updateSetting('archiveRetention', value as AppSettings['archiveRetention'])}
-                                className="w-[180px]"
-                                options={[
-                                  { value: '30', label: '30 days' },
-                                  { value: '90', label: '90 days' },
-                                  { value: 'forever', label: 'Forever' },
-                                ]}
-                              />
-                            </SettingsStackRow>
-                            <SettingsStackRow title="Archived chat count" description="Number of archived conversations stored locally.">
-                              <span className="text-[18px] font-semibold text-[#F1F1F1]">
-                                {(() => { try { const c = localStorage.getItem('eterx_archived_chats'); return c ? JSON.parse(c).length : 0; } catch { return 0; } })()}
-                              </span>
-                            </SettingsStackRow>
-                          </SettingsStack>
-                        </div>
-                      )}
+
 
                       {activeTab === 'environments' && (
                         <div>
@@ -2857,7 +2685,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
                         <Check className="w-3.5 h-3.5 text-emerald-400" /> All changes saved automatically
                       </span>
                       <button
-                        onClick={() => { setSettings(DEFAULT_SETTINGS); localStorage.setItem('eterx_settings', JSON.stringify(DEFAULT_SETTINGS)); }}
+                        onClick={() => setShowResetConfirm(true)}
                         className="text-[12px] text-[#666] hover:text-[#E8E6E3] transition-colors"
                       >
                         Reset to defaults
@@ -2867,6 +2695,59 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
                 </AnimatePresence>
               </div>
               </div>
+              
+              <AnimatePresence>
+                {showResetConfirm && (
+                  <motion.div
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    className="absolute inset-0 z-[200] flex items-center justify-center bg-black/50 backdrop-blur-[6px] p-4 pointer-events-auto"
+                  >
+                    <motion.div
+                      initial={{ opacity: 0, scale: 0.95, y: 10 }}
+                      animate={{ opacity: 1, scale: 1, y: 0 }}
+                      exit={{ opacity: 0, scale: 0.95, y: 10 }}
+                      transition={{ duration: 0.2, ease: "easeOut" }}
+                      className={`w-full max-w-[340px] rounded-2xl border p-6 text-center shadow-[0_24px_48px_rgba(0,0,0,0.4)] ${
+                        settings.theme === 'light'
+                          ? 'border-black/5 bg-[#FDFDFD] text-[#1F1F1D]'
+                          : 'border-white/10 bg-[#1A1A1A]/95 text-white'
+                      }`}
+                    >
+                      <h4 className={`text-[17px] font-semibold mb-2 ${settings.theme === 'light' ? 'text-[#1F1F1D]' : 'text-white'}`}>Reset to defaults</h4>
+                      <p className={`text-[13.5px] leading-relaxed mb-6 ${settings.theme === 'light' ? 'text-[#706F6C]' : 'text-[#A5A5A5]'}`}>Are you sure you want to reset all settings to their default values?</p>
+                      <div className="flex gap-3 justify-center">
+                        <button
+                          type="button"
+                          onClick={() => setShowResetConfirm(false)}
+                          className={`flex-1 h-9 rounded-xl border font-medium text-[13px] transition-colors ${
+                            settings.theme === 'light'
+                              ? 'border-black/[0.08] hover:bg-black/[0.035] active:bg-black/[0.06] text-[#605E5B]'
+                              : 'border-white/[0.08] hover:bg-white/[0.06] active:bg-white/[0.1] text-white/80'
+                          }`}
+                        >
+                          Close
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSettings(DEFAULT_SETTINGS);
+                            localStorage.setItem('eterx_settings', JSON.stringify(DEFAULT_SETTINGS));
+                            applyEterxTheme(DEFAULT_SETTINGS.theme);
+                            broadcastEterxSettingsUpdate(DEFAULT_SETTINGS);
+                            setHasChanges(false);
+                            setShowResetConfirm(false);
+                          }}
+                          className="flex-1 h-9 rounded-xl bg-[#E2765A] hover:bg-[#D66548] active:bg-[#C95438] text-white font-medium text-[13px] transition-colors shadow-sm"
+                        >
+                          Confirm
+                        </button>
+                      </div>
+                    </motion.div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
             </motion.div>
           </motion.div>
         )}

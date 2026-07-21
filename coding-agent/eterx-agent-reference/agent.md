@@ -142,7 +142,7 @@ Timeline notes should be sparse phase-change narration. One note should usually 
 
 Timeline note style:
 
-- Use natural concrete narration. Prefer subject-led/status-led notes over first-person openings.
+- Use natural concrete narration. First-person and subject-led openings are both valid; choose from the live situation rather than a fixed house style.
 - Avoid starting with "I am", "I'm", "I will", or "I'll", and never repeat the same opening across consecutive notes.
 - Say what you found, what changed, what failed, or what you are verifying next.
 - Skip the note when the next action row already says the same thing.

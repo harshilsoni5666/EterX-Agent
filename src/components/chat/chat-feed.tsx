@@ -318,6 +318,7 @@ const HIDDEN_HELPER_TYPES = new Set(['answer', 'ask_user', 'file_preview', 'cons
 const USER_QUERY_PREVIEW_LIMIT = 520;
 const USER_QUERY_PREVIEW_LINES = 8;
 const INITIAL_VISIBLE_GROUPS = 40;
+const MAX_TURN_NAV_ITEMS = 80;
 
 const normalizeTraceText = (value: any) => String(value || '')
   .replace(/<\/?thought>/gi, '')
@@ -370,11 +371,14 @@ const getUserQueryPreview = (value: any) => {
   return { isLong };
 };
 
-const getTraceActivitySignature = (logs: any[]) => logs
-  .map((log, index) => {
+const getTraceActivitySignature = (logs: any[]) => {
+  const start = Math.max(0, logs.length - 3);
+  return logs
+  .slice(start)
+  .map((log, offset) => {
     const text = String(log?.text ?? log?.output ?? log?.content ?? log?.secondary ?? '');
     return [
-      index,
+      start + offset,
       log?._traceIdx ?? '',
       log?.type ?? '',
       log?.answerId ?? '',
@@ -386,6 +390,7 @@ const getTraceActivitySignature = (logs: any[]) => logs
     ].join(':');
   })
   .join('|');
+};
 
 /**
  * CollapsibleThinking — wraps ThinkingProcess.
@@ -1101,7 +1106,7 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
         };
       }
       return null;
-    }).filter(Boolean) as Array<{ idx: number; userText: string; assistantText: string; attachmentName: string | null }>;
+    }).filter(Boolean).slice(-MAX_TURN_NAV_ITEMS) as Array<{ idx: number; userText: string; assistantText: string; attachmentName: string | null }>;
   }, [groups]);
 
   useEffect(() => {
@@ -1257,7 +1262,7 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
       <style dangerouslySetInnerHTML={{ __html: `${ liveMotionStyles }\n${ chatFeedSurfaceStyles }` }} />
       <div className="relative flex-1 min-h-0 w-full flex flex-col">
         {userTurns.length > 2 && (
-          <div className="absolute left-2 top-[44%] -translate-y-1/2 flex flex-col gap-[3px] z-[60] py-3">
+          <div className="eterx-chat-turns-nav absolute left-2 top-[44%] -translate-y-1/2 flex flex-col gap-[3px] z-[60] py-3">
             {userTurns.map((turn, k) => (
               <div key={turn.idx} className="group relative flex items-center py-2 cursor-pointer" onClick={() => {
                     const el = document.getElementById(`message-${turn.idx}`);
@@ -1266,7 +1271,7 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
                   }}>
                 <div
                   id={`dash-${k}`}
-                  className={`h-[2px] transition-all duration-200 ${
+                  className={`eterx-chat-turns-dash h-[2px] transition-all duration-200 ${
                     activeTurnIdx === k
                       ? 'bg-[#F4F2EE] w-[22px]'
                       : 'bg-white/30 w-[14px] group-hover:w-[22px] group-hover:bg-white/55'
@@ -1275,18 +1280,18 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
                 />
                 
                 {/* Popover */}
-                <div className="absolute left-8 top-1/2 -translate-y-1/2 w-[290px] rounded-xl border border-white/[0.06] bg-[#1C1C1B] backdrop-blur-2xl px-3 pt-2.5 pb-2.5 shadow-[0_12px_36px_rgba(0,0,0,0.6)] opacity-0 pointer-events-none group-hover:opacity-100 z-[70]">
-                  <p className="text-[12.5px] font-semibold text-[#EDEBE7] leading-[1.4] tracking-[-0.01em] mb-1" style={{display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical',overflow:'hidden'}}>
+                <div className="eterx-chat-turns-popover absolute left-8 top-1/2 -translate-y-1/2 w-[290px] rounded-xl border border-white/[0.06] bg-[#1C1C1B] backdrop-blur-2xl px-3 pt-2.5 pb-2.5 shadow-[0_12px_36px_rgba(0,0,0,0.6)] opacity-0 pointer-events-none group-hover:opacity-100 z-[70]">
+                  <p className="eterx-chat-turns-usertext text-[12.5px] font-semibold text-[#EDEBE7] leading-[1.4] tracking-[-0.01em] mb-1" style={{display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical',overflow:'hidden'}}>
                     {turn.userText}
                   </p>
                   {turn.assistantText && (
-                    <p className="text-[11px] text-[#6E6A64] leading-[1.55]" style={{display:'-webkit-box',WebkitLineClamp:3,WebkitBoxOrient:'vertical',overflow:'hidden'}}>
+                    <p className="eterx-chat-turns-assistanttext text-[11px] text-[#6E6A64] leading-[1.55]" style={{display:'-webkit-box',WebkitLineClamp:3,WebkitBoxOrient:'vertical',overflow:'hidden'}}>
                       {turn.assistantText}
                     </p>
                   )}
                   {turn.attachmentName && (
-                    <div className="mt-2 inline-flex items-center rounded-lg bg-white/[0.05] border border-white/[0.05] px-2 py-0.5 max-w-full">
-                      <span className="text-[10.5px] font-medium text-[#A09A93] truncate">{turn.attachmentName}</span>
+                    <div className="eterx-chat-turns-attachment mt-2 inline-flex items-center rounded-lg bg-white/[0.05] border border-white/[0.05] px-2 py-0.5 max-w-full">
+                      <span className="eterx-chat-turns-attachment-name text-[10.5px] font-medium text-[#A09A93] truncate">{turn.attachmentName}</span>
                     </div>
                   )}
                 </div>

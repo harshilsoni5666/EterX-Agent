@@ -9,8 +9,8 @@ The main EterX agent filters and surfaces timeline notes with these principles:
 - Clean text before display.
 - Remove code blocks, inline code markers, bullets, and private reasoning labels.
 - Reject notes that look like raw tool labels.
-- Prefer action-linked notes with subject-led/status-led wording.
-- Do not use first-person narration such as "I am", "I'm", "I will", "I'll", "I found", or "I checked"; make the file, state, result, or next phase the subject instead.
+- Prefer action-linked notes with wording chosen from the live situation.
+- First-person and subject-led narration are both valid. Use first person when it naturally communicates ownership or intent; do not force either perspective.
 - Never repeat the same opening across consecutive notes.
 - Surface a first note only when it explains the next action.
 - Surface later notes mainly on real phase changes.

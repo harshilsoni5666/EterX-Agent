@@ -41,9 +41,10 @@ export interface PersistedTask {
   lastUpdatedAt: number;
 }
 
-// Debounce timers per chat to prevent I/O spam
+// Throttled timers and per-chat write chains prevent I/O spam and stale-write races.
 const writeTimers: Map<string, NodeJS.Timeout> = new Map();
 const DEBOUNCE_MS = 500;
+const writeChains: Map<string, Promise<void>> = new Map();
 
 // In-memory cache for fast reads
 const taskCache: Map<string, PersistedTask> = new Map();
@@ -154,27 +155,35 @@ function rememberTask(chatId: string, task: PersistedTask): void {
 async function flushToDisk(chatId: string): Promise<void> {
   const task = taskCache.get(chatId);
   if (!task) return;
-  
-  try {
+
+  trimTask(task);
+  const snapshot = JSON.parse(JSON.stringify(task)) as PersistedTask;
+  const previousWrite = writeChains.get(chatId) || Promise.resolve();
+  const nextWrite = previousWrite.catch(() => {}).then(async () => {
     await ensureDir();
-    trimTask(task);
-    await writeJsonAtomic(getTaskPath(chatId), task);
+    await writeJsonAtomic(getTaskPath(chatId), snapshot);
+  });
+  writeChains.set(chatId, nextWrite);
+
+  try {
+    await nextWrite;
   } catch (err: any) {
     console.warn(`[TaskStore] ⚠️ Failed to persist task for ${chatId}: ${err.message}`);
+  } finally {
+    if (writeChains.get(chatId) === nextWrite) writeChains.delete(chatId);
   }
 }
 
 /**
- * Schedule a debounced write to disk.
- * For high-frequency trace events, this batches writes.
+ * Schedule a throttled write to disk. Continuous trace streams are snapshotted
+ * at least once per interval instead of postponing persistence indefinitely.
  */
 function scheduleDiskWrite(chatId: string): void {
-  const existing = writeTimers.get(chatId);
-  if (existing) clearTimeout(existing);
-  
+  if (writeTimers.has(chatId)) return;
+
   writeTimers.set(chatId, setTimeout(() => {
-    flushToDisk(chatId).catch(() => {});
     writeTimers.delete(chatId);
+    flushToDisk(chatId).catch(() => {});
   }, DEBOUNCE_MS));
   writeTimers.get(chatId)?.unref?.();
 }
@@ -449,7 +458,7 @@ export const taskStore = {
     }
     return {
       cachedTasks: taskCache.size,
-      pendingWrites: writeTimers.size,
+      pendingWrites: writeTimers.size + writeChains.size,
       runningTasks,
       completedTasks,
     };

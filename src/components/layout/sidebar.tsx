@@ -922,6 +922,11 @@ export const Sidebar = React.memo<SidebarProps>(({
                 <SidebarToggleIcon isOpen={isOpen} isHovered={toggleHovered} sizeClass="w-[18px] h-[18px]" />
               </button>
             </Tooltip>
+            {isOpen && (
+              <span className="eterx-sidebar-brand-text text-[#E3E3E3] font-bold text-[19px] ml-3.5 select-none tracking-[0.01em] [-webkit-app-region:no-drag] leading-none flex items-center h-8 translate-y-[0.5px]">
+                EterX
+              </span>
+            )}
           </div>
 
           {/* Navigation Actions */}

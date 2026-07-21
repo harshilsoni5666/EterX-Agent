@@ -1276,6 +1276,9 @@
 
 :root[data-theme="light"] .eterx-home-greeting {
   background-image: linear-gradient(90deg, #34332F 0%, #34332F 46%, #57534E 78%, #8C887F 100%) !important;
+  background-clip: text !important;
+  -webkit-background-clip: text !important;
+  color: transparent !important;
   filter: none !important;
   text-shadow: none !important;
 }

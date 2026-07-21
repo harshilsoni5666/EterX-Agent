@@ -57,9 +57,15 @@ export async function POST(req: NextRequest) {
     const queued = agentRegistry.addSteeringMessage(chatId, cleanMessage, cleanId);
 
     if (!queued) {
+      const stillRunning = agentRegistry.isRunning(chatId);
       return attachAgentApiSessionCookie(NextResponse.json(
-        { success: false, reason: 'No running agent found for this chat. The message was not queued.' },
-        { status: 409 }
+        {
+          success: false,
+          reason: stillRunning
+            ? 'The live steering queue is full. The message was not queued and remains available in the composer.'
+            : 'No running agent found for this chat. The message was not queued.',
+        },
+        { status: stillRunning ? 429 : 409 }
       ), session);
     }
 

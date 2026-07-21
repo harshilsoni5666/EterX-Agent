@@ -7,7 +7,10 @@ import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { applyEterxTheme, broadcastEterxSettingsUpdate } from '../components/theme/theme-bridge';
 import { ChatInput } from '../components/layout/chat-input';
 import { ChatFeed } from '../components/chat/chat-feed';
-import { AlertTriangle, CheckCircle2, ChevronDown, Sun, Moon, Clock3, Code2, GraduationCap, List, MessageSquare, Pencil, PenTool, SendHorizontal, SquarePen, Search, X, ArrowLeft, ListTodo, ChevronRight, Monitor, GitFork, Terminal, GitBranch, GitCommit, PlusSquare, Check, FileCode, FileText, MoreHorizontal, Sparkles, Pin, PinOff, Archive, Split, Calendar, ExternalLink, Copy, ChevronLeft, History, RefreshCw, Plus, Pause, Play, SlidersHorizontal, ShieldCheck, Minus, ArrowUp, Mic } from 'lucide-react';
+// @ts-ignore — react-markdown's runtime types vary between desktop bundles.
+import ReactMarkdown from 'react-markdown';
+import { markdownComponents, normalizeMarkdownForRendering, remarkPlugins, rehypePlugins } from '../components/chat/markdown-renderer';
+import { AlertTriangle, CheckCircle2, ChevronDown, Sun, Moon, Clock3, Code2, GraduationCap, List, MessageSquare, Pencil, PenTool, SendHorizontal, SquarePen, Search, X, ArrowLeft, ListTodo, ChevronRight, Monitor, GitFork, Terminal, GitBranch, GitCommit, PlusSquare, Check, FileCode, FileText, MoreHorizontal, Sparkles, Pin, PinOff, Archive, Split, Calendar, ExternalLink, Copy, ChevronLeft, History, RefreshCw, Plus, Pause, Play, SlidersHorizontal, ShieldCheck, Minus, ArrowUp, Mic, Power, LifeBuoy, Bug, Mail } from 'lucide-react';
 import { Tooltip } from '../components/ui/tooltip';
 import { motion, AnimatePresence, Reorder } from 'framer-motion';
 import { InteractiveGrid } from '../components/ui/interactive-grid';
@@ -212,6 +215,14 @@ type ComposerAttachment = {
   uploadStatus?: 'uploading' | 'done' | 'error';
   localPath?: string;
   fileUri?: string;
+};
+
+type QueuedFollowUp = {
+  id: string;
+  chatId: string;
+  text: string;
+  attachments: ComposerAttachment[];
+  createdAt: number;
 };
 
 type TaskTrackerStep = {
@@ -489,6 +500,28 @@ const fallbackTitleFromPrompt = (prompt: string) => {
   return DEFAULT_CHAT_TITLE;
 };
 
+const formatProxyManagerMarkdown = (value: string) => {
+  const normalized = normalizeMarkdownForRendering(String(value || '').replace(/\\n/g, '\n')).trim();
+  // Models sometimes begin a numbered deliverable list immediately after a
+  // sentence. Put each item on a Markdown block boundary so emphasis and list
+  // rendering work instead of exposing raw ** markers.
+  return normalized
+    .replace(/\s+(?=\d{1,2}\.\s+(?:\*\*|__)?[A-Za-z])/g, '\n\n')
+    .replace(/([^\n])\s+(?=([-*])\s+(?:\*\*|__)?[A-Za-z])/g, '$1\n\n');
+};
+
+const proxyManagerMarkdownComponents = {
+  ...markdownComponents,
+  p: ({ ...props }: any) => <p className="mb-2 break-words leading-5 last:mb-0" {...props} />,
+  ol: ({ ...props }: any) => <ol className="my-1 list-decimal space-y-1 pl-5" {...props} />,
+  ul: ({ ...props }: any) => <ul className="my-1 list-disc space-y-1 pl-5" {...props} />,
+  li: ({ ...props }: any) => <li className="break-words leading-5" {...props} />,
+  h1: ({ ...props }: any) => <h1 className="mb-2 mt-3 text-[15px] font-bold leading-5" {...props} />,
+  h2: ({ ...props }: any) => <h2 className="mb-2 mt-3 text-[14px] font-bold leading-5" {...props} />,
+  h3: ({ ...props }: any) => <h3 className="mb-1.5 mt-2 text-[13px] font-semibold leading-5" {...props} />,
+  pre: ({ ...props }: any) => <pre className="my-2 max-w-full overflow-hidden whitespace-pre-wrap break-words rounded-lg bg-white/[0.04] p-2 text-[10px] leading-4" {...props} />,
+};
+
 const sortChats = (chats: ChatSession[]) => {
   return [...chats].sort((a, b) => {
     if (a.isFavorite && !b.isFavorite) return -1;
@@ -588,6 +621,8 @@ function DeepWorkUI() {
     return AUTO_MODEL_SELECTION;
   });
   const [proxyModelEntries, setProxyModelEntries] = useState(() => readRuntimeModelEntries());
+  const [proxyModelSelection, setProxyModelSelection] = useState<string>(AUTO_MODEL_SELECTION);
+  const [proxyRuntimeModelSelection, setProxyRuntimeModelSelection] = useState<string>(AUTO_MODEL_SELECTION);
 
   const [composerStates, setComposerStates] = useState<Record<string, ChatComposerState>>(() => {
     if (typeof window !== 'undefined') {
@@ -719,25 +754,17 @@ function DeepWorkUI() {
     ].find(candidate => candidate.optionKey === selection);
     if (!option) return;
 
-    if (option.optionKey === AUTO_MODEL_SELECTION) {
-      window.localStorage.setItem(CHAT_MODEL_SELECTION_STORAGE_KEY, AUTO_MODEL_SELECTION);
-      window.localStorage.setItem(MODEL_OVERRIDE_STORAGE_KEY, JSON.stringify({}));
-      handleModelSelectionChange(AUTO_MODEL_SELECTION);
-      window.dispatchEvent(new CustomEvent('eterx-settings-updated', { detail: { type: 'model-selection-updated' } }));
-      return;
-    }
+    setProxyModelSelection(option.optionKey);
+  }, [proxyModelEntries]);
 
-    const nextEntries = ensureModelSelectorEntry(proxyModelEntries, option.provider, option.modelId);
-    const nextOverrides = { [option.provider]: option.modelId };
-    window.localStorage.setItem(CHAT_MODEL_SELECTION_STORAGE_KEY, option.optionKey);
-    window.localStorage.setItem(MODEL_SELECTOR_STORAGE_KEY, JSON.stringify(nextEntries));
-    window.localStorage.setItem(MODEL_CATALOG_STORAGE_KEY, JSON.stringify(entriesToModelCatalog(nextEntries)));
-    window.localStorage.setItem(MODEL_OVERRIDE_STORAGE_KEY, JSON.stringify(nextOverrides));
-    setProxyModelEntries(nextEntries);
-    setAgentMode(MODEL_PROVIDER_MODE[option.provider]);
-    handleModelSelectionChange(option.optionKey);
-    window.dispatchEvent(new CustomEvent('eterx-settings-updated', { detail: { type: 'model-selection-updated' } }));
-  }, [handleModelSelectionChange, proxyModelEntries]);
+  const handleProxyRuntimeModelSelectionChange = useCallback((selection: string) => {
+    const valid = selection === AUTO_MODEL_SELECTION || proxyModelEntries.some(entry => modelEntryKey(entry.provider, entry.modelId) === selection);
+    if (!valid) return;
+    setProxyRuntimeModelSelection(selection);
+    try {
+      localStorage.setItem(`eterx_proxy_runtime_model_${activeChatIdRef.current || 'new_chat'}`, selection);
+    } catch { }
+  }, [proxyModelEntries]);
 
   useEffect(() => {
     const refreshProxyModels = () => setProxyModelEntries(readRuntimeModelEntries());
@@ -752,10 +779,16 @@ function DeepWorkUI() {
   }, []);
   const [selectedProjectSection, setSelectedProjectSection] = useState('new-tasks');
   const [pendingSteering, setPendingSteering] = useState<{ id: string, text: string, chatId: string }[]>([]);
+  const [queuedFollowUps, setQueuedFollowUps] = useState<QueuedFollowUp[]>([]);
+  const queuedFollowUpDispatchRef = useRef<Set<string>>(new Set());
   // Per-chat thinking state: Set of chatIds that have running agents
   const [runningChats, setRunningChats] = useState<Set<string>>(new Set());
   const [unreadChatIds, setUnreadChatIds] = useState<Set<string>>(new Set());
   const [traceLogs, setTraceLogs] = useState<any[]>([]);
+  const traceLogsLengthRef = useRef(0);
+  useEffect(() => {
+    traceLogsLengthRef.current = traceLogs.length;
+  }, [traceLogs.length]);
   const [greeting, setGreeting] = useState("Initializing...");
 
   const [chats, setChats] = useState<ChatSession[]>([]);
@@ -779,9 +812,15 @@ function DeepWorkUI() {
   const [activeView, setActiveViewState] = useState<ActiveView>('chat');
   const [agentMode, setAgentMode] = useState<MainAgentMode>(() => readStoredMainAgentMode() || 'think');
   const [thinkingLevel, setThinkingLevelState] = useState<MainAgentThinkingLevel>('low');
-  const [selectedAgentState, setSelectedAgentState] = useState<SelectedAgentState>({
-    agentId: null,
-    agentName: 'General',
+  const [selectedAgentState, setSelectedAgentState] = useState<SelectedAgentState>(() => {
+    try {
+      const saved = typeof window !== 'undefined' ? localStorage.getItem('eterx_settings') : null;
+      const settings = saved ? JSON.parse(saved) : null;
+      if (settings?.workMode === 'specialist') {
+        return { agentId: 'autonomous', agentName: 'Autonomous' };
+      }
+    } catch {}
+    return { agentId: null, agentName: 'General' };
   });
   const [proxyEnabled, setProxyEnabled] = useState(true);
   const [proxyIntervention, setProxyIntervention] = useState<'minimal' | 'normal' | 'high'>('normal');
@@ -789,13 +828,19 @@ function DeepWorkUI() {
   const [showProxyChat, setShowProxyChat] = useState(false);
   const [proxyChatInput, setProxyChatInput] = useState('');
   const [showProxyModelMenu, setShowProxyModelMenu] = useState(false);
-  const [proxyChatMessages, setProxyChatMessages] = useState<Array<{ sender: 'user' | 'proxy'; text: string; time: string }>>([]);
+  const [showProxyRuntimeModelMenu, setShowProxyRuntimeModelMenu] = useState(false);
+  const [showProxyInterventionMenu, setShowProxyInterventionMenu] = useState(false);
+  const [proxyChatMessages, setProxyChatMessages] = useState<Array<{ id?: string; sender: 'user' | 'proxy'; text: string; time: string; delivery?: string }>>([]);
+  const [proxyChatHistoryChatId, setProxyChatHistoryChatId] = useState<string | null>(null);
+  const [proxyChatLoading, setProxyChatLoading] = useState(false);
   const [proxyChatWindow, setProxyChatWindow] = useState({ x: 0, y: 0, width: 330, height: 420 });
+  const proxyChatWindowRef = useRef<HTMLDivElement | null>(null);
   const proxyWindowInteractionRef = useRef<{
     type: 'drag' | 'resize';
     startX: number;
     startY: number;
     startWindow: typeof proxyChatWindow;
+    baseRect: { left: number; top: number };
   } | null>(null);
   const [activeWorkspacePath, setActiveWorkspacePath] = useState<string | null>(null);
   const [activeRunLocation, setActiveRunLocation] = useState<'local' | 'sandbox'>('local');
@@ -826,6 +871,7 @@ function DeepWorkUI() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState<string>('models');
   const [topbarThemeOpen, setTopbarThemeOpen] = useState(false);
+  const [topbarHelpOpen, setTopbarHelpOpen] = useState(false);
   const [monitorOpen, setMonitorOpen] = useState(false);
   const [agentTeamOpen, setAgentTeamOpen] = useState(false);
   const [activeSubAgentTab, setActiveSubAgentTab] = useState<string | null>(null);
@@ -1118,37 +1164,54 @@ function DeepWorkUI() {
     }
     setActiveViewState(view);
   }, []);
-
   const handleThemeChange = useCallback((newTheme: 'light' | 'dark') => {
     console.log('[ThemeChange] Changing theme to:', newTheme);
-    try {
-      const saved = localStorage.getItem(SETTINGS_STORAGE_KEY);
-      const settings = saved ? JSON.parse(saved) : {};
-      settings.theme = newTheme;
-      localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
-      
-      // Direct DOM manipulation to ensure instant update
-      const root = document.documentElement;
-      root.setAttribute('data-theme', newTheme);
-      root.classList.toggle('dark', newTheme === 'dark');
-      root.classList.toggle('light', newTheme === 'light');
-      root.style.colorScheme = newTheme;
-      
-      // Sync natively
-      (window as any).electronAPI?.setNativeTheme?.(newTheme);
-      
-      applyEterxTheme(newTheme);
-      broadcastEterxSettingsUpdate(settings);
-      
-      window.dispatchEvent(new StorageEvent('storage', { key: SETTINGS_STORAGE_KEY }));
-    } catch (err) {
-      console.error('[ThemeChange] Error changing theme:', err);
+    const changeThemeDOM = () => {
+      try {
+        const saved = localStorage.getItem(SETTINGS_STORAGE_KEY);
+        const settings = saved ? JSON.parse(saved) : {};
+        settings.theme = newTheme;
+        localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+        
+        // Direct DOM manipulation to ensure instant update
+        const root = document.documentElement;
+        root.setAttribute('data-theme', newTheme);
+        root.classList.toggle('dark', newTheme === 'dark');
+        root.classList.toggle('light', newTheme === 'light');
+        root.style.colorScheme = newTheme;
+        
+        // Sync natively
+        (window as any).electronAPI?.setNativeTheme?.(newTheme);
+        
+        applyEterxTheme(newTheme);
+        broadcastEterxSettingsUpdate(settings);
+        
+        window.dispatchEvent(new StorageEvent('storage', { key: SETTINGS_STORAGE_KEY }));
+      } catch (err) {
+        console.error('[ThemeChange] Error changing theme:', err);
+      }
+    };
+
+    if (typeof document !== 'undefined' && (document as any).startViewTransition) {
+      const rootClass = document.documentElement.classList;
+      rootClass.add('theme-transitioning');
+      const transition = (document as any).startViewTransition(() => {
+        changeThemeDOM();
+      });
+      transition.finished.then(() => {
+        rootClass.remove('theme-transitioning');
+      });
+    } else {
+      changeThemeDOM();
     }
     setTopbarThemeOpen(false);
   }, []);
-
-  const openSettingsWindow = useCallback((tab?: string) => {
-    if (tab) setSettingsInitialTab(tab);
+  const openSettingsWindow = useCallback((tab?: any) => {
+    if (tab && typeof tab === 'string') {
+      setSettingsInitialTab(tab);
+    } else {
+      setSettingsInitialTab('general');
+    }
     setIsSettingsOpen(true);
   }, [setSettingsInitialTab, setIsSettingsOpen]);
 
@@ -1160,30 +1223,51 @@ function DeepWorkUI() {
       }
     };
 
-    const onStorage = (event: StorageEvent) => {
-      if (!event.key || event.key === SETTINGS_STORAGE_KEY) applyStoredAgentMode();
+    const applyStoredSettings = () => {
+      applyStoredAgentMode();
+      try {
+        const saved = localStorage.getItem(SETTINGS_STORAGE_KEY);
+        const settings = saved ? JSON.parse(saved) : null;
+        if (settings && settings.workMode && traceLogsLengthRef.current === 0) {
+          if (settings.workMode === 'specialist') {
+            const next = { agentId: 'autonomous', agentName: 'Autonomous' };
+            setSelectedAgentState(next);
+            updateComposerState(state => ({ ...state, selectedAgent: next }));
+          } else if (settings.workMode === 'everyday') {
+            const next = { agentId: null, agentName: 'General' };
+            setSelectedAgentState(next);
+            updateComposerState(state => ({ ...state, selectedAgent: next }));
+          }
+        }
+      } catch (e) {
+        console.error('Failed to sync settings workMode to agent selection:', e);
+      }
     };
 
-    applyStoredAgentMode();
+    const onStorage = (event: StorageEvent) => {
+      if (!event.key || event.key === SETTINGS_STORAGE_KEY) applyStoredSettings();
+    };
+
+    applyStoredSettings();
     window.addEventListener('storage', onStorage);
-    window.addEventListener('focus', applyStoredAgentMode);
-    window.addEventListener('eterx-settings-updated', applyStoredAgentMode);
+    window.addEventListener('focus', applyStoredSettings);
+    window.addEventListener('eterx-settings-updated', applyStoredSettings);
 
     let channel: BroadcastChannel | null = null;
     try {
       channel = new BroadcastChannel(SETTINGS_CHANNEL);
-      channel.onmessage = applyStoredAgentMode;
+      channel.onmessage = applyStoredSettings;
     } catch {
       channel = null;
     }
 
     return () => {
       window.removeEventListener('storage', onStorage);
-      window.removeEventListener('focus', applyStoredAgentMode);
-      window.removeEventListener('eterx-settings-updated', applyStoredAgentMode);
+      window.removeEventListener('focus', applyStoredSettings);
+      window.removeEventListener('eterx-settings-updated', applyStoredSettings);
       channel?.close();
     };
-  }, []);
+  }, [updateComposerState]);
 
   // ═══ Gemini Live Session State ═══
   const [liveState, setLiveState] = useState<LiveSessionState>('idle');
@@ -1219,14 +1303,20 @@ function DeepWorkUI() {
   const pollRunIdRef = useRef<Map<string, string>>(new Map());
   // Invalidates in-flight poll callbacks when a poller is restarted or stopped.
   const pollGenerationRef = useRef<Map<string, number>>(new Map());
+  const backgroundChatUpdatesRef = useRef<Map<string, Array<(logs: any[]) => any[]>>>(new Map());
+  const backgroundUpdateTimerRef = useRef<number | null>(null);
   // CRITICAL: Ref for activeChatId so polling closures always see the latest value
   const activeChatIdRef = useRef<string | null>(null);
   const localStorageTimerRef = useRef<NodeJS.Timeout | null>(null);
   const pendingLocalStorageWrite = useRef(false);
+  const lastChatSnapshotAtRef = useRef(0);
+  const persistedChatSignaturesRef = useRef<Map<string, string>>(new Map());
+  const chatsRef = useRef<ChatSession[]>([]);
   const restoredActiveChatRef = useRef(false);
   const panelResizeCleanupRef = useRef<(() => void) | null>(null);
   // Keep ref synced with state
   activeChatIdRef.current = activeChatId;
+  chatsRef.current = chats;
   activeViewRef.current = activeView;
   runningChatsRef.current = runningChats;
   networkBannerVisibleRef.current = networkBannerVisible;
@@ -1374,52 +1464,147 @@ function DeepWorkUI() {
   const handleProxyToggle = useCallback(async () => {
     const nextEnabled = !proxyEnabled;
     setProxyEnabled(nextEnabled);
-    if (activeChatId) {
-      const ok = await updateProxyControl(nextEnabled ? 'resume' : 'pause');
-      if (!ok) setProxyEnabled(!nextEnabled);
-    }
-  }, [activeChatId, proxyEnabled, updateProxyControl]);
+    try { localStorage.setItem(`eterx_proxy_controls_${activeChatId || 'new_chat'}`, JSON.stringify({ enabled: nextEnabled, intervention: proxyIntervention })); } catch { }
+    if (activeChatId) await updateProxyControl(nextEnabled ? 'resume' : 'pause');
+  }, [activeChatId, proxyEnabled, proxyIntervention, updateProxyControl]);
 
   const handleProxyInterventionChange = useCallback(async (level: 'minimal' | 'normal' | 'high') => {
-    const previous = proxyIntervention;
     setProxyIntervention(level);
-    if (activeChatId) {
-      const ok = await updateProxyControl('intervention', level);
-      if (!ok) setProxyIntervention(previous);
+    try { localStorage.setItem(`eterx_proxy_controls_${activeChatId || 'new_chat'}`, JSON.stringify({ enabled: proxyEnabled, intervention: level })); } catch { }
+    if (activeChatId) await updateProxyControl('intervention', level);
+  }, [activeChatId, proxyEnabled, updateProxyControl]);
+
+  useEffect(() => {
+    const key = `eterx_proxy_controls_${activeChatId || 'new_chat'}`;
+    try {
+      const saved = JSON.parse(localStorage.getItem(key) || '{}');
+      setProxyEnabled(saved.enabled !== false);
+      setProxyIntervention(['minimal', 'normal', 'high'].includes(saved.intervention) ? saved.intervention : 'normal');
+    } catch {
+      setProxyEnabled(true);
+      setProxyIntervention('normal');
     }
-  }, [activeChatId, proxyIntervention, updateProxyControl]);
+  }, [activeChatId]);
 
-  const handleSendProxyMessage = useCallback(() => {
-    if (!proxyChatInput.trim()) return;
-    const userMsg = {
-      sender: 'user' as const,
-      text: proxyChatInput,
-      time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-    };
-    setProxyChatMessages(prev => [...prev, userMsg]);
+  useEffect(() => {
+    try {
+      setProxyRuntimeModelSelection(localStorage.getItem(`eterx_proxy_runtime_model_${activeChatId || 'new_chat'}`) || AUTO_MODEL_SELECTION);
+    } catch {
+      setProxyRuntimeModelSelection(AUTO_MODEL_SELECTION);
+    }
+  }, [activeChatId]);
+
+
+  useEffect(() => {
+    if (!activeChatId) {
+      setProxyChatMessages([]);
+      setProxyChatHistoryChatId(null);
+      setProxyModelSelection(AUTO_MODEL_SELECTION);
+      return;
+    }
+    setProxyChatMessages([]);
+    setProxyChatHistoryChatId(null);
     setProxyChatInput('');
+    setShowProxyModelMenu(false);
+    setShowProxyRuntimeModelMenu(false);
+    setShowProxyInterventionMenu(false);
+    setProxyChatLoading(false);
+    try {
+      setProxyModelSelection(localStorage.getItem(`eterx_proxy_manager_model_${activeChatId}`) || AUTO_MODEL_SELECTION);
+    } catch { setProxyModelSelection(AUTO_MODEL_SELECTION); }
+    let cancelled = false;
+    fetch(`/api/agent/proxy-manager?chatId=${encodeURIComponent(activeChatId)}`)
+      .then(response => response.ok ? response.json() : Promise.reject(new Error('history unavailable')))
+      .then(data => {
+        if (cancelled) return;
+        setProxyChatMessages((Array.isArray(data.messages) ? data.messages : []).map((item: any) => ({
+          id: String(item.id || ''),
+          sender: item.role === 'user' ? 'user' : 'proxy',
+          text: String(item.text || ''),
+          time: new Date(Number(item.createdAt || Date.now())).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          delivery: item.delivery,
+        })));
+        setProxyChatHistoryChatId(activeChatId);
+      })
+      .catch(() => { if (!cancelled) setProxyChatMessages([]); });
+    return () => { cancelled = true; };
+  }, [activeChatId]);
 
-    setTimeout(() => {
+  useEffect(() => {
+    if (!activeChatId) return;
+    try { localStorage.setItem(`eterx_proxy_manager_model_${activeChatId}`, proxyModelSelection); } catch { }
+  }, [activeChatId, proxyModelSelection]);
+
+  const visibleProxyChatMessages = proxyChatHistoryChatId === activeChatId ? proxyChatMessages : [];
+
+  const handleSendProxyMessage = useCallback(async () => {
+    const text = proxyChatInput.trim();
+    if (!text || !activeChatId || proxyChatLoading) return;
+    const optimisticId = crypto.randomUUID();
+    setProxyChatHistoryChatId(activeChatId);
+    setProxyChatMessages(prev => [...prev, {
+      id: optimisticId,
+      sender: 'user',
+      text,
+      time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    }]);
+    setProxyChatInput('');
+    setProxyChatLoading(true);
+    const parsedModel = parseModelEntryKey(proxyModelSelection);
+    try {
+      const response = await fetch('/api/agent/proxy-manager', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chatId: activeChatId, message: text, model: parsedModel || {} }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.success) throw new Error(data.error || 'Proxy Manager request failed');
+      setProxyChatMessages((Array.isArray(data.history) ? data.history : []).map((item: any) => ({
+        id: String(item.id || ''),
+        sender: item.role === 'user' ? 'user' : 'proxy',
+        text: String(item.text || ''),
+        time: new Date(Number(item.createdAt || Date.now())).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        delivery: item.delivery,
+      })));
+    } catch (error: any) {
       setProxyChatMessages(prev => [...prev, {
+        id: crypto.randomUUID(),
         sender: 'proxy',
-        text: "I received your message! I'm continuing to monitor the execution flow and will keep you posted.",
-        time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        text: String(error?.message || 'Proxy Manager is temporarily unavailable.'),
+        time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        delivery: 'unavailable',
       }]);
-    }, 1000);
-  }, [proxyChatInput]);
+    } finally {
+      setProxyChatLoading(false);
+    }
+  }, [activeChatId, proxyChatInput, proxyChatLoading, proxyModelSelection]);
 
   const handleProxyWindowPointerMove = useCallback((event: PointerEvent) => {
     const interaction = proxyWindowInteractionRef.current;
     if (!interaction) return;
     const dx = event.clientX - interaction.startX;
     const dy = event.clientY - interaction.startY;
+    const baseLeft = interaction.baseRect.left - interaction.startWindow.x;
+    const baseTop = interaction.baseRect.top - interaction.startWindow.y;
     if (interaction.type === 'drag') {
-      setProxyChatWindow(current => ({ ...current, x: interaction.startWindow.x + dx, y: interaction.startWindow.y + dy }));
-    } else {
+      const minX = 10 - baseLeft;
+      const maxX = window.innerWidth - 10 - baseLeft - interaction.startWindow.width;
+      const minY = 10 - baseTop;
+      const maxY = window.innerHeight - 10 - baseTop - interaction.startWindow.height;
       setProxyChatWindow(current => ({
         ...current,
-        width: Math.max(280, Math.min(560, interaction.startWindow.width + dx)),
-        height: Math.max(320, Math.min(720, interaction.startWindow.height + dy)),
+        x: Math.max(minX, Math.min(maxX, interaction.startWindow.x + dx)),
+        y: Math.max(minY, Math.min(maxY, interaction.startWindow.y + dy)),
+      }));
+    } else {
+      const left = baseLeft + interaction.startWindow.x;
+      const top = baseTop + interaction.startWindow.y;
+      const maxWidth = Math.max(280, window.innerWidth - left - 10);
+      const maxHeight = Math.max(320, window.innerHeight - top - 10);
+      setProxyChatWindow(current => ({
+        ...current,
+        width: Math.max(280, Math.min(560, maxWidth, interaction.startWindow.width + dx)),
+        height: Math.max(320, Math.min(720, maxHeight, interaction.startWindow.height + dy)),
       }));
     }
   }, []);
@@ -1445,6 +1630,10 @@ function DeepWorkUI() {
       startX: event.clientX,
       startY: event.clientY,
       startWindow: proxyChatWindow,
+      baseRect: (() => {
+        const rect = proxyChatWindowRef.current?.getBoundingClientRect();
+        return { left: rect?.left ?? 0, top: rect?.top ?? 0 };
+      })(),
     };
   }, [proxyChatWindow]);
 
@@ -1661,7 +1850,7 @@ function DeepWorkUI() {
       };
       setChats(prev => {
         const updated = [newChat, ...prev];
-        localStorage.setItem('eterx_chats', JSON.stringify(stripChatsForStorage(updated)));
+        persistChats(updated);
         return updated;
       });
       setActiveChatId(currentChatId);
@@ -1674,7 +1863,7 @@ function DeepWorkUI() {
       const res = await fetch('/api/live/key', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chatId: activeChatId || `live_${ Date.now() }` })
+        body: JSON.stringify({ chatId: currentChatId })
       });
 
       if (!res.ok) {
@@ -1737,7 +1926,7 @@ function DeepWorkUI() {
                   }
                   return c;
                 });
-                localStorage.setItem('eterx_chats', JSON.stringify(stripChatsForStorage(updated)));
+                persistChats(updated);
                 return updated;
               });
               return merged;
@@ -1843,24 +2032,81 @@ function DeepWorkUI() {
   useEffect(() => {
     if (restoredActiveChatRef.current) return;
     restoredActiveChatRef.current = true;
+    let cancelled = false;
+    let localChats: ChatSession[] = [];
+    let localSavedAt = 0;
+
+    const applyRestoredChats = (restoredChats: ChatSession[]) => {
+      if (cancelled) return;
+      setChats(restoredChats);
+      const savedActiveChatId = localStorage.getItem(ACTIVE_CHAT_STORAGE_KEY);
+      const restoredActiveChat = restoredChats.find(chat => chat.id === savedActiveChatId);
+      if (restoredActiveChat) {
+        activeChatIdRef.current = restoredActiveChat.id;
+        setActiveChatId(restoredActiveChat.id);
+        setTraceLogs(restoredActiveChat.traceLogs || []);
+        setActiveWorkspacePath(restoredActiveChat.workspacePath || null);
+        applyComposerState(composerStates[restoredActiveChat.id]);
+      }
+    };
+
     try {
       const saved = localStorage.getItem('eterx_chats');
+      localSavedAt = Number(localStorage.getItem('eterx_chats_saved_at') || 0);
       if (saved) {
-        const parsed = JSON.parse(saved);
-        const restoredChats = sortChats(parsed);
-        setChats(restoredChats);
-
-        const savedActiveChatId = localStorage.getItem(ACTIVE_CHAT_STORAGE_KEY);
-        const restoredActiveChat = restoredChats.find(chat => chat.id === savedActiveChatId);
-        if (restoredActiveChat) {
-          activeChatIdRef.current = restoredActiveChat.id;
-          setActiveChatId(restoredActiveChat.id);
-          setTraceLogs(restoredActiveChat.traceLogs || []);
-          setActiveWorkspacePath(restoredActiveChat.workspacePath || null);
-          applyComposerState(composerStates[restoredActiveChat.id]);
-        }
+        localChats = sortChats(JSON.parse(saved));
+        applyRestoredChats(localChats);
       }
-    } catch (e) { }
+    } catch { }
+
+    void fetch('/api/chats', { cache: 'no-store' })
+      .then(response => response.ok ? response.json() : Promise.reject(new Error(`Chat restore HTTP ${response.status}`)))
+      .then(snapshot => {
+        if (cancelled) return;
+        const appDataChats = Array.isArray(snapshot?.chats) ? sortChats(snapshot.chats) : [];
+        const appDataSavedAt = Number(snapshot?.savedAt || 0);
+        lastChatSnapshotAtRef.current = Math.max(localSavedAt, appDataSavedAt, Date.now());
+
+        const logIdentity = (log: any) => [
+          log?.id || '', log?.type || '', log?.timestamp || log?.startTime || '',
+          String(log?.text || log?.output || '').slice(0, 160),
+        ].join('|');
+        const mergeNewerCacheIntoDurableChat = (durable: ChatSession, cached: ChatSession): ChatSession => {
+          const durableLogs = durable.traceLogs || [];
+          const cachedLogs = cached.traceLogs || [];
+          if (durableLogs.length === 0 || cachedLogs.length === 0) return { ...durable, ...cached, traceLogs: cachedLogs.length ? cachedLogs : durableLogs };
+          const firstCachedIdentity = logIdentity(cachedLogs[0]);
+          let overlapIndex = -1;
+          for (let i = durableLogs.length - 1; i >= 0; i--) {
+            if (logIdentity(durableLogs[i]) === firstCachedIdentity) {
+              overlapIndex = i;
+              break;
+            }
+          }
+          const mergedLogs = overlapIndex >= 0
+            ? [...durableLogs.slice(0, overlapIndex), ...cachedLogs]
+            : durableLogs.length >= cachedLogs.length ? durableLogs : cachedLogs;
+          return { ...durable, ...cached, traceLogs: mergedLogs };
+        };
+
+        const mergedById = new Map(appDataChats.map(chat => [chat.id, chat]));
+        for (const cachedChat of localChats) {
+          const durableChat = mergedById.get(cachedChat.id);
+          if (!durableChat) {
+            mergedById.set(cachedChat.id, cachedChat);
+          } else if (localSavedAt > appDataSavedAt) {
+            mergedById.set(cachedChat.id, mergeNewerCacheIntoDurableChat(durableChat, cachedChat));
+          }
+        }
+        const restoredChats = sortChats(Array.from(mergedById.values()));
+        applyRestoredChats(restoredChats);
+        persistChats(restoredChats);
+      })
+      .catch(() => {
+        if (localChats.length > 0) persistChats(localChats);
+      });
+
+    return () => { cancelled = true; };
   }, [applyComposerState, composerStates]);
 
   useEffect(() => {
@@ -1936,7 +2182,7 @@ function DeepWorkUI() {
             c.id === activeChatId ? { ...c, traceLogs: finalLogs, updatedAt: Date.now() } : c
           );
           const sorted = sortChats(updated);
-          localStorage.setItem('eterx_chats', JSON.stringify(stripChatsForStorage(sorted)));
+          persistChats(sorted);
           return sorted;
         });
       }
@@ -1991,6 +2237,71 @@ function DeepWorkUI() {
       ...chat,
       traceLogs: (chat.traceLogs || []).map(stripTraceLogForStorage)
     }));
+  const stripChatsForBrowserCache = (chatList: ChatSession[]) =>
+    chatList.slice(0, 50).map(chat => ({
+      ...chat,
+      // AppData owns full history. Browser storage is only a fast/offline cache
+      // and must stay bounded to avoid synchronous localStorage stalls.
+      traceLogs: (chat.traceLogs || []).slice(-300).map(stripTraceLogForStorage),
+    }));
+  const persistChats = async (chatList: ChatSession[], keepalive = false): Promise<void> => {
+    const persistenceSignature = (chat: ChatSession) => {
+      const logs = chat.traceLogs || [];
+      const tailSignature = logs.slice(-12).map((log: any) => {
+        const text = String(log?.text || log?.output || log?.content || '');
+        return [log?.id || '', log?._traceIdx ?? '', log?.type || '', log?.status || '', text.length, text.slice(-64)].join(':');
+      }).join('~');
+      return [
+        chat.updatedAt, chat.title, chat.isFavorite ? 1 : 0, chat.workspacePath || '', chat.runLocation || '',
+        logs.length, tailSignature,
+      ].join('|');
+    };
+    const nextSignatures = new Map(chatList.map(chat => [chat.id, persistenceSignature(chat)]));
+    const previousSignatures = persistedChatSignaturesRef.current;
+    const changedChats = chatList.filter(chat => previousSignatures.get(chat.id) !== nextSignatures.get(chat.id));
+    const hasDeletion = Array.from(previousSignatures.keys()).some(id => !nextSignatures.has(id));
+    if (changedChats.length === 0 && !hasDeletion) return;
+
+    const stripped = stripChatsForStorage(changedChats);
+    const chatIds = chatList.map(chat => chat.id);
+    const savedAt = Math.max(Date.now(), lastChatSnapshotAtRef.current + 1);
+    lastChatSnapshotAtRef.current = savedAt;
+    try {
+      localStorage.setItem('eterx_chats', JSON.stringify(stripChatsForBrowserCache(chatList)));
+      localStorage.setItem('eterx_chats_saved_at', String(savedAt));
+    } catch { }
+    const desktopSave = (window as any).electronAPI?.saveChatSnapshot;
+    if (desktopSave) {
+      const saved = await desktopSave({ savedAt, chats: stripped, chatIds, partial: true })
+        .then(() => true)
+        .catch(() => false);
+      if (saved) persistedChatSignaturesRef.current = nextSignatures;
+      return;
+    }
+    const saved = await fetch('/api/chats', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ savedAt, chats: stripped, chatIds, partial: true }),
+      keepalive,
+    }).then(response => response.ok).catch(() => false);
+    if (saved) persistedChatSignaturesRef.current = nextSignatures;
+  };
+  useEffect(() => {
+    const flushChatSnapshot = () => {
+      if (localStorageTimerRef.current) {
+        clearTimeout(localStorageTimerRef.current);
+        localStorageTimerRef.current = null;
+      }
+      pendingLocalStorageWrite.current = false;
+      void persistChats(chatsRef.current, true);
+    };
+    window.addEventListener('pagehide', flushChatSnapshot);
+    window.addEventListener('beforeunload', flushChatSnapshot);
+    return () => {
+      window.removeEventListener('pagehide', flushChatSnapshot);
+      window.removeEventListener('beforeunload', flushChatSnapshot);
+    };
+  }, []);
   const isTerminalAgentStatus = (status: any) => status === 'completed' || status === 'failed' || status === 'stopped';
   const normalizeClientTraceTime = (value: unknown, fallback = Date.now()) => {
     const raw = Number(value);
@@ -2105,7 +2416,7 @@ function DeepWorkUI() {
         };
       });
       const sorted = options.touchUpdatedAt ? sortChats(updated) : updated;
-      try { localStorage.setItem('eterx_chats', JSON.stringify(stripChatsForStorage(sorted))); } catch { }
+      persistChats(sorted);
       return sorted;
     });
   };
@@ -2128,6 +2439,15 @@ function DeepWorkUI() {
         chat = { ...chat, ...freshChat };
       }
     } catch { /* fallback to React state */ }
+
+    const queuedUpdates = backgroundChatUpdatesRef.current.get(id);
+    if (chat && queuedUpdates?.length) {
+      let latestLogs = chat.traceLogs || [];
+      for (const update of queuedUpdates) latestLogs = update(latestLogs);
+      chat = { ...chat, traceLogs: latestLogs };
+      backgroundChatUpdatesRef.current.delete(id);
+      setChats(current => current.map(item => item.id === id ? chat! : item));
+    }
 
     if (chat) {
       activeChatIdRef.current = id;
@@ -2182,7 +2502,7 @@ function DeepWorkUI() {
                 setTraceLogs(mergedLogs);
                 setChats(prev => {
                   const updated = prev.map(c => c.id === id ? { ...c, traceLogs: mergedLogs } : c);
-                  try { localStorage.setItem('eterx_chats', JSON.stringify(stripChatsForStorage(updated))); } catch { }
+                  persistChats(updated);
                   return updated;
                 });
               }
@@ -2219,7 +2539,7 @@ function DeepWorkUI() {
     if (activeChatId) {
       setChats(prev => {
         const updated = prev.map(chat => chat.id === activeChatId ? { ...chat, workspacePath: path } : chat);
-        localStorage.setItem('eterx_chats', JSON.stringify(stripChatsForStorage(updated)));
+        persistChats(updated);
         return updated;
       });
     }
@@ -2231,7 +2551,7 @@ function DeepWorkUI() {
     if (activeChatId) {
       setChats(prev => {
         const updated = prev.map(chat => chat.id === activeChatId ? { ...chat, runLocation: location } : chat);
-        localStorage.setItem('eterx_chats', JSON.stringify(stripChatsForStorage(updated)));
+        persistChats(updated);
         return updated;
       });
     }
@@ -2250,7 +2570,7 @@ function DeepWorkUI() {
       };
       setChats(prev => {
         const updated = [chat!, ...prev];
-        localStorage.setItem('eterx_chats', JSON.stringify(stripChatsForStorage(updated)));
+        persistChats(updated);
         return updated;
       });
       activeChatIdRef.current = builderChatId;
@@ -2346,7 +2666,7 @@ function DeepWorkUI() {
 
     setChats(prev => {
       const updated = prev.filter(c => !deleteSet.has(c.id));
-      localStorage.setItem('eterx_chats', JSON.stringify(stripChatsForStorage(updated)));
+      persistChats(updated);
       return updated;
     });
 
@@ -2367,7 +2687,7 @@ function DeepWorkUI() {
         c.id === id ? { ...c, title: newTitle, updatedAt: Date.now() } : c
       );
       const sorted = sortChats(updated);
-      localStorage.setItem('eterx_chats', JSON.stringify(stripChatsForStorage(sorted)));
+      persistChats(sorted);
       return sorted;
     });
   }, []);
@@ -2378,7 +2698,7 @@ function DeepWorkUI() {
         c.id === id ? { ...c, isFavorite: !c.isFavorite } : c
       );
       const sorted = sortChats(updated);
-      localStorage.setItem('eterx_chats', JSON.stringify(stripChatsForStorage(sorted)));
+      persistChats(sorted);
       return sorted;
     });
   }, []);
@@ -2413,7 +2733,7 @@ function DeepWorkUI() {
             c.id === chatId ? { ...c, title, updatedAt: Date.now() } : c
           );
           const sorted = sortChats(updated);
-          localStorage.setItem('eterx_chats', JSON.stringify(stripChatsForStorage(sorted)));
+          persistChats(sorted);
           return sorted;
         });
       }
@@ -2454,9 +2774,7 @@ function DeepWorkUI() {
           : chat
       );
       const sorted = sortChats(updated);
-      try {
-        window.localStorage.setItem('eterx_chats', JSON.stringify(stripChatsForStorage(sorted)));
-      } catch { }
+      persistChats(sorted);
       return sorted;
     });
   }, [activeChatId]);
@@ -2778,12 +3096,50 @@ function DeepWorkUI() {
         pendingLocalStorageWrite.current = false;
         // Read current chats state and write to localStorage
         setChats(currentChats => {
-          try { localStorage.setItem('eterx_chats', JSON.stringify(stripChatsForStorage(currentChats))); } catch { }
+          persistChats(currentChats);
           return currentChats; // Don't modify state
         });
       }
-    }, 2000); // Write at most every 2 seconds during polling
+    }, 4000); // Durable task traces save every 500ms; snapshot the heavy UI state less often.
   };
+
+  const flushBackgroundChatUpdates = () => {
+    if (backgroundUpdateTimerRef.current !== null) {
+      window.clearTimeout(backgroundUpdateTimerRef.current);
+      backgroundUpdateTimerRef.current = null;
+    }
+    if (backgroundChatUpdatesRef.current.size === 0) return;
+    const pending = new Map(backgroundChatUpdatesRef.current);
+    backgroundChatUpdatesRef.current.clear();
+    setChats(currentChats => {
+      let changed = false;
+      const updated = currentChats.map(chat => {
+        const updaters = pending.get(chat.id);
+        if (!updaters?.length) return chat;
+        let logs = chat.traceLogs || [];
+        for (const update of updaters) logs = update(logs);
+        changed = true;
+        return { ...chat, traceLogs: logs };
+      });
+      return changed ? updated : currentChats;
+    });
+  };
+
+  const queueBackgroundChatUpdate = (chatId: string, updater: (logs: any[]) => any[]) => {
+    const queued = backgroundChatUpdatesRef.current.get(chatId) || [];
+    queued.push(updater);
+    backgroundChatUpdatesRef.current.set(chatId, queued);
+    if (backgroundUpdateTimerRef.current === null) {
+      backgroundUpdateTimerRef.current = window.setTimeout(flushBackgroundChatUpdates, 120);
+    }
+  };
+
+  useEffect(() => () => {
+    if (backgroundUpdateTimerRef.current !== null) window.clearTimeout(backgroundUpdateTimerRef.current);
+    backgroundUpdateTimerRef.current = null;
+    backgroundChatUpdatesRef.current.clear();
+  }, []);
+
   /**
    * Start incremental polling for a specific chat.
    * Each chat has its own polling interval — fully independent.
@@ -2849,9 +3205,20 @@ function DeepWorkUI() {
         delay = Math.min(5000, 500 * Math.pow(2, errorBackoff - 1)); // 500ms, 1s, 2s, 4s, 5s cap
       } else {
         // PERFORMANCE: Adaptive poll delay.
-        // 200ms when receiving data (barely perceptible vs 150ms), 600ms when idle (60% less CPU).
-        // Error backoff remains unchanged. Network-paused stays at 1s.
-        delay = lastHadData ? 200 : 600;
+        // Very long active chats receive events in slightly larger batches so
+        // React does not rebuild thousands of timeline entries five times/sec.
+        const isActive = activeChatIdRef.current === chatId;
+        const isLargeActiveChat = isActive && traceLogsLengthRef.current > 1500;
+        const concurrentRuns = runningChatsRef.current.size;
+        if (!isActive) {
+          delay = concurrentRuns > 4
+            ? (lastHadData ? 750 : 1500)
+            : (lastHadData ? 400 : 900);
+        } else {
+          delay = isLargeActiveChat
+            ? (lastHadData ? 400 : 1000)
+            : (lastHadData ? 200 : 600);
+        }
       }
 
       const timeoutId = setTimeout(pollOnce, delay);
@@ -3170,16 +3537,7 @@ function DeepWorkUI() {
             }
           } else {
             // BACKGROUND chat — only update chats state, DON'T touch traceLogs
-            setChats(currentChats => {
-              const chat = currentChats.find(c => c.id === chatId);
-              if (!chat) return currentChats;
-
-              const chatLogs = processTraces(chat.traceLogs || []);
-
-              return currentChats.map(c =>
-                c.id === chatId ? { ...c, traceLogs: chatLogs } : c
-              );
-            });
+            queueBackgroundChatUpdate(chatId, processTraces);
           }
 
           // Debounced localStorage write — strip large content fields to avoid quota overflow
@@ -3189,6 +3547,7 @@ function DeepWorkUI() {
         // CRITICAL: Only stop on TERMINAL states, NOT 'idle'
         // 'idle' means agent hasn't started yet (race condition)
         if (data.status === 'failed') {
+          if (activeChatIdRef.current !== chatId) flushBackgroundChatUpdates();
           // Show error trace so UI doesn't silently drop — this was causing the
           // 'UI gets off while running' appearance (agent failed, no feedback)
           const errMsg = data.finalAnswer || data.error || 'All API attempts exhausted or agent encountered a fatal error.';
@@ -3206,6 +3565,7 @@ function DeepWorkUI() {
           }
         }
         if (data.status === 'completed' || data.status === 'failed' || data.status === 'stopped') {
+          if (activeChatIdRef.current !== chatId) flushBackgroundChatUpdates();
           // Check if it's already stopped by a overlapping async fetch
           const shouldNotify = pollingIntervalsRef.current.has(chatId);
 
@@ -3259,8 +3619,7 @@ function DeepWorkUI() {
           // Final save to localStorage (immediate, not debounced).
           // Strip large content fields before saving to prevent quota errors.
           setChats(currentChats => {
-            const stripped = stripChatsForStorage(currentChats);
-            try { localStorage.setItem('eterx_chats', JSON.stringify(stripped)); } catch { }
+            persistChats(currentChats);
             return currentChats; // Don't update React state with stripped version
           });
 
@@ -3603,8 +3962,34 @@ function DeepWorkUI() {
   }, [activeChatId, revealNetworkBanner]);
 
   const handleSteer = async () => {
-    if (!inputValue.trim()) return;
+    if (!inputValue.trim() && attachments.length === 0) return;
     const steerMessage = inputValue.trim();
+    let followUpBehavior: 'queue' | 'steer' = 'steer';
+    try {
+      const saved = localStorage.getItem(SETTINGS_STORAGE_KEY);
+      const settings = saved ? JSON.parse(saved) : null;
+      if (settings?.followUpBehavior === 'queue') followUpBehavior = 'queue';
+    } catch { }
+
+    // Attachments cannot be safely injected into an in-flight model turn.
+    // Preserve the complete composer payload as the next turn instead.
+    if (followUpBehavior === 'queue' || attachments.length > 0) {
+      if (!activeChatId) return;
+      setQueuedFollowUps(previous => [
+        ...previous,
+        {
+          id: crypto.randomUUID(),
+          chatId: activeChatId,
+          text: steerMessage,
+          attachments: [...attachments],
+          createdAt: Date.now(),
+        },
+      ]);
+      updateInputValue('');
+      updateAttachments([]);
+      return;
+    }
+
     updateInputValue('');
     await sendSteeringMessage(steerMessage);
   };
@@ -3923,13 +4308,14 @@ function DeepWorkUI() {
     }
   }, [activeChatId, activeSubAgentTab, attachments, inputValue, isRecording, revealNetworkBanner]);
 
-  const handleSend = async (overridePrompt?: string) => {
+  const handleSend = async (overridePrompt?: string, overrideAttachments?: ComposerAttachment[]) => {
     if (isRecording && mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
       mediaRecorderRef.current.stop();
       setIsRecording(false);
     }
     const promptText = (typeof overridePrompt === 'string' ? overridePrompt : inputValue).trim();
-    if (!promptText && attachments.length === 0) return;
+    const requestedAttachments = overrideAttachments ?? attachments;
+    if (!promptText && requestedAttachments.length === 0) return;
     if (isThinking) return;
     if (networkPausedRef.current) {
       revealNetworkBanner();
@@ -3947,7 +4333,7 @@ function DeepWorkUI() {
 
     const runAgentMode = readRuntimeAgentMode(agentMode);
     const runThinkingLevel = thinkingLevel;
-    const currentAttachments = [...attachments];
+    const currentAttachments = [...requestedAttachments];
     const userLogAttachments = currentAttachments.map(serializeComposerAttachment);
     const runStartedAt = Date.now();
     const clientRunId = crypto.randomUUID();
@@ -3978,6 +4364,11 @@ function DeepWorkUI() {
 
     if (!chatIdToUse) {
       chatIdToUse = crypto.randomUUID();
+      try {
+        localStorage.setItem(`eterx_proxy_controls_${chatIdToUse}`, JSON.stringify({ enabled: proxyEnabled, intervention: proxyIntervention }));
+        localStorage.setItem(`eterx_proxy_manager_model_${chatIdToUse}`, proxyModelSelection);
+        localStorage.setItem(`eterx_proxy_runtime_model_${chatIdToUse}`, proxyRuntimeModelSelection);
+      } catch { }
       activeChatIdRef.current = chatIdToUse;
       setActiveChatId(chatIdToUse);
 
@@ -3993,7 +4384,7 @@ function DeepWorkUI() {
 
       setChats(prev => {
         const updated = [newChat, ...prev];
-        localStorage.setItem('eterx_chats', JSON.stringify(stripChatsForStorage(updated)));
+        persistChats(updated);
         return updated;
       });
       setTraceLogs([userLog]);
@@ -4005,7 +4396,7 @@ function DeepWorkUI() {
           if (!generatedTitle || generatedTitle === initialTitle) return;
           setChats(prev => {
             const updated = prev.map(chat => chat.id === titleChatId ? { ...chat, title: generatedTitle } : chat);
-            localStorage.setItem('eterx_chats', JSON.stringify(stripChatsForStorage(updated)));
+            persistChats(updated);
             return updated;
           });
         })
@@ -4021,6 +4412,7 @@ function DeepWorkUI() {
       if (userMessageCount > 1 && userMessageCount % 5 === 0) {
         const chatHistory = updatedLogs
           .filter(log => log.type === 'user_action' || log.type === 'thought' || log.type === 'answer')
+          .slice(-80)
           .map(log => ({
             role: log.type === 'user_action' ? 'user' : 'model',
             parts: [{ text: log.text }]
@@ -4039,9 +4431,10 @@ function DeepWorkUI() {
     // Build chat history for context
     const chatHistory = historySourceLogs
       .filter(log => log.type === 'user_action' || log.type === 'answer')
+      .slice(-80)
       .map(log => ({
         role: log.type === 'user_action' ? 'user' : 'model',
-        parts: [{ text: log.text }]
+        parts: [{ text: String(log.text || '').slice(0, 60_000) }]
       }));
 
     const isBuilderChat = !!chatIdToUse && chatIdToUse.startsWith('agent_builder_');
@@ -4302,6 +4695,7 @@ function DeepWorkUI() {
           initiative: 'high',
           verification: 'adaptive',
           intervention: proxyIntervention,
+          proxyModelSelection: proxyRuntimeModelSelection,
         },
       } : {}),
       ...(activeWorkspacePath ? {
@@ -4422,6 +4816,23 @@ function DeepWorkUI() {
     }
   };
 
+  // Queue mode creates real follow-up turns rather than injecting text into an
+  // in-flight response. Process one item at a time after the current run has
+  // fully left the running state so history and trace ownership stay ordered.
+  useEffect(() => {
+    if (isThinking || !activeChatId || networkPausedRef.current) return;
+    const next = queuedFollowUps.find(item => item.chatId === activeChatId);
+    if (!next || queuedFollowUpDispatchRef.current.has(next.id)) return;
+
+    queuedFollowUpDispatchRef.current.add(next.id);
+    setQueuedFollowUps(previous => previous.filter(item => item.id !== next.id));
+    window.setTimeout(() => {
+      void handleSend(next.text, next.attachments).finally(() => {
+        queuedFollowUpDispatchRef.current.delete(next.id);
+      });
+    }, 0);
+  }, [activeChatId, isThinking, networkPhase, queuedFollowUps]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Automated real-time agent execution when scheduled task triggers
   useEffect(() => {
     const handleTriggerTask = (e: CustomEvent<{ task: any }>) => {
@@ -4457,9 +4868,7 @@ function DeepWorkUI() {
 
       setChats(prev => {
         const updated = [newChatSession, ...prev.filter(c => c.id !== taskChatId)];
-        try {
-          localStorage.setItem('eterx_chats', JSON.stringify(stripChatsForStorage(updated)));
-        } catch { }
+        persistChats(updated);
         return updated;
       });
 
@@ -4526,34 +4935,66 @@ function DeepWorkUI() {
   useEffect(() => {
     const rehydrate = async () => {
       try {
-        const saved = localStorage.getItem('eterx_chats');
-        if (!saved) return;
-        const savedChats: ChatSession[] = JSON.parse(saved);
+        let cachedChats: ChatSession[] = [];
+        try {
+          cachedChats = JSON.parse(localStorage.getItem('eterx_chats') || '[]');
+        } catch { }
+        let appDataChats: ChatSession[] = [];
+        try {
+          const response = await fetch('/api/chats', { cache: 'no-store' });
+          if (response.ok) {
+            const snapshot = await response.json();
+            if (Array.isArray(snapshot?.chats)) appDataChats = snapshot.chats;
+          }
+        } catch { }
+        const savedById = new Map<string, ChatSession>();
+        for (const chat of [...appDataChats, ...cachedChats, ...chatsRef.current]) {
+          if (chat?.id) savedById.set(chat.id, chat);
+        }
+        const savedChats = sortChats(Array.from(savedById.values()));
+        if (savedChats.length === 0) return;
 
-        // Check each chat for running agents on the server
-        for (const chat of savedChats.slice(0, 10)) { // Check last 10 chats max
+        // Reconcile recent chats with persisted task traces. This also restores
+        // the final UI state of work interrupted by an application restart.
+        for (const chat of savedChats.slice(0, 100)) {
           try {
             const data = await fetchAgentPoll(chat.id, -1, 5000);
+
+            if ((data.traces && data.traces.length > 0) || isTerminalAgentStatus(data.status)) {
+              setChats(prev => {
+                const updated = prev.map(c => {
+                  if (c.id !== chat.id) return c;
+                  let restoredLogs = mergeServerRunLogs(c.traceLogs || [], data.traces);
+                  if (data.status === 'completed' && data.finalAnswer) {
+                    const lastUserIndex = restoredLogs.findLastIndex((log: any) => log?.type === 'user_action');
+                    const currentTurn = lastUserIndex >= 0 ? restoredLogs.slice(lastUserIndex + 1) : restoredLogs;
+                    if (!currentTurn.some((log: any) => log?.type === 'answer')) {
+                      restoredLogs = [...restoredLogs, withTraceTiming({ type: 'answer', text: data.finalAnswer }, data.completedAt)];
+                    }
+                  } else if (data.status === 'failed' && data.finalAnswer) {
+                    const interruptionText = String(data.finalAnswer);
+                    if (!restoredLogs.some((log: any) => String(log?.text || '').includes(interruptionText))) {
+                      restoredLogs = [...restoredLogs, systemThoughtLog(`\n\n*${ interruptionText }*`, normalizeClientTraceTime(data.completedAt))];
+                    }
+                  }
+                  return { ...c, traceLogs: restoredLogs };
+                });
+                persistChats(updated);
+                if (activeChatIdRef.current === chat.id) {
+                  const active = updated.find(c => c.id === chat.id);
+                  if (active) setTraceLogs(active.traceLogs || []);
+                }
+                return updated;
+              });
+            }
 
             if (data.status === 'running') {
               console.log(`[Rehydrate] Found running agent for chat "${ chat.title }" (${ chat.id.substring(0, 8) }...)`);
               setRunningChats(prev => new Set(prev).add(chat.id));
-
-              // If this is the active chat, load live traces
-              if (data.traces && data.traces.length > 0) {
-                const mergedLogs = mergeServerRunLogs(chat.traceLogs || [], data.traces);
-                // Update the chat's traceLogs with merged state
-                setChats(prev => {
-                  const updated = prev.map(c =>
-                    c.id === chat.id ? { ...c, traceLogs: mergedLogs } : c
-                  );
-                  try { localStorage.setItem('eterx_chats', JSON.stringify(stripChatsForStorage(updated))); } catch { }
-                  return updated;
-                });
-              }
-
               // Start polling for this chat
               startPolling(chat.id, data.maxIndex ?? (data.totalTraces - 1));
+            } else if (isTerminalAgentStatus(data.status)) {
+              removeRunningChat(chat.id);
             }
           } catch {
             // Skip — server might not be ready yet
@@ -4664,19 +5105,33 @@ function DeepWorkUI() {
     return [...filteredLogs, ...liveLogs];
   }, [liveState, traceLogs, getLiveTraceLogs]);
 
+  const activeTurnTraceLogs = useMemo(() => {
+    for (let i = traceLogs.length - 1; i >= 0; i--) {
+      if (traceLogs[i]?.type === 'user_action') return traceLogs.slice(i);
+    }
+    return traceLogs;
+  }, [traceLogs]);
+
   const currentSubAgents = useMemo(() => {
     const agentMap = new Map<string, any>();
     const getTraceEventTime = (log: any) => {
       const at = Number(log?.startTime || log?.timestamp || log?.endTime || 0);
       return Number.isFinite(at) && at > 0 ? at : 0;
     };
-    const firstTraceAt = traceLogs.map(getTraceEventTime).find(Boolean) || Date.now();
+    let firstTraceAt = Date.now();
+    for (const log of activeTurnTraceLogs) {
+      const at = getTraceEventTime(log);
+      if (at) {
+        firstTraceAt = at;
+        break;
+      }
+    }
 
     // Add Main agent if running or if we have trace logs for it
     if (isThinking) {
       let mainStatus = 'working';
       let mainStartedAt = 0;
-      for (const log of traceLogs) {
+      for (const log of activeTurnTraceLogs) {
         if (!log) continue;
         const name = log.agentName || log.subAgent;
         if (name === 'Main' && !mainStartedAt) mainStartedAt = getTraceEventTime(log);
@@ -4699,7 +5154,7 @@ function DeepWorkUI() {
       });
     }
 
-    for (const log of traceLogs) {
+    for (const log of activeTurnTraceLogs) {
       if (!log) continue;
       const name = log.agentName || log.subAgent;
       if (!name) continue;
@@ -4741,7 +5196,7 @@ function DeepWorkUI() {
       }
     }
     return Array.from(agentMap.values());
-  }, [traceLogs, isThinking]);
+  }, [activeTurnTraceLogs, isThinking]);
 
   const realSubAgents = useMemo(
     () => currentSubAgents.filter((agent: any) => agent?.name && agent.name !== 'Main'),
@@ -4873,7 +5328,7 @@ function DeepWorkUI() {
   // Per-sub-agent trace logs — filters the main traceLogs for the selected sub-agent tab
   const subAgentDisplayLogs = useMemo(() => {
     if (!activeSubAgentTab) return [];
-    const filtered = traceLogs.filter(log => {
+    const filtered = activeTurnTraceLogs.filter(log => {
       if (!log) return false;
       const agentName = log.agentName || log.subAgent;
       return agentName === activeSubAgentTab;
@@ -4894,7 +5349,7 @@ function DeepWorkUI() {
       ];
     }
     return filtered;
-  }, [traceLogs, activeSubAgentTab, currentSubAgents]);
+  }, [activeTurnTraceLogs, activeSubAgentTab, currentSubAgents]);
 
   // Which logs to show in ChatFeed — main or sub-agent
   const autonomousSelected = selectedAgent === 'autonomous';
@@ -5433,17 +5888,149 @@ function DeepWorkUI() {
             </DropdownMenu.Root>
           </div>
           
-          {/* Help */}
-          <button type="button"
-            onClick={() => {}}
-            className="eterx-topbar-btn px-[10px] h-full text-[13px] font-normal tracking-[0.01em] cursor-pointer select-none outline-none bg-transparent border-0 transition-colors duration-150"
-            style={{ color: 'var(--sidebar-muted-text, #9A9590)' }}>
-            Help
-          </button>
+          {/* Help dropdown */}
+          <div className="relative flex items-center">
+            <DropdownMenu.Root open={topbarHelpOpen} onOpenChange={setTopbarHelpOpen}>
+              <DropdownMenu.Trigger asChild>
+                <button type="button"
+                  className="eterx-topbar-btn px-[10px] h-full text-[13px] font-normal tracking-[0.01em] cursor-pointer select-none outline-none bg-transparent border-0 transition-colors duration-150"
+                  style={{ color: 'var(--sidebar-muted-text, #9A9590)' }}>
+                  Help
+                </button>
+              </DropdownMenu.Trigger>
+              <DropdownMenu.Portal>
+                <DropdownMenu.Content
+                  align="end"
+                  sideOffset={6}
+                  className="w-[180px] flex flex-col gap-[2px] rounded-[10px] p-[4px] z-[9999]"
+                  style={{
+                    background: 'var(--eterx-dropdown-bg, var(--sidebar-bg, #F0EDE8))',
+                    border: '1px solid var(--eterx-dropdown-border, var(--sidebar-border, rgba(0,0,0,0.1)))',
+                    boxShadow: '0 4px 16px rgba(0,0,0,0.12), 0 1px 4px rgba(0,0,0,0.06)',
+                  }}
+                >
+                  <DropdownMenu.Item
+                    asChild
+                    onSelect={async (e) => {
+                      e.preventDefault();
+                      setTopbarHelpOpen(false);
+                      await persistChats(chatsRef.current, true);
+                      if ((window as any).electronAPI?.restartApp) {
+                        await (window as any).electronAPI.restartApp();
+                      } else {
+                        window.location.reload();
+                      }
+                    }}
+                  >
+                    <button
+                      type="button"
+                      className="flex items-center gap-[8px] w-full px-[8px] py-[6px] text-[12px] font-medium rounded-[6px] text-left transition-all duration-150 outline-none border-0 cursor-pointer pointer-events-auto"
+                      style={{
+                        background: 'transparent',
+                        color: 'var(--sidebar-strong-text, currentColor)',
+                        opacity: 0.8,
+                      }}
+                      onMouseEnter={e => {
+                        e.currentTarget.style.background = 'var(--sidebar-hover-bg, rgba(0,0,0,0.03))';
+                        e.currentTarget.style.opacity = '1';
+                      }}
+                      onMouseLeave={e => {
+                        e.currentTarget.style.background = 'transparent';
+                        e.currentTarget.style.opacity = '0.8';
+                      }}
+                    >
+                      <RefreshCw size={14} />
+                      <span>Restart</span>
+                    </button>
+                  </DropdownMenu.Item>
+
+                  <DropdownMenu.Item
+                    asChild
+                    onSelect={async (e) => {
+                      e.preventDefault();
+                      setTopbarHelpOpen(false);
+                      await persistChats(chatsRef.current, true);
+                      if ((window as any).electronAPI?.closeApp) {
+                        await (window as any).electronAPI.closeApp();
+                      } else {
+                        window.close();
+                      }
+                    }}
+                  >
+                    <button
+                      type="button"
+                      className="flex items-center gap-[8px] w-full px-[8px] py-[6px] text-[12px] font-medium rounded-[6px] text-left transition-all duration-150 outline-none border-0 cursor-pointer pointer-events-auto"
+                      style={{
+                        background: 'transparent',
+                        color: 'var(--sidebar-strong-text, currentColor)',
+                        opacity: 0.8,
+                      }}
+                      onMouseEnter={e => {
+                        e.currentTarget.style.background = 'var(--sidebar-hover-bg, rgba(0,0,0,0.03))';
+                        e.currentTarget.style.opacity = '1';
+                      }}
+                      onMouseLeave={e => {
+                        e.currentTarget.style.background = 'transparent';
+                        e.currentTarget.style.opacity = '0.8';
+                      }}
+                    >
+                      <Power size={14} />
+                      <span>Close Completely</span>
+                    </button>
+                  </DropdownMenu.Item>
+
+                  <DropdownMenu.Item
+                    asChild
+                    onSelect={(e) => {
+                      e.preventDefault();
+                      setTopbarHelpOpen(false);
+                      const email = 'harshilsoni5666@gmail.com';
+                      const subject = encodeURIComponent('Feedback / Found A Bug - EterX Agent');
+                      const body = encodeURIComponent('Hi Harshil,\n\nI found a bug / have some feedback:\n\n[Describe the bug or feedback here]');
+                      const mailtoUrl = `mailto:${email}?subject=${subject}&body=${body}`;
+                      if ((window as any).electronAPI?.openExternal) {
+                        (window as any).electronAPI.openExternal(mailtoUrl);
+                      } else {
+                        window.location.href = mailtoUrl;
+                      }
+                    }}
+                  >
+                    <button
+                      type="button"
+                      className="flex items-center gap-[8px] w-full px-[8px] py-[6px] text-[12px] font-medium rounded-[6px] text-left transition-all duration-150 outline-none border-0 cursor-pointer pointer-events-auto"
+                      style={{
+                        background: 'transparent',
+                        color: 'var(--sidebar-strong-text, currentColor)',
+                        opacity: 0.8,
+                      }}
+                      onMouseEnter={e => {
+                        e.currentTarget.style.background = 'var(--sidebar-hover-bg, rgba(0,0,0,0.03))';
+                        e.currentTarget.style.opacity = '1';
+                      }}
+                      onMouseLeave={e => {
+                        e.currentTarget.style.background = 'transparent';
+                        e.currentTarget.style.opacity = '0.8';
+                      }}
+                    >
+                      <Bug size={14} />
+                      <span>Feedback / Found A Bug</span>
+                    </button>
+                  </DropdownMenu.Item>
+                </DropdownMenu.Content>
+              </DropdownMenu.Portal>
+            </DropdownMenu.Root>
+          </div>
           
           {/* Updates */}
           <button type="button"
-            onClick={() => { setSettingsInitialTab('general'); setIsSettingsOpen(true); }}
+            onClick={() => {
+              const url = 'https://github.com/harshilsoni5666/EterX-Agent';
+              if ((window as any).electronAPI?.openExternal) {
+                (window as any).electronAPI.openExternal(url);
+              } else {
+                window.open(url, '_blank', 'noopener,noreferrer');
+              }
+            }}
             className="eterx-topbar-btn px-[10px] h-full text-[13px] font-normal tracking-[0.01em] cursor-pointer select-none outline-none bg-transparent border-0 transition-colors duration-150"
             style={{ color: 'var(--sidebar-muted-text, #9A9590)' }}>
             Updates
@@ -5451,6 +6038,13 @@ function DeepWorkUI() {
         </div>
         {/* Right drag fill */}
         <div className="flex-1" />
+        {/* By Harshil Soni */}
+        <div className="pointer-events-auto flex items-center [-webkit-app-region:no-drag] pr-[64px]">
+          <span className="text-[12px] font-normal tracking-[0.01em] select-none"
+            style={{ color: 'var(--sidebar-muted-text, #9A9590)' }}>
+            — By Harshil Soni
+          </span>
+        </div>
       </div>
       <NetworkStatusBanner
         phase={networkPhase}
@@ -6730,18 +7324,18 @@ function DeepWorkUI() {
                     style={hasOpenFiles ? { width: chatPanelWidth ?? undefined, flexBasis: chatPanelWidth === null ? `${ DEFAULT_CHAT_PANEL_RATIO * 100 }%` : undefined } : undefined}
                   >
                     {autonomousSelected && activeChatId && (
-                      <div className="pointer-events-none absolute right-6 top-1/2 z-30 w-[200px] -translate-y-1/2 transition-all duration-300 ease-in-out">
-                        <div className="pointer-events-auto flex h-fit flex-col gap-2 rounded-[20px] border border-white/[0.10] bg-[#252525]/95 px-3 pb-3 pt-3 shadow-[0_18px_44px_rgba(0,0,0,0.34),inset_0_1px_0_rgba(255,255,255,0.04)] backdrop-blur-xl select-none">
+                      <div className="pointer-events-none absolute right-6 top-1/2 z-[60] w-[200px] -translate-y-1/2 transition-all duration-300 ease-in-out">
+                        <div className="eterx-proxy-card pointer-events-auto flex h-fit flex-col gap-2 rounded-[20px] border border-white/[0.10] bg-[#252525]/95 px-3 pb-3 pt-3 shadow-[0_18px_44px_rgba(0,0,0,0.34),inset_0_1px_0_rgba(255,255,255,0.04)] backdrop-blur-xl select-none">
                           {/* Professional Header */}
                           <div className="pt-0.5 pb-1 shrink-0 flex items-center justify-center w-full">
-                            <span className="text-[13.5px] font-semibold tracking-wide text-white/90">Proxy-Agent</span>
+                            <span className="eterx-proxy-title text-[13.5px] font-semibold tracking-wide text-white/90">Proxy-Agent</span>
                           </div>
 
                           {/* Toggle Button */}
                           <button
                             type="button"
                             onClick={handleProxyToggle}
-                            className="w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-[12px] font-medium transition-all duration-200 border border-white/[0.08] bg-white/[0.04] text-white/80 hover:bg-white/[0.08] hover:text-white active:bg-white/[0.12] shrink-0"
+                            className="eterx-proxy-button w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-[12px] font-medium transition-all duration-200 border border-white/[0.08] bg-white/[0.04] text-white/80 hover:bg-white/[0.08] hover:text-white active:bg-white/[0.12] shrink-0"
                           >
                             {proxyEnabled ? (
                               <>
@@ -6756,21 +7350,74 @@ function DeepWorkUI() {
                             )}
                           </button>
 
+                          {/* Runtime Proxy model — independent from the user-facing Proxy chat model */}
+                          <div className="group relative flex flex-col gap-1.5 shrink-0">
+                            <div onClick={() => setShowProxyRuntimeModelMenu(value => !value)} className="eterx-proxy-intervention-row w-full flex min-w-0 items-center justify-between rounded-xl border border-white/[0.08] bg-white/[0.03] px-3 py-2 text-[12px] font-medium text-white/85 hover:bg-white/[0.06] hover:border-white/[0.14] cursor-pointer transition-all">
+                              <span className="text-white/50">Proxy model</span>
+                              <button
+                                type="button"
+                                onClick={(event) => { event.stopPropagation(); setShowProxyRuntimeModelMenu(value => !value); }}
+                                className="flex min-w-0 max-w-[112px] items-center gap-1 overflow-hidden text-white/90 font-semibold"
+                                title="Model used by the live runtime Proxy-Agent"
+                              >
+                                <span className="truncate">
+                                  <span className="truncate">
+                                    {proxyRuntimeModelSelection === AUTO_MODEL_SELECTION
+                                      ? 'Auto'
+                                      : (proxyModelEntries.find(entry => modelEntryKey(entry.provider, entry.modelId) === proxyRuntimeModelSelection)?.modelId || 'Auto')}
+                                  </span>
+                                </span>
+                                <ChevronDown className={`h-3.5 w-3.5 shrink-0 text-white/35 transition-transform ${showProxyRuntimeModelMenu ? 'rotate-180' : ''}`} />
+                              </button>
+                            </div>
+                            {showProxyRuntimeModelMenu && (
+                              <div className="eterx-proxy-runtime-model-menu absolute right-0 top-full z-[100] mt-1.5 w-[220px] max-h-[260px] overflow-y-auto rounded-2xl border border-white/[0.10] bg-[#252525] p-1.5 shadow-2xl">
+                                <button
+                                  type="button"
+                                  onClick={() => { handleProxyRuntimeModelSelectionChange(AUTO_MODEL_SELECTION); setShowProxyRuntimeModelMenu(false); }}
+                                  className={`w-full rounded-xl px-2.5 py-2 text-left transition-colors ${proxyRuntimeModelSelection === AUTO_MODEL_SELECTION ? 'bg-white/[0.08] text-white' : 'text-white/60 hover:bg-white/[0.05] hover:text-white'}`}
+                                >
+                                  <span className="block text-[12px] font-medium">Auto</span>
+                                  <span className="block text-[9.5px] text-white/30">Use the settings model priority</span>
+                                </button>
+                                {proxyModelEntries.map(entry => {
+                                  const optionKey = modelEntryKey(entry.provider, entry.modelId);
+                                  const selected = proxyRuntimeModelSelection === optionKey;
+                                  return (
+                                    <button
+                                      key={`runtime-proxy-${optionKey}`}
+                                      type="button"
+                                      onClick={() => { handleProxyRuntimeModelSelectionChange(optionKey); setShowProxyRuntimeModelMenu(false); }}
+                                      className={`w-full rounded-xl px-2.5 py-2 text-left transition-colors ${selected ? 'bg-white/[0.08] text-white' : 'text-white/60 hover:bg-white/[0.05] hover:text-white'}`}
+                                    >
+                                      <span className="block truncate text-[12px] font-medium">{entry.modelId}</span>
+                                      <span className="block text-[9.5px] text-white/30">{entry.provider}</span>
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </div>
+
                           {/* Intervention Row (with hover pop-out to the left) */}
                           <div className="group relative flex flex-col gap-1.5 shrink-0">
-                            <div className="w-full flex items-baseline justify-between rounded-xl border border-white/[0.08] bg-white/[0.03] px-3 py-2 text-[12px] font-medium text-white/85 hover:bg-white/[0.06] hover:border-white/[0.14] cursor-pointer transition-all">
+                            <button
+                              type="button"
+                              onClick={() => setShowProxyInterventionMenu(value => !value)}
+                              className="eterx-proxy-intervention-row w-full flex items-baseline justify-between rounded-xl border border-white/[0.08] bg-white/[0.03] px-3 py-2 text-[12px] font-medium text-white/85 hover:bg-white/[0.06] hover:border-white/[0.14] cursor-pointer transition-all"
+                            >
                               <span className="text-white/50">Intervention</span>
                               <div className="flex items-center gap-1.5">
                                 <span className="capitalize text-white/90 font-semibold">
                                   {proxyIntervention}
                                 </span>
-                                <ChevronRight className="h-3.5 w-3.5 text-white/30 group-hover:text-white/60 transition-colors" />
+                                <ChevronRight className={`h-3.5 w-3.5 text-white/30 group-hover:text-white/60 transition-all ${showProxyInterventionMenu ? 'rotate-90' : ''}`} />
                               </div>
-                            </div>
+                            </button>
 
                             {/* Pop-out Dropdown to the Left (pr-2 connects hover hit area across the 8px visual gap) */}
-                            <div className="pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100 absolute right-full top-1/2 -translate-y-1/2 z-50 w-[158px] pr-2 transition-all duration-200 translate-x-2 group-hover:translate-x-0">
-                              <div className="rounded-2xl border border-white/[0.08] bg-[#252525] shadow-2xl p-1.5 flex flex-col gap-1 w-full">
+                            <div className={`absolute right-full top-1/2 -translate-y-1/2 z-[100] w-[158px] pr-2 transition-all duration-200 ${showProxyInterventionMenu ? 'pointer-events-auto opacity-100 translate-x-0' : 'pointer-events-none opacity-0 translate-x-2'}`}>
+                              <div className="eterx-proxy-popout rounded-2xl border border-white/[0.08] bg-[#252525] shadow-2xl p-1.5 flex flex-col gap-1 w-full">
                                 {(['minimal', 'normal', 'high'] as const).map((level) => {
                                   const isSelected = proxyIntervention === level;
                                   const subtitle = level === 'minimal' ? 'Observe more' : level === 'normal' ? 'Balanced' : 'Intervene';
@@ -6779,7 +7426,7 @@ function DeepWorkUI() {
                                       key={level}
                                       type="button"
                                       onClick={() => handleProxyInterventionChange(level)}
-                                      className={`w-full flex flex-col items-start rounded-xl px-2.5 py-1 text-left transition-colors relative pr-6 ${
+                                      className={`eterx-proxy-popout-item w-full flex flex-col items-start rounded-xl px-2.5 py-1 text-left transition-colors relative pr-6 ${
                                         isSelected
                                           ? 'bg-white/[0.08] text-white'
                                           : 'text-white/50 hover:bg-white/[0.04] hover:text-white/85'
@@ -6803,7 +7450,7 @@ function DeepWorkUI() {
                           <button
                             type="button"
                             onClick={() => setShowProxyChat(!showProxyChat)}
-                            className={`w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-[12px] font-medium transition-all duration-200 border shrink-0 ${
+                            className={`eterx-proxy-button w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-[12px] font-medium transition-all duration-200 border shrink-0 ${
                               showProxyChat
                                 ? 'bg-white/[0.08] border-white/[0.14] text-white'
                                 : 'border-white/[0.08] bg-white/[0.04] text-white/80 hover:bg-white/[0.08] hover:text-white active:bg-white/[0.12]'
@@ -6847,11 +7494,12 @@ function DeepWorkUI() {
                             anthropic: 'Anthropic',
                           };
                           const allModelOptions = [autoModelOption, ...modelOptions];
-                          const selectedModel = allModelOptions.find(option => option.optionKey === activeModelSelection) || autoModelOption;
+                          const selectedModel = allModelOptions.find(option => option.optionKey === proxyModelSelection) || autoModelOption;
 
                           return (
                             <div
-                              className="pointer-events-auto absolute right-[calc(100%+12px)] bottom-0 rounded-[24px] border border-white/[0.14] bg-[#181818]/[0.98] shadow-[0_20px_60px_rgba(0,0,0,0.48),inset_0_1px_0_rgba(255,255,255,0.05)] flex flex-col overflow-visible transition-[box-shadow] duration-200"
+                              ref={proxyChatWindowRef}
+                              className="eterx-proxy-chat-window pointer-events-auto absolute right-[calc(100%+12px)] bottom-12 z-[90] max-h-[calc(100vh-32px)] max-w-[calc(100vw-24px)] overflow-hidden rounded-[24px] border border-white/[0.14] bg-[#181818]/[0.98] shadow-[0_16px_44px_rgba(0,0,0,0.38),inset_0_1px_0_rgba(255,255,255,0.04)] flex flex-col transition-[box-shadow] duration-200"
                               style={{
                                 width: proxyChatWindow.width,
                                 height: proxyChatWindow.height,
@@ -6861,7 +7509,7 @@ function DeepWorkUI() {
                               {/* Header */}
                               <div
                                 onPointerDown={(event) => startProxyWindowInteraction('drag', event)}
-                                className="flex min-h-[56px] cursor-grab items-center justify-between rounded-t-[24px] border-b border-white/[0.06] bg-gradient-to-b from-white/[0.025] to-transparent px-5 py-3 shrink-0 active:cursor-grabbing select-none touch-none"
+                                className="eterx-proxy-chat-header flex min-h-[56px] cursor-grab items-center justify-between rounded-t-[24px] border-b border-white/[0.06] bg-gradient-to-b from-white/[0.025] to-transparent px-5 py-3 shrink-0 active:cursor-grabbing select-none touch-none"
                               >
                                 <div className="flex items-center">
                                   <span className="text-[13px] font-semibold tracking-[-0.01em] text-white/80">Talk with Proxy-Agent</span>
@@ -6877,36 +7525,54 @@ function DeepWorkUI() {
                               </div>
 
                               {/* Message Feed */}
-                              <div className="flex-1 min-h-0 overflow-y-auto p-4 flex flex-col gap-3 eterx-scrollbar bg-transparent">
-                                {proxyChatMessages.length === 0 ? (
+                              <div className="relative flex-1 min-h-0 overflow-y-auto overflow-x-hidden p-4 flex flex-col gap-3 eterx-scrollbar bg-transparent [scrollbar-gutter:stable]">
+                                <div className="eterx-proxy-chat-fade-top pointer-events-none absolute inset-x-0 top-0 z-10 h-7 bg-gradient-to-b from-[#181818] to-transparent" />
+                                {visibleProxyChatMessages.length === 0 ? (
                                   <div className="flex-1 flex flex-col items-center justify-center text-center p-4">
                                     <span className="text-[15px] font-semibold text-white/60">
                                       Tell me your goals!
                                     </span>
                                   </div>
                                 ) : (
-                                  proxyChatMessages.map((msg, idx) => (
+                                  visibleProxyChatMessages.map((msg, idx) => (
                                     <div
-                                      key={idx}
-                                      className={`flex flex-col max-w-[80%] ${
+                                      key={msg.id || idx}
+                                      className={`flex min-w-0 max-w-[92%] flex-col ${
                                         msg.sender === 'user' ? 'self-end items-end' : 'self-start items-start'
                                       }`}
                                     >
                                       <div
-                                        className={`rounded-xl px-3 py-2 text-[11.5px] leading-relaxed break-words ${
+                                        className={`eterx-proxy-message-bubble min-w-0 max-w-full whitespace-pre-wrap [overflow-wrap:anywhere] text-[11.5px] leading-relaxed ${
                                           msg.sender === 'user'
-                                            ? 'bg-emerald-500/[0.15] border border-emerald-500/20 text-emerald-100'
-                                            : 'bg-[#2d2d2d] border border-white/[0.04] text-white/85'
+                                            ? 'rounded-xl border border-white/[0.08] bg-[#242424] px-3 py-2 text-white/90 shadow-[0_5px_18px_rgba(0,0,0,0.16)]'
+                                            : 'rounded-none border-0 bg-transparent px-0 py-0 text-white/78'
                                         }`}
                                       >
-                                        {msg.text}
+                                        {msg.sender === 'proxy' ? (
+                                          <div className="proxy-manager-markdown max-w-full min-w-0 break-words">
+                                            <ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} components={proxyManagerMarkdownComponents}>
+                                              {formatProxyManagerMarkdown(msg.text)}
+                                            </ReactMarkdown>
+                                          </div>
+                                        ) : msg.text}
                                       </div>
-                                      <span className="text-[8.5px] text-white/20 mt-1 px-1">
+                                      <span className="mt-1 px-1 text-[8.5px] text-white/20">
                                         {msg.time}
                                       </span>
                                     </div>
                                   ))
                                 )}
+                                {proxyChatLoading && (
+                                  <div className="self-start px-0 py-1 text-[11px] text-white/42">
+                                    <span className="mr-1.5">Thinking</span>
+                                    <span className="inline-flex items-center gap-1 align-middle">
+                                      <span className="h-1 w-1 animate-bounce rounded-full bg-white/55 [animation-delay:-0.24s]" />
+                                      <span className="h-1 w-1 animate-bounce rounded-full bg-white/55 [animation-delay:-0.12s]" />
+                                      <span className="h-1 w-1 animate-bounce rounded-full bg-white/55" />
+                                    </span>
+                                  </div>
+                                )}
+                                <div className="eterx-proxy-chat-fade-bottom pointer-events-none absolute inset-x-0 bottom-0 z-10 h-5 bg-gradient-to-t from-[#181818] to-transparent" />
                               </div>
 
                               {/* Redesigned Input Form matching the upload */}
@@ -6917,7 +7583,7 @@ function DeepWorkUI() {
                                 }}
                                 className="p-3 bg-transparent rounded-b-[24px] shrink-0"
                               >
-                                <div className="rounded-2xl border border-white/[0.08] bg-[#2d2d2d] flex flex-col p-2 gap-2">
+                                <div className="eterx-proxy-input-wrapper rounded-2xl border border-white/[0.08] bg-[#2d2d2d] flex flex-col p-2 gap-2">
                                   <textarea
                                     value={proxyChatInput}
                                     onChange={(e) => setProxyChatInput(e.target.value)}
@@ -6928,7 +7594,7 @@ function DeepWorkUI() {
                                       }
                                     }}
                                     placeholder="Do anything"
-                                    className="w-full bg-transparent text-white text-[12px] outline-none placeholder-white/30 resize-none h-[28px] px-1"
+                                    className="eterx-proxy-textarea w-full bg-transparent text-white text-[12px] outline-none placeholder-white/30 resize-none h-[28px] px-1"
                                   />
                                   <div className="flex items-center justify-between mt-0.5 px-0.5">
                                     <div className="flex items-center gap-1">
@@ -7005,7 +7671,8 @@ function DeepWorkUI() {
                                       {/* Send button */}
                                       <button
                                         type="submit"
-                                        className="h-7 w-7 rounded-full bg-white/10 hover:bg-white/20 text-white/80 flex items-center justify-center transition-colors focus:outline-none"
+                                        disabled={proxyChatLoading || !proxyChatInput.trim() || !activeChatId}
+                                        className="h-7 w-7 rounded-full bg-white/10 hover:bg-white/20 disabled:opacity-30 disabled:hover:bg-white/10 text-white/80 flex items-center justify-center transition-colors focus:outline-none"
                                       >
                                         <ArrowUp className="h-4 w-4" />
                                       </button>
@@ -7054,6 +7721,25 @@ function DeepWorkUI() {
                         {pendingSteering.filter(message => message.chatId === activeChatId).map(msg => (
                           <div key={msg.id} className="bg-[#242424] rounded-xl py-2.5 px-3.5 flex items-center gap-3 text-sm text-neutral-200 shadow-sm border border-white/[0.04]">
                             <span className="truncate">{msg.text}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {!activeSubAgentTab && queuedFollowUps.some(message => message.chatId === activeChatId) && (
+                      <div className={`px-4 ${ isRightPanelVisible ? 'sm:px-4' : 'sm:px-12' } w-full max-w-[760px] mx-auto flex flex-col gap-2 pb-2`}>
+                        <div className="text-xs text-neutral-500 font-medium px-1">Queued follow-ups</div>
+                        {queuedFollowUps.filter(message => message.chatId === activeChatId).map(message => (
+                          <div key={message.id} className="bg-[#242424] rounded-xl py-2.5 px-3.5 flex items-center gap-3 text-sm text-neutral-200 shadow-sm border border-white/[0.04]">
+                            <span className="min-w-0 flex-1 truncate">{message.text || `${ message.attachments.length } attachment${ message.attachments.length === 1 ? '' : 's' }`}</span>
+                            <button
+                              type="button"
+                              onClick={() => setQueuedFollowUps(previous => previous.filter(item => item.id !== message.id))}
+                              className="shrink-0 text-[11px] text-neutral-500 hover:text-neutral-200 transition-colors"
+                              aria-label="Remove queued follow-up"
+                            >
+                              Remove
+                            </button>
                           </div>
                         ))}
                       </div>

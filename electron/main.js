@@ -1408,6 +1408,54 @@ ipcMain.handle('open-external', async (event, url) => {
   await shell.openExternal(url);
 });
 
+ipcMain.handle('app-restart', () => {
+  stopPackagedServer();
+  app.relaunch();
+  app.exit(0);
+});
+
+ipcMain.handle('app-close', () => {
+  stopPackagedServer();
+  app.quit();
+});
+
+ipcMain.handle('chat-snapshot-save', (_event, snapshot) => {
+  const chats = Array.isArray(snapshot?.chats)
+    ? snapshot.chats.filter((chat) => chat && typeof chat === 'object' && typeof chat.id === 'string').slice(0, 2000)
+    : null;
+  const savedAt = Number(snapshot?.savedAt);
+  if (!chats || !Number.isFinite(savedAt) || savedAt <= 0) {
+    throw new Error('Invalid chat snapshot.');
+  }
+
+  const chatsDir = path.join(app.getPath('userData'), 'data', 'chats');
+  const chatsPath = path.join(chatsDir, 'chats.json');
+  let current = null;
+  try {
+    current = JSON.parse(fs.readFileSync(chatsPath, 'utf8'));
+    if (Number(current?.savedAt || 0) > savedAt) return { ok: true, savedAt: current.savedAt };
+  } catch {
+    if (fs.existsSync(chatsPath)) {
+      const corruptPath = path.join(chatsDir, `chats.corrupt-${Date.now()}.json`);
+      try { fs.renameSync(chatsPath, corruptPath); } catch {}
+    }
+  }
+
+  let chatsToWrite = chats;
+  if (snapshot?.partial === true && Array.isArray(snapshot?.chatIds) && current && Array.isArray(current.chats)) {
+    const safeIds = Array.from(new Set(snapshot.chatIds.filter((id) => typeof id === 'string' && id.length > 0))).slice(0, 2000);
+    const byId = new Map(current.chats.map((chat) => [chat.id, chat]));
+    for (const chat of chats) byId.set(chat.id, chat);
+    chatsToWrite = safeIds.map((id) => byId.get(id)).filter(Boolean);
+  }
+
+  fs.mkdirSync(chatsDir, { recursive: true });
+  const temporaryPath = path.join(chatsDir, `.chats.electron.${process.pid}.${Date.now()}.tmp`);
+  fs.writeFileSync(temporaryPath, JSON.stringify({ version: 1, savedAt, chats: chatsToWrite }), 'utf8');
+  fs.renameSync(temporaryPath, chatsPath);
+  return { ok: true, savedAt };
+});
+
 ipcMain.handle('native-theme-get', () => readNativeTheme());
 
 ipcMain.on('native-theme-set', (_event, theme) => {

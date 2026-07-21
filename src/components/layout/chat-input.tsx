@@ -1073,7 +1073,6 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const [showAgentMenu, setShowAgentMenu] = useState(false);
   const [openStatusMenu, setOpenStatusMenu] = useState<StatusRailMenu>(null);
   const [projectSearch, setProjectSearch] = useState('');
-  const [activeProjectSubmenu, setActiveProjectSubmenu] = useState<'new_project' | null>(null);
   const [agentMenuXOffset, setAgentMenuXOffset] = useState(0);
   const [modelMenuXOffset, setModelMenuXOffset] = useState(0);
   const [thinkingMenuSide, setThinkingMenuSide] = useState<'left' | 'right'>('right');
@@ -1230,7 +1229,21 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     return /^[a-zA-Z]:[\\/]/i.test(trimmed) || trimmed.includes('/') || trimmed.includes('\\');
   }, [projectSearch]);
 
-  const handleSelectFolderDialog = useCallback(async () => {
+    const handleRemoveRecentProject = useCallback((projectPath: string) => {
+    if (typeof window !== 'undefined') {
+      try {
+        const saved = localStorage.getItem('eterx_recent_projects');
+        const parsed = saved ? JSON.parse(saved) : [];
+        if (Array.isArray(parsed)) {
+          const updated = parsed.filter((p: any) => p.path !== projectPath);
+          localStorage.setItem('eterx_recent_projects', JSON.stringify(updated));
+          setRecentProjects(updated);
+        }
+      } catch { }
+    }
+  }, []);
+
+const handleSelectFolderDialog = useCallback(async () => {
     const w = window as any;
     let selectedPath: string | null = null;
     if (w.electronAPI?.selectFolder) {
@@ -1313,6 +1326,23 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   useEffect(() => {
     refreshStoredModelSettings();
 
+    const onSettingsUpdated = () => {
+      refreshStoredModelSettings();
+      try {
+        const saved = localStorage.getItem('eterx_settings');
+        const settings = saved ? JSON.parse(saved) : null;
+        if (settings && settings.workMode && traceLogsLength === 0) {
+          if (settings.workMode === 'specialist' && selectedAgent !== 'autonomous') {
+            onAgentChange?.('autonomous', 'Autonomous');
+          } else if (settings.workMode === 'everyday' && selectedAgent !== null) {
+            onAgentChange?.(null, 'General');
+          }
+        }
+      } catch (e) {
+        console.error('Failed to sync settings workMode to agent selection inside chat-input:', e);
+      }
+    };
+
     const onStorage = (event: StorageEvent) => {
       if (
         !event.key ||
@@ -1321,12 +1351,12 @@ export const ChatInput: React.FC<ChatInputProps> = ({
         event.key === MODEL_CATALOG_STORAGE_KEY ||
         event.key === MODEL_SELECTOR_STORAGE_KEY ||
         event.key === MODEL_API_KEYS_STORAGE_KEY ||
-        event.key === CHAT_MODEL_SELECTION_STORAGE_KEY
+        event.key === CHAT_MODEL_SELECTION_STORAGE_KEY ||
+        event.key === 'eterx_settings'
       ) {
-        refreshStoredModelSettings();
+        onSettingsUpdated();
       }
     };
-    const onSettingsUpdated = () => refreshStoredModelSettings();
 
     window.addEventListener('storage', onStorage);
     window.addEventListener('focus', onSettingsUpdated);
@@ -1346,7 +1376,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       window.removeEventListener('eterx-settings-updated', onSettingsUpdated);
       channel?.close();
     };
-  }, [refreshStoredModelSettings]);
+  }, [refreshStoredModelSettings, traceLogsLength, selectedAgent, onAgentChange]);
 
   useEffect(() => {
     const handleAgentsUpdated = (event?: Event) => {
@@ -3498,7 +3528,6 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       role="dialog"
                       aria-label="Workspace folder selector"
                       onClick={(event) => event.stopPropagation()}
-                      onMouseLeave={() => setActiveProjectSubmenu(null)}
                     >
                       <label className="eterx-status-search">
                         <Search className="h-4 w-4 shrink-0" strokeWidth={2} />
@@ -3508,7 +3537,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                           placeholder="Search projects"
                         />
                       </label>
-                      <div className="eterx-status-menu-section max-h-[280px] overflow-y-auto eterx-scrollbar" onMouseEnter={() => setActiveProjectSubmenu(null)}>
+                      <div className="eterx-status-menu-section max-h-[160px] flex-1 min-h-0 overflow-y-auto eterx-scrollbar">
                         {looksLikePath && (
                           <button
                             type="button"
@@ -3545,13 +3574,26 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                               key={project.path}
                               type="button"
                               title={project.path}
-                              className={`eterx-status-menu-item ${ selected ? 'is-selected' : '' }`}
+                              className={`eterx-status-menu-item group ${ selected ? 'is-selected' : '' }`}
                               onClick={() => {
                                 handleWorkspacePathChange(project.path);
                                 setOpenStatusMenu(null);
                               }}
                             >
-                              <Folder className="eterx-status-menu-icon" strokeWidth={1.95} />
+                              <div className="relative h-4 w-4 shrink-0 flex items-center justify-center">
+                                <Folder className="absolute inset-0 eterx-status-menu-icon group-hover:opacity-0 transition-opacity" strokeWidth={1.95} />
+                                <button
+                                  type="button"
+                                  className="absolute inset-0 h-4 w-4 rounded-sm flex items-center justify-center bg-transparent text-black/55 dark:text-white/55 hover:text-black dark:hover:text-white hover:bg-black/10 dark:hover:bg-white/10 opacity-0 group-hover:opacity-100 transition-all duration-150 cursor-pointer"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleRemoveRecentProject(project.path);
+                                  }}
+                                  title="Remove from list"
+                                >
+                                  <X className="h-3 w-3" strokeWidth={2.5} />
+                                </button>
+                              </div>
                               <span className="min-w-0 flex-1 truncate text-left text-[13px] font-medium">{project.name}</span>
                               {selected && <Check className="h-4 w-4 shrink-0" strokeWidth={2.35} />}
                             </button>
@@ -3563,49 +3605,17 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       
                       <div className="eterx-status-menu-rule" />
                       
-                      <div
-                        className="relative flex items-center justify-between eterx-status-menu-item group cursor-pointer"
-                        onMouseEnter={() => setActiveProjectSubmenu('new_project')}
+                      <button
+                        type="button"
+                        className="eterx-status-menu-item w-full"
+                        onClick={() => {
+                          handleSelectFolderDialog();
+                          setOpenStatusMenu(null);
+                        }}
                       >
-                        <div className="flex items-center gap-2.5">
-                          <Plus className="eterx-status-menu-icon" strokeWidth={1.95} />
-                          <span className="min-w-0 flex-1 truncate text-left text-[13px] font-medium text-[#F4F1EA]">New project</span>
-                        </div>
-                        <ChevronRight className="h-4 w-4 shrink-0 opacity-65 text-[#F4F1EA]" strokeWidth={2.1} />
-                        
-                        {activeProjectSubmenu === 'new_project' && (
-                          <div
-                            className="absolute left-[calc(100%+8px)] bottom-0 z-[140] w-[210px] rounded-xl border border-white/[0.08] bg-[#1E1E1E]/95 backdrop-blur-xl p-1.5 shadow-[0_12px_36px_rgba(0,0,0,0.5)] flex flex-col gap-0.5"
-                            onClick={(e) => e.stopPropagation()}
-                            onMouseLeave={() => setActiveProjectSubmenu(null)}
-                          >
-                            <button
-                              type="button"
-                              className="eterx-status-menu-item"
-                              onClick={() => {
-                                handleSelectFolderDialog();
-                                setActiveProjectSubmenu(null);
-                                setOpenStatusMenu(null);
-                              }}
-                            >
-                              <Plus className="eterx-status-menu-icon" strokeWidth={1.95} />
-                              <span className="min-w-0 flex-1 truncate text-left text-[13px] font-medium">Start from scratch</span>
-                            </button>
-                            <button
-                              type="button"
-                              className="eterx-status-menu-item"
-                              onClick={() => {
-                                handleSelectFolderDialog();
-                                setActiveProjectSubmenu(null);
-                                setOpenStatusMenu(null);
-                              }}
-                            >
-                              <Folder className="eterx-status-menu-icon" strokeWidth={1.95} />
-                              <span className="min-w-0 flex-1 truncate text-left text-[13px] font-medium">Use an existing folder</span>
-                            </button>
-                          </div>
-                        )}
-                      </div>
+                        <Plus className="eterx-status-menu-icon" strokeWidth={1.95} />
+                        <span className="min-w-0 flex-1 truncate text-left text-[13px] font-medium text-[#F4F1EA]">New project</span>
+                      </button>
                     </motion.div>
                   )}
                 </AnimatePresence>
@@ -3695,7 +3705,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                         onClick={(event) => event.stopPropagation()}
                       >
                         <div className="eterx-status-menu-label">Branch</div>
-                        <div className="eterx-status-menu-section max-h-[200px] overflow-y-auto eterx-scrollbar">
+                        <div className="eterx-status-menu-section max-h-[160px] flex-1 min-h-0 overflow-y-auto eterx-scrollbar">
                           {branchesList.map(b => {
                             const isCurrent = b === branchName;
                             return (

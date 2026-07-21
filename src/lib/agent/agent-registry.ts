@@ -4,9 +4,11 @@ import { AgentOrchestrator } from './orchestrator';
 import { apiKeyPool, type KeyLease } from './api-key-pool';
 import { taskStore } from './task-store';
 import { getMainAgentModelConfig, type MainAgentMode } from './model-routing';
-import type { ScopedRuntimeSettings } from './runtime-api-keys';
+import { MODEL_PROVIDER_MODE, isModelProvider } from './model-selector-store';
+import { getScopedRuntimeApiKey, type ScopedRuntimeSettings } from './runtime-api-keys';
 import { flushLedgerForChat } from './memory/conversation-ledger';
-import { observeUserProxy, startUserProxyRuntime, stopUserProxyRuntime, pauseUserProxyRuntime, resumeUserProxyRuntime, setUserProxyIntervention, type ProxyInterventionLevel } from './autonomy/user-proxy-runtime';
+import { globalToolRegistry } from './tools/registry';
+import { observeUserProxy, startUserProxyRuntime, stopUserProxyRuntime, pauseUserProxyRuntime, resumeUserProxyRuntime, setUserProxyIntervention, getUserProxyManagerSnapshot, deliverUserProxyManagerDirective, type ProxyInterventionLevel, type ProxyManagerDirective } from './autonomy/user-proxy-runtime';
 
 // Ensure tools are bootstrapped
 import './tools/index';
@@ -582,6 +584,22 @@ class AgentRegistry {
         const proxyLease = autonomyEnabled && !isExternalProvider
           ? apiKeyPool.leaseSubAgentKey(chatId, 'user_proxy')
           : null;
+        const selectedProxyModel = (pinnedContext as any)?.autonomy?.proxyModelSelection;
+        const proxyModelEntry = typeof selectedProxyModel === 'string' && selectedProxyModel.includes(':')
+          ? (() => {
+            const [provider, ...modelParts] = selectedProxyModel.split(':');
+            return isModelProvider(provider) && modelParts.join(':').trim()
+              ? { provider, modelId: modelParts.join(':').trim() }
+              : null;
+          })()
+          : null;
+        const proxyRuntimeSettings: ScopedRuntimeSettings | null | undefined = proxyModelEntry && runtimeSettings
+          ? { ...runtimeSettings, modelOverrides: { ...runtimeSettings.modelOverrides, [proxyModelEntry.provider]: proxyModelEntry.modelId } }
+          : runtimeSettings;
+        const proxyRuntimeMode = proxyModelEntry ? MODEL_PROVIDER_MODE[proxyModelEntry.provider] : mode;
+        const selectedProxyApiKey = proxyModelEntry && proxyRuntimeSettings
+          ? getScopedRuntimeApiKey(proxyRuntimeSettings, proxyModelEntry.provider)
+          : '';
         startUserProxyRuntime({
           context: {
             ...(pinnedContext || {}),
@@ -589,13 +607,17 @@ class AgentRegistry {
             selectedModelMode: mode,
           } as any,
           objective: prompt,
-          mode,
-          apiKey: isExternalProvider ? projectId : (proxyLease?.apiKey || lease?.apiKey || ''),
-          runtimeSettings,
+          mode: proxyRuntimeMode,
+          apiKey: isExternalProvider ? projectId : (selectedProxyApiKey || proxyLease?.apiKey || lease?.apiKey || ''),
+          runtimeSettings: proxyRuntimeSettings,
+          fallbackMode: mode,
+          fallbackApiKey: isExternalProvider ? projectId : (proxyLease?.apiKey || lease?.apiKey || ''),
+          fallbackRuntimeSettings: runtimeSettings,
           history,
           attachments: mediaAttachments,
           onTrace,
           steer: (message, metadata) => this.addSteeringMessage(chatId, message, undefined, metadata),
+          stopMain: (reason, metadata) => this.stopAgent(chatId, reason, metadata),
         });
         const response = await orchestrator.executePipeline(
           userId,
@@ -746,7 +768,7 @@ class AgentRegistry {
    * Stop a specific chat's agent. Per-chat — doesn't affect other chats.
    * IDEMPOTENT: Calling this multiple times for the same chat is safe.
    */
-  public stopAgent(chatId: string): boolean {
+  public stopAgent(chatId: string, reason = 'Stopped by user.', metadata?: Record<string, any>): boolean {
     const execution = this.executions.get(chatId);
     if (!execution) return false;
 
@@ -761,7 +783,13 @@ class AgentRegistry {
     execution.status = 'stopped';
     execution.completedAt = Date.now();
 
-    this.appendTrace(execution, { type: 'thought', text: '\n\n*Generation stopped by user.*' });
+    this.appendTrace(execution, {
+      type: metadata?._autonomyProxy ? 'autonomy_proxy_status' : 'thought',
+      phase: metadata?._autonomyProxy ? 'main_stopped' : undefined,
+      text: metadata?._autonomyProxy ? `Proxy-Agent stopped Main: ${reason}` : '\n\n*Generation stopped by user.*',
+      timestamp: Date.now(),
+      ...(metadata || {}),
+    });
 
     taskStore.stopTask(chatId).catch(() => { });
     apiKeyPool.releaseKey(chatId);
@@ -786,28 +814,39 @@ class AgentRegistry {
 
     const trimmedMessage = message.trim().substring(0, 8000);
     if (!trimmedMessage) return false;
+    const resolvedId = steeringId || `steer_${ Date.now() }_${ Math.random().toString(36).slice(2, 8) }`;
+    const duplicate = execution.steeringQueue.find(item => item.id === resolvedId);
+    if (duplicate) {
+      duplicate.text = trimmedMessage;
+      duplicate.updatedAt = Date.now();
+      duplicate.metadata = metadata;
+      return true;
+    }
+    if (execution.steeringQueue.length >= MAX_STEERING_QUEUE) {
+      console.warn(`[AgentRegistry] Steering queue full for chat ${ chatId.substring(0, 8) }...; rejecting new guidance so the client can retain it.`);
+      return false;
+    }
     const queuedMessage: SteeringMessage = {
-      id: steeringId || `steer_${ Date.now() }_${ Math.random().toString(36).slice(2, 8) }`,
+      id: resolvedId,
       text: trimmedMessage,
       createdAt: Date.now(),
       metadata,
     };
     execution.steeringQueue.push(queuedMessage);
-    if (execution.steeringQueue.length > MAX_STEERING_QUEUE) {
-      const toDrop = execution.steeringQueue.length - MAX_STEERING_QUEUE;
-      console.warn(`[AgentRegistry] ⚠️ Steering queue full — dropping ${ toDrop } oldest message(s) for chat ${ chatId.substring(0, 8) }...`);
-      execution.steeringQueue.splice(0, toDrop);
+    // Completion-boundary Proxy guidance is revealed when it is applied on
+    // the next loop boundary. Emitting it here would place the Proxy message
+    // before the fully generated answer checkpoint and make that answer appear
+    // to vanish. Human and mid-run guidance still acknowledge immediately.
+    if (metadata?.completionReview !== true) {
+      this.appendTrace(execution, {
+        type: 'steering_received',
+        text: trimmedMessage,
+        steeringId: queuedMessage.id,
+        steeringIds: [queuedMessage.id],
+        timestamp: Date.now(),
+        ...(metadata || {}),
+      });
     }
-
-    // Immediately emit a trace so the UI shows the steering card right away
-    this.appendTrace(execution, {
-      type: 'steering_received',
-      text: trimmedMessage,
-      steeringId: queuedMessage.id,
-      steeringIds: [queuedMessage.id],
-      timestamp: Date.now(),
-      ...(metadata || {}),
-    });
 
     console.log(`[AgentRegistry] 🧭 Steering message queued for chat ${ chatId.substring(0, 8) }...: "${ trimmedMessage.substring(0, 60) }"`);
     return true;
@@ -862,6 +901,67 @@ class AgentRegistry {
     if (action === 'pause') return pauseUserProxyRuntime(projectId);
     if (action === 'resume') return resumeUserProxyRuntime(projectId);
     return level ? setUserProxyIntervention(projectId, level) : false;
+  }
+
+  public getProxyManagerContext(chatId: string): Record<string, any> {
+    const execution = this.findExecution(chatId);
+    const projectId = execution?.orchestratorProjectId || chatId;
+    const visibleTypes = new Set(['task_plan', 'plan', 'work_note', 'tool_call', 'tool_result', 'file_preview', 'evidence', 'error', 'steering_received', 'steering_applied', 'autonomy_proxy_status', 'answer', 'done']);
+    const activity = (execution?.traceBuffer || [])
+      .map(entry => ({ ...entry.data, timestamp: entry.timestamp }))
+      .filter(trace => visibleTypes.has(String(trace?.type || '')))
+      .slice(-36)
+      .map(trace => ({
+        type: String(trace.type || ''),
+        text: String(trace.text || trace.data || trace.output || trace.error || '').replace(/\s+/g, ' ').trim().slice(0, 1400),
+        tool: String(trace.tool || trace.toolName || trace.name || '').slice(0, 120),
+        success: trace.success,
+        phase: trace.phase,
+        timestamp: trace.timestamp,
+      }));
+    return {
+      chatId,
+      run: execution ? {
+        status: execution.status,
+        objective: execution.prompt.slice(0, 6000),
+        startedAt: execution.startedAt,
+        mode: execution.mode,
+        effectiveModel: execution.effectiveModel,
+        finalAnswer: execution.status === 'running' ? '' : execution.finalAnswer.slice(0, 5000),
+      } : { status: 'idle', objective: '' },
+      activity,
+      capabilities: this.getMainCapabilitySummary(activity, execution?.prompt || ''),
+      proxy: getUserProxyManagerSnapshot(projectId),
+    };
+  }
+
+  private getMainCapabilitySummary(activity: Array<Record<string, any>>, objective: string): Record<string, any> {
+    const recentlyUsed = new Set(activity.map(item => String(item.tool || '')).filter(Boolean));
+    const objectiveTerms = new Set((objective.toLowerCase().match(/[a-z0-9]{4,}/g) || []).slice(0, 80));
+    const groups = new Map<string, string[]>();
+    const relevant: Array<{ name: string; category: string; capability: string; recentlyUsed: boolean }> = [];
+    for (const tool of globalToolRegistry.getAllTools()) {
+      const category = String(tool.category || 'support');
+      const items = groups.get(category) || [];
+      items.push(tool.name);
+      groups.set(category, items);
+      const description = String(tool.description || '').replace(/\s+/g, ' ').trim();
+      const haystack = `${tool.name} ${description}`.toLowerCase();
+      const isRelevant = recentlyUsed.has(tool.name) || Array.from(objectiveTerms).some(term => haystack.includes(term));
+      if (isRelevant) relevant.push({ name: tool.name, category, capability: description.slice(0, 180), recentlyUsed: recentlyUsed.has(tool.name) });
+    }
+    return {
+      note: 'Every registered Main capability name is grouped below. Detailed descriptions are included only for task-relevant or recently used tools to save side-agent tokens. Presence does not authorize Proxy Manager to execute tools.',
+      total: Array.from(groups.values()).reduce((sum, items) => sum + items.length, 0),
+      groups: Object.fromEntries(groups),
+      relevant: relevant.slice(0, 36),
+    };
+  }
+
+  public deliverProxyManagerDirective(chatId: string, directive: Omit<ProxyManagerDirective, 'id' | 'createdAt' | 'status'>) {
+    const execution = this.findExecution(chatId);
+    const projectId = execution?.orchestratorProjectId || chatId;
+    return deliverUserProxyManagerDirective(projectId, directive);
   }
 
   /**

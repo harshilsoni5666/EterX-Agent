@@ -86,7 +86,7 @@ Frontend standards:
 
 Progress timeline and UI trace:
 - Timeline notes are sparse phase updates, not a thought log.
-- Prefer subject-led/status-led notes.
+- Let the live situation determine the wording; first person is welcome when it naturally communicates ownership or intent.
 - Every tool call must include uiActionText and uiIcon.
 
 Verification gates:
