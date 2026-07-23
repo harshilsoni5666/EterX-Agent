@@ -65,7 +65,10 @@ type RuntimeProjectContext = ProjectContext & {
   agentId?: string;
   selectedModelMode?: MainAgentMode;
   selectedModelName?: string;
+  selectedModelProvider?: string;
+  strictModelSelection?: boolean;
   selectedThinkingLevel?: MainAgentThinkingLevel;
+  terminalShell?: string;
   runtimeSettings?: ScopedRuntimeSettings | null;
   agentSessionId?: string;
   source?: string;
@@ -88,6 +91,7 @@ type RuntimeProjectContext = ProjectContext & {
   allowedCapabilities?: string[];
   toolPolicy?: { allowedCapabilities?: string[] };
   runLocation?: string;
+  abortSignal?: AbortSignal;
   sandboxGuard?: any;
   allowRawCommand?: boolean;
   isFocusedWorkspace?: boolean;
@@ -350,6 +354,7 @@ export class AgentOrchestrator {
 
     const runLocation = pinnedContext?.runLocation || 'local';
     context.runLocation = runLocation;
+    context.terminalShell = String(pinnedContext?.terminalShell || 'auto');
 
     if (runLocation === 'sandbox') {
       let sandboxPath = workspace.getSandboxPath();
@@ -431,6 +436,9 @@ export class AgentOrchestrator {
       context.agentId = pinnedContext.agentId;
       context.source = pinnedContext.source;
       context.telegram = pinnedContext.telegram;
+      context.selectedModelProvider = String(pinnedContext.selectedModelProvider || '').trim() || undefined;
+      context.strictModelSelection = pinnedContext.strictModelSelection === true;
+      context.abortSignal = pinnedContext.abortSignal instanceof AbortSignal ? pinnedContext.abortSignal : undefined;
     }
 
     const isSandboxRun = runLocation === 'sandbox';
@@ -489,7 +497,7 @@ export class AgentOrchestrator {
 
     const startTime = Date.now();
     const complexity = pinnedContext?.forceFastMode ? 'standard' : this.classifyComplexity(userRequest);
-    const hasExplicitModel = String(pinnedContext?.selectedModelProvider || '').trim() === 'openai'
+    const hasExplicitModel = String(pinnedContext?.selectedModelProvider || '').trim().length > 0
       && typeof pinnedContext?.selectedModelName === 'string'
       && pinnedContext.selectedModelName.trim().length > 0;
     const effectiveMode = pinnedContext?.forceFastMode
@@ -512,6 +520,8 @@ export class AgentOrchestrator {
     );
     context.selectedModelMode = effectiveMode;
     context.selectedModelName = modelConfig.modelName;
+    context.selectedModelProvider = modelConfig.provider;
+    context.strictModelSelection = hasExplicitModel && pinnedContext?.strictModelSelection === true;
     context.selectedThinkingLevel = selectedThinkingLevel;
     (context as any).modelThinkingCapability = modelThinkingCapability;
 
@@ -648,7 +658,7 @@ export class AgentOrchestrator {
 
 
     if (shouldPersistSession) {
-      await globalSessionManager.save();
+      await globalSessionManager.saveForChat(projectId);
     }
 
     // Flush Synapse graph state to disk

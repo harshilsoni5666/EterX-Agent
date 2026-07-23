@@ -680,7 +680,7 @@ const FileTreeNode = ({ node, depth, openFilePaths, activeFilePath, onFileClick 
 };
 
 export const IdePanel = () => {
-  const { openFiles, reviewFiles, reviewSubagents, activeIndex, closePanel, setActiveIndex, openPanel } = useGlobalFilePanel();
+  const { openFiles, reviewFiles, reviewSubagents, activeIndex, activeChatId, closePanel, setActiveIndex, openPanel } = useGlobalFilePanel();
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [contextMenu, setContextMenu] = useState<{ x: number, y: number, index: number } | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -1605,6 +1605,7 @@ export const IdePanel = () => {
               ) : activeTabMode === 'browser' ? (
                 <div className={`${isFullscreen ? '' : 'rounded-b-[24px]'} h-full flex flex-col overflow-hidden`}>
                   <LiveBrowserPanel
+                    chatId={activeChatId || undefined}
                     isFullscreen={isFullscreen}
                     onToggleFullscreen={() => setIsFullscreen(f => !f)}
                   />

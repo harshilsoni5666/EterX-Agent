@@ -22,6 +22,9 @@ import { bindComputerTarget, isUnsafeHostControlEnabled } from './computer-sessi
 const execAsync = promisify(exec);
 
 async function ps(script: string, timeout = 8000): Promise<string> {
+  if (process.platform !== 'win32') {
+    throw new Error(`Windows application connector is unavailable on ${process.platform}.`);
+  }
   if (!isUnsafeHostControlEnabled()) return '';
   try {
     const { stdout } = await execAsync(script, { shell: 'powershell.exe', timeout, maxBuffer: 5 * 1024 * 1024 });

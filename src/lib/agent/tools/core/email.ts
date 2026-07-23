@@ -1,7 +1,5 @@
 import { z } from 'zod';
 import { ToolDefinition } from '../../schemas';
-import { exec } from 'child_process';
-import { promisify } from 'util';
 import path from 'path';
 import fs from 'fs-extra';
 import {
@@ -9,12 +7,6 @@ import {
   resolveReadableWorkspacePathForContext,
 } from '../../workspace/path_resolver';
 import { enforceToolCapability } from '../security/tool_policy';
-
-const execAsync = promisify(exec);
-
-function psQuote(value: unknown): string {
-  return `'${String(value ?? '').replace(/'/g, "''")}'`;
-}
 
 function cleanHeader(value: unknown): string {
   return String(value ?? '').replace(/[\r\n]+/g, ' ').trim();
@@ -31,7 +23,7 @@ function parseSmtpPort(value: string | undefined): number {
 /**
  * Email Manager Tool
  * 
- * Sends emails via PowerShell's Send-MailMessage or via direct SMTP.
+ * Sends emails via direct SMTP.
  * Reads email drafts by composing mailto: links or reading local mailbox exports.
  * For full Gmail IMAP, configure GMAIL_APP_PASSWORD in .env.local
  */
@@ -63,7 +55,6 @@ export const emailTool: ToolDefinition = {
 
       switch (input.action) {
         case 'send': {
-          // Use PowerShell SMTP sending
           const smtpServer = cleanHeader(process.env.SMTP_SERVER || 'smtp.gmail.com');
           const smtpPort = parseSmtpPort(process.env.SMTP_PORT);
           const smtpUser = cleanHeader(process.env.SMTP_USER || process.env.EMAIL_ADDRESS);
@@ -77,34 +68,22 @@ export const emailTool: ToolDefinition = {
             return { success: false, result: 'Missing required fields: to, subject, body' };
           }
 
-          const to = cleanHeader(input.to);
-          const cc = input.cc ? cleanHeader(input.cc) : '';
-          const subject = cleanHeader(input.subject);
-          const body = String(input.body || '');
-          const psScript = `
-            $secpasswd = ConvertTo-SecureString $env:ETERX_SMTP_PASSWORD -AsPlainText -Force;
-            $credential = New-Object System.Management.Automation.PSCredential(${psQuote(smtpUser)}, $secpasswd);
-            $params = @{
-              From = ${psQuote(smtpUser)}
-              To = ${psQuote(to)}
-              Subject = ${psQuote(subject)}
-              Body = ${psQuote(body)}
-              SmtpServer = ${psQuote(smtpServer)}
-              Port = ${smtpPort}
-              Credential = $credential
-              UseSsl = $true
-              ${body.includes('<') ? "BodyAsHtml = $true" : ''}
-            };
-            ${cc ? `$params.Cc = ${psQuote(cc)};` : ''}
-            Send-MailMessage @params;
-            Write-Output 'Email sent successfully.';
-          `.trim();
-
-          const { stdout } = await execAsync(psScript, {
-            shell: 'powershell.exe',
-            env: { ...process.env, ETERX_SMTP_PASSWORD: smtpPass },
+          const nodemailer = require('nodemailer');
+          const transporter = nodemailer.createTransport({
+            host: smtpServer,
+            port: smtpPort,
+            secure: smtpPort === 465,
+            auth: { user: smtpUser, pass: smtpPass },
           });
-          return { success: true, result: stdout.trim() || 'Email sent successfully.' };
+          const body = String(input.body || '');
+          const info = await transporter.sendMail({
+            from: smtpUser,
+            to: cleanHeader(input.to),
+            cc: input.cc ? cleanHeader(input.cc) : undefined,
+            subject: cleanHeader(input.subject),
+            ...(body.includes('<') ? { html: body } : { text: body }),
+          });
+          return { success: true, result: `Email sent successfully (${info.messageId || 'SMTP accepted'}).` };
         }
 
         case 'draft': {

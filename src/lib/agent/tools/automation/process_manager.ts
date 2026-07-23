@@ -5,6 +5,7 @@ import { promisify } from 'util';
 import fs from 'fs-extra';
 import { resolveWorkspaceDirectoryForContext } from '../../workspace/path_resolver';
 import { authorizeToolCommand } from '../security/command_broker';
+import { resolveTerminalShell } from '../core/shell_resolver';
 
 const execAsync = promisify(exec);
 
@@ -35,7 +36,7 @@ export const processManagerTool: ToolDefinition = {
   description: `Manage long-running background processes. Start servers, watch scripts, build processes, or any command that runs continuously. Monitor their output and stop them when needed.
   
   USAGE:
-  - Start a dev server: action="start" command="npm run dev" cwd="C:\\Users\\User\\Desktop\\my-project"
+  - Start a dev server: action="start" command="npm run dev" cwd="/absolute/path/to/my-project"
   - Monitor output: action="logs" processId="dev-server"
   - Check status: action="status" processId="dev-server"
   - Stop: action="stop" processId="dev-server"
@@ -48,8 +49,8 @@ export const processManagerTool: ToolDefinition = {
     command: z.string().optional().describe('Shell command to start (required for start action). Do NOT prefix with "cd path;"'),
     processId: z.string().optional().describe('Process ID for stop/status/logs actions'),
     name: z.string().optional().describe('Friendly name for the process (e.g., "dev-server")'),
-    cwd: z.string().optional().describe('ABSOLUTE PATH to the working directory for the command. Required for start action. Example: "C:\\\\Users\\\\User\\\\Desktop\\\\my-project"'),
-    shellType: z.enum(['default', 'powershell', 'cmd']).optional().default('default').describe('Shell for start action. Use default unless a command specifically needs PowerShell or cmd.'),
+    cwd: z.string().optional().describe('Absolute working-directory path valid for the current OS. Required for start action.'),
+    shellType: z.enum(['default', 'powershell', 'cmd', 'git-bash', 'wsl', 'zsh', 'bash', 'fish', 'sh']).optional().default('default').describe('Shell for start action. Default follows the integrated-terminal setting and operating system.'),
     env: z.string().optional().describe('Optional JSON object string of environment variables, e.g. {"PORT":"3001"}'),
     maxLines: z.number().optional().describe('Maximum output lines to return for action="logs" (default: 100, max: 200)')
   }),
@@ -67,7 +68,11 @@ export const processManagerTool: ToolDefinition = {
         case 'start': {
           if (!input.command) return { success: false, message: 'command is required for start action' };
 
-          const id = input.name || `proc_${Date.now()}`;
+          const requestedId = input.name || `proc_${Date.now()}`;
+          const existingProcess = managedProcesses.get(requestedId);
+          const id = existingProcess?.status === 'running'
+            ? `${requestedId}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`
+            : requestedId;
           const workingDir = resolveProcessCwd(input.cwd, context);
           if (!await fs.pathExists(workingDir)) {
             return { success: false, message: `Working directory not found: ${workingDir}` };
@@ -86,11 +91,11 @@ export const processManagerTool: ToolDefinition = {
             };
           }
 
-          const shell = input.shellType === 'powershell'
-            ? 'powershell.exe'
-            : input.shellType === 'cmd'
-              ? 'cmd.exe'
-              : true;
+          const shell = resolveTerminalShell(
+            input.shellType && input.shellType !== 'default'
+              ? input.shellType
+              : context?.terminalShell
+          );
 
           const child = spawn(input.command, [], {
             shell,
@@ -166,7 +171,7 @@ export const processManagerTool: ToolDefinition = {
             // Force kill via shell
             if (proc.pid) {
               if (process.platform === 'win32') {
-                await execAsync(`taskkill /PID ${proc.pid} /T /F`, { shell: 'powershell.exe' }).catch(() => {});
+                await execAsync(`taskkill /PID ${proc.pid} /T /F`, { shell: process.env.ComSpec || 'cmd.exe' }).catch(() => {});
               } else {
                 await execAsync(`kill -9 ${proc.pid}`).catch(() => {});
               }

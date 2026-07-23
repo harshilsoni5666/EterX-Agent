@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { ToolDefinition } from '../../schemas';
-import { exec } from 'child_process';
+import { exec, execFile } from 'child_process';
 import { promisify } from 'util';
 import path from 'path';
 import fs from 'fs-extra';
@@ -8,6 +8,7 @@ import { resolveFinalArtifactPathForContext } from '../../workspace/path_resolve
 import { enforceToolCapability } from '../security/tool_policy';
 
 const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 function psQuote(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
@@ -40,6 +41,27 @@ export const screenshotTool: ToolDefinition = {
     console.log(`[Tool: screenshot_capture] Capturing ${ input.target || 'fullscreen' } → ${ filePath }`);
 
     try {
+      if (process.platform === 'darwin') {
+        await execFileAsync('screencapture', ['-x', filePath]);
+      } else if (process.platform !== 'win32') {
+        const candidates: Array<[string, string[]]> = [
+          ['gnome-screenshot', ['-f', filePath]],
+          ['scrot', [filePath]],
+          ['import', ['-window', 'root', filePath]]
+        ];
+        let captured = false;
+        let lastError: any;
+        for (const [command, args] of candidates) {
+          try {
+            await execFileAsync(command, args);
+            captured = true;
+            break;
+          } catch (error) {
+            lastError = error;
+          }
+        }
+        if (!captured) throw new Error(`No supported screenshot utility was found: ${lastError?.message || 'install gnome-screenshot, scrot, or ImageMagick'}`);
+      } else {
       let psScript: string;
 
       if (input.target === 'active_window') {
@@ -86,6 +108,7 @@ export const screenshotTool: ToolDefinition = {
       }
 
       await execAsync(psScript, { shell: 'powershell.exe' });
+      }
 
       if (await fs.pathExists(filePath)) {
         const stats = await fs.stat(filePath);

@@ -6,6 +6,13 @@ import path from 'path';
 import fs from 'fs-extra';
 import { resolveWorkspaceDirectoryForContext } from '../../workspace/path_resolver';
 import { authorizeToolCommand } from '../security/command_broker';
+import {
+  getTerminalBackgroundTaskStatus,
+  killTerminalBackgroundTask,
+  listTerminalBackgroundTasks,
+  runTerminalCommandWithCheckIn,
+} from './terminal_background';
+import { resolveTerminalShell } from './shell_resolver';
 
 const execAsync = promisify(exec);
 
@@ -150,6 +157,25 @@ Use for: long installs, builds, data processing, file watching, anything that ta
           };
         }
 
+        const managedResult = await runTerminalCommandWithCheckIn({
+          command: input.command,
+          cwd: authorization.cwd,
+          env: authorization.env,
+          source: 'background_task',
+          description: input.description,
+          context,
+          shell: resolveTerminalShell(context?.terminalShell),
+          immediateHandoff: true,
+          surviveRunSettlement: true,
+        });
+        return {
+          success: true,
+          taskId: managedResult.taskId,
+          status: managedResult.status,
+          output: managedResult.output || '',
+          message: `Background task launched: "${input.description || input.command}" (ID: ${managedResult.taskId}, PID: ${managedResult.pid}). Use mode="check" to monitor progress.`,
+        };
+
         const task: BackgroundTask = {
           id: taskId,
           command: input.command,
@@ -222,6 +248,9 @@ Use for: long installs, builds, data processing, file watching, anything that ta
           return { success: false, message: 'Invalid taskId' };
         }
 
+        const terminalTask = await getTerminalBackgroundTaskStatus(taskId);
+        if (terminalTask?.terminalTask) return terminalTask;
+
         // Check in-memory first
         const task = activeTasks.get(taskId);
         if (task) {
@@ -258,11 +287,11 @@ Use for: long installs, builds, data processing, file watching, anything that ta
       }
 
       case 'list': {
-        const tasks: any[] = [];
+        const tasks: any[] = await listTerminalBackgroundTasks();
 
         // In-memory tasks
         for (const [id, task] of activeTasks) {
-          tasks.push({
+          if (!tasks.some(item => item.id === id)) tasks.push({
             id, status: task.status, description: task.description,
             startedAt: new Date(task.startedAt).toLocaleTimeString(),
             duration: task.completedAt ? `${((task.completedAt - task.startedAt) / 1000).toFixed(1)}s` : 'running'
@@ -301,6 +330,11 @@ Use for: long installs, builds, data processing, file watching, anything that ta
         const taskId = safeTaskId(input.taskId);
         if (!taskId) {
           return { success: false, message: 'Invalid taskId' };
+        }
+
+        const terminalTask = await killTerminalBackgroundTask(taskId);
+        if (terminalTask?.terminalTask) {
+          return { ...terminalTask, success: true, message: `Task ${taskId} terminated.` };
         }
 
         const task = activeTasks.get(taskId);

@@ -17,6 +17,7 @@ import {
 import { authorizeToolCommand } from '../security/command_broker';
 import { runTerminalCommandWithCheckIn } from '../core/terminal_background';
 import { monitorEmitter } from '../../monitor/emitter';
+import { resolveTerminalShell } from '../core/shell_resolver';
 
 const execAsync = promisify(exec);
 
@@ -100,8 +101,11 @@ export const workspaceRunCommandTool: ToolDefinition = {
         cwd: runDir,
         source: 'workspace_run_command',
         context,
+        shell: resolveTerminalShell(context?.terminalShell),
         checkInMs: input.background ? 1 : timeoutMs,
-        hardTimeoutMs: undefined // Keep background running up to EterX's 30-minute limit
+        hardTimeoutMs: undefined, // Keep background running up to EterX's 30-minute limit
+        immediateHandoff: input.background === true,
+        surviveRunSettlement: input.background === true,
       });
 
       return {
@@ -236,8 +240,9 @@ export const workspaceExecuteScriptTool: ToolDefinition = {
       }
 
       await fs.writeFile(scriptPath, input.script, 'utf-8');
+      const powerShellExecutable = resolveTerminalShell('powershell');
       const command =
-        input.language === 'powershell' ? `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${scriptPath}"` :
+        input.language === 'powershell' ? `"${powerShellExecutable}" -NoProfile -NonInteractive ${process.platform === 'win32' ? '-ExecutionPolicy Bypass ' : ''}-File "${scriptPath}"` :
         input.language === 'python' ? `python "${scriptPath}"` :
         `node "${scriptPath}"`;
 
@@ -257,19 +262,28 @@ export const workspaceExecuteScriptTool: ToolDefinition = {
         };
       }
 
-      const { stdout, stderr } = await execAsync(command, {
+      const result = await runTerminalCommandWithCheckIn({
+        command,
         cwd: authorization.cwd,
         env: authorization.env,
-        maxBuffer: 8 * 1024 * 1024,
-        timeout: timeoutMs,
-        signal: context?.abortSignal,
+        source: 'workspace_execute_script',
+        description: `${input.language} inline script`,
+        context,
+        shell: resolveTerminalShell(context?.terminalShell),
+        checkInMs: timeoutMs,
+        hardTimeoutMs: Math.max(timeoutMs + 1_000, 30 * 60_000),
       });
 
       return {
-        stdout: String(stdout || '').slice(0, 30000),
-        stderr: String(stderr || '').slice(0, 8000),
-        exitCode: 0,
+        stdout: String(result.stdout || result.output || '').slice(0, 30000),
+        stderr: String(result.stderr || '').slice(0, 8000),
+        exitCode: result.exitCode ?? (result.success ? 0 : 1),
         timeoutMs,
+        stillRunning: Boolean(result.stillRunning),
+        backgroundTaskId: result.backgroundTaskId,
+        taskId: result.taskId,
+        nextActionNote: result.nextActionNote,
+        _consoleTraceEmitted: true,
       };
     } catch (error: any) {
       if (error?.name === 'AbortError' || context?.abortSignal?.aborted || context?.isCancelled?.()) {

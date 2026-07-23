@@ -44,6 +44,9 @@ function encode(value: string) {
 }
 
 async function ensureBinary(): Promise<string> {
+  if (process.platform !== 'win32') {
+    throw new Error(`Isolated managed computer is currently available only on Windows, not ${process.platform}.`);
+  }
   const sourcePath = path.resolve(process.cwd(), 'src', 'lib', 'agent', 'computer', 'EterXManagedComputer.cs');
   const outDir = path.resolve(process.cwd(), '.workspaces', 'temp', 'managed-computer');
   const exePath = path.join(outDir, 'EterXManagedComputer.exe');

@@ -1,9 +1,8 @@
 import { z } from 'zod';
-import { ToolDefinition } from '../../schemas';
-import { exec } from 'child_process';
-import { promisify } from 'util';
 import path from 'path';
 import fs from 'fs-extra';
+import AdmZip from 'adm-zip';
+import { ToolDefinition } from '../../schemas';
 import {
   hasRuntimeWorkspaceContext,
   resolveFinalArtifactPathForContext,
@@ -12,21 +11,19 @@ import {
   resolveWorkspacePathForContext,
 } from '../../workspace/path_resolver';
 
-const execAsync = promisify(exec);
-
-function psQuote(value: string): string {
-  return `'${String(value).replace(/'/g, "''")}'`;
+function wildcardMatcher(pattern?: string): ((name: string) => boolean) | undefined {
+  if (!pattern) return undefined;
+  const escaped = pattern
+    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+    .replace(/\*/g, '.*')
+    .replace(/\?/g, '.');
+  const matcher = new RegExp(`^${escaped}$`, 'i');
+  return (name: string) => matcher.test(path.basename(name)) || matcher.test(name.replace(/\\/g, '/'));
 }
 
-/**
- * Compression Tool — Zip/Unzip/Archive
- * 
- * Compress files into archives or extract them.
- * Supports ZIP format via PowerShell's Compress-Archive.
- */
 export const compressionTool: ToolDefinition = {
   name: 'file_compression',
-  description: 'Compress files/folders into ZIP archives or extract ZIP files. Use this for bundling deliverables, creating backups, or extracting downloaded archives.',
+  description: 'Compress files/folders into ZIP archives or extract ZIP files on Windows, macOS, and Linux.',
   category: 'workspace',
   inputSchema: z.object({
     action: z.enum(['compress', 'extract', 'list']).describe('compress: create ZIP, extract: unzip, list: view archive contents'),
@@ -43,64 +40,58 @@ export const compressionTool: ToolDefinition = {
     const sourcePath = hasRuntimeWorkspaceContext(context)
       ? resolveReadableWorkspacePathForContext(input.source, context)
       : resolveReadableWorkspacePath(input.source);
-    
-    console.log(`[Tool: file_compression] ${input.action}: ${sourcePath}`);
 
     try {
-      switch (input.action) {
-        case 'compress': {
-          const destPath = input.destination 
-            ? resolveFinalArtifactPathForContext(input.destination, '.zip', undefined, context)
-            : resolveFinalArtifactPathForContext(`${path.basename(sourcePath)}.zip`, '.zip', undefined, context);
+      if (input.action === 'compress') {
+        const destPath = input.destination
+          ? resolveFinalArtifactPathForContext(input.destination, '.zip', undefined, context)
+          : resolveFinalArtifactPathForContext(`${path.basename(sourcePath)}.zip`, '.zip', undefined, context);
+        const zip = new AdmZip();
+        const sourceStats = await fs.stat(sourcePath);
+        const filter = wildcardMatcher(input.includePattern);
 
-          const pattern = input.includePattern ? `-Filter ${psQuote(input.includePattern)}` : '';
-          const psScript = `Compress-Archive -Path ${psQuote(sourcePath)} -DestinationPath ${psQuote(destPath)} -Force ${pattern}`;
-          
-          await fs.ensureDir(path.dirname(destPath));
-          await execAsync(psScript, { shell: 'powershell.exe' });
-
-          if (await fs.pathExists(destPath)) {
-            const stats = await fs.stat(destPath);
-            return {
-              success: true,
-              message: `✅ Compressed to: ${path.basename(destPath)} (${(stats.size / 1024).toFixed(1)} KB)`,
-              outputPath: destPath
-            };
-          }
-          return { success: false, message: 'Compression completed but output file not found.' };
+        if (sourceStats.isDirectory()) {
+          zip.addLocalFolder(sourcePath, '', filter);
+        } else if (!filter || filter(sourcePath)) {
+          zip.addLocalFile(sourcePath);
+        } else {
+          return { success: false, message: `No files matched ${input.includePattern}.` };
         }
 
-        case 'extract': {
-          const destDir = input.destination 
-            ? resolveWorkspacePathForContext(input.destination, context)
-            : sourcePath.replace('.zip', '_extracted');
-
-          await fs.ensureDir(destDir);
-          await execAsync(
-            `Expand-Archive -Path ${psQuote(sourcePath)} -DestinationPath ${psQuote(destDir)} -Force`,
-            { shell: 'powershell.exe' }
-          );
-
-          const files = await fs.readdir(destDir, { recursive: true });
-          return {
-            success: true,
-            message: `✅ Extracted ${files.length} items to: ${path.basename(destDir)}`,
-            outputPath: destDir,
-            filesExtracted: files.length
-          };
-        }
-
-        case 'list': {
-          const { stdout } = await execAsync(
-            `Add-Type -AssemblyName System.IO.Compression.FileSystem; [System.IO.Compression.ZipFile]::OpenRead(${psQuote(sourcePath)}).Entries | Select-Object FullName, Length, LastWriteTime | Format-Table -AutoSize | Out-String -Width 300`,
-            { shell: 'powershell.exe' }
-          );
-          return { success: true, message: stdout.trim() };
-        }
-
-        default:
-          return { success: false, message: 'Unknown action' };
+        await fs.ensureDir(path.dirname(destPath));
+        zip.writeZip(destPath);
+        const outputStats = await fs.stat(destPath);
+        return {
+          success: true,
+          message: `Compressed to: ${path.basename(destPath)} (${(outputStats.size / 1024).toFixed(1)} KB)`,
+          outputPath: destPath
+        };
       }
+
+      if (input.action === 'extract') {
+        const destDir = input.destination
+          ? resolveWorkspacePathForContext(input.destination, context)
+          : sourcePath.replace(/\.zip$/i, '_extracted');
+        await fs.ensureDir(destDir);
+        new AdmZip(sourcePath).extractAllTo(destDir, true);
+        const files = await fs.readdir(destDir, { recursive: true });
+        return {
+          success: true,
+          message: `Extracted ${files.length} items to: ${path.basename(destDir)}`,
+          outputPath: destDir,
+          filesExtracted: files.length
+        };
+      }
+
+      if (input.action === 'list') {
+        const entries = new AdmZip(sourcePath).getEntries();
+        const listing = entries.map(entry =>
+          `${entry.entryName}\t${entry.header.size} bytes\t${entry.header.time.toISOString()}`
+        );
+        return { success: true, message: listing.join('\n') || 'Archive is empty.' };
+      }
+
+      return { success: false, message: 'Unknown action' };
     } catch (error: any) {
       return { success: false, message: `Compression error: ${error.message}` };
     }

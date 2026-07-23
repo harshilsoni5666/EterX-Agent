@@ -19,6 +19,7 @@
  */
 
 import path from 'path';
+import os from 'os';
 import fs from 'fs-extra';
 import { exec, execSync } from 'child_process';
 import { promisify } from 'util';
@@ -264,10 +265,15 @@ export class BrowserEngine {
 
     // Check if Chrome is already running (profile would be locked)
     try {
-      const { stdout } = await execAsync(`tasklist /FI "IMAGENAME eq ${install.processName}" /NH`, {
-        shell: 'cmd.exe',
-        timeout: 3000,
-      });
+      const { stdout } = process.platform === 'win32'
+        ? await execAsync(`tasklist /FI "IMAGENAME eq ${install.processName}" /NH`, {
+            shell: process.env.ComSpec || 'cmd.exe',
+            timeout: 3000,
+          })
+        : await execAsync(`pgrep -f "${install.processName.replace(/"/g, '')}"`, {
+            shell: process.env.SHELL || '/bin/sh',
+            timeout: 3000,
+          });
       
       if (stdout.toLowerCase().includes(install.processName.toLowerCase())) {
         // Chrome is already running — check if it has debug port
@@ -913,10 +919,10 @@ export class BrowserEngine {
     }
 
     // Fallback: check netstat
-    try {
+    if (process.platform === 'win32') try {
       const { stdout } = await execAsync(
         'netstat -ano | findstr "LISTENING" | findstr /R ":9222 :9223 :9333"',
-        { shell: 'cmd.exe', timeout: 1200 }
+        { shell: process.env.ComSpec || 'cmd.exe', timeout: 1200 }
       );
       if (stdout.includes('9223')) return 9223;
       if (stdout.includes('9222')) return 9222;
@@ -931,7 +937,25 @@ export class BrowserEngine {
    */
   private async findBrowserInstall(): Promise<BrowserInstall> {
     const localAppData = process.env.LOCALAPPDATA || '';
+    const home = os.homedir();
     const candidates: Array<Omit<BrowserInstall, 'executablePath'> & { executablePaths: string[] }> = [
+      ...(process.platform === 'darwin' ? [{
+        displayName: 'Chrome',
+        processName: 'Google Chrome',
+        executablePaths: ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'],
+        userDataDirCandidates: [path.join(home, 'Library', 'Application Support', 'Google', 'Chrome')],
+      }, {
+        displayName: 'Brave',
+        processName: 'Brave Browser',
+        executablePaths: ['/Applications/Brave Browser.app/Contents/MacOS/Brave Browser'],
+        userDataDirCandidates: [path.join(home, 'Library', 'Application Support', 'BraveSoftware', 'Brave-Browser')],
+      }] : []),
+      ...(process.platform === 'linux' ? [{
+        displayName: 'Chrome',
+        processName: 'chrome',
+        executablePaths: ['/usr/bin/google-chrome', '/usr/bin/google-chrome-stable', '/usr/bin/chromium', '/usr/bin/chromium-browser'],
+        userDataDirCandidates: [path.join(home, '.config', 'google-chrome'), path.join(home, '.config', 'chromium')],
+      }] : []),
       {
         displayName: 'Chrome',
         processName: 'chrome.exe',
@@ -983,7 +1007,7 @@ export class BrowserEngine {
       }
     }
 
-    try {
+    if (process.platform === 'win32') try {
       const result = execSync(
         'reg query "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\chrome.exe" /ve',
         { encoding: 'utf-8', timeout: 3000 }
@@ -1001,8 +1025,8 @@ export class BrowserEngine {
 
     return {
       displayName: 'Chrome',
-      executablePath: 'chrome',
-      processName: 'chrome.exe',
+      executablePath: process.platform === 'darwin' ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : process.platform === 'win32' ? 'chrome.exe' : 'google-chrome',
+      processName: process.platform === 'win32' ? 'chrome.exe' : 'chrome',
       userDataDirCandidates: candidates[0].userDataDirCandidates,
     };
   }

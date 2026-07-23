@@ -960,7 +960,7 @@
 }
 
 :root[data-theme="light"] .eterx-inline-code-filename {
-  color: #1F1F1D !important;
+  color: #0969DA !important;
 }
 
 :root[data-theme="light"] .eterx-inline-code-label {
@@ -977,7 +977,11 @@
 }
 
 :root[data-theme="light"] .eterx-inline-code-content {
-  color: #1F1F1D !important;
+  color: #24292F !important;
+}
+
+:root[data-theme="light"] .eterx-inline-code-content-created {
+  color: #1F4D2E !important;
 }
 
 :root[data-theme="light"] .eterx-inline-code-row:hover {

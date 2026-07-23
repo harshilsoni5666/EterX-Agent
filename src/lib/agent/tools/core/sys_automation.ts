@@ -1,12 +1,13 @@
 import { z } from 'zod';
 import { ToolDefinition } from '../../schemas';
-import { exec } from 'child_process';
+import { exec, execFile } from 'child_process';
 import { promisify } from 'util';
 import { isUnsafeHostControlEnabled } from '../../computer/computer-session';
 import { resolveReadableWorkspacePathForContext } from '../../workspace/path_resolver';
 import { enforceToolCapability } from '../security/tool_policy';
 
 const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 const SAFE_READONLY_ACTIONS = new Set(['battery']);
 
 function psQuote(value: unknown): string {
@@ -56,7 +57,7 @@ function clampVolume(value: unknown): number {
  */
 export const sysAutomationTool: ToolDefinition = {
   name: 'system_automation',
-  description: `Control the OS: open applications, manage windows, set environment variables, control volume, lock screen, open URLs in browser, manage services, check battery, and empty recycle bin. Deep Windows integration.`,
+  description: `Control common operating-system actions on Windows, macOS, and Linux. Platform-specific actions return a clear unsupported response when unavailable.`,
   category: 'core',
   inputSchema: z.object({
     action: z.enum([
@@ -85,6 +86,63 @@ export const sysAutomationTool: ToolDefinition = {
     }
 
     try {
+      if (process.platform !== 'win32') {
+        const opener = process.platform === 'darwin' ? 'open' : 'xdg-open';
+        switch (input.action) {
+          case 'open_app': {
+            const target = requireTarget(input);
+            if (process.platform === 'darwin') await execFileAsync('open', ['-a', target]);
+            else await execFileAsync(target, []);
+            return { success: true, result: `Opened: ${target}` };
+          }
+          case 'open_url': {
+            const target = requireHttpUrl(input.target);
+            await execFileAsync(opener, [target]);
+            return { success: true, result: `Opened URL: ${target}` };
+          }
+          case 'open_file':
+          case 'open_folder': {
+            const target = resolveReadableWorkspacePathForContext(input.target || '.', context);
+            await execFileAsync(opener, [target]);
+            return { success: true, result: `Opened: ${target}` };
+          }
+          case 'list_running': {
+            const { stdout } = await execFileAsync('ps', ['-axo', 'pid=,comm=,%cpu=,rss=']);
+            return { success: true, result: stdout.trim().split(/\r?\n/).slice(0, 40).join('\n') };
+          }
+          case 'kill_app': {
+            const target = requireProcessName(input.target);
+            await execFileAsync('pkill', ['-f', target]);
+            return { success: true, result: `Killed: ${target}` };
+          }
+          case 'get_env': {
+            const target = input.target ? requireEnvName(input.target) : '';
+            return { success: true, result: target ? (process.env[target] || '') : Object.entries(process.env).slice(0, 30) };
+          }
+          case 'battery': {
+            if (process.platform === 'darwin') {
+              const { stdout } = await execFileAsync('pmset', ['-g', 'batt']);
+              return { success: true, result: stdout.trim() };
+            }
+            const { stdout } = await execAsync('for f in /sys/class/power_supply/BAT*/capacity; do printf "%s: " "$f"; cat "$f"; done', { shell: '/bin/sh' });
+            return { success: true, result: stdout.trim() || 'No battery detected.' };
+          }
+          case 'lock_screen': {
+            if (process.platform === 'darwin') {
+              await execFileAsync('/System/Library/CoreServices/Menu Extras/User.menu/Contents/Resources/CGSession', ['-suspend']);
+            } else {
+              await execFileAsync('loginctl', ['lock-session']);
+            }
+            return { success: true, result: 'Screen locked' };
+          }
+          case 'empty_trash': {
+            return { success: false, result: 'Emptying trash is intentionally unsupported on this platform because desktop trash locations vary.' };
+          }
+          default:
+            return { success: false, result: `${input.action} is not supported by system automation on ${process.platform}.` };
+        }
+      }
+
       switch (input.action) {
         case 'open_app': {
           const target = requireTarget(input);

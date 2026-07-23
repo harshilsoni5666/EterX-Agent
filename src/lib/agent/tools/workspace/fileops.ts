@@ -76,10 +76,10 @@ async function readFileRange(
 // ════════════════════════════════════════════════════════════════════
 export const workspaceReadTool: ToolDefinition = {
   name: 'workspace_read_file',
-  description: 'Read the contents of ANY file on the local system. Supports absolute paths (C:\\Users\\...\\file.txt) and relative workspace paths. Use startLine/endLine for targeted ranges. Returns numbered lines for precise editing.',
+  description: 'Read file contents using an absolute OS path or a relative workspace path. Use startLine/endLine for targeted ranges. Returns numbered lines for precise editing.',
   category: 'workspace',
   inputSchema: z.object({
-    filename: z.string().describe('File path — absolute (C:\\path\\to\\file) or relative to workspace'),
+    filename: z.string().describe('Absolute path for the current OS, or a path relative to the workspace'),
     startLine: z.number().optional().describe('Start line number (1-indexed). Omit to start from beginning.'),
     endLine: z.number().optional().describe('End line number (1-indexed, inclusive). Omit to read to end.'),
     maxLines: z.number().optional().describe('Maximum number of lines to return (default: 500). Use smaller values for targeted reads.')
@@ -385,7 +385,7 @@ export const workspaceListDirectoryTool: ToolDefinition = {
   description: 'List files and directories at ANY path on the local system. Use absolute paths for Desktop, Documents, etc. Use relative for workspace.',
   category: 'workspace',
   inputSchema: z.object({
-    directory: z.string().optional().describe('Directory path — absolute (C:\\Users\\...\\Desktop) or relative. Default: workspace root'),
+    directory: z.string().optional().describe('Absolute OS path or relative workspace directory. Default: workspace root'),
     depth: z.number().optional().describe('Maximum depth for recursive listing (default: 1 = current dir only, 2 = one level deep)')
   }),
   outputSchema: z.object({
@@ -522,7 +522,7 @@ export const workspaceSearchTextTool: ToolDefinition = {
     }
 
     // ─── Fallback: PowerShell Select-String ───
-    try {
+    if (process.platform === 'win32') try {
       const psPattern = input.pattern.replace(/'/g, "''");
       const psCmd = `Select-String -Path "${searchDir}\\*" -Pattern '${psPattern}' -Recurse -ErrorAction SilentlyContinue | Select-Object -First ${maxResults} | ForEach-Object { "$($_.RelativePath):$($_.LineNumber):$($_.Line.Trim().Substring(0, [Math]::Min(200, $_.Line.Trim().Length)))" }`;
 

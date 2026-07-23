@@ -347,7 +347,7 @@ export const imageAssetSearchTool: ToolDefinition = {
 
 Use this instead of raw web_search images whenever you need image assets for a built website or UI. It rejects placeholder domains, verifies MIME type, checks image dimensions, filters obvious description mismatches, saves the files locally, and returns file paths plus browser-ready src paths.
 
-For website projects, pass outputDir as the project's public asset folder, for example C:\\path\\project\\public\\eterx-assets, and publicPath as /eterx-assets. Use the returned publicPath values in React/HTML instead of remote image URLs.`,
+For website projects, pass outputDir as the project's absolute public asset folder for the current OS, and publicPath as /eterx-assets. Use the returned publicPath values in React/HTML instead of remote image URLs.`,
   category: 'research',
   inputSchema: z.object({
     query: z.string().describe('Precise visual search query, including the exact subject, place, product, style, or scene needed.'),

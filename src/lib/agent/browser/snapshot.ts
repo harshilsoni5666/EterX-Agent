@@ -270,6 +270,11 @@ export class DOMSnapshot {
         
         const tag = el.tagName?.toLowerCase();
         if (!tag) return;
+
+        // EterX's own browser controller lives in the page so the user can
+        // always pause automation. It is chrome, not website content: exposing
+        // it as a snapshot ref can make the agent click its own Stop button.
+        if (el.id?.startsWith('eterx-') || el.classList?.contains('eterx-ref-layer')) return;
         
         // Skip script, style, SVG internals, and other non-renderable elements
         if (['script', 'style', 'noscript', 'meta', 'link', 'svg', 'path', 'circle', 'rect',

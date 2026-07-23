@@ -48,9 +48,8 @@ export interface SubAgentStrategy {
     | null;
 }
 
-const SPECIALIST_PROFILES: Record<SpecialistRole, { name: string; triggers: RegExp[]; task: string }> = {
+const SPECIALIST_PROFILES: Record<SpecialistRole, { triggers: RegExp[]; task: string }> = {
   security_auditor: {
-    name: 'Mira',
     triggers: [
       /\bsecurity|secure|auth|oauth|token|secret|xss|csrf|injection|vulnerabil|permission|privacy\b/i,
       /\bproduction|compliance|audit\b/i,
@@ -58,7 +57,6 @@ const SPECIALIST_PROFILES: Record<SpecialistRole, { name: string; triggers: RegE
     task: 'Audit the security, authorization, data handling, and unsafe execution paths. Return severity-rated findings with exact files and fixes.',
   },
   performance_analyst: {
-    name: 'Leo',
     triggers: [
       /\bperformance|slow|latency|memory|leak|optimi[sz]e|bottleneck|profil|cache|bundle\b/i,
       /\btimeout|rate limit|throughput|concurrency\b/i,
@@ -66,7 +64,6 @@ const SPECIALIST_PROFILES: Record<SpecialistRole, { name: string; triggers: RegE
     task: 'Find performance bottlenecks, concurrency risks, memory pressure, and practical optimization changes. Include verification steps.',
   },
   architect: {
-    name: 'Kai',
     triggers: [
       /\barchitecture|architect|design|system|orchestrat|coordination|refactor|scalab|module|boundary\b/i,
       /\bagent|subagent|main agent|workflow|pipeline\b/i,
@@ -74,7 +71,6 @@ const SPECIALIST_PROFILES: Record<SpecialistRole, { name: string; triggers: RegE
     task: 'Review architecture, agent routing, module boundaries, state flow, and long-term maintainability. Recommend concrete implementation changes.',
   },
   qa_tester: {
-    name: 'Zara',
     triggers: [
       /\bbug|fix|test|qa|regression|edge case|verify|coverage|broken|error\b/i,
       /\bfail|race|flaky|reproduce\b/i,
@@ -82,7 +78,6 @@ const SPECIALIST_PROFILES: Record<SpecialistRole, { name: string; triggers: RegE
     task: 'Find likely bugs and missing verification coverage. Propose or add focused tests and reproduction steps.',
   },
   researcher: {
-    name: 'Sage',
     triggers: [
       /\bresearch|source|cite|market|trend|compare|benchmark|latest|evidence|paper|report\b/i,
       /\bcompetitor|industry|forecast|deep dive\b/i,
@@ -126,8 +121,7 @@ function splitParallelTasks(request: string, specialists: SpecialistRole[], maxA
   if (specialists.length > 0) {
     return specialists.slice(0, maxAgents).map((role) => ({
       role,
-      name: SPECIALIST_PROFILES[role].name,
-      task: `${SPECIALIST_PROFILES[role].task}\n\nUser request:\n${request}`,
+      task: request,
       reason: `The request matches ${role.replace(/_/g, ' ')} signals.`,
     }));
   }
@@ -135,14 +129,12 @@ function splitParallelTasks(request: string, specialists: SpecialistRole[], maxA
   const genericTasks = [
     {
       role: 'parallel_worker' as const,
-      name: 'Ada',
-      task: `Map the current implementation and identify the most relevant files, contracts, and risks for this request:\n${request}`,
+      task: request,
       reason: 'Independent discovery can run while the main agent starts implementation.',
     },
     {
       role: 'parallel_worker' as const,
-      name: 'Turing',
-      task: `Look for likely bugs, missing edge cases, and verification gaps related to this request:\n${request}`,
+      task: request,
       reason: 'Independent QA review reduces missed regressions.',
     },
   ];
@@ -194,8 +186,8 @@ export function buildSubAgentStrategy(request: string, options?: { maxAgents?: n
       rationale,
       guardrails,
       recommendedAgents: [
-        { role: 'skeptic', name: 'Nova', task: normalizedRequest, reason: 'Challenge assumptions and surface failure modes.' },
-        { role: 'realist', name: 'Sam', task: normalizedRequest, reason: 'Resolve tradeoffs into practical recommendations.' },
+        { role: 'skeptic', task: normalizedRequest, reason: 'Challenge assumptions and surface failure modes.' },
+        { role: 'realist', task: normalizedRequest, reason: 'Resolve tradeoffs into practical recommendations.' },
       ],
       recommendedToolCall: { mode: 'debate', tasks: [{ task: normalizedRequest }] },
     };
@@ -212,9 +204,9 @@ export function buildSubAgentStrategy(request: string, options?: { maxAgents?: n
       rationale,
       guardrails,
       recommendedAgents: [
-        { role: 'optimist', name: 'Dave', task: normalizedRequest, reason: 'Identify upside and viable paths.' },
-        { role: 'skeptic', name: 'Nova', task: normalizedRequest, reason: 'Identify risks and hidden failures.' },
-        { role: 'realist', name: 'Sam', task: normalizedRequest, reason: 'Ground the synthesis in constraints.' },
+        { role: 'optimist', task: normalizedRequest, reason: 'Identify upside and viable paths.' },
+        { role: 'skeptic', task: normalizedRequest, reason: 'Identify risks and hidden failures.' },
+        { role: 'realist', task: normalizedRequest, reason: 'Ground the synthesis in constraints.' },
       ],
       recommendedToolCall: { mode: 'consensus', tasks: [{ task: normalizedRequest }] },
     };
@@ -233,8 +225,7 @@ export function buildSubAgentStrategy(request: string, options?: { maxAgents?: n
       guardrails,
       recommendedAgents: [{
         role,
-        name: SPECIALIST_PROFILES[role].name,
-        task: `${SPECIALIST_PROFILES[role].task}\n\nUser request:\n${normalizedRequest}`,
+        task: normalizedRequest,
         reason: 'A focused specialist is lower overhead than a broad swarm.',
       }],
       recommendedToolCall: { mode: 'specialist', specialistRole: role, tasks: [{ task: normalizedRequest }] },

@@ -1,7 +1,5 @@
 import { z } from 'zod';
 import { ToolDefinition } from '../../schemas';
-import { exec } from 'child_process';
-import { promisify } from 'util';
 import path from 'path';
 import fs from 'fs-extra';
 import { getPathResolverInfo, resolveWorkspaceDirectoryForContext } from '../../workspace/path_resolver';
@@ -13,9 +11,9 @@ import {
 } from './terminal_timeout';
 import { authorizeToolCommand } from '../security/command_broker';
 
-const execAsync = promisify(exec);
-
 import { referencesDesktopHelperScript } from '../shared/desktop_guard';
+import { runTerminalCommandWithCheckIn } from './terminal_background';
+import { normalizeTerminalShell, resolveTerminalShell } from './shell_resolver';
 
 function isPathInsideOrEqual(parentPath: string, candidatePath: string): boolean {
   const relative = path.relative(path.resolve(parentPath), path.resolve(candidatePath));
@@ -121,11 +119,11 @@ function detectLongRunningTimeout(command: string): number {
  */
 export const shellTool: ToolDefinition = {
   name: 'system_shell',
-  description: `Execute finite one-shot shell commands on the host OS (Windows/PowerShell). Supports custom working directories, environment variables, multi-command chaining, output truncation, and execution timing.
+  description: `Execute finite one-shot shell commands using the current operating system and selected integrated shell. Supports custom working directories, environment variables, multi-command chaining, output streaming, and background handoff.
 
   CRITICAL RULES:
   - NEVER prefix commands with "cd path;". Use the workingDir parameter instead. cd prefixes are auto-stripped but waste cycles.
-  - This is PowerShell on Windows. Common Unix commands (mkdir -p, rm -rf, touch, cat) are auto-translated, but prefer native PowerShell for complex cases.
+  - Shell selection is automatic by default: PowerShell on Windows, zsh on macOS, and the configured login shell on Linux.
   - Install commands (npm install, pip install, cargo build, etc.) auto-get 120s timeout — no need to set timeoutSeconds.
   - For dev servers, watchers, or anything that runs forever: use process_manager/background_task + wait_timer.
   - For installs that STILL time out at 120s: use background_task mode="launch" with the same command.
@@ -138,7 +136,7 @@ export const shellTool: ToolDefinition = {
   inputSchema: z.object({
     command: z.string().describe('The shell command to execute'),
     workingDir: z.string().optional().describe('Working directory (relative to workspace). Default: workspace root'),
-    shellType: z.enum(['powershell', 'cmd']).optional().default('powershell').describe('Shell type to use'),
+    shellType: z.enum(['auto', 'powershell', 'cmd', 'git-bash', 'wsl', 'zsh', 'bash', 'fish', 'sh']).optional().default('auto').describe('Shell type. Auto uses the OS default or the integrated-terminal preference.'),
     timeoutSeconds: z.number().optional().describe('Optional command timeout in seconds. Default: 30 seconds. Max: 120 seconds.'),
     env: z.string().optional().describe('Optional JSON object string of environment variables, e.g. {"NODE_ENV":"production"}')
   }),
@@ -149,7 +147,9 @@ export const shellTool: ToolDefinition = {
     executionTimeMs: z.number(),
     timedOut: z.boolean().optional(),
     timeoutMs: z.number().optional(),
-    nextActionNote: z.string().optional()
+    nextActionNote: z.string().optional(),
+    stillRunning: z.boolean().optional(),
+    backgroundTaskId: z.string().optional()
   }),
   execute: async (input: { command: string, workingDir?: string, shellType?: string, env?: Record<string, string> | string, timeoutSeconds?: number, timeoutMs?: number }, context?: any) => {
     // ═══ SANDBOX GATE (defense-in-depth) ═══
@@ -182,7 +182,10 @@ export const shellTool: ToolDefinition = {
     }
 
     // === CROSS-PLATFORM TRANSLATION ===
-    if (process.platform === 'win32' && input.shellType !== 'cmd') {
+    const selectedShell = normalizeTerminalShell(input.shellType === 'auto' || !input.shellType
+      ? context?.terminalShell
+      : input.shellType);
+    if (process.platform === 'win32' && !['cmd', 'git-bash', 'wsl', 'bash'].includes(selectedShell)) {
       const translated = translateUnixToWindows(effectiveCommand);
       if (translated !== effectiveCommand) {
         console.log(`[Tool: system_shell] Auto-translated Unix->Windows: "${effectiveCommand.substring(0, 60)}" -> "${translated.substring(0, 60)}"`);
@@ -240,8 +243,8 @@ export const shellTool: ToolDefinition = {
       // Ensure the target directory exists before running command
       await fs.ensureDir(cwd);
 
-      const shellExe = input.shellType === 'cmd' ? 'cmd.exe' : 'powershell.exe';
-      const command = shellExe === 'powershell.exe'
+      const shellExe = resolveTerminalShell(selectedShell);
+      const command = String(shellExe).toLowerCase().includes('powershell')
         ? effectiveCommand.replace(/\[Environment\]::GetFolderPath\(\s*Desktop\s*\)/g, "[Environment]::GetFolderPath('Desktop')")
         : effectiveCommand;
 
@@ -294,13 +297,19 @@ export const shellTool: ToolDefinition = {
         }
       }
 
-      const { stdout, stderr } = await execAsync(command, {
+      const terminalResult = await runTerminalCommandWithCheckIn({
+        command,
         shell: shellExe,
         cwd: authorization.cwd,
-        maxBuffer: 10 * 1024 * 1024, // 10MB buffer (up from default 1MB)
-        timeout: timeoutMs,
-        env: execEnv
+        source: 'system_shell',
+        context,
+        env: execEnv,
+        checkInMs: timeoutMs,
+        hardTimeoutMs: undefined,
+        maxOutputChars: 10 * 1024 * 1024,
       });
+      const stdout = terminalResult.stdout || terminalResult.output || '';
+      const stderr = terminalResult.stderr || '';
 
       const executionTime = Date.now() - startTime;
 
@@ -323,6 +332,34 @@ export const shellTool: ToolDefinition = {
         } catch {}
       }
 
+      if (terminalResult.stillRunning) {
+        return {
+          stdout: truncatedStdout,
+          stderr: truncatedStderr,
+          exitCode: 0,
+          executionTimeMs: executionTime,
+          timeoutMs,
+          cwd,
+          stillRunning: true,
+          backgroundTaskId: terminalResult.backgroundTaskId || terminalResult.taskId,
+          nextActionNote: terminalResult.nextActionNote,
+          _consoleTraceEmitted: true,
+        };
+      }
+
+      if (terminalResult.exitCode !== 0) {
+        return {
+          CRITICAL_ERROR: 'YOUR COMMAND CRASHED. Read the error, fix your code/command, and try again.',
+          stdout: truncatedStdout,
+          stderr: truncatedStderr,
+          exitCode: terminalResult.exitCode,
+          executionTimeMs: executionTime,
+          timeoutMs,
+          cwd,
+          _consoleTraceEmitted: true,
+        };
+      }
+
       if (stderr && stderr.trim().length > 0) {
         return {
           stdout: truncatedStdout,
@@ -335,7 +372,7 @@ export const shellTool: ToolDefinition = {
         };
       }
 
-      return { stdout: truncatedStdout, stderr: '', exitCode: 0, executionTimeMs: executionTime, timeoutMs, cwd };
+      return { stdout: truncatedStdout, stderr: '', exitCode: 0, executionTimeMs: executionTime, timeoutMs, cwd, _consoleTraceEmitted: true };
     } catch (error: any) {
       const executionTime = Date.now() - startTime;
       if (context?.runLocation === 'sandbox' && authorization?.session) {

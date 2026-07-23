@@ -1,11 +1,12 @@
 import { z } from 'zod';
 import { ToolDefinition } from '../../schemas';
 import os from 'os';
-import { exec } from 'child_process';
+import { exec, execFile } from 'child_process';
 import { promisify } from 'util';
 import { enforceToolCapability } from '../security/tool_policy';
 
 const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 export const systemMonitorTool: ToolDefinition = {
   name: 'system_monitor',
@@ -88,6 +89,22 @@ export const systemMonitorTool: ToolDefinition = {
 
     const getDisk = async () => {
       try {
+        if (process.platform !== 'win32') {
+          const { stdout } = await execFileAsync('df', ['-kP']);
+          return stdout.trim().split(/\r?\n/).slice(1).map(line => {
+            const parts = line.trim().split(/\s+/);
+            const total = Number(parts[1]) * 1024;
+            const used = Number(parts[2]) * 1024;
+            const free = Number(parts[3]) * 1024;
+            return {
+              drive: parts.slice(5).join(' ') || parts[0],
+              total: `${(total / 1073741824).toFixed(1)} GB`,
+              free: `${(free / 1073741824).toFixed(1)} GB`,
+              used: `${(used / 1073741824).toFixed(1)} GB`,
+              usagePercent: parts[4] || 'N/A'
+            };
+          });
+        }
         const { stdout } = await execAsync('wmic logicaldisk get size,freespace,caption /format:csv', { shell: 'powershell.exe' });
         const lines = stdout.trim().split('\n').filter(l => l.trim());
         const disks: any[] = [];
@@ -114,6 +131,10 @@ export const systemMonitorTool: ToolDefinition = {
 
     const getProcesses = async () => {
       try {
+        if (process.platform !== 'win32') {
+          const { stdout } = await execFileAsync('ps', ['-axo', 'pid=,comm=,rss=,%cpu=', '-r']);
+          return stdout.trim().split(/\r?\n/).slice(0, 15).join('\n');
+        }
         const { stdout } = await execAsync(
           'Get-Process | Sort-Object -Property WorkingSet64 -Descending | Select-Object -First 15 Name, Id, @{Name="MemMB";Expression={[math]::Round($_.WorkingSet64/1MB,1)}}, CPU | Format-Table -AutoSize | Out-String -Width 200',
           { shell: 'powershell.exe' }

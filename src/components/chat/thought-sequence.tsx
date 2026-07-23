@@ -214,13 +214,6 @@ const tokenizeMarkdownForReveal = (value: string) => {
   return chunks;
 };
 
-const getRevealDelay = (chunk: string, speed: RevealSpeed) => {
-  if (isTableLine(chunk)) return speed.tableDelayMs;
-  if (chunk.includes('\n')) return speed.lineDelayMs;
-  if (/[.!?;:]\s*$/.test(chunk.trim())) return speed.punctuationDelayMs;
-  return speed.baseDelayMs;
-};
-
 const usePrefersReducedMotion = (active: boolean) => {
   const [reduced, setReduced] = useState(false);
 
@@ -260,6 +253,10 @@ const useProgressiveMarkdown = (value: string, enabled: boolean, speed: RevealSp
   }, [chunks.length, speed, value.length]);
   const previousValueRef = useRef(value);
   const [visibleCount, setVisibleCount] = useState(() => enabled && !reducedMotion ? 0 : chunks.length);
+  const chunksRef = useRef(chunks);
+  const effectiveSpeedRef = useRef(effectiveSpeed);
+  chunksRef.current = chunks;
+  effectiveSpeedRef.current = effectiveSpeed;
 
   useEffect(() => {
     if (!enabled || reducedMotion) {
@@ -281,18 +278,31 @@ const useProgressiveMarkdown = (value: string, enabled: boolean, speed: RevealSp
   }, [chunks.length, enabled, reducedMotion, value]);
 
   useEffect(() => {
-    if (!enabled || reducedMotion || visibleCount >= chunks.length) return;
+    if (!enabled || reducedMotion) return;
 
-    const chunk = chunks[visibleCount] || '';
-    const durationBurst = Math.ceil((chunks.length * effectiveSpeed.baseDelayMs) / Math.max(effectiveSpeed.maxDurationMs, 1));
-    const isStructuralChunk = isTableLine(chunk) || chunk.includes('\n');
-    const burst = isStructuralChunk ? 1 : Math.max(effectiveSpeed.burst, durationBurst);
-    const timeout = window.setTimeout(() => {
-      setVisibleCount(current => Math.min(chunks.length, current + burst));
-    }, getRevealDelay(chunk, effectiveSpeed));
+    // Keep one stable clock while tokens arrive. Recreating a timeout for every
+    // server chunk can continuously postpone the reveal on a fast stream.
+    const interval = window.setInterval(() => {
+      setVisibleCount(current => {
+        const latestChunks = chunksRef.current;
+        const total = latestChunks.length;
+        if (current >= total) return current;
 
-    return () => window.clearTimeout(timeout);
-  }, [chunks, effectiveSpeed, enabled, reducedMotion, visibleCount]);
+        const currentChunk = latestChunks[current] || '';
+        const currentSpeed = effectiveSpeedRef.current;
+        const backlog = total - current;
+        const durationBurst = Math.ceil((total * currentSpeed.baseDelayMs) / Math.max(currentSpeed.maxDurationMs, 1));
+        const catchUpBurst = Math.ceil(backlog / 5);
+        const isStructuralChunk = isTableLine(currentChunk) || currentChunk.includes('\n');
+        const burst = isStructuralChunk
+          ? 1
+          : Math.max(currentSpeed.burst, durationBurst, catchUpBurst);
+        return Math.min(total, current + burst);
+      });
+    }, 32);
+
+    return () => window.clearInterval(interval);
+  }, [enabled, reducedMotion]);
 
   const visibleText = useMemo(() => chunks.slice(0, visibleCount).join(''), [chunks, visibleCount]);
 
@@ -302,34 +312,6 @@ const useProgressiveMarkdown = (value: string, enabled: boolean, speed: RevealSp
   };
 };
 
-
-const GhostCodeBlock = ({ inline, className, children, ...props }: any) => {
-  const content = String(children).replace(/\n$/, '');
-
-  if (inline) {
-    if (isLocalFilePath(content)) return <LocalFileLinkChip filePath={content.trim()} compact />;
-    return <code className="eterx-progressive-ghost-inline-code" {...props}>{children}</code>;
-  }
-
-  const lineCount = Math.max(1, content.split(/\r?\n/).length);
-  const language = /language-([^\s]+)/.exec(className || '')?.[1]?.toLowerCase() || '';
-  const diagramLike = language === 'mermaid' || language === 'mmd' || /^(graph|flowchart|sequenceDiagram|classDiagram|stateDiagram|erDiagram|journey|gantt|pie|timeline|mindmap)\b/i.test(content.trim());
-  const minHeight = diagramLike
-    ? Math.max(20, lineCount * 1.45 + 6)
-    : lineCount * 1.7 + 2.6;
-  return (
-    <pre
-      className="eterx-progressive-ghost-code"
-      style={{ minHeight: `${ minHeight }em` }}
-    >
-      <code>{content}</code>
-    </pre>
-  );
-};
-
-const GhostImage = () => (
-  <span className="eterx-progressive-ghost-image" aria-hidden="true" />
-);
 
 // Brand connector icons — compact SVGs
 const C = ({ d, fill, vb = '0 0 24 24', className }: { d: string, fill: string, vb?: string, className?: string }) => <svg className={className} viewBox={vb} fill={fill}><path d={d} /></svg>;
@@ -600,7 +582,7 @@ export const ProfessionalThought = React.memo(({ text, isLatest, isThinking, var
     if (variant !== 'thought') return;
     if (isLatest && isThinking) return;
     setOpen(false);
-  }, [variant, isLatest, isThinking, text]);
+  }, [variant, isLatest, isThinking]);
 
   const renderText = useMemo(() => {
     if (!text) return '';
@@ -666,7 +648,6 @@ export const ProfessionalThought = React.memo(({ text, isLatest, isThinking, var
   const revealSpeed = isNote ? TEXT_REVEAL_SPEEDS.workNote : TEXT_REVEAL_SPEEDS.answer;
   const progressive = useProgressiveMarkdown(renderText, revealEnabled, revealSpeed);
   const markdownText = revealEnabled ? progressive.text : renderText;
-  const showAnswerWriter = variant === 'answer' && (progressive.isRevealing || (isLatest && isThinking));
   const professionalMarkdownComponents = useMemo(() => ({
     ...markdownComponents,
     p: ({ node, ...props }: any) => <p className={`eterx-answer-paragraph mb-2.5 last:mb-0 break-words tracking-normal ${ isNote ? 'leading-[1.58]' : 'leading-[1.72]' }`} {...props} />,
@@ -687,18 +668,12 @@ export const ProfessionalThought = React.memo(({ text, isLatest, isThinking, var
       return <a className="eterx-answer-link hover:underline" target="_blank" rel="noopener" href={href} {...props}>{children}</a>;
     },
   }), [isNote]);
-  const professionalGhostMarkdownComponents = useMemo(() => ({
-    ...professionalMarkdownComponents,
-    code: GhostCodeBlock,
-    img: GhostImage,
-  }), [professionalMarkdownComponents]);
-
-  const renderProfessionalMarkdown = (value: string, withWriter = false, ghost = false) => (
+  const renderProfessionalMarkdown = (value: string) => (
     <>
       <ReactMarkdown
         remarkPlugins={remarkPlugins}
         rehypePlugins={rehypePlugins}
-        components={ghost ? professionalGhostMarkdownComponents : professionalMarkdownComponents}
+        components={professionalMarkdownComponents}
       >
         {value}
       </ReactMarkdown>
@@ -767,16 +742,11 @@ export const ProfessionalThought = React.memo(({ text, isLatest, isThinking, var
       className={`professional-thought eterx-professional-thought relative w-full max-w-full font-sans font-normal selection:bg-[#D98B6A]/20 select-text tracking-normal ${ progressive.isRevealing ? 'eterx-reveal-active' : '' } ${ isNote ? 'eterx-professional-note py-0.5 text-[13.5px] leading-[1.5] text-[#D2CECA]' : 'eterx-professional-answer text-[13.5px] leading-[1.56] text-[#F2F0EC]' }`}
     >
       {revealEnabled ? (
-        <div className="eterx-progressive-markdown">
-          <div className="eterx-progressive-markdown-ghost" aria-hidden="true">
-            {renderProfessionalMarkdown(renderText, false, true)}
-          </div>
-          <div className="eterx-progressive-markdown-live">
-            {renderProfessionalMarkdown(markdownText, showAnswerWriter)}
-          </div>
+        <div className="eterx-progressive-markdown eterx-progressive-markdown--direct">
+          {renderProfessionalMarkdown(markdownText)}
         </div>
       ) : (
-        renderProfessionalMarkdown(markdownText, showAnswerWriter)
+        renderProfessionalMarkdown(markdownText)
       )}
       {suffix}
       <style>{`
@@ -817,18 +787,18 @@ const highlightSyntax = (code: string): string => {
   for (const m of e.matchAll(TOKEN)) {
     const [full, cmt, , num, pascal, ident, flag] = m;
     out += e.slice(last, m.index!); last = m.index! + full.length;
-    if (cmt) out += `<span style="color:#6E7681;font-style:italic">${ full }</span>`;
-    else if (m[2]) out += `<span style="color:#A5D6FF">${ full }</span>`;
-    else if (num) out += `<span style="color:#79B8FF">${ full }</span>`;
-    else if (pascal) out += `<span style="color:#FFA657">${ full }</span>`;
+    if (cmt) out += `<span class="eterx-syntax-comment">${ full }</span>`;
+    else if (m[2]) out += `<span class="eterx-syntax-string">${ full }</span>`;
+    else if (num) out += `<span class="eterx-syntax-number">${ full }</span>`;
+    else if (pascal) out += `<span class="eterx-syntax-type">${ full }</span>`;
     else if (ident) {
-      if (KW_FLOW.has(ident)) out += `<span style="color:#FF7B72">${ full }</span>`;
-      else if (KW_DECL.has(ident)) out += `<span style="color:#FF7B72;font-weight:600">${ full }</span>`;
-      else if (KW_VAL.has(ident)) out += `<span style="color:#79C0FF">${ full }</span>`;
-      else if (KW_THIS.has(ident)) out += `<span style="color:#79C0FF">${ full }</span>`;
-      else out += e.slice(last).trimStart().startsWith('(') ? `<span style="color:#D2A8FF">${ full }</span>` : full;
+      if (KW_FLOW.has(ident)) out += `<span class="eterx-syntax-keyword">${ full }</span>`;
+      else if (KW_DECL.has(ident)) out += `<span class="eterx-syntax-keyword eterx-syntax-declaration">${ full }</span>`;
+      else if (KW_VAL.has(ident)) out += `<span class="eterx-syntax-value">${ full }</span>`;
+      else if (KW_THIS.has(ident)) out += `<span class="eterx-syntax-value">${ full }</span>`;
+      else out += e.slice(last).trimStart().startsWith('(') ? `<span class="eterx-syntax-function">${ full }</span>` : full;
     }
-    else if (flag) out += `<span style="color:#56D364">${ full }</span>`;
+    else if (flag) out += `<span class="eterx-syntax-flag">${ full }</span>`;
     else out += full;
   }
   return out + e.slice(last);
@@ -971,13 +941,13 @@ const InlineConsole = ({ command, content, exitCode, durationMs }: { command: st
           onScroll={handleScroll}
           className="eterx-terminal-console-output eterx-scrollbar max-h-[292px] min-h-[104px] overflow-auto px-3 py-2.5 text-[12.25px] leading-[1.58] text-[#CDC5BB]"
         >
-          <div className="min-w-max pr-4">
+          <div className="min-w-0 pr-1">
             <div className="eterx-terminal-console-header mb-4 text-[11.5px] font-medium leading-none text-[#A9A196]">Shell</div>
             <div className="eterx-terminal-console-command flex items-start gap-2.5 whitespace-pre-wrap text-[#E4DDD3]">
               <span className="select-none text-[15px] leading-5 font-medium text-[#CFC8BD]">$</span>
-              <span className="min-w-0 flex-1 text-[12.75px] font-medium leading-5">{command}</span>
+              <span className="min-w-0 flex-1 break-words text-[12.75px] font-medium leading-5">{command}</span>
             </div>
-            <div className="eterx-terminal-console-body mt-4 whitespace-pre text-[#CDC5BB]">
+            <div className="eterx-terminal-console-body mt-4 whitespace-pre-wrap break-words text-[#CDC5BB]">
               {content
                 ? <span dangerouslySetInnerHTML={{ __html: ansiToHtml(content) }} />
                 : <span className="text-[#8D867C] italic">{isRunning ? 'Waiting for output...' : '(no output)'}</span>
@@ -986,7 +956,7 @@ const InlineConsole = ({ command, content, exitCode, durationMs }: { command: st
           </div>
         </div>
         {!atBottom && lineCount > 8 && (
-          <button onClick={(e) => { e.stopPropagation(); const el = scrollRef.current; if (!el) return; shouldFollowOutputRef.current = true; el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' }); }} className="absolute bottom-2.5 right-2.5 flex h-7 w-7 items-center justify-center rounded-full border border-white/[0.08] bg-[#2A2A29]/95 text-[#BDB5AA] shadow-[0_6px_18px_rgba(0,0,0,0.26)] transition-colors hover:bg-[#333331] hover:text-[#F0EAE0]">
+          <button type="button" aria-label="Scroll output to bottom" onClick={(e) => { e.stopPropagation(); const el = scrollRef.current; if (!el) return; shouldFollowOutputRef.current = true; el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' }); }} className="absolute bottom-2.5 right-2.5 flex h-7 w-7 items-center justify-center rounded-full border border-white/[0.08] bg-[#2A2A29]/95 text-[#BDB5AA] shadow-[0_6px_18px_rgba(0,0,0,0.26)] transition-colors hover:bg-[#333331] hover:text-[#F0EAE0] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/20">
             <ChevronDown className="h-3.5 w-3.5" />
           </button>
         )}
@@ -1005,7 +975,7 @@ const InlineConsole = ({ command, content, exitCode, durationMs }: { command: st
       </div>
     </div>
   );
-  return <motion.div layout initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }}>{consolePanel}</motion.div>;
+  return <div>{consolePanel}</div>;
 };
 
 // ─── Patch Summary Panel — shown for workspace_apply_patch results ────────────
@@ -1075,7 +1045,7 @@ const PatchSummaryPanel = ({
   };
 
   return (
-    <motion.div layout initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }}>
+    <div>
       <div className={`eterx-patch-summary-panel flex flex-col bg-[#1B1B1A] font-mono shadow-[0_6px_18px_rgba(0,0,0,0.20),inset_0_1px_0_rgba(255,255,255,0.026)] ${ flush ? 'mt-1 mb-2' : 'mx-3 mt-1.5 mb-2' } overflow-hidden rounded-[12px] border border-white/[0.07]`}>
         {/* Header */}
         <div className="flex flex-wrap items-center justify-between gap-2 bg-[#20201F] px-3 py-2">
@@ -1146,7 +1116,7 @@ const PatchSummaryPanel = ({
                         {parentPath ? <span className="mt-0.5 truncate text-[9.5px] text-[#69645E]">{parentPath}</span> : null}
                       </span>
                       {f.detail && (f.detail.additions || f.detail.deletions) ? (
-                        <span className="flex shrink-0 items-center gap-1.5 font-mono text-[10px] tabular-nums">
+                        <span className="flex shrink-0 items-center gap-1.5 text-[10px] tabular-nums">
                           <span className="text-emerald-300">+{f.detail.additions || 0}</span>
                           <span className="text-red-300">−{f.detail.deletions || 0}</span>
                         </span>
@@ -1181,7 +1151,7 @@ const PatchSummaryPanel = ({
           )}
         </AnimatePresence>
       </div>
-    </motion.div>
+    </div>
   );
 };
 
@@ -1278,6 +1248,7 @@ const ObjectCard = React.memo(({ item, primaryKey, secondaryKey, metaKeys }: {
           )}
         </div>
         <button
+          type="button"
           onClick={() => setExpanded(!expanded)}
           className="shrink-0 text-[10px] font-medium text-[#6B9AB8] hover:text-[#94C7E0] hover:bg-white/[0.04] transition-all px-1.5 py-0.5 rounded border border-white/[0.06] shadow-[0_1px_3px_rgba(0,0,0,0.1)]"
         >
@@ -1863,14 +1834,14 @@ const InlineMissingDiffView = ({
 }) => {
   const parentPath = filepath ? filepath.replace(/\\/g, '/').split('/').slice(0, -1).slice(-3).join('/') : '';
   return (
-    <motion.div layout initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }}>
+    <div>
       <div className="mx-3 mb-2 mt-1.5 overflow-hidden rounded-[12px] border border-amber-400/[0.12] bg-[#1B1B1A] shadow-[0_6px_18px_rgba(0,0,0,0.18)]">
         <div className="flex items-center justify-between gap-3 bg-[#20201F] px-3 py-2">
           <span className="flex min-w-0 flex-col leading-tight">
             <span className="truncate font-mono text-[12px] font-semibold text-[#A9D2E5]">{filename}</span>
             {parentPath ? <span className="mt-0.5 truncate font-mono text-[9.5px] text-[#6D6861]">{parentPath}</span> : null}
           </span>
-          <ChangeStats stats={stats} className="flex shrink-0 items-center gap-1 font-mono text-[11px] font-semibold tabular-nums" />
+          <ChangeStats stats={stats} className="flex shrink-0 items-center gap-1 text-[11px] font-semibold tabular-nums" />
         </div>
         <div className="flex items-start gap-2.5 border-t border-white/[0.045] px-3 py-3 text-[11.5px] leading-relaxed text-[#AAA298]">
           <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-300/80" />
@@ -1880,7 +1851,7 @@ const InlineMissingDiffView = ({
           </div>
         </div>
       </div>
-    </motion.div>
+    </div>
   );
 };
 
@@ -1942,7 +1913,7 @@ const InlineDiffView = ({ filename, filepath = '', diffLines, showExpand = true,
           </button>
           <ChangeStats
             stats={{ added, removed }}
-            className="flex shrink-0 items-center gap-1 font-mono text-[11px] font-semibold tabular-nums"
+            className="flex shrink-0 items-center gap-1 text-[11px] font-semibold tabular-nums"
             addedClassName="eterx-file-change-added text-[#3FB950]"
             removedClassName="eterx-file-change-removed text-[#FF7B72]"
           />
@@ -1955,7 +1926,7 @@ const InlineDiffView = ({ filename, filepath = '', diffLines, showExpand = true,
             ).join('\n')}
             label="Copy visible diff"
           />
-          {showExpand && !full && <button onClick={(e) => { e.stopPropagation(); setFull(true); }} className="eterx-action-icon-button flex h-7 w-7 items-center justify-center rounded-[8px] border border-white/[0.06] bg-white/[0.028] text-[#9A9389] transition-colors hover:border-white/[0.10] hover:bg-white/[0.05] hover:text-[#DAD4CA]" aria-label="Expand diff"><Maximize2 className="h-3.5 w-3.5" /></button>}
+          {showExpand && !full && <button type="button" onClick={(e) => { e.stopPropagation(); setFull(true); }} className="eterx-action-icon-button flex h-7 w-7 items-center justify-center rounded-[8px] border border-white/[0.06] bg-white/[0.028] text-[#9A9389] transition-colors hover:border-white/[0.10] hover:bg-white/[0.05] hover:text-[#DAD4CA]" aria-label="Expand diff"><Maximize2 className="h-3.5 w-3.5" /></button>}
         </div>
       </div>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-white/[0.04] bg-[#1D1D1C] px-3 py-1.5 text-[9.5px] font-medium text-[#777169]">
@@ -2007,6 +1978,8 @@ const InlineDiffView = ({ filename, filepath = '', diffLines, showExpand = true,
         </div>
         {!atBottom && diffLines.length > 10 && (
           <button
+            type="button"
+            aria-label="Scroll diff to bottom"
             onClick={(e) => { e.stopPropagation(); scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' }); }}
             className="absolute bottom-2.5 right-2.5 flex h-7 w-7 items-center justify-center rounded-full border border-white/[0.08] bg-[#2A2A29]/95 text-[#BDB5AA] shadow-[0_6px_18px_rgba(0,0,0,0.26)] transition-colors hover:bg-[#333331] hover:text-[#F0EAE0]"
           ><ChevronDown className="h-3.5 w-3.5" /></button>
@@ -2014,7 +1987,7 @@ const InlineDiffView = ({ filename, filepath = '', diffLines, showExpand = true,
       </div>
     </div>
   );
-  return <>{full ? <FullScreenModal onClose={() => setFull(false)} title={`Diff: ${ filename }`}>{diffPanel}</FullScreenModal> : <motion.div layout initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }}>{diffPanel}</motion.div>}</>;
+  return <>{full ? <FullScreenModal onClose={() => setFull(false)} title={`Diff: ${ filename }`}>{diffPanel}</FullScreenModal> : <div>{diffPanel}</div>}</>;
 };
 
 const InlineCodeView = ({
@@ -2105,7 +2078,7 @@ const InlineCodeView = ({
           {hasVisibleChangeStats(displayStats) ? (
             <ChangeStats
               stats={displayStats}
-              className="flex shrink-0 items-center gap-1 font-mono text-[11px] font-semibold tabular-nums"
+              className="flex shrink-0 items-center gap-1 text-[11px] font-semibold tabular-nums"
               addedClassName="eterx-file-change-added text-[#3FB950]"
               removedClassName="eterx-file-change-removed text-[#FF7B72]"
             />
@@ -2115,7 +2088,7 @@ const InlineCodeView = ({
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
           <IconCopyButton content={effectiveContent} label="Copy file content" />
-          {showExpand && !full && <button onClick={(e) => { e.stopPropagation(); setFull(true); }} className="eterx-action-icon-button flex h-7 w-7 items-center justify-center rounded-[8px] border border-white/[0.06] bg-white/[0.028] text-[#9A9389] transition-colors hover:border-white/[0.10] hover:bg-white/[0.05] hover:text-[#DAD4CA]" aria-label="Expand file"><Maximize2 className="h-3.5 w-3.5" /></button>}
+          {showExpand && !full && <button type="button" onClick={(e) => { e.stopPropagation(); setFull(true); }} className="eterx-action-icon-button flex h-7 w-7 items-center justify-center rounded-[8px] border border-white/[0.06] bg-white/[0.028] text-[#9A9389] transition-colors hover:border-white/[0.10] hover:bg-white/[0.05] hover:text-[#DAD4CA]" aria-label="Expand file"><Maximize2 className="h-3.5 w-3.5" /></button>}
         </div>
       </div>
       {/* Single unified scroll container */}
@@ -2142,6 +2115,8 @@ const InlineCodeView = ({
         </div>
         {!atBottom && lineCount > 10 && (
           <button
+            type="button"
+            aria-label="Scroll file to bottom"
             onClick={(e) => { e.stopPropagation(); scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' }); }}
             className="absolute bottom-2.5 right-2.5 flex h-7 w-7 items-center justify-center rounded-full border border-white/[0.08] bg-[#2A2A29]/95 text-[#BDB5AA] shadow-[0_6px_18px_rgba(0,0,0,0.26)] transition-colors hover:bg-[#333331] hover:text-[#F0EAE0]"
           ><ChevronDown className="h-3.5 w-3.5" /></button>
@@ -2149,7 +2124,7 @@ const InlineCodeView = ({
       </div>
     </div>
   );
-  return <>{full ? <FullScreenModal onClose={() => setFull(false)} title={`File: ${ filename }`}>{codePanel}</FullScreenModal> : <motion.div layout initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }}>{codePanel}</motion.div>}</>;
+  return <>{full ? <FullScreenModal onClose={() => setFull(false)} title={`File: ${ filename }`}>{codePanel}</FullScreenModal> : <div>{codePanel}</div>}</>;
 };
 
 // ─── Single row inside a tool card ──────────────────────────────────────────
@@ -2255,7 +2230,7 @@ const hasVisibleChangeStats = (stats?: { added: number; removed: number } | null
 
 const ChangeStats = ({
   stats,
-  className = 'flex shrink-0 items-center gap-1 font-mono text-[12.5px] font-semibold tabular-nums leading-tight',
+  className = 'flex shrink-0 items-center gap-1 text-[12.5px] font-semibold tabular-nums leading-tight',
   addedClassName = 'eterx-file-change-added text-[#3EE06F]',
   removedClassName = 'eterx-file-change-removed text-[#FF6D63]',
 }: {
@@ -2545,15 +2520,63 @@ const getStableActionEventId = (log: any) => {
 const ACTION_CARD_CLASS = "eterx-action-card w-full overflow-hidden rounded-[12px] border border-white/[0.075] bg-[#151514]/60 shadow-[inset_0_1px_0_rgba(255,255,255,0.028),0_2px_10px_rgba(0,0,0,0.14)]";
 const ACTION_ROW_DIVIDER_CLASS = "eterx-action-row-divider border-t border-white/[0.052]";
 
+const formatTerminalSourcePreview = (value: unknown) => {
+  const source = String(value || '').trim();
+  if (!source) return '';
+  const lines = source.split(/\r?\n/);
+  const meaningfulIndex = lines.findIndex(line => {
+    const clean = line.trim();
+    if (!clean || /^(?:#|\/\/|import\s|from\s+\S+\s+import\s)/.test(clean)) return false;
+    if (/^(?:path|dataset_path|file_path|csv_path|csv_file|data_path|df)\s*=/i.test(clean)) return false;
+    return true;
+  });
+  const opening = lines.slice(0, Math.min(4, lines.length));
+  const meaningful = meaningfulIndex > 4
+    ? ['', '# ...', ...lines.slice(meaningfulIndex, meaningfulIndex + 8)]
+    : lines.slice(4, 12);
+  const preview = [...opening, ...meaningful].join('\n').slice(0, 1200).trim();
+  return preview.length < source.length ? `${preview}\n...` : preview;
+};
+
+const getTerminalSourceValue = (log: any, preview?: any) => {
+  const toolArgs = log?.toolArgs || log?.args || preview?.toolArgs || {};
+  return [toolArgs.script, toolArgs.code, toolArgs.source]
+    .find(value => String(value || '').trim().length > 0);
+};
+
+const getCollapsedTerminalCode = (log: any, preview: any, fallback: string) => {
+  const source = String(getTerminalSourceValue(log, preview) || '').trim();
+  if (!source) return fallback;
+  const lines = source.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  const meaningful = lines.filter(line =>
+    !/^(?:#|\/\/|import\s|from\s+\S+\s+import\s)/.test(line) &&
+    !/^(?:path|dataset_path|file_path|csv_path|csv_file|data_path|df)\s*=/i.test(line)
+  );
+  const selected = (meaningful.length > 0 ? meaningful : lines).slice(0, 3);
+  const actualCode = selected.join('  |  ').slice(0, 520).trim();
+  return actualCode || fallback;
+};
+
 const getTerminalCommandText = (log: any, preview?: any, fallback = '') => {
-  return String(
-    preview?.command ||
-    log?.command ||
-    log?.secondary ||
-    log?.cmd ||
-    fallback ||
-    ''
-  ).trim();
+  const toolArgs = log?.toolArgs || log?.args || preview?.toolArgs || {};
+  const resultObject = preview?.result && typeof preview.result === 'object' ? preview.result : null;
+  const sourceCandidate = [
+    toolArgs.script,
+    toolArgs.code,
+    toolArgs.source,
+    toolArgs.command,
+    resultObject?.commandUsed,
+    preview?.command,
+    log?.command,
+    log?.secondary,
+    log?.cmd,
+    fallback,
+  ].find(value => String(value || '').trim().length > 0);
+  const sourcePreview = formatTerminalSourcePreview(sourceCandidate);
+  if (sourcePreview) return sourcePreview;
+
+  const language = String(toolArgs.language || '').trim();
+  return language ? `${language} inline script` : '';
 };
 
 const isTerminalActionLike = (log: any, preview?: any) => {
@@ -2634,9 +2657,23 @@ const TerminalTraceCard = ({
   inCard?: boolean;
 }) => {
   const command = getTerminalCommandText(log, preview, subtitle) || 'terminal command';
-  const output = String(preview?.output ?? preview?.content ?? log?.output ?? log?.content ?? '');
+  const collapsedCommand = getCollapsedTerminalCode(log, preview, command);
+  const rawResult = preview?.result ?? log?.toolResult;
+  const resultObject = rawResult && typeof rawResult === 'object' ? rawResult : null;
+  const stdout = resultObject ? String(resultObject.stdout ?? resultObject.output ?? resultObject.content ?? '') : '';
+  const stderr = resultObject ? String(resultObject.stderr ?? resultObject.error ?? '') : '';
+  const resultText = typeof rawResult === 'string' ? rawResult : [stdout, stderr].filter(Boolean).join('\n');
+  const output = String(preview?.output ?? preview?.content ?? preview?.outputPreview ?? resultText ?? log?.output ?? log?.content ?? log?.outputPreview ?? '');
   const exitCode = typeof preview?.exitCode === 'number'
     ? preview.exitCode
+    : typeof resultObject?.exitCode === 'number'
+      ? resultObject.exitCode
+      : typeof resultObject?.code === 'number'
+        ? resultObject.code
+        : resultObject?.passed === false || resultObject?.success === false
+          ? 1
+          : resultObject && resultObject.running !== true && resultObject.stillRunning !== true && resultObject.status !== 'running'
+            ? 0
     : typeof log?.exitCode === 'number'
       ? log.exitCode
       : undefined;
@@ -2645,7 +2682,16 @@ const TerminalTraceCard = ({
     : typeof log?.durationMs === 'number'
       ? log.durationMs
       : undefined;
-  const isStreaming = Boolean(preview?.isStreaming || log?.isStreaming || (isLiveChip && exitCode === undefined));
+  const explicitlyRunning = Boolean(
+    preview?.isStreaming ||
+    log?.isStreaming ||
+    resultObject?.running === true ||
+    resultObject?.stillRunning === true ||
+    resultObject?.status === 'running'
+  );
+  const hasCompletionSignal = exitCode !== undefined || (rawResult !== undefined && rawResult !== null && !explicitlyRunning);
+  const isStreaming = explicitlyRunning || (isLiveChip && !hasCompletionSignal);
+  const displayedExitCode = exitCode ?? (isStreaming ? undefined : 0);
   const isFailed = exitCode !== undefined && exitCode !== 0;
   const durationLabel = formatTerminalMetaDuration(durationMs);
   const hasOutput = output.trim().length > 0;
@@ -2695,7 +2741,7 @@ const TerminalTraceCard = ({
         </span>
         {!isExpanded && (
           <span className="min-w-0 flex-1 truncate font-mono text-[12px] leading-tight text-[#857E73] select-all">
-            {command || '(no command)'}
+            {collapsedCommand || '(no command)'}
           </span>
         )}
         <ChevronRight className={`h-3.5 w-3.5 shrink-0 text-[#898176] transition-transform ${ isExpanded ? 'rotate-90 text-[#C8C1B8]' : '' }`} />
@@ -2705,7 +2751,7 @@ const TerminalTraceCard = ({
           <InlineConsole
             command={command}
             content={output}
-            exitCode={isStreaming ? undefined : exitCode}
+            exitCode={displayedExitCode}
             durationMs={durationMs}
           />
         )}
@@ -2838,7 +2884,7 @@ const FileChangeTraceCard = ({
           {displayFileTargets.length === 1 && (
             <ChangeStats
               stats={effectiveStats}
-              className="flex shrink-0 items-center gap-1 font-mono text-[11.5px] font-semibold tabular-nums"
+              className="flex shrink-0 items-center gap-1 text-[11.5px] font-semibold tabular-nums"
             />
           )}
         </div>
@@ -2993,12 +3039,14 @@ const ActionChip = ({
     const searchLogs = myIdx !== -1 ? allLogs.slice(myIdx) : allLogs;
     const findOwnerPreview = (items: any[]) => {
       const candidates = items.filter((item: any) =>
-        (item?.type === 'file_preview' || item?.type === 'tool_result_preview') &&
+        (item?.type === 'file_preview' || item?.type === 'tool_result_preview' || item?.type === 'console_output') &&
         ownerIdentities.length > 0 &&
         ownerIdentities.includes(String(item.ownerTraceId || ''))
       );
       return candidates.find((item: any) => item?.type === 'file_preview' && Array.isArray(item?.diffLines) && item.diffLines.length > 0)
         || candidates.find((item: any) => item?.type === 'file_preview' && item?.isEdit)
+        || [...candidates].reverse().find((item: any) => item?.type === 'console_output' && (item?.exitCode !== undefined || item?.isStreaming === false))
+        || [...candidates].reverse().find((item: any) => item?.type === 'console_output')
         || candidates[0];
     };
     const ownerPreview = findOwnerPreview(searchLogs) || findOwnerPreview(allLogs);
@@ -3221,7 +3269,7 @@ const ActionChip = ({
               <button
                 type="button"
                 onClick={(e) => openInIde(e, 'diff')}
-                className="eterx-action-diff-chip group/diff relative -my-1 inline-flex h-7 shrink-0 items-center gap-1 rounded-full px-2 font-mono text-[12px] font-semibold tabular-nums leading-none text-[#C8C1B8] transition-colors duration-150 hover:bg-white/[0.052] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/18"
+                className="eterx-action-diff-chip group/diff relative -my-1 inline-flex h-7 shrink-0 items-center gap-1 rounded-full px-2 text-[12px] font-semibold tabular-nums leading-none text-[#C8C1B8] transition-colors duration-150 hover:bg-white/[0.052] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/18"
                 aria-label={`Open file: ${ fileName }`}
               >
                 <ChangeStats
@@ -3236,7 +3284,7 @@ const ActionChip = ({
               </button>
             )}
             {lineContext && (
-              <span className="shrink-0 font-mono text-[12px] font-medium leading-tight text-[#857E73]">
+              <span className="shrink-0 text-[12px] font-medium leading-tight text-[#857E73]">
                 {lineContext}
               </span>
             )}
@@ -3252,6 +3300,7 @@ const ActionChip = ({
           )}
           {hasFile && fullPath.toLowerCase().match(/\.(html|htm)$/) && (
             <button
+              type="button"
               onClick={(e) => { e.stopPropagation(); openPanel({ filename: fileName, filepath: fullPath, content: typeof preview?.content === 'string' ? preview.content : undefined, lineCount: preview?.lineCount, totalLines: preview?.totalLines ?? preview?.lineCount, truncated: preview?.truncated, activeTabMode: 'preview' }); }}
               className="flex items-center gap-1 rounded-[7px] border border-white/[0.07] bg-white/[0.035] px-2 py-0.5 text-[10px] font-semibold uppercase text-[#C8C1B8] transition-colors hover:border-[#94C7E0]/25 hover:bg-white/[0.055] hover:text-[#B9DCEB] shrink-0"
             ><Monitor className="w-2.5 h-2.5" /> Preview</button>
@@ -4157,21 +4206,30 @@ const HtmlPreviewCard = ({ log }: { log: any }) => {
 
         <div className="hidden md:flex items-center p-0.5 rounded-[8px] bg-black/30 border border-white/[0.05]">
           <button
+            type="button"
             onClick={() => setDevice('desktop')}
+            aria-label="Desktop preview"
+            aria-pressed={device === 'desktop'}
             className={`p-1.5 rounded-[7px] transition-colors ${ device === 'desktop' ? 'bg-[#DCD6CC] text-[#161514]' : 'text-white/40 hover:bg-white/[0.04] hover:text-white/80' }`}
             title="Desktop"
           >
             <Monitor className="w-3.5 h-3.5" />
           </button>
           <button
+            type="button"
             onClick={() => setDevice('tablet')}
+            aria-label="Tablet preview"
+            aria-pressed={device === 'tablet'}
             className={`p-1.5 rounded-[7px] transition-colors ${ device === 'tablet' ? 'bg-[#DCD6CC] text-[#161514]' : 'text-white/40 hover:bg-white/[0.04] hover:text-white/80' }`}
             title="Tablet"
           >
             <Tablet className="w-3.5 h-3.5" />
           </button>
           <button
+            type="button"
             onClick={() => setDevice('mobile')}
+            aria-label="Mobile preview"
+            aria-pressed={device === 'mobile'}
             className={`p-1.5 rounded-[7px] transition-colors ${ device === 'mobile' ? 'bg-[#DCD6CC] text-[#161514]' : 'text-white/40 hover:bg-white/[0.04] hover:text-white/80' }`}
             title="Mobile"
           >
@@ -4181,7 +4239,9 @@ const HtmlPreviewCard = ({ log }: { log: any }) => {
 
         <div className="flex items-center gap-1.5">
           <button
+            type="button"
             onClick={handleCopy}
+            aria-label={copied ? 'HTML copied' : 'Copy HTML'}
             className={`flex items-center gap-1 px-2.5 py-1 rounded-[7px] text-[10.5px] font-semibold transition-colors ${ copied ? 'text-emerald-300 bg-emerald-500/10' : 'text-[#928B81] hover:text-[#E8E1D7] hover:bg-white/[0.04]' }`}
             title="Copy HTML"
           >
@@ -4189,21 +4249,28 @@ const HtmlPreviewCard = ({ log }: { log: any }) => {
             <span className="hidden sm:inline">{copied ? 'COPIED' : 'COPY'}</span>
           </button>
           <button
+            type="button"
             onClick={handleRefresh}
+            aria-label="Refresh preview"
             className="p-1.5 rounded-[7px] text-[#928B81] hover:text-[#E8E1D7] hover:bg-white/[0.04] transition-colors"
             title="Refresh Preview"
           >
             <RefreshCw className="w-3.5 h-3.5" />
           </button>
           <button
+            type="button"
             onClick={handleOpenExternal}
+            aria-label="Open preview in a new window"
             className="p-1.5 rounded-[7px] text-[#928B81] hover:text-[#E8E1D7] hover:bg-white/[0.04] transition-colors"
             title="Open in new window"
           >
             <ExternalLink className="w-3.5 h-3.5" />
           </button>
           <button
+            type="button"
             onClick={() => setShowConsole(value => !value)}
+            aria-label="Toggle preview console"
+            aria-pressed={showConsole}
             className={`p-1.5 rounded-[7px] transition-colors relative ${ showConsole ? 'text-emerald-300 bg-emerald-500/10' : 'text-[#928B81] hover:text-[#E8E1D7] hover:bg-white/[0.04]' }`}
             title="Toggle Iframe Console"
           >
@@ -4213,7 +4280,9 @@ const HtmlPreviewCard = ({ log }: { log: any }) => {
             )}
           </button>
           <button
+            type="button"
             onClick={() => setCollapsed(value => !value)}
+            aria-label={collapsed ? 'Expand preview' : 'Collapse preview'}
             className="p-1.5 rounded-[7px] text-[#928B81] hover:text-[#E8E1D7] hover:bg-white/[0.04] transition-colors"
             title={collapsed ? 'Expand' : 'Collapse'}
           >
@@ -4271,6 +4340,7 @@ const HtmlPreviewCard = ({ log }: { log: any }) => {
                       Console Output ({consoleLogs.length})
                     </div>
                     <button
+                      type="button"
                       onClick={() => setConsoleLogs([])}
                       className="text-[10px] text-white/40 hover:text-white transition-colors"
                     >
@@ -4417,11 +4487,14 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
     else if (log.type === 'ask_user') { flush(idx - 1); segs.push({ kind: 'ask_user', log, idx }); }
     else if (log.type === 'console_output') {
       const commandSnippet = String(log.command || '').trim().substring(0, 20);
-      const hasCommandOwner = Boolean(commandSnippet) && timelineLogs
+      const hasCommandOwner = timelineLogs
         .slice(0, idx)
         .some((candidate: any) =>
           candidate?.type === 'command' &&
-          getTerminalCommandText(candidate, undefined, String(candidate.secondary || '')).includes(commandSnippet)
+          (
+            (log.ownerTraceId && [candidate.traceId, candidate.id, candidate._traceIdx].map(String).includes(String(log.ownerTraceId))) ||
+            (Boolean(commandSnippet) && getTerminalCommandText(candidate, undefined, String(candidate.secondary || '')).includes(commandSnippet))
+          )
         );
       if (!hasCommandOwner) {
         flush(idx - 1);
@@ -4432,19 +4505,6 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
     else { pushActionLog(log, idx); }
   });
   flush(timelineLogs.length - 1);
-  const scrollRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    // Only auto-scroll if user hasn't scrolled up manually
-    const chatContainer = document.getElementById('chat-container');
-    if (!chatContainer) return;
-    const distFromBottom = chatContainer.scrollHeight - chatContainer.scrollTop - chatContainer.clientHeight;
-    if (isThinking && distFromBottom <= 80) {
-      const frame = window.requestAnimationFrame(() => {
-        chatContainer.scrollTop = chatContainer.scrollHeight;
-      });
-      return () => window.cancelAnimationFrame(frame);
-    }
-  }, [segs.length, isThinking]);
   return (
     <div ref={containerRef} className="eterx-thinking-process-stack w-full flex flex-col gap-2 py-0">
       {segs.map((seg, i) => {

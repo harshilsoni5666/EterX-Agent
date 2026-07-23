@@ -1,16 +1,13 @@
 import { z } from 'zod';
 import { ToolDefinition } from '../../schemas';
-import { exec, execFile } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 import * as net from 'net';
+import * as dns from 'dns/promises';
+import os from 'os';
 import { enforceToolCapability } from '../security/tool_policy';
 
-const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
-
-function psQuote(value: string): string {
-  return `'${value.replace(/'/g, "''")}'`;
-}
 
 function normalizeHostTarget(target?: string): { success: true; value: string } | { success: false; error: string } {
   const trimmed = String(target || '').trim();
@@ -93,6 +90,20 @@ function parsePortList(ports?: string): { success: true; values: number[] } | { 
   return { success: true, values: Array.from(values) };
 }
 
+function checkPort(host: string, port: number): Promise<{ port: number; status: string }> {
+  return new Promise(resolve => {
+    const socket = net.createConnection({ host, port });
+    const finish = (status: string) => {
+      socket.destroy();
+      resolve({ port, status });
+    };
+    socket.setTimeout(1800);
+    socket.once('connect', () => finish('OPEN'));
+    socket.once('timeout', () => finish('CLOSED'));
+    socket.once('error', () => finish('CLOSED'));
+  });
+}
+
 /**
  * Network Tools — DNS, Ping, Port Scanning, IP Lookup
  * 
@@ -129,7 +140,7 @@ export const networkTool: ToolDefinition = {
           const count = Math.min(10, Math.max(1, Math.floor(input.count || 4)));
           const { stdout } = await execFileAsync(
             'ping',
-            ['-n', String(count), target.value],
+            [process.platform === 'win32' ? '-n' : '-c', String(count), target.value],
             { timeout: 30000, windowsHide: true }
           );
           return { success: true, result: String(stdout).trim() };
@@ -138,11 +149,8 @@ export const networkTool: ToolDefinition = {
         case 'dns': {
           const target = normalizeHostTarget(input.target);
           if (target.success === false) return { success: false, result: target.error };
-          const { stdout } = await execAsync(
-            `Resolve-DnsName -Name ${psQuote(target.value)} -Type A | Format-Table -AutoSize | Out-String -Width 300`,
-            { shell: 'powershell.exe', timeout: 15000 }
-          );
-          return { success: true, result: stdout.trim() };
+          const records = await dns.lookup(target.value, { all: true });
+          return { success: true, result: records };
         }
 
         case 'ports': {
@@ -151,79 +159,70 @@ export const networkTool: ToolDefinition = {
           const portList = parsePortList(input.ports);
           if (portList.success === false) return { success: false, result: portList.error };
           
-          const scanScript = [
-            `$targetHost = ${psQuote(target.value)}`,
-            ...portList.values.map(port =>
-              `$result = Test-NetConnection -ComputerName $targetHost -Port ${port} -WarningAction SilentlyContinue -InformationLevel Quiet; Write-Output "${port}: $(if($result){'OPEN'}else{'CLOSED'})"`
-            ),
-          ].join('; ');
-
-          const { stdout } = await execAsync(scanScript, { shell: 'powershell.exe', timeout: 60000 });
-          
-          const results = stdout.trim().split('\n').filter(Boolean).map(line => {
-            const [port, status] = line.split(':').map(s => s.trim());
-            return { port: parseInt(port), status };
-          });
+          const results = await Promise.all(portList.values.map(port => checkPort(target.value, port)));
 
           return { success: true, result: { host: target.value, ports: results } };
         }
 
         case 'ip_info': {
-          const { stdout } = await execAsync(
-            `Get-NetIPAddress | Where-Object {$_.AddressFamily -eq 'IPv4' -and $_.PrefixOrigin -ne 'WellKnown'} | Select-Object IPAddress, InterfaceAlias, PrefixLength | Format-Table -AutoSize | Out-String -Width 300`,
-            { shell: 'powershell.exe' }
+          const localInterfaces = Object.entries(os.networkInterfaces()).flatMap(([name, addresses]) =>
+            (addresses || []).filter(address => !address.internal).map(address => ({
+              interface: name,
+              address: address.address,
+              family: address.family,
+              netmask: address.netmask
+            }))
           );
-          
-          // Also get public IP
           let publicIp = 'unknown';
           try {
-            const { stdout: pip } = await execAsync(
-              `(Invoke-WebRequest -Uri "https://api.ipify.org" -UseBasicParsing).Content`,
-              { shell: 'powershell.exe', timeout: 10000 }
-            );
-            publicIp = pip.trim();
+            const response = await fetch('https://api.ipify.org', { signal: AbortSignal.timeout(10000) });
+            if (response.ok) publicIp = (await response.text()).trim();
           } catch { }
 
-          return { success: true, result: { localInterfaces: stdout.trim(), publicIp } };
+          return { success: true, result: { localInterfaces, publicIp } };
         }
 
         case 'http_check': {
           const url = normalizeHttpTarget(input.target);
           if (url.success === false) return { success: false, result: url.error };
           
-          const { stdout } = await execAsync(
-            `$sw = [System.Diagnostics.Stopwatch]::new(); $sw.Start(); try { $r = Invoke-WebRequest -Uri ${psQuote(url.value)} -Method HEAD -UseBasicParsing -TimeoutSec 10; $sw.Stop(); Write-Output "status=$($r.StatusCode) time=$($sw.ElapsedMilliseconds)ms headers=$($r.Headers['Server']),$($r.Headers['Content-Type'])" } catch { $sw.Stop(); Write-Output "status=ERROR time=$($sw.ElapsedMilliseconds)ms error=$($_.Exception.Message)" }`,
-            { shell: 'powershell.exe', timeout: 20000 }
-          );
-
-          return { success: true, result: stdout.trim() };
+          const startedAt = Date.now();
+          const response = await fetch(url.value, { method: 'HEAD', redirect: 'follow', signal: AbortSignal.timeout(10000) });
+          return {
+            success: true,
+            result: {
+              status: response.status,
+              timeMs: Date.now() - startedAt,
+              server: response.headers.get('server'),
+              contentType: response.headers.get('content-type')
+            }
+          };
         }
 
         case 'traceroute': {
           const target = normalizeHostTarget(input.target);
           if (target.success === false) return { success: false, result: target.error };
           const { stdout } = await execFileAsync(
-            'tracert',
-            ['-d', '-h', '15', target.value],
+            process.platform === 'win32' ? 'tracert' : 'traceroute',
+            process.platform === 'win32' ? ['-d', '-h', '15', target.value] : ['-n', '-m', '15', target.value],
             { timeout: 60000, windowsHide: true }
           );
           return { success: true, result: String(stdout).trim().substring(0, 5000) };
         }
 
         case 'wifi': {
-          const { stdout } = await execAsync(
-            `netsh wlan show interfaces`,
-            { shell: 'powershell.exe' }
-          );
+          const command = process.platform === 'win32'
+            ? ['netsh', ['wlan', 'show', 'interfaces']] as const
+            : process.platform === 'darwin'
+              ? ['/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport', ['-I']] as const
+              : ['nmcli', ['-t', '-f', 'ACTIVE,SSID,SIGNAL,SECURITY', 'dev', 'wifi']] as const;
+          const { stdout } = await execFileAsync(command[0], [...command[1]]);
           return { success: true, result: stdout.trim() };
         }
 
         case 'netstat': {
-          const { stdout } = await execAsync(
-            `Get-NetTCPConnection | Where-Object {$_.State -eq 'Established'} | Select-Object -First 20 LocalAddress, LocalPort, RemoteAddress, RemotePort, State, OwningProcess | Format-Table -AutoSize | Out-String -Width 300`,
-            { shell: 'powershell.exe' }
-          );
-          return { success: true, result: stdout.trim() };
+          const { stdout } = await execFileAsync('netstat', process.platform === 'win32' ? ['-ano'] : ['-an']);
+          return { success: true, result: stdout.trim().split(/\r?\n/).slice(0, 50).join('\n') };
         }
 
         default:

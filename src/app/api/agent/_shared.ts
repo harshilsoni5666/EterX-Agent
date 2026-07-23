@@ -8,6 +8,7 @@ export const MAX_PROMPT_CHARS = 200_000;
 export const MAX_MESSAGE_CHARS = 60_000;
 export const MAX_ANSWER_CHARS = 20_000;
 export const MAX_HISTORY_MESSAGES = 80;
+export const MAX_HISTORY_TOTAL_CHARS = 400_000;
 
 const AGENT_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
 const CHAT_ID_PATTERN = /^[a-zA-Z0-9_.:-]+$/;
@@ -232,6 +233,18 @@ export function normalizeHistory(raw: unknown): Array<{ role: 'user' | 'model'; 
     }
 
     if (parts.length > 0) history.push({ role, parts });
+  }
+
+  // Bound the aggregate payload as well as individual messages. Without this,
+  // an 80-message conversation can reach several megabytes and stall every
+  // concurrent chat while JSON parsing and model context construction run.
+  let totalChars = history.reduce(
+    (total, message) => total + message.parts.reduce((sum, part) => sum + part.text.length, 0),
+    0,
+  );
+  while (history.length > 1 && totalChars > MAX_HISTORY_TOTAL_CHARS) {
+    const removed = history.shift()!;
+    totalChars -= removed.parts.reduce((sum, part) => sum + part.text.length, 0);
   }
 
   return history;

@@ -1,10 +1,11 @@
 import { z } from 'zod';
 import { ToolDefinition } from '../../schemas';
-import { exec } from 'child_process';
+import { exec, execFile } from 'child_process';
 import { promisify } from 'util';
 import { enforceToolCapability } from '../security/tool_policy';
 
 const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 function psQuote(value: unknown): string {
   return `'${String(value ?? '').replace(/'/g, "''")}'`;
@@ -21,7 +22,7 @@ function escapeXml(value: unknown): string {
 
 export const desktopNotifyTool: ToolDefinition = {
   name: 'desktop_notification',
-  description: 'Send a Windows desktop toast notification to the user. Use this to alert them about completed tasks, important events, scheduled reminders, errors, or any important status updates.',
+  description: 'Send a native desktop notification on Windows, macOS, or Linux.',
   category: 'core',
   inputSchema: z.object({
     title: z.string().describe('The notification title (short, 1-5 words)'),
@@ -39,6 +40,17 @@ export const desktopNotifyTool: ToolDefinition = {
       const decision = enforceToolCapability('desktop_notification', input, context);
       if (!decision.allowed) {
         return { success: false, message: decision.reason || 'Desktop notifications are not allowed' };
+      }
+
+      if (process.platform === 'darwin') {
+        const script = 'on run argv\n display notification (item 2 of argv) with title (item 1 of argv)\nend run';
+        await execFileAsync('osascript', ['-e', script, input.title.slice(0, 120), input.message.slice(0, 500)]);
+        return { success: true, message: `Notification sent: "${input.title}"` };
+      }
+      if (process.platform !== 'win32') {
+        const urgency = input.urgency === 'critical' ? 'critical' : input.urgency === 'low' ? 'low' : 'normal';
+        await execFileAsync('notify-send', ['--urgency', urgency, input.title.slice(0, 120), input.message.slice(0, 500)]);
+        return { success: true, message: `Notification sent: "${input.title}"` };
       }
 
       // Use PowerShell to create a Windows Toast notification

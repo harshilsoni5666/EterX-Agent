@@ -82,14 +82,20 @@ export function isStatelessCodingTool(toolName: string): boolean {
   return false;
 }
 
-export function partitionCodingToolCalls<T extends { name?: string }>(calls: T[]): {
+export function partitionCodingToolCalls<T extends { name?: string; args?: any }>(calls: T[]): {
   stateless: T[];
   stateful: T[];
 } {
   const stateless: T[] = [];
   const stateful: T[] = [];
   for (const call of calls) {
-    if (isStatelessCodingTool(String(call.name || ''))) stateless.push(call);
+    const name = String(call.name || '');
+    const args = call.args || {};
+    const explicitBackground =
+      (name === 'background_task' && ['launch', 'check', 'list'].includes(String(args.mode || ''))) ||
+      (name === 'workspace_run_command' && args.background === true) ||
+      (name === 'process_manager' && ['start', 'status', 'logs', 'list'].includes(String(args.action || '')));
+    if (explicitBackground || isStatelessCodingTool(name)) stateless.push(call);
     else stateful.push(call);
   }
   return { stateless, stateful };

@@ -46,6 +46,7 @@ function psQuote(value: string) {
 }
 
 async function runPowerShell(script: string, timeout = 5000): Promise<string> {
+  if (process.platform !== 'win32') return '';
   try {
     const { stdout } = await execFileAsync(
       'powershell.exe',

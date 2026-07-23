@@ -95,6 +95,9 @@ public class DCE {
 `.trim();
 
 async function runPS(script: string, timeout = 12000): Promise<string> {
+  if (process.platform !== 'win32') {
+    throw new Error(`Windows UI automation is unavailable on ${process.platform}.`);
+  }
   try {
     const { stdout } = await execAsync(script, { shell: 'powershell.exe', timeout });
     return stdout.trim();

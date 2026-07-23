@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import * as path from 'path';
 import { getPathResolverInfo } from '@/lib/agent/workspace/path_resolver';
 import { runTerminalCommandWithCheckIn } from '@/lib/agent/tools/core/terminal_background';
+import { normalizeTerminalShell, resolveTerminalShell } from '@/lib/agent/tools/core/shell_resolver';
 import { rejectCrossOrigin } from '../../agent/_shared';
 
 export const dynamic = 'force-dynamic';
@@ -14,7 +15,7 @@ export async function POST(req: NextRequest) {
     const originError = rejectCrossOrigin(req);
     if (originError) return originError;
 
-    const { command, cwd, timeoutSeconds, timeoutMs, checkInSeconds, checkInMs, hardTimeoutSeconds, hardTimeoutMs } = await req.json();
+    const { command, cwd, terminalShell, background, timeoutSeconds, timeoutMs, checkInSeconds, checkInMs, hardTimeoutSeconds, hardTimeoutMs } = await req.json();
 
     if (!command) {
       return NextResponse.json({ error: 'command is required' }, { status: 400 });
@@ -32,12 +33,14 @@ export async function POST(req: NextRequest) {
       command,
       cwd: workingDir,
       source: 'code_terminal',
-      shell: process.platform === 'win32' ? 'powershell.exe' : '/bin/bash',
+      shell: resolveTerminalShell(normalizeTerminalShell(terminalShell)),
       env: { ...process.env, FORCE_COLOR: '0' },
       checkInMs: checkInSeconds ?? checkInMs ?? timeoutSeconds ?? timeoutMs,
       hardTimeoutMs: hardTimeoutSeconds ?? hardTimeoutMs,
       maxOutputChars: 10 * 1024 * 1024,
-      traceThrottleMs: 150
+      traceThrottleMs: 150,
+      immediateHandoff: background === true,
+      surviveRunSettlement: background === true,
     });
 
     return NextResponse.json({

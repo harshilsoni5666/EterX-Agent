@@ -879,6 +879,14 @@ TIPS:
     if (!decision.allowed) {
       return { success: false, action, result: decision.reason || 'Screen agent control is not allowed', vision: null };
     }
+    if (process.platform !== 'win32') {
+      return {
+        success: false,
+        action,
+        result: `Interactive screen automation is currently unavailable on ${process.platform}. Use screenshot_capture for cross-platform screen capture.`,
+        vision: null
+      };
+    }
 
     // Auto-start live stream whenever screen_agent is used
     if (chatId) autoStreamPing(chatId);

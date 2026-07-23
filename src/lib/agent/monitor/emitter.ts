@@ -8,6 +8,7 @@
  */
 
 import { EventEmitter } from 'events';
+import { writeRuntimeTrace } from '../runtime-trace';
 
 export type MonitorEventType =
   | 'tool_start'
@@ -188,14 +189,25 @@ class AgentMonitorEmitter extends EventEmitter {
       result: partial.result !== undefined ? this._truncate(partial.result, 2000) : undefined,
       text: partial.text ? String(partial.text).substring(0, 4000) : undefined,
       output: partial.output ? String(partial.output).substring(0, 3000) : undefined,
-      screenshot: partial.screenshot?.substring(0, 600_000),
-      frameData: partial.frameData?.substring(0, 400_000),
+      // Never truncate base64 images: a partial payload is not a smaller image,
+      // it is corrupt data. Oversized frames are dropped as a safety bound.
+      screenshot: partial.screenshot && partial.screenshot.length <= 12_000_000 ? partial.screenshot : undefined,
+      frameData: partial.frameData && partial.frameData.length <= 8_000_000 ? partial.frameData : undefined,
     };
 
+    if (event.type === 'browser_screenshot' || event.type === 'desktop_screenshot' || event.type === 'live_frame') {
+      // Retain only the latest frame for each chat/type so reconnect replay works
+      // without allowing image history to dominate server memory.
+      this.recentEvents = this.recentEvents.filter(existing => (
+        existing.type !== event.type || existing.chatId !== event.chatId
+      ));
+    }
     this.recentEvents.push(event);
     if (this.recentEvents.length > this.MAX_RECENT) {
       this.recentEvents = this.recentEvents.slice(-this.MAX_RECENT);
     }
+
+    writeRuntimeTrace('monitor_event', event as unknown as Record<string, unknown>);
 
     // Use setImmediate to never block caller
     setImmediate(() => {
@@ -224,12 +236,8 @@ class AgentMonitorEmitter extends EventEmitter {
     if (!chatId) return true;
     if (event.chatId === chatId) return true;
     if (!event.chatId && options.includeGlobal === true) return true;
-    if (
-      options.includeVisual === true &&
-      (event.type === 'live_frame' || event.type === 'desktop_screenshot' || event.type === 'browser_screenshot')
-    ) {
-      return true;
-    }
+    // Visual payloads are never implicitly global. A frame from another chat
+    // may contain private page or account data and must obey normal scoping.
     return false;
   }
 

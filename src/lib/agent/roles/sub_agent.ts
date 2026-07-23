@@ -21,16 +21,24 @@ import { getEterxWorkspaceDir } from '../storage-paths';
 
 const AGENT_NAMES = [
   'Einstein', 'Heisenberg', 'Sam', 'Dario', 'Elon',
-  'Tesla', 'Newton', 'Turing', 'Ada', 'Curie',
+  'Tesla', 'Newton', 'Turing',
+  'Ada', 'Curie',
   'Feynman', 'Darwin', 'Hawking', 'Galileo', 'DaVinci',
-  'Aristotle', 'Oppenheimer', 'Gates', 'Jobs', 'Pascal',
-  'Dave', 'Nova', 'Mira', 'Leo', 'Kai',
-  'Zara', 'Sage'
+  'Aristotle', 'Oppenheimer', 'Gates', 'Jobs', 'Pascal'
 ] as const;
 
-export type SubAgentName = typeof AGENT_NAMES[number];
+export type SubAgentName = string;
+
+const MAX_PENDING_RESULTS_PER_PROJECT = 100;
+const MAX_PENDING_RESULTS_TOTAL = 1000;
 
 const AGENTS_DIR = getEterxWorkspaceDir('agents');
+const MAX_SUB_AGENT_TRACE_LOGS = 400;
+const SUB_AGENT_STATUS_WRITE_INTERVAL_MS = 1000;
+const LEGACY_NON_SCIENTIST_AGENT_NAMES = new Set([
+  'dave', 'nova', 'mira', 'leo', 'kai', 'zara', 'sage',
+]);
+let legacyAgentStatusCleanupPromise: Promise<void> | null = null;
 
 function isPathInside(parent: string, candidate: string): boolean {
   const relative = path.relative(parent, candidate);
@@ -289,7 +297,20 @@ export function resetAgentControls(projectId?: string) {
  * Cancel agents for a specific chat only.
  */
 export function cancelAgent(chatId: string) {
+  const resolvedProjectId = resolveProjectId(chatId);
   cancelFlags.set(chatId, true);
+  cancelFlags.set(resolvedProjectId, true);
+
+  // A paused agent is awaiting its resume promise and cannot observe the
+  // cancellation flag until that promise resolves. Wake every paused agent in
+  // this run so stop is prompt and background cleanup cannot hang forever.
+  for (const [key, state] of agentPauseStates.entries()) {
+    if (key.startsWith(`${resolvedProjectId}:`)) {
+      state.paused = false;
+      state.resolver?.();
+      agentPauseStates.delete(key);
+    }
+  }
   console.log(`[SubAgent] 🛑 Cancel flag set for chat ${chatId.substring(0, 8)}...`);
 }
 
@@ -301,6 +322,9 @@ export function cancelAllSubAgents() {
   for (const key of cancelFlags.keys()) {
     cancelFlags.set(key, true);
   }
+  // Wake paused agents so they can see the global cancellation immediately.
+  for (const state of agentPauseStates.values()) state.resolver?.();
+  agentPauseStates.clear();
   console.log('[SubAgent] 🛑 GLOBAL CANCEL — all sub-agents stopping');
 }
 
@@ -310,7 +334,9 @@ export function cancelAllSubAgents() {
  */
 export function resetCancelFlag(chatId?: string) {
   if (chatId) {
-    cancelFlags.set(chatId, false);
+    const resolvedProjectId = resolveProjectId(chatId);
+    cancelFlags.delete(chatId);
+    cancelFlags.delete(resolvedProjectId);
     resetAgentControls(chatId);
     // Also reset global flag if it was set — emergency is over if we're starting new work
     if (globalCancelFlag) {
@@ -325,24 +351,49 @@ export function resetCancelFlag(chatId?: string) {
   }
 }
 
+/** Release completed-run control entries without changing emergency-stop state. */
+export function clearCancelState(chatId: string) {
+  const resolvedProjectId = resolveProjectId(chatId);
+  cancelFlags.delete(chatId);
+  cancelFlags.delete(resolvedProjectId);
+  resetAgentControls(resolvedProjectId);
+}
+
 /**
  * Check if a specific chat is cancelled, or if a specific agent within it is closed.
  */
 export function isCancelled(chatId?: string, agentName?: string): boolean {
+  if (globalCancelFlag) return true;
   if (chatId && agentName) {
     if (isAgentClosed(chatId, agentName)) return true;
   }
   if (chatId) return cancelFlags.get(chatId) === true;
-  // Only return true for global if no chatId specified (legacy callers)
-  return globalCancelFlag;
+  return false;
 }
 
 /**
  * Agent-to-Agent Message Bus
  */
 class AgentMessageBus {
+  private statusWriteChains = new Map<string, Promise<void>>();
+
   async ensureDir() {
     await fs.ensureDir(AGENTS_DIR);
+    if (!legacyAgentStatusCleanupPromise) {
+      legacyAgentStatusCleanupPromise = (async () => {
+        const files = await fs.readdir(AGENTS_DIR);
+        await Promise.all(files.filter(file => file.endsWith('.json')).map(async file => {
+          const filePath = resolveUnder(AGENTS_DIR, file);
+          try {
+            const status = await fs.readJson(filePath);
+            if (LEGACY_NON_SCIENTIST_AGENT_NAMES.has(String(status?.agentName || '').toLowerCase())) {
+              await fs.remove(filePath);
+            }
+          } catch { }
+        }));
+      })();
+    }
+    await legacyAgentStatusCleanupPromise;
   }
 
   private statusFilePath(agentName: string, projectId?: string): string {
@@ -362,7 +413,16 @@ class AgentMessageBus {
   }, projectId?: string) {
     await this.ensureDir();
     const filePath = this.statusFilePath(agentName, projectId);
-    await writeJsonAtomic(filePath, { ...data, projectId, agentName, updatedAt: Date.now() });
+    const previousWrite = this.statusWriteChains.get(filePath) || Promise.resolve();
+    const nextWrite = previousWrite.catch(() => {}).then(() =>
+      writeJsonAtomic(filePath, { ...data, projectId, agentName, updatedAt: Date.now() })
+    );
+    this.statusWriteChains.set(filePath, nextWrite);
+    try {
+      await nextWrite;
+    } finally {
+      if (this.statusWriteChains.get(filePath) === nextWrite) this.statusWriteChains.delete(filePath);
+    }
   }
 
   async readAgentStatus(agentName: string, projectId?: string): Promise<any | null> {
@@ -431,6 +491,17 @@ const pendingResults: Map<string, PendingSubAgentResult> = new Map();
 function queuePendingResult(result: PendingSubAgentResult) {
   const runKey = `${ result.projectId }:${ result.name }:${ Date.now() }:${ Math.random().toString(36).slice(2) }`;
   pendingResults.set(runKey, result);
+  const projectEntries = Array.from(pendingResults.entries())
+    .filter(([, queued]) => queued.projectId === result.projectId);
+  while (projectEntries.length > MAX_PENDING_RESULTS_PER_PROJECT) {
+    const [oldestKey] = projectEntries.shift()!;
+    pendingResults.delete(oldestKey);
+  }
+  while (pendingResults.size > MAX_PENDING_RESULTS_TOTAL) {
+    const oldestKey = pendingResults.keys().next().value as string | undefined;
+    if (!oldestKey) break;
+    pendingResults.delete(oldestKey);
+  }
 }
 
 export function getPendingResults(projectId?: string, agentName?: string): Array<{ name: SubAgentName, result: string, success: boolean, durationMs: number }> {
@@ -457,7 +528,7 @@ export class SubAgentSpawner {
   private backgroundPromises: Map<string, BackgroundSubAgentRun> = new Map();
 
   private isAgentName(name?: string): name is SubAgentName {
-    return AGENT_NAMES.includes(name as SubAgentName);
+    return typeof name === 'string' && /^[a-zA-Z0-9_-]{1,64}$/.test(name);
   }
 
   private isNameBusy(projectId: string, name: SubAgentName, reservedNames?: Set<SubAgentName>): boolean {
@@ -471,8 +542,12 @@ export class SubAgentSpawner {
 
   private pickRandomName(projectId: string, reservedNames?: Set<SubAgentName>): SubAgentName {
     const availableNames = AGENT_NAMES.filter(name => !this.isNameBusy(projectId, name, reservedNames));
-    const pool = availableNames.length > 0 ? availableNames : AGENT_NAMES;
-    return pool[Math.floor(Math.random() * pool.length)];
+    if (availableNames.length > 0) {
+      return availableNames[Math.floor(Math.random() * availableNames.length)];
+    }
+    let suffix = AGENT_NAMES.length + 1;
+    while (this.isNameBusy(projectId, `Worker-${suffix}`, reservedNames)) suffix++;
+    return `Worker-${suffix}`;
   }
 
   private resolveAgentName(projectId: string, preferredName?: string, reservedNames?: Set<SubAgentName>): SubAgentName {
@@ -518,7 +593,7 @@ export class SubAgentSpawner {
     customName?: SubAgentName
   ): Promise<{ agentId: string, name: SubAgentName, result: string, success: boolean, durationMs: number, traceLog: string[] }> {
     const name = customName || this.resolveAgentName(context.projectId);
-    const agentId = `${name.toLowerCase().replace('-', '_')}_${Date.now()}`;
+    const agentId = `${safeAgentSegment(context.projectId, 'project')}_${safeAgentSegment(name, 'agent')}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     if (isCancelled(context.projectId)) {
       return { agentId, name, result: 'Cancelled by user', success: false, durationMs: 0, traceLog: ['Cancelled before start'] };
     }
@@ -540,18 +615,22 @@ export class SubAgentSpawner {
       parentAgentName: 'Main',
       isSubAgent: true,
     };
-    const deepBrief = this.buildDeepBrief(task, name, context.projectId, parentContext);
+    // Main owns delegation. Forward its task verbatim instead of layering a
+    // personality, specialty, or redundant role prompt onto the sub-agent.
+    const deepBrief = task;
     const traceLog: string[] = [];
+    let traceEventCount = 0;
+    let lastStatusWriteAt = 0;
     const instance: SubAgentInstance = {
       id: agentId, projectId: context.projectId, name, task, deepBrief,
       status: 'running', traceLog, startedAt: Date.now()
     };
     this.activeAgents.set(agentId, instance);
-    await agentMessageBus.writeAgentStatus(name, {
+    void agentMessageBus.writeAgentStatus(name, {
       status: 'running', task,
       progress: 'Starting execution...',
       startedAt: instance.startedAt
-    }, context.projectId);
+    }, context.projectId).catch(() => { });
     interAgentMailbox.updateAgentPresence(context.projectId, name, {
       status: 'running',
       task,
@@ -609,11 +688,19 @@ export class SubAgentSpawner {
             instance.status = 'running';
           }
 
-          const logEntry = `[${ new Date().toISOString() }] ${ trace.type }: ${ trace.text || '' }${ trace.secondary ? ' | ' + trace.secondary : '' }`;
+          const traceSummary = `${ trace.text || '' }${ trace.secondary ? ' | ' + trace.secondary : '' }`.slice(0, 4000);
+          const logEntry = `[${ new Date().toISOString() }] ${ trace.type }: ${ traceSummary }`;
+          traceEventCount++;
           traceLog.push(logEntry);
+          if (traceLog.length > MAX_SUB_AGENT_TRACE_LOGS) {
+            traceLog.splice(0, traceLog.length - MAX_SUB_AGENT_TRACE_LOGS);
+          }
 
-          // Write status every 8th event (reduced disk I/O for speed)
-          if (traceLog.length % 8 === 0) {
+          // Time-based throttling stays bounded even when several agents emit
+          // bursts at very different rates.
+          const statusWriteAt = Date.now();
+          if (statusWriteAt - lastStatusWriteAt >= SUB_AGENT_STATUS_WRITE_INTERVAL_MS) {
+            lastStatusWriteAt = statusWriteAt;
             interAgentMailbox.updateAgentPresence(context.projectId, name, {
               status: instance.status === ('paused' as any) ? 'paused' : 'running',
               task,
@@ -638,11 +725,21 @@ export class SubAgentSpawner {
               subAgent: name,
               agentName: name,
               agentStatus: instance.status === ('paused' as any) ? 'paused' : 'working',
-              agentStep: traceLog.length
+              agentStep: traceEventCount
             });
           }
         }
       );
+
+      // A provider may finish while cancellation is propagating. Never publish
+      // that late result as successful work after the user stopped the run.
+      if (
+        isCancelled(context.projectId) ||
+        (context as any).abortSignal?.aborted ||
+        isAgentClosed(context.projectId, name)
+      ) {
+        throw new Error('CANCELLED_BY_USER');
+      }
 
       const durationMs = Date.now() - instance.startedAt;
       instance.status = 'completed';
@@ -675,13 +772,13 @@ export class SubAgentSpawner {
         onTrace({
           type: 'sub_agent_complete',
           text: `${ name } completed`,
-          secondary: `${ (durationMs / 1000).toFixed(1) }s · ${ traceLog.length } steps`,
+          secondary: `${ (durationMs / 1000).toFixed(1) }s · ${ traceEventCount } steps`,
           subAgent: name,
           agentName: name,
           agentStatus: 'completed',
           taskSummary: result.text.substring(0, 300),
           durationMs,
-          stepCount: traceLog.length,
+          stepCount: traceEventCount,
           traceLog: traceLog.slice(-5)
         });
       }
@@ -689,7 +786,10 @@ export class SubAgentSpawner {
       return { agentId, name, result: result.text, success: true, durationMs, traceLog };
     } catch (error: any) {
       const durationMs = Date.now() - instance.startedAt;
-      const wasCancelled = error.message === 'CANCELLED_BY_USER' || isCancelled(context.projectId);
+      const wasCancelled = error.message === 'CANCELLED_BY_USER'
+        || isCancelled(context.projectId)
+        || (context as any).abortSignal?.aborted
+        || isAgentClosed(context.projectId, name);
       if (!wasCancelled && lease) {
         apiKeyPool.reportFailure(`${context.projectId}_sub_${name}`, apiKeyPool.classifyError(error.message || ''), error.message || '');
       }
@@ -746,9 +846,6 @@ export class SubAgentSpawner {
     parentContext?: string,
     onTrace?: (trace: any) => void
   ): { agentNames: string[], message: string } {
-    // Reset cancel flag ONLY for this chat at start of parallel spawn
-    resetCancelFlag(context.projectId);
-
     const teamSize = tasks.length;
     const reservedNames = new Set<SubAgentName>();
     const agentNames = tasks.map((t) => {
@@ -767,7 +864,7 @@ export class SubAgentSpawner {
         role: 'sub_agent',
         task: taskItem.task,
         status: 'planned',
-        progress: index === 0 ? 'Queued for immediate start' : `Queued with ${index * 500}ms stagger`,
+        progress: index === 0 ? 'Queued for immediate start' : 'Queued for parallel start',
       });
     });
 
@@ -802,18 +899,6 @@ export class SubAgentSpawner {
         }
         
         // Minimal stagger: 500ms (was 2s) — each agent has its own key, minimal collision risk
-        if (index > 0) {
-          await new Promise(r => setTimeout(r, index * 500));
-          if (isCancelled(context.projectId)) {
-            interAgentMailbox.updateAgentPresence(context.projectId, name, {
-              status: 'cancelled',
-              task: t.task,
-              progress: 'Cancelled before start',
-            });
-            return;
-          }
-        }
-
         await this.spawnAgent(t.task, context, index, parentContext, onTrace, name);
       })()
         .catch((error) => {
@@ -821,6 +906,9 @@ export class SubAgentSpawner {
         })
         .finally(() => {
           this.backgroundPromises.delete(runKey);
+          if (this.getBackgroundCount(context.projectId) === 0) {
+            clearCancelState(context.projectId);
+          }
         });
 
       this.backgroundPromises.set(runKey, { projectId: context.projectId, name, promise });
@@ -847,8 +935,6 @@ export class SubAgentSpawner {
     successCount: number,
     failCount: number
   }> {
-    resetCancelFlag(context.projectId);
-
     const startTime = Date.now();
     const reservedNames = new Set<SubAgentName>();
     const agentNames = tasks.map((t) => {
@@ -867,7 +953,7 @@ export class SubAgentSpawner {
         role: 'sub_agent',
         task: taskItem.task,
         status: 'planned',
-        progress: index === 0 ? 'Queued for immediate start' : `Queued with ${index * 500}ms stagger`,
+        progress: index === 0 ? 'Queued for immediate start' : 'Queued for parallel start',
       });
     });
 
@@ -888,13 +974,6 @@ export class SubAgentSpawner {
           return;
         }
         // Minimal stagger: 500ms (was 2s) — each agent has its own key now
-        if (index > 0) {
-          await new Promise(r => setTimeout(r, index * 500));
-          if (isCancelled(context.projectId)) {
-            resolve({ agentId: '', name, result: 'Cancelled', success: false, durationMs: 0, traceLog: [] });
-            return;
-          }
-        }
         const result = await this.spawnAgent(t.task, context, index, parentContext, onTrace, name);
         resolve(result);
       });
@@ -979,9 +1058,9 @@ export class SubAgentSpawner {
    * MULTI-AGENT CONSENSUS MODE
    * 
    * Spawns 3 agents with different cognitive "lenses" to approach the SAME task:
-   * - Agent-Alpha (Optimist): Focuses on opportunities, best-case scenarios, positive outcomes
-   * - Agent-Nova (Skeptic): Focuses on risks, edge cases, what could go wrong
-   * - Agent-Bolt (Realist): Focuses on practical execution, real constraints, balanced view
+   * - Feynman (Optimist): Focuses on opportunities, best-case scenarios, positive outcomes
+   * - Heisenberg (Skeptic): Focuses on risks, edge cases, what could go wrong
+   * - Aristotle (Realist): Focuses on practical execution, real constraints, balanced view
    * 
    * The main agent then synthesizes their outputs into a consensus answer,
    * eliminating hallucination and single-perspective bias.
@@ -997,29 +1076,38 @@ export class SubAgentSpawner {
     synthesisPrompt: string,
     totalDurationMs: number
   }> {
+    const reservedNames = new Set<SubAgentName>();
+    const nextIdentity = () => {
+      const name = this.resolveAgentName(context.projectId, undefined, reservedNames);
+      reservedNames.add(name);
+      return name;
+    };
+    const optimistName = nextIdentity();
+    const skepticName = nextIdentity();
+    const realistName = nextIdentity();
     const perspectives = [
       {
-        name: 'Dave' as SubAgentName,
+        name: optimistName,
         lens: 'OPTIMIST',
-        brief: `You are Dave, the OPTIMIST on the team. Approach this task with a focus on OPPORTUNITIES, best-case outcomes, strengths, and positive potential. Highlight what COULD go well and why.
+        brief: `You are ${optimistName}, the OPTIMIST on this assignment. Approach this task with a focus on OPPORTUNITIES, best-case outcomes, strengths, and positive potential. Highlight what COULD go well and why.
 
 TASK: ${task}
 
 Your analysis should cover the optimistic angle: growth potential, advantages, strengths, positive trends, best-case scenarios. Be thorough but maintain your optimistic lens. Back your points with evidence.`
       },
       {
-        name: 'Nova' as SubAgentName,
+        name: skepticName,
         lens: 'SKEPTIC', 
-        brief: `You are Nova, the SKEPTIC on the team. Approach this task with a focus on RISKS, edge cases, weaknesses, and what could go wrong. Challenge assumptions and look for hidden problems.
+        brief: `You are ${skepticName}, the SKEPTIC on this assignment. Approach this task with a focus on RISKS, edge cases, weaknesses, and what could go wrong. Challenge assumptions and look for hidden problems.
 
 TASK: ${task}
 
 Your analysis should cover the skeptical angle: risks, weaknesses, threats, negative trends, worst-case scenarios, hidden costs. Be thorough and honest. Don't be contrarian for its own sake — identify REAL risks with evidence.`
       },
       {
-        name: 'Sam' as SubAgentName,
+        name: realistName,
         lens: 'REALIST',
-        brief: `You are Sam, the REALIST on the team. Approach this task with a focus on PRACTICAL EXECUTION, real constraints, balanced trade-offs, and actionable recommendations.
+        brief: `You are ${realistName}, the REALIST on this assignment. Approach this task with a focus on PRACTICAL EXECUTION, real constraints, balanced trade-offs, and actionable recommendations.
 
 TASK: ${task}
 
@@ -1110,6 +1198,10 @@ Do NOT just list what each agent said. SYNTHESIZE into a cohesive analysis.`;
   }> {
     const startTime = Date.now();
     const rounds: Array<{ round: number; results: Array<{ agent: string; result: string }> }> = [];
+    const reservedNames = new Set<SubAgentName>();
+    const firstDebater = this.resolveAgentName(context.projectId, undefined, reservedNames);
+    reservedNames.add(firstDebater);
+    const secondDebater = this.resolveAgentName(context.projectId, undefined, reservedNames);
 
     if (onTrace) {
       onTrace({
@@ -1122,8 +1214,8 @@ Do NOT just list what each agent said. SYNTHESIZE into a cohesive analysis.`;
     // === ROUND 1: Independent Analysis ===
     const round1 = await this.spawnParallel(
       [
-        { task: `[DEBATE ROUND 1 - ANALYSIS] Analyze this task independently and thoroughly:\n\n${task}\n\nProvide your complete analysis with evidence. Be specific and detailed.`, name: 'Dave' as SubAgentName },
-        { task: `[DEBATE ROUND 1 - ANALYSIS] Analyze this task independently and thoroughly:\n\n${task}\n\nProvide your complete analysis with evidence. Be specific and detailed.`, name: 'Nova' as SubAgentName },
+        { task: `[DEBATE ROUND 1 - ANALYSIS] Analyze this task independently and thoroughly:\n\n${task}\n\nProvide your complete analysis with evidence. Be specific and detailed.`, name: firstDebater },
+        { task: `[DEBATE ROUND 1 - ANALYSIS] Analyze this task independently and thoroughly:\n\n${task}\n\nProvide your complete analysis with evidence. Be specific and detailed.`, name: secondDebater },
       ],
       context,
       'Debate Round 1: Independent analysis. Be thorough.',
@@ -1135,8 +1227,8 @@ Do NOT just list what each agent said. SYNTHESIZE into a cohesive analysis.`;
       results: round1.results.map(r => ({ agent: r.name, result: r.result }))
     });
 
-    const r1Dave = round1.results[0]?.result || 'No result';
-    const r1Nova = round1.results[1]?.result || 'No result';
+    const firstAnalysis = round1.results[0]?.result || 'No result';
+    const secondAnalysis = round1.results[1]?.result || 'No result';
 
     // === ROUND 2: Cross-Rebuttal ===
     if (onTrace) {
@@ -1149,31 +1241,31 @@ Do NOT just list what each agent said. SYNTHESIZE into a cohesive analysis.`;
           task: `[DEBATE ROUND 2 - REBUTTAL] 
 ORIGINAL TASK: ${task}
 
-YOUR ANALYSIS (Round 1): ${r1Dave.substring(0, 2000)}
+YOUR ANALYSIS (Round 1): ${firstAnalysis.substring(0, 2000)}
 
-OPPONENT'S ANALYSIS (Round 1): ${r1Nova.substring(0, 2000)}
+OPPONENT'S ANALYSIS (Round 1): ${secondAnalysis.substring(0, 2000)}
 
 Now REBUT the opponent's analysis:
 1. What did they get WRONG? Provide evidence.
 2. What did they MISS that you covered?
 3. What points do you CONCEDE they got right?
 4. What is your REVISED position after seeing their analysis?`,
-          name: 'Dave' as SubAgentName 
+          name: firstDebater
         },
         { 
           task: `[DEBATE ROUND 2 - REBUTTAL]
 ORIGINAL TASK: ${task}
 
-YOUR ANALYSIS (Round 1): ${r1Nova.substring(0, 2000)}
+YOUR ANALYSIS (Round 1): ${secondAnalysis.substring(0, 2000)}
 
-OPPONENT'S ANALYSIS (Round 1): ${r1Dave.substring(0, 2000)}
+OPPONENT'S ANALYSIS (Round 1): ${firstAnalysis.substring(0, 2000)}
 
 Now REBUT the opponent's analysis:
 1. What did they get WRONG? Provide evidence.
 2. What did they MISS that you covered?
 3. What points do you CONCEDE they got right?
 4. What is your REVISED position after seeing their analysis?`,
-          name: 'Nova' as SubAgentName 
+          name: secondDebater
         },
       ],
       context,
@@ -1187,11 +1279,11 @@ Now REBUT the opponent's analysis:
     });
 
     // === SYNTHESIS: Calculate consensus and confidence ===
-    const r2Dave = round2.results[0]?.result || '';
-    const r2Nova = round2.results[1]?.result || '';
+    const firstRebuttal = round2.results[0]?.result || '';
+    const secondRebuttal = round2.results[1]?.result || '';
 
     // Confidence estimation based on agreement patterns
-    const concessions = [r2Dave, r2Nova].filter(r => 
+    const concessions = [firstRebuttal, secondRebuttal].filter(r =>
       r.toLowerCase().includes('concede') || r.toLowerCase().includes('agree') || r.toLowerCase().includes('correct')
     ).length;
     const confidenceScore = Math.min(0.95, 0.5 + (concessions * 0.15) + (round1.successCount === 2 ? 0.1 : 0));
@@ -1201,14 +1293,14 @@ Now REBUT the opponent's analysis:
 ORIGINAL TASK: "${task}"
 
 📗 ROUND 1 — Independent Analyses:
-Dave: ${r1Dave.substring(0, 1500)}
+${firstDebater}: ${firstAnalysis.substring(0, 1500)}
 
-Nova: ${r1Nova.substring(0, 1500)}
+${secondDebater}: ${secondAnalysis.substring(0, 1500)}
 
 📕 ROUND 2 — Cross-Rebuttals:
-Dave's Rebuttal: ${r2Dave.substring(0, 1000)}
+${firstDebater}'s Rebuttal: ${firstRebuttal.substring(0, 1000)}
 
-Nova's Rebuttal: ${r2Nova.substring(0, 1000)}
+${secondDebater}'s Rebuttal: ${secondRebuttal.substring(0, 1000)}
 
 ━━━ SYNTHESIZE ━━━
 Create a definitive answer that:
@@ -1241,10 +1333,9 @@ Confidence threshold: ${(confidenceScore * 100).toFixed(0)}% — ${confidenceSco
     onTrace?: (trace: any) => void
   ): Promise<{ name: string; result: string; success: boolean; durationMs: number; confidence: number }> {
 
-    const specialistProfiles: Record<string, { name: SubAgentName; systemBrief: string; toolHints: string[] }> = {
+    const specialistProfiles: Record<string, { systemBrief: string; toolHints: string[] }> = {
       security_auditor: {
-        name: 'Mira' as SubAgentName,
-        systemBrief: `You are Mira, a SECURITY SPECIALIST. Your sole focus is identifying vulnerabilities, attack vectors, and security risks. You think like an attacker.
+        systemBrief: `You are the SECURITY SPECIALIST for this assignment. Your sole focus is identifying vulnerabilities, attack vectors, and security risks. You think like an attacker.
         
 METHODOLOGY:
 1. Check for injection vulnerabilities (SQL, XSS, command injection)
@@ -1259,8 +1350,7 @@ OUTPUT: Severity-rated findings (CRITICAL/HIGH/MEDIUM/LOW) with exact file locat
         toolHints: ['workspace_read_file', 'workspace_search_text', 'code_intelligence', 'system_shell']
       },
       performance_analyst: {
-        name: 'Leo' as SubAgentName,
-        systemBrief: `You are Leo, a PERFORMANCE SPECIALIST. Your focus is identifying bottlenecks, memory leaks, and optimization opportunities.
+        systemBrief: `You are the PERFORMANCE SPECIALIST for this assignment. Your focus is identifying bottlenecks, memory leaks, and optimization opportunities.
         
 METHODOLOGY:
 1. Analyze algorithmic complexity (O(n²) patterns, unnecessary loops)
@@ -1275,8 +1365,7 @@ OUTPUT: Performance findings with impact estimates (ms saved, memory freed) and 
         toolHints: ['workspace_read_file', 'code_intelligence', 'system_shell', 'workspace_search_text']
       },
       architect: {
-        name: 'Kai' as SubAgentName,
-        systemBrief: `You are Kai, an ARCHITECTURE SPECIALIST. Your focus is design patterns, system structure, and long-term maintainability.
+        systemBrief: `You are the ARCHITECTURE SPECIALIST for this assignment. Your focus is design patterns, system structure, and long-term maintainability.
         
 METHODOLOGY:
 1. Analyze module boundaries and separation of concerns
@@ -1291,8 +1380,7 @@ OUTPUT: Architecture assessment with diagrams (mermaid), specific refactoring re
         toolHints: ['workspace_list_directory', 'workspace_read_file', 'code_intelligence', 'workspace_analyze']
       },
       qa_tester: {
-        name: 'Zara' as SubAgentName,
-        systemBrief: `You are Zara, a QA TESTING SPECIALIST. Your focus is finding bugs, edge cases, and writing comprehensive tests.
+        systemBrief: `You are the QA TESTING SPECIALIST for this assignment. Your focus is finding bugs, edge cases, and writing comprehensive tests.
         
 METHODOLOGY:
 1. Identify untested code paths
@@ -1307,8 +1395,7 @@ OUTPUT: Bug report with reproduction steps, test files created, and coverage ana
         toolHints: ['workspace_read_file', 'workspace_write_file', 'system_shell', 'workspace_verify_code']
       },
       researcher: {
-        name: 'Sage' as SubAgentName,
-        systemBrief: `You are Sage, a DEEP RESEARCH SPECIALIST. Your focus is thorough, evidence-based research with source verification.
+        systemBrief: `You are the DEEP RESEARCH SPECIALIST for this assignment. Your focus is thorough, evidence-based research with source verification.
         
 METHODOLOGY:
 1. Search multiple sources for diverse perspectives
@@ -1326,15 +1413,16 @@ OUTPUT: Research report with cited sources, confidence levels per claim, and are
 
     const profile = specialistProfiles[role];
     if (!profile) throw new Error(`Unknown specialist role: ${role}`);
+    const specialistName = this.resolveAgentName(context.projectId);
 
-    const specialistBrief = `${profile.systemBrief}\n\n━━━ TASK ━━━\n${task}\n\nPrioritize tools: ${profile.toolHints.join(', ')}\nExecute thoroughly. No shortcuts.`;
+    const specialistBrief = task;
 
     if (onTrace) {
       onTrace({
         type: 'command',
-        text: `Deploying ${role.replace('_', ' ')} specialist: ${profile.name}`,
+        text: `Deploying ${role.replace('_', ' ')} specialist: ${specialistName}`,
         secondary: task.substring(0, 60),
-        subAgent: profile.name
+        subAgent: specialistName
       });
     }
 
@@ -1344,7 +1432,7 @@ OUTPUT: Research report with cited sources, confidence levels per claim, and are
       0,
       `Specialist role: ${role}`,
       onTrace,
-      profile.name
+      specialistName
     );
 
     // Estimate confidence based on tool usage and completion
@@ -1352,7 +1440,7 @@ OUTPUT: Research report with cited sources, confidence levels per claim, and are
     const confidence = Math.min(0.95, 0.4 + (toolsUsed * 0.05) + (result.success ? 0.2 : 0));
 
     return {
-      name: profile.name,
+      name: specialistName,
       result: result.result,
       success: result.success,
       durationMs: result.durationMs,

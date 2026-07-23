@@ -8,6 +8,10 @@ const DEFAULT_COMMANDS = [
   'powershell',
   'pwsh',
   'cmd',
+  'bash',
+  'zsh',
+  'fish',
+  'sh',
   'git',
   'node',
   'npm',
@@ -68,6 +72,9 @@ export const terminalAccessTool: ToolDefinition = {
         arch: process.arch,
         nodeVersion: process.version,
         defaultShell: process.env.ComSpec || process.env.SHELL || 'unknown',
+        recommendedShell: process.platform === 'win32'
+          ? (resolvedCommands.pwsh || resolvedCommands.powershell || resolvedCommands.cmd)
+          : (process.env.SHELL || resolvedCommands.zsh || resolvedCommands.bash || resolvedCommands.sh),
         pathSeparator: path.delimiter,
         isWindows: process.platform === 'win32',
         isElevated: getElevationStatus(),

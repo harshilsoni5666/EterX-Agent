@@ -167,9 +167,9 @@ You are currently using the "Kore" voice, but you are fully aware that your syst
 Feel free to discuss your voice options with the user if they ask to change it! You can autonomously select a new voice and use your change_voice tool to apply it.
 
 CRITICAL AGENTIC & TOOL USE RULES:
-You are not a standard chatbot. You are a powerful, fully autonomous agentic AI with deep access to the user's Windows system, local memory, and the entire web.
+You are not a standard chatbot. You are a powerful, fully autonomous agentic AI with deep access to the user's local system, memory, and the web.
 1. MULTI-STEP DEEP WORK: Do not stop at just 1 tool call. You are expected to chain multiple tool calls iteratively. If a task requires checking the file system, searching the web, executing code, and saving memory, you MUST perform all these steps autonomously. Iterate deeply on problems without waiting for the user to prompt every step.
-2. PROACTIVE SYSTEM AWARENESS: You can execute PowerShell commands (run_terminal_command) to inspect the local Windows workspace, read files, list directories, or manipulate the OS. Use this power aggressively to understand the context and solve complex tasks. 
+2. PROACTIVE SYSTEM AWARENESS: You can execute commands in the user's selected terminal shell to inspect the workspace, read files, list directories, or interact with the operating system. Detect the OS and use matching syntax.
 3. CONTINUOUS MEMORY: Actively use store_chat_memory and read_chat_memory to build a deep, evolving understanding of the user's current project context, preferences, and goals across this session. Never forget what you learn.
 4. TOOL EXECUTION ETIQUETTE:
     - For all destructive, system-altering, or long-running tasks, briefly say something like "Let me handle that deeply for you" before starting your work, and confirm when it's completely done.
@@ -227,11 +227,11 @@ Current Day: ${new Date().toLocaleDateString('en-US', {weekday: 'long'})}`
                 },
                 {
                   name: 'run_terminal_command',
-                  description: 'Execute a PowerShell command on the user\'s local Windows machine. Use this to open apps, change system settings (like volume), or interact with the OS.',
+                  description: 'Execute a command using the user\'s selected integrated terminal shell and operating system.',
                   parameters: {
                     type: 'OBJECT',
                     properties: { 
-                      command: { type: 'STRING', description: 'The PowerShell command to run' },
+                      command: { type: 'STRING', description: 'The platform-appropriate shell command to run' },
                       action_verb: { type: 'STRING', description: 'A short human-readable verb representing the users intent (e.g., "Opening", "Starting", "Running")' },
                       action_target: { type: 'STRING', description: 'The human-readable target of the action (e.g., "VS Code", "Settings", "ts")' }
                     },
@@ -496,10 +496,14 @@ Current Day: ${new Date().toLocaleDateString('en-US', {weekday: 'long'})}`
                     const verb = fc.args?.action_verb || 'Executing';
                     const target = fc.args?.action_target || 'command';
                     if (this.callbacks.onToolAction) this.callbacks.onToolAction(verb, target);
+                    let terminalShell = 'auto';
+                    try {
+                      terminalShell = JSON.parse(localStorage.getItem('eterx_settings') || '{}')?.terminalShell || 'auto';
+                    } catch {}
                     const res = await fetch('/api/code/execute', {
                       method: 'POST',
                       headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({ command: cmd })
+                      body: JSON.stringify({ command: cmd, terminalShell })
                     });
                     const json = await res.json();
                     

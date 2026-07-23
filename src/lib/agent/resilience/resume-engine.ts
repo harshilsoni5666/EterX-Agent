@@ -30,12 +30,13 @@
  */
 
 import path from 'path';
+import os from 'os';
 import fs from 'fs-extra';
 import { lifetimeBrain, type LifetimeEvent } from '../memory/lifetime';
 
-const USERPROFILE = process.env.USERPROFILE || process.env.HOME || 'C:\\Users\\User';
+const USERPROFILE = os.homedir();
 const DESKTOP_PATHS = [
-  path.join(USERPROFILE, 'OneDrive', 'Desktop'),
+  ...(process.platform === 'win32' ? [path.join(USERPROFILE, 'OneDrive', 'Desktop')] : []),
   path.join(USERPROFILE, 'Desktop'),
 ];
 

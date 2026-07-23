@@ -313,9 +313,11 @@ export function detectChatBoundary(ctx: BoundaryContext): BoundaryResult {
       return result('new_task', 0.92, `Long message (${words} words) with task-starter + near-zero context overlap (${combinedOverlap.toFixed(2)})`);
     }
 
-    // Task-starting phrase with zero overlap and no active plan
+    // A completed prior task plus a distinct task-starter is a new objective,
+    // even when the user states it concisely. Requiring a long prompt caused
+    // ordinary second turns to inherit stale plans and memory.
     if (TASK_STARTERS.test(msg) && combinedOverlap < 0.05 && isAllComplete(ctx.activeTaskPlan)) {
-      if (words > 15) {
+      if (words >= 6) {
         return result('new_task', 0.85, `Task-starter phrase + no overlap + completed/no plan (${words} words)`);
       }
     }

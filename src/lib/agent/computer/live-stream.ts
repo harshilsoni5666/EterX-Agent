@@ -46,6 +46,9 @@ let _stdoutBuffer = '';
 
 // Ensure compiled binary exists
 async function ensureBinary(): Promise<string> {
+  if (process.platform !== 'win32') {
+    throw new Error(`Native screen streaming is currently available only on Windows, not ${process.platform}.`);
+  }
   const srcPath = path.resolve(process.cwd(), 'src', 'lib', 'agent', 'computer', 'EterXScreenStream.cs');
   const outDir = path.resolve(process.cwd(), '.workspaces', 'temp', 'screen-stream');
   const exePath = path.join(outDir, 'EterXScreenStream.exe');

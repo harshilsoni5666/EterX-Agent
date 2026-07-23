@@ -82,7 +82,7 @@ export async function GET(req: NextRequest) {
       send({ type: 'connected', ts: Date.now() });
 
       // Send the latest existing screenshot immediately
-      const latest = getLatestScreenshot();
+      const latest = chatId ? null : getLatestScreenshot();
       if (latest) {
         const base64 = readFileAsBase64(latest.path);
         if (base64) {
@@ -101,6 +101,7 @@ export async function GET(req: NextRequest) {
       // Watch screenshots directory for new files
       let watcher: fs.FSWatcher | null = null;
       try {
+        if (chatId) throw new Error('chat-scoped stream uses monitor events');
         watcher = fs.watch(SCREENSHOTS_DIR, { persistent: false }, (eventType, filename) => {
           if (!filename || !filename.endsWith('.png') || closed) return;
           let filePath = '';
@@ -134,6 +135,9 @@ export async function GET(req: NextRequest) {
       // Also subscribe to monitor emitter for browser_screenshot events
       const onMonitorEvent = (ev: any) => {
         if (closed) return;
+        if (ev.type === 'browser_screenshot' && ev.screenshot) {
+          send({ type: 'screenshot', ts: ev.ts, base64: ev.screenshot, url: ev.url, chatId: ev.chatId });
+        }
         if (ev.type === 'browser_nav') {
           send({ type: 'nav', ts: ev.ts, url: ev.url, chatId: ev.chatId });
         }
@@ -151,7 +155,7 @@ export async function GET(req: NextRequest) {
         }
       };
       const unsubMonitor = chatId
-        ? monitorEmitter.subscribeForChat(chatId, onMonitorEvent, { replay: false, includeVisual: true })
+        ? monitorEmitter.subscribeForChat(chatId, onMonitorEvent, { replay: true, replayLimit: 20, includeVisual: true })
         : monitorEmitter.subscribe(onMonitorEvent);
 
       // Heartbeat every 10s

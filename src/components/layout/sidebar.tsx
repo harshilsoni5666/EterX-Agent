@@ -14,7 +14,34 @@ const MINUTE_MS = 60 * 1000;
 const HOUR_MS = 60 * MINUTE_MS;
 const DAY_MS = 24 * HOUR_MS;
 
-const clampSidebarWidth = (width: number) => Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, Math.round(width)));
+const getSidebarViewportMax = (viewportWidth: number) => {
+  // Keep the existing mobile/tablet sizing untouched; this adaptive scale is
+  // intentionally limited to desktop-class viewports.
+  if (viewportWidth < 769) return SIDEBAR_MAX_WIDTH;
+  if (viewportWidth < 1200) return 248;
+  if (viewportWidth < 1600) return 300;
+  if (viewportWidth < 2200) return 360;
+  return SIDEBAR_MAX_WIDTH;
+};
+const getSidebarViewportMin = (viewportWidth: number) => {
+  if (viewportWidth >= 3200) return 320;
+  if (viewportWidth >= 2200) return 280;
+  return SIDEBAR_MIN_WIDTH;
+};
+const clampSidebarWidth = (width: number) => {
+  const viewportWidth = typeof window === 'undefined' ? 1440 : window.innerWidth;
+  const responsiveMin = getSidebarViewportMin(viewportWidth);
+  const responsiveMax = getSidebarViewportMax(viewportWidth);
+  return Math.min(responsiveMax, Math.max(responsiveMin, Math.round(width)));
+};
+const getAdaptiveSidebarDefault = (viewportWidth: number) => {
+  if (viewportWidth < 769) return SIDEBAR_DEFAULT_WIDTH;
+  if (viewportWidth >= 3200) return 360;
+  if (viewportWidth >= 2200) return 320;
+  if (viewportWidth >= 1600) return 280;
+  if (viewportWidth < 1200) return 232;
+  return SIDEBAR_DEFAULT_WIDTH;
+};
 
 const formatChatUpdatedAt = (updatedAt: number, now: number) => {
   if (!Number.isFinite(updatedAt) || updatedAt <= 0) return '';
@@ -474,6 +501,7 @@ export const Sidebar = React.memo<SidebarProps>(({
   const [menuState, setMenuState] = React.useState<{ id: string, x: number, y: number, dropUp: boolean } | null>(null);
   const [toggleHovered, setToggleHovered] = React.useState(false);
   const [isMobile, setIsMobile] = React.useState(false);
+  const [viewportWidth, setViewportWidth] = React.useState(1440);
   const [sidebarWidth, setSidebarWidth] = React.useState(SIDEBAR_DEFAULT_WIDTH);
   const [isResizingSidebar, setIsResizingSidebar] = React.useState(false);
   const [now, setNow] = React.useState(() => Date.now());
@@ -482,7 +510,10 @@ export const Sidebar = React.memo<SidebarProps>(({
   const resizeLastClientXRef = React.useRef<number | null>(null);
 
   React.useEffect(() => {
-    const handleResize = () => setIsMobile(window.innerWidth < 768);
+    const handleResize = () => {
+      setIsMobile(window.innerWidth < 768);
+      setViewportWidth(window.innerWidth);
+    };
     handleResize();
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
@@ -499,7 +530,25 @@ export const Sidebar = React.memo<SidebarProps>(({
       const nextWidth = clampSidebarWidth(storedWidth);
       resizeCurrentWidthRef.current = nextWidth;
       setSidebarWidth(nextWidth);
+      return;
     }
+    const adaptiveWidth = getAdaptiveSidebarDefault(window.innerWidth);
+    resizeCurrentWidthRef.current = adaptiveWidth;
+    setSidebarWidth(adaptiveWidth);
+  }, []);
+
+  React.useEffect(() => {
+    const responsiveMin = getSidebarViewportMin(viewportWidth);
+    const responsiveMax = getSidebarViewportMax(viewportWidth);
+    setSidebarWidth(current => Math.min(responsiveMax, Math.max(responsiveMin, current)));
+  }, [viewportWidth]);
+
+  React.useEffect(() => {
+    document.documentElement.style.setProperty('--eterx-shell-sidebar-width', `${sidebarWidth}px`);
+  }, [sidebarWidth]);
+
+  React.useEffect(() => () => {
+    document.documentElement.style.removeProperty('--eterx-shell-sidebar-width');
   }, []);
 
   React.useEffect(() => {
@@ -520,8 +569,9 @@ export const Sidebar = React.memo<SidebarProps>(({
 
     const stopResize = () => {
       if (resizeLastClientXRef.current !== null && resizeLastClientXRef.current <= SIDEBAR_AUTO_CLOSE_EDGE) {
-        resizeCurrentWidthRef.current = SIDEBAR_DEFAULT_WIDTH;
-        setSidebarWidth(SIDEBAR_DEFAULT_WIDTH);
+        const adaptiveWidth = getAdaptiveSidebarDefault(window.innerWidth);
+        resizeCurrentWidthRef.current = adaptiveWidth;
+        setSidebarWidth(adaptiveWidth);
         setIsResizingSidebar(false);
         setIsOpen(false);
         return;
@@ -923,7 +973,7 @@ export const Sidebar = React.memo<SidebarProps>(({
               </button>
             </Tooltip>
             {isOpen && (
-              <span className="eterx-sidebar-brand-text text-[#E3E3E3] font-bold text-[19px] ml-3.5 select-none tracking-[0.01em] [-webkit-app-region:no-drag] leading-none flex items-center h-8 translate-y-[0.5px]">
+              <span className="eterx-sidebar-brand-text text-[var(--sidebar-text)] font-bold text-[19px] ml-3.5 select-none tracking-[0.01em] [-webkit-app-region:no-drag] leading-none flex items-center h-8 translate-y-[0.5px]">
                 EterX
               </span>
             )}
@@ -1157,7 +1207,7 @@ export const Sidebar = React.memo<SidebarProps>(({
                           </span>
                         )}
 
-                        <div className={`eterx-sidebar-chat-content ${ !isWorking && !isSelectMode && isMenuOpen ? 'eterx-sidebar-chat-content-menu-visible' : '' } ${ isWorking && !isSelectMode ? 'eterx-sidebar-chat-content-working' : '' } flex min-w-0 items-center overflow-hidden flex-1 relative z-10 w-full pl-0`}>
+                        <div className={`eterx-sidebar-chat-content ${ !isWorking && !isSelectMode && isMenuOpen ? 'eterx-sidebar-chat-content-menu-visible' : '' } ${ isWorking && !isSelectMode ? 'eterx-sidebar-chat-content-working' : '' } flex min-w-0 max-w-full items-center overflow-hidden flex-[0_1_auto] relative z-10 pl-0`}>
                           {isWorking ? (
                             <span className="eterx-sidebar-chat-title truncate relative z-10 font-medium leading-normal">
                               {chat.title}
@@ -1183,7 +1233,7 @@ export const Sidebar = React.memo<SidebarProps>(({
                               onClick={(e) => e.stopPropagation()}
                             />
                           ) : (
-                            <div className="eterx-sidebar-chat-title-wrap flex items-center truncate relative z-10 w-full min-w-0">
+                            <div className="eterx-sidebar-chat-title-wrap flex min-w-0 items-center truncate relative z-10">
                               {chat.isFavorite && <PremiumStar className="eterx-sidebar-favorite-icon w-3.5 h-3.5 text-yellow-500/90 mr-1.5 shrink-0" />}
                               <span className="eterx-sidebar-chat-title truncate text-current leading-normal">{chat.title}</span>
                             </div>
@@ -1226,6 +1276,7 @@ export const Sidebar = React.memo<SidebarProps>(({
                             </button>
                           </div>
                         )}
+
                       </div>
                     );
                   })
@@ -1278,8 +1329,8 @@ export const Sidebar = React.memo<SidebarProps>(({
             role="separator"
             aria-orientation="vertical"
             aria-label="Resize sidebar"
-            aria-valuemin={SIDEBAR_MIN_WIDTH}
-            aria-valuemax={SIDEBAR_MAX_WIDTH}
+            aria-valuemin={getSidebarViewportMin(viewportWidth)}
+            aria-valuemax={getSidebarViewportMax(viewportWidth)}
             aria-valuenow={sidebarWidth}
             onPointerDown={handleSidebarResizePointerDown}
             className={`eterx-sidebar-resize-handle ${ isResizingSidebar ? 'eterx-sidebar-resize-handle-active' : '' }`}

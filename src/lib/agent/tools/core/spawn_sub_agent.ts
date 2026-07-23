@@ -53,9 +53,9 @@ WHEN TO USE SPECIALIST: focused security, performance, architecture, QA, or rese
     mode: z.enum(['advise', 'spawn', 'status', 'collect', 'clear', 'consensus', 'debate', 'specialist', 'pause', 'resume', 'close'])
       .describe('advise = choose the right orchestration pattern without spawning, spawn = fire-and-forget launch, status = check progress, collect = get results, clear = cleanup, consensus = 3-agent panel, debate = multi-round adversarial panel, specialist = one expert role, pause/resume/close = control an agent'),
     tasks: z.array(z.object({
-      task: z.string().describe('Detailed task description for this sub-agent'),
+      task: z.string().min(1).max(200_000).describe('Detailed task description for this sub-agent'),
       name: z.string().optional().describe('Optional agent name (auto-assigned if not provided)')
-    })).optional().describe('Array of tasks for spawn, consensus, debate, or specialist mode'),
+    })).max(20).optional().describe('Array of tasks for spawn, consensus, debate, or specialist mode'),
     request: z.string().optional().describe('Original user request for advise mode. Falls back to the first task if omitted.'),
     specialistRole: z.enum(SPECIALIST_ROLES).optional().describe('Required for specialist mode.'),
     maxAgents: z.number().int().min(1).max(6).optional().describe('Maximum agents to recommend in advise mode.'),
@@ -223,8 +223,9 @@ WHEN TO USE SPECIALIST: focused security, performance, architecture, QA, or rese
 
       // ═══ COLLECT: Get final results from completed sub-agents ═══
       case 'collect': {
-        // First wait for this chat's background agents to finish.
-        await globalSubAgentSpawner.waitForAll(context?.projectId);
+        // Collect is a snapshot, not a join barrier. Waiting for every agent
+        // made one slow or stuck sub-agent freeze Main even though the response
+        // format already supports reporting agents as still running.
         
         if (input.agentName) {
           const queuedResults = getPendingResults(context?.projectId, input.agentName);

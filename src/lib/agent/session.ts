@@ -144,6 +144,7 @@ export class SessionStateManager {
   private activeChatSessions: Map<string, SessionState> = new Map();
   private _saveTimer: ReturnType<typeof setTimeout> | null = null;
   private _savePending = false;
+  private _chatSaveTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private _lastStaleCleanupAt = 0;
 
   /** Resolve the state file path for a given chatId */
@@ -482,6 +483,17 @@ export class SessionStateManager {
     }, 3000);
   }
 
+  /** Debounce one chat without consulting the process-wide current-project pointer. */
+  public debouncedSaveForChat(chatId: string): void {
+    if (!chatId || this._chatSaveTimers.has(chatId)) return;
+    const timer = setTimeout(() => {
+      this._chatSaveTimers.delete(chatId);
+      this.saveForChat(chatId).catch(() => {});
+    }, 3000);
+    (timer as any).unref?.();
+    this._chatSaveTimers.set(chatId, timer);
+  }
+
   /**
    * Hydrate ReAct loop state from the persisted session.
    */
@@ -595,12 +607,27 @@ export class SessionStateManager {
     return this.getStateForChat(chatId).lastAgentOutput;
   }
 
+  /** Clear task-scoped continuity after a confidently detected new objective. */
+  public resetTaskStateForChat(chatId: string): void {
+    const previous = this.getOrCreateStateForChat(chatId);
+    const reset: SessionState = {
+      ...EMPTY_STATE,
+      createdAt: previous.createdAt || Date.now(),
+      lastActivityAt: Date.now(),
+      messageCount: previous.messageCount || 0,
+      boundChatId: chatId,
+    };
+    if (this.currentProjectId === chatId) this.state = reset;
+    this.rememberActiveSession(chatId, reset);
+    this.debouncedSaveForChat(chatId);
+  }
+
   /** Set the last user message for a SPECIFIC chat */
   public setLastUserMessageForChat(chatId: string, message: string): void {
     const state = this.getOrCreateStateForChat(chatId);
     state.lastUserMessage = message;
     this.rememberActiveSession(chatId, state);
-    this.debouncedSave();
+    this.debouncedSaveForChat(chatId);
   }
 
   /** Set the agent's last output for a SPECIFIC chat */
@@ -608,7 +635,7 @@ export class SessionStateManager {
     const state = this.getOrCreateStateForChat(chatId);
     state.lastAgentOutput = output.substring(0, 1500);
     this.rememberActiveSession(chatId, state);
-    this.debouncedSave();
+    this.debouncedSaveForChat(chatId);
   }
 
   /** Get session summary for a SPECIFIC chat — NEVER leaks other chats' data */
@@ -665,7 +692,7 @@ export class SessionStateManager {
     state.toolResultDigest = state.toolResultDigest.slice(-MAX_TOOL_RESULT_DIGEST);
     
     this.rememberActiveSession(chatId, state);
-    this.debouncedSave();
+    this.debouncedSaveForChat(chatId);
   }
 
   /** Self-review for a SPECIFIC chat */
@@ -681,7 +708,7 @@ export class SessionStateManager {
     state.lastExtendedAt = Date.now();
     state.extensionCount = (state.extensionCount ?? 0) + 1;
     console.log(`[Session] 🚀 Long-task mode ENABLED for chat ${chatId.substring(0, 8)} — session immortal until task completion.`);
-    this.debouncedSave();
+    this.debouncedSaveForChat(chatId);
   }
 
   /** Disable long-task mode for a specific chat */
@@ -689,7 +716,7 @@ export class SessionStateManager {
     const state = this.getOrCreateStateForChat(chatId);
     state.longTaskMode = false;
     console.log(`[Session] ⏱ Long-task mode disabled for chat ${chatId.substring(0, 8)}. Normal timeout restored.`);
-    this.debouncedSave();
+    this.debouncedSaveForChat(chatId);
   }
 
   /** Returns true if a specific chat is in long-task mode */
@@ -704,7 +731,7 @@ export class SessionStateManager {
     state.lastExtendedAt = Date.now();
     state.extensionCount = (state.extensionCount ?? 0) + 1;
     if ((state.extensionCount % 10) === 0) {
-      this.debouncedSave();
+      this.debouncedSaveForChat(chatId);
     }
   }
 
@@ -729,7 +756,7 @@ export class SessionStateManager {
       state.fileRecords = state.fileRecords.slice(-15);
     }
     this.rememberActiveSession(chatId, state);
-    this.debouncedSave();
+    this.debouncedSaveForChat(chatId);
   }
 
   /** Store the current task plan steps for progress tracking in a specific chat */
@@ -737,14 +764,14 @@ export class SessionStateManager {
     const state = this.getOrCreateStateForChat(chatId);
     state.taskPlanSteps = steps.slice(0, 20); // Cap at 20 steps
     this.rememberActiveSession(chatId, state);
-    this.debouncedSave();
+    this.debouncedSaveForChat(chatId);
   }
 
   public setExecutionPlanForChat(chatId: string, planState: PlanState | null): void {
     const state = this.getOrCreateStateForChat(chatId);
     state.executionPlanState = planState ? JSON.parse(JSON.stringify(planState)) : null;
     this.rememberActiveSession(chatId, state);
-    this.debouncedSave();
+    this.debouncedSaveForChat(chatId);
   }
 
   /** Add a human-readable action summary entry for a specific chat */
@@ -755,7 +782,7 @@ export class SessionStateManager {
       state.actionSummary = state.actionSummary.slice(-15);
     }
     this.rememberActiveSession(chatId, state);
-    this.debouncedSave();
+    this.debouncedSaveForChat(chatId);
   }
 
   /** Increment message count for a specific chat */
@@ -763,7 +790,7 @@ export class SessionStateManager {
     const state = this.getOrCreateStateForChat(chatId);
     state.messageCount = (state.messageCount || 0) + 1;
     this.rememberActiveSession(chatId, state);
-    this.debouncedSave();
+    this.debouncedSaveForChat(chatId);
   }
 
   /** Get the current message count for a specific chat */

@@ -3,12 +3,14 @@ import { randomUUID } from 'crypto';
 import { AgentOrchestrator } from './orchestrator';
 import { apiKeyPool, type KeyLease } from './api-key-pool';
 import { taskStore } from './task-store';
+import { writeRuntimeTrace } from './runtime-trace';
 import { getMainAgentModelConfig, type MainAgentMode } from './model-routing';
 import { MODEL_PROVIDER_MODE, isModelProvider } from './model-selector-store';
 import { getScopedRuntimeApiKey, type ScopedRuntimeSettings } from './runtime-api-keys';
 import { flushLedgerForChat } from './memory/conversation-ledger';
 import { globalToolRegistry } from './tools/registry';
 import { observeUserProxy, startUserProxyRuntime, stopUserProxyRuntime, pauseUserProxyRuntime, resumeUserProxyRuntime, setUserProxyIntervention, getUserProxyManagerSnapshot, deliverUserProxyManagerDirective, type ProxyInterventionLevel, type ProxyManagerDirective } from './autonomy/user-proxy-runtime';
+import { cancelAgent, cancelAllSubAgents, clearCancelState, globalSubAgentSpawner } from './roles/sub_agent';
 
 // Ensure tools are bootstrapped
 import './tools/index';
@@ -59,6 +61,8 @@ interface AgentExecution {
   finalAnswer: string;
   error?: string;
   cancelled: boolean;          // Per-chat cancel flag
+  abortController: AbortController; // Per-run cancellation; later runs cannot reset it
+  settled: boolean;            // Persistence and resource cleanup have finished
   promise: Promise<void>;      // The running execution
   keyLeaseId: string;          // API key lease identifier
   steeringQueue: SteeringMessage[]; // Live steering messages from user mid-run
@@ -68,6 +72,7 @@ interface AgentExecution {
   effectiveModel: string;      // Actual model used (may differ from mode due to smart routing)
   complexity: string;          // Task complexity classification
   peakMemoryMB: number;        // Peak memory usage during execution
+  lastMemorySampleAt: number;
   retentionCompacted?: boolean;
   orchestratorProjectId?: string;
 }
@@ -183,14 +188,18 @@ class AgentRegistry {
       if (existingIdx >= 0) execution.traceBuffer.splice(existingIdx, 1);
     }
 
+    const now = Date.now();
     const entry: TraceEvent = {
       index: execution.traceCounter++,
-      timestamp: Date.now(),
+      timestamp: now,
       data: traceEvent,
     };
 
     execution.traceBuffer.push(entry);
-    execution.peakMemoryMB = Math.max(execution.peakMemoryMB || 0, this.getProcessMemoryMB());
+    if (now - execution.lastMemorySampleAt >= 1000) {
+      execution.lastMemorySampleAt = now;
+      execution.peakMemoryMB = Math.max(execution.peakMemoryMB || 0, this.getProcessMemoryMB());
+    }
 
     if (traceEvent?.type === 'tool_call' || traceEvent?.type === 'action') {
       execution.toolCallCount++;
@@ -210,7 +219,8 @@ class AgentRegistry {
         execution.chatId,
         compactTrace && typeof compactTrace === 'object'
           ? { ...compactTrace, _traceIdx: entry.index }
-          : compactTrace
+          : compactTrace,
+        execution.runId,
       );
     }
 
@@ -237,8 +247,15 @@ class AgentRegistry {
 
     // Check if this chat already has a running agent
     const existing = this.executions.get(chatId);
-    if (existing && existing.status === 'running') {
-      return { status: 'already_running', chatId, runId: existing.runId, message: 'Agent is already running for this chat' };
+    if (existing && !existing.settled) {
+      return {
+        status: 'already_running',
+        chatId,
+        runId: existing.runId,
+        message: existing.status === 'running'
+          ? 'Agent is already running for this chat'
+          : 'The previous run is still shutting down. Try again in a moment.',
+      };
     }
 
     const modelConfig = getMainAgentModelConfig(mode, runtimeSettings);
@@ -280,23 +297,34 @@ class AgentRegistry {
       traceCounter: 0,
       finalAnswer: '',
       cancelled: false,
+      abortController: new AbortController(),
+      settled: false,
       keyLeaseId: isExternalProvider ? modelConfig.provider : chatId,
       mode,
       promise: Promise.resolve(), // Placeholder, replaced below
       steeringQueue: [],
       // Execution metrics
       toolCallCount: 0,
-      effectiveModel: modelConfig.modelName,
+      effectiveModel: pinnedContext?.strictModelSelection === true && typeof pinnedContext?.selectedModelName === 'string'
+        ? pinnedContext.selectedModelName
+        : modelConfig.modelName,
       complexity: 'unknown',
       peakMemoryMB: 0,
+      lastMemorySampleAt: 0,
     };
 
     // Build the trace callback that writes to the buffer
     const onTrace = (traceEvent: any) => {
+      writeRuntimeTrace('agent_trace', {
+        chatId,
+        event: traceEvent,
+      });
       // Check per-chat cancellation
       if (execution.cancelled) {
         return;
       }
+      const currentExecution = this.executions.get(chatId);
+      if (currentExecution && currentExecution !== execution) return;
 
       // Enrich custom agent traces
       if (pinnedContext?.agentRuntime === 'custom_agent' && pinnedContext?.customAgentId) {
@@ -323,12 +351,13 @@ class AgentRegistry {
 
     // Fire-and-forget execution
     execution.promise = (async () => {
+      let terminalStatus: AgentExecution['status'] = 'failed';
       try {
         // Create a dedicated orchestrator for this chat
         const orchestrator = new AgentOrchestrator();
 
         // Pre-process media (same logic as chat route)
-        const fs = require('fs');
+        const fs = require('fs-extra');
         const path = require('path');
         const { randomUUID } = require('crypto');
 
@@ -342,7 +371,7 @@ class AgentRegistry {
 
         const workspaceTemp = path.resolve(process.cwd(), '.workspaces', 'temp');
         const hasMediaAttachments = !!(mediaAttachments && mediaAttachments.length > 0);
-        if (hasMediaAttachments && !fs.existsSync(workspaceTemp)) fs.mkdirSync(workspaceTemp, { recursive: true });
+        if (hasMediaAttachments) await fs.ensureDir(workspaceTemp);
 
         const resolveUnder = (rootPath: string, ...segments: string[]) => {
           const root = path.resolve(rootPath);
@@ -419,13 +448,13 @@ class AgentRegistry {
             const att = mediaAttachments[attachmentIndex];
             const mimeType = att.mimeType || 'application/octet-stream';
 
-            if (att.path && fs.existsSync(att.path)) {
+            if (att.path && await fs.pathExists(att.path)) {
               const sourcePath = path.resolve(att.path);
               const safeName = getRunScopedMediaName(att, attachmentIndex, sourcePath);
               const destPath = isInsideWorkspaceTemp(sourcePath) ? sourcePath : resolveUnder(workspaceTemp, safeName);
 
               if (sourcePath !== destPath) {
-                fs.copyFileSync(sourcePath, destPath);
+                await fs.copyFile(sourcePath, destPath);
               }
               mediaFiles.push({ path: destPath, mimeType, name: safeName });
             } else if (att.data || att.inlineData) {
@@ -433,17 +462,17 @@ class AgentRegistry {
               if (typeof b64 === 'string') {
                 const safeName = getRunScopedMediaName(att, attachmentIndex);
                 const destPath = resolveUnder(workspaceTemp, safeName);
-                fs.writeFileSync(destPath, Buffer.from(b64, 'base64'));
+                await fs.writeFile(destPath, Buffer.from(b64, 'base64'));
                 mediaFiles.push({ path: destPath, mimeType, name: safeName });
               }
             } else if (att.fileUri) {
               const safeName = getRunScopedMediaName(att, attachmentIndex, att.path);
               const destPath = resolveUnder(workspaceTemp, safeName);
               if (att.path) {
-                try { fs.copyFileSync(att.path, destPath); } catch { }
+                try { await fs.copyFile(att.path, destPath); } catch { }
               }
-              const filePath = fs.existsSync(destPath) ? destPath : (att.path || destPath);
-              if (fs.existsSync(filePath)) {
+              const filePath = await fs.pathExists(destPath) ? destPath : (att.path || destPath);
+              if (await fs.pathExists(filePath)) {
                 mediaFiles.push({ path: filePath, mimeType, name: safeName });
               }
             }
@@ -460,7 +489,7 @@ class AgentRegistry {
         const visualMemoryPath = resolveUnder(workspaceTemp, `${ safeChatTempName(chatId) }_visual_memory.json`);
         let geminiNativeFiles = [...currentGeminiNativeFiles];
         try {
-          if (fs.existsSync(visualMemoryPath)) fs.unlinkSync(visualMemoryPath);
+          await fs.remove(visualMemoryPath);
         } catch (e: any) {
           console.warn(`[AgentRegistry] Could not clear stale visual memory: ${ e?.message || e }`);
         }
@@ -489,7 +518,7 @@ class AgentRegistry {
             }
 
             // ALWAYS fresh upload for NEW files using the LEASED key (prevents cross-key 403)
-            if (!fs.existsSync(file.path)) {
+            if (!await fs.pathExists(file.path)) {
               console.warn(`[AgentRegistry] ⚠️ File not found for upload: ${ file.path }`);
               continue;
             }
@@ -544,20 +573,20 @@ class AgentRegistry {
             if (ext === '.pdf') {
               try {
                 const pdfParse = require('pdf-parse');
-                const dataBuffer = fs.readFileSync(file.path);
+                const dataBuffer = await fs.readFile(file.path);
                 const data = await pdfParse(dataBuffer);
                 enrichedPrompt += `[Attached PDF: ${ file.name }]\n\`\`\`\n${ (data.text || '').slice(0, 50000) }\n\`\`\`\n\n`;
               } catch { enrichedPrompt += `[Attached PDF: ${ file.name }] — use parse_pdf tool\n\n`; }
             } else if (ext === '.docx') {
               try {
                 const AdmZip = require('adm-zip');
-                const zip = new AdmZip(file.path);
+                const zip = new AdmZip(await fs.readFile(file.path));
                 const entry = zip.getEntry('word/document.xml');
                 const xml = entry ? entry.getData().toString('utf-8').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 50000) : '[Could not read]';
                 enrichedPrompt += `[Attached DOCX: ${ file.name }]\n\`\`\`\n${ xml }\n\`\`\`\n\n`;
               } catch { enrichedPrompt += `[Attached DOCX: ${ file.name }] — saved at ${ file.path }\n\n`; }
             } else if (TEXT_EXTS.has(ext) || file.mimeType.startsWith('text/')) {
-              const content = fs.readFileSync(file.path, 'utf-8').slice(0, 50000);
+              const content = String(await fs.readFile(file.path, 'utf-8')).slice(0, 50000);
               enrichedPrompt += `[Attached File: ${ file.name }]\n\`\`\`\n${ content }\n\`\`\`\n\n`;
             } else {
               enrichedPrompt += `[Attached File: ${ file.name }] — saved at ${ file.path }\n\n`;
@@ -626,7 +655,7 @@ class AgentRegistry {
           history,
           onTrace,
           mode,
-          pinnedContext,
+          { ...(pinnedContext || {}), abortSignal: execution.abortController.signal },
           geminiNativeFiles,
           uploadedImageParts, // Files API parts instead of base64
           userName,
@@ -638,14 +667,15 @@ class AgentRegistry {
         const wasCancelledByResponse = execution.cancelled || responseText === 'Stopped by user.';
         const responseFailed = response.success === false || /^Agent (Execution Failed|Error):/i.test(responseText);
 
-        execution.status = wasCancelledByResponse ? 'stopped' : responseFailed ? 'failed' : 'completed';
-        execution.completedAt = Date.now();
+        terminalStatus = wasCancelledByResponse ? 'stopped' : responseFailed ? 'failed' : 'completed';
         execution.finalAnswer = responseText;
         if (responseFailed) execution.error = responseText;
 
         // Update effective model with the model mode resolved by the orchestrator!
         const actualModelConfig = getMainAgentModelConfig(response.modelMode, runtimeSettings);
-        execution.effectiveModel = actualModelConfig.modelName;
+        execution.effectiveModel = pinnedContext?.strictModelSelection === true && typeof pinnedContext?.selectedModelName === 'string'
+          ? pinnedContext.selectedModelName
+          : actualModelConfig.modelName;
 
         // Emit done event to trace buffer
         if (!execution.cancelled) {
@@ -654,21 +684,20 @@ class AgentRegistry {
 
         // Persist to TaskStore
         if (!pinnedContext?.disableTaskStore) {
-          await taskStore.completeTask(chatId, execution.finalAnswer, execution.status === 'completed', execution.status);
+          await taskStore.completeTask(chatId, execution.finalAnswer, terminalStatus === 'completed', terminalStatus, execution.runId);
         }
 
         // Report success to key pool
-        if (!isExternalProvider && execution.status === 'completed') {
+        if (!isExternalProvider && terminalStatus === 'completed') {
           apiKeyPool.reportSuccess(chatId, (response as any).effectiveApiKey);
         }
 
-        console.log(`[AgentRegistry] ${ execution.status === 'completed' ? '✅ Agent completed' : execution.status === 'stopped' ? '🛑 Agent stopped' : '❌ Agent failed' } for chat ${ chatId.substring(0, 8) }... in ${ ((Date.now() - execution.startedAt) / 1000).toFixed(1) }s`);
+        console.log(`[AgentRegistry] ${ terminalStatus === 'completed' ? '✅ Agent completed' : terminalStatus === 'stopped' ? '🛑 Agent stopped' : '❌ Agent failed' } for chat ${ chatId.substring(0, 8) }... in ${ ((Date.now() - execution.startedAt) / 1000).toFixed(1) }s`);
 
       } catch (error: any) {
         const wasCancelled = error.message === 'CANCELLED_BY_USER' || execution.cancelled;
 
-        execution.status = wasCancelled ? 'stopped' : 'failed';
-        execution.completedAt = Date.now();
+        terminalStatus = wasCancelled ? 'stopped' : 'failed';
         execution.error = error.message;
         execution.finalAnswer = wasCancelled ? 'Stopped by user.' : `Agent Error: ${ error.message }`;
 
@@ -691,22 +720,54 @@ class AgentRegistry {
         }
 
         if (!pinnedContext?.disableTaskStore) {
-          if (execution.status === 'stopped') {
-            await taskStore.stopTask(chatId, execution.finalAnswer).catch(() => { });
+          if (terminalStatus === 'stopped') {
+            await taskStore.stopTask(chatId, execution.finalAnswer, execution.runId).catch(() => { });
           } else {
-            await taskStore.completeTask(chatId, execution.finalAnswer, false, execution.status).catch(() => { });
+            await taskStore.completeTask(chatId, execution.finalAnswer, false, terminalStatus, execution.runId).catch(() => { });
           }
         }
 
       } finally {
-        if (execution.orchestratorProjectId) stopUserProxyRuntime(execution.orchestratorProjectId);
-        // ALWAYS release ALL keys associated with this chat (main agent + ANY dynamically named sub-agents)
-        if (!isExternalProvider) apiKeyPool.releaseKey(chatId);
-        apiKeyPool.releaseLeasesWithPrefix(`${ chatId }_sub_`);
+        if (execution.orchestratorProjectId) {
+          try { stopUserProxyRuntime(execution.orchestratorProjectId); } catch { }
+        }
+        // No background worker may outlive its owning main run. Cancel first and
+        // give workers a bounded window to observe the signal before releasing
+        // their leases; otherwise a successor can reuse a key still in flight.
+        const subAgentProjectId = execution.orchestratorProjectId || chatId;
+        if (!execution.abortController.signal.aborted) {
+          execution.abortController.abort(new Error('MAIN_RUN_SETTLED'));
+        }
+        try { cancelAgent(subAgentProjectId); } catch { }
+        try {
+          await Promise.race([
+            globalSubAgentSpawner.waitForAll(subAgentProjectId),
+            new Promise<void>(resolve => setTimeout(resolve, 3000)),
+          ]);
+        } catch { }
+        if (globalSubAgentSpawner.getBackgroundCount(subAgentProjectId) === 0) {
+          clearCancelState(subAgentProjectId);
+        }
+
+        // ALWAYS release ALL keys associated with this chat after bounded drain.
+        if (!isExternalProvider) {
+          try { apiKeyPool.releaseKey(chatId); } catch { }
+        }
+        // Never make an in-flight key available to a successor. Responsive
+        // workers release their own lease in spawnAgent.finally; this sweep is
+        // only safe once the background registry confirms the run is drained.
+        if (globalSubAgentSpawner.getBackgroundCount(subAgentProjectId) === 0) {
+          try { apiKeyPool.releaseLeasesWithPrefix(`${ chatId }_sub_`); } catch { }
+        } else {
+          console.warn(`[AgentRegistry] Sub-agent drain timed out for ${chatId.substring(0, 8)}...; retaining worker leases until their owners exit.`);
+        }
 
         // Flush ledger so no pending writes are lost when the agent finishes,
         // crashes, or is stopped. Non-blocking — errors are swallowed.
-        flushLedgerForChat(chatId).catch(() => {});
+        await flushLedgerForChat(chatId).catch(() => {});
+        execution.settled = true;
+        if (execution.status === 'running') execution.status = terminalStatus;
+        execution.completedAt = execution.completedAt || Date.now();
       }
     })();
 
@@ -740,11 +801,25 @@ class AgentRegistry {
     this.compactExecutionForRetention(execution);
 
     // Get traces after the given index — indices are monotonic, never re-indexed
-    const newTraces: any[] = [];
-    for (const trace of execution.traceBuffer) {
-      if (afterIndex >= 0 && trace.index <= afterIndex) continue;
-      newTraces.push({ timestamp: trace.timestamp, ...trace.data, _traceIdx: trace.index });
+    // The buffer is index-ordered even after old entries are compacted. Binary
+    // search avoids rescanning up to 2,000 entries on every high-frequency poll
+    // for every running chat.
+    let start = 0;
+    if (afterIndex >= 0) {
+      let low = 0;
+      let high = execution.traceBuffer.length;
+      while (low < high) {
+        const middle = (low + high) >>> 1;
+        if (execution.traceBuffer[middle].index <= afterIndex) low = middle + 1;
+        else high = middle;
+      }
+      start = low;
     }
+    const newTraces = execution.traceBuffer.slice(start).map(trace => ({
+      timestamp: trace.timestamp,
+      ...trace.data,
+      _traceIdx: trace.index,
+    }));
 
     // maxIndex = the highest monotonic index we've ever issued for this chat
     const maxIndex = execution.traceBuffer.length > 0
@@ -772,6 +847,11 @@ class AgentRegistry {
     const execution = this.executions.get(chatId);
     if (!execution) return false;
 
+    // Registry owns the whole run lifecycle. This must happen here (rather than
+    // only in an HTTP route) so Proxy, Telegram, shutdown, and tests all stop the
+    // same sub-agent tree.
+    cancelAgent(execution.orchestratorProjectId || chatId);
+
     // Already stopped/completed/failed — idempotent, don't re-process
     if (execution.status !== 'running') {
       // Still set cancel flag in case sub-agents are lingering
@@ -780,6 +860,7 @@ class AgentRegistry {
     }
 
     execution.cancelled = true;
+    execution.abortController.abort(new Error('CANCELLED_BY_USER'));
     execution.status = 'stopped';
     execution.completedAt = Date.now();
 
@@ -791,9 +872,7 @@ class AgentRegistry {
       ...(metadata || {}),
     });
 
-    taskStore.stopTask(chatId).catch(() => { });
-    apiKeyPool.releaseKey(chatId);
-    apiKeyPool.releaseLeasesWithPrefix(`${ chatId }_sub_`);
+    taskStore.stopTask(chatId, reason, execution.runId).catch(() => { });
 
     // Flush the ledger so the last tool calls are not lost on stop.
     flushLedgerForChat(chatId).catch(() => {});
@@ -893,6 +972,18 @@ class AgentRegistry {
   public isRunning(chatId: string): boolean {
     const execution = this.executions.get(chatId);
     return execution?.status === 'running';
+  }
+
+  /** Wait briefly for a stopped run's cleanup before admitting its successor. */
+  public async waitForStoppedRunToSettle(chatId: string, timeoutMs = 5000): Promise<boolean> {
+    const execution = this.executions.get(chatId);
+    if (!execution || execution.settled) return true;
+    if (execution.status === 'running') return false;
+    await Promise.race([
+      execution.promise.catch(() => undefined),
+      new Promise(resolve => setTimeout(resolve, Math.max(1, timeoutMs))),
+    ]);
+    return execution.settled;
   }
 
   public controlUserProxy(chatId: string, action: 'pause' | 'resume' | 'intervention', level?: ProxyInterventionLevel): boolean {
@@ -1054,14 +1145,17 @@ class AgentRegistry {
    * Emergency stop all agents (app shutdown).
    */
   public stopAll(): void {
+    cancelAllSubAgents();
     for (const [chatId, execution] of this.executions.entries()) {
       if (execution.status === 'running') {
         execution.cancelled = true;
+        execution.abortController.abort(new Error('CANCELLED_BY_USER'));
         execution.status = 'stopped';
         execution.completedAt = Date.now();
-        taskStore.stopTask(chatId).catch(() => { });
-        apiKeyPool.releaseKey(chatId);
-        apiKeyPool.releaseLeasesWithPrefix(`${ chatId }_sub_`);
+        taskStore.stopTask(chatId, 'Stopped by user.', execution.runId).catch(() => { });
+        if (execution.orchestratorProjectId) {
+          try { stopUserProxyRuntime(execution.orchestratorProjectId); } catch { }
+        }
       }
     }
     console.log(`[AgentRegistry] 🛑 Emergency stop — all agents stopped`);

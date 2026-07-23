@@ -78,9 +78,16 @@ let desktopUpdateState = {
   message: app.isPackaged ? 'Ready to check for updates' : 'Updates are available in packaged builds',
 };
 
+const APP_ICON_PNG = app.isPackaged
+  ? path.join(process.resourcesPath, 'logo.png')
+  : path.join(__dirname, '../public/logo.png');
+
 const APP_ICON_PATH = app.isPackaged
   ? path.join(process.resourcesPath, 'icon.ico')
-  : path.join(__dirname, '../public/logo.png');
+  : (process.platform === 'win32' && fs.existsSync(path.join(__dirname, '../public/icon.ico'))
+      ? path.join(__dirname, '../public/icon.ico')
+      : APP_ICON_PNG);
+
 const NATIVE_THEME_FILE = 'eterx-native-theme.json';
 const SECURE_RUNTIME_SETTINGS_FILE = 'eterx-runtime-settings.bin';
 const SECURE_RUNTIME_SETTINGS_PROVIDERS = new Set([
@@ -170,7 +177,7 @@ function nativeThemePath() {
 
 function getSplashIconDataUrl() {
   try {
-    const icon = nativeImage.createFromPath(APP_ICON_PATH);
+    const icon = nativeImage.createFromPath(APP_ICON_PNG);
     return icon.isEmpty() ? '' : icon.toDataURL();
   } catch {
     return '';
@@ -1416,12 +1423,35 @@ ipcMain.handle('convert-docx-to-pdf', async (event, docxPath) => {
         return resolve(null);
       }
       const tempPdfPath = path.join(app.getPath('temp'), `docx_preview_${Date.now()}.pdf`);
+      const { exec, execFile } = require('child_process');
+
+      if (process.platform !== 'win32') {
+        const commands = process.platform === 'darwin'
+          ? ['/Applications/LibreOffice.app/Contents/MacOS/soffice', 'soffice', 'libreoffice']
+          : ['libreoffice', 'soffice', '/usr/bin/libreoffice', '/usr/bin/soffice'];
+        const tryNext = (index) => {
+          if (index >= commands.length) return resolve(null);
+          execFile(commands[index], ['--headless', '--convert-to', 'pdf', '--outdir', path.dirname(tempPdfPath), docxPath], { timeout: 60000 }, (err) => {
+            if (err) return tryNext(index + 1);
+            const generated = path.join(path.dirname(tempPdfPath), `${path.basename(docxPath, path.extname(docxPath))}.pdf`);
+            try {
+              if (!fs.existsSync(generated)) return tryNext(index + 1);
+              fs.renameSync(generated, tempPdfPath);
+              resolve(tempPdfPath);
+            } catch {
+              resolve(null);
+            }
+          });
+        };
+        tryNext(0);
+        return;
+      }
+
       const escapedDocx = docxPath.replace(/'/g, "''");
       const escapedPdf = tempPdfPath.replace(/'/g, "''");
       
       const psCommand = `$word = New-Object -ComObject Word.Application; $word.Visible = $false; try { $doc = $word.Documents.Open('${escapedDocx}', $true, $true); $doc.SaveAs('${escapedPdf}', 17); $doc.Close(); } finally { $word.Quit(); }`;
       
-      const { exec } = require('child_process');
       exec(`powershell.exe -NoProfile -NonInteractive -Command "${psCommand.replace(/"/g, '\\"')}"`, (err, stdout, stderr) => {
         if (err) {
           console.error('Failed to convert docx to pdf via PowerShell:', err, stderr);

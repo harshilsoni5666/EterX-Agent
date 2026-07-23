@@ -291,7 +291,7 @@ interface ChatInputProps {
   isThinking: boolean;
   isRecording: boolean;
   handleSend: () => void;
-  handleStop: () => void;
+  handleStop: () => void | Promise<boolean>;
   handleSteer?: () => void;  // Send live steering to running agent
   toggleSpeech: () => void;
   attachments: Attachment[];
@@ -1328,19 +1328,6 @@ const handleSelectFolderDialog = useCallback(async () => {
 
     const onSettingsUpdated = () => {
       refreshStoredModelSettings();
-      try {
-        const saved = localStorage.getItem('eterx_settings');
-        const settings = saved ? JSON.parse(saved) : null;
-        if (settings && settings.workMode && traceLogsLength === 0) {
-          if (settings.workMode === 'specialist' && selectedAgent !== 'autonomous') {
-            onAgentChange?.('autonomous', 'Autonomous');
-          } else if (settings.workMode === 'everyday' && selectedAgent !== null) {
-            onAgentChange?.(null, 'General');
-          }
-        }
-      } catch (e) {
-        console.error('Failed to sync settings workMode to agent selection inside chat-input:', e);
-      }
     };
 
     const onStorage = (event: StorageEvent) => {
@@ -1376,7 +1363,7 @@ const handleSelectFolderDialog = useCallback(async () => {
       window.removeEventListener('eterx-settings-updated', onSettingsUpdated);
       channel?.close();
     };
-  }, [refreshStoredModelSettings, traceLogsLength, selectedAgent, onAgentChange]);
+  }, [refreshStoredModelSettings]);
 
   useEffect(() => {
     const handleAgentsUpdated = (event?: Event) => {
@@ -2301,8 +2288,9 @@ const handleSelectFolderDialog = useCallback(async () => {
     if (isModelLocked) return;
     if (activeModelSelection === AUTO_MODEL_SELECTION) return;
     if (modelOptions.some(option => option.optionKey === activeModelSelection)) return;
-    // Only reset localStorage global if the global key is stale — never reset prop-driven selection
-    if (propChatModelSelection === undefined) {
+    if (propChatModelSelection !== undefined) {
+      onModelSelectionChange?.(AUTO_MODEL_SELECTION);
+    } else {
       window.localStorage.setItem(CHAT_MODEL_SELECTION_STORAGE_KEY, AUTO_MODEL_SELECTION);
       window.localStorage.setItem(MODEL_OVERRIDE_STORAGE_KEY, JSON.stringify({}));
       setStoredModelSettings(prev => ({
@@ -2313,7 +2301,7 @@ const handleSelectFolderDialog = useCallback(async () => {
       emitModelSettingsUpdate({ type: 'model-selection-updated', modelOverrides: {}, chatModelSelection: AUTO_MODEL_SELECTION });
       syncRuntimeModelOverrides({});
     }
-  }, [isModelLocked, modelOptions, activeModelSelection, propChatModelSelection]);
+  }, [isModelLocked, modelOptions, activeModelSelection, propChatModelSelection, onModelSelectionChange]);
   const controlPopoutVerticalClass = 'bottom-[calc(100%+10px)]';
   const selectorPopoutVerticalClass = isNewChatHome ? 'top-[calc(100%+10px)]' : 'bottom-[calc(100%+10px)]';
   const selectorMenuOffset = 8;
@@ -2326,10 +2314,15 @@ const handleSelectFolderDialog = useCallback(async () => {
   const slashMenuVisible = !!slashTrigger && !slashPanel && liveState === 'idle' && !isRecording && !isProcessingVoice;
 
   return (
-    <div className={`eterx-chat-input-dock ${ !isEmptyHome ? 'eterx-chat-input-dock-active' : '' } absolute left-0 flex flex-col items-center z-30 right-0 w-full ${ isEmptyHome
+    <div
+      className={`eterx-chat-input-dock ${ !isEmptyHome ? 'eterx-chat-input-dock-active' : '' } absolute left-0 flex flex-col items-center z-30 right-0 w-full ${ isEmptyHome
       ? `top-[45%] -translate-y-1/2 ${ inputSidePadding }`
       : `top-auto bottom-0 ${ isCompressed ? 'pb-4 pt-8' : 'pb-5 pt-10' } ${ inputSidePadding } bg-[linear-gradient(180deg,rgba(15,15,15,0)_0%,#0F0F0F_32%,#0F0F0F_100%)]`
-    }`} onDragStart={handleComposerDragStart}>
+    }`}
+      data-home={isEmptyHome ? 'true' : 'false'}
+      data-compressed={isCompressed ? 'true' : 'false'}
+      onDragStart={handleComposerDragStart}
+    >
 
       <AnimatePresence>
         {traceLogsLength === 0 && !isThinking && liveState === 'idle' && (
@@ -3433,7 +3426,12 @@ const handleSelectFolderDialog = useCallback(async () => {
                     >
                       <Tooltip text="Stop Agent" side="top">
                         <button
-                          onClick={() => { setIsStopping(true); handleStop(); }}
+                          onClick={() => {
+                            setIsStopping(true);
+                            Promise.resolve(handleStop())
+                              .then(stopped => { if (stopped === false) setIsStopping(false); })
+                              .catch(() => setIsStopping(false));
+                          }}
                           className="eterx-control-button eterx-composer-stop-button w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full bg-[#F2EFEA] text-black hover:bg-[#F2EFEA] transition-all duration-200 shadow-[0_8px_22px_rgba(242,239,234,0.15),inset_0_1px_0_rgba(255,255,255,0.82)] active:scale-[0.96] group cursor-pointer overflow-hidden relative"
                         >
                           <div className="absolute inset-0 bg-gradient-to-t from-black/0 to-black/5" />

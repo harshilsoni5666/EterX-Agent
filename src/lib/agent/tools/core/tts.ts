@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { ToolDefinition } from '../../schemas';
-import { exec } from 'child_process';
+import { exec, execFile } from 'child_process';
 import { promisify } from 'util';
 import path from 'path';
 import fs from 'fs-extra';
@@ -8,6 +8,7 @@ import { resolveFinalArtifactPathForContext } from '../../workspace/path_resolve
 import { enforceToolCapability } from '../security/tool_policy';
 
 const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 function psQuote(value: unknown): string {
   return `'${String(value ?? '').replace(/'/g, "''")}'`;
@@ -20,12 +21,11 @@ function ensureExtension(filePath: string, extension: string): string {
 /**
  * Text-to-Speech Tool
  * 
- * Converts text into speech audio using Edge TTS (Microsoft) via PowerShell.
- * Free, no API key needed. Returns an audio file path.
+ * Converts text into speech audio using the operating system's native speech engine.
  */
 export const ttsTool: ToolDefinition = {
   name: 'text_to_speech',
-  description: 'Convert text into spoken audio (MP3). Uses Microsoft Edge TTS voices for natural speech. Returns the file path to the generated audio. Use this for voice messages, accessibility, audio content generation, or audio notifications.',
+  description: 'Convert text into spoken WAV audio using the native speech engine available on Windows, macOS, or Linux.',
   category: 'core',
   inputSchema: z.object({
     text: z.string().describe('The text to convert to speech'),
@@ -57,6 +57,22 @@ export const ttsTool: ToolDefinition = {
     console.log(`[Tool: text_to_speech] Converting ${input.text.length} chars with voice: ${voice}`);
 
     try {
+      if (process.platform === 'darwin') {
+        await execFileAsync('say', ['-o', filePath, '--data-format=LEI16@22050', textEscaped]);
+        const stats = await fs.stat(filePath);
+        return { success: true, filePath, message: `Audio generated: ${path.basename(filePath)} (${(stats.size / 1024).toFixed(1)} KB)` };
+      }
+      if (process.platform !== 'win32') {
+        try {
+          await execFileAsync('espeak', ['-w', filePath, textEscaped]);
+        } catch {
+          await execFileAsync('spd-say', ['--wait', textEscaped]);
+          return { success: true, filePath: '', message: 'Speech played using the system speech dispatcher; this engine cannot save audio.' };
+        }
+        const stats = await fs.stat(filePath);
+        return { success: true, filePath, message: `Audio generated: ${path.basename(filePath)} (${(stats.size / 1024).toFixed(1)} KB)` };
+      }
+
       // Use PowerShell with System.Speech (built-in Windows TTS) as primary
       // Then save to WAV/MP3
       const psScript = `

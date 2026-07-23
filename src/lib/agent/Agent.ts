@@ -69,6 +69,7 @@ import { readTaskTracker, readTaskTrackerMarkdown, trackerToTrace, writeTaskTrac
 import { normalizeTimeoutMs, secondsFromTimeoutMs } from './tools/core/terminal_timeout';
 import { buildAgentBuilderRuntimePrompt, isAgentBuilderRuntimeContext, shouldExposeToolToRuntime, isCustomAgentRuntimeContext, buildCustomAgentRuntimePrompt, loadCustomAgentProfile } from './builder-agent';
 import { buildCodingAgentPromptContext, buildCodingAgentRootPrompt, isCodingAgentProfile } from './coding-agent-profile';
+import { buildRuntimePlatformPrompt } from './runtime/platform-context';
 import { CODE_AGENT_TOOLS } from '../code/code-agent-tools';
 import { ensureCodeIndex } from './workspace/code-index';
 import { getCodingAgentToolSummary } from '../code/code-agent-runtime';
@@ -76,6 +77,7 @@ import * as cognitiveCore from './hooks/cognitive-core';
 import { formatVisibleWorkNote as formatCleanVisibleWorkNote } from './work-note';
 import { RuntimeEvidenceLedger } from './runtime-evidence';
 import { ExecutionGovernor } from './execution-governor';
+import { writeRuntimeTrace } from './runtime-trace';
 import * as pathLib from 'path';
 import * as fsExtra from 'fs-extra';
 import {
@@ -86,6 +88,10 @@ import {
   languageFromFilename,
   normalizeTracePath,
 } from './tool-trace';
+
+function isRunCancelled(context: any): boolean {
+  return context?.abortSignal?.aborted === true || isCancelled(context?.projectId || context?.chatId);
+}
 
 type SkillCandidate = {
   id: string;
@@ -1510,6 +1516,7 @@ export class GeminiAgentClient {
             }
           } catch { /* silent */ }
           await clearLedgerForChat(chatId);
+          globalSessionManager.resetTaskStateForChat(chatId);
           try {
             const { clearPlanEngine } = require('./plan-execution-engine');
             clearPlanEngine(chatId);
@@ -1735,7 +1742,7 @@ export class GeminiAgentClient {
     callHistory.add(normalizedSig);
     toolCallCounts.set(name, (toolCallCounts.get(name) || 0) + 1);
 
-    if (isCancelled(context.projectId)) {
+    if (isRunCancelled(context)) {
       return { error: 'Cancelled by user.' };
     }
 
@@ -1803,6 +1810,7 @@ export class GeminiAgentClient {
 
     const startedAt = Date.now();
     const toolExec = createToolExecutionContext(context, onTrace);
+    (toolExec.context as any).ownerTraceId = actionTraceId;
     try {
       toolExec.throwIfCancelled();
       const output = await tool.execute(effectiveArgs, toolExec.context);
@@ -1876,6 +1884,7 @@ export class GeminiAgentClient {
     mediaFiles: AgentMediaFile[] = []
   ): Promise<{ text: string, trace: any[] }> {
     const trace: any[] = [];
+    const strictModelSelection = (context as any).strictModelSelection === true;
     const infra = await this.buildLoopInfrastructure(context, message, onTrace, mediaFiles);
     const {
       dynamicContextParts, callHistory, toolCallCounts, evidenceLedger,
@@ -1922,10 +1931,12 @@ export class GeminiAgentClient {
 
     let lastAnswer = '';
     let prematurePlanFinals = 0;
+    const visibleWorkNoteTexts: string[] = [];
+    const recentActionEvidence: string[] = [];
     const maxLoopIterations = 240;
 
     for (let interactions = 1; interactions <= maxLoopIterations; interactions++) {
-      if (isCancelled(context.projectId)) throw new Error('CANCELLED_BY_USER');
+      if (isRunCancelled(context)) throw new Error('CANCELLED_BY_USER');
 
       const liveSteering = this.drainLiveSteering(context.projectId, onTrace);
       if (liveSteering.length > 0) {
@@ -2026,13 +2037,19 @@ export class GeminiAgentClient {
           const thoughtId = `thought_${ interactions }`;
           const toolCallsAccumulated = new Map<number, any>();
 
+          writeRuntimeTrace('model_request', {
+            provider: this.activeProvider,
+            model: this.mistralModelName,
+            request: params,
+            interaction: interactions,
+          });
           const stream: any = await client.chat.completions.create({
             ...params,
             stream: true,
           } as any);
 
           for await (const chunk of stream) {
-            if (isCancelled(context.projectId)) {
+            if (isRunCancelled(context)) {
               throw new Error('CANCELLED_BY_USER');
             }
             const choice = chunk.choices?.[0];
@@ -2093,7 +2110,7 @@ export class GeminiAgentClient {
           break;
         } catch (err: any) {
           const errorMsg = err.message || '';
-          if (isModelDeprecatedError(errorMsg)) {
+          if (!strictModelSelection && isModelDeprecatedError(errorMsg)) {
             const fallbackChain = getFallbackChain(this.activeMode, this.runtimeSettings);
             const currentIdx = fallbackChain.indexOf(this.mistralModelName);
             if (currentIdx !== -1 && currentIdx < fallbackChain.length - 1) {
@@ -2166,18 +2183,47 @@ export class GeminiAgentClient {
         onTrace?.(answerEvt);
         if (!sessionPersistenceDisabled) {
           globalSessionManager.setLastAgentOutputForChat(context.projectId, finalText);
-          globalSessionManager.save().catch(() => { });
+          globalSessionManager.saveForChat(context.projectId).catch(() => { });
         }
         return { text: finalText, trace };
       }
 
-      if (contentText) {
+      let visibleNoteText = contentText;
+      if (!visibleNoteText) {
+        visibleNoteText = await this.generateMissingActionWorkNote(message, toolCalls, async (prompt, onPartial) => {
+          const noteParams: any = {
+            model: this.mistralModelName,
+            messages: [{ role: 'user', content: prompt }],
+          };
+          if (this.activeProvider === 'openai' && isOpenAIReasoningModel(this.mistralModelName)) {
+            noteParams.max_completion_tokens = 700;
+            noteParams.reasoning_effort = 'low';
+          } else {
+            noteParams.max_tokens = 320;
+          }
+          const noteStream: any = await client.chat.completions.create({ ...noteParams, stream: true });
+          let noteText = '';
+          for await (const chunk of noteStream) {
+            const delta = this.extractMistralContent(chunk?.choices?.[0]?.delta?.content);
+            if (!delta) continue;
+            noteText += delta;
+            onPartial?.(noteText);
+          }
+          return noteText;
+        }, {
+          previousNotes: visibleWorkNoteTexts,
+          recentEvidence: recentActionEvidence,
+        });
+      }
+
+      if (visibleNoteText) {
         lastAnswer = contentText;
-        const noteText = this.formatVisibleWorkNote(contentText);
+        const noteText = this.formatVisibleWorkNote(visibleNoteText);
         if (noteText) {
           const noteEvt = { type: 'work_note', text: noteText, isDelta: false, isStreaming: false, noteId: `mistral_work_stream_${ interactions }` };
           trace.push(noteEvt);
           onTrace?.(noteEvt);
+          visibleWorkNoteTexts.push(noteText);
         }
       }
 
@@ -2206,6 +2252,7 @@ export class GeminiAgentClient {
         if (normalizeRegistryToolName(String(toolCall?.function?.name || '')) === 'task_decomposer' && !output?.error) {
           taskDecomposerUsed = true;
         }
+        recentActionEvidence.push(`${ String(toolCall?.function?.name || 'action') }: ${ this.compactText(this.stringifyMistralToolOutput(output), 760) }`);
 
         toolMessages.push({
           role: 'tool',
@@ -2226,7 +2273,7 @@ export class GeminiAgentClient {
           toolCallCounts,
           toolResultDigest: [],
         });
-        globalSessionManager.debouncedSave();
+        globalSessionManager.debouncedSaveForChat(context.projectId);
       }
     }
 
@@ -2250,6 +2297,7 @@ export class GeminiAgentClient {
     mediaFiles: AgentMediaFile[] = []
   ): Promise<{ text: string, trace: any[] }> {
     const trace: any[] = [];
+    const strictModelSelection = (context as any).strictModelSelection === true;
     const infra = await this.buildLoopInfrastructure(context, message, onTrace, mediaFiles);
     const {
       dynamicContextParts, callHistory, toolCallCounts, evidenceLedger,
@@ -2359,6 +2407,8 @@ export class GeminiAgentClient {
 
     let lastAnswer = '';
     let prematurePlanFinals = 0;
+    const visibleWorkNoteTexts: string[] = [];
+    const recentActionEvidence: string[] = [];
     const maxLoopIterations = 240;
     const maxTokens = positiveIntEnv('ANTHROPIC_MAX_TOKENS', 8192);
     // Generate static and dynamic system prompts for caching
@@ -2378,7 +2428,7 @@ export class GeminiAgentClient {
     ];
 
     for (let interactions = 1; interactions <= maxLoopIterations; interactions++) {
-      if (isCancelled(context.projectId)) throw new Error('CANCELLED_BY_USER');
+      if (isRunCancelled(context)) throw new Error('CANCELLED_BY_USER');
 
       const liveSteering = this.drainLiveSteering(context.projectId, onTrace);
       if (liveSteering.length > 0) {
@@ -2508,10 +2558,16 @@ export class GeminiAgentClient {
           const thoughtStartTime = Date.now();
           const thoughtId = `thought_${ interactions }`;
 
+          writeRuntimeTrace('model_request', {
+            provider: 'anthropic',
+            model: this.mistralModelName,
+            request: params,
+            interaction: interactions,
+          });
           const runner = client.messages.stream(params);
 
           for await (const event of runner) {
-            if (isCancelled(context.projectId)) {
+            if (isRunCancelled(context)) {
               throw new Error('CANCELLED_BY_USER');
             }
             if (event.type === 'content_block_delta') {
@@ -2545,10 +2601,12 @@ export class GeminiAgentClient {
             if (onTrace) {
               onTrace({
                 type: 'progress',
-                text: `Model refused request: ${explanation}. Attempting fallback...`,
+                text: strictModelSelection
+                  ? `Selected model refused the request: ${ explanation }`
+                  : `Model refused request: ${ explanation }. Attempting fallback...`,
               });
             }
-            const fallbackChain = getFallbackChain('anthropic', this.runtimeSettings);
+            const fallbackChain = strictModelSelection ? [] : getFallbackChain('anthropic', this.runtimeSettings);
             const currentIdx = fallbackChain.indexOf(this.mistralModelName);
             if (currentIdx !== -1 && currentIdx < fallbackChain.length - 1) {
               const nextModel = fallbackChain[currentIdx + 1];
@@ -2565,7 +2623,7 @@ export class GeminiAgentClient {
           break;
         } catch (err: any) {
           const errorMsg = err.message || '';
-          if (isModelDeprecatedError(errorMsg)) {
+          if (!strictModelSelection && isModelDeprecatedError(errorMsg)) {
             const fallbackChain = getFallbackChain('anthropic', this.runtimeSettings);
             const currentIdx = fallbackChain.indexOf(this.mistralModelName);
             if (currentIdx !== -1 && currentIdx < fallbackChain.length - 1) {
@@ -2642,18 +2700,41 @@ export class GeminiAgentClient {
         onTrace?.(answerEvt);
         if (!sessionPersistenceDisabled) {
           globalSessionManager.setLastAgentOutputForChat(context.projectId, finalText);
-          globalSessionManager.save().catch(() => { });
+          globalSessionManager.saveForChat(context.projectId).catch(() => { });
         }
         return { text: finalText, trace };
       }
 
-      if (contentText) {
+      let visibleNoteText = contentText;
+      if (!visibleNoteText) {
+        visibleNoteText = await this.generateMissingActionWorkNote(message, toolUses, async (prompt, onPartial) => {
+          const noteStream: any = client.messages.stream({
+            model: this.mistralModelName,
+            max_tokens: 320,
+            messages: [{ role: 'user', content: prompt }],
+          });
+          let noteText = '';
+          for await (const event of noteStream) {
+            const delta = event?.type === 'content_block_delta' ? String(event?.delta?.text || '') : '';
+            if (!delta) continue;
+            noteText += delta;
+            onPartial?.(noteText);
+          }
+          return noteText;
+        }, {
+          previousNotes: visibleWorkNoteTexts,
+          recentEvidence: recentActionEvidence,
+        });
+      }
+
+      if (visibleNoteText) {
         lastAnswer = contentText;
-        const noteText = this.formatVisibleWorkNote(contentText);
+        const noteText = this.formatVisibleWorkNote(visibleNoteText);
         if (noteText) {
           const noteEvt = { type: 'work_note', text: noteText, isDelta: false, isStreaming: false, noteId: `anthropic_work_stream_${ interactions }` };
           trace.push(noteEvt);
           onTrace?.(noteEvt);
+          visibleWorkNoteTexts.push(noteText);
         }
       }
 
@@ -2684,6 +2765,7 @@ export class GeminiAgentClient {
         if (normalizeRegistryToolName(String(toolUse?.name || '')) === 'task_decomposer' && !output?.error) {
           taskDecomposerUsed = true;
         }
+        recentActionEvidence.push(`${ String(toolUse?.name || 'action') }: ${ this.compactText(this.stringifyMistralToolOutput(output), 760) }`);
 
         toolResultBlocks.push({
           type: 'tool_result',
@@ -2707,7 +2789,7 @@ export class GeminiAgentClient {
           toolCallCounts,
           toolResultDigest: [],
         });
-        globalSessionManager.debouncedSave();
+        globalSessionManager.debouncedSaveForChat(context.projectId);
       }
     }
 
@@ -2734,6 +2816,71 @@ export class GeminiAgentClient {
 
   private formatVisibleWorkNote(value: string, _maxLength = 720, suppressFinalAnswers = false): string {
     return formatCleanVisibleWorkNote(value, _maxLength, suppressFinalAnswers);
+  }
+
+  private async generateMissingActionWorkNote(
+    message: string,
+    actions: any[],
+    generate: (prompt: string, onPartial?: (text: string) => void) => Promise<string>,
+    communicationContext: {
+      previousNotes?: string[];
+      recentEvidence?: string[];
+    } = {}
+  ): Promise<string> {
+    const actionContext = actions.slice(0, 4).map(action => {
+      const name = String(action?.function?.name || action?.name || action?.id || 'action');
+      const rawArguments = action?.function?.arguments ?? action?.input ?? action?.args ?? {};
+      const argumentsText = typeof rawArguments === 'string'
+        ? rawArguments
+        : JSON.stringify(rawArguments);
+      return `${ name }: ${ this.compactText(argumentsText, 420) }`;
+    }).join('\n');
+
+    const previousNotes = (communicationContext.previousNotes || [])
+      .slice(-3)
+      .map(note => this.compactText(note, 520))
+      .join('\n');
+    const recentEvidence = (communicationContext.recentEvidence || [])
+      .slice(-4)
+      .map(evidence => this.compactText(evidence, 620))
+      .join('\n');
+
+    const prompt = [
+      'An active task response selected actions but omitted its user-facing communication.',
+      'Supply the communication that belongs with this action from the same live situation. Do not apply a template, cadence, phase taxonomy, or fixed writing style. First person is available when it is natural. Keep private reasoning private and do not claim unfinished actions are complete. Return only the user-facing communication.',
+      '',
+      'Current user request:',
+      this.compactText(message, 1800),
+      ...(previousNotes ? ['', 'Recent visible updates:', previousNotes] : []),
+      ...(recentEvidence ? ['', 'Recent completed-action evidence:', recentEvidence] : []),
+      '',
+      'Actions about to run:',
+      actionContext,
+    ].join('\n');
+
+    try {
+      const generated = await Promise.race([
+        generate(prompt, partial => {
+          const noteText = this.formatVisibleWorkNote(partial, 720, false);
+          if (noteText) {
+            onTrace?.({
+              type: 'work_note',
+              text: noteText,
+              isDelta: false,
+              isStreaming: true,
+              isLiveTyping: true,
+              wasStreaming: true,
+              noteId: `work_note_stream_${Date.now()}`,
+            });
+          }
+        }),
+        new Promise<string>((_, reject) => setTimeout(() => reject(new Error('WORK_NOTE_GENERATION_TIMEOUT')), 15_000)),
+      ]);
+      return String(generated || '').trim();
+    } catch (error: any) {
+      console.warn('[Agent] Could not recover omitted action communication:', String(error?.message || error));
+      return '';
+    }
   }
 
   private skillText(skill: any): string {
@@ -3621,7 +3768,7 @@ export class GeminiAgentClient {
     const locale = Intl.DateTimeFormat().resolvedOptions().locale || 'en-IN';
 
     const userNameTxt = context.userName && context.userName !== 'Developer' && context.userName !== 'User'
-      ? `\nPRIORITY IDENTITY\nIMPORTANT: The person you are currently serving is "${ context.userName }".\nYou MUST address them as "${ context.userName }" and NO other name.\nThe Windows OS username/profile might show "Aayushi" or others - IGNORE THAT. That is just the system account. Your human master is ${ context.userName }.\nIf they ask "who am I?", answer "${ context.userName }". NEVER use tools (whoami, shell, etc.) to look up a name.\n`
+      ? `\nPRIORITY IDENTITY\nIMPORTANT: The person you are currently serving is "${ context.userName }".\nYou MUST address them as "${ context.userName }" and NO other name.\nThe operating-system account name might show another name - IGNORE THAT. It is only the system account. Your human master is ${ context.userName }.\nIf they ask "who am I?", answer "${ context.userName }". NEVER use tools (whoami, shell, etc.) to look up a name.\n`
       : '';
 
     if (isCodingAgentProfile((context as any).agentProfile)) {
@@ -3642,9 +3789,12 @@ export class GeminiAgentClient {
       });
     }
 
-    return `You are EterX. You run locally on the user's Windows machine and deliver real work with real results.
+    const runtimePlatformPrompt = buildRuntimePlatformPrompt((context as any).terminalShell || 'auto');
+    return `You are EterX. You run locally on the user's machine and deliver real work with real results.
 ${ userNameTxt }
 You are NOT a chatbot. You are an autonomous agent who EXECUTES. You don't discuss - you deliver.
+
+${runtimePlatformPrompt}
 
 TEMPORAL CONTEXT
 ${ dateStr } | ${ timeStr } | ${ tzLabel } | ${ isoDate }
@@ -3683,15 +3833,15 @@ TRUTHFUL EXECUTION
 - When blocked: state what was completed, what could not complete, what is needed, and the next action.
 
 FILESYSTEM
-- Home: ${ process.env.USERPROFILE || process.env.HOME || 'C:\\Users\\User' }
-- Desktop: ${ (() => { try { const r = require('child_process').execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', "[Environment]::GetFolderPath('Desktop')"], { timeout: 3000 }).toString().trim(); return r || (process.env.USERPROFILE + '\\Desktop'); } catch { return (process.env.USERPROFILE || 'C:\\Users\\User') + '\\Desktop'; } })() }
-- Documents: ${ process.env.USERPROFILE || 'C:\\Users\\User' }\\Documents
-- Downloads: ${ process.env.USERPROFILE || 'C:\\Users\\User' }\\Downloads
+- Home: ${ require('os').homedir() }
+- Desktop: ${ pathLib.join(require('os').homedir(), 'Desktop') }
+- Documents: ${ pathLib.join(require('os').homedir(), 'Documents') }
+- Downloads: ${ pathLib.join(require('os').homedir(), 'Downloads') }
 - PROTECTED: Cannot modify AgentX source (src/, electron/, public/).
 - SAVE LOCATION: Never default to Desktop. Save to user-specified path or project directory.
 - Use .workspaces/sandbox/ for ALL temp/intermediate work. Never put temp scripts on Desktop.
 - Use absolute paths. Resolve "desktop" via the Shell API path above.
-- CRITICAL PATH RULE: When you create a file with workspace_write_file, the tool returns the absolute path in its result (e.g. "C:\\Harshil projects\\EterX-Agent\\.workspaces\\sandbox\\download_dataset.py"). ALWAYS use that ABSOLUTE path in any subsequent workspace_run_command/system_shell that runs it. NEVER use a relative path like "python .workspaces/sandbox/script.py" - the shell CWD may be a different directory and the file won't be found. Example: python "C:\\Harshil projects\\EterX-Agent\\.workspaces\\sandbox\\download_dataset.py"
+- CRITICAL PATH RULE: When workspace_write_file creates a file, reuse the absolute path returned by the tool in subsequent commands. Never reconstruct it or assume Windows/POSIX separators because the shell CWD and operating system may differ.
 
 AUTONOMOUS EXECUTION PROTOCOL
 This is the MOST IMPORTANT section. Follow this religiously:
@@ -3885,14 +4035,14 @@ TOOL MASTERY
 You have ${ toolCount } tools:
 
 TERMINAL:
-- system_shell / workspace_run_command: Run ANY shell command (PowerShell). Use for npm, tsc, pytest, git, Get-Content, rg, etc.
+- system_shell / workspace_run_command: Run shell commands using the selected integrated shell (automatic OS default when unset). Use for npm, tsc, pytest, git, and rg.
   - NEVER prefix commands with "cd path;". Use the workingDir/cwd parameter with an ABSOLUTE PATH instead.
-  - This is Windows/PowerShell. Do NOT use Unix commands directly:
+  - Detect the operating system and shell from terminal_access before using platform-specific syntax. On Windows/PowerShell:
     mkdir -p → New-Item -ItemType Directory -Force -Path "path" (auto-translated but prefer native)
     rm -rf → Remove-Item -Recurse -Force "path"
     touch → New-Item -ItemType File -Force -Path "path"
     cat → Get-Content
-  - File reading: "Get-Content file.ts" or "Get-Content file.ts | Select-Object -First 50 -Last 50"
+  - On macOS/Linux use the selected POSIX shell and native commands; on Windows use PowerShell/cmd/Git Bash/WSL syntax matching the selected shell.
   - Code search: "rg 'pattern' -n --type ts" or "rg 'pattern' --json" (ripgrep — fastest code search)
   - If result has stillRunning/backgroundTaskId, the command is already alive in the background.
 - process_manager: anything long-running (dev servers, watchers, databases). Use action="start" with cwd.
@@ -4025,8 +4175,13 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
     }
     const selectedModelName = String((context as any).selectedModelName || '').trim();
     const selectedModelProvider = String((context as any).selectedModelProvider || '').trim();
-    if (selectedModelName && selectedModelProvider === 'openai' && this.activeProvider === 'openai') {
-      this.mistralModelName = selectedModelName;
+    const strictModelSelection = (context as any).strictModelSelection === true;
+    if (selectedModelName && selectedModelProvider === this.activeProvider) {
+      if (this.activeProvider === 'gemini') {
+        this.modelName = selectedModelName;
+      } else {
+        this.mistralModelName = selectedModelName;
+      }
     }
     const cognitiveSession = cognitiveCore.createCognitiveCoreSession();
     const reflectionEngine = new AgentReflectionEngine();
@@ -4147,7 +4302,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
             console.warn(`[GeminiClient] ðŸ›‘ Server overload (503/500). Rotating key without penalty and retrying.`);
             this.rotateKeyForError(context, errorMsg);
             attempts++;
-          } else if (errorMsg.includes('404') || errorMsg.includes('not found')) {
+          } else if (!strictModelSelection && (errorMsg.includes('404') || errorMsg.includes('not found'))) {
             // Model not found â€” switch to fallback
             console.warn(`[GeminiClient] ðŸ›‘ Model ${ this.modelName } not found. Swapping to fallback: ${ this.fallbackModel }`);
             if (this.fallbackModel !== this.modelName) {
@@ -4382,6 +4537,20 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
     return false;
   }
 
+  private isParallelSafeToolCall(call: any): boolean {
+    if (this.isStatelessTool(String(call?.name || ''))) return true;
+    const name = String(call?.name || '');
+    const args = call?.args || {};
+
+    // Explicit background launches only register independent processes and
+    // return task handles, so several may start together without blocking the
+    // model loop. Foreground commands and file mutations remain ordered.
+    if (name === 'background_task') return ['launch', 'check', 'list'].includes(String(args.mode || ''));
+    if (name === 'workspace_run_command') return args.background === true;
+    if (name === 'process_manager') return ['start', 'status', 'logs', 'list'].includes(String(args.action || ''));
+    return false;
+  }
+
   private hasDeliverableIntent(message: string): boolean {
     return /\b(create|make|generate|export|build|prepare|save|download|format|edit|finish|final|deliver)\b/i.test(message) &&
       /\b(file|artifact|excel|xlsx|spreadsheet|workbook|csv|docx|document|pdf|pptx|presentation|slides?|html|website|app|report)\b/i.test(message);
@@ -4517,6 +4686,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
     cognitiveSession: cognitiveCore.CognitiveCoreSession = cognitiveCore.createCognitiveCoreSession(),
     reflectionEngine: AgentReflectionEngine = new AgentReflectionEngine(),
   ): Promise<{ text: string, trace: any[] }> {
+    const strictModelSelection = (context as any).strictModelSelection === true;
     const sessionPersistenceDisabled = !!(context as any).disableSessionPersistence;
     const longTermMemoryDisabled = !!(context as any).disableLongTermMemory;
     const sharedCacheDisabled = !!(context as any).disableSharedCache;
@@ -4543,6 +4713,9 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
     }
 
     const trace: any[] = survivorState?.trace ? [...survivorState.trace] : [];
+    const visibleWorkNoteTexts = trace
+      .filter(item => item?.type === 'work_note' && typeof item?.text === 'string')
+      .map(item => item.text as string);
 
     // === SESSION CONTINUITY: Hydrate from previous messages ===
     const chatId = context.projectId;
@@ -4622,6 +4795,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
         writtenFiles.clear();
         loadedSkills.clear();
         taskDecomposerUsed = false;
+        globalSessionManager.resetTaskStateForChat(chatId);
         console.log(`[GeminiClient] ðŸ”€ Chat boundary: new_task detected â€” session state reset (confidence: ${ chatBoundaryDecision.confidence })`);
       }
     } catch { /* boundary detection is advisory */ }
@@ -4638,7 +4812,6 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
     // Track message count for session analytics
     if (!sessionPersistenceDisabled) {
       globalSessionManager.incrementMessageCountForChat(chatId);
-      globalSessionManager.setLastUserMessageForChat(chatId, userVisibleMessage);
     }
 
     // Selective cache invalidation: only purge expired entries, keep valid cross-message cache
@@ -4908,6 +5081,17 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
         await _sg.initialize(context.projectId, context.projectId);
         const _sr = _sg.processTurn(userVisibleMessage);
         if (_sr.renderedContext) dynamicContextParts.push(_sr.renderedContext);
+        writeRuntimeTrace('synapse_injection', {
+          projectId: context.projectId,
+          query: userVisibleMessage,
+          state: _sr.state,
+          omega: _sr.omega,
+          confidence: _sr.confidence,
+          renderedContext: _sr.renderedContext,
+          payload: _sr.payload,
+          decisionSurface: _sr.decisionSurface,
+          processingTimeMs: _sr.processingTimeMs,
+        });
         const ds = _sr.decisionSurface;
         console.log(
           `[SynapseGraph] ✅ state=${ _sr.state } Ω=${ _sr.omega.toFixed(3) } conf=${ _sr.confidence.toFixed(2) } | ` +
@@ -5042,6 +5226,12 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
     if (initialThinkingConfig) config.thinkingConfig = initialThinkingConfig as any;
 
     // === UNLIMITED ITERATIONS â€” agent works until done or user stops ===
+    // Preserve the previous turn while building continuity context. Updating it
+    // earlier made the current request masquerade as its own previous task.
+    if (!sessionPersistenceDisabled) {
+      globalSessionManager.setLastUserMessageForChat(chatId, userVisibleMessage);
+    }
+
     const maxLoopIterations = Math.min(
       positiveIntEnv('GEMINI_REACT_MAX_ITERATIONS', lightweightTelegramMode ? 40 : 240),
       1000,
@@ -5053,6 +5243,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
     let currentRunToolCallCount = survivorState?.currentRunToolCallCount ?? (survivorState ? survivorState.callHistory.size : 0);
     let exploratoryCallsWithoutArtifact = survivorState?.exploratoryCallsWithoutArtifact ?? 0;
     let userFacingArtifactCreated = survivorState?.userFacingArtifactCreated ?? false;
+    let forcedCompletionIterations = 0;
     const deliverableIntent = !isDirectAnswer && intent.primaryIntent !== 'educate_explain';
     // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     // TOOL RESULT MEMORY â€” tracks what each tool returned so the agent
@@ -5172,7 +5363,7 @@ The first meaningful action group in a user turn needs an update. Later boundari
         } catch { /* never block ReAct loop on context management */ }
       }
       // === CANCELLATION CHECK: User pressed Stop ===
-      if (isCancelled(context.projectId)) {
+      if (isRunCancelled(context)) {
         console.log('[GeminiClient] \u{1F6D1} User cancelled â€” stopping main loop');
         const cancelText = loopAccumulatedText || 'Stopped by user.';
         const cancelEvt = { type: 'answer', text: cancelText };
@@ -5180,9 +5371,36 @@ The first meaningful action group in a user turn needs an update. Later boundari
         if (onTrace) onTrace(cancelEvt);
         if (!sessionPersistenceDisabled) {
           globalSessionManager.setLastAgentOutputForChat(chatId, cancelText);
-          globalSessionManager.save().catch(() => { });
+          globalSessionManager.saveForChat(chatId).catch(() => { });
         }
         return { text: cancelText, trace };
+      }
+
+      const governorSnapshot = executionGovernor.snapshot();
+      const mustForceCompletion = executionGovernor.isTimedOut()
+        || executionGovernor.isBudgetExhausted()
+        || governorSnapshot.consecutiveFailures >= 6
+        || governorSnapshot.consecutiveNoProgress >= 16;
+      if (mustForceCompletion) {
+        forcedCompletionIterations++;
+        if (forcedCompletionIterations === 1) {
+          contents.push({
+            role: 'user',
+            parts: [{ text: '[SYSTEM - CIRCUIT BREAKER] Execution has reached a hard runtime/no-progress boundary. Do not call more tools. Give the user the best evidence-based final answer now, clearly separating completed work from any blocker or remaining work.' }],
+          });
+        } else if (forcedCompletionIterations > 3) {
+          const evidenceSummary = toolResultDigest.slice(-8)
+            .map(entry => `${entry.tool}: ${entry.result}`)
+            .join('\n');
+          const forcedText = loopAccumulatedText.trim()
+            || (evidenceSummary
+              ? `Execution stopped at the reliability circuit breaker. Recent evidence:\n${evidenceSummary}`
+              : 'Execution stopped after repeated failures or no progress. No reliable completion evidence was produced.');
+          const forcedEvent = { type: 'answer', text: forcedText };
+          trace.push(forcedEvent);
+          onTrace?.(forcedEvent);
+          return { text: forcedText, trace };
+        }
       }
 
       // === LIVE STEERING: Drain user mid-run feedback ===
@@ -5506,7 +5724,7 @@ The first meaningful action group in a user turn needs an update. Later boundari
         const delayMs = Math.min(capMs, baseMs * Math.pow(2, Math.max(0, attempt - 1))) + Math.floor(Math.random() * 350);
         const end = Date.now() + delayMs;
         while (Date.now() < end) {
-          if (isCancelled(context.projectId)) throw new Error('CANCELLED_BY_USER');
+          if (isRunCancelled(context)) throw new Error('CANCELLED_BY_USER');
           await new Promise(resolve => setTimeout(resolve, Math.min(250, end - Date.now())));
         }
       };
@@ -5517,7 +5735,7 @@ The first meaningful action group in a user turn needs an update. Later boundari
         try {
           const cancel = new Promise<never>((_, reject) => {
             cancelInterval = setInterval(() => {
-              if (isCancelled(context.projectId)) {
+              if (isRunCancelled(context)) {
                 if (cancelInterval) clearInterval(cancelInterval);
                 abortController?.abort();
                 reject(new Error('CANCELLED_BY_USER'));
@@ -5544,7 +5762,7 @@ The first meaningful action group in a user turn needs an update. Later boundari
         }
 
         // Check cancellation between retries
-        if (isCancelled(context.projectId)) {
+        if (isRunCancelled(context)) {
           throw new Error('CANCELLED_BY_USER');
         }
 
@@ -5555,7 +5773,7 @@ The first meaningful action group in a user turn needs an update. Later boundari
           // (the gap between calling generateContentStream and the first chunk arriving)
           const _connectionGuard = new Promise<never>((_, reject) => {
             const iv = setInterval(() => {
-              if (isCancelled(context.projectId)) {
+              if (isRunCancelled(context)) {
                 clearInterval(iv);
                 attemptAbortController.abort();
                 reject(new Error('CANCELLED_BY_USER'));
@@ -5579,6 +5797,16 @@ The first meaningful action group in a user turn needs an update. Later boundari
             },
             abortSignal: attemptAbortController.signal,
           };
+          writeRuntimeTrace('model_request', {
+            projectId: context.projectId,
+            provider: 'gemini',
+            model: currentModel,
+            contents,
+            systemInstruction: attemptConfig.systemInstruction,
+            toolCount: Array.isArray((attemptConfig as any).tools)
+              ? (attemptConfig as any).tools.length
+              : 0,
+          });
           stream = await Promise.race([
             this.ai.models.generateContentStream({
               model: currentModel,
@@ -5691,7 +5919,7 @@ The first meaningful action group in a user turn needs an update. Later boundari
             continue;
           }
 
-          if (isModelError && currentModel === this.modelName) {
+          if (!strictModelSelection && isModelError && currentModel === this.modelName) {
             // Switch to fallback model immediately
             currentModel = this.fallbackModel;
             console.log(`[GeminiClient] ðŸ”„ Switching to fallback model: ${ this.fallbackModel }`);
@@ -5704,7 +5932,7 @@ The first meaningful action group in a user turn needs an update. Later boundari
               streamConnectTimeouts = 0;
             }
             if (streamAttempts < maxStreamAttempts) {
-              if (isCancelled(context.projectId)) throw new Error('CANCELLED_BY_USER');
+              if (isRunCancelled(context)) throw new Error('CANCELLED_BY_USER');
               await waitBeforeStreamRetry(streamAttempts, 'connect_timeout');
               continue;
             }
@@ -5749,7 +5977,7 @@ The first meaningful action group in a user turn needs an update. Later boundari
           }
 
           // Between retries â€” check cancel one more time so stop is instant even at 50ms pause
-          if (isCancelled(context.projectId)) throw new Error('CANCELLED_BY_USER');
+          if (isRunCancelled(context)) throw new Error('CANCELLED_BY_USER');
           await waitBeforeStreamRetry(
             streamAttempts,
             isRateLimit ? 'rate_limit' : isServerError ? 'server_error' : 'transient'
@@ -5797,7 +6025,7 @@ The first meaningful action group in a user turn needs an update. Later boundari
             lastUsageMetadata = chunk.usageMetadata;
           }
           // Instant cancel check during streaming — throw so it propagates immediately
-          if (isCancelled(context.projectId)) throw new Error('CANCELLED_BY_USER');
+          if (isRunCancelled(context)) throw new Error('CANCELLED_BY_USER');
           const candidates = chunk.candidates;
           if (!candidates || candidates.length === 0) continue;
 
@@ -5818,6 +6046,22 @@ The first meaningful action group in a user turn needs an update. Later boundari
             if (!part.thought && part.text) {
               accumulatedText += part.text;
               accumulatedWorkNote = accumulatedText;
+              // Push provisional answer snapshots while the model is still
+              // generating. The quality-gated answer below replaces this
+              // provisional stream when the turn is complete.
+              if (onTrace && !functionCalls.length) {
+                onTrace({
+                  type: 'answer',
+                  text: accumulatedText,
+                  isStreaming: true,
+                  isLiveTyping: true,
+                  isDelta: false,
+                  wasStreaming: true,
+                  answerId: `answer_stream_${interactions}`,
+                  startTime: thoughtStartTime,
+                  timestamp: Date.now(),
+                });
+              }
               // The response boundary determines whether this text is progress
               // or the final answer; a tool call establishes an action turn.
               if (functionCalls.length > 0) emitVisibleWorkNote();
@@ -5881,6 +6125,40 @@ The first meaningful action group in a user turn needs an update. Later boundari
       if (accumulatedThought && functionCalls.length > 0) {
         trace.push({ type: 'thought_stream', text: accumulatedThought, isDelta: false, thoughtId: `thought_${ interactions }`, startTime: thoughtStartTime, endTime: Date.now() });
       }
+      if (forcedCompletionIterations > 0) {
+        delete (config as any).cachedContent;
+        delete (config as any).tools;
+        _cachedContentName = null;
+      }
+
+      if (functionCalls.length > 0 && !accumulatedText && !emittedWorkNoteText) {
+        const generatedNote = await this.generateMissingActionWorkNote(message, functionCalls, async (prompt, onPartial) => {
+          const thinkingConfig = getGeminiThinkingConfig('minimal', this.modelName, false);
+          const noteStream = await this.ai.models.generateContentStream({
+            model: this.modelName,
+            contents: [{ role: 'user', parts: [{ text: prompt }] }],
+            config: {
+              maxOutputTokens: 700,
+              ...(thinkingConfig ? { thinkingConfig } : {}),
+            },
+          });
+          let noteText = '';
+          for await (const chunk of noteStream as any) {
+            const delta = String(chunk?.candidates?.[0]?.content?.parts?.map((part: any) => part?.text || '').join('') || '');
+            if (!delta) continue;
+            noteText += delta;
+            onPartial?.(noteText);
+          }
+          return noteText;
+        }, {
+          previousNotes: visibleWorkNoteTexts,
+          recentEvidence: toolResultDigest.slice(-4).map(entry => `${ entry.tool }: ${ entry.result }`),
+        });
+        if (generatedNote) {
+          accumulatedWorkNote = generatedNote;
+          emitVisibleWorkNote(generatedNote);
+        }
+      }
 
       if (functionCalls.length > 0 && (accumulatedText || emittedWorkNoteText)) {
         const noteText = this.formatVisibleWorkNote(accumulatedText || emittedWorkNoteText, 720, false);
@@ -5891,6 +6169,9 @@ The first meaningful action group in a user turn needs an update. Later boundari
           if (onTrace && (!workNoteEmitted || emittedWorkNoteText !== noteText)) onTrace(noteEvt);
           workNoteEmitted = true;
           emittedWorkNoteText = noteText;
+          if (visibleWorkNoteTexts[visibleWorkNoteTexts.length - 1] !== noteText) {
+            visibleWorkNoteTexts.push(noteText);
+          }
         }
       }
 
@@ -6109,7 +6390,7 @@ The first meaningful action group in a user turn needs an update. Later boundari
           if (onTrace) onTrace(fallback);
           if (!sessionPersistenceDisabled) {
             globalSessionManager.setLastAgentOutputForChat(chatId, stuckText);
-            globalSessionManager.save().catch(() => { });
+            globalSessionManager.saveForChat(chatId).catch(() => { });
           }
           return { text: stuckText, trace };
         }
@@ -6601,7 +6882,7 @@ The first meaningful action group in a user turn needs an update. Later boundari
         // === EXECUTE THE TOOL ===
         callHistory.add(normalizedSig);
         // Cancellation check before executing each tool
-        if (isCancelled(context.projectId)) {
+        if (isRunCancelled(context)) {
           return {
             functionResponse: {
               name: call.name,
@@ -6670,6 +6951,7 @@ The first meaningful action group in a user turn needs an update. Later boundari
           } else {
             const execStart = Date.now();
             const toolExec = createToolExecutionContext(context, onTrace);
+            (toolExec.context as any).ownerTraceId = actionTraceId;
             // === MONITOR: broadcast tool_start ===
             try { monitorEmitter.toolStart(canonicalToolName, effectiveArgs || {}, (context as any).projectId || (context as any).chatId); } catch { }
             try {
@@ -6814,15 +7096,17 @@ The first meaningful action group in a user turn needs an update. Later boundari
                 if (actualPath) {
                   try {
                     // Try multiple possible locations for the file
-                    const userHome = process.env.USERPROFILE || process.env.HOME || '';
+                    const userHome = require('os').homedir();
                     const candidatePaths = [
                       // 1. The path exactly as returned by tool
                       actualPath,
                       // 2. Absolute resolution from CWD
                       pathLib.isAbsolute(actualPath) ? actualPath : pathLib.resolve(process.cwd(), actualPath),
-                      // 3. OneDrive Desktop resolution (common on Windows)
-                      pathLib.isAbsolute(actualPath) ? actualPath : pathLib.resolve(userHome, 'OneDrive', 'Desktop', actualPath),
-                      // 4. Regular Desktop resolution
+                      // 3. OneDrive Desktop resolution (Windows only)
+                      ...(process.platform === 'win32'
+                        ? [pathLib.isAbsolute(actualPath) ? actualPath : pathLib.resolve(userHome, 'OneDrive', 'Desktop', actualPath)]
+                        : []),
+                      // 4. Standard Desktop resolution
                       pathLib.isAbsolute(actualPath) ? actualPath : pathLib.resolve(userHome, 'Desktop', actualPath),
                     ].filter((p, i, arr) => arr.indexOf(p) === i); // dedupe
 
@@ -7026,20 +7310,30 @@ The first meaningful action group in a user turn needs an update. Later boundari
               }
 
               // ═══ LIVE CONSOLE OUTPUT: Emit real shell stdout/stderr to UI ═══
-              if ((call.name === 'system_shell' || call.name === 'workspace_run_command') && toolOutput && !toolOutput?._consoleTraceEmitted) {
-                const rawStdout = String(toolOutput?.stdout || toolOutput?.output || toolOutput?.result || '').trim();
+              if (['system_shell', 'workspace_run_command', 'workspace_execute_script', 'workspace_verify_code', 'background_task', 'process_manager'].includes(call.name) && toolOutput) {
+                const scalarResult = typeof toolOutput?.result === 'string' || typeof toolOutput?.result === 'number'
+                  ? toolOutput.result
+                  : '';
+                const rawStdout = String(toolOutput?.stdout || toolOutput?.output || scalarResult || toolOutput?.message || '').trim();
                 const rawStderr = String(toolOutput?.stderr || '').trim();
                 const combinedOut = [rawStdout, rawStderr].filter(Boolean).join('\n');
+                const stillRunning = Boolean(toolOutput?.stillRunning || toolOutput?.running || toolOutput?.status === 'running');
                 const exitCode = typeof toolOutput?.exitCode === 'number' ? toolOutput.exitCode
                   : typeof toolOutput?.code === 'number' ? toolOutput.code
-                    : (toolOutput?.error && !rawStdout) ? 1 : 0;
-                if (combinedOut) {
+                    : stillRunning ? undefined
+                      : toolOutput?.passed === false || toolOutput?.success === false ? 1
+                        : (toolOutput?.error && !rawStdout) ? 1 : 0;
+                if (combinedOut || !stillRunning) {
                   const consoleEvt = {
                     type: 'console_output',
                     command: String(args?.command || args?.script || '').substring(0, 300),
                     output: combinedOut,
                     content: combinedOut,
                     exitCode,
+                    durationMs: execDuration,
+                    isStreaming: stillRunning,
+                    ownerTraceId: actionTraceId,
+                    toolName: canonicalToolName,
                   };
                   trace.push(consoleEvt);
                   if (onTrace) onTrace(consoleEvt);
@@ -7371,8 +7665,8 @@ The first meaningful action group in a user turn needs an update. Later boundari
         continue;
       }
 
-      const statelessCalls = functionCalls.filter(call => this.isStatelessTool(call.name));
-      const statefulCalls = functionCalls.filter(call => !this.isStatelessTool(call.name));
+      const statelessCalls = functionCalls.filter(call => this.isParallelSafeToolCall(call));
+      const statefulCalls = functionCalls.filter(call => !this.isParallelSafeToolCall(call));
 
       if (statelessCalls.length > 0) {
         if (statelessCalls.length > 1) {
@@ -7424,7 +7718,7 @@ The first meaningful action group in a user turn needs an update. Later boundari
           callHistory, writtenFiles, loadedSkills,
           taskDecomposerUsed, toolCallCounts, toolResultDigest
         });
-        globalSessionManager.debouncedSave();
+        globalSessionManager.debouncedSaveForChat(chatId);
       }
     }
 
@@ -7470,7 +7764,7 @@ The first meaningful action group in a user turn needs an update. Later boundari
     if (onTrace) onTrace(fallbackEvt);
     if (fallbackText.trim() && !sessionPersistenceDisabled) {
       globalSessionManager.setLastAgentOutputForChat(chatId, fallbackText);
-      globalSessionManager.save().catch(() => { });
+      globalSessionManager.saveForChat(chatId).catch(() => { });
     }
     return { text: fallbackText, trace };
   }

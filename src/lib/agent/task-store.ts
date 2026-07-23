@@ -22,6 +22,7 @@ import { getEterxWorkspaceDir } from './storage-paths';
  */
 
 const TASKS_DIR = getEterxWorkspaceDir('.tasks');
+const TASK_STORE_PROCESS_STARTED_AT = Date.now();
 const MAX_TASK_CACHE_ENTRIES = 80;
 const MAX_RUNNING_TRACE_LOGS = 700;
 const MAX_COMPLETED_TRACE_LOGS = 350;
@@ -81,6 +82,14 @@ async function writeJsonAtomic(filePath: string, value: unknown): Promise<void> 
   await fs.move(tmpPath, filePath, { overwrite: true });
 }
 
+async function writeSerializedJsonAtomic(filePath: string, serialized: string): Promise<void> {
+  const dir = path.dirname(filePath);
+  await fs.ensureDir(dir);
+  const tmpPath = path.join(dir, `.${path.basename(filePath)}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`);
+  await fs.writeFile(tmpPath, serialized, 'utf8');
+  await fs.move(tmpPath, filePath, { overwrite: true });
+}
+
 function compactTraceEvent(traceEvent: any): any {
   if (!traceEvent || typeof traceEvent !== 'object') return traceEvent;
 
@@ -123,8 +132,9 @@ function trimTask(task: PersistedTask, compactAll = false): void {
   task.prompt = String(task.prompt || '').substring(0, MAX_PROMPT_CHARS);
   task.finalAnswer = String(task.finalAnswer || '').substring(0, MAX_FINAL_ANSWER_CHARS);
   const limit = task.status === 'running' ? MAX_RUNNING_TRACE_LOGS : MAX_COMPLETED_TRACE_LOGS;
-  const traceLogs = (task.traceLogs || []).slice(-limit);
-  task.traceLogs = compactAll ? traceLogs.map(compactTraceEvent) : traceLogs;
+  if (!Array.isArray(task.traceLogs)) task.traceLogs = [];
+  if (task.traceLogs.length > limit) task.traceLogs = task.traceLogs.slice(-limit);
+  if (compactAll) task.traceLogs = task.traceLogs.map(compactTraceEvent);
 }
 
 function rememberTask(chatId: string, task: PersistedTask): void {
@@ -157,11 +167,13 @@ async function flushToDisk(chatId: string): Promise<void> {
   if (!task) return;
 
   trimTask(task);
-  const snapshot = JSON.parse(JSON.stringify(task)) as PersistedTask;
+  // Serialize once at scheduling time. The old clone-then-writeJson path
+  // stringified every long trace history twice per flush.
+  const snapshot = JSON.stringify(task);
   const previousWrite = writeChains.get(chatId) || Promise.resolve();
   const nextWrite = previousWrite.catch(() => {}).then(async () => {
     await ensureDir();
-    await writeJsonAtomic(getTaskPath(chatId), snapshot);
+    await writeSerializedJsonAtomic(getTaskPath(chatId), snapshot);
   });
   writeChains.set(chatId, nextWrite);
 
@@ -205,6 +217,10 @@ export const taskStore = {
           try {
             const task = await fs.readJson(taskPath) as PersistedTask;
             if (task.status !== 'running') continue;
+            // Recovery can overlap the first live starts after a cold launch.
+            // Only tasks that existed before this module initialized are
+            // orphans; a newer timestamp belongs to this live process.
+            if ((task.startedAt || 0) >= TASK_STORE_PROCESS_STARTED_AT) continue;
             task.status = 'failed';
             task.finalAnswer = 'Agent interrupted because EterX was closed or restarted. Previous activity is preserved above.';
             task.completedAt = Date.now();
@@ -248,9 +264,10 @@ export const taskStore = {
   /**
    * Append a trace log event. Debounced to prevent I/O spam during streaming.
    */
-  addTrace(chatId: string, traceEvent: any): void {
+  addTrace(chatId: string, traceEvent: any, expectedRunId?: string): void {
     const task = taskCache.get(chatId);
     if (!task) return;
+    if (expectedRunId && task.runId && task.runId !== expectedRunId) return;
 
     const now = Date.now();
     const compactEvent = compactTraceEvent(traceEvent);
@@ -317,9 +334,10 @@ export const taskStore = {
   /**
    * Mark a task as completed with the final answer.
    */
-  async completeTask(chatId: string, finalAnswer: string, success: boolean, statusOverride?: 'completed' | 'failed' | 'stopped'): Promise<void> {
+  async completeTask(chatId: string, finalAnswer: string, success: boolean, statusOverride?: 'completed' | 'failed' | 'stopped', expectedRunId?: string): Promise<void> {
     const task = taskCache.get(chatId);
     if (!task) return;
+    if (expectedRunId && task.runId && task.runId !== expectedRunId) return;
     
     task.status = statusOverride || (success ? 'completed' : 'failed');
     task.finalAnswer = finalAnswer;
@@ -341,9 +359,10 @@ export const taskStore = {
   /**
    * Mark a task as stopped by user.
    */
-  async stopTask(chatId: string, finalAnswer = 'Stopped by user.'): Promise<void> {
+  async stopTask(chatId: string, finalAnswer = 'Stopped by user.', expectedRunId?: string): Promise<void> {
     const task = taskCache.get(chatId);
     if (!task || task.status !== 'running') return;
+    if (expectedRunId && task.runId && task.runId !== expectedRunId) return;
     
     task.status = 'stopped';
     task.finalAnswer = finalAnswer;

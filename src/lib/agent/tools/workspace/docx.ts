@@ -42,7 +42,7 @@ IMPORTANT: When creating a document, you MUST provide DEEP, SUBSTANTIAL content:
 - Include tables with real data, not empty rows.
 - Include real image URLs or local image paths as Markdown image lines when visuals help: ![Caption](https://...)
 
-The file is saved to the EXACT path you specify — use full paths like C:\\Users\\AAYUSHI\\Desktop\\report.docx`,
+The file is saved to the exact path you specify. Use an absolute path valid for the current operating system.`,
 
   category: 'workspace',
   inputSchema: z.object({

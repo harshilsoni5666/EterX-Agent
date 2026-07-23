@@ -2,6 +2,7 @@ import fs from 'fs-extra';
 import path from 'path';
 import type { ProjectContext } from './schemas';
 import { buildCodingProfileToolBlock, getCodingAgentToolSummary } from '../code/code-agent-runtime';
+import { buildRuntimePlatformPrompt, getRuntimePlatformContext } from './runtime/platform-context';
 
 export const ETERX_CODE_AGENT_PROFILE = 'eterx-code';
 
@@ -90,19 +91,6 @@ function trimPromptContent(value: string, maxChars?: number): string {
   return `${text.slice(0, maxChars).replace(/\s+\S*$/, '').trim()}\n\n[Truncated for runtime prompt budget]`;
 }
 
-function getDesktopPath(): string {
-  try {
-    const desktop = require('child_process').execFileSync(
-      'powershell.exe',
-      ['-NoProfile', '-NonInteractive', '-Command', "[Environment]::GetFolderPath('Desktop')"],
-      { timeout: 3000 }
-    ).toString().trim();
-    return desktop || `${process.env.USERPROFILE || 'C:\\Users\\User'}\\Desktop`;
-  } catch {
-    return `${process.env.USERPROFILE || 'C:\\Users\\User'}\\Desktop`;
-  }
-}
-
 export function buildCodingAgentRootPrompt(options: CodingRootPromptOptions): string {
   const {
     context,
@@ -120,8 +108,10 @@ export function buildCodingAgentRootPrompt(options: CodingRootPromptOptions): st
   } = options;
   const runtimeContext = context as any;
   const workspacePath = runtimeContext.workspacePath || runtimeContext.workspaceRoot || process.cwd();
-  const homePath = process.env.USERPROFILE || process.env.HOME || 'C:\\Users\\User';
-  const desktopPath = getDesktopPath();
+  const platformContext = getRuntimePlatformContext(runtimeContext.terminalShell || 'auto');
+  const runtimePlatformPrompt = buildRuntimePlatformPrompt(runtimeContext.terminalShell || 'auto');
+  const homePath = platformContext.homePath;
+  const desktopPath = platformContext.desktopPath;
   const uploadedFiles = (context.uploadedFiles || []).join(', ') || 'None';
   const codingTools = getCodingAgentToolSummary();
 
@@ -135,6 +125,8 @@ You are not the General EterX chat profile. This run was explicitly started from
 Your behavior must feel like a senior/principal engineer with strong local tooling, not a generic assistant.
 You execute with evidence: inspect, change, verify, and report what is proven.
 </identity>
+
+${runtimePlatformPrompt}
 
 <request_contract>
 The latest USER request is the executable objective.
@@ -357,7 +349,7 @@ The chat UI renders GitHub-flavored Markdown, Mermaid diagrams, and KaTeX math.
 <safety>
 - Never expose secrets from env files, logs, cookies, tokens, keys, or private configs.
 - Never run destructive recursive commands without explicit approval and resolved path verification.
-- On Windows, keep file operations in one shell and use literal paths for risky moves/deletes.
+- Keep file operations in the detected runtime shell and use literal absolute paths for risky moves/deletes.
 - Do not alter production data, registry settings, global machine state, or remote branches without explicit user request.
 - Keep scratch work under .workspaces/sandbox/ unless the USER specified a path.
 </safety>
@@ -365,8 +357,8 @@ The chat UI renders GitHub-flavored Markdown, Mermaid diagrams, and KaTeX math.
 <filesystem>
 Home: ${homePath}
 Desktop: ${desktopPath}
-Documents: ${homePath}\\Documents
-Downloads: ${homePath}\\Downloads
+Documents: ${platformContext.documentsPath}
+Downloads: ${platformContext.downloadsPath}
 Workspace: ${workspacePath}
 Save to the requested project path or obvious workspace location. Never default to Desktop.
 </filesystem>
@@ -407,7 +399,8 @@ export async function buildCodingAgentPromptContext(): Promise<string> {
 
     let content = '';
     try {
-      content = trimPromptContent(await fs.readFile(filePath, 'utf-8'), file.maxChars);
+      content = trimPromptContent(await fs.readFile(filePath, 'utf-8'), file.maxChars)
+        .replace(/\{\{RUNTIME_PLATFORM_PROMPT\}\}/g, buildRuntimePlatformPrompt('auto'));
     } catch {
       continue;
     }

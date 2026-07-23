@@ -129,17 +129,31 @@ export const LiveBrowserPanel: React.FC<LiveBrowserPanelProps> = ({
 
   // Connect to the SSE stream
   useEffect(() => {
-    let es: EventSource;
+    let es: EventSource | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let disposed = false;
+    let retryCount = 0;
 
     const connect = () => {
-      es = new EventSource(SSE_URL);
+      if (disposed) return;
+      es?.close();
+      const streamUrl = chatId ? `${SSE_URL}?chatId=${encodeURIComponent(chatId)}` : SSE_URL;
+      es = new EventSource(streamUrl);
       eventSourceRef.current = es;
 
-      es.onopen = () => setConnected(true);
+      es.onopen = () => {
+        retryCount = 0;
+        setConnected(true);
+      };
       es.onerror = () => {
+        es?.close();
         setConnected(false);
-        // Reconnect after 3s
-        setTimeout(connect, 3000);
+        if (disposed || reconnectTimer) return;
+        const delay = Math.min(15000, 1000 * (2 ** Math.min(retryCount++, 4)));
+        reconnectTimer = setTimeout(() => {
+          reconnectTimer = null;
+          connect();
+        }, delay);
       };
 
       es.onmessage = (event) => {
@@ -162,7 +176,9 @@ export const LiveBrowserPanel: React.FC<LiveBrowserPanelProps> = ({
             setCurrentUrl(data.url);
             setUrlInput(data.url);
             addLog({ ts: data.ts, type: 'nav', text: `→ ${data.url}` });
-            markActive(`Navigating to ${new URL(data.url).hostname}`);
+            let destination = 'new page';
+            try { destination = new URL(data.url).hostname || destination; } catch { /* non-standard browser URL */ }
+            markActive(`Navigating to ${destination}`);
             return;
           }
 
@@ -194,10 +210,13 @@ export const LiveBrowserPanel: React.FC<LiveBrowserPanelProps> = ({
 
     connect();
     return () => {
+      disposed = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
       es?.close();
       eventSourceRef.current = null;
+      if (activityTimerRef.current) clearTimeout(activityTimerRef.current);
     };
-  }, [markActive, addLog]);
+  }, [chatId, markActive, addLog]);
 
   // Auto-scroll logs
   useEffect(() => {

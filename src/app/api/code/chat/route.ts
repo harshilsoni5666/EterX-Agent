@@ -257,6 +257,7 @@ async function executeRegistryTool(
   args: any,
   workspacePath: string,
   loadedToolNames: string[] = [...CODE_AGENT_TOOLS],
+  terminalShell: string = 'auto',
 ): Promise<{ success: boolean; output: string }> {
   const canonicalToolName = normalizeRegistryToolName(toolName);
   const loaded = new Set(loadedToolNames.map(name => normalizeRegistryToolName(name)));
@@ -327,6 +328,7 @@ async function executeRegistryTool(
       source: isInternalEterXWorkspace ? 'eterx_internal_dev' : undefined,
       allowedCapabilities: ['command.workspace', 'filesystem.read', 'filesystem.write', 'tool.utility', 'memory.manage'],
       networkPolicy: 'deny',
+      terminalShell,
     };
     const capabilityDecision = enforceToolCapability(canonicalToolName, args, toolContext);
     if (!capabilityDecision.allowed) {
@@ -346,6 +348,7 @@ async function executeToolCallsParallel(
   workspacePath: string,
   loadedToolNames: string[],
   send: (data: any) => void,
+  terminalShell: string = 'auto',
 ): Promise<any[]> {
   const indexedCalls = toolCalls.map((call, index) => ({
     index,
@@ -369,7 +372,7 @@ async function executeToolCallsParallel(
       },
     });
 
-    let result = await executeRegistryTool(call.name, call.args, workspacePath, loadedToolNames);
+    let result = await executeRegistryTool(call.name, call.args, workspacePath, loadedToolNames, terminalShell);
     if (canonicalToolName === 'tool_finder' && result.success) {
       const addedTools = expandLoadedToolsFromFinder(call.args, result.output, loadedToolNames);
       if (addedTools.length > 0) {
@@ -424,7 +427,7 @@ export async function POST(req: NextRequest) {
     return new Response(JSON.stringify({ error: 'Invalid JSON body' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
   }
 
-  const { prompt, history, workspacePath } = body;
+  const { prompt, history, workspacePath, terminalShell = 'auto' } = body;
   if (!prompt || typeof prompt !== 'string' || !prompt.trim()) {
     return new Response(JSON.stringify({ error: 'Prompt is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
   }
@@ -549,10 +552,11 @@ export async function POST(req: NextRequest) {
 
           // ─── API Call with Retry ───
           let response: any = null;
+          let liveStreamed = false;
           let lastApiError: any = null;
           for (let attempt = 0; attempt < 3; attempt++) {
             try {
-              response = await requestAiClient.models.generateContent({
+              const responseStream = await requestAiClient.models.generateContentStream({
                 model: requestModelName,
                 contents: messages,
                 config: {
@@ -565,6 +569,24 @@ export async function POST(req: NextRequest) {
                   maxOutputTokens: 16384,
                 },
               });
+              const streamedParts: any[] = [];
+              let usageMetadata: any = null;
+              for await (const chunk of responseStream as any) {
+                usageMetadata = chunk?.usageMetadata || usageMetadata;
+                const parts = chunk?.candidates?.[0]?.content?.parts || [];
+                for (const part of parts) {
+                  streamedParts.push(part);
+                  if (part.thought && part.text) {
+                    liveStreamed = true;
+                    send({ type: 'trace', data: { type: 'thought_stream', text: part.text } });
+                  } else if (part.text && !part.thought) {
+                    liveStreamed = true;
+                    accumulatedAnswer += part.text;
+                    send({ type: 'trace', data: { type: 'answer', text: accumulatedAnswer } });
+                  }
+                }
+              }
+              response = { candidates: [{ content: { parts: streamedParts } }], usageMetadata };
               lastApiError = null;
               if (response?.usageMetadata) {
                 const promptTokens = response.usageMetadata.promptTokenCount ?? response.usageMetadata.inputTokenCount ?? 0;
@@ -608,9 +630,9 @@ export async function POST(req: NextRequest) {
           const toolCalls: Array<{ name?: string; args?: any }> = [];
 
           for (const part of candidate.content.parts) {
-            if (part.thought && part.text) {
+            if (part.thought && part.text && !liveStreamed) {
               send({ type: 'trace', data: { type: 'thought_stream', text: part.text } });
-            } else if (part.text && !part.thought) {
+            } else if (part.text && !part.thought && !liveStreamed) {
               accumulatedAnswer += part.text;
               send({ type: 'trace', data: { type: 'answer', text: accumulatedAnswer } });
             } else if (part.functionCall) {
@@ -621,7 +643,7 @@ export async function POST(req: NextRequest) {
 
           if (hasToolCalls && toolCalls.length > 0 && streamAlive) {
             totalToolCalls += toolCalls.length;
-            const toolResults = await executeToolCallsParallel(toolCalls, workspacePath || '', loadedToolNames, send);
+            const toolResults = await executeToolCallsParallel(toolCalls, workspacePath || '', loadedToolNames, send, terminalShell);
             messages.push({ role: 'model', parts: candidate.content.parts });
             messages.push({ role: 'user', parts: toolResults });
             continue;

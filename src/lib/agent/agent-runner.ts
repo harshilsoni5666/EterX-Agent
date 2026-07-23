@@ -21,6 +21,7 @@ import { globalToolRegistry, normalizeRegistryToolName } from './tools/registry'
 import { normalizeRegistryToolArgs, validateRegistryToolArgs } from './tools/tool-args';
 import { DEFAULT_MAIN_AGENT_ALLOWED_CAPABILITIES, enforceToolCapability } from './tools/security/tool_policy';
 import { getPathResolverInfo } from './workspace/path_resolver';
+import { buildRuntimePlatformPrompt } from './runtime/platform-context';
 import { createToolExecutionContext, isToolCancellationError } from './cancellation';
 import type { ScopedRuntimeSettings } from './runtime-api-keys';
 import {
@@ -134,6 +135,7 @@ export class AgentRunner {
 
     // Professional prompt (the core identity — written by the builder)
     parts.push(this.profile.professionalPrompt!);
+    parts.push(`\n${buildRuntimePlatformPrompt('auto')}`);
 
     // Mission
     if (this.profile.mission) {
@@ -212,7 +214,6 @@ These rules are enforced at runtime and cannot be overridden:
 ## Environment Context
 Current date/time: ${now.toLocaleString()}
 Timezone: ${Intl.DateTimeFormat().resolvedOptions().timeZone}
-Operating System: ${process.platform === 'win32' ? 'Windows' : process.platform === 'darwin' ? 'macOS' : 'Linux'}
 Workspace: ${getPathResolverInfo().desktopPath}
 Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.name).join(', ')})`);
 
@@ -542,7 +543,23 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
             generateConfig.config.tools = [{ functionDeclarations: funcDecls }];
           }
 
-          const response = await ai.models.generateContent(generateConfig);
+          const responseStream = await ai.models.generateContentStream(generateConfig);
+          const streamedParts: any[] = [];
+          let liveStreamedText = false;
+          for await (const chunk of responseStream as any) {
+            const parts = chunk?.candidates?.[0]?.content?.parts || [];
+            for (const part of parts) {
+              streamedParts.push(part);
+              if (part.thought && part.text) {
+                liveStreamedText = true;
+                yield { type: 'status', text: String(part.text).substring(0, 500), agentName, timestamp: Date.now() };
+              } else if (part.text && !part.thought) {
+                liveStreamedText = true;
+                yield { type: 'text', text: part.text, agentName, timestamp: Date.now() };
+              }
+            }
+          }
+          const response: any = { candidates: [{ content: { parts: streamedParts } }] };
           const candidate = response?.candidates?.[0];
           if (!candidate?.content?.parts) {
             // Check for safety/blocking reasons
@@ -561,7 +578,7 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
 
           for (const part of candidate.content.parts) {
             // Extract thinking/reasoning trace
-            if ((part as any).thought) {
+            if ((part as any).thought && !liveStreamedText) {
               yield {
                 type: 'status',
                 text: String((part as any).thought).substring(0, 500),
@@ -571,7 +588,7 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
             }
 
             // Text response
-            if (part.text) {
+            if (part.text && !liveStreamedText) {
               yield { type: 'text', text: part.text, agentName, timestamp: Date.now() };
             }
 
@@ -846,6 +863,7 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
       allowedPaths,
       isFocusedWorkspace,
       runLocation: isSandboxRun ? 'sandbox' : 'local',
+      terminalShell: config.pinnedContext?.terminalShell || 'auto',
       sandboxGuard: sandboxGuard || undefined,
       allowedCapabilities: isSandboxRun
         ? ['command.workspace', 'filesystem.read', 'filesystem.write', 'tool.utility', 'memory.manage']

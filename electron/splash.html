@@ -24,6 +24,8 @@
       body {
         width: 100%;
         height: 100%;
+        margin: 0;
+        padding: 0;
       }
 
       html {
@@ -31,7 +33,6 @@
       }
 
       body {
-        margin: 0;
         display: grid;
         place-items: center;
         overflow: hidden;
@@ -103,7 +104,6 @@
             #1f1f1d 292deg,
             rgba(31, 31, 29, 0) 360deg
           );
-        filter: drop-shadow(0 0 8px rgba(31, 31, 29, 0.1));
       }
 
       html[data-theme="light"] .subtle-link {
@@ -196,15 +196,31 @@
         height: 98px;
         display: grid;
         place-items: center;
-        animation: icon-breathe 2600ms ease-in-out infinite;
       }
 
+      /* Simple motion without glow: 2s breathe + 3 fast wheel spins */
       .splash-icon img {
         display: block;
         width: 92px;
         height: 92px;
         object-fit: contain;
         pointer-events: none;
+        animation: logo-breathe-wheel 4s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+      }
+
+      @keyframes logo-breathe-wheel {
+        0% {
+          transform: scale(1) rotate(0deg);
+        }
+        25% {
+          transform: scale(1.14) rotate(0deg);
+        }
+        50% {
+          transform: scale(1) rotate(0deg);
+        }
+        100% {
+          transform: scale(1) rotate(1080deg);
+        }
       }
 
       .headline {
@@ -258,7 +274,6 @@
           );
         -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 2.5px), #000 0);
         mask: radial-gradient(farthest-side, transparent calc(100% - 2.5px), #000 0);
-        filter: drop-shadow(0 0 8px rgba(255, 255, 255, 0.18));
         animation: spin 950ms linear infinite;
       }
 
@@ -304,23 +319,6 @@
         animation-delay: 360ms;
       }
 
-      @keyframes icon-breathe {
-        0%,
-        100% {
-          transform: scale(1);
-          filter:
-            drop-shadow(0 0 8px rgba(12, 151, 255, 0.12))
-            drop-shadow(0 0 10px rgba(224, 42, 255, 0.1));
-        }
-
-        50% {
-          transform: scale(1.018);
-          filter:
-            drop-shadow(0 0 10px rgba(12, 151, 255, 0.16))
-            drop-shadow(0 0 12px rgba(224, 42, 255, 0.12));
-        }
-      }
-
       @keyframes spin {
         to {
           transform: rotate(360deg);
@@ -339,27 +337,6 @@
         46% {
           opacity: 0.82;
           transform: scale(1);
-        }
-      }
-
-      html[data-theme="dark"] .splash-icon {
-        animation-name: icon-breathe-dark;
-      }
-
-      @keyframes icon-breathe-dark {
-        0%,
-        100% {
-          transform: scale(1);
-          filter:
-            drop-shadow(0 0 8px rgba(12, 151, 255, 0.12))
-            drop-shadow(0 0 10px rgba(224, 42, 255, 0.1));
-        }
-
-        50% {
-          transform: scale(1.018);
-          filter:
-            drop-shadow(0 0 10px rgba(12, 151, 255, 0.16))
-            drop-shadow(0 0 12px rgba(224, 42, 255, 0.12));
         }
       }
 

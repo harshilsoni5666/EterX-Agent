@@ -168,6 +168,10 @@ export const CodeChat: React.FC<CodeChatProps> = ({ workspacePath, activeFile, o
     const isCurrentRun = () => runSeqRef.current === runSeq;
 
     try {
+      let terminalShell = 'auto';
+      try {
+        terminalShell = JSON.parse(localStorage.getItem('eterx_settings') || '{}')?.terminalShell || 'auto';
+      } catch {}
       const response = await fetch('/api/code/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -175,6 +179,7 @@ export const CodeChat: React.FC<CodeChatProps> = ({ workspacePath, activeFile, o
           prompt: userMessage,
           history: chatHistory,
           workspacePath,
+          terminalShell,
           activeFile: activeFile ? { path: activeFile.path, name: activeFile.name, language: activeFile.language } : undefined,
         }),
         signal: controller.signal,

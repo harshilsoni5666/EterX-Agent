@@ -81,18 +81,18 @@
     --chat-feed-sb-size: 13px;
 
     /* Scrollbar SVG variables (Light Mode) */
-    --sb-arrow-up: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAxMCA2JyBmaWxsPScjMDAwMDAwJyBmaWxsLW9wYWNpdHk9JzAuNDAnIHN0cm9rZT0nIzAwMDAwMCcgc3Ryb2tlPScjMDAwMDAwJyBzdHJva2Utb3BhY2l0eT0nMC40MCcgc3Ryb2tlLXdpZHRoPScxLjInIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00xLjUgNC41IEw4LjUgNC41IEw1IDEuNSBaJy8+PC9zdmc+");
-    --sb-arrow-up-hover: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAxMCA2JyBmaWxsPScjMDAwMDAwJyBmaWxsLW9wYWNpdHk9JzAuNjUnIHN0cm9rZT0nIzAwMDAwMCcgc3Ryb2tlPScjMDAwMDAwJyBzdHJva2Utb3BhY2l0eT0nMC42NScgc3Ryb2tlLXdpZHRoPScxLjInIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00xLjUgNC41IEw4LjUgNC41IEw1IDEuNSBaJy8+PC9zdmc+");
-    --sb-arrow-up-active: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAxMCA2JyBmaWxsPScjMDAwMDAwJyBmaWxsLW9wYWNpdHk9JzAuOTAnIHN0cm9rZT0nIzAwMDAwMCcgc3Ryb2tlPScjMDAwMDAwJyBzdHJva2Utb3BhY2l0eT0nMC45MCcgc3Ryb2tlLXdpZHRoPScxLjInIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00xLjUgNC41IEw4LjUgNC41IEw1IDEuNSBaJy8+PC9zdmc+");
-    --sb-arrow-down: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAxMCA2JyBmaWxsPScjMDAwMDAwJyBmaWxsLW9wYWNpdHk9JzAuNDAnIHN0cm9rZT0nIzAwMDAwMCcgc3Ryb2tlPScjMDAwMDAwJyBzdHJva2Utb3BhY2l0eT0nMC40MCcgc3Ryb2tlLXdpZHRoPScxLjInIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00xLjUgMS41IEw4LjUgMS41IEw1IDQuNSBaJy8+PC9zdmc+");
-    --sb-arrow-down-hover: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAxMCA2JyBmaWxsPScjMDAwMDAwJyBmaWxsLW9wYWNpdHk9JzAuNjUnIHN0cm9rZT0nIzAwMDAwMCcgc3Ryb2tlPScjMDAwMDAwJyBzdHJva2Utb3BhY2l0eT0nMC42NScgc3Ryb2tlLXdpZHRoPScxLjInIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00xLjUgMS41IEw4LjUgMS41IEw1IDQuNSBaJy8+PC9zdmc+");
-    --sb-arrow-down-active: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAxMCA2JyBmaWxsPScjMDAwMDAwJyBmaWxsLW9wYWNpdHk9JzAuOTAnIHN0cm9rZT0nIzAwMDAwMCcgc3Ryb2tlPScjMDAwMDAwJyBzdHJva2Utb3BhY2l0eT0nMC45MCcgc3Ryb2tlLXdpZHRoPScxLjInIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00xLjUgMS41IEw4LjUgMS41IEw1IDQuNSBaJy8+PC9zdmc+");
-    --sb-arrow-left: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA2IDEwJyBmaWxsPScjMDAwMDAwJyBmaWxsLW9wYWNpdHk9JzAuNDAnIHN0cm9rZT0nIzAwMDAwMCcgc3Ryb2tlPScjMDAwMDAwJyBzdHJva2Utb3BhY2l0eT0nMC40MCcgc3Ryb2tlLXdpZHRoPScxLjInIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J000LjUgMS41IEw0LjUgOC41IEwxLjUgNSBaJy8+PC9zdmc+");
-    --sb-arrow-left-hover: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA2IDEwJyBmaWxsPScjMDAwMDAwJyBmaWxsLW9wYWNpdHk9JzAuNjUnIHN0cm9rZT0nIzAwMDAwMCcgc3Ryb2tlPScjMDAwMDAwJyBzdHJva2Utb3BhY2l0eT0nMC42NScgc3Ryb2tlLXdpZHRoPScxLjInIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J000LjUgMS41IEw0LjUgOC41IEwxLjUgNSBaJy8+PC9zdmc+");
-    --sb-arrow-left-active: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA2IDEwJyBmaWxsPScjMDAwMDAwJyBmaWxsLW9wYWNpdHk9JzAuOTAnIHN0cm9rZT0nIzAwMDAwMCcgc3Ryb2tlPScjMDAwMDAwJyBzdHJva2Utb3BhY2l0eT0nMC45MCcgc3Ryb2tlLXdpZHRoPScxLjInIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J000LjUgMS41IEw0LjUgOC41IEwxLjUgNSBaJy8+PC9zdmc+");
-    --sb-arrow-right: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA2IDEwJyBmaWxsPScjMDAwMDAwJyBmaWxsLW9wYWNpdHk9JzAuNDAnIHN0cm9rZT0nIzAwMDAwMCcgc3Ryb2tlPScjMDAwMDAwJyBzdHJva2Utb3BhY2l0eT0nMC40MCcgc3Ryb2tlLXdpZHRoPScxLjInIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00xLjUgMS41IEwxLjUgOC41IEw0LjUgNSBaJy8+PC9zdmc+");
-    --sb-arrow-right-hover: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA2IDEwJyBmaWxsPScjMDAwMDAwJyBmaWxsLW9wYWNpdHk9JzAuNjUnIHN0cm9rZT0nIzAwMDAwMCcgc3Ryb2tlPScjMDAwMDAwJyBzdHJva2Utb3BhY2l0eT0nMC42NScgc3Ryb2tlLXdpZHRoPScxLjInIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00xLjUgMS41IEwxLjUgOC41IEw0LjUgNSBaJy8+PC9zdmc+");
-    --sb-arrow-right-active: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA2IDEwJyBmaWxsPScjMDAwMDAwJyBmaWxsLW9wYWNpdHk9JzAuOTAnIHN0cm9rZT0nIzAwMDAwMCcgc3Ryb2tlPScjMDAwMDAwJyBzdHJva2Utb3BhY2l0eT0nMC45MCcgc3Ryb2tlLXdpZHRoPScxLjInIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00xLjUgMS41IEwxLjUgOC41IEw0LjUgNSBaJy8+PC9zdmc+");
+    --sb-arrow-up: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA4IDUnIGZpbGw9JyMwMDAwMDAnIGZpbGwtb3BhY2l0eT0nMC4zNScgc3Ryb2tlPScjMDAwMDAwJyBzdHJva2Utb3BhY2l0eT0nMC4zNScgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00wLjc1IDQuMjUgTDcuMjUgNC4yNSBMNCAwLjc1IFonLz48L3N2Zz4=");
+    --sb-arrow-up-hover: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA4IDUnIGZpbGw9JyMwMDAwMDAnIGZpbGwtb3BhY2l0eT0nMC41MCcgc3Ryb2tlPScjMDAwMDAwJyBzdHJva2Utb3BhY2l0eT0nMC41MCcgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00wLjc1IDQuMjUgTDcuMjUgNC4yNSBMNCAwLjc1IFonLz48L3N2Zz4=");
+    --sb-arrow-up-active: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA4IDUnIGZpbGw9JyMwMDAwMDAnIGZpbGwtb3BhY2l0eT0nMC42NScgc3Ryb2tlPScjMDAwMDAwJyBzdHJva2Utb3BhY2l0eT0nMC42NScgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00wLjc1IDQuMjUgTDcuMjUgNC4yNSBMNCAwLjc1IFonLz48L3N2Zz4=");
+    --sb-arrow-down: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA4IDUnIGZpbGw9JyMwMDAwMDAnIGZpbGwtb3BhY2l0eT0nMC4zNScgc3Ryb2tlPScjMDAwMDAwJyBzdHJva2Utb3BhY2l0eT0nMC4zNScgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00wLjc1IDAuNzUgTDcuMjUgMC43NSBMNCA0LjI1IFonLz48L3N2Zz4=");
+    --sb-arrow-down-hover: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA4IDUnIGZpbGw9JyMwMDAwMDAnIGZpbGwtb3BhY2l0eT0nMC41MCcgc3Ryb2tlPScjMDAwMDAwJyBzdHJva2Utb3BhY2l0eT0nMC41MCcgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00wLjc1IDAuNzUgTDcuMjUgMC43NSBMNCA0LjI1IFonLz48L3N2Zz4=");
+    --sb-arrow-down-active: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA4IDUnIGZpbGw9JyMwMDAwMDAnIGZpbGwtb3BhY2l0eT0nMC42NScgc3Ryb2tlPScjMDAwMDAwJyBzdHJva2Utb3BhY2l0eT0nMC42NScgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00wLjc1IDAuNzUgTDcuMjUgMC43NSBMNCA0LjI1IFonLz48L3N2Zz4=");
+    --sb-arrow-left: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA1IDgnIGZpbGw9JyMwMDAwMDAnIGZpbGwtb3BhY2l0eT0nMC4zNScgc3Ryb2tlPScjMDAwMDAwJyBzdHJva2Utb3BhY2l0eT0nMC4zNScgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J000LjI1IDAuNzUgTDQuMjUgNy4yNSBMMC43NSA0IFonLz48L3N2Zz4=");
+    --sb-arrow-left-hover: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA1IDgnIGZpbGw9JyMwMDAwMDAnIGZpbGwtb3BhY2l0eT0nMC41MCcgc3Ryb2tlPScjMDAwMDAwJyBzdHJva2Utb3BhY2l0eT0nMC41MCcgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J000LjI1IDAuNzUgTDQuMjUgNy4yNSBMMC43NSA0IFonLz48L3N2Zz4=");
+    --sb-arrow-left-active: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA1IDgnIGZpbGw9JyMwMDAwMDAnIGZpbGwtb3BhY2l0eT0nMC42NScgc3Ryb2tlPScjMDAwMDAwJyBzdHJva2Utb3BhY2l0eT0nMC42NScgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J000LjI1IDAuNzUgTDQuMjUgNy4yNSBMMC43NSA0IFonLz48L3N2Zz4=");
+    --sb-arrow-right: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA1IDgnIGZpbGw9JyMwMDAwMDAnIGZpbGwtb3BhY2l0eT0nMC4zNScgc3Ryb2tlPScjMDAwMDAwJyBzdHJva2Utb3BhY2l0eT0nMC4zNScgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00wLjc1IDAuNzUgTDAuNzUgNy4yNSBMNC4yNSA0IFonLz48L3N2Zz4=");
+    --sb-arrow-right-hover: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA1IDgnIGZpbGw9JyMwMDAwMDAnIGZpbGwtb3BhY2l0eT0nMC41MCcgc3Ryb2tlPScjMDAwMDAwJyBzdHJva2Utb3BhY2l0eT0nMC41MCcgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00wLjc1IDAuNzUgTDAuNzUgNy4yNSBMNC4yNSA0IFonLz48L3N2Zz4=");
+    --sb-arrow-right-active: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA1IDgnIGZpbGw9JyMwMDAwMDAnIGZpbGwtb3BhY2l0eT0nMC42NScgc3Ryb2tlPScjMDAwMDAwJyBzdHJva2Utb3BhY2l0eT0nMC42NScgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00wLjc1IDAuNzUgTDAuNzUgNy4yNSBMNC4yNSA0IFonLz48L3N2Zz4=");
   }
 
   :root[data-theme="dark"],
@@ -167,18 +167,18 @@
     --sb-thumb-active: rgba(255, 255, 255, 0.60);
 
     /* Scrollbar SVG variables (Dark Mode) */
-    --sb-arrow-up: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAxMCA2JyBmaWxsPScjZmZmZmZmJyBmaWxsLW9wYWNpdHk9JzAuNDAnIHN0cm9rZT0nI2ZmZmZmZicgc3Ryb2tlPScjZmZmZmZmJyBzdHJva2Utb3BhY2l0eT0nMC40MCcgc3Ryb2tlLXdpZHRoPScxLjInIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00xLjUgNC41IEw4LjUgNC41IEw1IDEuNSBaJy8+PC9zdmc+");
-    --sb-arrow-up-hover: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAxMCA2JyBmaWxsPScjZmZmZmZmJyBmaWxsLW9wYWNpdHk9JzAuNjUnIHN0cm9rZT0nI2ZmZmZmZicgc3Ryb2tlPScjZmZmZmZmJyBzdHJva2Utb3BhY2l0eT0nMC42NScgc3Ryb2tlLXdpZHRoPScxLjInIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00xLjUgNC41IEw4LjUgNC41IEw1IDEuNSBaJy8+PC9zdmc+");
-    --sb-arrow-up-active: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAxMCA2JyBmaWxsPScjZmZmZmZmJyBmaWxsLW9wYWNpdHk9JzAuOTAnIHN0cm9rZT0nI2ZmZmZmZicgc3Ryb2tlPScjZmZmZmZmJyBzdHJva2Utb3BhY2l0eT0nMC45MCcgc3Ryb2tlLXdpZHRoPScxLjInIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00xLjUgNC41IEw4LjUgNC41IEw1IDEuNSBaJy8+PC9zdmc+");
-    --sb-arrow-down: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAxMCA2JyBmaWxsPScjZmZmZmZmJyBmaWxsLW9wYWNpdHk9JzAuNDAnIHN0cm9rZT0nI2ZmZmZmZicgc3Ryb2tlPScjZmZmZmZmJyBzdHJva2Utb3BhY2l0eT0nMC40MCcgc3Ryb2tlLXdpZHRoPScxLjInIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00xLjUgMS41IEw4LjUgMS41IEw1IDQuNSBaJy8+PC9zdmc+");
-    --sb-arrow-down-hover: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAxMCA2JyBmaWxsPScjZmZmZmZmJyBmaWxsLW9wYWNpdHk9JzAuNjUnIHN0cm9rZT0nI2ZmZmZmZicgc3Ryb2tlPScjZmZmZmZmJyBzdHJva2Utb3BhY2l0eT0nMC42NScgc3Ryb2tlLXdpZHRoPScxLjInIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00xLjUgMS41IEw4LjUgMS41IEw1IDQuNSBaJy8+PC9zdmc+");
-    --sb-arrow-down-active: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAxMCA2JyBmaWxsPScjZmZmZmZmJyBmaWxsLW9wYWNpdHk9JzAuOTAnIHN0cm9rZT0nI2ZmZmZmZicgc3Ryb2tlPScjZmZmZmZmJyBzdHJva2Utb3BhY2l0eT0nMC45MCcgc3Ryb2tlLXdpZHRoPScxLjInIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00xLjUgMS41IEw4LjUgMS41IEw1IDQuNSBaJy8+PC9zdmc+");
-    --sb-arrow-left: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA2IDEwJyBmaWxsPScjZmZmZmZmJyBmaWxsLW9wYWNpdHk9JzAuNDAnIHN0cm9rZT0nI2ZmZmZmZicgc3Ryb2tlPScjZmZmZmZmJyBzdHJva2Utb3BhY2l0eT0nMC40MCcgc3Ryb2tlLXdpZHRoPScxLjInIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J000LjUgMS41IEw0LjUgOC41IEwxLjUgNSBaJy8+PC9zdmc+");
-    --sb-arrow-left-hover: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA2IDEwJyBmaWxsPScjZmZmZmZmJyBmaWxsLW9wYWNpdHk9JzAuNjUnIHN0cm9rZT0nI2ZmZmZmZicgc3Ryb2tlPScjZmZmZmZmJyBzdHJva2Utb3BhY2l0eT0nMC42NScgc3Ryb2tlLXdpZHRoPScxLjInIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J000LjUgMS41IEw0LjUgOC41IEwxLjUgNSBaJy8+PC9zdmc+");
-    --sb-arrow-left-active: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA2IDEwJyBmaWxsPScjZmZmZmZmJyBmaWxsLW9wYWNpdHk9JzAuOTAnIHN0cm9rZT0nI2ZmZmZmZicgc3Ryb2tlPScjZmZmZmZmJyBzdHJva2Utb3BhY2l0eT0nMC45MCcgc3Ryb2tlLXdpZHRoPScxLjInIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J000LjUgMS41IEw0LjUgOC41IEwxLjUgNSBaJy8+PC9zdmc+");
-    --sb-arrow-right: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA2IDEwJyBmaWxsPScjZmZmZmZmJyBmaWxsLW9wYWNpdHk9JzAuNDAnIHN0cm9rZT0nI2ZmZmZmZicgc3Ryb2tlPScjZmZmZmZmJyBzdHJva2Utb3BhY2l0eT0nMC40MCcgc3Ryb2tlLXdpZHRoPScxLjInIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00xLjUgMS41IEwxLjUgOC41IEw0LjUgNSBaJy8+PC9zdmc+");
-    --sb-arrow-right-hover: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA2IDEwJyBmaWxsPScjZmZmZmZmJyBmaWxsLW9wYWNpdHk9JzAuNjUnIHN0cm9rZT0nI2ZmZmZmZicgc3Ryb2tlPScjZmZmZmZmJyBzdHJva2Utb3BhY2l0eT0nMC42NScgc3Ryb2tlLXdpZHRoPScxLjInIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00xLjUgMS41IEwxLjUgOC41IEw0LjUgNSBaJy8+PC9zdmc+");
-    --sb-arrow-right-active: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA2IDEwJyBmaWxsPScjZmZmZmZmJyBmaWxsLW9wYWNpdHk9JzAuOTAnIHN0cm9rZT0nI2ZmZmZmZicgc3Ryb2tlPScjZmZmZmZmJyBzdHJva2Utb3BhY2l0eT0nMC45MCcgc3Ryb2tlLXdpZHRoPScxLjInIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00xLjUgMS41IEwxLjUgOC41IEw0LjUgNSBaJy8+PC9zdmc+");
+    --sb-arrow-up: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA4IDUnIGZpbGw9JyNmZmZmZmYnIGZpbGwtb3BhY2l0eT0nMC4zMCcgc3Ryb2tlPScjZmZmZmZmJyBzdHJva2Utb3BhY2l0eT0nMC4zMCcgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00wLjc1IDQuMjUgTDcuMjUgNC4yNSBMNCAwLjc1IFonLz48L3N2Zz4=");
+    --sb-arrow-up-hover: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA4IDUnIGZpbGw9JyNmZmZmZmYnIGZpbGwtb3BhY2l0eT0nMC40NScgc3Ryb2tlPScjZmZmZmZmJyBzdHJva2Utb3BhY2l0eT0nMC40NScgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00wLjc1IDQuMjUgTDcuMjUgNC4yNSBMNCAwLjc1IFonLz48L3N2Zz4=");
+    --sb-arrow-up-active: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA4IDUnIGZpbGw9JyNmZmZmZmYnIGZpbGwtb3BhY2l0eT0nMC42MCcgc3Ryb2tlPScjZmZmZmZmJyBzdHJva2Utb3BhY2l0eT0nMC42MCcgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00wLjc1IDQuMjUgTDcuMjUgNC4yNSBMNCAwLjc1IFonLz48L3N2Zz4=");
+    --sb-arrow-down: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA4IDUnIGZpbGw9JyNmZmZmZmYnIGZpbGwtb3BhY2l0eT0nMC4zMCcgc3Ryb2tlPScjZmZmZmZmJyBzdHJva2Utb3BhY2l0eT0nMC4zMCcgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00wLjc1IDAuNzUgTDcuMjUgMC43NSBMNCA0LjI1IFonLz48L3N2Zz4=");
+    --sb-arrow-down-hover: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA4IDUnIGZpbGw9JyNmZmZmZmYnIGZpbGwtb3BhY2l0eT0nMC40NScgc3Ryb2tlPScjZmZmZmZmJyBzdHJva2Utb3BhY2l0eT0nMC40NScgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00wLjc1IDAuNzUgTDcuMjUgMC43NSBMNCA0LjI1IFonLz48L3N2Zz4=");
+    --sb-arrow-down-active: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA4IDUnIGZpbGw9JyNmZmZmZmYnIGZpbGwtb3BhY2l0eT0nMC42MCcgc3Ryb2tlPScjZmZmZmZmJyBzdHJva2Utb3BhY2l0eT0nMC42MCcgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00wLjc1IDAuNzUgTDcuMjUgMC43NSBMNCA0LjI1IFonLz48L3N2Zz4=");
+    --sb-arrow-left: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA1IDgnIGZpbGw9JyNmZmZmZmYnIGZpbGwtb3BhY2l0eT0nMC4zMCcgc3Ryb2tlPScjZmZmZmZmJyBzdHJva2Utb3BhY2l0eT0nMC4zMCcgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J000LjI1IDAuNzUgTDQuMjUgNy4yNSBMMC43NSA0IFonLz48L3N2Zz4=");
+    --sb-arrow-left-hover: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA1IDgnIGZpbGw9JyNmZmZmZmYnIGZpbGwtb3BhY2l0eT0nMC40NScgc3Ryb2tlPScjZmZmZmZmJyBzdHJva2Utb3BhY2l0eT0nMC40NScgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J000LjI1IDAuNzUgTDQuMjUgNy4yNSBMMC43NSA0IFonLz48L3N2Zz4=");
+    --sb-arrow-left-active: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA1IDgnIGZpbGw9JyNmZmZmZmYnIGZpbGwtb3BhY2l0eT0nMC42MCcgc3Ryb2tlPScjZmZmZmZmJyBzdHJva2Utb3BhY2l0eT0nMC42MCcgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J000LjI1IDAuNzUgTDQuMjUgNy4yNSBMMC43NSA0IFonLz48L3N2Zz4=");
+    --sb-arrow-right: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA1IDgnIGZpbGw9JyNmZmZmZmYnIGZpbGwtb3BhY2l0eT0nMC4zMCcgc3Ryb2tlPScjZmZmZmZmJyBzdHJva2Utb3BhY2l0eT0nMC4zMCcgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00wLjc1IDAuNzUgTDAuNzUgNy4yNSBMNC4yNSA0IFonLz48L3N2Zz4=");
+    --sb-arrow-right-hover: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA1IDgnIGZpbGw9JyNmZmZmZmYnIGZpbGwtb3BhY2l0eT0nMC40NScgc3Ryb2tlPScjZmZmZmZmJyBzdHJva2Utb3BhY2l0eT0nMC40NScgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00wLjc1IDAuNzUgTDAuNzUgNy4yNSBMNC4yNSA0IFonLz48L3N2Zz4=");
+    --sb-arrow-right-active: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA1IDgnIGZpbGw9JyNmZmZmZmYnIGZpbGwtb3BhY2l0eT0nMC42MCcgc3Ryb2tlPScjZmZmZmZmJyBzdHJva2Utb3BhY2l0eT0nMC42MCcgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00wLjc1IDAuNzUgTDAuNzUgNy4yNSBMNC4yNSA0IFonLz48L3N2Zz4=");
   }
 
   html,
@@ -1427,20 +1427,22 @@
 }
 
 .eterx-text-shimmer {
-  --eterx-shimmer-duration: 8.4s;
+  /* Shared token set for every live label (feed, progress, and sidebar). */
+  --eterx-shimmer-duration: 6.8s;
   --eterx-shimmer-ease: cubic-bezier(.45, 0, .18, 1);
-  --eterx-shimmer-a: #C8C2B8;
-  --eterx-shimmer-d: #ECE6DC;
+  --eterx-shimmer-base: #9B9EA5;
+  --eterx-shimmer-highlight: #E6E8EC;
+  color: var(--eterx-shimmer-base);
   background:
     linear-gradient(104deg,
       transparent 0%,
       transparent 38%,
-      color-mix(in srgb, var(--eterx-shimmer-d) 6%, transparent) 45%,
-      color-mix(in srgb, var(--eterx-shimmer-d) 48%, transparent) 50%,
-      color-mix(in srgb, var(--eterx-shimmer-d) 10%, transparent) 56%,
+      color-mix(in srgb, var(--eterx-shimmer-highlight) 12%, transparent) 45%,
+      color-mix(in srgb, var(--eterx-shimmer-highlight) 54%, transparent) 50%,
+      color-mix(in srgb, var(--eterx-shimmer-highlight) 14%, transparent) 56%,
       transparent 64%,
       transparent 100%),
-    linear-gradient(var(--eterx-shimmer-a), var(--eterx-shimmer-a));
+    linear-gradient(var(--eterx-shimmer-base), var(--eterx-shimmer-base));
   background-size: 210% 100%, 100% 100%;
   background-position: 190% 50%, 0 0;
   background-repeat: no-repeat, no-repeat;
@@ -1463,26 +1465,20 @@
 
 .eterx-text-shimmer-active {
   --eterx-shimmer-duration: 7.2s;
-  --eterx-shimmer-a: #D0C9BF;
-  --eterx-shimmer-d: #EFE9DF;
 }
 
 .eterx-text-shimmer-working {
   --eterx-shimmer-duration: 8.8s;
-  --eterx-shimmer-a: #C7C0B7;
-  --eterx-shimmer-d: #E6DFD5;
 }
 
 .eterx-text-shimmer-ambient {
   --eterx-shimmer-duration: 12s;
-  --eterx-shimmer-a: #AAA49C;
-  --eterx-shimmer-d: #D2CCC3;
 }
 
 .eterx-text-shimmer-action {
   --eterx-shimmer-duration: 9.2s;
-  --eterx-shimmer-a: #AFA9A1;
-  --eterx-shimmer-d: #D4CEC5;
+  --eterx-shimmer-base: #969AA3;
+  --eterx-shimmer-highlight: #E6E8EC;
 }
 
 .eterx-subagent-identity {
@@ -1714,8 +1710,9 @@
 
 :root[data-theme="light"] .eterx-text-shimmer,
 [data-theme="light"] .eterx-text-shimmer {
-  --eterx-shimmer-a: #4C4944;
-  --eterx-shimmer-d: #FFFFFF;
+  --eterx-shimmer-base: #B0B0B2;
+  --eterx-shimmer-highlight: #FFFFFF;
+  color: var(--eterx-shimmer-base);
   text-shadow: none;
 }
 
@@ -1723,8 +1720,8 @@
 [data-theme="light"] .eterx-text-shimmer-active,
 :root[data-theme="light"] .eterx-text-shimmer-working,
 [data-theme="light"] .eterx-text-shimmer-working {
-  --eterx-shimmer-a: #24221F;
-  --eterx-shimmer-d: #FFFFFF;
+  --eterx-shimmer-base: #A9A9AB;
+  --eterx-shimmer-highlight: #FFFFFF;
 }
 
 :root[data-theme="light"] .eterx-surface-shimmer,
@@ -1857,11 +1854,11 @@
   visibility: visible !important;
   opacity: 1 !important;
   width: var(--sb-size, 12px) !important;
-  height: 16px !important;
+  height: var(--sb-size, 12px) !important;
   background-color: transparent !important;
   background-repeat: no-repeat !important;
   background-position: center !important;
-  background-size: calc(var(--sb-size) - 2px) calc((var(--sb-size) - 2px) * 0.6) !important;
+  background-size: calc(var(--sb-size) - 4px) calc((var(--sb-size) - 4px) * 0.625) !important;
   border: 0 !important;
   box-shadow: none !important;
   background-image: var(--sb-arrow-up) !important;
@@ -1883,11 +1880,11 @@
   visibility: visible !important;
   opacity: 1 !important;
   width: var(--sb-size, 12px) !important;
-  height: 16px !important;
+  height: var(--sb-size, 12px) !important;
   background-color: transparent !important;
   background-repeat: no-repeat !important;
   background-position: center !important;
-  background-size: calc(var(--sb-size) - 2px) calc((var(--sb-size) - 2px) * 0.6) !important;
+  background-size: calc(var(--sb-size) - 4px) calc((var(--sb-size) - 4px) * 0.625) !important;
   border: 0 !important;
   box-shadow: none !important;
   background-image: var(--sb-arrow-down) !important;
@@ -1909,12 +1906,12 @@
   display: block !important;
   visibility: visible !important;
   opacity: 1 !important;
-  width: 16px !important;
+  width: var(--sb-size, 12px) !important;
   height: var(--sb-size, 12px) !important;
   background-color: transparent !important;
   background-repeat: no-repeat !important;
   background-position: center !important;
-  background-size: calc((var(--sb-size) - 2px) * 0.6) calc(var(--sb-size) - 2px) !important;
+  background-size: calc((var(--sb-size) - 4px) * 0.625) calc(var(--sb-size) - 4px) !important;
   border: 0 !important;
   box-shadow: none !important;
   background-image: var(--sb-arrow-left) !important;
@@ -1935,12 +1932,12 @@
   display: block !important;
   visibility: visible !important;
   opacity: 1 !important;
-  width: 16px !important;
+  width: var(--sb-size, 12px) !important;
   height: var(--sb-size, 12px) !important;
   background-color: transparent !important;
   background-repeat: no-repeat !important;
   background-position: center !important;
-  background-size: calc((var(--sb-size) - 2px) * 0.6) calc(var(--sb-size) - 2px) !important;
+  background-size: calc((var(--sb-size) - 4px) * 0.625) calc(var(--sb-size) - 4px) !important;
   border: 0 !important;
   box-shadow: none !important;
   background-image: var(--sb-arrow-right) !important;
@@ -2508,6 +2505,15 @@
 
 .eterx-user-message-bubble>* {
   min-width: 0;
+}
+
+/* User message scroll container - invisible scrollbar, bottom fade */
+.eterx-user-msg-scroll {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.eterx-user-msg-scroll::-webkit-scrollbar {
+  display: none;
 }
 
 .eterx-user-message-actions {
@@ -3418,6 +3424,7 @@
 
 .eterx-agent-tab {
   position: relative;
+  isolation: isolate;
   z-index: 1;
   display: inline-flex;
   align-items: center;
@@ -3471,7 +3478,21 @@
     inset 0 1px 0 rgba(255, 255, 255, 0.25),
     0 4px 12px rgba(0, 0, 0, 0.3);
   pointer-events: none;
-  z-index: -1;
+  z-index: 0;
+  transition: background-color 150ms ease, border-color 150ms ease, box-shadow 150ms ease;
+}
+
+.eterx-agent-tab > :not(.eterx-agent-tab-active-bg) {
+  position: relative;
+  z-index: 1;
+}
+
+.eterx-agent-tab-active:hover .eterx-agent-tab-active-bg {
+  border-color: rgba(255, 255, 255, 0.32);
+  background: rgba(255, 255, 255, 0.16);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.3),
+    0 5px 15px rgba(0, 0, 0, 0.34);
 }
 
 .eterx-agent-tab-idle {
@@ -4460,8 +4481,15 @@
 }
 
 .eterx-chat-message-group {
-  overflow-anchor: none;
+  overflow-anchor: auto;
   min-width: 0;
+}
+
+/* The live tail is controlled by ChatFeed's explicit bottom-follow policy.
+   Completed rows remain eligible browser anchors so resizing content above a
+   reader's viewport does not move the passage they are reading. */
+.eterx-chat-message-group[data-live="true"] {
+  overflow-anchor: none;
 }
 
 .eterx-chat-message-group:not([data-live="true"]) {
@@ -4526,9 +4554,34 @@
   overflow: visible;
 }
 
+/* Code-preview syntax tokens keep the same semantic hues in both themes.
+   Light mode adjusts contrast only; it never flattens the token palette. */
+.eterx-syntax-comment { color: #6E7681; font-style: italic; }
+.eterx-syntax-string { color: #A5D6FF; }
+.eterx-syntax-number { color: #79B8FF; }
+.eterx-syntax-type { color: #FFA657; }
+.eterx-syntax-keyword { color: #FF7B72; }
+.eterx-syntax-declaration { font-weight: 600; }
+.eterx-syntax-value { color: #79C0FF; }
+.eterx-syntax-function { color: #D2A8FF; }
+.eterx-syntax-flag { color: #56D364; }
+
+:root[data-theme="light"] .eterx-syntax-comment { color: #6E7781; }
+:root[data-theme="light"] .eterx-syntax-string { color: #0A3069; }
+:root[data-theme="light"] .eterx-syntax-number { color: #0550AE; }
+:root[data-theme="light"] .eterx-syntax-type { color: #953800; }
+:root[data-theme="light"] .eterx-syntax-keyword { color: #CF222E; }
+:root[data-theme="light"] .eterx-syntax-value { color: #0550AE; }
+:root[data-theme="light"] .eterx-syntax-function { color: #8250DF; }
+:root[data-theme="light"] .eterx-syntax-flag { color: #116329; }
+
 .eterx-sidebar-recents,
 .eterx-connectors-grid,
 .eterx-prompt-preview-scroll,
+.eterx-thought-expanded,
+.eterx-terminal-console-output,
+.eterx-inline-diff-scroll,
+.eterx-inline-code-scroll,
 .eterx-mermaid-popout-stage,
 .eterx-review-scrollbar,
 .eterx-ide-sidebar,
@@ -6534,6 +6587,294 @@
 
 ::view-transition-old(root) {
   z-index: 1;
+}
+
+/* Desktop workstation sizing system.
+   Deliberately starts above the tablet boundary so phone/tablet layouts retain
+   their existing behavior. Width and height tokens scale independently. */
+@media (min-width: 769px) {
+  .eterx-app-shell {
+    --eterx-chat-content-max: 680px;
+    --eterx-chat-content-compact-max: 460px;
+    --eterx-composer-max: 680px;
+    --eterx-composer-compact-max: 460px;
+    --eterx-chat-auxiliary-max: 760px;
+    --eterx-chat-gutter: 36px;
+    --eterx-chat-compact-gutter: 24px;
+    --eterx-chat-content-top: 60px;
+    --eterx-chat-feed-bottom-space: 164px;
+    --eterx-composer-dock-bottom: 18px;
+    --eterx-composer-dock-top-space: 40px;
+    --eterx-composer-textarea-max: 320px;
+    --eterx-home-dock-top: 45%;
+    --eterx-home-greeting-size: 42px;
+    --eterx-home-greeting-compact-size: 30px;
+    --eterx-proxy-chat-offset: -80px;
+    --eterx-proxy-width: 200px;
+    --eterx-agent-team-width: 320px;
+    --eterx-chat-panel-min: 360px;
+  }
+
+  .eterx-topbar-sidebar-spacer {
+    width: 56px;
+  }
+
+  .eterx-app-shell[data-sidebar-open="true"] .eterx-topbar-sidebar-spacer {
+    width: var(--eterx-shell-sidebar-width);
+  }
+
+  .eterx-chat-feed-content {
+    max-width: var(--eterx-chat-content-max) !important;
+    padding-top: var(--eterx-chat-content-top) !important;
+  }
+
+  .eterx-chat-feed[data-compressed="true"] .eterx-chat-feed-content {
+    max-width: var(--eterx-chat-content-compact-max) !important;
+  }
+
+  .eterx-chat-feed-scroll {
+    padding-right: var(--eterx-chat-gutter) !important;
+    padding-left: var(--eterx-chat-gutter) !important;
+    padding-bottom: var(--eterx-chat-feed-bottom-space) !important;
+  }
+
+  .eterx-chat-feed[data-compressed="true"] .eterx-chat-feed-scroll {
+    padding-right: var(--eterx-chat-compact-gutter) !important;
+    padding-left: var(--eterx-chat-compact-gutter) !important;
+  }
+
+  .eterx-chat-input-dock {
+    padding-right: var(--eterx-chat-gutter) !important;
+    padding-left: var(--eterx-chat-gutter) !important;
+  }
+
+  .eterx-chat-input-dock[data-compressed="true"] {
+    padding-right: var(--eterx-chat-compact-gutter) !important;
+    padding-left: var(--eterx-chat-compact-gutter) !important;
+  }
+
+  .eterx-chat-input-dock[data-home="true"] {
+    top: var(--eterx-home-dock-top) !important;
+  }
+
+  .eterx-chat-input-dock-active {
+    padding-top: var(--eterx-composer-dock-top-space) !important;
+    padding-bottom: var(--eterx-composer-dock-bottom) !important;
+  }
+
+  .eterx-composer-shell {
+    max-width: var(--eterx-composer-max) !important;
+  }
+
+  .eterx-composer-shell[data-compressed="true"] {
+    max-width: var(--eterx-composer-compact-max) !important;
+  }
+
+  .eterx-composer-textarea {
+    max-height: var(--eterx-composer-textarea-max) !important;
+  }
+
+  .eterx-composer-shell .eterx-home-greeting {
+    max-width: min(100%, var(--eterx-chat-content-max));
+    font-size: var(--eterx-home-greeting-size) !important;
+    white-space: normal !important;
+    text-align: center;
+    text-wrap: balance;
+  }
+
+  .eterx-composer-shell[data-compressed="true"] .eterx-home-greeting {
+    font-size: var(--eterx-home-greeting-compact-size) !important;
+  }
+
+  .eterx-chat-auxiliary-stack {
+    max-width: var(--eterx-chat-auxiliary-max) !important;
+    padding-right: var(--eterx-chat-gutter) !important;
+    padding-left: var(--eterx-chat-gutter) !important;
+  }
+
+  .eterx-chat-column {
+    min-width: var(--eterx-chat-panel-min);
+  }
+
+  .eterx-chat-column[data-proxy-active="true"] .eterx-chat-feed-content,
+  .eterx-chat-column[data-proxy-active="true"] .eterx-chat-input-dock {
+    transform: translateX(var(--eterx-proxy-chat-offset)) !important;
+  }
+
+  .eterx-proxy-dock {
+    width: var(--eterx-proxy-width) !important;
+  }
+
+  .eterx-agent-team-panel {
+    width: var(--eterx-agent-team-width) !important;
+    max-height: calc(100dvh - var(--eterx-shell-topbar-height) - 72px);
+  }
+}
+
+/* Compact laptops: 11–13 inch devices and narrow development windows. */
+@media (min-width: 769px) and (max-width: 1199px) {
+  .eterx-app-shell {
+    --eterx-main-header-height: 50px;
+    --eterx-chat-content-max: 600px;
+    --eterx-chat-content-compact-max: 420px;
+    --eterx-composer-max: 600px;
+    --eterx-composer-compact-max: 430px;
+    --eterx-chat-auxiliary-max: 660px;
+    --eterx-chat-gutter: 28px;
+    --eterx-chat-compact-gutter: 18px;
+    --eterx-chat-content-top: 48px;
+    --eterx-chat-feed-bottom-space: 150px;
+    --eterx-composer-dock-bottom: 14px;
+    --eterx-composer-dock-top-space: 32px;
+    --eterx-composer-textarea-max: 240px;
+    --eterx-home-greeting-size: 36px;
+    --eterx-home-greeting-compact-size: 27px;
+    --eterx-proxy-chat-offset: -40px;
+    --eterx-proxy-width: 176px;
+    --eterx-agent-team-width: 292px;
+    --eterx-chat-panel-min: 320px;
+  }
+
+  .eterx-main-header {
+    gap: 8px !important;
+    padding-right: 12px !important;
+  }
+
+  .eterx-proxy-dock {
+    right: 12px !important;
+  }
+}
+
+/* Standard developer desktops. */
+@media (min-width: 1600px) and (max-width: 2199px) {
+  .eterx-app-shell {
+    --eterx-chat-content-max: 740px;
+    --eterx-chat-content-compact-max: 520px;
+    --eterx-composer-max: 720px;
+    --eterx-composer-compact-max: 500px;
+    --eterx-chat-auxiliary-max: 820px;
+    --eterx-chat-gutter: 48px;
+    --eterx-chat-compact-gutter: 32px;
+    --eterx-chat-content-top: 72px;
+    --eterx-chat-feed-bottom-space: 176px;
+    --eterx-composer-dock-bottom: 24px;
+    --eterx-home-greeting-size: 46px;
+    --eterx-home-greeting-compact-size: 32px;
+    --eterx-agent-team-width: 340px;
+    --eterx-chat-panel-min: 400px;
+  }
+}
+
+/* Ultra-wide and 4K workstations: more breathing room, bounded line length. */
+@media (min-width: 2200px) {
+  .eterx-app-shell {
+    --eterx-main-header-height: 60px;
+    --eterx-chat-content-max: 820px;
+    --eterx-chat-content-compact-max: 580px;
+    --eterx-composer-max: 760px;
+    --eterx-composer-compact-max: 540px;
+    --eterx-chat-auxiliary-max: 900px;
+    --eterx-chat-gutter: 64px;
+    --eterx-chat-compact-gutter: 40px;
+    --eterx-chat-content-top: 88px;
+    --eterx-chat-feed-bottom-space: 196px;
+    --eterx-composer-dock-bottom: 30px;
+    --eterx-composer-dock-top-space: 48px;
+    --eterx-composer-textarea-max: 420px;
+    --eterx-home-dock-top: 43%;
+    --eterx-home-greeting-size: 52px;
+    --eterx-home-greeting-compact-size: 34px;
+    --eterx-proxy-chat-offset: -96px;
+    --eterx-proxy-width: 220px;
+    --eterx-agent-team-width: 368px;
+    --eterx-chat-panel-min: 460px;
+  }
+}
+
+/* Native 4K workspaces need density scaling, not merely wider columns. Most
+   chat primitives intentionally use pixel-perfect sizes, so scale the complete
+   message/composer surfaces as one unit to preserve their visual proportions.
+   CSS zoom participates in layout and scroll height (unlike transform: scale). */
+@media (min-width: 3000px) {
+  .eterx-app-shell {
+    --eterx-main-header-height: 68px;
+    --eterx-chat-content-top: 104px;
+    --eterx-chat-feed-bottom-space: 236px;
+    --eterx-composer-dock-bottom: 38px;
+    --eterx-composer-dock-top-space: 56px;
+    --eterx-home-dock-top: 42%;
+    --eterx-proxy-chat-offset: -112px;
+    --eterx-proxy-width: 244px;
+    --eterx-agent-team-width: 400px;
+    --eterx-chat-panel-min: 520px;
+  }
+
+  @supports (zoom: 1) {
+    .eterx-chat-feed-content,
+    .eterx-composer-shell,
+    .eterx-chat-auxiliary-stack {
+      zoom: 1.28;
+    }
+  }
+
+  .eterx-chat-scroll-latest {
+    zoom: 1.18;
+    bottom: 190px !important;
+  }
+
+  .eterx-chat-turns-nav {
+    zoom: 1.18;
+  }
+}
+
+@media (min-width: 4200px) {
+  .eterx-app-shell {
+    --eterx-chat-content-top: 120px;
+    --eterx-chat-feed-bottom-space: 260px;
+    --eterx-composer-dock-bottom: 44px;
+    --eterx-agent-team-width: 440px;
+  }
+
+  @supports (zoom: 1) {
+    .eterx-chat-feed-content,
+    .eterx-composer-shell,
+    .eterx-chat-auxiliary-stack {
+      zoom: 1.4;
+    }
+  }
+}
+
+/* Short laptop displays: preserve vertical working area before decoration. */
+@media (min-width: 769px) and (max-height: 760px) {
+  .eterx-app-shell {
+    --eterx-main-header-height: 48px;
+    --eterx-chat-content-top: 42px;
+    --eterx-chat-feed-bottom-space: 140px;
+    --eterx-composer-dock-bottom: 10px;
+    --eterx-composer-dock-top-space: 28px;
+    --eterx-composer-textarea-max: 200px;
+    --eterx-home-dock-top: 47%;
+  }
+
+  .eterx-sidebar-nav-item,
+  .eterx-sidebar-chat-row {
+    min-height: 34px !important;
+    height: 34px !important;
+  }
+
+  .eterx-sidebar-profile-card {
+    height: 38px !important;
+  }
+}
+
+/* Tall desktop displays use the extra vertical space without stretching text. */
+@media (min-width: 1200px) and (max-width: 2999px) and (min-height: 1000px) {
+  .eterx-app-shell {
+    --eterx-chat-content-top: 84px;
+    --eterx-chat-feed-bottom-space: 190px;
+    --eterx-composer-dock-bottom: 30px;
+    --eterx-home-dock-top: 43%;
+  }
 }
 
 @keyframes eterxThemeRevealCircle {

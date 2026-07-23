@@ -45,7 +45,7 @@ const BROWSER_VISUAL_BOOTSTRAP = `
     globalThis.__name = globalThis.__name || function(fn) { return fn; };
     var root = document.documentElement || document.body;
     if (!root) return false;
-    var version = '2026-05-12.2';
+    var version = '2026-07-21.1';
     if (window.__eterxExtensionOverlayReady) {
       window.__eterxVisualFeedbackReady = version + ':extension';
       return true;
@@ -63,11 +63,12 @@ const BROWSER_VISUAL_BOOTSTRAP = `
         '#eterx-control-frame.eterx-active{opacity:1}',
         '#eterx-control-frame.eterx-active:before{content:"";position:absolute;inset:0;padding:3px;border-radius:0;background:conic-gradient(from var(--eterx-frame-angle),transparent 0deg,transparent 54deg,rgba(96,165,250,.08) 84deg,#38bdf8 124deg,#dbeafe 176deg,#60a5fa 232deg,transparent 300deg,transparent 360deg);-webkit-mask:linear-gradient(#fff 0 0) content-box,linear-gradient(#fff 0 0);-webkit-mask-composite:xor;mask:linear-gradient(#fff 0 0) content-box,linear-gradient(#fff 0 0);mask-composite:exclude;animation:eterx-frame-spin 2.4s linear infinite}',
         '#eterx-control-frame.eterx-active:after{content:"";position:absolute;inset:0;box-shadow:inset 0 0 0 1px rgba(56,189,248,.24),inset 0 0 32px rgba(56,189,248,.06)}',
-        '#eterx-control-hud{position:fixed;left:50%;bottom:18px;max-width:min(560px,calc(100vw - 28px));min-height:36px;transform:translateX(-50%) translateY(10px) scale(.98);display:flex;align-items:center;gap:9px;padding:5px 5px 5px 11px;border:1px solid rgba(255,255,255,.18);border-radius:8px;background:linear-gradient(180deg,rgba(12,12,12,.96),rgba(3,3,3,.94));color:#fff;box-shadow:0 18px 44px rgba(0,0,0,.42),0 0 0 1px rgba(255,255,255,.04),0 0 32px rgba(37,99,235,.18);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);pointer-events:auto;overflow:hidden;z-index:2147483647;opacity:0;transition:opacity 180ms ease,transform 180ms cubic-bezier(.2,.8,.2,1);font:720 12px/1.1 ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}',
-        '#eterx-control-hud:before{content:"";position:absolute;inset:0;border-radius:inherit;background:linear-gradient(90deg,transparent,rgba(56,189,248,.13),transparent);transform:translateX(-100%);animation:eterx-control-pill-sheen 2.8s ease-in-out infinite;pointer-events:none}',
+        '#eterx-control-hud{position:fixed;left:50%;bottom:max(20px,env(safe-area-inset-bottom));width:max-content;max-width:min(680px,calc(100vw - 32px));min-height:52px;box-sizing:border-box;transform:translateX(-50%) translateY(12px) scale(.985);display:flex;align-items:center;gap:11px;padding:7px 7px 7px 9px;border:1px solid rgba(255,255,255,.14);border-radius:16px;background:linear-gradient(145deg,rgba(25,27,32,.96),rgba(11,12,15,.97));color:#fff;box-shadow:0 22px 60px rgba(0,0,0,.38),0 2px 8px rgba(0,0,0,.24),inset 0 1px 0 rgba(255,255,255,.08);backdrop-filter:blur(22px) saturate(1.35);-webkit-backdrop-filter:blur(22px) saturate(1.35);pointer-events:auto;overflow:hidden;z-index:2147483647;opacity:0;transition:opacity 180ms ease,transform 220ms cubic-bezier(.2,.8,.2,1);font:650 12px/1.15 ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color-scheme:dark}',
+        '#eterx-control-hud:before{content:"";position:absolute;inset:0;border-radius:inherit;background:radial-gradient(circle at 12% 0,rgba(56,189,248,.12),transparent 34%);pointer-events:none}',
         '#eterx-control-hud.eterx-active{opacity:1;transform:translateX(-50%) translateY(0) scale(1)}',
-        '.eterx-hud-dot{position:relative;z-index:1;width:8px;height:8px;border-radius:999px;background:#22c55e;box-shadow:0 0 0 4px rgba(34,197,94,.14);opacity:.95;flex:0 0 auto;animation:eterx-control-live-dot 1.4s ease-in-out infinite}',
-        '.eterx-hud-body{position:relative;z-index:1;min-width:0;display:flex;flex-direction:column;gap:2px;flex:1 1 auto;max-width:340px}.eterx-hud-title,.eterx-hud-detail{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.eterx-hud-title{font-weight:760}.eterx-hud-detail{color:rgba(255,255,255,.74);font-size:11px;font-weight:620}.eterx-hud-actions{position:relative;z-index:1;display:flex;align-items:center;gap:5px;margin-left:4px}.eterx-hud-button{height:26px;padding:0 9px;border:0;border-radius:7px;background:rgba(255,255,255,.12);color:rgba(255,255,255,.94);cursor:pointer;font:760 11px/1 ui-sans-serif,system-ui,sans-serif}.eterx-hud-button:hover{background:rgba(255,255,255,.18)}.eterx-hud-button.stop{background:rgba(239,68,68,.95);color:#fff}.eterx-hud-button.stop:hover{background:rgba(220,38,38,.98)}',
+        '.eterx-hud-brand{position:relative;z-index:1;width:34px;height:34px;display:grid;place-items:center;border:1px solid rgba(125,211,252,.22);border-radius:10px;background:linear-gradient(145deg,rgba(14,165,233,.22),rgba(37,99,235,.12));color:#e0f2fe;font:800 14px/1 ui-sans-serif,system-ui,sans-serif;flex:0 0 auto}.eterx-hud-dot{position:absolute;right:-2px;bottom:-2px;width:8px;height:8px;border:2px solid #15171b;border-radius:999px;background:#34d399;box-shadow:0 0 0 3px rgba(52,211,153,.12);animation:eterx-control-live-dot 1.8s ease-in-out infinite}',
+        '.eterx-hud-body{position:relative;z-index:1;min-width:116px;display:flex;flex-direction:column;gap:3px;flex:1 1 auto;max-width:310px}.eterx-hud-title,.eterx-hud-detail{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.eterx-hud-title{font-weight:730;letter-spacing:-.01em}.eterx-hud-detail{color:rgba(255,255,255,.62);font-size:10.5px;font-weight:540}.eterx-hud-actions{position:relative;z-index:1;display:flex;align-items:center;gap:6px;margin-left:3px}.eterx-hud-button{height:36px;padding:0 12px;border:1px solid rgba(255,255,255,.08);border-radius:10px;background:rgba(255,255,255,.08);color:rgba(255,255,255,.92);cursor:pointer;touch-action:manipulation;font:680 11.5px/1 ui-sans-serif,system-ui,sans-serif;transition:background 140ms ease,border-color 140ms ease,transform 100ms ease}.eterx-hud-button:hover{background:rgba(255,255,255,.14);border-color:rgba(255,255,255,.14)}.eterx-hud-button:active{transform:scale(.97)}.eterx-hud-button:focus-visible{outline:2px solid #7dd3fc;outline-offset:2px}.eterx-hud-button.resume{display:none;background:rgba(14,165,233,.2);border-color:rgba(56,189,248,.3)}.eterx-hud-button.stop{background:rgba(248,113,113,.11);border-color:rgba(248,113,113,.17);color:#fecaca}.eterx-hud-button.stop:hover{background:rgba(239,68,68,.2);border-color:rgba(248,113,113,.3)}#eterx-control-hud.eterx-paused .eterx-hud-dot{background:#fbbf24;animation:none}#eterx-control-hud.eterx-paused .eterx-hud-button.take{display:none}#eterx-control-hud.eterx-paused .eterx-hud-button.resume{display:inline-flex;align-items:center}',
+        '@media(max-width:560px){#eterx-control-hud{bottom:max(10px,env(safe-area-inset-bottom));width:calc(100vw - 20px);max-width:none;min-height:58px;padding:7px;border-radius:15px;gap:8px}.eterx-hud-brand{width:32px;height:32px}.eterx-hud-body{min-width:0;max-width:none}.eterx-hud-title{font-size:11.5px}.eterx-hud-detail{font-size:10px}.eterx-hud-actions{gap:5px;margin-left:0}.eterx-hud-button{height:38px;padding:0 10px}.eterx-hud-button.take,.eterx-hud-button.resume{font-size:0}.eterx-hud-button.take:after{content:"Pause";font-size:11px}.eterx-hud-button.resume:after{content:"Resume";font-size:11px}}@media(max-width:380px){.eterx-hud-brand{display:none}.eterx-hud-body{min-width:72px}.eterx-hud-button{padding:0 8px}}@media(prefers-reduced-motion:reduce){#eterx-control-frame:before,.eterx-hud-dot{animation:none!important}#eterx-control-hud,#eterx-control-frame{transition:none!important}}',
         '#eterx-control-cursor{position:fixed;left:0;top:0;width:18px;height:22px;pointer-events:none;z-index:2147483647;opacity:0;transform:translate(-100px,-100px);transition:opacity 120ms ease,filter 130ms ease;will-change:transform,opacity;filter:drop-shadow(0 8px 12px rgba(0,0,0,.42))}',
         '#eterx-control-cursor.eterx-active{opacity:1}',
         '#eterx-control-cursor svg{display:block;width:18px;height:22px;transform-origin:4px 4px;transition:transform 90ms ease}',
@@ -95,7 +96,7 @@ const BROWSER_VISUAL_BOOTSTRAP = `
       return node;
     }
     var frame = ensure('eterx-control-frame', '', '');
-    var hud = ensure('eterx-control-hud', '', '<span class="eterx-hud-dot"></span><span class="eterx-hud-body"><span class="eterx-hud-title">EterX is using Chrome</span><span class="eterx-hud-detail"></span></span><span class="eterx-hud-actions"><button class="eterx-hud-button" data-eterx-control="take" type="button">Take control</button><button class="eterx-hud-button stop" data-eterx-control="stop" type="button">Stop</button></span>');
+    var hud = ensure('eterx-control-hud', '', '<span class="eterx-hud-brand" aria-hidden="true">E<span class="eterx-hud-dot"></span></span><span class="eterx-hud-body" aria-live="polite"><span class="eterx-hud-title">EterX is working</span><span class="eterx-hud-detail">Browser control active</span></span><span class="eterx-hud-actions"><button class="eterx-hud-button take" data-eterx-control="take" type="button" aria-label="Pause EterX and take control">Take control</button><button class="eterx-hud-button resume" data-eterx-control="resume" type="button" aria-label="Resume EterX browser control">Resume EterX</button><button class="eterx-hud-button stop" data-eterx-control="stop" type="button" aria-label="Stop this browser session">Stop</button></span>');
     var cursor = ensure('eterx-control-cursor', '', '');
     if (!cursor.__eterxSvg) {
       cursor.__eterxSvg = true;
@@ -108,19 +109,29 @@ const BROWSER_VISUAL_BOOTSTRAP = `
         if (!target) return;
         event.preventDefault();
         event.stopPropagation();
-        if (target.getAttribute('data-eterx-control') === 'stop') {
-          window.__eterxBrowserStopRequested = true;
-          document.dispatchEvent(new CustomEvent('eterx-control-stop-requested'));
-        } else {
-          document.dispatchEvent(new CustomEvent('eterx-control-takeover'));
+        var command = target.getAttribute('data-eterx-control');
+        if (command === 'stop') window.__eterxBrowserStopRequested = true;
+        if (command === 'take') {
+          hud.classList.add('eterx-paused');
+          setStatus('You have control', 'EterX is paused on this page');
+        } else if (command === 'resume') {
+          window.__eterxBrowserStopRequested = false;
+          hud.classList.remove('eterx-paused');
+          setStatus('EterX is ready', 'Browser control resumed');
+        } else if (command === 'stop') {
+          setStatus('Session stopped', 'EterX will not interact with this page');
         }
-        window.__eterxEndActivity();
+        document.dispatchEvent(new CustomEvent('eterx-control-' + command));
+        if (typeof window.__eterxControlRequest === 'function') {
+          Promise.resolve(window.__eterxControlRequest(command)).catch(function() {});
+        }
+        if (command === 'stop') window.__eterxEndActivity(900);
       });
     }
     function setStatus(title, detail) {
       var titleEl = hud.querySelector('.eterx-hud-title');
       var detailEl = hud.querySelector('.eterx-hud-detail');
-      if (titleEl) titleEl.textContent = String(title || 'EterX is using Chrome').slice(0, 90);
+      if (titleEl) titleEl.textContent = String(title || 'EterX is working').slice(0, 90);
       if (detailEl) {
         detailEl.textContent = String(detail || '').slice(0, 160);
         detailEl.style.display = detail ? 'block' : 'none';
@@ -140,6 +151,7 @@ const BROWSER_VISUAL_BOOTSTRAP = `
     }
     window.__eterxStartActivity = function(title, detail) {
       window.__eterxBrowserStopRequested = false;
+      hud.classList.remove('eterx-paused');
       setStatus(title, detail);
       activate(0, true);
     };
@@ -256,12 +268,51 @@ let _browserVisualSessionActive = false;
 let _browserVisualSessionPage: any = null;
 let _browserVisualIdleTimer: ReturnType<typeof setTimeout> | null = null;
 const BROWSER_VISUAL_IDLE_MS = 30000;
+type BrowserUserControlState = 'agent' | 'paused' | 'stopped';
+let _browserUserControlState: BrowserUserControlState = 'agent';
+let _browserUiInterruptController = new AbortController();
+
+function resetBrowserUserControl(): void {
+  _browserUserControlState = 'agent';
+  if (_browserUiInterruptController.signal.aborted) {
+    _browserUiInterruptController = new AbortController();
+  }
+}
+
+function browserUiInterruptedError(): Error {
+  const paused = _browserUserControlState === 'paused';
+  const error = new Error(paused ? 'USER_TOOK_BROWSER_CONTROL' : 'BROWSER_SESSION_STOPPED_BY_USER');
+  (error as any).cancelled = true;
+  (error as any).browserUserControl = _browserUserControlState;
+  return error;
+}
+
+function interruptBrowserForUser(command: string): void {
+  if (command === 'resume') {
+    resetBrowserUserControl();
+    return;
+  }
+  if (command !== 'take' && command !== 'stop') return;
+  _browserUserControlState = command === 'take' ? 'paused' : 'stopped';
+  if (command === 'stop') {
+    _browserVisualSessionActive = false;
+    _browserVisualSessionPage = null;
+    if (_browserVisualIdleTimer) {
+      clearTimeout(_browserVisualIdleTimer);
+      _browserVisualIdleTimer = null;
+    }
+  }
+  if (!_browserUiInterruptController.signal.aborted) {
+    _browserUiInterruptController.abort(browserUiInterruptedError());
+  }
+}
 
 function getAbortSignal(context?: any): AbortSignal | undefined {
   return context?.abortSignal || context?.signal;
 }
 
 function isBrowserCancelled(context?: any): boolean {
+  if (_browserUserControlState !== 'agent') return true;
   if (getAbortSignal(context)?.aborted) return true;
   try {
     return typeof context?.isCancelled === 'function' && context.isCancelled() === true;
@@ -271,6 +322,7 @@ function isBrowserCancelled(context?: any): boolean {
 }
 
 function browserCancelledError(): Error {
+  if (_browserUserControlState !== 'agent') return browserUiInterruptedError();
   const error = new Error('CANCELLED_BY_USER');
   (error as any).cancelled = true;
   return error;
@@ -279,7 +331,9 @@ function browserCancelledError(): Error {
 function isBrowserCancellationError(error: any): boolean {
   return error?.cancelled === true ||
     error?.name === 'AbortError' ||
-    error?.message === 'CANCELLED_BY_USER';
+    error?.message === 'CANCELLED_BY_USER' ||
+    error?.message === 'USER_TOOK_BROWSER_CONTROL' ||
+    error?.message === 'BROWSER_SESSION_STOPPED_BY_USER';
 }
 
 function throwIfBrowserCancelled(context?: any): void {
@@ -298,8 +352,12 @@ function cancellationPromise(context?: any): Promise<never> | null {
 async function waitWithBrowserCancellation<T>(promise: Promise<T>, context?: any): Promise<T> {
   throwIfBrowserCancelled(context);
   const abort = cancellationPromise(context);
-  if (!abort) return promise;
-  return Promise.race([promise, abort]);
+  const uiAbort = new Promise<never>((_, reject) => {
+    const signal = _browserUiInterruptController.signal;
+    if (signal.aborted) return reject(browserUiInterruptedError());
+    signal.addEventListener('abort', () => reject(browserUiInterruptedError()), { once: true });
+  });
+  return Promise.race(abort ? [promise, abort, uiAbort] : [promise, uiAbort]);
 }
 
 async function withBrowserLock<T>(context: any, fn: () => Promise<T>): Promise<T> {
@@ -351,12 +409,19 @@ function fail(action: string, msg: string, recovery?: string, nextAction?: strin
 }
 
 function failCancelled(action: string, startedAt: number) {
+  const userControl = _browserUserControlState;
+  const tookControl = userControl === 'paused';
   return {
     success: false,
     action,
-    result: 'Browser action cancelled by user.',
-    error: 'CANCELLED_BY_USER',
+    result: tookControl
+      ? 'Browser action paused because the user took control. Wait until they resume EterX.'
+      : userControl === 'stopped'
+        ? 'Browser session stopped by the user.'
+        : 'Browser action cancelled by user.',
+    error: tookControl ? 'USER_TOOK_BROWSER_CONTROL' : userControl === 'stopped' ? 'BROWSER_SESSION_STOPPED_BY_USER' : 'CANCELLED_BY_USER',
     cancelled: true,
+    ...(userControl !== 'agent' ? { userControl } : {}),
     elapsedMs: Date.now() - startedAt,
   };
 }
@@ -441,6 +506,11 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, label: string, co
     ];
     const abort = cancellationPromise(context);
     if (abort) races.push(abort);
+    const uiSignal = _browserUiInterruptController.signal;
+    races.push(new Promise<never>((_, reject) => {
+      if (uiSignal.aborted) return reject(browserUiInterruptedError());
+      uiSignal.addEventListener('abort', () => reject(browserUiInterruptedError()), { once: true });
+    }));
     return await Promise.race(races);
   } finally {
     if (timer) clearTimeout(timer);
@@ -582,7 +652,7 @@ async function installVisualFeedback(page: any): Promise<void> {
     await withTimeout(page.evaluate('var __name = globalThis.__name = globalThis.__name || ((fn, name) => fn)').catch(() => {}), 700, 'visual shim').catch(() => {});
     await withTimeout(page.evaluate(() => {
       const w = window as any;
-      const version = '2026-05-12.2';
+      const version = '2026-07-21.1';
       if (w.__eterxExtensionOverlayReady) {
         document.getElementById('eterx-browser-control-style')?.remove();
         document.getElementById('eterx-control-frame')?.remove();
@@ -1081,6 +1151,16 @@ function ensureVisualHooks(page: any): void {
   try {
     if (!page || _visualHookedPages.has(page)) return;
     _visualHookedPages.add(page);
+    // Bridge the in-page controller back to the automation runtime. Previously
+    // these buttons only emitted DOM events, so they looked functional while
+    // the active Playwright action continued running.
+    void page.exposeBinding('__eterxControlRequest', (_source: any, command: unknown) => {
+      interruptBrowserForUser(String(command || '').toLowerCase());
+      return { ok: true, state: _browserUserControlState };
+    }).catch(() => {});
+    // Install before site JavaScript on every navigation. The load listeners
+    // below remain as a recovery path for pages that replace the document root.
+    void page.addInitScript(BROWSER_VISUAL_BOOTSTRAP).catch(() => {});
     const reinstall = async () => {
       try {
         await page.waitForLoadState('domcontentloaded', { timeout: 2000 }).catch(() => {});
@@ -1559,6 +1639,7 @@ async function readPageSemantics(page: any, maxChars = 30000): Promise<any> {
       })),
     }));
     const actions = pick('button,a,input,textarea,select,[role="button"],[role="link"],[role="tab"],[tabindex],[contenteditable="true"]', 160, (el) => {
+      if (el.closest('[id^="eterx-"]')) return null;
       const rect = el.getBoundingClientRect();
       const tag = el.tagName.toLowerCase();
       const text = clean((el as HTMLInputElement).value || el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.textContent, 180);
@@ -1937,6 +2018,11 @@ USE THIS WHEN THE USER ASKS TO:
   }),
 
   execute: async (input: any, context?: any) => {
+    // Lifecycle commands must remain available after the in-page Stop control
+    // aborts the current signal; otherwise a stopped session could not restart.
+    if (['launch', 'connect', 'start_browser_session', 'end_browser_session', 'disconnect'].includes(input.action)) {
+      resetBrowserUserControl();
+    }
     // SEQUENTIAL EXECUTION: All browser actions are queued and run one after another.
     // This prevents race conditions (e.g. goto running before launch finishes).
     return withBrowserLock(context, async () => {
@@ -3316,7 +3402,11 @@ USE THIS WHEN THE USER ASKS TO:
         scheduleBrowserActivityIdleEnd(activityPage);
       }
       if (action !== 'disconnect') {
-        const monitorChatId = typeof input.chatId === 'string' ? input.chatId : undefined;
+        const monitorChatId = typeof input.chatId === 'string'
+          ? input.chatId
+          : typeof context?.chatId === 'string'
+            ? context.chatId
+            : undefined;
         if (activityPage && !activityPage.isClosed?.()) {
           void emitBrowserMonitorFrame(activityPage, monitorChatId);
         } else if (browserEngine.connected) {

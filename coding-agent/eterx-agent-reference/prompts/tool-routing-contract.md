@@ -70,12 +70,14 @@ Session management (long/deep tasks):
 - workspace_edit_session action=rollback → restore to a named checkpoint
 
 Terminal:
-- workspace_run_command for finite commands (PowerShell)
+- workspace_run_command for finite commands in the detected runtime shell
 - workspace_execute_script for one-shot analysis/transform scripts only
 - process_manager or background_task for dev servers and watchers
 - NEVER prefix commands with "cd path;". Use the cwd parameter instead.
 
-Windows Command Reference (this is PowerShell, NOT bash):
+{{RUNTIME_PLATFORM_PROMPT}}
+
+Legacy command translations below apply only when the detected shell is PowerShell:
 - mkdir -p path → New-Item -ItemType Directory -Force -Path "path"
 - rm -rf path → Remove-Item -Recurse -Force "path"
 - touch file → New-Item -ItemType File -Force -Path "file"

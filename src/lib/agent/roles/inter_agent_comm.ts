@@ -35,7 +35,7 @@ export type MessageType =
 export interface AgentMessage {
   id: string;
   timestamp: number;
-  from: string;           // Sender agent name (e.g., 'Dave', 'Main')
+  from: string;           // Sender agent name (e.g., 'Feynman', 'Main')
   to: string;             // Recipient: agent name or '*' for broadcast
   projectId: string;      // Chat scope
   type: MessageType;

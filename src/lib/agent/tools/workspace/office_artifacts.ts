@@ -203,8 +203,12 @@ async function tryBuildPdfViaDocx(targetPath: string, title: string, markdown: s
   const commands = [
     'soffice',
     'libreoffice',
-    'C:\\Program Files\\LibreOffice\\program\\soffice.exe',
-    'C:\\Program Files (x86)\\LibreOffice\\program\\soffice.exe',
+    ...(process.platform === 'darwin' ? ['/Applications/LibreOffice.app/Contents/MacOS/soffice'] : []),
+    ...(process.platform === 'linux' ? ['/usr/bin/libreoffice', '/usr/bin/soffice'] : []),
+    ...(process.platform === 'win32' ? [
+      'C:\\Program Files\\LibreOffice\\program\\soffice.exe',
+      'C:\\Program Files (x86)\\LibreOffice\\program\\soffice.exe',
+    ] : []),
   ];
 
   for (const command of commands) {

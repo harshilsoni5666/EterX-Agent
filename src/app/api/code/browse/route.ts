@@ -36,9 +36,8 @@ export async function GET(req: NextRequest) {
 
     // Add common dev folders
     const devFolders = [
-      'c:\\Harshil projects',
-      'C:\\Projects',
-      'C:\\dev',
+      ...(process.platform === 'win32' ? ['C:\\Projects', 'C:\\dev'] : []),
+      ...(process.platform === 'darwin' ? [path.join(home, 'Developer')] : []),
       path.join(home, 'dev'),
       path.join(home, 'code'),
       path.join(home, 'workspace'),

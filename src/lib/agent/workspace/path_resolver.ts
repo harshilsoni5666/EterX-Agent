@@ -58,19 +58,22 @@ function relativeStartsWithPath(relativePath: string, prefix: string): boolean {
 }
 
 function detectEterXRoot(): string {
-  // process.cwd() is the EterX root when running in dev
-  const cwd = process.cwd();
+  const candidates = [
+    process.env.ETERX_APP_ROOT,
+    process.cwd(),
+    typeof __dirname === 'string' ? path.resolve(__dirname, '..', '..', '..', '..') : '',
+  ].filter((candidate): candidate is string => Boolean(candidate));
 
-  // Verify by checking for our signature files
-  const hasPackageJson = fs.existsSync(path.join(cwd, 'package.json'));
-  const hasSrc = fs.existsSync(path.join(cwd, 'src'));
-
-  if (hasPackageJson && hasSrc) {
-    return path.resolve(cwd);
+  for (const candidate of candidates) {
+    const resolved = path.resolve(candidate);
+    if (fs.existsSync(path.join(resolved, 'package.json')) && fs.existsSync(path.join(resolved, 'src'))) {
+      return resolved;
+    }
   }
 
-  // Fallback: hardcoded known path
-  return path.resolve('c:\\Harshil projects\\EterX');
+  // In packaged builds source files may not be present. CWD is still safer and
+  // portable compared with inventing a machine-specific Windows path.
+  return path.resolve(process.cwd());
 }
 
 /**
@@ -154,17 +157,18 @@ function getRealDesktopPath(): string {
   const homeDir = os.homedir();
 
   // Check OneDrive Desktop first (many Windows users have this)
-  const oneDriveDesktop = path.join(homeDir, 'OneDrive', 'Desktop');
-  if (fs.existsSync(oneDriveDesktop)) {
-    return oneDriveDesktop;
-  }
+  if (process.platform === 'win32') {
+    const oneDriveDesktop = path.join(homeDir, 'OneDrive', 'Desktop');
+    if (fs.existsSync(oneDriveDesktop)) {
+      return oneDriveDesktop;
+    }
 
-  // Check OneDrive with locale-specific folder names
-  const oneDrivePath = process.env.OneDrive || process.env.OneDriveConsumer || '';
-  if (oneDrivePath) {
-    const oneDriveDesktopAlt = path.join(oneDrivePath, 'Desktop');
-    if (fs.existsSync(oneDriveDesktopAlt)) {
-      return oneDriveDesktopAlt;
+    const oneDrivePath = process.env.OneDrive || process.env.OneDriveConsumer || '';
+    if (oneDrivePath) {
+      const oneDriveDesktopAlt = path.join(oneDrivePath, 'Desktop');
+      if (fs.existsSync(oneDriveDesktopAlt)) {
+        return oneDriveDesktopAlt;
+      }
     }
   }
 
@@ -183,7 +187,7 @@ function uniquePaths(paths: string[]): string[] {
   const unique: string[] = [];
   for (const candidate of paths) {
     const resolved = path.resolve(candidate);
-    const key = resolved.toLowerCase();
+    const key = process.platform === 'win32' ? resolved.toLowerCase() : resolved;
     if (!seen.has(key)) {
       seen.add(key);
       unique.push(resolved);

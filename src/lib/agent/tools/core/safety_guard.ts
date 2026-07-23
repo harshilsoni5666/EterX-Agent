@@ -13,13 +13,15 @@ import fs from 'fs-extra';
 const AUDIT_DIR = path.resolve(process.cwd(), '.workspaces', '.audit');
 const BLOCKED_COMMANDS = [
   'format', 'del /s', 'rm -rf /', 'rmdir /s c:', 'shutdown', 'restart-computer',
+  'reboot', 'poweroff', 'halt', 'systemctl poweroff',
   'stop-service', 'disable-', 'set-executionpolicy unrestricted',
   'invoke-webrequest.*malware', 'net user', 'reg delete'
 ];
 
 const BLOCKED_PATHS = [
   'C:\\Windows', 'C:\\Program Files', 'C:\\Users\\*\\AppData',
-  '/etc', '/usr', '/bin', '/sbin', '/var', '/root'
+  '/etc', '/usr', '/bin', '/sbin', '/var', '/root',
+  '/System', '/Library', '/private/etc'
 ];
 
 interface AuditEntry {

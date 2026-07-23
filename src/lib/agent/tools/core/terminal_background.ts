@@ -26,6 +26,8 @@ export interface TerminalCommandRunOptions {
   hardTimeoutMs?: number;
   maxOutputChars?: number;
   traceThrottleMs?: number;
+  immediateHandoff?: boolean;
+  surviveRunSettlement?: boolean;
 }
 
 export interface TerminalBackgroundTask {
@@ -54,11 +56,13 @@ export interface TerminalBackgroundTask {
   statusFile: string;
   streamId: string;
   process?: ChildProcess;
-  traceContext?: { _onTrace?: (trace: any) => void; chatId?: string };
+  traceContext?: { _onTrace?: (trace: any) => void; chatId?: string; ownerTraceId?: string };
   flushTimer?: NodeJS.Timeout;
   persistTimer?: NodeJS.Timeout;
   checkTimer?: NodeJS.Timeout;
   statusTimer?: NodeJS.Timeout;
+  outputWrite?: Promise<void>;
+  statusWrite?: Promise<void>;
 }
 
 const TASKS_DIR = path.resolve(process.cwd(), '.workspaces', 'background_tasks');
@@ -194,6 +198,7 @@ export async function runTerminalCommandWithCheckIn(options: TerminalCommandRunO
       task.completedAt = Date.now();
       clearTaskTimers(task);
       flushTaskOutput(task, true, exitCode ?? (status === 'completed' ? 0 : 1));
+      await task.outputWrite?.catch(() => undefined);
       await persistTaskStatus(task);
 
       if (task.handedOff) {
@@ -215,6 +220,11 @@ export async function runTerminalCommandWithCheckIn(options: TerminalCommandRunO
 
     onAbort = () => {
       if (task.status !== 'running') return;
+      const reason = String((abortSignal as any)?.reason?.message || (abortSignal as any)?.reason || '');
+      if (options.surviveRunSettlement && task.handedOff && reason.includes('MAIN_RUN_SETTLED')) {
+        abortSignal?.removeEventListener('abort', onAbort);
+        return;
+      }
       appendTaskOutput(task, 'stderr', '\nCancelled by user.\n');
       killProcessTree(task.pid);
       finishTask('killed', 130, 'SIGTERM').catch(() => {
@@ -270,7 +280,7 @@ export async function runTerminalCommandWithCheckIn(options: TerminalCommandRunO
       scheduleAutomatedCheckIns(task);
       persistTaskStatus(task).catch(() => undefined);
       resolveOnce(buildRunningResult(task, note));
-    }, checkInMs);
+    }, options.immediateHandoff ? 0 : checkInMs);
     handoffTimer.unref?.();
 
     task.statusTimer = setTimeout(() => {
@@ -398,7 +408,10 @@ function appendTaskOutput(task: TerminalBackgroundTask, stream: 'stdout' | 'stde
   task.output = combined.text;
   task.droppedOutputChars += combined.dropped;
 
-  fs.appendFile(task.outputFile, text).catch(() => undefined);
+  task.outputWrite = (task.outputWrite || Promise.resolve())
+    .catch(() => undefined)
+    .then(() => fs.appendFile(task.outputFile, text))
+    .catch(() => undefined);
 }
 
 function trimOutput(text: string, maxChars: number): { text: string; dropped: number } {
@@ -427,7 +440,7 @@ function scheduleTaskStatusPersist(task: TerminalBackgroundTask) {
 
 function flushTaskOutput(task: TerminalBackgroundTask, final = false, exitCode?: number | null) {
   const output = visibleOutput(task);
-  if (!output.trim()) return;
+  if (!output.trim() && !final) return;
   emitTrace(task.traceContext, {
     type: 'console_output',
     command: task.command,
@@ -436,6 +449,7 @@ function flushTaskOutput(task: TerminalBackgroundTask, final = false, exitCode?:
     source: task.source,
     streamId: task.streamId,
     taskId: task.id,
+    ownerTraceId: task.traceContext?.ownerTraceId,
     isStreaming: !final,
     ...(final ? { exitCode: exitCode ?? task.exitCode ?? 0, durationMs: Date.now() - task.startedAt } : {})
   });
@@ -570,8 +584,13 @@ function clearTaskTimers(task: TerminalBackgroundTask) {
 }
 
 async function persistTaskStatus(task: TerminalBackgroundTask) {
-  await fs.ensureDir(TASKS_DIR);
-  await writeJsonAtomic(task.statusFile, serializeTask(task));
+  task.statusWrite = (task.statusWrite || Promise.resolve())
+    .catch(() => undefined)
+    .then(async () => {
+      await fs.ensureDir(TASKS_DIR);
+      await writeJsonAtomic(task.statusFile, serializeTask(task));
+    });
+  await task.statusWrite;
 }
 
 function serializeTask(task: TerminalBackgroundTask): Record<string, any> {
@@ -611,16 +630,18 @@ async function readOutputTail(filePath: string, maxChars = 12_000): Promise<stri
   }
 }
 
-function createTraceContext(context: any): { _onTrace?: (trace: any) => void; chatId?: string } {
+function createTraceContext(context: any): { _onTrace?: (trace: any) => void; chatId?: string; ownerTraceId?: string } {
   return {
     _onTrace: typeof context?._onTrace === 'function' ? context._onTrace : undefined,
-    chatId: context?.chatId || context?.projectId
+    chatId: context?.chatId || context?.projectId,
+    ownerTraceId: context?.ownerTraceId,
   };
 }
 
-function emitTrace(context: { _onTrace?: (trace: any) => void; chatId?: string } | undefined, event: any) {
+function emitTrace(context: { _onTrace?: (trace: any) => void; chatId?: string; ownerTraceId?: string } | undefined, event: any) {
   if (typeof context?._onTrace === 'function') {
     context._onTrace(event);
+    return;
   }
 
   if (context?.chatId) {

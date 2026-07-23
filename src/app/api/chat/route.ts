@@ -63,6 +63,7 @@ export async function POST(req: NextRequest) {
       projectId = 'default_project', 
       mode = 'think', 
       selectedModel = null,
+      strictModelSelection = false,
       thinkingLevel = 'low',
       modelThinkingCapability = null,
       pinnedContext = null, 
@@ -73,11 +74,12 @@ export async function POST(req: NextRequest) {
       runId,
     } = await readJsonObject(req);
     const prompt = cleanString(rawPrompt, MAX_PROMPT_CHARS);
+    const safeMediaAttachments = normalizeMediaAttachments(mediaAttachments);
     const chatId = projectId;
 
-    if (!isSafeChatId(chatId) || !prompt) {
+    if (!isSafeChatId(chatId) || (!prompt && safeMediaAttachments.length === 0)) {
       return attachAgentApiSessionCookie(
-        jsonError('Valid projectId and prompt are required', 400),
+        jsonError('Valid projectId and either a prompt or attachment are required', 400),
         session,
       );
     }
@@ -101,8 +103,7 @@ export async function POST(req: NextRequest) {
     const requestedModelName = selectedModel && typeof selectedModel === 'object'
       ? String((selectedModel as any).modelId || (selectedModel as any).modelName || '').trim()
       : '';
-    const exactModelName = requestedModelProvider === 'openai'
-      && requestedModelProvider === selectedModelConfig.provider
+    const exactModelName = requestedModelProvider === selectedModelConfig.provider
       && requestedModelName.length > 0
       ? requestedModelName.slice(0, 200)
       : '';
@@ -110,7 +111,7 @@ export async function POST(req: NextRequest) {
     const safeThinkingLevel = normalizeThinkingLevelForModel(
       thinkingLevel,
       selectedModelConfig.provider,
-      selectedModelConfig.modelName,
+      exactModelName || selectedModelConfig.modelName,
       safeModelThinkingCapability,
     );
     const isBuilderChat = isAgentBuilderChatId(chatId);
@@ -120,7 +121,11 @@ export async function POST(req: NextRequest) {
     let effectivePinnedContext: Record<string, any> = {
       ...(isBuilderChat ? buildAgentBuilderPinnedContext(chatId, safePinnedContext) : safePinnedContext),
       thinkingLevel: safeThinkingLevel,
-      ...(exactModelName ? { selectedModelName: exactModelName, selectedModelProvider: requestedModelProvider } : {}),
+      ...(exactModelName ? {
+        selectedModelName: exactModelName,
+        selectedModelProvider: requestedModelProvider,
+        strictModelSelection: strictModelSelection === true,
+      } : {}),
       ...(safeModelThinkingCapability ? { modelThinkingCapability: safeModelThinkingCapability } : {}),
       agentSessionId: session.sessionId,
       runLocation: typeof runLocation === 'string' ? runLocation : 'local',
@@ -153,8 +158,13 @@ export async function POST(req: NextRequest) {
     if (runId !== undefined && !isSafeRunId(runId)) {
       return attachAgentApiSessionCookie(jsonError('runId must be a valid identifier when provided', 400), session);
     }
-    const effectivePrompt = isBuilderChat ? buildAgentBuilderUserRequest(builderAgentId, prompt) : prompt;
+    const promptWithAttachmentFallback = prompt || 'Please review the attached file or media and help me with it.';
+    const effectivePrompt = isBuilderChat ? buildAgentBuilderUserRequest(builderAgentId, promptWithAttachmentFallback) : promptWithAttachmentFallback;
     const effectiveMode = isBuilderChat ? getAgentBuilderMode(safeMode) : safeMode;
+
+    // A stopped run may still be unwinding tools and releasing its key. Wait for
+    // that run-scoped cleanup so its successor cannot be affected by stale finalizers.
+    await agentRegistry.waitForStoppedRunToSettle(chatId, 5000);
 
     // Start the agent via the registry (fire-and-forget, non-blocking)
     const startResult = agentRegistry.startAgent(
@@ -164,7 +174,7 @@ export async function POST(req: NextRequest) {
       effectiveMode,
       safeUserId,
       effectivePinnedContext,
-      normalizeMediaAttachments(mediaAttachments),
+      safeMediaAttachments,
       safeUserName,
       runtimeSettings.preferredGeminiApiKey,
       runtimeSettings,
@@ -176,6 +186,20 @@ export async function POST(req: NextRequest) {
     }
     if (startResult.status === 'already_running') {
       return attachAgentApiSessionCookie(jsonError(startResult.message, 409, startResult), session);
+    }
+
+    // The desktop UI has a reconnectable, run-aware poller and does not consume
+    // SSE trace payloads. Let it release this request immediately instead of
+    // allocating another 100ms interval and long-lived connection per chat.
+    // SSE remains the default for backward-compatible API clients.
+    if (/\brespond-async\b/i.test(req.headers.get('prefer') || '')) {
+      return attachAgentApiSessionCookie(
+        NextResponse.json(startResult, {
+          status: 202,
+          headers: { 'Preference-Applied': 'respond-async' },
+        }),
+        session,
+      );
     }
 
     // Now stream the traces via SSE by polling the registry buffer

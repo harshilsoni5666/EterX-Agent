@@ -50,6 +50,21 @@ class APIKeyPool {
   private autoRefreshStarted = false;
 
   private static readonly MAX_CONSECUTIVE_FAILURES = 5;
+  private static readonly DEFAULT_PARALLEL_LEASES_PER_KEY = 8;
+
+  private get maxParallelLeasesPerKey(): number {
+    const configured = Number.parseInt(process.env.ETERX_MAX_PARALLEL_PER_GEMINI_KEY || '', 10);
+    if (!Number.isFinite(configured)) return APIKeyPool.DEFAULT_PARALLEL_LEASES_PER_KEY;
+    return Math.max(1, Math.min(64, configured));
+  }
+
+  private getLeaseCountsByKey(): Map<number, number> {
+    const counts = new Map<number, number>();
+    for (const lease of this.activeLeases.values()) {
+      counts.set(lease.keyIndex, (counts.get(lease.keyIndex) || 0) + 1);
+    }
+    return counts;
+  }
 
   /**
    * Initialize the pool by discovering all API keys from environment.
@@ -80,6 +95,16 @@ class APIKeyPool {
    */
   public setRuntimeKeys(apiKeys: string[]): void {
     this.initialize();
+
+    const previousKeys = [...this.allKeys];
+    const previousPreferredKeys = new Map<string, string>();
+    for (const [ownerId, keyIndex] of this.preferredKeyByOwner.entries()) {
+      const key = previousKeys[keyIndex];
+      if (key) previousPreferredKeys.set(ownerId, key);
+    }
+    const previousLastProvenKey = this.lastProvenKeyIndex == null
+      ? null
+      : previousKeys[this.lastProvenKeyIndex] || null;
 
     const uniqueKeys = Array.from(new Set(
       apiKeys
@@ -113,12 +138,21 @@ class APIKeyPool {
       });
     });
 
-    this.lastProvenKeyIndex = this.lastProvenKeyIndex != null && this.lastProvenKeyIndex < this.allKeys.length
-      ? this.lastProvenKeyIndex
-      : null;
+    for (const [chatId, lease] of this.activeLeases.entries()) {
+      const keyIndex = this.allKeys.indexOf(lease.apiKey);
+      if (keyIndex < 0) this.activeLeases.delete(chatId);
+      else if (lease.keyIndex !== keyIndex) this.activeLeases.set(chatId, { ...lease, keyIndex });
+    }
 
-    for (const [ownerId, keyIndex] of Array.from(this.preferredKeyByOwner.entries())) {
-      if (keyIndex >= this.allKeys.length) this.preferredKeyByOwner.delete(ownerId);
+    const lastProvenKeyIndex = previousLastProvenKey == null
+      ? -1
+      : this.allKeys.indexOf(previousLastProvenKey);
+    this.lastProvenKeyIndex = lastProvenKeyIndex >= 0 ? lastProvenKeyIndex : null;
+
+    this.preferredKeyByOwner.clear();
+    for (const [ownerId, key] of previousPreferredKeys.entries()) {
+      const keyIndex = this.allKeys.indexOf(key);
+      if (keyIndex >= 0) this.preferredKeyByOwner.set(ownerId, keyIndex);
     }
 
     console.log(`[APIKeyPool] Runtime pool synced from Settings: ${this.allKeys.length} Gemini key(s).`);
@@ -146,7 +180,7 @@ class APIKeyPool {
   public get maxParallelAgents(): number {
     this.initialize();
     const usableKeys = this.allKeys.length - this.retiredKeyIndices.size;
-    return usableKeys <= 0 ? 0 : Math.max(1, usableKeys - 2);
+    return usableKeys <= 0 ? 0 : usableKeys * this.maxParallelLeasesPerKey;
   }
 
   /**
@@ -176,46 +210,25 @@ class APIKeyPool {
 
     const now = Date.now();
 
-    // 1. Try to find keys not leased to ANY chat at all
-    const leasedIndices = new Set<number>();
-    for (const lease of this.activeLeases.values()) {
-      leasedIndices.add(lease.keyIndex);
-    }
+    const leaseCounts = this.getLeaseCountsByKey();
 
-    let candidates: { index: number; health: KeyHealth }[] = [];
+    let candidates: { index: number; health: KeyHealth; active: number }[] = [];
     for (let i = 0; i < this.allKeys.length; i++) {
-      if (leasedIndices.has(i)) continue;
       if (this.retiredKeyIndices.has(i)) continue;
       if (avoidKeyIndex === i) continue;
-      candidates.push({ index: i, health: this.keyHealth.get(i)! });
+      const active = leaseCounts.get(i) || 0;
+      if (active >= this.maxParallelLeasesPerKey) continue;
+      candidates.push({ index: i, health: this.keyHealth.get(i)!, active });
     }
 
-    // 2. Fall back to allowing sharing for sub-agents/Main of the same chat if no free keys exist
-    if (candidates.length === 0) {
-      const leasedToOtherOwners = new Set<number>();
-      const requestOwner = this.ownerIdFor(chatId);
-      for (const [otherChatId, lease] of this.activeLeases.entries()) {
-        if (this.ownerIdFor(otherChatId) !== requestOwner) {
-          leasedToOtherOwners.add(lease.keyIndex);
-        }
-      }
-
-      for (let i = 0; i < this.allKeys.length; i++) {
-        if (leasedToOtherOwners.has(i)) continue;
-        if (this.retiredKeyIndices.has(i)) continue;
-        if (avoidKeyIndex === i) continue;
-        candidates.push({ index: i, health: this.keyHealth.get(i)! });
-      }
-    }
-
-    if (candidates.length === 0 && avoidKeyIndex != null && !leasedIndices.has(avoidKeyIndex) && !this.retiredKeyIndices.has(avoidKeyIndex)) {
+    if (candidates.length === 0 && avoidKeyIndex != null && (leaseCounts.get(avoidKeyIndex) || 0) < this.maxParallelLeasesPerKey && !this.retiredKeyIndices.has(avoidKeyIndex)) {
       const health = this.keyHealth.get(avoidKeyIndex)!;
-      candidates.push({ index: avoidKeyIndex, health });
+      candidates.push({ index: avoidKeyIndex, health, active: leaseCounts.get(avoidKeyIndex) || 0 });
       console.warn(`[APIKeyPool] No alternate ready key; retrying key #${avoidKeyIndex} immediately.`);
     }
 
     if (candidates.length === 0) {
-      console.error(`[APIKeyPool] No ready API keys. ${leasedIndices.size} leased, ${this.retiredKeyIndices.size} retired, ${this.allKeys.length} total.`);
+      console.error(`[APIKeyPool] No ready API-key capacity. ${this.activeLeases.size} leases, ${this.retiredKeyIndices.size} retired, ${this.allKeys.length} total.`);
       return null;
     }
 
@@ -242,7 +255,11 @@ class APIKeyPool {
     const globalProvenCandidate = this.lastProvenKeyIndex == null
       ? null
       : candidates.find(candidate => candidate.index === this.lastProvenKeyIndex);
-    if (globalProvenCandidate && purpose === 'main_agent') {
+    const leastActiveCandidateCount = candidates.reduce(
+      (minimum, candidate) => Math.min(minimum, candidate.active),
+      Number.POSITIVE_INFINITY,
+    );
+    if (globalProvenCandidate && purpose === 'main_agent' && globalProvenCandidate.active <= leastActiveCandidateCount) {
       const lease: KeyLease = {
         keyIndex: globalProvenCandidate.index,
         apiKey: this.allKeys[globalProvenCandidate.index],
@@ -258,8 +275,9 @@ class APIKeyPool {
       return lease;
     }
 
-    // Sort candidates: healthiest first, then fewest uses, then longest since last use.
+    // Spread concurrent work first, then prefer the healthiest/least-used key.
     candidates.sort((a, b) => {
+      if (a.active !== b.active) return a.active - b.active;
       if (a.health.failures !== b.health.failures) {
         return a.health.failures - b.health.failures;
       }
@@ -308,9 +326,8 @@ class APIKeyPool {
       return existing.keyIndex === keyIndex ? existing : null;
     }
 
-    for (const lease of this.activeLeases.values()) {
-      if (lease.keyIndex === keyIndex) return null;
-    }
+    const activeOnKey = this.getLeaseCountsByKey().get(keyIndex) || 0;
+    if (activeOnKey >= this.maxParallelLeasesPerKey) return null;
 
     const health = this.keyHealth.get(keyIndex);
     if (!health) return null;
@@ -460,17 +477,13 @@ class APIKeyPool {
   } {
     this.initialize();
     const now = Date.now();
-    const leasedIndices = new Set<number>();
-    for (const lease of this.activeLeases.values()) {
-      leasedIndices.add(lease.keyIndex);
-    }
+    const leaseCounts = this.getLeaseCountsByKey();
 
     const retiredCount = this.retiredKeyIndices.size;
     let availableCount = 0;
     for (let i = 0; i < this.allKeys.length; i++) {
-      if (leasedIndices.has(i)) continue;
       if (this.retiredKeyIndices.has(i)) continue;
-      availableCount++;
+      availableCount += Math.max(0, this.maxParallelLeasesPerKey - (leaseCounts.get(i) || 0));
     }
 
     const leases = Array.from(this.activeLeases.entries()).map(([chatId, lease]) => ({
@@ -487,7 +500,7 @@ class APIKeyPool {
       retiredKeys: retiredCount,
       cooldownKeys: 0,
       leases,
-      healthySummary: `${availableCount} ready, ${this.activeLeases.size} in use, ${retiredCount} retired`,
+      healthySummary: `${availableCount} slots ready, ${this.activeLeases.size} in use, ${retiredCount} keys retired`,
     };
   }
 
@@ -504,14 +517,10 @@ class APIKeyPool {
    */
   public canAcceptNewAgent(): boolean {
     this.initialize();
-    const leasedIndices = new Set<number>();
-    for (const lease of this.activeLeases.values()) {
-      leasedIndices.add(lease.keyIndex);
-    }
+    const leaseCounts = this.getLeaseCountsByKey();
 
     for (let i = 0; i < this.allKeys.length; i++) {
-      if (leasedIndices.has(i)) continue;
-      if (!this.retiredKeyIndices.has(i)) return true;
+      if (!this.retiredKeyIndices.has(i) && (leaseCounts.get(i) || 0) < this.maxParallelLeasesPerKey) return true;
     }
 
     return false;
@@ -655,12 +664,11 @@ class APIKeyPool {
    */
   public areAllKeysExhausted(): boolean {
     this.initialize();
-    const leasedIndices = new Set<number>();
-    for (const lease of this.activeLeases.values()) leasedIndices.add(lease.keyIndex);
+    const leaseCounts = this.getLeaseCountsByKey();
 
     for (let i = 0; i < this.allKeys.length; i++) {
       if (this.retiredKeyIndices.has(i)) continue;
-      if (!leasedIndices.has(i)) return false; // At least one free key
+      if ((leaseCounts.get(i) || 0) < this.maxParallelLeasesPerKey) return false;
     }
     return true;
   }

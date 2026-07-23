@@ -1,10 +1,58 @@
 import { z } from 'zod';
 import { ToolDefinition } from '../../schemas';
-import { exec } from 'child_process';
-import { promisify } from 'util';
+import { execFile, spawn } from 'child_process';
 import { enforceToolCapability } from '../security/tool_policy';
 
-const execAsync = promisify(exec);
+function runClipboardCommand(command: string, args: string[] = [], input?: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    if (input === undefined) {
+      execFile(command, args, { windowsHide: true }, (error, stdout) => error ? reject(error) : resolve(stdout));
+      return;
+    }
+    const child = spawn(command, args, { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', chunk => { stdout += chunk.toString(); });
+    child.stderr.on('data', chunk => { stderr += chunk.toString(); });
+    child.on('error', reject);
+    child.on('close', code => code === 0 ? resolve(stdout) : reject(new Error(stderr.trim() || `${command} exited with code ${code}`)));
+    child.stdin.end(input);
+  });
+}
+
+async function readClipboard(): Promise<string> {
+  if (process.platform === 'win32') return runClipboardCommand('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', 'Get-Clipboard -Raw']);
+  if (process.platform === 'darwin') return runClipboardCommand('pbpaste');
+  const candidates: Array<[string, string[]]> = [
+    ['wl-paste', ['--no-newline']],
+    ['xclip', ['-selection', 'clipboard', '-o']],
+    ['xsel', ['--clipboard', '--output']]
+  ];
+  for (const [command, args] of candidates) {
+    try { return await runClipboardCommand(command, args); } catch {}
+  }
+  throw new Error('No supported clipboard utility was found. Install wl-clipboard, xclip, or xsel.');
+}
+
+async function writeClipboard(content: string): Promise<void> {
+  if (process.platform === 'win32') {
+    await runClipboardCommand('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', '$input | Set-Clipboard'], content);
+    return;
+  }
+  if (process.platform === 'darwin') {
+    await runClipboardCommand('pbcopy', [], content);
+    return;
+  }
+  const candidates: Array<[string, string[]]> = [
+    ['wl-copy', []],
+    ['xclip', ['-selection', 'clipboard']],
+    ['xsel', ['--clipboard', '--input']]
+  ];
+  for (const [command, args] of candidates) {
+    try { await runClipboardCommand(command, args, content); return; } catch {}
+  }
+  throw new Error('No supported clipboard utility was found. Install wl-clipboard, xclip, or xsel.');
+}
 
 export const clipboardTool: ToolDefinition = {
   name: 'clipboard_manager',
@@ -28,15 +76,12 @@ export const clipboardTool: ToolDefinition = {
       }
 
       if (input.action === 'read') {
-        const { stdout } = await execAsync('Get-Clipboard', { shell: 'powershell.exe' });
-        return { content: stdout.trim(), success: true };
+        return { content: await readClipboard(), success: true };
       } else if (input.action === 'write') {
         if (!input.content) {
           return { content: '', success: false, error: 'Content is required for write action' };
         }
-        // Escape for PowerShell
-        const escaped = input.content.replace(/'/g, "''");
-        await execAsync(`Set-Clipboard -Value '${escaped}'`, { shell: 'powershell.exe' });
+        await writeClipboard(input.content);
         return { content: input.content, success: true, message: 'Content copied to clipboard successfully.' };
       }
       return { content: '', success: false, error: 'Invalid action' };

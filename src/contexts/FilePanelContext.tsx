@@ -8,6 +8,7 @@ interface FilePanelStateContextType {
   reviewFiles: FilePanelProps[];
   reviewSubagents: WorkspaceReviewSubagent[];
   activeIndex: number;
+  activeChatId: string | null;
 }
 
 interface FilePanelActionsContextType {
@@ -110,7 +111,13 @@ export function FilePanelProvider({ children }: { children: ReactNode }) {
 
   const reviewFiles = reviewFilesByChat[activeReviewChatId] || [];
   const reviewSubagents = reviewSubagentsByChat[activeReviewChatId] || [];
-  const stateValue = useMemo(() => ({ openFiles, reviewFiles, reviewSubagents, activeIndex }), [openFiles, reviewFiles, reviewSubagents, activeIndex]);
+  const stateValue = useMemo(() => ({
+    openFiles,
+    reviewFiles,
+    reviewSubagents,
+    activeIndex,
+    activeChatId: activeReviewChatId === '__new__' ? null : activeReviewChatId,
+  }), [openFiles, reviewFiles, reviewSubagents, activeIndex, activeReviewChatId]);
   const actionsValue = useMemo(
     () => ({ openPanel, closePanel, clearPanels, setActiveIndex, setReviewFiles, setReviewSubagents, setActiveReviewChatId }),
     [openPanel, closePanel, clearPanels, setReviewFiles, setReviewSubagents, setActiveReviewChatId]

@@ -123,7 +123,7 @@ export type HeartbeatTask = z.infer<typeof HeartbeatTaskSchema>;
 // ==========================================
 export const SubAgentSchema = z.object({
   id: z.string(),
-  role: z.string(),  // Named agent identity (Agent-Alpha, Agent-Nova, etc.)
+  role: z.string(),  // Named agent identity (Einstein, Curie, etc.)
   task: z.string(),
   status: z.enum(['idle', 'spawning', 'running', 'completed', 'failed']),
   result: z.string().optional(),

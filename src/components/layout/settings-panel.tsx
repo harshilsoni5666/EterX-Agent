@@ -219,7 +219,7 @@ export interface AppSettings {
   fontSize: 'compact' | 'default' | 'comfortable';
   workMode: 'specialist' | 'everyday';
   openDestination: 'eterx' | 'workspace' | 'last';
-  terminalShell: 'powershell' | 'cmd' | 'git-bash' | 'wsl';
+  terminalShell: 'auto' | 'powershell' | 'cmd' | 'git-bash' | 'wsl' | 'zsh' | 'bash' | 'fish' | 'sh';
   requireCtrlEnter: boolean;
   followUpBehavior: 'queue' | 'steer';
   codeReviewMode: 'inline' | 'detached';
@@ -273,7 +273,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   fontSize: 'default',
   workMode: 'everyday',
   openDestination: 'eterx',
-  terminalShell: 'powershell',
+  terminalShell: 'auto',
   requireCtrlEnter: false,
   followUpBehavior: 'steer',
   codeReviewMode: 'inline',
@@ -314,6 +314,36 @@ const DEFAULT_SETTINGS: AppSettings = {
   browserAccess: true,
   computerUse: false,
   archiveRetention: '90',
+};
+
+const getTerminalShellOptions = (platform: 'unknown' | 'windows' | 'mac' | 'linux') => {
+  if (platform === 'mac') {
+    return [
+      { value: 'auto', label: 'Smart (auto-detect)' },
+      { value: 'zsh', label: 'Z shell (zsh)' },
+      { value: 'bash', label: 'Bash' },
+      { value: 'fish', label: 'Fish' },
+      { value: 'powershell', label: 'PowerShell (pwsh)' },
+    ];
+  }
+  if (platform === 'linux') {
+    return [
+      { value: 'auto', label: 'Smart (auto-detect)' },
+      { value: 'bash', label: 'Bash' },
+      { value: 'zsh', label: 'Z shell (zsh)' },
+      { value: 'fish', label: 'Fish' },
+      { value: 'sh', label: 'POSIX shell (sh)' },
+      { value: 'powershell', label: 'PowerShell (pwsh)' },
+    ];
+  }
+  if (platform === 'windows') return [
+    { value: 'auto', label: 'Smart (auto-detect)' },
+    { value: 'powershell', label: 'PowerShell' },
+    { value: 'cmd', label: 'Command Prompt' },
+    { value: 'git-bash', label: 'Git Bash' },
+    { value: 'wsl', label: 'WSL' },
+  ];
+  return [{ value: 'auto', label: 'Smart (auto-detect)' }];
 };
 
 type Tab =
@@ -1258,6 +1288,7 @@ const ApiKeyRow: React.FC<{
 export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, initialTab = 'general', standalone = false }) => {
   const [activeTab, setActiveTab] = useState<Tab>(normalizeSettingsTab(initialTab));
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
+  const [terminalPlatform, setTerminalPlatform] = useState<'unknown' | 'windows' | 'mac' | 'linux'>('unknown');
   const [apiKeys, setApiKeys] = useState<Record<string, string>>({});
   const [apiSyncStatus, setApiSyncStatus] = useState<'idle' | 'syncing' | 'synced' | 'error'>('idle');
   const [apiSyncMessage, setApiSyncMessage] = useState('Runtime keys are local until synced.');
@@ -1286,6 +1317,12 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
     percent: 0,
     message: 'Desktop updates are available in the installed application.',
   });
+  const terminalShellOptions = getTerminalShellOptions(terminalPlatform);
+
+  useEffect(() => {
+    const userAgent = `${navigator.platform || ''} ${navigator.userAgent || ''}`.toLowerCase();
+    setTerminalPlatform(/mac|darwin/.test(userAgent) ? 'mac' : /win/.test(userAgent) ? 'windows' : 'linux');
+  }, []);
 
   const handleToggleDefaultPerms = useCallback((v: boolean) => {
     if (!v) {
@@ -1438,7 +1475,14 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
     const loadSettings = async () => {
       try {
       const saved = localStorage.getItem('eterx_settings');
-      if (saved) setSettings({ ...DEFAULT_SETTINGS, ...JSON.parse(saved) });
+      if (saved) {
+        const parsedSettings = JSON.parse(saved);
+        const nextSettings = { ...DEFAULT_SETTINGS, ...parsedSettings };
+        if (!['auto', 'powershell', 'cmd', 'git-bash', 'wsl', 'zsh', 'bash', 'fish', 'sh'].includes(nextSettings.terminalShell)) {
+          nextSettings.terminalShell = 'auto';
+        }
+        setSettings(nextSettings);
+      }
       const savedKeys = localStorage.getItem('eterx_api_keys');
       const savedModelOverrides = localStorage.getItem(MODEL_OVERRIDE_STORAGE_KEY);
       const savedModelCatalog = localStorage.getItem(MODEL_CATALOG_STORAGE_KEY);
@@ -1982,16 +2026,11 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
                                 ]}
                               />
                             </SettingsStackRow>
-                            <SettingsStackRow title="Integrated terminal shell" description="Choose which shell opens in the integrated terminal.">
+                            <SettingsStackRow title="Integrated terminal shell" description="Smart automatically selects the best available shell for this operating system.">
                               <SelectControl
                                 value={settings.terminalShell}
                                 onChange={(value) => updateSetting('terminalShell', value as AppSettings['terminalShell'])}
-                                options={[
-                                  { value: 'powershell', label: 'PowerShell' },
-                                  { value: 'cmd', label: 'Command Prompt' },
-                                  { value: 'git-bash', label: 'Git Bash' },
-                                  { value: 'wsl', label: 'WSL' },
-                                ]}
+                                options={terminalShellOptions}
                               />
                             </SettingsStackRow>
 
