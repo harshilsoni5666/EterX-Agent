@@ -6372,6 +6372,17 @@
   -webkit-app-region: drag !important;
 }
 
+/* Ensure all floating portals, dropdowns, and poppers bypass Electron drag regions */
+[data-radix-popper-content-wrapper],
+[data-radix-portal],
+[data-radix-menu-content],
+[role="menu"],
+[role="menuitem"],
+.eterx-topbar-btn {
+  -webkit-app-region: no-drag !important;
+  pointer-events: auto !important;
+}
+
 /* Top bar action buttons */
 .eterx-topbar-btn {
   height: 28px !important;

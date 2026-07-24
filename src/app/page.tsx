@@ -966,8 +966,11 @@ function DeepWorkUI() {
   const [subAgentsSectionOpen, setSubAgentsSectionOpen] = useState(true);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState<string>('models');
-  const [topbarThemeOpen, setTopbarThemeOpen] = useState(false);
-  const [topbarHelpOpen, setTopbarHelpOpen] = useState(false);
+  const [activeTopbarMenu, setActiveTopbarMenu] = useState<'theme' | 'help' | null>(null);
+  const topbarThemeOpen = activeTopbarMenu === 'theme';
+  const topbarHelpOpen = activeTopbarMenu === 'help';
+  const setTopbarThemeOpen = (v: boolean) => setActiveTopbarMenu(v ? 'theme' : null);
+  const setTopbarHelpOpen = (v: boolean) => setActiveTopbarMenu(v ? 'help' : null);
   const [monitorOpen, setMonitorOpen] = useState(false);
   const [agentTeamOpen, setAgentTeamOpen] = useState(false);
   const [subAgentDockOpen, setSubAgentDockOpen] = useState(false);
@@ -6241,7 +6244,7 @@ function DeepWorkUI() {
 
           {/* Theme toggle — light/dark dropdown (Powered by Radix UI Portal) */}
           <div className="relative flex items-center">
-            <DropdownMenu.Root open={topbarThemeOpen} onOpenChange={setTopbarThemeOpen}>
+            <DropdownMenu.Root open={topbarThemeOpen} onOpenChange={(open) => setActiveTopbarMenu(open ? 'theme' : null)}>
               <DropdownMenu.Trigger asChild>
                 <button type="button"
                   className="eterx-topbar-btn px-[10px] h-full text-[13px] font-normal tracking-[0.01em] cursor-pointer select-none outline-none bg-transparent border-0 transition-colors duration-150"
@@ -6253,7 +6256,7 @@ function DeepWorkUI() {
                 <DropdownMenu.Content
                   align="end"
                   sideOffset={6}
-                  className="w-[110px] flex flex-col gap-[2px] rounded-[10px] p-[4px] z-[9999]"
+                  className="w-[110px] flex flex-col gap-[2px] rounded-[10px] p-[4px] z-[9999] pointer-events-auto [-webkit-app-region:no-drag]"
                   style={{
                     background: 'var(--eterx-dropdown-bg, var(--sidebar-bg, #F0EDE8))',
                     border: '1px solid var(--eterx-dropdown-border, var(--sidebar-border, rgba(0,0,0,0.1)))',
@@ -6279,7 +6282,7 @@ function DeepWorkUI() {
                         onSelect={(e) => {
                           e.preventDefault();
                           handleThemeChange(value as 'light' | 'dark');
-                          setTopbarThemeOpen(false);
+                          setActiveTopbarMenu(null);
                         }}
                       >
                         <button
@@ -6319,7 +6322,7 @@ function DeepWorkUI() {
 
           {/* Help dropdown */}
           <div className="relative flex items-center">
-            <DropdownMenu.Root open={topbarHelpOpen} onOpenChange={setTopbarHelpOpen}>
+            <DropdownMenu.Root open={topbarHelpOpen} onOpenChange={(open) => setActiveTopbarMenu(open ? 'help' : null)}>
               <DropdownMenu.Trigger asChild>
                 <button type="button"
                   className="eterx-topbar-btn px-[10px] h-full text-[13px] font-normal tracking-[0.01em] cursor-pointer select-none outline-none bg-transparent border-0 transition-colors duration-150"
@@ -6331,7 +6334,7 @@ function DeepWorkUI() {
                 <DropdownMenu.Content
                   align="end"
                   sideOffset={6}
-                  className="w-[180px] flex flex-col gap-[2px] rounded-[10px] p-[4px] z-[9999]"
+                  className="w-[180px] flex flex-col gap-[2px] rounded-[10px] p-[4px] z-[9999] pointer-events-auto [-webkit-app-region:no-drag]"
                   style={{
                     background: 'var(--eterx-dropdown-bg, var(--sidebar-bg, #F0EDE8))',
                     border: '1px solid var(--eterx-dropdown-border, var(--sidebar-border, rgba(0,0,0,0.1)))',
@@ -6342,7 +6345,7 @@ function DeepWorkUI() {
                     asChild
                     onSelect={async (e) => {
                       e.preventDefault();
-                      setTopbarHelpOpen(false);
+                      setActiveTopbarMenu(null);
                       await persistChats(chatsRef.current, true);
                       if ((window as any).electronAPI?.restartApp) {
                         await (window as any).electronAPI.restartApp();
@@ -6377,7 +6380,7 @@ function DeepWorkUI() {
                     asChild
                     onSelect={async (e) => {
                       e.preventDefault();
-                      setTopbarHelpOpen(false);
+                      setActiveTopbarMenu(null);
                       await persistChats(chatsRef.current, true);
                       if ((window as any).electronAPI?.closeApp) {
                         await (window as any).electronAPI.closeApp();
@@ -6412,7 +6415,7 @@ function DeepWorkUI() {
                     asChild
                     onSelect={(e) => {
                       e.preventDefault();
-                      setTopbarHelpOpen(false);
+                      setActiveTopbarMenu(null);
                       const email = 'harshilsoni5666@gmail.com';
                       const subject = encodeURIComponent('Feedback / Found A Bug - EterX Agent');
                       const body = encodeURIComponent('Hi Harshil,\n\nI found a bug / have some feedback:\n\n[Describe the bug or feedback here]');
