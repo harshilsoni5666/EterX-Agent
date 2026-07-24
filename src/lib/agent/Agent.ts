@@ -2825,7 +2825,8 @@ export class GeminiAgentClient {
     communicationContext: {
       previousNotes?: string[];
       recentEvidence?: string[];
-    } = {}
+    } = {},
+    onTrace?: (trace: any) => void
   ): Promise<string> {
     const actionContext = actions.slice(0, 4).map(action => {
       const name = String(action?.function?.name || action?.name || action?.id || 'action');

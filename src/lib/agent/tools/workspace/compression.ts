@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import path from 'path';
 import fs from 'fs-extra';
+// @ts-ignore
 import AdmZip from 'adm-zip';
 import { ToolDefinition } from '../../schemas';
 import {
@@ -85,7 +86,7 @@ export const compressionTool: ToolDefinition = {
 
       if (input.action === 'list') {
         const entries = new AdmZip(sourcePath).getEntries();
-        const listing = entries.map(entry =>
+        const listing = entries.map((entry: any) =>
           `${entry.entryName}\t${entry.header.size} bytes\t${entry.header.time.toISOString()}`
         );
         return { success: true, message: listing.join('\n') || 'Archive is empty.' };

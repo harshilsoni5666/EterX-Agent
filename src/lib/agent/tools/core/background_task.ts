@@ -176,16 +176,19 @@ Use for: long installs, builds, data processing, file watching, anything that ta
           message: `Background task launched: "${input.description || input.command}" (ID: ${managedResult.taskId}, PID: ${managedResult.pid}). Use mode="check" to monitor progress.`,
         };
 
+        const taskCommand = input.command || '';
+        const taskDescription = input.description || input.command || '';
+
         const task: BackgroundTask = {
           id: taskId,
-          command: input.command,
-          description: input.description || input.command,
+          command: taskCommand,
+          description: taskDescription,
           status: 'running',
           startedAt: Date.now()
         };
         activeTasks.set(taskId, task);
 
-        console.log(`[BackgroundTask] 🚀 Launching: ${input.command} (${taskId})`);
+        console.log(`[BackgroundTask] 🚀 Launching: ${taskCommand} (${taskId})`);
 
         // Run in background — don't await
         const outputFile = resolveUnder(TASKS_DIR, `${taskId}_output.txt`);
@@ -195,13 +198,13 @@ Use for: long installs, builds, data processing, file watching, anything that ta
         await writeJsonAtomic(statusFile, task);
 
         // Execute asynchronously
-        const child = exec(input.command, {
-          cwd: authorization.cwd,
-          env: authorization.env,
+        const child = exec(taskCommand, {
+          cwd: authorization.cwd || process.cwd(),
+          env: authorization.env as NodeJS.ProcessEnv | undefined,
           timeout: 600000,  // 10 minute timeout
           maxBuffer: 50 * 1024 * 1024,  // 50MB buffer
           signal: context?.abortSignal,
-        }, async (error, stdout, stderr) => {
+        }, async (error: any, stdout: string, stderr: string) => {
           const output = stdout + (stderr ? `\nSTDERR:\n${stderr}` : '');
           task.output = output.substring(0, 10000);  // Cap at 10KB
           task.completedAt = Date.now();
