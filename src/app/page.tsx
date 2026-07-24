@@ -11,7 +11,7 @@ import { FloatingLiveWidget } from '../components/chat/FloatingLiveWidget';
 // @ts-ignore — react-markdown's runtime types vary between desktop bundles.
 import ReactMarkdown from 'react-markdown';
 import { markdownComponents, normalizeMarkdownForRendering, remarkPlugins, rehypePlugins } from '../components/chat/markdown-renderer';
-import { AlertTriangle, CheckCircle2, ChevronDown, Sun, Moon, Clock3, Code2, GraduationCap, List, MessageSquare, Pencil, PenTool, SendHorizontal, SquarePen, Search, X, ArrowLeft, ListTodo, ChevronRight, Monitor, GitFork, Terminal, GitBranch, GitCommit, PlusSquare, Check, FileCode, FileText, MoreHorizontal, Sparkles, Pin, PinOff, Archive, Split, Calendar, ExternalLink, Copy, ChevronLeft, History, RefreshCw, Plus, Pause, Play, SlidersHorizontal, ShieldCheck, Minus, ArrowUp, Mic, Power, LifeBuoy, Bug, Mail } from 'lucide-react';
+import { Maximize2, Minimize2, AlertTriangle, CheckCircle2, ChevronDown, Sun, Moon, Clock3, Code2, GraduationCap, List, MessageSquare, Pencil, PenTool, SendHorizontal, SquarePen, Search, X, ArrowLeft, ListTodo, ChevronRight, Monitor, GitFork, Terminal, GitBranch, GitCommit, PlusSquare, Check, FileCode, FileText, MoreHorizontal, Sparkles, Pin, PinOff, Archive, Split, Calendar, ExternalLink, Copy, ChevronLeft, History, RefreshCw, Plus, Pause, Play, SlidersHorizontal, ShieldCheck, Minus, ArrowUp, Mic, Power, LifeBuoy, Bug, Mail, Paperclip, Camera } from 'lucide-react';
 import { Tooltip } from '../components/ui/tooltip';
 import { Shimmer } from '../components/ui/shimmer';
 import { motion, AnimatePresence, Reorder } from 'framer-motion';
@@ -499,29 +499,6 @@ type SelectedAgentState = {
 };
 
 const readSelectedAgentState = (): SelectedAgentState => {
-  if (typeof window === 'undefined') return { agentId: null, agentName: 'General' };
-  try {
-    const saved = localStorage.getItem(SELECTED_AGENT_STORAGE_KEY);
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      const agentId = typeof parsed?.agentId === 'string' && parsed.agentId.trim()
-        ? parsed.agentId.trim()
-        : null;
-      const agentName = typeof parsed?.agentName === 'string' && parsed.agentName.trim()
-        ? parsed.agentName.trim()
-        : agentId === 'coding'
-          ? 'Coding'
-          : agentId || 'General';
-      return { agentId, agentName };
-    }
-    const rawSettings = localStorage.getItem(SETTINGS_STORAGE_KEY);
-    const settings = rawSettings ? JSON.parse(rawSettings) : null;
-    if (settings?.workMode === 'specialist') {
-      return { agentId: 'autonomous', agentName: 'Autonomous' };
-    }
-  } catch {
-    // Fall through to the stable default.
-  }
   return { agentId: null, agentName: 'General' };
 };
 
@@ -561,7 +538,7 @@ const formatProxyManagerMarkdown = (value: string) => {
   // sentence. Put each item on a Markdown block boundary so emphasis and list
   // rendering work instead of exposing raw ** markers.
   return normalized
-    .replace(/\s+(?=\d{1,2}\.\s+(?:\*\*|__)?[A-Za-z])/g, '\n\n')
+    .replace(/([.!?:]\s*)(?=\d{1,2}\.\s+(?:\*\*|__)?[A-Za-z])/g, '$1\n\n')
     .replace(/([^\n])\s+(?=([-*])\s+(?:\*\*|__)?[A-Za-z])/g, '$1\n\n');
 };
 
@@ -575,6 +552,11 @@ const proxyManagerMarkdownComponents = {
   h2: ({ ...props }: any) => <h2 className="mb-2 mt-3 text-[14px] font-bold leading-5" {...props} />,
   h3: ({ ...props }: any) => <h3 className="mb-1.5 mt-2 text-[13px] font-semibold leading-5" {...props} />,
   pre: ({ ...props }: any) => <pre className="my-2 max-w-full overflow-hidden whitespace-pre-wrap break-words rounded-lg bg-white/[0.04] p-2 text-[10px] leading-4" {...props} />,
+  strong: ({ ...props }: any) => <strong className="font-semibold text-white/95" {...props} />,
+  em: ({ ...props }: any) => <em className="italic text-white/80" {...props} />,
+  a: ({ node, href, children, ...props }: any) => (
+    <a className="text-[#E2765A] underline-offset-2 hover:underline" target="_blank" rel="noopener noreferrer" href={href} {...props}>{children}</a>
+  ),
 };
 
 const sortChats = (chats: ChatSession[]) => {
@@ -684,6 +666,7 @@ function DeepWorkUI() {
   const [proxyModelEntries, setProxyModelEntries] = useState(() => readRuntimeModelEntries());
   const [proxyModelSelection, setProxyModelSelection] = useState<string>(AUTO_MODEL_SELECTION);
   const [proxyRuntimeModelSelection, setProxyRuntimeModelSelection] = useState<string>(AUTO_MODEL_SELECTION);
+  const [showProxyAttachMenu, setShowProxyAttachMenu] = useState(false);
 
   const [composerStates, setComposerStates] = useState<Record<string, ChatComposerState>>(() => {
     if (typeof window !== 'undefined') {
@@ -902,6 +885,26 @@ function DeepWorkUI() {
   const [agentMode, setAgentMode] = useState<MainAgentMode>(() => composerRuntimeSelectionRef.current.agentMode);
   const [thinkingLevel, setThinkingLevelState] = useState<MainAgentThinkingLevel>(() => composerRuntimeSelectionRef.current.thinkingLevel);
   const [selectedAgentState, setSelectedAgentState] = useState<SelectedAgentState>(() => composerRuntimeSelectionRef.current.selectedAgent);
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(SELECTED_AGENT_STORAGE_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        const agentId = typeof parsed?.agentId === 'string' && parsed.agentId.trim() ? parsed.agentId.trim() : null;
+        const agentName = typeof parsed?.agentName === 'string' && parsed.agentName.trim()
+          ? parsed.agentName.trim()
+          : agentId === 'coding' ? 'Coding' : agentId || 'General';
+        setSelectedAgentState({ agentId, agentName });
+        return;
+      }
+      const rawSettings = localStorage.getItem(SETTINGS_STORAGE_KEY);
+      const settings = rawSettings ? JSON.parse(rawSettings) : null;
+      if (settings?.workMode === 'specialist') {
+        setSelectedAgentState({ agentId: 'autonomous', agentName: 'Autonomous' });
+      }
+    } catch {}
+  }, []);
   const [proxyEnabled, setProxyEnabled] = useState(true);
   const [proxyIntervention, setProxyIntervention] = useState<'minimal' | 'normal' | 'high'>('normal');
   const [proxyDropdownOpen, setProxyDropdownOpen] = useState(false);
@@ -913,7 +916,20 @@ function DeepWorkUI() {
   const [proxyChatMessages, setProxyChatMessages] = useState<Array<{ id?: string; sender: 'user' | 'proxy'; text: string; time: string; delivery?: string }>>([]);
   const [proxyChatHistoryChatId, setProxyChatHistoryChatId] = useState<string | null>(null);
   const [proxyChatLoading, setProxyChatLoading] = useState(false);
-  const [proxyChatWindow, setProxyChatWindow] = useState({ x: 0, y: 0, width: 330, height: 420 });
+  const [proxyChatWindow, setProxyChatWindow] = useState({ x: 0, y: 0, width: 340, height: 460 });
+  const [isProxyExpanded, setIsProxyExpanded] = useState(false);
+  
+  const toggleProxyExpanded = useCallback(() => {
+    setIsProxyExpanded(prev => {
+      const next = !prev;
+      if (next) {
+        setProxyChatWindow({ x: 0, y: 0, width: 440, height: 620 });
+      } else {
+        setProxyChatWindow({ x: 0, y: 0, width: 340, height: 460 });
+      }
+      return next;
+    });
+  }, []);
   const proxyChatWindowRef = useRef<HTMLDivElement | null>(null);
   const proxyWindowInteractionRef = useRef<{
     type: 'drag' | 'resize';
@@ -1566,6 +1582,121 @@ function DeepWorkUI() {
     }
   }, [activeChatId]);
 
+  const proxyCardRef = useRef<HTMLDivElement>(null);
+  const proxyModelMenuRef = useRef<HTMLDivElement>(null);
+  const proxyAttachMenuRef = useRef<HTMLDivElement>(null);
+  const [proxyAttachments, setProxyAttachments] = useState<ComposerAttachment[]>([]);
+  const [customInputHeight, setCustomInputHeight] = useState<number | null>(null);
+
+  const startInputHeightResize = useCallback((downEvent: React.PointerEvent) => {
+    downEvent.preventDefault();
+    const startY = downEvent.clientY;
+    const startHeight = customInputHeight || 36;
+
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      const dy = startY - moveEvent.clientY;
+      const newHeight = Math.max(32, Math.min(360, startHeight + dy));
+      setCustomInputHeight(newHeight);
+    };
+
+    const handlePointerUp = () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+    };
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp);
+  }, [customInputHeight]);
+  const [proxyPinnedItems, setProxyPinnedItems] = useState<{ name: string; isFolder?: boolean }[]>([]);
+  const proxyFileInputRef = useRef<HTMLInputElement>(null);
+  const proxyPinInputRef = useRef<HTMLInputElement>(null);
+
+  const handleProxyFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files || []);
+    if (!files.length) return;
+    const newAtts: ComposerAttachment[] = files.map(file => ({
+      id: `proxy-att-${Date.now()}-${Math.random()}`,
+      file,
+      name: file.name,
+      preview: file.type.startsWith('image/') ? URL.createObjectURL(file) : '',
+    }));
+    setProxyAttachments(prev => [...prev, ...newAtts]);
+    if (event.target) event.target.value = '';
+  };
+
+  const handleProxyPinSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files || []);
+    if (!files.length) return;
+    const newPins = files.map(file => {
+      const relPath = (file as any).webkitRelativePath || file.name;
+      const parts = relPath.split('/');
+      const name = parts.length > 1 ? parts[0] : file.name;
+      return { name, isFolder: parts.length > 1 };
+    });
+    setProxyPinnedItems(prev => {
+      const existing = new Set(prev.map(p => p.name));
+      const added = newPins.filter(p => !existing.has(p.name));
+      return [...prev, ...added];
+    });
+    if (event.target) event.target.value = '';
+  };
+
+  const handleProxyTakeScreenshot = async () => {
+    try {
+      const canvas = document.createElement('canvas');
+      const w = window.innerWidth || 1280;
+      const h = window.innerHeight || 800;
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.fillStyle = '#181818';
+        ctx.fillRect(0, 0, w, h);
+        ctx.fillStyle = '#252525';
+        ctx.fillRect(40, 40, w - 80, h - 80);
+        ctx.font = '16px sans-serif';
+        ctx.fillStyle = '#888';
+        ctx.fillText('App Screenshot Preview', 60, 80);
+      }
+      const dataUrl = canvas.toDataURL('image/png');
+      const res = await fetch(dataUrl);
+      const blob = await res.blob();
+      const file = new File([blob], `screenshot_${Date.now()}.png`, { type: 'image/png' });
+      setProxyAttachments(prev => [
+        ...prev,
+        {
+          id: `proxy-att-${Date.now()}-${Math.random()}`,
+          file,
+          name: file.name,
+          preview: dataUrl,
+        }
+      ]);
+    } catch (e) { }
+  };
+
+  useEffect(() => {
+    if (!showProxyRuntimeModelMenu && !showProxyInterventionMenu && !showProxyModelMenu && !showProxyAttachMenu) return;
+
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (proxyCardRef.current && !proxyCardRef.current.contains(target)) {
+        setShowProxyRuntimeModelMenu(false);
+        setShowProxyInterventionMenu(false);
+      }
+      if (proxyModelMenuRef.current && !proxyModelMenuRef.current.contains(target)) {
+        setShowProxyModelMenu(false);
+      }
+      if (proxyAttachMenuRef.current && !proxyAttachMenuRef.current.contains(target)) {
+        setShowProxyAttachMenu(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [showProxyRuntimeModelMenu, showProxyInterventionMenu, showProxyModelMenu, showProxyAttachMenu]);
+
 
   useEffect(() => {
     if (!activeChatId) {
@@ -1610,34 +1741,63 @@ function DeepWorkUI() {
   const visibleProxyChatMessages = proxyChatHistoryChatId === activeChatId ? proxyChatMessages : [];
 
   const handleSendProxyMessage = useCallback(async () => {
-    const text = proxyChatInput.trim();
-    if (!text || !activeChatId || proxyChatLoading) return;
+    const rawText = proxyChatInput.trim();
+    const hasAttachments = proxyAttachments.length > 0 || proxyPinnedItems.length > 0;
+    if ((!rawText && !hasAttachments) || !activeChatId || proxyChatLoading) return;
+
+    let fullText = rawText;
+    if (proxyPinnedItems.length > 0) {
+      const pinNames = proxyPinnedItems.map(p => `📌 ${p.name}`).join(', ');
+      fullText = fullText ? `${fullText}\n\n${pinNames}` : pinNames;
+    }
+    if (proxyAttachments.length > 0) {
+      const attNames = proxyAttachments.map(a => `📎 ${a.name || 'attachment'}`).join(', ');
+      fullText = fullText ? `${fullText}\n\n${attNames}` : attNames;
+    }
+
     const optimisticId = crypto.randomUUID();
     setProxyChatHistoryChatId(activeChatId);
     setProxyChatMessages(prev => [...prev, {
       id: optimisticId,
       sender: 'user',
-      text,
+      text: fullText,
       time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     }]);
+
     setProxyChatInput('');
+    setProxyAttachments([]);
+    setProxyPinnedItems([]);
     setProxyChatLoading(true);
+
     const parsedModel = parseModelEntryKey(proxyModelSelection);
     try {
       const response = await fetch('/api/agent/proxy-manager', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chatId: activeChatId, message: text, model: parsedModel || {} }),
+        body: JSON.stringify({ chatId: activeChatId, message: fullText, model: parsedModel || {} }),
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok || !data.success) throw new Error(data.error || 'Proxy Manager request failed');
-      setProxyChatMessages((Array.isArray(data.history) ? data.history : []).map((item: any) => ({
-        id: String(item.id || ''),
-        sender: item.role === 'user' ? 'user' : 'proxy',
-        text: String(item.text || ''),
-        time: new Date(Number(item.createdAt || Date.now())).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        delivery: item.delivery,
-      })));
+      const historyArr = Array.isArray(data.history) ? data.history : [];
+      if (historyArr.length > 0) {
+        // Full history from server — replace list (canonical source of truth)
+        setProxyChatMessages(historyArr.map((item: any) => ({
+          id: String(item.id || ''),
+          sender: item.role === 'user' ? 'user' : 'proxy',
+          text: String(item.text || ''),
+          time: new Date(Number(item.createdAt || Date.now())).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          delivery: item.delivery,
+        })));
+      } else if (data.reply) {
+        // Server returned only the reply (no full history) — append it
+        setProxyChatMessages(prev => [...prev, {
+          id: crypto.randomUUID(),
+          sender: 'proxy' as const,
+          text: String(data.reply || ''),
+          time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        }]);
+      }
+      // else: server sent empty history + no reply → keep optimistic user msg
     } catch (error: any) {
       setProxyChatMessages(prev => [...prev, {
         id: crypto.randomUUID(),
@@ -1649,7 +1809,7 @@ function DeepWorkUI() {
     } finally {
       setProxyChatLoading(false);
     }
-  }, [activeChatId, proxyChatInput, proxyChatLoading, proxyModelSelection]);
+  }, [activeChatId, proxyAttachments, proxyChatInput, proxyChatLoading, proxyModelSelection, proxyPinnedItems]);
 
   const handleProxyWindowPointerMove = useCallback((event: PointerEvent) => {
     const interaction = proxyWindowInteractionRef.current;
@@ -7662,164 +7822,167 @@ function DeepWorkUI() {
                   >
                     {autonomousSelected && activeChatId && (
                       <div className="eterx-proxy-dock pointer-events-none absolute right-6 top-1/2 z-[60] w-[224px] -translate-y-1/2 transition-all duration-300 ease-in-out">
-                        <div className="eterx-proxy-card pointer-events-auto flex h-fit flex-col gap-2 rounded-[20px] border border-white/[0.10] bg-[#252525]/95 px-3 pb-3 pt-3 shadow-[0_18px_44px_rgba(0,0,0,0.34),inset_0_1px_0_rgba(255,255,255,0.04)] backdrop-blur-xl select-none">
+                        <div ref={proxyCardRef} className="eterx-proxy-card pointer-events-auto flex h-fit flex-col gap-2 rounded-[20px] border border-white/[0.10] bg-[#252525]/95 px-3 pb-3 pt-3 shadow-[0_18px_44px_rgba(0,0,0,0.34),inset_0_1px_0_rgba(255,255,255,0.04)] backdrop-blur-xl select-none">
                           {/* Professional Header */}
-                          <div className="pt-1 pb-1.5 shrink-0 flex items-center justify-between px-1 w-full border-b border-white/[0.06] mb-0.5">
-                            <div className="flex items-center gap-1.5">
-                              <Sparkles className="w-3.5 h-3.5 text-white/70" />
-                              <span className="eterx-proxy-title text-[12.5px] font-semibold tracking-wide text-white/95">Proxy-Agent</span>
-                            </div>
-                            <span className={`text-[9.5px] font-medium px-2 py-0.5 rounded-full border transition-colors ${ proxyEnabled ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-amber-500/10 text-amber-400 border-amber-500/20' }`}>
-                              {proxyEnabled ? 'Active' : 'Paused'}
-                            </span>
+                          <div className="pt-1 pb-1 shrink-0 flex items-center justify-center w-full">
+                            <span className="eterx-proxy-title text-[14px] font-semibold tracking-[0.02em] text-white/95 text-center">Proxy-Agent</span>
                           </div>
 
-                          {/* Toggle Button */}
-                          <button
-                            type="button"
-                            onClick={handleProxyToggle}
-                            className="eterx-proxy-button w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-[12px] font-medium transition-all duration-200 border border-white/[0.08] bg-white/[0.04] text-white/80 hover:bg-white/[0.08] hover:text-white active:bg-white/[0.12] shrink-0"
-                          >
-                            {proxyEnabled ? (
-                              <>
-                                <Pause className="h-3 w-3 text-white/60" />
-                                <span>Pause Proxy</span>
-                              </>
-                            ) : (
-                              <>
-                                <Play className="h-3 w-3 text-white/60" />
-                                <span>Resume Proxy</span>
-                              </>
-                            )}
-                          </button>
-
-                          {/* Runtime Proxy model — independent from the user-facing Proxy chat model */}
-                          <div className="group relative flex flex-col gap-1.5 shrink-0">
-                            <div
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                setShowProxyInterventionMenu(false);
-                                setShowProxyRuntimeModelMenu(value => !value);
-                              }}
-                              className="eterx-proxy-intervention-row w-full flex min-w-0 items-center justify-between gap-2 rounded-xl border border-white/[0.08] bg-white/[0.03] px-3 py-2 text-[12px] font-medium text-white/85 hover:bg-white/[0.06] hover:border-white/[0.14] cursor-pointer transition-all"
+                          {/* UNIFIED JOINED CONTROL GROUP (All 4 Controls Joined) */}
+                          <div className="eterx-proxy-group-block w-full flex flex-col rounded-2xl border border-white/[0.08] bg-white/[0.03] shrink-0">
+                            {/* 1. Pause / Resume Proxy Button (Top Item) */}
+                            <button
+                              type="button"
+                              onClick={handleProxyToggle}
+                              className="eterx-proxy-group-item w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-t-2xl text-[12px] font-medium text-white/85 hover:bg-white/[0.06] hover:text-white transition-colors shrink-0"
                             >
-                              <span className="text-white/50 shrink-0 text-[12px]">Proxy model</span>
-                              <button
-                                type="button"
+                              {proxyEnabled ? (
+                                <>
+                                  <Pause className="h-3.5 w-3.5 text-white/60" />
+                                  <span>Pause Proxy</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Play className="h-3.5 w-3.5 text-white/60" />
+                                  <span>Resume Proxy</span>
+                                </>
+                              )}
+                            </button>
+
+                            <div className="h-[1px] w-full bg-white/[0.06] eterx-proxy-group-divider" />
+
+                            {/* 2. Proxy Model Row */}
+                            <div className="group relative">
+                              <div
                                 onClick={(event) => {
                                   event.stopPropagation();
                                   setShowProxyInterventionMenu(false);
                                   setShowProxyRuntimeModelMenu(value => !value);
                                 }}
-                                className="flex min-w-0 max-w-[115px] items-center justify-end gap-1 text-white/90 font-semibold"
-                                title="Model used by the live runtime Proxy-Agent"
+                                className="eterx-proxy-group-item w-full flex min-w-0 items-center justify-between gap-2 px-3 py-2.5 text-[12px] font-medium text-white/85 hover:bg-white/[0.06] cursor-pointer transition-colors"
                               >
-                                <span className="truncate text-[12px]">
-                                  {proxyRuntimeModelSelection === AUTO_MODEL_SELECTION
-                                    ? 'Auto'
-                                    : (proxyModelEntries.find(entry => modelEntryKey(entry.provider, entry.modelId) === proxyRuntimeModelSelection)?.modelId || 'Auto')}
-                                </span>
-                                <ChevronDown className={`h-3.5 w-3.5 shrink-0 text-white/35 transition-transform duration-200 ${ showProxyRuntimeModelMenu ? 'rotate-180' : '' }`} />
-                              </button>
-                            </div>
-                            {showProxyRuntimeModelMenu && (
-                              <div className="eterx-proxy-runtime-model-menu absolute right-0 top-full z-[110] mt-1.5 w-[220px] max-h-[260px] overflow-y-auto rounded-2xl border border-white/[0.10] bg-[#252525] p-1.5 shadow-2xl">
+                                <span className="text-white/50 shrink-0 text-[12px]">Proxy model</span>
                                 <button
                                   type="button"
-                                  onClick={() => { handleProxyRuntimeModelSelectionChange(AUTO_MODEL_SELECTION); setShowProxyRuntimeModelMenu(false); }}
-                                  className={`w-full rounded-xl px-2.5 py-2 text-left transition-colors ${ proxyRuntimeModelSelection === AUTO_MODEL_SELECTION ? 'bg-white/[0.08] text-white' : 'text-white/60 hover:bg-white/[0.05] hover:text-white' }`}
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    setShowProxyInterventionMenu(false);
+                                    setShowProxyRuntimeModelMenu(value => !value);
+                                  }}
+                                  className="flex min-w-0 max-w-[115px] items-center justify-end gap-1 px-1.5 py-0.5 rounded-lg text-white/90 font-semibold bg-transparent hover:bg-white/[0.08] active:bg-white/[0.12] transition-colors"
+                                  title="Model used by the live runtime Proxy-Agent"
                                 >
-                                  <span className="block text-[12px] font-medium">Auto</span>
-                                  <span className="block text-[9.5px] text-white/30">Use the settings model priority</span>
+                                  <span className="truncate text-[12px]">
+                                    {proxyRuntimeModelSelection === AUTO_MODEL_SELECTION
+                                      ? 'Auto'
+                                      : (proxyModelEntries.find(entry => modelEntryKey(entry.provider, entry.modelId) === proxyRuntimeModelSelection)?.modelId || 'Auto')}
+                                  </span>
+                                  <ChevronDown className={`h-3.5 w-3.5 shrink-0 text-white/35 transition-transform duration-200 ${ showProxyRuntimeModelMenu ? 'rotate-180' : '' }`} />
                                 </button>
-                                {proxyModelEntries.map(entry => {
-                                  const optionKey = modelEntryKey(entry.provider, entry.modelId);
-                                  const selected = proxyRuntimeModelSelection === optionKey;
-                                  return (
-                                    <button
-                                      key={`runtime-proxy-${ optionKey }`}
-                                      type="button"
-                                      onClick={() => { handleProxyRuntimeModelSelectionChange(optionKey); setShowProxyRuntimeModelMenu(false); }}
-                                      className={`w-full rounded-xl px-2.5 py-2 text-left transition-colors ${ selected ? 'bg-white/[0.08] text-white' : 'text-white/60 hover:bg-white/[0.05] hover:text-white' }`}
-                                    >
-                                      <span className="block truncate text-[12px] font-medium">{entry.modelId}</span>
-                                      <span className="block text-[9.5px] text-white/30">{entry.provider}</span>
-                                    </button>
-                                  );
-                                })}
                               </div>
-                            )}
-                          </div>
+                              {showProxyRuntimeModelMenu && (
+                                <div className="eterx-proxy-runtime-model-menu absolute right-0 top-full z-[110] mt-1.5 w-[220px] max-h-[260px] overflow-y-auto rounded-2xl border border-white/[0.10] bg-[#252525] p-1.5 shadow-2xl">
+                                  <button
+                                    type="button"
+                                    onClick={() => { handleProxyRuntimeModelSelectionChange(AUTO_MODEL_SELECTION); setShowProxyRuntimeModelMenu(false); }}
+                                    className={`w-full rounded-xl px-2.5 py-2 text-left transition-colors ${ proxyRuntimeModelSelection === AUTO_MODEL_SELECTION ? 'eterx-proxy-model-item-active bg-white/[0.08] text-white' : 'text-white/60 hover:bg-white/[0.05] hover:text-white' }`}
+                                  >
+                                    <span className="block text-[12px] font-medium">Auto</span>
+                                    <span className="block text-[9.5px] text-white/30">Use the settings model priority</span>
+                                  </button>
+                                  {proxyModelEntries.map(entry => {
+                                    const optionKey = modelEntryKey(entry.provider, entry.modelId);
+                                    const selected = proxyRuntimeModelSelection === optionKey;
+                                    return (
+                                      <button
+                                        key={`runtime-proxy-${ optionKey }`}
+                                        type="button"
+                                        onClick={() => { handleProxyRuntimeModelSelectionChange(optionKey); setShowProxyRuntimeModelMenu(false); }}
+                                        className={`w-full rounded-xl px-2.5 py-2 text-left transition-colors ${ selected ? 'eterx-proxy-model-item-active bg-white/[0.08] text-white' : 'text-white/60 hover:bg-white/[0.05] hover:text-white' }`}
+                                      >
+                                        <span className="block truncate text-[12px] font-medium">{entry.modelId}</span>
+                                        <span className="block text-[9.5px] text-white/30">{entry.provider}</span>
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </div>
 
-                          {/* Intervention Row (with hover pop-out to the left) */}
-                          <div className="group relative flex flex-col gap-1.5 shrink-0">
-                            <button
-                              type="button"
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                setShowProxyRuntimeModelMenu(false);
-                                setShowProxyInterventionMenu(value => !value);
-                              }}
-                              className="eterx-proxy-intervention-row w-full flex items-center justify-between gap-2 rounded-xl border border-white/[0.08] bg-white/[0.03] px-3 py-2 text-[12px] font-medium text-white/85 hover:bg-white/[0.06] hover:border-white/[0.14] cursor-pointer transition-all"
-                            >
-                              <span className="text-white/50 shrink-0 text-[12px]">Intervention</span>
-                              <div className="flex shrink-0 items-center gap-1.5">
-                                <span className="capitalize text-[12px] text-white/90 font-semibold">
-                                  {proxyIntervention}
-                                </span>
-                                <ChevronRight className={`h-3.5 w-3.5 shrink-0 text-white/35 group-hover:text-white/70 transition-transform duration-200 ${ showProxyInterventionMenu ? 'rotate-90' : '' }`} />
-                              </div>
-                            </button>
+                            <div className="h-[1px] w-full bg-white/[0.06] eterx-proxy-group-divider" />
 
-                            {/* Pop-out Dropdown to the Left (pr-2 connects hover hit area across the 8px visual gap) */}
-                            <div className={`absolute right-full top-1/2 -translate-y-1/2 z-[110] w-[158px] pr-2 transition-all duration-200 ${ showProxyInterventionMenu ? 'pointer-events-auto opacity-100 translate-x-0' : 'pointer-events-none opacity-0 translate-x-2' }`}>
-                              <div className="eterx-proxy-popout rounded-2xl border border-white/[0.08] bg-[#252525] shadow-2xl p-1.5 flex flex-col gap-1 w-full">
-                                {(['minimal', 'normal', 'high'] as const).map((level) => {
-                                  const isSelected = proxyIntervention === level;
-                                  const subtitle = level === 'minimal' ? 'Observe more' : level === 'normal' ? 'Balanced' : 'Intervene';
-                                  return (
-                                    <button
-                                      key={level}
-                                      type="button"
-                                      onClick={() => {
-                                        handleProxyInterventionChange(level);
-                                        setShowProxyInterventionMenu(false);
-                                      }}
-                                      className={`eterx-proxy-popout-item w-full flex flex-col items-start rounded-xl px-2.5 py-1 text-left transition-colors relative pr-6 ${ isSelected
-                                          ? 'bg-white/[0.08] text-white'
-                                          : 'text-white/50 hover:bg-white/[0.04] hover:text-white/85'
-                                        }`}
-                                    >
-                                      <span className="text-[12px] font-medium capitalize">{level}</span>
-                                      <span className="text-[9.5px] text-white/30 font-normal leading-normal">{subtitle}</span>
-                                      {isSelected && (
-                                        <span className="absolute right-2 top-1/2 -translate-y-1/2">
-                                          <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
-                                        </span>
-                                      )}
-                                    </button>
-                                  );
-                                })}
+                            {/* 3. Intervention Row */}
+                            <div className="group relative">
+                              <button
+                                type="button"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  setShowProxyRuntimeModelMenu(false);
+                                  setShowProxyInterventionMenu(value => !value);
+                                }}
+                                className="eterx-proxy-group-item w-full flex items-center justify-between gap-2 px-3 py-2.5 text-[12px] font-medium text-white/85 hover:bg-white/[0.06] cursor-pointer transition-colors"
+                              >
+                                <span className="text-white/50 shrink-0 text-[12px]">Intervention</span>
+                                <div className="flex shrink-0 items-center gap-1.5">
+                                  <span className="capitalize text-[12px] text-white/90 font-semibold">
+                                    {proxyIntervention}
+                                  </span>
+                                  <ChevronRight className={`h-3.5 w-3.5 shrink-0 text-white/35 group-hover:text-white/70 transition-transform duration-200 ${ showProxyInterventionMenu ? 'rotate-90' : '' }`} />
+                                </div>
+                              </button>
+
+                              {/* Pop-out Dropdown to the Left */}
+                              <div className={`absolute right-full top-1/2 -translate-y-1/2 z-[110] w-[158px] pr-2 transition-all duration-200 ${ showProxyInterventionMenu ? 'pointer-events-auto opacity-100 translate-x-0' : 'pointer-events-none opacity-0 translate-x-2' }`}>
+                                <div className="eterx-proxy-popout rounded-2xl border border-white/[0.08] bg-[#252525] shadow-2xl p-1.5 flex flex-col gap-1 w-full">
+                                  {(['minimal', 'normal', 'high'] as const).map((level) => {
+                                    const isSelected = proxyIntervention === level;
+                                    const subtitle = level === 'minimal' ? 'Observe more' : level === 'normal' ? 'Balanced' : 'Best Efforts';
+                                    return (
+                                      <button
+                                        key={level}
+                                        type="button"
+                                        onClick={() => {
+                                          handleProxyInterventionChange(level);
+                                          setShowProxyInterventionMenu(false);
+                                        }}
+                                        className={`eterx-proxy-popout-item w-full flex flex-col items-start rounded-xl px-2.5 py-1 text-left transition-colors relative pr-6 ${ isSelected
+                                            ? 'eterx-proxy-popout-item-active bg-white/[0.08] text-white'
+                                            : 'text-white/50 hover:bg-white/[0.04] hover:text-white/85'
+                                          }`}
+                                      >
+                                        <span className="text-[12px] font-medium capitalize">{level}</span>
+                                        <span className="text-[9.5px] text-white/30 font-normal leading-normal">{subtitle}</span>
+                                        {isSelected && (
+                                          <span className="absolute right-2 top-1/2 -translate-y-1/2">
+                                            <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                                          </span>
+                                        )}
+                                      </button>
+                                    );
+                                  })}
+                                </div>
                               </div>
                             </div>
-                          </div>
 
-                          {/* Talk with proxy Button */}
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setShowProxyRuntimeModelMenu(false);
-                              setShowProxyInterventionMenu(false);
-                              setShowProxyChat(!showProxyChat);
-                            }}
-                            className={`eterx-proxy-button w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-[12px] font-medium transition-all duration-200 border shrink-0 ${ showProxyChat
-                                ? 'bg-white/[0.08] border-white/[0.14] text-white'
-                                : 'border-white/[0.08] bg-white/[0.04] text-white/80 hover:bg-white/[0.08] hover:text-white active:bg-white/[0.12]'
-                              }`}
-                          >
-                            <MessageSquare className="h-3 w-3 text-white/60" />
-                            <span>Talk with proxy</span>
-                          </button>
+                            <div className="h-[1px] w-full bg-white/[0.06] eterx-proxy-group-divider" />
+
+                            {/* 4. Talk with proxy Button (Bottom Item) */}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setShowProxyRuntimeModelMenu(false);
+                                setShowProxyInterventionMenu(false);
+                                setShowProxyChat(!showProxyChat);
+                              }}
+                              className={`eterx-proxy-group-item w-full flex items-center justify-center gap-1.5 px-3 py-2.5 text-[12px] font-medium transition-colors rounded-b-2xl shrink-0 ${ showProxyChat
+                                  ? 'bg-white/[0.08] text-white'
+                                  : 'text-white/80 hover:bg-white/[0.06] hover:text-white'
+                                }`}
+                            >
+                              <MessageSquare className="h-3.5 w-3.5 text-white/60" />
+                              <span>Talk with proxy</span>
+                            </button>
+                          </div>
                         </div>
 
                         {/* Floating Chat Container */}
@@ -7875,7 +8038,7 @@ function DeepWorkUI() {
                                 <div className="flex items-center">
                                   <span className="text-[13px] font-semibold tracking-[-0.01em] text-white/80">Talk with Proxy-Agent</span>
                                 </div>
-                                <button
+<button
                                   type="button"
                                   onPointerDown={(event) => event.stopPropagation()}
                                   onClick={() => setShowProxyChat(false)}
@@ -7902,8 +8065,8 @@ function DeepWorkUI() {
                                         }`}
                                     >
                                       <div
-                                        className={`eterx-proxy-message-bubble min-w-0 max-w-full whitespace-pre-wrap [overflow-wrap:anywhere] text-[11.5px] leading-relaxed ${ msg.sender === 'user'
-                                            ? 'rounded-xl border border-white/[0.08] bg-[#242424] px-3 py-2 text-white/90 shadow-[0_5px_18px_rgba(0,0,0,0.16)]'
+                                        className={`eterx-proxy-message-bubble min-w-0 max-w-full [overflow-wrap:anywhere] text-[11.5px] leading-relaxed ${ msg.sender === 'user'
+                                            ? 'rounded-xl border border-white/[0.08] bg-[#242424] px-3 py-2 text-white/90 shadow-[0_5px_18px_rgba(0,0,0,0.16)] whitespace-pre-wrap'
                                             : 'rounded-none border-0 bg-transparent px-0 py-0 text-white/78'
                                           }`}
                                       >
@@ -7927,7 +8090,7 @@ function DeepWorkUI() {
                                     <span className="inline-flex items-center gap-1 align-middle">
                                       <span className="h-1 w-1 animate-bounce rounded-full bg-white/55 [animation-delay:-0.24s]" />
                                       <span className="h-1 w-1 animate-bounce rounded-full bg-white/55 [animation-delay:-0.12s]" />
-                                      <span className="h-1 w-1 animate-bounce rounded-full bg-white/55" />
+                                        <span className="h-1 w-1 animate-bounce rounded-full bg-white/55" />
                                     </span>
                                   </div>
                                 )}
@@ -7940,12 +8103,79 @@ function DeepWorkUI() {
                                   e.preventDefault();
                                   handleSendProxyMessage();
                                 }}
-                                className="p-3 bg-transparent rounded-b-[24px] shrink-0"
+                                className="p-3 pt-0 bg-transparent shrink-0 border-none outline-none shadow-none"
                               >
-                                <div className="eterx-proxy-input-wrapper rounded-2xl border border-white/[0.08] bg-[#2d2d2d] flex flex-col p-2 gap-2">
+                                <div className="eterx-proxy-input-wrapper relative rounded-2xl border border-white/[0.08] bg-[#2d2d2d] flex flex-col p-2 gap-1.5">
+                                    {/* Interactive Top Height Resizer Drag Handle */}
+                                    <div
+                                      onPointerDown={startInputHeightResize}
+                                      onDoubleClick={() => setCustomInputHeight(null)}
+                                      title="Drag up/down to adjust height (Double click to reset)"
+                                      className="group absolute -top-2 inset-x-0 mx-auto w-16 h-3 flex items-center justify-center cursor-ns-resize z-30 select-none touch-none"
+                                    >
+                                      <div className="w-9 h-1 rounded-full bg-white/20 group-hover:bg-white/60 group-active:bg-white/90 transition-colors shadow-sm" />
+                                    </div>
+
+                                    <input ref={proxyFileInputRef} type="file" multiple className="hidden" onChange={handleProxyFileSelect} />
+                                    <input ref={proxyPinInputRef} type="file" multiple className="hidden" onChange={handleProxyPinSelect} />
+
+                                    {(proxyAttachments.length > 0 || proxyPinnedItems.length > 0) && (
+                                       <div className="flex items-center gap-2 px-1 pt-0.5 pb-1 overflow-x-auto overflow-y-hidden select-none whitespace-nowrap [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
+                                         {proxyPinnedItems.map((pin, idx) => (
+                                           <div key={`proxy-pin-${idx}`} className="group relative inline-flex shrink-0 items-center gap-2 rounded-xl border border-white/[0.12] bg-[#222222]/90 p-1 pr-2.5 shadow-sm backdrop-blur-md select-none mt-1">
+                                             <div className="flex h-6.5 w-6.5 shrink-0 items-center justify-center rounded-lg bg-white/[0.08] border border-white/[0.06]">
+                                               <img src="/icons/ui/pin.png" alt="Pin" className="h-3 w-3 object-contain eterx-popout-icon-img" />
+                                             </div>
+                                             <div className="flex flex-col min-w-0 pr-0.5">
+                                               <span className="max-w-[105px] truncate text-[10.5px] font-medium leading-tight text-white/90">{pin.name}</span>
+                                             </div>
+                                             <button
+                                               type="button"
+                                               onClick={() => setProxyPinnedItems(prev => prev.filter((_, i) => i !== idx))}
+                                               className="absolute -top-1 -right-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-white text-black shadow-md transition-transform hover:scale-110 active:scale-95 z-10"
+                                             >
+                                               <X className="h-2 w-2 stroke-[3]" />
+                                             </button>
+                                           </div>
+                                         ))}
+
+                                         {proxyAttachments.map((att, idx) => {
+                                           const fileName = att.name || att.file?.name || 'File';
+                                           const ext = fileName.includes('.') ? fileName.split('.').pop()?.toUpperCase() : 'FILE';
+                                           return (
+                                             <div key={`proxy-att-${att.id || idx}`} className="group relative inline-flex shrink-0 items-center gap-2 rounded-xl border border-white/[0.12] bg-[#222222]/90 p-1 pr-2.5 shadow-sm backdrop-blur-md select-none mt-1">
+                                               {att.preview ? (
+                                                 <img src={att.preview} alt={fileName} className="h-6.5 w-6.5 rounded-lg object-cover shrink-0 border border-white/10" />
+                                               ) : (
+                                                 <div className="flex h-6.5 w-6.5 shrink-0 items-center justify-center rounded-lg bg-white/[0.08] border border-white/[0.06] text-white/70">
+                                                   <FileText className="h-3 w-3" />
+                                                 </div>
+                                               )}
+                                               <div className="flex flex-col min-w-0 pr-0.5">
+                                                 <span className="max-w-[105px] truncate text-[10.5px] font-medium leading-tight text-white/90">{fileName}</span>
+                                                 <span className="text-[8.5px] font-semibold uppercase tracking-wider text-white/40 mt-0.5">{ext}</span>
+                                               </div>
+                                               <button
+                                                 type="button"
+                                                 onClick={() => setProxyAttachments(prev => prev.filter((_, i) => i !== idx))}
+                                                 className="absolute -top-1 -right-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-white text-black shadow-md transition-transform hover:scale-110 active:scale-95 z-10"
+                                               >
+                                                 <X className="h-2 w-2 stroke-[3]" />
+                                               </button>
+                                             </div>
+                                           );
+                                         })}
+                                       </div>
+                                     )}
                                   <textarea
                                     value={proxyChatInput}
-                                    onChange={(e) => setProxyChatInput(e.target.value)}
+                                    onChange={(e) => {
+                                      setProxyChatInput(e.target.value);
+                                      if (!customInputHeight) {
+                                        e.target.style.height = 'auto';
+                                        e.target.style.height = `${Math.min(e.target.scrollHeight, 240)}px`;
+                                      }
+                                    }}
                                     onKeyDown={(e) => {
                                       if (e.key === 'Enter' && !e.shiftKey) {
                                         e.preventDefault();
@@ -7953,28 +8183,62 @@ function DeepWorkUI() {
                                       }
                                     }}
                                     placeholder="Do anything"
-                                    className="eterx-proxy-textarea w-full bg-transparent text-white text-[12px] outline-none placeholder-white/30 resize-none h-[28px] px-1"
+                                    style={customInputHeight ? { height: `${customInputHeight}px` } : undefined}
+                                    className="eterx-proxy-textarea w-full bg-transparent text-white text-[12.5px] leading-relaxed outline-none placeholder-white/30 resize-none px-1 py-1 min-h-[32px] max-h-[360px] eterx-scrollbar"
                                   />
-                                  <div className="flex items-center justify-between mt-0.5 px-0.5">
-                                    <div className="flex items-center gap-1">
+                                  <div className="flex items-center justify-between mt-0.5 px-0.5 min-w-0">
+                                    <div ref={proxyAttachMenuRef} className="relative flex items-center shrink-0">
                                       <button
                                         type="button"
-                                        className="h-7 w-7 rounded-full flex items-center justify-center text-white/40 hover:text-white/80 hover:bg-white/[0.06] active:bg-white/[0.12] transition-colors focus:outline-none"
+                                        onClick={() => setShowProxyAttachMenu(prev => !prev)}
+                                        className={`h-7 w-7 rounded-full flex-none aspect-square shrink-0 flex items-center justify-center text-white/40 hover:text-white/80 hover:bg-white/[0.06] active:bg-white/[0.12] transition-colors focus:outline-none ${ showProxyAttachMenu ? 'bg-white/[0.10] text-white' : '' }`}
                                       >
-                                        <Plus className="h-4 w-4" />
+                                        <Plus className={`h-4 w-4 transition-transform duration-200 ${ showProxyAttachMenu ? 'rotate-45 text-white' : '' }`} />
                                       </button>
+
+                                      {/* + Dropdown Menu */}
+                                      {showProxyAttachMenu && (
+                                        <div className="eterx-proxy-attach-menu absolute bottom-[calc(100%+8px)] left-0 z-[130] flex w-[136px] flex-col gap-0.5 rounded-xl border border-white/[0.10] bg-[#1E1E1E]/95 p-1 text-[#F4F1EA] shadow-[0_12px_36px_rgba(0,0,0,0.52)] backdrop-blur-2xl animate-in fade-in zoom-in-95 duration-150 select-none">
+                                          <button
+                                            type="button"
+                                            onClick={() => { setShowProxyAttachMenu(false); proxyPinInputRef.current?.click(); }}
+                                            className="group flex h-8 w-full items-center gap-2.5 rounded-lg px-2 text-left text-[12px] font-medium text-white/85 transition-all hover:bg-white/[0.08] hover:text-white active:scale-[0.98]"
+                                          >
+                                            <img src="/icons/ui/pin.png" alt="Pin" className="h-4 w-4 shrink-0 object-contain eterx-popout-icon-img" />
+                                            <span>Pin</span>
+                                          </button>
+
+                                          <button
+                                            type="button"
+                                            onClick={() => { setShowProxyAttachMenu(false); handleProxyTakeScreenshot(); }}
+                                            className="group flex h-8 w-full items-center gap-2.5 rounded-lg px-2 text-left text-[12px] font-medium text-white/85 transition-all hover:bg-white/[0.08] hover:text-white active:scale-[0.98]"
+                                          >
+                                            <img src="/icons/ui/screenshot.png" alt="Screenshot" className="h-4 w-4 shrink-0 object-contain eterx-popout-icon-img" />
+                                            <span>Screenshot</span>
+                                          </button>
+
+                                          <button
+                                            type="button"
+                                            onClick={() => { setShowProxyAttachMenu(false); proxyFileInputRef.current?.click(); }}
+                                            className="group flex h-8 w-full items-center gap-2.5 rounded-lg px-2 text-left text-[12px] font-medium text-white/85 transition-all hover:bg-white/[0.08] hover:text-white active:scale-[0.98]"
+                                          >
+                                            <img src="/icons/ui/attach.png" alt="Attach" className="h-4 w-4 shrink-0 object-contain eterx-popout-icon-img" />
+                                            <span>Attach</span>
+                                          </button>
+                                        </div>
+                                      )}
                                     </div>
-                                    <div className="flex items-center gap-1.5">
+                                    <div className="flex items-center gap-1.5 min-w-0 shrink-0">
                                       {/* Model selector — matches the main chat composer */}
-                                      <div className="eterx-model-selector relative min-w-0">
+                                      <div ref={proxyModelMenuRef} className="eterx-model-selector relative min-w-0">
                                         <div
                                           onClick={() => setShowProxyModelMenu(!showProxyModelMenu)}
-                                          className={`eterx-model-button mr-0 flex h-[32px] min-w-0 max-w-[142px] items-center justify-between gap-1 rounded-full border border-transparent bg-[#2D2D2D] px-3 text-[#F4F4F4] transition-colors hover:bg-[#333333] hover:text-white active:bg-[#333333] group cursor-pointer ${ showProxyModelMenu ? '!bg-[#333333] !text-white' : '' }`}
+                                          className={`eterx-model-button mr-0 flex h-[32px] min-w-0 max-w-[110px] items-center justify-between gap-1 rounded-full border border-transparent bg-transparent px-2 text-[#F4F4F4] transition-colors hover:bg-white/[0.06] hover:text-white active:bg-white/[0.10] group cursor-pointer ${ showProxyModelMenu ? '!bg-white/[0.10] !text-white' : '' }`}
                                         >
-                                          <span className="eterx-selector-label min-w-0 truncate text-[13px] font-medium tracking-normal text-white/60">
+                                          <span className="eterx-selector-label min-w-0 truncate text-[12px] font-medium tracking-normal text-white/60">
                                             {selectedModel.label}
                                           </span>
-                                          <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[#F0F0F0] transition-all duration-150 hover:bg-white/10 hover:text-white">
+                                          <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[#F0F0F0] transition-all duration-150 group-hover:text-white">
                                             <ChevronDown className={`eterx-selector-chevron h-3.5 w-3.5 text-[#F0F0F0] transition-all duration-200 group-hover:text-white ${ showProxyModelMenu ? 'rotate-180' : 'group-hover:translate-y-px' }`} strokeWidth={2.1} />
                                           </span>
                                         </div>
@@ -7993,7 +8257,7 @@ function DeepWorkUI() {
                                                     setShowProxyModelMenu(false);
                                                   }}
                                                   className={`group flex min-h-[36px] w-full items-center gap-2 rounded-md px-2 py-1 text-left transition-colors ${ isCurrent
-                                                      ? 'bg-white/[0.08] text-[#F4F4F4] font-normal shadow-sm'
+                                                      ? 'eterx-proxy-model-item-active bg-white/[0.08] text-[#F4F1EA] font-normal shadow-sm'
                                                       : 'text-[#D0D0D0] hover:bg-white/[0.05] active:bg-white/[0.12]'
                                                     }`}
                                                   aria-pressed={isCurrent}
@@ -8029,7 +8293,7 @@ function DeepWorkUI() {
                                       {/* Send button */}
                                       <button
                                         type="submit"
-                                        disabled={proxyChatLoading || !proxyChatInput.trim() || !activeChatId}
+                                        disabled={proxyChatLoading || (!proxyChatInput.trim() && proxyAttachments.length === 0 && proxyPinnedItems.length === 0) || !activeChatId}
                                         className="h-7 w-7 rounded-full bg-white/10 hover:bg-white/20 disabled:opacity-30 disabled:hover:bg-white/10 text-white/80 flex items-center justify-center transition-colors focus:outline-none"
                                       >
                                         <ArrowUp className="h-4 w-4" />

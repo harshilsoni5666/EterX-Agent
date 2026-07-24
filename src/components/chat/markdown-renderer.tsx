@@ -176,8 +176,11 @@ const SYSTEM_TAGS = [
   'run_command'
 ];
 
+// Only strip COMPLETE tag pairs — never use `$` as a closing alternative.
+// Using `$` would silently eat everything from an unclosed tag to end-of-string,
+// truncating real answer content mid-stream.
 const SYSTEM_TAGS_PATTERN = new RegExp(
-  `<(${ SYSTEM_TAGS.join('|') })(?:\\s[^>]*)?(?:\\/>|>[\\s\\S]*?(?:<\\/\\1>|$))`,
+  `<(${ SYSTEM_TAGS.join('|') })(?:\\s[^>]*)?(?:\\/>|>[\\s\\S]*?<\\/\\1>)`,
   'gi'
 );
 
@@ -189,9 +192,10 @@ const stripSystemTagsOutsideCode = (value: string) =>
     // Strip fully formed or streaming system tags and their contents
     let processed = chunk.replace(SYSTEM_TAGS_PATTERN, '');
 
-    // Anti-Flicker: Strip incomplete HTML/XML tags at the very end of the stream
-    // Matches `<` optionally followed by `/`, then a letter, then any non-`>` chars until EOF.
-    processed = processed.replace(/<\/?(?:[A-Za-z_][^>]*)?$/, '');
+    // Anti-Flicker: Strip incomplete tag token at the very end of the stream.
+    // Only matches when `<` is followed directly by a letter/slash+letter (genuine tag start),
+    // so `< 5` or `<= 10` comparisons are NOT stripped.
+    processed = processed.replace(/<\/?[A-Za-z_][^>]*$/, '');
 
     return processed;
   }).join('');

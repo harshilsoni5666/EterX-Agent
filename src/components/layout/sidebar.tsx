@@ -374,12 +374,38 @@ const lightweightSidebarCss = `
   }
 
   @keyframes eterx-sidebar-ticker {
-    0%, 12% { transform: translateX(0); }
-    82%, 100% { transform: translateX(calc(-1 * var(--eterx-ticker-dist, 0px))); }
+    0%, 2% {
+      transform: translateX(0);
+      opacity: 1;
+    }
+    70% {
+      transform: translateX(calc(-1 * var(--eterx-ticker-dist, 0px)));
+      opacity: 1;
+    }
+    84% {
+      transform: translateX(calc(-1 * var(--eterx-ticker-dist, 0px)));
+      opacity: 1;
+    }
+    88% {
+      transform: translateX(calc(-1 * var(--eterx-ticker-dist, 0px)));
+      opacity: 0;
+    }
+    89% {
+      transform: translateX(0);
+      opacity: 0;
+    }
+    93% {
+      transform: translateX(0);
+      opacity: 1;
+    }
+    100% {
+      transform: translateX(0);
+      opacity: 1;
+    }
   }
 
   .eterx-sidebar-shell .eterx-sidebar-chat-title.eterx-ticker-play {
-    animation: eterx-sidebar-ticker 2.6s cubic-bezier(0.4, 0, 0.2, 1) 0.25s 1 both;
+    animation: eterx-sidebar-ticker var(--eterx-ticker-dur, 5s) linear infinite;
   }
 
   .eterx-sidebar-shell .eterx-sidebar-chat-content {
@@ -518,7 +544,10 @@ export const Sidebar = React.memo<SidebarProps>(({
     void title.offsetWidth; // force reflow to restart
     const dist = title.scrollWidth - wrap.clientWidth;
     if (dist > 6) {
-      title.style.setProperty('--eterx-ticker-dist', `${dist + 4}px`);
+      const scrollDist = dist + 8;
+      const dur = Math.max(2.5, scrollDist / 19.0);
+      title.style.setProperty('--eterx-ticker-dist', `${scrollDist}px`);
+      title.style.setProperty('--eterx-ticker-dur', `${dur.toFixed(2)}s`);
       title.classList.add('eterx-ticker-play');
     }
   }, []);
@@ -528,6 +557,7 @@ export const Sidebar = React.memo<SidebarProps>(({
     if (!title) return;
     title.classList.remove('eterx-ticker-play');
     title.style.removeProperty('--eterx-ticker-dist');
+    title.style.removeProperty('--eterx-ticker-dur');
   }, []);
   const [now, setNow] = React.useState(() => Date.now());
   const resizeStartRef = React.useRef({ x: 0, width: SIDEBAR_DEFAULT_WIDTH });

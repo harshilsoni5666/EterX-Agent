@@ -1740,6 +1740,35 @@
   color: #1F1F1D !important;
 }
 
+:root[data-theme="light"] .eterx-proxy-group-block {
+  background: rgba(31, 31, 29, 0.03) !important;
+  border-color: rgba(31, 31, 29, 0.08) !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-group-divider {
+  background-color: rgba(31, 31, 29, 0.07) !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-group-item {
+  color: #1F1F1D !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-group-item span:first-child {
+  color: #77736C !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-group-item span:last-child {
+  color: #1F1F1D !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-group-item svg {
+  color: #98938A !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-group-item:hover {
+  background: rgba(31, 31, 29, 0.05) !important;
+}
+
 :root[data-theme="light"] .eterx-proxy-intervention-row span:first-child {
   color: #77736C !important;
 }
@@ -1770,6 +1799,7 @@
 }
 
 :root[data-theme="light"] .eterx-proxy-runtime-model-menu button {
+  background: transparent !important;
   color: #1F1F1D !important;
 }
 
@@ -1785,11 +1815,13 @@
   background: rgba(31, 31, 29, 0.05) !important;
 }
 
-:root[data-theme="light"] .eterx-proxy-runtime-model-menu button[class*="bg-white"] {
+:root[data-theme="light"] .eterx-proxy-runtime-model-menu button.eterx-proxy-model-item-active {
   background: rgba(31, 31, 29, 0.08) !important;
+  color: #1F1F1D !important;
 }
 
 :root[data-theme="light"] .eterx-proxy-popout-item {
+  background: transparent !important;
   color: #1F1F1D !important;
 }
 
@@ -1806,8 +1838,51 @@
   color: #1F1F1D !important;
 }
 
-:root[data-theme="light"] .eterx-proxy-popout-item[class*="bg-white"] {
+:root[data-theme="light"] .eterx-proxy-popout-item.eterx-proxy-popout-item-active {
   background: rgba(31, 31, 29, 0.08) !important;
+  color: #1F1F1D !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-chat-window .eterx-composer-popout {
+  background: #FFFFFF !important;
+  border-color: rgba(31, 31, 29, 0.12) !important;
+  box-shadow: 0 14px 40px rgba(31, 31, 29, 0.14) !important;
+  color: #1F1F1D !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-chat-window .eterx-composer-popout button {
+  background: transparent !important;
+  color: #1F1F1D !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-chat-window .eterx-composer-popout button span {
+  color: #1F1F1D !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-chat-window .eterx-composer-popout button span span:last-child {
+  color: #77736C !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-chat-window .eterx-composer-popout button:hover {
+  background: rgba(31, 31, 29, 0.05) !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-chat-window .eterx-composer-popout button.eterx-proxy-model-item-active {
+  background: rgba(31, 31, 29, 0.08) !important;
+  color: #1F1F1D !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-chat-window .eterx-model-button {
+  background: transparent !important;
+  border-color: transparent !important;
+  color: #1F1F1D !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-chat-window .eterx-model-button:hover {
+  background: rgba(31, 31, 29, 0.06) !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-chat-window .eterx-model-button span {
   color: #1F1F1D !important;
 }
 
@@ -1881,12 +1956,13 @@
 }
 
 :root[data-theme="light"] .eterx-proxy-input-wrapper .eterx-model-button {
-  background: rgba(31, 31, 29, 0.05) !important;
+  background: transparent !important;
+  border-color: transparent !important;
   color: #1F1F1D !important;
 }
 
 :root[data-theme="light"] .eterx-proxy-input-wrapper .eterx-model-button:hover {
-  background: rgba(31, 31, 29, 0.08) !important;
+  background: rgba(31, 31, 29, 0.06) !important;
 }
 
 :root[data-theme="light"] .eterx-proxy-input-wrapper .eterx-selector-label {
@@ -1926,4 +2002,40 @@
 :root[data-theme="light"] .eterx-file-change-removed,
 :root[data-theme="light"] .eterx-action-diff-removed {
   color: #D64545 !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-attach-menu {
+  background: #FFFFFF !important;
+  border-color: rgba(31, 31, 29, 0.12) !important;
+  box-shadow: 0 14px 40px rgba(31, 31, 29, 0.14) !important;
+  color: #1F1F1D !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-attach-menu button {
+  background: transparent !important;
+  color: #1F1F1D !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-attach-menu button svg {
+  color: #77736C !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-attach-menu button:hover {
+  background: rgba(31, 31, 29, 0.05) !important;
+  color: #1F1F1D !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-attach-menu button:hover svg {
+  color: #1F1F1D !important;
+}
+
+.eterx-popout-icon-img {
+  filter: invert(1) brightness(0.95);
+  opacity: 0.85;
+  transition: opacity 0.15s ease, filter 0.15s ease;
+}
+
+:root[data-theme="light"] .eterx-popout-icon-img {
+  filter: none !important;
+  opacity: 0.8 !important;
 }

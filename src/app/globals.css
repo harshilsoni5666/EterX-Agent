@@ -4452,8 +4452,8 @@
 }
 
 :root[data-theme="dark"] .eterx-app-shell[data-active-view="channels"] .eterx-sidebar-profile {
-  background: var(--sidebar-profile-bg) !important;
-  border-top-color: var(--sidebar-shell-border) !important;
+  background: transparent !important;
+  border-top-color: transparent !important;
 }
 
 .eterx-chat-feed-scroll {
