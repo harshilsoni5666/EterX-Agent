@@ -7661,11 +7661,17 @@ function DeepWorkUI() {
                     style={hasOpenFiles ? { width: chatPanelWidth ?? undefined, flexBasis: chatPanelWidth === null ? `${ DEFAULT_CHAT_PANEL_RATIO * 100 }%` : undefined } : undefined}
                   >
                     {autonomousSelected && activeChatId && (
-                      <div className="eterx-proxy-dock pointer-events-none absolute right-6 top-1/2 z-[60] w-[200px] -translate-y-1/2 transition-all duration-300 ease-in-out">
+                      <div className="eterx-proxy-dock pointer-events-none absolute right-6 top-1/2 z-[60] w-[224px] -translate-y-1/2 transition-all duration-300 ease-in-out">
                         <div className="eterx-proxy-card pointer-events-auto flex h-fit flex-col gap-2 rounded-[20px] border border-white/[0.10] bg-[#252525]/95 px-3 pb-3 pt-3 shadow-[0_18px_44px_rgba(0,0,0,0.34),inset_0_1px_0_rgba(255,255,255,0.04)] backdrop-blur-xl select-none">
                           {/* Professional Header */}
-                          <div className="pt-0.5 pb-1 shrink-0 flex items-center justify-center w-full">
-                            <span className="eterx-proxy-title text-[13.5px] font-semibold tracking-wide text-white/90">Proxy-Agent</span>
+                          <div className="pt-1 pb-1.5 shrink-0 flex items-center justify-between px-1 w-full border-b border-white/[0.06] mb-0.5">
+                            <div className="flex items-center gap-1.5">
+                              <Sparkles className="w-3.5 h-3.5 text-white/70" />
+                              <span className="eterx-proxy-title text-[12.5px] font-semibold tracking-wide text-white/95">Proxy-Agent</span>
+                            </div>
+                            <span className={`text-[9.5px] font-medium px-2 py-0.5 rounded-full border transition-colors ${ proxyEnabled ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-amber-500/10 text-amber-400 border-amber-500/20' }`}>
+                              {proxyEnabled ? 'Active' : 'Paused'}
+                            </span>
                           </div>
 
                           {/* Toggle Button */}
@@ -7689,26 +7695,35 @@ function DeepWorkUI() {
 
                           {/* Runtime Proxy model — independent from the user-facing Proxy chat model */}
                           <div className="group relative flex flex-col gap-1.5 shrink-0">
-                            <div onClick={() => setShowProxyRuntimeModelMenu(value => !value)} className="eterx-proxy-intervention-row w-full flex min-w-0 items-center justify-between rounded-xl border border-white/[0.08] bg-white/[0.03] px-3 py-2 text-[12px] font-medium text-white/85 hover:bg-white/[0.06] hover:border-white/[0.14] cursor-pointer transition-all">
-                              <span className="text-white/50">Proxy model</span>
+                            <div
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                setShowProxyInterventionMenu(false);
+                                setShowProxyRuntimeModelMenu(value => !value);
+                              }}
+                              className="eterx-proxy-intervention-row w-full flex min-w-0 items-center justify-between gap-2 rounded-xl border border-white/[0.08] bg-white/[0.03] px-3 py-2 text-[12px] font-medium text-white/85 hover:bg-white/[0.06] hover:border-white/[0.14] cursor-pointer transition-all"
+                            >
+                              <span className="text-white/50 shrink-0 text-[12px]">Proxy model</span>
                               <button
                                 type="button"
-                                onClick={(event) => { event.stopPropagation(); setShowProxyRuntimeModelMenu(value => !value); }}
-                                className="flex min-w-0 max-w-[112px] items-center gap-1 overflow-hidden text-white/90 font-semibold"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  setShowProxyInterventionMenu(false);
+                                  setShowProxyRuntimeModelMenu(value => !value);
+                                }}
+                                className="flex min-w-0 max-w-[115px] items-center justify-end gap-1 text-white/90 font-semibold"
                                 title="Model used by the live runtime Proxy-Agent"
                               >
-                                <span className="truncate">
-                                  <span className="truncate">
-                                    {proxyRuntimeModelSelection === AUTO_MODEL_SELECTION
-                                      ? 'Auto'
-                                      : (proxyModelEntries.find(entry => modelEntryKey(entry.provider, entry.modelId) === proxyRuntimeModelSelection)?.modelId || 'Auto')}
-                                  </span>
+                                <span className="truncate text-[12px]">
+                                  {proxyRuntimeModelSelection === AUTO_MODEL_SELECTION
+                                    ? 'Auto'
+                                    : (proxyModelEntries.find(entry => modelEntryKey(entry.provider, entry.modelId) === proxyRuntimeModelSelection)?.modelId || 'Auto')}
                                 </span>
-                                <ChevronDown className={`h-3.5 w-3.5 shrink-0 text-white/35 transition-transform ${ showProxyRuntimeModelMenu ? 'rotate-180' : '' }`} />
+                                <ChevronDown className={`h-3.5 w-3.5 shrink-0 text-white/35 transition-transform duration-200 ${ showProxyRuntimeModelMenu ? 'rotate-180' : '' }`} />
                               </button>
                             </div>
                             {showProxyRuntimeModelMenu && (
-                              <div className="eterx-proxy-runtime-model-menu absolute right-0 top-full z-[100] mt-1.5 w-[220px] max-h-[260px] overflow-y-auto rounded-2xl border border-white/[0.10] bg-[#252525] p-1.5 shadow-2xl">
+                              <div className="eterx-proxy-runtime-model-menu absolute right-0 top-full z-[110] mt-1.5 w-[220px] max-h-[260px] overflow-y-auto rounded-2xl border border-white/[0.10] bg-[#252525] p-1.5 shadow-2xl">
                                 <button
                                   type="button"
                                   onClick={() => { handleProxyRuntimeModelSelectionChange(AUTO_MODEL_SELECTION); setShowProxyRuntimeModelMenu(false); }}
@@ -7740,20 +7755,24 @@ function DeepWorkUI() {
                           <div className="group relative flex flex-col gap-1.5 shrink-0">
                             <button
                               type="button"
-                              onClick={() => setShowProxyInterventionMenu(value => !value)}
-                              className="eterx-proxy-intervention-row w-full flex items-baseline justify-between rounded-xl border border-white/[0.08] bg-white/[0.03] px-3 py-2 text-[12px] font-medium text-white/85 hover:bg-white/[0.06] hover:border-white/[0.14] cursor-pointer transition-all"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                setShowProxyRuntimeModelMenu(false);
+                                setShowProxyInterventionMenu(value => !value);
+                              }}
+                              className="eterx-proxy-intervention-row w-full flex items-center justify-between gap-2 rounded-xl border border-white/[0.08] bg-white/[0.03] px-3 py-2 text-[12px] font-medium text-white/85 hover:bg-white/[0.06] hover:border-white/[0.14] cursor-pointer transition-all"
                             >
-                              <span className="text-white/50">Intervention</span>
-                              <div className="flex items-center gap-1.5">
-                                <span className="capitalize text-white/90 font-semibold">
+                              <span className="text-white/50 shrink-0 text-[12px]">Intervention</span>
+                              <div className="flex shrink-0 items-center gap-1.5">
+                                <span className="capitalize text-[12px] text-white/90 font-semibold">
                                   {proxyIntervention}
                                 </span>
-                                <ChevronRight className={`h-3.5 w-3.5 text-white/30 group-hover:text-white/60 transition-all ${ showProxyInterventionMenu ? 'rotate-90' : '' }`} />
+                                <ChevronRight className={`h-3.5 w-3.5 shrink-0 text-white/35 group-hover:text-white/70 transition-transform duration-200 ${ showProxyInterventionMenu ? 'rotate-90' : '' }`} />
                               </div>
                             </button>
 
                             {/* Pop-out Dropdown to the Left (pr-2 connects hover hit area across the 8px visual gap) */}
-                            <div className={`absolute right-full top-1/2 -translate-y-1/2 z-[100] w-[158px] pr-2 transition-all duration-200 ${ showProxyInterventionMenu ? 'pointer-events-auto opacity-100 translate-x-0' : 'pointer-events-none opacity-0 translate-x-2' }`}>
+                            <div className={`absolute right-full top-1/2 -translate-y-1/2 z-[110] w-[158px] pr-2 transition-all duration-200 ${ showProxyInterventionMenu ? 'pointer-events-auto opacity-100 translate-x-0' : 'pointer-events-none opacity-0 translate-x-2' }`}>
                               <div className="eterx-proxy-popout rounded-2xl border border-white/[0.08] bg-[#252525] shadow-2xl p-1.5 flex flex-col gap-1 w-full">
                                 {(['minimal', 'normal', 'high'] as const).map((level) => {
                                   const isSelected = proxyIntervention === level;
@@ -7762,7 +7781,10 @@ function DeepWorkUI() {
                                     <button
                                       key={level}
                                       type="button"
-                                      onClick={() => handleProxyInterventionChange(level)}
+                                      onClick={() => {
+                                        handleProxyInterventionChange(level);
+                                        setShowProxyInterventionMenu(false);
+                                      }}
                                       className={`eterx-proxy-popout-item w-full flex flex-col items-start rounded-xl px-2.5 py-1 text-left transition-colors relative pr-6 ${ isSelected
                                           ? 'bg-white/[0.08] text-white'
                                           : 'text-white/50 hover:bg-white/[0.04] hover:text-white/85'
@@ -7785,7 +7807,11 @@ function DeepWorkUI() {
                           {/* Talk with proxy Button */}
                           <button
                             type="button"
-                            onClick={() => setShowProxyChat(!showProxyChat)}
+                            onClick={() => {
+                              setShowProxyRuntimeModelMenu(false);
+                              setShowProxyInterventionMenu(false);
+                              setShowProxyChat(!showProxyChat);
+                            }}
                             className={`eterx-proxy-button w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-[12px] font-medium transition-all duration-200 border shrink-0 ${ showProxyChat
                                 ? 'bg-white/[0.08] border-white/[0.14] text-white'
                                 : 'border-white/[0.08] bg-white/[0.04] text-white/80 hover:bg-white/[0.08] hover:text-white active:bg-white/[0.12]'

@@ -1706,6 +1706,14 @@
   color: #1F1F1D !important;
 }
 
+:root[data-theme="light"] .eterx-proxy-card .border-b {
+  border-bottom-color: rgba(31, 31, 29, 0.08) !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-card svg {
+  color: #55524D;
+}
+
 :root[data-theme="light"] .eterx-proxy-button {
   background: rgba(31, 31, 29, 0.04) !important;
   border-color: rgba(31, 31, 29, 0.08) !important;
@@ -1751,12 +1759,38 @@
 
 :root[data-theme="light"] .eterx-proxy-popout {
   background: #FFFFFF !important;
-  border-color: rgba(31, 31, 29, 0.08) !important;
-  box-shadow: 0 12px 32px rgba(31, 31, 29, 0.08) !important;
+  border-color: rgba(31, 31, 29, 0.12) !important;
+  box-shadow: 0 12px 36px rgba(31, 31, 29, 0.12) !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-runtime-model-menu {
+  background: #FFFFFF !important;
+  border-color: rgba(31, 31, 29, 0.12) !important;
+  box-shadow: 0 14px 40px rgba(31, 31, 29, 0.14) !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-runtime-model-menu button {
+  color: #1F1F1D !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-runtime-model-menu button span:first-child {
+  color: #1F1F1D !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-runtime-model-menu button span:last-child {
+  color: #77736C !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-runtime-model-menu button:hover {
+  background: rgba(31, 31, 29, 0.05) !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-runtime-model-menu button[class*="bg-white"] {
+  background: rgba(31, 31, 29, 0.08) !important;
 }
 
 :root[data-theme="light"] .eterx-proxy-popout-item {
-  color: #77736C !important;
+  color: #1F1F1D !important;
 }
 
 :root[data-theme="light"] .eterx-proxy-popout-item span:first-child {
@@ -1764,16 +1798,16 @@
 }
 
 :root[data-theme="light"] .eterx-proxy-popout-item span:nth-child(2) {
-  color: #98938A !important;
+  color: #77736C !important;
 }
 
 :root[data-theme="light"] .eterx-proxy-popout-item:hover {
-  background: rgba(31, 31, 29, 0.04) !important;
+  background: rgba(31, 31, 29, 0.05) !important;
   color: #1F1F1D !important;
 }
 
 :root[data-theme="light"] .eterx-proxy-popout-item[class*="bg-white"] {
-  background: rgba(31, 31, 29, 0.06) !important;
+  background: rgba(31, 31, 29, 0.08) !important;
   color: #1F1F1D !important;
 }
 
