@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import dynamic from 'next/dynamic';
@@ -7,11 +7,13 @@ import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { applyEterxTheme, broadcastEterxSettingsUpdate } from '../components/theme/theme-bridge';
 import { ChatInput } from '../components/layout/chat-input';
 import { ChatFeed } from '../components/chat/chat-feed';
+import { FloatingLiveWidget } from '../components/chat/FloatingLiveWidget';
 // @ts-ignore — react-markdown's runtime types vary between desktop bundles.
 import ReactMarkdown from 'react-markdown';
 import { markdownComponents, normalizeMarkdownForRendering, remarkPlugins, rehypePlugins } from '../components/chat/markdown-renderer';
 import { AlertTriangle, CheckCircle2, ChevronDown, Sun, Moon, Clock3, Code2, GraduationCap, List, MessageSquare, Pencil, PenTool, SendHorizontal, SquarePen, Search, X, ArrowLeft, ListTodo, ChevronRight, Monitor, GitFork, Terminal, GitBranch, GitCommit, PlusSquare, Check, FileCode, FileText, MoreHorizontal, Sparkles, Pin, PinOff, Archive, Split, Calendar, ExternalLink, Copy, ChevronLeft, History, RefreshCw, Plus, Pause, Play, SlidersHorizontal, ShieldCheck, Minus, ArrowUp, Mic, Power, LifeBuoy, Bug, Mail } from 'lucide-react';
 import { Tooltip } from '../components/ui/tooltip';
+import { Shimmer } from '../components/ui/shimmer';
 import { motion, AnimatePresence, Reorder } from 'framer-motion';
 import { InteractiveGrid } from '../components/ui/interactive-grid';
 import { GeminiLiveSession, LiveSessionState } from '../lib/live/gemini-live';
@@ -585,7 +587,7 @@ const sortChats = (chats: ChatSession[]) => {
 
 const getCatchyGreeting = () => {
   const hour = new Date().getHours();
-  
+
   // Base greetings that are always in the rotation pool
   const greetings = [
     "brhhhhh.",
@@ -712,7 +714,7 @@ function DeepWorkUI() {
       const currentState = prevStates[key] || defaultState;
       const nextState = updater(currentState);
       const nextStates = { ...prevStates, [key]: nextState };
-      try { localStorage.setItem('eterx_chat_composer_states', JSON.stringify(nextStates)); } catch {}
+      try { localStorage.setItem('eterx_chat_composer_states', JSON.stringify(nextStates)); } catch { }
       return nextStates;
     });
   }, []);
@@ -740,7 +742,7 @@ function DeepWorkUI() {
           attachments: [],
         };
       }
-      try { localStorage.setItem('eterx_chat_composer_states', JSON.stringify(nextStates)); } catch {}
+      try { localStorage.setItem('eterx_chat_composer_states', JSON.stringify(nextStates)); } catch { }
       return nextStates;
     });
   }, []);
@@ -838,7 +840,7 @@ function DeepWorkUI() {
     if (!valid) return;
     setProxyRuntimeModelSelection(selection);
     try {
-      localStorage.setItem(`eterx_proxy_runtime_model_${activeChatIdRef.current || 'new_chat'}`, selection);
+      localStorage.setItem(`eterx_proxy_runtime_model_${ activeChatIdRef.current || 'new_chat' }`, selection);
     } catch { }
   }, [proxyModelEntries]);
 
@@ -982,7 +984,7 @@ function DeepWorkUI() {
         }
         return;
       }
-      
+
       // Get current active branch name
       fetch('/api/code/execute', {
         method: 'POST',
@@ -996,7 +998,7 @@ function DeepWorkUI() {
             const activeBranch = data.stdout.trim();
             setCurrentBranch(activeBranch);
             setIsHeaderGitRepo(true);
-            
+
             // Get all local branches
             fetch('/api/code/execute', {
               method: 'POST',
@@ -1025,7 +1027,7 @@ function DeepWorkUI() {
                   }
                 }
               })
-              .catch(() => {});
+              .catch(() => { });
           } else {
             setIsHeaderGitRepo(false);
             setCurrentBranch('main');
@@ -1246,20 +1248,20 @@ function DeepWorkUI() {
         const settings = saved ? JSON.parse(saved) : {};
         settings.theme = newTheme;
         localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
-        
+
         // Direct DOM manipulation to ensure instant update
         const root = document.documentElement;
         root.setAttribute('data-theme', newTheme);
         root.classList.toggle('dark', newTheme === 'dark');
         root.classList.toggle('light', newTheme === 'light');
         root.style.colorScheme = newTheme;
-        
+
         // Sync natively
         (window as any).electronAPI?.setNativeTheme?.(newTheme);
-        
+
         applyEterxTheme(newTheme);
         broadcastEterxSettingsUpdate(settings);
-        
+
         window.dispatchEvent(new StorageEvent('storage', { key: SETTINGS_STORAGE_KEY }));
       } catch (err) {
         console.error('[ThemeChange] Error changing theme:', err);
@@ -1354,7 +1356,8 @@ function DeepWorkUI() {
   }, [activeChatId]);
 
   // Derived: isThinking for CURRENT active chat only
-  const isThinking = (activeChatId ? runningChats.has(activeChatId) : false) || (liveState !== 'idle');
+  const isLiveSessionActive = liveState !== 'idle' && liveState !== 'error';
+  const isThinking = (activeChatId ? runningChats.has(activeChatId) : false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortControllersRef = useRef<Map<string, AbortController>>(new Map());
@@ -1533,18 +1536,18 @@ function DeepWorkUI() {
   const handleProxyToggle = useCallback(async () => {
     const nextEnabled = !proxyEnabled;
     setProxyEnabled(nextEnabled);
-    try { localStorage.setItem(`eterx_proxy_controls_${activeChatId || 'new_chat'}`, JSON.stringify({ enabled: nextEnabled, intervention: proxyIntervention })); } catch { }
+    try { localStorage.setItem(`eterx_proxy_controls_${ activeChatId || 'new_chat' }`, JSON.stringify({ enabled: nextEnabled, intervention: proxyIntervention })); } catch { }
     if (activeChatId) await updateProxyControl(nextEnabled ? 'resume' : 'pause');
   }, [activeChatId, proxyEnabled, proxyIntervention, updateProxyControl]);
 
   const handleProxyInterventionChange = useCallback(async (level: 'minimal' | 'normal' | 'high') => {
     setProxyIntervention(level);
-    try { localStorage.setItem(`eterx_proxy_controls_${activeChatId || 'new_chat'}`, JSON.stringify({ enabled: proxyEnabled, intervention: level })); } catch { }
+    try { localStorage.setItem(`eterx_proxy_controls_${ activeChatId || 'new_chat' }`, JSON.stringify({ enabled: proxyEnabled, intervention: level })); } catch { }
     if (activeChatId) await updateProxyControl('intervention', level);
   }, [activeChatId, proxyEnabled, updateProxyControl]);
 
   useEffect(() => {
-    const key = `eterx_proxy_controls_${activeChatId || 'new_chat'}`;
+    const key = `eterx_proxy_controls_${ activeChatId || 'new_chat' }`;
     try {
       const saved = JSON.parse(localStorage.getItem(key) || '{}');
       setProxyEnabled(saved.enabled !== false);
@@ -1557,7 +1560,7 @@ function DeepWorkUI() {
 
   useEffect(() => {
     try {
-      setProxyRuntimeModelSelection(localStorage.getItem(`eterx_proxy_runtime_model_${activeChatId || 'new_chat'}`) || AUTO_MODEL_SELECTION);
+      setProxyRuntimeModelSelection(localStorage.getItem(`eterx_proxy_runtime_model_${ activeChatId || 'new_chat' }`) || AUTO_MODEL_SELECTION);
     } catch {
       setProxyRuntimeModelSelection(AUTO_MODEL_SELECTION);
     }
@@ -1579,10 +1582,10 @@ function DeepWorkUI() {
     setShowProxyInterventionMenu(false);
     setProxyChatLoading(false);
     try {
-      setProxyModelSelection(localStorage.getItem(`eterx_proxy_manager_model_${activeChatId}`) || AUTO_MODEL_SELECTION);
+      setProxyModelSelection(localStorage.getItem(`eterx_proxy_manager_model_${ activeChatId }`) || AUTO_MODEL_SELECTION);
     } catch { setProxyModelSelection(AUTO_MODEL_SELECTION); }
     let cancelled = false;
-    fetch(`/api/agent/proxy-manager?chatId=${encodeURIComponent(activeChatId)}`)
+    fetch(`/api/agent/proxy-manager?chatId=${ encodeURIComponent(activeChatId) }`)
       .then(response => response.ok ? response.json() : Promise.reject(new Error('history unavailable')))
       .then(data => {
         if (cancelled) return;
@@ -1601,7 +1604,7 @@ function DeepWorkUI() {
 
   useEffect(() => {
     if (!activeChatId) return;
-    try { localStorage.setItem(`eterx_proxy_manager_model_${activeChatId}`, proxyModelSelection); } catch { }
+    try { localStorage.setItem(`eterx_proxy_manager_model_${ activeChatId }`, proxyModelSelection); } catch { }
   }, [activeChatId, proxyModelSelection]);
 
   const visibleProxyChatMessages = proxyChatHistoryChatId === activeChatId ? proxyChatMessages : [];
@@ -1997,12 +2000,19 @@ function DeepWorkUI() {
             });
           }
 
-          // Do not reset live text immediately; it will clear on the next turn send gesture.
-          // This keeps the live answer rendered while SWR loads the updated traceLogs.
+          // Reset transient live state immediately so traceLogs rendered in ChatFeed takes over seamlessly
+          setLiveInputText('');
+          setLiveOutputText('');
+          setLiveSpokenText('');
+          setLiveCommands([]);
           liveCommandsRef.current = [];
         },
         onInterrupted: () => {
           liveCommandsRef.current = [];
+          setLiveInputText('');
+          setLiveOutputText('');
+          setLiveSpokenText('');
+          setLiveCommands([]);
         },
         onError: (error) => {
           console.error('[LiveSession] Error:', error);
@@ -2036,6 +2046,15 @@ function DeepWorkUI() {
     }
 
     setLiveState('idle');
+    setLiveInputText('');
+    setLiveOutputText('');
+    setLiveSpokenText('');
+    setLiveActiveTool(null);
+    setLiveCommands([]);
+    setLiveMicVolume(0);
+    setLiveModelVolume(0);
+    setLiveError(null);
+    liveCommandsRef.current = [];
   }, []);
 
   const toggleLiveMicMute = useCallback(() => {
@@ -2055,32 +2074,23 @@ function DeepWorkUI() {
   }, []);
 
   const getLiveTraceLogs = useCallback(() => {
-    // Check if the current chat already contains the final answer for the active/latest turn
-    const hasSavedAnswerForCurrentTurn = () => {
-      const lastUserIdx = [...traceLogs].reverse().findIndex(l => l.type === 'user_action');
-      if (lastUserIdx === -1) return false;
-      const actualLastUserIdx = traceLogs.length - 1 - lastUserIdx;
-      return traceLogs.slice(actualLastUserIdx + 1).some(l => l.type === 'answer');
-    };
+    if (liveState === 'idle' || liveState === 'error') return [];
 
-    if (hasSavedAnswerForCurrentTurn()) return [];
-
-    const logs = [];
+    const logs: any[] = [];
     if (liveInputText) {
       logs.push({ type: 'user_action', text: liveInputText, isLive: true });
     }
 
     if (liveOutputText) {
-      logs.push({ type: 'answer', text: liveOutputText, spokenText: liveSpokenText, isLive: true, isLiveTyping: liveState !== 'idle' });
+      logs.push({ type: 'answer', text: liveOutputText, spokenText: liveSpokenText, isLive: true, isLiveTyping: true });
     }
 
-    // Add any tool commands that happened in this live turn after the text
     if (liveCommands.length > 0) {
       logs.push(...liveCommands);
     }
 
     return logs;
-  }, [liveState, liveInputText, liveOutputText, liveSpokenText, liveCommands, traceLogs]);
+  }, [liveState, liveInputText, liveOutputText, liveSpokenText, liveCommands]);
 
   useEffect(() => {
     setGreeting(getCatchyGreeting());
@@ -2124,7 +2134,7 @@ function DeepWorkUI() {
     } catch { }
 
     void fetch('/api/chats', { cache: 'no-store' })
-      .then(response => response.ok ? response.json() : Promise.reject(new Error(`Chat restore HTTP ${response.status}`)))
+      .then(response => response.ok ? response.json() : Promise.reject(new Error(`Chat restore HTTP ${ response.status }`)))
       .then(snapshot => {
         if (cancelled) return;
         const appDataChats = Array.isArray(snapshot?.chats) ? sortChats(snapshot.chats) : [];
@@ -2434,6 +2444,21 @@ function DeepWorkUI() {
   const systemThoughtLog = (text: string, at = Date.now()) => ({
     type: 'thought',
     text,
+    timestamp: at,
+    startTime: at,
+    endTime: at,
+  });
+  const agentStatusLog = (
+    status: 'stopped' | 'failed' | 'warning',
+    title: string,
+    detail: string,
+    at = Date.now(),
+  ) => ({
+    type: 'agent_status',
+    status,
+    title,
+    text: detail,
+    detail,
     timestamp: at,
     startTime: at,
     endTime: at,
@@ -3125,9 +3150,9 @@ function DeepWorkUI() {
           const existingIdx = trace.ownerTraceId
             ? (() => {
               const relativeIdx = logs.slice(currentTurnStart).findLastIndex((l: any) =>
-              l.type === 'file_preview' &&
-              l.ownerTraceId === trace.ownerTraceId &&
-              (!tracePreviewPath || String(l.filepath || l.filename || '') === tracePreviewPath)
+                l.type === 'file_preview' &&
+                l.ownerTraceId === trace.ownerTraceId &&
+                (!tracePreviewPath || String(l.filepath || l.filename || '') === tracePreviewPath)
               );
               return relativeIdx >= 0 ? currentTurnStart + relativeIdx : -1;
             })()
@@ -3331,7 +3356,7 @@ function DeepWorkUI() {
       markChatUnreadIfBackground(chatId);
       setChatLogsById(chatId, logs => [
         ...stripAgentConnectionLogs(logs),
-        systemThoughtLog(`\n\n*${ message }*`)
+        agentStatusLog('failed', 'Agent unavailable', message)
       ]);
     };
 
@@ -3385,449 +3410,449 @@ function DeepWorkUI() {
       pollInFlight = true;
       try {
 
-      // Safety: if we were stopped while waiting, don't run
-      if (!pollingIntervalsRef.current.has(chatId) || pollGenerationRef.current.get(chatId) !== pollGeneration) return;
-      try {
-        const cursor = pollCursorsRef.current.get(chatId) ?? -1;
-        const data = await fetchAgentPoll(chatId, cursor);
-
-        // The request may have been replaced while awaiting the response.
+        // Safety: if we were stopped while waiting, don't run
         if (!pollingIntervalsRef.current.has(chatId) || pollGenerationRef.current.get(chatId) !== pollGeneration) return;
+        try {
+          const cursor = pollCursorsRef.current.get(chatId) ?? -1;
+          const data = await fetchAgentPoll(chatId, cursor);
 
-        // Reset error backoff on successful fetch
-        errorBackoff = 0;
+          // The request may have been replaced while awaiting the response.
+          if (!pollingIntervalsRef.current.has(chatId) || pollGenerationRef.current.get(chatId) !== pollGeneration) return;
 
-        const expectedRunId = pollRunIdRef.current.get(chatId);
-        const serverRunId = typeof data.runId === 'string' ? data.runId : '';
-        if (expectedRunId && serverRunId !== expectedRunId) {
-          if (!handleStartPending()) return;
-          return;
-        }
+          // Reset error backoff on successful fetch
+          errorBackoff = 0;
 
-        const expectedRunStart = pollRunStartRef.current.get(chatId) || 0;
-        const serverRunStart = typeof data.startedAt === 'number' ? data.startedAt : 0;
-        const isStaleServerRun = !!(expectedRunStart && serverRunStart && serverRunStart + 1000 < expectedRunStart);
-
-        if (isStaleServerRun) {
-          if (!handleStartPending()) return;
-          return;
-        }
-
-        // Track idle responses — stop after 30 seconds of continuous idle
-        // (agent never started, or server restarted)
-        if (data.status === 'idle') {
-          if (!handleStartPending()) return;
-          return; // Don't process â€” agent hasn't started yet
-        }
-        idleCount = 0; // Agent exists, reset idle counter
-
-        lastHadData = data.traces && data.traces.length > 0;
-        if (data.traces && data.traces.length > 0) {
-          // Update cursor using server's stable monotonic maxIndex (NOT totalTraces - 1)
-          if (data.maxIndex !== undefined && data.maxIndex >= 0) {
-            pollCursorsRef.current.set(chatId, data.maxIndex);
-          } else {
-            pollCursorsRef.current.set(chatId, data.maxIndex ?? (data.totalTraces - 1));
+          const expectedRunId = pollRunIdRef.current.get(chatId);
+          const serverRunId = typeof data.runId === 'string' ? data.runId : '';
+          if (expectedRunId && serverRunId !== expectedRunId) {
+            if (!handleStartPending()) return;
+            return;
           }
 
-          // CRITICAL: Check if this poll is for the CURRENTLY ACTIVE chat
-          const isActiveChat = activeChatIdRef.current === chatId;
+          const expectedRunStart = pollRunStartRef.current.get(chatId) || 0;
+          const serverRunStart = typeof data.startedAt === 'number' ? data.startedAt : 0;
+          const isStaleServerRun = !!(expectedRunStart && serverRunStart && serverRunStart + 1000 < expectedRunStart);
 
-          // ═══════════════════════════════════════════
-          // UNIFIED TRACE PROCESSOR — used for BOTH active and background chats
-          // Prevents duplicate action containers by deduplicating on _traceIdx
-          // ═══════════════════════════════════════════
-          const processTraces = (existingLogs: any[]): any[] => {
-            let logs = stripAgentConnectionLogs([...existingLogs]);
-            // Find start of current turn (after last user_action) for dedup scoping
-            const lastUserIdx = logs.reduceRight((found, l, i) => found === -1 && l.type === 'user_action' ? i : found, -1);
-            const currentTurnStart = lastUserIdx >= 0 ? lastUserIdx + 1 : 0;
-            const currentTurnLogs = lastUserIdx >= 0 ? logs.slice(lastUserIdx) : logs;
-            const currentUserLog = lastUserIdx >= 0 ? logs[lastUserIdx] : null;
-            const activeRunId = serverRunId || expectedRunId || '';
-            const currentTurnId = String(currentUserLog?.turnId || currentUserLog?.runId || activeRunId || '').trim();
-            const seenTraceIdx = new Set(
-              currentTurnLogs
-                .map((log: any) => log?._traceIdx)
-                .filter((idx: any) => idx !== undefined && idx !== null)
-            );
-            for (const trace of orderServerTraces(data.traces)) {
-              // DEDUP: only skip if _traceIdx already exists in the CURRENT TURN (not old questions)
-              if (trace._traceIdx !== undefined && trace._traceIdx !== null) {
-                if (seenTraceIdx.has(trace._traceIdx)) continue;
-                seenTraceIdx.add(trace._traceIdx);
-              }
-              const timedTrace = withTraceTiming({
-                ...trace,
-                ...(activeRunId ? { runId: activeRunId } : {}),
-                ...(currentTurnId ? { turnId: currentTurnId } : {}),
-              });
-              const traceAt = timedTrace.endTime;
+          if (isStaleServerRun) {
+            if (!handleStartPending()) return;
+            return;
+          }
 
-              if (trace.type === 'work_note_cancel') {
-                const subAgent = trace.subAgent || null;
-                const noteId = trace.noteId || null;
-                // Mark the streaming worknote as cancelled rather than removing it.
-                // This preserves its DOM position so the final permanent work_note
-                // merges into it in-place — preventing the flash/re-animate bug.
-                for (let i = logs.length - 1; i >= 0; i--) {
-                  if (logs[i].type === 'user_action') break;
-                  if (
-                    logs[i].type === 'work_note' &&
-                    (logs[i].subAgent || null) === subAgent &&
-                    (!noteId || logs[i].noteId === noteId)
-                  ) {
-                    logs[i] = { ...logs[i], _streamingCancelled: true };
-                    break;
-                  }
-                }
-                continue;
-              }
+          // Track idle responses — stop after 30 seconds of continuous idle
+          // (agent never started, or server restarted)
+          if (data.status === 'idle') {
+            if (!handleStartPending()) return;
+            return; // Don't process â€” agent hasn't started yet
+          }
+          idleCount = 0; // Agent exists, reset idle counter
 
-              if (trace.type === 'thought_stream') {
-                const subAgent = trace.subAgent || null;
-                const thoughtId = trace.thoughtId || null;
-                let mergeIdx = -1;
-                for (let i = logs.length - 1; i >= 0; i--) {
-                  if (logs[i].type === 'user_action') break;
-                  if (logs[i].type === 'thought_stream' && (logs[i].subAgent || null) === subAgent) {
-                    if (thoughtId && logs[i].thoughtId && logs[i].thoughtId !== thoughtId) break;
-                    mergeIdx = i;
-                    break;
-                  }
+          lastHadData = data.traces && data.traces.length > 0;
+          if (data.traces && data.traces.length > 0) {
+            // Update cursor using server's stable monotonic maxIndex (NOT totalTraces - 1)
+            if (data.maxIndex !== undefined && data.maxIndex >= 0) {
+              pollCursorsRef.current.set(chatId, data.maxIndex);
+            } else {
+              pollCursorsRef.current.set(chatId, data.maxIndex ?? (data.totalTraces - 1));
+            }
+
+            // CRITICAL: Check if this poll is for the CURRENTLY ACTIVE chat
+            const isActiveChat = activeChatIdRef.current === chatId;
+
+            // ═══════════════════════════════════════════
+            // UNIFIED TRACE PROCESSOR — used for BOTH active and background chats
+            // Prevents duplicate action containers by deduplicating on _traceIdx
+            // ═══════════════════════════════════════════
+            const processTraces = (existingLogs: any[]): any[] => {
+              let logs = stripAgentConnectionLogs([...existingLogs]);
+              // Find start of current turn (after last user_action) for dedup scoping
+              const lastUserIdx = logs.reduceRight((found, l, i) => found === -1 && l.type === 'user_action' ? i : found, -1);
+              const currentTurnStart = lastUserIdx >= 0 ? lastUserIdx + 1 : 0;
+              const currentTurnLogs = lastUserIdx >= 0 ? logs.slice(lastUserIdx) : logs;
+              const currentUserLog = lastUserIdx >= 0 ? logs[lastUserIdx] : null;
+              const activeRunId = serverRunId || expectedRunId || '';
+              const currentTurnId = String(currentUserLog?.turnId || currentUserLog?.runId || activeRunId || '').trim();
+              const seenTraceIdx = new Set(
+                currentTurnLogs
+                  .map((log: any) => log?._traceIdx)
+                  .filter((idx: any) => idx !== undefined && idx !== null)
+              );
+              for (const trace of orderServerTraces(data.traces)) {
+                // DEDUP: only skip if _traceIdx already exists in the CURRENT TURN (not old questions)
+                if (trace._traceIdx !== undefined && trace._traceIdx !== null) {
+                  if (seenTraceIdx.has(trace._traceIdx)) continue;
+                  seenTraceIdx.add(trace._traceIdx);
                 }
-                if (mergeIdx >= 0) {
-                  // Preserve the original startTime from when the thought began
-                  logs[mergeIdx] = { ...logs[mergeIdx], text: trace.text, thoughtId, _traceIdx: trace._traceIdx, timestamp: traceAt, startTime: logs[mergeIdx].startTime, endTime: trace.endTime ?? traceAt };
-                } else {
-                  logs.push({
-                    type: 'thought_stream',
-                    text: trace.text,
-                    subAgent,
-                    thoughtId,
-                    _traceIdx: trace._traceIdx,
-                    ...(activeRunId ? { runId: activeRunId } : {}),
-                    ...(currentTurnId ? { turnId: currentTurnId } : {}),
-                    timestamp: traceAt,
-                    startTime: trace.startTime ?? traceAt,
-                    endTime: trace.endTime ?? traceAt,
-                  });
-                }
-              } else if (trace.type === 'work_note') {
-                const subAgent = trace.subAgent || null;
-                const noteId = trace.noteId || null;
-                const incomingIsFinal = trace.isStreaming === false || trace.isDelta === false;
-                const noteText = formatVisibleWorkNote(String(trace.text || ''));
-                if (!noteText) continue;
-                let mergeIdx = -1;
-                let duplicateIdx = -1;
-                for (let i = logs.length - 1; i >= 0; i--) {
-                  if (logs[i].type === 'user_action') break;
-                  if (logs[i].type === 'work_note' && (logs[i].subAgent || null) === subAgent) {
-                    const existingText = String(logs[i].text || '').trim();
-                    if (noteId && logs[i].noteId && logs[i].noteId === noteId) {
-                      mergeIdx = i;
-                      break;
-                    }
-                    // Merge final note into a streaming-cancelled placeholder (same subAgent, no noteId match needed)
-                    if (logs[i]._streamingCancelled && incomingIsFinal) {
-                      mergeIdx = i;
-                      break;
-                    }
-                    if (existingText === noteText) {
-                      if (incomingIsFinal && (logs[i].isStreaming || logs[i].isDelta)) {
-                        mergeIdx = i;
-                      } else {
-                        duplicateIdx = i;
-                      }
-                      break;
-                    }
-                    if (!noteId || !logs[i].noteId) {
-                      mergeIdx = i;
+                const timedTrace = withTraceTiming({
+                  ...trace,
+                  ...(activeRunId ? { runId: activeRunId } : {}),
+                  ...(currentTurnId ? { turnId: currentTurnId } : {}),
+                });
+                const traceAt = timedTrace.endTime;
+
+                if (trace.type === 'work_note_cancel') {
+                  const subAgent = trace.subAgent || null;
+                  const noteId = trace.noteId || null;
+                  // Mark the streaming worknote as cancelled rather than removing it.
+                  // This preserves its DOM position so the final permanent work_note
+                  // merges into it in-place — preventing the flash/re-animate bug.
+                  for (let i = logs.length - 1; i >= 0; i--) {
+                    if (logs[i].type === 'user_action') break;
+                    if (
+                      logs[i].type === 'work_note' &&
+                      (logs[i].subAgent || null) === subAgent &&
+                      (!noteId || logs[i].noteId === noteId)
+                    ) {
+                      logs[i] = { ...logs[i], _streamingCancelled: true };
                       break;
                     }
                   }
-                }
-                if (duplicateIdx >= 0) continue;
-                if (mergeIdx >= 0) {
-                  logs[mergeIdx] = {
-                    ...logs[mergeIdx],
-                    ...trace,
-                    type: 'work_note',
-                    text: noteText,
-                    subAgent,
-                    noteId,
-                    _traceIdx: trace._traceIdx ?? logs[mergeIdx]._traceIdx,
-                    timestamp: traceAt,
-                    startTime: logs[mergeIdx].startTime || timedTrace.startTime,
-                    endTime: traceAt,
-                    _streamingCancelled: undefined,
-                  };
-                } else {
-                  logs.push({ ...timedTrace, type: 'work_note', text: noteText, subAgent, noteId, _traceIdx: trace._traceIdx, startTime: timedTrace.startTime, endTime: traceAt });
-                }
-              } else if (trace.type === 'ask_user') {
-                const question = String(trace.question || '').trim();
-                if (!question) {
                   continue;
                 }
 
-                const responseKey = String(trace.responseKey || (trace.timestamp ? `ask_user_${ trace.timestamp }` : '')).trim();
-                let askIdx = -1;
-                for (let i = logs.length - 1; i >= 0; i--) {
-                  if (logs[i].type === 'user_action') break;
-                  if (logs[i].type !== 'ask_user') continue;
-                  const sameResponseKey = responseKey && logs[i].responseKey === responseKey;
-                  const sameQuestion = String(logs[i].question || '').trim() === question;
-                  if (sameResponseKey || sameQuestion) {
-                    askIdx = i;
-                    break;
+                if (trace.type === 'thought_stream') {
+                  const subAgent = trace.subAgent || null;
+                  const thoughtId = trace.thoughtId || null;
+                  let mergeIdx = -1;
+                  for (let i = logs.length - 1; i >= 0; i--) {
+                    if (logs[i].type === 'user_action') break;
+                    if (logs[i].type === 'thought_stream' && (logs[i].subAgent || null) === subAgent) {
+                      if (thoughtId && logs[i].thoughtId && logs[i].thoughtId !== thoughtId) break;
+                      mergeIdx = i;
+                      break;
+                    }
                   }
-                }
+                  if (mergeIdx >= 0) {
+                    // Preserve the original startTime from when the thought began
+                    logs[mergeIdx] = { ...logs[mergeIdx], text: trace.text, thoughtId, _traceIdx: trace._traceIdx, timestamp: traceAt, startTime: logs[mergeIdx].startTime, endTime: trace.endTime ?? traceAt };
+                  } else {
+                    logs.push({
+                      type: 'thought_stream',
+                      text: trace.text,
+                      subAgent,
+                      thoughtId,
+                      _traceIdx: trace._traceIdx,
+                      ...(activeRunId ? { runId: activeRunId } : {}),
+                      ...(currentTurnId ? { turnId: currentTurnId } : {}),
+                      timestamp: traceAt,
+                      startTime: trace.startTime ?? traceAt,
+                      endTime: trace.endTime ?? traceAt,
+                    });
+                  }
+                } else if (trace.type === 'work_note') {
+                  const subAgent = trace.subAgent || null;
+                  const noteId = trace.noteId || null;
+                  const incomingIsFinal = trace.isStreaming === false || trace.isDelta === false;
+                  const noteText = formatVisibleWorkNote(String(trace.text || ''));
+                  if (!noteText) continue;
+                  let mergeIdx = -1;
+                  let duplicateIdx = -1;
+                  for (let i = logs.length - 1; i >= 0; i--) {
+                    if (logs[i].type === 'user_action') break;
+                    if (logs[i].type === 'work_note' && (logs[i].subAgent || null) === subAgent) {
+                      const existingText = String(logs[i].text || '').trim();
+                      if (noteId && logs[i].noteId && logs[i].noteId === noteId) {
+                        mergeIdx = i;
+                        break;
+                      }
+                      // Merge final note into a streaming-cancelled placeholder (same subAgent, no noteId match needed)
+                      if (logs[i]._streamingCancelled && incomingIsFinal) {
+                        mergeIdx = i;
+                        break;
+                      }
+                      if (existingText === noteText) {
+                        if (incomingIsFinal && (logs[i].isStreaming || logs[i].isDelta)) {
+                          mergeIdx = i;
+                        } else {
+                          duplicateIdx = i;
+                        }
+                        break;
+                      }
+                      if (!noteId || !logs[i].noteId) {
+                        mergeIdx = i;
+                        break;
+                      }
+                    }
+                  }
+                  if (duplicateIdx >= 0) continue;
+                  if (mergeIdx >= 0) {
+                    logs[mergeIdx] = {
+                      ...logs[mergeIdx],
+                      ...trace,
+                      type: 'work_note',
+                      text: noteText,
+                      subAgent,
+                      noteId,
+                      _traceIdx: trace._traceIdx ?? logs[mergeIdx]._traceIdx,
+                      timestamp: traceAt,
+                      startTime: logs[mergeIdx].startTime || timedTrace.startTime,
+                      endTime: traceAt,
+                      _streamingCancelled: undefined,
+                    };
+                  } else {
+                    logs.push({ ...timedTrace, type: 'work_note', text: noteText, subAgent, noteId, _traceIdx: trace._traceIdx, startTime: timedTrace.startTime, endTime: traceAt });
+                  }
+                } else if (trace.type === 'ask_user') {
+                  const question = String(trace.question || '').trim();
+                  if (!question) {
+                    continue;
+                  }
 
-                const nextAskLog = {
-                  ...timedTrace,
-                  ...trace,
-                  type: 'ask_user',
-                  question,
-                  responseKey: responseKey || timedTrace.responseKey,
-                  timestamp: Number(trace.timestamp || timedTrace.timestamp || traceAt),
-                  startTime: timedTrace.startTime,
-                  endTime: traceAt,
-                };
+                  const responseKey = String(trace.responseKey || (trace.timestamp ? `ask_user_${ trace.timestamp }` : '')).trim();
+                  let askIdx = -1;
+                  for (let i = logs.length - 1; i >= 0; i--) {
+                    if (logs[i].type === 'user_action') break;
+                    if (logs[i].type !== 'ask_user') continue;
+                    const sameResponseKey = responseKey && logs[i].responseKey === responseKey;
+                    const sameQuestion = String(logs[i].question || '').trim() === question;
+                    if (sameResponseKey || sameQuestion) {
+                      askIdx = i;
+                      break;
+                    }
+                  }
 
-                if (askIdx >= 0) {
-                  logs[askIdx] = {
-                    ...logs[askIdx],
-                    ...nextAskLog,
-                    answeredWith: logs[askIdx].answeredWith,
-                    answeredAt: logs[askIdx].answeredAt,
+                  const nextAskLog = {
+                    ...timedTrace,
+                    ...trace,
+                    type: 'ask_user',
+                    question,
+                    responseKey: responseKey || timedTrace.responseKey,
+                    timestamp: Number(trace.timestamp || timedTrace.timestamp || traceAt),
+                    startTime: timedTrace.startTime,
+                    endTime: traceAt,
                   };
-                } else {
-                  logs.push(nextAskLog);
-                }
-              } else if (trace.type === 'task_plan') {
-                mergeTaskPlanLog(logs, timedTrace);
-              } else if (trace.type === 'answer' && !trace.subAgent) {
-                let answerIdx = -1;
-                for (let i = logs.length - 1; i >= 0; i--) {
-                  if (logs[i].type === 'user_action') break;
-                  if (logs[i].type === 'answer') { answerIdx = i; break; }
-                }
-                if (answerIdx >= 0) {
-                  logs[answerIdx] = { ...logs[answerIdx], ...timedTrace, text: trace.text, _traceIdx: trace._traceIdx };
-                } else {
-                  logs.push(timedTrace);
-                }
-              } else if (trace.type === 'file_preview') {
-                const stablePreviewRelativeIdx = logs.slice(currentTurnStart).findLastIndex((l: any) =>
-                  l.type === 'file_preview' && (
-                    (trace._traceIdx !== undefined && trace._traceIdx !== null && l._traceIdx === trace._traceIdx) ||
-                    (trace.traceId && l.traceId === trace.traceId) ||
-                    (trace.id && l.id === trace.id)
-                  )
-                );
-                const stablePreviewIdx = stablePreviewRelativeIdx >= 0
-                  ? currentTurnStart + stablePreviewRelativeIdx
-                  : -1;
-                if (stablePreviewIdx >= 0) {
-                  logs[stablePreviewIdx] = { ...timedTrace, startTime: logs[stablePreviewIdx].startTime || timedTrace.startTime, endTime: traceAt };
-                } else {
-                  const tracePreviewPath = String(trace.filepath || trace.filename || '');
-                  const existingIdx = trace.ownerTraceId
-                    ? (() => {
-                      const relativeIdx = logs.slice(currentTurnStart).findLastIndex((l: any) =>
-                      l.type === 'file_preview' &&
-                      l.ownerTraceId === trace.ownerTraceId &&
-                      (!tracePreviewPath || String(l.filepath || l.filename || '') === tracePreviewPath)
-                      );
-                      return relativeIdx >= 0 ? currentTurnStart + relativeIdx : -1;
-                    })()
-                    : trace.dedupe !== false
-                      ? (() => {
-                        const relativeIdx = logs.slice(currentTurnStart).findLastIndex((l: any) =>
-                          l.type === 'file_preview' && l.filepath === trace.filepath && l.dedupe !== false
-                        );
-                        return relativeIdx >= 0 ? currentTurnStart + relativeIdx : -1;
-                      })()
-                      : -1;
-                  if (existingIdx >= 0) {
-                    logs[existingIdx] = { ...timedTrace, startTime: logs[existingIdx].startTime || timedTrace.startTime, endTime: traceAt };
+
+                  if (askIdx >= 0) {
+                    logs[askIdx] = {
+                      ...logs[askIdx],
+                      ...nextAskLog,
+                      answeredWith: logs[askIdx].answeredWith,
+                      answeredAt: logs[askIdx].answeredAt,
+                    };
+                  } else {
+                    logs.push(nextAskLog);
+                  }
+                } else if (trace.type === 'task_plan') {
+                  mergeTaskPlanLog(logs, timedTrace);
+                } else if (trace.type === 'answer' && !trace.subAgent) {
+                  let answerIdx = -1;
+                  for (let i = logs.length - 1; i >= 0; i--) {
+                    if (logs[i].type === 'user_action') break;
+                    if (logs[i].type === 'answer') { answerIdx = i; break; }
+                  }
+                  if (answerIdx >= 0) {
+                    logs[answerIdx] = { ...logs[answerIdx], ...timedTrace, text: trace.text, _traceIdx: trace._traceIdx };
                   } else {
                     logs.push(timedTrace);
                   }
-                }
-              } else if (trace.type === 'console_output') {
-                // Always push new console output — each shell execution is a unique event
-                // Dedup only exact same command+output combo
-                const currentOutputLogs = logs.slice(currentTurnStart);
-                const relativeMergeIdx = findMergeableConsoleOutputIndex(currentOutputLogs, trace);
-                const mergeIdx = relativeMergeIdx >= 0 ? currentTurnStart + relativeMergeIdx : -1;
-                if (mergeIdx >= 0) {
-                  logs[mergeIdx] = {
-                    ...logs[mergeIdx],
-                    ...timedTrace,
-                    _traceIdx: trace._traceIdx ?? logs[mergeIdx]._traceIdx,
-                    startTime: logs[mergeIdx].startTime || timedTrace.startTime,
-                    endTime: traceAt,
-                    timestamp: traceAt,
-                  };
-                } else if (!isDuplicateConsoleOutput(currentOutputLogs, trace)) {
-                  logs.push(timedTrace);
-                }
-              } else if (trace.type === 'done' || trace.type === 'error') {
-                // Skip — handled by status check below
-              } else {
-                // ALL other types (command, exploration, file_edit, etc.) — deduplicated by _traceIdx above
-                // Replace _instant preview with real trace
-                if (!trace._instant && (trace.type === 'command' || trace.type === 'file_edit' || trace.type === 'exploration')) {
-                  const relativeInstantIdx = logs.slice(currentTurnStart).findIndex(l => l._instant && l.type === trace.type);
-                  const instantIdx = relativeInstantIdx >= 0 ? currentTurnStart + relativeInstantIdx : -1;
-                  if (instantIdx >= 0) logs.splice(instantIdx, 1);
-                }
-                if (trace._instant && logs.slice(currentTurnStart).some(l => !l._instant && (l.type === 'command' || l.type === 'file_edit' || l.type === 'exploration'))) {
-                  continue;
-                }
-                logs.push(timedTrace);
-              }
-            }
-            return logs;
-          };
-
-          if (isActiveChat) {
-            // Synchronous update — compute newLogs from prevLogs and update BOTH
-            // setTraceLogs and setChats in the same render pass.
-            // IMPORTANT: Never use Promise.resolve().then() inside a React state
-            // updater — updaters can be called multiple times (StrictMode/concurrent
-            // mode), each scheduling a microtask with a stale newLogs snapshot that
-            // could write older logs back into `chats` → causes the flash bug.
-            let computedNewLogs: any[] | null = null;
-            setTraceLogs(prevLogs => {
-              computedNewLogs = processTraces(prevLogs);
-              return computedNewLogs;
-            });
-            // setChats AFTER setTraceLogs so React can batch them together.
-            // Use a functional update to get fresh chats (avoids stale closure).
-            if (computedNewLogs !== null) {
-              const logsSnapshot = computedNewLogs;
-              setChats(currentChats =>
-                currentChats.map(c =>
-                  c.id === chatId ? { ...c, traceLogs: logsSnapshot } : c
-                )
-              );
-            }
-          } else {
-            // BACKGROUND chat — only update chats state, DON'T touch traceLogs
-            queueBackgroundChatUpdate(chatId, processTraces);
-          }
-
-          // Debounced localStorage write — strip large content fields to avoid quota overflow
-          debouncedSaveToLocalStorage();
-        }
-
-        // CRITICAL: Only stop on TERMINAL states, NOT 'idle'
-        // 'idle' means agent hasn't started yet (race condition)
-        if (data.status === 'failed') {
-          if (activeChatIdRef.current !== chatId) flushBackgroundChatUpdates();
-          // Show error trace so UI doesn't silently drop — this was causing the
-          // 'UI gets off while running' appearance (agent failed, no feedback)
-          const errMsg = data.finalAnswer || data.error || 'All API attempts exhausted or agent encountered a fatal error.';
-          const isActiveChat = activeChatIdRef.current === chatId;
-          if (isActiveChat) {
-            setTraceLogs(prev => [
-              ...stripAgentConnectionLogs(prev),
-              systemThoughtLog(`\n\n*Agent stopped: ${ errMsg.slice(0, 200) }*`, normalizeClientTraceTime(data.completedAt))
-            ]);
-          } else {
-            setChats(currentChats => currentChats.map(c => c.id === chatId
-              ? { ...c, traceLogs: [...stripAgentConnectionLogs(c.traceLogs || []), systemThoughtLog(`\n\n*Agent stopped: ${ errMsg.slice(0, 200) }*`, normalizeClientTraceTime(data.completedAt))] }
-              : c
-            ));
-          }
-        }
-        if (data.status === 'completed' || data.status === 'failed' || data.status === 'stopped') {
-          if (activeChatIdRef.current !== chatId) flushBackgroundChatUpdates();
-          // Check if it's already stopped by a overlapping async fetch
-          const shouldNotify = pollingIntervalsRef.current.has(chatId);
-
-          clearAgentConnectionStatus(chatId);
-          stopPolling(chatId);
-          removeRunningChat(chatId);
-          markChatUnreadIfBackground(chatId);
-
-          // Title generation uses the same provider credentials as agents.
-          // Run it only after execution ends so a cosmetic request never
-          // competes with Main or sub-agents for latency/quota.
-          const pendingTitle = pendingTitleRequestsRef.current.get(chatId);
-          if (pendingTitle) {
-            pendingTitleRequestsRef.current.delete(chatId);
-            window.setTimeout(() => {
-              void generateTitle(chatId, pendingTitle.history, pendingTitle.currentTitle, pendingTitle.mode);
-            }, 500);
-          }
-
-          // TRIGGER DESKTOP NOTIFICATION (Outside setState to prevent React.StrictMode double-firing!)
-          if (shouldNotify && data.status === 'completed' && 'Notification' in window) {
-            // Ensure exactly ONE notification per agent run - solves the 2-3x duplicate bug
-            if (!notifiedChatIdsRef.current.has(chatId)) {
-              notifiedChatIdsRef.current.add(chatId);
-
-              try {
-                const svd = localStorage.getItem('eterx_settings');
-                const settings = svd ? JSON.parse(svd) : {};
-                if (settings.desktopNotifications !== false) {
-                  const cht = chatsRef.current.find((c: any) => c.id === chatId);
-                  let titleName = cht && !isDefaultChatTitle(cht.title) ? cht.title : '';
-
-                  if (!titleName) {
-                    const firstUserMsg = cht?.traceLogs?.find((l: any) => l.type === 'user_action')?.text;
-                    if (firstUserMsg) {
-                      titleName = firstUserMsg.length > 35 ? firstUserMsg.substring(0, 35) + '...' : firstUserMsg;
+                } else if (trace.type === 'file_preview') {
+                  const stablePreviewRelativeIdx = logs.slice(currentTurnStart).findLastIndex((l: any) =>
+                    l.type === 'file_preview' && (
+                      (trace._traceIdx !== undefined && trace._traceIdx !== null && l._traceIdx === trace._traceIdx) ||
+                      (trace.traceId && l.traceId === trace.traceId) ||
+                      (trace.id && l.id === trace.id)
+                    )
+                  );
+                  const stablePreviewIdx = stablePreviewRelativeIdx >= 0
+                    ? currentTurnStart + stablePreviewRelativeIdx
+                    : -1;
+                  if (stablePreviewIdx >= 0) {
+                    logs[stablePreviewIdx] = { ...timedTrace, startTime: logs[stablePreviewIdx].startTime || timedTrace.startTime, endTime: traceAt };
+                  } else {
+                    const tracePreviewPath = String(trace.filepath || trace.filename || '');
+                    const existingIdx = trace.ownerTraceId
+                      ? (() => {
+                        const relativeIdx = logs.slice(currentTurnStart).findLastIndex((l: any) =>
+                          l.type === 'file_preview' &&
+                          l.ownerTraceId === trace.ownerTraceId &&
+                          (!tracePreviewPath || String(l.filepath || l.filename || '') === tracePreviewPath)
+                        );
+                        return relativeIdx >= 0 ? currentTurnStart + relativeIdx : -1;
+                      })()
+                      : trace.dedupe !== false
+                        ? (() => {
+                          const relativeIdx = logs.slice(currentTurnStart).findLastIndex((l: any) =>
+                            l.type === 'file_preview' && l.filepath === trace.filepath && l.dedupe !== false
+                          );
+                          return relativeIdx >= 0 ? currentTurnStart + relativeIdx : -1;
+                        })()
+                        : -1;
+                    if (existingIdx >= 0) {
+                      logs[existingIdx] = { ...timedTrace, startTime: logs[existingIdx].startTime || timedTrace.startTime, endTime: traceAt };
                     } else {
-                      titleName = 'EterX Agent';
+                      logs.push(timedTrace);
                     }
                   }
-
-                  let cleanBody = data.finalAnswer
-                    ? data.finalAnswer.replace(/<[^>]*>?/gm, '').replace(/[*#_`]/g, '')
-                    : "The agent has finished completing your task.";
-
-                  if (cleanBody.length > 130) cleanBody = cleanBody.substring(0, 130) + '...';
-
-                  // Use Native Electron IPC for perfect OS Notification UI
-                  const win = window as any;
-                  if (win.electronAPI && win.electronAPI.showNotification) {
-                    win.electronAPI.showNotification(titleName, cleanBody);
-                  } else {
-                    new Notification(titleName, { body: cleanBody });
+                } else if (trace.type === 'console_output') {
+                  // Always push new console output — each shell execution is a unique event
+                  // Dedup only exact same command+output combo
+                  const currentOutputLogs = logs.slice(currentTurnStart);
+                  const relativeMergeIdx = findMergeableConsoleOutputIndex(currentOutputLogs, trace);
+                  const mergeIdx = relativeMergeIdx >= 0 ? currentTurnStart + relativeMergeIdx : -1;
+                  if (mergeIdx >= 0) {
+                    logs[mergeIdx] = {
+                      ...logs[mergeIdx],
+                      ...timedTrace,
+                      _traceIdx: trace._traceIdx ?? logs[mergeIdx]._traceIdx,
+                      startTime: logs[mergeIdx].startTime || timedTrace.startTime,
+                      endTime: traceAt,
+                      timestamp: traceAt,
+                    };
+                  } else if (!isDuplicateConsoleOutput(currentOutputLogs, trace)) {
+                    logs.push(timedTrace);
                   }
+                } else if (trace.type === 'done' || trace.type === 'error') {
+                  // Skip — handled by status check below
+                } else {
+                  // ALL other types (command, exploration, file_edit, etc.) — deduplicated by _traceIdx above
+                  // Replace _instant preview with real trace
+                  if (!trace._instant && (trace.type === 'command' || trace.type === 'file_edit' || trace.type === 'exploration')) {
+                    const relativeInstantIdx = logs.slice(currentTurnStart).findIndex(l => l._instant && l.type === trace.type);
+                    const instantIdx = relativeInstantIdx >= 0 ? currentTurnStart + relativeInstantIdx : -1;
+                    if (instantIdx >= 0) logs.splice(instantIdx, 1);
+                  }
+                  if (trace._instant && logs.slice(currentTurnStart).some(l => !l._instant && (l.type === 'command' || l.type === 'file_edit' || l.type === 'exploration'))) {
+                    continue;
+                  }
+                  logs.push(timedTrace);
                 }
-              } catch { }
+              }
+              return logs;
+            };
+
+            if (isActiveChat) {
+              // Synchronous update — compute newLogs from prevLogs and update BOTH
+              // setTraceLogs and setChats in the same render pass.
+              // IMPORTANT: Never use Promise.resolve().then() inside a React state
+              // updater — updaters can be called multiple times (StrictMode/concurrent
+              // mode), each scheduling a microtask with a stale newLogs snapshot that
+              // could write older logs back into `chats` → causes the flash bug.
+              let computedNewLogs: any[] | null = null;
+              setTraceLogs(prevLogs => {
+                computedNewLogs = processTraces(prevLogs);
+                return computedNewLogs;
+              });
+              // setChats AFTER setTraceLogs so React can batch them together.
+              // Use a functional update to get fresh chats (avoids stale closure).
+              if (computedNewLogs !== null) {
+                const logsSnapshot = computedNewLogs;
+                setChats(currentChats =>
+                  currentChats.map(c =>
+                    c.id === chatId ? { ...c, traceLogs: logsSnapshot } : c
+                  )
+                );
+              }
+            } else {
+              // BACKGROUND chat — only update chats state, DON'T touch traceLogs
+              queueBackgroundChatUpdate(chatId, processTraces);
             }
+
+            // Debounced localStorage write — strip large content fields to avoid quota overflow
+            debouncedSaveToLocalStorage();
           }
 
-          // Final save to localStorage (immediate, not debounced).
-          // Strip large content fields before saving to prevent quota errors.
-          setChats(currentChats => {
-            persistChats(currentChats);
-            return currentChats; // Don't update React state with stripped version
-          });
+          // CRITICAL: Only stop on TERMINAL states, NOT 'idle'
+          // 'idle' means agent hasn't started yet (race condition)
+          if (data.status === 'failed') {
+            if (activeChatIdRef.current !== chatId) flushBackgroundChatUpdates();
+            // Show error trace so UI doesn't silently drop — this was causing the
+            // 'UI gets off while running' appearance (agent failed, no feedback)
+            const errMsg = data.finalAnswer || data.error || 'All API attempts exhausted or agent encountered a fatal error.';
+            const isActiveChat = activeChatIdRef.current === chatId;
+            if (isActiveChat) {
+              setTraceLogs(prev => [
+                ...stripAgentConnectionLogs(prev),
+                agentStatusLog('failed', 'Run ended with an error', errMsg.slice(0, 200), normalizeClientTraceTime(data.completedAt))
+              ]);
+            } else {
+              setChats(currentChats => currentChats.map(c => c.id === chatId
+                ? { ...c, traceLogs: [...stripAgentConnectionLogs(c.traceLogs || []), agentStatusLog('failed', 'Run ended with an error', errMsg.slice(0, 200), normalizeClientTraceTime(data.completedAt))] }
+                : c
+              ));
+            }
+          }
+          if (data.status === 'completed' || data.status === 'failed' || data.status === 'stopped') {
+            if (activeChatIdRef.current !== chatId) flushBackgroundChatUpdates();
+            // Check if it's already stopped by a overlapping async fetch
+            const shouldNotify = pollingIntervalsRef.current.has(chatId);
 
-          return; // Don't schedule next poll — we're done
+            clearAgentConnectionStatus(chatId);
+            stopPolling(chatId);
+            removeRunningChat(chatId);
+            markChatUnreadIfBackground(chatId);
+
+            // Title generation uses the same provider credentials as agents.
+            // Run it only after execution ends so a cosmetic request never
+            // competes with Main or sub-agents for latency/quota.
+            const pendingTitle = pendingTitleRequestsRef.current.get(chatId);
+            if (pendingTitle) {
+              pendingTitleRequestsRef.current.delete(chatId);
+              window.setTimeout(() => {
+                void generateTitle(chatId, pendingTitle.history, pendingTitle.currentTitle, pendingTitle.mode);
+              }, 500);
+            }
+
+            // TRIGGER DESKTOP NOTIFICATION (Outside setState to prevent React.StrictMode double-firing!)
+            if (shouldNotify && data.status === 'completed' && 'Notification' in window) {
+              // Ensure exactly ONE notification per agent run - solves the 2-3x duplicate bug
+              if (!notifiedChatIdsRef.current.has(chatId)) {
+                notifiedChatIdsRef.current.add(chatId);
+
+                try {
+                  const svd = localStorage.getItem('eterx_settings');
+                  const settings = svd ? JSON.parse(svd) : {};
+                  if (settings.desktopNotifications !== false) {
+                    const cht = chatsRef.current.find((c: any) => c.id === chatId);
+                    let titleName = cht && !isDefaultChatTitle(cht.title) ? cht.title : '';
+
+                    if (!titleName) {
+                      const firstUserMsg = cht?.traceLogs?.find((l: any) => l.type === 'user_action')?.text;
+                      if (firstUserMsg) {
+                        titleName = firstUserMsg.length > 35 ? firstUserMsg.substring(0, 35) + '...' : firstUserMsg;
+                      } else {
+                        titleName = 'EterX Agent';
+                      }
+                    }
+
+                    let cleanBody = data.finalAnswer
+                      ? data.finalAnswer.replace(/<[^>]*>?/gm, '').replace(/[*#_`]/g, '')
+                      : "The agent has finished completing your task.";
+
+                    if (cleanBody.length > 130) cleanBody = cleanBody.substring(0, 130) + '...';
+
+                    // Use Native Electron IPC for perfect OS Notification UI
+                    const win = window as any;
+                    if (win.electronAPI && win.electronAPI.showNotification) {
+                      win.electronAPI.showNotification(titleName, cleanBody);
+                    } else {
+                      new Notification(titleName, { body: cleanBody });
+                    }
+                  }
+                } catch { }
+              }
+            }
+
+            // Final save to localStorage (immediate, not debounced).
+            // Strip large content fields before saving to prevent quota errors.
+            setChats(currentChats => {
+              persistChats(currentChats);
+              return currentChats; // Don't update React state with stripped version
+            });
+
+            return; // Don't schedule next poll — we're done
+          }
+        } catch {
+          // Network error — don't stop polling, agent might still be running
+          // Apply exponential backoff
+          errorBackoff = Math.min(errorBackoff + 1, 5);
+          lastHadData = false;
         }
-      } catch {
-        // Network error — don't stop polling, agent might still be running
-        // Apply exponential backoff
-        errorBackoff = Math.min(errorBackoff + 1, 5);
-        lastHadData = false;
-      }
 
-      // Schedule next poll (only if still active)
-      if (pollingIntervalsRef.current.has(chatId) && pollGenerationRef.current.get(chatId) === pollGeneration) {
-        // Remove old entry before scheduling (setTimeout returns a new ID)
-        pollingIntervalsRef.current.delete(chatId);
-        scheduleNextPoll();
-      }
+        // Schedule next poll (only if still active)
+        if (pollingIntervalsRef.current.has(chatId) && pollGenerationRef.current.get(chatId) === pollGeneration) {
+          // Remove old entry before scheduling (setTimeout returns a new ID)
+          pollingIntervalsRef.current.delete(chatId);
+          scheduleNextPoll();
+        }
       } finally {
         pollInFlight = false;
       }
@@ -3978,8 +4003,11 @@ function DeepWorkUI() {
             return log;
           });
           const clean = stripAgentConnectionLogs(cleared);
-          const alreadyMarked = clean.some(log => log.type === 'thought' && String(log.text || '').includes('Generation stopped by user.'));
-          return alreadyMarked ? clean : [...clean, systemThoughtLog("\n\n*Generation stopped by user.*")];
+          const alreadyMarked = clean.some(log =>
+            (log.type === 'agent_status' && log.status === 'stopped') ||
+            (log.type === 'thought' && String(log.text || '').includes('Generation stopped by user.'))
+          );
+          return alreadyMarked ? clean : [...clean, agentStatusLog('stopped', 'Run stopped', 'Stopped by you.')];
         });
         return true;
       } catch (error: any) {
@@ -3993,7 +4021,7 @@ function DeepWorkUI() {
         });
         setChatLogsById(chatId, previous => [
           ...stripAgentConnectionLogs(previous),
-          systemThoughtLog(`\n\n*Could not stop the agent: ${ String(error?.message || error).slice(0, 180) }*`),
+          agentStatusLog('warning', 'Stop request failed', String(error?.message || error).slice(0, 180)),
         ]);
         return false;
       } finally {
@@ -4512,9 +4540,9 @@ function DeepWorkUI() {
     if (!chatIdToUse) {
       chatIdToUse = crypto.randomUUID();
       try {
-        localStorage.setItem(`eterx_proxy_controls_${chatIdToUse}`, JSON.stringify({ enabled: proxyEnabled, intervention: proxyIntervention }));
-        localStorage.setItem(`eterx_proxy_manager_model_${chatIdToUse}`, proxyModelSelection);
-        localStorage.setItem(`eterx_proxy_runtime_model_${chatIdToUse}`, proxyRuntimeModelSelection);
+        localStorage.setItem(`eterx_proxy_controls_${ chatIdToUse }`, JSON.stringify({ enabled: proxyEnabled, intervention: proxyIntervention }));
+        localStorage.setItem(`eterx_proxy_manager_model_${ chatIdToUse }`, proxyModelSelection);
+        localStorage.setItem(`eterx_proxy_runtime_model_${ chatIdToUse }`, proxyRuntimeModelSelection);
       } catch { }
       activeChatIdRef.current = chatIdToUse;
       setActiveChatId(chatIdToUse);
@@ -4723,7 +4751,7 @@ function DeepWorkUI() {
           } catch { }
           setChatLogsById(chatIdToUse!, logs => [
             ...stripAgentConnectionLogs(logs),
-            systemThoughtLog(`\n\n*${ message }*`),
+            agentStatusLog('failed', 'Custom agent unavailable', message),
           ], { touchUpdatedAt: true });
           return;
         }
@@ -4739,7 +4767,7 @@ function DeepWorkUI() {
           if (event.type === 'text') {
             pendingCustomText += String(event.text || '');
           } else if (event.type === 'status') {
-              appendCustomAgentStatus(String(event.text || ''), String(event.agentName || runSelectedAgentName));
+            appendCustomAgentStatus(String(event.text || ''), String(event.agentName || runSelectedAgentName));
           } else if (event.type === 'ask_user') {
             const at = Number(event.timestamp || Date.now());
             flushCustomWorkNote();
@@ -4755,7 +4783,7 @@ function DeepWorkUI() {
           } else if (event.type === 'tool_call') {
             const at = Date.now();
             flushCustomWorkNote();
-              const actionLog = createCustomToolActionLog(event, String(event.agentName || runSelectedAgentName), at);
+            const actionLog = createCustomToolActionLog(event, String(event.agentName || runSelectedAgentName), at);
             activeCustomToolLogs.set(customToolTraceKey(event), {
               id: actionLog.id,
               toolName: String(event.toolName || ''),
@@ -4780,7 +4808,7 @@ function DeepWorkUI() {
             const message = String(event.text || 'Custom agent failed.');
             setChatLogsById(chatIdToUse!, logs => [
               ...stripAgentConnectionLogs(logs),
-              systemThoughtLog(`\n\n*${ message.slice(0, 240) }*`),
+              agentStatusLog('failed', 'Custom agent run failed', message.slice(0, 240)),
             ], { touchUpdatedAt: true });
           } else if (event.type === 'done') {
             if (pendingCustomText.trim()) {
@@ -4819,7 +4847,7 @@ function DeepWorkUI() {
         if (error.name !== 'AbortError') {
           setChatLogsById(chatIdToUse!, logs => [
             ...stripAgentConnectionLogs(logs),
-            systemThoughtLog(`\n\n*Custom agent connection failed: ${ String(error.message || error).slice(0, 180) }*`),
+            agentStatusLog('failed', 'Custom agent connection failed', String(error.message || error).slice(0, 180)),
           ], { touchUpdatedAt: true });
         }
       } finally {
@@ -4930,7 +4958,7 @@ function DeepWorkUI() {
         markChatUnreadIfBackground(chatIdToUse!);
         setChatLogsById(chatIdToUse!, prev => [
           ...stripAgentConnectionLogs(prev),
-          systemThoughtLog(`\n\n*${ message }*`)
+          agentStatusLog('failed', 'Agent unavailable', message)
         ]);
         return;
       }
@@ -4982,7 +5010,7 @@ function DeepWorkUI() {
           markChatUnreadIfBackground(chatIdToUse!);
           setChatLogsById(chatIdToUse!, prev => [
             ...stripAgentConnectionLogs(prev),
-            systemThoughtLog(`\n\n*Agent connection failed: ${ String(error.message || error).slice(0, 180) }*`)
+            agentStatusLog('failed', 'Agent connection failed', String(error.message || error).slice(0, 180))
           ]);
           return;
         }
@@ -5169,7 +5197,26 @@ function DeepWorkUI() {
                   } else if (ownsLatestTurn && data.status === 'failed' && data.finalAnswer) {
                     const interruptionText = String(data.finalAnswer);
                     if (!restoredLogs.some((log: any) => String(log?.text || '').includes(interruptionText))) {
-                      restoredLogs = [...restoredLogs, systemThoughtLog(`\n\n*${ interruptionText }*`, normalizeClientTraceTime(data.completedAt))];
+                      restoredLogs = [
+                        ...restoredLogs,
+                        agentStatusLog('failed', 'Run ended with an error', interruptionText, normalizeClientTraceTime(data.completedAt)),
+                      ];
+                    }
+                  } else if (ownsLatestTurn && data.status === 'stopped') {
+                    const alreadyStopped = restoredLogs.some((log: any) =>
+                      (log?.type === 'agent_status' && log?.status === 'stopped') ||
+                      /generation stopped by user|agent stopped/i.test(String(log?.text || ''))
+                    );
+                    if (!alreadyStopped) {
+                      restoredLogs = [
+                        ...restoredLogs,
+                        agentStatusLog(
+                          'stopped',
+                          'Run stopped',
+                          String(data.finalAnswer || 'The agent was stopped.'),
+                          normalizeClientTraceTime(data.completedAt),
+                        ),
+                      ];
                     }
                   }
                   return { ...c, traceLogs: restoredLogs };
@@ -5795,7 +5842,7 @@ function DeepWorkUI() {
         const response = await fetch('/api/code/execute', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ command: `git checkout ${branchName}`, cwd: activeWorkspacePath }),
+          body: JSON.stringify({ command: `git checkout ${ branchName }`, cwd: activeWorkspacePath }),
         });
         const data = await response.json();
         if (data.stderr && data.stderr.includes('error:')) {
@@ -5830,7 +5877,7 @@ function DeepWorkUI() {
         const response = await fetch('/api/code/execute', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ command: `git checkout -b ${newName}`, cwd: activeWorkspacePath }),
+          body: JSON.stringify({ command: `git checkout -b ${ newName }`, cwd: activeWorkspacePath }),
         });
         const data = await response.json();
         if (data.stderr && data.stderr.includes('error:')) {
@@ -6008,12 +6055,12 @@ function DeepWorkUI() {
     <div data-active-view={activeView} data-sidebar-open={sidebarOpen ? 'true' : 'false'} className="eterx-app-shell flex h-screen font-sans overflow-hidden selection:bg-[#E2765A]/30 transition-colors relative">
       {/* Global Window Drag Bar (Independent Layer) */}
       <div className="pointer-events-none absolute top-0 left-0 right-[150px] h-[var(--eterx-shell-topbar-height)] z-[998] [-webkit-app-region:drag]" />
-      
+
       {/* Global Top Bar UI Container */}
       <div className="pointer-events-none absolute top-0 left-0 right-[150px] h-[var(--eterx-shell-topbar-height)] z-[999] flex items-center">
         {/* Drag spacer — pointer-events-none so sidebar toggle clicks pass through */}
         <div className="eterx-topbar-sidebar-spacer shrink-0 pointer-events-none transition-[width] duration-300" />
-        
+
         {/* Action buttons — API | Models | Theme | Help | Updates */}
         <div className="pointer-events-auto flex items-center [-webkit-app-region:no-drag]">
           {/* API */}
@@ -6023,7 +6070,7 @@ function DeepWorkUI() {
             style={{ color: 'var(--sidebar-muted-text, #9A9590)' }}>
             API
           </button>
-          
+
           {/* Models */}
           <button type="button"
             onClick={() => { setSettingsInitialTab('models'); setIsSettingsOpen(true); }}
@@ -6031,7 +6078,7 @@ function DeepWorkUI() {
             style={{ color: 'var(--sidebar-muted-text, #9A9590)' }}>
             Models
           </button>
-          
+
           {/* Theme toggle — light/dark dropdown (Powered by Radix UI Portal) */}
           <div className="relative flex items-center">
             <DropdownMenu.Root open={topbarThemeOpen} onOpenChange={setTopbarThemeOpen}>
@@ -6109,7 +6156,7 @@ function DeepWorkUI() {
               </DropdownMenu.Portal>
             </DropdownMenu.Root>
           </div>
-          
+
           {/* Help dropdown */}
           <div className="relative flex items-center">
             <DropdownMenu.Root open={topbarHelpOpen} onOpenChange={setTopbarHelpOpen}>
@@ -6209,7 +6256,7 @@ function DeepWorkUI() {
                       const email = 'harshilsoni5666@gmail.com';
                       const subject = encodeURIComponent('Feedback / Found A Bug - EterX Agent');
                       const body = encodeURIComponent('Hi Harshil,\n\nI found a bug / have some feedback:\n\n[Describe the bug or feedback here]');
-                      const mailtoUrl = `mailto:${email}?subject=${subject}&body=${body}`;
+                      const mailtoUrl = `mailto:${ email }?subject=${ subject }&body=${ body }`;
                       if ((window as any).electronAPI?.openExternal) {
                         (window as any).electronAPI.openExternal(mailtoUrl);
                       } else {
@@ -6242,7 +6289,7 @@ function DeepWorkUI() {
               </DropdownMenu.Portal>
             </DropdownMenu.Root>
           </div>
-          
+
           {/* Updates */}
           <button type="button"
             onClick={() => {
@@ -6286,23 +6333,23 @@ function DeepWorkUI() {
           />
           <Sidebar
             isOpen={sidebarOpen}
-          setIsOpen={setSidebarOpen}
-          createNewChat={createNewChat}
-          chats={nonBuilderChats}
-          activeChatId={activeChatId}
-          loadChat={loadChat}
-          deleteChat={deleteChat}
-          deleteChats={deleteChats}
-          renameChat={renameChat}
-          toggleFavorite={toggleFavorite}
-          onSearchClick={() => setCmdPaletteOpen(true)}
-          activeView={activeView}
-          setActiveView={setActiveView}
-          runningChats={runningChats}
-          unreadChats={unreadChatIds}
-          onSettingsClick={openSettingsWindow}
-          isThinking={isThinking}
-        />
+            setIsOpen={setSidebarOpen}
+            createNewChat={createNewChat}
+            chats={nonBuilderChats}
+            activeChatId={activeChatId}
+            loadChat={loadChat}
+            deleteChat={deleteChat}
+            deleteChats={deleteChats}
+            renameChat={renameChat}
+            toggleFavorite={toggleFavorite}
+            onSearchClick={() => setCmdPaletteOpen(true)}
+            activeView={activeView}
+            setActiveView={setActiveView}
+            runningChats={runningChats}
+            unreadChats={unreadChatIds}
+            onSettingsClick={openSettingsWindow}
+            isThinking={isThinking}
+          />
         </>
       )}
 
@@ -6429,7 +6476,7 @@ function DeepWorkUI() {
                           >
                             <ChevronDown className={`w-3.5 h-3.5 shrink-0 transition-transform duration-200 ${ chatActionMenuOpen ? 'rotate-180 text-white' : '' }`} strokeWidth={1.6} />
                           </div>
-                          
+
                           <AnimatePresence>
                             {chatActionMenuOpen && (
                               <>
@@ -6474,7 +6521,7 @@ function DeepWorkUI() {
                                     <Pencil className="w-3.5 h-3.5 mr-2.5 shrink-0 text-[#A3A19E]" strokeWidth={1.5} />
                                     <span>Rename task</span>
                                   </button>
-                                  
+
                                   <div className="my-1 h-px bg-white/[0.06]" />
 
                                   <button
@@ -6484,7 +6531,7 @@ function DeepWorkUI() {
                                     <Calendar className="w-3.5 h-3.5 mr-2.5 shrink-0 text-[#A3A19E]" strokeWidth={1.5} />
                                     <span>Schedule task...</span>
                                   </button>
-                                  
+
                                   <div className="my-1 h-px bg-white/[0.06]" />
 
                                   <button
@@ -6639,17 +6686,17 @@ function DeepWorkUI() {
                           // also draggable (especially after a drag or on touch).
                           // Use the native click event so selecting a tab always
                           // updates the active workspace.
-                          onClick={(event) => {
+                          onClick={(event: React.MouseEvent) => {
                             event.stopPropagation();
                             setActiveSubAgentTab(agent.name);
                             setOverflowDropdownOpen(false);
                           }}
-                          onPointerDown={(event) => {
+                          onPointerDown={(event: React.PointerEvent) => {
                             if (event.button !== 0) return;
                             setActiveSubAgentTab(agent.name);
                             setOverflowDropdownOpen(false);
                           }}
-                          onKeyDown={(event) => {
+                          onKeyDown={(event: React.KeyboardEvent) => {
                             if (event.key !== 'Enter' && event.key !== ' ') return;
                             event.preventDefault();
                             setActiveSubAgentTab(agent.name);
@@ -6675,7 +6722,7 @@ function DeepWorkUI() {
                             />
                           )}
                           <SubAgentAvatar name={agent.name} status={agent.status} size="xs" />
-                          <span className="eterx-agent-tab-label min-w-0 truncate">{agent.name}</span>
+                          <Shimmer active={isWorking} className="eterx-agent-tab-label min-w-0 truncate">{agent.name}</Shimmer>
                           {isWorking && (
                             <svg className="animate-spin h-3.5 w-3.5 text-white/80 shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" aria-label="Working">
                               <circle className="opacity-20" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
@@ -6694,8 +6741,8 @@ function DeepWorkUI() {
                         type="button"
                         onClick={() => setOverflowDropdownOpen(!overflowDropdownOpen)}
                         className={`eterx-agent-tab eterx-agent-tab-overflow flex items-center gap-1.5 transition-all
-                          ${ overflowDropdownOpen 
-                            ? 'border-white/25 bg-white/12 text-white shadow-[0_4px_12px_rgba(255,255,255,0.15)]' 
+                          ${ overflowDropdownOpen
+                            ? 'border-white/25 bg-white/12 text-white shadow-[0_4px_12px_rgba(255,255,255,0.15)]'
                             : 'border-white/12 bg-white/8 text-white/60'
                           }`}
                         title={`${ hiddenHeaderSubAgentCount } more agents`}
@@ -6738,7 +6785,7 @@ function DeepWorkUI() {
                   <div className="relative group">
                     <button
                       type="button"
-                      aria-label={`Git branch ${currentBranch}`}
+                      aria-label={`Git branch ${ currentBranch }`}
                       onMouseDown={(e) => e.stopPropagation()}
                       onClick={(e) => {
                         e.stopPropagation();
@@ -6842,7 +6889,7 @@ function DeepWorkUI() {
                             )}
 
                             <div className="h-px bg-white/[0.06] my-1.5 mx-1" onMouseEnter={() => setHoveredSubmenu(null)} />
-                            
+
                             {/* Recent Commits (Submenu Button) */}
                             <div className="relative">
                               <button
@@ -6916,10 +6963,10 @@ function DeepWorkUI() {
                                           className="p-1 rounded hover:bg-white/5 text-white/40 hover:text-white transition-colors"
                                           title="Refresh commits"
                                         >
-                                          <RefreshCw className={`h-3 w-3 ${isCommitsLoading ? 'animate-spin' : ''}`} />
+                                          <RefreshCw className={`h-3 w-3 ${ isCommitsLoading ? 'animate-spin' : '' }`} />
                                         </button>
                                       </div>
-                                      
+
                                       {isCommitsLoading ? (
                                         <div className="flex flex-col items-center justify-center py-6 select-none">
                                           <RefreshCw className="h-4 w-4 animate-spin text-white/40" />
@@ -6935,7 +6982,7 @@ function DeepWorkUI() {
                                               type="button"
                                               onClick={() => {
                                                 navigator.clipboard.writeText(c.hash);
-                                                alert(`Copied hash ${c.hash} to clipboard!`);
+                                                alert(`Copied hash ${ c.hash } to clipboard!`);
                                               }}
                                               className="text-left px-2 py-1.5 rounded-lg hover:bg-white/5 transition-all flex items-center gap-2"
                                               title="Click to copy hash"
@@ -7129,9 +7176,9 @@ function DeepWorkUI() {
                                                 <span className="shrink-0">
                                                   <TaskStatusGlyphMini status={step.status} active={activeWorking} />
                                                 </span>
-                                                <span className={`truncate flex-1 ${ step.status === 'done' ? 'line-through text-white/45' : activeWorking ? 'text-white font-medium' : 'text-white/70' }`}>
+                                                <Shimmer active={activeWorking} className={`truncate flex-1 ${ step.status === 'done' ? 'line-through text-white/45' : activeWorking ? 'text-white font-medium' : 'text-white/70' }`}>
                                                   {step.name || `Task ${ step.step }`}
-                                                </span>
+                                                </Shimmer>
                                               </div>
                                             );
                                           });
@@ -7657,7 +7704,7 @@ function DeepWorkUI() {
                                       : (proxyModelEntries.find(entry => modelEntryKey(entry.provider, entry.modelId) === proxyRuntimeModelSelection)?.modelId || 'Auto')}
                                   </span>
                                 </span>
-                                <ChevronDown className={`h-3.5 w-3.5 shrink-0 text-white/35 transition-transform ${showProxyRuntimeModelMenu ? 'rotate-180' : ''}`} />
+                                <ChevronDown className={`h-3.5 w-3.5 shrink-0 text-white/35 transition-transform ${ showProxyRuntimeModelMenu ? 'rotate-180' : '' }`} />
                               </button>
                             </div>
                             {showProxyRuntimeModelMenu && (
@@ -7665,7 +7712,7 @@ function DeepWorkUI() {
                                 <button
                                   type="button"
                                   onClick={() => { handleProxyRuntimeModelSelectionChange(AUTO_MODEL_SELECTION); setShowProxyRuntimeModelMenu(false); }}
-                                  className={`w-full rounded-xl px-2.5 py-2 text-left transition-colors ${proxyRuntimeModelSelection === AUTO_MODEL_SELECTION ? 'bg-white/[0.08] text-white' : 'text-white/60 hover:bg-white/[0.05] hover:text-white'}`}
+                                  className={`w-full rounded-xl px-2.5 py-2 text-left transition-colors ${ proxyRuntimeModelSelection === AUTO_MODEL_SELECTION ? 'bg-white/[0.08] text-white' : 'text-white/60 hover:bg-white/[0.05] hover:text-white' }`}
                                 >
                                   <span className="block text-[12px] font-medium">Auto</span>
                                   <span className="block text-[9.5px] text-white/30">Use the settings model priority</span>
@@ -7675,10 +7722,10 @@ function DeepWorkUI() {
                                   const selected = proxyRuntimeModelSelection === optionKey;
                                   return (
                                     <button
-                                      key={`runtime-proxy-${optionKey}`}
+                                      key={`runtime-proxy-${ optionKey }`}
                                       type="button"
                                       onClick={() => { handleProxyRuntimeModelSelectionChange(optionKey); setShowProxyRuntimeModelMenu(false); }}
-                                      className={`w-full rounded-xl px-2.5 py-2 text-left transition-colors ${selected ? 'bg-white/[0.08] text-white' : 'text-white/60 hover:bg-white/[0.05] hover:text-white'}`}
+                                      className={`w-full rounded-xl px-2.5 py-2 text-left transition-colors ${ selected ? 'bg-white/[0.08] text-white' : 'text-white/60 hover:bg-white/[0.05] hover:text-white' }`}
                                     >
                                       <span className="block truncate text-[12px] font-medium">{entry.modelId}</span>
                                       <span className="block text-[9.5px] text-white/30">{entry.provider}</span>
@@ -7701,12 +7748,12 @@ function DeepWorkUI() {
                                 <span className="capitalize text-white/90 font-semibold">
                                   {proxyIntervention}
                                 </span>
-                                <ChevronRight className={`h-3.5 w-3.5 text-white/30 group-hover:text-white/60 transition-all ${showProxyInterventionMenu ? 'rotate-90' : ''}`} />
+                                <ChevronRight className={`h-3.5 w-3.5 text-white/30 group-hover:text-white/60 transition-all ${ showProxyInterventionMenu ? 'rotate-90' : '' }`} />
                               </div>
                             </button>
 
                             {/* Pop-out Dropdown to the Left (pr-2 connects hover hit area across the 8px visual gap) */}
-                            <div className={`absolute right-full top-1/2 -translate-y-1/2 z-[100] w-[158px] pr-2 transition-all duration-200 ${showProxyInterventionMenu ? 'pointer-events-auto opacity-100 translate-x-0' : 'pointer-events-none opacity-0 translate-x-2'}`}>
+                            <div className={`absolute right-full top-1/2 -translate-y-1/2 z-[100] w-[158px] pr-2 transition-all duration-200 ${ showProxyInterventionMenu ? 'pointer-events-auto opacity-100 translate-x-0' : 'pointer-events-none opacity-0 translate-x-2' }`}>
                               <div className="eterx-proxy-popout rounded-2xl border border-white/[0.08] bg-[#252525] shadow-2xl p-1.5 flex flex-col gap-1 w-full">
                                 {(['minimal', 'normal', 'high'] as const).map((level) => {
                                   const isSelected = proxyIntervention === level;
@@ -7716,11 +7763,10 @@ function DeepWorkUI() {
                                       key={level}
                                       type="button"
                                       onClick={() => handleProxyInterventionChange(level)}
-                                      className={`eterx-proxy-popout-item w-full flex flex-col items-start rounded-xl px-2.5 py-1 text-left transition-colors relative pr-6 ${
-                                        isSelected
+                                      className={`eterx-proxy-popout-item w-full flex flex-col items-start rounded-xl px-2.5 py-1 text-left transition-colors relative pr-6 ${ isSelected
                                           ? 'bg-white/[0.08] text-white'
                                           : 'text-white/50 hover:bg-white/[0.04] hover:text-white/85'
-                                      }`}
+                                        }`}
                                     >
                                       <span className="text-[12px] font-medium capitalize">{level}</span>
                                       <span className="text-[9.5px] text-white/30 font-normal leading-normal">{subtitle}</span>
@@ -7740,11 +7786,10 @@ function DeepWorkUI() {
                           <button
                             type="button"
                             onClick={() => setShowProxyChat(!showProxyChat)}
-                            className={`eterx-proxy-button w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-[12px] font-medium transition-all duration-200 border shrink-0 ${
-                              showProxyChat
+                            className={`eterx-proxy-button w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-[12px] font-medium transition-all duration-200 border shrink-0 ${ showProxyChat
                                 ? 'bg-white/[0.08] border-white/[0.14] text-white'
                                 : 'border-white/[0.08] bg-white/[0.04] text-white/80 hover:bg-white/[0.08] hover:text-white active:bg-white/[0.12]'
-                            }`}
+                              }`}
                           >
                             <MessageSquare className="h-3 w-3 text-white/60" />
                             <span>Talk with proxy</span>
@@ -7793,7 +7838,7 @@ function DeepWorkUI() {
                               style={{
                                 width: proxyChatWindow.width,
                                 height: proxyChatWindow.height,
-                                transform: `translate(${proxyChatWindow.x}px, ${proxyChatWindow.y}px)`,
+                                transform: `translate(${ proxyChatWindow.x }px, ${ proxyChatWindow.y }px)`,
                               }}
                             >
                               {/* Header */}
@@ -7827,16 +7872,14 @@ function DeepWorkUI() {
                                   visibleProxyChatMessages.map((msg, idx) => (
                                     <div
                                       key={msg.id || idx}
-                                      className={`flex min-w-0 max-w-[92%] flex-col ${
-                                        msg.sender === 'user' ? 'self-end items-end' : 'self-start items-start'
-                                      }`}
+                                      className={`flex min-w-0 max-w-[92%] flex-col ${ msg.sender === 'user' ? 'self-end items-end' : 'self-start items-start'
+                                        }`}
                                     >
                                       <div
-                                        className={`eterx-proxy-message-bubble min-w-0 max-w-full whitespace-pre-wrap [overflow-wrap:anywhere] text-[11.5px] leading-relaxed ${
-                                          msg.sender === 'user'
+                                        className={`eterx-proxy-message-bubble min-w-0 max-w-full whitespace-pre-wrap [overflow-wrap:anywhere] text-[11.5px] leading-relaxed ${ msg.sender === 'user'
                                             ? 'rounded-xl border border-white/[0.08] bg-[#242424] px-3 py-2 text-white/90 shadow-[0_5px_18px_rgba(0,0,0,0.16)]'
                                             : 'rounded-none border-0 bg-transparent px-0 py-0 text-white/78'
-                                        }`}
+                                          }`}
                                       >
                                         {msg.sender === 'proxy' ? (
                                           <div className="proxy-manager-markdown max-w-full min-w-0 break-words">
@@ -7854,7 +7897,7 @@ function DeepWorkUI() {
                                 )}
                                 {proxyChatLoading && (
                                   <div className="self-start px-0 py-1 text-[11px] text-white/42">
-                                    <span className="mr-1.5">Thinking</span>
+                                    <Shimmer className="mr-1.5">Thinking</Shimmer>
                                     <span className="inline-flex items-center gap-1 align-middle">
                                       <span className="h-1 w-1 animate-bounce rounded-full bg-white/55 [animation-delay:-0.24s]" />
                                       <span className="h-1 w-1 animate-bounce rounded-full bg-white/55 [animation-delay:-0.12s]" />
@@ -7900,13 +7943,13 @@ function DeepWorkUI() {
                                       <div className="eterx-model-selector relative min-w-0">
                                         <div
                                           onClick={() => setShowProxyModelMenu(!showProxyModelMenu)}
-                                          className={`eterx-model-button mr-0 flex h-[32px] min-w-0 max-w-[142px] items-center justify-between gap-1 rounded-full border border-transparent bg-[#2D2D2D] px-3 text-[#F4F4F4] transition-colors hover:bg-[#333333] hover:text-white active:bg-[#333333] group cursor-pointer ${showProxyModelMenu ? '!bg-[#333333] !text-white' : ''}`}
+                                          className={`eterx-model-button mr-0 flex h-[32px] min-w-0 max-w-[142px] items-center justify-between gap-1 rounded-full border border-transparent bg-[#2D2D2D] px-3 text-[#F4F4F4] transition-colors hover:bg-[#333333] hover:text-white active:bg-[#333333] group cursor-pointer ${ showProxyModelMenu ? '!bg-[#333333] !text-white' : '' }`}
                                         >
                                           <span className="eterx-selector-label min-w-0 truncate text-[13px] font-medium tracking-normal text-white/60">
                                             {selectedModel.label}
                                           </span>
                                           <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[#F0F0F0] transition-all duration-150 hover:bg-white/10 hover:text-white">
-                                            <ChevronDown className={`eterx-selector-chevron h-3.5 w-3.5 text-[#F0F0F0] transition-all duration-200 group-hover:text-white ${showProxyModelMenu ? 'rotate-180' : 'group-hover:translate-y-px'}`} strokeWidth={2.1} />
+                                            <ChevronDown className={`eterx-selector-chevron h-3.5 w-3.5 text-[#F0F0F0] transition-all duration-200 group-hover:text-white ${ showProxyModelMenu ? 'rotate-180' : 'group-hover:translate-y-px' }`} strokeWidth={2.1} />
                                           </span>
                                         </div>
 
@@ -7923,11 +7966,10 @@ function DeepWorkUI() {
                                                     handleProxyModelSelectionChange(option.optionKey);
                                                     setShowProxyModelMenu(false);
                                                   }}
-                                                  className={`group flex min-h-[36px] w-full items-center gap-2 rounded-md px-2 py-1 text-left transition-colors ${
-                                                    isCurrent
+                                                  className={`group flex min-h-[36px] w-full items-center gap-2 rounded-md px-2 py-1 text-left transition-colors ${ isCurrent
                                                       ? 'bg-white/[0.08] text-[#F4F4F4] font-normal shadow-sm'
                                                       : 'text-[#D0D0D0] hover:bg-white/[0.05] active:bg-white/[0.12]'
-                                                  }`}
+                                                    }`}
                                                   aria-pressed={isCurrent}
                                                 >
                                                   <span className="flex h-4 w-4 shrink-0 items-center justify-center text-white/95">
@@ -8000,6 +8042,7 @@ function DeepWorkUI() {
                       onEditUserMessage={updateInputValue}
                       onOpenAgentTeam={handleOpenAgentTeam}
                       isSubAgentTab={!!activeSubAgentTab}
+                      liveState={liveState}
                     />
 
                     {/* Pending Steering Queue */}
@@ -8045,7 +8088,7 @@ function DeepWorkUI() {
                           <span className="flex shrink-0 items-center gap-1.5">
                             <span className={`h-1.5 w-1.5 rounded-full ${ effectiveIsThinking ? 'bg-emerald-300/80' : 'bg-white/28' }`} />
                             <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-white/38">
-                              {effectiveIsThinking ? 'working' : 'ready'} - deferred
+                              {effectiveIsThinking ? <Shimmer>Working</Shimmer> : 'Ready'} - deferred
                             </span>
                           </span>
                         </div>
@@ -8079,6 +8122,7 @@ function DeepWorkUI() {
                       liveError={liveError}
                       onLiveStart={startLiveSession}
                       onLiveStop={stopLiveSession}
+                      onLiveSendText={(text) => liveSessionRef.current?.sendText(text)}
                       liveOutputText={liveOutputText}
                       liveInputText={liveInputText}
                       liveMicVolume={liveMicVolume}
@@ -8223,11 +8267,13 @@ function DeepWorkUI() {
                                       <div className="flex items-center gap-2">
                                         <span className="truncate text-[12px] font-semibold text-white/86">{agent.name}</span>
                                         <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-[8px] font-semibold uppercase tracking-wider ${ statusBadge.bg }`}>
-                                          {statusBadge.label}
+                                          {isWorking ? <Shimmer>{statusBadge.label}</Shimmer> : statusBadge.label}
                                         </span>
                                       </div>
                                       <div className="mt-0.5 line-clamp-1 text-[10.5px] leading-4 text-white/40">
-                                        {agent.currentAction || agent.task || 'Waiting...'}
+                                        {isWorking
+                                          ? <Shimmer>{agent.currentAction || agent.task || 'Working'}</Shimmer>
+                                          : agent.currentAction || agent.task || 'Waiting...'}
                                       </div>
                                     </div>
                                     {/* Control buttons */}
@@ -8294,6 +8340,18 @@ function DeepWorkUI() {
         createNewChat={createNewChat}
         chats={chats}
         loadChat={loadChat}
+      />
+
+      <FloatingLiveWidget
+        liveState={liveState}
+        liveMicVolume={liveMicVolume}
+        liveModelVolume={liveModelVolume}
+        isMicMuted={liveMicMuted}
+        isSpeakerMuted={liveSpeakerMuted}
+        liveActiveTool={liveActiveTool}
+        onToggleMicMute={toggleLiveMicMute}
+        onToggleSpeakerMute={toggleLiveSpeakerMute}
+        onLiveStop={stopLiveSession}
       />
 
       <style dangerouslySetInnerHTML={{

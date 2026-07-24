@@ -68,6 +68,15 @@
 
     --font-dm-sans: var(--font-sans), -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 
+    /* Shared app typography and status colors. Components can opt into these
+       tokens without introducing a separate light/dark palette. */
+    --eterx-ui-font-size: 14px;
+    --eterx-ui-line-height: 1.45;
+    --eterx-ui-text: var(--foreground);
+    --eterx-ui-muted-text: var(--muted-foreground);
+    --eterx-ui-working-text: #4B5563;
+    --eterx-ui-working-highlight: #171717;
+
     --sb-size: 12px;
     --sb-button-size: 12px;
     --sb-track: transparent;
@@ -159,6 +168,9 @@
     --destructive: #ef4444;
     --info: #3b82f6;
 
+    --eterx-ui-working-text: #A3A3A3;
+    --eterx-ui-working-highlight: #E5E5E5;
+
     --sb-track: transparent;
     --sb-track-solid: transparent;
     --sb-track-edge: transparent;
@@ -204,6 +216,17 @@
   .eterx-app-shell {
     background: var(--sidebar-bg);
     color: var(--foreground);
+    font-size: var(--eterx-ui-font-size);
+    line-height: var(--eterx-ui-line-height);
+    color: var(--eterx-ui-text);
+    font-family: var(--font-sans), -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+
+  .eterx-app-shell button,
+  .eterx-app-shell input,
+  .eterx-app-shell textarea,
+  .eterx-app-shell select {
+    font: inherit;
   }
 
   .eterx-workspace-shell {
@@ -311,7 +334,7 @@
     box-shadow: 0 12px 28px rgba(31, 31, 29, 0.10), inset 1px 0 0 rgba(255, 255, 255, 0.75);
   }
 
-:root[data-theme="light"] .eterx-sidebar-closed-edge-handle:hover::before,
+  :root[data-theme="light"] .eterx-sidebar-closed-edge-handle:hover::before,
   :root[data-theme="light"] .eterx-sidebar-closed-edge-handle:focus-visible::before,
   :root[data-theme="light"] .eterx-sidebar-closed-edge-handle:active::before {
     background: rgba(31, 31, 29, 0.12);
@@ -981,7 +1004,7 @@
 
   /* Modern scrollbar classes that fallback to global styled values */
   .eterx-scrollbar,
-  
+
   .eterx-modern-scrollbar,
   .eterx-prompt-preview-scroll,
   .eterx-action-scroll,
@@ -1426,59 +1449,110 @@
   border-color: rgba(255, 255, 255, 0.6);
 }
 
-.eterx-text-shimmer {
-  /* Shared token set for every live label (feed, progress, and sidebar). */
-  --eterx-shimmer-duration: 6.8s;
-  --eterx-shimmer-ease: cubic-bezier(.45, 0, .18, 1);
-  --eterx-shimmer-base: #9B9EA5;
-  --eterx-shimmer-highlight: #E6E8EC;
-  color: var(--eterx-shimmer-base);
-  background:
-    linear-gradient(104deg,
-      transparent 0%,
-      transparent 38%,
-      color-mix(in srgb, var(--eterx-shimmer-highlight) 12%, transparent) 45%,
-      color-mix(in srgb, var(--eterx-shimmer-highlight) 54%, transparent) 50%,
-      color-mix(in srgb, var(--eterx-shimmer-highlight) 14%, transparent) 56%,
-      transparent 64%,
-      transparent 100%),
-    linear-gradient(var(--eterx-shimmer-base), var(--eterx-shimmer-base));
-  background-size: 210% 100%, 100% 100%;
-  background-position: 190% 50%, 0 0;
-  background-repeat: no-repeat, no-repeat;
+/* shadcn shimmer utility, kept local because this project uses Tailwind v3.
+   Defaults: 20deg angle, 2s duration, and a font-aware highlight spread. */
+.shimmer {
+  --_spread: var(--shimmer-spread, calc(3ch + 40px));
+  --_base: currentColor;
+  --_highlight: var(--shimmer-color, color-mix(in srgb, currentColor 20%, transparent));
+  --shimmer-color: var(--eterx-ui-working-highlight);
+  --shimmer-duration: 2s;
+  --shimmer-angle: 20deg;
+  --shimmer-spread: calc(2ch + 24px);
+  color: var(--eterx-ui-working-text);
+  background-image: var(--shimmer-image, linear-gradient(calc(90deg + var(--shimmer-angle, 20deg)),
+        var(--_base) calc(50% - var(--_spread)),
+        color-mix(in oklch, var(--_highlight), var(--_base) 50%) calc(50% - var(--_spread) * .5),
+        var(--_highlight) 50%,
+        color-mix(in oklch, var(--_highlight), var(--_base) 50%) calc(50% + var(--_spread) * .5),
+        var(--_base) calc(50% + var(--_spread))));
+  background-repeat: no-repeat;
+  background-size: calc(200% + var(--_spread) * 2) 100%;
+  background-position: 0 0;
   background-clip: text;
   -webkit-background-clip: text;
-  color: transparent;
-  -webkit-text-fill-color: transparent;
-  animation: eterx-text-soft-shimmer var(--eterx-shimmer-duration) var(--eterx-shimmer-ease) infinite;
+  -webkit-text-fill-color: var(--shimmer-text-fill, transparent);
+  animation: tw-shimmer var(--shimmer-duration, 2s) linear infinite;
   text-shadow: none;
-  will-change: background-position;
 }
 
-.eterx-text-shimmer-medium {
-  --eterx-shimmer-duration: 8.4s;
+:root[data-theme="dark"] .shimmer,
+.dark .shimmer {
+  --_highlight: var(--shimmer-color, oklch(from currentColor max(.8, calc(l + .4)) c h / calc(alpha + .4)));
 }
 
-.eterx-text-shimmer-slow {
-  --eterx-shimmer-duration: 10.8s;
+.shimmer:where([dir="rtl"], [dir="rtl"] *) {
+  animation-direction: reverse;
 }
 
-.eterx-text-shimmer-active {
-  --eterx-shimmer-duration: 7.2s;
+.shimmer-once {
+  animation-iteration-count: 1;
 }
 
-.eterx-text-shimmer-working {
-  --eterx-shimmer-duration: 8.8s;
+.shimmer-reverse {
+  animation-direction: reverse;
 }
 
-.eterx-text-shimmer-ambient {
-  --eterx-shimmer-duration: 12s;
+.shimmer-none {
+  --shimmer-image: none;
+  --shimmer-text-fill: currentColor;
 }
 
-.eterx-text-shimmer-action {
-  --eterx-shimmer-duration: 9.2s;
-  --eterx-shimmer-base: #969AA3;
-  --eterx-shimmer-highlight: #E6E8EC;
+.eterx-agent-run-notice {
+  color: #D2D5DA;
+}
+
+.eterx-agent-run-notice-icon,
+.eterx-agent-run-notice-detail {
+  color: #8E949E;
+}
+
+.eterx-agent-run-notice-error {
+  color: #E8B4B4;
+}
+
+.eterx-agent-run-notice-error .eterx-agent-run-notice-icon {
+  color: #D78E8E;
+}
+
+.eterx-agent-run-notice-warning {
+  color: #E5C58E;
+}
+
+.eterx-agent-run-notice-warning .eterx-agent-run-notice-icon {
+  color: #CFA764;
+}
+
+:root[data-theme="light"] .eterx-agent-run-notice,
+[data-theme="light"] .eterx-agent-run-notice {
+  color: #373A40;
+}
+
+:root[data-theme="light"] .eterx-agent-run-notice-icon,
+[data-theme="light"] .eterx-agent-run-notice-icon,
+:root[data-theme="light"] .eterx-agent-run-notice-detail,
+[data-theme="light"] .eterx-agent-run-notice-detail {
+  color: #6B7280;
+}
+
+:root[data-theme="light"] .eterx-agent-run-notice-error,
+[data-theme="light"] .eterx-agent-run-notice-error {
+  color: #9F3A3A;
+}
+
+:root[data-theme="light"] .eterx-agent-run-notice-error .eterx-agent-run-notice-icon,
+[data-theme="light"] .eterx-agent-run-notice-error .eterx-agent-run-notice-icon {
+  color: #B54747;
+}
+
+:root[data-theme="light"] .eterx-agent-run-notice-warning,
+[data-theme="light"] .eterx-agent-run-notice-warning {
+  color: #8A5A16;
+}
+
+:root[data-theme="light"] .eterx-agent-run-notice-warning .eterx-agent-run-notice-icon,
+[data-theme="light"] .eterx-agent-run-notice-warning .eterx-agent-run-notice-icon {
+  color: #A16A1B;
 }
 
 .eterx-subagent-identity {
@@ -1674,71 +1748,6 @@
   }
 }
 
-.eterx-surface-shimmer {
-  --eterx-shimmer-duration: 5.2s;
-  --eterx-shimmer-ease: cubic-bezier(.4, 0, .12, 1);
-  background: linear-gradient(102deg,
-      transparent 0%,
-      transparent 43%,
-      rgba(255, 255, 255, .08) 48%,
-      rgba(255, 255, 255, .22) 52%,
-      rgba(255, 255, 255, .08) 58%,
-      transparent 64%,
-      transparent 100%);
-  background-size: 245% 100%;
-  background-position: 260% 50%;
-  background-repeat: no-repeat;
-  animation: eterx-task-shimmer var(--eterx-shimmer-duration) var(--eterx-shimmer-ease) infinite;
-  will-change: background-position;
-}
-
-.eterx-surface-shimmer-upload {
-  --eterx-shimmer-duration: 3.8s;
-}
-
-.eterx-surface-shimmer-progress {
-  --eterx-shimmer-duration: 4.8s;
-}
-
-.eterx-surface-shimmer-panel {
-  --eterx-shimmer-duration: 6.2s;
-}
-
-.eterx-surface-shimmer-ambient {
-  --eterx-shimmer-duration: 7.4s;
-}
-
-:root[data-theme="light"] .eterx-text-shimmer,
-[data-theme="light"] .eterx-text-shimmer {
-  --eterx-shimmer-base: #B0B0B2;
-  --eterx-shimmer-highlight: #FFFFFF;
-  color: var(--eterx-shimmer-base);
-  text-shadow: none;
-}
-
-:root[data-theme="light"] .eterx-text-shimmer-active,
-[data-theme="light"] .eterx-text-shimmer-active,
-:root[data-theme="light"] .eterx-text-shimmer-working,
-[data-theme="light"] .eterx-text-shimmer-working {
-  --eterx-shimmer-base: #A9A9AB;
-  --eterx-shimmer-highlight: #FFFFFF;
-}
-
-:root[data-theme="light"] .eterx-surface-shimmer,
-[data-theme="light"] .eterx-surface-shimmer {
-  background: linear-gradient(102deg,
-      transparent 0%,
-      transparent 43%,
-      rgba(255, 255, 255, .18) 48%,
-      rgba(255, 255, 255, .48) 52%,
-      rgba(255, 255, 255, .18) 58%,
-      transparent 64%,
-      transparent 100%);
-  background-size: 245% 100%;
-  background-position: 260% 50%;
-  background-repeat: no-repeat;
-}
-
 :root[data-theme="light"] .eterx-chat-input-dock-active,
 [data-theme="light"] .eterx-chat-input-dock-active {
   background: transparent !important;
@@ -1777,28 +1786,12 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .eterx-text-shimmer {
-    background: none;
-    color: #C8C5BF;
+  .shimmer {
+    background-image: none;
     -webkit-text-fill-color: currentColor;
-    text-shadow: none;
     animation: none;
   }
 
-  :root[data-theme="light"] .eterx-text-shimmer,
-  [data-theme="light"] .eterx-text-shimmer {
-    color: #777674;
-  }
-
-  .eterx-surface-shimmer {
-    animation: none;
-    background: transparent;
-  }
-
-  :root[data-theme="light"] .eterx-surface-shimmer,
-  [data-theme="light"] .eterx-surface-shimmer {
-    background: transparent;
-  }
 }
 
 /* Global modern scrollbar styling. Chrome/Electron use WebKit pseudos so thumb rounding works. */
@@ -2512,6 +2505,7 @@
   scrollbar-width: none;
   -ms-overflow-style: none;
 }
+
 .eterx-user-msg-scroll::-webkit-scrollbar {
   display: none;
 }
@@ -2594,9 +2588,11 @@
     margin-right: 0;
     transform: none;
   }
+
   .eterx-user-message-actions::after {
     display: none !important;
   }
+
   .eterx-user-message-actions::before {
     content: '';
     position: absolute;
@@ -3378,21 +3374,13 @@
   }
 }
 
-@keyframes eterx-text-soft-shimmer {
+@keyframes tw-shimmer {
   0% {
-    background-position: 190% 50%, 0 0;
-  }
-
-  24% {
-    background-position: 190% 50%, 0 0;
-  }
-
-  74% {
-    background-position: -190% 50%, 0 0;
+    background-position: 100% 0;
   }
 
   100% {
-    background-position: -190% 50%, 0 0;
+    background-position: 0 0;
   }
 }
 
@@ -3482,7 +3470,7 @@
   transition: background-color 150ms ease, border-color 150ms ease, box-shadow 150ms ease;
 }
 
-.eterx-agent-tab > :not(.eterx-agent-tab-active-bg) {
+.eterx-agent-tab> :not(.eterx-agent-tab-active-bg) {
   position: relative;
   z-index: 1;
 }
@@ -4556,24 +4544,74 @@
 
 /* Code-preview syntax tokens keep the same semantic hues in both themes.
    Light mode adjusts contrast only; it never flattens the token palette. */
-.eterx-syntax-comment { color: #6E7681; font-style: italic; }
-.eterx-syntax-string { color: #A5D6FF; }
-.eterx-syntax-number { color: #79B8FF; }
-.eterx-syntax-type { color: #FFA657; }
-.eterx-syntax-keyword { color: #FF7B72; }
-.eterx-syntax-declaration { font-weight: 600; }
-.eterx-syntax-value { color: #79C0FF; }
-.eterx-syntax-function { color: #D2A8FF; }
-.eterx-syntax-flag { color: #56D364; }
+.eterx-syntax-comment {
+  color: #6E7681;
+  font-style: italic;
+}
 
-:root[data-theme="light"] .eterx-syntax-comment { color: #6E7781; }
-:root[data-theme="light"] .eterx-syntax-string { color: #0A3069; }
-:root[data-theme="light"] .eterx-syntax-number { color: #0550AE; }
-:root[data-theme="light"] .eterx-syntax-type { color: #953800; }
-:root[data-theme="light"] .eterx-syntax-keyword { color: #CF222E; }
-:root[data-theme="light"] .eterx-syntax-value { color: #0550AE; }
-:root[data-theme="light"] .eterx-syntax-function { color: #8250DF; }
-:root[data-theme="light"] .eterx-syntax-flag { color: #116329; }
+.eterx-syntax-string {
+  color: #A5D6FF;
+}
+
+.eterx-syntax-number {
+  color: #79B8FF;
+}
+
+.eterx-syntax-type {
+  color: #FFA657;
+}
+
+.eterx-syntax-keyword {
+  color: #FF7B72;
+}
+
+.eterx-syntax-declaration {
+  font-weight: 600;
+}
+
+.eterx-syntax-value {
+  color: #79C0FF;
+}
+
+.eterx-syntax-function {
+  color: #D2A8FF;
+}
+
+.eterx-syntax-flag {
+  color: #56D364;
+}
+
+:root[data-theme="light"] .eterx-syntax-comment {
+  color: #6E7781;
+}
+
+:root[data-theme="light"] .eterx-syntax-string {
+  color: #0A3069;
+}
+
+:root[data-theme="light"] .eterx-syntax-number {
+  color: #0550AE;
+}
+
+:root[data-theme="light"] .eterx-syntax-type {
+  color: #953800;
+}
+
+:root[data-theme="light"] .eterx-syntax-keyword {
+  color: #CF222E;
+}
+
+:root[data-theme="light"] .eterx-syntax-value {
+  color: #0550AE;
+}
+
+:root[data-theme="light"] .eterx-syntax-function {
+  color: #8250DF;
+}
+
+:root[data-theme="light"] .eterx-syntax-flag {
+  color: #116329;
+}
 
 .eterx-sidebar-recents,
 .eterx-connectors-grid,
@@ -4777,15 +4815,14 @@
 }
 
 .eterx-sidebar-chat-content {
-  -webkit-mask-image: linear-gradient(90deg, #000 0%, #000 calc(100% - 0.2rem), transparent calc(100% - 0.05rem));
-  mask-image: linear-gradient(90deg, #000 0%, #000 calc(100% - 0.2rem), transparent calc(100% - 0.05rem));
-  transition: -webkit-mask-image 150ms ease, mask-image 150ms ease;
+  -webkit-mask-image: none;
+  mask-image: none;
 }
 
 .eterx-sidebar-chat-content-menu-visible,
 .eterx-sidebar-chat-row:hover .eterx-sidebar-chat-content {
-  -webkit-mask-image: linear-gradient(90deg, #000 0%, #000 calc(100% - 2.35rem), transparent calc(100% - 2.2rem));
-  mask-image: linear-gradient(90deg, #000 0%, #000 calc(100% - 2.35rem), transparent calc(100% - 2.2rem));
+  -webkit-mask-image: none;
+  mask-image: none;
 }
 
 
@@ -4804,20 +4841,20 @@
 }
 
 .eterx-sidebar-shell .eterx-sidebar-chat-menu-button {
-  background: color-mix(in srgb, var(--sidebar-bg) 40%, var(--sidebar-strong-text) 12%) !important;
-  border: 1px solid var(--sidebar-surface-border) !important;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.16) !important;
+  background: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
 }
 
 .eterx-sidebar-shell .eterx-sidebar-chat-menu-button:hover {
-  background: color-mix(in srgb, var(--sidebar-bg) 20%, var(--sidebar-strong-text) 20%) !important;
-  border-color: var(--sidebar-surface-border) !important;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.22) !important;
+  background: var(--sidebar-hover-bg) !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
 }
 
 .eterx-sidebar-shell .eterx-sidebar-chat-menu-button:active {
-  background: color-mix(in srgb, var(--sidebar-bg) 10%, var(--sidebar-strong-text) 26%) !important;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12) !important;
+  background: var(--sidebar-toggle-active-bg) !important;
+  box-shadow: none !important;
 }
 
 
@@ -6266,21 +6303,25 @@
   margin-bottom: 0 !important;
   border-radius: 16px 16px 0 0 !important;
 }
+
 .eterx-scheduled-chat-input-container .eterx-composer-surface {
   border-radius: 18px !important;
 }
 
 /* Responsive adjustments for narrow/minimized window sizes */
 @container (max-width: 530px) {
+
   .eterx-selector-label,
   .eterx-selector-chevron,
   .eterx-selector-chevron-wrapper {
     display: none !important;
   }
+
   .eterx-selector-icon {
     display: block !important;
     margin: auto !important;
   }
+
   .eterx-agent-selector,
   .eterx-model-selector,
   .eterx-agent-button,
@@ -6291,12 +6332,14 @@
     padding-right: 0 !important;
     justify-content: center !important;
   }
+
   .eterx-chat-controls {
     flex-wrap: nowrap !important;
   }
 }
 
 @container (max-width: 380px) {
+
   .eterx-agent-selector,
   .eterx-model-selector,
   .eterx-agent-button,
@@ -6311,6 +6354,7 @@
   -webkit-app-region: drag !important;
   pointer-events: auto !important;
 }
+
 .eterx-main-header * {
   -webkit-app-region: no-drag;
 }
@@ -6319,6 +6363,7 @@
   -webkit-app-region: drag !important;
   pointer-events: auto !important;
 }
+
 .eterx-sidebar-topbar * {
   -webkit-app-region: no-drag;
 }
@@ -6401,6 +6446,7 @@
 
 /* NARROW WINDOW (<960px): sidebar overlays, workspace stays full-width */
 @media (max-width: 959px) {
+
   /* Sidebar shell: lift out of flex flow and fix to left edge */
   .eterx-app-shell[data-sidebar-open="true"] .eterx-sidebar-shell {
     position: fixed !important;
@@ -6412,11 +6458,11 @@
     width: var(--eterx-shell-sidebar-width) !important;
     margin-right: 0 !important;
     overflow: visible !important;
-    box-shadow: 4px 0 32px rgba(0,0,0,0.38), 1px 0 0 rgba(255,255,255,0.045) !important;
+    box-shadow: 4px 0 32px rgba(0, 0, 0, 0.38), 1px 0 0 rgba(255, 255, 255, 0.045) !important;
   }
 
   /* Inner sidebar div: full width (no extra padding from open-state rule) */
-  .eterx-app-shell[data-sidebar-open="true"] .eterx-sidebar-shell > div:not(.eterx-sidebar-sheen):not(.eterx-sidebar-resize-handle) {
+  .eterx-app-shell[data-sidebar-open="true"] .eterx-sidebar-shell>div:not(.eterx-sidebar-sheen):not(.eterx-sidebar-resize-handle) {
     width: var(--eterx-shell-sidebar-width) !important;
   }
 
@@ -6438,7 +6484,7 @@
     background: inherit !important;
   }
 
-  .eterx-app-shell[data-sidebar-open="true"] .eterx-workspace-shell > * {
+  .eterx-app-shell[data-sidebar-open="true"] .eterx-workspace-shell>* {
     pointer-events: auto !important;
   }
 
@@ -6526,7 +6572,6 @@
 }
 
 /* Live typing cursor and shimmer — GPU-accelerated animation */
-.eterx-text-shimmer,
 .eterx-live-dot,
 .eterx-reveal-active {
   will-change: opacity, transform;
@@ -6810,6 +6855,7 @@
   }
 
   @supports (zoom: 1) {
+
     .eterx-chat-feed-content,
     .eterx-composer-shell,
     .eterx-chat-auxiliary-stack {
@@ -6836,6 +6882,7 @@
   }
 
   @supports (zoom: 1) {
+
     .eterx-chat-feed-content,
     .eterx-composer-shell,
     .eterx-chat-auxiliary-stack {
@@ -6881,6 +6928,7 @@
   from {
     clip-path: circle(0% at calc(100% - 150px) 18px);
   }
+
   to {
     clip-path: circle(150% at calc(100% - 150px) 18px);
   }

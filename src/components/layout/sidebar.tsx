@@ -318,20 +318,20 @@ const lightweightSidebarCss = `
   }
 
   .eterx-sidebar-shell .eterx-sidebar-chat-menu-button {
-    background: color-mix(in srgb, var(--sidebar-bg) 40%, var(--sidebar-strong-text) 12%) !important;
-    border: 1px solid var(--sidebar-surface-border) !important;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.16) !important;
+    background: transparent !important;
+    border-color: transparent !important;
+    box-shadow: none !important;
   }
 
   .eterx-sidebar-shell .eterx-sidebar-chat-menu-button:hover {
-    background: color-mix(in srgb, var(--sidebar-bg) 20%, var(--sidebar-strong-text) 20%) !important;
-    border-color: var(--sidebar-surface-border) !important;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.22) !important;
+    background: var(--sidebar-hover-bg) !important;
+    border-color: transparent !important;
+    box-shadow: none !important;
   }
 
   .eterx-sidebar-shell .eterx-sidebar-chat-menu-button:active {
-    background: color-mix(in srgb, var(--sidebar-bg) 10%, var(--sidebar-strong-text) 26%) !important;
-    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12) !important;
+    background: var(--sidebar-toggle-active-bg) !important;
+    box-shadow: none !important;
   }
 
 
@@ -362,16 +362,30 @@ const lightweightSidebarCss = `
     text-overflow: clip !important;
   }
 
-  .eterx-sidebar-shell .eterx-sidebar-chat-content {
-    min-width: 0;
-    -webkit-mask-image: linear-gradient(90deg, #000 0%, #000 calc(100% - 0.2rem), transparent calc(100% - 0.05rem)) !important;
-    mask-image: linear-gradient(90deg, #000 0%, #000 calc(100% - 0.2rem), transparent calc(100% - 0.05rem)) !important;
+  .eterx-sidebar-shell .eterx-sidebar-chat-title {
+    display: inline-block !important;
+    white-space: nowrap !important;
+    overflow: visible !important;
+    will-change: transform;
   }
 
-  .eterx-sidebar-shell .eterx-sidebar-chat-content-menu-visible,
-  .eterx-sidebar-shell .eterx-sidebar-chat-row:hover .eterx-sidebar-chat-content {
-    -webkit-mask-image: linear-gradient(90deg, #000 0%, #000 calc(100% - 2.35rem), transparent calc(100% - 2.2rem)) !important;
-    mask-image: linear-gradient(90deg, #000 0%, #000 calc(100% - 2.35rem), transparent calc(100% - 2.2rem)) !important;
+  .eterx-sidebar-shell .eterx-sidebar-chat-title-wrap {
+    overflow: hidden !important;
+  }
+
+  @keyframes eterx-sidebar-ticker {
+    0%, 12% { transform: translateX(0); }
+    82%, 100% { transform: translateX(calc(-1 * var(--eterx-ticker-dist, 0px))); }
+  }
+
+  .eterx-sidebar-shell .eterx-sidebar-chat-title.eterx-ticker-play {
+    animation: eterx-sidebar-ticker 2.6s cubic-bezier(0.4, 0, 0.2, 1) 0.25s 1 both;
+  }
+
+  .eterx-sidebar-shell .eterx-sidebar-chat-content {
+    min-width: 0;
+    -webkit-mask-image: none !important;
+    mask-image: none !important;
   }
 
 
@@ -386,23 +400,13 @@ const lightweightSidebarCss = `
 
 
   .eterx-sidebar-shell .eterx-sidebar-chat-meta {
-    min-width: 2.15rem;
+    min-width: 0;
     height: 100%;
     color: var(--sidebar-time-text);
     font-size: 12.5px;
     font-weight: 560;
     letter-spacing: 0;
-    transition: opacity 150ms ease, transform 150ms ease, color 150ms ease, min-width 150ms ease, margin-left 150ms ease, width 150ms ease;
-  }
-
-  .eterx-sidebar-shell .eterx-sidebar-chat-row:not(.eterx-sidebar-chat-working):hover .eterx-sidebar-chat-meta,
-  .eterx-sidebar-shell .eterx-sidebar-chat-meta-hidden {
-    opacity: 0;
-    transform: translateX(3px);
-    width: 0 !important;
-    min-width: 0 !important;
-    margin-left: 0 !important;
-    overflow: hidden;
+    transition: opacity 150ms ease, transform 150ms ease, color 150ms ease, width 150ms ease, margin-left 150ms ease;
   }
 
   .eterx-sidebar-shell .eterx-sidebar-chat-active .eterx-sidebar-chat-meta {
@@ -504,6 +508,27 @@ export const Sidebar = React.memo<SidebarProps>(({
   const [viewportWidth, setViewportWidth] = React.useState(1440);
   const [sidebarWidth, setSidebarWidth] = React.useState(SIDEBAR_DEFAULT_WIDTH);
   const [isResizingSidebar, setIsResizingSidebar] = React.useState(false);
+
+  const handleChatRowMouseEnter = React.useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    const row = e.currentTarget;
+    const wrap = row.querySelector('.eterx-sidebar-chat-title-wrap') as HTMLElement | null;
+    const title = row.querySelector('.eterx-sidebar-chat-title') as HTMLElement | null;
+    if (!wrap || !title) return;
+    title.classList.remove('eterx-ticker-play');
+    void title.offsetWidth; // force reflow to restart
+    const dist = title.scrollWidth - wrap.clientWidth;
+    if (dist > 6) {
+      title.style.setProperty('--eterx-ticker-dist', `${dist + 4}px`);
+      title.classList.add('eterx-ticker-play');
+    }
+  }, []);
+
+  const handleChatRowMouseLeave = React.useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    const title = e.currentTarget.querySelector('.eterx-sidebar-chat-title') as HTMLElement | null;
+    if (!title) return;
+    title.classList.remove('eterx-ticker-play');
+    title.style.removeProperty('--eterx-ticker-dist');
+  }, []);
   const [now, setNow] = React.useState(() => Date.now());
   const resizeStartRef = React.useRef({ x: 0, width: SIDEBAR_DEFAULT_WIDTH });
   const resizeCurrentWidthRef = React.useRef(SIDEBAR_DEFAULT_WIDTH);
@@ -870,18 +895,18 @@ export const Sidebar = React.memo<SidebarProps>(({
   }, [allChatsSelected, chatIds, commitSelectedChatIds]);
 
   React.useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
+    const handleKeyDown = (KeyboardEvent: any) => {
+      if (KeyboardEvent.key === 'Escape') {
         if (showDeleteConfirm || isSelectMode || menuState) {
-          event.preventDefault();
+          KeyboardEvent.preventDefault();
           setMenuState(null);
           if (showDeleteConfirm) setShowDeleteConfirm(false);
           else if (isSelectMode) exitSelectMode();
         }
       }
 
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a' && isSelectMode) {
-        event.preventDefault();
+      if ((KeyboardEvent.ctrlKey || KeyboardEvent.metaKey) && KeyboardEvent.key.toLowerCase() === 'a' && isSelectMode) {
+        KeyboardEvent.preventDefault();
         handleSelectAllToggle();
       }
     };
@@ -1166,6 +1191,8 @@ export const Sidebar = React.memo<SidebarProps>(({
                     return (
                       <div
                         key={chat.id}
+                        onMouseEnter={handleChatRowMouseEnter}
+                        onMouseLeave={handleChatRowMouseLeave}
                         onPointerDown={(e) => {
                           triggerGlassClick(e, `chat-${ chat.id }`);
                           if (isSelectMode) {
@@ -1207,7 +1234,7 @@ export const Sidebar = React.memo<SidebarProps>(({
                           </span>
                         )}
 
-                        <div className={`eterx-sidebar-chat-content ${ !isWorking && !isSelectMode && isMenuOpen ? 'eterx-sidebar-chat-content-menu-visible' : '' } ${ isWorking && !isSelectMode ? 'eterx-sidebar-chat-content-working' : '' } flex min-w-0 max-w-full items-center overflow-hidden flex-[0_1_auto] relative z-10 pl-0`}>
+                        <div className={`eterx-sidebar-chat-content ${ !isWorking && !isSelectMode && isMenuOpen ? 'eterx-sidebar-chat-content-menu-visible' : '' } ${ isWorking && !isSelectMode ? 'eterx-sidebar-chat-content-working' : '' } flex min-w-0 max-w-full flex-1 items-center overflow-hidden relative z-10 pl-0`}>
                           {isWorking ? (
                             <span className="eterx-sidebar-chat-title truncate relative z-10 font-medium leading-normal">
                               {chat.title}
@@ -1233,47 +1260,49 @@ export const Sidebar = React.memo<SidebarProps>(({
                               onClick={(e) => e.stopPropagation()}
                             />
                           ) : (
-                            <div className="eterx-sidebar-chat-title-wrap flex min-w-0 items-center truncate relative z-10">
+                            <div className="eterx-sidebar-chat-title-wrap flex min-w-0 items-center overflow-hidden relative z-10">
                               {chat.isFavorite && <PremiumStar className="eterx-sidebar-favorite-icon w-3.5 h-3.5 text-yellow-500/90 mr-1.5 shrink-0" />}
-                              <span className="eterx-sidebar-chat-title truncate text-current leading-normal">{chat.title}</span>
+                              <span className="eterx-sidebar-chat-title text-current leading-normal">{chat.title}</span>
                             </div>
                           )}
                         </div>
 
                         {!isSelectMode && (
-                          <div className={`eterx-sidebar-chat-meta ml-2 flex shrink-0 items-center justify-end relative z-10 ${ isMenuOpen ? 'eterx-sidebar-chat-meta-hidden' : '' }`}>
+                          <div className="eterx-sidebar-chat-meta ml-1.5 flex shrink-0 items-center justify-end relative z-10">
                             {isWorking ? (
                               <span className="eterx-sidebar-running-indicator" aria-label="Agent working" />
                             ) : hasUnread ? (
                               <span className="eterx-sidebar-unread-dot" aria-label="Unread agent update" />
-                            ) : timeLabel ? (
-                              <span className="eterx-sidebar-chat-time tabular-nums" title={new Date(chat.updatedAt).toLocaleString()}>{timeLabel}</span>
-                            ) : null}
-                          </div>
-                        )}
-
-                        {!isSelectMode && (
-                          <div className="absolute right-1.5 top-1/2 z-30 flex h-7 w-7 -translate-y-1/2 items-center justify-center">
-                            <button
-                              type="button"
-                              aria-label="Chat options"
-                              onMouseDown={(e) => triggerGlassClick(e, `chat-menu-${ chat.id }`)}
-                              style={glassClickStyle(`chat-menu-${ chat.id }`)}
-                              className={`eterx-sidebar-click-surface eterx-sidebar-chat-menu-button ${ glassClickClass(`chat-menu-${ chat.id }`) } flex h-7 w-7 items-center justify-center rounded-[8px] bg-transparent transition-colors duration-150 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--sidebar-focus-ring)] ${ isMenuOpen ? 'opacity-100 text-[var(--sidebar-active-text)] border border-transparent' : (isWorking || isSelectMode ? 'opacity-0 pointer-events-none hidden' : 'opacity-0 group-hover:opacity-100 text-[var(--sidebar-muted-text)] hover:bg-transparent hover:text-[var(--sidebar-hover-text)] border border-transparent') } relative z-40`}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                if (isWorking) return;
-                                if (isMenuOpen) {
-                                  setMenuState(null);
-                                } else {
-                                  const rect = e.currentTarget.getBoundingClientRect();
-                                  const dropUp = rect.bottom + 220 > window.innerHeight;
-                                  setMenuState({ id: chat.id, x: rect.right, y: dropUp ? rect.top : rect.bottom, dropUp });
-                                }
-                              }}
-                            >
-                              <PremiumMoreHorizontal className="w-4 h-4 transition-colors duration-150" />
-                            </button>
+                            ) : (
+                              <div className="relative w-7 h-7 shrink-0 flex items-center justify-end">
+                                {timeLabel && (
+                                  <span
+                                    className={`eterx-sidebar-chat-time tabular-nums transition-opacity duration-150 absolute inset-0 flex items-center justify-end pr-0.5 pointer-events-none whitespace-nowrap ${ isMenuOpen ? 'opacity-0' : 'group-hover:opacity-0' }`}
+                                    title={new Date(chat.updatedAt).toLocaleString()}
+                                  >{timeLabel}</span>
+                                )}
+                                <button
+                                  type="button"
+                                  aria-label="Chat options"
+                                  onMouseDown={(e) => triggerGlassClick(e, `chat-menu-${ chat.id }`)}
+                                  style={glassClickStyle(`chat-menu-${ chat.id }`)}
+                                  className={`eterx-sidebar-click-surface eterx-sidebar-chat-menu-button ${ glassClickClass(`chat-menu-${ chat.id }`) } absolute inset-0 z-20 flex items-center justify-end pr-0.5 rounded-[8px] transition-colors duration-150 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--sidebar-focus-ring)] ${ isMenuOpen ? 'opacity-100 text-[var(--sidebar-active-text)]' : 'pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100 text-[var(--sidebar-muted-text)]' }`}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    if (isWorking) return;
+                                    if (isMenuOpen) {
+                                      setMenuState(null);
+                                    } else {
+                                      const rect = e.currentTarget.getBoundingClientRect();
+                                      const dropUp = rect.bottom + 220 > window.innerHeight;
+                                      setMenuState({ id: chat.id, x: rect.right, y: dropUp ? rect.top : rect.bottom, dropUp });
+                                    }
+                                  }}
+                                >
+                                  <PremiumMoreHorizontal className="w-4 h-4 transition-colors duration-150" />
+                                </button>
+                              </div>
+                            )}
                           </div>
                         )}
 

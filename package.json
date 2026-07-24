@@ -88,6 +88,7 @@
     "fs-extra": "^11.3.4",
     "googlethis": "^1.8.0",
     "groq-sdk": "^1.1.2",
+    "gsap": "^3.15.0",
     "katex": "^0.16.44",
     "koffi": "^2.15.2",
     "lucide-react": "^0.364.0",
@@ -175,7 +176,9 @@
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ]
     },
@@ -196,7 +199,10 @@
       "installerHeaderIcon": "public/icon.ico"
     },
     "linux": {
-      "target": ["AppImage", "deb"],
+      "target": [
+        "AppImage",
+        "deb"
+      ],
       "category": "Development",
       "icon": "public/logo.png",
       "executableName": "eterx",
@@ -207,7 +213,10 @@
       }
     },
     "mac": {
-      "target": ["dmg", "zip"],
+      "target": [
+        "dmg",
+        "zip"
+      ],
       "category": "public.app-category.developer-tools",
       "icon": "public/icon.icns",
       "hardenedRuntime": true,

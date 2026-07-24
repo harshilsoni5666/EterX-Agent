@@ -14,7 +14,7 @@ const TERMINAL_WORK_TYPES = new Set([
 ]);
 
 const TERMINAL_WORK_TEXT =
-  /(?:generation stopped by user|agent stopped(?:\s*:|\b)|agent connection failed|agent start failed)/i;
+  /(?:generation stopped by user|agent stopped(?:\s*:|\b)|agent connection (?:failed|did not start)|agent start failed|custom agent (?:start|connection) failed)/i;
 
 /**
  * Returns true only for traces that conclusively end the current main-agent

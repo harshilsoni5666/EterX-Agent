@@ -8,7 +8,7 @@ function logToFile(msg) {
   try {
     const logPath = path.join(app.getPath('userData'), 'eterx-desktop.log');
     fs.appendFileSync(logPath, `[${new Date().toISOString()}] ${msg}\n`, 'utf8');
-  } catch (e) {}
+  } catch (e) { }
 }
 
 // Attempt to read Google API Key from Next.js local environment variables to unlock Chromium's Speech Engine
@@ -85,8 +85,8 @@ const APP_ICON_PNG = app.isPackaged
 const APP_ICON_PATH = app.isPackaged
   ? path.join(process.resourcesPath, 'icon.ico')
   : (process.platform === 'win32' && fs.existsSync(path.join(__dirname, '../public/icon.ico'))
-      ? path.join(__dirname, '../public/icon.ico')
-      : APP_ICON_PNG);
+    ? path.join(__dirname, '../public/icon.ico')
+    : APP_ICON_PNG);
 
 const NATIVE_THEME_FILE = 'eterx-native-theme.json';
 const SECURE_RUNTIME_SETTINGS_FILE = 'eterx-runtime-settings.bin';
@@ -253,7 +253,7 @@ function writeSecureRuntimeSettings(raw) {
     fs.renameSync(temporary, target);
     return { ok: true, available: true, ...settings };
   } catch (error) {
-    try { fs.rmSync(temporary, { force: true }); } catch {}
+    try { fs.rmSync(temporary, { force: true }); } catch { }
     return { ok: false, available: true, error: error?.message || 'Failed to save secure settings.' };
   }
 }
@@ -904,7 +904,7 @@ async function startPackagedServer() {
 
 function stopPackagedServer() {
   if (!packagedServer || packagedServer.killed) return;
-  try { packagedServer.kill(); } catch {}
+  try { packagedServer.kill(); } catch { }
   packagedServer = null;
   packagedServerUrl = null;
 }
@@ -964,23 +964,23 @@ async function showStartupFailure(error, target) {
   const failureTheme = readNativeTheme();
   const failureColors = failureTheme === 'dark'
     ? {
-        page: '#101010',
-        text: '#f1f1f1',
-        panel: '#151515',
-        border: '#262626',
-        muted: '#b8b8b8',
-        code: '#e2e2e2',
-        shadow: '0 24px 70px rgba(0, 0, 0, 0.44)',
-      }
+      page: '#101010',
+      text: '#f1f1f1',
+      panel: '#151515',
+      border: '#262626',
+      muted: '#b8b8b8',
+      code: '#e2e2e2',
+      shadow: '0 24px 70px rgba(0, 0, 0, 0.44)',
+    }
     : {
-        page: '#FAFAF8',
-        text: '#1F1F1D',
-        panel: '#FFFFFF',
-        border: 'rgba(31, 31, 29, 0.12)',
-        muted: '#77736C',
-        code: '#516B8A',
-        shadow: '0 24px 70px rgba(31, 31, 29, 0.12)',
-      };
+      page: '#FAFAF8',
+      text: '#1F1F1D',
+      panel: '#FFFFFF',
+      border: 'rgba(31, 31, 29, 0.12)',
+      muted: '#77736C',
+      code: '#516B8A',
+      shadow: '0 24px 70px rgba(31, 31, 29, 0.12)',
+    };
 
   const html = `<!doctype html>
 <html>
@@ -1153,10 +1153,10 @@ async function openPetWindow(status) {
   const workArea = screen.getPrimaryDisplay().workArea;
   const petSize = PET_WINDOW_SIZES[DEFAULT_PET_WINDOW_SIZE];
   petWindow = new BrowserWindow({
-    width: petSize.width,
-    height: petSize.height,
-    x: Math.max(workArea.x + 8, workArea.x + workArea.width - petSize.width - 16),
-    y: workArea.y + 84,
+    width: 220,
+    height: 220,
+    x: Math.max(workArea.x + 8, workArea.x + workArea.width - 236),
+    y: Math.max(workArea.y + 8, workArea.y + workArea.height - 240),
     frame: false,
     transparent: true,
     resizable: false,
@@ -1165,7 +1165,7 @@ async function openPetWindow(status) {
     alwaysOnTop: true,
     hasShadow: false,
     backgroundColor: '#00000000',
-    title: 'EterX Pet',
+    title: 'EterX Live Agent',
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -1173,10 +1173,9 @@ async function openPetWindow(status) {
     }
   });
 
-  applyPetWindowShape(petSize.width, petSize.height);
   petWindow.setAlwaysOnTop(true, 'screen-saver');
   petWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-  petWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(getPetWindowHtml())}`);
+  petWindow.loadURL(`${getAppTarget()}/live-overlay`);
   petWindow.once('ready-to-show', () => {
     if (!petWindow || petWindow.isDestroyed()) return;
     petWindow.showInactive();
@@ -1236,7 +1235,7 @@ async function bootApp(options = {}) {
     bootFailureCount += 1;
     const target = getAppTarget();
     if (retryOnFailure && isHttpTarget(target) && bootFailureCount < 3) {
-      await showSplashScreen().catch(() => {});
+      await showSplashScreen().catch(() => { });
       scheduleBootRetry(1200);
       return;
     }
@@ -1280,16 +1279,25 @@ function createWindow() {
   mainWindow.setAutoHideMenuBar(true);
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    const colors = nativeThemeColors(readNativeTheme());
+    if (/^https?:\/\//i.test(url)) {
+      shell.openExternal(url);
+      return { action: 'deny' };
+    }
     const settingsWindow = isSettingsUrl(url);
+    if (!settingsWindow) {
+      return { action: 'deny' };
+    }
 
+    const colors = nativeThemeColors(readNativeTheme());
     return {
       action: 'allow',
       overrideBrowserWindowOptions: {
-        minWidth: settingsWindow ? 900 : 400,
-        minHeight: settingsWindow ? 620 : 400,
+        width: 900,
+        height: 650,
+        minWidth: 900,
+        minHeight: 620,
         backgroundColor: colors.background,
-        title: settingsWindow ? 'Settings' : 'EterX',
+        title: 'Settings',
         icon: APP_ICON_PATH,
         titleBarStyle: 'hidden',
         titleBarOverlay: {
@@ -1396,7 +1404,7 @@ ipcMain.handle('list-folder', async (event, folderPath) => {
         try {
           const files = fs.readdirSync(full);
           isProject = files.some(f => ['package.json', 'Cargo.toml', 'go.mod', '.git', 'tsconfig.json', 'pyproject.toml'].includes(f));
-        } catch {}
+        } catch { }
         return { name: e.name, path: full, isProject };
       })
       .sort((a, b) => (a.isProject === b.isProject ? a.name.localeCompare(b.name) : a.isProject ? -1 : 1));
@@ -1449,9 +1457,9 @@ ipcMain.handle('convert-docx-to-pdf', async (event, docxPath) => {
 
       const escapedDocx = docxPath.replace(/'/g, "''");
       const escapedPdf = tempPdfPath.replace(/'/g, "''");
-      
+
       const psCommand = `$word = New-Object -ComObject Word.Application; $word.Visible = $false; try { $doc = $word.Documents.Open('${escapedDocx}', $true, $true); $doc.SaveAs('${escapedPdf}', 17); $doc.Close(); } finally { $word.Quit(); }`;
-      
+
       exec(`powershell.exe -NoProfile -NonInteractive -Command "${psCommand.replace(/"/g, '\\"')}"`, (err, stdout, stderr) => {
         if (err) {
           console.error('Failed to convert docx to pdf via PowerShell:', err, stderr);
@@ -1516,7 +1524,7 @@ ipcMain.handle('chat-snapshot-save', (_event, snapshot) => {
   } catch {
     if (fs.existsSync(chatsPath)) {
       const corruptPath = path.join(chatsDir, `chats.corrupt-${Date.now()}.json`);
-      try { fs.renameSync(chatsPath, corruptPath); } catch {}
+      try { fs.renameSync(chatsPath, corruptPath); } catch { }
     }
   }
 
@@ -1595,7 +1603,7 @@ app.on('ready', async () => {
   Menu.setApplicationMenu(null);
 
   migrateLegacyUserData();
-  
+
   session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
     const allowedPermissions = ['media', 'microphone', 'audioCapture', 'notifications'];
     if (allowedPermissions.includes(permission)) {

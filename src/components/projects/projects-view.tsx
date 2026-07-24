@@ -4,6 +4,7 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion';
 import { ChevronDown, Plus, Mic, ArrowUp, Check, ChevronRight, ChevronLeft, Calendar, Clock, Bot, Play, Trash2, ExternalLink, AlertCircle, CheckCircle2, Loader2 } from 'lucide-react';
 import { PremiumSend } from '../ui/premium-icons';
+import { Shimmer } from '../ui/shimmer';
 
 export interface ScheduledTaskItem {
   id: string;
@@ -1695,7 +1696,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                             ) : (
                               <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
                             )}
-                            {t.status === 'running' ? 'Running' : 'Queued'}
+                            {t.status === 'running' ? <Shimmer>Running</Shimmer> : 'Queued'}
                           </span>
                         </div>
 

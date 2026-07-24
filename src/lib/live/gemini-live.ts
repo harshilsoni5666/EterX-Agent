@@ -55,6 +55,7 @@ export class GeminiLiveSession {
   private readonly SILENCE_TIMEOUT_MS = 30000; // 30 seconds of silence → auto-end
   private lastActivityTimestamp = 0;
   private currentVoice = 'Kore'; // AGI: Dynamic voice selection
+  private isInterruptedThisTurn = false;
 
   // AGI: Audio timing for true karaoke sync
   private turnAudioStartTime: number | null = null;
@@ -72,7 +73,7 @@ export class GeminiLiveSession {
     if (this.state === newState) return;
     this.state = newState;
     this.callbacks.onStateChange(newState);
-    
+
     // Manage silence timer based on state
     if (newState === 'speaking' || newState === 'connecting' || newState === 'idle') {
       this.clearSilenceTimer();
@@ -107,7 +108,7 @@ export class GeminiLiveSession {
     this.turnInputTranscript = '';
 
     try {
-      const url = `${LIVE_WS_URL}?key=${this.apiKey}`;
+      const url = `${ LIVE_WS_URL }?key=${ this.apiKey }`;
       this.ws = new WebSocket(url);
 
       this.ws.onopen = () => {
@@ -178,9 +179,9 @@ You are not a standard chatbot. You are a powerful, fully autonomous agentic AI 
 Make the user feel like they are working with a true, deeply premium autonomous AGI that does heavy computational lifting in the background.
 
 CURRENT SYSTEM CONTEXT:
-Current Date: ${new Date().toLocaleDateString()}
-Current Time: ${new Date().toLocaleTimeString()}
-Current Day: ${new Date().toLocaleDateString('en-US', {weekday: 'long'})}`
+Current Date: ${ new Date().toLocaleDateString() }
+Current Time: ${ new Date().toLocaleTimeString() }
+Current Day: ${ new Date().toLocaleDateString('en-US', { weekday: 'long' }) }`
               }]
             },
             tools: [{
@@ -190,7 +191,7 @@ Current Day: ${new Date().toLocaleDateString('en-US', {weekday: 'long'})}`
                   description: 'Change your own voice to any of the 30 available Gemini 3.1 voices. Use this when the user asks you to change your voice, or if you autonomously select a better voice for the context. After calling this, the system will briefly reconnect and you should immediately speak to demonstrate your new voice.',
                   parameters: {
                     type: 'OBJECT',
-                    properties: { 
+                    properties: {
                       voice_name: { type: 'STRING', description: 'The exact name of the voice (e.g., "Kore", "Aoede", "Charon", "Puck")' },
                       reason: { type: 'STRING', description: 'Briefly explain why you selected this voice' },
                       action_verb: { type: 'STRING', description: 'A short human-readable verb for the UI (e.g., "Configuring", "Switching")' },
@@ -204,7 +205,7 @@ Current Day: ${new Date().toLocaleDateString('en-US', {weekday: 'long'})}`
                   description: 'Search the web using Tavily AI Search for accurate, research-grade, up-to-date information.',
                   parameters: {
                     type: 'OBJECT',
-                    properties: { 
+                    properties: {
                       query: { type: 'STRING', description: 'The search query' },
                       action_verb: { type: 'STRING', description: 'A short human-readable verb for the UI (e.g., "Searching", "Reading")' },
                       action_target: { type: 'STRING', description: 'The target for the UI (e.g., "Web", "React Docs", "Weather")' }
@@ -217,7 +218,7 @@ Current Day: ${new Date().toLocaleDateString('en-US', {weekday: 'long'})}`
                   description: 'End the live voice call. Use this when the user says goodbye, asks to end the call, or when there has been prolonged silence.',
                   parameters: {
                     type: 'OBJECT',
-                    properties: { 
+                    properties: {
                       reason: { type: 'STRING' },
                       action_verb: { type: 'STRING', description: 'A short human-readable verb for the UI (e.g., "Ending")' },
                       action_target: { type: 'STRING', description: 'The target for the UI (e.g., "Call")' }
@@ -230,7 +231,7 @@ Current Day: ${new Date().toLocaleDateString('en-US', {weekday: 'long'})}`
                   description: 'Execute a command using the user\'s selected integrated terminal shell and operating system.',
                   parameters: {
                     type: 'OBJECT',
-                    properties: { 
+                    properties: {
                       command: { type: 'STRING', description: 'The platform-appropriate shell command to run' },
                       action_verb: { type: 'STRING', description: 'A short human-readable verb representing the users intent (e.g., "Opening", "Starting", "Running")' },
                       action_target: { type: 'STRING', description: 'The human-readable target of the action (e.g., "VS Code", "Settings", "ts")' }
@@ -243,7 +244,7 @@ Current Day: ${new Date().toLocaleDateString('en-US', {weekday: 'long'})}`
                   description: 'Get the current local time and date of the user.',
                   parameters: {
                     type: 'OBJECT',
-                    properties: { 
+                    properties: {
                       action_verb: { type: 'STRING', description: 'A short human-readable verb for the UI (e.g., "Checking")' },
                       action_target: { type: 'STRING', description: 'The target for the UI (e.g., "Time")' }
                     },
@@ -255,7 +256,7 @@ Current Day: ${new Date().toLocaleDateString('en-US', {weekday: 'long'})}`
                   description: 'Store a fact, preference, or context in the memory specifically isolated for this chat session.',
                   parameters: {
                     type: 'OBJECT',
-                    properties: { 
+                    properties: {
                       fact: { type: 'STRING', description: 'The information to remember' },
                       action_verb: { type: 'STRING', description: 'A short human-readable verb for the UI (e.g., "Remembering", "Saving")' },
                       action_target: { type: 'STRING', description: 'The target for the UI (e.g., "Fact", "User details")' }
@@ -268,7 +269,7 @@ Current Day: ${new Date().toLocaleDateString('en-US', {weekday: 'long'})}`
                   description: 'Read all stored memories for the current chat session.',
                   parameters: {
                     type: 'OBJECT',
-                    properties: { 
+                    properties: {
                       action_verb: { type: 'STRING', description: 'A short human-readable verb for the UI (e.g., "Reading")' },
                       action_target: { type: 'STRING', description: 'The target for the UI (e.g., "Memory")' }
                     },
@@ -298,9 +299,9 @@ Current Day: ${new Date().toLocaleDateString('en-US', {weekday: 'long'})}`
         console.log('[GeminiLive] WebSocket closed:', event.code, event.reason);
         if (event.code !== 1000 && event.code !== 1005) {
           if (this.state !== 'error') {
-             this.callbacks.onError(`API Disconnected (${event.code}): ${event.reason || 'Check console.'}`);
-             this.cleanup();
-             this.setState('error');
+            this.callbacks.onError(`API Disconnected (${ event.code }): ${ event.reason || 'Check console.' }`);
+            this.cleanup();
+            this.setState('error');
           }
           return;
         }
@@ -347,6 +348,26 @@ Current Day: ${new Date().toLocaleDateString('en-US', {weekday: 'long'})}`
       if (data.serverContent) {
         const content = data.serverContent;
 
+        // Check for server-side interruption signal FIRST
+        if (content.interrupted || content.modelTurn?.interrupted) {
+          console.log('[GeminiLive] Gemini server confirmed interruption');
+          this.isInterruptedThisTurn = true;
+          this.flushPlayback();
+          this.turnInputTranscript = '';
+          this.turnOutputTranscript = '';
+          this.callbacks.onInterrupted();
+          this.setState('listening');
+          return;
+        }
+
+        // If turn was interrupted, ignore stale in-flight audio chunks from Gemini
+        if (this.isInterruptedThisTurn) {
+          if (content.turnComplete) {
+            this.isInterruptedThisTurn = false;
+          }
+          return;
+        }
+
         // Model audio/text output
         if (content.modelTurn?.parts) {
           for (const part of content.modelTurn.parts) {
@@ -382,6 +403,7 @@ Current Day: ${new Date().toLocaleDateString('en-US', {weekday: 'long'})}`
 
         // Turn complete
         if (content.turnComplete) {
+          this.isInterruptedThisTurn = false;
           this.callbacks.onTurnComplete(this.turnInputTranscript, this.turnOutputTranscript);
           // Check if user asked to end the call via voice
           this.checkVoiceEndRequest(this.turnInputTranscript);
@@ -391,13 +413,6 @@ Current Day: ${new Date().toLocaleDateString('en-US', {weekday: 'long'})}`
           this.setState('listening');
           // Reset silence timer — conversation is active
           this.resetSilenceTimer();
-        }
-
-        // Interrupted by user speaking over the model
-        if (content.interrupted) {
-          this.flushPlayback();
-          this.callbacks.onInterrupted();
-          this.setState('listening');
         }
       }
 
@@ -416,7 +431,7 @@ Current Day: ${new Date().toLocaleDateString('en-US', {weekday: 'long'})}`
                   const verb = fc.args?.action_verb || 'Ending';
                   const target = fc.args?.action_target || 'call';
                   if (this.callbacks.onToolAction) this.callbacks.onToolAction(verb, target);
-                  
+
                   // Wait for the model to finish speaking its goodbye before disconnecting.
                   // Poll activeSources — when all audio buffers have finished playing, disconnect.
                   const waitForSpeechEnd = () => {
@@ -438,25 +453,25 @@ Current Day: ${new Date().toLocaleDateString('en-US', {weekday: 'long'})}`
                 if (fc.name === 'change_voice') {
                   try {
                     const newVoice = fc.args?.voice_name || 'Kore';
-                    console.log(`[GeminiLive] Changing voice to: ${newVoice} (Reason: ${fc.args?.reason})`);
+                    console.log(`[GeminiLive] Changing voice to: ${ newVoice } (Reason: ${ fc.args?.reason })`);
                     this.currentVoice = newVoice;
                     const verb = fc.args?.action_verb || 'Configuring';
                     const target = fc.args?.action_target || newVoice;
                     if (this.callbacks.onToolAction) this.callbacks.onToolAction(verb, target);
-                    
+
                     // Save transcript history to re-inject after reconnection
-                    const history = `User previously said: ${this.inputTranscript}\nYou previously said: ${this.outputTranscript}`;
+                    const history = `User previously said: ${ this.inputTranscript }\nYou previously said: ${ this.outputTranscript }`;
 
                     // Wait for the agent to finish its current sentence ("Let me do it for you"), then reconnect
                     const waitForSpeechEnd = () => {
                       if (this.activeSources.length === 0) {
                         this.cleanup();
                         this.setState('idle');
-                        
+
                         setTimeout(() => {
                           this.connect().then(() => {
                             setTimeout(() => {
-                              this.sendText(`System: You have successfully changed your voice to ${newVoice}. \n\nConversation history context:\n${history}\n\nPlease immediately speak a sentence to demonstrate your new voice to the user! Say you have done it.`);
+                              this.sendText(`System: You have successfully changed your voice to ${ newVoice }. \n\nConversation history context:\n${ history }\n\nPlease immediately speak a sentence to demonstrate your new voice to the user! Say you have done it.`);
                             }, 1000); // Give WebSocket a second to fully stabilize
                           });
                         }, 500);
@@ -466,7 +481,7 @@ Current Day: ${new Date().toLocaleDateString('en-US', {weekday: 'long'})}`
                     };
                     setTimeout(waitForSpeechEnd, 500);
 
-                    return { id: fc.id, name: fc.name, response: { result: `Voice change initiated to ${newVoice}. Reconnecting...` } };
+                    return { id: fc.id, name: fc.name, response: { result: `Voice change initiated to ${ newVoice }. Reconnecting...` } };
                   } catch (e: any) {
                     return { id: fc.id, name: fc.name, response: { error: e.message } };
                   }
@@ -499,14 +514,14 @@ Current Day: ${new Date().toLocaleDateString('en-US', {weekday: 'long'})}`
                     let terminalShell = 'auto';
                     try {
                       terminalShell = JSON.parse(localStorage.getItem('eterx_settings') || '{}')?.terminalShell || 'auto';
-                    } catch {}
+                    } catch { }
                     const res = await fetch('/api/code/execute', {
                       method: 'POST',
                       headers: { 'Content-Type': 'application/json' },
                       body: JSON.stringify({ command: cmd, terminalShell })
                     });
                     const json = await res.json();
-                    
+
                     // --- AGI SPEED OPTIMIZATION ---
                     // Truncate massive terminal outputs to prevent the model from taking 20 seconds to process the context window
                     if (json.stdout && json.stdout.length > 2000) {
@@ -533,7 +548,7 @@ Current Day: ${new Date().toLocaleDateString('en-US', {weekday: 'long'})}`
                     const verb = fc.args?.action_verb || 'Remembering';
                     const target = fc.args?.action_target || fact.slice(0, 20);
                     if (this.callbacks.onToolAction) this.callbacks.onToolAction(verb, target);
-                    const key = `eterx_live_mem_${this.chatId}`;
+                    const key = `eterx_live_mem_${ this.chatId }`;
                     const existingStr = localStorage.getItem(key);
                     const existing = existingStr ? JSON.parse(existingStr) : [];
                     existing.push({ timestamp: Date.now(), fact });
@@ -548,7 +563,7 @@ Current Day: ${new Date().toLocaleDateString('en-US', {weekday: 'long'})}`
                     const verb = fc.args?.action_verb || 'Reading';
                     const target = fc.args?.action_target || 'memory';
                     if (this.callbacks.onToolAction) this.callbacks.onToolAction(verb, target);
-                    const key = `eterx_live_mem_${this.chatId}`;
+                    const key = `eterx_live_mem_${ this.chatId }`;
                     const existingStr = localStorage.getItem(key);
                     const existing = existingStr ? JSON.parse(existingStr) : [];
                     return { id: fc.id, name: fc.name, response: { result: existing } };
@@ -558,7 +573,7 @@ Current Day: ${new Date().toLocaleDateString('en-US', {weekday: 'long'})}`
                 }
                 return { id: fc.id, name: fc.name, response: { result: 'Tool missing or executed successfully' } };
               }));
-  
+
               this.ws?.send(JSON.stringify({
                 toolResponse: { functionResponses: responses }
               }));
@@ -614,22 +629,33 @@ Current Day: ${new Date().toLocaleDateString('en-US', {weekday: 'long'})}`
         if (this.state === 'idle' || this.state === 'error') return;
         if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
         if (this.micMuted) return;
-        
-        // --- SMART MIC DUCKING ---
-        // If the agent is speaking out loud, completely drop microphone packets.
-        // This fully eliminates the acoustic echo feedback loop where the mic hears the speakers.
-        if (this.state === 'speaking') return;
 
+        // --- SMART MIC DUCKING & REALTIME BARGE-IN ---
         const inputData = event.inputBuffer.getChannelData(0);
 
-        // Compute RMS volume for real-time visualization
+        // Compute RMS volume for real-time visualization and barge-in detection
         let sumSq = 0;
         for (let i = 0; i < inputData.length; i++) {
           sumSq += inputData[i] * inputData[i];
         }
         const rms = Math.sqrt(sumSq / inputData.length);
         const normalizedVolume = Math.min(100, Math.round(rms * 400)); // 0-100 scale
-        
+
+        // Instant Voice Barge-In (Interruption): flush AI audio playback when user speaks over the AI
+        if (this.state === 'speaking') {
+          if (normalizedVolume > 8) {
+            console.log('[GeminiLive] Instant voice barge-in triggered (volume:', normalizedVolume, ')');
+            this.flushPlayback();
+            this.turnInputTranscript = '';
+            this.turnOutputTranscript = '';
+            this.callbacks.onInterrupted();
+            this.setState('listening');
+          } else {
+            // Drop routine mic background noise while AI speaks to avoid acoustic feedback
+            return;
+          }
+        }
+
         // Reset silence timer if user makes noise
         if (normalizedVolume > 5 && this.state === 'listening') {
           this.resetSilenceTimer();
@@ -686,19 +712,19 @@ Current Day: ${new Date().toLocaleDateString('en-US', {weekday: 'long'})}`
         this.playbackContext = new (window.AudioContext || (window as any).webkitAudioContext)({
           sampleRate: 24000
         });
-        
+
         // Setup analyser for real-time model volume
         this.playbackAnalyser = this.playbackContext.createAnalyser();
         this.playbackAnalyser.fftSize = 256;
-        
+
         this.playbackGain = this.playbackContext.createGain();
         this.playbackGain.gain.value = this.speakerMuted ? 0 : 1;
 
         this.playbackAnalyser.connect(this.playbackGain);
         this.playbackGain.connect(this.playbackContext.destination);
-        
+
         this.startModelVolumeLoop();
-        
+
         this.nextPlayTime = this.playbackContext.currentTime;
       }
 
@@ -737,7 +763,7 @@ Current Day: ${new Date().toLocaleDateString('en-US', {weekday: 'long'})}`
 
       source.start(startTime);
       this.nextPlayTime = startTime + buffer.duration;
-      
+
       this.activeSources.push(source);
       source.onended = () => {
         this.activeSources = this.activeSources.filter(s => s !== source);
@@ -761,10 +787,10 @@ Current Day: ${new Date().toLocaleDateString('en-US', {weekday: 'long'})}`
         // True Multiband Equalizer: Map 128 frequency bins to 4 UI bars for deep organic syncing
         const buckets = [0, 0, 0, 0];
         const bucketSize = Math.floor(dataArray.length / 4);
-        
+
         // Human voice tuning multipliers for visually pleasing EQ (bass, low-mid, high-mid, treble)
-        const multipliers = [1.5, 1.3, 1.8, 2.5]; 
-        
+        const multipliers = [1.5, 1.3, 1.8, 2.5];
+
         for (let i = 0; i < 4; i++) {
           let sum = 0;
           for (let j = 0; j < bucketSize; j++) {
@@ -773,7 +799,7 @@ Current Day: ${new Date().toLocaleDateString('en-US', {weekday: 'long'})}`
           const avg = sum / bucketSize; // 0 to 255
           buckets[i] = Math.min(100, Math.round((avg / 255) * 100 * multipliers[i]));
         }
-        
+
         const now = Date.now();
         if (now - lastUpdateMs > 60) { // Throttle to ~16 FPS to prevent React from freezing the main thread
           if (this.callbacks.onModelVolume) {
@@ -790,9 +816,9 @@ Current Day: ${new Date().toLocaleDateString('en-US', {weekday: 'long'})}`
           if (progress > 1) progress = 1;
 
           if (this.callbacks.onOutputPlaybackProgress) {
-             const spokenChars = Math.floor(progress * this.turnOutputTranscript.length);
-             const spokenText = this.turnOutputTranscript.substring(0, spokenChars);
-             this.callbacks.onOutputPlaybackProgress(spokenText);
+            const spokenChars = Math.floor(progress * this.turnOutputTranscript.length);
+            const spokenText = this.turnOutputTranscript.substring(0, spokenChars);
+            this.callbacks.onOutputPlaybackProgress(spokenText);
           }
         }
       }
@@ -811,7 +837,7 @@ Current Day: ${new Date().toLocaleDateString('en-US', {weekday: 'long'})}`
       });
       this.activeSources = [];
     }
-    
+
     this.turnAudioStartTime = null;
     this.turnAudioDuration = 0;
 
@@ -821,14 +847,37 @@ Current Day: ${new Date().toLocaleDateString('en-US', {weekday: 'long'})}`
   }
 
   /**
-   * Send a text message during the live session.
+   * Send a text message during the live session using Gemini Multimodal Live clientContent payload.
    */
   sendText(text: string): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    if (!text || !text.trim()) return;
+
+    const trimmed = text.trim();
+    console.log('[GeminiLive] Sending real-time text prompt over WebSocket:', trimmed);
+
+    // Instant Interruption: flush active AI speech playback immediately when user sends text
+    if (this.state === 'speaking' || this.activeSources.length > 0) {
+      console.log('[GeminiLive] Interrupted AI speech via text prompt');
+      this.flushPlayback();
+      this.callbacks.onInterrupted();
+    }
+
+    this.turnInputTranscript = trimmed;
+    this.turnOutputTranscript = '';
+    this.callbacks.onInputTranscription(trimmed);
 
     this.ws.send(JSON.stringify({
-      realtimeInput: {
-        text: text
+      clientContent: {
+        turns: [
+          {
+            role: 'user',
+            parts: [
+              { text: trimmed }
+            ]
+          }
+        ],
+        turnComplete: true
       }
     }));
   }
@@ -858,7 +907,7 @@ Current Day: ${new Date().toLocaleDateString('en-US', {weekday: 'long'})}`
       this.sourceNode = null;
     }
     if (this.captureContext) {
-      this.captureContext.close().catch(() => {});
+      this.captureContext.close().catch(() => { });
       this.captureContext = null;
     }
     if (this.mediaStream) {
@@ -869,7 +918,7 @@ Current Day: ${new Date().toLocaleDateString('en-US', {weekday: 'long'})}`
     // Stop playback
     this.flushPlayback();
     if (this.playbackContext) {
-      this.playbackContext.close().catch(() => {});
+      this.playbackContext.close().catch(() => { });
       this.playbackContext = null;
     }
 
@@ -938,7 +987,7 @@ Current Day: ${new Date().toLocaleDateString('en-US', {weekday: 'long'})}`
     try {
       const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
       const t = ctx.currentTime;
-      
+
       // Layered rising chord: C5 + E5 + G5 with shimmer
       const notes = [523, 659, 784]; // C5, E5, G5 — major chord
       notes.forEach((freq, i) => {
@@ -946,14 +995,14 @@ Current Day: ${new Date().toLocaleDateString('en-US', {weekday: 'long'})}`
         const gain = ctx.createGain();
         osc.connect(gain);
         gain.connect(ctx.destination);
-        
+
         osc.type = i === 2 ? 'triangle' : 'sine'; // top note is softer triangle
         osc.frequency.setValueAtTime(freq * 0.97, t + i * 0.06);
         osc.frequency.exponentialRampToValueAtTime(freq, t + i * 0.06 + 0.08);
         gain.gain.setValueAtTime(0, t + i * 0.06);
         gain.gain.linearRampToValueAtTime(0.1 - i * 0.02, t + i * 0.06 + 0.03);
         gain.gain.exponentialRampToValueAtTime(0.001, t + 0.55);
-        
+
         osc.start(t + i * 0.06);
         osc.stop(t + 0.55);
         if (i === notes.length - 1) osc.onended = () => ctx.close();
@@ -967,11 +1016,11 @@ Current Day: ${new Date().toLocaleDateString('en-US', {weekday: 'long'})}`
     this.disconnectSoundPlayed = true;
     // Reset flag after a short delay
     setTimeout(() => { this.disconnectSoundPlayed = false; }, 1000);
-    
+
     try {
       const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
       const t = ctx.currentTime;
-      
+
       // Descending 3-note arpeggio: G5 → E5 → C5 with gentle fade
       const notes = [784, 659, 523]; // G5, E5, C5
       notes.forEach((freq, i) => {
@@ -979,13 +1028,13 @@ Current Day: ${new Date().toLocaleDateString('en-US', {weekday: 'long'})}`
         const gain = ctx.createGain();
         osc.connect(gain);
         gain.connect(ctx.destination);
-        
+
         osc.type = 'sine';
         osc.frequency.setValueAtTime(freq, t + i * 0.1);
         osc.frequency.exponentialRampToValueAtTime(freq * 0.98, t + i * 0.1 + 0.15);
         gain.gain.setValueAtTime(0.08 - i * 0.015, t + i * 0.1);
         gain.gain.exponentialRampToValueAtTime(0.001, t + i * 0.1 + 0.2);
-        
+
         osc.start(t + i * 0.1);
         osc.stop(t + i * 0.1 + 0.2);
         if (i === notes.length - 1) osc.onended = () => ctx.close();
@@ -997,7 +1046,7 @@ Current Day: ${new Date().toLocaleDateString('en-US', {weekday: 'long'})}`
     try {
       const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
       const t = ctx.currentTime;
-      
+
       // Futuristic data-pulse: quick ascending harmonics with digital shimmer
       const freqs = [440, 660, 880, 1320]; // A4 + harmonics
       freqs.forEach((freq, i) => {
@@ -1005,12 +1054,12 @@ Current Day: ${new Date().toLocaleDateString('en-US', {weekday: 'long'})}`
         const gain = ctx.createGain();
         osc.connect(gain);
         gain.connect(ctx.destination);
-        
+
         osc.type = i < 2 ? 'sine' : 'triangle';
         osc.frequency.setValueAtTime(freq, t + i * 0.035);
         gain.gain.setValueAtTime(0.06 / (i + 1), t + i * 0.035);
         gain.gain.exponentialRampToValueAtTime(0.001, t + i * 0.035 + 0.09);
-        
+
         osc.start(t + i * 0.035);
         osc.stop(t + i * 0.035 + 0.09);
         if (i === freqs.length - 1) osc.onended = () => ctx.close();

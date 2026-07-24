@@ -264,6 +264,16 @@ export interface AppSettings {
   browserAccess: boolean;
   computerUse: boolean;
   archiveRetention: '30' | '90' | 'forever';
+
+  // Live Convo
+  liveConvoEnabled: boolean;
+  liveConvoProvider: string;
+  liveConvoModel: string;
+  liveConvoVoice: string;
+  liveConvoLatencyMode: 'ultra-low' | 'balanced' | 'high-quality';
+  liveConvoAudioInput: boolean;
+  liveConvoAudioOutput: boolean;
+  liveConvoSystemInstruction: string;
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -314,6 +324,14 @@ const DEFAULT_SETTINGS: AppSettings = {
   browserAccess: true,
   computerUse: false,
   archiveRetention: '90',
+  liveConvoEnabled: true,
+  liveConvoProvider: 'gemini-live',
+  liveConvoModel: 'auto',
+  liveConvoVoice: 'Puck',
+  liveConvoLatencyMode: 'ultra-low',
+  liveConvoAudioInput: true,
+  liveConvoAudioOutput: true,
+  liveConvoSystemInstruction: '',
 };
 
 const getTerminalShellOptions = (platform: 'unknown' | 'windows' | 'mac' | 'linux') => {
@@ -357,6 +375,7 @@ type Tab =
   | 'hooks'
   | 'models'
   | 'api'
+  | 'live-convo'
   | 'git'
   | 'environments'
   | 'worktrees'
@@ -433,13 +452,209 @@ const providerKeyLooksValid = (provider: string, key: string) => {
   return value.length >= 12;
 };
 
+export const LIVE_PROVIDER_MODELS: Record<string, Array<{ value: string; label: string; tag?: string; description?: string }>> = {
+  'gemini-live': [
+    { value: 'auto', label: 'Auto (Latest Gemini Live Model)', tag: 'AUTO LATEST', description: 'Automatically routes to newest Gemini Live API' },
+    { value: 'gemini-2.0-flash-exp-live', label: 'Gemini 2.0 Flash Realtime Multimodal', tag: 'FREE TIER', description: 'Low latency WebSockets speech & vision stream' },
+    { value: 'gemini-2.0-flash-thinking-exp-live', label: 'Gemini 2.0 Flash Thinking Live', tag: 'FREE TIER', description: 'Reasoning live voice stream' },
+    { value: 'gemini-1.5-flash-live', label: 'Gemini 1.5 Flash Audio Stream', tag: 'FREE TIER', description: 'Fast stable audio stream' },
+  ],
+  'openai-realtime': [
+    { value: 'auto', label: 'Auto (Latest GPT-4o Realtime Model)', tag: 'AUTO LATEST', description: 'Automatically routes to newest GPT-4o Realtime API' },
+    { value: 'gpt-4o-realtime-preview', label: 'GPT-4o Realtime Audio (WebRTC)', description: 'Full-duplex low-latency speech-to-speech' },
+    { value: 'gpt-4o-mini-realtime-preview', label: 'GPT-4o Mini Realtime Audio', description: 'Fast low-cost speech-to-speech stream' },
+    { value: 'gpt-4o-audio-preview', label: 'GPT-4o Audio Direct Stream', description: 'Direct audio input/output stream' },
+  ],
+  'grok-voice': [
+    { value: 'auto', label: 'Auto (Latest Grok Voice Agent)', tag: 'AUTO LATEST', description: 'Automatically routes to newest xAI Grok voice engine' },
+    { value: 'grok-2-voice', label: 'xAI Grok-2 Voice Agent', description: 'Sub-second native speech-to-speech API' },
+    { value: 'grok-3-realtime', label: 'xAI Grok-3 Realtime Multimodal', description: 'Real-time video & voice stream' },
+  ],
+  'claude-live': [
+    { value: 'auto', label: 'Auto (Latest Claude Live Stream)', tag: 'AUTO LATEST', description: 'Automatically routes to newest Anthropic Claude stream' },
+    { value: 'claude-3-5-sonnet-live', label: 'Claude 3.5 Sonnet Live Audio Stream', description: 'Interactive stream with extended thinking' },
+    { value: 'claude-3-5-haiku-live', label: 'Claude 3.5 Haiku Low-Latency Stream', description: 'Ultra-fast low latency stream' },
+  ],
+  'deepseek-live': [
+    { value: 'auto', label: 'Auto (Latest DeepSeek Live Stream)', tag: 'AUTO LATEST', description: 'Automatically routes to newest DeepSeek V3/R1 model' },
+    { value: 'deepseek-v3-live', label: 'DeepSeek-V3 Live Audio Stream', tag: 'FREE TIER', description: 'Fast 671B MoE streaming agent' },
+    { value: 'deepseek-r1-live', label: 'DeepSeek-R1 Reasoning Stream', tag: 'FREE TIER', description: 'Open reasoning chain-of-thought stream' },
+  ],
+  'elevenlabs': [
+    { value: 'auto', label: 'Auto (Latest ElevenLabs Voice Agent)', tag: 'AUTO LATEST', description: 'Automatically routes to newest ElevenLabs model' },
+    { value: 'eleven_flash_v2_5', label: 'ElevenLabs Flash v2.5 (~75ms Latency)', description: 'Ultra-low latency real-time voice agent' },
+    { value: 'eleven_turbo_v2_5', label: 'ElevenLabs Turbo v2.5 Realtime Voice', description: 'High-speed voice synthesis engine' },
+    { value: 'eleven_multilingual_v2', label: 'ElevenLabs Multilingual v2', description: 'High-fidelity multi-language voice stream' },
+  ],
+  'deepgram': [
+    { value: 'auto', label: 'Auto (Latest Deepgram Aura-2 Pipeline)', tag: 'AUTO LATEST' },
+    { value: 'aura-2-thalia-en', label: 'Deepgram Aura-2 Thalia (STT+TTS)', description: 'Sub-200ms TTFB real-time voice agent' },
+    { value: 'aura-2-asteria-en', label: 'Deepgram Aura-2 Asteria (STT+TTS)', description: 'Conversational female voice agent' },
+    { value: 'aura-2-orpheus-en', label: 'Deepgram Aura-2 Orpheus (STT+TTS)', description: 'Conversational male voice agent' },
+    { value: 'aura-2-helios-en', label: 'Deepgram Aura-2 Helios (STT+TTS)', description: 'Strong clear male voice agent' },
+    { value: 'aura-2-zeus-en', label: 'Deepgram Aura-2 Zeus (STT+TTS)', description: 'Authoritative deep male voice agent' },
+  ],
+  'hume-evi': [
+    { value: 'auto', label: 'Auto (Latest Hume EVI-2 Empathic)', tag: 'AUTO LATEST' },
+    { value: 'evi-2-empathic', label: 'Hume AI EVI-2 Empathic Voice Agent', description: 'Emotion-aware empathic audio stream' },
+  ],
+  'cartesia-sonic': [
+    { value: 'auto', label: 'Auto (Latest Cartesia Sonic Stream)', tag: 'AUTO LATEST' },
+    { value: 'sonic-multilingual', label: 'Cartesia Sonic Sub-200ms Stream', description: 'Ultra-fast low latency voice stream' },
+  ],
+  'playht': [
+    { value: 'auto', label: 'Auto (Latest PlayHT Realtime)', tag: 'AUTO LATEST' },
+    { value: 'playht-2.0-turbo', label: 'PlayHT 2.0 Turbo Realtime Stream', description: 'Realtime streaming conversational voice' },
+  ],
+  'groq-live': [
+    { value: 'auto', label: 'Auto (Latest Groq Realtime LPU)', tag: 'AUTO LATEST' },
+    { value: 'groq-llama-3.3-70b-realtime', label: 'Groq Llama 3.3 70B Realtime', tag: 'FREE TIER', description: 'LPU Engine 500+ tokens/sec stream' },
+    { value: 'groq-whisper-v3-fast', label: 'Groq Fast Speech-to-Speech', tag: 'FREE TIER', description: 'Sub-second audio stream' },
+  ],
+  'cerebras-live': [
+    { value: 'auto', label: 'Auto (Latest Cerebras Wafer Stream)', tag: 'AUTO LATEST' },
+    { value: 'cerebras-llama3.3-70b-realtime', label: 'Cerebras Llama 3.3 70B Instant Stream', tag: 'FREE TIER', description: '2000+ tokens/sec wafer engine stream' },
+  ],
+  'sambanova-live': [
+    { value: 'auto', label: 'Auto (Latest SambaNova Realtime)', tag: 'AUTO LATEST' },
+    { value: 'sambanova-deepseek-r1-voice', label: 'SambaNova DeepSeek R1 Voice Stream', tag: 'FREE TIER', description: 'High-speed reconfigurable dataflow stream' },
+  ],
+  'together-voice': [
+    { value: 'auto', label: 'Auto (Latest Together Voice Pipeline)', tag: 'AUTO LATEST' },
+    { value: 'together-whisper-llama3-tts', label: 'Together AI Audio & Llama 3 Stream', tag: 'FREE CREDIT', description: 'Fast open-source LLM & audio stack' },
+  ],
+  'fireworks-speech': [
+    { value: 'auto', label: 'Auto (Latest Fireworks Speech Pipeline)', tag: 'AUTO LATEST' },
+    { value: 'fireworks-whisper-v3-fast', label: 'Fireworks AI Fast Whisper & Speech', tag: 'FREE CREDIT', description: 'Fast Whisper & open weights stream' },
+  ],
+  'perplexity-live': [
+    { value: 'auto', label: 'Auto (Latest Perplexity Sonar Stream)', tag: 'AUTO LATEST' },
+    { value: 'sonar-reasoning-pro-live', label: 'Perplexity Sonar Reasoning Realtime', description: 'Search-augmented real-time stream' },
+  ],
+  'cohere-live': [
+    { value: 'auto', label: 'Auto (Latest Cohere Command Stream)', tag: 'AUTO LATEST' },
+    { value: 'command-r-plus-live', label: 'Cohere Command R+ Realtime Voice', description: 'Enterprise tool calling voice stream' },
+  ],
+  'openrouter-live': [
+    { value: 'auto', label: 'Auto (Latest OpenRouter Realtime)', tag: 'AUTO LATEST' },
+    { value: 'openrouter-auto-realtime', label: 'OpenRouter Auto Realtime Voice Router', tag: 'FREE MODELS', description: 'Automatic failover live voice router' },
+  ],
+  'ollama-local': [
+    { value: 'auto', label: 'Auto (Latest Ollama Local Voice)', tag: 'FREE (LOCAL)' },
+    { value: 'ollama-local-whisper-llama3', label: 'Ollama Local Whisper & Llama 3 Speech', tag: 'FREE (LOCAL)' },
+  ],
+  'lmstudio-local': [
+    { value: 'auto', label: 'Auto (Latest LM Studio Local Server)', tag: 'FREE (LOCAL)' },
+    { value: 'lmstudio-local-server', label: 'LM Studio Local Desktop Audio Server', tag: 'FREE (LOCAL)' },
+  ],
+  'vllm-local': [
+    { value: 'auto', label: 'Auto (Latest vLLM Production Voice)', tag: 'FREE (OPEN SOURCE)' },
+    { value: 'vllm-openai-compatible-live', label: 'vLLM OpenAI-Compatible Stream', tag: 'FREE (OPEN SOURCE)' },
+  ],
+};
+
+export const LIVE_PROVIDER_VOICES: Record<string, Array<{ value: string; label: string; tag?: string; description?: string }>> = {
+  'gemini-live': [
+    { value: 'auto', label: 'Auto (Latest Google Voice)', tag: 'AUTO LATEST', description: 'Automatically resolves to optimal Gemini voice' },
+    { value: 'Puck', label: 'Puck (Enthusiastic & Natural)', description: 'Upbeat male voice' },
+    { value: 'Charon', label: 'Charon (Deep & Professional)', description: 'Authoritative male voice' },
+    { value: 'Kore', label: 'Kore (Calm & Clear)', description: 'Relaxed female voice' },
+    { value: 'Fenrir', label: 'Fenrir (Warm & Expressive)', description: 'Rich male voice' },
+    { value: 'Aoede', label: 'Aoede (Smooth & Bright)', description: 'Bright female voice' },
+  ],
+  'openai-realtime': [
+    { value: 'auto', label: 'Auto (Latest OpenAI Voice)', tag: 'AUTO LATEST', description: 'Automatically resolves to optimal GPT-4o voice' },
+    { value: 'Alloy', label: 'Alloy (Balanced & Natural)', description: 'Neutral open voice' },
+    { value: 'Echo', label: 'Echo (Soft Male)', description: 'Gentle male voice' },
+    { value: 'Shimmer', label: 'Shimmer (Clear Female)', description: 'Resonant female voice' },
+    { value: 'Ash', label: 'Ash (Expressive Male)', description: 'Dynamic male voice' },
+    { value: 'Ballad', label: 'Ballad (Rich Male)', description: 'Deep storytelling male voice' },
+    { value: 'Coral', label: 'Coral (Smooth Female)', description: 'Warm female voice' },
+    { value: 'Sage', label: 'Sage (Warm Female)', description: 'Calm female voice' },
+  ],
+  'elevenlabs': [
+    { value: 'auto', label: 'Auto (Latest ElevenLabs Voice)', tag: 'AUTO LATEST', description: 'Automatically resolves to your account default voice' },
+    { value: '21m00Tcm4TlvDq8ikWAM', label: 'Rachel (Conversational Female)', description: 'Calm, professional female voice' },
+    { value: 'AZnzlk1XvdvUeBnXmlld', label: 'Domi (Energetic Female)', description: 'High-energy female voice' },
+    { value: 'EXAVITQu4vr4xnSDxMaL', label: 'Bella (Narrative Female)', description: 'Soft narrative female voice' },
+    { value: 'ErXwobaYiN019PkySvjV', label: 'Antoni (Warm Male)', description: 'Versatile warm male voice' },
+    { value: 'TxGEfe70L6mWAfGQfd48', label: 'Josh (Deep Male)', description: 'Resonant deep male voice' },
+  ],
+  'deepgram': [
+    { value: 'auto', label: 'Auto (Latest Deepgram Aura-2 Voice)', tag: 'AUTO LATEST' },
+    { value: 'aura-2-thalia-en', label: 'Aura-2 Thalia (Clear Female)', description: 'Sub-200ms conversational female' },
+    { value: 'aura-2-asteria-en', label: 'Aura-2 Asteria (Natural Female)', description: 'Expressive conversational female' },
+    { value: 'aura-2-orpheus-en', label: 'Aura-2 Orpheus (Warm Male)', description: 'Natural conversational male' },
+    { value: 'aura-2-helios-en', label: 'Aura-2 Helios (Strong Male)', description: 'Strong clear male' },
+    { value: 'aura-2-zeus-en', label: 'Aura-2 Zeus (Deep Male)', description: 'Authoritative deep male' },
+  ],
+  'hume-evi': [
+    { value: 'auto', label: 'Auto (Latest Hume EVI Voice)', tag: 'AUTO LATEST' },
+    { value: 'evi-2-empathic-1', label: 'Empathic Neutral', description: 'Hume AI EVI-2' },
+    { value: 'evi-2-empathic-2', label: 'Empathic Warm', description: 'Hume AI EVI-2' },
+  ],
+  'cartesia-sonic': [
+    { value: 'auto', label: 'Auto (Latest Cartesia Sonic Voice)', tag: 'AUTO LATEST' },
+    { value: 'sonic-female-1', label: 'Sonic Female', description: 'Cartesia Sub-200ms' },
+    { value: 'sonic-male-1', label: 'Sonic Male', description: 'Cartesia Sub-200ms' },
+  ],
+  'ollama-local': [
+    { value: 'auto', label: 'Auto (Local Offline System TTS)', tag: 'FREE (LOCAL)' },
+    { value: 'piper-tts-en', label: 'Piper Local Neural Voice', tag: 'FREE (LOCAL)' },
+    { value: 'coqui-xtts-v2', label: 'Coqui Local XTTS-v2', tag: 'FREE (LOCAL)' },
+  ],
+};
+
+export const PROVIDER_PRICING_TAG: Record<string, string> = {
+  gemini: 'FREE TIER',
+  groq: 'FREE TIER',
+  ollama: 'FREE (LOCAL)',
+  lmstudio: 'FREE (LOCAL)',
+  vllm: 'FREE (OPEN SOURCE)',
+  huggingface: 'FREE TIER',
+  openrouter: 'FREE MODELS',
+  deepseek: 'FREE TIER',
+  cerebras: 'FREE TIER',
+  together: 'FREE CREDIT',
+  fireworks: 'FREE CREDIT',
+  'gemini-live': 'FREE TIER',
+  'groq-live': 'FREE TIER',
+  'ollama-local': 'FREE (LOCAL)',
+  'lmstudio-local': 'FREE (LOCAL)',
+  'vllm-local': 'FREE (OPEN SOURCE)',
+  'deepseek-live': 'FREE TIER',
+  'cerebras-live': 'FREE TIER',
+  'huggingface-live': 'FREE TIER',
+  'openrouter-live': 'FREE MODELS',
+};
+
 const PROVIDER_LABEL: Record<string, string> = {
   gemini: 'Google Gemini',
-  mistral: 'Mistral',
-  openai: 'OpenAI',
-  openrouter: 'OpenRouter',
-  groq: 'Groq',
-  anthropic: 'Anthropic',
+  openai: 'OpenAI Platform',
+  anthropic: 'Anthropic Claude',
+  grok: 'xAI Grok',
+  deepseek: 'DeepSeek AI',
+  mistral: 'Mistral AI',
+  groq: 'Groq LPU',
+  cerebras: 'Cerebras Wafer',
+  sambanova: 'SambaNova Systems',
+  together: 'Together AI',
+  fireworks: 'Fireworks AI',
+  openrouter: 'OpenRouter Unified',
+  perplexity: 'Perplexity AI',
+  cohere: 'Cohere Enterprise',
+  deepinfra: 'DeepInfra',
+  replicate: 'Replicate Cloud',
+  novita: 'Novita AI',
+  huggingface: 'Hugging Face',
+  elevenlabs: 'ElevenLabs',
+  deepgram: 'Deepgram',
+  hume: 'Hume AI EVI',
+  cartesia: 'Cartesia Sonic',
+  playht: 'PlayHT',
+  ollama: 'Ollama Local',
+  lmstudio: 'LM Studio',
+  vllm: 'vLLM Engine',
 };
 const PROVIDER_MODE: Record<MainAgentProvider, MainAgentMode> = MODEL_PROVIDER_MODE;
 const PROVIDER_ACCENT: Record<string, string> = {
@@ -486,88 +701,177 @@ const OFFICIAL_PROVIDER_GUIDE: Record<string, {
     source: 'Google AI Studio / Gemini API',
     keySource: 'Google AI Studio API key',
     endpoint: 'GET /v1beta/models',
-    docsUrl: 'ai.google.dev/api/models',
+    docsUrl: 'ai.google.dev/docs',
     families: [
-      { name: 'Gemini 3.5 Flash', id: 'gemini-3.5-flash', note: 'Stable frontier model for sustained agent and coding work' },
-      { name: 'Gemini 3.1 Pro Preview', id: 'gemini-3.1-pro-preview', note: 'Advanced reasoning, multimodal work, and high-autonomy tasks' },
-      { name: 'Gemini 3 Flash Preview', id: 'gemini-3-flash-preview', note: 'Preview 3-series model for fast, capable agent runs' },
-      { name: 'Gemini 3.1 Flash-Lite', id: 'gemini-3.1-flash-lite', note: 'Fast low-cost 3-series option for routine tasks' },
-      { name: 'Gemini 2.5 Pro', id: 'gemini-2.5-pro', note: 'Stable complex reasoning, coding, and multimodal understanding' },
-      { name: 'Gemini 2.5 Flash', id: 'gemini-2.5-flash', note: 'Stable price-performance fallback with thinking support' },
-      { name: 'Gemini 3.1 Flash Live', id: 'gemini-3.1-flash-live-preview', note: 'Low-latency Live API model for voice-first flows' },
-    ],
-  },
-  mistral: {
-    source: 'Mistral AI Platform',
-    keySource: 'Mistral API key',
-    endpoint: 'GET /v1/models',
-    docsUrl: 'docs.mistral.ai/models',
-    families: [
-      { name: 'Mistral Medium 3.5', id: 'mistral-medium-3-5', note: 'Frontier multimodal model optimized for agentic and coding use cases' },
-      { name: 'Mistral Medium (latest)', id: 'mistral-medium-2508', note: 'Proven medium-tier model' },
-      { name: 'Mistral Large 3', id: 'mistral-large-2512', note: 'High-capability open-weight multimodal model' },
-      { name: 'Mistral Small 4', id: 'mistral-small-2603', note: 'Efficient hybrid instruct, reasoning, and coding model' },
-      { name: 'Ministral 3 14B', id: 'ministral-14b-2512', note: 'Vision-capable efficient generalist model' },
-      { name: 'Codestral', id: 'codestral-2508', note: 'Code completion and developer workflow model' },
-    ],
-  },
-  anthropic: {
-    source: 'Anthropic Console / Claude API',
-    keySource: 'Anthropic Console workspace key',
-    endpoint: 'GET /v1/models',
-    docsUrl: 'docs.anthropic.com',
-    families: [
-      { name: 'Claude Sonnet 5', id: 'claude-sonnet-5', note: 'Balanced speed, intelligence, and extended thinking' },
-      { name: 'Claude Fable 5', id: 'claude-fable-5', note: 'Preview frontier model for high-autonomy coding' },
-      { name: 'Claude Mythos 5', id: 'claude-mythos-5', note: 'Approved customer preview model via Project Glasswing' },
-      { name: 'Claude Opus 4.8', id: 'claude-opus-4-8', note: 'Most capable Claude model for complex reasoning and agentic coding' },
-      { name: 'Claude Haiku 4.5', id: 'claude-haiku-4-5', note: 'Fastest 4.5-series model with high intelligence' },
-      { name: 'Claude Sonnet 4.6', id: 'claude-sonnet-4-6', note: 'Previous Sonnet fallback' },
+      { name: 'Gemini 2.0 Flash', id: 'gemini-2.0-flash', note: 'Fast multimodal model with next-gen speed & native tool use' },
+      { name: 'Gemini 2.0 Flash Thinking', id: 'gemini-2.0-flash-thinking-exp-01-21', note: 'Experimental thinking model with explicit reasoning traces' },
+      { name: 'Gemini 2.0 Flash Lite Preview', id: 'gemini-2.0-flash-lite-preview-02-05', note: 'Ultra-fast low-cost 2.0 series model' },
+      { name: 'Gemini 2.0 Pro Experimental', id: 'gemini-2.0-pro-exp-02-05', note: 'Frontier reasoning and coding model' },
+      { name: 'Gemini 1.5 Pro', id: 'gemini-1.5-pro', note: 'High context window (2M tokens) complex reasoning model' },
+      { name: 'Gemini 1.5 Flash', id: 'gemini-1.5-flash', note: 'Production fast multimodal model' },
+      { name: 'Gemini 1.5 Flash 8B', id: 'gemini-1.5-flash-8b', note: 'Lightweight high-speed model' },
     ],
   },
   openai: {
     source: 'OpenAI Platform',
-    keySource: 'OpenAI project API key',
+    keySource: 'OpenAI Project API Key',
     endpoint: 'GET /v1/models',
     docsUrl: 'platform.openai.com/docs/models',
     families: [
-      { name: 'GPT-5.6 Sol', id: 'gpt-5.6-sol', note: 'Flagship model for complex professional reasoning, coding, and general tasks' },
-      { name: 'GPT-5.6 Luna Pro', id: 'gpt-5.6-luna-pro', note: 'Affordable high-context flagship model' },
-      { name: 'GPT-5.6 Luna', id: 'gpt-5.6-luna', note: 'More affordable flagship model for coding' },
-      { name: 'GPT-5.6 Terra Pro', id: 'gpt-5.6-terra-pro', note: 'Fast option for coding, computer use, and sub-agents' },
-      { name: 'GPT-5.6 Terra', id: 'gpt-5.6-terra', note: 'Low latency fallback model' },
-      { name: 'GPT-5.5', id: 'gpt-5.5', note: 'Stable 5-series model' },
-      { name: 'OpenAI o3-pro', id: 'o3-pro', note: 'Flagship deep reasoning model' },
-      { name: 'OpenAI o3', id: 'o3', note: 'Standard deep reasoning model' },
-      { name: 'OpenAI o4-mini', id: 'o4-mini', note: 'High-speed mini reasoning model' },
-      { name: 'GPT-5.4 Pro', id: 'gpt-5.4-pro', note: 'Precision coding model' },
-      { name: 'GPT-5.4 mini', id: 'gpt-5.4-mini', note: 'Strongest mini model for computer/agent use' },
-      { name: 'GPT-4o', id: 'gpt-4o', note: 'Stable legacy fallback model' },
+      { name: 'GPT-4o', id: 'gpt-4o', note: 'Flagship high-intelligence multimodal model' },
+      { name: 'GPT-4o Mini', id: 'gpt-4o-mini', note: 'Fast, affordable model for focused agent tasks' },
+      { name: 'OpenAI o1', id: 'o1', note: 'Full reasoning model for complex STEM and coding problems' },
+      { name: 'OpenAI o1-mini', id: 'o1-mini', note: 'Fast reasoning model optimized for code and math' },
+      { name: 'OpenAI o3-mini', id: 'o3-mini', note: 'High-speed 3-series reasoning model with adjustable effort' },
+      { name: 'GPT-4 Turbo', id: 'gpt-4-turbo', note: 'High-capability vision and function-calling fallback' },
     ],
   },
-  openrouter: {
-    source: 'OpenRouter',
-    keySource: 'OpenRouter API key',
-    endpoint: 'GET /api/v1/models',
-    docsUrl: 'openrouter.ai/docs',
+  anthropic: {
+    source: 'Anthropic Console / Claude API',
+    keySource: 'Anthropic API Key',
+    endpoint: 'GET /v1/models',
+    docsUrl: 'docs.anthropic.com',
     families: [
-      { name: 'GPT-5.6 Luna', id: 'openai/gpt-5.6-luna', note: 'OpenAI flagship through OpenRouter' },
-      { name: 'GPT-5.6 Terra', id: 'openai/gpt-5.6-terra', note: 'OpenAI fast model through OpenRouter' },
-      { name: 'Claude Sonnet 5', id: 'anthropic/claude-sonnet-5', note: 'Anthropic flagship through OpenRouter' },
-      { name: 'Claude Fable 5', id: 'anthropic/claude-fable-5', note: 'Anthropic preview flagship through OpenRouter' },
-      { name: 'Gemini 3.5 Flash', id: 'google/gemini-3.5-flash', note: 'Google Gemini routed through OpenRouter' },
-      { name: 'Grok 4.5', id: 'x-ai/grok-4.5', note: 'xAI flagship through OpenRouter' },
-      { name: 'Full OpenRouter catalog', note: 'Live endpoint loads hundreds of provider models automatically' },
+      { name: 'Claude 3.5 Sonnet', id: 'claude-3-5-sonnet-20241022', note: 'Frontier model for coding, complex analysis, and agent work' },
+      { name: 'Claude 3.5 Haiku', id: 'claude-3-5-haiku-20241022', note: 'Ultra-fast, high-intelligence lightweight model' },
+      { name: 'Claude 3 Opus', id: 'claude-3-opus-20240229', note: 'Deep analysis and long-form reasoning flagship' },
+    ],
+  },
+  grok: {
+    source: 'xAI Console',
+    keySource: 'xAI API Key',
+    endpoint: 'GET /v1/models',
+    docsUrl: 'docs.x.ai',
+    families: [
+      { name: 'Grok 2 Latest', id: 'grok-2-latest', note: 'Frontier reasoning and general knowledge model' },
+      { name: 'Grok 2 Vision Latest', id: 'grok-2-vision-latest', note: 'Multimodal vision and document understanding' },
+      { name: 'Grok Beta', id: 'grok-beta', note: 'Fast instruct model endpoint' },
+    ],
+  },
+  deepseek: {
+    source: 'DeepSeek Platform',
+    keySource: 'DeepSeek API Key',
+    endpoint: 'GET /v1/models',
+    docsUrl: 'platform.deepseek.com/docs',
+    families: [
+      { name: 'DeepSeek-V3', id: 'deepseek-chat', note: 'Frontier 671B parameter mixture-of-experts model' },
+      { name: 'DeepSeek-R1', id: 'deepseek-reasoner', note: 'Open-weights reasoning model with explicit chain-of-thought' },
+    ],
+  },
+  mistral: {
+    source: 'Mistral AI Platform',
+    keySource: 'Mistral API Key',
+    endpoint: 'GET /v1/models',
+    docsUrl: 'docs.mistral.ai',
+    families: [
+      { name: 'Mistral Large Latest', id: 'mistral-large-latest', note: 'Flagship reasoning and multi-language model' },
+      { name: 'Codestral Latest', id: 'codestral-latest', note: 'Specialized 80+ programming language coding model' },
+      { name: 'Pixtral Large Latest', id: 'pixtral-large-latest', note: '123B multimodal vision model' },
+      { name: 'Mistral Small Latest', id: 'mistral-small-latest', note: 'Efficient low-cost general model' },
+      { name: 'Ministral 8B', id: 'ministral-8b-latest', note: 'Ultra-fast edge/device instruction model' },
     ],
   },
   groq: {
     source: 'GroqCloud',
-    keySource: 'Groq API key',
+    keySource: 'Groq API Key',
     endpoint: 'GET /openai/v1/models',
     docsUrl: 'console.groq.com/docs/models',
     families: [
-      { name: 'Llama 3.3 70B Versatile', id: 'llama-3.3-70b-versatile', note: 'Production Llama model with a large context window' },
-      { name: 'Llama 3.1 8B Instant', id: 'llama-3.1-8b-instant', note: 'Production ultra-fast small model for quick tasks' },
+      { name: 'Llama 3.3 70B Versatile', id: 'llama-3.3-70b-versatile', note: '500+ tokens/sec production Llama model' },
+      { name: 'Llama 3.1 8B Instant', id: 'llama-3.1-8b-instant', note: 'Ultra-fast sub-second response model' },
+      { name: 'DeepSeek R1 Distill Llama 70B', id: 'deepseek-r1-distill-llama-70b', note: 'Fast reasoning distilled on LPU hardware' },
+      { name: 'Mixtral 8x7B 32k', id: 'mixtral-8x7b-32768', note: 'High throughput MoE model' },
+    ],
+  },
+  cerebras: {
+    source: 'Cerebras Cloud Platform',
+    keySource: 'Cerebras API Key',
+    endpoint: 'GET /v1/models',
+    docsUrl: 'inference-docs.cerebras.ai',
+    families: [
+      { name: 'Llama 3.3 70B', id: 'llama3.3-70b', note: '2000+ tokens/sec wafer-scale engine inference' },
+      { name: 'Llama 3.1 8B', id: 'llama3.1-8b', note: 'Instant responses for agent sub-tasks' },
+    ],
+  },
+  together: {
+    source: 'Together AI Platform',
+    keySource: 'Together API Key',
+    endpoint: 'GET /v1/models',
+    docsUrl: 'docs.together.ai',
+    families: [
+      { name: 'Llama 3.3 70B Instruct Turbo', id: 'meta-llama/Llama-3.3-70B-Instruct-Turbo', note: 'Fast production open-weights endpoint' },
+      { name: 'DeepSeek R1', id: 'deepseek-ai/DeepSeek-R1', note: 'Full 671B DeepSeek R1 reasoning' },
+      { name: 'DeepSeek V3', id: 'deepseek-ai/DeepSeek-V3', note: 'Full 671B DeepSeek V3 chat' },
+      { name: 'Qwen 2.5 Coder 32B Instruct', id: 'Qwen/Qwen2.5-Coder-32B-Instruct', note: 'High performance open coding model' },
+    ],
+  },
+  fireworks: {
+    source: 'Fireworks AI Console',
+    keySource: 'Fireworks API Key',
+    endpoint: 'GET /v1/models',
+    docsUrl: 'readme.fireworks.ai',
+    families: [
+      { name: 'DeepSeek R1', id: 'accounts/fireworks/models/deepseek-r1', note: 'Fast DeepSeek R1 inference' },
+      { name: 'DeepSeek V3', id: 'accounts/fireworks/models/deepseek-v3', note: 'Fast DeepSeek V3 inference' },
+      { name: 'Llama 3.3 70B Instruct', id: 'accounts/fireworks/models/llama-v3p3-70b-instruct', note: 'Compound AI inference engine' },
+    ],
+  },
+  sambanova: {
+    source: 'SambaNova Cloud',
+    keySource: 'SambaNova API Key',
+    endpoint: 'GET /v1/models',
+    docsUrl: 'community.sambanova.ai',
+    families: [
+      { name: 'DeepSeek R1', id: 'DeepSeek-R1', note: 'Reconfigurable dataflow hardware acceleration' },
+      { name: 'Llama 3.3 70B Instruct', id: 'Meta-Llama-3.3-70B-Instruct', note: 'High speed open weights flagship' },
+    ],
+  },
+  perplexity: {
+    source: 'Perplexity AI API',
+    keySource: 'Perplexity API Key',
+    endpoint: 'GET /v1/models',
+    docsUrl: 'docs.perplexity.ai',
+    families: [
+      { name: 'Sonar Reasoning Pro', id: 'sonar-reasoning-pro', note: 'Search-augmented reasoning model' },
+      { name: 'Sonar Reasoning', id: 'sonar-reasoning', note: 'Search-augmented lightweight reasoning' },
+      { name: 'Sonar Pro', id: 'sonar-pro', note: 'Advanced web grounded search model' },
+      { name: 'Sonar', id: 'sonar', note: 'Lightweight web search model' },
+    ],
+  },
+  cohere: {
+    source: 'Cohere Dashboard',
+    keySource: 'Cohere API Key',
+    endpoint: 'GET /v1/models',
+    docsUrl: 'docs.cohere.com',
+    families: [
+      { name: 'Command R+', id: 'command-r-plus', note: 'Enterprise RAG and complex tool use' },
+      { name: 'Command R', id: 'command-r', note: 'Fast RAG and agent workflow model' },
+    ],
+  },
+  openrouter: {
+    source: 'OpenRouter',
+    keySource: 'OpenRouter API Key',
+    endpoint: 'GET /api/v1/models',
+    docsUrl: 'openrouter.ai/docs',
+    families: [
+      { name: 'Auto Router', id: 'openrouter/auto', note: 'Dynamic lowest-cost highest-speed model routing' },
+      { name: 'DeepSeek R1 (OpenRouter)', id: 'deepseek/deepseek-r1', note: 'DeepSeek R1 via OpenRouter' },
+      { name: 'Claude 3.5 Sonnet (OpenRouter)', id: 'anthropic/claude-3.5-sonnet', note: 'Claude 3.5 Sonnet via OpenRouter' },
+      { name: 'GPT-4o (OpenRouter)', id: 'openai/gpt-4o', note: 'GPT-4o via OpenRouter' },
+      { name: 'Gemini 2.0 Flash (OpenRouter)', id: 'google/gemini-2.0-flash-001', note: 'Gemini 2.0 Flash via OpenRouter' },
+    ],
+  },
+  ollama: {
+    source: 'Ollama Local Instance',
+    keySource: 'Local endpoint (No Key Required)',
+    endpoint: 'GET http://localhost:11434/api/tags',
+    docsUrl: 'ollama.com',
+    families: [
+      { name: 'DeepSeek R1 70B Local', id: 'deepseek-r1:70b', note: 'Full local 70B quantized reasoning' },
+      { name: 'DeepSeek R1 14B Local', id: 'deepseek-r1:14b', note: 'Balanced local reasoning' },
+      { name: 'DeepSeek R1 8B Local', id: 'deepseek-r1:8b', note: 'Fast local reasoning' },
+      { name: 'Llama 3.3 70B Local', id: 'llama3.3:70b', note: 'Offline full capability Llama' },
+      { name: 'Qwen 2.5 Coder 14B', id: 'qwen2.5-coder:14b', note: 'Local coding specialist' },
     ],
   },
 };
@@ -591,6 +895,7 @@ const normalizeSettingsTab = (tab: any): Tab => {
     'hooks',
     'models',
     'api',
+    'live-convo',
     'git',
     'environments',
     'worktrees',
@@ -607,6 +912,10 @@ const normalizeSettingsTab = (tab: any): Tab => {
       return 'configuration';
     case 'api':
       return 'api';
+    case 'live':
+    case 'liveconvo':
+    case 'live-convo':
+      return 'live-convo';
     case 'connections':
       return 'models';
     case 'advanced':
@@ -1093,7 +1402,7 @@ const ProviderMark: React.FC<{ provider: string; className?: string }> = ({ prov
 const ModernSelect: React.FC<{
   value: string;
   onChange: (value: string) => void;
-  options: Array<{ value: string; label: string; description?: string }>;
+  options: Array<{ value: string; label: string; tag?: string; description?: string }>;
   placeholder?: string;
   className?: string;
 }> = ({ value, onChange, options, placeholder = 'Select', className = '' }) => {
@@ -1151,6 +1460,7 @@ const ProviderSelect: React.FC<{
 }> = ({ value, onChange, providers, className = '' }) => {
   const [open, setOpen] = useState(false);
   const label = PROVIDER_LABEL[value] || value || 'Select provider';
+  const currentTag = PROVIDER_PRICING_TAG[value];
 
   return (
     <div className={`relative ${className}`}>
@@ -1163,31 +1473,46 @@ const ProviderSelect: React.FC<{
         <span className="flex min-w-0 items-center gap-2">
           <ProviderMark provider={value} />
           <span className="truncate">{label}</span>
+          {currentTag && (
+            <span className="rounded-full bg-emerald-500/15 border border-emerald-500/30 px-1.5 py-0.5 text-[9.5px] font-semibold text-emerald-400">
+              {currentTag}
+            </span>
+          )}
         </span>
         <ChevronRight className={`h-4 w-4 shrink-0 text-[#A7A7A7] transition-transform ${open ? '-rotate-90' : 'rotate-90'}`} />
       </button>
       {open && (
-        <div className="absolute right-0 z-50 mt-2 max-h-72 w-full min-w-[240px] overflow-y-auto rounded-xl border border-white/[0.10] bg-[#242424] p-1 shadow-[0_18px_48px_rgba(0,0,0,0.45)] eterx-scrollbar">
-          {providers.map(provider => (
-            <button
-              key={provider}
-              type="button"
-              onMouseDown={(event) => {
-                event.preventDefault();
-                onChange(provider);
-                setOpen(false);
-              }}
-              className={`flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2 text-left text-[12.5px] transition-colors ${
-                value === provider ? 'bg-white/[0.08] text-[#F4F4F4]' : 'text-[#CFCFCF] hover:bg-white/[0.055] hover:text-[#F4F4F4]'
-              }`}
-            >
-              <span className="flex min-w-0 items-center gap-2">
-                <ProviderMark provider={provider} />
-                <span className="truncate">{PROVIDER_LABEL[provider] || provider}</span>
-              </span>
-              {value === provider && <Check className="h-3.5 w-3.5 shrink-0" />}
-            </button>
-          ))}
+        <div className="absolute right-0 z-50 mt-2 max-h-72 w-full min-w-[260px] overflow-y-auto rounded-xl border border-white/[0.10] bg-[#242424] p-1 shadow-[0_18px_48px_rgba(0,0,0,0.45)] eterx-scrollbar">
+          {providers.map(provider => {
+            const tag = PROVIDER_PRICING_TAG[provider];
+            return (
+              <button
+                key={provider}
+                type="button"
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                  onChange(provider);
+                  setOpen(false);
+                }}
+                className={`flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2 text-left text-[12.5px] transition-colors ${
+                  value === provider ? 'bg-white/[0.08] text-[#F4F4F4]' : 'text-[#CFCFCF] hover:bg-white/[0.055] hover:text-[#F4F4F4]'
+                }`}
+              >
+                <span className="flex min-w-0 items-center gap-2">
+                  <ProviderMark provider={provider} />
+                  <span className="truncate">{PROVIDER_LABEL[provider] || provider}</span>
+                </span>
+                <span className="flex items-center gap-1.5 shrink-0">
+                  {tag && (
+                    <span className="rounded-full bg-emerald-500/15 border border-emerald-500/30 px-1.5 py-0.5 text-[9.5px] font-semibold text-emerald-400">
+                      {tag}
+                    </span>
+                  )}
+                  {value === provider && <Check className="h-3.5 w-3.5 shrink-0 text-[#F4F4F4]" />}
+                </span>
+              </button>
+            );
+          })}
         </div>
       )}
     </div>
@@ -1654,6 +1979,27 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
     return () => window.removeEventListener('keydown', onKey);
   }, [isOpen, handleClose]);
 
+    const activeLiveProviderKey = (settings.liveConvoProvider || 'gemini-live').replace(/-live|-voice|-local|-realtime|-speech/g, '');
+  const discoveredLiveModels = (modelDirectory[activeLiveProviderKey]?.models || [])
+    .filter(m => {
+      const id = m.id.toLowerCase();
+      const caps = (m.capabilities || []).map(c => String(c).toLowerCase());
+      return id.includes('realtime') || id.includes('live') || id.includes('audio') || id.includes('voice') || id.includes('speech') || id.includes('flash') || caps.includes('audio') || caps.includes('realtime');
+    })
+    .map(m => ({
+    value: m.id,
+    label: m.name || m.id,
+    tag: 'LIVE DISCOVERED',
+    description: m.description || 'Auto-discovered live API model',
+  }));
+
+  const activeLiveModelOptions = [
+    ...(LIVE_PROVIDER_MODELS[settings.liveConvoProvider || 'gemini-live'] || [
+      { value: 'auto', label: 'Auto (Latest Provider Model)', tag: 'AUTO LATEST', description: 'Automatically resolves to provider default' }
+    ]),
+    ...discoveredLiveModels.filter(m => !(LIVE_PROVIDER_MODELS[settings.liveConvoProvider || 'gemini-live'] || []).some(existing => existing.value === m.value)),
+  ];
+
   const tabs: { id: Tab; label: string; icon: string }[] = [
     { id: 'general', label: 'General', icon: 'general' },
     { id: 'profile', label: 'Profile', icon: 'profile' },
@@ -1663,6 +2009,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
     { id: 'mcp', label: 'MCP servers', icon: 'mcp' },
     { id: 'models', label: 'Models', icon: 'models' },
     { id: 'api', label: 'API', icon: 'api' },
+    { id: 'live-convo', label: 'Live Convo', icon: 'live-convo' },
     { id: 'git', label: 'Git', icon: 'git' },
     { id: 'environments', label: 'Environments', icon: 'environments' },
     { id: 'browser', label: 'Browser', icon: 'browser' },
@@ -2445,6 +2792,203 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
                                 sync={providerSync('github')}
                                 minRows={3}
                                 onChange={(nextValue) => updateApiKey('github', nextValue)}
+                              />
+                            </SettingsStackRow>
+                          </SettingsStack>
+                        </div>
+                      )}
+
+                      {/* ═══ LIVE CONVO TAB ═══ */}
+                      {activeTab === 'live-convo' && (
+                        <div>
+                          <SectionHeader
+                            title="Live Convo"
+                            badge={settings.liveConvoEnabled ? 'LIVE' : 'DISABLED'}
+                            info="Configure real-time voice, video, and multi-modal low-latency streaming models (Gemini Live, OpenAI Realtime, and Live Providers)."
+                          />
+                          <SettingsStack>
+                            <SettingsStackRow
+                              title="Live Convo Engine"
+                              description="Enable real-time bidirectional audio & streaming sessions for live agents."
+                            >
+                              <Toggle
+                                enabled={settings.liveConvoEnabled ?? true}
+                                onChange={(v) => updateSetting('liveConvoEnabled', v)}
+                              />
+                            </SettingsStackRow>
+
+                            <SettingsStackRow
+                              title="Live Provider"
+                              description="Select the real-time stream provider for active live sessions."
+                              info="Supports native speech-to-speech WebSockets, WebRTC streams, fast open-source LPUs, and local offline engines."
+                            >
+                              <ModernSelect
+                                value={settings.liveConvoProvider || 'gemini-live'}
+                                onChange={(val) => {
+                                  updateSetting('liveConvoProvider', val);
+                                  updateSetting('liveConvoModel', 'auto');
+                                  updateSetting('liveConvoVoice', 'auto');
+                                }}
+                                className="w-[280px]"
+                                                                options={[
+                                  { value: 'gemini-live', label: 'Gemini Live (Google AI)', description: 'Low latency multimodal WebSockets & Speech' },
+                                  { value: 'openai-realtime', label: 'OpenAI Realtime API', description: 'Full-duplex GPT-4o voice & WebRTC' },
+                                  { value: 'grok-voice', label: 'xAI Grok Voice Agent', description: 'Sub-second native speech-to-speech API' },
+                                  { value: 'claude-live', label: 'Claude Live (Anthropic)', description: 'Interactive streaming agent pipeline' },
+                                  { value: 'deepseek-live', label: 'DeepSeek Live Stream', description: 'Low-latency V3 & R1 reasoning stream' },
+                                  { value: 'elevenlabs', label: 'ElevenLabs Conversational', description: 'High-fidelity voice agent platform' },
+                                  { value: 'deepgram', label: 'Deepgram Voice Agent', description: 'Integrated STT + LLM + TTS pipeline' },
+                                  { value: 'hume-evi', label: 'Hume AI Empathic Voice (EVI-2)', description: 'Emotion-aware empathic voice stream' },
+                                  { value: 'cartesia-sonic', label: 'Cartesia Sonic Voice', description: 'Sub-200ms ultra-fast voice stream' },
+                                  { value: 'playht', label: 'PlayHT Realtime Agent', description: 'Realtime streaming conversational voice' },
+                                  { value: 'groq-live', label: 'Groq LPU Fast Stream', description: 'LPU Engine ultra-fast Llama & DeepSeek' },
+                                  { value: 'cerebras-live', label: 'Cerebras Wafer Engine', description: 'Instant wafer-scale LLM stream' },
+                                  { value: 'sambanova-live', label: 'SambaNova High-Speed Voice', description: 'Reconfigurable dataflow fast inference' },
+                                  { value: 'together-voice', label: 'Together AI Voice Pipeline', description: 'Fast open-source LLM & audio stack' },
+                                  { value: 'fireworks-speech', label: 'Fireworks AI Speech & LLM', description: 'Fast Whisper & open weights stream' },
+                                  { value: 'perplexity-live', label: 'Perplexity Sonar Stream', description: 'Search-augmented real-time answers' },
+                                  { value: 'cohere-live', label: 'Cohere Command Stream', description: 'Enterprise RAG & conversational engine' },
+                                  { value: 'openrouter-live', label: 'OpenRouter Unified Live', description: 'Multi-provider unified stream router' },
+                                  { value: 'deepinfra-live', label: 'DeepInfra Serverless', description: 'Cost-effective open-source inference' },
+                                  { value: 'replicate-live', label: 'Replicate Cloud Stream', description: 'Serverless open-source model execution' },
+                                  { value: 'novita-live', label: 'Novita AI GPU Cloud', description: 'High-performance GPU cloud for open models' },
+                                  { value: 'huggingface-live', label: 'Hugging Face Endpoints', description: 'Open-source TGI & inference endpoints' },
+                                  { value: 'ollama-local', label: 'Ollama Local Voice (Offline)', description: 'Self-hosted local open-source models' },
+                                  { value: 'lmstudio-local', label: 'LM Studio Local Server', description: 'Offline desktop API server stream' },
+                                  { value: 'vllm-local', label: 'vLLM Production Engine', description: 'High-throughput open-source serving engine' },
+                                ]}
+                              />
+                            </SettingsStackRow>
+
+                            <SettingsStackRow
+                              title="Live Model"
+                              description="Specific model engine active for current provider stream."
+                              info="Auto mode dynamically routes to the provider's newest latest frontier model."
+                            >
+                              <ModernSelect
+                                value={settings.liveConvoModel || 'auto'}
+                                onChange={(val) => updateSetting('liveConvoModel', val)}
+                                className="w-[340px]"
+                                options={activeLiveModelOptions}
+                              />
+                            </SettingsStackRow>
+
+                            <SettingsStackRow
+                              title="Voice Persona"
+                              description="Choose the synthesized output voice for live responses."
+                              info="Filtered strictly to native voices supported by the selected provider."
+                            >
+                              <ModernSelect
+                                value={settings.liveConvoVoice || 'auto'}
+                                onChange={(val) => updateSetting('liveConvoVoice', val)}
+                                className="w-[340px]"
+                                options={LIVE_PROVIDER_VOICES[settings.liveConvoProvider || 'gemini-live'] || [
+                                  { value: 'auto', label: 'Auto (Latest Provider Voice)', tag: 'AUTO LATEST', description: 'Automatically resolves to provider default voice' },
+                                  { value: 'Puck', label: 'Puck (Google Natural)', description: 'Google default' },
+                                  { value: 'Alloy', label: 'Alloy (OpenAI Balanced)', description: 'OpenAI default' },
+                                ]}
+                              />
+                            </SettingsStackRow>
+
+                            <SettingsStackRow
+                              title="Latency & Streaming Mode"
+                              description="Optimize network streaming for minimum delay or maximum response quality."
+                            >
+                              <ModernSelect
+                                value={settings.liveConvoLatencyMode || 'ultra-low'}
+                                onChange={(val) => updateSetting('liveConvoLatencyMode', val as AppSettings['liveConvoLatencyMode'])}
+                                className="w-[220px]"
+                                options={[
+                                  { value: 'ultra-low', label: 'Ultra-low Latency (Realtime)' },
+                                  { value: 'balanced', label: 'Balanced (Standard Voice)' },
+                                  { value: 'high-quality', label: 'High Quality (Rich Reasoner)' },
+                                ]}
+                              />
+                            </SettingsStackRow>
+
+                            <SettingsStackRow
+                              title="Audio Modalities"
+                              description="Control live microphone input capture and speaker output."
+                            >
+                              <div className="flex items-center gap-6">
+                                <label className="flex items-center gap-2 text-[13px] text-[#E0E0E0] cursor-pointer">
+                                  <Toggle
+                                    enabled={settings.liveConvoAudioInput ?? true}
+                                    onChange={(v) => updateSetting('liveConvoAudioInput', v)}
+                                  />
+                                  Mic Input
+                                </label>
+                                <label className="flex items-center gap-2 text-[13px] text-[#E0E0E0] cursor-pointer">
+                                  <Toggle
+                                    enabled={settings.liveConvoAudioOutput ?? true}
+                                    onChange={(v) => updateSetting('liveConvoAudioOutput', v)}
+                                  />
+                                  Speaker Output
+                                </label>
+                              </div>
+                            </SettingsStackRow>
+                          </SettingsStack>
+
+                          <SectionHeader title="Live System Instructions" />
+                          <p className="-mt-2 mb-4 text-[14px] leading-relaxed text-[#A5A5A5]">
+                            Custom system directives sent to the live API session to define how the live agent speaks and behaves during realtime interaction.
+                          </p>
+                          <textarea
+                            value={settings.liveConvoSystemInstruction || ''}
+                            onChange={(e) => updateSetting('liveConvoSystemInstruction', e.target.value)}
+                            placeholder="e.g. You are a fast, concise live voice coding assistant. Speak directly, avoid long intros, and answer code questions immediately."
+                            className="min-h-[120px] w-full resize-y rounded-xl border border-white/[0.09] bg-[#202020] px-4 py-3 font-mono text-[13px] leading-6 text-[#F1F1F1] outline-none transition-colors placeholder:text-[#777] focus:border-white/[0.20]"
+                          />
+
+                          <SectionHeader title="Live Provider API Key" />
+                          <SettingsStack>
+                            <SettingsStackRow
+                              title="Live Key Pool"
+                              description="API key pool used for live WebSocket & WebRTC endpoints."
+                              tall
+                            >
+                              <ApiKeyPoolEditor
+                                provider={
+                                  settings.liveConvoProvider?.includes('openai')
+                                    ? 'openai'
+                                    : settings.liveConvoProvider?.includes('claude')
+                                    ? 'anthropic'
+                                    : 'gemini'
+                                }
+                                providerLabel={`${
+                                  settings.liveConvoProvider?.includes('openai')
+                                    ? 'OpenAI'
+                                    : settings.liveConvoProvider?.includes('claude')
+                                    ? 'Anthropic'
+                                    : 'Gemini'
+                                } Live API Pool`}
+                                value={
+                                  apiKeys[
+                                    settings.liveConvoProvider?.includes('openai')
+                                      ? 'openai'
+                                      : settings.liveConvoProvider?.includes('claude')
+                                      ? 'anthropic'
+                                      : 'gemini'
+                                  ] || ''
+                                }
+                                sync={providerSync(
+                                  settings.liveConvoProvider?.includes('openai')
+                                    ? 'openai'
+                                    : settings.liveConvoProvider?.includes('claude')
+                                    ? 'anthropic'
+                                    : 'gemini'
+                                )}
+                                minRows={2}
+                                onChange={(nextValue) =>
+                                  updateApiKey(
+                                    settings.liveConvoProvider?.includes('openai')
+                                      ? 'openai'
+                                      : settings.liveConvoProvider?.includes('claude')
+                                      ? 'anthropic'
+                                      : 'gemini',
+                                    nextValue
+                                  )
+                                }
                               />
                             </SettingsStackRow>
                           </SettingsStack>

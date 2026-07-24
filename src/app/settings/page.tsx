@@ -15,6 +15,7 @@ type SettingsTab =
   | 'hooks'
   | 'models'
   | 'api'
+  | 'live-convo'
   | 'git'
   | 'environments'
   | 'worktrees'
@@ -27,6 +28,8 @@ const TAB_ALIASES: Record<string, SettingsTab> = {
   agent: 'configuration',
   connections: 'models',
   advanced: 'environments',
+  live: 'live-convo',
+  liveconvo: 'live-convo',
 };
 
 const VALID_TABS = new Set<SettingsTab>([
@@ -40,6 +43,7 @@ const VALID_TABS = new Set<SettingsTab>([
   'hooks',
   'models',
   'api',
+  'live-convo',
   'git',
   'environments',
   'worktrees',

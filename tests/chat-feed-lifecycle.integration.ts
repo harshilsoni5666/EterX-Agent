@@ -40,6 +40,18 @@ assert.equal(
 );
 
 assert.equal(
+  isTerminalWorkTrace({ type: 'tool_error', status: 'error', text: 'Command failed; agent will recover' }),
+  false,
+  'a recoverable tool error must not stop the main turn counter',
+);
+
+assert.equal(
+  isTerminalWorkTrace({ type: 'agent_status', status: 'failed', text: 'No API key is available' }),
+  true,
+  'a structured main-run failure should stop the counter',
+);
+
+assert.equal(
   isTerminalWorkTrace({ type: 'done' }),
   true,
   'a main-agent done trace should be terminal',

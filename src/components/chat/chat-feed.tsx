@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { createPortal } from 'react-dom';
-import { Copy, RefreshCw, ChevronDown, FileText, Check, Clock, ChevronRight, MessageSquarePlus, Activity, Minimize2, CornerDownLeft } from 'lucide-react';
+import { Copy, RefreshCw, ChevronDown, FileText, Check, Clock, ChevronRight, MessageSquarePlus, Activity, Minimize2, CornerDownLeft, CircleStop, TriangleAlert, Sparkles } from 'lucide-react';
 import { ThinkingProcess, ProfessionalThought } from '../chat/thought-sequence';
 import { AskUserPrompt } from '../chat/ask-user-prompt';
 import { Tooltip } from '../ui/tooltip';
+import { Shimmer } from '../ui/shimmer';
 import { notifyAgentFaceTraceLog } from './agent-face-controller';
 import ReactMarkdown from 'react-markdown';
 import { markdownComponents, normalizeMarkdownForRendering, remarkPlugins, rehypePlugins } from './markdown-renderer';
@@ -23,6 +24,7 @@ interface ChatFeedProps {
   onAnswerAskUser?: (timestamp: number, answer: string, responseKey?: string) => void;
   onEditUserMessage?: (text: string) => void;
   isSubAgentTab?: boolean;
+  liveState?: string;
 }
 
 const copyTextToClipboard = async (text: string) => {
@@ -374,15 +376,86 @@ const isExternalWorkNoteNoise = (value: any) => {
 };
 
 const isInternalStatusThought = (log: any) => {
-  if (!log || log.type !== 'thought') return false;
+  if (!log || (log.type !== 'thought' && log.type !== 'agent_status')) return false;
+  if (log.type === 'agent_status') return true;
   const text = normalizeTraceText(log.text);
   return !text ||
     /^generation stopped by user\.?$/.test(text) ||
     /^agent stopped\b/.test(text) ||
+    /^agent connection did not start\b/.test(text) ||
     /^agent connection failed\b/.test(text) ||
     /^agent start failed\b/.test(text) ||
     /^custom agent (?:start|connection) failed\b/.test(text) ||
+    /^could not stop the agent\b/.test(text) ||
     /^failed to send message to\b/.test(text);
+};
+
+type AgentRunNotice = {
+  tone: 'stopped' | 'error' | 'warning';
+  title: string;
+  detail: string;
+};
+
+const cleanAgentStatusText = (value: unknown) => String(value || '')
+  .replace(/^\s*[*_`]+|[*_`]+\s*$/g, '')
+  .replace(/\s+/g, ' ')
+  .trim();
+
+const getAgentRunNotice = (log: any): AgentRunNotice | null => {
+  if (!isInternalStatusThought(log)) return null;
+
+  const detail = cleanAgentStatusText(log.detail || log.text || log.message);
+  if (log.type !== 'agent_status' && !detail) return null;
+  const explicitStatus = String(log.status || '').toLowerCase();
+  const explicitTitle = cleanAgentStatusText(log.title);
+
+  if (log.type === 'agent_status') {
+    const tone = explicitStatus === 'stopped'
+      ? 'stopped'
+      : explicitStatus === 'warning'
+        ? 'warning'
+        : 'error';
+    return {
+      tone,
+      title: explicitTitle || (tone === 'stopped' ? 'Run stopped' : tone === 'warning' ? 'Action needed' : 'Run failed'),
+      detail: detail || (tone === 'stopped' ? 'The agent was stopped.' : 'The agent could not continue.'),
+    };
+  }
+
+  if (/^generation stopped by user\.?$/i.test(detail)) {
+    return { tone: 'stopped', title: 'Run stopped', detail: 'Stopped by you.' };
+  }
+  if (/^could not stop the agent\b/i.test(detail)) {
+    return { tone: 'warning', title: 'Stop request failed', detail: detail.replace(/^could not stop the agent\s*:?\s*/i, '') || 'The agent may still be running.' };
+  }
+  if (/^agent stopped\s*:/i.test(detail)) {
+    return { tone: 'error', title: 'Run ended with an error', detail: detail.replace(/^agent stopped\s*:?\s*/i, '') || 'The agent could not continue.' };
+  }
+  if (/^agent stopped\b/i.test(detail)) {
+    return { tone: 'stopped', title: 'Run stopped', detail: detail.replace(/^agent stopped\s*:?\s*/i, '') || 'The agent was stopped.' };
+  }
+  if (/connection (?:failed|did not start)|start failed/i.test(detail)) {
+    return { tone: 'error', title: 'Agent unavailable', detail };
+  }
+  return { tone: 'error', title: 'Request failed', detail: detail || 'The request could not be completed.' };
+};
+
+const AgentRunStatusNotice = ({ notice }: { notice: AgentRunNotice }) => {
+  const isStopped = notice.tone === 'stopped';
+  const Icon = isStopped ? CircleStop : TriangleAlert;
+
+  return (
+    <div
+      role={isStopped ? 'status' : 'alert'}
+      className={`eterx-agent-run-notice eterx-agent-run-notice-${ notice.tone } mb-3 flex w-full items-start gap-2 py-1 text-[13px] leading-[1.5]`}
+    >
+      <Icon className="eterx-agent-run-notice-icon mt-[3px] h-3.5 w-3.5 shrink-0" strokeWidth={2} />
+      <span className="min-w-0 whitespace-pre-wrap break-words">
+        <span className="font-semibold">{notice.title}.</span>{' '}
+        <span className="eterx-agent-run-notice-detail">{notice.detail}</span>
+      </span>
+    </div>
+  );
 };
 
 const isLikelyAnswerEcho = (candidate: any, answer: any) => {
@@ -492,7 +565,7 @@ const formatWorkElapsed = (seconds: number) => {
 
 const RollingTimeDisplay = ({ label }: { label: string }) => {
   return (
-    <span className="eterx-text-shimmer eterx-text-shimmer-working font-sans font-semibold text-[13px] tracking-normal">
+    <span className="font-sans font-semibold tabular-nums tracking-normal">
       {label}
     </span>
   );
@@ -518,13 +591,22 @@ const normalizeWorkTimestamp = (value: unknown): number | null => {
   return timestamp;
 };
 
-const getWorkTimeBounds = (logs: any[], startedAt?: number | null) => {
-  let start: number | null = normalizeWorkTimestamp(startedAt);
+const isCountedWorkflowLog = (log: any) =>
+  WORKFLOW_COUNT_TYPES.has(log?.type) &&
+  !HIDDEN_HELPER_TYPES.has(log?.type) &&
+  !isHiddenStatusOnlyLog(log);
+
+const getWorkTimeBounds = (logs: any[]) => {
+  let start: number | null = null;
   let end: number | null = null;
   logs.forEach((log) => {
     const startValue = normalizeWorkTimestamp(log?.startTime ?? log?.timestamp ?? log?.endTime);
     const endValue = normalizeWorkTimestamp(log?.endTime ?? log?.timestamp ?? log?.startTime);
-    if (startValue !== null) start = start === null ? startValue : Math.min(start, startValue);
+    // Work duration begins with the first visible agent action, never with the
+    // user's message or the request-admission/network wait.
+    if (isCountedWorkflowLog(log) && startValue !== null) {
+      start = start === null ? startValue : Math.min(start, startValue);
+    }
     if (endValue !== null) end = end === null ? endValue : Math.max(end, endValue);
   });
   if (start !== null && end !== null && end < start) end = start;
@@ -537,24 +619,23 @@ const getWorkElapsedFromBounds = (start: number | null, end: number | null) => {
   return Math.floor(elapsedMs / 1000);
 };
 
-const useWorkElapsedSeconds = (active: boolean, logs: any[], startedAt?: number | null, endedAt?: number | null) => {
+const useWorkElapsedSeconds = (active: boolean, logs: any[], endedAt?: number | null) => {
   const [seconds, setSeconds] = React.useState(0);
   const sessionStartRef = React.useRef<number | null>(null);
 
-  const normalizedStartedAt = React.useMemo(() => normalizeWorkTimestamp(startedAt), [startedAt]);
   const normalizedEndedAt = React.useMemo(() => normalizeWorkTimestamp(endedAt), [endedAt]);
+  const actionStart = React.useMemo(() => getWorkTimeBounds(logs).start, [logs]);
 
   // 1. Establish stable session start time
   React.useEffect(() => {
     if (active) {
       if (sessionStartRef.current === null) {
-        const bounds = getWorkTimeBounds(logs, normalizedStartedAt);
-        sessionStartRef.current = bounds.start ?? normalizedStartedAt ?? Date.now();
+        sessionStartRef.current = actionStart ?? Date.now();
       }
     } else {
       sessionStartRef.current = null;
     }
-  }, [active, normalizedStartedAt]);
+  }, [active, actionStart]);
 
   // 2. Manage the live tick interval when active (no dependence on logs/bounds changes)
   React.useEffect(() => {
@@ -575,19 +656,19 @@ const useWorkElapsedSeconds = (active: boolean, logs: any[], startedAt?: number 
   // 3. Fallback to static bounds calculation when inactive
   React.useEffect(() => {
     if (!active) {
-      const bounds = getWorkTimeBounds(logs, normalizedStartedAt);
-      const finalEnd = normalizedEndedAt ?? bounds.end ?? Date.now();
-      const finalStart = bounds.start ?? normalizedStartedAt ?? Date.now();
+      const bounds = getWorkTimeBounds(logs);
+      const finalEnd = normalizedEndedAt ?? bounds.end;
+      const finalStart = bounds.start;
       setSeconds(getWorkElapsedFromBounds(finalStart, finalEnd));
     }
-  }, [active, logs, normalizedStartedAt, normalizedEndedAt]);
+  }, [active, logs, normalizedEndedAt]);
 
   return seconds;
 };
 
 const ThoughtSequence = ({
-  logs, liveLogs = [], isThinking, isLast, hasAnswer, stepCount, turnStartedAt, turnEndedAt, onOpenAgentTeam, isSubAgentTab = false, groupIdx = 0, onEditUserMessage
-}: { logs: any[], liveLogs?: any[], isThinking: boolean, isLast: boolean, hasAnswer: boolean, stepCount: number, turnStartedAt?: number | null, turnEndedAt?: number | null, onOpenAgentTeam?: (agentName?: string) => void, isSubAgentTab?: boolean, groupIdx?: number, onEditUserMessage?: (text: string) => void }) => {
+  logs, liveLogs = [], isThinking, isLast, hasAnswer, stepCount, turnEndedAt, onOpenAgentTeam, isSubAgentTab = false, groupIdx = 0, onEditUserMessage
+}: { logs: any[], liveLogs?: any[], isThinking: boolean, isLast: boolean, hasAnswer: boolean, stepCount: number, turnEndedAt?: number | null, onOpenAgentTeam?: (agentName?: string) => void, isSubAgentTab?: boolean, groupIdx?: number, onEditUserMessage?: (text: string) => void }) => {
   // Start collapsed for completed turns, open for active/no-answer turns
   const [open, setOpen] = React.useState(false);
   const containerRef = React.useRef<HTMLDivElement>(null);
@@ -659,7 +740,8 @@ const ThoughtSequence = ({
   };
 
   const isOpen = open;
-  const workElapsedSeconds = useWorkElapsedSeconds(isLiveThinking, turnLogs, turnStartedAt, turnEndedAt);
+  const hasRealActions = stepCount > 0;
+  const workElapsedSeconds = useWorkElapsedSeconds(isLiveThinking && hasRealActions, turnLogs, turnEndedAt);
   const workElapsedLabel = formatWorkElapsed(workElapsedSeconds);
 
   if (stepCount === 0 && logs.length === 0 && !isLiveThinking) return null;
@@ -667,10 +749,9 @@ const ThoughtSequence = ({
   const isWaitingForFirstTrace = isLiveThinking && stepCount === 0 && logs.length === 0 && liveLogs.length === 0;
   const actionLabel = stepCount > 0
     ? `${ stepCount } action${ stepCount !== 1 ? 's' : '' }`
-    : 'Thinking';
+    : 'Working';
   const hasCounter = stepCount > 0 || logs.length > 0;
   const isCollapsedWithAnswer = hasAnswer && !isOpen;
-  const hasRealActions = stepCount > 0;
   const isLiveWorkCounter = isLiveThinking && hasRealActions && !isWaitingForFirstTrace;
   const showWorkedSummary = !isLiveThinking && hasRealActions;
   const shouldStickCounter = hasAnswer || isLiveWorkCounter;
@@ -689,7 +770,7 @@ const ThoughtSequence = ({
     <div className="relative" ref={containerRef}>
       {showWorkedSummary && <div className="eterx-worked-summary mb-2 flex w-full items-center gap-4 pt-1"><div className="eterx-worked-summary-line h-px flex-1 bg-[var(--border)]" /><span className="eterx-worked-summary-label shrink-0 py-[1px] text-center text-[12px] font-medium leading-[1.35] tracking-normal text-[var(--muted-foreground)]">{`Worked for ${ workElapsedLabel }`}</span><div className="eterx-worked-summary-line h-px flex-1 bg-[var(--border)]" /></div>}
       {hasCounter && <div className={`eterx-process-summary-row ${ shouldStickCounter ? 'sticky top-3 z-20' : '' } ${ isCollapsedWithAnswer ? 'mb-2' : 'mb-1' } flex w-full items-center overflow-visible py-1.5`}>
-        {isLiveWorkCounter ? <button type="button" onClick={toggleOpen} aria-expanded={isOpen} className="eterx-process-summary-chip eterx-process-summary-chip-live group inline-flex min-h-[36px] shrink-0 items-center gap-1.5 rounded-full bg-[var(--muted)] px-3 py-[6px] text-[13px] font-semibold leading-[1.35] tracking-normal text-[var(--muted-foreground)] outline outline-1 outline-[var(--border)] transition-all duration-150 hover:bg-[var(--secondary)] hover:text-[var(--foreground)]"><span className="eterx-process-summary-label inline-flex items-center pb-[1px] leading-[1.35] text-[var(--muted-foreground)]"><span className="eterx-text-shimmer eterx-text-shimmer-working mr-1">Working for</span><RollingTimeDisplay label={workElapsedLabel} /></span>{isOpen ? <ChevronDown className="h-3 w-3 opacity-55" /> : <ChevronRight className="h-3 w-3 opacity-55" />}</button> : <button type="button" onClick={toggleOpen} aria-expanded={isOpen} className="eterx-process-summary-chip inline-flex h-[30px] items-center gap-1.5 transition-all duration-200" style={{ ...compactCounterStyle, cursor: 'pointer', position: 'relative', zIndex: 1 }} onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = 'var(--foreground)'; (e.currentTarget as HTMLElement).style.background = counterHoverBackground; }} onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = counterColor; (e.currentTarget as HTMLElement).style.background = counterBackground; }}><span className="eterx-process-summary-icon" style={{ display: 'inline-flex', width: 20, height: 20, alignItems: 'center', justifyContent: 'center', borderRadius: 8, color: 'inherit', background: 'var(--border)', outline: '1px solid var(--border)' }}><StepCounterIcon live={isLiveThinking} /></span><span className={`eterx-process-summary-label${ isLiveThinking ? ' eterx-text-shimmer eterx-text-shimmer-active' : '' }`} style={{ fontSize: 13, fontWeight: 650, letterSpacing: 0, lineHeight: 1 }}>{actionLabel}</span>{isOpen ? <ChevronDown style={{ width: 9, height: 9, flexShrink: 0, opacity: 0.6 }} /> : <ChevronRight style={{ width: 9, height: 9, flexShrink: 0, opacity: 0.6 }} />}</button>}
+        {isLiveWorkCounter ? <button type="button" onClick={toggleOpen} aria-expanded={isOpen} className="eterx-process-summary-chip eterx-process-summary-chip-live group inline-flex min-h-[36px] shrink-0 items-center gap-1.5 rounded-full bg-[var(--muted)] px-3 py-[6px] text-[13px] font-semibold leading-[1.35] tracking-normal text-[var(--muted-foreground)] outline outline-1 outline-[var(--border)] transition-all duration-150 hover:bg-[var(--secondary)] hover:text-[var(--foreground)]"><span className="eterx-process-summary-label inline-flex items-center gap-1 pb-[1px] leading-[1.35]" style={{ color: 'var(--eterx-ui-working-text)' }}><Shimmer>Working for</Shimmer><RollingTimeDisplay label={workElapsedLabel} /></span>{isOpen ? <ChevronDown className="h-3 w-3 opacity-55" /> : <ChevronRight className="h-3 w-3 opacity-55" />}</button> : <button type="button" onClick={toggleOpen} aria-expanded={isOpen} className="eterx-process-summary-chip inline-flex h-[30px] items-center gap-1.5 transition-all duration-200" style={{ ...compactCounterStyle, cursor: 'pointer', position: 'relative', zIndex: 1 }} onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = 'var(--foreground)'; (e.currentTarget as HTMLElement).style.background = counterHoverBackground; }} onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = counterColor; (e.currentTarget as HTMLElement).style.background = counterBackground; }}><span className="eterx-process-summary-icon" style={{ display: 'inline-flex', width: 20, height: 20, alignItems: 'center', justifyContent: 'center', borderRadius: 8, color: 'inherit', background: 'var(--border)', outline: '1px solid var(--border)' }}><StepCounterIcon live={isLiveThinking} /></span><Shimmer active={isLiveThinking} className="eterx-process-summary-label" style={{ fontSize: 13, fontWeight: 650, letterSpacing: 0, lineHeight: 1 } as any}>{actionLabel}</Shimmer>{isOpen ? <ChevronDown style={{ width: 9, height: 9, flexShrink: 0, opacity: 0.6 }} /> : <ChevronRight style={{ width: 9, height: 9, flexShrink: 0, opacity: 0.6 }} />}</button>}
       </div>}
 
       {isOpen && (
@@ -755,7 +836,6 @@ const ChatFeedMessageGroup = React.memo(({
   group,
   groupIdx,
   isThinkingTurn,
-  turnStartedAt,
   isCompressed,
   onOpenAgentTeam,
   onAnswerAskUser,
@@ -766,7 +846,6 @@ const ChatFeedMessageGroup = React.memo(({
   group: any[];
   groupIdx: number;
   isThinkingTurn: boolean;
-  turnStartedAt: number | null;
   isCompressed: boolean;
   onOpenAgentTeam?: (agentName?: string) => void;
   onAnswerAskUser?: (timestamp: number, answer: string, responseKey?: string) => void;
@@ -792,6 +871,7 @@ const ChatFeedMessageGroup = React.memo(({
         <div className="flex w-full justify-end">
           <div className={`eterx-user-message-bubble eterx-chat-feed-user-bubble flex min-w-0 flex-col items-end rounded-[18px] border border-white/[0.06] bg-[#20201F] px-4 py-2.5 text-[13.5px] leading-[1.56] text-[#F4F2EE] shadow-[0_4px_18px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(255,255,255,0.025)] selection:bg-[#D98B6A]/25 relative whitespace-pre-wrap select-text ${ isCompressed ? 'max-w-[92%]' : 'max-w-[520px]' }`}>
             <UserMessageActions text={userText} onEdit={onEditUserMessage} />
+
             {first.attachments && first.attachments.length > 0 && (
               <div className="flex flex-wrap justify-end gap-2.5 mb-3 w-full">
                 {first.attachments.map((att: any, i: number) => {
@@ -864,6 +944,8 @@ const ChatFeedMessageGroup = React.memo(({
     l.type !== 'thought_stream' &&
     !isHiddenStatusOnlyLog(l)
   );
+  const latestAgentStatusLog = [...standardLogs].reverse().find(isInternalStatusThought);
+  const agentRunNotice = latestAgentStatusLog ? getAgentRunNotice(latestAgentStatusLog) : null;
 
   let processLogs: any[] = [];
   let finalAnswer: any = null;
@@ -871,10 +953,20 @@ const ChatFeedMessageGroup = React.memo(({
 
   let firstAnswerIdx = -1;
   let lastAnswerIdx = -1;
+  let latestAnswerAt = Number.NEGATIVE_INFINITY;
   for (let i = 0; i < standardLogs.length; i++) {
     if (standardLogs[i].type === 'answer') {
       if (firstAnswerIdx === -1) firstAnswerIdx = i;
-      lastAnswerIdx = i;
+      const answerAt = Number(
+        standardLogs[i].endTime ??
+        standardLogs[i].timestamp ??
+        standardLogs[i].startTime ??
+        i
+      );
+      if (answerAt >= latestAnswerAt) {
+        latestAnswerAt = answerAt;
+        lastAnswerIdx = i;
+      }
     }
   }
   if (firstAnswerIdx >= 0) {
@@ -887,6 +979,7 @@ const ChatFeedMessageGroup = React.memo(({
     finalAnswer = {
       type: 'answer',
       text: answerText,
+      isLive: lastAnswerLog?.isLive || false,
       isLiveTyping: lastAnswerLog?.isLiveTyping || false,
       isStreaming: lastAnswerLog?.isStreaming || false,
       wasStreaming: lastAnswerLog?.wasStreaming || false,
@@ -922,17 +1015,17 @@ const ChatFeedMessageGroup = React.memo(({
     }
   }
   const displayFinalAnswer = finalAnswer ?? lastKnownAnswerRef.current;
-  const answerUpdatedAt = Number(displayFinalAnswer?.startTime ?? displayFinalAnswer?.timestamp ?? 0);
-  const answerRecentlyStreamed = !!displayFinalAnswer &&
-    Number.isFinite(answerUpdatedAt) &&
-    answerUpdatedAt > 0 &&
-    Date.now() - answerUpdatedAt < 10000;
-  // Decouple from isThinkingTurn so live class persists through end-of-turn animation
+  // Only a real active stream may animate token-by-token. A settled answer can
+  // be delivered again by polling or history restoration, but must render once
+  // without replaying its entrance animation.
   const isAnswerActivelyTyping = !!(displayFinalAnswer?.isLiveTyping || displayFinalAnswer?.isStreaming);
 
   // Stable deduplication set for work notes â€” keyed on noteId or content
   const seenWorkNoteKeys = new Set<string>();
-  const rawWorkLogs = [...displayProcessLogs, ...tailLogs];
+  // Status/interruptions have their own professional notice. Keeping them in
+  // the thinking timeline creates an empty "Thinking" pill because plain
+  // internal status thoughts are not actionable timeline rows.
+  const rawWorkLogs = [...displayProcessLogs, ...tailLogs].filter(log => !isInternalStatusThought(log));
   const isAskUserInteractionLog = (log: any) =>
     log?.type === 'ask_user' &&
     typeof log.question === 'string' &&
@@ -1003,10 +1096,10 @@ const ChatFeedMessageGroup = React.memo(({
         else if (hasStructuredWork && isExternalWorkNoteNoise(log.text)) isValid = false;
         else if (displayFinalAnswer && isLikelyAnswerEcho(log.text, displayFinalAnswer.text)) isValid = false;
         else {
-          const noteId = String(log.noteId || '').trim();
-          const key = noteId
-            ? `${ log.subAgent || '' }::id::${ noteId }`
-            : `${ log.subAgent || '' }::${ text }`;
+          // Work-note ids are regenerated by some live runtimes. The visible
+          // content and owning agent form the stable UI identity, so repeated
+          // delivery cannot create duplicate "Working" notes.
+          const key = `${ log.subAgent || log.agentName || '' }::${ text }`;
           if (seenWorkNoteKeys.has(key)) isValid = false;
           else seenWorkNoteKeys.add(key);
         }
@@ -1018,14 +1111,20 @@ const ChatFeedMessageGroup = React.memo(({
     }
   });
 
-  if (currentThoughts.length > 0 || isThinkingTurn) {
+  const groupIsThinking = isTurnWorkActive(
+    isThinkingTurn,
+    Boolean(displayFinalAnswer),
+    [...standardLogs, ...liveCommandLogs],
+  );
+
+  if (currentThoughts.length > 0 || groupIsThinking) {
     segments.push({ type: 'thoughts', logs: currentThoughts });
   }
 
   return (
     <div
       data-chat-group-index={groupIdx}
-      data-live={isThinkingTurn ? 'true' : undefined}
+      data-live={groupIsThinking ? 'true' : undefined}
       className="eterx-chat-message-group w-full flex flex-col mb-8 scroll-m-20 relative"
     >
       {segments.map((seg, segIdx) => {
@@ -1059,18 +1158,17 @@ const ChatFeedMessageGroup = React.memo(({
           ...(isLastThoughts ? liveCommandLogs : []),
         ]);
 
-        if (stepCount === 0 && (seg.logs || []).length === 0 && !(isThinkingTurn && isLastThoughts)) return null;
+        if (stepCount === 0 && (seg.logs || []).length === 0 && !(groupIsThinking && isLastThoughts)) return null;
 
         return (
           <ThoughtSequence
             key={`thoughts-${ groupIdx }-${ segIdx }`}
             logs={seg.logs || []}
             liveLogs={isLastThoughts ? liveCommandLogs : []}
-            isThinking={isThinkingTurn && isLastThoughts}
+            isThinking={groupIsThinking && isLastThoughts}
             isLast={isLastThoughts}
             hasAnswer={!!displayFinalAnswer && isLastThoughts}
             stepCount={stepCount}
-            turnStartedAt={turnStartedAt}
             turnEndedAt={displayFinalAnswer?.endTime ?? displayFinalAnswer?.timestamp ?? null}
             onOpenAgentTeam={onOpenAgentTeam}
             isSubAgentTab={isSubAgentTab}
@@ -1080,8 +1178,11 @@ const ChatFeedMessageGroup = React.memo(({
         );
       })}
 
+      {agentRunNotice && <AgentRunStatusNotice notice={agentRunNotice} />}
+
       {displayFinalAnswer && (
         <div className="eterx-assistant-answer w-full group/assistant mt-0 [&_.professional-thought>*:first-child]:!mt-0">
+
           <div className="relative group/thought">
             <div className={`eterx-assistant-answer-body ${ isAnswerActivelyTyping ? 'eterx-assistant-live-text' : '' } text-[13.5px] leading-[1.56] text-[#F2F0EC] font-sans relative`}>
               <ProfessionalThought
@@ -1095,7 +1196,7 @@ const ChatFeedMessageGroup = React.memo(({
                 isThinking={isAnswerActivelyTyping}
                 variant="answer"
                 updatedAt={isAnswerActivelyTyping ? displayFinalAnswer.timestamp : undefined}
-                reveal={answerRecentlyStreamed}
+                reveal={isAnswerActivelyTyping}
                 suffix={!isAnswerActivelyTyping ? (
                   <div className="inline-flex items-center gap-1.5 ml-2 align-middle mt-[-2px]">
                     <div className="flex items-center gap-0 opacity-0 group-hover/thought:opacity-100 transition-opacity duration-200">
@@ -1128,7 +1229,6 @@ const ChatFeedMessageGroup = React.memo(({
 }, (previous, next) => {
   if (previous.groupIdx !== next.groupIdx) return false;
   if (previous.isThinkingTurn !== next.isThinkingTurn) return false;
-  if (previous.turnStartedAt !== next.turnStartedAt) return false;
   if (previous.isCompressed !== next.isCompressed) return false;
   if (previous.isSubAgentTab !== next.isSubAgentTab) return false;
   if (previous.onOpenAgentTeam !== next.onOpenAgentTeam) return false;
@@ -1145,7 +1245,7 @@ const ChatFeedMessageGroup = React.memo(({
 });
 
 export const ChatFeed = React.memo<ChatFeedProps>(({
-  traceLogs, isThinking, messagesEndRef, setSidebarOpen, sidebarOpen, handleScroll: externalHandleScroll, showScrollBottom, isCompressed = false, onOpenAgentTeam, onAnswerAskUser, onEditUserMessage, isSubAgentTab = false
+  traceLogs, isThinking, messagesEndRef, setSidebarOpen, sidebarOpen, handleScroll: externalHandleScroll, showScrollBottom, isCompressed = false, onOpenAgentTeam, onAnswerAskUser, onEditUserMessage, isSubAgentTab = false, liveState
 }) => {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const navContainerRef = useRef<HTMLDivElement>(null);
@@ -1444,43 +1544,6 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
     <>
       <style dangerouslySetInnerHTML={{ __html: `${ liveMotionStyles }\n${ chatFeedSurfaceStyles }` }} />
       <div className="relative flex-1 min-h-0 w-full flex flex-col">
-        {userTurns.length > 2 && (
-          <motion.div
-            ref={navContainerRef}
-            role="navigation"
-            aria-label="Conversation turns"
-            initial={{ opacity: 0, x: -8 }}
-            animate={{ opacity: 1, x: 0 }}
-            transition={{ duration: 0.24, ease: 'easeOut' }}
-            className="eterx-chat-turns-nav absolute left-2 top-[46%] z-[60] flex max-h-[min(62vh,560px)] -translate-y-1/2 flex-col gap-0 overflow-y-auto overscroll-contain py-4 pl-1.5 pr-1.5 scroll-smooth [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-          >
-            {userTurns.map((turn, k) => (
-              <motion.button
-                type="button"
-                key={turn.idx}
-                data-turn-index={k}
-                aria-label={`Go to turn ${ k + 1 }: ${ turn.userText.slice(0, 80) }`}
-                aria-current={activeTurnIdx === k ? 'step' : undefined}
-                className="group relative flex min-h-[18px] w-[34px] shrink-0 items-center justify-center rounded-lg py-1 text-left outline-none transition-colors duration-150 hover:bg-[var(--muted)] focus-visible:bg-[var(--muted)] focus-visible:ring-2 focus-visible:ring-[var(--accent)]/30"
-                whileHover={{ x: 2 }}
-                whileTap={{ scale: 0.94 }}
-                transition={{ type: 'spring', stiffness: 520, damping: 32 }}
-                onMouseEnter={(event) => setHoveredTurn({ turn, rect: event.currentTarget.getBoundingClientRect() })}
-                onMouseLeave={() => setHoveredTurn(null)}
-                onFocus={(event) => setHoveredTurn({ turn, rect: event.currentTarget.getBoundingClientRect() })}
-                onBlur={() => setHoveredTurn(null)}
-                onClick={() => navigateToTurn(turn, k)}
-              >
-                <span
-                  className={`eterx-chat-turns-dash h-[2px] rounded-full transition-[width,opacity] duration-150 ease-out ${ activeTurnIdx === k
-                      ? 'bg-[var(--sidebar-strong-text)] w-[24px] opacity-100'
-                      : 'bg-[var(--sidebar-icon)] w-[14px] opacity-40 group-hover:w-[22px] group-hover:opacity-75'
-                    }`}
-                />
-              </motion.button>
-            ))}
-          </motion.div>
-        )}
         {hoveredTurn && typeof document !== 'undefined' && createPortal(
           <div
             role="tooltip"
@@ -1535,6 +1598,45 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
           className={`eterx-chat-feed relative flex-1 min-h-0 w-full overflow-hidden ${ isEmptyNewChatFeed ? 'eterx-chat-feed-empty' : '' }`}
           data-compressed={isCompressed ? 'true' : 'false'}
         >
+          {userTurns.length > 2 && (
+          <motion.div
+              ref={navContainerRef}
+              role="navigation"
+              aria-label="Conversation turns"
+              initial={{ opacity: 0, x: -8 }}
+              animate={{ opacity: 1, x: 0 }}
+              transition={{ duration: 0.24, ease: 'easeOut' }}
+              className="eterx-chat-turns-nav pointer-events-none absolute inset-y-0 left-2 z-[60] flex items-center"
+            >
+              <div className="pointer-events-auto flex max-h-[min(52vh,460px)] flex-col gap-0 overflow-y-auto overscroll-contain py-3 pl-1.5 pr-1.5 scroll-smooth [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                {userTurns.map((turn, k) => (
+                  <motion.button
+                    type="button"
+                    key={turn.idx}
+                    data-turn-index={k}
+                    aria-label={`Go to turn ${ k + 1 }: ${ turn.userText.slice(0, 80) }`}
+                    aria-current={activeTurnIdx === k ? 'step' : undefined}
+                    className="group relative flex min-h-[18px] w-[34px] shrink-0 items-center justify-center rounded-lg py-1 text-left outline-none transition-colors duration-150 hover:bg-[var(--muted)] focus-visible:bg-[var(--muted)] focus-visible:ring-2 focus-visible:ring-[var(--accent)]/30"
+                    whileHover={{ x: 2 }}
+                    whileTap={{ scale: 0.94 }}
+                    transition={{ type: 'spring', stiffness: 520, damping: 32 }}
+                    onMouseEnter={(event) => setHoveredTurn({ turn, rect: event.currentTarget.getBoundingClientRect() })}
+                    onMouseLeave={() => setHoveredTurn(null)}
+                    onFocus={(event) => setHoveredTurn({ turn, rect: event.currentTarget.getBoundingClientRect() })}
+                    onBlur={() => setHoveredTurn(null)}
+                    onClick={() => navigateToTurn(turn, k)}
+                  >
+                    <span
+                      className={`eterx-chat-turns-dash h-[2px] rounded-full transition-[width,background-color,opacity] duration-200 ease-out ${ activeTurnIdx === k
+                          ? 'bg-[var(--sidebar-strong-text)] w-[22px] opacity-100'
+                          : 'bg-[var(--sidebar-icon)] w-[12px] opacity-30 group-hover:w-[18px] group-hover:opacity-60'
+                        }`}
+                    />
+                  </motion.button>
+                ))}
+              </div>
+            </motion.div>
+          )}
           <div
             id="chat-container"
             className={`eterx-chat-feed-scroll relative h-full w-full flex flex-col overflow-y-auto overflow-x-hidden pb-40 eterx-scrollbar ${ isCompressed ? 'px-4 sm:px-8' : 'px-4 sm:px-14'
@@ -1555,6 +1657,14 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
 
 
 
+            {traceLogs.length === 0 && (liveState === 'connecting' || liveState === 'listening' || liveState === 'speaking') && (
+              <div className="flex-1 flex flex-col items-center justify-center min-h-[380px] p-6 my-auto text-center select-none">
+                <Shimmer className="text-2xl font-semibold tracking-wide text-white">
+                  Connecting...
+                </Shimmer>
+              </div>
+            )}
+
             {traceLogs.length > 0 && (
               <div className={`eterx-chat-feed-content w-full mx-auto pb-4 relative ${ isCompressed ? 'max-w-[460px] pt-14' : 'max-w-[660px] pt-16' }`}>
                 {hiddenGroupCount > 0 && (
@@ -1571,20 +1681,12 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
                 {visibleGroups.map((group, visibleGroupIdx) => {
                   const groupIdx = hiddenGroupCount + visibleGroupIdx;
                   const isThinkingTurn = isThinking && groupIdx === groups.length - 1;
-                  const previousUserLog = groups
-                    .slice(0, groupIdx)
-                    .reverse()
-                    .find((candidate) => candidate[0]?.type === 'user_action')?.[0];
-                  const turnStartedAtRaw = previousUserLog?.startTime ?? previousUserLog?.timestamp ?? previousUserLog?.endTime;
-                  const turnStartedAt = Number.isFinite(Number(turnStartedAtRaw)) ? Number(turnStartedAtRaw) : null;
-
                   return (
                     <ChatFeedMessageGroup
-                      key={`group-${ groupIdx }-${ getGroupMountIdentity(group, groupIdx) }`}
+                      key={`group-${ groupIdx }`}
                       group={group}
                       groupIdx={groupIdx}
                       isThinkingTurn={isThinkingTurn}
-                      turnStartedAt={turnStartedAt}
                       isCompressed={isCompressed}
                       onOpenAgentTeam={onOpenAgentTeam}
                       onAnswerAskUser={onAnswerAskUser}

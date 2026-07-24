@@ -1,5 +1,6 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { X } from 'lucide-react';
+import { Shimmer } from '../ui/shimmer';
 
 const getPetLogText = (log: any) => {
   const raw = log?.text || log?.command || log?.summary || log?.message || '';
@@ -7,7 +8,6 @@ const getPetLogText = (log: any) => {
 };
 
 export const getLatestPetMonitorText = (logs: any[], isThinking: boolean) => {
-  if (isThinking) return 'Thinking';
   for (let i = logs.length - 1; i >= 0; i--) {
     const log = logs[i];
     if (!log || log.type === 'user_action' || log.type === 'task_plan') continue;
@@ -19,7 +19,7 @@ export const getLatestPetMonitorText = (logs: any[], isThinking: boolean) => {
 
 export const PetThinkingLabel = ({ className = '' }: { className?: string }) => (
   <span className={`eterx-pet-thinking-label inline-flex items-baseline gap-[3px] ${ className }`}>
-    <span>Thinking</span>
+    <Shimmer>Thinking</Shimmer>
     <span className="eterx-pet-thinking-dots inline-flex w-[22px] items-baseline justify-start gap-[2px]" aria-hidden="true">
       <span />
       <span />
@@ -32,7 +32,6 @@ export const FloatingPetMonitor = ({
   open,
   isThinking,
   title,
-  logs,
   onClose,
   onReply,
 }: {
@@ -48,11 +47,7 @@ export const FloatingPetMonitor = ({
   const [replyText, setReplyText] = useState('');
   const dragFrameRef = useRef<number | null>(null);
 
-  const latestText = useMemo(() => getLatestPetMonitorText(logs, isThinking), [isThinking, logs]);
-
   const displayTitle = title?.trim() || 'EterX agent';
-  const previewText = isThinking ? 'Thinking' : latestText;
-
   const startDrag = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
     const target = event.target as HTMLElement | null;

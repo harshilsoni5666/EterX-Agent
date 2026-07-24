@@ -16,6 +16,7 @@ import {
   TerminalSquare,
   X,
 } from 'lucide-react';
+import { Shimmer } from '../ui/shimmer';
 
 export type WorkspaceReviewMode = 'overview' | 'review' | 'code';
 type WorkspaceInternalMode = WorkspaceReviewMode | 'subagent';
@@ -456,7 +457,9 @@ function SubagentDetailPanel({
         <div className="rounded-[16px] border border-white/[0.07] bg-white/[0.018] p-4">
           <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-white/32">Current work</div>
           <div className="mt-2 text-[14px] font-semibold leading-6 text-white/76">
-            {agent.progress || (running ? 'Working' : agent.status === 'complete' ? 'Completed' : 'No live progress yet')}
+            {running
+              ? <Shimmer>{agent.progress || 'Working'}</Shimmer>
+              : agent.progress || (agent.status === 'complete' ? 'Completed' : 'No live progress yet')}
           </div>
           {agent.task && agent.progress && agent.task !== agent.progress && (
             <div className="mt-2 text-[12.5px] leading-5 text-white/42">{agent.task}</div>

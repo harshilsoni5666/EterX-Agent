@@ -25,6 +25,7 @@ import {
   XCircle,
   Zap,
 } from 'lucide-react';
+import { Shimmer } from '../ui/shimmer';
 
 export interface MonitorEvent {
   id: string;
@@ -625,7 +626,7 @@ function ActivityCard({
           {event && (
             <div className="mt-0.5 flex items-center gap-2 text-[11px] text-white/36">
               <span>{formatElapsed(event.ts)}</span>
-              <span>{status}</span>
+              {status === 'Thinking' ? <Shimmer>{status}</Shimmer> : <span>{status}</span>}
             </div>
           )}
         </div>

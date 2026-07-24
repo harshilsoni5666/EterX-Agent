@@ -4,6 +4,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { FileText, X, Check, Activity, CheckCircle2, XCircle, Folder, File as FileIcon, ChevronDown, ChevronRight, Image as ImageIcon, AlertCircle, ListTodo, ArrowUpRight, LaptopMinimal, GitBranch, Search, FolderPlus, FolderOpen, Cloud, CloudOff, ExternalLink, Gauge, Plus, CircleSlash, GitFork, Terminal, Bot } from 'lucide-react';
 import { PremiumMic, PremiumSend, PremiumPlus, PremiumAudioLines, PremiumVolume2, PremiumVolumeX, PremiumMicOff } from '../ui/premium-icons';
 import { Tooltip } from '../ui/tooltip';
+import { Shimmer } from '../ui/shimmer';
 import { ConnectorsModal, ConnectorsButton } from './connectors-modal';
 import { AgentFace } from '../chat/agent-face';
 import { notifyAgentFaceFiles, notifyAgentFaceInputChange, notifyAgentFaceSend } from '../chat/agent-face-controller';
@@ -311,6 +312,7 @@ interface ChatInputProps {
   // ═══ Gemini Live Session ═══
   liveState?: 'idle' | 'connecting' | 'connected' | 'listening' | 'speaking' | 'error';
   onLiveStart?: () => void;
+  onLiveSendText?: (text: string) => void;
   onLiveStop?: () => void;
   liveOutputText?: string;
   liveInputText?: string;
@@ -944,9 +946,9 @@ const TaskTrackerDock = React.memo(({
             <ListTodo className="h-[14px] w-[14px] shrink-0 text-[#F2EFEA]/82" strokeWidth={2.25} />
           )}
           <span className="flex min-w-0 items-center">
-            <span className={`truncate text-[12.5px] font-semibold leading-5 tracking-normal ${ liveHeader ? 'eterx-text-shimmer eterx-text-shimmer-active' : 'text-[#F4F1EA]' }`}>
+            <Shimmer active={liveHeader} className="truncate text-[12.5px] font-semibold leading-5 tracking-normal text-[#F4F1EA]">
               {headerTitle}
-            </span>
+            </Shimmer>
             {liveHeader && <GeneratingDots className="shrink-0 text-[#D7D7D7]" />}
           </span>
         </span>
@@ -1001,9 +1003,9 @@ const TaskTrackerDock = React.memo(({
                             <TaskStatusGlyph status={step.status} active={activeWorking} />
                           </span>
                           <span className="flex min-w-0 flex-1 items-center gap-1.5">
-                            <span className={`block min-w-0 truncate text-[12.5px] font-semibold leading-5 ${ activeWorking ? 'eterx-text-shimmer eterx-text-shimmer-working' : 'text-[#D9D6CE]' }`}>
+                            <Shimmer active={activeWorking} className="block min-w-0 truncate text-[12.5px] font-semibold leading-5 text-[#D9D6CE]">
                               {step.name || `Task ${ step.step }`}
-                            </span>
+                            </Shimmer>
                             {activeWorking && <GeneratingDots className="shrink-0 text-[#CFCFCF]" />}
                           </span>
                         </div>
@@ -1032,6 +1034,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   liveMicVolume = 0, liveModelVolume = 0, liveActiveTool = null,
   isMicMuted = false, onToggleMicMute = () => { },
   isSpeakerMuted = false, onToggleSpeakerMute = () => { },
+  onLiveSendText,
   isCompressed = false,
   taskTracker = null,
   isNetworkPaused = false,
@@ -1054,6 +1057,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   onModelSelectionChange,
 }) => {
   const isAgentBuilder = Boolean(buildingAgentId || activeChatId?.startsWith('agent_builder_') || activeChatId?.includes('agent_builder'));
+  const isLiveActive = liveState !== 'idle' && liveState !== 'error';
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const goalTextareaRef = useRef<HTMLTextAreaElement>(null);
@@ -1972,6 +1976,17 @@ const handleSelectFolderDialog = useCallback(async () => {
       return;
     }
     if (hasErroredAttachments) return;
+
+    if (isLiveActive) {
+      const textToSubmit = inputValue.trim();
+      if (textToSubmit) {
+        setInputValue('');
+        setHasDraftInputText(false);
+        onLiveSendText?.(textToSubmit);
+      }
+      return;
+    }
+
     if (isThinking) {
       if (hasComposerPayload) {
         handleSteer();
@@ -1983,7 +1998,7 @@ const handleSelectFolderDialog = useCallback(async () => {
     if (!hasComposerPayload) return;
     notifyAgentFaceSend();
     handleSend();
-  }, [attachments.length, handleSend, handleSteer, hasComposerPayload, hasErroredAttachments, hasPreparingAttachments, inputValue, isNetworkPaused, isThinking, onNetworkPausedAction]);
+  }, [attachments.length, handleSend, handleSteer, hasComposerPayload, hasErroredAttachments, hasPreparingAttachments, inputValue, isLiveActive, isNetworkPaused, isThinking, onLiveSendText, onNetworkPausedAction, setInputValue]);
 
   const handleTextareaKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (slashTrigger) {
@@ -2313,12 +2328,7 @@ const handleSelectFolderDialog = useCallback(async () => {
   const pillPopoutVerticalClass = isEmptyHome ? 'bottom-full mb-2' : 'bottom-[calc(100%+72px)] mb-0';
   const slashMenuVisible = !!slashTrigger && !slashPanel && liveState === 'idle' && !isRecording && !isProcessingVoice;
 
-  return (
-    <div
-      className={`eterx-chat-input-dock ${ !isEmptyHome ? 'eterx-chat-input-dock-active' : '' } absolute left-0 flex flex-col items-center z-30 right-0 w-full ${ isEmptyHome
-      ? `top-[45%] -translate-y-1/2 ${ inputSidePadding }`
-      : `top-auto bottom-0 ${ isCompressed ? 'pb-4 pt-8' : 'pb-5 pt-10' } ${ inputSidePadding } bg-[linear-gradient(180deg,rgba(15,15,15,0)_0%,#0F0F0F_32%,#0F0F0F_100%)]`
-    }`}
+    return (<div className={`eterx-chat-input-dock ${ !isEmptyHome ? 'eterx-chat-input-dock-active' : '' } absolute left-0 flex flex-col items-center z-30 right-0 w-full ${ isEmptyHome ? `top-[45%] -translate-y-1/2 ${ inputSidePadding }` : `top-auto bottom-0 ${ isCompressed ? 'pb-4 pt-8' : 'pb-5 pt-10' } ${ inputSidePadding } bg-[linear-gradient(180deg,rgba(15,15,15,0)_0%,#0F0F0F_32%,#0F0F0F_100%)]` }`}
       data-home={isEmptyHome ? 'true' : 'false'}
       data-compressed={isCompressed ? 'true' : 'false'}
       onDragStart={handleComposerDragStart}
@@ -2549,13 +2559,98 @@ const handleSelectFolderDialog = useCallback(async () => {
         <motion.div
           animate={liveAnimateState}
           transition={liveTransition}
-          className={`eterx-composer-surface w-full ${ composerRadius } flex flex-col ${ isCompressed ? 'pt-2' : 'pt-2.5' } pb-2 transition-all duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)] overflow-visible relative ${ isNewChatHome ? 'eterx-new-chat-composer-surface' : '' } bg-[#202020] backdrop-blur-[28px] shadow-[0_18px_42px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(255,255,255,0.035)] ${ isRecording ? 'border border-white/[0.20]' : 'border border-white/[0.075] hover:border-white/[0.11] focus-within:border-white/[0.15]' }`}>
+          className={`eterx-composer-surface transition-all duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)] overflow-visible relative ${
+`w-full ${ isLiveActive ? (inputValue.includes('\n') || inputValue.length > 55 ? 'rounded-[22px]' : 'rounded-full') : composerRadius } flex flex-col ${ isLiveActive ? 'p-1' : isCompressed ? 'pt-2 pb-2' : 'pt-2.5 pb-2' } ${ isNewChatHome ? 'eterx-new-chat-composer-surface' : '' } bg-[#202020] backdrop-blur-[28px] shadow-[0_18px_42px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(255,255,255,0.035)] ${ isLiveActive || isRecording ? 'border border-white/[0.20]' : 'border border-white/[0.075] hover:border-white/[0.11] focus-within:border-white/[0.15]' }`
+          }`}>
           <input type="file" multiple ref={fileInputRef} onChange={handleFileSelect} className="hidden" />
 
-          <div className={`${ isCompressed ? 'px-4' : 'px-5' } pb-1 min-h-[42px] flex items-center relative z-10`}>
+          {/* ═══ LIVE MODE HEADER BANNER (Disabled per user request) ═══ */}
+          {false && isLiveActive && (
+            <div className="mx-3 mt-0 mb-0 px-3 py-1 flex items-center justify-between bg-white/[0.04] backdrop-blur-xl border border-white/[0.08] rounded-full shadow-inner">
+              <div className="flex items-center gap-1">
+                <Tooltip text={isSpeakerMuted ? "Unmute system voice" : "Mute system voice"} side="top">
+                  <button type="button" onClick={onToggleSpeakerMute} className={`w-7 h-7 flex items-center justify-center rounded-full transition-all ${isSpeakerMuted ? 'text-rose-400 bg-rose-500/20' : 'text-white/80 hover:bg-white/10'}`}>
+                    {isSpeakerMuted ? <PremiumVolumeX className="w-3.5 h-3.5" /> : <PremiumVolume2 className="w-3.5 h-3.5" />}
+                  </button>
+                </Tooltip>
+                <Tooltip text={isMicMuted ? "Unmute microphone" : "Mute microphone"} side="top">
+                  <button type="button" onClick={onToggleMicMute} className={`w-7 h-7 flex items-center justify-center rounded-full transition-all ${isMicMuted ? 'text-rose-400 bg-rose-500/20' : 'text-white/80 hover:bg-white/10'}`}>
+                    {isMicMuted ? <PremiumMicOff className="w-3.5 h-3.5" /> : <PremiumMic className="w-3.5 h-3.5" />}
+                  </button>
+                </Tooltip>
+              </div>
+
+              <div className="flex items-center gap-2.5">
+                <div className="flex items-center gap-[3px] h-[18px]">
+                  {Array.from({ length: 4 }).map((_, i) => (
+                    <div key={i} className="w-[3px] rounded-full bg-white transition-all duration-100 ease-out" style={{ height: `${Math.max(8, Math.min(18, 8 + (liveMicVolume / 100) * 10))}px` }} />
+                  ))}
+                </div>
+                {liveActiveTool && <Shimmer className="text-[11.5px] font-medium text-[#C8C1B8]">{(liveActiveTool ?? '').replace(/_/g, ' ')}...</Shimmer>}
+              </div>
+
+              <div className="flex items-center gap-2">
+                <span className="flex items-center gap-1.5 text-[10.5px] font-semibold tracking-wide text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2.5 py-0.5 rounded-full">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                  LIVE
+                </span>
+                <button type="button" onClick={onLiveStop} className="w-6 h-6 flex items-center justify-center rounded-full bg-rose-500/20 text-rose-400 border border-rose-500/30 hover:bg-rose-500/40 transition-all">
+                  <CircleSlash className="w-3 h-3" />
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* ═══ AUTO-EXPANDING LIVE TYPING BAR ═══ */}
+          {isLiveActive && (
+            <div className="flex items-end justify-between w-full min-h-[44px] max-h-[160px] pl-4 pr-1.5 py-1 relative transition-all duration-200">
+              <textarea
+                ref={(el) => {
+                  if (el) {
+                    el.style.height = 'auto';
+                    el.style.height = `${Math.min(el.scrollHeight, 150)}px`;
+                  }
+                }}
+                value={inputValue}
+                onChange={(e) => {
+                  const nextValue = e.target.value;
+                  setHasDraftInputText(Boolean(nextValue.trim()));
+                  setInputValue(nextValue);
+                  e.target.style.height = 'auto';
+                  e.target.style.height = `${Math.min(e.target.scrollHeight, 150)}px`;
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    if (inputValue.trim()) {
+                      submitPrompt();
+                    }
+                  }
+                }}
+                placeholder="Type..."
+                rows={1}
+                className="flex-1 bg-transparent border-0 outline-none ring-0 text-[14.5px] text-[#F0F0F0] placeholder:text-[#6B6964] font-normal pr-3 resize-none min-h-[26px] max-h-[150px] leading-[1.45] py-2 overflow-y-auto eterx-scrollbar scrollbar-no-buttons"
+                style={{ caretColor: '#F0F0F0' }}
+              />
+              <button
+                type="button"
+                onClick={submitPrompt}
+                disabled={!inputValue.trim()}
+                className={`w-[34px] h-[34px] mb-0.5 shrink-0 flex items-center justify-center rounded-full transition-all duration-200 ${
+                  inputValue.trim()
+                    ? 'bg-[#F2EFEA] text-black hover:bg-white shadow-[0_4px_14px_rgba(242,239,234,0.25)] active:scale-95 cursor-pointer'
+                    : 'bg-[#2D2D2D] text-[#8C8984] hover:bg-[#333333] hover:text-white cursor-pointer opacity-70'
+                }`}
+              >
+                <PremiumSend className="w-[16px] h-[16px]" strokeWidth={2.1} />
+              </button>
+            </div>
+          )}
+
+          {!isLiveActive && (<div className={`${ isCompressed ? 'px-4' : 'px-5' } pb-1 min-h-[42px] flex items-center relative z-10`}>
             <AnimatePresence mode="wait">
               {/* ═══ GEMINI LIVE — Modern Centered Visualization ═══ */}
-              {liveState !== 'idle' && liveState !== 'error' ? (
+              {false ? (
                 <motion.div
                   key="live-overlay"
                   initial={{ opacity: 0 }}
@@ -2565,7 +2660,7 @@ const handleSelectFolderDialog = useCallback(async () => {
                   className="flex items-center justify-center w-full min-h-[44px] relative"
                 >
                   {/* Left Side: Mute Controls (Ultra-Aesthetic Circular Pill) */}
-                  <div className="absolute left-2 top-1/2 -translate-y-1/2 flex items-center p-1 bg-white/[0.03] backdrop-blur-[24px] border border-white/[0.08] rounded-full shadow-sm transition-all duration-300 hover:bg-white/[0.05] hover:border-white/[0.12] gap-0.5">
+                  <div className="absolute left-1.5 top-1/2 -translate-y-1/2 flex items-center p-1 bg-white/[0.03] backdrop-blur-[24px] border border-white/[0.08] rounded-full shadow-sm transition-all duration-300 hover:bg-white/[0.05] hover:border-white/[0.12] gap-0.5">
                     <Tooltip text={isSpeakerMuted ? "Unmute system voice" : "Mute system voice"} side="top">
                       <button
                         onClick={onToggleSpeakerMute}
@@ -2601,51 +2696,41 @@ const handleSelectFolderDialog = useCallback(async () => {
                     {/* Centered Frequency Bar Visualizer — Lag Free & Modern */}
                     <div className="flex items-center justify-center gap-[4px] h-[36px]">
                       {Array.from({ length: 4 }).map((_, i) => {
-                        // Advanced organic motion math
                         const isSpeaking = liveState === 'speaking';
                         const isConnecting = liveState === 'connecting';
                         const isListening = liveState === 'listening';
 
-                        let h = 14; // Base height: perfect circle
+                        let h = 14;
                         let baseVol = 0;
 
                         if (isSpeaking) {
-                          // True Multi-band EQ rendering: each bar dances independently to actual voice frequency buckets
                           if (Array.isArray(liveModelVolume)) {
-                            baseVol = (liveModelVolume[i] / 100) * 26; // Punchy scaling
+                            baseVol = (liveModelVolume[i] / 100) * 24;
                             h = 14 + baseVol;
                           } else {
-                            // Fallback for single volume
                             const multiplier = [0.6, 1.0, 0.85, 0.5][i];
                             baseVol = ((liveModelVolume as number) / 100) * 22;
                             h = 14 + (baseVol * multiplier);
                           }
                         } else if (isListening) {
-                          // Real-time Mic volume with inverse wave distribution
-                          const multiplier = [0.5, 0.85, 1.0, 0.6][i];
+                          const multiplier = [0.6, 1.0, 0.9, 0.7][i];
                           baseVol = (liveMicVolume / 100) * 22;
                           h = 14 + (baseVol * multiplier);
                         }
 
-                        // Determine animation state
-                        let animateHeight: any = Math.max(14, Math.min(36, h));
-                        let transitionCfg: any = { type: 'spring', stiffness: 400, damping: 25, mass: 0.5 };
-
-                        if (isConnecting) {
-                          animateHeight = [14, 28, 14];
-                          transitionCfg = { duration: 1.2, repeat: Infinity, ease: 'easeInOut', delay: i * 0.2 };
-                        } else if (isListening && baseVol < 1) {
-                          // Subtle silent breathing
-                          animateHeight = [14, 16 + (i % 2), 14];
-                          transitionCfg = { duration: 2.5, repeat: Infinity, ease: 'easeInOut', delay: i * 0.4 };
-                        }
+                        const targetHeight = Math.max(14, Math.min(36, h));
 
                         return (
-                          <motion.div
+                          <div
                             key={i}
-                            className="w-[14px] rounded-full bg-white"
-                            animate={{ height: animateHeight }}
-                            transition={transitionCfg}
+                            className={`w-[14px] rounded-full bg-white transition-all duration-100 ease-out ${
+                              isConnecting ? 'animate-pulse' : ''
+                            }`}
+                            style={{
+                              height: `${targetHeight}px`,
+                              opacity: isConnecting ? 0.75 : 1,
+                              transform: `scaleY(${isConnecting ? 1 + (i % 2) * 0.2 : 1})`,
+                            }}
                           />
                         );
                       })}
@@ -2655,7 +2740,7 @@ const handleSelectFolderDialog = useCallback(async () => {
                   </motion.div>
 
                   {/* Absolute positioned End Button and Status Text on the right */}
-                  <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-4">
+                  <div className="absolute right-1.5 top-1/2 -translate-y-1/2 flex items-center gap-3">
                     <AnimatePresence mode="wait">
                       {liveState === 'connecting' ? (
                         <motion.span
@@ -2664,7 +2749,7 @@ const handleSelectFolderDialog = useCallback(async () => {
                           animate={{ opacity: 1, x: 0 }}
                           className="text-[12.5px] text-[#F0F0F0] tracking-wide font-medium whitespace-nowrap"
                         >
-                          Connecting...
+                          <Shimmer className="text-[12.5px] font-medium text-[#C8C1B8]">Connecting...</Shimmer>
                         </motion.span>
                       ) : liveActiveTool ? (
                         <motion.span
@@ -2675,18 +2760,20 @@ const handleSelectFolderDialog = useCallback(async () => {
                           transition={{ duration: 0.3 }}
                           className="text-[12.5px] text-[#F0F0F0] tracking-wide font-medium whitespace-nowrap"
                         >
-                          {(() => {
-                            switch (liveActiveTool) {
-                              case 'web_search': return 'Searching Web...';
-                              case 'run_terminal_command': return 'Working...';
-                              case 'store_chat_memory': return 'Updating Memory...';
-                              case 'read_chat_memory': return 'Reading Memory...';
-                              case 'change_voice': return 'Configuring Voice...';
-                              case 'get_system_time': return 'Checking Time...';
-                              case 'end_call': return 'Ending Call...';
-                              default: return liveActiveTool.replace(/_/g, ' ') + '...';
-                            }
-                          })()}
+                          <Shimmer className="text-[12.5px] font-medium text-[#C8C1B8]">
+                            {(() => {
+                              switch (liveActiveTool) {
+                                case 'web_search': return 'Searching Web...';
+                                case 'run_terminal_command': return 'Working...';
+                                case 'store_chat_memory': return 'Updating Memory...';
+                                case 'read_chat_memory': return 'Reading Memory...';
+                                case 'change_voice': return 'Configuring Voice...';
+                                case 'get_system_time': return 'Checking Time...';
+                                case 'end_call': return 'Ending Call...';
+                                default: return (liveActiveTool ?? '').replace(/_/g, ' ') + '...';
+                              }
+                            })()}
+                          </Shimmer>
                         </motion.span>
                       ) : null}
                     </AnimatePresence>
@@ -2854,7 +2941,9 @@ const handleSelectFolderDialog = useCallback(async () => {
                                 className={`w-full h-full object-cover rounded-[12px] ${ isErrored ? 'opacity-40 grayscale' : 'opacity-100' }`}
                               />
                               {isPreparing && (
-                                <div className="pointer-events-none absolute inset-0 eterx-surface-shimmer eterx-surface-shimmer-upload rounded-[12px]" />
+                                <div className="pointer-events-none absolute inset-0 flex items-center justify-center rounded-[12px] bg-black/25">
+                                  <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/30 border-t-white/85" />
+                                </div>
                               )}
                               {isErrored && (
                                 <div className="absolute inset-0 flex items-center justify-center bg-black/28 rounded-[12px]">
@@ -2898,7 +2987,9 @@ const handleSelectFolderDialog = useCallback(async () => {
                                 className="w-[18px] h-[18px] object-contain shrink-0"
                               />
                               {isPreparing && (
-                                <div className="pointer-events-none absolute inset-0 eterx-surface-shimmer eterx-surface-shimmer-upload" />
+                                <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/20">
+                                  <span className="h-3 w-3 animate-spin rounded-full border-2 border-white/25 border-t-white/80" />
+                                </div>
                               )}
                               {isErrored && (
                                 <div className="absolute inset-0 flex items-center justify-center bg-black/28">
@@ -2913,7 +3004,7 @@ const handleSelectFolderDialog = useCallback(async () => {
                                 {displayName}
                               </span>
                               <span className={`text-[9px] font-bold tracking-wider leading-none mt-0.5 ${ isErrored ? 'text-[#F0B6A7]' : 'text-neutral-400' }`}>
-                                {isErrored ? 'Failed' : isPreparing ? 'Preparing' : extension}
+                                {isErrored ? 'Failed' : isPreparing ? <Shimmer>Preparing</Shimmer> : extension}
                               </span>
                             </div>
 
@@ -2959,8 +3050,8 @@ const handleSelectFolderDialog = useCallback(async () => {
                     onDragOver={handleDragOver}
                     onDrop={handleDrop}
                     onScroll={handleTextareaScroll}
-                    placeholder={composerPlaceholder || (isThinking ? "Send guidance to the running agent" : isNewChatHome ? "What should EterX work on?" : "Message EterX")}
-                    className={`eterx-composer-textarea w-full appearance-none border-0 bg-transparent shadow-none outline-none ring-0 text-[14.5px] font-normal text-[#F0F0F0] placeholder:text-[#8B8984] focus:border-0 focus:outline-none focus:ring-0 placeholder:font-normal min-h-[26px] max-h-[400px] resize-none leading-[1.45] selection:bg-white/15 transition-colors duration-200 relative z-0 py-1 ${ isOverflowing ? 'overflow-y-auto eterx-scrollbar pr-2' : 'overflow-hidden' }`}
+                    placeholder={composerPlaceholder || (isLiveActive ? "Type..." : isThinking ? "Send guidance to the running agent" : isNewChatHome ? "What should EterX work on?" : "Message EterX")}
+                    className={`eterx-composer-textarea w-full appearance-none border-0 bg-transparent shadow-none outline-none ring-0 text-[14.5px] font-normal text-[#F0F0F0] placeholder:text-[#8B8984] focus:border-0 focus:outline-none focus:ring-0 placeholder:font-normal min-h-[26px] max-h-[400px] resize-none leading-[1.45] selection:bg-white/15 transition-colors duration-200 relative z-0 py-1 scrollbar-no-buttons ${ isOverflowing ? 'overflow-y-auto eterx-scrollbar pr-2' : 'overflow-hidden' }`}
                     style={{
                       caretColor: '#F0F0F0',
                       height: '26px',
@@ -2976,8 +3067,9 @@ const handleSelectFolderDialog = useCallback(async () => {
                 </div>
               )}
             </AnimatePresence>
-          </div>
+          </div>)}
 
+          {!isLiveActive && (
           <div className={`eterx-chat-controls ${ isCompressed ? 'px-2.5' : 'px-3.5' } mt-0 relative z-10 transition-all duration-300`}>
             <div className="eterx-chat-controls-left">
               <Tooltip text="Attach files" side="top">
@@ -3362,14 +3454,14 @@ const handleSelectFolderDialog = useCallback(async () => {
                 </button>
               </Tooltip>
 
-              <Tooltip text="Start Live Conversation" side="top">
+              <Tooltip text={liveState !== 'idle' ? "End Live Conversation" : "Start Live Conversation"} side="top">
                 <button
-                  onClick={onLiveStart}
+                  onClick={liveState !== 'idle' ? onLiveStop : onLiveStart}
                   disabled={isNetworkPaused}
-                  className={`eterx-control-button eterx-composer-live-button w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full border border-transparent bg-[#2D2D2D] text-white shadow-none transition-all duration-150 active:bg-[#333333] cursor-pointer group relative overflow-hidden hover:bg-[#333333] hover:border-transparent hover:text-white ${ isRecording ? '!text-[#E2765A]' : '' }`}
+                  className={`eterx-control-button eterx-composer-live-button w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full border border-transparent bg-[#2D2D2D] text-white shadow-none transition-all duration-150 active:bg-[#333333] cursor-pointer group relative overflow-hidden hover:bg-[#333333] hover:border-transparent hover:text-white ${ liveState !== 'idle' ? '!bg-white !text-black shadow-[0_0_16px_rgba(255,255,255,0.4)]' : '' }`}
                 >
                   <div className={inputControlSheen} />
-                  <PremiumAudioLines className={`eterx-composer-control-icon eterx-composer-live-icon w-[20px] h-[20px] text-white transition-all duration-200 ease-out group-hover:scale-[1.04] ${ isRecording ? '!text-[#E2765A] animate-pulse scale-[1.04]' : '' }`} strokeWidth={1.85} />
+                  <PremiumAudioLines className={`eterx-composer-control-icon eterx-composer-live-icon w-[20px] h-[20px] transition-all duration-200 ease-out group-hover:scale-[1.04] ${ liveState !== 'idle' ? '!text-black scale-[1.05]' : 'text-white' }`} strokeWidth={1.85} />
                 </button>
               </Tooltip>
 
@@ -3490,6 +3582,7 @@ const handleSelectFolderDialog = useCallback(async () => {
               )}
             </div>
           </div>
+          )}
         </motion.div>
 
         {isNewChatHome && (

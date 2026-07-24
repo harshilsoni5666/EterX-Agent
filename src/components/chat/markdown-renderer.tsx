@@ -53,10 +53,10 @@ const normalizeLatexOutsideCode = (value: string) =>
   value.split(CODE_FENCE_SPLIT).map((chunk) => {
     if (/^(```|~~~)/.test(chunk)) return chunk;
     return chunk
-      .replace(/\\\[((?:.|\n)*?)\\\]/g, (_match, inner) => `\n\n$$\n${String(inner).trim()}\n$$\n\n`)
-      .replace(/\\\((.*?)\\\)/g, (_match, inner) => `$${String(inner).trim()}$`)
+      .replace(/\\\[((?:.|\n)*?)\\\]/g, (_match, inner) => `\n\n$$\n${ String(inner).trim() }\n$$\n\n`)
+      .replace(/\\\((.*?)\\\)/g, (_match, inner) => `$${ String(inner).trim() }$`)
       .replace(/\\begin\{(equation\*?|align\*?|gather\*?|multline\*?)\}([\s\S]*?)\\end\{\1\}/g, (_match, env, body) => (
-        `\n\n$$\n\\begin{${env}}\n${String(body).trim()}\n\\end{${env}}\n$$\n\n`
+        `\n\n$$\n\\begin{${ env }}\n${ String(body).trim() }\n\\end{${ env }}\n$$\n\n`
       ));
   }).join('');
 
@@ -79,7 +79,7 @@ const isPotentialMarkdownTableRow = (line: string) => {
 const makeMarkdownTableSeparator = (line: string) => {
   const cells = splitMarkdownTableCells(line);
   if (line.trim().startsWith('|') || line.trim().endsWith('|')) {
-    return `| ${cells.map(() => '---').join(' | ')} |`;
+    return `| ${ cells.map(() => '---').join(' | ') } |`;
   }
   return cells.map(() => '---').join(' | ');
 };
@@ -177,7 +177,7 @@ const SYSTEM_TAGS = [
 ];
 
 const SYSTEM_TAGS_PATTERN = new RegExp(
-  `<(${SYSTEM_TAGS.join('|')})(?:\\s[^>]*)?(?:\\/>|>[\\s\\S]*?(?:<\\/\\1>|$))`,
+  `<(${ SYSTEM_TAGS.join('|') })(?:\\s[^>]*)?(?:\\/>|>[\\s\\S]*?(?:<\\/\\1>|$))`,
   'gi'
 );
 
@@ -185,14 +185,14 @@ const stripSystemTagsOutsideCode = (value: string) =>
   value.split(CODE_FENCE_SPLIT).map((chunk) => {
     // Preserve code blocks completely
     if (/^(```|~~~|`)/.test(chunk)) return chunk;
-    
+
     // Strip fully formed or streaming system tags and their contents
     let processed = chunk.replace(SYSTEM_TAGS_PATTERN, '');
 
     // Anti-Flicker: Strip incomplete HTML/XML tags at the very end of the stream
     // Matches `<` optionally followed by `/`, then a letter, then any non-`>` chars until EOF.
     processed = processed.replace(/<\/?(?:[A-Za-z_][^>]*)?$/, '');
-    
+
     return processed;
   }).join('');
 
@@ -348,7 +348,7 @@ const svgToPngBlob = async (svg: string, scale = 2): Promise<Blob> => {
         .replace(/\swidth=["'][^"']*["']/i, '')
         .replace(/\sheight=["'][^"']*["']/i, '')
         .replace(/\sstyle=["'][^"']*["']/i, '');
-      return `<svg${nextAttrs} width="${Math.ceil(width)}" height="${Math.ceil(height)}" style="background:${background}">`;
+      return `<svg${ nextAttrs } width="${ Math.ceil(width) }" height="${ Math.ceil(height) }" style="background:${ background }">`;
     });
   const svgBlob = new Blob([exportSvg], { type: 'image/svg+xml;charset=utf-8' });
   const url = URL.createObjectURL(svgBlob);
@@ -421,10 +421,10 @@ const shouldQuoteMermaidLabel = (label: string) =>
 const quoteFlowNodeLabels = (line: string) =>
   line
     .replace(/([A-Za-z][\w-]*)\[([^\]\n"]+)\]/g, (match, id, label) => (
-      shouldQuoteMermaidLabel(label) ? `${id}["${escapeMermaidLabel(label)}"]` : match
+      shouldQuoteMermaidLabel(label) ? `${ id }["${ escapeMermaidLabel(label) }"]` : match
     ))
     .replace(/([A-Za-z][\w-]*)\{([^}\n"]+)\}/g, (match, id, label) => (
-      shouldQuoteMermaidLabel(label) ? `${id}{"${escapeMermaidLabel(label)}"}` : match
+      shouldQuoteMermaidLabel(label) ? `${ id }{"${ escapeMermaidLabel(label) }"}` : match
     ));
 
 const normalizeSubgraphLine = (line: string, index: number) => {
@@ -436,11 +436,11 @@ const normalizeSubgraphLine = (line: string, index: number) => {
 
   const idTitleMatch = trimmed.match(/^([A-Za-z][\w-]*)\s+(.+)$/);
   if (idTitleMatch && shouldQuoteMermaidLabel(idTitleMatch[2])) {
-    return `${indent}subgraph ${idTitleMatch[1]}["${escapeMermaidLabel(idTitleMatch[2])}"]`;
+    return `${ indent }subgraph ${ idTitleMatch[1] }["${ escapeMermaidLabel(idTitleMatch[2]) }"]`;
   }
 
   if (shouldQuoteMermaidLabel(trimmed)) {
-    return `${indent}subgraph sg_${index}["${escapeMermaidLabel(trimmed)}"]`;
+    return `${ indent }subgraph sg_${ index }["${ escapeMermaidLabel(trimmed) }"]`;
   }
 
   return line;
@@ -541,28 +541,28 @@ const MERMAID_PALETTES: Record<MermaidThemeName, MermaidPalette> = {
 };
 
 const nodeShapeSelector = (prefix: string) => [
-  `${prefix} rect`,
-  `${prefix} circle`,
-  `${prefix} ellipse`,
-  `${prefix} polygon`,
-  `${prefix} path`,
+  `${ prefix } rect`,
+  `${ prefix } circle`,
+  `${ prefix } ellipse`,
+  `${ prefix } polygon`,
+  `${ prefix } path`,
 ].join(',\n');
 
 const getMermaidThemeCss = (theme: MermaidThemeName) => {
   const palette = MERMAID_PALETTES[theme];
   const variantRules = palette.nodeFillVariants.map((fill, index) => {
     const stroke = palette.nodeStrokeVariants[index] || palette.nodeStroke;
-    const selector = nodeShapeSelector(`.nodes .node:nth-child(${palette.nodeFillVariants.length}n + ${index + 1})`);
-    return `${selector} {
-  fill: ${fill} !important;
-  stroke: ${stroke} !important;
+    const selector = nodeShapeSelector(`.nodes .node:nth-child(${ palette.nodeFillVariants.length }n + ${ index + 1 })`);
+    return `${ selector } {
+  fill: ${ fill } !important;
+  stroke: ${ stroke } !important;
 }`;
   }).join('\n\n');
 
   return `
 svg {
   background: transparent !important;
-  font-family: ${MERMAID_FONT_FAMILY} !important;
+  font-family: ${ MERMAID_FONT_FAMILY } !important;
 }
 
 text,
@@ -575,26 +575,26 @@ text,
 .messageText,
 .loopText,
 .noteText {
-  fill: ${palette.text} !important;
-  color: ${palette.text} !important;
-  font-family: ${MERMAID_FONT_FAMILY} !important;
+  fill: ${ palette.text } !important;
+  color: ${ palette.text } !important;
+  font-family: ${ MERMAID_FONT_FAMILY } !important;
   letter-spacing: 0 !important;
 }
 
-${nodeShapeSelector('.node')} {
-  fill: ${palette.nodeFill} !important;
-  stroke: ${palette.nodeStroke} !important;
+${ nodeShapeSelector('.node') } {
+  fill: ${ palette.nodeFill } !important;
+  stroke: ${ palette.nodeStroke } !important;
   stroke-width: 1.45px !important;
   filter: none !important;
 }
 
-${variantRules}
+${ variantRules }
 
 .cluster rect,
 .cluster polygon,
 .cluster path {
-  fill: ${palette.clusterFill} !important;
-  stroke: ${palette.clusterStroke} !important;
+  fill: ${ palette.clusterFill } !important;
+  stroke: ${ palette.clusterStroke } !important;
   stroke-width: 1.25px !important;
 }
 
@@ -603,55 +603,55 @@ ${variantRules}
 .messageLine0,
 .messageLine1,
 .transition {
-  stroke: ${palette.edge} !important;
+  stroke: ${ palette.edge } !important;
 }
 
 .arrowheadPath,
 marker path {
-  fill: ${palette.edge} !important;
-  stroke: ${palette.edge} !important;
+  fill: ${ palette.edge } !important;
+  stroke: ${ palette.edge } !important;
 }
 
 .edgeLabel,
 .edgeLabel p,
 .edgeLabel span,
 .edgeLabel text {
-  color: ${palette.mutedText} !important;
-  fill: ${palette.mutedText} !important;
-  background: ${palette.labelBackground} !important;
+  color: ${ palette.mutedText } !important;
+  fill: ${ palette.mutedText } !important;
+  background: ${ palette.labelBackground } !important;
 }
 
 .edgeLabel rect,
 .labelBkg {
-  fill: ${palette.labelBackground} !important;
+  fill: ${ palette.labelBackground } !important;
   opacity: 0.94 !important;
 }
 
 .note,
 .noteBox {
-  fill: ${palette.noteFill} !important;
-  stroke: ${palette.noteStroke} !important;
+  fill: ${ palette.noteFill } !important;
+  stroke: ${ palette.noteStroke } !important;
 }
 
 .actorBox {
-  fill: ${palette.nodeFill} !important;
-  stroke: ${palette.nodeStroke} !important;
+  fill: ${ palette.nodeFill } !important;
+  stroke: ${ palette.nodeStroke } !important;
 }
 `.trim();
 };
 
 const injectMermaidThemeCss = (svg: string, theme: MermaidThemeName) => {
-  const style = `<style data-eterx-mermaid-theme="${theme}">\n${getMermaidThemeCss(theme)}\n</style>`;
+  const style = `<style data-eterx-mermaid-theme="${ theme }">\n${ getMermaidThemeCss(theme) }\n</style>`;
   if (/<\/svg>\s*$/i.test(svg)) {
-    return svg.replace(/<\/svg>\s*$/i, `${style}</svg>`);
+    return svg.replace(/<\/svg>\s*$/i, `${ style }</svg>`);
   }
-  return `${svg}${style}`;
+  return `${ svg }${ style }`;
 };
 
 const MermaidDiagram = ({ chart }: { chart: string }) => {
   const theme = useResolvedTheme();
   const reactId = useId().replace(/[^a-zA-Z0-9_-]/g, '');
-  const chartId = useMemo(() => `eterx-mermaid-${reactId || Math.random().toString(36).slice(2)}`, [reactId]);
+  const chartId = useMemo(() => `eterx-mermaid-${ reactId || Math.random().toString(36).slice(2) }`, [reactId]);
   const [svg, setSvg] = useState('');
   const [error, setError] = useState('');
   const [renderedChart, setRenderedChart] = useState(chart);
@@ -733,7 +733,7 @@ const MermaidDiagram = ({ chart }: { chart: string }) => {
         for (const candidate of candidates) {
           try {
             await mermaid.parse(candidate);
-            const result = await mermaid.render(`${chartId}-${theme}-${token}-${candidates.indexOf(candidate)}`, candidate);
+            const result = await mermaid.render(`${ chartId }-${ theme }-${ token }-${ candidates.indexOf(candidate) }`, candidate);
             if (!cancelled && renderTokenRef.current === token) {
               const themedSvg = injectMermaidThemeCss(result.svg, theme);
               setRenderedChart(candidate);
@@ -837,13 +837,13 @@ const MermaidDiagram = ({ chart }: { chart: string }) => {
   };
 
   const canvasStyle = {
-    '--eterx-mermaid-display-width': `${displayWidth}px`,
+    '--eterx-mermaid-display-width': `${ displayWidth }px`,
   } as React.CSSProperties;
 
   if (error && !svg) return null;
 
   return (
-    <div className={`eterx-mermaid-card group/mermaid relative my-5 mx-auto max-w-full overflow-visible ${expanded ? 'eterx-mermaid-expanded' : ''}`} style={canvasStyle}>
+    <div className={`eterx-mermaid-card group/mermaid relative my-5 mx-auto max-w-full overflow-visible ${ expanded ? 'eterx-mermaid-expanded' : '' }`} style={canvasStyle}>
       <div ref={menuRef} className="eterx-mermaid-toolbar absolute right-1 top-1 z-30 flex items-center opacity-75 transition-opacity duration-200 group-hover/mermaid:opacity-100 focus-within:opacity-100">
         <button
           type="button"
@@ -892,7 +892,7 @@ const MermaidDiagram = ({ chart }: { chart: string }) => {
               <span>{expanded ? 'Fit inline' : 'Expand inline'}</span>
             </button>
             <button type="button" className="eterx-mermaid-menu-item" onClick={() => runAction(() => setShowSource(value => !value))}>
-              <ChevronDown className={`h-4 w-4 transition-transform ${showSource ? 'rotate-180' : ''}`} />
+              <ChevronDown className={`h-4 w-4 transition-transform ${ showSource ? 'rotate-180' : '' }`} />
               <span>{showSource ? 'Hide source' : 'Show source'}</span>
             </button>
           </div>
@@ -1012,7 +1012,7 @@ const customLightTheme = {
   "italic": { "fontStyle": "italic" }
 };
 
-const CodeBlock = ({ language, content, forceSource = false, ...props }: { language: string; content: string; forceSource?: boolean; [key: string]: any }) => {
+const CodeBlock = ({ language, content, forceSource = false, ...props }: { language: string; content: string; forceSource?: boolean;[key: string]: any }) => {
   const [wrapLines, setWrapLines] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const theme = useResolvedTheme();
@@ -1036,7 +1036,7 @@ const CodeBlock = ({ language, content, forceSource = false, ...props }: { langu
 
   return (
     <div
-      className={`eterx-markdown-code-block group/code relative my-5 flex max-w-full flex-col overflow-hidden rounded-xl border border-white/[0.08] bg-[#1C1B1A] shadow-[0_10px_28px_rgba(0,0,0,0.16)] ${expanded ? 'eterx-code-expanded' : ''}`}
+      className={`eterx-markdown-code-block group/code relative my-5 flex max-w-full flex-col overflow-hidden rounded-xl border border-white/[0.08] bg-[#1C1B1A] shadow-[0_10px_28px_rgba(0,0,0,0.16)] ${ expanded ? 'eterx-code-expanded' : '' }`}
       data-language={displayLanguage}
     >
       <div className="eterx-markdown-code-actions absolute right-2 top-2 z-20 flex items-center gap-1 rounded-lg border border-white/[0.08] bg-[#1C1B1A]/86 p-1 opacity-55 shadow-[0_8px_22px_rgba(0,0,0,0.22)] backdrop-blur-md transition-opacity duration-200 group-hover/code:opacity-100">
@@ -1054,7 +1054,7 @@ const CodeBlock = ({ language, content, forceSource = false, ...props }: { langu
           className="eterx-markdown-copy-button h-8 w-8 border border-white/[0.08] bg-white/[0.035] text-[#8C8A88] hover:bg-white/[0.07] hover:text-[#E8E6E3]"
         />
       </div>
-      <div className={`eterx-markdown-code-scroll eterx-scrollbar overflow-auto ${isLong && !expanded ? 'max-h-[520px]' : ''}`}>
+      <div className={`eterx-markdown-code-scroll eterx-scrollbar overflow-auto ${ isLong && !expanded ? 'max-h-[520px]' : '' }`}>
         <SyntaxHighlighter
           style={highlightStyle as any}
           language={displayLanguage}
@@ -1093,13 +1093,13 @@ const makeHeading = (Tag: keyof JSX.IntrinsicElements, className: string) => {
       {
         ...props,
         id,
-        className: `${className} eterx-md-heading group/heading scroll-mt-28`,
+        className: `${ className } eterx-md-heading group/heading scroll-mt-28`,
       },
       <>
         <a
-          href={`#${id}`}
+          href={`#${ id }`}
           className="eterx-md-heading-anchor mr-2 inline-flex translate-y-[-1px] text-[#5E5A55] opacity-0 transition-opacity group-hover/heading:opacity-100"
-          aria-label={`Link to ${text || 'section'}`}
+          aria-label={`Link to ${ text || 'section' }`}
         >
           #
         </a>

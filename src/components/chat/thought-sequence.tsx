@@ -15,6 +15,7 @@ import { markdownComponents, normalizeMarkdownForRendering, remarkPlugins, rehyp
 import { LocalFileIcon, LocalFileLinkChip, decodeLocalFileHref, isLocalFilePath } from './local-file-link';
 import { AGENT_ICONS, resolveAgentIcon, AgentAssetIcon, SubAgentIdentityIcon } from './agent-icons';
 import { AgentFace } from './agent-face';
+import { Shimmer } from '../ui/shimmer';
 
 
 type RevealSpeed = {
@@ -696,9 +697,9 @@ export const ProfessionalThought = React.memo(({ text, isLatest, isThinking, var
             aria-expanded={open}
             className="eterx-thought-toggle flex min-h-[33px] w-full items-center gap-2.5 px-3 py-1 text-left transition-colors hover:bg-white/[0.026] group"
           >
-            <span className={`flex-1 text-[13.5px] font-medium ${ isLive ? 'eterx-text-shimmer eterx-text-shimmer-working' : 'text-[#7C776F]' }`}>
+            <Shimmer active={isLive} className="flex-1 text-[13.5px] font-medium text-[#7C776F]">
               {thinkLabel}
-            </span>
+            </Shimmer>
             <ChevronRight className={`h-4 w-4 text-[#625C54] group-hover:text-[#A8A198] transition-all ${ open ? 'rotate-90' : '' }`} />
           </button>
           <AnimatePresence initial={false}>
@@ -970,7 +971,7 @@ const InlineConsole = ({ command, content, exitCode, durationMs }: { command: st
           ) : (
             <CornerDownLeft className="h-3.5 w-3.5 text-red-300" />
           )}
-          {isRunning ? 'Running' : success ? 'Success' : `Exit ${ exitCode }`}
+          {isRunning ? <Shimmer>Running</Shimmer> : success ? 'Success' : `Exit ${ exitCode }`}
         </span>
       </div>
     </div>
@@ -994,9 +995,9 @@ const patchDiffLines = (diff = '') => diff
   .map(line => line.startsWith('@@')
     ? { type: 'context' as const, content: line.replace(/^@@\s*|\s*@@$/g, '') || 'Next change', isGap: true }
     : {
-        type: line.startsWith('+') ? 'added' as const : line.startsWith('-') ? 'removed' as const : 'unchanged' as const,
-        content: /^[+\- ]/.test(line) ? line.slice(1) : line,
-      });
+      type: line.startsWith('+') ? 'added' as const : line.startsWith('-') ? 'removed' as const : 'unchanged' as const,
+      content: /^[+\- ]/.test(line) ? line.slice(1) : line,
+    });
 
 const PatchSummaryPanel = ({
   filesModified = [],
@@ -1101,13 +1102,13 @@ const PatchSummaryPanel = ({
                 return (
                   <button
                     type="button"
-                    key={`${f.kind}-${f.path}-${i}`}
-                    className={`group flex w-full items-center gap-0 border-t border-white/[0.045] text-left first:border-t-0 hover:bg-white/[0.025] ${selectedFile?.path === f.path ? 'bg-white/[0.035]' : ''}`}
+                    key={`${ f.kind }-${ f.path }-${ i }`}
+                    className={`group flex w-full items-center gap-0 border-t border-white/[0.045] text-left first:border-t-0 hover:bg-white/[0.025] ${ selectedFile?.path === f.path ? 'bg-white/[0.035]' : '' }`}
                     onClick={() => {
                       if (f.kind === 'deleted') return;
                       setSelectedPath(f.path);
                     }}
-                    title={f.kind === 'deleted' ? f.path : `Show changes in ${f.path}`}
+                    title={f.kind === 'deleted' ? f.path : `Show changes in ${ f.path }`}
                   >
                     <div className={`w-[3px] self-stretch shrink-0 ${ style.bar }`} />
                     <div className="flex min-w-0 flex-1 items-center gap-2 px-3 py-[5px]">
@@ -1122,7 +1123,7 @@ const PatchSummaryPanel = ({
                         </span>
                       ) : null}
                       <span className={`shrink-0 rounded-[4px] border px-1.5 py-[1px] text-[10px] font-semibold ${ style.pill }`}>{style.label}</span>
-                      {f.kind !== 'deleted' ? <ChevronRight className={`h-3 w-3 shrink-0 text-[#716B64] transition-transform ${selectedFile?.path === f.path ? 'rotate-90 text-[#B2AAA0]' : ''}`} /> : null}
+                      {f.kind !== 'deleted' ? <ChevronRight className={`h-3 w-3 shrink-0 text-[#716B64] transition-transform ${ selectedFile?.path === f.path ? 'rotate-90 text-[#B2AAA0]' : '' }`} /> : null}
                     </div>
                   </button>
                 );
@@ -1921,8 +1922,8 @@ const InlineDiffView = ({ filename, filepath = '', diffLines, showExpand = true,
         <div className="flex shrink-0 items-center gap-1.5">
           <IconCopyButton
             content={diffLines.map(line => line.isGap
-              ? `@@ ${line.content || `${line.skipped || 0} lines hidden`} @@`
-              : `${line.type === 'added' ? '+' : line.type === 'removed' ? '-' : ' '}${line.content}`
+              ? `@@ ${ line.content || `${ line.skipped || 0 } lines hidden` } @@`
+              : `${ line.type === 'added' ? '+' : line.type === 'removed' ? '-' : ' ' }${ line.content }`
             ).join('\n')}
             label="Copy visible diff"
           />
@@ -1948,9 +1949,9 @@ const InlineDiffView = ({ filename, filepath = '', diffLines, showExpand = true,
               const isDel = l.type === 'removed';
               if (l.isGap) {
                 return (
-                  <div key={`gap-${i}`} className="eterx-inline-diff-gap flex min-h-[30px] items-center border-y border-white/[0.045] bg-[#171716] text-[10px] text-[#716B63]">
+                  <div key={`gap-${ i }`} className="eterx-inline-diff-gap flex min-h-[30px] items-center border-y border-white/[0.045] bg-[#171716] text-[10px] text-[#716B63]">
                     <div className="w-[45px] shrink-0 border-r border-white/[0.045] py-2 text-center text-[#514D48]">•••</div>
-                    <div className="px-4 py-2 italic">{l.skipped ? `${l.skipped} unchanged line${l.skipped === 1 ? '' : 's'} hidden` : l.content || 'Next change'}</div>
+                    <div className="px-4 py-2 italic">{l.skipped ? `${ l.skipped } unchanged line${ l.skipped === 1 ? '' : 's' } hidden` : l.content || 'Next change'}</div>
                   </div>
                 );
               }
@@ -2535,7 +2536,7 @@ const formatTerminalSourcePreview = (value: unknown) => {
     ? ['', '# ...', ...lines.slice(meaningfulIndex, meaningfulIndex + 8)]
     : lines.slice(4, 12);
   const preview = [...opening, ...meaningful].join('\n').slice(0, 1200).trim();
-  return preview.length < source.length ? `${preview}\n...` : preview;
+  return preview.length < source.length ? `${ preview }\n...` : preview;
 };
 
 const getTerminalSourceValue = (log: any, preview?: any) => {
@@ -2576,7 +2577,7 @@ const getTerminalCommandText = (log: any, preview?: any, fallback = '') => {
   if (sourcePreview) return sourcePreview;
 
   const language = String(toolArgs.language || '').trim();
-  return language ? `${language} inline script` : '';
+  return language ? `${ language } inline script` : '';
 };
 
 const isTerminalActionLike = (log: any, preview?: any) => {
@@ -2674,9 +2675,9 @@ const TerminalTraceCard = ({
           ? 1
           : resultObject && resultObject.running !== true && resultObject.stillRunning !== true && resultObject.status !== 'running'
             ? 0
-    : typeof log?.exitCode === 'number'
-      ? log.exitCode
-      : undefined;
+            : typeof log?.exitCode === 'number'
+              ? log.exitCode
+              : undefined;
   const durationMs = typeof preview?.durationMs === 'number'
     ? preview.durationMs
     : typeof log?.durationMs === 'number'
@@ -2736,9 +2737,9 @@ const TerminalTraceCard = ({
         <span className="eterx-action-icon eterx-terminal-icon flex h-6 w-6 shrink-0 items-center justify-center text-[#A39B91]">
           <Terminal className="h-[15px] w-[15px]" strokeWidth={2.1} />
         </span>
-        <span className={`min-w-0 truncate text-[13.5px] font-medium leading-tight tracking-normal ${ isStreaming ? 'eterx-text-shimmer eterx-text-shimmer-active' : 'text-[#C8C1B8]' }`}>
+        <Shimmer active={isStreaming} className="min-w-0 truncate text-[13.5px] font-medium leading-tight tracking-normal text-[#C8C1B8]">
           {headerLabel}
-        </span>
+        </Shimmer>
         {!isExpanded && (
           <span className="min-w-0 flex-1 truncate font-mono text-[12px] leading-tight text-[#857E73] select-all">
             {collapsedCommand || '(no command)'}
@@ -2837,9 +2838,9 @@ const FileChangeTraceCard = ({
   const isPatchWithResult = Boolean(patchResult && (isPatch || patchResult.changes.length > 0));
   const structuredStats = patchResult?.changes.length
     ? patchResult.changes.reduce((total, change) => ({
-        added: total.added + (Number(change.additions) || 0),
-        removed: total.removed + (Number(change.deletions) || 0),
-      }), { added: 0, removed: 0 })
+      added: total.added + (Number(change.additions) || 0),
+      removed: total.removed + (Number(change.deletions) || 0),
+    }), { added: 0, removed: 0 })
     : null;
   const effectiveStats = structuredStats || diffStats;
 
@@ -2962,9 +2963,9 @@ const FileChangeTraceCard = ({
         <span className="eterx-action-icon eterx-file-change-icon flex h-6 w-6 shrink-0 items-center justify-center">
           <AI isLive={isLiveChip} size={15} color={isLiveChip ? ac : '#DAD6CF'} />
         </span>
-        <span className={`eterx-file-change-title min-w-max whitespace-nowrap text-[13.5px] font-medium leading-tight tracking-normal ${ isLiveChip ? 'eterx-text-shimmer eterx-text-shimmer-active' : 'text-[#C8C1B8]' }`}>
+        <Shimmer active={isLiveChip} className="eterx-file-change-title min-w-max whitespace-nowrap text-[13.5px] font-medium leading-tight tracking-normal text-[#C8C1B8]">
           {title}
-        </span>
+        </Shimmer>
         <span className="eterx-file-change-detail flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 overflow-visible">
           {targetLabel ? (
             <span className="inline-flex min-w-0 max-w-full items-center gap-2">
@@ -3253,7 +3254,7 @@ const ActionChip = ({
           return <span className="eterx-action-icon flex h-6 w-6 items-center justify-center shrink-0"><AI isLive={isLiveChip} size={15} color={isLiveChip ? ac : '#DAD6CF'} /></span>;
         })()}
         {isThinkChip && <span className="h-6 w-6 shrink-0" />}
-        <span className={`eterx-action-verb shrink-0 truncate text-[13.5px] font-medium leading-tight tracking-normal ${ isLiveChip ? 'eterx-text-shimmer eterx-text-shimmer-active' : 'text-[#C8C1B8]' }`}>{displayVerbLabel}</span>
+        <Shimmer active={isLiveChip} className="eterx-action-verb shrink-0 truncate text-[13.5px] font-medium leading-tight tracking-normal text-[#C8C1B8]">{displayVerbLabel}</Shimmer>
         {hasFile && (
           <span className="flex min-w-0 items-center gap-2">
             <LocalFileIcon fileName={fileName} size="sm" />
@@ -3323,11 +3324,11 @@ const ActionChip = ({
                 ? <InlineDiffView filename={preview.filename || fileName} filepath={preview.filepath || fullPath} diffLines={preview.diffLines} />
                 : preview.type === 'file_preview' && previewLooksEdited
                   ? <InlineMissingDiffView filename={preview.filename || fileName} filepath={preview.filepath || fullPath} stats={diffStats} />
-                : preview.type === 'file_preview'
-                  ? <InlineCodeView filename={preview.filename || fileName} content={getPreviewContent(preview)} filepath={preview.filepath || fullPath} fetchFull={Boolean(preview.filepath || fullPath)} />
-                  : preview.type === 'tool_result_preview'
-                    ? <ToolResultPreview toolName={preview.toolName} args={preview.toolArgs} result={preview.result} />
-                    : null}
+                  : preview.type === 'file_preview'
+                    ? <InlineCodeView filename={preview.filename || fileName} content={getPreviewContent(preview)} filepath={preview.filepath || fullPath} fetchFull={Boolean(preview.filepath || fullPath)} />
+                    : preview.type === 'tool_result_preview'
+                      ? <ToolResultPreview toolName={preview.toolName} args={preview.toolArgs} result={preview.result} />
+                      : null}
           </motion.div>
         )}
       </AnimatePresence>
@@ -3372,10 +3373,12 @@ const SubAgentCard = ({ log, onOpenAgentTeam }: { log: any; onOpenAgentTeam?: (n
               <span className="truncate text-[13px] font-medium tracking-normal text-[#D8D1C8]">{agentName}</span>
               <span className={`shrink-0 inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.08em] ${ statusBadge.bg } ${ statusBadge.text }`}>
                 {isWorking && <span className="eterx-agent-live-rail !h-[6px] !w-[22px]" aria-hidden="true" />}
-                {statusBadge.label}
+                {isWorking ? <Shimmer>{statusBadge.label}</Shimmer> : statusBadge.label}
               </span>
             </span>
-            <span className={`mt-0.5 block truncate text-[11px] font-medium ${ isWorking ? 'text-[#BDB5AA]' : 'text-[#7E766C]' }`}>{metaText}</span>
+            <span className={`mt-0.5 block truncate text-[11px] font-medium ${ isWorking ? 'text-[#BDB5AA]' : 'text-[#7E766C]' }`}>
+              {isWorking ? <Shimmer>{metaText}</Shimmer> : metaText}
+            </span>
           </span>
 
           <ChevronRight className={`h-3.5 w-3.5 shrink-0 text-[#6F685F] transition-all ${ open ? 'rotate-90 text-[#B6AEA3]' : '' }`} />
@@ -3615,9 +3618,9 @@ const AskUserTimelineCard = ({ log, isLive }: { log: any; isLive: boolean }) => 
             <AgentAssetIcon size={18} color="#DAD6CF" />
           )}
         </span>
-        <span className={`shrink-0 truncate text-[13.5px] font-medium leading-tight tracking-normal ${ !answered && isLive ? 'eterx-text-shimmer eterx-text-shimmer-active' : 'text-[#C8C1B8]' }`}>
+        <Shimmer active={!answered && isLive} className="shrink-0 truncate text-[13.5px] font-medium leading-tight tracking-normal text-[#C8C1B8]">
           {answered ? 'Asked user' : `Asking user${ isLive ? '...' : '' }`}
-        </span>
+        </Shimmer>
         <span className="min-w-0 flex-1 truncate text-[12.75px] text-[#918A80]">
           {questionLabel}
         </span>
@@ -3678,7 +3681,7 @@ const CollapsibleActionGroup = ({
       initial={{ opacity: 0, y: 5 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
-    className={useStandaloneRows ? 'w-full' : ACTION_CARD_CLASS}
+      className={useStandaloneRows ? 'w-full' : ACTION_CARD_CLASS}
     >
       {!useStandaloneRows && visibleLogs.length > 1 && (
         <button
@@ -3687,7 +3690,7 @@ const CollapsibleActionGroup = ({
           onClick={() => setOpen(value => !value)}
           className="flex w-full items-center gap-2 border-b border-white/[0.06] px-3 py-2 text-left text-[12px] font-medium text-white/60 transition-colors hover:bg-white/[0.035] hover:text-white/85 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30"
         >
-          <ChevronDown className={`h-3.5 w-3.5 transition-transform ${open ? '' : '-rotate-90'}`} aria-hidden="true" />
+          <ChevronDown className={`h-3.5 w-3.5 transition-transform ${ open ? '' : '-rotate-90' }`} aria-hidden="true" />
           <span>{visibleLogs.length} actions</span>
           <span className="ml-auto text-[10px] text-white/35">{open ? 'Hide' : 'Show'}</span>
         </button>
@@ -3774,6 +3777,7 @@ const LiveWorkingIndicator = ({ logs }: { logs: any[] }) => {
   };
 
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const transitionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const modeRef = useRef<'thinking' | 'acting' | 'idle'>('idle');
   const queueRef = useRef<{ text: string; dur: number }[]>([]);
   const lastLabelRef = useRef<string>('');
@@ -3797,18 +3801,17 @@ const LiveWorkingIndicator = ({ logs }: { logs: any[] }) => {
     const s = getLogState(logs);
     return s.label || (s.mode === 'thinking' ? THINKING_PHRASES[0].text : IDLE_PHRASES[0].text);
   });
-  const [flip, setFlip] = useState(false);
   const [faceReady, setFaceReady] = useState(false);
   const mountedAtRef = useRef(Date.now());
   const hasDeepWork = useMemo(() => logs.some(isDeepWorkLog), [logs]);
 
   const doTransition = (nextText: string, nextDur: number) => {
     if (timerRef.current) clearTimeout(timerRef.current);
-    setFlip(true);
-    setTimeout(() => {
+    if (transitionTimerRef.current) clearTimeout(transitionTimerRef.current);
+    transitionTimerRef.current = setTimeout(() => {
       setLabel(nextText);
       lastLabelRef.current = nextText;
-      setFlip(false);
+      transitionTimerRef.current = null;
     }, 260);
     if (nextDur > 0) timerRef.current = setTimeout(() => advancePhrase(modeRef.current), nextDur);
   };
@@ -3834,7 +3837,10 @@ const LiveWorkingIndicator = ({ logs }: { logs: any[] }) => {
       const first = queueRef.current.shift() || pool[0] || DEFAULT_LIVE_PHRASE;
       doTransition(first.text, first.dur);
     }
-    return () => { if (timerRef.current) clearTimeout(timerRef.current); };
+    return () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+      if (transitionTimerRef.current) clearTimeout(transitionTimerRef.current);
+    };
   }, []);
 
   // React to log changes — immediately reflect mode/action
@@ -3905,7 +3911,7 @@ const LiveWorkingIndicator = ({ logs }: { logs: any[] }) => {
   const shouldUseNeutralLabel = hideDuringFreshThought || isRecentAction;
   const faceMode = modeRef.current === 'acting' ? 'working' : modeRef.current === 'thinking' ? 'thinking' : 'idle';
   const displayLabel = shouldUseNeutralLabel
-    ? faceMode === 'working' ? 'Working' : 'Thinking'
+    ? 'Working'
     : label;
 
   if (!faceReady) return null;
@@ -3934,9 +3940,9 @@ const LiveWorkingIndicator = ({ logs }: { logs: any[] }) => {
           animate={{ opacity: 1, x: 0 }}
           exit={{ opacity: 0, x: -4 }}
           transition={{ duration: 0.18, ease: 'easeOut' }}
-          className="eterx-text-shimmer eterx-text-shimmer-ambient min-w-0 truncate pb-[2px] text-[13.5px] font-medium leading-[1.35] tracking-normal"
+          className="min-w-0 truncate pb-[2px] text-[13.5px] font-medium leading-[1.35] tracking-normal"
         >
-          {displayLabel}
+          <Shimmer>{displayLabel}</Shimmer>
         </motion.span>
       </AnimatePresence>
     </motion.div>
@@ -4042,7 +4048,7 @@ const SteeringCard = ({ log, onEdit }: { log: any; onEdit?: (text: string) => vo
       transition={{ type: 'spring', stiffness: 450, damping: 24 }}
       className="flex justify-end w-full my-3 relative z-10 group/steer"
     >
-      <div className={`${isProxy ? 'bg-[#121416] border-[#34383D]' : 'bg-[#20201F] border-white/[0.06]'} px-4 py-3 rounded-[18px] rounded-tr-[6px] ml-auto text-[13.5px] text-[#F4F2EE] shadow-[0_4px_16px_rgba(0,0,0,0.22),inset_0_1px_0_rgba(255,255,255,0.025)] leading-[1.56] whitespace-pre-wrap relative border select-text flex flex-row items-end gap-3 max-w-[84%]`}>
+      <div className={`${ isProxy ? 'bg-[#121416] border-[#34383D]' : 'bg-[#20201F] border-white/[0.06]' } px-4 py-3 rounded-[18px] rounded-tr-[6px] ml-auto text-[13.5px] text-[#F4F2EE] shadow-[0_4px_16px_rgba(0,0,0,0.22),inset_0_1px_0_rgba(255,255,255,0.025)] leading-[1.56] whitespace-pre-wrap relative border select-text flex flex-row items-end gap-3 max-w-[84%]`}>
         <UserMessageActions text={log.text} onEdit={isProxy ? undefined : onEdit} />
         <span className="block w-full text-left break-words [word-break:break-word] [overflow-wrap:anywhere]">
           {log.text}
@@ -4564,7 +4570,7 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
         return <CollapsibleActionGroup key={groupKey} logs={seg.logs} isActiveGroup={isThinking && isLast && i === segs.length - 1} isLast={isLast} allLogs={timelineLogs} />;
       })}
       <AnimatePresence>
-        {showLiveIndicator && isThinking && isLast && <LiveWorkingIndicator key="live-working" logs={statusLogs} />}
+        {showLiveIndicator && isThinking && isLast && segs.length === 0 && <LiveWorkingIndicator key="live-working" logs={statusLogs} />}
       </AnimatePresence>
     </div>
   );

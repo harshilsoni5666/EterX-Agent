@@ -306,6 +306,155 @@ async function fetchAnthropicModels(): Promise<ProviderModelResult> {
   }
 }
 
+
+async function fetchDeepSeekModels(): Promise<ProviderModelResult> {
+  const apiKey = getRuntimeApiKeyValues('deepseek' as any)[0];
+  if (!apiKey) return { provider: 'deepseek' as any, connected: false, source: 'unavailable', models: [], error: 'Missing DeepSeek API key' };
+  try {
+    const res = await withTimeout(fetch('https://api.deepseek.com/v1/models', {
+      cache: 'no-store',
+      headers: { Authorization: `Bearer ${apiKey}` },
+    }));
+    if (!res.ok) throw new Error(`DeepSeek models request failed (${res.status})`);
+    const data = await res.json();
+    const models = trimModels((data.data || []).map((model: any) => ({
+      id: String(model.id || ''),
+      name: String(model.id || ''),
+      description: model.owned_by ? `Owned by ${model.owned_by}` : undefined,
+    })));
+    return { provider: 'deepseek' as any, connected: true, source: 'live', models };
+  } catch (error) {
+    return providerError('deepseek' as any, error);
+  }
+}
+
+async function fetchGrokModels(): Promise<ProviderModelResult> {
+  const apiKey = getRuntimeApiKeyValues('grok' as any)[0];
+  if (!apiKey) return { provider: 'grok' as any, connected: false, source: 'unavailable', models: [], error: 'Missing xAI Grok API key' };
+  try {
+    const res = await withTimeout(fetch('https://api.x.ai/v1/models', {
+      cache: 'no-store',
+      headers: { Authorization: `Bearer ${apiKey}` },
+    }));
+    if (!res.ok) throw new Error(`Grok models request failed (${res.status})`);
+    const data = await res.json();
+    const models = trimModels((data.data || []).map((model: any) => ({
+      id: String(model.id || ''),
+      name: String(model.id || ''),
+      description: 'xAI Grok Model',
+    })));
+    return { provider: 'grok' as any, connected: true, source: 'live', models };
+  } catch (error) {
+    return providerError('grok' as any, error);
+  }
+}
+
+async function fetchCerebrasModels(): Promise<ProviderModelResult> {
+  const apiKey = getRuntimeApiKeyValues('cerebras' as any)[0];
+  if (!apiKey) return { provider: 'cerebras' as any, connected: false, source: 'unavailable', models: [], error: 'Missing Cerebras API key' };
+  try {
+    const res = await withTimeout(fetch('https://api.cerebras.ai/v1/models', {
+      cache: 'no-store',
+      headers: { Authorization: `Bearer ${apiKey}` },
+    }));
+    if (!res.ok) throw new Error(`Cerebras models request failed (${res.status})`);
+    const data = await res.json();
+    const models = trimModels((data.data || []).map((model: any) => ({
+      id: String(model.id || ''),
+      name: String(model.id || ''),
+      description: 'Cerebras Wafer Engine Model',
+    })));
+    return { provider: 'cerebras' as any, connected: true, source: 'live', models };
+  } catch (error) {
+    return providerError('cerebras' as any, error);
+  }
+}
+
+async function fetchTogetherModels(): Promise<ProviderModelResult> {
+  const apiKey = getRuntimeApiKeyValues('together' as any)[0];
+  if (!apiKey) return { provider: 'together' as any, connected: false, source: 'unavailable', models: [], error: 'Missing Together API key' };
+  try {
+    const res = await withTimeout(fetch('https://api.together.xyz/v1/models', {
+      cache: 'no-store',
+      headers: { Authorization: `Bearer ${apiKey}` },
+    }));
+    if (!res.ok) throw new Error(`Together models request failed (${res.status})`);
+    const data = await res.json();
+    const raw = Array.isArray(data) ? data : data.data || [];
+    const models = trimModels(raw.map((model: any) => ({
+      id: String(model.id || model.name || ''),
+      name: model.display_name || model.id || model.name,
+      description: model.description || 'Together AI Model',
+      contextLength: model.context_length,
+    })));
+    return { provider: 'together' as any, connected: true, source: 'live', models };
+  } catch (error) {
+    return providerError('together' as any, error);
+  }
+}
+
+async function fetchElevenLabsVoices(): Promise<ProviderModelResult> {
+  const apiKey = getRuntimeApiKeyValues('elevenlabs' as any)[0];
+  try {
+    const headers: Record<string, string> = {};
+    if (apiKey) headers['xi-api-key'] = apiKey;
+    const res = await withTimeout(fetch('https://api.elevenlabs.io/v1/voices', {
+      cache: 'no-store',
+      headers,
+    }));
+    if (!res.ok) throw new Error(`ElevenLabs voices request failed (${res.status})`);
+    const data = await res.json();
+    const raw = data.voices || [];
+    const models = trimModels(raw.map((voice: any) => ({
+      id: String(voice.voice_id || voice.name || ''),
+      name: `${voice.name} (${voice.category || 'voice'})`,
+      description: voice.description || `ElevenLabs ${voice.category || 'voice'}`,
+    })));
+    return { provider: 'elevenlabs' as any, connected: true, source: 'live', models };
+  } catch (error) {
+    return providerError('elevenlabs' as any, error);
+  }
+}
+
+async function fetchOllamaModels(): Promise<ProviderModelResult> {
+  try {
+    const host = process.env.OLLAMA_HOST || 'http://localhost:11434';
+    const res = await withTimeout(fetch(`${host.replace(/\/+$/, '')}/api/tags`, {
+      cache: 'no-store',
+    }), 4000);
+    if (!res.ok) throw new Error(`Ollama local request failed (${res.status})`);
+    const data = await res.json();
+    const models = trimModels((data.models || []).map((model: any) => ({
+      id: String(model.name || model.model || ''),
+      name: String(model.name || model.model || ''),
+      description: model.details?.parameter_size ? `Local (${model.details.parameter_size})` : 'Local Ollama Model',
+    })));
+    return { provider: 'ollama' as any, connected: true, source: 'live', models };
+  } catch (error) {
+    return providerError('ollama' as any, error);
+  }
+}
+
+async function fetchLMStudioModels(): Promise<ProviderModelResult> {
+  try {
+    const host = process.env.LMSTUDIO_HOST || 'http://localhost:1234';
+    const res = await withTimeout(fetch(`${host.replace(/\/+$/, '')}/v1/models`, {
+      cache: 'no-store',
+    }), 4000);
+    if (!res.ok) throw new Error(`LM Studio local request failed (${res.status})`);
+    const data = await res.json();
+    const models = trimModels((data.data || []).map((model: any) => ({
+      id: String(model.id || ''),
+      name: String(model.id || ''),
+      description: 'LM Studio Desktop Local Server',
+    })));
+    return { provider: 'lmstudio' as any, connected: true, source: 'live', models };
+  } catch (error) {
+    return providerError('lmstudio' as any, error);
+  }
+}
+
+
 export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({}));
   applyRuntimeApiKeys(body?.apiKeys);
@@ -322,6 +471,13 @@ export async function POST(req: NextRequest) {
   if (!requested || requested.has('openrouter')) jobs.push(fetchOpenRouterModels());
   if (!requested || requested.has('groq')) jobs.push(fetchGroqModels());
   if (!requested || requested.has('anthropic')) jobs.push(fetchAnthropicModels());
+  if (!requested || requested.has('deepseek')) jobs.push(fetchDeepSeekModels());
+  if (!requested || requested.has('grok')) jobs.push(fetchGrokModels());
+  if (!requested || requested.has('cerebras')) jobs.push(fetchCerebrasModels());
+  if (!requested || requested.has('together')) jobs.push(fetchTogetherModels());
+  if (!requested || requested.has('elevenlabs')) jobs.push(fetchElevenLabsVoices());
+  if (!requested || requested.has('ollama')) jobs.push(fetchOllamaModels());
+  if (!requested || requested.has('lmstudio')) jobs.push(fetchLMStudioModels());
 
   const results = await Promise.all(jobs);
   return NextResponse.json({
@@ -348,6 +504,13 @@ export async function GET(req: NextRequest) {
   if (!requested || requested.has('openrouter')) jobs.push(fetchOpenRouterModels());
   if (!requested || requested.has('groq')) jobs.push(fetchGroqModels());
   if (!requested || requested.has('anthropic')) jobs.push(fetchAnthropicModels());
+  if (!requested || requested.has('deepseek')) jobs.push(fetchDeepSeekModels());
+  if (!requested || requested.has('grok')) jobs.push(fetchGrokModels());
+  if (!requested || requested.has('cerebras')) jobs.push(fetchCerebrasModels());
+  if (!requested || requested.has('together')) jobs.push(fetchTogetherModels());
+  if (!requested || requested.has('elevenlabs')) jobs.push(fetchElevenLabsVoices());
+  if (!requested || requested.has('ollama')) jobs.push(fetchOllamaModels());
+  if (!requested || requested.has('lmstudio')) jobs.push(fetchLMStudioModels());
 
   const results = await Promise.all(jobs);
   return NextResponse.json({
