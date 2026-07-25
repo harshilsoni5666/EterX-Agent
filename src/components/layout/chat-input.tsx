@@ -2604,40 +2604,46 @@ const handleSelectFolderDialog = useCallback(async () => {
           {/* ═══ AUTO-EXPANDING LIVE TYPING BAR ═══ */}
           {isLiveActive && (
             <div className="flex items-end justify-between w-full min-h-[44px] max-h-[160px] pl-4 pr-1.5 py-1 relative transition-all duration-200">
-              <textarea
-                ref={(el) => {
-                  if (el) {
-                    el.style.height = 'auto';
-                    el.style.height = `${Math.min(el.scrollHeight, 150)}px`;
-                  }
-                }}
-                value={inputValue}
-                onChange={(e) => {
-                  const nextValue = e.target.value;
-                  setHasDraftInputText(Boolean(nextValue.trim()));
-                  setInputValue(nextValue);
-                  e.target.style.height = 'auto';
-                  e.target.style.height = `${Math.min(e.target.scrollHeight, 150)}px`;
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    if (inputValue.trim()) {
-                      submitPrompt();
+              {liveState === 'connecting' ? (
+                <div className="flex-1 flex items-center min-h-[42px] py-2 pl-1 select-none">
+                  <Shimmer className="text-[14.5px] font-medium text-[#C8C1B8]">Connecting...</Shimmer>
+                </div>
+              ) : (
+                <textarea
+                  ref={(el) => {
+                    if (el) {
+                      el.style.height = 'auto';
+                      el.style.height = `${Math.min(el.scrollHeight, 150)}px`;
                     }
-                  }
-                }}
-                placeholder="Type..."
-                rows={1}
-                className="flex-1 bg-transparent border-0 outline-none ring-0 text-[14.5px] text-[#F0F0F0] placeholder:text-[#6B6964] font-normal pr-3 resize-none min-h-[26px] max-h-[150px] leading-[1.45] py-2 overflow-y-auto eterx-scrollbar scrollbar-no-buttons"
-                style={{ caretColor: '#F0F0F0' }}
-              />
+                  }}
+                  value={inputValue}
+                  onChange={(e) => {
+                    const nextValue = e.target.value;
+                    setHasDraftInputText(Boolean(nextValue.trim()));
+                    setInputValue(nextValue);
+                    e.target.style.height = 'auto';
+                    e.target.style.height = `${Math.min(e.target.scrollHeight, 150)}px`;
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault();
+                      if (inputValue.trim()) {
+                        submitPrompt();
+                      }
+                    }
+                  }}
+                  placeholder="Type..."
+                  rows={1}
+                  className="flex-1 bg-transparent border-0 outline-none ring-0 text-[14.5px] text-[#F0F0F0] placeholder:text-[#6B6964] font-normal pr-3 resize-none min-h-[26px] max-h-[150px] leading-[1.45] py-2 overflow-y-auto eterx-scrollbar scrollbar-no-buttons"
+                  style={{ caretColor: '#F0F0F0' }}
+                />
+              )}
               <button
                 type="button"
                 onClick={submitPrompt}
-                disabled={!inputValue.trim()}
+                disabled={liveState === 'connecting' || !inputValue.trim()}
                 className={`w-[34px] h-[34px] mb-0.5 shrink-0 flex items-center justify-center rounded-full transition-all duration-200 ${
-                  inputValue.trim()
+                  liveState !== 'connecting' && inputValue.trim()
                     ? 'bg-[#F2EFEA] text-black hover:bg-white shadow-[0_4px_14px_rgba(242,239,234,0.25)] active:scale-95 cursor-pointer'
                     : 'bg-[#2D2D2D] text-[#8C8984] hover:bg-[#333333] hover:text-white cursor-pointer opacity-70'
                 }`}
