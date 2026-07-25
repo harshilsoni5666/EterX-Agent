@@ -200,7 +200,7 @@ interface ProjectsViewProps {
   setSelectedSection: (section: string) => void;
 }
 
-export const ProjectsView: React.FC<ProjectsViewProps> = ({
+export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
   selectedSection,
   setSelectedSection,
 }) => {
@@ -1888,4 +1888,4 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
       </div>
     </div>
   );
-};
+});

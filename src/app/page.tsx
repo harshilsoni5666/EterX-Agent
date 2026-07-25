@@ -172,7 +172,7 @@ const getSubAgentStatusTone = (status?: string) => {
   }
 };
 
-const SubAgentAvatar = ({
+const SubAgentAvatar = React.memo(({
   name,
   status,
   size = 'sm',
@@ -209,9 +209,9 @@ const SubAgentAvatar = ({
       )}
     </span>
   );
-};
+});
 
-const TaskStatusGlyphMini = ({ status, active }: { status?: string; active?: boolean }) => {
+const TaskStatusGlyphMini = React.memo(({ status, active }: { status?: string; active?: boolean }) => {
   if (status === 'done') {
     return (
       <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full bg-[#A9A9A9] text-[#1F1F1F] shadow-[inset_0_1px_0_rgba(255,255,255,0.28)]">
@@ -230,7 +230,7 @@ const TaskStatusGlyphMini = ({ status, active }: { status?: string; active?: boo
   }
 
   return <span className="block h-3.5 w-3.5 shrink-0 rounded-full border-[1.5px] border-[#A9A9A9]/50" />;
-};
+});
 
 interface ChatSession {
   id: string;

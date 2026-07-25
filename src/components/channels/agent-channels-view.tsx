@@ -103,7 +103,7 @@ const connectorImage = (src: string, size: number, className = 'h-[58%] w-[58%]'
   />
 );
 
-export const AgentChannelsView = () => {
+export const AgentChannelsView = React.memo(() => {
   const [headlineIndex, setHeadlineIndex] = useState(0);
 
   useEffect(() => {
@@ -227,6 +227,6 @@ export const AgentChannelsView = () => {
       </div>
     </div>
   );
-};
+});;
 
 export default AgentChannelsView;

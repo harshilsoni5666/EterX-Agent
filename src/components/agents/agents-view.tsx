@@ -15,7 +15,7 @@ interface Agent {
   builderMessages?: {role: 'user' | 'assistant', content: string}[];
 }
 
-export const AgentsView = ({
+export const AgentsView = React.memo(({
   onOpenBuilder,
   onUseAgent,
   selectedAgentId,
@@ -734,4 +734,4 @@ export const AgentsView = ({
 
     </div>
   );
-};
+});

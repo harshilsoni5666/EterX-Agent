@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect } from 'react';
+import React, { useEffect } from 'react';
 
 type ThemePreference = 'dark' | 'light' | 'system';
 type ResolvedTheme = 'dark' | 'light';
@@ -49,7 +49,7 @@ export const broadcastEterxSettingsUpdate = (settings: unknown) => {
   }
 };
 
-export const ThemeBridge = () => {
+export const ThemeBridge = React.memo(() => {
   useEffect(() => {
     const applyStoredTheme = () => applyEterxTheme();
     applyStoredTheme();
@@ -83,4 +83,4 @@ export const ThemeBridge = () => {
   }, []);
 
   return null;
-};
+});
