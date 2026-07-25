@@ -2836,8 +2836,8 @@ const TerminalTraceCard = ({
     return (
       <div className={`eterx-terminal-trace w-full ${ inCard ? '' : 'my-1.5' }`}>
         <div className="eterx-terminal-trace-row flex min-h-[33px] w-full items-center gap-2 px-1.5 py-1 text-left">
-          <span className="eterx-action-icon eterx-terminal-icon flex h-6 w-6 shrink-0 items-center justify-center text-[#A39B91]">
-            <Clock className={`h-[15px] w-[15px] ${ isStreaming ? 'text-[#3EE06F] animate-spin' : 'text-[#A39B91]' }`} strokeWidth={2.1} />
+          <span className="eterx-action-icon eterx-terminal-icon flex h-[26px] w-[26px] shrink-0 items-center justify-center text-[#A39B91]">
+            <Clock className={`h-[16.5px] w-[16.5px] ${ isStreaming ? 'text-[#3EE06F] animate-spin' : 'text-[#A39B91]' }`} strokeWidth={2.1} />
           </span>
           <Shimmer active={isStreaming} className="min-w-0 truncate text-[13.5px] font-medium leading-tight tracking-normal text-[#C8C1B8]">
             {headerLabel}
@@ -2878,8 +2878,8 @@ const TerminalTraceCard = ({
   const headerLabel = durationLabel && !isStreaming ? `${ title } · ${ durationLabel }` : title;
 
   const rowGridClass = isExpanded
-    ? 'grid-cols-[24px_1fr_auto]'   // title fills space → chevron stays at far right
-    : 'grid-cols-[24px_auto_minmax(0,1fr)_auto]';
+    ? 'grid-cols-[26px_1fr_auto]'   // title fills space → chevron stays at far right
+    : 'grid-cols-[26px_auto_minmax(0,1fr)_auto]';
 
   return (
     <div className={`eterx-terminal-trace w-full ${ inCard ? '' : 'my-1.5' }`}>
@@ -2892,8 +2892,8 @@ const TerminalTraceCard = ({
         aria-expanded={isExpanded}
         className={`eterx-terminal-trace-row group grid min-h-[33px] w-full ${ rowGridClass } items-center gap-2 px-1.5 py-1 text-left transition-colors outline-none focus:outline-none focus-visible:outline-none focus-visible:ring-0 ${ inCard ? 'hover:bg-white/[0.024]' : 'rounded-[9px] hover:bg-white/[0.024]' }`}
       >
-        <span className="eterx-action-icon eterx-terminal-icon flex h-6 w-6 shrink-0 items-center justify-center text-[#A39B91]">
-          <Terminal className="h-[15px] w-[15px]" strokeWidth={2.1} />
+        <span className="eterx-action-icon eterx-terminal-icon flex h-[26px] w-[26px] shrink-0 items-center justify-center text-[#A39B91]">
+          <Terminal className="h-[16.5px] w-[16.5px]" strokeWidth={2.1} />
         </span>
         <Shimmer active={isStreaming} className="min-w-0 truncate text-[13.5px] font-medium leading-tight tracking-normal text-[#C8C1B8]">
           {headerLabel}
@@ -3068,8 +3068,8 @@ const FileChangeTraceCard = ({
   );
 
   const collapsedRowClass = inCard
-    ? `eterx-file-change-row eterx-file-change-row--embedded group grid min-h-[33px] w-full grid-cols-[24px_auto_minmax(0,1fr)_auto] items-center gap-2 px-1.5 py-1 text-left transition-colors hover:bg-white/[0.024] ${ canExpand ? 'cursor-pointer' : 'cursor-default' }`
-    : `eterx-file-change-row eterx-file-change-row--standalone group grid min-h-[38px] w-full grid-cols-[24px_auto_minmax(0,1fr)_auto] items-center gap-2 px-3 py-1 text-left transition-colors ${ canExpand ? 'cursor-pointer hover:bg-white/[0.025]' : 'cursor-default' }`;
+    ? `eterx-file-change-row eterx-file-change-row--embedded group grid min-h-[33px] w-full grid-cols-[26px_auto_minmax(0,1fr)_auto] items-center gap-2 px-1.5 py-1 text-left transition-colors hover:bg-white/[0.024] ${ canExpand ? 'cursor-pointer' : 'cursor-default' }`
+    : `eterx-file-change-row eterx-file-change-row--standalone group grid min-h-[38px] w-full grid-cols-[26px_auto_minmax(0,1fr)_auto] items-center gap-2 px-3 py-1 text-left transition-colors ${ canExpand ? 'cursor-pointer hover:bg-white/[0.025]' : 'cursor-default' }`;
 
   return (
     <div className={`eterx-file-change-trace w-full ${ inCard ? '' : `${ ACTION_CARD_CLASS } my-1.5` }`}>
@@ -3086,8 +3086,8 @@ const FileChangeTraceCard = ({
         }}
         className={collapsedRowClass}
       >
-        <span className="eterx-action-icon eterx-file-change-icon flex h-6 w-6 shrink-0 items-center justify-center">
-          <AI isLive={isLiveChip} size={15} color={isLiveChip ? ac : '#DAD6CF'} />
+        <span className="eterx-action-icon eterx-file-change-icon flex h-[26px] w-[26px] shrink-0 items-center justify-center">
+          <AI isLive={isLiveChip} size={16.5} color={isLiveChip ? ac : '#DAD6CF'} />
         </span>
         <Shimmer active={isLiveChip} className="eterx-file-change-title min-w-max whitespace-nowrap text-[13.5px] font-medium leading-tight tracking-normal text-[#C8C1B8]">
           {title}
@@ -3366,14 +3366,14 @@ const ActionChip = ({
           e.preventDefault();
           handleTogglePreview(e);
         }}
-        className={`eterx-action-chip grid min-h-[33px] w-full grid-cols-[24px_auto_minmax(0,1fr)_auto] items-center gap-2 px-1.5 py-1 transition-colors group ${ inCard ? 'rounded-none border-0 bg-transparent hover:bg-white/[0.026]' : preview ? `${ ACTION_CARD_CLASS } cursor-pointer hover:border-white/[0.13] hover:bg-[#181817]/80` : `${ ACTION_CARD_CLASS } cursor-default hover:bg-[#171716]/70` } ${ preview ? 'cursor-pointer' : 'cursor-default' }`}
+        className={`eterx-action-chip grid min-h-[33px] w-full grid-cols-[26px_auto_minmax(0,1fr)_auto] items-center gap-2 px-1.5 py-1 transition-colors group ${ inCard ? 'rounded-none border-0 bg-transparent hover:bg-white/[0.026]' : preview ? `${ ACTION_CARD_CLASS } cursor-pointer hover:border-white/[0.13] hover:bg-[#181817]/80` : `${ ACTION_CARD_CLASS } cursor-default hover:bg-[#171716]/70` } ${ preview ? 'cursor-pointer' : 'cursor-default' }`}
       >
         {!isThinkChip && (() => {
           // Terminal-style traces can arrive with custom text and older computer categories.
           const iconCategory = shouldUseTerminalIcon(log, subtitle, preview) ? 'terminal' : log.iconCategory;
           const agentEntry = resolveAgentIcon(displayVerbLabel, log.text, iconCategory);
           const { Icon: AI, color: ac } = agentEntry;
-          return <span className="eterx-action-icon flex h-6 w-6 items-center justify-center shrink-0"><AI isLive={isLiveChip} size={15} color={isLiveChip ? ac : '#DAD6CF'} /></span>;
+          return <span className="eterx-action-icon flex h-[26px] w-[26px] items-center justify-center shrink-0"><AI isLive={isLiveChip} size={16.5} color={isLiveChip ? ac : '#DAD6CF'} /></span>;
         })()}
         {isThinkChip && <span className="h-6 w-6 shrink-0" />}
         <Shimmer active={isLiveChip} className="eterx-action-verb shrink-0 truncate text-[13.5px] font-medium leading-tight tracking-normal text-[#C8C1B8]">{displayVerbLabel}</Shimmer>
