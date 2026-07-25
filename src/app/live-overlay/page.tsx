@@ -125,8 +125,8 @@ export default function LiveOverlayPage() {
     <>
       <style dangerouslySetInnerHTML={{
         __html: `
-        html, body, #__next, main { background: transparent !important; background-color: transparent !important; margin: 0; padding: 0; overflow: hidden; }
-        * { box-sizing: border-box; pointer-events: none; }
+        html, body, #__next, main { background: transparent !important; background-color: transparent !important; margin: 0; padding: 0; overflow: hidden; pointer-events: none; }
+        button, a, input { pointer-events: auto !important; }
       ` }} />
       <div
         className="w-screen h-screen flex flex-col items-center justify-center select-none"
@@ -187,6 +187,7 @@ export default function LiveOverlayPage() {
                   WebkitBackdropFilter: 'blur(24px) saturate(1.8)',
                   boxShadow: '0 4px 20px rgba(0, 0, 0, 0.15), 0 0 0 1px rgba(0, 0, 0, 0.05)',
                   whiteSpace: 'nowrap',
+                  pointerEvents: 'auto',
                   WebkitAppRegion: 'no-drag',
                 } as any}
                 onMouseEnter={handlePillEnter}
@@ -195,52 +196,61 @@ export default function LiveOverlayPage() {
               >
                 <button
                   type="button"
-                  onClick={() => {
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handlePillEnter(e);
                     const next = !isSpeakerMuted;
                     setIsSpeakerMuted(next);
                     if (typeof window !== 'undefined' && (window as any).electronAPI?.petReply) {
                       (window as any).electronAPI.petReply(JSON.stringify({ action: 'toggle-speaker', muted: next }));
                     }
                   }}
-                  className="w-7 h-7 flex items-center justify-center rounded-full transition-all duration-150 active:scale-90 hover:bg-black/5"
-                  style={{ color: isSpeakerMuted ? '#ef4444' : '#374151' }}
+                  className="w-7 h-7 flex items-center justify-center rounded-full transition-all duration-150 active:scale-90 hover:bg-black/10 pointer-events-auto cursor-pointer"
+                  style={{ color: isSpeakerMuted ? '#ef4444' : '#374151', pointerEvents: 'auto' }}
                   title={isSpeakerMuted ? "Unmute Audio" : "Mute Audio"}
                 >
                   {isSpeakerMuted
-                    ? <PremiumVolumeX className="w-4 h-4 text-red-500" />
-                    : <PremiumVolume2 className="w-4 h-4 text-gray-700" />}
+                    ? <PremiumVolumeX className="w-4 h-4 text-red-500 pointer-events-none" />
+                    : <PremiumVolume2 className="w-4 h-4 text-gray-700 pointer-events-none" />}
                 </button>
 
                 <button
                   type="button"
-                  onClick={() => {
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handlePillEnter(e);
                     const next = !isMicMuted;
                     setIsMicMuted(next);
                     if (typeof window !== 'undefined' && (window as any).electronAPI?.petReply) {
                       (window as any).electronAPI.petReply(JSON.stringify({ action: 'toggle-mic', muted: next }));
                     }
                   }}
-                  className="w-7 h-7 flex items-center justify-center rounded-full transition-all duration-150 active:scale-90 hover:bg-black/5"
-                  style={{ color: isMicMuted ? '#ef4444' : '#374151' }}
+                  className="w-7 h-7 flex items-center justify-center rounded-full transition-all duration-150 active:scale-90 hover:bg-black/10 pointer-events-auto cursor-pointer"
+                  style={{ color: isMicMuted ? '#ef4444' : '#374151', pointerEvents: 'auto' }}
                   title={isMicMuted ? "Unmute Microphone" : "Mute Microphone"}
                 >
                   {isMicMuted
-                    ? <PremiumMicOff className="w-4 h-4 text-red-500" />
-                    : <PremiumMic className="w-4 h-4 text-gray-700" />}
+                    ? <PremiumMicOff className="w-4 h-4 text-red-500 pointer-events-none" />
+                    : <PremiumMic className="w-4 h-4 text-gray-700 pointer-events-none" />}
                 </button>
 
                 <button
                   type="button"
-                  onClick={handleClose}
-                  className="w-7 h-7 flex items-center justify-center rounded-full transition-all duration-150 active:scale-90 hover:opacity-90"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handlePillEnter(e);
+                    handleClose();
+                  }}
+                  className="w-7 h-7 flex items-center justify-center rounded-full transition-all duration-150 active:scale-90 hover:opacity-90 pointer-events-auto cursor-pointer"
                   style={{
                     background: 'linear-gradient(135deg, #27272a, #09090b)',
                     color: '#ffffff',
                     boxShadow: '0 2px 8px rgba(0, 0, 0, 0.25)',
+                    pointerEvents: 'auto',
                   }}
                   title="Close Overlay"
                 >
-                  <X className="w-3.5 h-3.5 stroke-[2.5]" />
+                  <X className="w-3.5 h-3.5 stroke-[2.5] pointer-events-none" />
                 </button>
               </motion.div>
             )}
