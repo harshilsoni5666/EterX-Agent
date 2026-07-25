@@ -3,6 +3,7 @@ import * as THREE from 'three';
 
 const vertexShaderSource = `varying vec3 vNormal;
 varying vec3 vPosition;
+varying vec3 vLocalPos;
 uniform float time;
 uniform float morph;
 
@@ -89,8 +90,9 @@ float cnoise(vec3 P) {
 
 void main() {
   vNormal = normalize(normalMatrix * normal);
-  // Pure local harmonic oscillation — Mesh stays 100% fixed in orientation
-  float f = morph * cnoise(normal * 0.4 + vec3(sin(time * 0.8), cos(time * 0.7), sin(time * 0.9)) * 0.35);
+  vLocalPos = normal;
+  // Soft organic surface wave
+  float f = morph * cnoise(normal * 0.4 + vec3(sin(time * 0.9), cos(time * 0.8), sin(time * 1.0)) * 0.35);
   vec4 pos = vec4(position + f * normal, 1.0);
   vPosition = pos.xyz;
   gl_Position = projectionMatrix * modelViewMatrix * pos;
@@ -98,6 +100,7 @@ void main() {
 
 const fragmentShaderSource = `varying vec3 vNormal;
 varying vec3 vPosition;
+varying vec3 vLocalPos;
 uniform float time;
 uniform float RGBr;
 uniform float RGBg;
@@ -183,48 +186,67 @@ float cnoise(vec3 P) {
   return 2.2 * n_xyz;
 }
 
+// 4-Octave Fractional Brownian Motion (fBm) for Volumetric Random Cloud Wisps
+float fbm(vec3 p) {
+  float value = 0.0;
+  float amplitude = 0.5;
+  float frequency = 1.0;
+  vec3 flow = vec3(sin(time * 1.1), cos(time * 0.9), sin(time * 1.25)) * 0.4;
+  for (int i = 0; i < 4; i++) {
+    value += amplitude * cnoise((p + flow) * frequency);
+    frequency *= 2.08;
+    amplitude *= 0.5;
+  }
+  return value;
+}
+
 void main() {
-  // Oscillating harmonic time offsets (clouds move in place, never drift across hemispheres)
-  vec3 oscOffset = vec3(sin(time * 0.85) * 0.35, cos(time * 0.72) * 0.35, sin(time * 0.95) * 0.35);
+  vec3 p = vLocalPos * 1.6;
 
-  // 1. Blue Domain internal clouds (bottom hemisphere)
-  float blueTurb1 = cnoise(RGBr * (vNormal * 1.8 + oscOffset));
-  float blueTurb2 = cnoise(RGBg * (vNormal * 3.2 - oscOffset * 1.1)) * 0.5;
-  float blueCloud = (blueTurb1 + blueTurb2) * 0.5;
+  // Random volumetric cloud turbulence
+  float cloudNoise = fbm(p * RGBr);
 
-  // 2. White Domain internal clouds (top hemisphere)
-  float whiteTurb1 = cnoise(RGBr * (vNormal * 2.2 + oscOffset * 0.9));
-  float whiteTurb2 = cnoise(RGBg * (vNormal * 3.8 - oscOffset * 1.2)) * 0.4;
-  float whiteCloud = (whiteTurb1 + whiteTurb2) * 0.5;
+  // ═══ COLOR PALETTE ═══
+  // Bottom: Deep Ocean Blue (#004BE0 to #0070FF)
+  vec3 oceanDeepBlue   = vec3(0.00, 0.28, 0.88); // Deep Ocean Royal (#004BE0)
+  vec3 oceanLightBlue  = vec3(0.00, 0.46, 0.98); // Bright Ocean Blue (#0076FF)
 
-  // Palette: Deep Sky Blue & Azure Cyan for Blue; Pure White & Soft Cyan Mist for White
-  vec3 skyBlueDeep = vec3(0.00, 0.42, 0.98);   // Vibrant Deep Sky Blue (#006CFF)
-  vec3 skyBlueBright = vec3(0.12, 0.70, 0.98); // Bright Azure Cyan (#1EB2FF)
-  vec3 cloudWhite = vec3(0.98, 0.99, 1.0);     // Crisp Pure Cloud White (#FAFBFF)
-  vec3 cloudSoft = vec3(0.86, 0.94, 1.0);      // Soft Mist Tint
+  // Middle/Top: Dominant Pure Cloud White (#FAFBFF)
+  vec3 cloudWhite      = vec3(0.98, 0.99, 1.00); // Pure Cumulus White (#FAFBFF)
+  vec3 cloudMist       = vec3(0.88, 0.95, 1.00); // Soft Atmospheric Mist
 
-  vec3 blueRegionColor = mix(skyBlueDeep, skyBlueBright, blueCloud * 0.5 + 0.5);
-  vec3 whiteRegionColor = mix(cloudWhite, cloudSoft, whiteCloud * 0.5 + 0.5);
+  // Top Edge: Reduced Subtle Sky Blue Touch (#1EA2FF)
+  vec3 skyBlueTouch    = vec3(0.12, 0.64, 0.98);
 
-  // FIXED TOP WHITE / BOTTOM BLUE DIVISION
-  // vNormal.y > 0 is TOP (White), vNormal.y < 0 is BOTTOM (Blue)
-  float boundaryRipple = sin(vNormal.x * 4.0 + time * 1.2) * 0.04 + cos(vNormal.z * 4.0 + time * 1.1) * 0.04;
-  float splitFactor = smoothstep(-0.15, 0.25, vNormal.y + boundaryRipple);
+  // Blend internal random clouds
+  vec3 bottomRegion = mix(oceanDeepBlue, oceanLightBlue, cloudNoise * 0.5 + 0.5);
+  vec3 middleRegion = mix(cloudWhite, cloudMist, fbm(p * 2.2) * 0.35 + 0.2);
 
-  vec3 baseColor = mix(blueRegionColor, whiteRegionColor, splitFactor);
+  // FIXED DIVISION: Ocean Blue strictly at bottom, White in dominant middle/top, reduced Sky Blue touch at top edge
+  float boundaryRipple = sin(vLocalPos.x * 4.0 + time * 1.4) * 0.05 + cos(vLocalPos.z * 4.0 + time * 1.2) * 0.05;
+  float normY = vLocalPos.y + boundaryRipple + cloudNoise * 0.14;
 
-  // Fresnel Rim Highlight for 3D Luminous Polish
+  vec3 baseColor;
+  if (normY < 0.0) {
+    float t = smoothstep(-0.65, 0.0, normY);
+    baseColor = mix(bottomRegion, middleRegion, t);
+  } else {
+    float t = smoothstep(0.0, 0.65, normY);
+    baseColor = mix(middleRegion, skyBlueTouch, t * 0.35); // Reduced sky blue impact at top
+  }
+
+  // Fresnel Soft Luminous Rim Glow
   vec3 viewDir = normalize(-vPosition);
-  float fresnel = pow(1.0 - max(dot(vNormal, viewDir), 0.0), 2.6);
-  baseColor = mix(baseColor, vec3(0.96, 0.98, 1.0), fresnel * 0.42);
+  float fresnel = pow(1.0 - max(dot(vNormal, viewDir), 0.0), 2.5);
+  baseColor = mix(baseColor, vec3(0.96, 0.98, 1.0), fresnel * 0.38);
 
-  // Soft Ambient & Specular Lighting
-  vec3 lightDir = normalize(vec3(0.5, 1.25, 1.35));
-  float diff = max(dot(vNormal, lightDir), 0.58);
-  vec3 halfDir = normalize(lightDir + viewDir);
-  float spec = pow(max(dot(vNormal, halfDir), 0.0), 28.0);
+  // Directional Sun Lighting (Top-Right Light Source)
+  vec3 sunDir = normalize(vec3(0.6, 1.3, 1.2));
+  float diff  = max(dot(vNormal, sunDir), 0.60);
+  vec3 halfDir = normalize(sunDir + viewDir);
+  float spec  = pow(max(dot(vNormal, halfDir), 0.0), 32.0);
 
-  vec3 finalColor = baseColor * (diff * 0.55 + 0.52) + vec3(0.42) * spec;
+  vec3 finalColor = baseColor * (diff * 0.52 + 0.55) + vec3(0.40) * spec;
 
   gl_FragColor = vec4(finalColor, 1.0);
 }`;
@@ -301,7 +323,6 @@ const AbstractBall: React.FC<AbstractBallProps> = (props) => {
     });
 
     const mesh = new THREE.Mesh(geometry, material);
-    // Fixed mesh orientation so Top is ALWAYS White and Bottom is ALWAYS Sky Blue!
     mesh.rotation.set(0, 0, 0);
     scene.add(mesh);
 
@@ -317,7 +338,6 @@ const AbstractBall: React.FC<AbstractBallProps> = (props) => {
       uniforms.time.value = clock;
       uniforms.morph.value = Math.min(6.0, curPerlinMorph * 0.12);
 
-      // Keep 3D mesh object rotation 100% static so orientation NEVER flips upside down!
       mesh.rotation.set(0, 0, 0);
 
       camera.lookAt(scene.position);
