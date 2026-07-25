@@ -239,16 +239,20 @@ const UserMessageActionButton = ({
 };
 
 const UserMessageActions = React.memo(({ text, onEdit }: { text: string; onEdit?: (text: string) => void }) => {
+  const [copied, setCopied] = useState(false);
   const handleCopy = async (event: React.MouseEvent) => {
     event.stopPropagation();
     const didCopy = await copyTextToClipboard(text);
-    if (!didCopy) return;
+    if (didCopy) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
   };
 
   return (
     <div className="eterx-user-message-actions absolute right-full top-1/2 mr-2 flex -translate-y-1/2 shrink-0 items-center gap-0.5 opacity-0 pointer-events-none transition-opacity duration-150 group-hover/user:opacity-100 group-hover/user:pointer-events-auto group-hover/steer:opacity-100 group-hover/steer:pointer-events-auto focus-within:opacity-100 focus-within:pointer-events-auto">
-      <UserMessageActionButton label="Copy message" onClick={handleCopy}>
-        <Copy className="h-[18px] w-[18px]" strokeWidth={2.15} />
+      <UserMessageActionButton label={copied ? "Copied" : "Copy message"} onClick={handleCopy}>
+        {copied ? <Check className="h-[18px] w-[18px] text-emerald-400" strokeWidth={2.15} /> : <Copy className="h-[18px] w-[18px]" strokeWidth={2.15} />}
       </UserMessageActionButton>
       {onEdit && (
         <UserMessageActionButton

@@ -844,21 +844,10 @@ const IconCopyButton = ({ content, label = 'Copy content' }: { content: string, 
   const handle = async (e: React.MouseEvent) => {
     e.stopPropagation();
     e.preventDefault();
-    try {
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        await navigator.clipboard.writeText(content || '');
-      } else {
-        const textArea = document.createElement('textarea');
-        textArea.value = content || '';
-        document.body.appendChild(textArea);
-        textArea.select();
-        document.execCommand('copy');
-        document.body.removeChild(textArea);
-      }
+    const ok = await safeCopyTextToClipboard(content || '');
+    if (ok) {
       setCopied(true);
       setTimeout(() => setCopied(false), 1600);
-    } catch (err) {
-      console.error('Failed to copy:', err);
     }
   };
   return (
@@ -868,7 +857,7 @@ const IconCopyButton = ({ content, label = 'Copy content' }: { content: string, 
       aria-label={copied ? 'Copied' : label}
       className="eterx-action-icon-button flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] border border-white/[0.06] bg-white/[0.028] text-[#9A9389] transition-colors hover:border-white/[0.10] hover:bg-white/[0.05] hover:text-[#DAD4CA]"
     >
-      {copied ? <CheckCircle className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
+      {copied ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
     </button>
   );
 };
@@ -4129,13 +4118,7 @@ const useElapsed = (active: boolean) => {
 // while the agent is running. Shows immediately in the timeline.
 // ═══════════════════════════════════════════════════════════════════
 const copyTextToClipboard = async (text: string) => {
-  try {
-    await navigator.clipboard.writeText(text);
-    return true;
-  } catch (err) {
-    console.error('Failed to copy:', err);
-    return false;
-  }
+  return await safeCopyTextToClipboard(text);
 };
 
 const EditMessageIcon = ({ className = '' }: { className?: string }) => (
@@ -4172,16 +4155,20 @@ const UserMessageActionButton = ({
 };
 
 const UserMessageActions = ({ text, onEdit }: { text: string; onEdit?: (text: string) => void }) => {
+  const [copied, setCopied] = useState(false);
   const handleCopy = async (event: React.MouseEvent) => {
     event.stopPropagation();
     const didCopy = await copyTextToClipboard(text);
-    if (!didCopy) return;
+    if (didCopy) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
   };
 
   return (
     <div className="eterx-user-message-actions absolute right-full top-1/2 mr-2 flex -translate-y-1/2 shrink-0 items-center gap-0.5 opacity-0 pointer-events-none transition-opacity duration-150 group-hover/steer:opacity-100 group-hover/steer:pointer-events-auto focus-within:opacity-100 focus-within:pointer-events-auto">
-      <UserMessageActionButton label="Copy message" onClick={handleCopy}>
-        <Copy className="h-[18px] w-[18px]" strokeWidth={2.15} />
+      <UserMessageActionButton label={copied ? "Copied" : "Copy message"} onClick={handleCopy}>
+        {copied ? <Check className="h-[18px] w-[18px] text-emerald-400" strokeWidth={2.15} /> : <Copy className="h-[18px] w-[18px]" strokeWidth={2.15} />}
       </UserMessageActionButton>
       {onEdit && (
         <UserMessageActionButton
