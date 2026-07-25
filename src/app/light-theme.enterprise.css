@@ -401,41 +401,52 @@
 }
 
 :root[data-theme="light"] .eterx-terminal-console {
-  background: #F5F5F3 !important;
-  border-color: rgba(31, 31, 29, 0.10) !important;
+  background: #F8F8F6 !important;
+  border-color: rgba(31, 31, 29, 0.12) !important;
   color: #1F1F1D !important;
-  box-shadow: none !important;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.03) !important;
+}
+
+:root[data-theme="light"] .eterx-terminal-console-command-card {
+  background: rgba(31, 31, 29, 0.045) !important;
+  border-color: rgba(31, 31, 29, 0.10) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8), 0 2px 8px rgba(0, 0, 0, 0.04) !important;
 }
 
 :root[data-theme="light"] .eterx-terminal-console-header,
 :root[data-theme="light"] .eterx-terminal-console-command,
 :root[data-theme="light"] .eterx-terminal-console-footer,
 :root[data-theme="light"] .eterx-terminal-console-output {
-  background: #F5F5F3 !important;
+  background: transparent !important;
   border-color: transparent !important;
   color: #1F1F1D !important;
 }
 
 :root[data-theme="light"] .eterx-terminal-console-header {
-  color: #77736C !important;
+  color: #6E6A63 !important;
   font-size: 12px !important;
   font-weight: 500 !important;
 }
 
 :root[data-theme="light"] .eterx-terminal-console-command span,
+:root[data-theme="light"] .eterx-terminal-console-output,
 :root[data-theme="light"] .eterx-terminal-console-body,
 :root[data-theme="light"] .eterx-terminal-console-body span {
   color: #1F1F1D !important;
 }
 
 :root[data-theme="light"] .eterx-terminal-console-footer {
-  background: #EBEBE9 !important;
-  border-top: 1px solid rgba(31, 31, 29, 0.08) !important;
-  color: #77736C !important;
+  background: #F0EFEA !important;
+  border-top: 1px solid rgba(31, 31, 29, 0.10) !important;
+  color: #6E6A63 !important;
 }
 
 :root[data-theme="light"] .eterx-terminal-console-footer span {
-  color: #77736C !important;
+  color: #6E6A63 !important;
+}
+
+:root[data-theme="light"] .eterx-user-msg-fade {
+  background: linear-gradient(to top, #F0EFEA 0%, transparent 100%) !important;
 }
 
 :root[data-theme="light"] .eterx-inline-diff-line-number {
@@ -460,6 +471,14 @@
   border-color: rgba(31, 31, 29, 0.12) !important;
   box-shadow: 0 16px 44px rgba(31, 31, 29, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.82) !important;
   color: #1F1F1D !important;
+}
+
+:root[data-theme="light"] .eterx-logo-popout-text {
+  background-image: linear-gradient(180deg, #1F1F1D 0%, #34332F 60%, #57534E 100%) !important;
+  background-clip: text !important;
+  -webkit-background-clip: text !important;
+  color: transparent !important;
+  filter: none !important;
 }
 
 :root[data-theme="light"] .eterx-composer-popout .text-white,
@@ -582,11 +601,15 @@
 }
 
 :root[data-theme="light"] .eterx-home-greeting {
+  background-color: transparent !important;
   background-image: linear-gradient(90deg, #52606F 0%, #1F2A38 50%, #7A8796 100%) !important;
   background-clip: text !important;
   -webkit-background-clip: text !important;
   color: transparent !important;
   filter: none !important;
+  box-shadow: none !important;
+  border: none !important;
+  outline: none !important;
 }
 
 /* Keep the root app chrome joined after theme-specific overrides load. */
@@ -2038,4 +2061,59 @@
 :root[data-theme="light"] .eterx-popout-icon-img {
   filter: none !important;
   opacity: 0.8 !important;
+}
+
+/* Ultra-modern Light Theme Dropdowns, Popovers & Selection Menus */
+:root[data-theme="light"] .eterx-work-menu,
+:root[data-theme="light"] .eterx-work-menu-flyout {
+  background: #FFFFFF !important;
+  border-color: rgba(0, 0, 0, 0.08) !important;
+  color: #1F1F1D !important;
+  box-shadow: 0 16px 44px rgba(0, 0, 0, 0.08), 0 2px 8px rgba(0, 0, 0, 0.04) !important;
+}
+
+:root[data-theme="light"] .eterx-work-menu-section-button {
+  color: #1F1F1D !important;
+}
+
+:root[data-theme="light"] .eterx-work-menu-section-button:hover {
+  background: rgba(0, 0, 0, 0.04) !important;
+}
+
+:root[data-theme="light"] .eterx-work-menu-row {
+  color: #1F1F1D !important;
+}
+
+:root[data-theme="light"] .eterx-work-menu-row:hover {
+  background: rgba(0, 0, 0, 0.04) !important;
+}
+
+:root[data-theme="light"] .eterx-work-menu-divider {
+  background: rgba(0, 0, 0, 0.06) !important;
+}
+
+:root[data-theme="light"] .eterx-work-menu-empty {
+  color: #8A857D !important;
+}
+
+:root[data-theme="light"] [data-radix-popper-content-wrapper] > div,
+:root[data-theme="light"] [role="menu"],
+:root[data-theme="light"] [role="listbox"] {
+  background-color: #FFFFFF !important;
+  border-color: rgba(0, 0, 0, 0.08) !important;
+  color: #1F1F1D !important;
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.08), 0 2px 8px rgba(0, 0, 0, 0.04) !important;
+}
+
+:root[data-theme="light"] [role="menuitem"],
+:root[data-theme="light"] [role="option"] {
+  color: #1F1F1D !important;
+}
+
+:root[data-theme="light"] [role="menuitem"]:hover,
+:root[data-theme="light"] [role="menuitem"][data-highlighted],
+:root[data-theme="light"] [role="option"]:hover,
+:root[data-theme="light"] [role="option"][data-highlighted] {
+  background-color: rgba(0, 0, 0, 0.04) !important;
+  color: #1F1F1D !important;
 }

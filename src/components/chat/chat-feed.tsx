@@ -27,33 +27,66 @@ interface ChatFeedProps {
   liveState?: string;
 }
 
-const copyTextToClipboard = async (text: string) => {
-  try {
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(text);
-      return true;
-    }
-  } catch {
-    // Fall back below when Clipboard API permission is denied.
-  }
+const FadeScrollContainer = ({
+  children,
+  className = '',
+  maxHeightClass = 'max-h-[230px]',
+  fadeClass = 'eterx-user-msg-fade',
+}: {
+  children: React.ReactNode;
+  className?: string;
+  maxHeightClass?: string;
+  fadeClass?: string;
+}) => {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [showBottomFade, setShowBottomFade] = useState(false);
 
-  try {
-    const textArea = document.createElement('textarea');
-    textArea.value = text;
-    textArea.setAttribute('readonly', '');
-    textArea.style.position = 'fixed';
-    textArea.style.left = '-9999px';
-    textArea.style.top = '0';
-    document.body.appendChild(textArea);
-    textArea.focus();
-    textArea.select();
-    const copied = document.execCommand('copy');
-    document.body.removeChild(textArea);
-    return copied;
-  } catch (err) {
-    console.error('Failed to copy:', err);
-    return false;
-  }
+  const checkScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const hasOverflow = el.scrollHeight > el.clientHeight + 4;
+    const isAtBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 6;
+    setShowBottomFade(hasOverflow && !isAtBottom);
+  }, []);
+
+  useEffect(() => {
+    checkScroll();
+    const timer = setTimeout(checkScroll, 120);
+    window.addEventListener('resize', checkScroll);
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener('resize', checkScroll);
+    };
+  }, [checkScroll, children]);
+
+  return (
+    <div className="relative w-full overflow-hidden">
+      <div
+        ref={scrollRef}
+        onScroll={checkScroll}
+        className={`w-full overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden ${maxHeightClass} ${className}`}
+      >
+        {children}
+      </div>
+      <AnimatePresence>
+        {showBottomFade && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.15 }}
+            className={`pointer-events-none absolute bottom-0 left-0 right-0 h-9 z-10 ${fadeClass}`}
+          />
+        )}
+      </AnimatePresence>
+    </div>
+  );
+};
+
+import { safeCopyTextToClipboard } from '../ui/copy-button';
+
+const copyTextToClipboard = async (text: string) => {
+  return await safeCopyTextToClipboard(text);
 };
 
 const NakedCopyButton = ({ content }: { content: string }) => {
@@ -923,9 +956,9 @@ const ChatFeedMessageGroup = React.memo(({
               </div>
             )}
             <div className="w-full text-left">
-              <div className={`w-full eterx-user-msg-scroll ${ isLong ? 'max-h-[230px] overflow-y-scroll' : '' }`}>
+              <FadeScrollContainer maxHeightClass={isLong ? 'max-h-[230px]' : ''}>
                 <span className="block w-full text-left break-words [word-break:break-word] [overflow-wrap:anywhere]">{userText}</span>
-              </div>
+              </FadeScrollContainer>
             </div>
           </div>
         </div>
@@ -1598,45 +1631,7 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
           className={`eterx-chat-feed relative flex-1 min-h-0 w-full overflow-hidden ${ isEmptyNewChatFeed ? 'eterx-chat-feed-empty' : '' }`}
           data-compressed={isCompressed ? 'true' : 'false'}
         >
-          {userTurns.length > 2 && (
-          <motion.div
-              ref={navContainerRef}
-              role="navigation"
-              aria-label="Conversation turns"
-              initial={{ opacity: 0, x: -8 }}
-              animate={{ opacity: 1, x: 0 }}
-              transition={{ duration: 0.24, ease: 'easeOut' }}
-              className="eterx-chat-turns-nav pointer-events-none absolute inset-y-0 left-2 z-[60] flex items-center"
-            >
-              <div className="pointer-events-auto flex max-h-[min(52vh,460px)] flex-col gap-0 overflow-y-auto overscroll-contain py-3 pl-1.5 pr-1.5 scroll-smooth [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-                {userTurns.map((turn, k) => (
-                  <motion.button
-                    type="button"
-                    key={turn.idx}
-                    data-turn-index={k}
-                    aria-label={`Go to turn ${ k + 1 }: ${ turn.userText.slice(0, 80) }`}
-                    aria-current={activeTurnIdx === k ? 'step' : undefined}
-                    className="group relative flex min-h-[18px] w-[34px] shrink-0 items-center justify-center rounded-lg py-1 text-left outline-none transition-colors duration-150 hover:bg-[var(--muted)] focus-visible:bg-[var(--muted)] focus-visible:ring-2 focus-visible:ring-[var(--accent)]/30"
-                    whileHover={{ x: 2 }}
-                    whileTap={{ scale: 0.94 }}
-                    transition={{ type: 'spring', stiffness: 520, damping: 32 }}
-                    onMouseEnter={(event) => setHoveredTurn({ turn, rect: event.currentTarget.getBoundingClientRect() })}
-                    onMouseLeave={() => setHoveredTurn(null)}
-                    onFocus={(event) => setHoveredTurn({ turn, rect: event.currentTarget.getBoundingClientRect() })}
-                    onBlur={() => setHoveredTurn(null)}
-                    onClick={() => navigateToTurn(turn, k)}
-                  >
-                    <span
-                      className={`eterx-chat-turns-dash h-[2px] rounded-full transition-[width,background-color,opacity] duration-200 ease-out ${ activeTurnIdx === k
-                          ? 'bg-[var(--sidebar-strong-text)] w-[22px] opacity-100'
-                          : 'bg-[var(--sidebar-icon)] w-[12px] opacity-30 group-hover:w-[18px] group-hover:opacity-60'
-                        }`}
-                    />
-                  </motion.button>
-                ))}
-              </div>
-            </motion.div>
-          )}
+          {/* Turn connection navigation indicator removed */}
           <div
             id="chat-container"
             className={`eterx-chat-feed-scroll relative h-full w-full flex flex-col overflow-y-auto overflow-x-hidden pb-40 eterx-scrollbar ${ isCompressed ? 'px-4 sm:px-8' : 'px-4 sm:px-14'

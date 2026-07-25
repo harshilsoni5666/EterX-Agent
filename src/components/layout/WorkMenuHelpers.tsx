@@ -33,9 +33,8 @@ export const WorkMenuSectionButton = ({
 
 export const WorkMenuEmptyState = ({ label, detail }: { label: string; detail?: string }) => (
   <div className="eterx-work-menu-empty">
-    <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-white/14" />
-    <span className="min-w-0 flex-1 truncate">{label}</span>
-    {detail && <span className="hidden shrink-0 text-white/28 sm:inline">{detail}</span>}
+    <span className="min-w-0 flex-1 truncate text-[#A39B91] font-normal">{label}</span>
+    {detail && <span className="hidden shrink-0 text-[#A39B91]/60 sm:inline">{detail}</span>}
   </div>
 );
 

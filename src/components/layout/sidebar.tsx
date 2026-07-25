@@ -18,11 +18,51 @@ const getSidebarViewportMax = (viewportWidth: number) => {
   // Keep the existing mobile/tablet sizing untouched; this adaptive scale is
   // intentionally limited to desktop-class viewports.
   if (viewportWidth < 769) return SIDEBAR_MAX_WIDTH;
-  if (viewportWidth < 1200) return 248;
-  if (viewportWidth < 1600) return 300;
-  if (viewportWidth < 2200) return 360;
-  return SIDEBAR_MAX_WIDTH;
+  return Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, Math.round(viewportWidth * 0.28)));
 };
+
+const ChatTitleMarquee = ({ title, isFavorite }: { title: string; isFavorite?: boolean }) => {
+  const containerRef = React.useRef<HTMLDivElement>(null);
+  const textRef = React.useRef<HTMLSpanElement>(null);
+  const [overflowDistance, setOverflowDistance] = React.useState(0);
+  const [isHovered, setIsHovered] = React.useState(false);
+
+  React.useEffect(() => {
+    const container = containerRef.current;
+    const text = textRef.current;
+    if (container && text) {
+      const diff = text.scrollWidth - container.clientWidth;
+      setOverflowDistance(diff > 4 ? diff : 0);
+    }
+  }, [title]);
+
+  const marqueeDuration = Math.max(8, Math.min(22, overflowDistance * 0.22));
+
+  return (
+    <div
+      ref={containerRef}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
+      className="eterx-sidebar-chat-title-wrap flex min-w-0 flex-1 items-center overflow-hidden relative z-10"
+    >
+      {isFavorite && <PremiumStar className="eterx-sidebar-favorite-icon w-3.5 h-3.5 text-yellow-500/90 mr-1.5 shrink-0" />}
+      <motion.span
+        ref={textRef}
+        animate={(overflowDistance > 0 && isHovered) ? { x: [0, -overflowDistance, -overflowDistance, 0] } : { x: 0 }}
+        transition={(overflowDistance > 0 && isHovered) ? {
+          duration: marqueeDuration,
+          ease: [0.25, 1, 0.5, 1],
+          repeat: Infinity,
+          repeatDelay: 2.8,
+        } : { duration: 0.3 }}
+        className="eterx-sidebar-chat-title text-current leading-normal whitespace-nowrap"
+      >
+        {title}
+      </motion.span>
+    </div>
+  );
+};
+
 const getSidebarViewportMin = (viewportWidth: number) => {
   if (viewportWidth >= 3200) return 320;
   if (viewportWidth >= 2200) return 280;
@@ -1290,10 +1330,7 @@ export const Sidebar = React.memo<SidebarProps>(({
                               onClick={(e) => e.stopPropagation()}
                             />
                           ) : (
-                            <div className="eterx-sidebar-chat-title-wrap flex min-w-0 items-center overflow-hidden relative z-10">
-                              {chat.isFavorite && <PremiumStar className="eterx-sidebar-favorite-icon w-3.5 h-3.5 text-yellow-500/90 mr-1.5 shrink-0" />}
-                              <span className="eterx-sidebar-chat-title text-current leading-normal">{chat.title}</span>
-                            </div>
+                            <ChatTitleMarquee title={chat.title} isFavorite={chat.isFavorite} />
                           )}
                         </div>
 
@@ -1304,10 +1341,10 @@ export const Sidebar = React.memo<SidebarProps>(({
                             ) : hasUnread ? (
                               <span className="eterx-sidebar-unread-dot" aria-label="Unread agent update" />
                             ) : (
-                              <div className="relative w-7 h-7 shrink-0 flex items-center justify-end">
+                              <div className="relative w-7 h-7 shrink-0 flex items-center justify-center">
                                 {timeLabel && (
                                   <span
-                                    className={`eterx-sidebar-chat-time tabular-nums transition-opacity duration-150 absolute inset-0 flex items-center justify-end pr-0.5 pointer-events-none whitespace-nowrap ${ isMenuOpen ? 'opacity-0' : 'group-hover:opacity-0' }`}
+                                    className={`eterx-sidebar-chat-time tabular-nums transition-opacity duration-150 absolute inset-0 flex items-center justify-center pointer-events-none whitespace-nowrap ${ isMenuOpen ? 'opacity-0' : 'group-hover:opacity-0' }`}
                                     title={new Date(chat.updatedAt).toLocaleString()}
                                   >{timeLabel}</span>
                                 )}
@@ -1316,7 +1353,7 @@ export const Sidebar = React.memo<SidebarProps>(({
                                   aria-label="Chat options"
                                   onMouseDown={(e) => triggerGlassClick(e, `chat-menu-${ chat.id }`)}
                                   style={glassClickStyle(`chat-menu-${ chat.id }`)}
-                                  className={`eterx-sidebar-click-surface eterx-sidebar-chat-menu-button ${ glassClickClass(`chat-menu-${ chat.id }`) } absolute inset-0 z-20 flex items-center justify-end pr-0.5 rounded-[8px] transition-colors duration-150 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--sidebar-focus-ring)] ${ isMenuOpen ? 'opacity-100 text-[var(--sidebar-active-text)]' : 'pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100 text-[var(--sidebar-muted-text)]' }`}
+                                  className={`eterx-sidebar-click-surface eterx-sidebar-chat-menu-button ${ glassClickClass(`chat-menu-${ chat.id }`) } absolute inset-0 z-20 flex items-center justify-center rounded-[8px] transition-colors duration-150 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--sidebar-focus-ring)] ${ isMenuOpen ? 'opacity-100 text-[var(--sidebar-active-text)]' : 'pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100 text-[var(--sidebar-muted-text)]' }`}
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     if (isWorking) return;

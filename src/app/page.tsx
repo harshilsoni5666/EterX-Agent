@@ -936,7 +936,9 @@ function DeepWorkUI() {
     startX: number;
     startY: number;
     startWindow: typeof proxyChatWindow;
-    baseRect: { left: number; top: number };
+    baseLeft0: number;
+    baseTop0: number;
+    startRect: { left: number; top: number; width: number; height: number };
   } | null>(null);
   const [activeWorkspacePath, setActiveWorkspacePath] = useState<string | null>(null);
   const [activeRunLocation, setActiveRunLocation] = useState<'local' | 'sandbox'>('local');
@@ -1819,27 +1821,51 @@ function DeepWorkUI() {
     if (!interaction) return;
     const dx = event.clientX - interaction.startX;
     const dy = event.clientY - interaction.startY;
-    const baseLeft = interaction.baseRect.left - interaction.startWindow.x;
-    const baseTop = interaction.baseRect.top - interaction.startWindow.y;
+
+    const containerRect = splitContainerRef.current?.getBoundingClientRect();
+
     if (interaction.type === 'drag') {
-      const minX = 10 - baseLeft;
-      const maxX = window.innerWidth - 10 - baseLeft - interaction.startWindow.width;
-      const minY = 10 - baseTop;
-      const maxY = window.innerHeight - 10 - baseTop - interaction.startWindow.height;
+      const { baseLeft0, baseTop0, startRect } = interaction;
+      const targetLeft = startRect.left + dx;
+      const targetTop = startRect.top + dy;
+
+      const boundaryMinLeft = (containerRect ? containerRect.left : 0) + 12;
+      const boundaryMaxLeft = (containerRect ? containerRect.right : window.innerWidth) - startRect.width - 12;
+      const boundaryMinTop = (containerRect ? containerRect.top : 0) + 12;
+      const boundaryMaxTop = (containerRect ? containerRect.bottom : window.innerHeight) - startRect.height - 12;
+
+      const clampedLeft = Math.max(boundaryMinLeft, Math.min(Math.max(boundaryMinLeft, boundaryMaxLeft), targetLeft));
+      const clampedTop = Math.max(boundaryMinTop, Math.min(Math.max(boundaryMinTop, boundaryMaxTop), targetTop));
+
       setProxyChatWindow(current => ({
         ...current,
-        x: Math.max(minX, Math.min(maxX, interaction.startWindow.x + dx)),
-        y: Math.max(minY, Math.min(maxY, interaction.startWindow.y + dy)),
+        x: clampedLeft - baseLeft0,
+        y: clampedTop - baseTop0,
       }));
     } else {
-      const left = baseLeft + interaction.startWindow.x;
-      const top = baseTop + interaction.startWindow.y;
-      const maxWidth = Math.max(280, window.innerWidth - left - 10);
-      const maxHeight = Math.max(320, window.innerHeight - top - 10);
+      const { baseLeft0, baseTop0, startRect } = interaction;
+      const containerRight = containerRect ? containerRect.right : window.innerWidth;
+      const containerBottom = containerRect ? containerRect.bottom : window.innerHeight;
+      const maxWidth = Math.max(280, containerRight - startRect.left - 12);
+      const maxHeight = Math.max(320, containerBottom - startRect.top - 12);
+
+      const nextWidth = Math.max(280, Math.min(580, maxWidth, startRect.width + dx));
+      const nextHeight = Math.max(320, Math.min(740, maxHeight, startRect.height + dy));
+
+      const boundaryMinLeft = (containerRect ? containerRect.left : 0) + 12;
+      const boundaryMaxLeft = containerRight - nextWidth - 12;
+      const boundaryMinTop = (containerRect ? containerRect.top : 0) + 12;
+      const boundaryMaxTop = containerBottom - nextHeight - 12;
+
+      const clampedLeft = Math.max(boundaryMinLeft, Math.min(Math.max(boundaryMinLeft, boundaryMaxLeft), startRect.left));
+      const clampedTop = Math.max(boundaryMinTop, Math.min(Math.max(boundaryMinTop, boundaryMaxTop), startRect.top));
+
       setProxyChatWindow(current => ({
         ...current,
-        width: Math.max(280, Math.min(560, maxWidth, interaction.startWindow.width + dx)),
-        height: Math.max(320, Math.min(720, maxHeight, interaction.startWindow.height + dy)),
+        width: nextWidth,
+        height: nextHeight,
+        x: clampedLeft - baseLeft0,
+        y: clampedTop - baseTop0,
       }));
     }
   }, []);
@@ -1847,6 +1873,43 @@ function DeepWorkUI() {
   const handleProxyWindowPointerUp = useCallback(() => {
     proxyWindowInteractionRef.current = null;
   }, []);
+
+  useEffect(() => {
+    if (!showProxyChat) return;
+    const clampProxyWindowToBounds = () => {
+      const rect = proxyChatWindowRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const baseLeft0 = rect.left - proxyChatWindow.x;
+      const baseTop0 = rect.top - proxyChatWindow.y;
+
+      const containerRect = splitContainerRef.current?.getBoundingClientRect();
+      const boundaryMinLeft = (containerRect ? containerRect.left : 0) + 12;
+      const boundaryMaxLeft = (containerRect ? containerRect.right : window.innerWidth) - rect.width - 12;
+      const boundaryMinTop = (containerRect ? containerRect.top : 0) + 12;
+      const boundaryMaxTop = (containerRect ? containerRect.bottom : window.innerHeight) - rect.height - 12;
+
+      const clampedLeft = Math.max(boundaryMinLeft, Math.min(Math.max(boundaryMinLeft, boundaryMaxLeft), rect.left));
+      const clampedTop = Math.max(boundaryMinTop, Math.min(Math.max(boundaryMinTop, boundaryMaxTop), rect.top));
+
+      const nextX = clampedLeft - baseLeft0;
+      const nextY = clampedTop - baseTop0;
+
+      if (Math.abs(nextX - proxyChatWindow.x) > 0.5 || Math.abs(nextY - proxyChatWindow.y) > 0.5) {
+        setProxyChatWindow(current => ({
+          ...current,
+          x: nextX,
+          y: nextY,
+        }));
+      }
+    };
+
+    const timerId = setTimeout(clampProxyWindowToBounds, 40);
+    window.addEventListener('resize', clampProxyWindowToBounds);
+    return () => {
+      clearTimeout(timerId);
+      window.removeEventListener('resize', clampProxyWindowToBounds);
+    };
+  }, [showProxyChat, proxyChatWindow.x, proxyChatWindow.y, proxyChatWindow.width, proxyChatWindow.height]);
 
   useEffect(() => {
     window.addEventListener('pointermove', handleProxyWindowPointerMove);
@@ -1860,15 +1923,16 @@ function DeepWorkUI() {
   const startProxyWindowInteraction = useCallback((type: 'drag' | 'resize', event: React.PointerEvent) => {
     event.preventDefault();
     event.stopPropagation();
+    const rect = proxyChatWindowRef.current?.getBoundingClientRect();
+    if (!rect) return;
     proxyWindowInteractionRef.current = {
       type,
       startX: event.clientX,
       startY: event.clientY,
       startWindow: proxyChatWindow,
-      baseRect: (() => {
-        const rect = proxyChatWindowRef.current?.getBoundingClientRect();
-        return { left: rect?.left ?? 0, top: rect?.top ?? 0 };
-      })(),
+      baseLeft0: rect.left - proxyChatWindow.x,
+      baseTop0: rect.top - proxyChatWindow.y,
+      startRect: { left: rect.left, top: rect.top, width: rect.width, height: rect.height },
     };
   }, [proxyChatWindow]);
 
@@ -6470,13 +6534,6 @@ function DeepWorkUI() {
         </div>
         {/* Right drag fill */}
         <div className="flex-1" />
-        {/* By Harshil Soni */}
-        <div className="pointer-events-auto flex items-center [-webkit-app-region:no-drag] pr-[64px]">
-          <span className="text-[12px] font-normal tracking-[0.01em] select-none"
-            style={{ color: 'var(--sidebar-muted-text, #9A9590)' }}>
-            — By Harshil Soni
-          </span>
-        </div>
       </div>
       <FloatingPetMonitor
         open={petWidgetOpen && !nativePetAvailable}
@@ -7230,53 +7287,23 @@ function DeepWorkUI() {
                         e.stopPropagation();
                         setEnvDropdownOpen(!envDropdownOpen);
                       }}
-                      className={`relative eterx-header-icon-button flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-transparent bg-transparent text-[var(--sidebar-muted-text)] transition-colors duration-150 hover:bg-[var(--sidebar-toggle-hover-bg)] hover:text-[var(--sidebar-hover-text)] active:bg-[var(--sidebar-toggle-active-bg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--sidebar-focus-ring)] ${ envDropdownOpen ? 'bg-[var(--sidebar-toggle-hover-bg)] text-[var(--sidebar-hover-text)]' : '' }`}
+                      className={`relative eterx-header-icon-button flex h-8 w-8 shrink-0 items-center justify-center rounded-full border transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/20 ${ envDropdownOpen ? 'border-white/10 bg-white/[0.12] text-white shadow-[0_2px_8px_rgba(0,0,0,0.25)]' : 'border-transparent bg-transparent text-[var(--sidebar-muted-text)] hover:bg-[var(--sidebar-toggle-hover-bg)] hover:text-[var(--sidebar-hover-text)] active:bg-[var(--sidebar-toggle-active-bg)]' }`}
                     >
                       <ListTodo className="h-[17px] w-[17px]" strokeWidth={2.15} />
                     </button>
                     <AnimatePresence>
-                      {envDropdownOpen && (() => {
-                        const chatId = activeChatId || 'default';
-                        const layout = workMenuLayouts[chatId] || { x: 0, y: 0, width: 320, height: 'auto' };
-                        return (
-                          <motion.div
-                            ref={envDropdownRef}
-                            initial={{ opacity: 0, y: -5, scale: 0.98 }}
-                            animate={{ opacity: 1, y: 0, scale: 1 }}
-                            exit={{ opacity: 0, y: -5, scale: 0.98 }}
-                            transition={{ duration: 0.15, ease: "easeOut" }}
-                            onMouseLeave={() => setActiveSubmenu(null)}
-                            className="eterx-work-menu absolute right-0 top-[calc(100%+10px)] z-[70] flex flex-col"
-                            style={{
-                              transform: `translate(${ layout.x }px, ${ layout.y }px)`,
-                              width: layout.width,
-                              height: layout.height,
-                            }}
-                            onMouseDown={(e) => e.stopPropagation()}
-                          >
-                            {/* Drag handle */}
-                            <div
-                              className="eterx-work-menu-drag-bar group/drag"
-                              onMouseDown={handleMenuDragStart}
-                            >
-                              <div className="eterx-work-menu-drag-handle" />
-                            </div>
-
-                            {/* Resize handles */}
-                            <div
-                              className="eterx-work-menu-resize-l"
-                              onMouseDown={handleMenuResizeLeftStart}
-                            />
-                            <div
-                              className="eterx-work-menu-resize-b"
-                              onMouseDown={handleMenuResizeBottomStart}
-                            />
-                            <div
-                              className="eterx-work-menu-resize-corner"
-                              onMouseDown={handleMenuResizeCornerStart}
-                            />
-
-                            <div className="eterx-work-menu-content flex-1 overflow-y-auto eterx-scrollbar">
+                      {envDropdownOpen && (
+                        <motion.div
+                          ref={envDropdownRef}
+                          initial={{ opacity: 0, y: -5, scale: 0.98 }}
+                          animate={{ opacity: 1, y: 0, scale: 1 }}
+                          exit={{ opacity: 0, y: -5, scale: 0.98 }}
+                          transition={{ duration: 0.15, ease: "easeOut" }}
+                          onMouseLeave={() => setActiveSubmenu(null)}
+                          className="eterx-work-menu absolute right-0 top-[calc(100%+10px)] z-[70] flex flex-col"
+                          onMouseDown={(e) => e.stopPropagation()}
+                        >
+                          <div className="eterx-work-menu-content flex-1 overflow-y-auto eterx-scrollbar">
                               <WorkMenuSectionButton
                                 title="Todo"
                                 meta={todoCounterText || (isThinking ? 'Live' : undefined)}
@@ -7355,293 +7382,6 @@ function DeepWorkUI() {
                                   </motion.div>
                                 )}
                               </AnimatePresence>
-
-                              {/* Divider */}
-                              <div
-                                onMouseEnter={() => setActiveSubmenu(null)}
-                                className="eterx-work-menu-divider"
-                              />
-
-                              {/* Changes Row */}
-                              <button
-                                onMouseEnter={() => setActiveSubmenu(null)}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setEnvDropdownOpen(false);
-                                  setMonitorOpen(true);
-                                }}
-                                className="eterx-work-menu-row group"
-                              >
-                                <PlusSquare className="eterx-work-menu-row-icon" />
-                                <span className="flex min-w-0 flex-1 items-center justify-between gap-3">
-                                  <span className="truncate text-white/90">Changes</span>
-                                  <div className="flex shrink-0 items-center gap-1.5 text-[11px] font-semibold tabular-nums">
-                                    <span className="text-[#19C37D]">+{chatChangeStats.additions}</span>
-                                    <span className="text-[#EF4444]">-{chatChangeStats.deletions}</span>
-                                  </div>
-                                </span>
-                              </button>
-
-                              {/* Local Row */}
-                              <div
-                                role="button"
-                                tabIndex={0}
-                                onMouseEnter={() => setActiveSubmenu('local')}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setActiveSubmenu(activeSubmenu === 'local' ? null : 'local');
-                                }}
-                                onKeyDown={(e) => {
-                                  if (e.key === 'Enter' || e.key === ' ') {
-                                    e.preventDefault();
-                                    e.stopPropagation();
-                                    setActiveSubmenu(activeSubmenu === 'local' ? null : 'local');
-                                  }
-                                }}
-                                className={`eterx-work-menu-row group relative ${ activeSubmenu === 'local' ? 'eterx-work-menu-row-active' : '' }`}
-                              >
-                                <Monitor className="eterx-work-menu-row-icon" />
-                                <span className="flex min-w-0 flex-1 items-center justify-between gap-3">
-                                  <span className={`truncate ${ activeSubmenu === 'local' ? 'text-white font-medium' : '' }`}>{currentEnv}</span>
-                                  <ChevronRight className={`h-3.5 w-3.5 shrink-0 text-white/30 transition-transform ${ activeSubmenu === 'local' ? 'text-white' : '' }`} />
-                                </span>
-
-                                {/* Local Submenu Flyout */}
-                                <AnimatePresence>
-                                  {activeSubmenu === 'local' && (
-                                    <motion.div
-                                      initial={{ opacity: 0, x: 5 }}
-                                      animate={{ opacity: 1, x: 0 }}
-                                      exit={{ opacity: 0, x: 5 }}
-                                      transition={{ duration: 0.15 }}
-                                      className="eterx-work-menu-flyout absolute right-[calc(100%+10px)] top-0 w-[248px]"
-                                      onClick={(e) => e.stopPropagation()}
-                                    >
-                                      <div className="eterx-work-menu-flyout-label">
-                                        Continue in
-                                      </div>
-
-                                      <button
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          setCurrentEnv('Local');
-                                          setActiveSubmenu(null);
-                                        }}
-                                        className="eterx-work-menu-row group"
-                                      >
-                                        <Monitor className="eterx-work-menu-row-icon" />
-                                        <span className="flex min-w-0 flex-1 items-center justify-between gap-3">
-                                          <span className={`truncate ${ currentEnv === 'Local' ? 'text-white font-medium' : '' }`}>Work locally</span>
-                                          {currentEnv === 'Local' && <Check className="w-3.5 h-3.5 text-[#19C37D] shrink-0" />}
-                                        </span>
-                                      </button>
-
-                                      <button
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          setCurrentEnv('Worktree');
-                                          setActiveSubmenu(null);
-                                        }}
-                                        className="eterx-work-menu-row group"
-                                      >
-                                        <GitFork className="eterx-work-menu-row-icon" />
-                                        <span className="flex min-w-0 flex-1 items-center justify-between gap-3">
-                                          <span className={`truncate ${ currentEnv === 'Worktree' ? 'text-white font-medium' : '' }`}>Handoff to worktree</span>
-                                          {currentEnv === 'Worktree' && <Check className="w-3.5 h-3.5 text-[#19C37D] shrink-0" />}
-                                        </span>
-                                      </button>
-
-                                      <button
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          setCurrentEnv('Sandbox');
-                                          setActiveSubmenu(null);
-                                        }}
-                                        className="eterx-work-menu-row group"
-                                      >
-                                        <Terminal className="eterx-work-menu-row-icon" />
-                                        <span className="flex min-w-0 flex-1 items-center justify-between gap-3">
-                                          <span className={`truncate ${ currentEnv === 'Sandbox' ? 'text-white font-medium' : '' }`}>Sandbox</span>
-                                          {currentEnv === 'Sandbox' && <Check className="w-3.5 h-3.5 text-[#19C37D] shrink-0" />}
-                                        </span>
-                                      </button>
-                                    </motion.div>
-                                  )}
-                                </AnimatePresence>
-                              </div>
-
-                              {/* Branch Row */}
-                              <div
-                                role="button"
-                                tabIndex={0}
-                                onMouseEnter={() => setActiveSubmenu('branch')}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setActiveSubmenu(activeSubmenu === 'branch' ? null : 'branch');
-                                }}
-                                onKeyDown={(e) => {
-                                  if (e.key === 'Enter' || e.key === ' ') {
-                                    e.preventDefault();
-                                    e.stopPropagation();
-                                    setActiveSubmenu(activeSubmenu === 'branch' ? null : 'branch');
-                                  }
-                                }}
-                                className={`eterx-work-menu-row group relative ${ activeSubmenu === 'branch' ? 'eterx-work-menu-row-active' : '' }`}
-                              >
-                                <GitBranch className="eterx-work-menu-row-icon" />
-                                <span className="flex min-w-0 flex-1 items-center justify-between gap-3">
-                                  <span className={`truncate font-mono ${ activeSubmenu === 'branch' ? 'text-white font-medium' : '' }`}>{currentBranch}</span>
-                                  <ChevronRight className={`h-3.5 w-3.5 shrink-0 text-white/30 transition-transform ${ activeSubmenu === 'branch' ? 'text-white' : '' }`} />
-                                </span>
-
-                                {/* Branch Submenu Flyout */}
-                                <AnimatePresence>
-                                  {activeSubmenu === 'branch' && (
-                                    <motion.div
-                                      initial={{ opacity: 0, x: 5 }}
-                                      animate={{ opacity: 1, x: 0 }}
-                                      exit={{ opacity: 0, x: 5 }}
-                                      transition={{ duration: 0.15 }}
-                                      className="eterx-work-menu-flyout absolute right-[calc(100%+10px)] top-0 w-[276px]"
-                                      onClick={(e) => e.stopPropagation()}
-                                    >
-                                      {gitError && (
-                                        <div className="mb-1.5 rounded-[10px] border border-red-500/20 bg-red-500/10 p-2 text-[11px] text-red-400 break-words">
-                                          {gitError}
-                                        </div>
-                                      )}
-
-                                      {isCreatingBranch ? (
-                                        <div className="flex flex-col gap-2">
-                                          <div className="eterx-work-menu-flyout-label px-1">
-                                            Create new branch
-                                          </div>
-
-                                          <div className="eterx-work-menu-search">
-                                            <GitBranch className="h-3.5 w-3.5 shrink-0 text-white/34" />
-                                            <input
-                                              type="text"
-                                              placeholder="Branch name"
-                                              autoFocus
-                                              value={newBranchName}
-                                              onChange={(e) => setNewBranchName(e.target.value)}
-                                              className="w-full border-none bg-transparent font-mono text-[12px] text-white/90 outline-none placeholder:text-white/35"
-                                              onKeyDown={(e) => {
-                                                if (e.key === 'Enter') {
-                                                  handleCreateBranchSubmit();
-                                                } else if (e.key === 'Escape') {
-                                                  setIsCreatingBranch(false);
-                                                  setNewBranchName('');
-                                                }
-                                              }}
-                                            />
-                                          </div>
-
-                                          <div className="flex items-center gap-2 justify-end mt-1">
-                                            <button
-                                              onClick={() => {
-                                                setIsCreatingBranch(false);
-                                                setNewBranchName('');
-                                                setGitError(null);
-                                              }}
-                                              className="rounded-[8px] bg-white/[0.055] px-2.5 py-1 text-[11px] font-medium text-white/78 transition-colors hover:bg-white/[0.10] hover:text-white"
-                                            >
-                                              Cancel
-                                            </button>
-                                            <button
-                                              disabled={!newBranchName.trim()}
-                                              onClick={handleCreateBranchSubmit}
-                                              className="rounded-[8px] bg-[#19C37D]/18 px-2.5 py-1 text-[11px] font-semibold text-[#35D291] transition-colors hover:bg-[#19C37D]/28 disabled:text-[#19C37D]/50 disabled:opacity-40 disabled:hover:bg-[#19C37D]/18"
-                                            >
-                                              Create
-                                            </button>
-                                          </div>
-                                        </div>
-                                      ) : (
-                                        <>
-                                          <div className="eterx-work-menu-search mb-1.5">
-                                            <Search className="h-3.5 w-3.5 shrink-0 text-white/34" />
-                                            <input
-                                              type="text"
-                                              placeholder="Search branches"
-                                              value={branchSearch}
-                                              onChange={(e) => setBranchSearch(e.target.value)}
-                                              className="w-full border-none bg-transparent text-[12px] text-white/90 outline-none placeholder:text-white/35"
-                                            />
-                                          </div>
-
-                                          <div className="eterx-work-menu-flyout-label">
-                                            Branches
-                                          </div>
-
-                                          <div className="eterx-work-menu-list eterx-work-menu-list-tall eterx-scrollbar">
-                                            {(() => {
-                                              const filteredBranches = gitBranches.filter(b =>
-                                                b.name.toLowerCase().includes(branchSearch.toLowerCase())
-                                              );
-
-                                              if (filteredBranches.length === 0) {
-                                                return <WorkMenuEmptyState label="No branches found" />;
-                                              }
-
-                                              return filteredBranches.map((b) => (
-                                                <button
-                                                  key={b.name}
-                                                  onClick={(e) => {
-                                                    e.stopPropagation();
-                                                    handleCheckoutBranch(b.name);
-                                                  }}
-                                                  className="eterx-work-menu-row group items-start"
-                                                >
-                                                  <GitBranch className="eterx-work-menu-row-icon mt-0.5" />
-                                                  <span className="flex min-w-0 flex-1 items-start justify-between gap-3">
-                                                    <div className="flex flex-col min-w-0">
-                                                      <span className={`truncate font-mono ${ currentBranch === b.name ? 'text-white font-medium' : 'text-white/70' }`}>{b.name}</span>
-                                                      {b.uncommitted && (
-                                                        <span className="text-[10px] text-white/35">{b.uncommitted}</span>
-                                                      )}
-                                                    </div>
-                                                    {currentBranch === b.name && (
-                                                      <Check className="w-3.5 h-3.5 text-[#19C37D] shrink-0 mt-0.5" />
-                                                    )}
-                                                  </span>
-                                                </button>
-                                              ));
-                                            })()}
-                                          </div>
-
-                                          <div className="eterx-work-menu-divider my-1" />
-
-                                          <button
-                                            onClick={(e) => {
-                                              e.stopPropagation();
-                                              setIsCreatingBranch(true);
-                                            }}
-                                            className="eterx-work-menu-row group text-white/64"
-                                          >
-                                            <PlusSquare className="eterx-work-menu-row-icon" />
-                                            <span className="min-w-0 flex-1 truncate">Create and checkout new branch...</span>
-                                          </button>
-                                        </>
-                                      )}
-                                    </motion.div>
-                                  )}
-                                </AnimatePresence>
-                              </div>
-
-                              {/* Commit/Push Row */}
-                              <button
-                                onMouseEnter={() => setActiveSubmenu(null)}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setEnvDropdownOpen(false);
-                                  setMonitorOpen(true);
-                                }}
-                                className="eterx-work-menu-row group"
-                              >
-                                <GitCommit className="eterx-work-menu-row-icon" />
-                                <span className="min-w-0 flex-1 truncate">Commit or push</span>
-                              </button>
 
                               {/* Divider */}
                               <div
@@ -7766,9 +7506,8 @@ function DeepWorkUI() {
                               </AnimatePresence>
                             </div>
                           </motion.div>
-                        );
-                      })()}
-                    </AnimatePresence>
+                        )}
+                      </AnimatePresence>
                   </div>
                 )}
               </div>
@@ -8026,7 +7765,7 @@ function DeepWorkUI() {
                           return (
                             <div
                               ref={proxyChatWindowRef}
-                              className="eterx-proxy-chat-window pointer-events-auto absolute right-[calc(100%+12px)] bottom-12 z-[90] max-h-[calc(100vh-32px)] max-w-[calc(100vw-24px)] overflow-hidden rounded-[24px] border border-white/[0.14] bg-[#181818]/[0.98] shadow-[0_16px_44px_rgba(0,0,0,0.38),inset_0_1px_0_rgba(255,255,255,0.04)] flex flex-col transition-[box-shadow] duration-200"
+                              className="eterx-proxy-chat-window pointer-events-auto fixed right-6 bottom-20 z-[9990] max-h-[calc(100vh-32px)] max-w-[calc(100vw-24px)] overflow-hidden rounded-[24px] border border-white/[0.14] bg-[#181818]/[0.98] shadow-[0_16px_44px_rgba(0,0,0,0.38),inset_0_1px_0_rgba(255,255,255,0.04)] flex flex-col transition-[box-shadow] duration-200"
                               style={{
                                 width: proxyChatWindow.width,
                                 height: proxyChatWindow.height,

@@ -19,7 +19,7 @@ export const isLocalFilePath = (value: string) =>
   LOCAL_PATH_EXACT_PATTERN.test(String(value || '').trim());
 
 export const encodeLocalFileHref = (filePath: string) =>
-  `${LOCAL_FILE_HREF_PREFIX}${encodeURIComponent(String(filePath || '').trim())}`;
+  `${ LOCAL_FILE_HREF_PREFIX }${ encodeURIComponent(String(filePath || '').trim()) }`;
 
 export const decodeLocalFileHref = (href?: string | null) => {
   if (!href) return null;
@@ -42,7 +42,7 @@ const filePathMarkdownLink = (filePath: string) => {
   const cleanedPath = filePath.trim();
   if (!cleanedPath) return '';
   const fileName = escapeMarkdownLinkText(getLocalFileName(cleanedPath));
-  return `[${fileName}](${encodeLocalFileHref(cleanedPath)})`;
+  return `[${ fileName }](${ encodeLocalFileHref(cleanedPath) })`;
 };
 
 export const linkifyLocalFilePaths = (value: string) => {
@@ -60,19 +60,16 @@ export const linkifyLocalFilePaths = (value: string) => {
 
       return chunk.replace(LOCAL_PATH_PATTERN, (_match, prefix: string, filePath: string) => {
         const link = filePathMarkdownLink(filePath);
-        return link ? `${prefix}${link}` : _match;
+        return link ? `${ prefix }${ link }` : _match;
       });
     }).join('');
   }).join('');
 };
 
+import { safeCopyTextToClipboard } from '../ui/copy-button';
+
 export const copyTextToClipboard = async (value: string) => {
-  try {
-    return copy(value);
-  } catch (err) {
-    console.error('Failed to copy text: ', err);
-    return false;
-  }
+  return await safeCopyTextToClipboard(value);
 };
 
 export const openLocalFilePath = async (filePath: string) => {
@@ -199,7 +196,7 @@ export const LocalFileIcon = ({ fileName, size = 'md' }: { fileName: string; siz
   return (
     <img
       src={iconPath}
-      className={`${iconSize} shrink-0 object-contain`}
+      className={`${ iconSize } shrink-0 object-contain`}
       alt=""
       aria-hidden="true"
       draggable={false}
@@ -223,7 +220,7 @@ export const LocalFileLinkChip = ({
   const previewUrl = useMemo(() => {
     const cleanPath = filePath.replace(/\\/g, '/');
     const segments = cleanPath.split('/').filter(Boolean).map(encodeURIComponent);
-    return `/api/preview/${segments.join('/')}`;
+    return `/api/preview/${ segments.join('/') }`;
   }, [filePath]);
 
   const copyPath = async (event: React.MouseEvent) => {
@@ -254,11 +251,11 @@ export const LocalFileLinkChip = ({
   return (
     <span
       onClick={openPath}
-      className={`eterx-local-file-chip inline-flex max-w-full items-center align-middle text-left ${compact ? 'my-0.5' : 'my-1'} rounded-[10px] border border-white/[0.09] bg-[#181817] shadow-[0_7px_20px_rgba(0,0,0,0.16),inset_0_1px_0_rgba(255,255,255,0.045)] transition-colors hover:border-white/[0.14] hover:bg-[#1D1C1B] cursor-pointer`}
+      className={`eterx-local-file-chip inline-flex max-w-full items-center align-middle text-left ${ compact ? 'my-0.5' : 'my-1' } rounded-[10px] border border-white/[0.09] bg-[#181817] shadow-[0_7px_20px_rgba(0,0,0,0.16),inset_0_1px_0_rgba(255,255,255,0.045)] transition-colors hover:border-white/[0.14] hover:bg-[#1D1C1B] cursor-pointer`}
       title={filePath}
     >
       <span
-        className={`inline-flex min-w-0 items-center gap-2 rounded-l-[10px] ${compact ? 'px-2 py-1' : 'px-2.5 py-1.5'} text-left`}
+        className={`inline-flex min-w-0 items-center gap-2 rounded-l-[10px] ${ compact ? 'px-2 py-1' : 'px-2.5 py-1.5' } text-left`}
       >
         <LocalFileIcon fileName={name} size={compact ? 'sm' : 'md'} />
         <span className="min-w-0 truncate text-[12.75px] font-semibold leading-tight tracking-normal text-[#E8E6E3]">
@@ -270,8 +267,8 @@ export const LocalFileLinkChip = ({
       <button
         type="button"
         onClick={copyPath}
-        className={`inline-flex shrink-0 items-center justify-center rounded-r-[10px] ${compact ? 'h-8 w-8' : 'h-9 w-9'} text-[#9D968D] transition-colors hover:bg-white/[0.045] hover:text-[#E8E6E3] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#94C7E0]/24`}
-        aria-label={`Copy URL for ${name}`}
+        className={`inline-flex shrink-0 items-center justify-center rounded-r-[10px] ${ compact ? 'h-8 w-8' : 'h-9 w-9' } text-[#9D968D] transition-colors hover:bg-white/[0.045] hover:text-[#E8E6E3] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#94C7E0]/24`}
+        aria-label={`Copy URL for ${ name }`}
         title="Copy download URL"
       >
         {copied ? <Check className="h-3.5 w-3.5 text-emerald-400" strokeWidth={2.2} /> : <Copy className="h-3.5 w-3.5" strokeWidth={2.1} />}

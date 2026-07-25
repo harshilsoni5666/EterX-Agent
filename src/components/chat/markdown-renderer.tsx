@@ -13,7 +13,7 @@ import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 // @ts-ignore
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { Check, ChevronDown, Copy, Download, Maximize2, Minimize2, MoreHorizontal, WrapText } from 'lucide-react';
-import { CopyButton } from '../ui/copy-button';
+import { CopyButton, safeCopyTextToClipboard } from '../ui/copy-button';
 import { Tooltip } from '../ui/tooltip';
 import { LiveArtifact } from './live-artifact';
 import { LocalFileLinkChip, decodeLocalFileHref, isLocalFilePath, linkifyLocalFilePaths } from './local-file-link';
@@ -236,29 +236,16 @@ const useResolvedTheme = () => {
   return theme;
 };
 
-const useClipboard = (text: string, timeout = 1600) => {
+export const useClipboard = (text: string, timeout = 2000) => {
   const [copied, setCopied] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const copy = async () => {
-    try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(text);
-      } else {
-        const textarea = document.createElement('textarea');
-        textarea.value = text;
-        textarea.style.position = 'fixed';
-        textarea.style.opacity = '0';
-        document.body.appendChild(textarea);
-        textarea.select();
-        document.execCommand('copy');
-        document.body.removeChild(textarea);
-      }
+    const ok = await safeCopyTextToClipboard(text);
+    if (ok) {
       setCopied(true);
       if (timerRef.current) clearTimeout(timerRef.current);
       timerRef.current = setTimeout(() => setCopied(false), timeout);
-    } catch (error) {
-      console.error('Copy failed:', error);
     }
   };
 
@@ -1047,18 +1034,13 @@ const CodeBlock = ({ language, content, forceSource = false, ...props }: { langu
         <ToolbarButton label={wrapLines ? 'Disable wrap' : 'Wrap lines'} active={wrapLines} onClick={() => setWrapLines(value => !value)}>
           <WrapText className="h-4 w-4" />
         </ToolbarButton>
-        {isLong && (
-          <ToolbarButton label={expanded ? 'Collapse code' : 'Expand code'} active={expanded} onClick={() => setExpanded(value => !value)}>
-            {expanded ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
-          </ToolbarButton>
-        )}
         <CopyButton
           text={content}
           side="bottom"
           className="eterx-markdown-copy-button h-8 w-8 border border-white/[0.08] bg-white/[0.035] text-[#8C8A88] hover:bg-white/[0.07] hover:text-[#E8E6E3]"
         />
       </div>
-      <div className={`eterx-markdown-code-scroll eterx-scrollbar overflow-auto ${ isLong && !expanded ? 'max-h-[520px]' : '' }`}>
+      <div className={`eterx-markdown-code-scroll overflow-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden ${ isLong && !expanded ? 'max-h-[520px]' : '' }`}>
         <SyntaxHighlighter
           style={highlightStyle as any}
           language={displayLanguage}
@@ -1141,7 +1123,7 @@ export const markdownComponents = {
     }
 
     return (
-      <code className="eterx-markdown-inline-code font-mono" {...props}>
+      <code className="eterx-markdown-inline-code font-semibold" {...props}>
         {children}
       </code>
     );

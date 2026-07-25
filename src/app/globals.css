@@ -1015,17 +1015,20 @@
 }
 
 .eterx-work-menu {
-  width: min(320px, calc(100vw - 24px));
-  border: 1px solid rgba(255, 255, 255, 0.095);
+  width: 276px !important;
+  max-width: calc(100vw - 24px);
+  height: auto !important;
+  max-height: calc(100vh - 120px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 16px;
-  background: linear-gradient(180deg, rgba(24, 24, 27, 0.98), rgba(17, 17, 19, 0.98));
+  background: #1C1C1A;
   color: rgba(242, 240, 236, 0.74);
-  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.54), 0 2px 8px rgba(0, 0, 0, 0.34), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  box-shadow: 0 20px 55px rgba(0, 0, 0, 0.48), inset 0 1px 0 rgba(255, 255, 255, 0.04);
   font-size: 13px;
-  overflow: visible;
+  overflow: hidden;
   transform-origin: top right;
-  -webkit-backdrop-filter: blur(24px);
-  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(20px);
+  backdrop-filter: blur(20px);
 }
 
 .eterx-work-menu-header {
@@ -1240,13 +1243,13 @@
 
 .eterx-work-menu-empty {
   display: flex;
-  min-height: 32px;
+  min-height: 28px;
   align-items: center;
   gap: 9px;
   border-radius: 10px;
-  color: rgba(255, 255, 255, 0.60);
-  padding: 6px 10px;
-  font-size: 12px;
+  color: #A39B91;
+  padding: 4px 10px 8px;
+  font-size: 12.5px;
   line-height: 1.2;
 }
 
@@ -1358,34 +1361,10 @@
   }
 }
 
-/* Drag Bar at the top of the card */
-.eterx-work-menu-drag-bar {
-  height: 12px;
-  width: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: grab;
-  user-select: none;
-  background: transparent;
-  border-radius: 16px 16px 0 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.02);
-}
-
-.eterx-work-menu-drag-bar:active {
-  cursor: grabbing;
-}
-
+/* Drag Bar at the top of the card (hidden) */
+.eterx-work-menu-drag-bar,
 .eterx-work-menu-drag-handle {
-  width: 32px;
-  height: 3.5px;
-  border-radius: 99px;
-  background: rgba(255, 255, 255, 0.30);
-  transition: background 150ms ease;
-}
-
-.eterx-work-menu-drag-bar:hover .eterx-work-menu-drag-handle {
-  background: rgba(255, 255, 255, 0.24);
+  display: none !important;
 }
 
 /* Resize Handles */
@@ -1783,6 +1762,15 @@
   background: #FFFFFF !important;
   border-color: rgba(31, 31, 29, 0.07) !important;
   box-shadow: none !important;
+}
+
+:root[data-theme="light"] .eterx-logo-popout-text,
+[data-theme="light"] .eterx-logo-popout-text {
+  background-image: linear-gradient(180deg, #1F1F1D 0%, #34332F 60%, #57534E 100%) !important;
+  background-clip: text !important;
+  -webkit-background-clip: text !important;
+  color: transparent !important;
+  filter: none !important;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -2559,6 +2547,10 @@
 .eterx-user-message-bubble:hover .eterx-user-message-action-fade,
 .eterx-user-message-bubble:focus-within .eterx-user-message-action-fade {
   opacity: 1;
+}
+
+.eterx-user-msg-fade {
+  background: linear-gradient(to top, #20201F 0%, transparent 100%);
 }
 
 .eterx-user-message-action-fade {
@@ -3903,10 +3895,12 @@
 .eterx-markdown-inline-code {
   background: transparent !important;
   border: none !important;
+  box-shadow: none !important;
   color: var(--eterx-md-strong) !important;
-  font-family: var(--font-mono) !important;
-  font-weight: 700 !important;
+  font-family: inherit !important;
+  font-weight: 600 !important;
   padding: 0 !important;
+  border-radius: 0 !important;
   white-space: break-spaces;
 }
 
@@ -3917,11 +3911,56 @@
   border: 0;
   background: transparent;
   color: var(--eterx-md-strong);
-  font-family: var(--font-mono);
-  font-size: 0.96em;
-  font-weight: 700;
+  font-family: inherit;
+  font-size: 1em;
+  font-weight: 600;
   line-height: inherit;
   white-space: break-spaces;
+}
+
+/* Theme-aware Local File Link Chip styling */
+.eterx-local-file-chip {
+  background-color: #181817 !important;
+  border-color: rgba(255, 255, 255, 0.09) !important;
+}
+
+.eterx-local-file-chip:hover {
+  background-color: #20201F !important;
+  border-color: rgba(255, 255, 255, 0.15) !important;
+}
+
+.eterx-local-file-chip-name {
+  color: #E8E6E3 !important;
+}
+
+:root[data-theme="light"] .eterx-local-file-chip,
+.light-theme .eterx-local-file-chip {
+  background-color: #F3F2F0 !important;
+  border-color: rgba(31, 31, 29, 0.12) !important;
+  box-shadow: 0 2px 8px rgba(31, 31, 29, 0.05) !important;
+}
+
+:root[data-theme="light"] .eterx-local-file-chip:hover,
+.light-theme .eterx-local-file-chip:hover {
+  background-color: #E8E7E4 !important;
+  border-color: rgba(31, 31, 29, 0.18) !important;
+}
+
+:root[data-theme="light"] .eterx-local-file-chip-name,
+.light-theme .eterx-local-file-chip-name {
+  color: #1F1F1D !important;
+}
+
+:root[data-theme="light"] .eterx-local-file-chip-icon,
+.light-theme .eterx-local-file-chip-icon,
+:root[data-theme="light"] .eterx-local-file-chip-copy,
+.light-theme .eterx-local-file-chip-copy {
+  color: #6D6861 !important;
+}
+
+:root[data-theme="light"] .eterx-local-file-chip-divider,
+.light-theme .eterx-local-file-chip-divider {
+  background-color: rgba(31, 31, 29, 0.10) !important;
 }
 
 .eterx-markdown-list-item>.eterx-markdown-plain-snippet:first-child:last-child {
@@ -6413,8 +6452,8 @@
 }
 
 :root[data-theme="light"] {
-  --eterx-dropdown-bg: #F5F3EF !important;
-  --eterx-dropdown-border: rgba(0, 0, 0, 0.12) !important;
+  --eterx-dropdown-bg: #FFFFFF !important;
+  --eterx-dropdown-border: rgba(0, 0, 0, 0.08) !important;
 }
 
 
@@ -6736,6 +6775,9 @@
     white-space: normal !important;
     text-align: center;
     text-wrap: balance;
+    background-color: transparent !important;
+    box-shadow: none !important;
+    border: none !important;
   }
 
   .eterx-composer-shell[data-compressed="true"] .eterx-home-greeting {
@@ -6880,7 +6922,7 @@
   }
 
   .eterx-chat-turns-nav {
-    zoom: 1.18;
+    display: none !important;
   }
 }
 
@@ -6972,4 +7014,4 @@
 
 :root[data-theme="light"] .eterx-proxy-runtime-model-menu button span:last-child {
   color: rgba(20, 20, 20, 0.46) !important;
-}
+}
