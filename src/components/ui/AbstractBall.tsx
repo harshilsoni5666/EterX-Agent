@@ -91,9 +91,8 @@ float cnoise(vec3 P) {
 void main() {
   vNormal = normalize(normalMatrix * normal);
   vLocalPos = normal;
-  // Soft organic surface wave
-  float f = morph * cnoise(normal * 0.4 + vec3(sin(time * 0.9), cos(time * 0.8), sin(time * 1.0)) * 0.35);
-  vec4 pos = vec4(position + f * normal, 1.0);
+  // Maintain a smooth, 100% uniform perfect sphere boundary
+  vec4 pos = vec4(position, 1.0);
   vPosition = pos.xyz;
   gl_Position = projectionMatrix * modelViewMatrix * pos;
 }`;
@@ -186,15 +185,15 @@ float cnoise(vec3 P) {
   return 2.2 * n_xyz;
 }
 
-// 4-Octave Fractional Brownian Motion (fBm) for Volumetric Random Cloud Wisps
+// 4-Octave Volumetric Cloud fBm
 float fbm(vec3 p) {
   float value = 0.0;
   float amplitude = 0.5;
   float frequency = 1.0;
-  vec3 flow = vec3(sin(time * 1.1), cos(time * 0.9), sin(time * 1.25)) * 0.4;
+  vec3 flow = vec3(sin(time * 1.35) * 0.4, -time * 0.95, cos(time * 1.25) * 0.4);
   for (int i = 0; i < 4; i++) {
     value += amplitude * cnoise((p + flow) * frequency);
-    frequency *= 2.08;
+    frequency *= 2.05;
     amplitude *= 0.5;
   }
   return value;
@@ -202,51 +201,37 @@ float fbm(vec3 p) {
 
 void main() {
   vec3 p = vLocalPos * 1.6;
+  float cloudDensity = fbm(p * RGBr);
 
-  // Random volumetric cloud turbulence
-  float cloudNoise = fbm(p * RGBr);
+  // Dynamic Shifting Dark Blue to Purplish Cloud Palette (NOT LIGHT)
+  float shadeShift = sin(time * 0.95) * 0.5 + 0.5;
 
-  // ═══ COLOR PALETTE ═══
-  // Bottom: Deep Ocean Blue (#004BE0 to #0070FF)
-  vec3 oceanDeepBlue   = vec3(0.00, 0.28, 0.88); // Deep Ocean Royal (#004BE0)
-  vec3 oceanLightBlue  = vec3(0.00, 0.46, 0.98); // Bright Ocean Blue (#0076FF)
+  vec3 deepOceanBlue    = vec3(0.00, 0.28, 0.88); // Rich Deep Royal Blue (#0048E0)
+  vec3 deepIndigoPurple = vec3(0.24, 0.08, 0.62); // Deep Electric Purplish (#3D159E)
+  vec3 darkAzureBlue    = vec3(0.00, 0.45, 0.98); // Vivid Dark Azure (#0073FF)
 
-  // Middle/Top: Dominant Pure Cloud White (#FAFBFF)
-  vec3 cloudWhite      = vec3(0.98, 0.99, 1.00); // Pure Cumulus White (#FAFBFF)
-  vec3 cloudMist       = vec3(0.88, 0.95, 1.00); // Soft Atmospheric Mist
+  vec3 pureCloudWhite   = vec3(1.00, 1.00, 1.00);
+  vec3 softMistTint     = vec3(0.88, 0.96, 1.00);
 
-  // Top Edge: Reduced Subtle Sky Blue Touch (#1EA2FF)
-  vec3 skyBlueTouch    = vec3(0.12, 0.64, 0.98);
+  vec3 dynamicDarkShade = mix(deepOceanBlue, deepIndigoPurple, shadeShift);
+  vec3 blueCloud        = mix(dynamicDarkShade, darkAzureBlue, cloudDensity * 0.5 + 0.5);
+  vec3 whiteCloud       = mix(pureCloudWhite, softMistTint, cloudDensity * 0.4 + 0.2);
 
-  // Blend internal random clouds
-  vec3 bottomRegion = mix(oceanDeepBlue, oceanLightBlue, cloudNoise * 0.5 + 0.5);
-  vec3 middleRegion = mix(cloudWhite, cloudMist, fbm(p * 2.2) * 0.35 + 0.2);
+  float normY = vLocalPos.y + cloudDensity * 0.35;
+  float splitFactor = smoothstep(-0.45, 0.45, normY);
 
-  // FIXED DIVISION: Ocean Blue strictly at bottom, White in dominant middle/top, reduced Sky Blue touch at top edge
-  float boundaryRipple = sin(vLocalPos.x * 4.0 + time * 1.4) * 0.05 + cos(vLocalPos.z * 4.0 + time * 1.2) * 0.05;
-  float normY = vLocalPos.y + boundaryRipple + cloudNoise * 0.14;
+  vec3 baseColor = mix(blueCloud, whiteCloud, splitFactor);
 
-  vec3 baseColor;
-  if (normY < 0.0) {
-    float t = smoothstep(-0.65, 0.0, normY);
-    baseColor = mix(bottomRegion, middleRegion, t);
-  } else {
-    float t = smoothstep(0.0, 0.65, normY);
-    baseColor = mix(middleRegion, skyBlueTouch, t * 0.35); // Reduced sky blue impact at top
-  }
-
-  // Fresnel Soft Luminous Rim Glow
   vec3 viewDir = normalize(-vPosition);
-  float fresnel = pow(1.0 - max(dot(vNormal, viewDir), 0.0), 2.5);
-  baseColor = mix(baseColor, vec3(0.96, 0.98, 1.0), fresnel * 0.38);
+  float fresnel = pow(1.0 - max(dot(vNormal, viewDir), 0.0), 2.2);
+  baseColor = mix(baseColor, vec3(1.0, 1.0, 1.0), fresnel * 0.40);
 
-  // Directional Sun Lighting (Top-Right Light Source)
-  vec3 sunDir = normalize(vec3(0.6, 1.3, 1.2));
-  float diff  = max(dot(vNormal, sunDir), 0.60);
+  vec3 sunDir = normalize(vec3(0.5, 1.3, 1.2));
+  float diff  = max(dot(vNormal, sunDir), 0.75);
   vec3 halfDir = normalize(sunDir + viewDir);
-  float spec  = pow(max(dot(vNormal, halfDir), 0.0), 32.0);
+  float spec  = pow(max(dot(vNormal, halfDir), 0.0), 36.0);
 
-  vec3 finalColor = baseColor * (diff * 0.52 + 0.55) + vec3(0.40) * spec;
+  vec3 finalColor = baseColor * (diff * 0.35 + 0.68) + vec3(0.38) * spec;
 
   gl_FragColor = vec4(finalColor, 1.0);
 }`;
@@ -262,6 +247,8 @@ export interface AbstractBallProps {
   cameraZoom?: number;
   className?: string;
   style?: React.CSSProperties;
+  liveState?: 'idle' | 'connecting' | 'connected' | 'listening' | 'speaking';
+  audioVolume?: number;
 }
 
 const AbstractBall: React.FC<AbstractBallProps> = (props) => {
@@ -273,9 +260,11 @@ const AbstractBall: React.FC<AbstractBallProps> = (props) => {
     chromaRGBb = 7.0,
     cameraSpeedY = 0.3,
     cameraSpeedX = 0.2,
-    cameraZoom = 150,
+    cameraZoom = 70,
     className = '',
     style,
+    liveState = 'idle',
+    audioVolume = 0,
   } = props;
 
   const mountRef = useRef<HTMLDivElement>(null);
@@ -298,7 +287,15 @@ const AbstractBall: React.FC<AbstractBallProps> = (props) => {
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     renderer.domElement.style.background = 'transparent';
     renderer.domElement.style.backgroundColor = 'transparent';
+    renderer.domElement.style.border = 'none';
     renderer.domElement.style.outline = 'none';
+    renderer.domElement.style.boxShadow = 'none';
+    renderer.domElement.style.display = 'block';
+    renderer.domElement.style.borderRadius = '50%';
+    renderer.domElement.style.clipPath = 'circle(50% at 50% 50%)';
+    (renderer.domElement.style as any).webkitClipPath = 'circle(50% at 50% 50%)';
+    renderer.domElement.style.width = '100%';
+    renderer.domElement.style.height = '100%';
 
     while (container.firstChild) {
       container.removeChild(container.firstChild);
@@ -333,10 +330,26 @@ const AbstractBall: React.FC<AbstractBallProps> = (props) => {
       const p = propsRef.current;
       const curPerlinTime = p.perlinTime ?? 25.0;
       const curPerlinMorph = p.perlinMorph ?? 25.0;
+      const state = p.liveState || 'idle';
+      const vol = p.audioVolume || 0;
 
-      clock += (curPerlinTime / 8000);
+      let speedMult = 1.0;
+      let morphBoost = 1.0;
+
+      if (state === 'speaking') {
+        speedMult = 2.4 + vol * 1.5;
+        morphBoost = 1.6 + vol * 1.2;
+      } else if (state === 'listening') {
+        speedMult = 1.6 + Math.sin(clock * 3.0) * 0.4;
+        morphBoost = 1.3 + Math.sin(clock * 2.5) * 0.3;
+      } else if (state === 'connecting') {
+        speedMult = 2.0;
+        morphBoost = 1.4;
+      }
+
+      clock += (curPerlinTime / 4200) * speedMult;
       uniforms.time.value = clock;
-      uniforms.morph.value = Math.min(6.0, curPerlinMorph * 0.12);
+      uniforms.morph.value = Math.min(10.0, curPerlinMorph * 0.12 * morphBoost);
 
       mesh.rotation.set(0, 0, 0);
 
@@ -372,8 +385,19 @@ const AbstractBall: React.FC<AbstractBallProps> = (props) => {
   return (
     <div
       ref={mountRef}
-      style={{ background: 'transparent', backgroundColor: 'transparent', ...style }}
-      className={`bg-transparent overflow-hidden ${className || ''}`}
+      style={{
+        background: 'transparent',
+        backgroundColor: 'transparent',
+        border: 'none',
+        outline: 'none',
+        boxShadow: 'none',
+        borderRadius: '50%',
+        clipPath: 'circle(50% at 50% 50%)',
+        WebkitClipPath: 'circle(50% at 50% 50%)',
+        overflow: 'hidden',
+        ...style,
+      }}
+      className={`bg-transparent ${ className || '' }`}
     />
   );
 };
