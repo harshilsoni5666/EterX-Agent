@@ -1,7 +1,7 @@
 import React from 'react';
 import { ChevronDown } from 'lucide-react';
 
-export const WorkMenuSectionButton = ({
+export const WorkMenuSectionButton = React.memo(({
   title,
   meta,
   open,
@@ -29,16 +29,16 @@ export const WorkMenuSectionButton = ({
       <ChevronDown className={`h-3.5 w-3.5 text-white/34 transition duration-150 group-hover:text-white/64 ${ open ? '' : '-rotate-90' }`} />
     </span>
   </button>
-);
+));
 
-export const WorkMenuEmptyState = ({ label, detail }: { label: string; detail?: string }) => (
+export const WorkMenuEmptyState = React.memo(({ label, detail }: { label: string; detail?: string }) => (
   <div className="eterx-work-menu-empty">
     <span className="min-w-0 flex-1 truncate text-[#A39B91] font-normal">{label}</span>
     {detail && <span className="hidden shrink-0 text-[#A39B91]/60 sm:inline">{detail}</span>}
   </div>
-);
+));
 
-export const WorkMenuStatusIndicator = ({ status }: { status?: string }) => {
+export const WorkMenuStatusIndicator = React.memo(({ status }: { status?: string }) => {
   switch (status) {
     case 'working':
     case 'spawning':
@@ -66,4 +66,4 @@ export const WorkMenuStatusIndicator = ({ status }: { status?: string }) => {
     default:
       return <span className="h-2 w-2 shrink-0 rounded-full bg-white/20" aria-label="Idle" />;
   }
-};
+});

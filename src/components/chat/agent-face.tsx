@@ -32,7 +32,7 @@ const sizeMap: Record<AgentFaceSize, { outer: string; faceScale: number; sparkSc
   welcome: { outer: 'h-[58px] w-[58px]', faceScale: 1.22, sparkScale: 0.8 },
 };
 
-export const AgentFace = ({
+export const AgentFace = React.memo(({
   mode = 'idle',
   seed,
   actionKey = '',
@@ -535,4 +535,4 @@ export const AgentFace = ({
       </div>
     </motion.button>
   );
-};
+});

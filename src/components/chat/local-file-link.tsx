@@ -188,7 +188,7 @@ const getFileIconPath = (fileName: string) => {
   }
 };
 
-export const LocalFileIcon = ({ fileName, size = 'md' }: { fileName: string; size?: 'sm' | 'md' }) => {
+export const LocalFileIcon = React.memo(({ fileName, size = 'md' }: { fileName: string; size?: 'sm' | 'md' }) => {
   const iconPath = useMemo(() => getFileIconPath(fileName), [fileName]);
   const isSmall = size === 'sm';
   const iconSize = isSmall ? 'h-4 w-4' : 'h-5 w-5';
@@ -202,9 +202,9 @@ export const LocalFileIcon = ({ fileName, size = 'md' }: { fileName: string; siz
       draggable={false}
     />
   );
-};
+});
 
-export const LocalFileLinkChip = ({
+export const LocalFileLinkChip = React.memo(({
   filePath,
   label,
   compact = false,
@@ -275,4 +275,4 @@ export const LocalFileLinkChip = ({
       </button>
     </span>
   );
-};
+});
