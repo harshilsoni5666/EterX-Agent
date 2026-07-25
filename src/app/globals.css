@@ -1431,6 +1431,8 @@
 /* shadcn shimmer utility, kept local because this project uses Tailwind v3.
    Defaults: 20deg angle, 2s duration, and a font-aware highlight spread. */
 .shimmer {
+  display: inline-block;
+  vertical-align: middle;
   --_spread: var(--shimmer-spread, calc(3ch + 40px));
   --_base: currentColor;
   --_highlight: var(--shimmer-color, color-mix(in srgb, currentColor 20%, transparent));

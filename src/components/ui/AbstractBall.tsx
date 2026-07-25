@@ -88,9 +88,9 @@ float cnoise(vec3 P) {
 }
 
 void main() {
-  // Soft, spherical surface wave
-  float f = morph * cnoise(normal * 0.5 + time * 0.8);
   vNormal = normalize(normalMatrix * normal);
+  // Pure local harmonic oscillation — Mesh stays 100% fixed in orientation
+  float f = morph * cnoise(normal * 0.4 + vec3(sin(time * 0.8), cos(time * 0.7), sin(time * 0.9)) * 0.35);
   vec4 pos = vec4(position + f * normal, 1.0);
   vPosition = pos.xyz;
   gl_Position = projectionMatrix * modelViewMatrix * pos;
@@ -184,40 +184,47 @@ float cnoise(vec3 P) {
 }
 
 void main() {
-  float colorTime = time * 2.0;
+  // Oscillating harmonic time offsets (clouds move in place, never drift across hemispheres)
+  vec3 oscOffset = vec3(sin(time * 0.85) * 0.35, cos(time * 0.72) * 0.35, sin(time * 0.95) * 0.35);
 
-  // Layered Volumetric Cloud Turbulence (fBm)
-  float n1 = cnoise(RGBr * (vNormal * 1.5 + colorTime * 0.8));
-  float n2 = cnoise(RGBg * (vNormal * 2.8 - colorTime * 1.2)) * 0.5;
-  float n3 = cnoise(vec3(vNormal.x * 4.5, vNormal.y * 4.5 + colorTime * 1.5, vNormal.z * 4.5)) * 0.25;
-  
-  float cloudNoise = (n1 + n2 + n3) / 1.75; // Soft realistic sky cloud texture
+  // 1. Blue Domain internal clouds (bottom hemisphere)
+  float blueTurb1 = cnoise(RGBr * (vNormal * 1.8 + oscOffset));
+  float blueTurb2 = cnoise(RGBg * (vNormal * 3.2 - oscOffset * 1.1)) * 0.5;
+  float blueCloud = (blueTurb1 + blueTurb2) * 0.5;
 
-  // Sky Blue (Bottom) & Pure Cloud White (Top) Color Gradient
-  vec3 skyBlueDeep = vec3(0.0, 0.45, 0.98);   // Vibrant Deep Sky Blue (#0073FF)
-  vec3 skyBlueBright = vec3(0.12, 0.68, 0.98); // Bright Azure Cyan (#1EAEFF)
+  // 2. White Domain internal clouds (top hemisphere)
+  float whiteTurb1 = cnoise(RGBr * (vNormal * 2.2 + oscOffset * 0.9));
+  float whiteTurb2 = cnoise(RGBg * (vNormal * 3.8 - oscOffset * 1.2)) * 0.4;
+  float whiteCloud = (whiteTurb1 + whiteTurb2) * 0.5;
+
+  // Palette: Deep Sky Blue & Azure Cyan for Blue; Pure White & Soft Cyan Mist for White
+  vec3 skyBlueDeep = vec3(0.00, 0.42, 0.98);   // Vibrant Deep Sky Blue (#006CFF)
+  vec3 skyBlueBright = vec3(0.12, 0.70, 0.98); // Bright Azure Cyan (#1EB2FF)
   vec3 cloudWhite = vec3(0.98, 0.99, 1.0);     // Crisp Pure Cloud White (#FAFBFF)
-  vec3 cloudSoft = vec3(0.88, 0.95, 1.0);      // Soft Mist Tint
+  vec3 cloudSoft = vec3(0.86, 0.94, 1.0);      // Soft Mist Tint
 
-  vec3 blueHalf = mix(skyBlueDeep, skyBlueBright, cloudNoise * 0.5 + 0.5);
-  vec3 whiteHalf = mix(cloudWhite, cloudSoft, n2 * 0.5 + 0.5);
+  vec3 blueRegionColor = mix(skyBlueDeep, skyBlueBright, blueCloud * 0.5 + 0.5);
+  vec3 whiteRegionColor = mix(cloudWhite, cloudSoft, whiteCloud * 0.5 + 0.5);
 
-  // Vertical Y-axis Split (Top White, Bottom Blue) matching image!
-  float split = vNormal.y * 0.85 + cloudNoise * 0.35;
-  vec3 baseColor = mix(blueHalf, whiteHalf, smoothstep(-0.25, 0.55, split));
+  // FIXED TOP WHITE / BOTTOM BLUE DIVISION
+  // vNormal.y > 0 is TOP (White), vNormal.y < 0 is BOTTOM (Blue)
+  float boundaryRipple = sin(vNormal.x * 4.0 + time * 1.2) * 0.04 + cos(vNormal.z * 4.0 + time * 1.1) * 0.04;
+  float splitFactor = smoothstep(-0.15, 0.25, vNormal.y + boundaryRipple);
 
-  // Fresnel Rim Glow for soft luminous spherical edge matching image
+  vec3 baseColor = mix(blueRegionColor, whiteRegionColor, splitFactor);
+
+  // Fresnel Rim Highlight for 3D Luminous Polish
   vec3 viewDir = normalize(-vPosition);
-  float fresnel = pow(1.0 - max(dot(vNormal, viewDir), 0.0), 2.5);
-  baseColor = mix(baseColor, vec3(0.95, 0.98, 1.0), fresnel * 0.45);
+  float fresnel = pow(1.0 - max(dot(vNormal, viewDir), 0.0), 2.6);
+  baseColor = mix(baseColor, vec3(0.96, 0.98, 1.0), fresnel * 0.42);
 
-  // Soft Ambient Lighting & Subtle Specular Highlight
-  vec3 lightDir = normalize(vec3(0.5, 1.2, 1.4));
-  float diff = max(dot(vNormal, lightDir), 0.55);
+  // Soft Ambient & Specular Lighting
+  vec3 lightDir = normalize(vec3(0.5, 1.25, 1.35));
+  float diff = max(dot(vNormal, lightDir), 0.58);
   vec3 halfDir = normalize(lightDir + viewDir);
-  float spec = pow(max(dot(vNormal, halfDir), 0.0), 24.0);
+  float spec = pow(max(dot(vNormal, halfDir), 0.0), 28.0);
 
-  vec3 finalColor = baseColor * (diff * 0.55 + 0.55) + vec3(0.4) * spec;
+  vec3 finalColor = baseColor * (diff * 0.55 + 0.52) + vec3(0.42) * spec;
 
   gl_FragColor = vec4(finalColor, 1.0);
 }`;
@@ -267,6 +274,9 @@ const AbstractBall: React.FC<AbstractBallProps> = (props) => {
     renderer.setClearColor(0x000000, 0);
     renderer.setSize(width, height);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    renderer.domElement.style.background = 'transparent';
+    renderer.domElement.style.backgroundColor = 'transparent';
+    renderer.domElement.style.outline = 'none';
 
     while (container.firstChild) {
       container.removeChild(container.firstChild);
@@ -291,6 +301,8 @@ const AbstractBall: React.FC<AbstractBallProps> = (props) => {
     });
 
     const mesh = new THREE.Mesh(geometry, material);
+    // Fixed mesh orientation so Top is ALWAYS White and Bottom is ALWAYS Sky Blue!
+    mesh.rotation.set(0, 0, 0);
     scene.add(mesh);
 
     let animationFrameId: number;
@@ -300,15 +312,13 @@ const AbstractBall: React.FC<AbstractBallProps> = (props) => {
       const p = propsRef.current;
       const curPerlinTime = p.perlinTime ?? 25.0;
       const curPerlinMorph = p.perlinMorph ?? 25.0;
-      const curCameraSpeedY = p.cameraSpeedY ?? 0.3;
-      const curCameraSpeedX = p.cameraSpeedX ?? 0.2;
 
       clock += (curPerlinTime / 8000);
       uniforms.time.value = clock;
       uniforms.morph.value = Math.min(6.0, curPerlinMorph * 0.12);
 
-      mesh.rotation.y += curCameraSpeedY / 100;
-      mesh.rotation.z += curCameraSpeedX / 100;
+      // Keep 3D mesh object rotation 100% static so orientation NEVER flips upside down!
+      mesh.rotation.set(0, 0, 0);
 
       camera.lookAt(scene.position);
       renderer.render(scene, camera);
@@ -342,8 +352,8 @@ const AbstractBall: React.FC<AbstractBallProps> = (props) => {
   return (
     <div
       ref={mountRef}
-      style={style}
-      className={className}
+      style={{ background: 'transparent', backgroundColor: 'transparent', ...style }}
+      className={`bg-transparent overflow-hidden ${className || ''}`}
     />
   );
 };

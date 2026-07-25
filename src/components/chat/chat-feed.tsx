@@ -1657,8 +1657,8 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
 
 
             {traceLogs.length === 0 && (liveState === 'connecting' || liveState === 'listening' || liveState === 'speaking') && (
-              <div className="flex-1 flex flex-col items-center justify-center min-h-[380px] p-6 my-auto text-center select-none">
-                <Shimmer className="text-2xl font-semibold tracking-wide text-white">
+              <div className="flex-1 flex flex-col items-center justify-center min-h-[380px] p-6 my-auto text-center select-none bg-transparent">
+                <Shimmer className="inline-block text-2xl font-semibold tracking-wide text-white">
                   Connecting...
                 </Shimmer>
               </div>
