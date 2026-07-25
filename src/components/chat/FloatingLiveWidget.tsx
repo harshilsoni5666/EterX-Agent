@@ -73,25 +73,30 @@ export const FloatingLiveWidget: React.FC<FloatingLiveWidgetProps> = ({
   const perlinMorph = 16.0 + (currentVol / 100) * 24.0;
   const perlinTime = 22.0 + (currentVol / 100) * 28.0;
 
-  const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+  const handlePillEnter = (e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
+    setIsHovered(true);
+  };
+
+  const handleOrbMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
     const centerX = rect.left + rect.width / 2;
     const centerY = rect.top + rect.height / 2;
     const dx = e.clientX - centerX;
     const dy = e.clientY - centerY;
     const radius = rect.width / 2;
-    const isInsideCircle = (dx * dx + dy * dy) <= (radius * radius);
+    const isInsideOrbArea = (dx * dx + dy * dy) <= (radius * radius * 1.05) || (isHovered && dy > 0 && dy <= radius + 35 && Math.abs(dx) <= radius);
 
-    if (isInsideCircle) {
-      if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
-      setIsHovered(true);
+    if (isInsideOrbArea) {
+      handlePillEnter(e);
     } else {
       handleMouseLeave();
     }
   };
 
   const handleMouseEnter = (e: React.MouseEvent<HTMLDivElement>) => {
-    handleMouseMove(e);
+    handleOrbMouseMove(e);
   };
 
   const handleMouseLeave = () => {
@@ -148,7 +153,7 @@ export const FloatingLiveWidget: React.FC<FloatingLiveWidgetProps> = ({
             pointerEvents: 'auto',
           }}
           onMouseEnter={handleMouseEnter}
-          onMouseMove={handleMouseMove}
+          onMouseMove={handleOrbMouseMove}
           onMouseLeave={handleMouseLeave}
         />
       </motion.div>
@@ -170,41 +175,44 @@ export const FloatingLiveWidget: React.FC<FloatingLiveWidgetProps> = ({
               boxShadow: '0 4px 20px rgba(0, 0, 0, 0.15), 0 0 0 1px rgba(0, 0, 0, 0.05)',
               whiteSpace: 'nowrap',
             }}
-            onMouseEnter={handleMouseEnter}
-            onMouseMove={handleMouseMove}
+            onMouseEnter={handlePillEnter}
+            onMouseMove={handlePillEnter}
             onMouseLeave={handleMouseLeave}
           >
             <button
               type="button"
               onClick={onToggleSpeakerMute}
               className="w-7 h-7 flex items-center justify-center rounded-full transition-all duration-150 active:scale-90 hover:bg-black/5"
-              style={{ color: isSpeakerMuted ? '#bbb' : '#555' }}
+              style={{ color: isSpeakerMuted ? '#ef4444' : '#374151' }}
+              title={isSpeakerMuted ? "Unmute Audio" : "Mute Audio"}
             >
               {isSpeakerMuted
-                ? <PremiumVolumeX className="w-4 h-4" />
-                : <PremiumVolume2 className="w-4 h-4" />}
+                ? <PremiumVolumeX className="w-4 h-4 text-red-500" />
+                : <PremiumVolume2 className="w-4 h-4 text-gray-700" />}
             </button>
 
             <button
               type="button"
               onClick={onToggleMicMute}
               className="w-7 h-7 flex items-center justify-center rounded-full transition-all duration-150 active:scale-90 hover:bg-black/5"
-              style={{ color: isMicMuted ? '#bbb' : '#555' }}
+              style={{ color: isMicMuted ? '#ef4444' : '#374151' }}
+              title={isMicMuted ? "Unmute Microphone" : "Mute Microphone"}
             >
               {isMicMuted
-                ? <PremiumMicOff className="w-4 h-4" />
-                : <PremiumMic className="w-4 h-4" />}
+                ? <PremiumMicOff className="w-4 h-4 text-red-500" />
+                : <PremiumMic className="w-4 h-4 text-gray-700" />}
             </button>
 
             <button
               type="button"
               onClick={onLiveStop}
-              className="w-7 h-7 flex items-center justify-center rounded-full transition-all duration-150 active:scale-90"
+              className="w-7 h-7 flex items-center justify-center rounded-full transition-all duration-150 active:scale-90 hover:opacity-90"
               style={{
-                background: 'linear-gradient(135deg, #3B82F6, #2563EB)',
-                color: '#fff',
-                boxShadow: '0 1px 4px rgba(37, 99, 235, 0.3)',
+                background: 'linear-gradient(135deg, #27272a, #09090b)',
+                color: '#ffffff',
+                boxShadow: '0 2px 8px rgba(0, 0, 0, 0.25)',
               }}
+              title="Close Live Session"
             >
               <X className="w-3.5 h-3.5 stroke-[2.5]" />
             </button>

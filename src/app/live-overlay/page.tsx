@@ -32,28 +32,33 @@ export default function LiveOverlayPage() {
     }
   }, []);
 
-  const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+  const handlePillEnter = (e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
+    setIsHovered(true);
+    if (typeof window !== 'undefined' && (window as any).electronAPI?.setIgnoreMouseEvents) {
+      (window as any).electronAPI.setIgnoreMouseEvents(false);
+    }
+  };
+
+  const handleOrbMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
     const centerX = rect.left + rect.width / 2;
     const centerY = rect.top + rect.height / 2;
     const dx = e.clientX - centerX;
     const dy = e.clientY - centerY;
     const radius = rect.width / 2;
-    const isInsideCircle = (dx * dx + dy * dy) <= (radius * radius);
+    const isInsideOrbArea = (dx * dx + dy * dy) <= (radius * radius * 1.05) || (isHovered && dy > 0 && dy <= radius + 35 && Math.abs(dx) <= radius);
 
-    if (isInsideCircle) {
-      if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
-      setIsHovered(true);
-      if (typeof window !== 'undefined' && (window as any).electronAPI?.setIgnoreMouseEvents) {
-        (window as any).electronAPI.setIgnoreMouseEvents(false);
-      }
+    if (isInsideOrbArea) {
+      handlePillEnter(e);
     } else {
       handleMouseLeave();
     }
   };
 
   const handleMouseEnter = (e: React.MouseEvent<HTMLDivElement>) => {
-    handleMouseMove(e);
+    handleOrbMouseMove(e);
   };
 
   const handleMouseLeave = () => {
@@ -108,6 +113,9 @@ export default function LiveOverlayPage() {
   const perlinTime = isSpeaking ? 40.0 : isListening ? 25.0 : 18.0;
 
   const handleClose = () => {
+    if (typeof window !== 'undefined' && (window as any).electronAPI?.petReply) {
+      (window as any).electronAPI.petReply(JSON.stringify({ action: 'stop' }));
+    }
     if (typeof window !== 'undefined' && (window as any).electronAPI?.closePetWindow) {
       (window as any).electronAPI.closePetWindow();
     }
@@ -158,7 +166,7 @@ export default function LiveOverlayPage() {
               }}
               onMouseDown={handleOrbMouseDown}
               onMouseEnter={handleMouseEnter}
-              onMouseMove={handleMouseMove}
+              onMouseMove={handleOrbMouseMove}
               onMouseLeave={handleMouseLeave}
             />
           </div>
@@ -181,41 +189,56 @@ export default function LiveOverlayPage() {
                   whiteSpace: 'nowrap',
                   WebkitAppRegion: 'no-drag',
                 } as any}
-                onMouseEnter={handleMouseEnter}
-                onMouseMove={handleMouseMove}
+                onMouseEnter={handlePillEnter}
+                onMouseMove={handlePillEnter}
                 onMouseLeave={handleMouseLeave}
               >
                 <button
                   type="button"
-                  onClick={() => setIsSpeakerMuted(!isSpeakerMuted)}
+                  onClick={() => {
+                    const next = !isSpeakerMuted;
+                    setIsSpeakerMuted(next);
+                    if (typeof window !== 'undefined' && (window as any).electronAPI?.petReply) {
+                      (window as any).electronAPI.petReply(JSON.stringify({ action: 'toggle-speaker', muted: next }));
+                    }
+                  }}
                   className="w-7 h-7 flex items-center justify-center rounded-full transition-all duration-150 active:scale-90 hover:bg-black/5"
-                  style={{ color: isSpeakerMuted ? '#bbb' : '#555' }}
+                  style={{ color: isSpeakerMuted ? '#ef4444' : '#374151' }}
+                  title={isSpeakerMuted ? "Unmute Audio" : "Mute Audio"}
                 >
                   {isSpeakerMuted
-                    ? <PremiumVolumeX className="w-4 h-4" />
-                    : <PremiumVolume2 className="w-4 h-4" />}
+                    ? <PremiumVolumeX className="w-4 h-4 text-red-500" />
+                    : <PremiumVolume2 className="w-4 h-4 text-gray-700" />}
                 </button>
 
                 <button
                   type="button"
-                  onClick={() => setIsMicMuted(!isMicMuted)}
+                  onClick={() => {
+                    const next = !isMicMuted;
+                    setIsMicMuted(next);
+                    if (typeof window !== 'undefined' && (window as any).electronAPI?.petReply) {
+                      (window as any).electronAPI.petReply(JSON.stringify({ action: 'toggle-mic', muted: next }));
+                    }
+                  }}
                   className="w-7 h-7 flex items-center justify-center rounded-full transition-all duration-150 active:scale-90 hover:bg-black/5"
-                  style={{ color: isMicMuted ? '#bbb' : '#555' }}
+                  style={{ color: isMicMuted ? '#ef4444' : '#374151' }}
+                  title={isMicMuted ? "Unmute Microphone" : "Mute Microphone"}
                 >
                   {isMicMuted
-                    ? <PremiumMicOff className="w-4 h-4" />
-                    : <PremiumMic className="w-4 h-4" />}
+                    ? <PremiumMicOff className="w-4 h-4 text-red-500" />
+                    : <PremiumMic className="w-4 h-4 text-gray-700" />}
                 </button>
 
                 <button
                   type="button"
                   onClick={handleClose}
-                  className="w-7 h-7 flex items-center justify-center rounded-full transition-all duration-150 active:scale-90"
+                  className="w-7 h-7 flex items-center justify-center rounded-full transition-all duration-150 active:scale-90 hover:opacity-90"
                   style={{
-                    background: 'linear-gradient(135deg, #3B82F6, #2563EB)',
-                    color: '#fff',
-                    boxShadow: '0 1px 4px rgba(37, 99, 235, 0.3)',
+                    background: 'linear-gradient(135deg, #27272a, #09090b)',
+                    color: '#ffffff',
+                    boxShadow: '0 2px 8px rgba(0, 0, 0, 0.25)',
                   }}
+                  title="Close Overlay"
                 >
                   <X className="w-3.5 h-3.5 stroke-[2.5]" />
                 </button>

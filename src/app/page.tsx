@@ -2300,6 +2300,29 @@ function DeepWorkUI() {
     });
   }, []);
 
+  useEffect(() => {
+    if (typeof window === 'undefined' || !(window as any).electronAPI?.onPetReply) return;
+
+    const unsubscribe = (window as any).electronAPI.onPetReply((rawMessage: string) => {
+      try {
+        const data = typeof rawMessage === 'string' && rawMessage.startsWith('{') ? JSON.parse(rawMessage) : { action: rawMessage };
+        if (data.action === 'toggle-mic') {
+          toggleLiveMicMute();
+        } else if (data.action === 'toggle-speaker') {
+          toggleLiveSpeakerMute();
+        } else if (data.action === 'stop' || data.action === 'close') {
+          stopLiveSession();
+        }
+      } catch (e) {
+        console.warn('Failed to parse pet reply', e);
+      }
+    });
+
+    return () => {
+      if (typeof unsubscribe === 'function') unsubscribe();
+    };
+  }, [toggleLiveMicMute, toggleLiveSpeakerMute, stopLiveSession]);
+
   const getLiveTraceLogs = useCallback(() => {
     if (liveState === 'idle' || liveState === 'error') return [];
 
