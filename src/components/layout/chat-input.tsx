@@ -3464,10 +3464,10 @@ const handleSelectFolderDialog = useCallback(async () => {
                 <button
                   onClick={liveState !== 'idle' ? onLiveStop : onLiveStart}
                   disabled={isNetworkPaused}
-                  className={`eterx-control-button eterx-composer-live-button w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full border border-transparent bg-[#2D2D2D] text-white shadow-none transition-all duration-150 active:bg-[#333333] cursor-pointer group relative overflow-hidden hover:bg-[#333333] hover:border-transparent hover:text-white ${ liveState !== 'idle' ? '!bg-white !text-black shadow-[0_0_16px_rgba(255,255,255,0.4)]' : '' }`}
+                  className={`eterx-control-button eterx-composer-live-button w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full border border-transparent bg-[#2D2D2D] text-white shadow-none transition-all duration-150 active:bg-[#333333] cursor-pointer group relative overflow-hidden hover:bg-[#333333] hover:border-transparent hover:text-white ${ liveState !== 'idle' ? '!bg-[#252525] !text-[#10B981] !border-emerald-500/50 shadow-[0_0_16px_rgba(16,185,129,0.35)]' : '' }`}
                 >
                   <div className={inputControlSheen} />
-                  <PremiumAudioLines className={`eterx-composer-control-icon eterx-composer-live-icon w-[20px] h-[20px] transition-all duration-200 ease-out group-hover:scale-[1.04] ${ liveState !== 'idle' ? '!text-black scale-[1.05]' : 'text-white' }`} strokeWidth={1.85} />
+                  <PremiumAudioLines className={`eterx-composer-control-icon eterx-composer-live-icon w-[20px] h-[20px] transition-all duration-200 ease-out group-hover:scale-[1.04] ${ liveState !== 'idle' ? '!text-[#10B981] scale-[1.05]' : 'text-white' }`} strokeWidth={1.85} />
                 </button>
               </Tooltip>
 

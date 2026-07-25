@@ -1175,6 +1175,7 @@ async function openPetWindow(status) {
 
   petWindow.setAlwaysOnTop(true, 'screen-saver');
   petWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  petWindow.setBackgroundColor('#00000000');
   petWindow.loadURL(`${getAppTarget()}/live-overlay`);
   petWindow.once('ready-to-show', () => {
     if (!petWindow || petWindow.isDestroyed()) return;

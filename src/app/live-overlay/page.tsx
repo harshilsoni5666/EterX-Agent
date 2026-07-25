@@ -53,7 +53,7 @@ export default function LiveOverlayPage() {
 
   return (
     <>
-      <style dangerouslySetInnerHTML={{ __html: 'html, body { background: transparent !important; background-color: transparent !important; margin: 0; padding: 0; overflow: hidden; width: 100vw; height: 100vh; }' }} />
+      <style dangerouslySetInnerHTML={{ __html: 'html, body, #__next, main, div { background: transparent !important; background-color: transparent !important; margin: 0; padding: 0; overflow: hidden; width: 100vw; height: 100vh; }' }} />
       <div className="w-screen h-screen flex flex-col items-center justify-center bg-transparent select-none pointer-events-none">
         {/* INTERACTIVE UNIT: ORB + ATTACHED CONTROL PILL */}
         <div className="flex flex-col items-center justify-center bg-transparent pointer-events-auto">
