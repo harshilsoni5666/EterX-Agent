@@ -28,6 +28,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   updatePetWindow: (status) => ipcRenderer.send('pet-window-status', status),
   closePetWindow: () => ipcRenderer.send('pet-window-close'),
   resizePetWindow: (options) => ipcRenderer.send('pet-window-resize', options),
+  movePetWindow: (pos) => ipcRenderer.send('pet-window-move', pos),
+  setIgnoreMouseEvents: (ignore, options) => ipcRenderer.send('pet-window-ignore-mouse', ignore, options),
   petReply: (message) => ipcRenderer.send('pet-reply', message),
   onPetReply: (callback) => {
     const listener = (_event, message) => callback(message);

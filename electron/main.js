@@ -1108,8 +1108,7 @@ function getRoundedRectShape(width, height, radius = 24) {
 }
 
 function applyPetWindowShape(width, height) {
-  if (!petWindow || petWindow.isDestroyed() || typeof petWindow.setShape !== 'function') return;
-  petWindow.setShape(getRoundedRectShape(width, height));
+  return; // Disabled setShape to preserve 100% per-pixel DWM alpha transparency
 }
 
 function resizePetWindow(options = {}) {
@@ -1176,13 +1175,15 @@ async function openPetWindow(status) {
   petWindow.setAlwaysOnTop(true, 'screen-saver');
   petWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   petWindow.setBackgroundColor('#00000000');
+  petWindow.setIgnoreMouseEvents(true, { forward: true });
   petWindow.loadURL(`${getAppTarget()}/live-overlay`);
-  petWindow.once('ready-to-show', () => {
+
+  petWindow.webContents.once('did-finish-load', () => {
     if (!petWindow || petWindow.isDestroyed()) return;
-    petWindow.showInactive();
     sendPetStatus(latestPetStatus);
+    petWindow.showInactive();
   });
-  petWindow.webContents.once('did-finish-load', () => sendPetStatus(latestPetStatus));
+
   petWindow.on('closed', () => {
     petWindow = null;
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -1591,6 +1592,22 @@ ipcMain.on('pet-window-close', () => {
 
 ipcMain.on('pet-window-resize', (_event, options) => {
   resizePetWindow(options);
+});
+
+ipcMain.on('pet-window-move', (_event, pos) => {
+  if (petWindow && !petWindow.isDestroyed() && pos && typeof pos.x === 'number' && typeof pos.y === 'number') {
+    try {
+      petWindow.setPosition(Math.round(pos.x), Math.round(pos.y));
+    } catch { }
+  }
+});
+
+ipcMain.on('pet-window-ignore-mouse', (_event, ignore, options) => {
+  if (petWindow && !petWindow.isDestroyed()) {
+    try {
+      petWindow.setIgnoreMouseEvents(Boolean(ignore), options || { forward: true });
+    } catch { }
+  }
 });
 
 ipcMain.on('pet-reply', (_event, message) => {
