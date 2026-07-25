@@ -1003,7 +1003,7 @@ const customLightTheme = {
   "italic": { "fontStyle": "italic" }
 };
 
-const CodeBlock = ({ language, content, forceSource = false, ...props }: { language: string; content: string; forceSource?: boolean;[key: string]: any }) => {
+const CodeBlock = React.memo(({ language, content, forceSource = false, ...props }: { language: string; content: string; forceSource?: boolean;[key: string]: any }) => {
   const [wrapLines, setWrapLines] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const theme = useResolvedTheme();
@@ -1068,7 +1068,7 @@ const CodeBlock = ({ language, content, forceSource = false, ...props }: { langu
       </div>
     </div>
   );
-};
+}, (prevProps, nextProps) => prevProps.content === nextProps.content && prevProps.language === nextProps.language && prevProps.forceSource === nextProps.forceSource);
 
 const makeHeading = (Tag: keyof JSX.IntrinsicElements, className: string) => {
   const Heading = ({ node, children, ...props }: any) => {

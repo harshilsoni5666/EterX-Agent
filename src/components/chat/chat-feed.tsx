@@ -27,7 +27,7 @@ interface ChatFeedProps {
   liveState?: string;
 }
 
-const FadeScrollContainer = ({
+const FadeScrollContainer = React.memo(({
   children,
   className = '',
   maxHeightClass = 'max-h-[230px]',
@@ -81,7 +81,7 @@ const FadeScrollContainer = ({
       </AnimatePresence>
     </div>
   );
-};
+});
 
 import { safeCopyTextToClipboard } from '../ui/copy-button';
 
@@ -89,7 +89,7 @@ const copyTextToClipboard = async (text: string) => {
   return await safeCopyTextToClipboard(text);
 };
 
-const NakedCopyButton = ({ content }: { content: string }) => {
+const NakedCopyButton = React.memo(({ content }: { content: string }) => {
   const [copied, setCopied] = useState(false);
   const handle = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -108,7 +108,7 @@ const NakedCopyButton = ({ content }: { content: string }) => {
       </button>
     </Tooltip>
   );
-};
+});
 
 const StepCounterIcon = ({ live = false }: { live?: boolean }) => (
   <svg
@@ -238,7 +238,7 @@ const UserMessageActionButton = ({
   );
 };
 
-const UserMessageActions = ({ text, onEdit }: { text: string; onEdit?: (text: string) => void }) => {
+const UserMessageActions = React.memo(({ text, onEdit }: { text: string; onEdit?: (text: string) => void }) => {
   const handleCopy = async (event: React.MouseEvent) => {
     event.stopPropagation();
     const didCopy = await copyTextToClipboard(text);
@@ -263,14 +263,14 @@ const UserMessageActions = ({ text, onEdit }: { text: string; onEdit?: (text: st
       )}
     </div>
   );
-};
+});
 
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 // SteeringFeedCard â€” left-aligned enterprise card shown in the main
 // chat feed whenever the user sends a live steering message while the
 // agent is running. Feels native to the conversation thread.
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-const SteeringFeedCard = ({ log, isCompressed = false, onEdit }: { log: any; isCompressed?: boolean; onEdit?: (text: string) => void }) => (
+const SteeringFeedCard = React.memo(({ log, isCompressed = false, onEdit }: { log: any; isCompressed?: boolean; onEdit?: (text: string) => void }) => (
   <motion.div
     initial={{ opacity: 0, x: 20, y: 10, scale: 0.95 }}
     animate={{ opacity: 1, x: 0, y: 0, scale: 1 }}
@@ -287,7 +287,7 @@ const SteeringFeedCard = ({ log, isCompressed = false, onEdit }: { log: any; isC
       </div>
     </div>
   </motion.div>
-);
+));
 
 const liveMotionStyles = `
   @keyframes blink { 0%,100%{opacity:0.7} 50%{opacity:0} }

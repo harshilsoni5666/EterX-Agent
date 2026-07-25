@@ -21,7 +21,7 @@ const getSidebarViewportMax = (viewportWidth: number) => {
   return Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, Math.round(viewportWidth * 0.28)));
 };
 
-const ChatTitleMarquee = ({ title, isFavorite }: { title: string; isFavorite?: boolean }) => {
+const ChatTitleMarquee = React.memo(({ title, isFavorite }: { title: string; isFavorite?: boolean }) => {
   const containerRef = React.useRef<HTMLDivElement>(null);
   const textRef = React.useRef<HTMLSpanElement>(null);
   const [overflowDistance, setOverflowDistance] = React.useState(0);
@@ -61,7 +61,7 @@ const ChatTitleMarquee = ({ title, isFavorite }: { title: string; isFavorite?: b
       </motion.span>
     </div>
   );
-};
+});;
 
 const getSidebarViewportMin = (viewportWidth: number) => {
   if (viewportWidth >= 3200) return 320;
