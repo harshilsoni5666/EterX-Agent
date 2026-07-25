@@ -1597,7 +1597,7 @@ ipcMain.on('pet-window-resize', (_event, options) => {
 ipcMain.on('pet-window-move', (_event, pos) => {
   if (petWindow && !petWindow.isDestroyed() && pos && typeof pos.x === 'number' && typeof pos.y === 'number') {
     try {
-      petWindow.setPosition(Math.round(pos.x), Math.round(pos.y));
+      petWindow.setPosition(Math.round(pos.x), Math.round(pos.y), false);
     } catch { }
   }
 });

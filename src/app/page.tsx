@@ -6252,7 +6252,15 @@ function DeepWorkUI() {
   useEffect(() => {
     const api = (window as any).electronAPI;
     const unsubscribeReply = api?.onPetReply?.((message: string) => {
-      void sendSteeringMessage(message);
+      const msgStr = String(message || '').trim();
+      // Filter out internal control action JSON objects so they are not typed into the chat bar
+      if (msgStr.startsWith('{')) {
+        try {
+          const parsed = JSON.parse(msgStr);
+          if (parsed && parsed.action) return;
+        } catch { }
+      }
+      void sendSteeringMessage(msgStr);
     });
     const unsubscribeClosed = api?.onPetWindowClosed?.(() => {
       setPetWidgetOpen(false);

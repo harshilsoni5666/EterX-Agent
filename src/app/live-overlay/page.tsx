@@ -82,23 +82,41 @@ export default function LiveOverlayPage() {
     // Strict circular check: drag ONLY triggers inside true circle radius
     if (dx * dx + dy * dy > radius * radius) return;
 
+    if (typeof window !== 'undefined' && (window as any).electronAPI?.setIgnoreMouseEvents) {
+      (window as any).electronAPI.setIgnoreMouseEvents(false);
+    }
+
     const startScreenX = e.screenX;
     const startScreenY = e.screenY;
     const startWinX = window.screenX;
     const startWinY = window.screenY;
 
+    let animFrameId: number | null = null;
+    let targetX = startWinX;
+    let targetY = startWinY;
+
     const onMove = (moveEvt: MouseEvent) => {
-      const deltaX = moveEvt.screenX - startScreenX;
-      const deltaY = moveEvt.screenY - startScreenY;
-      if (typeof window !== 'undefined' && (window as any).electronAPI?.movePetWindow) {
-        (window as any).electronAPI.movePetWindow({
-          x: startWinX + deltaX,
-          y: startWinY + deltaY,
+      targetX = Math.round(startWinX + (moveEvt.screenX - startScreenX));
+      targetY = Math.round(startWinY + (moveEvt.screenY - startScreenY));
+
+      if (animFrameId === null) {
+        animFrameId = requestAnimationFrame(() => {
+          animFrameId = null;
+          if (typeof window !== 'undefined' && (window as any).electronAPI?.movePetWindow) {
+            (window as any).electronAPI.movePetWindow({ x: targetX, y: targetY });
+          }
         });
       }
     };
 
     const onUp = () => {
+      if (animFrameId !== null) {
+        cancelAnimationFrame(animFrameId);
+        animFrameId = null;
+      }
+      if (typeof window !== 'undefined' && (window as any).electronAPI?.movePetWindow) {
+        (window as any).electronAPI.movePetWindow({ x: targetX, y: targetY });
+      }
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
     };
