@@ -38,7 +38,7 @@ const SettingsGlyph = ({
       {children}
     </g>
   </svg>
-);
+);;
 
 const Key = (props: SettingsGlyphProps) => (
   <SettingsGlyph {...props}>
@@ -1610,7 +1610,7 @@ const ApiKeyRow: React.FC<{
 // ═══════════════════════════════════════════════════════
 // MAIN SETTINGS PANEL
 // ═══════════════════════════════════════════════════════
-export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, initialTab = 'general', standalone = false }) => {
+export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen, onClose, initialTab = 'general', standalone = false }) => {
   const [activeTab, setActiveTab] = useState<Tab>(normalizeSettingsTab(initialTab));
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [terminalPlatform, setTerminalPlatform] = useState<'unknown' | 'windows' | 'mac' | 'linux'>('unknown');
@@ -3491,4 +3491,4 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ isOpen, onClose, i
     </>,
     document.body
   );
-};
+});

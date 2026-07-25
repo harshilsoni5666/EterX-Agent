@@ -22,7 +22,7 @@ type ShimmerStyle = React.CSSProperties & {
 };
 
 /** Thin React wrapper around the shadcn shimmer CSS utility. */
-export const Shimmer = ({
+export const Shimmer = React.memo(({
   children,
   className = '',
   style,
@@ -51,4 +51,4 @@ export const Shimmer = ({
   };
 
   return <Tag className={classes} style={shimmerStyle}>{children}</Tag>;
-};
+});

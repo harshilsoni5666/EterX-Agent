@@ -68,13 +68,13 @@ async function submitAnswer(
   }
 }
 
-const AskingDots = () => (
+const AskingDots = React.memo(() => (
   <span className="eterx-ask-dots" aria-hidden="true">
     <span />
     <span />
     <span />
   </span>
-);
+));
 
 const validModes = new Set<AskUserMode>(['choice', 'text', 'confirm', 'multi_select', 'short_answer']);
 

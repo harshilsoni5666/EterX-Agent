@@ -28,7 +28,7 @@ export const PetThinkingLabel = ({ className = '' }: { className?: string }) => 
   </span>
 );
 
-export const FloatingPetMonitor = ({
+export const FloatingPetMonitor = React.memo(({
   open,
   isThinking,
   title,
@@ -181,4 +181,4 @@ export const FloatingPetMonitor = ({
       )}
     </div>
   );
-};
+});

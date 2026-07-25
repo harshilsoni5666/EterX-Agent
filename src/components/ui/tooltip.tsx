@@ -29,7 +29,7 @@ const measureTooltipText = (text: string, font: string) => {
   return width;
 };
 
-export const Tooltip = ({
+export const Tooltip = React.memo(({
   children,
   text,
   side = 'bottom',
@@ -209,4 +209,4 @@ export const Tooltip = ({
       )}
     </div>
   );
-};
+});
