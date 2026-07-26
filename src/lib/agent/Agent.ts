@@ -2861,6 +2861,7 @@ export class GeminiAgentClient {
       actionContext,
     ].join('\n');
 
+    const streamingNoteId = `work_note_stream_${ Date.now() }`;
     try {
       const generated = await Promise.race([
         generate(prompt, partial => {
@@ -2873,7 +2874,7 @@ export class GeminiAgentClient {
               isStreaming: true,
               isLiveTyping: true,
               wasStreaming: true,
-              noteId: `work_note_stream_${Date.now()}`,
+              noteId: streamingNoteId,
             });
           }
         }),
