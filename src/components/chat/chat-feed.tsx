@@ -1705,7 +1705,7 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
                   const isThinkingTurn = isThinking && groupIdx === groups.length - 1;
                   return (
                     <ChatFeedMessageGroup
-                      key={`group-${ groupIdx }`}
+                      key={`group-${ conversationIdentity }-${ getGroupMountIdentity(group, groupIdx) }`}
                       group={group}
                       groupIdx={groupIdx}
                       isThinkingTurn={isThinkingTurn}
