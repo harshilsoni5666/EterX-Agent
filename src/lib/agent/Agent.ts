@@ -2436,6 +2436,12 @@ export class GeminiAgentClient {
     const recentActionEvidence: string[] = [];
     const maxLoopIterations = 240;
     const maxTokens = positiveIntEnv('ANTHROPIC_MAX_TOKENS', 8192);
+    let provisionalAnswerId: string | null = null;
+    const cancelProvisionalAnswer = () => {
+      if (!provisionalAnswerId) return;
+      onTrace?.({ type: 'answer_cancel', answerId: provisionalAnswerId });
+      provisionalAnswerId = null;
+    };
     // Generate static and dynamic system prompts for caching
     const cacheEnabled = process.env.ETERX_DISABLE_CONTEXT_CACHE !== '1';
     const staticSystemPrompt = this.generateCacheableSystemPrompt();
@@ -2453,6 +2459,7 @@ export class GeminiAgentClient {
     ];
 
     for (let interactions = 1; interactions <= maxLoopIterations; interactions++) {
+      cancelProvisionalAnswer();
       if (isRunCancelled(context)) throw new Error('CANCELLED_BY_USER');
 
       const liveSteering = this.drainLiveSteering(context.projectId, onTrace);
@@ -2582,6 +2589,7 @@ export class GeminiAgentClient {
           let accumulatedThought = '';
           const thoughtStartTime = Date.now();
           const thoughtId = `thought_${ interactions }`;
+          let hasToolUseBlock = false;
 
           writeRuntimeTrace('model_request', {
             provider: 'anthropic',
@@ -2595,7 +2603,10 @@ export class GeminiAgentClient {
             if (isRunCancelled(context)) {
               throw new Error('CANCELLED_BY_USER');
             }
-            if (event.type === 'content_block_delta') {
+            if (event.type === 'content_block_start' && (event as any).content_block?.type === 'tool_use') {
+              hasToolUseBlock = true;
+              cancelProvisionalAnswer();
+            } else if (event.type === 'content_block_delta') {
               const delta = event.delta as any;
               if (delta.type === 'thinking_delta' && delta.thinking) {
                 accumulatedThought += delta.thinking;
@@ -2611,6 +2622,20 @@ export class GeminiAgentClient {
                 }
               } else if (delta.type === 'text_delta' && delta.text) {
                 accumulatedText += delta.text;
+                if (!hasToolUseBlock) {
+                  provisionalAnswerId = `answer_stream_anthropic_${ interactions }`;
+                  onTrace?.({
+                    type: 'answer',
+                    text: accumulatedText,
+                    isStreaming: true,
+                    isLiveTyping: true,
+                    isDelta: false,
+                    wasStreaming: true,
+                    answerId: provisionalAnswerId,
+                    startTime: thoughtStartTime,
+                    timestamp: Date.now(),
+                  });
+                }
               }
             } else if ((event as any).type === 'error') {
               const streamError = (event as any).error;
@@ -2648,6 +2673,7 @@ export class GeminiAgentClient {
           break;
         } catch (err: any) {
           const errorMsg = err.message || '';
+          cancelProvisionalAnswer();
           if (!strictModelSelection && isModelDeprecatedError(errorMsg)) {
             const fallbackChain = getFallbackChain('anthropic', this.runtimeSettings);
             const currentIdx = fallbackChain.indexOf(this.mistralModelName);
@@ -2696,6 +2722,7 @@ export class GeminiAgentClient {
       const contentBlocks = Array.isArray((response as any).content) ? (response as any).content : [];
       const contentText = this.extractAnthropicContent(contentBlocks).trim();
       const toolUses = contentBlocks.filter((part: any) => part?.type === 'tool_use' && part?.name);
+      if (toolUses.length > 0) cancelProvisionalAnswer();
 
       if (toolUses.length === 0) {
         const activePlanContext = this.getActivePlanCompletionContext(context.projectId);
