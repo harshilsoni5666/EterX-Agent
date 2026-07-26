@@ -5015,11 +5015,6 @@ function DeepWorkUI() {
     const body = `${ scheduledMessage.text }${ attachmentContext }`.trim();
 
     clearDraftComposerState(activeChatId);
-    setLiveInputText('');
-    setLiveOutputText('');
-    setLiveSpokenText('');
-    setLiveCommands([]);
-    liveCommandsRef.current = [];
 
     try {
       const res = await fetch('/api/agents/comm', {
