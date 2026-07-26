@@ -1359,6 +1359,8 @@ function DeepWorkUI() {
   const [liveInputText, setLiveInputText] = useState('');
   const [liveSpokenText, setLiveSpokenText] = useState('');
   const [liveCommands, setLiveCommands] = useState<any[]>([]);
+  const liveInputTextRef = useRef('');
+  const liveOutputTextRef = useRef('');
   const liveCommandsRef = useRef<any[]>([]);
   // A live-frame snapshot is only valid for the turn that produced it. Clear it
   // synchronously whenever navigation or a regular send starts so a previous
@@ -2149,6 +2151,8 @@ function DeepWorkUI() {
     setLiveActiveTool(null);
     setLiveMicVolume(0);
     setLiveModelVolume(0);
+    liveInputTextRef.current = '';
+    liveOutputTextRef.current = '';
     liveCommandsRef.current = [];
     liveConversationRef.current = [];
     lastLiveLogsSnapshotRef.current = [];
@@ -2229,6 +2233,82 @@ function DeepWorkUI() {
           };
         });
 
+      const commitLiveTurn = (userText: string, modelText: string, commands: any[]) => {
+        const cleanUserText = userText.trim();
+        const cleanModelText = modelText.trim();
+        if (!cleanUserText && !cleanModelText && commands.length === 0) return;
+
+        const completedAt = Date.now();
+        const turnId = `live_${ crypto.randomUUID() }`;
+        const newTraceLogs: any[] = [];
+        if (cleanUserText) {
+          newTraceLogs.push({
+            type: 'user_action',
+            text: cleanUserText,
+            isLive: true,
+            runId: turnId,
+            turnId,
+            startTime: completedAt,
+            endTime: completedAt,
+            timestamp: completedAt,
+          });
+        }
+        newTraceLogs.push(...commands.map(command => ({
+          ...command,
+          runId: turnId,
+          turnId,
+          timestamp: command.timestamp || completedAt,
+        })));
+        if (cleanModelText) {
+          newTraceLogs.push({
+            type: 'answer',
+            text: cleanModelText,
+            isLive: true,
+            isStreaming: false,
+            isLiveTyping: false,
+            wasStreaming: true,
+            runId: turnId,
+            turnId,
+            startTime: completedAt,
+            endTime: completedAt,
+            timestamp: completedAt,
+          });
+        }
+
+        setChats(prevChats => {
+          const updated = prevChats.map(chat => {
+            if (chat.id !== currentChatId) return chat;
+            const newTitle = chat.title === "Live Conversation" && cleanUserText
+              ? cleanUserText.slice(0, 50)
+              : chat.title;
+            return {
+              ...chat,
+              traceLogs: [...(chat.traceLogs || []), ...newTraceLogs],
+              updatedAt: completedAt,
+              title: newTitle,
+            };
+          });
+          persistChats(updated);
+          return updated;
+        });
+
+        if (activeChatIdRef.current === currentChatId) {
+          setTraceLogs(previous => [...previous, ...newTraceLogs]);
+        }
+        markChatUnreadIfBackground(currentChatId);
+      };
+
+      const clearLiveTurn = () => {
+        setLiveInputText('');
+        setLiveOutputText('');
+        setLiveSpokenText('');
+        setLiveCommands([]);
+        setLiveActiveTool(null);
+        liveInputTextRef.current = '';
+        liveOutputTextRef.current = '';
+        liveCommandsRef.current = [];
+      };
+
       const session = new GeminiLiveSession(
         apiKey,
         currentChatId,
@@ -2260,10 +2340,12 @@ function DeepWorkUI() {
           },
           onInputTranscription: (text) => {
             if (!isCurrentSession()) return;
+            liveInputTextRef.current = text;
             setLiveInputText(text);
           },
           onOutputTranscription: (text) => {
             if (!isCurrentSession()) return;
+            liveOutputTextRef.current = text;
             setLiveOutputText(text);
           },
           onOutputPlaybackProgress: (spokenText) => {
@@ -2272,46 +2354,8 @@ function DeepWorkUI() {
           },
           onTurnComplete: (userText, modelText) => {
             if (!isCurrentSession()) return;
-            const targetId = currentChatId;
-            const newTraceLogs: any[] = [];
-            if (userText.trim()) {
-              newTraceLogs.push({ type: 'user_action', text: userText.trim(), isLive: true });
-            }
-
-            // Tool activity belongs between the spoken request and response.
-            newTraceLogs.push(...liveCommandsRef.current);
-
-            if (modelText.trim()) {
-              newTraceLogs.push({ type: 'answer', text: modelText.trim(), isLive: true });
-            }
-
-            if (newTraceLogs.length > 0) {
-              setChats(prevChats => {
-                const updated = prevChats.map(c => {
-                  if (c.id === targetId) {
-                    const newTitle = c.title === "Live Conversation" && userText.trim() ? userText.trim().slice(0, 50) : c.title;
-                    const existingLogs = c.traceLogs || [];
-                    return { ...c, traceLogs: [...existingLogs, ...newTraceLogs], updatedAt: Date.now(), title: newTitle };
-                  }
-                  return c;
-                });
-                persistChats(updated);
-                return updated;
-              });
-
-              // CRITICAL BUG FIX: Only update traceLogs state if activeChatId matches targetId!
-              if (activeChatIdRef.current === targetId) {
-                setTraceLogs(prev => [...prev, ...newTraceLogs]);
-              }
-              markChatUnreadIfBackground(targetId);
-            }
-
-            // Reset transient live state immediately so traceLogs rendered in ChatFeed takes over seamlessly
-            setLiveInputText('');
-            setLiveOutputText('');
-            setLiveSpokenText('');
-            setLiveCommands([]);
-            liveCommandsRef.current = [];
+            commitLiveTurn(userText, modelText, liveCommandsRef.current);
+            clearLiveTurn();
           },
           onAppControlAction: async (action, args) => {
             if (!isCurrentSession()) return { error: 'Live session is no longer active.' };
@@ -2447,15 +2491,22 @@ function DeepWorkUI() {
           },
           onInterrupted: () => {
             if (!isCurrentSession()) return;
-            liveCommandsRef.current = [];
-            setLiveInputText('');
-            setLiveOutputText('');
-            setLiveSpokenText('');
-            setLiveCommands([]);
+            commitLiveTurn(
+              liveInputTextRef.current,
+              liveOutputTextRef.current,
+              liveCommandsRef.current
+            );
+            clearLiveTurn();
           },
           onError: (error) => {
             if (!isCurrentSession()) return;
             console.error('[LiveSession] Error:', error);
+            commitLiveTurn(
+              liveInputTextRef.current,
+              liveOutputTextRef.current,
+              liveCommandsRef.current
+            );
+            clearLiveTurn();
             setLiveError(error);
             setLiveState('error');
             setTimeout(() => {
@@ -2518,6 +2569,8 @@ function DeepWorkUI() {
     setLiveMicVolume(0);
     setLiveModelVolume(0);
     setLiveError(null);
+    liveInputTextRef.current = '';
+    liveOutputTextRef.current = '';
     liveCommandsRef.current = [];
   }, []);
 
