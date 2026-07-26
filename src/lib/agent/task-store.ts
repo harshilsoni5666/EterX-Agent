@@ -285,8 +285,44 @@ export const taskStore = {
           (!answerId || String(log.answerId || '') === answerId)
         ) {
           task.traceLogs.splice(i, 1);
+        }
+      }
+    } else if (timedEvent?.type === 'answer') {
+      const answerId = String(timedEvent.answerId || '').trim();
+      const incomingIsStreaming = timedEvent.isStreaming === true || timedEvent.isLiveTyping === true;
+      let mergeIdx = -1;
+      for (let i = task.traceLogs.length - 1; i >= 0; i--) {
+        const log = task.traceLogs[i];
+        if (log?.type !== 'answer') continue;
+        if (
+          (answerId && String(log.answerId || '') === answerId) ||
+          (!incomingIsStreaming && (log.isStreaming || log.isLiveTyping))
+        ) {
+          mergeIdx = i;
           break;
         }
+      }
+      if (mergeIdx >= 0) {
+        const previous = task.traceLogs[mergeIdx];
+        task.traceLogs[mergeIdx] = {
+          ...previous,
+          ...timedEvent,
+          isStreaming: incomingIsStreaming,
+          isLiveTyping: incomingIsStreaming,
+          wasStreaming: Boolean(
+            previous.wasStreaming ||
+            previous.isStreaming ||
+            previous.isLiveTyping ||
+            timedEvent.wasStreaming ||
+            incomingIsStreaming
+          ),
+        };
+      } else {
+        task.traceLogs.push({
+          ...timedEvent,
+          isStreaming: incomingIsStreaming,
+          isLiveTyping: incomingIsStreaming,
+        });
       }
     } else if (timedEvent?.type === 'work_note_cancel') {
       const noteId = timedEvent.noteId || null;
