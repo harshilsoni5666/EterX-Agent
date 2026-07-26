@@ -222,5 +222,13 @@ fs.writeFileSync(
 
 fs.rmSync(runtimeRoot, { recursive: true, force: true });
 fs.cpSync(stagingRoot, runtimeRoot, { recursive: true, force: true });
-fs.rmSync(stagingRoot, { recursive: true, force: true, maxRetries: 8, retryDelay: 250 });
+try {
+  // Windows antivirus/indexer processes can briefly hold a freshly-created
+  // staging child after the copy completes. Cleanup is non-functional: the
+  // runner removes its temp directory after the job, so never fail a valid
+  // packaged runtime only because this best-effort deletion raced a lock.
+  fs.rmSync(stagingRoot, { recursive: true, force: true, maxRetries: 8, retryDelay: 250 });
+} catch (error) {
+  console.warn(`[EterX build] Temporary staging cleanup deferred: ${error.message || error}`);
+}
 console.log(`[EterX build] Desktop runtime prepared at ${runtimeRoot}`);
