@@ -5946,24 +5946,26 @@ function DeepWorkUI() {
   useEffect(() => {
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible' && activeChatId) {
+        const targetChatId = activeChatId;
         // User returned to tab — check if active chat's agent is still running
-        fetchAgentPoll(activeChatId, -1, 5000)
+        fetchAgentPoll(targetChatId, -1, 5000)
           .then(data => {
-            if (data.status === 'running' && !pollingIntervalsRef.current.has(activeChatId!)) {
+            if (!chatsRef.current.some(chat => chat.id === targetChatId)) return;
+            if (data.status === 'running' && !pollingIntervalsRef.current.has(targetChatId)) {
               // Agent is running but we're not polling! Restart polling.
               console.log('[Visibility] Reconnecting to running agent...');
-              setRunningChats(prev => new Set(prev).add(activeChatId!));
+              setRunningChats(prev => new Set(prev).add(targetChatId));
 
               if (data.traces && data.traces.length > 0) {
-                setTraceLogs(prevLogs => mergeServerRunLogs(prevLogs, data.traces, {
+                setChatLogsById(targetChatId, previousLogs => mergeServerRunLogs(previousLogs, data.traces, {
                   runId: data.runId,
                   startedAt: data.startedAt,
                 }));
               }
 
-              startPolling(activeChatId!, data.maxIndex ?? (data.totalTraces - 1), data.startedAt, data.runId);
+              startPolling(targetChatId, data.maxIndex ?? (data.totalTraces - 1), data.startedAt, data.runId);
             } else if (isTerminalAgentStatus(data.status) || data.status === 'idle') {
-              removeRunningChat(activeChatId!);
+              removeRunningChat(targetChatId);
             }
           })
           .catch(() => { /* offline */ });
