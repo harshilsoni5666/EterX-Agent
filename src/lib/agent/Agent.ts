@@ -6049,21 +6049,24 @@ The first meaningful action group in a user turn needs an update. Later boundari
             if (!part.thought && part.text) {
               accumulatedText += part.text;
               accumulatedWorkNote = accumulatedText;
-              // Push provisional answer snapshots while the model is still
-              // generating. The quality-gated answer below replaces this
-              // provisional stream when the turn is complete.
+              // A text part can still be followed by a tool call in the same
+              // response. Keep it in the working surface until the response
+              // boundary proves that it is the final answer.
               if (onTrace && !functionCalls.length) {
-                onTrace({
-                  type: 'answer',
-                  text: accumulatedText,
-                  isStreaming: true,
-                  isLiveTyping: true,
-                  isDelta: false,
-                  wasStreaming: true,
-                  answerId: `answer_stream_${interactions}`,
-                  startTime: thoughtStartTime,
-                  timestamp: Date.now(),
-                });
+                const noteText = this.formatVisibleWorkNote(accumulatedText, 720, false);
+                if (noteText) {
+                  onTrace({
+                    type: 'work_note',
+                    text: noteText,
+                    isStreaming: true,
+                    isDelta: true,
+                    noteId: workNoteId,
+                    startTime: thoughtStartTime,
+                    timestamp: Date.now(),
+                  });
+                  workNoteEmitted = true;
+                  emittedWorkNoteText = noteText;
+                }
               }
               // The response boundary determines whether this text is progress
               // or the final answer; a tool call establishes an action turn.
