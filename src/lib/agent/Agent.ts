@@ -1936,8 +1936,15 @@ export class GeminiAgentClient {
     const visibleWorkNoteTexts: string[] = [];
     const recentActionEvidence: string[] = [];
     const maxLoopIterations = 240;
+    let provisionalAnswerId: string | null = null;
+    const cancelProvisionalAnswer = () => {
+      if (!provisionalAnswerId) return;
+      onTrace?.({ type: 'answer_cancel', answerId: provisionalAnswerId });
+      provisionalAnswerId = null;
+    };
 
     for (let interactions = 1; interactions <= maxLoopIterations; interactions++) {
+      cancelProvisionalAnswer();
       if (isRunCancelled(context)) throw new Error('CANCELLED_BY_USER');
 
       const liveSteering = this.drainLiveSteering(context.projectId, onTrace);
@@ -2072,8 +2079,23 @@ export class GeminiAgentClient {
               }
               if (delta.content) {
                 accumulatedContent += delta.content;
+                if (toolCallsAccumulated.size === 0) {
+                  provisionalAnswerId = `answer_stream_${ this.activeProvider }_${ interactions }`;
+                  onTrace?.({
+                    type: 'answer',
+                    text: accumulatedContent,
+                    isStreaming: true,
+                    isLiveTyping: true,
+                    isDelta: false,
+                    wasStreaming: true,
+                    answerId: provisionalAnswerId,
+                    startTime: thoughtStartTime,
+                    timestamp: Date.now(),
+                  });
+                }
               }
               if (Array.isArray(delta.tool_calls)) {
+                if (delta.tool_calls.length > 0) cancelProvisionalAnswer();
                 for (const tc of delta.tool_calls) {
                   const idx = tc.index;
                   if (!toolCallsAccumulated.has(idx)) {
@@ -2112,6 +2134,7 @@ export class GeminiAgentClient {
           break;
         } catch (err: any) {
           const errorMsg = err.message || '';
+          cancelProvisionalAnswer();
           if (!strictModelSelection && isModelDeprecatedError(errorMsg)) {
             const fallbackChain = getFallbackChain(this.activeMode, this.runtimeSettings);
             const currentIdx = fallbackChain.indexOf(this.mistralModelName);
