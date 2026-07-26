@@ -549,6 +549,7 @@ export async function POST(req: NextRequest) {
 
           const systemPrompt = buildCodingChatSystemPrompt(workspacePath || '', loadedToolNames, iterationCtx);
           const toolDeclarations = buildToolDeclarations(loadedToolNames);
+          const iterationAnswerBase = accumulatedAnswer;
 
           // ─── API Call with Retry ───
           let response: any = null;
@@ -596,6 +597,8 @@ export async function POST(req: NextRequest) {
               }
               break; // Success
             } catch (apiErr: any) {
+              accumulatedAnswer = iterationAnswerBase;
+              send({ type: 'trace', data: { type: 'answer_cancel', text: iterationAnswerBase } });
               lastApiError = apiErr;
               const status = apiErr?.status || apiErr?.httpStatusCode || 0;
               const msg = String(apiErr?.message || '');
@@ -642,6 +645,8 @@ export async function POST(req: NextRequest) {
           }
 
           if (hasToolCalls && toolCalls.length > 0 && streamAlive) {
+            accumulatedAnswer = iterationAnswerBase;
+            send({ type: 'trace', data: { type: 'answer_cancel', text: iterationAnswerBase } });
             totalToolCalls += toolCalls.length;
             const toolResults = await executeToolCallsParallel(toolCalls, workspacePath || '', loadedToolNames, send, terminalShell);
             messages.push({ role: 'model', parts: candidate.content.parts });

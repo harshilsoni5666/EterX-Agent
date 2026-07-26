@@ -244,6 +244,15 @@ export const CodeChat: React.FC<CodeChatProps> = ({ workspacePath, activeFile, o
                   }
                   return updated;
                 });
+              } else if (evtType === 'answer_cancel') {
+                setMessages(prev => {
+                  const updated = [...prev];
+                  const last = updated[updated.length - 1];
+                  if (last?.role === 'assistant') {
+                    updated[updated.length - 1] = { ...last, content: parsed.data.text || '' };
+                  }
+                  return updated;
+                });
               } else if (evtType === 'tool_start') {
                 setMessages(prev => {
                   const updated = [...prev];
