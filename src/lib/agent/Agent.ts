@@ -2203,7 +2203,13 @@ export class GeminiAgentClient {
           messages.push({ role: 'user', content: this.formatLiveSteering(lateSteering) });
           continue;
         }
-        const answerEvt = { type: 'answer', text: finalText };
+        const answerEvt = {
+          type: 'answer',
+          text: finalText,
+          isStreaming: false,
+          isLiveTyping: false,
+          wasStreaming: Boolean(provisionalAnswerId),
+        };
         trace.push(answerEvt);
         onTrace?.(answerEvt);
         if (!sessionPersistenceDisabled) {
@@ -2747,7 +2753,13 @@ export class GeminiAgentClient {
           messages.push({ role: 'user', content: [{ type: 'text', text: this.formatLiveSteering(lateSteering) }] });
           continue;
         }
-        const answerEvt = { type: 'answer', text: finalText };
+        const answerEvt = {
+          type: 'answer',
+          text: finalText,
+          isStreaming: false,
+          isLiveTyping: false,
+          wasStreaming: Boolean(provisionalAnswerId),
+        };
         trace.push(answerEvt);
         onTrace?.(answerEvt);
         if (!sessionPersistenceDisabled) {
@@ -6430,7 +6442,13 @@ The first meaningful action group in a user turn needs an update. Later boundari
             continue;
           }
           loopAccumulatedText = cleanText;
-          const answerEvt = { type: 'answer', text: cleanText };
+          const answerEvt = {
+            type: 'answer',
+            text: cleanText,
+            isStreaming: false,
+            isLiveTyping: false,
+            wasStreaming: Boolean(provisionalAnswerId),
+          };
           const existingIdx = trace.findIndex(t => t.type === 'answer');
           if (existingIdx >= 0) trace[existingIdx] = answerEvt;
           else trace.push(answerEvt);
