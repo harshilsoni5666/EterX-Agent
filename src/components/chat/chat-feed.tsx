@@ -848,7 +848,7 @@ const RENDER_RELEVANT_LOG_FIELDS = [
   'name', 'title', 'subject', 'body', 'from', 'to', 'priority', 'commType',
   'message', 'detail', 'messageType', 'deliveryMode', 'deliverAfter', 'scheduled', 'updatedAt',
   'icon', 'iconCategory', 'size', '_autonomyProxy', '_streamingCancelled',
-  '_connection', 'model', 'modelName',
+  '_autonomyCheckpoint', '_autonomyBoundaryFollowUp', '_connection', 'model', 'modelName',
 ] as const;
 
 const haveSameNestedValue = (left: unknown, right: unknown) => {
@@ -987,20 +987,30 @@ const ChatFeedMessageGroup = React.memo(({
     !isHiddenStatusOnlyLog(l)
   );
   const standardLogs = rawStandardLogs.map((log: any, index: number) => {
+    const turnIsActive = isThinkingTurn || isLiveSessionActive;
+    const isProvisionalAnswer =
+      log.type === 'answer' &&
+      turnIsActive &&
+      (
+        log.isStreaming === true ||
+        log.isLiveTyping === true ||
+        log._autonomyCheckpoint === true
+      );
+    const hasLaterWorkflowActivity = rawStandardLogs.slice(index + 1).some((later: any) =>
+      later.type === 'work_note' ||
+      (WORKFLOW_COUNT_TYPES.has(later.type) && !HIDDEN_HELPER_TYPES.has(later.type))
+    );
     if (
       log.type !== 'answer' ||
-      !(log.isStreaming || log.isLiveTyping) ||
-      !rawStandardLogs.slice(index + 1).some((later: any) =>
-        later.type === 'work_note' ||
-        (WORKFLOW_COUNT_TYPES.has(later.type) && !HIDDEN_HELPER_TYPES.has(later.type))
-      )
+      (!isProvisionalAnswer && !hasLaterWorkflowActivity)
     ) {
       return log;
     }
 
-    // Older runtimes could publish text as a provisional answer before a
-    // later tool call proved it was narration. Repair those persisted traces
-    // at render time so they stay inside the working sequence.
+    // A streamed response is provisional until the provider confirms that
+    // the response boundary has no tool calls or continuation. Keep it in the
+    // chronological work sequence so it cannot stop the timer, collapse the
+    // actions, or appear as a final answer between two real tool events.
     return {
       ...log,
       type: 'work_note',
