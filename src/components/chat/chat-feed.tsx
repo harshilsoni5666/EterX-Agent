@@ -634,15 +634,22 @@ const isCountedWorkflowLog = (log: any) =>
   !HIDDEN_HELPER_TYPES.has(log?.type) &&
   !isHiddenStatusOnlyLog(log);
 
+const isTimedWorkLog = (log: any) =>
+  isCountedWorkflowLog(log) ||
+  (
+    (log?.type === 'work_note' || log?.type === 'thought_stream') &&
+    !isHiddenStatusOnlyLog(log)
+  );
+
 const getWorkTimeBounds = (logs: any[]) => {
   let start: number | null = null;
   let end: number | null = null;
   logs.forEach((log) => {
     const startValue = normalizeWorkTimestamp(log?.startTime ?? log?.timestamp ?? log?.endTime);
     const endValue = normalizeWorkTimestamp(log?.endTime ?? log?.timestamp ?? log?.startTime);
-    // Work duration begins with the first visible agent action, never with the
-    // user's message or the request-admission/network wait.
-    if (isCountedWorkflowLog(log) && startValue !== null) {
+    // Work begins with the first visible reasoning, note, or action. The user
+    // message and request-admission/network wait remain outside this duration.
+    if (isTimedWorkLog(log) && startValue !== null) {
       start = start === null ? startValue : Math.min(start, startValue);
     }
     if (endValue !== null) end = end === null ? endValue : Math.max(end, endValue);
@@ -779,7 +786,8 @@ const ThoughtSequence = ({
 
   const isOpen = open;
   const hasRealActions = stepCount > 0;
-  const workElapsedSeconds = useWorkElapsedSeconds(isLiveThinking && hasRealActions, turnLogs, turnEndedAt);
+  const hasVisibleWork = logs.length > 0 || liveLogs.length > 0;
+  const workElapsedSeconds = useWorkElapsedSeconds(isLiveThinking && hasVisibleWork, turnLogs, turnEndedAt);
   const workElapsedLabel = formatWorkElapsed(workElapsedSeconds);
 
   if (stepCount === 0 && logs.length === 0 && !isLiveThinking) return null;
@@ -790,8 +798,8 @@ const ThoughtSequence = ({
     : 'Working';
   const hasCounter = stepCount > 0 || logs.length > 0;
   const isCollapsedWithAnswer = hasAnswer && !isOpen;
-  const isLiveWorkCounter = isLiveThinking && hasRealActions && !isWaitingForFirstTrace;
-  const showWorkedSummary = !isLiveThinking && hasRealActions;
+  const isLiveWorkCounter = isLiveThinking && hasVisibleWork && !isWaitingForFirstTrace;
+  const showWorkedSummary = !isLiveThinking && hasVisibleWork;
   const shouldStickCounter = hasAnswer || isLiveWorkCounter;
   const counterColor = 'var(--muted-foreground)';
   const counterBackground = 'var(--muted)';
