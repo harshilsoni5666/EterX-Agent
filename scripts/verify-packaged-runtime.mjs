@@ -28,12 +28,17 @@ if (archives.length === 0) {
 
 const requiredFiles = [
   'runtime/server.js',
-  'runtime/modules/next/package.json',
-  'runtime/modules/@swc/helpers/package.json',
-  'runtime/modules/electron-updater/package.json',
   'runtime/.next/BUILD_ID',
   'runtime/assets/skills',
   'runtime/assets/agent-prompts/prompts',
+];
+const requiredDependencies = [
+  'node_modules/next/package.json',
+  'node_modules/@swc/helpers/package.json',
+  'node_modules/electron-updater/package.json',
+  'node_modules/complex.js/dist/complex.js',
+  'node_modules/mathjs/lib/cjs/index.js',
+  'node_modules/mathjs/node_modules/fraction.js/fraction.js',
 ];
 const forbiddenPrefixes = [
   'runtime/src/',
@@ -54,6 +59,18 @@ for (const archive of archives) {
   for (const forbidden of forbiddenPrefixes) {
     if ([...entries].some((entry) => entry.startsWith(forbidden))) {
       throw new Error(`${archive} exposes forbidden source content: ${forbidden}`);
+    }
+  }
+  const dependencyArchive = path.join(path.dirname(archive), 'runtime', 'dependencies.asar');
+  if (!fs.existsSync(dependencyArchive)) {
+    throw new Error(`${archive} is missing its external dependency archive.`);
+  }
+  const dependencyEntries = new Set(
+    listPackage(dependencyArchive).map((entry) => entry.replaceAll('\\', '/').replace(/^\/+/, '')),
+  );
+  for (const required of requiredDependencies) {
+    if (!dependencyEntries.has(required)) {
+      throw new Error(`${dependencyArchive} is missing required dependency entry: ${required}`);
     }
   }
   console.log(`[EterX release] Verified packaged runtime contract: ${archive}`);

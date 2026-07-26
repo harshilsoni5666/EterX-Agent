@@ -415,11 +415,15 @@ type ModelOverrides = Record<string, string>;
 type ModelCatalog = Record<string, string[]>;
 type ProviderModelOption = { id: string; label: string; source: 'selected' | 'saved' | 'official' | 'live' };
 type DesktopUpdateState = {
-  status: 'idle' | 'development' | 'checking' | 'downloading' | 'current' | 'ready' | 'error';
+  status: 'idle' | 'development' | 'checking' | 'available' | 'downloading' | 'current' | 'ready' | 'error';
   currentVersion: string;
   availableVersion?: string | null;
   percent: number;
   message: string;
+  automaticChecks?: boolean;
+  manualInstall?: boolean;
+  lastCheckedAt?: string | null;
+  nextCheckAt?: string | null;
 };
 
 const splitApiKeyPool = (value: string | undefined) =>
@@ -3267,6 +3271,10 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                           <div className="flex gap-3">
                             {updateState.status === 'ready' ? (
                               <SoftButton onClick={() => void (window as any)?.electronAPI?.installUpdate?.()}>Restart and install</SoftButton>
+                            ) : updateState.status === 'available' ? (
+                              <SoftButton onClick={() => void (window as any)?.electronAPI?.downloadUpdate?.()}>
+                                Download EterX {updateState.availableVersion}
+                              </SoftButton>
                             ) : (
                               <SoftButton
                                 disabled={updateState.status === 'checking' || updateState.status === 'downloading' || updateState.status === 'development'}
@@ -3278,8 +3286,13 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                           </div>
 
                           <p className="mt-5 text-[12px] leading-relaxed text-[#666]">
-                            Updates download in the background and replace only application files. Your chats, workspaces, encrypted API settings, browser profiles, and preferences remain in the device data directory.
+                            Updates are fully manual. Choose Check for updates, then choose Download only if a newer stable release is available. EterX installs only after you choose Restart and install. Your chats, workspaces, encrypted API settings, browser profiles, and preferences remain in the device data directory.
                           </p>
+                          {updateState.lastCheckedAt && (
+                            <p className="mt-2 text-[11px] text-[#555]">
+                              Last checked {new Date(updateState.lastCheckedAt).toLocaleString()}
+                            </p>
+                          )}
                         </div>
                       )}
 

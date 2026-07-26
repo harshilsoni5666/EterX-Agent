@@ -72,12 +72,16 @@ let packagedServer = null;
 let packagedServerUrl = null;
 let isQuitting = false;
 let desktopAutoUpdater = null;
+let desktopUpdateCheckPromise = null;
 let desktopUpdateState = {
   status: app.isPackaged ? 'idle' : 'development',
   currentVersion: app.getVersion(),
   availableVersion: null,
   percent: 0,
   message: app.isPackaged ? 'Ready to check for updates' : 'Updates are available in packaged builds',
+  automaticChecks: false,
+  manualInstall: true,
+  lastCheckedAt: null,
 };
 
 app.on('second-instance', () => {
@@ -144,6 +148,43 @@ function publishDesktopUpdateState(patch = {}) {
   return desktopUpdateState;
 }
 
+function getPackagedDependencyModuleRoot() {
+  const dependencyArchive = path.join(process.resourcesPath, 'runtime', 'dependencies.asar');
+  if (!fs.existsSync(dependencyArchive)) return null;
+  const nestedNodeModules = path.join(dependencyArchive, 'node_modules');
+  return fs.existsSync(nestedNodeModules) ? nestedNodeModules : dependencyArchive;
+}
+
+async function performDesktopUpdateCheck() {
+  if (!app.isPackaged || !desktopAutoUpdater) return desktopUpdateState;
+  if (desktopUpdateCheckPromise) return desktopUpdateCheckPromise;
+  if (desktopUpdateState.status === 'downloading' || desktopUpdateState.status === 'ready') {
+    return desktopUpdateState;
+  }
+
+  desktopUpdateCheckPromise = (async () => {
+    publishDesktopUpdateState({
+      status: 'checking',
+      percent: 0,
+      message: 'Checking for updates...',
+    });
+    try {
+      await desktopAutoUpdater.checkForUpdates();
+      publishDesktopUpdateState({ lastCheckedAt: new Date().toISOString() });
+    } catch (error) {
+      publishDesktopUpdateState({
+        status: 'error',
+        lastCheckedAt: new Date().toISOString(),
+        message: `Update check failed: ${error.message}`,
+      });
+    } finally {
+      desktopUpdateCheckPromise = null;
+    }
+    return desktopUpdateState;
+  })();
+  return desktopUpdateCheckPromise;
+}
+
 function initializeDesktopUpdates() {
   if (!app.isPackaged) return publishDesktopUpdateState();
   try {
@@ -153,23 +194,40 @@ function initializeDesktopUpdates() {
       // The desktop server runtime already contains the production dependency
       // graph. Keeping the updater there avoids duplicating a second large
       // node_modules tree inside app.asar.
-      const bundledUpdater = path.join(app.getAppPath(), 'runtime', 'modules', 'electron-updater');
+      const dependencyModuleRoot = getPackagedDependencyModuleRoot();
+      if (dependencyModuleRoot) {
+        process.env.NODE_PATH = [dependencyModuleRoot, process.env.NODE_PATH].filter(Boolean).join(path.delimiter);
+        require('module').Module._initPaths();
+      }
+      const bundledUpdater = dependencyModuleRoot
+        ? path.join(dependencyModuleRoot, 'electron-updater')
+        : path.join(app.getAppPath(), 'runtime', 'modules', 'electron-updater');
       ({ autoUpdater: desktopAutoUpdater } = require(bundledUpdater));
     }
-    desktopAutoUpdater.autoDownload = true;
-    desktopAutoUpdater.autoInstallOnAppQuit = true;
+    desktopAutoUpdater.autoDownload = false;
+    desktopAutoUpdater.autoInstallOnAppQuit = false;
     desktopAutoUpdater.allowDowngrade = false;
+    desktopAutoUpdater.allowPrerelease = false;
+    desktopAutoUpdater.fullChangelog = true;
 
     desktopAutoUpdater.on('checking-for-update', () => publishDesktopUpdateState({ status: 'checking', percent: 0, message: 'Checking for a newer EterX release…' }));
-    desktopAutoUpdater.on('update-available', (info) => publishDesktopUpdateState({ status: 'downloading', availableVersion: info.version, percent: 0, message: `Downloading EterX ${info.version}…` }));
-    desktopAutoUpdater.on('update-not-available', () => publishDesktopUpdateState({ status: 'current', availableVersion: null, percent: 100, message: 'EterX is up to date' }));
+    desktopAutoUpdater.on('update-available', (info) => publishDesktopUpdateState({ status: 'available', availableVersion: info.version, percent: 0, message: `EterX ${info.version} is available` }));
+    desktopAutoUpdater.on('update-not-available', () => publishDesktopUpdateState({ status: 'current', availableVersion: null, percent: 100, message: 'EterX is up to date', lastCheckedAt: new Date().toISOString() }));
     desktopAutoUpdater.on('download-progress', (progress) => publishDesktopUpdateState({ status: 'downloading', percent: Math.max(0, Math.min(100, Math.round(progress.percent || 0))), message: `Downloading update — ${Math.round(progress.percent || 0)}%` }));
-    desktopAutoUpdater.on('update-downloaded', (info) => publishDesktopUpdateState({ status: 'ready', availableVersion: info.version, percent: 100, message: `EterX ${info.version} is ready to install` }));
+    desktopAutoUpdater.on('update-downloaded', (info) => {
+      publishDesktopUpdateState({ status: 'ready', availableVersion: info.version, percent: 100, message: `EterX ${info.version} is ready - restart when convenient` });
+      try {
+        const { Notification } = require('electron');
+        if (Notification.isSupported()) {
+          new Notification({
+            title: `EterX ${info.version} is ready`,
+            body: 'Open Updates and choose Restart and install.',
+          }).show();
+        }
+      } catch {}
+    });
     desktopAutoUpdater.on('error', (error) => publishDesktopUpdateState({ status: 'error', percent: 0, message: `Update failed: ${error?.message || 'unknown error'}` }));
 
-    setTimeout(() => desktopAutoUpdater.checkForUpdates().catch((error) => {
-      publishDesktopUpdateState({ status: 'error', message: `Update check failed: ${error.message}` });
-    }), 12_000);
   } catch (error) {
     publishDesktopUpdateState({ status: 'error', message: `Updater unavailable: ${error.message}` });
   }
@@ -869,7 +927,18 @@ function pruneOldPackagedRuntimes() {
       fs.rmSync(legacyRuntimeRoot, { recursive: true, force: true });
     }
     if (fs.existsSync(legacySourceRoot)) {
-      fs.rmSync(legacySourceRoot, { recursive: true, force: true });
+      const detachedSourceRoot = path.join(
+        app.getPath('userData'),
+        `.eterx-retired-source-${process.pid}-${Date.now()}`,
+      );
+      fs.renameSync(legacySourceRoot, detachedSourceRoot);
+      fs.rm(detachedSourceRoot, { recursive: true, force: true, maxRetries: 8, retryDelay: 250 }, (error) => {
+        if (error) {
+          logToFile(`[runtime] Detached legacy source cleanup will retry next launch: ${error.message || error}`);
+        } else {
+          logToFile('[runtime] Removed detached legacy AppData source checkout.');
+        }
+      });
     }
     logToFile('[runtime] Removed legacy AppData application-code copies after preserving durable state.');
   } catch (error) {
@@ -887,7 +956,7 @@ async function startPackagedServer() {
   const persistentEnv = readEnvFile(path.join(app.getPath('userData'), 'data', '.env.local'));
   const secureSettings = readSecureRuntimeSettings();
   const dataRoot = path.join(app.getPath('userData'), 'data');
-  const runtimeModules = path.join(runtimeRoot, 'modules');
+  const runtimeModules = getPackagedDependencyModuleRoot() || path.join(runtimeRoot, 'modules');
   const env = removeDesktopRuntimeSettingEnvironment({
     ...process.env,
     ...persistentEnv,
@@ -902,7 +971,10 @@ async function startPackagedServer() {
   });
   Object.assign(env, secureRuntimeSettingsEnvironment(secureSettings));
 
-  packagedServerUrl = `http://127.0.0.1:${port}`;
+  // Keep the BrowserWindow origin aligned with Next's canonical local URL.
+  // The server remains bound to loopback only; using localhost here prevents
+  // the desktop UI from being treated as cross-origin from its own API.
+  packagedServerUrl = `http://localhost:${port}`;
   packagedServer = spawn(process.execPath, [path.join(runtimeRoot, 'server.js')], {
     cwd: dataRoot,
     env,
@@ -1603,9 +1675,27 @@ ipcMain.handle('desktop-update-get-state', () => desktopUpdateState);
 
 ipcMain.handle('desktop-update-check', async () => {
   if (!app.isPackaged || !desktopAutoUpdater) return desktopUpdateState;
-  publishDesktopUpdateState({ status: 'checking', percent: 0, message: 'Checking for a newer EterX release…' });
-  try { await desktopAutoUpdater.checkForUpdates(); }
-  catch (error) { publishDesktopUpdateState({ status: 'error', message: `Update check failed: ${error.message}` }); }
+  return performDesktopUpdateCheck();
+});
+
+ipcMain.handle('desktop-update-download', async () => {
+  if (!app.isPackaged || !desktopAutoUpdater || desktopUpdateState.status !== 'available') {
+    return desktopUpdateState;
+  }
+  publishDesktopUpdateState({
+    status: 'downloading',
+    percent: 0,
+    message: `Downloading EterX ${desktopUpdateState.availableVersion || 'update'}...`,
+  });
+  try {
+    await desktopAutoUpdater.downloadUpdate();
+  } catch (error) {
+    publishDesktopUpdateState({
+      status: 'error',
+      percent: 0,
+      message: `Update download failed: ${error.message}`,
+    });
+  }
   return desktopUpdateState;
 });
 

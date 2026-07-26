@@ -18,6 +18,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   clearSecureRuntimeSettings: () => ipcRenderer.invoke('secure-runtime-settings-clear'),
   getUpdateState: () => ipcRenderer.invoke('desktop-update-get-state'),
   checkForUpdates: () => ipcRenderer.invoke('desktop-update-check'),
+  downloadUpdate: () => ipcRenderer.invoke('desktop-update-download'),
   installUpdate: () => ipcRenderer.invoke('desktop-update-install'),
   onUpdateState: (callback) => {
     const listener = (_event, state) => callback(state);

@@ -6738,14 +6738,7 @@ function DeepWorkUI() {
 
           {/* Updates */}
           <button type="button"
-            onClick={() => {
-              const url = 'https://github.com/harshilsoni5666/EterX-Agent';
-              if ((window as any).electronAPI?.openExternal) {
-                (window as any).electronAPI.openExternal(url);
-              } else {
-                window.open(url, '_blank', 'noopener,noreferrer');
-              }
-            }}
+            onClick={() => openSettingsWindow('updates')}
             className="eterx-topbar-btn px-[10px] h-full text-[13px] font-normal tracking-[0.01em] cursor-pointer select-none outline-none bg-transparent border-0 transition-colors duration-150"
             style={{ color: 'var(--sidebar-muted-text, #9A9590)' }}>
             Updates

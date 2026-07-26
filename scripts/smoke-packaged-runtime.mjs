@@ -41,27 +41,53 @@ function reservePort() {
   });
 }
 
-function requestReady(port) {
+function request(port, options = {}) {
   return new Promise((resolve) => {
-    const request = http.get(`http://127.0.0.1:${port}`, (response) => {
-      response.resume();
-      resolve(Boolean(response.statusCode && response.statusCode < 500));
+    const body = options.body ? JSON.stringify(options.body) : '';
+    const request = http.request({
+      hostname: '127.0.0.1',
+      port,
+      path: options.path || '/',
+      method: options.method || 'GET',
+      headers: body ? {
+        'content-type': 'application/json',
+        'content-length': Buffer.byteLength(body),
+      } : undefined,
+    }, (response) => {
+      let responseBody = '';
+      response.setEncoding('utf8');
+      response.on('data', (chunk) => { responseBody = `${responseBody}${chunk}`.slice(-12000); });
+      response.on('end', () => resolve({
+        statusCode: response.statusCode || 0,
+        body: responseBody,
+      }));
     });
-    request.setTimeout(1500, () => {
+    request.setTimeout(options.timeoutMs || 1500, () => {
       request.destroy();
-      resolve(false);
+      resolve({ statusCode: 0, body: '' });
     });
-    request.once('error', () => resolve(false));
+    request.once('error', () => resolve({ statusCode: 0, body: '' }));
+    if (body) request.write(body);
+    request.end();
   });
 }
 
 const archive = findArchive(searchRoot);
 const electronBinary = getElectronBinary();
 const serverEntry = path.join(archive, 'runtime', 'server.js');
-const modulesRoot = path.join(archive, 'runtime', 'modules');
+const modulesRoot = path.join(path.dirname(archive), 'runtime', 'dependencies.asar', 'node_modules');
 const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'eterx-release-smoke-'));
 const port = await reservePort();
 let output = '';
+
+function stopChild() {
+  return new Promise((resolve) => {
+    if (child.exitCode !== null) return resolve();
+    child.once('exit', resolve);
+    child.kill();
+    setTimeout(resolve, 5000);
+  });
+}
 
 const child = spawn(electronBinary, [serverEntry], {
   cwd: stateRoot,
@@ -84,14 +110,50 @@ child.stderr.on('data', (chunk) => { output = `${output}${chunk}`.slice(-12000);
 let ready = false;
 const deadline = Date.now() + 90000;
 while (!ready && child.exitCode === null && Date.now() < deadline) {
-  ready = await requestReady(port);
+  const rootResponse = await request(port);
+  ready = rootResponse.statusCode > 0 && rootResponse.statusCode < 500;
   if (!ready) await new Promise((resolve) => setTimeout(resolve, 500));
 }
 
-if (child.exitCode === null) child.kill();
-fs.rmSync(stateRoot, { recursive: true, force: true });
-
 if (!ready) {
+  await stopChild();
+  fs.rmSync(stateRoot, { recursive: true, force: true });
   throw new Error(`Packaged EterX runtime did not become ready.\n${output}`);
 }
-console.log(`[EterX release] Packaged runtime served HTTP successfully on port ${port}.`);
+
+// Loading this route imports the complete agent registry and its dynamic tool
+// dependency graph. GET is intentionally unsupported (405), so the check
+// validates module loading without starting an external agent run.
+const agentResponse = await request(port, {
+  path: '/api/agent/start',
+  method: 'GET',
+  timeoutMs: 90000,
+});
+
+// The desktop UI polls this route continuously. It imports mathjs, cheerio,
+// and their version-sensitive nested dependencies, so any 500 here blocks the
+// installer even when the root page and start route are healthy.
+const pollResponse = await request(port, {
+  path: '/api/agent/poll?chatId=eterx-package-smoke&after=-1',
+  method: 'GET',
+  timeoutMs: 90000,
+});
+
+await stopChild();
+fs.rmSync(stateRoot, { recursive: true, force: true });
+
+if (agentResponse.statusCode !== 405) {
+  throw new Error(
+    `Packaged agent route failed its dependency smoke check `
+    + `(expected 405, received ${agentResponse.statusCode}).\n`
+    + `${agentResponse.body}\n${output}`,
+  );
+}
+if (pollResponse.statusCode === 0 || pollResponse.statusCode >= 500) {
+  throw new Error(
+    `Packaged polling route failed its dependency smoke check `
+    + `(received ${pollResponse.statusCode}).\n`
+    + `${pollResponse.body}\n${output}`,
+  );
+}
+console.log(`[EterX release] Packaged UI and agent dependency graph passed on port ${port}.`);

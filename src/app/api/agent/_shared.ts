@@ -48,7 +48,21 @@ export function rejectCrossOrigin(req: NextRequest) {
   if (!origin) return null;
 
   try {
-    if (origin === new URL(req.url).origin) return null;
+    const source = new URL(origin);
+    const destination = new URL(req.url);
+    if (source.origin === destination.origin) return null;
+
+    const loopbackHosts = new Set(['localhost', '127.0.0.1', '[::1]']);
+    const sourcePort = source.port || (source.protocol === 'https:' ? '443' : '80');
+    const destinationPort = destination.port || (destination.protocol === 'https:' ? '443' : '80');
+    if (
+      source.protocol === destination.protocol
+      && sourcePort === destinationPort
+      && loopbackHosts.has(source.hostname)
+      && loopbackHosts.has(destination.hostname)
+    ) {
+      return null;
+    }
   } catch {
     return jsonError('Invalid request origin.', 400);
   }
