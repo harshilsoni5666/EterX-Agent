@@ -3211,6 +3211,9 @@ function DeepWorkUI() {
     if (idsToDelete.length === 0) return;
 
     const deleteSet = new Set(idsToDelete);
+    if (liveChatIdRef.current && deleteSet.has(liveChatIdRef.current)) {
+      stopLiveSession();
+    }
     const deletingActiveChat = !!activeChatId && deleteSet.has(activeChatId);
     if (deletingActiveChat) activeChatIdRef.current = null;
 
@@ -3263,7 +3266,7 @@ function DeepWorkUI() {
       setTraceLogs([]);
       setBuildingAgentId(null);
     }
-  }, [activeChatId]);
+  }, [activeChatId, stopLiveSession]);
 
   const deleteChat = useCallback((id: string) => {
     deleteChats([id]);
