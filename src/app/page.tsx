@@ -4166,7 +4166,22 @@ function DeepWorkUI() {
                     ) {
                       continue;
                     }
-                    logs[answerIdx] = { ...logs[answerIdx], ...timedTrace, text: trace.text, _traceIdx: trace._traceIdx };
+                    const incomingIsStreaming = trace.isStreaming === true || trace.isLiveTyping === true;
+                    logs[answerIdx] = {
+                      ...logs[answerIdx],
+                      ...timedTrace,
+                      text: trace.text,
+                      _traceIdx: trace._traceIdx,
+                      isStreaming: incomingIsStreaming,
+                      isLiveTyping: incomingIsStreaming,
+                      wasStreaming: Boolean(
+                        logs[answerIdx].wasStreaming ||
+                        logs[answerIdx].isStreaming ||
+                        logs[answerIdx].isLiveTyping ||
+                        trace.wasStreaming ||
+                        incomingIsStreaming
+                      ),
+                    };
                   } else {
                     logs.push(timedTrace);
                   }
