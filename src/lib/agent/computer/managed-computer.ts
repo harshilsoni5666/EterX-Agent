@@ -3,6 +3,7 @@ import fs from 'fs-extra';
 import { spawn, execFile, type ChildProcessWithoutNullStreams } from 'child_process';
 import { promisify } from 'util';
 import { monitorEmitter } from '../monitor/emitter';
+import { getEterxAppRoot, getEterxExecutableAssetPath } from '../storage-paths';
 
 const execFileAsync = promisify(execFile);
 
@@ -47,7 +48,10 @@ async function ensureBinary(): Promise<string> {
   if (process.platform !== 'win32') {
     throw new Error(`Isolated managed computer is currently available only on Windows, not ${process.platform}.`);
   }
-  const sourcePath = path.resolve(process.cwd(), 'src', 'lib', 'agent', 'computer', 'EterXManagedComputer.cs');
+  const bundledBinary = getEterxExecutableAssetPath('native', 'win', 'EterXManagedComputer.exe');
+  if (await fs.pathExists(bundledBinary)) return bundledBinary;
+
+  const sourcePath = path.resolve(getEterxAppRoot(), 'src', 'lib', 'agent', 'computer', 'EterXManagedComputer.cs');
   const outDir = path.resolve(process.cwd(), '.workspaces', 'temp', 'managed-computer');
   const exePath = path.join(outDir, 'EterXManagedComputer.exe');
   await fs.ensureDir(outDir);

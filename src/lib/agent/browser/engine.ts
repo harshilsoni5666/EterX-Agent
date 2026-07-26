@@ -24,6 +24,7 @@ import fs from 'fs-extra';
 import { exec, execSync } from 'child_process';
 import { promisify } from 'util';
 import net from 'net';
+import { getEterxAssetPath } from '../storage-paths';
 
 const execAsync = promisify(exec);
 
@@ -302,7 +303,10 @@ export class BrowserEngine {
     console.log(`[BrowserEngine] 🚀 Launching user's Chrome with debug port ${debugPort}...`);
 
     try {
-      const extensionDir = path.resolve(process.cwd(), 'src', 'lib', 'agent', 'browser', 'extension');
+      const bundledExtensionDir = getEterxAssetPath('browser-extension');
+      const extensionDir = await fs.pathExists(bundledExtensionDir)
+        ? bundledExtensionDir
+        : path.resolve(process.cwd(), 'src', 'lib', 'agent', 'browser', 'extension');
       const extensionArgs = await fs.pathExists(extensionDir)
         ? [`--disable-extensions-except=${extensionDir}`, `--load-extension=${extensionDir}`]
         : [];
@@ -392,7 +396,10 @@ export class BrowserEngine {
       launchArgs.push(`--remote-debugging-port=${debugPort}`);
     }
 
-    const extensionDir = path.resolve(process.cwd(), 'src', 'lib', 'agent', 'browser', 'extension');
+    const bundledExtensionDir = getEterxAssetPath('browser-extension');
+    const extensionDir = await fs.pathExists(bundledExtensionDir)
+      ? bundledExtensionDir
+      : path.resolve(process.cwd(), 'src', 'lib', 'agent', 'browser', 'extension');
     if (!headless && await fs.pathExists(extensionDir)) {
       launchArgs.push(`--disable-extensions-except=${extensionDir}`, `--load-extension=${extensionDir}`);
     }

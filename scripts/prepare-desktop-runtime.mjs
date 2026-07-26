@@ -7,6 +7,31 @@ import { fileURLToPath } from 'node:url';
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const standaloneRoot = path.join(repositoryRoot, '.next', 'standalone');
 const runtimeRoot = path.join(repositoryRoot, 'desktop-runtime');
+const npmExecPath = String(process.env.npm_execpath || '').trim();
+const npmCommand = npmExecPath ? process.execPath : (process.platform === 'win32' ? 'npm.cmd' : 'npm');
+
+function installProductionDependencies(targetRoot, manifest, label) {
+  fs.mkdirSync(targetRoot, { recursive: true });
+  fs.writeFileSync(path.join(targetRoot, 'package.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+  const npmArguments = [
+    'install',
+    '--omit=dev',
+    '--ignore-scripts',
+    '--no-audit',
+    '--fund=false',
+    '--package-lock=false',
+  ];
+  if (npmExecPath) npmArguments.unshift(npmExecPath);
+  const result = spawnSync(npmCommand, npmArguments, {
+    cwd: targetRoot,
+    stdio: 'inherit',
+    shell: false,
+    env: { ...process.env, NODE_ENV: 'production' },
+  });
+  if (result.status !== 0) {
+    throw new Error(`Could not prepare ${label} (exit ${result.status ?? 'unknown'}).`);
+  }
+}
 
 function findStandaloneServer(root) {
   const direct = path.join(root, 'server.js');
@@ -37,26 +62,25 @@ if (!applicationRoot) {
 const stagingRoot = `${runtimeRoot}.staging-${process.pid}`;
 fs.rmSync(stagingRoot, { recursive: true, force: true });
 fs.mkdirSync(stagingRoot, { recursive: true });
-const excludedStandaloneRoots = new Set([
-  '.git',
-  '.temp',
-  '.workspaces',
-  'coding-agent',
-  'desktop-runtime',
-  'dist',
-  'gaia',
-  'public',
-  'src',
-]);
-fs.cpSync(applicationRoot, stagingRoot, {
-  recursive: true,
-  force: true,
-  filter: (entry) => {
-    const relative = path.relative(applicationRoot, entry);
-    if (!relative) return true;
-    return !excludedStandaloneRoots.has(relative.split(path.sep)[0]);
-  },
-});
+for (const runtimeEntry of ['server.js', 'package.json', 'node_modules', '.next']) {
+  const source = path.join(applicationRoot, runtimeEntry);
+  if (!fs.existsSync(source)) continue;
+  fs.cpSync(source, path.join(stagingRoot, runtimeEntry), {
+    recursive: true,
+    force: true,
+  });
+}
+
+const serverPath = path.join(stagingRoot, 'server.js');
+const serverSource = fs.readFileSync(serverPath, 'utf8');
+fs.writeFileSync(
+  serverPath,
+  serverSource.replace(
+    'process.chdir(__dirname)',
+    "if (!process.env.ETERX_DATA_DIR) process.chdir(__dirname)",
+  ),
+  'utf8',
+);
 
 const staticSource = path.join(repositoryRoot, '.next', 'static');
 const staticTarget = path.join(stagingRoot, '.next', 'static');
@@ -70,17 +94,74 @@ if (fs.existsSync(publicSource)) {
   fs.cpSync(publicSource, path.join(stagingRoot, 'public'), { recursive: true, force: true });
 }
 
-// Next's standalone trace does not always retain the Next package itself,
-// although server.js loads it at runtime. Copy the framework package into the
-// packaged runtime so a clean native installation never depends on the source
-// checkout's node_modules directory.
-const nextSource = path.join(repositoryRoot, 'node_modules', 'next');
-const nextTarget = path.join(stagingRoot, 'node_modules', 'next');
-if (!fs.existsSync(nextSource)) {
-  throw new Error('The Next.js package is missing from node_modules. Run npm ci before preparing the desktop runtime.');
+const packageVersion = (name) => JSON.parse(
+  fs.readFileSync(path.join(repositoryRoot, 'node_modules', name, 'package.json'), 'utf8'),
+).version;
+const frameworkInstallRoot = path.join(stagingRoot, '.eterx-framework-install');
+installProductionDependencies(frameworkInstallRoot, {
+  name: 'eterx-next-runtime',
+  private: true,
+  version: '1.0.0',
+  dependencies: {
+    next: packageVersion('next'),
+    react: packageVersion('react'),
+    'react-dom': packageVersion('react-dom'),
+  },
+}, 'the complete Next.js runtime');
+fs.mkdirSync(path.join(stagingRoot, 'node_modules'), { recursive: true });
+fs.cpSync(
+  path.join(frameworkInstallRoot, 'node_modules'),
+  path.join(stagingRoot, 'node_modules'),
+  { recursive: true, force: true },
+);
+fs.rmSync(frameworkInstallRoot, { recursive: true, force: true });
+
+const assetsRoot = path.join(stagingRoot, 'assets');
+fs.cpSync(
+  path.join(repositoryRoot, 'src', 'lib', 'agent', 'skills'),
+  path.join(assetsRoot, 'skills'),
+  { recursive: true, force: true },
+);
+fs.cpSync(
+  path.join(repositoryRoot, 'coding-agent', 'eterx-agent-reference', 'prompts'),
+  path.join(assetsRoot, 'agent-prompts', 'prompts'),
+  { recursive: true, force: true },
+);
+fs.cpSync(
+  path.join(repositoryRoot, 'src', 'lib', 'agent', 'browser', 'extension'),
+  path.join(assetsRoot, 'browser-extension'),
+  { recursive: true, force: true },
+);
+
+if (process.platform === 'win32') {
+  const compiler = 'C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe';
+  const nativeRoot = path.join(assetsRoot, 'native', 'win');
+  fs.mkdirSync(nativeRoot, { recursive: true });
+  const nativePrograms = [
+    {
+      source: path.join(repositoryRoot, 'src', 'lib', 'agent', 'computer', 'EterXManagedComputer.cs'),
+      output: path.join(nativeRoot, 'EterXManagedComputer.exe'),
+      references: ['System.Drawing.dll'],
+    },
+    {
+      source: path.join(repositoryRoot, 'src', 'lib', 'agent', 'computer', 'EterXScreenStream.cs'),
+      output: path.join(nativeRoot, 'EterXScreenStream.exe'),
+      references: ['System.Windows.Forms.dll', 'System.Drawing.dll'],
+    },
+  ];
+  for (const nativeProgram of nativePrograms) {
+    const compile = spawnSync(compiler, [
+      '/nologo',
+      '/target:exe',
+      ...nativeProgram.references.map((reference) => `/r:${reference}`),
+      `/out:${nativeProgram.output}`,
+      nativeProgram.source,
+    ], { stdio: 'inherit', shell: false });
+    if (compile.status !== 0) {
+      throw new Error(`Could not compile ${path.basename(nativeProgram.output)} (exit ${compile.status ?? 'unknown'}).`);
+    }
+  }
 }
-fs.mkdirSync(path.dirname(nextTarget), { recursive: true });
-fs.cpSync(nextSource, nextTarget, { recursive: true, force: true });
 
 // electron/main.js is intentionally tiny and excludes the repository's full
 // node_modules tree. Bundle only electron-updater and its production closure so
@@ -97,30 +178,16 @@ fs.writeFileSync(path.join(updaterRoot, 'package.json'), `${JSON.stringify({
   dependencies: { 'electron-updater': updaterVersion },
 }, null, 2)}\n`);
 
-const npmExecPath = String(process.env.npm_execpath || '').trim();
-const npmCommand = npmExecPath ? process.execPath : (process.platform === 'win32' ? 'npm.cmd' : 'npm');
-const npmArguments = [
-  'install',
-  '--omit=dev',
-  '--ignore-scripts',
-  '--no-audit',
-  '--fund=false',
-  '--package-lock=false',
-];
-if (npmExecPath) npmArguments.unshift(npmExecPath);
-const updaterInstall = spawnSync(npmCommand, npmArguments, {
-  cwd: updaterRoot,
-  stdio: 'inherit',
-  shell: false,
-  env: { ...process.env, NODE_ENV: 'production' },
-});
-if (updaterInstall.status !== 0) {
-  throw new Error(`Could not prepare the desktop updater runtime (exit ${updaterInstall.status ?? 'unknown'}).`);
-}
+installProductionDependencies(updaterRoot, JSON.parse(
+  fs.readFileSync(path.join(updaterRoot, 'package.json'), 'utf8'),
+), 'the desktop updater runtime');
 
 const required = [
   'server.js',
   path.join('node_modules', 'next', 'package.json'),
+  path.join('node_modules', '@swc', 'helpers', 'package.json'),
+  path.join('assets', 'skills'),
+  path.join('assets', 'agent-prompts', 'prompts'),
   path.join('.next', 'BUILD_ID'),
   path.join('.next', 'server', 'app-paths-manifest.json'),
   path.join('updater', 'node_modules', 'electron-updater', 'package.json'),

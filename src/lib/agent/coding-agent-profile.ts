@@ -3,6 +3,7 @@ import path from 'path';
 import type { ProjectContext } from './schemas';
 import { buildCodingProfileToolBlock, getCodingAgentToolSummary } from '../code/code-agent-runtime';
 import { buildRuntimePlatformPrompt, getRuntimePlatformContext } from './runtime/platform-context';
+import { getEterxAssetPath } from './storage-paths';
 
 export const ETERX_CODE_AGENT_PROFILE = 'eterx-code';
 
@@ -66,7 +67,10 @@ export function isCodingAgentProfile(value: unknown): boolean {
 }
 
 function getReferenceRoot(): string {
-  return path.resolve(process.cwd(), 'coding-agent', 'eterx-agent-reference');
+  const bundledReferenceRoot = getEterxAssetPath('agent-prompts');
+  return fs.existsSync(bundledReferenceRoot)
+    ? bundledReferenceRoot
+    : path.resolve(process.cwd(), 'coding-agent', 'eterx-agent-reference');
 }
 
 async function buildCacheKey(referenceRoot: string): Promise<string> {

@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { AgentSkill } from './types';
+import { getEterxAssetPath } from '../storage-paths';
 
 interface ParsedFrontmatter {
   name: string;
@@ -361,8 +362,10 @@ function operatingNoticeForSkill(id: string): string {
  * @returns Array of AgentSkill objects, one per valid .md file
  */
 export function loadMarkdownSkills(): AgentSkill[] {
-  const projectRoot = process.cwd();
-  const skillsDir = path.join(projectRoot, 'src', 'lib', 'agent', 'skills');
+  const bundledSkillsDir = getEterxAssetPath('skills');
+  const skillsDir = fs.existsSync(bundledSkillsDir)
+    ? bundledSkillsDir
+    : path.join(process.cwd(), 'src', 'lib', 'agent', 'skills');
   const skills: AgentSkill[] = [];
   const seenSkillIds = new Map<string, { index: number; file: string }>();
   const sharedSkillContract = loadSharedSkillContract(skillsDir);

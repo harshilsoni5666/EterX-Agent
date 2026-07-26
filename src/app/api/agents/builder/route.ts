@@ -11,10 +11,14 @@ export const runtime = 'nodejs';
 
 import fs from 'fs';
 import path from 'path';
+import { getEterxAssetPath } from '../../../../lib/agent/storage-paths';
 
 function getAvailableSkills() {
   try {
-    const skillsPath = path.join(process.cwd(), 'src', 'lib', 'agent', 'skills');
+    const bundledSkillsPath = getEterxAssetPath('skills');
+    const skillsPath = fs.existsSync(bundledSkillsPath)
+      ? bundledSkillsPath
+      : path.join(process.cwd(), 'src', 'lib', 'agent', 'skills');
     if (!fs.existsSync(skillsPath)) return '\n\nNo skills available at the moment.';
     
     const entries = fs.readdirSync(skillsPath, { withFileTypes: true });

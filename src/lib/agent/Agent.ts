@@ -79,6 +79,7 @@ import { RuntimeEvidenceLedger } from './runtime-evidence';
 import { ExecutionGovernor } from './execution-governor';
 import { writeRuntimeTrace } from './runtime-trace';
 import * as pathLib from 'path';
+import { getEterxAssetPath } from './storage-paths';
 import * as fsExtra from 'fs-extra';
 import {
   basenameForTrace,
@@ -196,6 +197,7 @@ async function buildMainAgentPromptContext(): Promise<string> {
   // layouts.  "Codign agent" was an old typo, which meant the production
   // prompt loader silently injected no main-agent kernels at all.
   const referenceRootCandidates = [
+    getEterxAssetPath('agent-prompts'),
     pathLib.resolve(process.cwd(), 'coding-agent', 'eterx-agent-reference'),
     pathLib.resolve(process.cwd(), 'eterx-agent-reference'),
     pathLib.resolve(process.cwd(), 'Codign agent', 'eterx-agent-reference'), // legacy fallback

@@ -28,3 +28,20 @@ export function getEterxDataDir(): string {
 export function getEterxWorkspaceDir(...segments: string[]): string {
   return path.resolve(getEterxDataDir(), '.workspaces', ...segments);
 }
+
+export function getEterxAppRoot(): string {
+  const configured = String(process.env.ETERX_APP_ROOT || '').trim();
+  return configured ? path.resolve(configured) : path.resolve(process.cwd());
+}
+
+export function getEterxAssetPath(...segments: string[]): string {
+  return path.resolve(getEterxAppRoot(), 'assets', ...segments);
+}
+
+export function getEterxExecutableAssetPath(...segments: string[]): string {
+  const assetPath = getEterxAssetPath(...segments);
+  const asarSegment = `${path.sep}app.asar${path.sep}`;
+  return assetPath.includes(asarSegment)
+    ? assetPath.replace(asarSegment, `${path.sep}app.asar.unpacked${path.sep}`)
+    : assetPath;
+}

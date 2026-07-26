@@ -1,6 +1,6 @@
 {
   "name": "eterx",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "EterX autonomous AI agent desktop application",
   "author": {
     "name": "Harshil Soni",
@@ -147,26 +147,24 @@
     "generateUpdatesFilesForAllChannels": true,
     "compression": "normal",
     "asar": true,
+    "asarUnpack": [
+      "runtime/assets/native/**/*"
+    ],
     "npmRebuild": false,
     "buildDependenciesFromSource": false,
     "files": [
       "electron/**/*",
       "package.json",
+      {
+        "from": "desktop-runtime",
+        "to": "runtime",
+        "filter": [
+          "**/*"
+        ]
+      },
       "!node_modules/**/*"
     ],
     "extraResources": [
-      {
-        "from": "desktop-runtime",
-        "to": "runtime"
-      },
-      {
-        "from": "src",
-        "to": "runtime/src"
-      },
-      {
-        "from": "coding-agent",
-        "to": "runtime/coding-agent"
-      },
       {
         "from": "public/icon.ico",
         "to": "icon.ico"
@@ -178,6 +176,7 @@
     ],
     "win": {
       "icon": "public/icon.ico",
+      "executableName": "EterX",
       "target": [
         {
           "target": "nsis",

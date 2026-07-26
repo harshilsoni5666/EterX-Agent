@@ -66,10 +66,8 @@ let activeBootId = 0;
 let bootRetryTimer = null;
 let bootFailureCount = 0;
 
-// A production install contains the Next.js standalone server as an application
-// resource.  It is copied to userData once per app version before launch so the
-// agent can keep using its normal local workspace paths without ever trying to
-// write into Program Files, an .app bundle, or app.asar.
+// A production install runs its immutable Next.js server directly from the
+// packaged application archive. AppData contains durable user state only.
 let packagedRuntimeRoot = null;
 let packagedServer = null;
 let packagedServerUrl = null;
@@ -156,7 +154,7 @@ function initializeDesktopUpdates() {
       // The desktop server runtime already contains the production dependency
       // graph. Keeping the updater there avoids duplicating a second large
       // node_modules tree inside app.asar.
-      const bundledUpdater = path.join(process.resourcesPath, 'runtime', 'updater', 'node_modules', 'electron-updater');
+      const bundledUpdater = path.join(app.getAppPath(), 'runtime', 'updater', 'node_modules', 'electron-updater');
       ({ autoUpdater: desktopAutoUpdater } = require(bundledUpdater));
     }
     desktopAutoUpdater.autoDownload = true;
@@ -367,8 +365,10 @@ function migrateLegacySourceBootstrapData(currentUserData) {
   const legacySource = path.join(sourceBase, 'source');
   const destinationData = path.join(currentUserData, 'data');
   const destinationWorkspace = path.join(destinationData, '.workspaces');
+  const migrationMarker = path.join(destinationData, '.eterx-source-bootstrap-migrated');
 
   try {
+    if (fs.existsSync(migrationMarker)) return;
     const markerCandidates = [
       path.join(legacyWorkspace, 'config', 'setup-meta.json'),
       path.join(legacyWorkspace, 'memory'),
@@ -395,6 +395,7 @@ function migrateLegacySourceBootstrapData(currentUserData) {
       fs.mkdirSync(destinationData, { recursive: true });
       fs.copyFileSync(legacyEnv, destinationEnv, fs.constants.COPYFILE_EXCL);
     }
+    fs.writeFileSync(migrationMarker, `${new Date().toISOString()}\n`, 'utf8');
     logToFile(`[migration] Imported legacy source-bootstrap data from ${legacyWorkspace}`);
   } catch (error) {
     console.warn('[EterX] Could not migrate source-bootstrap data:', error?.message || error);
@@ -824,120 +825,54 @@ async function findAvailablePort(startPort) {
   throw new Error(`No free local port found from ${startPort} to ${startPort + 39}.`);
 }
 
-function linkRuntimeDataDirectory(runtimeRoot, dataRoot, name) {
-  const target = path.join(dataRoot, name);
-  const link = path.join(runtimeRoot, name);
-  fs.mkdirSync(target, { recursive: true });
-
-  try {
-    const existing = fs.lstatSync(link);
-    if (existing.isSymbolicLink()) return;
-    fs.rmSync(link, { recursive: true, force: true });
-  } catch {
-    // The runtime has no local data directory yet.
-  }
-
-  try {
-    fs.symlinkSync(target, link, process.platform === 'win32' ? 'junction' : 'dir');
-  } catch (error) {
-    // A writable fallback still lets the app start if the platform disallows
-    // links. It is retained for this runtime version.
-    console.warn(`[EterX] Could not link persistent ${name} directory:`, error.message);
-    fs.mkdirSync(link, { recursive: true });
-  }
-}
-
-function getPackagedRuntimeSignature(sourceRoot) {
-  const hash = crypto.createHash('sha256');
-  const signatureFiles = [
-    path.join(sourceRoot, 'server.js'),
-    path.join(sourceRoot, '.next', 'BUILD_ID'),
-    path.join(sourceRoot, '.next', 'server', 'app-paths-manifest.json'),
-  ];
-
-  for (const file of signatureFiles) {
-    try {
-      hash.update(file);
-      hash.update(fs.readFileSync(file));
-    } catch {
-      // A missing optional build file still produces a stable signature from
-      // the remaining runtime contents.
-    }
-  }
-
-  return `${app.getVersion()}:${hash.digest('hex')}`;
-}
-
 function preparePackagedRuntime() {
   if (!app.isPackaged) return null;
   if (packagedRuntimeRoot && fs.existsSync(packagedRuntimeRoot)) return packagedRuntimeRoot;
 
-  const sourceRoot = path.join(process.resourcesPath, 'runtime');
-  const serverEntry = path.join(sourceRoot, 'server.js');
+  const runtimeRoot = path.join(app.getAppPath(), 'runtime');
+  const serverEntry = path.join(runtimeRoot, 'server.js');
   if (!fs.existsSync(serverEntry)) {
     throw new Error(`Bundled runtime is missing: ${serverEntry}`);
   }
 
-  const version = String(app.getVersion() || '0.0.0').replace(/[^a-zA-Z0-9._-]/g, '_');
-  const runtimeRoot = path.join(app.getPath('userData'), 'runtime', version);
-  const markerPath = path.join(runtimeRoot, '.eterx-runtime-version');
-  const marker = `${getPackagedRuntimeSignature(sourceRoot)}\n`;
-
-  if (!fs.existsSync(path.join(runtimeRoot, 'server.js')) || !fs.existsSync(markerPath) || fs.readFileSync(markerPath, 'utf8') !== marker) {
-    const stagingRoot = `${runtimeRoot}.staging-${process.pid}-${Date.now()}`;
-    const previousRoot = `${runtimeRoot}.previous-${process.pid}`;
-    fs.rmSync(stagingRoot, { recursive: true, force: true });
-    fs.rmSync(previousRoot, { recursive: true, force: true });
-    fs.mkdirSync(path.dirname(runtimeRoot), { recursive: true });
-    fs.cpSync(sourceRoot, stagingRoot, { recursive: true, force: true });
-    fs.writeFileSync(path.join(stagingRoot, '.eterx-runtime-version'), marker, 'utf8');
-    if (fs.existsSync(runtimeRoot)) fs.renameSync(runtimeRoot, previousRoot);
-    try {
-      fs.renameSync(stagingRoot, runtimeRoot);
-      fs.rmSync(previousRoot, { recursive: true, force: true });
-    } catch (error) {
-      fs.rmSync(runtimeRoot, { recursive: true, force: true });
-      if (fs.existsSync(previousRoot)) fs.renameSync(previousRoot, runtimeRoot);
-      throw error;
-    }
-  }
-
   const dataRoot = path.join(app.getPath('userData'), 'data');
-  linkRuntimeDataDirectory(runtimeRoot, dataRoot, '.workspaces');
-  linkRuntimeDataDirectory(runtimeRoot, dataRoot, '.temp');
+  fs.mkdirSync(path.join(dataRoot, '.workspaces'), { recursive: true });
+  fs.mkdirSync(path.join(dataRoot, '.temp'), { recursive: true });
   packagedRuntimeRoot = runtimeRoot;
   return runtimeRoot;
 }
 
-function pruneOldPackagedRuntimes(activeRuntimeRoot) {
-  if (!app.isPackaged || !activeRuntimeRoot) return;
-  const versionsRoot = path.dirname(activeRuntimeRoot);
-  const activeName = path.basename(activeRuntimeRoot);
+function pruneOldPackagedRuntimes() {
+  if (!app.isPackaged) return;
+  const legacyRuntimeRoot = path.join(app.getPath('userData'), 'runtime');
+  const legacySourceRoot = path.join(app.getPath('userData'), 'source');
+  const dataRoot = path.join(app.getPath('userData'), 'data');
+  if (!fs.existsSync(legacyRuntimeRoot) && !fs.existsSync(legacySourceRoot)) return;
   try {
-    const entries = fs.readdirSync(versionsRoot, { withFileTypes: true });
-    for (const entry of entries) {
-      if (entry.isDirectory() && (entry.name.includes('.staging-') || entry.name.includes('.previous-'))) {
-        fs.rmSync(path.join(versionsRoot, entry.name), { recursive: true, force: true });
+    if (fs.existsSync(legacyRuntimeRoot)) {
+      for (const versionEntry of fs.readdirSync(legacyRuntimeRoot, { withFileTypes: true })) {
+        if (!versionEntry.isDirectory()) continue;
+        const versionRoot = path.join(legacyRuntimeRoot, versionEntry.name);
+        for (const stateName of ['.workspaces', '.temp']) {
+          const legacyState = path.join(versionRoot, stateName);
+          if (!fs.existsSync(legacyState)) continue;
+          const state = fs.lstatSync(legacyState);
+          if (!state.isSymbolicLink()) {
+            fs.mkdirSync(path.join(dataRoot, stateName), { recursive: true });
+            fs.cpSync(legacyState, path.join(dataRoot, stateName), {
+              recursive: true,
+              force: false,
+              errorOnExist: false,
+            });
+          }
+        }
       }
+      fs.rmSync(legacyRuntimeRoot, { recursive: true, force: true });
     }
-    const candidates = entries
-      .filter((entry) => entry.isDirectory() && !entry.name.includes('.staging-') && !entry.name.includes('.previous-'))
-      .map((entry) => {
-        const fullPath = path.join(versionsRoot, entry.name);
-        return { name: entry.name, fullPath, modifiedAt: fs.statSync(fullPath).mtimeMs };
-      })
-      .sort((left, right) => right.modifiedAt - left.modifiedAt);
-
-    const retained = new Set([activeName]);
-    for (const candidate of candidates) {
-      if (retained.size >= 2) break;
-      retained.add(candidate.name);
+    if (fs.existsSync(legacySourceRoot)) {
+      fs.rmSync(legacySourceRoot, { recursive: true, force: true });
     }
-    for (const candidate of candidates) {
-      if (!retained.has(candidate.name)) {
-        fs.rmSync(candidate.fullPath, { recursive: true, force: true });
-      }
-    }
+    logToFile('[runtime] Removed legacy AppData application-code copies after preserving durable state.');
   } catch (error) {
     logToFile(`[runtime] Old-version cleanup skipped: ${error.message || error}`);
   }
@@ -952,6 +887,7 @@ async function startPackagedServer() {
   const port = await findAvailablePort(Number.isInteger(startPort) && startPort > 0 ? startPort : 3000);
   const persistentEnv = readEnvFile(path.join(app.getPath('userData'), 'data', '.env.local'));
   const secureSettings = readSecureRuntimeSettings();
+  const dataRoot = path.join(app.getPath('userData'), 'data');
   const env = removeDesktopRuntimeSettingEnvironment({
     ...process.env,
     ...persistentEnv,
@@ -961,13 +897,13 @@ async function startPackagedServer() {
     PORT: String(port),
     ETERX_PORT: String(port),
     ETERX_APP_ROOT: runtimeRoot,
-    ETERX_DATA_DIR: path.join(app.getPath('userData'), 'data'),
+    ETERX_DATA_DIR: dataRoot,
   });
   Object.assign(env, secureRuntimeSettingsEnvironment(secureSettings));
 
   packagedServerUrl = `http://127.0.0.1:${port}`;
   packagedServer = spawn(process.execPath, [path.join(runtimeRoot, 'server.js')], {
-    cwd: runtimeRoot,
+    cwd: dataRoot,
     env,
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
@@ -1329,7 +1265,7 @@ async function bootApp(options = {}) {
       applyNativeWindowTheme(readNativeTheme());
       await mainWindow.loadURL(target);
       bootFailureCount = 0;
-      pruneOldPackagedRuntimes(packagedRuntimeRoot);
+      pruneOldPackagedRuntimes();
     }
   } catch (error) {
     console.error('[EterX] Startup failed:', error);
@@ -1369,6 +1305,9 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js')
     }
   });
+  if (process.platform === 'win32' && fs.existsSync(APP_ICON_PATH)) {
+    mainWindow.setIcon(nativeImage.createFromPath(APP_ICON_PATH));
+  }
   registerNativeThemedWindow(mainWindow);
   mainWindow.webContents.on('before-input-event', (event, input) => {
     if ((input.control && input.shift && input.key.toLowerCase() === 'i') || input.key === 'F12') {
