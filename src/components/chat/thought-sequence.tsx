@@ -2803,8 +2803,8 @@ const TerminalTraceCard = ({
     const displayCollapsed = timerPrompt ? String(timerPrompt) : '';
 
     return (
-      <div className={`eterx-terminal-trace w-full ${ inCard ? '' : 'my-1.5' }`}>
-        <div className="eterx-terminal-trace-row flex min-h-[33px] w-full items-center gap-2 px-1.5 py-1 text-left">
+      <div className={`eterx-terminal-trace w-full ${ inCard ? '' : `${ ACTION_CARD_CLASS } my-1.5` }`}>
+        <div className={`eterx-terminal-trace-row flex min-h-[33px] w-full items-center gap-2 py-1 text-left ${ inCard ? 'px-1.5' : 'px-3' }`}>
           <span className="eterx-action-icon eterx-terminal-icon flex h-[26px] w-[26px] shrink-0 items-center justify-center text-[#A39B91]">
             <Clock className={`h-[16.5px] w-[16.5px] ${ isStreaming ? 'text-[#3EE06F] animate-spin' : 'text-[#A39B91]' }`} strokeWidth={2.1} />
           </span>
@@ -2849,7 +2849,7 @@ const TerminalTraceCard = ({
     : 'grid-cols-[26px_auto_minmax(0,1fr)_auto]';
 
   return (
-    <div className={`eterx-terminal-trace w-full ${ inCard ? '' : 'my-1.5' }`}>
+    <div className={`eterx-terminal-trace w-full ${ inCard ? '' : `${ ACTION_CARD_CLASS } my-1.5` }`}>
       <button
         type="button"
         onClick={(event) => {
@@ -2857,7 +2857,7 @@ const TerminalTraceCard = ({
           setIsExpanded(open => !open);
         }}
         aria-expanded={isExpanded}
-        className={`eterx-terminal-trace-row group grid min-h-[33px] w-full ${ rowGridClass } items-center gap-2 px-1.5 py-1 text-left transition-colors outline-none focus:outline-none focus-visible:outline-none focus-visible:ring-0 ${ inCard ? 'hover:bg-white/[0.024]' : 'rounded-[9px] hover:bg-white/[0.024]' }`}
+        className={`eterx-terminal-trace-row group grid min-h-[33px] w-full ${ rowGridClass } items-center gap-2 py-1 text-left transition-colors outline-none focus:outline-none focus-visible:outline-none focus-visible:ring-0 ${ inCard ? 'px-1.5 hover:bg-white/[0.024]' : 'px-3 hover:bg-white/[0.024]' }`}
       >
         <span className="eterx-action-icon eterx-terminal-icon flex h-[26px] w-[26px] shrink-0 items-center justify-center text-[#A39B91]">
           <Terminal className="h-[16.5px] w-[16.5px]" strokeWidth={2.1} />
