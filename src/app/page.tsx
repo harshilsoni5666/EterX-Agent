@@ -2144,9 +2144,14 @@ function DeepWorkUI() {
     setLiveError(null);
     setLiveOutputText('');
     setLiveInputText('');
+    setLiveSpokenText('');
     setLiveCommands([]);
+    setLiveActiveTool(null);
+    setLiveMicVolume(0);
+    setLiveModelVolume(0);
     liveCommandsRef.current = [];
     liveConversationRef.current = [];
+    lastLiveLogsSnapshotRef.current = [];
 
     let currentChatId = activeChatId;
     // If on a new/empty chat window with no ID, create a fresh chat for the live session.
@@ -2164,6 +2169,7 @@ function DeepWorkUI() {
         persistChats(updated);
         return updated;
       });
+      activeChatIdRef.current = currentChatId;
       setActiveChatId(currentChatId);
       setTraceLogs([]);
     }
