@@ -2991,12 +2991,12 @@ function DeepWorkUI() {
   };
 
   const loadChat = (id: string) => {
-    let chat = chats.find(c => c.id === id);
+    // Read through the live ref so a sidebar callback from an earlier render
+    // cannot hydrate the chat with an older in-memory stream snapshot.
+    let chat = chatsRef.current.find(c => c.id === id);
 
-    // CRITICAL: Read freshest trace data from localStorage.
-    // The background poller writes to localStorage on every tick, but React state
-    // may be stale (closure). Without this, switching back to an initializing chat
-    // shows the "Agent is initializing" screen even though traces already exist.
+    // Local storage can still be ahead immediately after restoring a background
+    // session. Only prefer it when it contains additional committed rows.
     try {
       const stored = JSON.parse(localStorage.getItem('eterx_chats') || '[]');
       const freshChat = stored.find((c: any) => c.id === id);
