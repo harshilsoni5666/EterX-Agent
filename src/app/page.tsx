@@ -3995,6 +3995,22 @@ function DeepWorkUI() {
                 });
                 const traceAt = timedTrace.endTime;
 
+                if (trace.type === 'answer_cancel') {
+                  const answerId = String(trace.answerId || '').trim();
+                  for (let i = logs.length - 1; i >= 0; i--) {
+                    if (logs[i].type === 'user_action') break;
+                    if (
+                      logs[i].type === 'answer' &&
+                      (logs[i].isStreaming || logs[i].isLiveTyping) &&
+                      (!answerId || String(logs[i].answerId || '') === answerId)
+                    ) {
+                      logs.splice(i, 1);
+                      break;
+                    }
+                  }
+                  continue;
+                }
+
                 if (trace.type === 'work_note_cancel') {
                   const subAgent = trace.subAgent || null;
                   const noteId = trace.noteId || null;
