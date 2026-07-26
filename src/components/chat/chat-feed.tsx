@@ -1068,7 +1068,10 @@ const ChatFeedMessageGroup = React.memo(({
   // Only a real active stream may animate token-by-token. A settled answer can
   // be delivered again by polling or history restoration, but must render once
   // without replaying its entrance animation.
-  const isAnswerActivelyTyping = !!(displayFinalAnswer?.isLiveTyping || displayFinalAnswer?.isStreaming);
+  const isAnswerActivelyTyping = Boolean(
+    isThinkingTurn &&
+    (displayFinalAnswer?.isLiveTyping || displayFinalAnswer?.isStreaming)
+  );
 
   // Stable deduplication set for work notes â€” keyed on noteId or content
   const seenWorkNoteKeys = new Set<string>();
