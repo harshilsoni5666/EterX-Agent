@@ -1013,20 +1013,10 @@ const ChatFeedMessageGroup = React.memo(({
 
   let firstAnswerIdx = -1;
   let lastAnswerIdx = -1;
-  let latestAnswerAt = Number.NEGATIVE_INFINITY;
   for (let i = 0; i < standardLogs.length; i++) {
     if (standardLogs[i].type === 'answer') {
       if (firstAnswerIdx === -1) firstAnswerIdx = i;
-      const answerAt = Number(
-        standardLogs[i].endTime ??
-        standardLogs[i].timestamp ??
-        standardLogs[i].startTime ??
-        i
-      );
-      if (answerAt >= latestAnswerAt) {
-        latestAnswerAt = answerAt;
-        lastAnswerIdx = i;
-      }
+      lastAnswerIdx = i;
     }
   }
   if (firstAnswerIdx >= 0) {
