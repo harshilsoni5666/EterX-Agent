@@ -2300,7 +2300,11 @@ function DeepWorkUI() {
         });
 
         if (activeChatIdRef.current === currentChatId) {
-          setTraceLogs(previous => [...previous, ...newTraceLogs]);
+          setTraceLogs(previous =>
+            activeChatIdRef.current === currentChatId
+              ? [...previous, ...newTraceLogs]
+              : previous
+          );
         }
         markChatUnreadIfBackground(currentChatId);
       };
@@ -4423,18 +4427,10 @@ function DeepWorkUI() {
             // Show error trace so UI doesn't silently drop — this was causing the
             // 'UI gets off while running' appearance (agent failed, no feedback)
             const errMsg = data.finalAnswer || data.error || 'All API attempts exhausted or agent encountered a fatal error.';
-            const isActiveChat = activeChatIdRef.current === chatId;
-            if (isActiveChat) {
-              setTraceLogs(prev => [
-                ...stripAgentConnectionLogs(prev),
-                agentStatusLog('failed', 'Run ended with an error', errMsg.slice(0, 200), normalizeClientTraceTime(data.completedAt))
-              ]);
-            } else {
-              setChats(currentChats => currentChats.map(c => c.id === chatId
-                ? { ...c, traceLogs: [...stripAgentConnectionLogs(c.traceLogs || []), agentStatusLog('failed', 'Run ended with an error', errMsg.slice(0, 200), normalizeClientTraceTime(data.completedAt))] }
-                : c
-              ));
-            }
+            setChatLogsById(chatId, previous => [
+              ...stripAgentConnectionLogs(previous),
+              agentStatusLog('failed', 'Run ended with an error', errMsg.slice(0, 200), normalizeClientTraceTime(data.completedAt))
+            ]);
           }
           if (data.status === 'completed' || data.status === 'failed' || data.status === 'stopped') {
             if (activeChatIdRef.current !== chatId) flushBackgroundChatUpdates();
@@ -4584,27 +4580,10 @@ function DeepWorkUI() {
           if (cancelled) return;
 
           if (data.traces && data.traces.length > 0) {
-            if (activeChatIdRef.current === chatId) {
-              setTraceLogs(prevLogs => {
-                const mergedLogs = mergeServerRunLogs(prevLogs, data.traces, {
-                  runId: data.runId,
-                  startedAt: data.startedAt,
-                });
-                setChats(prev => prev.map(c => c.id === chatId ? { ...c, traceLogs: mergedLogs } : c));
-                return mergedLogs;
-              });
-            } else {
-              setChats(prev => prev.map(c => {
-                if (c.id !== chatId) return c;
-                return {
-                  ...c,
-                  traceLogs: mergeServerRunLogs(c.traceLogs || [], data.traces, {
-                    runId: data.runId,
-                    startedAt: data.startedAt,
-                  }),
-                };
-              }));
-            }
+            setChatLogsById(chatId, previousLogs => mergeServerRunLogs(previousLogs, data.traces, {
+              runId: data.runId,
+              startedAt: data.startedAt,
+            }));
             debouncedSaveToLocalStorage();
           }
 
