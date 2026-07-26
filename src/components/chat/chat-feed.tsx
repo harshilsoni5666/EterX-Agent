@@ -1164,7 +1164,6 @@ const ChatFeedMessageGroup = React.memo(({
 
       if (log.type === 'thought_stream') {
         if (displayFinalAnswer && isLikelyAnswerEcho(log.text, displayFinalAnswer.text)) isValid = false;
-        if (hasStructuredWork && isExternalWorkNoteNoise(log.text)) isValid = false;
         if (displayFinalAnswer && isValid) {
           const thoughtEndTime = Number(log.endTime ?? log.timestamp ?? 0);
           const answerStartTime = Number(displayFinalAnswer.startTime ?? displayFinalAnswer.timestamp ?? 0);
