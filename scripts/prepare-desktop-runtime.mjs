@@ -37,7 +37,26 @@ if (!applicationRoot) {
 const stagingRoot = `${runtimeRoot}.staging-${process.pid}`;
 fs.rmSync(stagingRoot, { recursive: true, force: true });
 fs.mkdirSync(stagingRoot, { recursive: true });
-fs.cpSync(applicationRoot, stagingRoot, { recursive: true, force: true });
+const excludedStandaloneRoots = new Set([
+  '.git',
+  '.temp',
+  '.workspaces',
+  'coding-agent',
+  'desktop-runtime',
+  'dist',
+  'gaia',
+  'public',
+  'src',
+]);
+fs.cpSync(applicationRoot, stagingRoot, {
+  recursive: true,
+  force: true,
+  filter: (entry) => {
+    const relative = path.relative(applicationRoot, entry);
+    if (!relative) return true;
+    return !excludedStandaloneRoots.has(relative.split(path.sep)[0]);
+  },
+});
 
 const staticSource = path.join(repositoryRoot, '.next', 'static');
 const staticTarget = path.join(stagingRoot, '.next', 'static');
