@@ -1000,9 +1000,15 @@ const ChatFeedMessageGroup = React.memo(({
       later.type === 'work_note' ||
       (WORKFLOW_COUNT_TYPES.has(later.type) && !HIDDEN_HELPER_TYPES.has(later.type))
     );
+    const shouldStayInWorkSequence =
+      isProvisionalAnswer ||
+      (
+        (log.isStreaming === true || log.isLiveTyping === true) &&
+        hasLaterWorkflowActivity
+      );
     if (
       log.type !== 'answer' ||
-      (!isProvisionalAnswer && !hasLaterWorkflowActivity)
+      !shouldStayInWorkSequence
     ) {
       return log;
     }
