@@ -3987,6 +3987,15 @@ function DeepWorkUI() {
                     }
                   }
                   if (mergeIdx >= 0) {
+                    const existingTraceIdx = Number(logs[mergeIdx]._traceIdx);
+                    const incomingTraceIdx = Number(trace._traceIdx);
+                    if (
+                      Number.isFinite(existingTraceIdx) &&
+                      Number.isFinite(incomingTraceIdx) &&
+                      incomingTraceIdx < existingTraceIdx
+                    ) {
+                      continue;
+                    }
                     // Preserve the original startTime from when the thought began
                     logs[mergeIdx] = { ...logs[mergeIdx], text: trace.text, thoughtId, _traceIdx: trace._traceIdx, timestamp: traceAt, startTime: logs[mergeIdx].startTime, endTime: trace.endTime ?? traceAt };
                   } else {
