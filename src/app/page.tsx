@@ -6273,6 +6273,40 @@ function DeepWorkUI() {
   const effectiveIsThinking = activeSubAgentTab && !autonomousSelected
     ? currentSubAgents.some(a => a.name === activeSubAgentTab && a.status === 'working')
     : isThinking && (!currentSubAgents.some(a => a.name === 'Main' && a.status === 'paused'));
+  const handleStopSelectedFeed = (): Promise<boolean> => {
+    const agentName = activeSubAgentTab && !autonomousSelected ? activeSubAgentTab : null;
+    if (!agentName) return handleStop();
+
+    const chatId = activeChatIdRef.current;
+    if (!chatId) return Promise.resolve(false);
+
+    const requestKey = `${ chatId }:sub-agent:${ agentName }`;
+    const existingRequest = stopRequestsRef.current.get(requestKey);
+    if (existingRequest) return existingRequest;
+
+    const stopRequest = (async () => {
+      try {
+        const response = await fetch('/api/agent/control', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'close', projectId: chatId, agentName }),
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || payload?.success !== true || payload?.closed !== true) {
+          throw new Error(payload?.error || `Stop failed (${ response.status })`);
+        }
+        return true;
+      } catch (error) {
+        console.error(`[AgentControl] Failed to stop selected feed "${ agentName }":`, error);
+        return false;
+      } finally {
+        stopRequestsRef.current.delete(requestKey);
+      }
+    })();
+
+    stopRequestsRef.current.set(requestKey, stopRequest);
+    return stopRequest;
+  };
   const currentTaskTracker = useMemo<TaskTrackerState | null>(() => {
     for (let i = traceLogs.length - 1; i >= 0; i--) {
       const log = traceLogs[i];
@@ -8550,10 +8584,10 @@ function DeepWorkUI() {
                     <ChatInput
                       inputValue={inputValue}
                       setInputValue={updateInputValue}
-                      isThinking={activeSubAgentTab ? false : isThinking}
+                      isThinking={effectiveIsThinking}
                       isRecording={isRecording}
                       handleSend={activeSubAgentTab ? handleSendSubAgentMessage : handleSend}
-                      handleStop={handleStop}
+                      handleStop={handleStopSelectedFeed}
                       handleSteer={activeSubAgentTab ? handleSendSubAgentMessage : handleSteer}
                       toggleSpeech={toggleSpeech}
                       attachments={attachments}
