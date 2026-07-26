@@ -1386,6 +1386,12 @@ function DeepWorkUI() {
     liveState !== 'idle' &&
     liveState !== 'error';
   const isThinking = (activeChatId ? runningChats.has(activeChatId) : false);
+  const sidebarRunningChats = useMemo(() => {
+    if (!liveChatId || liveState === 'idle' || liveState === 'error') return runningChats;
+    const visibleRuns = new Set(runningChats);
+    visibleRuns.add(liveChatId);
+    return visibleRuns;
+  }, [runningChats, liveChatId, liveState]);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortControllersRef = useRef<Map<string, AbortController>>(new Map());
@@ -6965,7 +6971,7 @@ function DeepWorkUI() {
             onSearchClick={() => setCmdPaletteOpen(true)}
             activeView={activeView}
             setActiveView={setActiveView}
-            runningChats={runningChats}
+            runningChats={sidebarRunningChats}
             unreadChats={unreadChatIds}
             onSettingsClick={openSettingsWindow}
             isThinking={isThinking}
