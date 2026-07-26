@@ -2215,7 +2215,7 @@ export class GeminiAgentClient {
         }, {
           previousNotes: visibleWorkNoteTexts,
           recentEvidence: recentActionEvidence,
-        });
+        }, onTrace);
       }
 
       if (visibleNoteText) {
