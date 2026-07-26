@@ -3033,10 +3033,12 @@ function DeepWorkUI() {
     options: { touchUpdatedAt?: boolean } = {}
   ) => {
     if (activeChatIdRef.current === chatId) {
-      setTraceLogs(prevLogs => typeof nextLogsOrUpdater === 'function'
-        ? nextLogsOrUpdater(prevLogs)
-        : nextLogsOrUpdater
-      );
+      setTraceLogs(prevLogs => {
+        if (activeChatIdRef.current !== chatId) return prevLogs;
+        return typeof nextLogsOrUpdater === 'function'
+          ? nextLogsOrUpdater(prevLogs)
+          : nextLogsOrUpdater;
+      });
     }
 
     setChats(currentChats => {
@@ -4410,27 +4412,20 @@ function DeepWorkUI() {
             };
 
             if (isActiveChat) {
-              // Synchronous update — compute newLogs from prevLogs and update BOTH
-              // setTraceLogs and setChats in the same render pass.
-              // IMPORTANT: Never use Promise.resolve().then() inside a React state
-              // updater — updaters can be called multiple times (StrictMode/concurrent
-              // mode), each scheduling a microtask with a stale newLogs snapshot that
-              // could write older logs back into `chats` → causes the flash bug.
-              let computedNewLogs: any[] | null = null;
+              // Keep the visible feed and stored chat independently current.
+              // Each updater owns only this chat, so a concurrent navigation
+              // cannot apply this response to the newly opened conversation.
               setTraceLogs(prevLogs => {
-                computedNewLogs = processTraces(prevLogs);
-                return computedNewLogs;
+                if (activeChatIdRef.current !== chatId) return prevLogs;
+                return processTraces(prevLogs);
               });
-              // setChats AFTER setTraceLogs so React can batch them together.
-              // Use a functional update to get fresh chats (avoids stale closure).
-              if (computedNewLogs !== null) {
-                const logsSnapshot = computedNewLogs;
-                setChats(currentChats =>
-                  currentChats.map(c =>
-                    c.id === chatId ? { ...c, traceLogs: logsSnapshot } : c
-                  )
-                );
-              }
+              setChats(currentChats =>
+                currentChats.map(chat =>
+                  chat.id === chatId
+                    ? { ...chat, traceLogs: processTraces(chat.traceLogs || []) }
+                    : chat
+                )
+              );
             } else {
               // BACKGROUND chat — only update chats state, DON'T touch traceLogs
               queueBackgroundChatUpdate(chatId, processTraces);
