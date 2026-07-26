@@ -1387,6 +1387,11 @@ function DeepWorkUI() {
     activeChatId === liveChatId &&
     liveState !== 'idle' &&
     liveState !== 'error';
+  const hasBackgroundLiveSession =
+    liveChatId !== null &&
+    activeChatId !== liveChatId &&
+    liveState !== 'idle' &&
+    liveState !== 'error';
   const isThinking = (activeChatId ? runningChats.has(activeChatId) : false);
   const sidebarRunningChats = useMemo(() => {
     if (!liveChatId || liveState === 'idle' || liveState === 'error') return runningChats;
@@ -8608,8 +8613,15 @@ function DeepWorkUI() {
                       pinnedItems={pinnedItems}
                       setPinnedItems={updatePinnedItems}
                       liveState={activeChatId === liveChatId ? liveState : 'idle'}
+                      hasBackgroundLiveSession={hasBackgroundLiveSession}
                       liveError={liveError}
-                      onLiveStart={startLiveSession}
+                      onLiveStart={() => {
+                        if (hasBackgroundLiveSession && liveChatId) {
+                          loadChat(liveChatId);
+                          return;
+                        }
+                        startLiveSession();
+                      }}
                       onLiveStop={stopLiveSession}
                       onLiveSendText={(text) => liveSessionRef.current?.sendText(text)}
                       liveOutputText={activeChatId === liveChatId ? liveOutputText : ''}

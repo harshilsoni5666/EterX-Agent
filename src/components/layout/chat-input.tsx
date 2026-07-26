@@ -311,6 +311,7 @@ interface ChatInputProps {
   setPinnedItems?: (items: any[]) => void;
   // ═══ Gemini Live Session ═══
   liveState?: 'idle' | 'connecting' | 'connected' | 'listening' | 'speaking' | 'error';
+  hasBackgroundLiveSession?: boolean;
   onLiveStart?: () => void;
   onLiveSendText?: (text: string) => void;
   onLiveStop?: () => void;
@@ -1029,7 +1030,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   agentMode = 'think', onModeChange = () => { },
   thinkingLevel = 'low', onThinkingLevelChange = () => { },
   pinnedItems = [], setPinnedItems = () => { },
-  liveState = 'idle', onLiveStart = () => { }, onLiveStop = () => { },
+  liveState = 'idle', hasBackgroundLiveSession = false, onLiveStart = () => { }, onLiveStop = () => { },
   liveOutputText = '', liveInputText = '',
   liveMicVolume = 0, liveModelVolume = 0, liveActiveTool = null,
   isMicMuted = false, onToggleMicMute = () => { },
@@ -1058,6 +1059,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
 }) => {
   const isAgentBuilder = Boolean(buildingAgentId || activeChatId?.startsWith('agent_builder_') || activeChatId?.includes('agent_builder'));
   const isLiveActive = liveState !== 'idle' && liveState !== 'error';
+  const hasAnyLiveSession = isLiveActive || hasBackgroundLiveSession;
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const goalTextareaRef = useRef<HTMLTextAreaElement>(null);
@@ -3460,14 +3462,14 @@ const handleSelectFolderDialog = useCallback(async () => {
                 </button>
               </Tooltip>
 
-              <Tooltip text={liveState !== 'idle' ? "End Live Conversation" : isThinking ? "Wait for this run to finish" : "Start Live Conversation"} side="top">
+              <Tooltip text={isLiveActive ? "End Live Conversation" : hasBackgroundLiveSession ? "Open Live Conversation" : isThinking ? "Wait for this run to finish" : "Start Live Conversation"} side="top">
                 <button
-                  onClick={liveState !== 'idle' ? onLiveStop : onLiveStart}
-                  disabled={isNetworkPaused || (liveState === 'idle' && isThinking)}
-                  className={`eterx-control-button eterx-composer-live-button w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full border border-transparent bg-[#2D2D2D] text-white shadow-none transition-all duration-150 active:bg-[#333333] cursor-pointer group relative overflow-hidden hover:bg-[#333333] hover:border-transparent hover:text-white disabled:cursor-not-allowed disabled:opacity-45 ${ liveState !== 'idle' ? '!bg-[#252525] !text-[#10B981] !border-emerald-500/50 shadow-[0_0_16px_rgba(16,185,129,0.35)]' : '' }`}
+                  onClick={isLiveActive ? onLiveStop : onLiveStart}
+                  disabled={isNetworkPaused || (!hasBackgroundLiveSession && liveState === 'idle' && isThinking)}
+                  className={`eterx-control-button eterx-composer-live-button w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full border border-transparent bg-[#2D2D2D] text-white shadow-none transition-all duration-150 active:bg-[#333333] cursor-pointer group relative overflow-hidden hover:bg-[#333333] hover:border-transparent hover:text-white disabled:cursor-not-allowed disabled:opacity-45 ${ hasAnyLiveSession ? '!bg-[#252525] !text-[#10B981] !border-emerald-500/50 shadow-[0_0_16px_rgba(16,185,129,0.35)]' : '' }`}
                 >
                   <div className={inputControlSheen} />
-                  <PremiumAudioLines className={`eterx-composer-control-icon eterx-composer-live-icon w-[20px] h-[20px] transition-all duration-200 ease-out group-hover:scale-[1.04] ${ liveState !== 'idle' ? '!text-[#10B981] scale-[1.05]' : 'text-white' }`} strokeWidth={1.85} />
+                  <PremiumAudioLines className={`eterx-composer-control-icon eterx-composer-live-icon w-[20px] h-[20px] transition-all duration-200 ease-out group-hover:scale-[1.04] ${ hasAnyLiveSession ? '!text-[#10B981] scale-[1.05]' : 'text-white' }`} strokeWidth={1.85} />
                 </button>
               </Tooltip>
 
