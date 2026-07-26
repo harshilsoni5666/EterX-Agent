@@ -4126,8 +4126,8 @@ function DeepWorkUI() {
                     logs[askIdx] = {
                       ...logs[askIdx],
                       ...nextAskLog,
-                      answeredWith: logs[askIdx].answeredWith,
-                      answeredAt: logs[askIdx].answeredAt,
+                      answeredWith: nextAskLog.answeredWith ?? logs[askIdx].answeredWith,
+                      answeredAt: nextAskLog.answeredAt ?? logs[askIdx].answeredAt,
                     };
                   } else {
                     logs.push(nextAskLog);
