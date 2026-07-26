@@ -6092,6 +6092,7 @@ The first meaningful action group in a user turn needs an update. Later boundari
         }
       } catch (streamReadErr: any) {
         const errMsg = String(streamReadErr?.message || streamReadErr);
+        cancelProvisionalAnswer();
         activeStreamAbortController?.abort();
         activeStreamAbortController = null;
         if (errMsg === 'CANCELLED_BY_USER' || errMsg.toLowerCase().includes('cancelled_by_user')) {
