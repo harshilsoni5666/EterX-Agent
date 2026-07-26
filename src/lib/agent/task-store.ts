@@ -108,8 +108,8 @@ function compactTraceEvent(traceEvent: any): any {
   }
 
   if (traceEvent.type === 'console_output') {
-    const { output, ...rest } = traceEvent;
-    const outputText = String(output || '');
+    const { output, content, ...rest } = traceEvent;
+    const outputText = String(output ?? content ?? '');
     return {
       ...rest,
       output: outputText.length > 2500 ? `${outputText.substring(0, 2500)}\n...[output compacted]` : outputText,
