@@ -6160,7 +6160,7 @@ The first meaningful action group in a user turn needs an update. Later boundari
         }, {
           previousNotes: visibleWorkNoteTexts,
           recentEvidence: toolResultDigest.slice(-4).map(entry => `${ entry.tool }: ${ entry.result }`),
-        });
+        }, onTrace);
         if (generatedNote) {
           accumulatedWorkNote = generatedNote;
           emitVisibleWorkNote(generatedNote);
