@@ -845,7 +845,7 @@ const RENDER_RELEVANT_LOG_FIELDS = [
   'startLine', 'endLine', 'loadedLines', 'added', 'removed', 'additions',
   'deletions', 'insertions', 'linesAdded', 'linesRemoved', 'diffLines',
   'name', 'title', 'subject', 'body', 'from', 'to', 'priority', 'commType',
-  'messageType', 'deliveryMode', 'deliverAfter', 'scheduled', 'updatedAt',
+  'message', 'detail', 'messageType', 'deliveryMode', 'deliverAfter', 'scheduled', 'updatedAt',
   'icon', 'iconCategory', 'size', '_autonomyProxy', '_streamingCancelled',
   '_connection', 'model', 'modelName',
 ] as const;
