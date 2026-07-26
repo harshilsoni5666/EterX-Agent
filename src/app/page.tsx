@@ -5147,11 +5147,6 @@ function DeepWorkUI() {
       : [];
     lastLiveLogsSnapshotRef.current = [];
     clearDraftComposerState(targetChatIdAtSend);
-    setLiveInputText('');
-    setLiveOutputText('');
-    setLiveSpokenText('');
-    setLiveCommands([]);
-    liveCommandsRef.current = [];
 
     let chatIdToUse = targetChatIdAtSend;
 
