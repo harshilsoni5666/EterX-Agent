@@ -5346,9 +5346,19 @@ The first meaningful action group in a user turn needs an update. Later boundari
       return parts.length > 0 ? `\nMETA-COGNITIVE AWARENESS\n${ parts.join('\n') }\nEND META` : '';
     };
 
+    let provisionalAnswerId: string | null = null;
+    const cancelProvisionalAnswer = () => {
+      if (!provisionalAnswerId) return;
+      onTrace?.({ type: 'answer_cancel', answerId: provisionalAnswerId });
+      provisionalAnswerId = null;
+    };
+
     while (interactions < maxLoopIterations) {
       interactions++;
 
+      // A new iteration means the previous completion attempt was rejected by
+      // a quality, plan, steering, or reliability gate.
+      cancelProvisionalAnswer();
 
       // === AUTO CONTEXT MANAGEMENT: Compress if context growing too large ===
       // Runs every iteration; only actually compresses when health is critical/overflow.
@@ -6050,24 +6060,22 @@ The first meaningful action group in a user turn needs an update. Later boundari
             if (!part.thought && part.text) {
               accumulatedText += part.text;
               accumulatedWorkNote = accumulatedText;
-              // A text part can still be followed by a tool call in the same
-              // response. Keep it in the working surface until the response
-              // boundary proves that it is the final answer.
+              // Stream direct responses as they arrive. If this response later
+              // reveals a tool call, the provisional answer is cancelled and
+              // the same text is finalized as a work note below.
               if (onTrace && !functionCalls.length) {
-                const noteText = this.formatVisibleWorkNote(accumulatedText, 720, false);
-                if (noteText) {
-                  onTrace({
-                    type: 'work_note',
-                    text: noteText,
-                    isStreaming: true,
-                    isDelta: true,
-                    noteId: workNoteId,
-                    startTime: thoughtStartTime,
-                    timestamp: Date.now(),
-                  });
-                  workNoteEmitted = true;
-                  emittedWorkNoteText = noteText;
-                }
+                provisionalAnswerId = `answer_stream_${ interactions }`;
+                onTrace({
+                  type: 'answer',
+                  text: accumulatedText,
+                  isStreaming: true,
+                  isLiveTyping: true,
+                  isDelta: false,
+                  wasStreaming: true,
+                  answerId: provisionalAnswerId,
+                  startTime: thoughtStartTime,
+                  timestamp: Date.now(),
+                });
               }
               // The response boundary determines whether this text is progress
               // or the final answer; a tool call establishes an action turn.
@@ -6076,6 +6084,7 @@ The first meaningful action group in a user turn needs an update. Later boundari
 
             // 3. FUNCTION CALL parts
             if (part.functionCall) {
+              cancelProvisionalAnswer();
               functionCalls.push(part.functionCall);
               emitVisibleWorkNote();
             }
