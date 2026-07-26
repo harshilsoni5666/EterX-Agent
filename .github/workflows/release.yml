@@ -78,15 +78,32 @@ jobs:
       - name: Package Windows
         if: matrix.target == 'win'
         shell: pwsh
-        run: npx electron-builder --win --x64 --arm64 --publish never
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:CSC_LINK)) {
+            Remove-Item Env:CSC_LINK -ErrorAction SilentlyContinue
+            Remove-Item Env:CSC_KEY_PASSWORD -ErrorAction SilentlyContinue
+            $env:CSC_IDENTITY_AUTO_DISCOVERY = 'false'
+          }
+          npx electron-builder --win --x64 --arm64 --publish never
 
       - name: Package macOS
         if: matrix.target == 'mac'
-        run: npx electron-builder --mac --x64 --arm64 --publish never
+        run: |
+          if [ -z "${CSC_LINK:-}" ]; then
+            unset CSC_LINK CSC_KEY_PASSWORD
+            export CSC_IDENTITY_AUTO_DISCOVERY=false
+          fi
+          if [ -z "${APPLE_ID:-}" ]; then
+            unset APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID
+          fi
+          npx electron-builder --mac --x64 --arm64 --publish never
 
       - name: Package Linux
         if: matrix.target == 'linux'
-        run: npx electron-builder --linux --x64 --arm64 --publish never
+        run: |
+          unset CSC_LINK CSC_KEY_PASSWORD
+          export CSC_IDENTITY_AUTO_DISCOVERY=false
+          npx electron-builder --linux --x64 --arm64 --publish never
 
       - name: Include Linux launcher icon
         if: matrix.target == 'linux'

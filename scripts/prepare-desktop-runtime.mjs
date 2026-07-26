@@ -85,15 +85,18 @@ fs.writeFileSync(path.join(updaterRoot, 'package.json'), `${JSON.stringify({
   dependencies: { 'electron-updater': updaterVersion },
 }, null, 2)}\n`);
 
-const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-const updaterInstall = spawnSync(npmCommand, [
+const npmExecPath = String(process.env.npm_execpath || '').trim();
+const npmCommand = npmExecPath ? process.execPath : (process.platform === 'win32' ? 'npm.cmd' : 'npm');
+const npmArguments = [
   'install',
   '--omit=dev',
   '--ignore-scripts',
   '--no-audit',
   '--fund=false',
   '--package-lock=false',
-], {
+];
+if (npmExecPath) npmArguments.unshift(npmExecPath);
+const updaterInstall = spawnSync(npmCommand, npmArguments, {
   cwd: updaterRoot,
   stdio: 'inherit',
   shell: false,

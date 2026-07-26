@@ -11,7 +11,16 @@ const nextConfig = {
     // environments, and user projects. They are durable data, never build
     // inputs, so file tracing must not traverse them during install/update.
     outputFileTracingExcludes: {
-      '*': ['**/.workspaces/**', '**\\.workspaces\\**', '**/.temp/**', '**/dist/**', '**/desktop-runtime/**', '**/gaia/**'],
+      '*': [
+        '**/.workspaces/**',
+        '**\\.workspaces\\**',
+        '**/.temp/**',
+        '**/dist/**',
+        '**/desktop-runtime/**',
+        '**/gaia/**',
+        '**/Windows/Microsoft.NET/**',
+        '**\\Windows\\Microsoft.NET\\**',
+      ],
     },
   },
   webpack: (config, { isServer }) => {

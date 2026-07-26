@@ -1,8 +1,11 @@
 {
   "name": "eterx",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "EterX autonomous AI agent desktop application",
-  "author": "Harshil Soni",
+  "author": {
+    "name": "Harshil Soni",
+    "email": "harshilsoni5666@users.noreply.github.com"
+  },
   "license": "MIT",
   "homepage": "https://github.com/harshilsoni5666/EterX-Agent",
   "repository": {
