@@ -1073,6 +1073,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const [isAtTop, setIsAtTop] = useState(true);
   const [isAtBottom, setIsAtBottom] = useState(false);
   const [isLogoHovered, setIsLogoHovered] = useState(false);
+  const [isStopping, setIsStopping] = useState(false);
   const [hasDraftInputText, setHasDraftInputText] = useState(() => Boolean(inputValue.trim()));
   const [showModelMenu, setShowModelMenu] = useState(false);
   const [showAgentMenu, setShowAgentMenu] = useState(false);
@@ -1405,6 +1406,10 @@ const handleSelectFolderDialog = useCallback(async () => {
       document.removeEventListener('keydown', escHandler);
     };
   }, [showAgentMenu]);
+
+  useEffect(() => {
+    if (!isThinking) setIsStopping(false);
+  }, [isThinking]);
 
   useEffect(() => {
     setHasDraftInputText(Boolean(inputValue.trim()));
@@ -3492,7 +3497,7 @@ const handleSelectFolderDialog = useCallback(async () => {
                         </button>
                       </Tooltip>
                     </motion.div>
-                  ) : hasComposerPayload ? (
+                  ) : hasComposerPayload && !isStopping ? (
                     /* Running agent + typed text: normal send button sends live steering */
                     <motion.div key={isThinking ? "send-steering" : "send"}
                       initial={{ opacity: 0, scale: 0.8 }}
@@ -3518,13 +3523,24 @@ const handleSelectFolderDialog = useCallback(async () => {
                       exit={{ opacity: 0, scale: 0.7 }}
                       transition={{ duration: 0.18, ease: 'easeOut' }}
                     >
-                      <Tooltip text="Stop Agent" side="top">
+                      <Tooltip text={isStopping ? "Stopping agent" : "Stop agent"} side="top">
                         <button
-                          onClick={() => { void handleStop(); }}
-                          className="eterx-control-button eterx-composer-stop-button w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full bg-[#F2EFEA] text-black hover:bg-[#F2EFEA] transition-all duration-200 shadow-[0_8px_22px_rgba(242,239,234,0.15),inset_0_1px_0_rgba(255,255,255,0.82)] active:scale-[0.96] group cursor-pointer overflow-hidden relative"
+                          disabled={isStopping}
+                          onClick={() => {
+                            if (isStopping) return;
+                            setIsStopping(true);
+                            Promise.resolve(handleStop())
+                              .then(stopped => { if (stopped === false) setIsStopping(false); })
+                              .catch(() => setIsStopping(false));
+                          }}
+                          className={`eterx-control-button eterx-composer-stop-button w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full bg-[#F2EFEA] text-black transition-all duration-200 shadow-[0_8px_22px_rgba(242,239,234,0.15),inset_0_1px_0_rgba(255,255,255,0.82)] group overflow-hidden relative ${ isStopping ? 'cursor-wait' : 'cursor-pointer hover:bg-[#F2EFEA] active:scale-[0.96]' }`}
                         >
                           <div className="absolute inset-0 bg-gradient-to-t from-black/0 to-black/5" />
-                          <span className="eterx-composer-stop-icon block h-[12px] w-[12px] rounded-[2.5px] bg-current transition-all duration-200" aria-hidden="true" />
+                          {isStopping ? (
+                            <span className="eterx-composer-stop-pending h-[12px] w-[12px] animate-spin rounded-full border-[1.75px] border-black/25 border-t-black" aria-hidden="true" />
+                          ) : (
+                            <span className="eterx-composer-stop-icon block h-[12px] w-[12px] rounded-[2.5px] bg-current transition-all duration-200" aria-hidden="true" />
+                          )}
                         </button>
                       </Tooltip>
                     </motion.div>
