@@ -552,37 +552,15 @@ export const ProfessionalThought = React.memo(({ text, isLatest, isThinking, var
   const thoughtScrollRef = useRef<HTMLDivElement>(null);
   const thoughtAutoScrollRef = useRef(true);
   const requestedLive = isLatest && isThinking;
-  const lastUpdateMs = asTimestamp(updatedAt);
-  const [isFresh, setIsFresh] = useState(false);
-
-  useEffect(() => {
-    if (!requestedLive) {
-      setIsFresh(false);
-      return;
-    }
-
-    if (lastUpdateMs === null) {
-      setIsFresh(true);
-      return;
-    }
-
-    const age = Date.now() - lastUpdateMs;
-    if (age >= LIVE_THOUGHT_FRESH_MS) {
-      setIsFresh(false);
-      return;
-    }
-
-    setIsFresh(true);
-    const timeout = window.setTimeout(() => setIsFresh(false), LIVE_THOUGHT_FRESH_MS - age);
-    return () => window.clearTimeout(timeout);
-  }, [requestedLive, lastUpdateMs, text]);
-
-  const isLive = requestedLive && isFresh;
+  const isLive = requestedLive;
   const secs = useThinkTimer(isLive, startedAt, updatedAt);
 
   useEffect(() => {
     if (variant !== 'thought') return;
-    if (isLatest && isThinking) return;
+    if (isLatest && isThinking) {
+      setOpen(true);
+      return;
+    }
     setOpen(false);
   }, [variant, isLatest, isThinking]);
 
