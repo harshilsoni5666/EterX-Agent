@@ -6172,7 +6172,9 @@ The first meaningful action group in a user turn needs an update. Later boundari
         if (shouldEmitFinalWorkNote) {
           const noteEvt = { type: 'work_note', text: noteText, isDelta: false, isStreaming: false, noteId: workNoteId };
           trace.push(noteEvt);
-          if (onTrace && (!workNoteEmitted || emittedWorkNoteText !== noteText)) onTrace(noteEvt);
+          // Always publish the settled state. The text may match the final
+          // streaming chunk while its lifecycle flags still need to change.
+          if (onTrace) onTrace(noteEvt);
           workNoteEmitted = true;
           emittedWorkNoteText = noteText;
           if (visibleWorkNoteTexts[visibleWorkNoteTexts.length - 1] !== noteText) {
