@@ -3584,6 +3584,15 @@ function DeepWorkUI() {
           if (logs[i].type === 'answer') { answerIdx = i; break; }
         }
         if (answerIdx >= 0) {
+          const existingTraceIdx = Number(logs[answerIdx]._traceIdx);
+          const incomingTraceIdx = Number(trace._traceIdx);
+          if (
+            Number.isFinite(existingTraceIdx) &&
+            Number.isFinite(incomingTraceIdx) &&
+            incomingTraceIdx < existingTraceIdx
+          ) {
+            continue;
+          }
           logs[answerIdx] = { ...logs[answerIdx], ...processedLog, text: trace.text, _traceIdx: trace._traceIdx, isLive: processedLog.isLive };
         } else {
           logs.push(processedLog);
