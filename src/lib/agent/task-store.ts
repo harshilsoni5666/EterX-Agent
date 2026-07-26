@@ -294,9 +294,10 @@ export const taskStore = {
       for (let i = task.traceLogs.length - 1; i >= 0; i--) {
         const log = task.traceLogs[i];
         if (log?.type !== 'answer') continue;
+        const sameText = String(log.text || '').trim() === String(timedEvent.text || '').trim();
         if (
           (answerId && String(log.answerId || '') === answerId) ||
-          (!incomingIsStreaming && (log.isStreaming || log.isLiveTyping))
+          (!incomingIsStreaming && (log.isStreaming || log.isLiveTyping || sameText))
         ) {
           mergeIdx = i;
           break;
