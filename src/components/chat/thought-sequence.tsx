@@ -555,15 +555,6 @@ export const ProfessionalThought = React.memo(({ text, isLatest, isThinking, var
   const isLive = requestedLive;
   const secs = useThinkTimer(isLive, startedAt, updatedAt);
 
-  useEffect(() => {
-    if (variant !== 'thought') return;
-    if (isLatest && isThinking) {
-      setOpen(true);
-      return;
-    }
-    setOpen(false);
-  }, [variant, isLatest, isThinking]);
-
   const renderText = useMemo(() => {
     if (!text) return '';
     let f = text.replace(/!\[.*?\]\(\/absolute.*?\.png\)/gi, '');
@@ -1004,7 +995,7 @@ const PatchSummaryPanel = ({
   rolledBack?: boolean;
   flush?: boolean;
 }) => {
-  const [expanded, setExpanded] = useState(true);
+  const [expanded, setExpanded] = useState(false);
   const [selectedPath, setSelectedPath] = useState(changes[0]?.path || '');
   useEffect(() => {
     if (!selectedPath && changes[0]?.path) setSelectedPath(changes[0].path);
@@ -2830,7 +2821,7 @@ const TerminalTraceCard = ({
     );
   }
 
-  const [isExpanded, setIsExpanded] = useState(() => isStreaming);
+  const [isExpanded, setIsExpanded] = useState(false);
   const commandIdentity = [
     log?._traceIdx ?? '',
     log?.traceId ?? '',
@@ -2843,11 +2834,9 @@ const TerminalTraceCard = ({
   useEffect(() => {
     if (commandIdentity !== lastCommandIdentityRef.current) {
       lastCommandIdentityRef.current = commandIdentity;
-      setIsExpanded(isStreaming);
-    } else if (isStreaming) {
-      setIsExpanded(true);
+      setIsExpanded(false);
     }
-  }, [commandIdentity, isStreaming]);
+  }, [commandIdentity]);
 
   const title = inCard
     ? (isStreaming ? 'Running' : isFailed ? 'Failed' : 'Ran')
@@ -3773,7 +3762,7 @@ const CollapsibleActionGroup = ({
   const progressLogs = visibleLogs.filter(l => l?.type === 'progress');
   const cardLogs = visibleLogs.filter(l => l?.type !== 'progress');
 
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(false);
   const terminalOnly = cardLogs.length === 1 && isTerminalActionLike(cardLogs[0]);
   const fileChangeOnly = cardLogs.length === 1 && cardLogs[0]?.type === 'file_edit';
   const useStandaloneRows = terminalOnly || fileChangeOnly;
