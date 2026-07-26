@@ -3494,6 +3494,15 @@ function DeepWorkUI() {
         }
         if (duplicateIdx >= 0) continue;
         if (mergeIdx >= 0) {
+          const existingTraceIdx = Number(logs[mergeIdx]._traceIdx);
+          const incomingTraceIdx = Number(trace._traceIdx);
+          if (
+            Number.isFinite(existingTraceIdx) &&
+            Number.isFinite(incomingTraceIdx) &&
+            incomingTraceIdx < existingTraceIdx
+          ) {
+            continue;
+          }
           logs[mergeIdx] = {
             ...logs[mergeIdx],
             ...trace,
