@@ -70,6 +70,18 @@ if (fs.existsSync(publicSource)) {
   fs.cpSync(publicSource, path.join(stagingRoot, 'public'), { recursive: true, force: true });
 }
 
+// Next's standalone trace does not always retain the Next package itself,
+// although server.js loads it at runtime. Copy the framework package into the
+// packaged runtime so a clean native installation never depends on the source
+// checkout's node_modules directory.
+const nextSource = path.join(repositoryRoot, 'node_modules', 'next');
+const nextTarget = path.join(stagingRoot, 'node_modules', 'next');
+if (!fs.existsSync(nextSource)) {
+  throw new Error('The Next.js package is missing from node_modules. Run npm ci before preparing the desktop runtime.');
+}
+fs.mkdirSync(path.dirname(nextTarget), { recursive: true });
+fs.cpSync(nextSource, nextTarget, { recursive: true, force: true });
+
 // electron/main.js is intentionally tiny and excludes the repository's full
 // node_modules tree. Bundle only electron-updater and its production closure so
 // clean installations can update without Node.js or npm on the user's device.
@@ -108,6 +120,7 @@ if (updaterInstall.status !== 0) {
 
 const required = [
   'server.js',
+  path.join('node_modules', 'next', 'package.json'),
   path.join('.next', 'BUILD_ID'),
   path.join('.next', 'server', 'app-paths-manifest.json'),
   path.join('updater', 'node_modules', 'electron-updater', 'package.json'),
