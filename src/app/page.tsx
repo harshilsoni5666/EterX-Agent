@@ -2295,8 +2295,9 @@ function DeepWorkUI() {
               title: newTitle,
             };
           });
-          persistChats(updated);
-          return updated;
+          const sorted = sortChats(updated);
+          persistChats(sorted);
+          return sorted;
         });
 
         if (activeChatIdRef.current === currentChatId) {
