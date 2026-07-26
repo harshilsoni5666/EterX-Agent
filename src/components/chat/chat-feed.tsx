@@ -988,10 +988,8 @@ const ChatFeedMessageGroup = React.memo(({
   if (group.length === 0 && !isThinkingTurn) return null;
 
   const liveCommandLogs = group.filter((l: any) => l.type === 'command' && l.isLive && !isHiddenStatusOnlyLog(l));
-  // thought_stream are internal streaming chunks; exclude them from the rendered log list
   const rawStandardLogs = group.filter((l: any) =>
     !(l.type === 'command' && l.isLive) &&
-    l.type !== 'thought_stream' &&
     !isHiddenStatusOnlyLog(l)
   );
   const standardLogs = rawStandardLogs.map((log: any, index: number) => {
