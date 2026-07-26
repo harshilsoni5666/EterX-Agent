@@ -976,11 +976,34 @@ const ChatFeedMessageGroup = React.memo(({
 
   const liveCommandLogs = group.filter((l: any) => l.type === 'command' && l.isLive && !isHiddenStatusOnlyLog(l));
   // thought_stream are internal streaming chunks; exclude them from the rendered log list
-  const standardLogs = group.filter((l: any) =>
+  const rawStandardLogs = group.filter((l: any) =>
     !(l.type === 'command' && l.isLive) &&
     l.type !== 'thought_stream' &&
     !isHiddenStatusOnlyLog(l)
   );
+  const standardLogs = rawStandardLogs.map((log: any, index: number) => {
+    if (
+      log.type !== 'answer' ||
+      !(log.isStreaming || log.isLiveTyping) ||
+      !rawStandardLogs.slice(index + 1).some((later: any) =>
+        later.type === 'work_note' ||
+        (WORKFLOW_COUNT_TYPES.has(later.type) && !HIDDEN_HELPER_TYPES.has(later.type))
+      )
+    ) {
+      return log;
+    }
+
+    // Older runtimes could publish text as a provisional answer before a
+    // later tool call proved it was narration. Repair those persisted traces
+    // at render time so they stay inside the working sequence.
+    return {
+      ...log,
+      type: 'work_note',
+      noteId: log.noteId || log.answerId || `recovered_work_note_${ index }`,
+      isStreaming: false,
+      isLiveTyping: false,
+    };
+  });
   const latestAgentStatusLog = [...standardLogs].reverse().find(isInternalStatusThought);
   const agentRunNotice = latestAgentStatusLog ? getAgentRunNotice(latestAgentStatusLog) : null;
 
