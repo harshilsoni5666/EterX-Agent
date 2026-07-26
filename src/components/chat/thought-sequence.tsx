@@ -3762,7 +3762,7 @@ const CollapsibleActionGroup = ({
   const progressLogs = visibleLogs.filter(l => l?.type === 'progress');
   const cardLogs = visibleLogs.filter(l => l?.type !== 'progress');
 
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(true);
   const terminalOnly = cardLogs.length === 1 && isTerminalActionLike(cardLogs[0]);
   const fileChangeOnly = cardLogs.length === 1 && cardLogs[0]?.type === 'file_edit';
   const useStandaloneRows = terminalOnly || fileChangeOnly;
