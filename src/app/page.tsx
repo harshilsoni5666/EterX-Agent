@@ -1379,7 +1379,11 @@ function DeepWorkUI() {
   }, [activeChatId]);
 
   // Derived: isThinking for CURRENT active chat only
-  const isLiveSessionActive = liveState !== 'idle' && liveState !== 'error';
+  const isLiveSessionActive =
+    activeChatId !== null &&
+    activeChatId === liveChatId &&
+    liveState !== 'idle' &&
+    liveState !== 'error';
   const isThinking = (activeChatId ? runningChats.has(activeChatId) : false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -5040,7 +5044,15 @@ function DeepWorkUI() {
     const requestedAttachments = overrideAttachments ?? attachments;
     if (!promptText && requestedAttachments.length === 0) return;
     const targetChatIdAtSend = activeChatIdRef.current;
-    if (targetChatIdAtSend ? runningChatsRef.current.has(targetChatIdAtSend) : liveState !== 'idle') return;
+    const targetHasLiveSession =
+      targetChatIdAtSend !== null &&
+      targetChatIdAtSend === liveChatIdRef.current &&
+      liveState !== 'idle' &&
+      liveState !== 'error';
+    if (
+      (targetChatIdAtSend && runningChatsRef.current.has(targetChatIdAtSend)) ||
+      targetHasLiveSession
+    ) return;
     // React state does not update synchronously. This latch closes the gap in
     // which a double click/Enter can launch two requests before isThinking flips.
     const admissionKey = targetChatIdAtSend || '__new_chat__';
@@ -5873,7 +5885,7 @@ function DeepWorkUI() {
   // into traceLogs. Without this, both the live answer AND all live action logs
   // disappear simultaneously for one render frame, causing the visible flash.
   const displayTraceLogs = useMemo(() => {
-    const baseLogs = liveState !== 'idle'
+    const baseLogs = isLiveSessionActive
       ? traceLogs.filter(l => l.type !== 'thought_stream')
       : traceLogs;
 
@@ -5891,7 +5903,7 @@ function DeepWorkUI() {
       return true;
     });
 
-    const freshLiveLogs = getLiveTraceLogs();
+    const freshLiveLogs = isLiveSessionActive ? getLiveTraceLogs() : [];
 
     // Update snapshot whenever we get non-empty live logs
     if (freshLiveLogs.length > 0) {
@@ -5922,7 +5934,7 @@ function DeepWorkUI() {
     }
 
     return [...filteredLogs, ...liveLogs];
-  }, [liveState, traceLogs, getLiveTraceLogs]);
+  }, [isLiveSessionActive, traceLogs, getLiveTraceLogs]);
 
   const activeTurnTraceLogs = useMemo(() => {
     for (let i = traceLogs.length - 1; i >= 0; i--) {
@@ -8421,7 +8433,7 @@ function DeepWorkUI() {
                       onEditUserMessage={updateInputValue}
                       onOpenAgentTeam={handleOpenAgentTeam}
                       isSubAgentTab={!!activeSubAgentTab}
-                      liveState={liveState}
+                      liveState={isLiveSessionActive ? liveState : 'idle'}
                     />
 
                     {/* Pending Steering Queue */}
@@ -8540,7 +8552,7 @@ function DeepWorkUI() {
                     />
 
                     {/* Disclaimer Text */}
-                    {traceLogs.length === 0 && !isThinking && liveState === 'idle' && (
+                    {traceLogs.length === 0 && !isThinking && !isLiveSessionActive && (
                       <div className="absolute bottom-6 left-0 right-0 flex flex-col items-center pointer-events-none z-40">
                         <div className="text-center text-[12px] text-black/60 font-medium tracking-wide mix-blend-overlay">
                           EterX is an AI Agent and can make Mistakes ; Please Double-Check Its Work.
