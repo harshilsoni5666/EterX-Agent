@@ -10,6 +10,10 @@
     "url": "https://github.com/harshilsoni5666/EterX-Agent.git"
   },
   "private": true,
+  "engines": {
+    "node": ">=20.0.0",
+    "npm": ">=10.0.0"
+  },
   "main": "electron/main.js",
   "bin": {
     "eterx": "./eterx.js"
@@ -20,9 +24,9 @@
     "desktop:prod": "npm run build && concurrently -k \"npm run start\" \"electron .\"",
     "desktop:prepare-runtime": "node scripts/prepare-desktop-runtime.mjs",
     "desktop:build": "npm run build && npm run desktop:prepare-runtime && electron-builder",
-    "desktop:build:win": "npm run build && npm run desktop:prepare-runtime && electron-builder --win",
-    "desktop:build:linux": "npm run build && npm run desktop:prepare-runtime && electron-builder --linux",
-    "desktop:build:mac": "npm run build && npm run desktop:prepare-runtime && electron-builder --mac",
+    "desktop:build:win": "npm run build && npm run desktop:prepare-runtime && electron-builder --win --x64 --arm64",
+    "desktop:build:linux": "npm run build && npm run desktop:prepare-runtime && electron-builder --linux --x64 --arm64",
+    "desktop:build:mac": "npm run build && npm run desktop:prepare-runtime && electron-builder --mac --x64 --arm64",
     "build": "node scripts/build-production.mjs",
     "start": "next start",
     "test": "npm run test:ci",
@@ -151,14 +155,6 @@
         "to": "runtime"
       },
       {
-        "from": ".next/static",
-        "to": "runtime/.next/static"
-      },
-      {
-        "from": "public",
-        "to": "runtime/public"
-      },
-      {
         "from": "src",
         "to": "runtime/src"
       },
@@ -169,6 +165,10 @@
       {
         "from": "public/icon.ico",
         "to": "icon.ico"
+      },
+      {
+        "from": "public/logo.png",
+        "to": "logo.png"
       }
     ],
     "win": {
@@ -177,7 +177,8 @@
         {
           "target": "nsis",
           "arch": [
-            "x64"
+            "x64",
+            "arm64"
           ]
         }
       ]
@@ -200,8 +201,20 @@
     },
     "linux": {
       "target": [
-        "AppImage",
-        "deb"
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "deb",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
       ],
       "category": "Development",
       "icon": "public/logo.png",
@@ -214,13 +227,26 @@
     },
     "mac": {
       "target": [
-        "dmg",
-        "zip"
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
       ],
       "category": "public.app-category.developer-tools",
       "icon": "public/icon.icns",
       "hardenedRuntime": true,
-      "gatekeeperAssess": false
+      "gatekeeperAssess": false,
+      "entitlementsInherit": "setup/entitlements.mac.plist"
     }
   },
   "devDependencies": {

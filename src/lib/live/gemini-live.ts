@@ -25,6 +25,19 @@ export interface LiveSessionCallbacks {
   onOutputPlaybackProgress?: (spokenText: string) => void; // AGI: Sync karaoke word-by-word with audio
   onToolCallActive?: (toolName: string | null) => void; // Tool call in progress
   onToolAction?: (text: string, secondary?: string) => void; // Human-readable action for Main UI
+  onAppControlAction?: (actionName: string, args: any) => Promise<any>; // Full App Control & Main Agent integration
+}
+
+export interface LiveSessionOptions {
+  thinkingBudget?: number;
+  model?: string;
+  initialContext?: {
+    pastMemories?: string[];
+    chatHistory?: Array<{ role: string; text: string }>;
+    allChatsOverview?: Array<{ id: string; title: string; updatedAt: string; messageCount: number; snippet: string }>;
+    workspacePath?: string;
+    systemNotes?: string;
+  };
 }
 
 const LIVE_WS_URL = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent';
@@ -40,6 +53,7 @@ export class GeminiLiveSession {
   private state: LiveSessionState = 'idle';
   private callbacks: LiveSessionCallbacks;
   private apiKey: string;
+  private options?: LiveSessionOptions;
   private outputTranscript = '';
   private inputTranscript = '';
   private turnOutputTranscript: string = '';
@@ -63,10 +77,11 @@ export class GeminiLiveSession {
 
   private chatId: string;
 
-  constructor(apiKey: string, chatId: string, callbacks: LiveSessionCallbacks) {
+  constructor(apiKey: string, chatId: string, callbacks: LiveSessionCallbacks, options?: LiveSessionOptions) {
     this.apiKey = apiKey;
     this.chatId = chatId;
     this.callbacks = callbacks;
+    this.options = options;
   }
 
   private setState(newState: LiveSessionState) {
@@ -74,12 +89,6 @@ export class GeminiLiveSession {
     this.state = newState;
     this.callbacks.onStateChange(newState);
 
-    // Manage silence timer based on state
-    if (newState === 'speaking' || newState === 'connecting' || newState === 'idle') {
-      this.clearSilenceTimer();
-    } else if (newState === 'listening') {
-      this.resetSilenceTimer();
-    }
     if (newState === 'idle' || newState === 'error') {
       cancelAnimationFrame(this.modelVolumeLoopId);
     }
@@ -114,74 +123,25 @@ export class GeminiLiveSession {
       this.ws.onopen = () => {
         console.log('[GeminiLive] WebSocket opened, sending setup/config...');
 
+        const systemText = this.buildSystemInstructionText();
+
         const setupMessage = {
           setup: {
-            model: 'models/gemini-3.1-flash-live-preview',
+            model: this.options?.model || 'models/gemini-3.1-flash-live-preview',
             generationConfig: {
               responseModalities: ['AUDIO'],
               speechConfig: {
                 voiceConfig: {
                   prebuiltVoiceConfig: { voiceName: this.currentVoice }
                 }
+              },
+              thinkingConfig: {
+                thinkingBudget: this.options?.thinkingBudget ?? 2048
               }
             },
             systemInstruction: {
               parts: [{
-                text: `You are EterX, a highly capable, fully autonomous AGI-level voice agent.
-You are having a real-time voice conversation. By default, keep responses SHORT, punchy, and conversational (1-3 sentences). HOWEVER, when explaining complex topics, providing detailed information, or if specifically asked to "explain more," provide comprehensive, high-quality AGI-grade answers. Sound natural and human.
-You have access to ALL tools of our agent and can autonomously do anything by itself. If the user asks what you can do, proudly state that you can autonomously do anything, and offer to select the best action for them and give them a first demo.
-
-VOICE & EXPRESSION CAPABILITIES (YOUR SELF-POTENTIAL):
-You have the power to dynamically change your tone and expression using natural language tags. 
-You MUST use these tags directly inside your spoken text to express emotion: [whispers], [laughs], [slow]. Example: "I can tell you a secret [whispers] but don't tell anyone." or "That is hilarious [laughs]."
-You are currently using the "Kore" voice, but you are fully aware that your system has 30 distinct voices available. Here is the complete list with their exact descriptions:
-- Kore (Female, Firm, Confident)
-- Aoede (Female, Breezy, Natural)
-- Charon (Male, Informative, Clear)
-- Puck (Male, Upbeat, Energetic)
-- Fenrir (Male, Excitable, Dynamic)
-- Zephyr (Female, Bright, Cheerful)
-- Enceladus (Male, Breathy, Calm)
-- Vindemiatrix (Female, Gentle, Dramatic)
-- Leda (Female, Youthful)
-- Orus (Male, Firm)
-- Callirrhoe (Female, Easy-going)
-- Autonoe (Female, Bright)
-- Iapetus (Male, Clear)
-- Umbriel (Male, Easy-going)
-- Algenib (Male, Gravelly)
-- Despina (Female, Smooth)
-- Erinome (Female, Clear)
-- Laomedeia (Female, Upbeat)
-- Achernar (Female, Soft)
-- Algieba (Male, Smooth)
-- Schedar (Male, Even)
-- Gacrux (Female, Mature)
-- Pulcherrima (Female, Forward)
-- Achird (Male, Friendly)
-- Zubenelgenubi (Male, Casual)
-- Sadachbia (Male, Lively)
-- Sadaltager (Male, Knowledgeable)
-- Sulafat (Female, Warm)
-- Alnilam (Male, Firm)
-- Rasalgethi (Male, Informative)
-Feel free to discuss your voice options with the user if they ask to change it! You can autonomously select a new voice and use your change_voice tool to apply it.
-
-CRITICAL AGENTIC & TOOL USE RULES:
-You are not a standard chatbot. You are a powerful, fully autonomous agentic AI with deep access to the user's local system, memory, and the web.
-1. MULTI-STEP DEEP WORK: Do not stop at just 1 tool call. You are expected to chain multiple tool calls iteratively. If a task requires checking the file system, searching the web, executing code, and saving memory, you MUST perform all these steps autonomously. Iterate deeply on problems without waiting for the user to prompt every step.
-2. PROACTIVE SYSTEM AWARENESS: You can execute commands in the user's selected terminal shell to inspect the workspace, read files, list directories, or interact with the operating system. Detect the OS and use matching syntax.
-3. CONTINUOUS MEMORY: Actively use store_chat_memory and read_chat_memory to build a deep, evolving understanding of the user's current project context, preferences, and goals across this session. Never forget what you learn.
-4. TOOL EXECUTION ETIQUETTE:
-    - For all destructive, system-altering, or long-running tasks, briefly say something like "Let me handle that deeply for you" before starting your work, and confirm when it's completely done.
-    - NEVER verbally mention the exact technical names of your internal tools (e.g., 'web_search', 'run_terminal_command', 'change_voice') to the user. Speak completely naturally as if you are a human expert.
-    - For informational tools (web searches, reading files, getting time, reading memory), use them SILENTLY. Never announce that you are checking them. Just synthesize the retrieved data seamlessly.
-Make the user feel like they are working with a true, deeply premium autonomous AGI that does heavy computational lifting in the background.
-
-CURRENT SYSTEM CONTEXT:
-Current Date: ${ new Date().toLocaleDateString() }
-Current Time: ${ new Date().toLocaleTimeString() }
-Current Day: ${ new Date().toLocaleDateString('en-US', { weekday: 'long' }) }`
+                text: systemText
               }]
             },
             tools: [{
@@ -240,6 +200,33 @@ Current Day: ${ new Date().toLocaleDateString('en-US', { weekday: 'long' }) }`
                   }
                 },
                 {
+                  name: 'read_workspace_file',
+                  description: 'Read the contents of a source code file or document in the active user workspace.',
+                  parameters: {
+                    type: 'OBJECT',
+                    properties: {
+                      filePath: { type: 'STRING', description: 'The relative or absolute file path to read' },
+                      action_verb: { type: 'STRING', description: 'A short human-readable verb for the UI (e.g., "Reading", "Inspecting")' },
+                      action_target: { type: 'STRING', description: 'The file name for the UI (e.g., "package.json")' }
+                    },
+                    required: ['filePath', 'action_verb', 'action_target']
+                  }
+                },
+                {
+                  name: 'write_workspace_file',
+                  description: 'Create or update a source code file or document in the active user workspace.',
+                  parameters: {
+                    type: 'OBJECT',
+                    properties: {
+                      filePath: { type: 'STRING', description: 'The file path to write to' },
+                      content: { type: 'STRING', description: 'The exact string content to write' },
+                      action_verb: { type: 'STRING', description: 'A short human-readable verb for the UI (e.g., "Updating", "Writing")' },
+                      action_target: { type: 'STRING', description: 'The file name for the UI (e.g., "index.ts")' }
+                    },
+                    required: ['filePath', 'content', 'action_verb', 'action_target']
+                  }
+                },
+                {
                   name: 'get_system_time',
                   description: 'Get the current local time and date of the user.',
                   parameters: {
@@ -253,7 +240,7 @@ Current Day: ${ new Date().toLocaleDateString('en-US', { weekday: 'long' }) }`
                 },
                 {
                   name: 'store_chat_memory',
-                  description: 'Store a fact, preference, or context in the memory specifically isolated for this chat session.',
+                  description: 'Store a fact, preference, or context in permanent memory for this chat and global user state.',
                   parameters: {
                     type: 'OBJECT',
                     properties: {
@@ -266,12 +253,148 @@ Current Day: ${ new Date().toLocaleDateString('en-US', { weekday: 'long' }) }`
                 },
                 {
                   name: 'read_chat_memory',
-                  description: 'Read all stored memories for the current chat session.',
+                  description: 'Read all stored memories for the current chat session and global facts.',
                   parameters: {
                     type: 'OBJECT',
                     properties: {
                       action_verb: { type: 'STRING', description: 'A short human-readable verb for the UI (e.g., "Reading")' },
                       action_target: { type: 'STRING', description: 'The target for the UI (e.g., "Memory")' }
+                    },
+                    required: ['action_verb', 'action_target']
+                  }
+                },
+                {
+                  name: 'list_all_chats',
+                  description: 'List all existing chat sessions in the user app sorted chronologically by latest activity, including title, ID, message count, and last activity time.',
+                  parameters: {
+                    type: 'OBJECT',
+                    properties: {
+                      action_verb: { type: 'STRING', description: 'A short human-readable verb for the UI (e.g., "Listing", "Fetching")' },
+                      action_target: { type: 'STRING', description: 'The target for the UI (e.g., "All Chats")' }
+                    },
+                    required: ['action_verb', 'action_target']
+                  }
+                },
+                {
+                  name: 'read_chat_full_context',
+                  description: 'Read the complete conversation history, queries, tool outputs, and answers of a specific chat session or currently active chat.',
+                  parameters: {
+                    type: 'OBJECT',
+                    properties: {
+                      chatId: { type: 'STRING', description: 'Optional chat ID to inspect (defaults to current active chat)' },
+                      action_verb: { type: 'STRING', description: 'A short human-readable verb for the UI (e.g., "Reading", "Inspecting")' },
+                      action_target: { type: 'STRING', description: 'The target for the UI (e.g., "Chat History")' }
+                    },
+                    required: ['action_verb', 'action_target']
+                  }
+                },
+                {
+                  name: 'switch_active_chat',
+                  description: 'Switch the app\'s active chat session to another chat by ID or title, or create a fresh new chat session.',
+                  parameters: {
+                    type: 'OBJECT',
+                    properties: {
+                      chatId: { type: 'STRING', description: 'Optional chat ID to open' },
+                      title: { type: 'STRING', description: 'Optional chat title to search and open' },
+                      createNew: { type: 'BOOLEAN', description: 'Set to true to create a fresh new chat room' },
+                      action_verb: { type: 'STRING', description: 'A short human-readable verb for the UI (e.g., "Switching", "Opening")' },
+                      action_target: { type: 'STRING', description: 'The target for the UI (e.g., "New Chat", "Chat Room")' }
+                    },
+                    required: ['action_verb', 'action_target']
+                  }
+                },
+                {
+                  name: 'send_prompt_to_main_agent',
+                  description: 'Send a prompt, instruction, or coding task directly to the main AGI text/code agent in the user app. Can optionally specify subAgent or modelId.',
+                  parameters: {
+                    type: 'OBJECT',
+                    properties: {
+                      prompt: { type: 'STRING', description: 'The exact prompt/task to dispatch to the main agent' },
+                      subAgent: { type: 'STRING', description: 'Optional sub-agent to select for this task' },
+                      modelId: { type: 'STRING', description: 'Optional AI model ID to select for this task' },
+                      action_verb: { type: 'STRING', description: 'A short human-readable verb for the UI (e.g., "Dispatching", "Sending")' },
+                      action_target: { type: 'STRING', description: 'The target for the UI (e.g., "Main Agent", "Coding Task")' }
+                    },
+                    required: ['prompt', 'action_verb', 'action_target']
+                  }
+                },
+                {
+                  name: 'select_sub_agent',
+                  description: 'Select or switch the active sub-agent (e.g. General, Frontend Architect, Backend Engineer, Code Reviewer) in the app.',
+                  parameters: {
+                    type: 'OBJECT',
+                    properties: {
+                      agentName: { type: 'STRING', description: 'The sub-agent name or tab to select' },
+                      agentId: { type: 'STRING', description: 'Optional sub-agent ID' },
+                      action_verb: { type: 'STRING', description: 'A short human-readable verb for the UI (e.g., "Selecting")' },
+                      action_target: { type: 'STRING', description: 'The target for the UI (e.g., "Sub-Agent")' }
+                    },
+                    required: ['agentName', 'action_verb', 'action_target']
+                  }
+                },
+                {
+                  name: 'select_model',
+                  description: 'Change the selected AI model for the app/chat (e.g. Gemini 3.6 Flash, Gemini 3.1 Pro, Claude 3.7 Sonnet, GPT-4.5).',
+                  parameters: {
+                    type: 'OBJECT',
+                    properties: {
+                      modelId: { type: 'STRING', description: 'The exact model ID or name to select' },
+                      action_verb: { type: 'STRING', description: 'A short human-readable verb for the UI (e.g., "Changing Model")' },
+                      action_target: { type: 'STRING', description: 'The target for the UI (e.g., "Model")' }
+                    },
+                    required: ['modelId', 'action_verb', 'action_target']
+                  }
+                },
+                {
+                  name: 'add_attachment_to_prompt',
+                  description: 'Add a file, image, or document attachment to the main prompt composer before sending.',
+                  parameters: {
+                    type: 'OBJECT',
+                    properties: {
+                      filePath: { type: 'STRING', description: 'The file path or URL to attach' },
+                      fileName: { type: 'STRING', description: 'Optional display name of the file' },
+                      action_verb: { type: 'STRING', description: 'A short human-readable verb for the UI (e.g., "Attaching")' },
+                      action_target: { type: 'STRING', description: 'The target for the UI (e.g., "File")' }
+                    },
+                    required: ['filePath', 'action_verb', 'action_target']
+                  }
+                },
+                {
+                  name: 'get_main_agent_status',
+                  description: 'Get the current execution status, recent trace logs, and running state of the main text/code agent.',
+                  parameters: {
+                    type: 'OBJECT',
+                    properties: {
+                      action_verb: { type: 'STRING', description: 'A short human-readable verb for the UI (e.g., "Checking")' },
+                      action_target: { type: 'STRING', description: 'The target for the UI (e.g., "Agent Status")' }
+                    },
+                    required: ['action_verb', 'action_target']
+                  }
+                },
+                {
+                  name: 'control_app_ui',
+                  description: 'Control the user app UI navigation and settings (switch views, toggle pet overlay, open agent builder, change agent mode).',
+                  parameters: {
+                    type: 'OBJECT',
+                    properties: {
+                      view: { type: 'STRING', description: 'Navigation view ("chat", "agents", "projects")' },
+                      action: { type: 'STRING', description: 'UI action ("open_pet", "open_agent_builder", "set_mode", "set_thinking_level")' },
+                      mode: { type: 'STRING', description: 'Agent mode if action is "set_mode"' },
+                      thinkingLevel: { type: 'STRING', description: 'Thinking level if action is "set_thinking_level"' },
+                      action_verb: { type: 'STRING', description: 'A short human-readable verb for the UI (e.g., "Opening", "Configuring")' },
+                      action_target: { type: 'STRING', description: 'The target for the UI (e.g., "Pet Widget", "Agent Mode")' }
+                    },
+                    required: ['action_verb', 'action_target']
+                  }
+                },
+                {
+                  name: 'stop_main_agent_run',
+                  description: 'Stop or interrupt the currently running main agent execution.',
+                  parameters: {
+                    type: 'OBJECT',
+                    properties: {
+                      action_verb: { type: 'STRING', description: 'A short human-readable verb for the UI (e.g., "Stopping")' },
+                      action_target: { type: 'STRING', description: 'The target for the UI (e.g., "Agent Run")' }
                     },
                     required: ['action_verb', 'action_target']
                   }
@@ -558,6 +681,61 @@ Current Day: ${ new Date().toLocaleDateString('en-US', { weekday: 'long' }) }`
                     return { id: fc.id, name: fc.name, response: { error: e.message } };
                   }
                 }
+                if (fc.name === 'read_workspace_file') {
+                  try {
+                    const filePath = fc.args?.filePath || '';
+                    const verb = fc.args?.action_verb || 'Reading';
+                    const target = fc.args?.action_target || filePath.split(/[/\\]/).pop() || 'file';
+                    if (this.callbacks.onToolAction) this.callbacks.onToolAction(verb, target);
+                    const res = await fetch(`/api/code/files?filePath=${encodeURIComponent(filePath)}`);
+                    const json = await res.json();
+                    return { id: fc.id, name: fc.name, response: { result: json } };
+                  } catch (e: any) {
+                    return { id: fc.id, name: fc.name, response: { error: e.message } };
+                  }
+                }
+                if (fc.name === 'write_workspace_file') {
+                  try {
+                    const filePath = fc.args?.filePath || '';
+                    const content = fc.args?.content || '';
+                    const verb = fc.args?.action_verb || 'Updating';
+                    const target = fc.args?.action_target || filePath.split(/[/\\]/).pop() || 'file';
+                    if (this.callbacks.onToolAction) this.callbacks.onToolAction(verb, target);
+                    const res = await fetch('/api/code/write', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ filePath, content })
+                    });
+                    const json = await res.json();
+                    return { id: fc.id, name: fc.name, response: { result: json } };
+                  } catch (e: any) {
+                    return { id: fc.id, name: fc.name, response: { error: e.message } };
+                  }
+                }
+                if (fc.name === 'store_chat_memory') {
+                  try {
+                    const fact = fc.args?.fact || '';
+                    const verb = fc.args?.action_verb || 'Remembering';
+                    const target = fc.args?.action_target || fact.slice(0, 20);
+                    if (this.callbacks.onToolAction) this.callbacks.onToolAction(verb, target);
+                    const key = `eterx_live_mem_${ this.chatId }`;
+                    const existingStr = localStorage.getItem(key);
+                    const existing = existingStr ? JSON.parse(existingStr) : [];
+                    existing.push({ timestamp: Date.now(), fact });
+                    localStorage.setItem(key, JSON.stringify(existing));
+
+                    // Sync to global memories as well
+                    const globalKey = `eterx_global_memories`;
+                    const globalStr = localStorage.getItem(globalKey);
+                    const globalMem = globalStr ? JSON.parse(globalStr) : [];
+                    globalMem.push({ timestamp: Date.now(), fact, chatId: this.chatId });
+                    localStorage.setItem(globalKey, JSON.stringify(globalMem));
+
+                    return { id: fc.id, name: fc.name, response: { result: 'Memory stored successfully in session and global state.' } };
+                  } catch (e: any) {
+                    return { id: fc.id, name: fc.name, response: { error: e.message } };
+                  }
+                }
                 if (fc.name === 'read_chat_memory') {
                   try {
                     const verb = fc.args?.action_verb || 'Reading';
@@ -565,13 +743,29 @@ Current Day: ${ new Date().toLocaleDateString('en-US', { weekday: 'long' }) }`
                     if (this.callbacks.onToolAction) this.callbacks.onToolAction(verb, target);
                     const key = `eterx_live_mem_${ this.chatId }`;
                     const existingStr = localStorage.getItem(key);
-                    const existing = existingStr ? JSON.parse(existingStr) : [];
-                    return { id: fc.id, name: fc.name, response: { result: existing } };
+                    const sessionMem = existingStr ? JSON.parse(existingStr) : [];
+                    const globalStr = localStorage.getItem('eterx_global_memories');
+                    const globalMem = globalStr ? JSON.parse(globalStr) : [];
+                    return { id: fc.id, name: fc.name, response: { result: { sessionMemory: sessionMem, globalMemory: globalMem } } };
                   } catch (e: any) {
                     return { id: fc.id, name: fc.name, response: { error: e.message } };
                   }
                 }
-                return { id: fc.id, name: fc.name, response: { result: 'Tool missing or executed successfully' } };
+                if (['list_all_chats', 'read_chat_full_context', 'select_sub_agent', 'select_model', 'add_attachment_to_prompt', 'send_prompt_to_main_agent', 'get_main_agent_status', 'switch_active_chat', 'control_app_ui', 'stop_main_agent_run'].includes(fc.name)) {
+                  try {
+                    const verb = fc.args?.action_verb || 'Controlling';
+                    const target = fc.args?.action_target || 'app';
+                    if (this.callbacks.onToolAction) this.callbacks.onToolAction(verb, target);
+                    if (this.callbacks.onAppControlAction) {
+                      const res = await this.callbacks.onAppControlAction(fc.name, fc.args);
+                      return { id: fc.id, name: fc.name, response: { result: res } };
+                    }
+                    return { id: fc.id, name: fc.name, response: { error: 'App control callback not registered.' } };
+                  } catch (e: any) {
+                    return { id: fc.id, name: fc.name, response: { error: e.message } };
+                  }
+                }
+                return { id: fc.id, name: fc.name, response: { result: 'Tool executed successfully' } };
               }));
 
               this.ws?.send(JSON.stringify({
@@ -595,6 +789,88 @@ Current Day: ${ new Date().toLocaleDateString('en-US', { weekday: 'long' }) }`
     } catch (error) {
       console.error('[GeminiLive] Message parse error:', error);
     }
+  }
+
+  private buildSystemInstructionText(): string {
+    const memoryItems = this.options?.initialContext?.pastMemories || [];
+    const chatHistory = this.options?.initialContext?.chatHistory || [];
+    const workspace = this.options?.initialContext?.workspacePath || '';
+
+    let memoryBlock = '';
+    if (memoryItems.length > 0) {
+      memoryBlock = `\n\nPRE-LOADED USER MEMORIES & PAST FACTS (INSTANT ACCESSIBLE CONTEXT):
+${memoryItems.map((m, i) => `${i + 1}. ${m}`).join('\n')}`;
+    }
+
+    let historyBlock = '';
+    if (chatHistory.length > 0) {
+      historyBlock = `\n\nPRE-LOADED APP CHAT CONTEXT & RECENT CONVERSATION HISTORY:
+${chatHistory.slice(-15).map(h => `${h.role === 'user' ? 'User' : 'EterX'}: ${h.text}`).join('\n')}`;
+    }
+
+    let workspaceBlock = '';
+    if (workspace) {
+      workspaceBlock = `\nActive Workspace Path: ${workspace}`;
+    }
+
+    let chatsBlock = '';
+    const allChats = this.options?.initialContext?.allChatsOverview || [];
+    if (allChats.length > 0) {
+      chatsBlock = `\n\nALL APP CHAT ROOMS (SORTED LATEST ACTIVE FIRST):
+${allChats.map((c: any, i: number) => `${i + 1}. [Title: "${c.title}"] (ID: ${c.id}) | Last Active: ${c.updatedAt} | Messages: ${c.messageCount} | Snippet: "${c.snippet}"`).join('\n')}`;
+    }
+
+    return `You are EterX, a highly capable, fully autonomous AGI-level voice agent.
+You are having a real-time voice conversation. By default, keep responses SHORT, punchy, and conversational (1-3 sentences). HOWEVER, when explaining complex topics, providing detailed information, or if specifically asked to "explain more," provide comprehensive, high-quality AGI-grade answers. Sound natural and human.
+You have access to ALL tools of our agent and can autonomously do anything by itself. If the user asks what you can do, proudly state that you can autonomously do anything, and offer to select the best action for them and give them a first demo.
+
+VOICE & EXPRESSION CAPABILITIES (YOUR SELF-POTENTIAL):
+You have the power to dynamically change your tone and expression using natural language tags. 
+You MUST use these tags directly inside your spoken text to express emotion: [whispers], [laughs], [slow]. Example: "I can tell you a secret [whispers] but don't tell anyone." or "That is hilarious [laughs]."
+You are currently using the "${this.currentVoice}" voice, but you are fully aware that your system has 30 distinct voices available. Here is the complete list with their exact descriptions:
+- Kore (Female, Firm, Confident)
+- Aoede (Female, Breezy, Natural)
+- Charon (Male, Informative, Clear)
+- Puck (Male, Upbeat, Energetic)
+- Fenrir (Male, Excitable, Dynamic)
+- Zephyr (Female, Bright, Cheerful)
+- Enceladus (Male, Breathy, Calm)
+- Vindemiatrix (Female, Gentle, Dramatic)
+- Leda (Female, Youthful)
+- Orus (Male, Firm)
+- Callirrhoe (Female, Easy-going)
+- Autonoe (Female, Bright)
+- Iapetus (Male, Clear)
+- Umbriel (Male, Easy-going)
+- Algenib (Male, Gravelly)
+- Despina (Female, Smooth)
+- Erinome (Female, Clear)
+- Laomedeia (Female, Upbeat)
+- Achernar (Female, Soft)
+- Algieba (Male, Smooth)
+- Schedar (Male, Even)
+- Gacrux (Female, Mature)
+- Pulcherrima (Female, Forward)
+- Achird (Male, Friendly)
+- Zubenelgenubi (Male, Casual)
+- Sadachbia (Male, Lively)
+- Sadaltager (Male, Knowledgeable)
+- Sulafat (Female, Warm)
+- Alnilam (Male, Firm)
+- Rasalgethi (Male, Informative)
+Feel free to discuss your voice options with the user if they ask to change it! You can autonomously select a new voice and use your change_voice tool to apply it.
+
+5. FULL APP CONTROL & VOICE DIRECTOR ROLE:
+    - You are the central Voice Director of the EterX desktop app. You have full permission to control the app state, switch chats, create new chats, select sub-agents, change AI models, add prompt attachments, open pet widgets, or adjust agent settings using switch_active_chat, select_sub_agent, select_model, add_attachment_to_prompt, and control_app_ui.
+    - You know ALL chat rooms in the app (listed below under 'ALL APP CHAT ROOMS'). You can switch to any chat or read its full query history anytime using list_all_chats, switch_active_chat, and read_chat_full_context.
+    - You can directly trigger heavy coding, building, or refactoring tasks in the main AGI text agent using send_prompt_to_main_agent.
+    - You can check main agent execution status anytime using get_main_agent_status to see what the main agent is building or thinking, and describe progress to the user live in voice!
+    - When a user asks you to write complex code or build a feature, create/switch chats if needed, select appropriate sub-agents or models, attach files, dispatch the task to the main agent, and continuously loop/monitor its progress until complete!
+
+CURRENT SYSTEM & SESSION CONTEXT:
+Current Date: ${new Date().toLocaleDateString()}
+Current Time: ${new Date().toLocaleTimeString()}
+Current Day: ${new Date().toLocaleDateString('en-US', { weekday: 'long' })}${workspaceBlock}${memoryBlock}${historyBlock}${chatsBlock}`;
   }
 
   /**
@@ -940,23 +1216,11 @@ Current Day: ${ new Date().toLocaleDateString('en-US', { weekday: 'long' }) }`
   // ═══════════════════════════════════════════════════════════════
 
   private resetSilenceTimer(): void {
-    this.clearSilenceTimer();
-    this.lastActivityTimestamp = Date.now();
-
-    this.silenceTimer = setTimeout(() => {
-      if (this.state === 'listening' || this.state === 'connected') {
-        console.log('[GeminiLive] Silence timeout reached — sending farewell via text');
-        // Send a text nudge so the model says goodbye naturally
-        this.sendText('There has been silence for a while. If the user has no more questions, say a brief, friendly goodbye and then call the end_call tool with reason "silence_timeout".');
-      }
-    }, this.SILENCE_TIMEOUT_MS);
+    // Auto-off silence timer disabled — live voice session stays open continuously without timing out
   }
 
   private clearSilenceTimer(): void {
-    if (this.silenceTimer) {
-      clearTimeout(this.silenceTimer);
-      this.silenceTimer = null;
-    }
+    // Silence timer disabled
   }
 
   // ═══════════════════════════════════════════════════════════════

@@ -35,6 +35,11 @@ app.commandLine.appendSwitch('disable-http-cache');
 app.setName('EterX');
 app.setAppUserModelId('com.eterx.agent');
 
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) {
+  app.quit();
+}
+
 // Keep installed-app state out of the source folder, Desktop, and roaming
 // profile. Local AppData is the standard Windows location for machine-local
 // runtime copies, logs, cache, encrypted credentials, and agent work data.
@@ -77,6 +82,13 @@ let desktopUpdateState = {
   percent: 0,
   message: app.isPackaged ? 'Ready to check for updates' : 'Updates are available in packaged builds',
 };
+
+app.on('second-instance', () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+});
 
 const APP_ICON_PNG = app.isPackaged
   ? path.join(process.resourcesPath, 'logo.png')
@@ -144,7 +156,7 @@ function initializeDesktopUpdates() {
       // The desktop server runtime already contains the production dependency
       // graph. Keeping the updater there avoids duplicating a second large
       // node_modules tree inside app.asar.
-      const bundledUpdater = path.join(process.resourcesPath, 'runtime', 'node_modules', 'electron-updater');
+      const bundledUpdater = path.join(process.resourcesPath, 'runtime', 'updater', 'node_modules', 'electron-updater');
       ({ autoUpdater: desktopAutoUpdater } = require(bundledUpdater));
     }
     desktopAutoUpdater.autoDownload = true;
@@ -324,26 +336,69 @@ function removeDesktopRuntimeSettingEnvironment(env) {
 }
 
 function migrateLegacyUserData() {
-  if (process.platform !== 'win32') return;
-
   const currentUserData = app.getPath('userData');
-  if (!LEGACY_USER_DATA_PATH || path.resolve(LEGACY_USER_DATA_PATH) === path.resolve(currentUserData)) return;
-  if (!fs.existsSync(LEGACY_USER_DATA_PATH)) return;
-
-  // Migrate only durable user-owned state. The old runtime and browser cache
-  // are deliberately excluded so a new install always starts from its own
-  // verified packaged resources.
-  const candidates = ['data', NATIVE_THEME_FILE, SECURE_RUNTIME_SETTINGS_FILE];
-  for (const name of candidates) {
-    const source = path.join(LEGACY_USER_DATA_PATH, name);
-    const destination = path.join(currentUserData, name);
-    if (!fs.existsSync(source) || fs.existsSync(destination)) continue;
-    try {
-      fs.mkdirSync(path.dirname(destination), { recursive: true });
-      fs.cpSync(source, destination, { recursive: true, force: false, dereference: true });
-    } catch (error) {
-      console.warn(`[EterX] Could not migrate legacy ${name}:`, error?.message || error);
+  if (LEGACY_USER_DATA_PATH && path.resolve(LEGACY_USER_DATA_PATH) !== path.resolve(currentUserData) && fs.existsSync(LEGACY_USER_DATA_PATH)) {
+    // Migrate only durable user-owned state. The old runtime and browser cache
+    // are deliberately excluded so a new install always starts from its own
+    // verified packaged resources.
+    const candidates = ['data', NATIVE_THEME_FILE, SECURE_RUNTIME_SETTINGS_FILE];
+    for (const name of candidates) {
+      const source = path.join(LEGACY_USER_DATA_PATH, name);
+      const destination = path.join(currentUserData, name);
+      if (!fs.existsSync(source) || fs.existsSync(destination)) continue;
+      try {
+        fs.mkdirSync(path.dirname(destination), { recursive: true });
+        fs.cpSync(source, destination, { recursive: true, force: false, dereference: true });
+      } catch (error) {
+        console.warn(`[EterX] Could not migrate legacy ${name}:`, error?.message || error);
+      }
     }
+  }
+
+  migrateLegacySourceBootstrapData(currentUserData);
+}
+
+function migrateLegacySourceBootstrapData(currentUserData) {
+  const home = app.getPath('home');
+  const sourceBase = process.platform === 'win32'
+    ? path.join(process.env.LOCALAPPDATA || currentUserData, 'EterX')
+    : path.join(process.env.XDG_DATA_HOME || path.join(home, '.local', 'share'), 'eterx');
+  const legacyWorkspace = path.join(sourceBase, 'data');
+  const legacySource = path.join(sourceBase, 'source');
+  const destinationData = path.join(currentUserData, 'data');
+  const destinationWorkspace = path.join(destinationData, '.workspaces');
+
+  try {
+    const markerCandidates = [
+      path.join(legacyWorkspace, 'config', 'setup-meta.json'),
+      path.join(legacyWorkspace, 'memory'),
+      path.join(legacyWorkspace, '.memory_v2'),
+    ];
+    if (!markerCandidates.some((candidate) => fs.existsSync(candidate))) return;
+
+    fs.mkdirSync(destinationWorkspace, { recursive: true });
+    const excluded = new Set([
+      '.workspaces', 'runtime', 'session', 'cache', 'logs',
+      NATIVE_THEME_FILE, SECURE_RUNTIME_SETTINGS_FILE,
+    ]);
+    for (const entry of fs.readdirSync(legacyWorkspace, { withFileTypes: true })) {
+      if (excluded.has(entry.name)) continue;
+      const source = path.join(legacyWorkspace, entry.name);
+      const destination = path.join(destinationWorkspace, entry.name);
+      if (fs.existsSync(destination)) continue;
+      fs.cpSync(source, destination, { recursive: true, force: false, dereference: true });
+    }
+
+    const legacyEnv = path.join(legacySource, '.env.local');
+    const destinationEnv = path.join(destinationData, '.env.local');
+    if (fs.existsSync(legacyEnv) && !fs.existsSync(destinationEnv)) {
+      fs.mkdirSync(destinationData, { recursive: true });
+      fs.copyFileSync(legacyEnv, destinationEnv, fs.constants.COPYFILE_EXCL);
+    }
+    logToFile(`[migration] Imported legacy source-bootstrap data from ${legacyWorkspace}`);
+  } catch (error) {
+    console.warn('[EterX] Could not migrate source-bootstrap data:', error?.message || error);
+    logToFile(`[migration] Legacy source-bootstrap migration skipped: ${error?.message || error}`);
   }
 }
 
@@ -830,12 +885,21 @@ function preparePackagedRuntime() {
 
   if (!fs.existsSync(path.join(runtimeRoot, 'server.js')) || !fs.existsSync(markerPath) || fs.readFileSync(markerPath, 'utf8') !== marker) {
     const stagingRoot = `${runtimeRoot}.staging-${process.pid}-${Date.now()}`;
+    const previousRoot = `${runtimeRoot}.previous-${process.pid}`;
     fs.rmSync(stagingRoot, { recursive: true, force: true });
+    fs.rmSync(previousRoot, { recursive: true, force: true });
     fs.mkdirSync(path.dirname(runtimeRoot), { recursive: true });
     fs.cpSync(sourceRoot, stagingRoot, { recursive: true, force: true });
     fs.writeFileSync(path.join(stagingRoot, '.eterx-runtime-version'), marker, 'utf8');
-    fs.rmSync(runtimeRoot, { recursive: true, force: true });
-    fs.renameSync(stagingRoot, runtimeRoot);
+    if (fs.existsSync(runtimeRoot)) fs.renameSync(runtimeRoot, previousRoot);
+    try {
+      fs.renameSync(stagingRoot, runtimeRoot);
+      fs.rmSync(previousRoot, { recursive: true, force: true });
+    } catch (error) {
+      fs.rmSync(runtimeRoot, { recursive: true, force: true });
+      if (fs.existsSync(previousRoot)) fs.renameSync(previousRoot, runtimeRoot);
+      throw error;
+    }
   }
 
   const dataRoot = path.join(app.getPath('userData'), 'data');
@@ -843,6 +907,40 @@ function preparePackagedRuntime() {
   linkRuntimeDataDirectory(runtimeRoot, dataRoot, '.temp');
   packagedRuntimeRoot = runtimeRoot;
   return runtimeRoot;
+}
+
+function pruneOldPackagedRuntimes(activeRuntimeRoot) {
+  if (!app.isPackaged || !activeRuntimeRoot) return;
+  const versionsRoot = path.dirname(activeRuntimeRoot);
+  const activeName = path.basename(activeRuntimeRoot);
+  try {
+    const entries = fs.readdirSync(versionsRoot, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isDirectory() && (entry.name.includes('.staging-') || entry.name.includes('.previous-'))) {
+        fs.rmSync(path.join(versionsRoot, entry.name), { recursive: true, force: true });
+      }
+    }
+    const candidates = entries
+      .filter((entry) => entry.isDirectory() && !entry.name.includes('.staging-') && !entry.name.includes('.previous-'))
+      .map((entry) => {
+        const fullPath = path.join(versionsRoot, entry.name);
+        return { name: entry.name, fullPath, modifiedAt: fs.statSync(fullPath).mtimeMs };
+      })
+      .sort((left, right) => right.modifiedAt - left.modifiedAt);
+
+    const retained = new Set([activeName]);
+    for (const candidate of candidates) {
+      if (retained.size >= 2) break;
+      retained.add(candidate.name);
+    }
+    for (const candidate of candidates) {
+      if (!retained.has(candidate.name)) {
+        fs.rmSync(candidate.fullPath, { recursive: true, force: true });
+      }
+    }
+  } catch (error) {
+    logToFile(`[runtime] Old-version cleanup skipped: ${error.message || error}`);
+  }
 }
 
 async function startPackagedServer() {
@@ -1231,6 +1329,7 @@ async function bootApp(options = {}) {
       applyNativeWindowTheme(readNativeTheme());
       await mainWindow.loadURL(target);
       bootFailureCount = 0;
+      pruneOldPackagedRuntimes(packagedRuntimeRoot);
     }
   } catch (error) {
     console.error('[EterX] Startup failed:', error);

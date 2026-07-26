@@ -41,21 +41,50 @@ export const FloatingLiveWidget: React.FC<FloatingLiveWidgetProps> = ({
   useEffect(() => {
     if (isElectron) {
       if (liveState !== 'idle' && liveState !== 'error') {
+        let statusStr = '';
+        if (liveActiveTool) {
+          const toolLower = liveActiveTool.toLowerCase();
+          if (toolLower.includes('search') || toolLower.includes('web')) statusStr = 'Searching';
+          else if (toolLower.includes('read') || toolLower.includes('file')) statusStr = 'Reading';
+          else if (toolLower.includes('write')) statusStr = 'Writing';
+          else if (toolLower.includes('send') || toolLower.includes('prompt')) statusStr = 'Dispatching';
+          else statusStr = 'Executing';
+        } else if (liveState === 'thinking') {
+          statusStr = 'Thinking';
+        }
         (window as any).electronAPI.openPetWindow({
           title: 'EterX Live Agent',
-          text: liveState === 'speaking' ? 'EterX Speaking...' : liveState === 'listening' ? 'Listening...' : 'Live Session Connected',
-          isThinking: liveState === 'connecting',
+          text: statusStr,
+          isThinking: liveState === 'thinking' || Boolean(liveActiveTool),
         });
       } else {
         (window as any).electronAPI.closePetWindow?.();
       }
     }
-  }, [liveState, isElectron]);
+  }, [liveState, liveActiveTool, isElectron]);
 
   if (!mounted || liveState === 'idle' || liveState === 'error' || isElectron) return null;
 
   const isSpeaking = liveState === 'speaking';
   const isListening = liveState === 'listening';
+
+  const getCenterStatusText = (): string | null => {
+    if (liveActiveTool) {
+      const toolLower = liveActiveTool.toLowerCase();
+      if (toolLower.includes('search') || toolLower.includes('web')) return 'Searching';
+      if (toolLower.includes('read') || toolLower.includes('file')) return 'Reading';
+      if (toolLower.includes('write')) return 'Writing';
+      if (toolLower.includes('send') || toolLower.includes('prompt')) return 'Dispatching';
+      if (toolLower.includes('switch') || toolLower.includes('chat')) return 'Switching';
+      if (toolLower.includes('memory')) return 'Remembering';
+      if (toolLower.includes('model') || toolLower.includes('agent')) return 'Configuring';
+      return 'Executing';
+    }
+    if (liveState === 'thinking') return 'Thinking';
+    return null;
+  };
+
+  const statusText = getCenterStatusText();
 
   let volumeScale = 1;
   let currentVol = 0;
@@ -107,56 +136,83 @@ export const FloatingLiveWidget: React.FC<FloatingLiveWidgetProps> = ({
   };
 
   return createPortal(
-    <motion.div
-      drag
-      dragMomentum={false}
-      initial={{ opacity: 0, scale: 0.85 }}
-      animate={{ opacity: 1, scale: 1 }}
-      exit={{ opacity: 0, scale: 0.85 }}
-      transition={{ type: 'spring', stiffness: 420, damping: 30 }}
-      className="fixed bottom-32 left-1/2 -translate-x-1/2 z-[999999] select-none flex flex-col items-center w-[175px]"
-      style={{ pointerEvents: 'none' }}
-    >
-      {/* 175px PERFECT CIRCULAR ORB */}
+    <>
+      <style dangerouslySetInnerHTML={{
+        __html: `
+        @keyframes eterx-shimmer-anim {
+          0% { background-position: 200% 0; }
+          100% { background-position: -200% 0; }
+        }
+      ` }} />
       <motion.div
-        animate={{ scale: volumeScale }}
-        transition={{ type: 'spring', stiffness: 350, damping: 20 }}
-        className="w-[175px] h-[175px] rounded-full overflow-hidden relative pointer-events-auto cursor-grab active:cursor-grabbing shrink-0"
-        style={{
-          clipPath: 'circle(50% at 50% 50%)',
-          WebkitClipPath: 'circle(50% at 50% 50%)',
-          border: 'none',
-          outline: 'none',
-          boxShadow: 'none',
-        }}
+        drag
+        dragMomentum={false}
+        initial={{ opacity: 0, scale: 0.85 }}
+        animate={{ opacity: 1, scale: 1 }}
+        exit={{ opacity: 0, scale: 0.85 }}
+        transition={{ type: 'spring', stiffness: 420, damping: 30 }}
+        className="fixed bottom-32 left-1/2 -translate-x-1/2 z-[999999] select-none flex flex-col items-center w-[175px]"
+        style={{ pointerEvents: 'none' }}
       >
-        {/* 3D Sphere */}
-        <AbstractBall
-          perlinTime={perlinTime}
-          perlinMorph={perlinMorph}
-          chromaRGBr={7.5}
-          chromaRGBg={5.0}
-          chromaRGBb={7.0}
-          cameraZoom={70}
-          cameraSpeedX={0.3}
-          cameraSpeedY={0.4}
-          style={{ width: '175px', height: '175px', borderRadius: '50%', clipPath: 'circle(50% at 50% 50%)', WebkitClipPath: 'circle(50% at 50% 50%)', pointerEvents: 'none', border: 'none', boxShadow: 'none', outline: 'none' }}
-          liveState={liveState as any}
-          audioVolume={currentVol}
-        />
-        {/* Transparent overlay — reliable hover detection on top of canvas */}
-        <div
-          className="absolute inset-0 rounded-full cursor-grab active:cursor-grabbing"
+        {/* 175px PERFECT CIRCULAR ORB */}
+        <motion.div
+          animate={{ scale: volumeScale }}
+          transition={{ type: 'spring', stiffness: 350, damping: 20 }}
+          className="w-[175px] h-[175px] rounded-full overflow-hidden relative pointer-events-auto cursor-grab active:cursor-grabbing shrink-0"
           style={{
             clipPath: 'circle(50% at 50% 50%)',
             WebkitClipPath: 'circle(50% at 50% 50%)',
-            pointerEvents: 'auto',
+            border: 'none',
+            outline: 'none',
+            boxShadow: 'none',
           }}
-          onMouseEnter={handleMouseEnter}
-          onMouseMove={handleOrbMouseMove}
-          onMouseLeave={handleMouseLeave}
-        />
-      </motion.div>
+        >
+          {/* 3D Sphere */}
+          <AbstractBall
+            perlinTime={perlinTime}
+            perlinMorph={perlinMorph}
+            chromaRGBr={7.5}
+            chromaRGBg={5.0}
+            chromaRGBb={7.0}
+            cameraZoom={70}
+            cameraSpeedX={0.3}
+            cameraSpeedY={0.4}
+            style={{ width: '175px', height: '175px', borderRadius: '50%', clipPath: 'circle(50% at 50% 50%)', WebkitClipPath: 'circle(50% at 50% 50%)', pointerEvents: 'none', border: 'none', boxShadow: 'none', outline: 'none' }}
+            liveState={liveState as any}
+            audioVolume={currentVol}
+          />
+
+          {/* PLAIN GRAY SHIMMER TEXT — Smooth Continuous 1-Pass Linear Shimmer */}
+          {statusText && (
+            <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10">
+              <span
+                className="text-[16px] font-semibold tracking-wide whitespace-nowrap select-none text-transparent bg-clip-text"
+                style={{
+                  fontWeight: 600,
+                  backgroundImage: 'linear-gradient(90deg, #09090b 0%, #e4e4e7 50%, #09090b 100%)',
+                  backgroundSize: '200% 100%',
+                  animation: 'eterx-shimmer-anim 3.5s linear infinite',
+                  filter: 'drop-shadow(0 0 6px rgba(255, 255, 255, 0.95)) drop-shadow(0 1px 2px rgba(255, 255, 255, 0.8))'
+                }}
+              >
+                {statusText}
+              </span>
+            </div>
+          )}
+
+          {/* Transparent overlay — reliable hover detection on top of canvas */}
+          <div
+            className="absolute inset-0 rounded-full cursor-grab active:cursor-grabbing z-20"
+            style={{
+              clipPath: 'circle(50% at 50% 50%)',
+              WebkitClipPath: 'circle(50% at 50% 50%)',
+              pointerEvents: 'auto',
+            }}
+            onMouseEnter={handleMouseEnter}
+            onMouseMove={handleOrbMouseMove}
+            onMouseLeave={handleMouseLeave}
+          />
+        </motion.div>
 
       {/* ABSOLUTE FLOATING CONTROL PILL — 100% perfectly centered below abstract ball */}
       <AnimatePresence>
@@ -232,7 +288,8 @@ export const FloatingLiveWidget: React.FC<FloatingLiveWidgetProps> = ({
           </motion.div>
         )}
       </AnimatePresence>
-    </motion.div>,
+      </motion.div>
+    </>,
     document.body
   );
 };

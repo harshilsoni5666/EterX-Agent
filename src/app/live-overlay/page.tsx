@@ -13,6 +13,8 @@ export default function LiveOverlayPage() {
   const [isHovered, setIsHovered] = useState(false);
   const hoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
+  const [statusText, setStatusText] = useState<string | null>(null);
+
   useEffect(() => {
     document.documentElement.style.backgroundColor = 'transparent';
     document.body.style.backgroundColor = 'transparent';
@@ -26,8 +28,20 @@ export default function LiveOverlayPage() {
 
     if (typeof window !== 'undefined' && (window as any).electronAPI?.onPetStatus) {
       (window as any).electronAPI.onPetStatus((status: any) => {
-        if (status?.text?.includes('Speaking')) setLiveState('speaking');
-        else if (status?.text?.includes('Listening')) setLiveState('listening');
+        const text = status?.text || '';
+        if (text) {
+          const toolLower = text.toLowerCase();
+          if (toolLower.includes('search') || toolLower.includes('web')) setStatusText('Searching');
+          else if (toolLower.includes('read') || toolLower.includes('file')) setStatusText('Reading');
+          else if (toolLower.includes('write')) setStatusText('Writing');
+          else if (toolLower.includes('send') || toolLower.includes('prompt')) setStatusText('Dispatching');
+          else if (toolLower.includes('switch') || toolLower.includes('chat')) setStatusText('Switching');
+          else if (toolLower.includes('thinking')) setStatusText('Thinking');
+          else if (toolLower.includes('executing') || toolLower.includes('tool')) setStatusText('Executing');
+          else setStatusText(null);
+        } else {
+          setStatusText(null);
+        }
       });
     }
   }, []);
@@ -145,6 +159,10 @@ export default function LiveOverlayPage() {
         __html: `
         html, body, #__next, main { background: transparent !important; background-color: transparent !important; margin: 0; padding: 0; overflow: hidden; pointer-events: none; }
         button, a, input { pointer-events: auto !important; }
+        @keyframes eterx-shimmer-anim {
+          0% { background-position: 200% 0; }
+          100% { background-position: -200% 0; }
+        }
       ` }} />
       <div
         className="w-screen h-screen flex flex-col items-center justify-center select-none"
@@ -174,9 +192,28 @@ export default function LiveOverlayPage() {
               style={{ width: '175px', height: '175px', borderRadius: '50%', clipPath: 'circle(50% at 50% 50%)', WebkitClipPath: 'circle(50% at 50% 50%)', pointerEvents: 'none', border: 'none', boxShadow: 'none', outline: 'none' }}
               liveState={liveState as any}
             />
+
+            {/* PLAIN GRAY SHIMMER TEXT — Smooth Continuous 1-Pass Linear Shimmer */}
+            {statusText && (
+              <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10">
+                <span
+                  className="text-[16px] font-semibold tracking-wide whitespace-nowrap select-none text-transparent bg-clip-text"
+                  style={{
+                    fontWeight: 600,
+                    backgroundImage: 'linear-gradient(90deg, #09090b 0%, #e4e4e7 50%, #09090b 100%)',
+                    backgroundSize: '200% 100%',
+                    animation: 'eterx-shimmer-anim 3.5s linear infinite',
+                    filter: 'drop-shadow(0 0 6px rgba(255, 255, 255, 0.95)) drop-shadow(0 1px 2px rgba(255, 255, 255, 0.8))'
+                  }}
+                >
+                  {statusText}
+                </span>
+              </div>
+            )}
+
             {/* Transparent overlay — reliable circular drag + hover detection */}
             <div
-              className="absolute inset-0 rounded-full cursor-grab active:cursor-grabbing"
+              className="absolute inset-0 rounded-full cursor-grab active:cursor-grabbing z-20"
               style={{
                 clipPath: 'circle(50% at 50% 50%)',
                 WebkitClipPath: 'circle(50% at 50% 50%)',

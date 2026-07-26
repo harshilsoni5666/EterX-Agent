@@ -2,57 +2,47 @@
 set -eu
 
 REPOSITORY="harshilsoni5666/EterX-Agent"
-BRANCH="${ETERX_BRANCH:-main}"
-DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
-INSTALL_DIR="${ETERX_INSTALL_DIR:-$DATA_HOME/eterx/source}"
-ETERX_DATA_DIR="${ETERX_DATA_DIR:-$DATA_HOME/eterx/data}"
-LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/eterx"
-LOG_FILE="$LOG_DIR/install.log"
-TEMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/eterx-install.XXXXXX")"
-BACKUP_DIR=""
+API_URL="https://api.github.com/repos/$REPOSITORY/releases/latest"
+OS="$(uname -s)"
+MACHINE="$(uname -m)"
+TEMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/eterx-bootstrap.XXXXXX")"
 
-mkdir -p "$LOG_DIR"
+case "$OS" in
+  Darwin)
+    PLATFORM="mac"
+    STATE_ROOT="${HOME}/Library/Logs/EterX"
+    DEFAULT_INSTALL_DIR="${HOME}/Applications"
+    ;;
+  Linux)
+    PLATFORM="linux"
+    STATE_ROOT="${XDG_STATE_HOME:-$HOME/.local/state}/eterx"
+    DEFAULT_INSTALL_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/eterx"
+    ;;
+  *)
+    printf '\n  EterX supports Windows, macOS, and Linux. Detected: %s\n' "$OS" >&2
+    exit 1
+    ;;
+esac
+
+case "$MACHINE" in
+  x86_64|amd64) ARCH="x64" ;;
+  arm64|aarch64) ARCH="arm64" ;;
+  *) printf '\n  EterX requires a 64-bit Intel/AMD or ARM device. Detected: %s\n' "$MACHINE" >&2; exit 1 ;;
+esac
+
+INSTALL_DIR="${ETERX_INSTALL_DIR:-$DEFAULT_INSTALL_DIR}"
+LOG_FILE="$STATE_ROOT/install.log"
+mkdir -p "$STATE_ROOT"
 
 log() { printf '[%s] %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*" >> "$LOG_FILE"; }
 stage() {
-  number="$1" percent="$2" title="$3" detail="$4"
-  width=34 filled=$((percent * width / 100)) empty=$((width - filled))
+  percent="$1" title="$2" detail="$3"
+  width=32
+  filled=$((percent * width / 100))
+  empty=$((width - filled))
   bar="$(printf '%*s' "$filled" '' | tr ' ' '#')$(printf '%*s' "$empty" '' | tr ' ' '-')"
   printf '\n  [%s] %3s%%  %s\n  %s\n' "$bar" "$percent" "$title" "$detail"
-  log "Stage $number ($percent%): $title - $detail"
-}
-node_major() {
-  command -v node >/dev/null 2>&1 || { printf '0'; return; }
-  node --version 2>/dev/null | sed 's/^v//' | cut -d. -f1
-}
-install_node() {
-  major="$(node_major)"
-  [ "${major:-0}" -ge 20 ] 2>/dev/null && return
-  printf '  Node.js 20+ was not found. Installing the LTS runtime...\n'
-  if command -v brew >/dev/null 2>&1; then brew install node@20
-  elif command -v apt-get >/dev/null 2>&1; then sudo apt-get update && sudo apt-get install -y nodejs npm
-  elif command -v dnf >/dev/null 2>&1; then sudo dnf install -y nodejs npm
-  elif command -v pacman >/dev/null 2>&1; then sudo pacman -Sy --needed --noconfirm nodejs npm
-  else
-    printf '  Install Node.js 20+ from https://nodejs.org and rerun this command.\n' >&2
-    exit 1
-  fi
-  major="$(node_major)"
-  [ "${major:-0}" -ge 20 ] 2>/dev/null || { printf '  Installed Node.js is older than version 20.\n' >&2; exit 1; }
-}
-download() {
-  url="$1" destination="$2"
-  if command -v curl >/dev/null 2>&1; then curl --fail --location --retry 3 --retry-delay 2 --progress-bar "$url" --output "$destination"
-  elif command -v wget >/dev/null 2>&1; then wget --tries=3 --show-progress -O "$destination" "$url"
-  else printf '  curl or wget is required.\n' >&2; exit 1
-  fi
-}
-restore_previous() {
-  [ -n "$BACKUP_DIR" ] && [ -d "$BACKUP_DIR" ] || return 0
-  printf '  Restoring the previous working installation...\n'
-  rm -rf -- "$INSTALL_DIR"
-  mv -- "$BACKUP_DIR" "$INSTALL_DIR"
-  BACKUP_DIR=""
+  log "$percent% $title - $detail"
 }
 cleanup() { rm -rf -- "$TEMP_ROOT"; }
 on_exit() {
@@ -60,8 +50,7 @@ on_exit() {
   trap - EXIT INT TERM HUP
   if [ "$code" -ne 0 ]; then
     log "FAILED with exit code $code"
-    restore_previous || true
-    printf '\n  Installation did not complete. Your previous installation was preserved.\n  Log: %s\n' "$LOG_FILE" >&2
+    printf '\n  EterX installation did not complete.\n  Existing EterX user data was not changed. Log: %s\n' "$LOG_FILE" >&2
   fi
   cleanup
   exit "$code"
@@ -70,43 +59,154 @@ trap on_exit EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM HUP
 
-printf '\n  ETERX  |  Professional Source Installer\n  Complete application, dependencies, repair, and update support\n'
-stage 1 5 'Checking this device' 'Operating system, storage path, and required runtime'
-install_node
-printf '  [OK] Node.js %s\n' "$(node --version)"
+retry() {
+  attempts=0
+  until "$@"; do
+    attempts=$((attempts + 1))
+    [ "$attempts" -ge 4 ] && return 1
+    delay=$((1 << attempts))
+    printf '  Retrying in %s seconds...\n' "$delay"
+    sleep "$delay"
+  done
+}
 
-stage 2 15 'Downloading verified source' "Branch: $BRANCH"
-archive="$TEMP_ROOT/eterx.zip"
-download "https://codeload.github.com/$REPOSITORY/zip/refs/heads/$BRANCH" "$archive"
-[ "$(wc -c < "$archive")" -gt 1024 ] || { printf 'Downloaded archive is unexpectedly small.\n' >&2; exit 1; }
+download() {
+  url="$1" destination="$2"
+  if command -v curl >/dev/null 2>&1; then
+    retry curl --fail --location --retry 2 --connect-timeout 20 --progress-bar \
+      --header 'Accept: application/vnd.github+json' \
+      --header 'X-GitHub-Api-Version: 2022-11-28' \
+      --user-agent 'EterX-Bootstrap/2' "$url" --output "$destination"
+  elif command -v wget >/dev/null 2>&1; then
+    retry wget --tries=2 --timeout=20 --show-progress --user-agent='EterX-Bootstrap/2' -O "$destination" "$url"
+  else
+    printf '  curl or wget is required to download EterX.\n' >&2
+    return 1
+  fi
+}
 
-stage 3 35 'Verifying and extracting' 'The existing installation is still untouched'
-extract_root="$TEMP_ROOT/extract"
-mkdir -p "$extract_root"
-if command -v unzip >/dev/null 2>&1; then unzip -q "$archive" -d "$extract_root"
-else printf '  unzip is required to extract EterX.\n' >&2; exit 1
+json_asset_url() {
+  asset_pattern="$1"
+  tr ',' '\n' < "$TEMP_ROOT/release.json" |
+    sed -n 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' |
+    grep -E "$asset_pattern" |
+    head -n 1
+}
+
+verify_checksum() {
+  artifact="$1"
+  artifact_name="$(basename "$artifact")"
+  expected="$(awk -v name="$artifact_name" '$2 == name || $2 == "*" name { print tolower($1); exit }' "$TEMP_ROOT/SHA256SUMS.txt")"
+  [ -n "$expected" ] || { printf '  Security manifest has no entry for %s.\n' "$artifact_name" >&2; return 1; }
+  if command -v shasum >/dev/null 2>&1; then actual="$(shasum -a 256 "$artifact" | awk '{print tolower($1)}')"
+  elif command -v sha256sum >/dev/null 2>&1; then actual="$(sha256sum "$artifact" | awk '{print tolower($1)}')"
+  else printf '  A SHA-256 utility is required.\n' >&2; return 1
+  fi
+  [ "$actual" = "$expected" ] || { printf '  Security verification failed for %s.\n' "$artifact_name" >&2; return 1; }
+  log "Verified SHA-256 $actual for $artifact_name"
+}
+
+install_macos() {
+  archive="$1"
+  extract_root="$TEMP_ROOT/app"
+  mkdir -p "$extract_root" "$INSTALL_DIR"
+  ditto -x -k "$archive" "$extract_root"
+  app_path="$(find "$extract_root" -maxdepth 2 -type d -name 'EterX.app' -print -quit)"
+  [ -n "$app_path" ] || { printf '  EterX.app is missing from the release archive.\n' >&2; return 1; }
+
+  target="$INSTALL_DIR/EterX.app"
+  staging="$INSTALL_DIR/.EterX.app.staging.$$"
+  previous="$INSTALL_DIR/.EterX.app.previous.$$"
+  rm -rf -- "$staging" "$previous"
+  ditto "$app_path" "$staging"
+  if [ -d "$target" ]; then mv -- "$target" "$previous"; fi
+  if ! mv -- "$staging" "$target"; then
+    [ -d "$previous" ] && mv -- "$previous" "$target"
+    return 1
+  fi
+  rm -rf -- "$previous"
+  [ "${ETERX_NO_LAUNCH:-0}" = "1" ] || open "$target"
+}
+
+install_linux() {
+  appimage="$1"
+  icon_source="$2"
+  app_root="$INSTALL_DIR/app"
+  bin_root="${HOME}/.local/bin"
+  desktop_root="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+  icon_root="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/512x512/apps"
+  mkdir -p "$app_root" "$bin_root" "$desktop_root" "$icon_root"
+
+  target="$app_root/EterX.AppImage"
+  staging="$app_root/.EterX.AppImage.staging.$$"
+  previous="$app_root/.EterX.AppImage.previous.$$"
+  cp -- "$appimage" "$staging"
+  chmod 755 "$staging"
+  [ -f "$target" ] && mv -- "$target" "$previous"
+  if ! mv -- "$staging" "$target"; then
+    [ -f "$previous" ] && mv -- "$previous" "$target"
+    return 1
+  fi
+  rm -f -- "$previous"
+
+  ln -sfn "$target" "$bin_root/eterx"
+  cp -- "$icon_source" "$icon_root/eterx.png"
+  cat > "$desktop_root/com.eterx.agent.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=EterX
+Comment=Autonomous AI Agent
+Exec="$target"
+Icon=eterx
+Terminal=false
+Categories=Development;Utility;
+StartupWMClass=EterX
+X-AppImage-Integrate=false
+EOF
+  chmod 644 "$desktop_root/com.eterx.agent.desktop"
+  command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$desktop_root" >/dev/null 2>&1 || true
+  [ "${ETERX_NO_LAUNCH:-0}" = "1" ] || nohup "$target" >/dev/null 2>&1 &
+}
+
+printf '\n  ETERX\n  Secure desktop installation for %s\n' "$OS"
+stage 8 'Detecting this device' "$PLATFORM $ARCH | per-user installation"
+
+stage 18 'Resolving the latest stable release' "GitHub: $REPOSITORY"
+if ! download "$API_URL" "$TEMP_ROOT/release.json"; then
+  log 'FAILED: latest release lookup failed'
+  printf '\n  EterX installation did not complete. Existing user data was not changed.\n  Log: %s\n' "$LOG_FILE" >&2
+  exit 1
 fi
-source_dir="$(find "$extract_root" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
-[ -f "$source_dir/package.json" ] && [ -f "$source_dir/setup.js" ] || { printf 'The package failed EterX integrity checks.\n' >&2; exit 1; }
 
-stage 4 48 'Installing application files' "$INSTALL_DIR"
-mkdir -p "$(dirname "$INSTALL_DIR")"
-if [ -d "$INSTALL_DIR" ]; then BACKUP_DIR="$INSTALL_DIR.previous-$(date -u '+%Y%m%d%H%M%S')"; mv -- "$INSTALL_DIR" "$BACKUP_DIR"; fi
-mv -- "$source_dir" "$INSTALL_DIR"
-if [ -n "$BACKUP_DIR" ]; then
-  [ -f "$BACKUP_DIR/.env.local" ] && cp -p "$BACKUP_DIR/.env.local" "$INSTALL_DIR/.env.local"
-  if [ -d "$BACKUP_DIR/.workspaces" ] && [ ! -e "$ETERX_DATA_DIR" ]; then cp -a "$BACKUP_DIR/.workspaces" "$ETERX_DATA_DIR"; fi
+if [ "$PLATFORM" = "mac" ]; then
+  artifact_url="$(json_asset_url "/EterX-[^/]+-mac-$ARCH\\.zip$" || true)"
+else
+  artifact_url="$(json_asset_url "/EterX-[^/]+-linux-$ARCH\\.AppImage$" || true)"
 fi
-mkdir -p "$ETERX_DATA_DIR"
-rm -rf -- "$INSTALL_DIR/.workspaces"
-ln -s "$ETERX_DATA_DIR" "$INSTALL_DIR/.workspaces"
+checksum_url="$(json_asset_url '/SHA256SUMS\.txt$' || true)"
+[ -n "$artifact_url" ] || { printf '  The latest release has no %s %s package.\n' "$PLATFORM" "$ARCH" >&2; exit 1; }
+[ -n "$checksum_url" ] || { printf '  The latest release has no checksum manifest.\n' >&2; exit 1; }
 
-stage 5 58 'Installing libraries and building EterX' 'Detailed output is saved by the setup engine'
-if ! (cd "$INSTALL_DIR" && node setup.js --auto --source-install); then exit 1; fi
+artifact="$TEMP_ROOT/$(basename "$artifact_url")"
+stage 30 'Downloading the native application' "$(basename "$artifact")"
+download "$artifact_url" "$artifact"
+download "$checksum_url" "$TEMP_ROOT/SHA256SUMS.txt"
+if [ "$PLATFORM" = "linux" ]; then
+  icon_url="$(json_asset_url '/eterx-icon-512\.png$' || true)"
+  [ -n "$icon_url" ] || { printf '  The latest release has no Linux launcher icon.\n' >&2; exit 1; }
+  download "$icon_url" "$TEMP_ROOT/eterx-icon-512.png"
+fi
 
-stage 6 96 'Finalizing shortcuts and update metadata' "User data: $ETERX_DATA_DIR"
-if [ -n "$BACKUP_DIR" ] && [ -d "$BACKUP_DIR" ]; then rm -rf -- "$BACKUP_DIR"; BACKUP_DIR=""; fi
+stage 72 'Verifying release integrity' 'SHA-256 manifest validation'
+verify_checksum "$artifact"
+if [ "$PLATFORM" = "linux" ]; then verify_checksum "$TEMP_ROOT/eterx-icon-512.png"; fi
 
-stage 7 100 'EterX is ready' "Installed at $INSTALL_DIR"
-printf '\n  Updates: run  eterx update\n  Installer log: %s\n' "$LOG_FILE"
-exit 0
+stage 84 'Installing EterX' "$INSTALL_DIR"
+if [ "$PLATFORM" = "mac" ]; then
+  install_macos "$artifact"
+else
+  install_linux "$artifact" "$TEMP_ROOT/eterx-icon-512.png"
+fi
+
+stage 100 'EterX is installed' 'Future updates are downloaded safely inside the app'
+printf '\n  User data is stored separately and remains intact across updates.\n  Installer log: %s\n' "$LOG_FILE"

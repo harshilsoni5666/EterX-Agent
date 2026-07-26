@@ -100,7 +100,6 @@ function launchBootstrapUpgrade(projectRoot) {
       fs.copyFileSync(source, updaterScript);
       const child = spawn('powershell.exe', [
         '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', updaterScript,
-        '-InstallDir', projectRoot, '-WaitForPid', String(process.pid), '-NoLaunch',
       ], { detached: true, stdio: 'inherit', windowsHide: false });
       child.unref();
     } else {
@@ -109,15 +108,15 @@ function launchBootstrapUpgrade(projectRoot) {
       const updaterScript = path.join(os.tmpdir(), `eterx-update-${Date.now()}.sh`);
       fs.copyFileSync(source, updaterScript);
       fs.chmodSync(updaterScript, 0o755);
-      const command = `while kill -0 ${process.pid} 2>/dev/null; do sleep 1; done; ETERX_INSTALL_DIR="$1" sh "$2"; code=$?; rm -f -- "$2"; exit $code`;
-      const child = spawn('sh', ['-c', command, 'eterx-updater', projectRoot, updaterScript], {
+      const command = `while kill -0 ${process.pid} 2>/dev/null; do sleep 1; done; ETERX_NO_LAUNCH=1 sh "$1"; code=$?; rm -f -- "$1"; exit $code`;
+      const child = spawn('sh', ['-c', command, 'eterx-updater', updaterScript], {
         detached: true,
         stdio: 'inherit',
       });
       child.unref();
     }
-    ok('The transactional updater is starting. This terminal will continue showing its progress.');
-    info('Your current installation and user data remain available until the replacement passes setup checks.');
+    ok('The native EterX installer is starting. This terminal will continue showing its progress.');
+    info('Your source-bootstrap data will be imported on the first native-app launch.');
     return true;
   } catch (error) {
     fail(`Could not start the source updater: ${error.message}`);

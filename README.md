@@ -16,35 +16,73 @@
 
 
 
-## Installation
+## Install EterX
 
-### Windows desktop app (recommended)
+The bootstrap detects the operating system and processor, downloads the matching
+native GitHub release, verifies its SHA-256 checksum, installs the application,
+and removes the temporary download. Node.js, npm, Git, and the source repository
+are not required on an end user's computer.
 
-Build or download the signed release installer named `EterX-<version>-windows-x64.exe`. It provides a branded Windows installer with an install-location choice, Start Menu/Desktop shortcuts, uninstaller, automatic background updates, and a visible **Settings → Updates** control.
+### Windows
 
-For a local release build:
+Open **PowerShell**, paste this command, and press Enter:
 
 ```powershell
-npm run desktop:build:win
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/harshilsoni5666/EterX-Agent/main/install.ps1 | iex"
 ```
 
-The installer is written to `dist/` and installs the complete app. Chats, workspaces, browser data, preferences, logs, and encrypted desktop settings are kept separately in `%LOCALAPPDATA%\EterX`, so uninstalling or updating the app does not erase user data.
+The native installer lets you choose the app location and Desktop/Start Menu
+shortcuts. EterX is installed per user and does not require administrator access.
 
-### One-command source install
+### macOS
 
-The source bootstrap is for developers and users who want the GitHub version. It detects Node.js, installs the per-user runtime when necessary, downloads and verifies the app into a staging directory, preserves existing data, installs all libraries, builds production code, creates shortcuts, and rolls back automatically if setup fails.
+Open **Terminal**, paste this command, and press Return:
 
-**Windows (PowerShell)**
-```powershell
-powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/harshilsoni5666/EterX-Agent/main/install.ps1 | iex"
-```
-
-**Linux & macOS (Bash)**
 ```bash
-curl -sSL "https://raw.githubusercontent.com/harshilsoni5666/EterX-Agent/main/install.sh" | bash
+curl --fail --silent --show-error --location https://raw.githubusercontent.com/harshilsoni5666/EterX-Agent/main/install.sh | sh
 ```
 
-After a source install, use `eterx update` (or `eterx upgrade`) to download and apply a new version without removing configuration or workspaces. Use `eterx repair` if dependencies are damaged; it safely closes only running EterX processes before replacing locked files.
+The default app location is `~/Applications/EterX.app`. To choose another
+application folder:
+
+```bash
+curl --fail --silent --show-error --location https://raw.githubusercontent.com/harshilsoni5666/EterX-Agent/main/install.sh | ETERX_INSTALL_DIR="/Applications" sh
+```
+
+### Linux
+
+Open a terminal and run:
+
+```bash
+curl --fail --silent --show-error --location https://raw.githubusercontent.com/harshilsoni5666/EterX-Agent/main/install.sh | sh
+```
+
+The installer places the AppImage under the XDG per-user data directory and
+creates both an application-menu entry and `~/.local/bin/eterx`.
+
+### Updates and user data
+
+EterX checks GitHub Releases after launch, downloads updates in the background,
+and exposes progress and installation controls under **Settings → Updates**.
+Downloaded updates are installed on exit or when you choose **Install update**.
+
+Application binaries and user-owned data are independent:
+
+| Platform | Application | Persistent user data |
+|---|---|---|
+| Windows | Location selected in the native installer | `%LOCALAPPDATA%\EterX` |
+| macOS | `~/Applications/EterX.app` by default | `~/Library/Application Support/EterX` |
+| Linux | `${XDG_DATA_HOME:-~/.local/share}/eterx/app` | `${XDG_CONFIG_HOME:-~/.config}/EterX` |
+
+Updates never replace chats, workspaces, preferences, browser profiles, logs, or
+encrypted API credentials. The runtime is activated from a versioned staging
+directory, the previous runtime is retained for recovery, and older runtime
+copies are cleaned up only after the new version starts successfully.
+
+> [!IMPORTANT]
+> A downloadable installation exists only after a maintainer publishes a
+> version tag through the native release workflow. See
+> [Release operations](./docs/releasing.md).
 
 ---
 
@@ -250,6 +288,10 @@ The `synapse-graph` memory system builds a relational graph of concepts—connec
 
 ## CLI Reference
 
+This section is for contributors running the repository in development mode.
+Native desktop installations are launched from the operating system and updated
+from **Settings → Updates**; they do not expose or depend on this source CLI.
+
 ### Launch
 ```bash
 eterx start           # Web app at localhost:3000
@@ -277,11 +319,9 @@ eterx providers       # List all providers and their status
 ### Management
 ```bash
 eterx status          # View config and update status
-eterx update          # Transactionally download and apply the latest source release
-eterx upgrade         # Alias for `eterx update`
 eterx backup          # Backup config and memory
 eterx restore         # Restore from backup
-eterx repair          # Fix broken installation
+eterx repair          # Fix broken development dependencies
 eterx logs            # View last 60 lines of setup logs
 eterx env             # Show masked environment variables
 eterx clean           # Clear Next.js cache, TypeScript build info, stale locks

@@ -1370,6 +1370,8 @@ function DeepWorkUI() {
   const [liveMicMuted, setLiveMicMuted] = useState(false);
   const [liveSpeakerMuted, setLiveSpeakerMuted] = useState(false);
   const liveSessionRef = useRef<GeminiLiveSession | null>(null);
+  const liveChatIdRef = useRef<string | null>(null);
+  const [liveChatId, setLiveChatId] = useState<string | null>(null);
   const liveConversationRef = useRef<{ role: string; text: string }[]>([]);
 
   useEffect(() => {
@@ -2150,6 +2152,8 @@ function DeepWorkUI() {
       setActiveChatId(currentChatId);
       setTraceLogs([]);
     }
+    liveChatIdRef.current = currentChatId;
+    setLiveChatId(currentChatId);
     setActiveView('chat');
 
     try {
@@ -2167,90 +2171,272 @@ function DeepWorkUI() {
 
       const { apiKey } = await res.json();
 
-      const session = new GeminiLiveSession(apiKey, currentChatId, {
-        onStateChange: (state) => {
-          setLiveState(state);
-          if (state !== 'connected' && state !== 'listening') {
-            setLiveMicVolume(0);
-          }
-        },
-        onMicVolume: (volume) => {
-          setLiveMicVolume(volume);
-        },
-        onModelVolume: (volume) => {
-          setLiveModelVolume(volume);
-        },
-        onToolCallActive: (toolName) => {
-          setLiveActiveTool(toolName);
-        },
-        onToolAction: (text, secondary) => {
-          const cmd = { type: 'command', text, secondary, isLive: true };
-          setLiveCommands(prev => [...prev, cmd]);
-          liveCommandsRef.current = [...liveCommandsRef.current, cmd];
-        },
-        onInputTranscription: (text) => {
-          setLiveInputText(text);
-        },
-        onOutputTranscription: (text) => {
-          setLiveOutputText(text);
-        },
-        onOutputPlaybackProgress: (spokenText) => {
-          setLiveSpokenText(spokenText);
-        },
-        onTurnComplete: (userText, modelText) => {
-          const newTraceLogs: any[] = [];
-          if (userText.trim()) {
-            newTraceLogs.push({ type: 'user_action', text: userText.trim(), isLive: true });
-          }
+      // Pre-load past memories & current chat history for instant context
+      let pastMemories: string[] = [];
+      try {
+        const localMemStr = localStorage.getItem(`eterx_live_mem_${currentChatId}`);
+        const localMem = localMemStr ? JSON.parse(localMemStr) : [];
+        const globalMemStr = localStorage.getItem(`eterx_global_memories`);
+        const globalMem = globalMemStr ? JSON.parse(globalMemStr) : [];
+        pastMemories = [
+          ...localMem.map((m: any) => m.fact || m),
+          ...globalMem.map((m: any) => m.fact || m)
+        ];
+      } catch {}
 
-          if (modelText.trim()) {
-            newTraceLogs.push({ type: 'answer', text: modelText.trim(), isLive: true });
-          }
+      const targetChatObj = chatsRef.current.find(c => c.id === currentChatId);
+      const chatHistory = (targetChatObj?.traceLogs || [])
+        .filter((l: any) => l.type === 'user_action' || l.type === 'answer')
+        .map((l: any) => ({
+          role: l.type === 'user_action' ? 'user' : 'model',
+          text: l.text || ''
+        }));
 
-          // Append buffered commands from this turn after the text
-          newTraceLogs.push(...liveCommandsRef.current);
-          if (newTraceLogs.length > 0) {
-            setTraceLogs(prev => {
-              const merged = [...prev, ...newTraceLogs];
+      const allChatsOverview = [...chatsRef.current]
+        .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+        .map(c => {
+          const lastLog = c.traceLogs?.slice(-1)[0];
+          const snippet = lastLog ? (lastLog.text || lastLog.secondary || '').slice(0, 80) : '';
+          return {
+            id: c.id,
+            title: c.title || 'Untitled Chat',
+            updatedAt: new Date(c.updatedAt || Date.now()).toLocaleString(),
+            messageCount: c.traceLogs?.length || 0,
+            snippet
+          };
+        });
+
+      const session = new GeminiLiveSession(
+        apiKey,
+        currentChatId,
+        {
+          onStateChange: (state) => {
+            setLiveState(state);
+            if (state !== 'connected' && state !== 'listening') {
+              setLiveMicVolume(0);
+            }
+          },
+          onMicVolume: (volume) => {
+            setLiveMicVolume(volume);
+          },
+          onModelVolume: (volume) => {
+            setLiveModelVolume(volume);
+          },
+          onToolCallActive: (toolName) => {
+            setLiveActiveTool(toolName);
+          },
+          onToolAction: (text, secondary) => {
+            const cmd = { type: 'command', text, secondary, isLive: true };
+            setLiveCommands(prev => [...prev, cmd]);
+            liveCommandsRef.current = [...liveCommandsRef.current, cmd];
+          },
+          onInputTranscription: (text) => {
+            setLiveInputText(text);
+          },
+          onOutputTranscription: (text) => {
+            setLiveOutputText(text);
+          },
+          onOutputPlaybackProgress: (spokenText) => {
+            setLiveSpokenText(spokenText);
+          },
+          onTurnComplete: (userText, modelText) => {
+            const targetId = liveChatIdRef.current || currentChatId;
+            const newTraceLogs: any[] = [];
+            if (userText.trim()) {
+              newTraceLogs.push({ type: 'user_action', text: userText.trim(), isLive: true });
+            }
+
+            if (modelText.trim()) {
+              newTraceLogs.push({ type: 'answer', text: modelText.trim(), isLive: true });
+            }
+
+            // Append buffered commands from this turn after the text
+            newTraceLogs.push(...liveCommandsRef.current);
+            if (newTraceLogs.length > 0) {
               setChats(prevChats => {
                 const updated = prevChats.map(c => {
-                  if (c.id === currentChatId) {
+                  if (c.id === targetId) {
                     const newTitle = c.title === "Live Conversation" && userText.trim() ? userText.trim().slice(0, 50) : c.title;
-                    return { ...c, traceLogs: merged, updatedAt: Date.now(), title: newTitle };
+                    const existingLogs = c.traceLogs || [];
+                    return { ...c, traceLogs: [...existingLogs, ...newTraceLogs], updatedAt: Date.now(), title: newTitle };
                   }
                   return c;
                 });
                 persistChats(updated);
                 return updated;
               });
-              return merged;
-            });
-          }
 
-          // Reset transient live state immediately so traceLogs rendered in ChatFeed takes over seamlessly
-          setLiveInputText('');
-          setLiveOutputText('');
-          setLiveSpokenText('');
-          setLiveCommands([]);
-          liveCommandsRef.current = [];
+              // CRITICAL BUG FIX: Only update traceLogs state if activeChatId matches targetId!
+              if (activeChatIdRef.current === targetId) {
+                setTraceLogs(prev => [...prev, ...newTraceLogs]);
+              }
+            }
+
+            // Reset transient live state immediately so traceLogs rendered in ChatFeed takes over seamlessly
+            setLiveInputText('');
+            setLiveOutputText('');
+            setLiveSpokenText('');
+            setLiveCommands([]);
+            liveCommandsRef.current = [];
+          },
+          onAppControlAction: async (action, args) => {
+            if (action === 'list_all_chats') {
+              const overview = [...chatsRef.current]
+                .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+                .map(c => ({
+                  id: c.id,
+                  title: c.title || 'Untitled Chat',
+                  updatedAt: new Date(c.updatedAt || Date.now()).toLocaleString(),
+                  messageCount: c.traceLogs?.length || 0,
+                  snippet: (c.traceLogs?.slice(-1)[0]?.text || c.traceLogs?.slice(-1)[0]?.secondary || '').slice(0, 100)
+                }));
+              return { success: true, totalChats: overview.length, chats: overview };
+            }
+
+            if (action === 'read_chat_full_context') {
+              const targetChatId = args.chatId || activeChatIdRef.current;
+              const targetChat = chatsRef.current.find(c => c.id === targetChatId);
+              if (!targetChat) {
+                return { error: `Chat session not found for ID: ${targetChatId}` };
+              }
+              const transcript = (targetChat.traceLogs || [])
+                .map((log: any, idx: number) => {
+                  if (log.type === 'user_action') return `[Message #${idx + 1}] USER QUERY: ${log.text}`;
+                  if (log.type === 'answer') return `[Message #${idx + 1}] AGENT RESPONSE: ${log.text}`;
+                  if (log.type === 'command') return `[Action #${idx + 1}] TOOL EXECUTION: ${log.text} (${log.secondary || ''})`;
+                  if (log.type === 'thought') return `[Thought #${idx + 1}] THINKING: ${log.text}`;
+                  return `[Item #${idx + 1}] ${log.type}: ${log.text || log.secondary || ''}`;
+                })
+                .join('\n');
+              return {
+                chatId: targetChat.id,
+                title: targetChat.title,
+                totalMessages: targetChat.traceLogs?.length || 0,
+                fullTranscript: transcript || '(No messages in this chat yet)'
+              };
+            }
+
+            if (action === 'switch_active_chat') {
+              if (args.createNew) {
+                createNewChat();
+                return { success: true, message: 'Created and opened a fresh new chat room.' };
+              }
+              let targetId = args.chatId;
+              if (!targetId && args.title) {
+                const searchLower = String(args.title).toLowerCase().trim();
+                const matched = chatsRef.current.find(c => (c.title || '').toLowerCase().includes(searchLower));
+                if (matched) targetId = matched.id;
+              }
+              if (targetId) {
+                loadChat(targetId);
+                const chatObj = chatsRef.current.find(c => c.id === targetId);
+                return { success: true, message: `Switched to chat "${chatObj?.title || targetId}".`, chatId: targetId };
+              }
+              return { error: 'Chat not found by specified ID or title.' };
+            }
+
+            if (action === 'select_sub_agent') {
+              const name = args.agentName || 'General';
+              setActiveSubAgentTab(name);
+              return { success: true, message: `Selected sub-agent "${name}".` };
+            }
+
+            if (action === 'select_model') {
+              if (args.modelId) {
+                handleModelSelectionChange(args.modelId);
+                return { success: true, message: `Changed AI model selection to "${args.modelId}".` };
+              }
+            }
+
+            if (action === 'add_attachment_to_prompt') {
+              if (args.filePath) {
+                const fileName = args.fileName || args.filePath.split(/[/\\]/).pop() || 'attachment';
+                const newAttachment: any = {
+                  id: crypto.randomUUID(),
+                  name: fileName,
+                  path: args.filePath,
+                  file: null,
+                  preview: args.filePath,
+                  type: 'file'
+                };
+                updateAttachments((prev: any[]) => [...(prev || []), newAttachment]);
+                return { success: true, message: `Attached file "${fileName}" to composer.` };
+              }
+            }
+
+            if (action === 'send_prompt_to_main_agent') {
+              if (args.subAgent) setActiveSubAgentTab(args.subAgent);
+              if (args.modelId) handleModelSelectionChange(args.modelId);
+              const prompt = args.prompt;
+              if (prompt) {
+                handleSend(prompt);
+                return { success: true, message: `Dispatched task to main agent: "${prompt.slice(0, 60)}..."` };
+              }
+            }
+
+            if (action === 'get_main_agent_status') {
+              const targetChat = chatsRef.current.find(c => c.id === activeChatIdRef.current);
+              const isRunning = activeChatIdRef.current ? runningChatsRef.current.has(activeChatIdRef.current) : false;
+              const recentLogs = (targetChat?.traceLogs || []).slice(-10);
+              return {
+                activeChatId: activeChatIdRef.current,
+                activeChatTitle: targetChat?.title || 'Untitled',
+                isRunning,
+                activeSubAgentTab,
+                recentLogsSummary: recentLogs.map(l => ({ type: l.type, text: (l.text || l.secondary || '').slice(0, 100) }))
+              };
+            }
+
+            if (action === 'control_app_ui') {
+              if (args.view) {
+                setActiveView(args.view as any);
+              }
+              if (args.action === 'open_pet') {
+                openPetWidget();
+              } else if (args.action === 'open_agent_builder') {
+                handleOpenAgentBuilder('');
+              } else if (args.action === 'set_mode' && args.mode) {
+                handleAgentModeChange(args.mode as any);
+              } else if (args.action === 'set_thinking_level' && args.thinkingLevel) {
+                setThinkingLevel(args.thinkingLevel as any);
+              }
+              return { success: true, message: 'App UI controls updated.' };
+            }
+
+            if (action === 'stop_main_agent_run') {
+              handleStop();
+              return { success: true, message: 'Main agent run stopped.' };
+            }
+
+            return { error: 'Unknown app control action' };
+          },
+          onInterrupted: () => {
+            liveCommandsRef.current = [];
+            setLiveInputText('');
+            setLiveOutputText('');
+            setLiveSpokenText('');
+            setLiveCommands([]);
+          },
+          onError: (error) => {
+            console.error('[LiveSession] Error:', error);
+            setLiveError(error);
+            setLiveState('error');
+            setTimeout(() => {
+              setLiveState('idle');
+              setLiveError(null);
+            }, 4000);
+          },
         },
-        onInterrupted: () => {
-          liveCommandsRef.current = [];
-          setLiveInputText('');
-          setLiveOutputText('');
-          setLiveSpokenText('');
-          setLiveCommands([]);
-        },
-        onError: (error) => {
-          console.error('[LiveSession] Error:', error);
-          setLiveError(error);
-          setLiveState('error');
-          setTimeout(() => {
-            setLiveState('idle');
-            setLiveError(null);
-          }, 4000);
-        },
-      });
+        {
+          thinkingBudget: 2048,
+          initialContext: {
+            pastMemories,
+            chatHistory,
+            allChatsOverview,
+            workspacePath: activeWorkspacePath || undefined
+          }
+        }
+      );
 
       liveSessionRef.current = session;
       await session.connect();
@@ -2264,13 +2450,15 @@ function DeepWorkUI() {
         setLiveError(null);
       }, 4000);
     }
-  }, [activeChatId, revealNetworkBanner]);
+  }, [activeChatId, activeWorkspacePath, revealNetworkBanner]);
 
   const stopLiveSession = useCallback(() => {
     if (liveSessionRef.current) {
       liveSessionRef.current.disconnect();
       liveSessionRef.current = null;
     }
+    liveChatIdRef.current = null;
+    setLiveChatId(null);
 
     setLiveState('idle');
     setLiveInputText('');
@@ -6224,7 +6412,7 @@ function DeepWorkUI() {
   }, [activeChatId, chats, traceLogs]);
   const petMonitorStatus = useMemo(() => ({
     title: petMonitorTitle,
-    text: getLatestPetMonitorText(displayTraceLogs, isThinking) || 'Thinking',
+    text: getLatestPetMonitorText(displayTraceLogs, isThinking) || '',
     isThinking,
   }), [displayTraceLogs, isThinking, petMonitorTitle]);
 
@@ -8181,13 +8369,13 @@ function DeepWorkUI() {
                       onThinkingLevelChange={setThinkingLevel}
                       pinnedItems={pinnedItems}
                       setPinnedItems={updatePinnedItems}
-                      liveState={liveState}
+                      liveState={activeChatId === liveChatId ? liveState : 'idle'}
                       liveError={liveError}
                       onLiveStart={startLiveSession}
                       onLiveStop={stopLiveSession}
                       onLiveSendText={(text) => liveSessionRef.current?.sendText(text)}
-                      liveOutputText={liveOutputText}
-                      liveInputText={liveInputText}
+                      liveOutputText={activeChatId === liveChatId ? liveOutputText : ''}
+                      liveInputText={activeChatId === liveChatId ? liveInputText : ''}
                       liveMicVolume={liveMicVolume}
                       liveModelVolume={liveModelVolume}
                       liveActiveTool={liveActiveTool}
