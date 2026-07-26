@@ -575,6 +575,7 @@ const DASH_ONLY_STATUS_PATTERN = /^[\s\-â€“â€”]{2,}$/;
 
 const isHiddenStatusOnlyLog = (log: any) => {
   if (log?.type === 'work_note_cancel') return true;
+  if (log?.type === 'answer_cancel') return true;
   if (log?.type === 'task_plan') return true;
   // Hide streaming worknote placeholders that were cancelled and not yet replaced
   if (log?.type === 'work_note' && log?._streamingCancelled === true) return true;
