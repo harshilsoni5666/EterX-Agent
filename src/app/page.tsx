@@ -3065,15 +3065,20 @@ function DeepWorkUI() {
         // No poller — check server for a running agent
         fetchAgentPoll(id, -1, 5000)
           .then(data => {
+            const currentChat = chatsRef.current.find(candidate => candidate.id === id);
+            if (!currentChat) return;
+
             if (data.status === 'running') {
               // Agent is running! Merge server traces into the current turn.
               if (data.traces && data.traces.length > 0) {
-                const mergedLogs = mergeServerRunLogs(chat.traceLogs || [], data.traces, {
+                const mergedLogs = mergeServerRunLogs(currentChat.traceLogs || [], data.traces, {
                   runId: data.runId,
                   startedAt: data.startedAt,
                 });
 
-                setTraceLogs(mergedLogs);
+                if (activeChatIdRef.current === id) {
+                  setTraceLogs(mergedLogs);
+                }
                 setChats(prev => {
                   const updated = prev.map(c => c.id === id ? { ...c, traceLogs: mergedLogs } : c);
                   persistChats(updated);
