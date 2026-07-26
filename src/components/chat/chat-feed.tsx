@@ -875,6 +875,7 @@ const ChatFeedMessageGroup = React.memo(({
   groupIdx,
   isThinkingTurn,
   isLiveSessionActive,
+  suppressInitialReveal,
   isCompressed,
   onOpenAgentTeam,
   onAnswerAskUser,
@@ -886,6 +887,7 @@ const ChatFeedMessageGroup = React.memo(({
   groupIdx: number;
   isThinkingTurn: boolean;
   isLiveSessionActive: boolean;
+  suppressInitialReveal: boolean;
   isCompressed: boolean;
   onOpenAgentTeam?: (agentName?: string) => void;
   onAnswerAskUser?: (timestamp: number, answer: string, responseKey?: string) => void;
@@ -1075,6 +1077,7 @@ const ChatFeedMessageGroup = React.memo(({
     (isThinkingTurn || isLiveSessionActive) &&
     (displayFinalAnswer?.isLiveTyping || displayFinalAnswer?.isStreaming)
   );
+  const shouldAnimateAnswerReveal = isAnswerActivelyTyping && !suppressInitialReveal;
 
   // Stable deduplication set for work notes â€” keyed on noteId or content
   const seenWorkNoteKeys = new Set<string>();
@@ -1248,11 +1251,11 @@ const ChatFeedMessageGroup = React.memo(({
                 // the turn flag here made direct answers look like thoughts
                 // and incorrectly showed the thinking treatment around
                 // citations and other answer markdown.
-                isLatest={isAnswerActivelyTyping}
-                isThinking={isAnswerActivelyTyping}
+                isLatest={shouldAnimateAnswerReveal}
+                isThinking={shouldAnimateAnswerReveal}
                 variant="answer"
-                updatedAt={isAnswerActivelyTyping ? displayFinalAnswer.timestamp : undefined}
-                reveal={isAnswerActivelyTyping}
+                updatedAt={shouldAnimateAnswerReveal ? displayFinalAnswer.timestamp : undefined}
+                reveal={shouldAnimateAnswerReveal}
                 suffix={!isAnswerActivelyTyping ? (
                   <div className="inline-flex items-center gap-1.5 ml-2 align-middle mt-[-2px]">
                     <div className="flex items-center gap-0 opacity-0 group-hover/thought:opacity-100 transition-opacity duration-200">
@@ -1286,6 +1289,7 @@ const ChatFeedMessageGroup = React.memo(({
   if (previous.groupIdx !== next.groupIdx) return false;
   if (previous.isThinkingTurn !== next.isThinkingTurn) return false;
   if (previous.isLiveSessionActive !== next.isLiveSessionActive) return false;
+  if (previous.suppressInitialReveal !== next.suppressInitialReveal) return false;
   if (previous.isCompressed !== next.isCompressed) return false;
   if (previous.isSubAgentTab !== next.isSubAgentTab) return false;
   if (previous.onOpenAgentTeam !== next.onOpenAgentTeam) return false;
@@ -1403,6 +1407,7 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
   const [historyWindowSize, setHistoryWindowSize] = useState(INITIAL_VISIBLE_GROUPS);
   const previousGroupCountRef = useRef(groups.length);
   const historyConversationIdentityRef = useRef(conversationIdentity);
+  const isHydratingConversation = historyConversationIdentityRef.current !== conversationIdentity;
   const AUTO_FOLLOW_THRESHOLD = 24;
   const traceActivitySignature = useMemo(() => getTraceActivitySignature(traceLogs), [traceLogs]);
 
@@ -1712,6 +1717,7 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
                       groupIdx={groupIdx}
                       isThinkingTurn={isThinkingTurn}
                       isLiveSessionActive={isLiveSessionActive}
+                      suppressInitialReveal={isHydratingConversation}
                       isCompressed={isCompressed}
                       onOpenAgentTeam={onOpenAgentTeam}
                       onAnswerAskUser={onAnswerAskUser}
