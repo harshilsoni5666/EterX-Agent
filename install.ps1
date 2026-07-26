@@ -70,7 +70,7 @@ function Save-Download([string]$Url, [string]$Destination, [string]$Label) {
     Invoke-WithRetry {
       if (Test-Path -LiteralPath $Destination) { Remove-Item -LiteralPath $Destination -Force }
       $response = $client.GetAsync($Url, [Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
-      $response.EnsureSuccessStatusCode()
+      $null = $response.EnsureSuccessStatusCode()
       [long]$total = 0
       if ($null -ne $response.Content.Headers.ContentLength) {
         $total = [long]$response.Content.Headers.ContentLength
@@ -80,20 +80,32 @@ function Save-Download([string]$Url, [string]$Destination, [string]$Label) {
       try {
         $buffer = New-Object byte[] 1048576
         [long]$received = 0
+        $lastPercent = -1
         while (($count = $inputStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
           $outputStream.Write($buffer, 0, $count)
           $received += $count
           if ($total -gt 0) {
-            $percent = [Math]::Min(100, [Math]::Floor($received * 100 / $total))
+            $percent = [int][Math]::Min(100, [Math]::Floor($received * 100 / $total))
             $receivedMb = [Math]::Round($received / 1MB, 1)
             $totalMb = [Math]::Round($total / 1MB, 1)
-            Write-Progress -Activity $Label -Status "$receivedMb MB / $totalMb MB" -PercentComplete $percent
+            if ($percent -ne $lastPercent) {
+              $barWidth = 30
+              $filled = [int][Math]::Floor($percent * $barWidth / 100)
+              $bar = ([string][char]0x2588 * $filled) + ([string][char]0x2591 * ($barWidth - $filled))
+              $status = "  [{0}] {1,3}%  {2} MB / {3} MB  {4}" -f $bar, $percent, $receivedMb, $totalMb, $Label
+              Write-Host ("`r" + $status.PadRight(100)) -NoNewline -ForegroundColor Cyan
+              $lastPercent = $percent
+            }
+          } else {
+            $receivedMb = [Math]::Round($received / 1MB, 1)
+            $status = "  Downloaded {0} MB  {1}" -f $receivedMb, $Label
+            Write-Host ("`r" + $status.PadRight(100)) -NoNewline -ForegroundColor Cyan
           }
         }
+        Write-Host ''
       } finally {
         $outputStream.Dispose()
         $inputStream.Dispose()
-        Write-Progress -Activity $Label -Completed
       }
     } "download of $Label"
   } finally {
