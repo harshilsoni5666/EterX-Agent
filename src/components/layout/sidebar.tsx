@@ -557,8 +557,8 @@ interface SidebarProps {
   renameChat: (id: string, newTitle: string) => void;
   toggleFavorite: (id: string) => void;
   onSearchClick: () => void;
-  activeView: 'chat' | 'code' | 'agents' | 'channels' | 'projects';
-  setActiveView: (view: 'chat' | 'code' | 'agents' | 'channels' | 'projects') => void;
+  activeView: 'chat' | 'agents' | 'channels' | 'projects';
+  setActiveView: (view: 'chat' | 'agents' | 'channels' | 'projects') => void;
   runningChats?: Set<string>;
   unreadChats?: Set<string>;
   onSettingsClick?: () => void;

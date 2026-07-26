@@ -286,7 +286,7 @@ type TaskTrackerState = {
   steps?: TaskTrackerStep[];
 };
 
-type ActiveView = 'chat' | 'code' | 'agents' | 'channels' | 'projects';
+type ActiveView = 'chat' | 'agents' | 'channels' | 'projects';
 
 // Probe the EterX backend itself. A third-party connectivity URL can be blocked
 // by a firewall while every configured model endpoint still works, falsely
@@ -2388,8 +2388,8 @@ function DeepWorkUI() {
             }
 
             if (action === 'control_app_ui') {
-              if (args.view) {
-                setActiveView(args.view as any);
+              if (args.view && ['chat', 'agents', 'channels', 'projects'].includes(String(args.view))) {
+                setActiveView(args.view as ActiveView);
               }
               if (args.action === 'open_pet') {
                 openPetWidget();
