@@ -2793,25 +2793,6 @@ function DeepWorkUI() {
     if (activeView === 'chat' && activeChatId) clearUnreadChat(activeChatId);
   }, [activeChatId, activeView, clearUnreadChat]);
 
-  const updateActiveChatLogs = (updater: any[] | ((prev: any[]) => any[])): any[] => {
-    let finalLogs: any[] = [];
-    setTraceLogs(prev => {
-      finalLogs = typeof updater === 'function' ? updater(prev) : updater;
-      if (activeChatId) {
-        setChats(currentChats => {
-          const updated = currentChats.map(c =>
-            c.id === activeChatId ? { ...c, traceLogs: finalLogs, updatedAt: Date.now() } : c
-          );
-          const sorted = sortChats(updated);
-          persistChats(sorted);
-          return sorted;
-        });
-      }
-      return finalLogs;
-    });
-    return finalLogs;
-  };
-
   const AGENT_CONNECTION_NOTE_ID = 'eterx-agent-connection';
   const isAgentConnectionLog = (log: any) =>
     !!log && (log._connection === true || (log.type === 'work_note' && log.noteId === AGENT_CONNECTION_NOTE_ID));
