@@ -34,7 +34,7 @@ function Invoke-WithRetry([scriptblock]$Operation, [string]$Description, [int]$A
     catch {
       if ($attempt -eq $Attempts) { throw }
       $delay = [Math]::Min(12, [Math]::Pow(2, $attempt))
-      Write-Log "$Description failed on attempt $attempt: $($_.Exception.Message)"
+      Write-Log "$Description failed on attempt ${attempt}: $($_.Exception.Message)"
       Write-Host "  Retrying $Description in $delay seconds..." -ForegroundColor Yellow
       Start-Sleep -Seconds $delay
     }
