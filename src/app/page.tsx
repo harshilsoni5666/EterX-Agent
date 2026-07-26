@@ -2266,12 +2266,13 @@ function DeepWorkUI() {
               newTraceLogs.push({ type: 'user_action', text: userText.trim(), isLive: true });
             }
 
+            // Tool activity belongs between the spoken request and response.
+            newTraceLogs.push(...liveCommandsRef.current);
+
             if (modelText.trim()) {
               newTraceLogs.push({ type: 'answer', text: modelText.trim(), isLive: true });
             }
 
-            // Append buffered commands from this turn after the text
-            newTraceLogs.push(...liveCommandsRef.current);
             if (newTraceLogs.length > 0) {
               setChats(prevChats => {
                 const updated = prevChats.map(c => {
@@ -2290,6 +2291,7 @@ function DeepWorkUI() {
               if (activeChatIdRef.current === targetId) {
                 setTraceLogs(prev => [...prev, ...newTraceLogs]);
               }
+              markChatUnreadIfBackground(targetId);
             }
 
             // Reset transient live state immediately so traceLogs rendered in ChatFeed takes over seamlessly
@@ -2554,12 +2556,12 @@ function DeepWorkUI() {
       logs.push({ type: 'user_action', text: liveInputText, isLive: true });
     }
 
-    if (liveOutputText) {
-      logs.push({ type: 'answer', text: liveOutputText, spokenText: liveSpokenText, isLive: true, isLiveTyping: true });
-    }
-
     if (liveCommands.length > 0) {
       logs.push(...liveCommands);
+    }
+
+    if (liveOutputText) {
+      logs.push({ type: 'answer', text: liveOutputText, spokenText: liveSpokenText, isLive: true, isLiveTyping: true });
     }
 
     return logs;
