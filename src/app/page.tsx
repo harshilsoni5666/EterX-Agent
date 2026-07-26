@@ -1370,6 +1370,7 @@ function DeepWorkUI() {
   const [liveMicMuted, setLiveMicMuted] = useState(false);
   const [liveSpeakerMuted, setLiveSpeakerMuted] = useState(false);
   const liveSessionRef = useRef<GeminiLiveSession | null>(null);
+  const liveSessionTokenRef = useRef<string | null>(null);
   const liveChatIdRef = useRef<string | null>(null);
   const [liveChatId, setLiveChatId] = useState<string | null>(null);
   const liveConversationRef = useRef<{ role: string; text: string }[]>([]);
@@ -2124,6 +2125,10 @@ function DeepWorkUI() {
   // ═══════════════════════════════════════════════════════════════
 
   const startLiveSession = useCallback(async () => {
+    const sessionToken = crypto.randomUUID();
+    liveSessionTokenRef.current = sessionToken;
+    const isCurrentSession = () => liveSessionTokenRef.current === sessionToken;
+
     if (liveSessionRef.current) {
       liveSessionRef.current.disconnect();
       liveSessionRef.current = null;
@@ -2167,6 +2172,7 @@ function DeepWorkUI() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ chatId: currentChatId })
       });
+      if (!isCurrentSession()) return;
 
       if (!res.ok) {
         const err = await res.json();
@@ -2174,6 +2180,7 @@ function DeepWorkUI() {
       }
 
       const { apiKey } = await res.json();
+      if (!isCurrentSession()) return;
 
       // Pre-load past memories & current chat history for instant context
       let pastMemories: string[] = [];
@@ -2215,36 +2222,45 @@ function DeepWorkUI() {
         currentChatId,
         {
           onStateChange: (state) => {
+            if (!isCurrentSession()) return;
             setLiveState(state);
             if (state !== 'connected' && state !== 'listening') {
               setLiveMicVolume(0);
             }
           },
           onMicVolume: (volume) => {
+            if (!isCurrentSession()) return;
             setLiveMicVolume(volume);
           },
           onModelVolume: (volume) => {
+            if (!isCurrentSession()) return;
             setLiveModelVolume(volume);
           },
           onToolCallActive: (toolName) => {
+            if (!isCurrentSession()) return;
             setLiveActiveTool(toolName);
           },
           onToolAction: (text, secondary) => {
+            if (!isCurrentSession()) return;
             const cmd = { type: 'command', text, secondary, isLive: true };
             setLiveCommands(prev => [...prev, cmd]);
             liveCommandsRef.current = [...liveCommandsRef.current, cmd];
           },
           onInputTranscription: (text) => {
+            if (!isCurrentSession()) return;
             setLiveInputText(text);
           },
           onOutputTranscription: (text) => {
+            if (!isCurrentSession()) return;
             setLiveOutputText(text);
           },
           onOutputPlaybackProgress: (spokenText) => {
+            if (!isCurrentSession()) return;
             setLiveSpokenText(spokenText);
           },
           onTurnComplete: (userText, modelText) => {
-            const targetId = liveChatIdRef.current || currentChatId;
+            if (!isCurrentSession()) return;
+            const targetId = currentChatId;
             const newTraceLogs: any[] = [];
             if (userText.trim()) {
               newTraceLogs.push({ type: 'user_action', text: userText.trim(), isLive: true });
@@ -2284,6 +2300,7 @@ function DeepWorkUI() {
             liveCommandsRef.current = [];
           },
           onAppControlAction: async (action, args) => {
+            if (!isCurrentSession()) return { error: 'Live session is no longer active.' };
             if (action === 'list_all_chats') {
               const overview = [...chatsRef.current]
                 .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
@@ -2415,6 +2432,7 @@ function DeepWorkUI() {
             return { error: 'Unknown app control action' };
           },
           onInterrupted: () => {
+            if (!isCurrentSession()) return;
             liveCommandsRef.current = [];
             setLiveInputText('');
             setLiveOutputText('');
@@ -2422,10 +2440,12 @@ function DeepWorkUI() {
             setLiveCommands([]);
           },
           onError: (error) => {
+            if (!isCurrentSession()) return;
             console.error('[LiveSession] Error:', error);
             setLiveError(error);
             setLiveState('error');
             setTimeout(() => {
+              if (!isCurrentSession()) return;
               setLiveState('idle');
               setLiveError(null);
             }, 4000);
@@ -2442,14 +2462,24 @@ function DeepWorkUI() {
         }
       );
 
+      if (!isCurrentSession()) {
+        session.disconnect();
+        return;
+      }
       liveSessionRef.current = session;
       await session.connect();
+      if (!isCurrentSession()) {
+        session.disconnect();
+        return;
+      }
 
     } catch (error: any) {
+      if (!isCurrentSession()) return;
       console.error('[LiveSession] Failed to start:', error);
       setLiveError(error.message || 'Failed to start Live API');
       setLiveState('error');
       setTimeout(() => {
+        if (!isCurrentSession()) return;
         setLiveState('idle');
         setLiveError(null);
       }, 4000);
@@ -2457,6 +2487,7 @@ function DeepWorkUI() {
   }, [activeChatId, activeWorkspacePath, revealNetworkBanner]);
 
   const stopLiveSession = useCallback(() => {
+    liveSessionTokenRef.current = null;
     if (liveSessionRef.current) {
       liveSessionRef.current.disconnect();
       liveSessionRef.current = null;
