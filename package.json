@@ -1,6 +1,6 @@
 {
   "name": "eterx",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "EterX autonomous AI agent desktop application",
   "author": {
     "name": "Harshil Soni",
@@ -148,7 +148,10 @@
     "compression": "normal",
     "asar": true,
     "asarUnpack": [
-      "runtime/assets/native/**/*"
+      "runtime/assets/native/**/*",
+      "runtime/modules/**/*.node",
+      "runtime/modules/**/*.dll",
+      "runtime/modules/**/*.exe"
     ],
     "npmRebuild": false,
     "buildDependenciesFromSource": false,

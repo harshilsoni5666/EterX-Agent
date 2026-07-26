@@ -103,6 +103,7 @@ installProductionDependencies(frameworkInstallRoot, {
   private: true,
   version: '1.0.0',
   dependencies: {
+    'electron-updater': packageVersion('electron-updater'),
     next: packageVersion('next'),
     react: packageVersion('react'),
     'react-dom': packageVersion('react-dom'),
@@ -163,34 +164,23 @@ if (process.platform === 'win32') {
   }
 }
 
-// electron/main.js is intentionally tiny and excludes the repository's full
-// node_modules tree. Bundle only electron-updater and its production closure so
-// clean installations can update without Node.js or npm on the user's device.
-const updaterVersion = JSON.parse(
-  fs.readFileSync(path.join(repositoryRoot, 'node_modules', 'electron-updater', 'package.json'), 'utf8'),
-).version;
-const updaterRoot = path.join(stagingRoot, 'updater');
-fs.mkdirSync(updaterRoot, { recursive: true });
-fs.writeFileSync(path.join(updaterRoot, 'package.json'), `${JSON.stringify({
-  name: 'eterx-desktop-updater-runtime',
-  private: true,
-  version: '1.0.0',
-  dependencies: { 'electron-updater': updaterVersion },
-}, null, 2)}\n`);
-
-installProductionDependencies(updaterRoot, JSON.parse(
-  fs.readFileSync(path.join(updaterRoot, 'package.json'), 'utf8'),
-), 'the desktop updater runtime');
+// Electron Builder intentionally filters every directory named node_modules.
+// Move the verified runtime closure under an application-owned name and expose
+// it through NODE_PATH when the packaged server starts.
+fs.renameSync(
+  path.join(stagingRoot, 'node_modules'),
+  path.join(stagingRoot, 'modules'),
+);
 
 const required = [
   'server.js',
-  path.join('node_modules', 'next', 'package.json'),
-  path.join('node_modules', '@swc', 'helpers', 'package.json'),
+  path.join('modules', 'next', 'package.json'),
+  path.join('modules', '@swc', 'helpers', 'package.json'),
+  path.join('modules', 'electron-updater', 'package.json'),
   path.join('assets', 'skills'),
   path.join('assets', 'agent-prompts', 'prompts'),
   path.join('.next', 'BUILD_ID'),
   path.join('.next', 'server', 'app-paths-manifest.json'),
-  path.join('updater', 'node_modules', 'electron-updater', 'package.json'),
 ];
 for (const relativePath of required) {
   if (!fs.existsSync(path.join(stagingRoot, relativePath))) {

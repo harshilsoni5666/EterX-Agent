@@ -33,7 +33,6 @@ const { app, BrowserWindow, ipcMain, dialog, shell, screen, Menu, nativeImage, s
 // Disable HTTP Cache globally in development to prevent aggressive cache storage of stylesheets and scripts
 app.commandLine.appendSwitch('disable-http-cache');
 app.setName('EterX');
-app.setAppUserModelId('com.eterx.agent');
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) {
@@ -154,7 +153,7 @@ function initializeDesktopUpdates() {
       // The desktop server runtime already contains the production dependency
       // graph. Keeping the updater there avoids duplicating a second large
       // node_modules tree inside app.asar.
-      const bundledUpdater = path.join(app.getAppPath(), 'runtime', 'updater', 'node_modules', 'electron-updater');
+      const bundledUpdater = path.join(app.getAppPath(), 'runtime', 'modules', 'electron-updater');
       ({ autoUpdater: desktopAutoUpdater } = require(bundledUpdater));
     }
     desktopAutoUpdater.autoDownload = true;
@@ -888,6 +887,7 @@ async function startPackagedServer() {
   const persistentEnv = readEnvFile(path.join(app.getPath('userData'), 'data', '.env.local'));
   const secureSettings = readSecureRuntimeSettings();
   const dataRoot = path.join(app.getPath('userData'), 'data');
+  const runtimeModules = path.join(runtimeRoot, 'modules');
   const env = removeDesktopRuntimeSettingEnvironment({
     ...process.env,
     ...persistentEnv,
@@ -898,6 +898,7 @@ async function startPackagedServer() {
     ETERX_PORT: String(port),
     ETERX_APP_ROOT: runtimeRoot,
     ETERX_DATA_DIR: dataRoot,
+    NODE_PATH: [runtimeModules, process.env.NODE_PATH].filter(Boolean).join(path.delimiter),
   });
   Object.assign(env, secureRuntimeSettingsEnvironment(secureSettings));
 
