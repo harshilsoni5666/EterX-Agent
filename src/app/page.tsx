@@ -3432,6 +3432,15 @@ function DeepWorkUI() {
             (logs[i].subAgent || null) === subAgent &&
             (!noteId || logs[i].noteId === noteId)
           ) {
+            const existingTraceIdx = Number(logs[i]._traceIdx);
+            const cancellationTraceIdx = Number(trace._traceIdx);
+            if (
+              Number.isFinite(existingTraceIdx) &&
+              Number.isFinite(cancellationTraceIdx) &&
+              cancellationTraceIdx < existingTraceIdx
+            ) {
+              break;
+            }
             logs[i] = { ...logs[i], _streamingCancelled: true };
             break;
           }
