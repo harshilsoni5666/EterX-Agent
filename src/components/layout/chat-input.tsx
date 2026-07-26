@@ -1073,7 +1073,6 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const [isAtTop, setIsAtTop] = useState(true);
   const [isAtBottom, setIsAtBottom] = useState(false);
   const [isLogoHovered, setIsLogoHovered] = useState(false);
-  const [isStopping, setIsStopping] = useState(false); // Intermediate stop state
   const [hasDraftInputText, setHasDraftInputText] = useState(() => Boolean(inputValue.trim()));
   const [showModelMenu, setShowModelMenu] = useState(false);
   const [showAgentMenu, setShowAgentMenu] = useState(false);
@@ -1406,11 +1405,6 @@ const handleSelectFolderDialog = useCallback(async () => {
       document.removeEventListener('keydown', escHandler);
     };
   }, [showAgentMenu]);
-
-  // Clear isStopping as soon as the agent actually stops
-  useEffect(() => {
-    if (!isThinking) setIsStopping(false);
-  }, [isThinking]);
 
   useEffect(() => {
     setHasDraftInputText(Boolean(inputValue.trim()));
@@ -3498,7 +3492,7 @@ const handleSelectFolderDialog = useCallback(async () => {
                         </button>
                       </Tooltip>
                     </motion.div>
-                  ) : !isStopping && hasComposerPayload ? (
+                  ) : hasComposerPayload ? (
                     /* Running agent + typed text: normal send button sends live steering */
                     <motion.div key={isThinking ? "send-steering" : "send"}
                       initial={{ opacity: 0, scale: 0.8 }}
@@ -3516,7 +3510,7 @@ const handleSelectFolderDialog = useCallback(async () => {
                         </button>
                       </Tooltip>
                     </motion.div>
-                  ) : isThinking && !isStopping ? (
+                  ) : isThinking ? (
                     /* ── STOP button (agent running, input empty) ── */
                     <motion.div key="stop"
                       initial={{ opacity: 0, scale: 0.8 }}
@@ -3526,34 +3520,13 @@ const handleSelectFolderDialog = useCallback(async () => {
                     >
                       <Tooltip text="Stop Agent" side="top">
                         <button
-                          onClick={() => {
-                            setIsStopping(true);
-                            Promise.resolve(handleStop())
-                              .then(stopped => { if (stopped === false) setIsStopping(false); })
-                              .catch(() => setIsStopping(false));
-                          }}
+                          onClick={() => { void handleStop(); }}
                           className="eterx-control-button eterx-composer-stop-button w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full bg-[#F2EFEA] text-black hover:bg-[#F2EFEA] transition-all duration-200 shadow-[0_8px_22px_rgba(242,239,234,0.15),inset_0_1px_0_rgba(255,255,255,0.82)] active:scale-[0.96] group cursor-pointer overflow-hidden relative"
                         >
                           <div className="absolute inset-0 bg-gradient-to-t from-black/0 to-black/5" />
                           <span className="eterx-composer-stop-icon block h-[12px] w-[12px] rounded-[2.5px] bg-current transition-all duration-200" aria-hidden="true" />
                         </button>
                       </Tooltip>
-                    </motion.div>
-                  ) : isStopping ? (
-                    /* ── STOPPING spinner (stop clicked, waiting for backend) ── */
-                    <motion.div key="stopping"
-                      initial={{ opacity: 0, scale: 0.7 }}
-                      animate={{ opacity: 1, scale: 1 }}
-                      exit={{ opacity: 0, scale: 0.8 }}
-                      transition={{ duration: 0.18, ease: 'easeOut' }}
-                    >
-                      <div className="eterx-control-button eterx-composer-stopping-button w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full bg-[#2D2D2D] border border-transparent shadow-none cursor-not-allowed">
-                        <motion.div
-                          className="eterx-composer-spinner w-[18px] h-[18px] rounded-full border-[2px] border-white/20 border-t-white"
-                          animate={{ rotate: 360 }}
-                          transition={{ duration: 0.75, repeat: Infinity, ease: 'linear' }}
-                        />
-                      </div>
                     </motion.div>
                   ) : (inputValue.trim() || attachments.length > 0) ? (
                     /* ── SEND button ── */
