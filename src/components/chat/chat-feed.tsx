@@ -874,6 +874,7 @@ const ChatFeedMessageGroup = React.memo(({
   group,
   groupIdx,
   isThinkingTurn,
+  isLiveSessionActive,
   isCompressed,
   onOpenAgentTeam,
   onAnswerAskUser,
@@ -884,6 +885,7 @@ const ChatFeedMessageGroup = React.memo(({
   group: any[];
   groupIdx: number;
   isThinkingTurn: boolean;
+  isLiveSessionActive: boolean;
   isCompressed: boolean;
   onOpenAgentTeam?: (agentName?: string) => void;
   onAnswerAskUser?: (timestamp: number, answer: string, responseKey?: string) => void;
@@ -1070,7 +1072,7 @@ const ChatFeedMessageGroup = React.memo(({
   // be delivered again by polling or history restoration, but must render once
   // without replaying its entrance animation.
   const isAnswerActivelyTyping = Boolean(
-    isThinkingTurn &&
+    (isThinkingTurn || isLiveSessionActive) &&
     (displayFinalAnswer?.isLiveTyping || displayFinalAnswer?.isStreaming)
   );
 
@@ -1283,6 +1285,7 @@ const ChatFeedMessageGroup = React.memo(({
 }, (previous, next) => {
   if (previous.groupIdx !== next.groupIdx) return false;
   if (previous.isThinkingTurn !== next.isThinkingTurn) return false;
+  if (previous.isLiveSessionActive !== next.isLiveSessionActive) return false;
   if (previous.isCompressed !== next.isCompressed) return false;
   if (previous.isSubAgentTab !== next.isSubAgentTab) return false;
   if (previous.onOpenAgentTeam !== next.onOpenAgentTeam) return false;
@@ -1697,12 +1700,18 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
                 {visibleGroups.map((group, visibleGroupIdx) => {
                   const groupIdx = hiddenGroupCount + visibleGroupIdx;
                   const isThinkingTurn = isThinking && groupIdx === groups.length - 1;
+                  const isLiveSessionActive =
+                    groupIdx === groups.length - 1 &&
+                    liveState !== undefined &&
+                    liveState !== 'idle' &&
+                    liveState !== 'error';
                   return (
                     <ChatFeedMessageGroup
                       key={`group-${ conversationIdentity }-${ groupIdx }`}
                       group={group}
                       groupIdx={groupIdx}
                       isThinkingTurn={isThinkingTurn}
+                      isLiveSessionActive={isLiveSessionActive}
                       isCompressed={isCompressed}
                       onOpenAgentTeam={onOpenAgentTeam}
                       onAnswerAskUser={onAnswerAskUser}
