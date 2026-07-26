@@ -3602,7 +3602,23 @@ function DeepWorkUI() {
           ) {
             continue;
           }
-          logs[answerIdx] = { ...logs[answerIdx], ...processedLog, text: trace.text, _traceIdx: trace._traceIdx, isLive: processedLog.isLive };
+          const incomingIsStreaming = trace.isStreaming === true || trace.isLiveTyping === true;
+          logs[answerIdx] = {
+            ...logs[answerIdx],
+            ...processedLog,
+            text: trace.text,
+            _traceIdx: trace._traceIdx,
+            isLive: processedLog.isLive,
+            isStreaming: incomingIsStreaming,
+            isLiveTyping: incomingIsStreaming,
+            wasStreaming: Boolean(
+              logs[answerIdx].wasStreaming ||
+              logs[answerIdx].isStreaming ||
+              logs[answerIdx].isLiveTyping ||
+              trace.wasStreaming ||
+              incomingIsStreaming
+            ),
+          };
         } else {
           logs.push(processedLog);
         }
