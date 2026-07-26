@@ -369,6 +369,34 @@ export const taskStore = {
       } else {
         task.traceLogs.push({ ...timedEvent, text: noteText, noteId, subAgent });
       }
+    } else if (timedEvent?.type === 'console_output') {
+      const streamId = String(timedEvent.streamId || '').trim();
+      const ownerTraceId = String(timedEvent.ownerTraceId || '').trim();
+      const terminalTaskId = String(timedEvent.taskId || '').trim();
+      let mergeIdx = -1;
+
+      for (let i = task.traceLogs.length - 1; i >= 0; i--) {
+        const log = task.traceLogs[i];
+        if (log?.type !== 'console_output') continue;
+        const sameStream = streamId && String(log.streamId || '') === streamId;
+        const sameOwner = ownerTraceId && String(log.ownerTraceId || '') === ownerTraceId;
+        const sameTask = terminalTaskId && String(log.taskId || '') === terminalTaskId;
+        if (sameStream || sameOwner || sameTask) {
+          mergeIdx = i;
+          break;
+        }
+      }
+
+      if (mergeIdx >= 0) {
+        const previous = task.traceLogs[mergeIdx];
+        task.traceLogs[mergeIdx] = {
+          ...previous,
+          ...timedEvent,
+          startTime: previous.startTime || previous.timestamp || timedEvent.startTime || timedEvent.timestamp,
+        };
+      } else {
+        task.traceLogs.push(timedEvent);
+      }
     } else {
       task.traceLogs.push(timedEvent);
     }
