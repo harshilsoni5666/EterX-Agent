@@ -2133,6 +2133,8 @@ function DeepWorkUI() {
   // ═══════════════════════════════════════════════════════════════
 
   const startLiveSession = useCallback(async () => {
+    if (activeChatId && runningChatsRef.current.has(activeChatId)) return;
+
     const sessionToken = crypto.randomUUID();
     liveSessionTokenRef.current = sessionToken;
     const isCurrentSession = () => liveSessionTokenRef.current === sessionToken;
