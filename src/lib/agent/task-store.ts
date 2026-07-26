@@ -275,7 +275,20 @@ export const taskStore = {
       ? { timestamp: now, ...compactEvent }
       : compactEvent;
 
-    if (timedEvent?.type === 'work_note_cancel') {
+    if (timedEvent?.type === 'answer_cancel') {
+      const answerId = String(timedEvent.answerId || '').trim();
+      for (let i = task.traceLogs.length - 1; i >= 0; i--) {
+        const log = task.traceLogs[i];
+        if (
+          log?.type === 'answer' &&
+          (log.isStreaming || log.isLiveTyping) &&
+          (!answerId || String(log.answerId || '') === answerId)
+        ) {
+          task.traceLogs.splice(i, 1);
+          break;
+        }
+      }
+    } else if (timedEvent?.type === 'work_note_cancel') {
       const noteId = timedEvent.noteId || null;
       const subAgent = timedEvent.subAgent || null;
       for (let i = task.traceLogs.length - 1; i >= 0; i--) {
