@@ -1014,7 +1014,7 @@ const ChatFeedMessageGroup = React.memo(({
   let firstAnswerIdx = -1;
   let lastAnswerIdx = -1;
   for (let i = 0; i < standardLogs.length; i++) {
-    if (standardLogs[i].type === 'answer') {
+    if (standardLogs[i].type === 'answer' && String(standardLogs[i].text || '').trim()) {
       if (firstAnswerIdx === -1) firstAnswerIdx = i;
       lastAnswerIdx = i;
     }
