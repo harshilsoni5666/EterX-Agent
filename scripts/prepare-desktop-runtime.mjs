@@ -115,6 +115,7 @@ fs.cpSync(
   path.join(stagingRoot, 'node_modules'),
   { recursive: true, force: true },
 );
+fs.rmSync(path.join(stagingRoot, 'node_modules', '.bin'), { recursive: true, force: true });
 fs.rmSync(frameworkInstallRoot, { recursive: true, force: true });
 
 const assetsRoot = path.join(stagingRoot, 'assets');
