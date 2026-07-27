@@ -7,6 +7,7 @@ import { detectChatBoundary } from '../src/lib/agent/chat-boundary';
 import { getEterxWorkspaceDir } from '../src/lib/agent/storage-paths';
 import { MAX_HISTORY_TOTAL_CHARS, normalizeHistory } from '../src/app/api/agent/_shared';
 import { buildSubAgentStrategy } from '../src/lib/agent/roles/sub_agent_strategy';
+import { buildProxyTaskHistory } from '../src/lib/agent/agent-registry';
 import {
   awaitIfPaused,
   cancelAgent,
@@ -155,6 +156,19 @@ function testHistoryAndSubAgentIdentityBounds(): void {
   assert.equal(strategy.recommendedAgents.some(agent => Boolean(agent.name)), false, 'strategies must not bind identities to roles');
 }
 
+function testProxyTaskHistoryIsolation(): void {
+  const baseHistory = [{ role: 'user', parts: [{ text: 'original request' }] }];
+  const independent = buildProxyTaskHistory(baseHistory, 'previous proxy prompt', 'previous answer', false);
+  assert.deepEqual(independent, baseHistory);
+  assert.equal(JSON.stringify(independent).includes('previous answer'), false);
+
+  const dependent = buildProxyTaskHistory(baseHistory, 'previous proxy prompt', 'previous answer', true);
+  assert.deepEqual(dependent.slice(-2), [
+    { role: 'user', parts: [{ text: 'previous proxy prompt' }] },
+    { role: 'model', parts: [{ text: 'previous answer' }] },
+  ]);
+}
+
 async function main(): Promise<void> {
   await testStaleRunCannotCorruptSuccessor();
   await testNewTaskResetRemovesTaskContamination();
@@ -162,6 +176,7 @@ async function main(): Promise<void> {
   await testCancellationIsGlobalAndWakesPausedAgents();
   await testLongTracePollingStaysIncrementalAfterCompaction();
   testHistoryAndSubAgentIdentityBounds();
+  testProxyTaskHistoryIsolation();
   console.log('Agent lifecycle integration checks passed.');
 }
 

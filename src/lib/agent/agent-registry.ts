@@ -87,6 +87,20 @@ interface AgentExecution {
   };
 }
 
+export const buildProxyTaskHistory = (
+  baseHistory: any[],
+  previousPrompt: string,
+  previousAnswer: string,
+  hasDependency: boolean,
+): any[] => {
+  const history = Array.isArray(baseHistory) ? [...baseHistory] : [];
+  if (!hasDependency) return history.slice(-24);
+
+  history.push({ role: 'user', parts: [{ text: previousPrompt }] });
+  if (previousAnswer) history.push({ role: 'model', parts: [{ text: previousAnswer }] });
+  return history.slice(-24);
+};
+
 const MAX_TRACE_BUFFER = 2000;          // Max traces kept in memory per chat
 const MAX_COMPLETED_TRACE_BUFFER = 350;
 const MAX_STEERING_QUEUE = 25;
@@ -1138,11 +1152,12 @@ class AgentRegistry {
     const control = readProxyControl(chatId);
     const runtimeSettings = current?.launchSpec.runtimeSettings || buildScopedRuntimeSettings();
     const priorHistory = current
-      ? [
-        ...current.launchSpec.history,
-        { role: 'user', parts: [{ text: current.prompt }] },
-        ...(current.finalAnswer ? [{ role: 'model', parts: [{ text: current.finalAnswer }] }] : []),
-      ].slice(-24)
+      ? buildProxyTaskHistory(
+        current.launchSpec.history,
+        current.prompt,
+        current.finalAnswer,
+        Boolean(task.dependency),
+      )
       : [];
     const basePinned = current?.launchSpec.pinnedContext || {};
     const pinnedContext = {
@@ -1163,7 +1178,7 @@ class AgentRegistry {
     const result = this.startAgent(
       chatId,
       task.dependency
-        ? `${task.prompt}\n\nDependency from the side-agent workflow: ${task.dependency}. Use the prior task result in conversation history as evidence; do not redo the prior task unless this dependency requires a correction.`
+        ? `${task.prompt}\n\nDependency: ${task.dependency}. Use the immediately preceding result in conversation history as evidence. Do not repeat completed work unless a correction is required.`
         : task.prompt,
       priorHistory,
       current?.launchSpec.mode || 'think',
