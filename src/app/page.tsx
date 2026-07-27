@@ -375,10 +375,13 @@ const serializeComposerAttachment = (att: ComposerAttachment) => {
 };
 
 const DEFAULT_CHAT_TITLE = 'New chat';
-const removeGeneratedEmptyChats = (chatList: ChatSession[]) => chatList.filter(chat => {
-  if ((chat.traceLogs || []).length > 0) return true;
+const isGeneratedEmptyChat = (chat: ChatSession | null | undefined) => {
+  if (!chat || (chat.traceLogs || []).length > 0) return false;
   const title = String(chat.title || '').trim().toLowerCase();
-  return title !== 'live conversation' && title !== DEFAULT_CHAT_TITLE.toLowerCase();
+  return title === 'live conversation' || title === DEFAULT_CHAT_TITLE.toLowerCase();
+};
+const removeGeneratedEmptyChats = (chatList: ChatSession[]) => chatList.filter(chat => {
+  return !isGeneratedEmptyChat(chat);
 });
 const SELECTED_AGENT_STORAGE_KEY = 'eterx_selected_agent';
 const SETTINGS_STORAGE_KEY = 'eterx_settings';
@@ -2147,6 +2150,12 @@ function DeepWorkUI() {
     if (!chatId || liveEphemeralChatIdRef.current !== chatId) return;
     liveEphemeralChatIdRef.current = null;
     lastLiveLogsSnapshotRef.current = [];
+    setChats(previous => {
+      const updated = previous.filter(chat => chat.id !== chatId || !isGeneratedEmptyChat(chat));
+      if (updated.length === previous.length) return previous;
+      persistChats(updated);
+      return updated;
+    });
     if (activeChatIdRef.current === chatId) {
       activeChatIdRef.current = null;
       setActiveChatId(null);
@@ -2182,9 +2191,19 @@ function DeepWorkUI() {
     lastLiveLogsSnapshotRef.current = [];
 
     let currentChatId = activeChatId;
+    const selectedChat = currentChatId
+      ? chatsRef.current.find(chat => chat.id === currentChatId)
+      : null;
     // A new live room stays ephemeral until its first real turn. Persisting it
     // here leaves empty "Live Conversation" rows behind after disconnects.
-    if (!currentChatId) {
+    if (!currentChatId || !selectedChat || isGeneratedEmptyChat(selectedChat)) {
+      if (selectedChat && isGeneratedEmptyChat(selectedChat)) {
+        setChats(previous => {
+          const updated = previous.filter(chat => chat.id !== selectedChat.id);
+          persistChats(updated);
+          return updated;
+        });
+      }
       currentChatId = crypto.randomUUID();
       liveEphemeralChatIdRef.current = currentChatId;
       activeChatIdRef.current = currentChatId;
