@@ -1157,6 +1157,20 @@ const ChatFeedMessageGroup = React.memo(({
 
   const segments: { type: 'thoughts' | 'steering' | 'ask_user'; logs?: any[]; log?: any }[] = [];
   let currentThoughts: any[] = [];
+  const segmentIdentity = (seg: { logs?: any[]; log?: any }, fallback: number) => {
+    const anchor = seg.log || seg.logs?.[0];
+    return String(
+      anchor?.thoughtId ??
+      anchor?.noteId ??
+      anchor?.responseKey ??
+      anchor?.steeringId ??
+      anchor?.id ??
+      anchor?.startTime ??
+      anchor?.timestamp ??
+      anchor?._traceIdx ??
+      fallback
+    );
+  };
 
   visibleWorkLogs.forEach(log => {
     if (log.type === 'steering_received') {
@@ -1222,12 +1236,12 @@ const ChatFeedMessageGroup = React.memo(({
     >
       {segments.map((seg, segIdx) => {
         if (seg.type === 'steering') {
-          return <SteeringFeedCard key={`steer-${ groupIdx }-${ segIdx }`} log={seg.log} isCompressed={isCompressed} onEdit={onEditUserMessage} />;
+          return <SteeringFeedCard key={`steer-${ groupIdx }-${ segmentIdentity(seg, segIdx) }`} log={seg.log} isCompressed={isCompressed} onEdit={onEditUserMessage} />;
         }
         if (seg.type === 'ask_user') {
           return (
             <AskUserPrompt
-              key={`ask-${ groupIdx }-${ segIdx }`}
+              key={`ask-${ groupIdx }-${ segmentIdentity(seg, segIdx) }`}
               question={seg.log.question}
               mode={seg.log.mode || 'text'}
               options={seg.log.options || []}
@@ -1255,7 +1269,7 @@ const ChatFeedMessageGroup = React.memo(({
 
         return (
           <ThoughtSequence
-            key={`thoughts-${ groupIdx }-${ segIdx }`}
+            key={`thoughts-${ groupIdx }-${ segmentIdentity(seg, segIdx) }`}
             logs={seg.logs || []}
             liveLogs={isLastThoughts ? liveCommandLogs : []}
             isThinking={groupIsThinking && isLastThoughts}
