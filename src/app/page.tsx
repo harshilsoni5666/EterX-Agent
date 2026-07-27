@@ -2253,6 +2253,12 @@ function DeepWorkUI() {
         const cleanUserText = userText.trim();
         const cleanModelText = modelText.trim();
         if (!cleanUserText && !cleanModelText && commands.length === 0) return;
+        if (
+          liveEphemeralChatIdRef.current === currentChatId &&
+          !cleanUserText
+        ) {
+          return;
+        }
 
         const completedAt = Date.now();
         const turnId = `live_${ crypto.randomUUID() }`;
