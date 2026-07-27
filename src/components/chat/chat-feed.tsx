@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+﻿import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { createPortal } from 'react-dom';
 import { Copy, RefreshCw, ChevronDown, FileText, Check, Clock, ChevronRight, MessageSquarePlus, Activity, Minimize2, CornerDownLeft, CircleStop, TriangleAlert, Sparkles } from 'lucide-react';
@@ -1776,8 +1776,7 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
                 shouldAutoFollowRef.current = true;
                 container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
               }}
-              className={`eterx-chat-scroll-latest absolute bottom-[112px] z-40 flex h-9 w-9 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--background)]/95 p-0 text-[var(--muted-foreground)] shadow-[0_10px_28px_rgba(0,0,0,0.18)] backdrop-blur-xl transition-colors hover:bg-[var(--muted)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/30 ${ isCompressed ? 'left-[calc(50%+270px)]' : 'left-[calc(50%+390px)]'
-                }`}
+              className="eterx-chat-scroll-latest absolute bottom-6 left-1/2 -translate-x-1/2 z-40 flex h-9 w-9 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--background)]/95 p-0 text-[var(--muted-foreground)] shadow-[0_10px_28px_rgba(0,0,0,0.18)] backdrop-blur-xl transition-colors hover:bg-[var(--muted)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/30"
             >
               <ChevronDown className="h-4 w-4" />
             </button>

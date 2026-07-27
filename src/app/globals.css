@@ -1,4 +1,4 @@
-@tailwind base;
+﻿@tailwind base;
 @tailwind components;
 @tailwind utilities;
 
@@ -7014,4 +7014,41 @@
 
 :root[data-theme="light"] .eterx-proxy-runtime-model-menu button span:last-child {
   color: rgba(20, 20, 20, 0.46) !important;
+}
+
+
+/* â”€â”€ Narrow window overlap fix â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+   When the app is used in a narrow window (< 900px wide), the topbar
+   nav buttons (API, Models, Theme, Help, Updates) and the main-header
+   right-side icon group can collide with each other and with the chat area.
+   We prevent this by:
+   1. Reducing topbar button padding and hiding less-critical labels.
+   2. Clamping the main-header right icon group gap so icons don't overflow.
+   â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+@media (max-width: 900px) {
+  .eterx-topbar-btn {
+    padding-left: 6px !important;
+    padding-right: 6px !important;
+    font-size: 12px !important;
+  }
+
+  /* Prevent the main header left+right sections from overlapping */
+  .eterx-main-header {
+    gap: 4px !important;
+    padding-right: 8px !important;
+    padding-left: 8px !important;
+  }
+
+  /* Right-side icon group: tighten gap */
+  .eterx-header-icon-button {
+    width: 30px !important;
+    height: 30px !important;
+  }
+}
+
+@media (max-width: 680px) {
+  /* At very small widths, hide topbar text-nav buttons entirely to avoid overlap */
+  .eterx-topbar-btn {
+    display: none !important;
+  }
 }
