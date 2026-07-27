@@ -1933,6 +1933,16 @@
   color: #1F1F1D !important;
 }
 
+:root[data-theme="light"] .eterx-proxy-context-panel {
+  background: rgba(31, 31, 29, 0.018) !important;
+  border-bottom-color: rgba(31, 31, 29, 0.07) !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-context-panel span,
+:root[data-theme="light"] .eterx-proxy-context-panel div {
+  color: #625F59;
+}
+
 :root[data-theme="light"] .eterx-proxy-chat-fade-top {
   background: linear-gradient(to bottom, #FFFFFF, transparent) !important;
 }

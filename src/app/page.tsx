@@ -929,7 +929,16 @@ function DeepWorkUI() {
   const [showProxyModelMenu, setShowProxyModelMenu] = useState(false);
   const [showProxyRuntimeModelMenu, setShowProxyRuntimeModelMenu] = useState(false);
   const [showProxyInterventionMenu, setShowProxyInterventionMenu] = useState(false);
-  const [proxyChatMessages, setProxyChatMessages] = useState<Array<{ id?: string; sender: 'user' | 'proxy'; text: string; time: string; delivery?: string }>>([]);
+  const [proxyChatMessages, setProxyChatMessages] = useState<Array<{
+    id?: string;
+    sender: 'user' | 'proxy';
+    text: string;
+    time: string;
+    delivery?: string;
+    operation?: string;
+    work?: Array<{ text: string; tool: string }>;
+  }>>([]);
+  const [proxyManagerContext, setProxyManagerContext] = useState<any>(null);
   const [proxyChatHistoryChatId, setProxyChatHistoryChatId] = useState<string | null>(null);
   const [proxyChatLoading, setProxyChatLoading] = useState(false);
   const [proxyChatWindow, setProxyChatWindow] = useState({ x: 0, y: 0, width: 340, height: 460 });
@@ -1745,6 +1754,7 @@ function DeepWorkUI() {
       setProxyChatMessages([]);
       setProxyChatHistoryChatId(null);
       setProxyModelSelection(AUTO_MODEL_SELECTION);
+      setProxyManagerContext(null);
       return;
     }
     setProxyChatMessages([]);
@@ -1771,12 +1781,15 @@ function DeepWorkUI() {
             setProxyRuntimeModelSelection(data.control.modelSelection);
           }
         }
+        setProxyManagerContext(data.context || null);
         setProxyChatMessages((Array.isArray(data.messages) ? data.messages : []).map((item: any) => ({
           id: String(item.id || ''),
           sender: item.role === 'user' ? 'user' : 'proxy',
           text: String(item.text || ''),
           time: new Date(Number(item.createdAt || Date.now())).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
           delivery: item.delivery,
+          operation: item.operation,
+          work: Array.isArray(item.work) ? item.work : [],
         })));
         setProxyChatHistoryChatId(activeChatId);
       })
@@ -1830,6 +1843,7 @@ function DeepWorkUI() {
       const data = await response.json().catch(() => ({}));
       if (!response.ok || !data.success) throw new Error(data.error || 'Proxy Manager request failed');
       const historyArr = Array.isArray(data.history) ? data.history : [];
+      setProxyManagerContext(data.context || null);
       if (historyArr.length > 0) {
         // Full history from server — replace list (canonical source of truth)
         setProxyChatMessages(historyArr.map((item: any) => ({
@@ -1838,6 +1852,8 @@ function DeepWorkUI() {
           text: String(item.text || ''),
           time: new Date(Number(item.createdAt || Date.now())).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
           delivery: item.delivery,
+          operation: item.operation,
+          work: Array.isArray(item.work) ? item.work : [],
         })));
       } else if (data.reply) {
         // Server returned only the reply (no full history) — append it
@@ -1849,10 +1865,13 @@ function DeepWorkUI() {
         }]);
       }
       if (data.wakeRequested) {
-        window.setTimeout(async () => {
+        const connectProxyRun = async (attempt = 0) => {
           try {
             const poll = await fetchAgentPoll(activeChatId, -1, 5000);
-            if (poll.status !== 'running') return;
+            if (poll.status !== 'running') {
+              if (attempt < 11) window.setTimeout(() => connectProxyRun(attempt + 1), 500);
+              return;
+            }
             setRunningChats(previous => new Set(previous).add(activeChatId));
             if (poll.traces?.length) {
               setChatLogsById(activeChatId, previous => mergeServerRunLogs(previous, poll.traces, {
@@ -1861,8 +1880,11 @@ function DeepWorkUI() {
               }));
             }
             startPolling(activeChatId, poll.maxIndex ?? (poll.totalTraces - 1), poll.startedAt, poll.runId);
-          } catch { }
-        }, 350);
+          } catch {
+            if (attempt < 11) window.setTimeout(() => connectProxyRun(attempt + 1), 700);
+          }
+        };
+        window.setTimeout(() => connectProxyRun(), 250);
       }
       // else: server sent empty history + no reply → keep optimistic user msg
     } catch (error: any) {
@@ -8329,6 +8351,25 @@ function DeepWorkUI() {
                           };
                           const allModelOptions = [autoModelOption, ...modelOptions];
                           const selectedModel = allModelOptions.find(option => option.optionKey === proxyModelSelection) || autoModelOption;
+                          const proxyRunStatus = String(proxyManagerContext?.run?.status || 'idle');
+                          const proxySupervisorStatus = String(proxyManagerContext?.proxy?.status || (proxyEnabled ? 'ready' : 'paused'));
+                          const proxyPendingTasks = Number(proxyManagerContext?.proxyControl?.pendingTaskCount || 0);
+                          const proxyCapabilityCount = Number(proxyManagerContext?.capabilities?.total || 0);
+                          const sideCapabilities = Array.isArray(proxyManagerContext?.sideAgent?.capabilities)
+                            ? proxyManagerContext.sideAgent.capabilities
+                            : [];
+                          const operationLabels: Record<string, string> = {
+                            brief_proxy: 'Supervisor briefed',
+                            guide_adaptively: 'Guidance staged',
+                            watch_condition: 'Condition watched',
+                            before_completion: 'Completion gate added',
+                            queue_after_current: 'Task queued',
+                            start_main: 'Main awakened',
+                            schedule_workflow: 'Workflow scheduled',
+                            replace_queued_task: 'Queue updated',
+                            interrupt_main: 'Main redirected',
+                            stop_main: 'Stop requested',
+                          };
 
                           return (
                             <div
@@ -8345,26 +8386,66 @@ function DeepWorkUI() {
                                 onPointerDown={(event) => startProxyWindowInteraction('drag', event)}
                                 className="eterx-proxy-chat-header flex min-h-[56px] cursor-grab items-center justify-between rounded-t-[24px] border-b border-white/[0.06] bg-gradient-to-b from-white/[0.025] to-transparent px-5 py-3 shrink-0 active:cursor-grabbing select-none touch-none"
                               >
-                                <div className="flex items-center">
-                                  <span className="text-[13px] font-semibold tracking-[-0.01em] text-white/80">Talk with Proxy-Agent</span>
+                                <div className="flex min-w-0 items-center gap-2.5">
+                                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border border-white/[0.08] bg-white/[0.05]">
+                                    <ShieldCheck className="h-4 w-4 text-white/72" />
+                                  </div>
+                                  <div className="min-w-0">
+                                    <div className="truncate text-[13px] font-semibold tracking-[-0.01em] text-white/90">Proxy workspace</div>
+                                    <div className="mt-0.5 flex items-center gap-1.5 text-[9.5px] text-white/38">
+                                      <span className={`h-1.5 w-1.5 rounded-full ${ proxyRunStatus === 'running' ? 'bg-emerald-400' : proxyEnabled ? 'bg-white/35' : 'bg-amber-400' }`} />
+                                      <span>{proxyRunStatus === 'running' ? 'Main active' : proxyEnabled ? 'Ready to coordinate' : 'Supervisor paused'}</span>
+                                    </div>
+                                  </div>
                                 </div>
-<button
-                                  type="button"
-                                  onPointerDown={(event) => event.stopPropagation()}
-                                  onClick={() => setShowProxyChat(false)}
-                                  className="h-7 w-7 rounded-full flex items-center justify-center hover:bg-white/[0.07] text-white/35 hover:text-white/80 transition-colors"
-                                >
-                                  <Minus className="h-3.5 w-3.5" />
-                                </button>
+                                <div className="flex items-center gap-1">
+                                  <button
+                                    type="button"
+                                    onPointerDown={(event) => event.stopPropagation()}
+                                    onClick={toggleProxyExpanded}
+                                    className="h-7 w-7 rounded-full flex items-center justify-center hover:bg-white/[0.07] text-white/35 hover:text-white/80 transition-colors"
+                                    title={isProxyExpanded ? 'Compact view' : 'Expand workspace'}
+                                  >
+                                    {isProxyExpanded ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onPointerDown={(event) => event.stopPropagation()}
+                                    onClick={() => setShowProxyChat(false)}
+                                    className="h-7 w-7 rounded-full flex items-center justify-center hover:bg-white/[0.07] text-white/35 hover:text-white/80 transition-colors"
+                                  >
+                                    <Minus className="h-3.5 w-3.5" />
+                                  </button>
+                                </div>
                               </div>
+
+                              {isProxyExpanded && (
+                                <div className="eterx-proxy-context-panel shrink-0 border-b border-white/[0.06] bg-white/[0.018] px-4 py-3">
+                                  <div className="flex items-center gap-3 text-[10px] text-white/38">
+                                    <span><span className="text-white/66">Main</span> · {proxyRunStatus}</span>
+                                    <span className="h-3 w-px bg-white/[0.07]" />
+                                    <span><span className="text-white/66">Supervisor</span> · {proxySupervisorStatus.replace(/_/g, ' ')}</span>
+                                    <span className="h-3 w-px bg-white/[0.07]" />
+                                    <span><span className="text-white/66">Queue</span> · {proxyPendingTasks}</span>
+                                  </div>
+                                  <div className="mt-2 truncate text-[9.5px] leading-4 text-white/28">
+                                    {sideCapabilities.join(' · ')}
+                                    {proxyCapabilityCount > 0 ? ` · Main: ${proxyCapabilityCount} tools` : ''}
+                                  </div>
+                                </div>
+                              )}
 
                               {/* Message Feed */}
                               <div className="relative flex-1 min-h-0 overflow-y-auto overflow-x-hidden p-4 flex flex-col gap-3 eterx-scrollbar bg-transparent [scrollbar-gutter:stable]">
                                 <div className="eterx-proxy-chat-fade-top pointer-events-none absolute inset-x-0 top-0 z-10 h-7 bg-gradient-to-b from-[#181818] to-transparent" />
                                 {visibleProxyChatMessages.length === 0 ? (
                                   <div className="flex-1 flex flex-col items-center justify-center text-center p-4">
-                                    <span className="text-[15px] font-semibold text-white/60">
-                                      Tell me your goals!
+                                    <div className="flex h-10 w-10 items-center justify-center rounded-2xl border border-white/[0.07] bg-white/[0.035]">
+                                      <Sparkles className="h-4 w-4 text-white/38" />
+                                    </div>
+                                    <span className="mt-3 text-[14px] font-semibold text-white/70">Coordinate the work</span>
+                                    <span className="mt-1 max-w-[250px] text-[10.5px] leading-4 text-white/30">
+                                      Add a goal, correct the active run, schedule what comes next, or ask for a grounded status update.
                                     </span>
                                   </div>
                                 ) : (
@@ -8381,10 +8462,38 @@ function DeepWorkUI() {
                                           }`}
                                       >
                                         {msg.sender === 'proxy' ? (
-                                          <div className="proxy-manager-markdown max-w-full min-w-0 break-words">
-                                            <ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} components={proxyManagerMarkdownComponents}>
-                                              {formatProxyManagerMarkdown(msg.text)}
-                                            </ReactMarkdown>
+                                          <div className="min-w-0 max-w-full">
+                                            {Array.isArray(msg.work) && msg.work.length > 0 && (
+                                              <div className="mb-3 flex flex-col gap-1.5">
+                                                {msg.work.map((item, workIndex) => {
+                                                  const WorkIcon = item.tool.includes('search')
+                                                    ? Search
+                                                    : item.tool.includes('workspace') || item.tool.includes('parse_')
+                                                      ? FileText
+                                                      : Sparkles;
+                                                  return (
+                                                    <div key={`${item.tool}-${workIndex}`} className="flex min-w-0 items-center gap-2 text-[10.5px] text-white/38">
+                                                      <WorkIcon className="h-3.5 w-3.5 shrink-0 text-white/28" />
+                                                      <span className="truncate">{item.text}</span>
+                                                    </div>
+                                                  );
+                                                })}
+                                              </div>
+                                            )}
+                                            {msg.operation && msg.operation !== 'none' && (
+                                              <div className="mb-2 flex items-center gap-2 text-[10.5px] text-white/42">
+                                                <Check className="h-3.5 w-3.5 text-white/34" />
+                                                <span className="font-medium text-white/52">{operationLabels[msg.operation] || msg.operation.replace(/_/g, ' ')}</span>
+                                                {msg.delivery && msg.delivery !== 'none' && (
+                                                  <span className="text-white/22">{msg.delivery}</span>
+                                                )}
+                                              </div>
+                                            )}
+                                            <div className="proxy-manager-markdown max-w-full min-w-0 break-words">
+                                              <ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} components={proxyManagerMarkdownComponents}>
+                                                {formatProxyManagerMarkdown(msg.text)}
+                                              </ReactMarkdown>
+                                            </div>
                                           </div>
                                         ) : msg.text}
                                       </div>
@@ -8395,8 +8504,9 @@ function DeepWorkUI() {
                                   ))
                                 )}
                                 {proxyChatLoading && (
-                                  <div className="self-start px-0 py-1 text-[11px] text-white/42">
-                                    <Shimmer className="mr-1.5">Thinking</Shimmer>
+                                  <div className="self-start flex items-center gap-2 px-0 py-1 text-[10.5px] text-white/42">
+                                    <Sparkles className="h-3.5 w-3.5 text-white/28" />
+                                    <Shimmer className="mr-1.5">Reviewing context</Shimmer>
                                     <span className="inline-flex items-center gap-1 align-middle">
                                       <span className="h-1 w-1 animate-bounce rounded-full bg-white/55 [animation-delay:-0.24s]" />
                                       <span className="h-1 w-1 animate-bounce rounded-full bg-white/55 [animation-delay:-0.12s]" />

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getProxyManagerHistory, talkToProxyManager } from '../../../../lib/agent/autonomy/proxy-manager-runtime';
 import { isModelProvider } from '../../../../lib/agent/model-selector-store';
 import { readProxyControl } from '../../../../lib/agent/autonomy/proxy-control-plane';
+import { agentRegistry } from '../../../../lib/agent/agent-registry';
 import {
   attachAgentApiSessionCookie,
   cleanString,
@@ -29,6 +30,7 @@ export async function GET(req: NextRequest) {
     success: true,
     messages: getProxyManagerHistory(chatId),
     control: readProxyControl(chatId),
+    context: agentRegistry.getProxyManagerContext(chatId),
   }), session);
 }
 
@@ -49,7 +51,11 @@ export async function POST(req: NextRequest) {
     const provider = isModelProvider(body?.model?.provider) ? body.model.provider : undefined;
     const modelId = cleanString(body?.model?.modelId, 220);
     const result = await talkToProxyManager({ chatId, message, model: { provider, modelId } });
-    return attachAgentApiSessionCookie(NextResponse.json({ success: true, ...result }), session);
+    return attachAgentApiSessionCookie(NextResponse.json({
+      success: true,
+      ...result,
+      context: agentRegistry.getProxyManagerContext(chatId),
+    }), session);
   } catch (error: any) {
     const response = NextResponse.json({ success: false, error: error?.message || 'Proxy Manager failed' }, { status: 500 });
     return session ? attachAgentApiSessionCookie(response, session) : response;
