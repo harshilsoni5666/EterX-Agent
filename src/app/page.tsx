@@ -3726,11 +3726,14 @@ function DeepWorkUI() {
       const leftHasIndex = Number.isFinite(leftIndex);
       const rightHasIndex = Number.isFinite(rightIndex);
       if (leftHasIndex && rightHasIndex && leftIndex !== rightIndex) return leftIndex - rightIndex;
-      if (leftHasIndex !== rightHasIndex) return leftHasIndex ? -1 : 1;
 
       const leftTime = Number(left.trace?.startTime ?? left.trace?.timestamp ?? left.trace?.endTime);
       const rightTime = Number(right.trace?.startTime ?? right.trace?.timestamp ?? right.trace?.endTime);
-      if (Number.isFinite(leftTime) && Number.isFinite(rightTime) && leftTime !== rightTime) return leftTime - rightTime;
+      if (Number.isFinite(leftTime) && Number.isFinite(rightTime)) {
+        if (leftTime !== rightTime) return leftTime - rightTime;
+        if (leftHasIndex !== rightHasIndex) return left.inputOrder - right.inputOrder;
+      }
+      if (leftHasIndex !== rightHasIndex) return leftHasIndex ? -1 : 1;
       return left.inputOrder - right.inputOrder;
     })
     .map(entry => entry.trace);
@@ -4090,9 +4093,32 @@ function DeepWorkUI() {
     runIdentity: { runId?: string; startedAt?: number } = {}
   ) => {
     if (!traces || traces.length === 0) return Array.isArray(existingLogs) ? [...existingLogs] : [];
+    const incomingUserLog = traces.find((trace: any) => trace?.type === 'user_action');
+    const incomingRunId = String(
+      runIdentity.runId || incomingUserLog?.runId || incomingUserLog?.turnId || ''
+    ).trim();
     // Poll/recovery snapshots are per-run, while trace indices restart at zero.
-    // Never attach a completed previous run beneath a newly appended user turn.
+    // A successor autonomous run is authoritative only when its own snapshot
+    // includes the user-action boundary that created it. Process that snapshot
+    // in isolation so trace indices restarted at zero cannot collide with the
+    // preceding run, then append it as a new conversation turn.
     if (!canMergeServerRunIntoLatestTurn(existingLogs, runIdentity)) {
+      if (incomingUserLog && incomingRunId) {
+        const alreadyPresent = existingLogs.some((log: any) =>
+          log?.type === 'user_action' &&
+          String(log.runId || log.turnId || '').trim() === incomingRunId
+        );
+        if (alreadyPresent) return Array.isArray(existingLogs) ? [...existingLogs] : [];
+        const successorTraces = traces.map((trace: any) => ({
+          ...trace,
+          runId: incomingRunId,
+          turnId: incomingRunId,
+        }));
+        return [
+          ...(Array.isArray(existingLogs) ? existingLogs : []),
+          ...processServerTraces(successorTraces, []),
+        ];
+      }
       return Array.isArray(existingLogs) ? [...existingLogs] : [];
     }
     // Catch-up endpoints return a full run snapshot. Feed that snapshot through
@@ -4276,13 +4302,24 @@ function DeepWorkUI() {
 
           const expectedRunId = pollRunIdRef.current.get(chatId);
           const serverRunId = typeof data.runId === 'string' ? data.runId : '';
+          const expectedRunStart = pollRunStartRef.current.get(chatId) || 0;
+          const serverRunStart = typeof data.startedAt === 'number' ? data.startedAt : 0;
           if (expectedRunId && serverRunId !== expectedRunId) {
+            // A queued or Proxy-started successor keeps the same chat ID but
+            // receives a new internal run ID. Adopt a demonstrably newer run
+            // instead of leaving the old poller waiting forever for its run.
+            if (serverRunId && serverRunStart && serverRunStart >= expectedRunStart) {
+              pollRunIdRef.current.set(chatId, serverRunId);
+              pollRunStartRef.current.set(chatId, serverRunStart);
+              pollCursorsRef.current.set(chatId, -1);
+              lastHadData = false;
+              scheduleNextPoll();
+              return;
+            }
             if (!handleStartPending()) return;
             return;
           }
 
-          const expectedRunStart = pollRunStartRef.current.get(chatId) || 0;
-          const serverRunStart = typeof data.startedAt === 'number' ? data.startedAt : 0;
           const isStaleServerRun = !!(expectedRunStart && serverRunStart && serverRunStart + 1000 < expectedRunStart);
 
           if (isStaleServerRun) {
@@ -4316,12 +4353,26 @@ function DeepWorkUI() {
             // ═══════════════════════════════════════════
             const processTraces = (existingLogs: any[]): any[] => {
               let logs = stripAgentConnectionLogs([...existingLogs]);
+              const activeRunId = serverRunId || expectedRunId || '';
+              const latestExistingUser = [...logs].reverse().find((log: any) => log?.type === 'user_action');
+              const latestExistingRunId = String(latestExistingUser?.runId || latestExistingUser?.turnId || '').trim();
+              const hasAuthoritativeSuccessorTurn = Boolean(
+                activeRunId &&
+                latestExistingRunId &&
+                activeRunId !== latestExistingRunId &&
+                data.traces.some((trace: any) => trace?.type === 'user_action')
+              );
+              if (hasAuthoritativeSuccessorTurn) {
+                return mergeServerRunLogs(logs, data.traces, {
+                  runId: activeRunId,
+                  startedAt: serverRunStart,
+                });
+              }
               // Find start of current turn (after last user_action) for dedup scoping
               const lastUserIdx = logs.reduceRight((found, l, i) => found === -1 && l.type === 'user_action' ? i : found, -1);
               const currentTurnStart = lastUserIdx >= 0 ? lastUserIdx + 1 : 0;
               const currentTurnLogs = lastUserIdx >= 0 ? logs.slice(lastUserIdx) : logs;
               const currentUserLog = lastUserIdx >= 0 ? logs[lastUserIdx] : null;
-              const activeRunId = serverRunId || expectedRunId || '';
               const currentTurnId = String(currentUserLog?.turnId || currentUserLog?.runId || activeRunId || '').trim();
               const seenTraceIdx = new Set(
                 currentTurnLogs

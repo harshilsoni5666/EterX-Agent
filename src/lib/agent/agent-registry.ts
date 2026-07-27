@@ -637,7 +637,7 @@ class AgentRegistry {
         if (!pinnedContext?.disableTaskStore) {
           await taskStore.createTask(chatId, prompt, execution.runId);
           if (proxyOriginUserEvent) {
-            taskStore.addTrace(chatId, proxyOriginUserEvent, execution.runId);
+            taskStore.addTrace(chatId, { ...proxyOriginUserEvent, _traceIdx: 0 }, execution.runId);
           }
         }
 
@@ -1178,6 +1178,7 @@ class AgentRegistry {
       chatId,
       run: execution ? {
         status: execution.status,
+        runId: execution.runId,
         objective: execution.prompt.slice(0, 6000),
         startedAt: execution.startedAt,
         mode: execution.mode,
