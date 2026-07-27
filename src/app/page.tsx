@@ -2151,7 +2151,7 @@ function DeepWorkUI() {
     liveEphemeralChatIdRef.current = null;
     lastLiveLogsSnapshotRef.current = [];
     setChats(previous => {
-      const updated = previous.filter(chat => chat.id !== chatId || !isGeneratedEmptyChat(chat));
+      const updated = removeGeneratedEmptyChats(previous);
       if (updated.length === previous.length) return previous;
       persistChats(updated);
       return updated;
@@ -3305,6 +3305,12 @@ function DeepWorkUI() {
     if (liveEphemeralChatIdRef.current) {
       stopLiveSession();
     }
+    setChats(previous => {
+      const updated = removeGeneratedEmptyChats(previous);
+      if (updated.length === previous.length) return previous;
+      persistChats(updated);
+      return updated;
+    });
     setActiveSubAgentTab(null);
     setSubAgentDockOpen(false);
     setOverflowDropdownOpen(false);
