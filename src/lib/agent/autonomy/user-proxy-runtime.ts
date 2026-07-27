@@ -29,6 +29,16 @@ type ProxyDecision = {
     unresolvedRisks: string[];
     nextExpectedBoundary: string;
   }>;
+  complexityUpdate?: Partial<{
+    level: 'simple' | 'moderate' | 'complex' | 'frontier';
+    criticalPath: string[];
+    dependencies: string[];
+    invariants: string[];
+    decisionPoints: string[];
+    uncertainty: string[];
+    recoveryBranches: string[];
+    verificationGates: string[];
+  }>;
 };
 
 type TaskContract = {
@@ -120,6 +130,16 @@ type ProxyState = {
     activeStrategy: string;
     unresolvedRisks: string[];
     nextExpectedBoundary: string;
+  };
+  complexityModel: {
+    level: 'simple' | 'moderate' | 'complex' | 'frontier';
+    criticalPath: string[];
+    dependencies: string[];
+    invariants: string[];
+    decisionPoints: string[];
+    uncertainty: string[];
+    recoveryBranches: string[];
+    verificationGates: string[];
   };
   updatedAt: number;
 };
@@ -255,6 +275,18 @@ function extractDecision(raw: string): ProxyDecision {
         unresolvedRisks: Array.isArray(parsed.situationUpdate.unresolvedRisks) ? unique(parsed.situationUpdate.unresolvedRisks, 8) : undefined,
         nextExpectedBoundary: compact(parsed.situationUpdate.nextExpectedBoundary, 700),
       } : undefined,
+      complexityUpdate: parsed.complexityUpdate && typeof parsed.complexityUpdate === 'object' ? {
+        level: new Set(['simple', 'moderate', 'complex', 'frontier']).has(parsed.complexityUpdate.level)
+          ? parsed.complexityUpdate.level
+          : undefined,
+        criticalPath: Array.isArray(parsed.complexityUpdate.criticalPath) ? unique(parsed.complexityUpdate.criticalPath, 12) : undefined,
+        dependencies: Array.isArray(parsed.complexityUpdate.dependencies) ? unique(parsed.complexityUpdate.dependencies, 16) : undefined,
+        invariants: Array.isArray(parsed.complexityUpdate.invariants) ? unique(parsed.complexityUpdate.invariants, 16) : undefined,
+        decisionPoints: Array.isArray(parsed.complexityUpdate.decisionPoints) ? unique(parsed.complexityUpdate.decisionPoints, 12) : undefined,
+        uncertainty: Array.isArray(parsed.complexityUpdate.uncertainty) ? unique(parsed.complexityUpdate.uncertainty, 12) : undefined,
+        recoveryBranches: Array.isArray(parsed.complexityUpdate.recoveryBranches) ? unique(parsed.complexityUpdate.recoveryBranches, 12) : undefined,
+        verificationGates: Array.isArray(parsed.complexityUpdate.verificationGates) ? unique(parsed.complexityUpdate.verificationGates, 12) : undefined,
+      } : undefined,
       contractUpdate: parsed.contractUpdate && typeof parsed.contractUpdate === 'object'
         ? {
           requiredDeliverables: Array.isArray(parsed.contractUpdate.requiredDeliverables) ? unique(parsed.contractUpdate.requiredDeliverables, 20) : undefined,
@@ -328,6 +360,16 @@ export class UserProxyRuntime {
       managerDirectives: [],
       coordinationEvents: [],
       situationModel: { progress: '', activeStrategy: '', unresolvedRisks: [], nextExpectedBoundary: '' },
+      complexityModel: {
+        level: 'moderate',
+        criticalPath: [],
+        dependencies: [],
+        invariants: [],
+        decisionPoints: [],
+        uncertainty: [],
+        recoveryBranches: [],
+        verificationGates: [],
+      },
       updatedAt: Date.now(),
     };
     this.state = this.restoreCompatibleState(freshState);
@@ -496,6 +538,7 @@ export class UserProxyRuntime {
       mainPhase: this.mainPhase,
       lastGoalGap: this.state.lastGoalGap,
       situationModel: this.state.situationModel,
+      complexityModel: this.state.complexityModel,
       interventionLevel: this.state.adaptivePolicy.cadence === 'quiet' ? 'minimal' : this.state.adaptivePolicy.cadence === 'close' ? 'high' : 'normal',
       recentEvents: this.state.events.slice(-18).map(event => ({ id: event.id, kind: event.kind, type: event.type, text: event.text, failed: event.failed, risk: event.risk, timestamp: event.timestamp })),
       recentInterventions: this.state.interventions.slice(-6),
@@ -723,6 +766,18 @@ export class UserProxyRuntime {
           unresolvedRisks: Array.isArray(saved?.situationModel?.unresolvedRisks) ? unique(saved.situationModel.unresolvedRisks, 8) : [],
           nextExpectedBoundary: compact(saved?.situationModel?.nextExpectedBoundary, 700),
         },
+        complexityModel: {
+          level: new Set(['simple', 'moderate', 'complex', 'frontier']).has(saved?.complexityModel?.level)
+            ? saved.complexityModel.level
+            : freshState.complexityModel.level,
+          criticalPath: Array.isArray(saved?.complexityModel?.criticalPath) ? unique(saved.complexityModel.criticalPath, 12) : [],
+          dependencies: Array.isArray(saved?.complexityModel?.dependencies) ? unique(saved.complexityModel.dependencies, 16) : [],
+          invariants: Array.isArray(saved?.complexityModel?.invariants) ? unique(saved.complexityModel.invariants, 16) : [],
+          decisionPoints: Array.isArray(saved?.complexityModel?.decisionPoints) ? unique(saved.complexityModel.decisionPoints, 12) : [],
+          uncertainty: Array.isArray(saved?.complexityModel?.uncertainty) ? unique(saved.complexityModel.uncertainty, 12) : [],
+          recoveryBranches: Array.isArray(saved?.complexityModel?.recoveryBranches) ? unique(saved.complexityModel.recoveryBranches, 12) : [],
+          verificationGates: Array.isArray(saved?.complexityModel?.verificationGates) ? unique(saved.complexityModel.verificationGates, 12) : [],
+        },
         status: saved.status || 'watching',
       };
     } catch {
@@ -942,6 +997,11 @@ export class UserProxyRuntime {
       'The priorUserContext field is reference context only. Treat it as part of the task only when the current goal explicitly continues or refers to it.',
       `CURRENT GOAL GAP (may be stale; revise from evidence):\n${this.state.lastGoalGap || '(unknown)'}`,
       `COMPACT SITUATION MODEL FROM PRIOR REVIEWS:\n${JSON.stringify(this.state.situationModel, null, 2)}`,
+      `DURABLE COMPLEXITY MODEL:\n${JSON.stringify(this.state.complexityModel, null, 2)}`,
+      'Complex-task reasoning protocol: maintain the smallest accurate dependency graph that explains the work. Distinguish prerequisites from preferences, invariants from tactics, reversible experiments from commitments, and verification gates from ordinary progress. Track the critical path without forcing Main to follow a rigid plan when evidence supports adaptation.',
+      'When work branches, reason about whether branches are independent, mutually constraining, or gated by a shared artifact. Do not demand sequential work merely because events arrive sequentially. Do not encourage parallel work when branches would race on the same mutable state, depend on an unresolved decision, or require the same scarce authority.',
+      'When the strategy changes, test whether prior evidence remains valid, whether an invariant was silently weakened, and whether downstream work must be revised. A failed tactic is not a failed goal: prefer a bounded recovery branch when one exists, and escalate only when the failure changes feasibility, authority, safety, or the user-visible outcome.',
+      'Treat uncertainty explicitly. Separate unknown facts, missing telemetry, unresolved user choices, and model speculation. Reduce uncertainty at the cheapest meaningful boundary. Never convert uncertainty into a claimed defect.',
       `DELIVERABLE EVIDENCE:\n${deliverables}`,
       `REVIEW TRIGGER: ${trigger}`,
       `CURRENT MAIN PHASE: ${this.mainPhase}. When this is composing, all visible answer text is partial and Main may already be producing exactly what is needed.`,
@@ -955,7 +1015,7 @@ export class UserProxyRuntime {
         ? 'Approve unless a required, consequential gap is supported by specific event evidence or explicitly admitted in the final answer. Optional improvements must never block completion.'
         : 'Choose observe unless intervention is necessary now. If visibility is insufficient, record visibilityGap and observe; do not nag Main for information it is likely still gathering.',
       'Return exactly one JSON object:',
-      '{"action":"observe|steer|redirect|challenge|request_real_user|interrupt_main|stop_main|approve_completion","message":"one short natural user-like instruction, blank for observe/approve","reason":"private rationale including the counterfactual necessity test","remainingGoalGap":"concrete remaining gap or blank","confidence":0.0,"severity":"low|medium|high|critical","evidenceEventIds":[1],"managerDirectiveId":"matching active directive id or blank","managerNotice":"only a consequential concise update worth surfacing to Proxy Manager, otherwise blank","visibilityGap":"missing telemetry, if any","optionalImprovement":false,"reviewCadence":"quiet|normal|close","attentionSignals":["task-specific signal"],"situationUpdate":{"progress":"durable compact progress summary","activeStrategy":"Main current strategy","unresolvedRisks":[],"nextExpectedBoundary":"next meaningful checkpoint"},"contractUpdate":null}',
+      '{"action":"observe|steer|redirect|challenge|request_real_user|interrupt_main|stop_main|approve_completion","message":"one short natural user-like instruction, blank for observe/approve","reason":"private rationale including the counterfactual necessity test","remainingGoalGap":"concrete remaining gap or blank","confidence":0.0,"severity":"low|medium|high|critical","evidenceEventIds":[1],"managerDirectiveId":"matching active directive id or blank","managerNotice":"only a consequential concise update worth surfacing to Proxy Manager, otherwise blank","visibilityGap":"missing telemetry, if any","optionalImprovement":false,"reviewCadence":"quiet|normal|close","attentionSignals":["task-specific signal"],"situationUpdate":{"progress":"durable compact progress summary","activeStrategy":"Main current strategy","unresolvedRisks":[],"nextExpectedBoundary":"next meaningful checkpoint"},"complexityUpdate":{"level":"simple|moderate|complex|frontier","criticalPath":[],"dependencies":[],"invariants":[],"decisionPoints":[],"uncertainty":[],"recoveryBranches":[],"verificationGates":[]},"contractUpdate":null}',
     ].filter(Boolean).join('\n\n');
 
     const { createIsolatedClient } = await import('../Agent');
@@ -1054,6 +1114,19 @@ export class UserProxyRuntime {
         activeStrategy: decision.situationUpdate.activeStrategy || this.state.situationModel.activeStrategy,
         unresolvedRisks: decision.situationUpdate.unresolvedRisks || this.state.situationModel.unresolvedRisks,
         nextExpectedBoundary: decision.situationUpdate.nextExpectedBoundary || this.state.situationModel.nextExpectedBoundary,
+      };
+    }
+    if (decision.complexityUpdate) {
+      const update = decision.complexityUpdate;
+      this.state.complexityModel = {
+        level: update.level || this.state.complexityModel.level,
+        criticalPath: update.criticalPath || this.state.complexityModel.criticalPath,
+        dependencies: update.dependencies || this.state.complexityModel.dependencies,
+        invariants: update.invariants || this.state.complexityModel.invariants,
+        decisionPoints: update.decisionPoints || this.state.complexityModel.decisionPoints,
+        uncertainty: update.uncertainty || this.state.complexityModel.uncertainty,
+        recoveryBranches: update.recoveryBranches || this.state.complexityModel.recoveryBranches,
+        verificationGates: update.verificationGates || this.state.complexityModel.verificationGates,
       };
     }
     const update = decision.contractUpdate;
@@ -1250,6 +1323,7 @@ export function getUserProxyManagerSnapshot(projectId: string): Record<string, a
       mainPhase: 'complete',
       lastGoalGap: compact(saved.lastGoalGap, 1800),
       situationModel: saved.situationModel || null,
+      complexityModel: saved.complexityModel || null,
       interventionLevel: saved?.adaptivePolicy?.cadence === 'quiet' ? 'minimal' : saved?.adaptivePolicy?.cadence === 'close' ? 'high' : 'normal',
       recentEvents: Array.isArray(saved.events) ? saved.events.slice(-18) : [],
       recentInterventions: Array.isArray(saved.interventions) ? saved.interventions.slice(-6) : [],
