@@ -138,6 +138,7 @@ type RuntimeOptions = {
   onTrace?: TraceFn;
   steer: (message: string, metadata?: Record<string, any>) => boolean;
   stopMain: (reason: string, metadata?: Record<string, any>) => boolean;
+  queueNext: (message: string, rationale?: string) => boolean;
 };
 
 export type ProxyInterventionLevel = 'minimal' | 'normal' | 'high';
@@ -379,6 +380,23 @@ export class UserProxyRuntime {
     this.schedulePersist();
   }
 
+  setModel(input: {
+    mode: MainAgentMode;
+    apiKey: string;
+    runtimeSettings?: ScopedRuntimeSettings | null;
+  }): void {
+    this.options.mode = input.mode;
+    this.options.apiKey = input.apiKey;
+    this.options.runtimeSettings = input.runtimeSettings;
+    this.options.onTrace?.({
+      type: 'autonomy_proxy_status',
+      phase: 'model_changed',
+      text: 'Proxy model updated for the next supervision review',
+      _autonomyProxy: true,
+      timestamp: Date.now(),
+    });
+  }
+
   receiveManagerDirective(input: Omit<ProxyManagerDirective, 'id' | 'createdAt' | 'status'>): { accepted: boolean; status: ProxyManagerDirective['status']; id?: string } {
     const message = compact(input.message, 2400);
     if (!message || this.stopped) return { accepted: false, status: 'pending' };
@@ -610,21 +628,16 @@ export class UserProxyRuntime {
     if (decision.action === 'approve_completion' || decision.action === 'observe' || decision.optionalImprovement) {
       const followUp = this.state.managerDirectives.find(item => item.status === 'pending' && item.timing === 'after_current');
       if (followUp) {
-        followUp.status = 'active';
-        const followUpDecision: ProxyDecision = {
-          action: 'steer',
-          message: followUp.message,
-          reason: followUp.rationale || 'The user explicitly scheduled this instruction after the current task was complete.',
-          remainingGoalGap: followUp.message,
-          confidence: 1,
-          severity: 'high',
-          evidenceEventIds: [],
-          completionBoundaryPassed: true,
-          managerDirectiveId: followUp.id,
-        };
-        this.applyDecision(followUpDecision, true);
-        this.schedulePersist();
-        return followUpDecision;
+        const queued = this.options.queueNext(
+          followUp.message,
+          followUp.rationale || 'The user explicitly scheduled this as a separate task after the current task.',
+        );
+        followUp.status = queued ? 'delivered' : 'rejected';
+        followUp.deliveredAt = queued ? Date.now() : undefined;
+        followUp.disposition = queued
+          ? 'Queued as an isolated successor task; it was not injected into the completing run.'
+          : 'Could not queue the successor task.';
+        this.addCoordinationEvent(queued ? 'proxy_delivery' : 'proxy_rejection', followUp.disposition, followUp.id);
       }
       this.state.status = 'complete';
       this.options.onTrace?.({
@@ -878,8 +891,36 @@ export class UserProxyRuntime {
       `- ${name}: ${evidence.verified ? 'verified evidence observed' : evidence.observed ? 'mentioned but not verified' : 'not observed'}${evidence.evidenceEventIds.length ? ` [events ${evidence.evidenceEventIds.join(', ')}]` : ''}`,
     ).join('\n') || '(No explicit deliverables extracted.)';
 
+    const interventionDoctrine = this.state.adaptivePolicy.cadence === 'quiet'
+      ? [
+        'MINIMAL INTERVENTION DOCTRINE:',
+        '- Preserve Main\'s uninterrupted deep-work state as the default. Review primarily at irreversible-risk, explicit-constraint, repeated-blockage, and completion boundaries.',
+        '- Do not intervene for a merely better approach, missing optional polish, uncertain telemetry, or a recoverable mistake Main can reasonably notice and repair.',
+        '- Require a large counterfactual benefit: without your message, the task is likely to become materially wrong, unsafe, unauthorized, or falsely complete.',
+        '- Prefer dormant attention and completion review over mid-task steering. One precise late correction is better than several preventative suggestions.',
+        '- Escalate immediately only for concrete critical risk or an explicit urgent user directive.',
+      ].join('\n')
+      : this.state.adaptivePolicy.cadence === 'close'
+        ? [
+          'HIGH INTERVENTION DOCTRINE:',
+          '- Act as an active expert supervisor. Inspect strategy transitions, dependencies, user constraints, evidence quality, recovery behavior, and completion claims early.',
+          '- Intervene before substantial rework when evidence shows Main is committing to a materially wrong path, silently dropping a required dependency, or repeatedly operating without needed evidence.',
+          '- High initiative does not mean frequent commentary. Consolidate related concerns into one actionable instruction and then give Main room to apply it.',
+          '- Challenge weak assumptions when they affect the outcome; redirect when the current strategy is no longer credible; interrupt only when the next action would create concrete harm or major wasted work.',
+          '- Track unresolved risks across reviews and close them at the most useful natural boundary. Never manufacture urgency from incomplete visibility.',
+        ].join('\n')
+        : [
+          'NORMAL INTERVENTION DOCTRINE:',
+          '- Balance uninterrupted execution with timely expert supervision. Let healthy work proceed, but intervene when a consequential gap is supported and waiting would noticeably reduce quality or increase rework.',
+          '- Review material checkpoints, strategy changes, repeated failures, important artifacts, explicit user constraints, and the completion boundary.',
+          '- Prefer a concise steer at the next model boundary. Redirect only for a materially wrong strategy; challenge only when Main must reassess a consequential assumption.',
+          '- Combine related observations, avoid duplicate guidance, and allow Main a fair opportunity to self-correct before escalating.',
+          '- Treat optional improvements as silent notes, not blockers.',
+        ].join('\n');
+
     const prompt = [
       'You are the persistent USER PROXY in a two-agent autonomous loop. Main performs the work. You act like a perceptive expert user who protects intent, notices consequential gaps, and otherwise stays silent.',
+      'ROLE SEPARATION: you are the live execution supervisor. You do not hold a parallel user conversation, invent new goals, or perform Main\'s task yourself. Proxy Manager is the user-facing coordinator; Main is the executor. You exclusively maintain task fidelity, supervise evidence, choose intervention timing, and guard completion.',
       'Your observations are incomplete telemetry, not omniscience. Never claim an action failed, a file is missing, or a constraint was violated unless the supplied evidence supports it. Lack of visibility is not proof of failure.',
       'Thought streams, streaming work notes, and partially composed response text are unfinished internal activity. Never ask Main to provide a full answer, full code, or final response based on those fragments. Only completion_candidate contains a finished response that may be judged for completeness.',
       'Use intelligent counterfactual judgment, not fixed patterns: predict what a capable Main will naturally do next. Before speaking, compare the expected benefit of intervention with the cost of interrupting flow. If Main is likely to handle the issue correctly without you, observe—even if you can imagine an improvement.',
@@ -893,6 +934,7 @@ export class UserProxyRuntime {
       'The task contract began as a conservative machine-extracted seed, not a fixed truth. Semantically refine it only from the current goal and relevant prior-user context. Do not turn optional ideas into required deliverables.',
       'Omit contractUpdate unless the seed is materially wrong. When correcting it, return the complete corrected requiredDeliverables and completionConditions. Explicit forbiddenActions and safetyConstraints may be strengthened but never weakened.',
       'Adapt your future attention: choose quiet cadence for healthy predictable progress, normal for uncertain work, and close only for demonstrated risk/blockage. Return a few task-specific attention signals rather than applying one fixed workflow.',
+      interventionDoctrine,
       this.state.helperUsed
         ? 'The one temporary specialist allowance is already used. Do not call tools.'
         : 'You may call spawn_sub_agent once in specialist mode only when a consequential uncertainty cannot be resolved from the evidence. Use exactly one focused task. Never create a panel, fleet, or general worker.',
@@ -1182,6 +1224,16 @@ export function setUserProxyIntervention(projectId: string, level: ProxyInterven
   const runtime = runtimes.get(projectId);
   if (!runtime) return false;
   runtime.setIntervention(level);
+  return true;
+}
+
+export function setUserProxyModel(
+  projectId: string,
+  input: { mode: MainAgentMode; apiKey: string; runtimeSettings?: ScopedRuntimeSettings | null },
+): boolean {
+  const runtime = runtimes.get(projectId);
+  if (!runtime) return false;
+  runtime.setModel(input);
   return true;
 }
 

@@ -9,6 +9,7 @@ import {
   isAgentBuilderChatId,
 } from '../../../../lib/agent/builder-agent';
 import { buildScopedRuntimeSettings } from '../../../../lib/agent/runtime-api-keys';
+import { readProxyControl, updateProxyControl } from '../../../../lib/agent/autonomy/proxy-control-plane';
 import {
   attachAgentApiSessionCookie,
   cleanString,
@@ -104,8 +105,24 @@ export async function POST(req: NextRequest) {
     );
     const isBuilderChat = isAgentBuilderChatId(chatId);
     const builderAgentId = isBuilderChat ? getAgentIdFromBuilderChatId(chatId) : '';
+    if (safePinnedContext?.agentRuntime === 'autonomy_v1' || safePinnedContext?.autonomy?.enabled === true) {
+      updateProxyControl(chatId, {
+        enabled: safePinnedContext?.autonomy?.enabled !== false,
+        intervention: safePinnedContext?.autonomy?.intervention,
+        modelSelection: safePinnedContext?.autonomy?.proxyModelSelection,
+      });
+    }
+    const proxyControl = readProxyControl(chatId);
     const effectivePinnedContext = {
       ...(isBuilderChat ? buildAgentBuilderPinnedContext(chatId, safePinnedContext) : safePinnedContext),
+      ...((safePinnedContext?.agentRuntime === 'autonomy_v1' || safePinnedContext?.autonomy?.enabled === true) ? {
+        autonomy: {
+          ...(safePinnedContext.autonomy || {}),
+          enabled: proxyControl.enabled,
+          intervention: proxyControl.intervention,
+          proxyModelSelection: proxyControl.modelSelection,
+        },
+      } : {}),
       thinkingLevel: safeThinkingLevel,
       ...(exactModelName ? {
         selectedModelName: exactModelName,

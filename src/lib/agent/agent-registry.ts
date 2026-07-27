@@ -6,10 +6,11 @@ import { taskStore } from './task-store';
 import { writeRuntimeTrace } from './runtime-trace';
 import { getMainAgentModelConfig, type MainAgentMode } from './model-routing';
 import { MODEL_PROVIDER_MODE, isModelProvider } from './model-selector-store';
-import { getScopedRuntimeApiKey, type ScopedRuntimeSettings } from './runtime-api-keys';
+import { buildScopedRuntimeSettings, getScopedRuntimeApiKey, type ScopedRuntimeSettings } from './runtime-api-keys';
 import { flushLedgerForChat } from './memory/conversation-ledger';
 import { globalToolRegistry } from './tools/registry';
-import { observeUserProxy, startUserProxyRuntime, stopUserProxyRuntime, pauseUserProxyRuntime, resumeUserProxyRuntime, setUserProxyIntervention, getUserProxyManagerSnapshot, deliverUserProxyManagerDirective, type ProxyInterventionLevel, type ProxyManagerDirective } from './autonomy/user-proxy-runtime';
+import { observeUserProxy, startUserProxyRuntime, stopUserProxyRuntime, pauseUserProxyRuntime, resumeUserProxyRuntime, setUserProxyIntervention, setUserProxyModel, getUserProxyManagerSnapshot, deliverUserProxyManagerDirective, type ProxyInterventionLevel, type ProxyManagerDirective } from './autonomy/user-proxy-runtime';
+import { claimDormantProxyDirectives, claimNextProxyTask, enqueueProxyTask, getPendingProxyTaskCount, readProxyControl, saveDormantProxyDirective, settleProxyTask, updateProxyControl } from './autonomy/proxy-control-plane';
 import { cancelAgent, cancelAllSubAgents, clearCancelState, globalSubAgentSpawner } from './roles/sub_agent';
 
 // Ensure tools are bootstrapped
@@ -75,6 +76,15 @@ interface AgentExecution {
   lastMemorySampleAt: number;
   retentionCompacted?: boolean;
   orchestratorProjectId?: string;
+  launchSpec: {
+    history: any[];
+    mode: MainAgentMode;
+    userId: string;
+    pinnedContext: any;
+    mediaAttachments: any[];
+    userName: string;
+    runtimeSettings?: ScopedRuntimeSettings | null;
+  };
 }
 
 const MAX_TRACE_BUFFER = 2000;          // Max traces kept in memory per chat
@@ -311,6 +321,15 @@ class AgentRegistry {
       complexity: 'unknown',
       peakMemoryMB: 0,
       lastMemorySampleAt: 0,
+      launchSpec: {
+        history,
+        mode,
+        userId,
+        pinnedContext,
+        mediaAttachments,
+        userName,
+        runtimeSettings,
+      },
     };
 
     // Build the trace callback that writes to the buffer
@@ -629,7 +648,7 @@ class AgentRegistry {
         const selectedProxyApiKey = proxyModelEntry && proxyRuntimeSettings
           ? getScopedRuntimeApiKey(proxyRuntimeSettings, proxyModelEntry.provider)
           : '';
-        startUserProxyRuntime({
+        const userProxyRuntime = startUserProxyRuntime({
           context: {
             ...(pinnedContext || {}),
             projectId,
@@ -647,7 +666,25 @@ class AgentRegistry {
           onTrace,
           steer: (message, metadata) => this.addSteeringMessage(chatId, message, undefined, metadata),
           stopMain: (reason, metadata) => this.stopAgent(chatId, reason, metadata),
+          queueNext: (message, rationale) => this.queueProxyTask(chatId, message, rationale).accepted,
         });
+        if (userProxyRuntime) {
+          for (const dormant of claimDormantProxyDirectives(chatId)) {
+            userProxyRuntime.receiveManagerDirective({
+              message: dormant.message,
+              target: dormant.target,
+              timing: dormant.scope === 'next_task' ? 'now' : dormant.timing,
+              intent: dormant.intent,
+              rationale: dormant.rationale,
+              requestedAction: dormant.requestedAction,
+              urgency: dormant.urgency,
+              expiresAt: dormant.expiresAt,
+              activationCondition: dormant.activationCondition,
+              scope: dormant.scope,
+              supersedesDirectiveId: dormant.supersedesDirectiveId,
+            });
+          }
+        }
         const response = await orchestrator.executePipeline(
           userId,
           projectId,
@@ -768,6 +805,9 @@ class AgentRegistry {
         execution.settled = true;
         if (execution.status === 'running') execution.status = terminalStatus;
         execution.completedAt = execution.completedAt || Date.now();
+        if (terminalStatus === 'completed') {
+          setTimeout(() => this.startNextProxyTask(chatId), 0).unref?.();
+        }
       }
     })();
 
@@ -986,12 +1026,104 @@ class AgentRegistry {
     return execution.settled;
   }
 
-  public controlUserProxy(chatId: string, action: 'pause' | 'resume' | 'intervention', level?: ProxyInterventionLevel): boolean {
+  public controlUserProxy(
+    chatId: string,
+    action: 'pause' | 'resume' | 'intervention' | 'model',
+    value?: ProxyInterventionLevel | string,
+  ): boolean {
     const execution = this.findExecution(chatId);
     const projectId = execution?.orchestratorProjectId || chatId;
-    if (action === 'pause') return pauseUserProxyRuntime(projectId);
-    if (action === 'resume') return resumeUserProxyRuntime(projectId);
-    return level ? setUserProxyIntervention(projectId, level) : false;
+    if (action === 'pause') {
+      updateProxyControl(chatId, { enabled: false });
+      pauseUserProxyRuntime(projectId);
+      return true;
+    }
+    if (action === 'resume') {
+      updateProxyControl(chatId, { enabled: true });
+      resumeUserProxyRuntime(projectId);
+      return true;
+    }
+    if (action === 'intervention') {
+      const level = value as ProxyInterventionLevel;
+      updateProxyControl(chatId, { intervention: level });
+      setUserProxyIntervention(projectId, level);
+      return true;
+    }
+
+    const selection = String(value || 'auto');
+    updateProxyControl(chatId, { modelSelection: selection });
+    if (!execution) return true;
+    const runtimeSettings = execution.launchSpec.runtimeSettings || buildScopedRuntimeSettings();
+    const parts = selection.includes(':') ? selection.split(':') : [];
+    const provider = isModelProvider(parts[0]) ? parts[0] : getMainAgentModelConfig(execution.mode, runtimeSettings).provider;
+    const modelId = parts.slice(1).join(':').trim();
+    const settings = modelId
+      ? { ...runtimeSettings, modelOverrides: { ...runtimeSettings.modelOverrides, [provider]: modelId } }
+      : runtimeSettings;
+    setUserProxyModel(projectId, {
+      mode: MODEL_PROVIDER_MODE[provider],
+      apiKey: getScopedRuntimeApiKey(settings, provider),
+      runtimeSettings: settings,
+    });
+    return true;
+  }
+
+  public queueProxyTask(chatId: string, prompt: string, rationale = ''): {
+    accepted: boolean;
+    status: 'pending' | 'starting';
+    id: string;
+  } {
+    const task = enqueueProxyTask(chatId, prompt, rationale);
+    const execution = this.findExecution(chatId);
+    const running = execution?.status === 'running' || (execution && !execution.settled);
+    if (!running) setTimeout(() => this.startNextProxyTask(chatId), 0).unref?.();
+    return { accepted: true, status: running ? 'pending' : 'starting', id: task.id };
+  }
+
+  private async startNextProxyTask(chatId: string): Promise<void> {
+    const current = this.findExecution(chatId);
+    if (current && (current.status === 'running' || !current.settled)) return;
+    const task = claimNextProxyTask(chatId);
+    if (!task) return;
+
+    const control = readProxyControl(chatId);
+    const runtimeSettings = current?.launchSpec.runtimeSettings || buildScopedRuntimeSettings();
+    const priorHistory = current
+      ? [
+        ...current.launchSpec.history,
+        { role: 'user', parts: [{ text: current.prompt }] },
+        ...(current.finalAnswer ? [{ role: 'model', parts: [{ text: current.finalAnswer }] }] : []),
+      ].slice(-24)
+      : [];
+    const basePinned = current?.launchSpec.pinnedContext || {};
+    const pinnedContext = {
+      ...basePinned,
+      agentRuntime: 'autonomy_v1',
+      autonomy: {
+        ...(basePinned.autonomy || {}),
+        enabled: control.enabled,
+        collaboration: 'user_proxy',
+        initiative: 'high',
+        verification: 'adaptive',
+        intervention: control.intervention,
+        proxyModelSelection: control.modelSelection,
+      },
+    };
+    const result = this.startAgent(
+      chatId,
+      task.prompt,
+      priorHistory,
+      current?.launchSpec.mode || 'think',
+      current?.launchSpec.userId || 'default_user',
+      pinnedContext,
+      [],
+      current?.launchSpec.userName || 'Developer',
+      runtimeSettings.preferredGeminiApiKey,
+      runtimeSettings,
+    );
+    settleProxyTask(chatId, task.id, result.status === 'started'
+      ? { status: 'started', runId: result.runId }
+      : { status: 'failed', error: result.message });
   }
 
   public getProxyManagerContext(chatId: string): Record<string, any> {
@@ -1023,6 +1155,10 @@ class AgentRegistry {
       activity,
       capabilities: this.getMainCapabilitySummary(activity, execution?.prompt || ''),
       proxy: getUserProxyManagerSnapshot(projectId),
+      proxyControl: {
+        ...readProxyControl(chatId),
+        pendingTaskCount: getPendingProxyTaskCount(chatId),
+      },
     };
   }
 
@@ -1052,7 +1188,10 @@ class AgentRegistry {
   public deliverProxyManagerDirective(chatId: string, directive: Omit<ProxyManagerDirective, 'id' | 'createdAt' | 'status'>) {
     const execution = this.findExecution(chatId);
     const projectId = execution?.orchestratorProjectId || chatId;
-    return deliverUserProxyManagerDirective(projectId, directive);
+    const delivered = deliverUserProxyManagerDirective(projectId, directive);
+    if (delivered.accepted) return delivered;
+    const saved = saveDormantProxyDirective(chatId, directive);
+    return { accepted: true, status: saved.status, id: saved.id };
   }
 
   /**

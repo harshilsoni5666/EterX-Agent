@@ -23,17 +23,22 @@ export async function POST(req: NextRequest) {
     const chatId = typeof body.chatId === 'string' ? body.chatId : '';
     const action = body.action;
     const level = body.level;
+    const modelSelection = typeof body.modelSelection === 'string' ? body.modelSelection.slice(0, 320) : '';
     if (!isSafeChatId(chatId)) return attachAgentApiSessionCookie(jsonError('Valid chatId is required', 400), session);
     const ownerError = requireChatOwner(chatId, session.sessionId);
     if (ownerError) return attachAgentApiSessionCookie(ownerError, session);
-    if (!['pause', 'resume', 'intervention'].includes(String(action))) {
+    if (!['pause', 'resume', 'intervention', 'model'].includes(String(action))) {
       return attachAgentApiSessionCookie(jsonError('Unknown proxy action', 400), session);
     }
     if (action === 'intervention' && !['minimal', 'normal', 'high'].includes(String(level))) {
       return attachAgentApiSessionCookie(jsonError('Invalid intervention level', 400), session);
     }
-    const success = agentRegistry.controlUserProxy(chatId, action as any, level as any);
-    return attachAgentApiSessionCookie(NextResponse.json({ success, action, level }), session);
+    if (action === 'model' && !modelSelection) {
+      return attachAgentApiSessionCookie(jsonError('modelSelection is required', 400), session);
+    }
+    const value = action === 'model' ? modelSelection : level;
+    const success = agentRegistry.controlUserProxy(chatId, action as any, value as any);
+    return attachAgentApiSessionCookie(NextResponse.json({ success, action, level, modelSelection }), session);
   } catch (error: any) {
     const response = NextResponse.json({ success: false, error: error?.message || 'Internal error' }, { status: 500 });
     return session ? attachAgentApiSessionCookie(response, session) : response;
