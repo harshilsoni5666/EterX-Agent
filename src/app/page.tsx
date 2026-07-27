@@ -3775,12 +3775,19 @@ function DeepWorkUI() {
       closeThoughtStreamsForBoundary(logs, processedLog);
       if (processedLog.type === 'user_action') {
         const traceRunId = String(processedLog.runId || processedLog.turnId || '').trim();
-        const existingUserIdx = traceRunId
-          ? logs.findIndex((log: any) =>
-            log?.type === 'user_action' &&
-            String(log.runId || log.turnId || '').trim() === traceRunId
-          )
-          : -1;
+        const traceUserId = String(processedLog.id || '').trim();
+        const traceIndex = processedLog._traceIdx;
+        const existingUserIdx = logs.findIndex((log: any) => {
+          if (log?.type !== 'user_action') return false;
+          const sameEventId = traceUserId && String(log.id || '').trim() === traceUserId;
+          const sameTraceIndex = traceIndex !== undefined && traceIndex !== null && log._traceIdx === traceIndex;
+          const optimisticRunMatch = (
+            traceRunId &&
+            String(log.runId || log.turnId || '').trim() === traceRunId &&
+            (log._traceIdx === undefined || log._traceIdx === null)
+          );
+          return Boolean(sameEventId || sameTraceIndex || optimisticRunMatch);
+        });
         if (existingUserIdx >= 0) {
           const optimisticUserLog = logs[existingUserIdx];
           logs[existingUserIdx] = {
@@ -4411,12 +4418,19 @@ function DeepWorkUI() {
                 closeThoughtStreamsForBoundary(logs, timedTrace);
                 if (timedTrace.type === 'user_action') {
                   const traceRunId = String(timedTrace.runId || timedTrace.turnId || '').trim();
-                  const existingUserIdx = traceRunId
-                    ? logs.findIndex((log: any) =>
-                      log?.type === 'user_action' &&
-                      String(log.runId || log.turnId || '').trim() === traceRunId
-                    )
-                    : -1;
+                  const traceUserId = String(timedTrace.id || '').trim();
+                  const traceIndex = timedTrace._traceIdx;
+                  const existingUserIdx = logs.findIndex((log: any) => {
+                    if (log?.type !== 'user_action') return false;
+                    const sameEventId = traceUserId && String(log.id || '').trim() === traceUserId;
+                    const sameTraceIndex = traceIndex !== undefined && traceIndex !== null && log._traceIdx === traceIndex;
+                    const optimisticRunMatch = (
+                      traceRunId &&
+                      String(log.runId || log.turnId || '').trim() === traceRunId &&
+                      (log._traceIdx === undefined || log._traceIdx === null)
+                    );
+                    return Boolean(sameEventId || sameTraceIndex || optimisticRunMatch);
+                  });
                   if (existingUserIdx >= 0) {
                     const optimisticUserLog = logs[existingUserIdx];
                     logs[existingUserIdx] = {
