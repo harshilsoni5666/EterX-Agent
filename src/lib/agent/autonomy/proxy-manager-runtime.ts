@@ -321,6 +321,24 @@ async function runProxyManagerTurn(input: {
     decision.tasks = [];
     decision.reply = isThanksOnly ? 'You’re welcome.' : 'Hi — what would you like to coordinate?';
   }
+  const freshMainContext = agentRegistry.getProxyManagerContext(input.chatId);
+  const mainIsRunning = freshMainContext?.run?.status === 'running';
+  if (decision.operation === 'start_main' && mainIsRunning) {
+    const belongsToCurrentRun =
+      decision.scope === 'current_step' ||
+      decision.scope === 'current_task' ||
+      decision.intent === 'correction' ||
+      decision.intent === 'preference';
+    decision.operation = belongsToCurrentRun ? 'guide_adaptively' : 'queue_after_current';
+    decision.target = belongsToCurrentRun ? 'both' : 'main';
+    decision.reply = belongsToCurrentRun
+      ? 'Main is already active, so I routed this request into the current run through Proxy-Agent supervision.'
+      : 'Main is already active, so I queued this as a separate next task.';
+  } else if (decision.operation === 'queue_after_current' && !mainIsRunning) {
+    decision.operation = 'start_main';
+    decision.target = 'main';
+    decision.reply = 'Main was idle, so I started this task now.';
+  }
   const work = (isGreetingOnly || isThanksOnly ? [] : (Array.isArray(response.trace) ? response.trace : []))
     .filter((item: any) => item?.tool && item?.text)
     .map((item: any) => ({ text: compact(item.text, 180), tool: compact(item.tool, 100) }))
