@@ -10,7 +10,7 @@ import { buildScopedRuntimeSettings, getScopedRuntimeApiKey, type ScopedRuntimeS
 import { flushLedgerForChat } from './memory/conversation-ledger';
 import { globalToolRegistry } from './tools/registry';
 import { observeUserProxy, startUserProxyRuntime, stopUserProxyRuntime, pauseUserProxyRuntime, resumeUserProxyRuntime, setUserProxyIntervention, setUserProxyModel, getUserProxyManagerSnapshot, deliverUserProxyManagerDirective, type ProxyInterventionLevel, type ProxyManagerDirective } from './autonomy/user-proxy-runtime';
-import { claimDormantProxyDirectives, claimNextProxyTask, enqueueProxyTask, getPendingProxyTaskCount, readProxyControl, saveDormantProxyDirective, settleProxyTask, updateProxyControl } from './autonomy/proxy-control-plane';
+import { cancelPendingProxyTasks, claimDormantProxyDirectives, claimNextProxyTask, enqueueProxyTask, getPendingProxyTaskCount, readProxyControl, saveDormantProxyDirective, settleProxyTask, updateProxyControl } from './autonomy/proxy-control-plane';
 import { cancelAgent, cancelAllSubAgents, clearCancelState, globalSubAgentSpawner } from './roles/sub_agent';
 
 // Ensure tools are bootstrapped
@@ -359,6 +359,22 @@ class AgentRegistry {
       }
     };
 
+    const proxyOriginUserEvent = pinnedContext?.autonomy?.origin === 'proxy_manager'
+      ? {
+        type: 'user_action',
+        text: prompt,
+        source: 'proxy_manager',
+        delegatedBy: 'Proxy-Agent',
+        proxyTaskId: pinnedContext?.autonomy?.proxyTaskId,
+        runId: execution.runId,
+        turnId: execution.runId,
+        startTime: execution.startedAt,
+        endTime: execution.startedAt,
+        timestamp: execution.startedAt,
+      }
+      : null;
+    if (proxyOriginUserEvent) onTrace(proxyOriginUserEvent);
+
     onTrace({
       type: 'work_note',
       text: `${ modelConfig.label } is starting`,
@@ -620,6 +636,9 @@ class AgentRegistry {
         // Create TaskStore entry
         if (!pinnedContext?.disableTaskStore) {
           await taskStore.createTask(chatId, prompt, execution.runId);
+          if (proxyOriginUserEvent) {
+            taskStore.addTrace(chatId, proxyOriginUserEvent, execution.runId);
+          }
         }
 
         // Execute the pipeline with per-chat API key
@@ -885,7 +904,10 @@ class AgentRegistry {
    */
   public stopAgent(chatId: string, reason = 'Stopped by user.', metadata?: Record<string, any>): boolean {
     const execution = this.executions.get(chatId);
-    if (!execution) return false;
+    const cancelledQueuedTasks = !metadata?._autonomyProxy
+      ? cancelPendingProxyTasks(chatId)
+      : 0;
+    if (!execution) return cancelledQueuedTasks > 0;
 
     // Registry owns the whole run lifecycle. This must happen here (rather than
     // only in an HTTP route) so Proxy, Telegram, shutdown, and tests all stop the
@@ -896,7 +918,7 @@ class AgentRegistry {
     if (execution.status !== 'running') {
       // Still set cancel flag in case sub-agents are lingering
       execution.cancelled = true;
-      return false;
+      return cancelledQueuedTasks > 0;
     }
 
     execution.cancelled = true;
@@ -1112,6 +1134,8 @@ class AgentRegistry {
         verification: 'adaptive',
         intervention: control.intervention,
         proxyModelSelection: control.modelSelection,
+        origin: 'proxy_manager',
+        proxyTaskId: task.id,
       },
     };
     const result = this.startAgent(

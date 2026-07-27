@@ -11,6 +11,7 @@ export type ProxyControlState = {
   modelSelection: string;
   dormantDirectives: ProxyManagerDirective[];
   taskQueue: ProxyQueuedTask[];
+  stopGeneration: number;
   updatedAt: number;
 };
 
@@ -48,6 +49,7 @@ export function readProxyControl(chatId: string): ProxyControlState {
         modelSelection: compact(saved.modelSelection, 320) || 'auto',
         dormantDirectives: Array.isArray(saved.dormantDirectives) ? saved.dormantDirectives.slice(-MAX_DIRECTIVES) : [],
         taskQueue: Array.isArray(saved.taskQueue) ? saved.taskQueue.slice(-MAX_TASKS) : [],
+        stopGeneration: Number(saved.stopGeneration || 0),
         updatedAt: Number(saved.updatedAt || Date.now()),
       };
     }
@@ -60,6 +62,7 @@ export function readProxyControl(chatId: string): ProxyControlState {
     modelSelection: 'auto',
     dormantDirectives: [],
     taskQueue: [],
+    stopGeneration: 0,
     updatedAt: Date.now(),
   };
 }
@@ -173,4 +176,18 @@ export function settleProxyTask(
 
 export function getPendingProxyTaskCount(chatId: string): number {
   return readProxyControl(chatId).taskQueue.filter(item => item.status === 'pending' || item.status === 'starting').length;
+}
+
+export function cancelPendingProxyTasks(chatId: string, reason = 'Cancelled after Main was stopped by the user.'): number {
+  const state = readProxyControl(chatId);
+  let cancelled = 0;
+  for (const task of state.taskQueue) {
+    if (task.status !== 'pending' && task.status !== 'starting') continue;
+    task.status = 'cancelled';
+    task.error = compact(reason, 1200);
+    cancelled += 1;
+  }
+  state.stopGeneration += 1;
+  writeProxyControl(state);
+  return cancelled;
 }

@@ -7,6 +7,7 @@ import { buildScopedRuntimeSettings, getScopedRuntimeApiKey, type ScopedRuntimeS
 import type { MainAgentMode, MainAgentProvider } from '../model-routing';
 import { getEterxWorkspaceDir } from '../storage-paths';
 import { taskStore } from '../task-store';
+import { readProxyControl } from './proxy-control-plane';
 
 export type ProxyManagerChatMessage = {
   id: string;
@@ -19,6 +20,14 @@ export type ProxyManagerChatMessage = {
 };
 
 export type ProxyManagerOperation = 'none' | 'brief_proxy' | 'guide_adaptively' | 'watch_condition' | 'before_completion' | 'queue_after_current' | 'start_main' | 'schedule_workflow' | 'replace_queued_task' | 'interrupt_main' | 'stop_main';
+
+export type ProxyManagerProgress = {
+  type: 'work' | 'status';
+  text: string;
+  tool?: string;
+  phase?: string;
+  timestamp: number;
+};
 
 type ManagerDecision = {
   reply: string;
@@ -187,7 +196,9 @@ async function runProxyManagerTurn(input: {
   chatId: string;
   message: string;
   model?: { provider?: string; modelId?: string };
+  onProgress?: (event: ProxyManagerProgress) => void;
 }): Promise<{ message: ProxyManagerChatMessage; history: ProxyManagerChatMessage[]; model: { provider: string; modelId: string }; wakeRequested: boolean }> {
+  const stopGenerationAtStart = readProxyControl(input.chatId).stopGeneration;
   const store = readStore(input.chatId);
   const userMessage: ProxyManagerChatMessage = { id: randomUUID(), role: 'user', text: compact(input.message, 12000), createdAt: Date.now() };
   store.messages.push(userMessage);
@@ -266,8 +277,41 @@ async function runProxyManagerTurn(input: {
     paths: live?.workspace?.pinnedPaths || [],
     isFocusedWorkspace: Boolean(live?.workspace?.path),
   };
-  const response = await client.executeMessageLoop(context, prompt, [], undefined, []);
+  input.onProgress?.({
+    type: 'status',
+    text: 'Reviewing the request and live workspace context',
+    phase: 'reviewing',
+    timestamp: Date.now(),
+  });
+  const response = await client.executeMessageLoop(context, prompt, [], (trace: any) => {
+    const type = String(trace?.type || '');
+    const text = compact(trace?.text || trace?.message || '', 240);
+    const tool = compact(trace?.tool || trace?.toolName || trace?.name || '', 100);
+    if (type === 'work_note' && text) {
+      input.onProgress?.({ type: 'work', text, phase: 'reasoning', timestamp: Date.now() });
+      return;
+    }
+    if (tool && text && !['tool_result_preview', 'console_output'].includes(type)) {
+      input.onProgress?.({ type: 'work', text, tool, phase: 'tool', timestamp: Date.now() });
+      return;
+    }
+    if (type === 'error' && text) {
+      input.onProgress?.({ type: 'status', text, phase: 'error', timestamp: Date.now() });
+    }
+  }, []);
   const decision = extractDecision(response.text);
+  if (readProxyControl(input.chatId).stopGeneration !== stopGenerationAtStart && decision.operation !== 'none') {
+    decision.operation = 'none';
+    decision.instruction = '';
+    decision.tasks = [];
+    decision.reply = 'Main was stopped while I was reviewing this request, so I did not start or queue more work.';
+    input.onProgress?.({
+      type: 'status',
+      text: 'Main was stopped; the pending routing decision was safely discarded',
+      phase: 'stopped',
+      timestamp: Date.now(),
+    });
+  }
   const conversationalText = input.message.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, '').replace(/\s+/g, ' ').trim();
   const isGreetingOnly = /^(hi|hello|hey|hiya|yo|good morning|good afternoon|good evening)$/.test(conversationalText);
   const isThanksOnly = /^(thanks|thank you|thx|got it|okay thanks|ok thanks)$/.test(conversationalText);
@@ -292,6 +336,14 @@ async function runProxyManagerTurn(input: {
     ? decision.tasks.length >= 2
     : Boolean(decision.instruction);
   if (decision.operation !== 'none' && hasOperationPayload && decision.confidence >= operationThreshold) {
+    input.onProgress?.({
+      type: 'status',
+      text: decision.operation === 'schedule_workflow'
+        ? 'Scheduling the autonomous workflow'
+        : 'Applying the coordination decision',
+      phase: 'routing',
+      timestamp: Date.now(),
+    });
     if (decision.operation === 'schedule_workflow') {
       let firstStatus: 'pending' | 'starting' = 'pending';
       decision.tasks.forEach((task, index) => {
@@ -372,6 +424,7 @@ export async function talkToProxyManager(input: {
   chatId: string;
   message: string;
   model?: { provider?: string; modelId?: string };
+  onProgress?: (event: ProxyManagerProgress) => void;
 }): Promise<{ message: ProxyManagerChatMessage; history: ProxyManagerChatMessage[]; model: { provider: string; modelId: string }; wakeRequested: boolean }> {
   const previous = proxyManagerTurnChains.get(input.chatId) || Promise.resolve();
   const turn = previous.catch(() => undefined).then(() => runProxyManagerTurn(input));

@@ -50,6 +50,49 @@ export async function POST(req: NextRequest) {
 
     const provider = isModelProvider(body?.model?.provider) ? body.model.provider : undefined;
     const modelId = cleanString(body?.model?.modelId, 220);
+    if (body.stream === true) {
+      const encoder = new TextEncoder();
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          let closed = false;
+          const send = (event: Record<string, any>) => {
+            if (closed) return;
+            try {
+              controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+            } catch {
+              closed = true;
+            }
+          };
+          send({ type: 'accepted', chatId, timestamp: Date.now() });
+          talkToProxyManager({
+            chatId,
+            message,
+            model: { provider, modelId },
+            onProgress: progress => send({ type: 'progress', progress }),
+          }).then(result => {
+            send({
+              type: 'complete',
+              result,
+              context: agentRegistry.getProxyManagerContext(chatId),
+            });
+          }).catch((error: any) => {
+            send({ type: 'error', error: error?.message || 'Proxy Manager failed' });
+          }).finally(() => {
+            if (closed) return;
+            closed = true;
+            try { controller.close(); } catch { }
+          });
+        },
+      });
+      return attachAgentApiSessionCookie(new NextResponse(stream, {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/x-ndjson; charset=utf-8',
+          'Cache-Control': 'no-cache, no-store, must-revalidate',
+          'X-Content-Type-Options': 'nosniff',
+        },
+      }), session);
+    }
     const result = await talkToProxyManager({ chatId, message, model: { provider, modelId } });
     return attachAgentApiSessionCookie(NextResponse.json({
       success: true,
