@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import dynamic from 'next/dynamic';
@@ -52,6 +52,7 @@ import {
   type CustomToolActiveTrace,
 } from '../lib/agent/custom-agent-trace-adapter';
 import { formatVisibleWorkNote } from '../lib/agent/work-note';
+import { closeThoughtStreamsForBoundary, mergeThoughtStreamTrace } from '../lib/thought-stream-lifecycle';
 import { FilePanelProvider, useGlobalFilePanel } from '../contexts/FilePanelContext';
 import { isProjectFile, getFileIconPath } from '../lib/utils/file-icon-utils';
 import { WorkMenuSectionButton, WorkMenuEmptyState, WorkMenuStatusIndicator } from '../components/layout/WorkMenuHelpers';
@@ -3772,6 +3773,7 @@ function DeepWorkUI() {
 
       let processedLog = withTraceTiming(trace);
       const traceAt = processedLog.endTime;
+      closeThoughtStreamsForBoundary(logs, processedLog);
       if (processedLog.type === 'user_action') {
         const traceRunId = String(processedLog.runId || processedLog.turnId || '').trim();
         const existingUserIdx = traceRunId
@@ -3849,32 +3851,7 @@ function DeepWorkUI() {
       }
 
       if (trace.type === 'thought_stream') {
-        const subAgent = trace.subAgent || null;
-        const thoughtId = trace.thoughtId || null;
-        let mergeIdx = -1;
-        for (let i = logs.length - 1; i >= 0; i--) {
-          if (logs[i].type === 'user_action') break;
-          if (logs[i].type === 'thought_stream' && (logs[i].subAgent || null) === subAgent) {
-            if (thoughtId && logs[i].thoughtId && logs[i].thoughtId !== thoughtId) break;
-            mergeIdx = i;
-            break;
-          }
-        }
-        if (mergeIdx >= 0) {
-          const existingTraceIdx = Number(logs[mergeIdx]._traceIdx);
-          const incomingTraceIdx = Number(trace._traceIdx);
-          if (
-            Number.isFinite(existingTraceIdx) &&
-            Number.isFinite(incomingTraceIdx) &&
-            incomingTraceIdx < existingTraceIdx
-          ) {
-            continue;
-          }
-          // Preserve the original startTime from when the thought began
-          logs[mergeIdx] = { ...logs[mergeIdx], text: trace.text, thoughtId, _traceIdx: trace._traceIdx, timestamp: traceAt, startTime: logs[mergeIdx].startTime, endTime: trace.endTime ?? traceAt };
-        } else {
-          logs.push({ type: 'thought_stream', text: trace.text, subAgent, thoughtId, _traceIdx: trace._traceIdx, timestamp: traceAt, startTime: trace.startTime ?? traceAt, endTime: trace.endTime ?? traceAt });
-        }
+        mergeThoughtStreamTrace(logs, processedLog);
       } else if (trace.type === 'work_note') {
         const subAgent = trace.subAgent || null;
         const noteId = trace.noteId || null;
@@ -4430,6 +4407,7 @@ function DeepWorkUI() {
                   ...(currentTurnId ? { turnId: currentTurnId } : {}),
                 });
                 const traceAt = timedTrace.endTime;
+                closeThoughtStreamsForBoundary(logs, timedTrace);
                 if (timedTrace.type === 'user_action') {
                   const traceRunId = String(timedTrace.runId || timedTrace.turnId || '').trim();
                   const existingUserIdx = traceRunId
@@ -4498,43 +4476,7 @@ function DeepWorkUI() {
                 }
 
                 if (trace.type === 'thought_stream') {
-                  const subAgent = trace.subAgent || null;
-                  const thoughtId = trace.thoughtId || null;
-                  let mergeIdx = -1;
-                  for (let i = logs.length - 1; i >= 0; i--) {
-                    if (logs[i].type === 'user_action') break;
-                    if (logs[i].type === 'thought_stream' && (logs[i].subAgent || null) === subAgent) {
-                      if (thoughtId && logs[i].thoughtId && logs[i].thoughtId !== thoughtId) break;
-                      mergeIdx = i;
-                      break;
-                    }
-                  }
-                  if (mergeIdx >= 0) {
-                    const existingTraceIdx = Number(logs[mergeIdx]._traceIdx);
-                    const incomingTraceIdx = Number(trace._traceIdx);
-                    if (
-                      Number.isFinite(existingTraceIdx) &&
-                      Number.isFinite(incomingTraceIdx) &&
-                      incomingTraceIdx < existingTraceIdx
-                    ) {
-                      continue;
-                    }
-                    // Preserve the original startTime from when the thought began
-                    logs[mergeIdx] = { ...logs[mergeIdx], text: trace.text, thoughtId, _traceIdx: trace._traceIdx, timestamp: traceAt, startTime: logs[mergeIdx].startTime, endTime: trace.endTime ?? traceAt };
-                  } else {
-                    logs.push({
-                      type: 'thought_stream',
-                      text: trace.text,
-                      subAgent,
-                      thoughtId,
-                      _traceIdx: trace._traceIdx,
-                      ...(activeRunId ? { runId: activeRunId } : {}),
-                      ...(currentTurnId ? { turnId: currentTurnId } : {}),
-                      timestamp: traceAt,
-                      startTime: trace.startTime ?? traceAt,
-                      endTime: trace.endTime ?? traceAt,
-                    });
-                  }
+                  mergeThoughtStreamTrace(logs, timedTrace);
                 } else if (trace.type === 'work_note') {
                   const subAgent = trace.subAgent || null;
                   const noteId = trace.noteId || null;
@@ -7116,12 +7058,12 @@ function DeepWorkUI() {
       <div className="pointer-events-none absolute top-0 left-0 right-[150px] h-[var(--eterx-shell-topbar-height)] z-[998] [-webkit-app-region:drag]" />
 
       {/* Global Top Bar UI Container */}
-      <div className="pointer-events-none absolute top-0 left-0 right-[150px] h-[var(--eterx-shell-topbar-height)] z-[999] flex items-center">
+      <div className="pointer-events-none absolute top-0 left-0 right-[150px] h-[var(--eterx-shell-topbar-height)] z-[999] flex items-center overflow-hidden">
         {/* Drag spacer — pointer-events-none so sidebar toggle clicks pass through */}
         <div className="eterx-topbar-sidebar-spacer shrink-0 pointer-events-none transition-[width] duration-300" />
 
         {/* Action buttons — API | Models | Theme | Help | Updates */}
-        <div className="pointer-events-auto flex items-center [-webkit-app-region:no-drag]">
+        <div className="pointer-events-auto flex items-center gap-0 min-w-0 overflow-hidden [-webkit-app-region:no-drag]">
           {/* API */}
           <button type="button"
             onClick={() => { setSettingsInitialTab('api'); setIsSettingsOpen(true); }}
@@ -7422,7 +7364,7 @@ function DeepWorkUI() {
         <>
           <div className={`eterx-main-panel ${ !sidebarOpen ? 'eterx-main-panel-sidebar-closed' : '' } flex-1 flex flex-col relative overflow-hidden`}>
             <div className="eterx-main-header relative z-50 flex h-[var(--eterx-main-header-height)] shrink-0 items-center justify-between gap-4 border-b border-[var(--border)] pl-3 pr-6 [-webkit-app-region:drag]">
-              <div className="flex min-w-0 items-center gap-2 pointer-events-auto [-webkit-app-region:no-drag]">
+              <div className="flex min-w-0 flex-1 overflow-hidden items-center gap-2 pointer-events-auto [-webkit-app-region:no-drag]">
                 <div id="agent-builder-back-portal" className="flex items-center">
                   {buildingAgentId && (
                     <button
@@ -7829,7 +7771,7 @@ function DeepWorkUI() {
                 </div>
               )}
 
-              <div className="flex shrink-0 items-center gap-1.5 pointer-events-auto [-webkit-app-region:no-drag]">
+              <div className="flex shrink-0 items-center gap-1 pointer-events-auto [-webkit-app-region:no-drag] ml-auto">
                 {isHeaderGitRepo && !!activeChatId && (
                   <div className="relative group">
                     <button

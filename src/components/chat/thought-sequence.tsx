@@ -4632,7 +4632,15 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
         const phaseIsLastVisible = i === segs.length - 1 || (seg.kind === 'note' && nextSeg?.kind === 'action_group' && i + 1 === segs.length - 1);
         const phaseIsActive = isThinking && isLast && phaseIsLastVisible;
 
-        if (seg.kind === 'thought') return <ProfessionalThought key={`t-${ seg.idx }`} text={seg.log.text} isLatest={isLast && i === segs.length - 1} isThinking={isThinking} startedAt={seg.log.startTime} updatedAt={seg.log.endTime} />;
+        if (seg.kind === 'thought') {
+          const thoughtIsLive =
+            isThinking &&
+            seg.log.isStreaming !== false &&
+            seg.log.streamState !== 'closed' &&
+            isLast &&
+            i === segs.length - 1;
+          return <ProfessionalThought key={`t-${ seg.idx }`} text={seg.log.text} isLatest={thoughtIsLive} isThinking={thoughtIsLive} startedAt={seg.log.startTime} updatedAt={seg.log.endTime} />;
+        }
         if (seg.kind === 'note' && nextSeg?.kind === 'action_group') {
           const firstIdx = nextSeg.firstIdx ?? nextSeg.lastIdx ?? i;
           const groupKey = `phase-g-${ firstIdx }-${ getActionIdentity(nextSeg.logs[0], firstIdx) }`;

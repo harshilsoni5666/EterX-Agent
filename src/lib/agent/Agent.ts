@@ -2048,7 +2048,7 @@ export class GeminiAgentClient {
           let accumulatedContent = '';
           let accumulatedReasoning = '';
           const thoughtStartTime = Date.now();
-          const thoughtId = `thought_${ interactions }`;
+          const thoughtId = `thought_${ interactions }_${ thoughtStartTime }`;
           const toolCallsAccumulated = new Map<number, any>();
 
           writeRuntimeTrace('model_request', {
@@ -2076,6 +2076,7 @@ export class GeminiAgentClient {
                     type: 'thought_stream',
                     text: accumulatedReasoning,
                     isDelta: false,
+                    isStreaming: true,
                     thoughtId,
                     startTime: thoughtStartTime,
                     endTime: Date.now()
@@ -2117,6 +2118,18 @@ export class GeminiAgentClient {
                 }
               }
             }
+          }
+
+          if (accumulatedReasoning && onTrace) {
+            onTrace({
+              type: 'thought_stream',
+              text: accumulatedReasoning,
+              isDelta: false,
+              isStreaming: false,
+              thoughtId,
+              startTime: thoughtStartTime,
+              endTime: Date.now(),
+            });
           }
 
           const finalToolCalls = Array.from(toolCallsAccumulated.values());
@@ -2597,7 +2610,7 @@ export class GeminiAgentClient {
           let accumulatedText = '';
           let accumulatedThought = '';
           const thoughtStartTime = Date.now();
-          const thoughtId = `thought_${ interactions }`;
+          const thoughtId = `thought_${ interactions }_${ thoughtStartTime }`;
           let hasToolUseBlock = false;
 
           writeRuntimeTrace('model_request', {
@@ -2624,6 +2637,7 @@ export class GeminiAgentClient {
                     type: 'thought_stream',
                     text: accumulatedThought,
                     isDelta: false,
+                    isStreaming: true,
                     thoughtId,
                     startTime: thoughtStartTime,
                     endTime: Date.now()
@@ -2650,6 +2664,18 @@ export class GeminiAgentClient {
               const streamError = (event as any).error;
               throw new Error(streamError?.message || 'Anthropic stream error');
             }
+          }
+
+          if (accumulatedThought && onTrace) {
+            onTrace({
+              type: 'thought_stream',
+              text: accumulatedThought,
+              isDelta: false,
+              isStreaming: false,
+              thoughtId,
+              startTime: thoughtStartTime,
+              endTime: Date.now(),
+            });
           }
 
           response = await runner.finalMessage();
@@ -6081,6 +6107,7 @@ The first meaningful action group in a user turn needs an update. Later boundari
       let accumulatedText = '';
       let accumulatedThought = '';
       const thoughtStartTime = Date.now();
+      const thoughtId = `thought_${ interactions }_${ thoughtStartTime }`;
       let accumulatedWorkNote = '';
       let workNoteEmitted = false;
       let emittedWorkNoteText = '';
@@ -6127,7 +6154,7 @@ The first meaningful action group in a user turn needs an update. Later boundari
             // 1. EXPLICIT THINKING (Native reasoning field)
             if (part.thought && part.text) {
               accumulatedThought += part.text;
-              const thoughtEvt = { type: 'thought_stream', text: accumulatedThought, isDelta: false, thoughtId: `thought_${ interactions }`, startTime: thoughtStartTime, endTime: Date.now() };
+              const thoughtEvt = { type: 'thought_stream', text: accumulatedThought, isDelta: false, isStreaming: true, thoughtId, startTime: thoughtStartTime, endTime: Date.now() };
               if (onTrace) onTrace(thoughtEvt);
             }
 
@@ -6164,6 +6191,17 @@ The first meaningful action group in a user turn needs an update. Later boundari
               emitVisibleWorkNote();
             }
           }
+        }
+        if (accumulatedThought && onTrace) {
+          onTrace({
+            type: 'thought_stream',
+            text: accumulatedThought,
+            isDelta: false,
+            isStreaming: false,
+            thoughtId,
+            startTime: thoughtStartTime,
+            endTime: Date.now(),
+          });
         }
       } catch (streamReadErr: any) {
         const errMsg = String(streamReadErr?.message || streamReadErr);
@@ -6215,7 +6253,7 @@ The first meaningful action group in a user turn needs an update. Later boundari
       // Keep normal model text separate from native thoughts whenever tools follow.
       // The UI renders this outside the collapsible Think card.
       if (accumulatedThought && functionCalls.length > 0) {
-        trace.push({ type: 'thought_stream', text: accumulatedThought, isDelta: false, thoughtId: `thought_${ interactions }`, startTime: thoughtStartTime, endTime: Date.now() });
+        trace.push({ type: 'thought_stream', text: accumulatedThought, isDelta: false, isStreaming: false, thoughtId, startTime: thoughtStartTime, endTime: Date.now() });
       }
       if (forcedCompletionIterations > 0) {
         delete (config as any).cachedContent;
