@@ -567,6 +567,18 @@ const proxyManagerMarkdownComponents = {
   ),
 };
 
+type ProxyLiveTurn = {
+  chatId: string;
+  turnId: string;
+  events: Array<{
+    type: 'work' | 'status';
+    text: string;
+    tool?: string;
+    phase?: string;
+    timestamp: number;
+  }>;
+};
+
 const sortChats = (chats: ChatSession[]) => {
   return [...chats].sort((a, b) => {
     if (a.isFavorite && !b.isFavorite) return -1;
@@ -942,6 +954,8 @@ function DeepWorkUI() {
   const [proxyChatHistoryChatId, setProxyChatHistoryChatId] = useState<string | null>(null);
   const [proxyChatLoading, setProxyChatLoading] = useState(false);
   const proxyLoadingChatIdsRef = useRef<Set<string>>(new Set());
+  const proxyLiveTurnsRef = useRef<Map<string, ProxyLiveTurn>>(new Map());
+  const [proxyLiveTurn, setProxyLiveTurn] = useState<ProxyLiveTurn | null>(null);
   const [proxyChatWindow, setProxyChatWindow] = useState({ x: 0, y: 0, width: 340, height: 460 });
   const [isProxyExpanded, setIsProxyExpanded] = useState(false);
   
@@ -1628,6 +1642,28 @@ function DeepWorkUI() {
   }, [activeChatId]);
 
   useEffect(() => {
+    if (!showProxyChat || !activeChatId) return;
+    const targetChatId = activeChatId;
+    let cancelled = false;
+    const refreshProxyContext = async () => {
+      try {
+        const response = await fetch(`/api/agent/proxy-manager?chatId=${encodeURIComponent(targetChatId)}`, {
+          cache: 'no-store',
+        });
+        const data = response.ok ? await response.json() : null;
+        if (cancelled || activeChatIdRef.current !== targetChatId || !data?.context) return;
+        setProxyManagerContext(data.context);
+      } catch { }
+    };
+    void refreshProxyContext();
+    const interval = window.setInterval(refreshProxyContext, 2500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [activeChatId, showProxyChat]);
+
+  useEffect(() => {
     try {
       setProxyRuntimeModelSelection(localStorage.getItem(`eterx_proxy_runtime_model_${ activeChatId || 'new_chat' }`) || AUTO_MODEL_SELECTION);
     } catch {
@@ -1757,6 +1793,7 @@ function DeepWorkUI() {
       setProxyChatHistoryChatId(null);
       setProxyModelSelection(AUTO_MODEL_SELECTION);
       setProxyManagerContext(null);
+      setProxyLiveTurn(null);
       return;
     }
     setProxyChatMessages([]);
@@ -1766,6 +1803,7 @@ function DeepWorkUI() {
     setShowProxyRuntimeModelMenu(false);
     setShowProxyInterventionMenu(false);
     setProxyChatLoading(proxyLoadingChatIdsRef.current.has(activeChatId));
+    setProxyLiveTurn(proxyLiveTurnsRef.current.get(activeChatId) || null);
     try {
       setProxyModelSelection(localStorage.getItem(`eterx_proxy_manager_model_${ activeChatId }`) || AUTO_MODEL_SELECTION);
     } catch { setProxyModelSelection(AUTO_MODEL_SELECTION); }
@@ -1812,7 +1850,7 @@ function DeepWorkUI() {
       proxyMessagesEndRef.current?.scrollIntoView({ block: 'end', behavior: 'smooth' });
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [activeChatId, proxyChatLoading, proxyChatMessages.length, showProxyChat]);
+  }, [activeChatId, proxyChatLoading, proxyChatMessages.length, proxyLiveTurn?.events.length, showProxyChat]);
 
   const handleSendProxyMessage = useCallback(async () => {
     const rawText = proxyChatInput.trim();
@@ -1843,16 +1881,64 @@ function DeepWorkUI() {
     setProxyAttachments([]);
     setProxyPinnedItems([]);
     proxyLoadingChatIdsRef.current.add(requestChatId);
+    const liveTurn: ProxyLiveTurn = {
+      chatId: requestChatId,
+      turnId: optimisticId,
+      events: [],
+    };
+    proxyLiveTurnsRef.current.set(requestChatId, liveTurn);
+    setProxyLiveTurn(liveTurn);
     setProxyChatLoading(true);
 
     const parsedModel = parseModelEntryKey(proxyModelSelection);
+    const applyProxyProgress = (event: ProxyLiveTurn['events'][number]) => {
+      const current = proxyLiveTurnsRef.current.get(requestChatId);
+      if (!current || current.turnId !== optimisticId) return;
+      const previous = current.events[current.events.length - 1];
+      if (previous?.text === event.text && previous?.phase === event.phase) return;
+      const next = { ...current, events: [...current.events, event].slice(-24) };
+      proxyLiveTurnsRef.current.set(requestChatId, next);
+      if (activeChatIdRef.current === requestChatId) setProxyLiveTurn(next);
+    };
     try {
       const response = await fetch('/api/agent/proxy-manager', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chatId: requestChatId, message: fullText, model: parsedModel || {} }),
+        body: JSON.stringify({ chatId: requestChatId, message: fullText, model: parsedModel || {}, stream: true }),
       });
-      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const failure = await response.json().catch(() => ({}));
+        throw new Error(failure.error || 'Proxy Manager request failed');
+      }
+      let data: any = {};
+      const contentType = response.headers.get('content-type') || '';
+      if (response.body && contentType.includes('application/x-ndjson')) {
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffered = '';
+        const processLine = (line: string) => {
+          if (!line.trim()) return;
+          const event = JSON.parse(line);
+          if (event.type === 'progress' && event.progress) {
+            applyProxyProgress(event.progress);
+          } else if (event.type === 'complete') {
+            data = { success: true, ...(event.result || {}), context: event.context };
+          } else if (event.type === 'error') {
+            throw new Error(event.error || 'Proxy Manager request failed');
+          }
+        };
+        while (true) {
+          const chunk = await reader.read();
+          buffered += decoder.decode(chunk.value || new Uint8Array(), { stream: !chunk.done });
+          const lines = buffered.split('\n');
+          buffered = lines.pop() || '';
+          lines.forEach(processLine);
+          if (chunk.done) break;
+        }
+        if (buffered.trim()) processLine(buffered);
+      } else {
+        data = await response.json().catch(() => ({}));
+      }
       if (!response.ok || !data.success) throw new Error(data.error || 'Proxy Manager request failed');
       const historyArr = Array.isArray(data.history) ? data.history : [];
       if (activeChatIdRef.current === requestChatId) {
@@ -1913,7 +1999,13 @@ function DeepWorkUI() {
       }
     } finally {
       proxyLoadingChatIdsRef.current.delete(requestChatId);
-      if (activeChatIdRef.current === requestChatId) setProxyChatLoading(false);
+      if (proxyLiveTurnsRef.current.get(requestChatId)?.turnId === optimisticId) {
+        proxyLiveTurnsRef.current.delete(requestChatId);
+      }
+      if (activeChatIdRef.current === requestChatId) {
+        setProxyLiveTurn(null);
+        setProxyChatLoading(false);
+      }
     }
   }, [activeChatId, proxyAttachments, proxyChatInput, proxyChatLoading, proxyModelSelection, proxyPinnedItems]);
 
@@ -8410,8 +8502,8 @@ function DeepWorkUI() {
                                   <div className="min-w-0">
                                     <div className="truncate text-[13px] font-semibold tracking-[-0.01em] text-white/90">Proxy workspace</div>
                                     <div className="mt-0.5 flex items-center gap-1.5 text-[9.5px] text-white/38">
-                                      <span className={`h-1.5 w-1.5 rounded-full ${ proxyRunStatus === 'running' ? 'bg-emerald-400' : proxyEnabled ? 'bg-white/35' : 'bg-amber-400' }`} />
-                                      <span>{proxyRunStatus === 'running' ? 'Main active' : proxyEnabled ? 'Ready to coordinate' : 'Supervisor paused'}</span>
+                                      <span className={`h-1.5 w-1.5 rounded-full ${ proxyChatLoading ? 'bg-sky-400' : proxyRunStatus === 'running' ? 'bg-emerald-400' : proxyEnabled ? 'bg-white/35' : 'bg-amber-400' }`} />
+                                      <span>{proxyChatLoading ? 'Side agent working' : proxyRunStatus === 'running' ? 'Main active' : proxyEnabled ? 'Ready to coordinate' : 'Supervisor paused'}</span>
                                     </div>
                                   </div>
                                 </div>
@@ -8519,15 +8611,38 @@ function DeepWorkUI() {
                                     </div>
                                   ))
                                 )}
-                                {proxyChatLoading && (
+                                {proxyLiveTurn?.chatId === activeChatId && (
+                                  <div role="status" aria-live="polite" className="self-start flex max-w-[94%] flex-col gap-1.5 px-0 py-1">
+                                    {proxyLiveTurn.events.map((event, eventIndex) => {
+                                      const EventIcon = event.tool?.includes('search')
+                                        ? Search
+                                        : event.tool?.includes('workspace') || event.tool?.includes('parse_')
+                                          ? FileText
+                                          : event.phase === 'routing'
+                                            ? ChevronRight
+                                            : Sparkles;
+                                      const isLast = eventIndex === proxyLiveTurn.events.length - 1;
+                                      return (
+                                        <div key={`${event.timestamp}-${eventIndex}`} className="flex min-w-0 items-start gap-2 text-[10.5px] leading-4 text-white/38">
+                                          <EventIcon className="mt-[1px] h-3.5 w-3.5 shrink-0 text-white/28" />
+                                          {isLast && proxyChatLoading
+                                            ? <Shimmer>{event.text}</Shimmer>
+                                            : <span className="break-words">{event.text}</span>}
+                                        </div>
+                                      );
+                                    })}
+                                    {proxyLiveTurn.events.length === 0 && (
+                                      <div className="flex items-center gap-2 text-[10.5px] text-white/38">
+                                        <Sparkles className="h-3.5 w-3.5 text-white/28" />
+                                        <Shimmer>Connecting the side agent</Shimmer>
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+                                {proxyChatLoading && proxyLiveTurn?.chatId !== activeChatId && (
                                   <div className="self-start flex items-center gap-2 px-0 py-1 text-[10.5px] text-white/42">
                                     <Sparkles className="h-3.5 w-3.5 text-white/28" />
-                                    <Shimmer className="mr-1.5">Reviewing context</Shimmer>
-                                    <span className="inline-flex items-center gap-1 align-middle">
-                                      <span className="h-1 w-1 animate-bounce rounded-full bg-white/55 [animation-delay:-0.24s]" />
-                                      <span className="h-1 w-1 animate-bounce rounded-full bg-white/55 [animation-delay:-0.12s]" />
-                                        <span className="h-1 w-1 animate-bounce rounded-full bg-white/55" />
-                                    </span>
+                                    <Shimmer>Restoring live work</Shimmer>
                                   </div>
                                 )}
                                 <div ref={proxyMessagesEndRef} className="h-px shrink-0" />
