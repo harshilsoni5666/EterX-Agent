@@ -153,7 +153,12 @@ export function enqueueProxyTask(
 
 export function claimNextProxyTask(chatId: string): ProxyQueuedTask | null {
   const state = readProxyControl(chatId);
-  const task = state.taskQueue.find(item => item.status === 'pending');
+  // `starting` is only a short synchronous handoff state. If it survives long
+  // enough to be read again, the process stopped before recording the run and
+  // the task must be reclaimed instead of remaining permanently undeliverable.
+  const task = state.taskQueue.find(item =>
+    item.status === 'pending' || (item.status === 'starting' && !item.runId),
+  );
   if (!task) return null;
   task.status = 'starting';
   writeProxyControl(state);
