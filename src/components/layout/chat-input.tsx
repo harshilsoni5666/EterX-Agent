@@ -3060,6 +3060,7 @@ const handleSelectFolderDialog = useCallback(async () => {
                     placeholder={composerPlaceholder || (isLiveActive ? "Type..." : isThinking ? "Send guidance to the running agent" : isNewChatHome ? "What should EterX work on?" : "Message EterX")}
                     className={`eterx-composer-textarea w-full appearance-none border-0 bg-transparent shadow-none outline-none ring-0 text-[14.5px] font-normal text-[#F0F0F0] placeholder:text-[#8B8984] focus:border-0 focus:outline-none focus:ring-0 placeholder:font-normal min-h-[26px] max-h-[400px] resize-none leading-[1.45] selection:bg-white/15 transition-colors duration-200 relative z-0 py-1 scrollbar-no-buttons ${ isOverflowing ? 'overflow-y-auto eterx-scrollbar pr-2' : 'overflow-hidden' }`}
                     style={{
+                      ['--eterx-composer-textarea-max' as any]: `${ textareaMaxHeight }px`,
                       caretColor: '#F0F0F0',
                       height: '26px',
                       maxHeight: textareaMaxHeight,

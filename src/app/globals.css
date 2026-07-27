@@ -5379,13 +5379,11 @@
 }
 
 :root[data-theme="dark"] .eterx-composer-shell[data-new-chat="true"] .eterx-composer-textarea {
-  max-height: min(280px, 34vh) !important;
-  overflow-y: auto !important;
+  max-height: var(--eterx-composer-textarea-max, min(280px, 34vh)) !important;
 }
 
 :root[data-theme="dark"] .eterx-composer-shell[data-compressed="true"] .eterx-composer-textarea {
-  max-height: min(196px, 30vh) !important;
-  overflow-y: auto !important;
+  max-height: var(--eterx-composer-textarea-max, min(196px, 30vh)) !important;
 }
 
 :root[data-theme="dark"] .eterx-composer-shell .eterx-composer-overflow-fade-top {
@@ -7016,4 +7014,4 @@
 
 :root[data-theme="light"] .eterx-proxy-runtime-model-menu button span:last-child {
   color: rgba(20, 20, 20, 0.46) !important;
-}
+}
