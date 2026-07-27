@@ -1375,6 +1375,7 @@ function DeepWorkUI() {
   const liveSessionTokenRef = useRef<string | null>(null);
   const liveChatIdRef = useRef<string | null>(null);
   const [liveChatId, setLiveChatId] = useState<string | null>(null);
+  const liveEphemeralChatIdRef = useRef<string | null>(null);
   const liveConversationRef = useRef<{ role: string; text: string }[]>([]);
 
   useEffect(() => {
@@ -2165,24 +2166,16 @@ function DeepWorkUI() {
     lastLiveLogsSnapshotRef.current = [];
 
     let currentChatId = activeChatId;
-    // If on a new/empty chat window with no ID, create a fresh chat for the live session.
-    // If on an existing conversation, stay in that same chat.
+    // A new live room stays ephemeral until its first real turn. Persisting it
+    // here leaves empty "Live Conversation" rows behind after disconnects.
     if (!currentChatId) {
       currentChatId = crypto.randomUUID();
-      const newChat: ChatSession = {
-        id: currentChatId,
-        title: "Live Conversation",
-        updatedAt: Date.now(),
-        traceLogs: []
-      };
-      setChats(prev => {
-        const updated = [newChat, ...prev];
-        persistChats(updated);
-        return updated;
-      });
+      liveEphemeralChatIdRef.current = currentChatId;
       activeChatIdRef.current = currentChatId;
       setActiveChatId(currentChatId);
       setTraceLogs([]);
+    } else {
+      liveEphemeralChatIdRef.current = null;
     }
     liveChatIdRef.current = currentChatId;
     setLiveChatId(currentChatId);
@@ -2282,19 +2275,31 @@ function DeepWorkUI() {
           });
         }
 
+        const liveTitle = (cleanUserText || cleanModelText || 'Live conversation').slice(0, 50);
+        liveEphemeralChatIdRef.current = null;
         setChats(prevChats => {
-          const updated = prevChats.map(chat => {
-            if (chat.id !== currentChatId) return chat;
-            const newTitle = chat.title === "Live Conversation" && cleanUserText
-              ? cleanUserText.slice(0, 50)
-              : chat.title;
-            return {
-              ...chat,
-              traceLogs: [...(chat.traceLogs || []), ...newTraceLogs],
-              updatedAt: completedAt,
-              title: newTitle,
-            };
-          });
+          const existingChat = prevChats.find(chat => chat.id === currentChatId);
+          const updated = existingChat
+            ? prevChats.map(chat => {
+                if (chat.id !== currentChatId) return chat;
+                const newTitle = chat.title === "Live Conversation" && cleanUserText
+                  ? cleanUserText.slice(0, 50)
+                  : chat.title;
+                return {
+                  ...chat,
+                  traceLogs: [...(chat.traceLogs || []), ...newTraceLogs],
+                  updatedAt: completedAt,
+                  title: newTitle,
+                };
+              })
+            : [{
+                id: currentChatId,
+                title: liveTitle,
+                updatedAt: completedAt,
+                traceLogs: newTraceLogs,
+                workspacePath: activeWorkspacePath,
+                runLocation: activeRunLocation,
+              }, ...prevChats];
           const sorted = sortChats(updated);
           persistChats(sorted);
           return sorted;
@@ -2561,7 +2566,7 @@ function DeepWorkUI() {
         setLiveError(null);
       }, 4000);
     }
-  }, [activeChatId, activeWorkspacePath, revealNetworkBanner]);
+  }, [activeChatId, activeRunLocation, activeWorkspacePath, revealNetworkBanner]);
 
   const stopLiveSession = useCallback(() => {
     liveSessionTokenRef.current = null;
