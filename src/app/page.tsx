@@ -1407,7 +1407,10 @@ function DeepWorkUI() {
   // A live-frame snapshot is only valid for the turn that produced it. Clear it
   // synchronously whenever navigation or a regular send starts so a previous
   // answer/tool sequence can never be rendered beneath the next user message.
-  const lastLiveLogsSnapshotRef = useRef<any[]>([]);
+  const lastLiveLogsSnapshotRef = useRef<{ chatId: string | null; logs: any[] }>({
+    chatId: null,
+    logs: [],
+  });
   const [liveMicVolume, setLiveMicVolume] = useState(0);
   const [liveModelVolume, setLiveModelVolume] = useState<number | number[]>(0);
   const [liveActiveTool, setLiveActiveTool] = useState<string | null>(null);
@@ -1419,10 +1422,6 @@ function DeepWorkUI() {
   const [liveChatId, setLiveChatId] = useState<string | null>(null);
   const liveEphemeralChatIdRef = useRef<string | null>(null);
   const liveConversationRef = useRef<{ role: string; text: string }[]>([]);
-
-  useEffect(() => {
-    lastLiveLogsSnapshotRef.current = [];
-  }, [activeChatId]);
 
   // Derived: isThinking for CURRENT active chat only
   const isLiveSessionActive =
@@ -2318,7 +2317,7 @@ function DeepWorkUI() {
   const discardEphemeralLiveRoom = useCallback((chatId: string | null) => {
     if (!chatId || liveEphemeralChatIdRef.current !== chatId) return;
     liveEphemeralChatIdRef.current = null;
-    lastLiveLogsSnapshotRef.current = [];
+    lastLiveLogsSnapshotRef.current = { chatId: null, logs: [] };
     setChats(previous => {
       const updated = removeGeneratedEmptyChats(previous);
       if (updated.length === previous.length) return previous;
@@ -2357,7 +2356,7 @@ function DeepWorkUI() {
     liveOutputTextRef.current = '';
     liveCommandsRef.current = [];
     liveConversationRef.current = [];
-    lastLiveLogsSnapshotRef.current = [];
+    lastLiveLogsSnapshotRef.current = { chatId: null, logs: [] };
 
     let currentChatId = activeChatId;
     const selectedChat = currentChatId
@@ -2816,6 +2815,7 @@ function DeepWorkUI() {
     liveInputTextRef.current = '';
     liveOutputTextRef.current = '';
     liveCommandsRef.current = [];
+    lastLiveLogsSnapshotRef.current = { chatId: null, logs: [] };
 
     if (discardEmptyRoom) discardEphemeralLiveRoom(stoppedChatId);
   }, [discardEphemeralLiveRoom]);
@@ -3317,7 +3317,6 @@ function DeepWorkUI() {
       setSubAgentDockOpen(false);
       setOverflowDropdownOpen(false);
       setAgentTeamOpen(false);
-      lastLiveLogsSnapshotRef.current = [];
       activeChatIdRef.current = id;
       setActiveChatId(id);
       try { localStorage.setItem(ACTIVE_CHAT_STORAGE_KEY, id); } catch { }
@@ -5475,7 +5474,7 @@ function DeepWorkUI() {
     const historySourceLogs = targetChatIdAtSend
       ? stripAgentConnectionLogs(chatsRef.current.find(chat => chat.id === targetChatIdAtSend)?.traceLogs || [])
       : [];
-    lastLiveLogsSnapshotRef.current = [];
+    lastLiveLogsSnapshotRef.current = { chatId: null, logs: [] };
     clearDraftComposerState(targetChatIdAtSend);
 
     let chatIdToUse = targetChatIdAtSend;
@@ -6280,8 +6279,11 @@ function DeepWorkUI() {
     const freshLiveLogs = isLiveSessionActive ? getLiveTraceLogs() : [];
 
     // Update snapshot whenever we get non-empty live logs
-    if (freshLiveLogs.length > 0) {
-      lastLiveLogsSnapshotRef.current = freshLiveLogs;
+    if (freshLiveLogs.length > 0 && activeChatId && activeChatId === liveChatId) {
+      lastLiveLogsSnapshotRef.current = {
+        chatId: activeChatId,
+        logs: freshLiveLogs,
+      };
     }
 
     // Check if traceLogs already has the committed answer for this turn.
@@ -6298,17 +6300,23 @@ function DeepWorkUI() {
     if (freshLiveLogs.length > 0) {
       // Fresh live data — use it directly
       liveLogs = freshLiveLogs;
-    } else if (!hasCommittedAnswer && lastLiveLogsSnapshotRef.current.length > 0) {
+    } else if (
+      !hasCommittedAnswer &&
+      lastLiveLogsSnapshotRef.current.chatId === activeChatId &&
+      lastLiveLogsSnapshotRef.current.logs.length > 0
+    ) {
       // Live session ended but traceLogs hasn't committed answer yet — hold snapshot
-      liveLogs = lastLiveLogsSnapshotRef.current;
+      liveLogs = lastLiveLogsSnapshotRef.current.logs;
     } else {
       // traceLogs has the answer — safe to drop the snapshot
-      lastLiveLogsSnapshotRef.current = [];
+      if (lastLiveLogsSnapshotRef.current.chatId === activeChatId) {
+        lastLiveLogsSnapshotRef.current = { chatId: null, logs: [] };
+      }
       liveLogs = [];
     }
 
     return [...filteredLogs, ...liveLogs];
-  }, [isLiveSessionActive, traceLogs, getLiveTraceLogs]);
+  }, [activeChatId, liveChatId, isLiveSessionActive, traceLogs, getLiveTraceLogs]);
 
   const activeTurnTraceLogs = useMemo(() => {
     for (let i = traceLogs.length - 1; i >= 0; i--) {
