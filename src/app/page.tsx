@@ -1624,10 +1624,14 @@ function DeepWorkUI() {
   }, [activeChatId, proxyEnabled, proxyIntervention, updateProxyControl]);
 
   const handleProxyInterventionChange = useCallback(async (level: 'minimal' | 'normal' | 'high') => {
+    const previousLevel = proxyIntervention;
     setProxyIntervention(level);
     try { localStorage.setItem(`eterx_proxy_controls_${ activeChatId || 'new_chat' }`, JSON.stringify({ enabled: proxyEnabled, intervention: level })); } catch { }
-    if (activeChatId) await updateProxyControl('intervention', level);
-  }, [activeChatId, proxyEnabled, updateProxyControl]);
+    if (activeChatId && !await updateProxyControl('intervention', level)) {
+      setProxyIntervention(previousLevel);
+      try { localStorage.setItem(`eterx_proxy_controls_${ activeChatId }`, JSON.stringify({ enabled: proxyEnabled, intervention: previousLevel })); } catch { }
+    }
+  }, [activeChatId, proxyEnabled, proxyIntervention, updateProxyControl]);
 
   useEffect(() => {
     const key = `eterx_proxy_controls_${ activeChatId || 'new_chat' }`;
@@ -3740,17 +3744,27 @@ function DeepWorkUI() {
 
   const processServerTraces = (traces: any[], existingLogs: any[] = []): any[] => {
     const logs: any[] = Array.isArray(existingLogs) ? [...existingLogs] : [];
-    // Only dedup within current turn (after last user_action in existing logs)
     const lastUserIdx = existingLogs.reduceRight((found, l, i) => found === -1 && l.type === 'user_action' ? i : found, -1);
     const currentTurnStart = lastUserIdx >= 0 ? lastUserIdx + 1 : 0;
-    const dedupScope = lastUserIdx >= 0 ? existingLogs.slice(lastUserIdx) : existingLogs;
+    const incomingRunId = String(
+      traces.find((trace: any) => trace?.runId || trace?.turnId)?.runId ||
+      traces.find((trace: any) => trace?.runId || trace?.turnId)?.turnId ||
+      ''
+    ).trim();
+    // Proxy guidance creates another visible user boundary inside the same
+    // server run. Trace indices remain run-scoped, so catch-up snapshots must
+    // deduplicate against the whole run rather than only the latest bubble.
+    const dedupScope = incomingRunId
+      ? existingLogs.filter((log: any) => String(log?.runId || log?.turnId || '').trim() === incomingRunId)
+      : lastUserIdx >= 0 ? existingLogs.slice(lastUserIdx) : existingLogs;
     const seenTraceIdx = new Set(
       dedupScope
         .map((log: any) => log?._traceIdx)
         .filter((idx: any) => idx !== undefined && idx !== null)
     );
     for (const trace of orderServerTraces(traces)) {
-      // Deduplicate by _traceIdx only within current turn
+      // Trace indices restart between runs but remain stable across all
+      // delegated turns inside one run.
       if (trace._traceIdx !== undefined && trace._traceIdx !== null) {
         if (seenTraceIdx.has(trace._traceIdx)) continue;
         seenTraceIdx.add(trace._traceIdx);
@@ -4374,13 +4388,17 @@ function DeepWorkUI() {
               const currentTurnLogs = lastUserIdx >= 0 ? logs.slice(lastUserIdx) : logs;
               const currentUserLog = lastUserIdx >= 0 ? logs[lastUserIdx] : null;
               const currentTurnId = String(currentUserLog?.turnId || currentUserLog?.runId || activeRunId || '').trim();
+              const activeRunLogs = activeRunId
+                ? logs.filter((log: any) => String(log?.runId || log?.turnId || '').trim() === activeRunId)
+                : currentTurnLogs;
               const seenTraceIdx = new Set(
-                currentTurnLogs
+                activeRunLogs
                   .map((log: any) => log?._traceIdx)
                   .filter((idx: any) => idx !== undefined && idx !== null)
               );
               for (const trace of orderServerTraces(data.traces)) {
-                // DEDUP: only skip if _traceIdx already exists in the CURRENT TURN (not old questions)
+                // One run may contain several Proxy-originated user turns.
+                // Deduplicate server indices across that whole run.
                 if (trace._traceIdx !== undefined && trace._traceIdx !== null) {
                   if (seenTraceIdx.has(trace._traceIdx)) continue;
                   seenTraceIdx.add(trace._traceIdx);

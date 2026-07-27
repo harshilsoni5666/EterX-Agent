@@ -334,6 +334,10 @@ class AgentRegistry {
 
     // Build the trace callback that writes to the buffer
     const onTrace = (traceEvent: any) => {
+      if (traceEvent && typeof traceEvent === 'object') {
+        traceEvent.runId = traceEvent.runId || execution.runId;
+        traceEvent.turnId = traceEvent.turnId || execution.runId;
+      }
       writeRuntimeTrace('agent_trace', {
         chatId,
         event: traceEvent,
@@ -362,9 +366,10 @@ class AgentRegistry {
     const proxyOriginUserEvent = pinnedContext?.autonomy?.origin === 'proxy_manager'
       ? {
         type: 'user_action',
+        id: `proxy-task-${pinnedContext?.autonomy?.proxyTaskId || execution.runId}`,
         text: prompt,
         source: 'proxy_manager',
-        delegatedBy: 'Proxy-Agent',
+        delegatedBy: 'Side Proxy-Agent',
         proxyTaskId: pinnedContext?.autonomy?.proxyTaskId,
         runId: execution.runId,
         turnId: execution.runId,
@@ -1069,8 +1074,8 @@ class AgentRegistry {
     if (action === 'intervention') {
       const level = value as ProxyInterventionLevel;
       updateProxyControl(chatId, { intervention: level });
-      setUserProxyIntervention(projectId, level);
-      return true;
+      const appliedToLiveRuntime = setUserProxyIntervention(projectId, level);
+      return execution?.status === 'running' ? appliedToLiveRuntime : true;
     }
 
     const selection = String(value || 'auto');
@@ -1161,6 +1166,9 @@ class AgentRegistry {
   public getProxyManagerContext(chatId: string): Record<string, any> {
     const execution = this.findExecution(chatId);
     const projectId = execution?.orchestratorProjectId || chatId;
+    const proxyControl = readProxyControl(chatId);
+    const proxySnapshot = getUserProxyManagerSnapshot(projectId);
+    if (proxySnapshot) proxySnapshot.interventionLevel = proxyControl.intervention;
     const visibleTypes = new Set(['task_plan', 'plan', 'work_note', 'tool_call', 'tool_result', 'file_preview', 'evidence', 'error', 'steering_received', 'steering_applied', 'autonomy_proxy_status', 'answer', 'done']);
     const activity = (execution?.traceBuffer || [])
       .map(entry => ({ ...entry.data, timestamp: entry.timestamp }))
@@ -1193,9 +1201,9 @@ class AgentRegistry {
           : [],
       },
       capabilities: this.getMainCapabilitySummary(activity, execution?.prompt || ''),
-      proxy: getUserProxyManagerSnapshot(projectId),
+      proxy: proxySnapshot,
       proxyControl: {
-        ...readProxyControl(chatId),
+        ...proxyControl,
         pendingTaskCount: getPendingProxyTaskCount(chatId),
       },
       sideAgent: {

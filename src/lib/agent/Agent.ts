@@ -1331,22 +1331,12 @@ export class GeminiAgentClient {
         const timestamp = Date.now();
         onTrace?.({
           type: 'user_action',
+          id: item.id || `proxy-turn-${timestamp}`,
           text: item.text.trim(),
           source,
           delegatedBy,
           steeringId: item.id,
           proxyManagerDirectiveId: item.metadata?.proxyManagerDirectiveId,
-          timestamp,
-        });
-        onTrace?.({
-          type: 'work_note',
-          text: `Main is applying the request from ${delegatedBy}`,
-          noteId: `proxy-guidance-${item.id || timestamp}`,
-          source,
-          delegatedBy,
-          steeringId: item.id,
-          phase: 'guidance',
-          startTime: timestamp,
           timestamp,
         });
       }
@@ -1367,39 +1357,9 @@ export class GeminiAgentClient {
 
   private formatLiveSteering(messages: Array<{ id?: string; text: string; metadata?: Record<string, any> }>): string {
     return messages.map((item, index) => {
-      const source = item.metadata?._autonomyProxy ? 'user_proxy' : 'human';
-      return `[LIVE GUIDANCE ${index + 1}${item.id ? ` | id=${item.id}` : ''} | source=${source}]\n${item.text}\n[/LIVE GUIDANCE]`;
+      if (item.metadata?._autonomyProxy) return item.text.trim();
+      return `[LIVE GUIDANCE ${index + 1}${item.id ? ` | id=${item.id}` : ''} | source=human]\n${item.text}\n[/LIVE GUIDANCE]`;
     }).join('\n\n');
-  }
-
-  /**
-   * Preserve a fully generated completion candidate when guidance causes the
-   * loop to continue. The UI merges later answers into this same turn, so the
-   * user sees the completed response immediately instead of watching it vanish
-   * during Proxy review or late steering.
-   */
-  private emitAutonomyCompletionCheckpoint(
-    text: string,
-    trace: any[],
-    onTrace?: (t: any) => void,
-    boundaryFollowUp = false,
-  ): void {
-    const cleanText = String(text || '').trim();
-    if (!cleanText) return;
-    const previous = [...trace].reverse().find(item => item?.type === 'answer');
-    if (previous?._autonomyCheckpoint && previous.text === cleanText) return;
-    const event = {
-      type: 'answer',
-      text: cleanText,
-      isStreaming: false,
-      _autonomyCheckpoint: true,
-      _autonomyBoundaryFollowUp: boundaryFollowUp,
-      timestamp: Date.now(),
-    };
-    const existingIdx = trace.findIndex(item => item?.type === 'answer');
-    if (existingIdx >= 0) trace[existingIdx] = event;
-    else trace.push(event);
-    onTrace?.(event);
   }
 
   private getActivePlanCompletionContext(chatId?: string | null): string {
@@ -2237,11 +2197,9 @@ export class GeminiAgentClient {
         const finalText = this.finalizeEvidenceBoundAnswer(contentText || lastAnswer || 'Done.', evidenceLedger, toolCallCounts, context.projectId);
         const proxyDecision = await reviewAutonomousCompletion(context.projectId, finalText);
         if (proxyDecision.action !== 'approve_completion') {
-          this.emitAutonomyCompletionCheckpoint(finalText, trace, onTrace, proxyDecision.completionBoundaryPassed === true);
           messages.push({ role: 'assistant', content: contentText || lastAnswer || 'I believe the task is complete.' });
           continue;
         }
-        this.emitAutonomyCompletionCheckpoint(finalText, trace, onTrace);
         const lateSteering = this.drainLiveSteering(context.projectId, onTrace);
         if (lateSteering.length > 0) {
           messages.push({ role: 'assistant', content: contentText || lastAnswer || finalText });
@@ -2787,11 +2745,9 @@ export class GeminiAgentClient {
         const finalText = this.finalizeEvidenceBoundAnswer(contentText || lastAnswer || 'Done.', evidenceLedger, toolCallCounts, context.projectId);
         const proxyDecision = await reviewAutonomousCompletion(context.projectId, finalText);
         if (proxyDecision.action !== 'approve_completion') {
-          this.emitAutonomyCompletionCheckpoint(finalText, trace, onTrace, proxyDecision.completionBoundaryPassed === true);
           messages.push({ role: 'assistant', content: contentBlocks });
           continue;
         }
-        this.emitAutonomyCompletionCheckpoint(finalText, trace, onTrace);
         const lateSteering = this.drainLiveSteering(context.projectId, onTrace);
         if (lateSteering.length > 0) {
           messages.push({ role: 'assistant', content: contentBlocks });
@@ -3950,6 +3906,8 @@ Work notes are ordinary user-facing communication during execution, generated fr
 TRUTHFUL EXECUTION
 - Intellectual honesty over pleasing the user. Never invent data, paths, calculations, or successful matches.
 - Verify inputs exist before claiming facts. If a metric cannot be computed from available data, say what is missing.
+- Tool output is the authority. A failed command, empty response, error page, missing result, or unverified URL is negative evidence, never permission to narrate success.
+- A success claim from an earlier assistant answer is context, not evidence for this turn. Re-establish the result from current tool output before repeating it.
 - Unknown is a valid professional answer. Confident unsupported claims are failure.
 - When blocked: state what was completed, what could not complete, what is needed, and the next action.
 
@@ -3970,10 +3928,10 @@ This is the MOST IMPORTANT section. Follow this religiously:
 1. JUST DO IT — Don't plan. Don't explain. Don't ask permission. Execute.
 2. CHAIN FAST — research → write → verify → next file. No gaps.
 3. SCOPED PATCHES — For editing existing files, use workspace_apply_patch with context matching to make precise, modular edits. Do NOT rewrite the entire file. For new files, write them completely without placeholders or TODOs.
-4. FIX AND CONTINUE — If something breaks, analyze the error/stderr carefully, patch the root cause, and verify again. Never repeat the exact same failed command or action without making a correction.
+4. FIX AND CONTINUE — If something breaks, analyze the error/stderr carefully, patch the root cause, and verify again. One corrected retry is reasonable; after it fails, change the underlying strategy or report the real blocker. Cosmetic command rewrites, shell-wrapper changes, and repeated calls to the same broken service are not new strategies.
 5. ITERATE UNTIL DONE — A task is done when it is verified to work (e.g. by running compiling/tests or reading back the file), not when you just wrote something. Verify outcomes.
 6. WORK AUTONOMOUSLY — Make decisions. Pick the best approach. Execute it.
-7. NEVER RESTART — You have persistent memory. If you already did something, move forward.
+7. NEVER RESTART — You have persistent memory. If you already did something, move forward. “Continue” means resume the unmet outcome from the strongest established evidence; never replay completed work or known-failed attempts.
 8. STOP WHEN DONE — Output your result as clean Markdown. No over-delivery.
 
 INTELLIGENT AUTONOMY (WHEN TO DECIDE VS WHEN TO STOP AND ASK)
@@ -6481,13 +6439,11 @@ The first meaningful action group in a user turn needs an update. Later boundari
           }
           const proxyDecision = await reviewAutonomousCompletion(chatId, cleanText);
           if (proxyDecision.action !== 'approve_completion') {
-            this.emitAutonomyCompletionCheckpoint(cleanText, trace, onTrace, proxyDecision.completionBoundaryPassed === true);
             if (fullResponseContent) contents.push(fullResponseContent);
             accumulatedText = '';
             accumulatedThought = '';
             continue;
           }
-          this.emitAutonomyCompletionCheckpoint(cleanText, trace, onTrace);
           const lateSteering = this.drainLiveSteering(chatId, onTrace);
           if (lateSteering.length > 0) {
             if (fullResponseContent) contents.push(fullResponseContent);
