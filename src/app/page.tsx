@@ -113,6 +113,11 @@ const buildBoundedAgentHistory = (logs: any[]) => {
   for (let index = logs.length - 1; index >= 0 && newestFirst.length < MAX_AGENT_HISTORY_MESSAGES && remainingChars > 0; index--) {
     const log = logs[index];
     if (log?.type !== 'user_action' && log?.type !== 'answer') continue;
+    const isInjectedProxyBoundary =
+      log.type === 'user_action' &&
+      (log.source === 'user_proxy' || log.source === 'proxy_manager') &&
+      Boolean(log.steeringId || (Array.isArray(log.steeringIds) && log.steeringIds.length > 0));
+    if (isInjectedProxyBoundary) continue;
     const text = String(log.text || '').slice(0, Math.min(MAX_AGENT_HISTORY_MESSAGE_CHARS, remainingChars));
     if (!text) continue;
     newestFirst.push({
