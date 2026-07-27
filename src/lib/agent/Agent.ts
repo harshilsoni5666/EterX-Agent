@@ -1324,6 +1324,32 @@ export class GeminiAgentClient {
         .map(item => typeof item === 'string' ? { text: item } : item)
         .filter(item => typeof item?.text === 'string' && item.text.trim());
       if (messages.length === 0) return [];
+      for (const item of messages) {
+        if (!item.metadata?._autonomyProxy) continue;
+        const source = item.metadata?._proxyManager ? 'proxy_manager' : 'user_proxy';
+        const delegatedBy = item.metadata?._proxyManager ? 'Side Proxy-Agent' : 'Proxy-Agent';
+        const timestamp = Date.now();
+        onTrace?.({
+          type: 'user_action',
+          text: item.text.trim(),
+          source,
+          delegatedBy,
+          steeringId: item.id,
+          proxyManagerDirectiveId: item.metadata?.proxyManagerDirectiveId,
+          timestamp,
+        });
+        onTrace?.({
+          type: 'work_note',
+          text: `Main is applying the request from ${delegatedBy}`,
+          noteId: `proxy-guidance-${item.id || timestamp}`,
+          source,
+          delegatedBy,
+          steeringId: item.id,
+          phase: 'guidance',
+          startTime: timestamp,
+          timestamp,
+        });
+      }
       onTrace?.({
         type: 'steering_applied',
         text: messages.map(item => item.text).join('\n\n'),

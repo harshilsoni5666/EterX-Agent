@@ -977,8 +977,9 @@ class AgentRegistry {
     // Completion-boundary Proxy guidance is revealed when it is applied on
     // the next loop boundary. Emitting it here would place the Proxy message
     // before the fully generated answer checkpoint and make that answer appear
-    // to vanish. Human and mid-run guidance still acknowledge immediately.
-    if (metadata?.completionReview !== true) {
+    // to vanish. Human guidance is acknowledged here; Proxy guidance becomes
+    // a real user turn only when it is actually injected into Main.
+    if (metadata?.completionReview !== true && !metadata?._autonomyProxy) {
       this.appendTrace(execution, {
         type: 'steering_received',
         text: trimmedMessage,
