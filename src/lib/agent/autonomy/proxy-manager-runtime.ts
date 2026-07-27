@@ -15,9 +15,10 @@ export type ProxyManagerChatMessage = {
   createdAt: number;
   operation?: ProxyManagerOperation;
   delivery?: 'none' | 'active' | 'pending' | 'delivered' | 'rejected' | 'expired' | 'unavailable';
+  work?: Array<{ text: string; tool: string }>;
 };
 
-export type ProxyManagerOperation = 'none' | 'brief_proxy' | 'guide_adaptively' | 'watch_condition' | 'before_completion' | 'queue_after_current' | 'start_main' | 'interrupt_main' | 'stop_main';
+export type ProxyManagerOperation = 'none' | 'brief_proxy' | 'guide_adaptively' | 'watch_condition' | 'before_completion' | 'queue_after_current' | 'start_main' | 'schedule_workflow' | 'replace_queued_task' | 'interrupt_main' | 'stop_main';
 
 type ManagerDecision = {
   reply: string;
@@ -31,6 +32,8 @@ type ManagerDecision = {
   activationCondition: string;
   scope: 'current_step' | 'current_task' | 'next_task' | 'persistent_mandate';
   supersedesDirectiveId: string;
+  supersedesTaskId: string;
+  tasks: Array<{ prompt: string; dependency: string; rationale: string }>;
 };
 
 type ManagerStore = {
@@ -80,10 +83,10 @@ function writeStore(store: ManagerStore): void {
 function extractDecision(raw: string): ManagerDecision {
   const cleaned = String(raw || '').replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
   const match = cleaned.match(/\{[\s\S]*\}/);
-  if (!match) return { reply: compact(cleaned, 8000) || 'I could not form a reliable response.', operation: 'none', target: 'proxy', instruction: '', intent: 'preference', rationale: '', confidence: 0, urgency: 'normal', activationCondition: '', scope: 'current_task', supersedesDirectiveId: '' };
+  if (!match) return { reply: compact(cleaned, 8000) || 'I could not form a reliable response.', operation: 'none', target: 'proxy', instruction: '', intent: 'preference', rationale: '', confidence: 0, urgency: 'normal', activationCondition: '', scope: 'current_task', supersedesDirectiveId: '', supersedesTaskId: '', tasks: [] };
   try {
     const parsed = JSON.parse(match[0]);
-    const operations = new Set<ProxyManagerOperation>(['none', 'brief_proxy', 'guide_adaptively', 'watch_condition', 'before_completion', 'queue_after_current', 'start_main', 'interrupt_main', 'stop_main']);
+    const operations = new Set<ProxyManagerOperation>(['none', 'brief_proxy', 'guide_adaptively', 'watch_condition', 'before_completion', 'queue_after_current', 'start_main', 'schedule_workflow', 'replace_queued_task', 'interrupt_main', 'stop_main']);
     const targets = new Set(['proxy', 'main', 'both']);
     const intents = new Set(['goal', 'constraint', 'correction', 'preference', 'follow_up']);
     return {
@@ -98,9 +101,15 @@ function extractDecision(raw: string): ManagerDecision {
       activationCondition: compact(parsed.activationCondition, 1200),
       scope: new Set(['current_step', 'current_task', 'next_task', 'persistent_mandate']).has(parsed.scope) ? parsed.scope : 'current_task',
       supersedesDirectiveId: compact(parsed.supersedesDirectiveId, 160),
+      supersedesTaskId: compact(parsed.supersedesTaskId, 160),
+      tasks: Array.isArray(parsed.tasks) ? parsed.tasks.slice(0, 8).map((task: any) => ({
+        prompt: compact(task?.prompt, 12000),
+        dependency: compact(task?.dependency, 1200),
+        rationale: compact(task?.rationale, 1200),
+      })).filter((task: any) => task.prompt) : [],
     };
   } catch {
-    return { reply: compact(cleaned, 8000) || 'I could not form a reliable response.', operation: 'none', target: 'proxy', instruction: '', intent: 'preference', rationale: '', confidence: 0, urgency: 'normal', activationCondition: '', scope: 'current_task', supersedesDirectiveId: '' };
+    return { reply: compact(cleaned, 8000) || 'I could not form a reliable response.', operation: 'none', target: 'proxy', instruction: '', intent: 'preference', rationale: '', confidence: 0, urgency: 'normal', activationCondition: '', scope: 'current_task', supersedesDirectiveId: '', supersedesTaskId: '', tasks: [] };
   }
 }
 
@@ -169,22 +178,27 @@ export async function talkToProxyManager(input: {
   const prompt = [
     'You are Proxy Manager, the persistent user-facing coordination agent beside a separate runtime User Proxy and Main execution agent. You remain useful whether Main is running, finishing, idle, stopped, or between goals. You converse naturally and turn user intent into durable, precisely routed work without mixing independent objectives.',
     'ROLE SEPARATION: Main executes tasks and owns tools. Runtime User Proxy silently supervises one active Main task. You own the side conversation, intent interpretation, temporal routing, durable future work, and wake-up decisions. Never pretend to be Main, never perform its work in chat, and never collapse these three roles into one.',
+    'You are a bounded coordination agent, not a single-pass classifier. When the user\'s request depends on facts not present in the snapshot, use your isolated read-only investigation tools, inspect the result, update your understanding, and continue until the routing decision is grounded. Do not use tools when the supplied context already answers the question. Tool findings inform your final decision but never become runtime-Proxy evidence unless you explicitly encode the relevant user-facing constraint in a directive.',
+    'Your tools are deliberately non-mutating. You may research, calculate, inspect workspace structure or content, and discover capabilities. You cannot edit files, run shell commands, operate Main\'s tools, or alter the active task except through the typed operation in your final JSON. This separation is mandatory.',
     'You are an agent, not a settings form. Infer timing, target, urgency, boundaries, dependencies, and the safest useful action from meaning and live context. Never force a cross-question ritual. Ask a concise question only when the missing answer genuinely changes the result and cannot be safely inferred.',
     'Build an intent ledger before routing: identify the active objective, whether the user is revising it, whether the request depends on its artifact, whether it is an independent new goal, what must remain true, and what completion boundary makes the instruction useful. Preserve the user\'s complete meaning in a standalone directive instead of forwarding a vague chat fragment.',
     'Protect the quality of the current task. Over-guidance can degrade a capable Main agent: predict whether Main or its runtime supervisor will naturally handle the issue before sending anything. Prefer silence when intervention has no clear counterfactual benefit. A new or unrelated goal must become a separate queued task. A dependent next step must wait until the current artifact or result exists. A current correction should go through the runtime Proxy for adaptive timing unless delay would cause concrete harm.',
-    'Never merge goals just because they arrived close together. Keep the current task contract stable. Queue each independent goal in user order. If a later message refines a queued goal, supersede or clarify that queued concept rather than disturbing Main. If Main is idle and the user clearly authorizes work, start_main wakes it. If Main is running, queue_after_current creates a durable successor task that starts only after successful settlement.',
+    'Never merge goals just because they arrived close together. Keep the current task contract stable. Queue each independent goal in user order. If a later message refines a queued goal, supersede or clarify that queued concept rather than disturbing Main. If Main is idle and the user clearly authorizes work, start_main wakes it. If Main is running, queue_after_current creates a durable successor task that starts only after the current run settles. A failed prior result remains visible to the successor so it can recover, revise the approach, or report a truly blocked dependency. An explicit user stop never auto-continues the queue.',
+    'For a request containing multiple substantial deliverables, use schedule_workflow only when separate Main runs materially improve isolation, dependency handling, or completion clarity. Return the smallest ordered task list that preserves the user\'s outcome. Each task prompt must stand alone; dependency describes what it consumes from the immediately prior result. Keep tightly coupled edits in one task instead of fragmenting work mechanically.',
+    'If the user corrects a task that is visibly still pending in proxyControl.taskQueue, use replace_queued_task with its exact id in supersedesTaskId. Never replace a task already starting or started; route that as current guidance or a later corrective task according to live status.',
     'Use none for ordinary conversation, explanations, status questions, brainstorming, or when the user has not actually authorized an instruction. Do not claim delivery unless an operation is selected; the server reports final delivery state.',
     'Treat the runtime snapshot as incomplete operational telemetry. Never expose private chain-of-thought. You may summarize visible plans, actions, gaps, and status. Respect explicit user boundaries and never silently weaken them.',
-    'Your operations are: brief_proxy (change what the supervisor watches), guide_adaptively (ask it to decide how/when to guide the current task), watch_condition (activate only if a semantic condition becomes relevant), before_completion (enforce a requirement at final review without distracting current work), queue_after_current (create a separate durable successor task), start_main (wake idle Main with a new authorized task), interrupt_main (request urgent reorientation at the next model boundary), and stop_main (terminate only on an explicit stop or critical active safety/authority violation). Choose at most one.',
+    'Your operations are: brief_proxy (change what the supervisor watches), guide_adaptively (ask it to decide how/when to guide the current task), watch_condition (activate only if a semantic condition becomes relevant), before_completion (enforce a requirement at final review without distracting current work), queue_after_current (create one separate successor task), start_main (wake idle Main with one task), schedule_workflow (queue two or more ordered isolated tasks and wake Main when idle), replace_queued_task (replace one pending task), interrupt_main (urgent reorientation), and stop_main (explicit stop or critical active violation). Choose at most one.',
     'Represent temporal intent precisely. A request may apply only to the current step, the whole current task, the next task, or a persistent supervisory mandate. Use activationCondition for dependencies such as after an artifact exists, if the current strategy fails, before a destructive action, or once Main reaches verification. If the user revises an earlier unsettled directive, set supersedesDirectiveId instead of leaving contradictory instructions alive.',
     'Route by consequence, not excitement: interrupt_main is the narrow direct path for a current, time-sensitive correction where waiting for the runtime Proxy review would cause concrete harm, irreversible action, or substantial rework. It reaches Main at the next model boundary and is mirrored to the runtime Proxy. Ordinary improvements, preferences, and non-urgent corrections must use guide_adaptively. Unrelated/new work must use queue_after_current so it cannot dilute the current task.',
     'Wake-up doctrine: use start_main only when the snapshot says Main is not running, the message is an executable request rather than discussion, and the user has authorized action. Use queue_after_current when Main is running or settling. Do not wake Main for a status question, hypothetical idea, or unresolved choice. The instruction for start_main or queue_after_current must be a complete Main-ready task prompt with required context, constraints, deliverables, and dependency results that are already known.',
     'The capability map summarizes all registered Main tools and recent usage. Use it to suggest viable approaches when a real gap exists, but never prescribe tools routinely and never imply that you executed them. Tool availability is context, not a reason to intervene.',
     'Read proxy.coordinationEvents and managerDirectives as messages back from the runtime supervisor: acknowledgements, deferrals, deliveries, rejections, stops, and observed outcomes. Incorporate them naturally when answering status questions and do not resend already settled instructions.',
+    'Professional response doctrine: lead with what is understood or what changed. State an operational action only if one was actually selected. Keep ordinary replies concise and calm; use a short structured list only for multiple goals, constraints, or queued stages. Never use hype, filler, fake certainty, or generic phrases such as "I will handle everything." If clarification is necessary, explain the exact decision it blocks in one sentence.',
     `LIVE MAIN + RUNTIME PROXY CONTEXT:\n${JSON.stringify(live, null, 2)}`,
     `THIS CHAT'S SAVED PROXY-MANAGER CONVERSATION:\n${recentConversation || '(new conversation)'}`,
     'Return exactly one JSON object with no markdown:',
-    '{"reply":"natural helpful answer to the user","operation":"none|brief_proxy|guide_adaptively|watch_condition|before_completion|queue_after_current|start_main|interrupt_main|stop_main","target":"proxy|main|both","instruction":"standalone directive preserving all necessary context, blank for none","intent":"goal|constraint|correction|preference|follow_up","rationale":"short private routing reason","confidence":0.0,"urgency":"low|normal|high|critical","activationCondition":"semantic activation condition or blank","scope":"current_step|current_task|next_task|persistent_mandate","supersedesDirectiveId":"prior active/pending directive id or blank"}',
+    '{"reply":"natural professional answer","operation":"none|brief_proxy|guide_adaptively|watch_condition|before_completion|queue_after_current|start_main|schedule_workflow|replace_queued_task|interrupt_main|stop_main","target":"proxy|main|both","instruction":"standalone directive for single-task operations, blank for none or schedule_workflow","intent":"goal|constraint|correction|preference|follow_up","rationale":"short private routing reason","confidence":0.0,"urgency":"low|normal|high|critical","activationCondition":"semantic activation condition or blank","scope":"current_step|current_task|next_task|persistent_mandate","supersedesDirectiveId":"prior directive id or blank","supersedesTaskId":"pending task id for replacement or blank","tasks":[{"prompt":"complete Main-ready task","dependency":"what this consumes from the prior task, blank if independent","rationale":"why this is a separate stage"}]}',
   ].join('\n\n');
 
   const resolved = resolveModel(input.model);
@@ -202,46 +216,68 @@ export async function talkToProxyManager(input: {
     selectedModelMode: resolved.mode,
     selectedModelName: resolved.modelId || undefined,
     selectedModelProvider: resolved.provider,
-    selectedThinkingLevel: 'low',
+    selectedThinkingLevel: 'high',
     runtimeSettings: resolved.settings,
+    workspacePath: live?.workspace?.path || undefined,
+    paths: live?.workspace?.pinnedPaths || [],
+    isFocusedWorkspace: Boolean(live?.workspace?.path),
   };
   const response = await client.executeMessageLoop(context, prompt, [], undefined, []);
   const decision = extractDecision(response.text);
+  const work = (Array.isArray(response.trace) ? response.trace : [])
+    .filter((item: any) => item?.tool && item?.text)
+    .map((item: any) => ({ text: compact(item.text, 180), tool: compact(item.tool, 100) }))
+    .filter((item: { text: string; tool: string }, index: number, items: Array<{ text: string; tool: string }>) =>
+      items.findIndex(candidate => candidate.text === item.text && candidate.tool === item.tool) === index,
+    )
+    .slice(-8);
 
   let delivery: ProxyManagerChatMessage['delivery'] = 'none';
   let wakeRequested = false;
   const operationThreshold = decision.operation === 'stop_main' || decision.operation === 'interrupt_main' ? 0.82 : 0.6;
-  if (decision.operation !== 'none' && decision.instruction && decision.confidence >= operationThreshold) {
-    if (decision.operation === 'queue_after_current' || decision.operation === 'start_main') {
-      const queued = agentRegistry.queueProxyTask(input.chatId, decision.instruction, decision.rationale);
+  const hasOperationPayload = decision.operation === 'schedule_workflow'
+    ? decision.tasks.length >= 2
+    : Boolean(decision.instruction);
+  if (decision.operation !== 'none' && hasOperationPayload && decision.confidence >= operationThreshold) {
+    if (decision.operation === 'schedule_workflow') {
+      let firstStatus: 'pending' | 'starting' = 'pending';
+      decision.tasks.forEach((task, index) => {
+        const queued = agentRegistry.queueProxyTask(input.chatId, task.prompt, task.rationale, {
+          dependency: task.dependency,
+        });
+        if (index === 0) firstStatus = queued.status;
+      });
+      delivery = firstStatus === 'starting' ? 'active' : 'pending';
+      wakeRequested = firstStatus === 'starting';
+    } else if (decision.operation === 'queue_after_current' || decision.operation === 'start_main' || decision.operation === 'replace_queued_task') {
+      const queued = agentRegistry.queueProxyTask(input.chatId, decision.instruction, decision.rationale, {
+        dependency: decision.activationCondition,
+        supersedesTaskId: decision.operation === 'replace_queued_task' ? decision.supersedesTaskId : undefined,
+      });
       delivery = queued.status === 'starting' ? 'active' : 'pending';
       wakeRequested = queued.status === 'starting';
     } else {
-    const timing = decision.operation === 'queue_after_current'
-      ? 'after_current'
-      : decision.operation === 'watch_condition'
+      const timing = decision.operation === 'watch_condition'
         ? 'when_relevant'
         : decision.operation === 'before_completion' ? 'before_completion' : 'now';
-    const target = decision.operation === 'brief_proxy'
-      ? 'proxy'
-      : decision.operation === 'queue_after_current' && decision.target === 'proxy' ? 'both' : decision.target;
-    const result = agentRegistry.deliverProxyManagerDirective(input.chatId, {
-      message: decision.instruction,
-      target,
-      timing,
-      intent: decision.intent,
-      rationale: decision.rationale,
-      requestedAction: decision.operation === 'brief_proxy'
-        ? 'advise_proxy'
-        : decision.operation === 'interrupt_main'
-          ? 'interrupt_main'
-          : decision.operation === 'stop_main' ? 'stop_main' : 'steer_adaptively',
-      urgency: decision.operation === 'stop_main' ? 'critical' : decision.urgency,
-      activationCondition: decision.activationCondition,
-      scope: decision.scope,
-      supersedesDirectiveId: decision.supersedesDirectiveId || undefined,
-    });
-    delivery = result.accepted ? result.status : 'unavailable';
+      const target = decision.operation === 'brief_proxy' ? 'proxy' : decision.target;
+      const result = agentRegistry.deliverProxyManagerDirective(input.chatId, {
+        message: decision.instruction,
+        target,
+        timing,
+        intent: decision.intent,
+        rationale: decision.rationale,
+        requestedAction: decision.operation === 'brief_proxy'
+          ? 'advise_proxy'
+          : decision.operation === 'interrupt_main'
+            ? 'interrupt_main'
+            : decision.operation === 'stop_main' ? 'stop_main' : 'steer_adaptively',
+        urgency: decision.operation === 'stop_main' ? 'critical' : decision.urgency,
+        activationCondition: decision.activationCondition,
+        scope: decision.scope,
+        supersedesDirectiveId: decision.supersedesDirectiveId || undefined,
+      });
+      delivery = result.accepted ? result.status : 'unavailable';
     }
   }
 
@@ -255,6 +291,7 @@ export async function talkToProxyManager(input: {
     createdAt: Date.now(),
     operation: decision.operation,
     delivery,
+    work,
   };
   store.messages.push(proxyMessage);
   writeStore(store);

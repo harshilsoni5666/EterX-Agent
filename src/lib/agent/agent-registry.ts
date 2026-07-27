@@ -805,7 +805,7 @@ class AgentRegistry {
         execution.settled = true;
         if (execution.status === 'running') execution.status = terminalStatus;
         execution.completedAt = execution.completedAt || Date.now();
-        if (terminalStatus === 'completed') {
+        if (terminalStatus !== 'stopped') {
           setTimeout(() => this.startNextProxyTask(chatId), 0).unref?.();
         }
       }
@@ -1068,12 +1068,17 @@ class AgentRegistry {
     return true;
   }
 
-  public queueProxyTask(chatId: string, prompt: string, rationale = ''): {
+  public queueProxyTask(
+    chatId: string,
+    prompt: string,
+    rationale = '',
+    options: { dependency?: string; supersedesTaskId?: string } = {},
+  ): {
     accepted: boolean;
     status: 'pending' | 'starting';
     id: string;
   } {
-    const task = enqueueProxyTask(chatId, prompt, rationale);
+    const task = enqueueProxyTask(chatId, prompt, rationale, options);
     const execution = this.findExecution(chatId);
     const running = execution?.status === 'running' || (execution && !execution.settled);
     if (!running) setTimeout(() => this.startNextProxyTask(chatId), 0).unref?.();
@@ -1111,7 +1116,9 @@ class AgentRegistry {
     };
     const result = this.startAgent(
       chatId,
-      task.prompt,
+      task.dependency
+        ? `${task.prompt}\n\nDependency from the side-agent workflow: ${task.dependency}. Use the prior task result in conversation history as evidence; do not redo the prior task unless this dependency requires a correction.`
+        : task.prompt,
       priorHistory,
       current?.launchSpec.mode || 'think',
       current?.launchSpec.userId || 'default_user',
@@ -1153,11 +1160,29 @@ class AgentRegistry {
         finalAnswer: execution.status === 'running' ? '' : execution.finalAnswer.slice(0, 5000),
       } : { status: 'idle', objective: '' },
       activity,
+      workspace: {
+        path: execution?.launchSpec.pinnedContext?.workspacePath || '',
+        pinnedPaths: Array.isArray(execution?.launchSpec.pinnedContext?.paths)
+          ? execution.launchSpec.pinnedContext.paths.slice(0, 20)
+          : [],
+      },
       capabilities: this.getMainCapabilitySummary(activity, execution?.prompt || ''),
       proxy: getUserProxyManagerSnapshot(projectId),
       proxyControl: {
         ...readProxyControl(chatId),
         pendingTaskCount: getPendingProxyTaskCount(chatId),
+      },
+      sideAgent: {
+        role: 'coordination',
+        access: 'read_only',
+        capabilities: [
+          'Live run context',
+          'Workspace inspection',
+          'Web research',
+          'Document reading',
+          'Calculation',
+          'Workflow scheduling',
+        ],
       },
     };
   }

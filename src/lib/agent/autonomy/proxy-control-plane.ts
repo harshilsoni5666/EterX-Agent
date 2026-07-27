@@ -18,8 +18,9 @@ export type ProxyQueuedTask = {
   id: string;
   prompt: string;
   rationale: string;
+  dependency?: string;
   createdAt: number;
-  status: 'pending' | 'starting' | 'started' | 'failed';
+  status: 'pending' | 'starting' | 'started' | 'failed' | 'cancelled';
   runId?: string;
   error?: string;
 };
@@ -118,12 +119,27 @@ export function claimDormantProxyDirectives(chatId: string): ProxyManagerDirecti
   return claimed;
 }
 
-export function enqueueProxyTask(chatId: string, prompt: string, rationale = ''): ProxyQueuedTask {
+export function enqueueProxyTask(
+  chatId: string,
+  prompt: string,
+  rationale = '',
+  options: { dependency?: string; supersedesTaskId?: string } = {},
+): ProxyQueuedTask {
   const state = readProxyControl(chatId);
+  if (options.supersedesTaskId) {
+    const superseded = state.taskQueue.find(item =>
+      item.id === options.supersedesTaskId && item.status === 'pending',
+    );
+    if (superseded) {
+      superseded.status = 'cancelled';
+      superseded.error = 'Replaced by a newer side-agent instruction.';
+    }
+  }
   const task: ProxyQueuedTask = {
     id: randomUUID(),
     prompt: compact(prompt, 12000),
     rationale: compact(rationale, 1200),
+    dependency: compact(options.dependency, 1200) || undefined,
     createdAt: Date.now(),
     status: 'pending',
   };

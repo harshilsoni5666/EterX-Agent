@@ -90,6 +90,25 @@ import {
   normalizeTracePath,
 } from './tool-trace';
 
+const PROXY_MANAGER_READ_ONLY_TOOLS = new Set([
+  'web_search',
+  'calculator',
+  'workspace_read_file',
+  'workspace_list_directory',
+  'workspace_search_text',
+  'workspace_find_files',
+  'workspace_read_many_files',
+  'workspace_semantic_search',
+  'workspace_symbol_lookup',
+  'workspace_file_outline',
+  'tool_finder',
+  'parse_pdf',
+  'parse_docx',
+  'youtube_transcript',
+  'json_yaml_transform',
+  'regex_text_processor',
+]);
+
 function isRunCancelled(context: any): boolean {
   return context?.abortSignal?.aborted === true || isCancelled(context?.projectId || context?.chatId);
 }
@@ -3293,7 +3312,13 @@ export class GeminiAgentClient {
         if (context?.disableSubAgents && tool.name === 'spawn_sub_agent') {
           return false;
         }
-        if ((context as any).isUserProxy && tool.name !== 'spawn_sub_agent') return false;
+        if ((context as any).isUserProxy) {
+          if ((context as any).isProxyManager) {
+            if (!PROXY_MANAGER_READ_ONLY_TOOLS.has(tool.name)) return false;
+          } else if (tool.name !== 'spawn_sub_agent') {
+            return false;
+          }
+        }
         if (context?.disablePlannerTools && telegramHiddenTools.has(tool.name)) {
           return false;
         }
@@ -3801,7 +3826,11 @@ export class GeminiAgentClient {
     const isBuilderPromptContext = isAgentBuilderRuntimeContext(context);
     const availableTools = globalToolRegistry.getAllTools()
       .filter(t => !((context as any).disableSubAgents && t.name === 'spawn_sub_agent'))
-      .filter(t => !(context as any).isUserProxy || t.name === 'spawn_sub_agent')
+      .filter(t => !(context as any).isUserProxy || (
+        (context as any).isProxyManager
+          ? PROXY_MANAGER_READ_ONLY_TOOLS.has(t.name)
+          : t.name === 'spawn_sub_agent'
+      ))
       .filter(t => !((context as any).disablePlannerTools && telegramHiddenTools.has(t.name)))
       .filter(t => shouldExposeToolToRuntime(t.name, isBuilderPromptContext))
       .filter(t => enforceToolCapability(t.name, {}, context).allowed);
