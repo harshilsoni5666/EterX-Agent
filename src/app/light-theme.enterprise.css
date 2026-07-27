@@ -307,6 +307,17 @@
   font-weight: 400;
 }
 
+:root[data-theme="light"] .eterx-chat-feed-user-bubble[data-delegated="true"] {
+  background: #FFFFFF !important;
+  border-color: rgba(31, 31, 29, 0.30) !important;
+  box-shadow: 0 5px 18px rgba(31, 31, 29, 0.07) !important;
+}
+
+:root[data-theme="light"] .eterx-delegated-source-header {
+  color: rgba(31, 31, 29, 0.60) !important;
+  border-color: rgba(31, 31, 29, 0.12) !important;
+}
+
 :root[data-theme="light"] .eterx-chat-feed-user-fade {
   background: linear-gradient(180deg, rgba(243, 243, 242, 0) 0%, rgba(243, 243, 242, 0.88) 58%, #F3F3F2 100%) !important;
 }

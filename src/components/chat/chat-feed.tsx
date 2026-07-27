@@ -916,11 +916,24 @@ const ChatFeedMessageGroup = React.memo(({
   if (first?.type === 'user_action') {
     const userText = String(first.text || '');
     const { isLong } = getUserQueryPreview(userText);
+    const delegatedSource = first.source === 'proxy_manager'
+      ? 'Side Proxy-Agent'
+      : first.source === 'user_proxy'
+        ? 'Proxy-Agent'
+        : first.source && first.source !== 'human' && first.source !== 'user'
+          ? String(first.delegatedBy || 'Agent request')
+          : '';
     return (
       <div data-chat-group-index={groupIdx} className="eterx-chat-message-group mt-8 mb-6 flex w-full scroll-m-20 justify-end group/user">
         <div className="flex w-full justify-end">
-          <div className={`eterx-user-message-bubble eterx-chat-feed-user-bubble flex min-w-0 flex-col items-end rounded-[18px] border border-white/[0.06] bg-[#20201F] px-4 py-2.5 text-[13.5px] leading-[1.56] text-[#F4F2EE] shadow-[0_4px_18px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(255,255,255,0.025)] selection:bg-[#D98B6A]/25 relative whitespace-pre-wrap select-text ${ isCompressed ? 'max-w-[92%]' : 'max-w-[520px]' }`}>
+          <div data-delegated={delegatedSource ? 'true' : undefined} className={`eterx-user-message-bubble eterx-chat-feed-user-bubble flex min-w-0 flex-col items-end rounded-[18px] border ${ delegatedSource ? 'border-white/[0.24] bg-[#181818] shadow-[0_5px_22px_rgba(0,0,0,0.24),inset_0_1px_0_rgba(255,255,255,0.05)]' : 'border-white/[0.06] bg-[#20201F] shadow-[0_4px_18px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(255,255,255,0.025)]' } px-4 py-2.5 text-[13.5px] leading-[1.56] text-[#F4F2EE] selection:bg-[#D98B6A]/25 relative whitespace-pre-wrap select-text ${ isCompressed ? 'max-w-[92%]' : 'max-w-[520px]' }`}>
             <UserMessageActions text={userText} onEdit={onEditUserMessage} />
+
+            {delegatedSource && (
+              <div className="eterx-delegated-source-header mb-1.5 w-full border-b border-white/[0.09] pb-1.5 text-left text-[11px] font-medium tracking-[0.01em] text-white/55">
+                {delegatedSource}
+              </div>
+            )}
 
             {first.attachments && first.attachments.length > 0 && (
               <div className="flex flex-wrap justify-end gap-2.5 mb-3 w-full">
@@ -1733,7 +1746,7 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
                     liveState !== 'error';
                   return (
                     <ChatFeedMessageGroup
-                      key={`group-${ conversationIdentity }-${ groupIdx }`}
+                      key={`group-${ conversationIdentity }-${ getGroupMountIdentity(group, groupIdx) }`}
                       group={group}
                       groupIdx={groupIdx}
                       isThinkingTurn={isThinkingTurn}
