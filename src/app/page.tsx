@@ -106,18 +106,27 @@ const MAX_AGENT_HISTORY_MESSAGES = 80;
 const MAX_AGENT_HISTORY_MESSAGE_CHARS = 60_000;
 const MAX_AGENT_HISTORY_TOTAL_CHARS = 400_000;
 
+const isInjectedProxyBoundary = (log: any) =>
+  log?.type === 'user_action' &&
+  (log.source === 'user_proxy' || log.source === 'proxy_manager') &&
+  Boolean(log.steeringId || (Array.isArray(log.steeringIds) && log.steeringIds.length > 0));
+
 const buildBoundedAgentHistory = (logs: any[]) => {
   const newestFirst: Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }> = [];
+  const excludedProxyTurnIndexes = new Set<number>();
+  let excludeCurrentTurn = false;
+  logs.forEach((log, index) => {
+    if (log?.type === 'user_action') excludeCurrentTurn = isInjectedProxyBoundary(log);
+    if (excludeCurrentTurn && (log?.type === 'user_action' || log?.type === 'answer')) {
+      excludedProxyTurnIndexes.add(index);
+    }
+  });
   let remainingChars = MAX_AGENT_HISTORY_TOTAL_CHARS;
 
   for (let index = logs.length - 1; index >= 0 && newestFirst.length < MAX_AGENT_HISTORY_MESSAGES && remainingChars > 0; index--) {
     const log = logs[index];
     if (log?.type !== 'user_action' && log?.type !== 'answer') continue;
-    const isInjectedProxyBoundary =
-      log.type === 'user_action' &&
-      (log.source === 'user_proxy' || log.source === 'proxy_manager') &&
-      Boolean(log.steeringId || (Array.isArray(log.steeringIds) && log.steeringIds.length > 0));
-    if (isInjectedProxyBoundary) continue;
+    if (excludedProxyTurnIndexes.has(index)) continue;
     const text = String(log.text || '').slice(0, Math.min(MAX_AGENT_HISTORY_MESSAGE_CHARS, remainingChars));
     if (!text) continue;
     newestFirst.push({
