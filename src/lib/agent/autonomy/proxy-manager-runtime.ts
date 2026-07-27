@@ -188,6 +188,35 @@ function resolveModel(selection?: { provider?: string; modelId?: string }): {
   };
 }
 
+function groundedOperationReply(
+  operation: ProxyManagerOperation,
+  delivery: ProxyManagerChatMessage['delivery'],
+): string {
+  if (delivery === 'unavailable') {
+    return 'I could not deliver that request because the required runtime is not active in this chat.';
+  }
+  const started = delivery === 'active' || delivery === 'delivered';
+  if (operation === 'schedule_workflow') {
+    return started
+      ? 'The workflow has started. Each stage will appear in the Main chat as a delegated user request when it begins.'
+      : 'The workflow is queued. Each stage will appear in the Main chat as a delegated user request when it begins.';
+  }
+  if (operation === 'start_main') return 'The request has started and is now visible in the Main chat.';
+  if (operation === 'queue_after_current' || operation === 'replace_queued_task') {
+    return started
+      ? 'The delegated request has started and is now visible in the Main chat.'
+      : 'The delegated request is queued and will appear in the Main chat when the current run finishes.';
+  }
+  if (operation === 'stop_main') return 'The stop request was delivered.';
+  if (operation === 'interrupt_main') return 'The correction was delivered as a new user turn in the active Main run.';
+  if (operation === 'before_completion') return 'The completion requirement is staged for the final review boundary.';
+  if (operation === 'watch_condition') return 'The condition is being watched and will only be delivered if it becomes relevant.';
+  if (operation === 'brief_proxy' || operation === 'guide_adaptively') {
+    return 'The request was accepted for contextual supervision and will be delivered only if intervention is useful.';
+  }
+  return '';
+}
+
 export function getProxyManagerHistory(chatId: string): ProxyManagerChatMessage[] {
   return readStore(chatId).messages;
 }
@@ -405,15 +434,16 @@ async function runProxyManagerTurn(input: {
     }
   }
 
-  const deliveryNote = delivery === 'unavailable'
-    ? ' The runtime Proxy is not active in this chat, so I did not claim or apply that operational change.'
-    : '';
+  const deliveredOperation: ProxyManagerOperation = delivery === 'none' ? 'none' : decision.operation;
+  const groundedReply = deliveredOperation === 'none'
+    ? decision.reply || 'Understood.'
+    : groundedOperationReply(deliveredOperation, delivery);
   const proxyMessage: ProxyManagerChatMessage = {
     id: randomUUID(),
     role: 'proxy',
-    text: `${decision.reply || 'Understood.'}${deliveryNote}`.trim(),
+    text: groundedReply.trim(),
     createdAt: Date.now(),
-    operation: decision.operation,
+    operation: deliveredOperation,
     delivery,
     work,
   };
