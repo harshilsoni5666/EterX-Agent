@@ -34,10 +34,17 @@ type ManagerDecision = {
   supersedesDirectiveId: string;
   supersedesTaskId: string;
   tasks: Array<{ prompt: string; dependency: string; rationale: string }>;
+  stateUpdate: {
+    activeIntent: string;
+    constraints: string[];
+    dependencies: string[];
+    openDecisions: string[];
+    durableOutcomes: string[];
+  };
 };
 
 type ManagerStore = {
-  version: 2;
+  version: 3;
   chatId: string;
   messages: ProxyManagerChatMessage[];
   pendingConcepts: Array<{
@@ -52,10 +59,22 @@ type ManagerStore = {
     expiresAt: number;
   }>;
   model?: { provider?: string; modelId?: string };
+  coordinationModel: ManagerDecision['stateUpdate'] & {
+    lastOperation: ProxyManagerOperation;
+  };
   updatedAt: number;
 };
 
 const MAX_MESSAGES = 80;
+const proxyManagerTurnChains = new Map<string, Promise<void>>();
+const EMPTY_COORDINATION_MODEL: ManagerStore['coordinationModel'] = {
+  activeIntent: '',
+  constraints: [],
+  dependencies: [],
+  openDecisions: [],
+  durableOutcomes: [],
+  lastOperation: 'none',
+};
 
 const compact = (value: unknown, max = 6000) =>
   String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
@@ -68,11 +87,26 @@ const storePath = (chatId: string) => {
 function readStore(chatId: string): ManagerStore {
   try {
     const saved = fs.readJsonSync(storePath(chatId));
-    if ((saved?.version === 1 || saved?.version === 2) && saved?.chatId === chatId && Array.isArray(saved.messages)) {
-      return { version: 2, chatId, messages: saved.messages.slice(-MAX_MESSAGES), pendingConcepts: Array.isArray(saved.pendingConcepts) ? saved.pendingConcepts.slice(-16) : [], model: saved.model, updatedAt: Number(saved.updatedAt || Date.now()) };
+    if ([1, 2, 3].includes(saved?.version) && saved?.chatId === chatId && Array.isArray(saved.messages)) {
+      return {
+        version: 3,
+        chatId,
+        messages: saved.messages.slice(-MAX_MESSAGES),
+        pendingConcepts: Array.isArray(saved.pendingConcepts) ? saved.pendingConcepts.slice(-16) : [],
+        model: saved.model,
+        coordinationModel: {
+          activeIntent: compact(saved?.coordinationModel?.activeIntent, 2400),
+          constraints: Array.isArray(saved?.coordinationModel?.constraints) ? saved.coordinationModel.constraints.slice(-16) : [],
+          dependencies: Array.isArray(saved?.coordinationModel?.dependencies) ? saved.coordinationModel.dependencies.slice(-16) : [],
+          openDecisions: Array.isArray(saved?.coordinationModel?.openDecisions) ? saved.coordinationModel.openDecisions.slice(-12) : [],
+          durableOutcomes: Array.isArray(saved?.coordinationModel?.durableOutcomes) ? saved.coordinationModel.durableOutcomes.slice(-12) : [],
+          lastOperation: saved?.coordinationModel?.lastOperation || 'none',
+        },
+        updatedAt: Number(saved.updatedAt || Date.now()),
+      };
     }
   } catch { }
-  return { version: 2, chatId, messages: [], pendingConcepts: [], updatedAt: Date.now() };
+  return { version: 3, chatId, messages: [], pendingConcepts: [], coordinationModel: { ...EMPTY_COORDINATION_MODEL }, updatedAt: Date.now() };
 }
 
 function writeStore(store: ManagerStore): void {
@@ -83,7 +117,7 @@ function writeStore(store: ManagerStore): void {
 function extractDecision(raw: string): ManagerDecision {
   const cleaned = String(raw || '').replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
   const match = cleaned.match(/\{[\s\S]*\}/);
-  if (!match) return { reply: compact(cleaned, 8000) || 'I could not form a reliable response.', operation: 'none', target: 'proxy', instruction: '', intent: 'preference', rationale: '', confidence: 0, urgency: 'normal', activationCondition: '', scope: 'current_task', supersedesDirectiveId: '', supersedesTaskId: '', tasks: [] };
+  if (!match) return { reply: compact(cleaned, 8000) || 'I could not form a reliable response.', operation: 'none', target: 'proxy', instruction: '', intent: 'preference', rationale: '', confidence: 0, urgency: 'normal', activationCondition: '', scope: 'current_task', supersedesDirectiveId: '', supersedesTaskId: '', tasks: [], stateUpdate: { ...EMPTY_COORDINATION_MODEL } };
   try {
     const parsed = JSON.parse(match[0]);
     const operations = new Set<ProxyManagerOperation>(['none', 'brief_proxy', 'guide_adaptively', 'watch_condition', 'before_completion', 'queue_after_current', 'start_main', 'schedule_workflow', 'replace_queued_task', 'interrupt_main', 'stop_main']);
@@ -107,9 +141,16 @@ function extractDecision(raw: string): ManagerDecision {
         dependency: compact(task?.dependency, 1200),
         rationale: compact(task?.rationale, 1200),
       })).filter((task: any) => task.prompt) : [],
+      stateUpdate: {
+        activeIntent: compact(parsed?.stateUpdate?.activeIntent, 2400),
+        constraints: Array.isArray(parsed?.stateUpdate?.constraints) ? parsed.stateUpdate.constraints.map((item: any) => compact(item, 500)).filter(Boolean).slice(0, 16) : [],
+        dependencies: Array.isArray(parsed?.stateUpdate?.dependencies) ? parsed.stateUpdate.dependencies.map((item: any) => compact(item, 500)).filter(Boolean).slice(0, 16) : [],
+        openDecisions: Array.isArray(parsed?.stateUpdate?.openDecisions) ? parsed.stateUpdate.openDecisions.map((item: any) => compact(item, 500)).filter(Boolean).slice(0, 12) : [],
+        durableOutcomes: Array.isArray(parsed?.stateUpdate?.durableOutcomes) ? parsed.stateUpdate.durableOutcomes.map((item: any) => compact(item, 700)).filter(Boolean).slice(0, 12) : [],
+      },
     };
   } catch {
-    return { reply: compact(cleaned, 8000) || 'I could not form a reliable response.', operation: 'none', target: 'proxy', instruction: '', intent: 'preference', rationale: '', confidence: 0, urgency: 'normal', activationCondition: '', scope: 'current_task', supersedesDirectiveId: '', supersedesTaskId: '', tasks: [] };
+    return { reply: compact(cleaned, 8000) || 'I could not form a reliable response.', operation: 'none', target: 'proxy', instruction: '', intent: 'preference', rationale: '', confidence: 0, urgency: 'normal', activationCondition: '', scope: 'current_task', supersedesDirectiveId: '', supersedesTaskId: '', tasks: [], stateUpdate: { ...EMPTY_COORDINATION_MODEL } };
   }
 }
 
@@ -142,7 +183,7 @@ export function getProxyManagerHistory(chatId: string): ProxyManagerChatMessage[
   return readStore(chatId).messages;
 }
 
-export async function talkToProxyManager(input: {
+async function runProxyManagerTurn(input: {
   chatId: string;
   message: string;
   model?: { provider?: string; modelId?: string };
@@ -195,10 +236,13 @@ export async function talkToProxyManager(input: {
     'The capability map summarizes all registered Main tools and recent usage. Use it to suggest viable approaches when a real gap exists, but never prescribe tools routinely and never imply that you executed them. Tool availability is context, not a reason to intervene.',
     'Read proxy.coordinationEvents and managerDirectives as messages back from the runtime supervisor: acknowledgements, deferrals, deliveries, rejections, stops, and observed outcomes. Incorporate them naturally when answering status questions and do not resend already settled instructions.',
     'Professional response doctrine: lead with what is understood or what changed. State an operational action only if one was actually selected. Keep ordinary replies concise and calm; use a short structured list only for multiple goals, constraints, or queued stages. Never use hype, filler, fake certainty, or generic phrases such as "I will handle everything." If clarification is necessary, explain the exact decision it blocks in one sentence.',
+    'Conversation-mode discipline: for a greeting, acknowledgement, thanks, or casual message, reply naturally in one short sentence and choose none—do not introduce yourself, summarize Main, list capabilities, or ask a broad follow-up. For a status question, answer only the requested status in at most three short points. For an authorized action, confirm the concrete routing result without repeating the full task. For a complex workflow, summarize only the stage boundaries and dependencies that help the user understand what will happen.',
+    'Do not end every response with a question. Ask one only when a specific unresolved decision blocks safe routing. Never respond to "hi" with workspace history or a long menu of possibilities.',
     `LIVE MAIN + RUNTIME PROXY CONTEXT:\n${JSON.stringify(live, null, 2)}`,
+    `DURABLE PER-CHAT COORDINATION MODEL:\n${JSON.stringify(store.coordinationModel, null, 2)}`,
     `THIS CHAT'S SAVED PROXY-MANAGER CONVERSATION:\n${recentConversation || '(new conversation)'}`,
     'Return exactly one JSON object with no markdown:',
-    '{"reply":"natural professional answer","operation":"none|brief_proxy|guide_adaptively|watch_condition|before_completion|queue_after_current|start_main|schedule_workflow|replace_queued_task|interrupt_main|stop_main","target":"proxy|main|both","instruction":"standalone directive for single-task operations, blank for none or schedule_workflow","intent":"goal|constraint|correction|preference|follow_up","rationale":"short private routing reason","confidence":0.0,"urgency":"low|normal|high|critical","activationCondition":"semantic activation condition or blank","scope":"current_step|current_task|next_task|persistent_mandate","supersedesDirectiveId":"prior directive id or blank","supersedesTaskId":"pending task id for replacement or blank","tasks":[{"prompt":"complete Main-ready task","dependency":"what this consumes from the prior task, blank if independent","rationale":"why this is a separate stage"}]}',
+    '{"reply":"natural professional answer","operation":"none|brief_proxy|guide_adaptively|watch_condition|before_completion|queue_after_current|start_main|schedule_workflow|replace_queued_task|interrupt_main|stop_main","target":"proxy|main|both","instruction":"standalone directive for single-task operations, blank for none or schedule_workflow","intent":"goal|constraint|correction|preference|follow_up","rationale":"short private routing reason","confidence":0.0,"urgency":"low|normal|high|critical","activationCondition":"semantic activation condition or blank","scope":"current_step|current_task|next_task|persistent_mandate","supersedesDirectiveId":"prior directive id or blank","supersedesTaskId":"pending task id for replacement or blank","tasks":[{"prompt":"complete Main-ready task","dependency":"what this consumes from the prior task, blank if independent","rationale":"why this is a separate stage"}],"stateUpdate":{"activeIntent":"current durable user intent","constraints":[],"dependencies":[],"openDecisions":[],"durableOutcomes":[]}}',
   ].join('\n\n');
 
   const resolved = resolveModel(input.model);
@@ -224,7 +268,16 @@ export async function talkToProxyManager(input: {
   };
   const response = await client.executeMessageLoop(context, prompt, [], undefined, []);
   const decision = extractDecision(response.text);
-  const work = (Array.isArray(response.trace) ? response.trace : [])
+  const conversationalText = input.message.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, '').replace(/\s+/g, ' ').trim();
+  const isGreetingOnly = /^(hi|hello|hey|hiya|yo|good morning|good afternoon|good evening)$/.test(conversationalText);
+  const isThanksOnly = /^(thanks|thank you|thx|got it|okay thanks|ok thanks)$/.test(conversationalText);
+  if (isGreetingOnly || isThanksOnly) {
+    decision.operation = 'none';
+    decision.instruction = '';
+    decision.tasks = [];
+    decision.reply = isThanksOnly ? 'You’re welcome.' : 'Hi — what would you like to coordinate?';
+  }
+  const work = (isGreetingOnly || isThanksOnly ? [] : (Array.isArray(response.trace) ? response.trace : []))
     .filter((item: any) => item?.tool && item?.text)
     .map((item: any) => ({ text: compact(item.text, 180), tool: compact(item.tool, 100) }))
     .filter((item: { text: string; tool: string }, index: number, items: Array<{ text: string; tool: string }>) =>
@@ -293,6 +346,18 @@ export async function talkToProxyManager(input: {
     delivery,
     work,
   };
+  if (decision.stateUpdate.activeIntent) {
+    store.coordinationModel = {
+      activeIntent: decision.stateUpdate.activeIntent,
+      constraints: decision.stateUpdate.constraints,
+      dependencies: decision.stateUpdate.dependencies,
+      openDecisions: decision.stateUpdate.openDecisions,
+      durableOutcomes: decision.stateUpdate.durableOutcomes,
+      lastOperation: decision.operation,
+    };
+  } else {
+    store.coordinationModel.lastOperation = decision.operation;
+  }
   store.messages.push(proxyMessage);
   writeStore(store);
   return {
@@ -301,4 +366,22 @@ export async function talkToProxyManager(input: {
     model: { provider: resolved.provider, modelId: resolved.modelId },
     wakeRequested,
   };
+}
+
+export async function talkToProxyManager(input: {
+  chatId: string;
+  message: string;
+  model?: { provider?: string; modelId?: string };
+}): Promise<{ message: ProxyManagerChatMessage; history: ProxyManagerChatMessage[]; model: { provider: string; modelId: string }; wakeRequested: boolean }> {
+  const previous = proxyManagerTurnChains.get(input.chatId) || Promise.resolve();
+  const turn = previous.catch(() => undefined).then(() => runProxyManagerTurn(input));
+  const settled = turn.then(() => undefined, () => undefined);
+  proxyManagerTurnChains.set(input.chatId, settled);
+  try {
+    return await turn;
+  } finally {
+    if (proxyManagerTurnChains.get(input.chatId) === settled) {
+      proxyManagerTurnChains.delete(input.chatId);
+    }
+  }
 }
