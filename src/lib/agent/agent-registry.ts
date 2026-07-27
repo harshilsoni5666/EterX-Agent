@@ -332,6 +332,12 @@ class AgentRegistry {
       },
     };
 
+    // Make the new run authoritative before emitting its first trace. A
+    // completed predecessor remains in the map until this replacement; if
+    // registration happens later, onTrace correctly treats the successor's
+    // opening user_action as stale and drops it from the live feed.
+    this.executions.set(chatId, execution);
+
     // Build the trace callback that writes to the buffer
     const onTrace = (traceEvent: any) => {
       if (traceEvent && typeof traceEvent === 'object') {
@@ -363,22 +369,27 @@ class AgentRegistry {
       }
     };
 
-    const proxyOriginUserEvent = pinnedContext?.autonomy?.origin === 'proxy_manager'
-      ? {
-        type: 'user_action',
-        id: `proxy-task-${pinnedContext?.autonomy?.proxyTaskId || execution.runId}`,
-        text: prompt,
-        source: 'proxy_manager',
-        delegatedBy: 'Side Proxy-Agent',
-        proxyTaskId: pinnedContext?.autonomy?.proxyTaskId,
-        runId: execution.runId,
-        turnId: execution.runId,
-        startTime: execution.startedAt,
-        endTime: execution.startedAt,
-        timestamp: execution.startedAt,
-      }
-      : null;
-    if (proxyOriginUserEvent) onTrace(proxyOriginUserEvent);
+    const proxyOrigin = pinnedContext?.autonomy?.origin === 'proxy_manager';
+    // Every Main run begins with the same canonical user boundary. Human runs
+    // may already have an optimistic local bubble; the client upserts this
+    // server-owned trace by run ID. Proxy-started work therefore follows the
+    // exact same transcript route instead of relying on a special feed path.
+    const runUserEvent = {
+      type: 'user_action',
+      id: proxyOrigin
+        ? `proxy-task-${pinnedContext?.autonomy?.proxyTaskId || execution.runId}`
+        : `user-turn-${execution.runId}`,
+      text: prompt,
+      source: proxyOrigin ? 'proxy_manager' : 'human',
+      delegatedBy: proxyOrigin ? 'Side Proxy-Agent' : undefined,
+      proxyTaskId: proxyOrigin ? pinnedContext?.autonomy?.proxyTaskId : undefined,
+      runId: execution.runId,
+      turnId: execution.runId,
+      startTime: execution.startedAt,
+      endTime: execution.startedAt,
+      timestamp: execution.startedAt,
+    };
+    onTrace(runUserEvent);
 
     onTrace({
       type: 'work_note',
@@ -641,9 +652,7 @@ class AgentRegistry {
         // Create TaskStore entry
         if (!pinnedContext?.disableTaskStore) {
           await taskStore.createTask(chatId, prompt, execution.runId);
-          if (proxyOriginUserEvent) {
-            taskStore.addTrace(chatId, { ...proxyOriginUserEvent, _traceIdx: 0 }, execution.runId);
-          }
+          taskStore.addTrace(chatId, { ...runUserEvent, _traceIdx: 0 }, execution.runId);
         }
 
         // Execute the pipeline with per-chat API key
@@ -835,8 +844,6 @@ class AgentRegistry {
       }
     })();
 
-    this.executions.set(chatId, execution);
-
     const poolStatus = isExternalProvider ? null : apiKeyPool.getPoolStatus();
     console.log(`[AgentRegistry] Agent started for chat ${ chatId.substring(0, 8) }... | Model: ${ modelConfig.modelName }${ lease ? ` | Key: #${ lease.keyIndex } | Pool: ${ poolStatus?.healthySummary }` : '' }`);
 
@@ -856,11 +863,19 @@ class AgentRegistry {
     startedAt?: number;
     completedAt?: number;
     error?: string;
+    pendingProxyTaskCount: number;
   } {
     const execution = this.executions.get(chatId);
 
     if (!execution) {
-      return { status: 'idle', traces: [], totalTraces: 0, maxIndex: -1, finalAnswer: '' };
+      return {
+        status: 'idle',
+        traces: [],
+        totalTraces: 0,
+        maxIndex: -1,
+        finalAnswer: '',
+        pendingProxyTaskCount: getPendingProxyTaskCount(chatId),
+      };
     }
     this.compactExecutionForRetention(execution);
 
@@ -900,6 +915,7 @@ class AgentRegistry {
       startedAt: execution.startedAt,
       completedAt: execution.completedAt,
       error: execution.error,
+      pendingProxyTaskCount: getPendingProxyTaskCount(chatId),
     };
   }
 

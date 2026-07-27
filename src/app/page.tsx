@@ -3772,6 +3772,27 @@ function DeepWorkUI() {
 
       let processedLog = withTraceTiming(trace);
       const traceAt = processedLog.endTime;
+      if (processedLog.type === 'user_action') {
+        const traceRunId = String(processedLog.runId || processedLog.turnId || '').trim();
+        const existingUserIdx = traceRunId
+          ? logs.findIndex((log: any) =>
+            log?.type === 'user_action' &&
+            String(log.runId || log.turnId || '').trim() === traceRunId
+          )
+          : -1;
+        if (existingUserIdx >= 0) {
+          const optimisticUserLog = logs[existingUserIdx];
+          logs[existingUserIdx] = {
+            ...processedLog,
+            ...optimisticUserLog,
+            id: processedLog.id || optimisticUserLog.id,
+            source: processedLog.source || optimisticUserLog.source,
+            delegatedBy: processedLog.delegatedBy || optimisticUserLog.delegatedBy,
+            _traceIdx: processedLog._traceIdx,
+          };
+          continue;
+        }
+      }
 
       // Preserve isLive status if this trace matches a local log that was marked as live
       if (trace.type === 'command' || trace.type === 'answer') {
@@ -4409,6 +4430,27 @@ function DeepWorkUI() {
                   ...(currentTurnId ? { turnId: currentTurnId } : {}),
                 });
                 const traceAt = timedTrace.endTime;
+                if (timedTrace.type === 'user_action') {
+                  const traceRunId = String(timedTrace.runId || timedTrace.turnId || '').trim();
+                  const existingUserIdx = traceRunId
+                    ? logs.findIndex((log: any) =>
+                      log?.type === 'user_action' &&
+                      String(log.runId || log.turnId || '').trim() === traceRunId
+                    )
+                    : -1;
+                  if (existingUserIdx >= 0) {
+                    const optimisticUserLog = logs[existingUserIdx];
+                    logs[existingUserIdx] = {
+                      ...timedTrace,
+                      ...optimisticUserLog,
+                      id: timedTrace.id || optimisticUserLog.id,
+                      source: timedTrace.source || optimisticUserLog.source,
+                      delegatedBy: timedTrace.delegatedBy || optimisticUserLog.delegatedBy,
+                      _traceIdx: timedTrace._traceIdx,
+                    };
+                    continue;
+                  }
+                }
 
                 if (trace.type === 'answer_cancel') {
                   const answerId = String(trace.answerId || '').trim();
@@ -4742,6 +4784,25 @@ function DeepWorkUI() {
               ...stripAgentConnectionLogs(previous),
               agentStatusLog('failed', 'Run ended with an error', errMsg.slice(0, 200), normalizeClientTraceTime(data.completedAt))
             ]);
+          }
+          const hasQueuedProxySuccessor =
+            data.status !== 'stopped' &&
+            Number(data.pendingProxyTaskCount || 0) > 0;
+          if (
+            hasQueuedProxySuccessor &&
+            (data.status === 'completed' || data.status === 'failed')
+          ) {
+            // The registry starts queued Proxy work immediately after the
+            // current run settles. Keep this poller attached across that small
+            // handoff window; stopping here loses the successor's delegated
+            // user turn and makes Main look idle in the visible transcript.
+            pollCursorsRef.current.set(chatId, -1);
+            lastHadData = false;
+            if (pollingIntervalsRef.current.has(chatId) && pollGenerationRef.current.get(chatId) === pollGeneration) {
+              pollingIntervalsRef.current.delete(chatId);
+              scheduleNextPoll();
+            }
+            return;
           }
           if (data.status === 'completed' || data.status === 'failed' || data.status === 'stopped') {
             if (activeChatIdRef.current !== chatId) flushBackgroundChatUpdates();

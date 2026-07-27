@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { agentRegistry } from '../../../../lib/agent/agent-registry';
 import { taskStore } from '../../../../lib/agent/task-store';
+import { getPendingProxyTaskCount } from '../../../../lib/agent/autonomy/proxy-control-plane';
 import {
   attachAgentApiSessionCookie,
   getOrCreateAgentApiSession,
@@ -47,7 +48,7 @@ export async function GET(req: NextRequest) {
     }
 
     const afterIndex = Math.max(-1, parseInteger(afterStr, -1));
-    let result = agentRegistry.getTraces(chatId, afterIndex);
+    let result: any = agentRegistry.getTraces(chatId, afterIndex);
 
     if (result.status === 'idle') {
       const persisted = await taskStore.getPollState(chatId, afterIndex);
@@ -55,6 +56,7 @@ export async function GET(req: NextRequest) {
         result = persisted;
       }
     }
+    result.pendingProxyTaskCount = getPendingProxyTaskCount(chatId);
 
     // Return with anti-cache headers for maximum freshness
     return attachAgentApiSessionCookie(new NextResponse(JSON.stringify(result), {
