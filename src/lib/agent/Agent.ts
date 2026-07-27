@@ -1324,19 +1324,22 @@ export class GeminiAgentClient {
         .map(item => typeof item === 'string' ? { text: item } : item)
         .filter(item => typeof item?.text === 'string' && item.text.trim());
       if (messages.length === 0) return [];
-      for (const item of messages) {
-        if (!item.metadata?._autonomyProxy) continue;
-        const source = item.metadata?._proxyManager ? 'proxy_manager' : 'user_proxy';
-        const delegatedBy = item.metadata?._proxyManager ? 'Side Proxy-Agent' : 'Proxy-Agent';
+      const proxyMessages = messages.filter(item => item.metadata?._autonomyProxy);
+      if (proxyMessages.length > 0) {
+        const proxyManagerOrigin = proxyMessages.some(item => item.metadata?._proxyManager);
+        const proxyIds = proxyMessages.map(item => item.id).filter(Boolean);
         const timestamp = Date.now();
         onTrace?.({
           type: 'user_action',
-          id: item.id || `proxy-turn-${timestamp}`,
-          text: item.text.trim(),
-          source,
-          delegatedBy,
-          steeringId: item.id,
-          proxyManagerDirectiveId: item.metadata?.proxyManagerDirectiveId,
+          id: proxyIds.length > 0 ? `proxy-turn-${proxyIds.join('-')}` : `proxy-turn-${timestamp}`,
+          text: proxyMessages.map(item => item.text.trim()).join('\n\n'),
+          source: proxyManagerOrigin ? 'proxy_manager' : 'user_proxy',
+          delegatedBy: proxyManagerOrigin ? 'Side Proxy-Agent' : 'Proxy-Agent',
+          steeringId: proxyIds[0],
+          steeringIds: proxyIds,
+          proxyManagerDirectiveIds: proxyMessages
+            .map(item => item.metadata?.proxyManagerDirectiveId)
+            .filter(Boolean),
           timestamp,
         });
       }
