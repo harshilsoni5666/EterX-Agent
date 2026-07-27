@@ -1933,6 +1933,15 @@
   color: #1F1F1D !important;
 }
 
+:root[data-theme="light"] .eterx-proxy-message-feed,
+:root[data-theme="light"] .eterx-proxy-composer {
+  background: #FFFFFF !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-composer {
+  border-top-color: rgba(31, 31, 29, 0.07) !important;
+}
+
 :root[data-theme="light"] .eterx-proxy-context-panel {
   background: rgba(31, 31, 29, 0.018) !important;
   border-bottom-color: rgba(31, 31, 29, 0.07) !important;

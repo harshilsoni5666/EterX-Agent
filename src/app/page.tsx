@@ -941,6 +941,7 @@ function DeepWorkUI() {
   const [proxyManagerContext, setProxyManagerContext] = useState<any>(null);
   const [proxyChatHistoryChatId, setProxyChatHistoryChatId] = useState<string | null>(null);
   const [proxyChatLoading, setProxyChatLoading] = useState(false);
+  const proxyLoadingChatIdsRef = useRef<Set<string>>(new Set());
   const [proxyChatWindow, setProxyChatWindow] = useState({ x: 0, y: 0, width: 340, height: 460 });
   const [isProxyExpanded, setIsProxyExpanded] = useState(false);
   
@@ -956,6 +957,7 @@ function DeepWorkUI() {
     });
   }, []);
   const proxyChatWindowRef = useRef<HTMLDivElement | null>(null);
+  const proxyMessagesEndRef = useRef<HTMLDivElement | null>(null);
   const proxyWindowInteractionRef = useRef<{
     type: 'drag' | 'resize';
     startX: number;
@@ -1763,7 +1765,7 @@ function DeepWorkUI() {
     setShowProxyModelMenu(false);
     setShowProxyRuntimeModelMenu(false);
     setShowProxyInterventionMenu(false);
-    setProxyChatLoading(false);
+    setProxyChatLoading(proxyLoadingChatIdsRef.current.has(activeChatId));
     try {
       setProxyModelSelection(localStorage.getItem(`eterx_proxy_manager_model_${ activeChatId }`) || AUTO_MODEL_SELECTION);
     } catch { setProxyModelSelection(AUTO_MODEL_SELECTION); }
@@ -1804,10 +1806,19 @@ function DeepWorkUI() {
 
   const visibleProxyChatMessages = proxyChatHistoryChatId === activeChatId ? proxyChatMessages : [];
 
+  useEffect(() => {
+    if (!showProxyChat) return;
+    const frame = window.requestAnimationFrame(() => {
+      proxyMessagesEndRef.current?.scrollIntoView({ block: 'end', behavior: 'smooth' });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [activeChatId, proxyChatLoading, proxyChatMessages.length, showProxyChat]);
+
   const handleSendProxyMessage = useCallback(async () => {
     const rawText = proxyChatInput.trim();
     const hasAttachments = proxyAttachments.length > 0 || proxyPinnedItems.length > 0;
     if ((!rawText && !hasAttachments) || !activeChatId || proxyChatLoading) return;
+    const requestChatId = activeChatId;
 
     let fullText = rawText;
     if (proxyPinnedItems.length > 0) {
@@ -1820,7 +1831,7 @@ function DeepWorkUI() {
     }
 
     const optimisticId = crypto.randomUUID();
-    setProxyChatHistoryChatId(activeChatId);
+    setProxyChatHistoryChatId(requestChatId);
     setProxyChatMessages(prev => [...prev, {
       id: optimisticId,
       sender: 'user',
@@ -1831,6 +1842,7 @@ function DeepWorkUI() {
     setProxyChatInput('');
     setProxyAttachments([]);
     setProxyPinnedItems([]);
+    proxyLoadingChatIdsRef.current.add(requestChatId);
     setProxyChatLoading(true);
 
     const parsedModel = parseModelEntryKey(proxyModelSelection);
@@ -1838,13 +1850,14 @@ function DeepWorkUI() {
       const response = await fetch('/api/agent/proxy-manager', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chatId: activeChatId, message: fullText, model: parsedModel || {} }),
+        body: JSON.stringify({ chatId: requestChatId, message: fullText, model: parsedModel || {} }),
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok || !data.success) throw new Error(data.error || 'Proxy Manager request failed');
       const historyArr = Array.isArray(data.history) ? data.history : [];
-      setProxyManagerContext(data.context || null);
-      if (historyArr.length > 0) {
+      if (activeChatIdRef.current === requestChatId) {
+        setProxyManagerContext(data.context || null);
+        if (historyArr.length > 0) {
         // Full history from server — replace list (canonical source of truth)
         setProxyChatMessages(historyArr.map((item: any) => ({
           id: String(item.id || ''),
@@ -1855,7 +1868,7 @@ function DeepWorkUI() {
           operation: item.operation,
           work: Array.isArray(item.work) ? item.work : [],
         })));
-      } else if (data.reply) {
+        } else if (data.reply) {
         // Server returned only the reply (no full history) — append it
         setProxyChatMessages(prev => [...prev, {
           id: crypto.randomUUID(),
@@ -1863,23 +1876,24 @@ function DeepWorkUI() {
           text: String(data.reply || ''),
           time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         }]);
+        }
       }
       if (data.wakeRequested) {
         const connectProxyRun = async (attempt = 0) => {
           try {
-            const poll = await fetchAgentPoll(activeChatId, -1, 5000);
+            const poll = await fetchAgentPoll(requestChatId, -1, 5000);
             if (poll.status !== 'running') {
               if (attempt < 11) window.setTimeout(() => connectProxyRun(attempt + 1), 500);
               return;
             }
-            setRunningChats(previous => new Set(previous).add(activeChatId));
+            setRunningChats(previous => new Set(previous).add(requestChatId));
             if (poll.traces?.length) {
-              setChatLogsById(activeChatId, previous => mergeServerRunLogs(previous, poll.traces, {
+              setChatLogsById(requestChatId, previous => mergeServerRunLogs(previous, poll.traces, {
                 runId: poll.runId,
                 startedAt: poll.startedAt,
               }));
             }
-            startPolling(activeChatId, poll.maxIndex ?? (poll.totalTraces - 1), poll.startedAt, poll.runId);
+            startPolling(requestChatId, poll.maxIndex ?? (poll.totalTraces - 1), poll.startedAt, poll.runId);
           } catch {
             if (attempt < 11) window.setTimeout(() => connectProxyRun(attempt + 1), 700);
           }
@@ -1888,15 +1902,18 @@ function DeepWorkUI() {
       }
       // else: server sent empty history + no reply → keep optimistic user msg
     } catch (error: any) {
-      setProxyChatMessages(prev => [...prev, {
-        id: crypto.randomUUID(),
-        sender: 'proxy',
-        text: String(error?.message || 'Proxy Manager is temporarily unavailable.'),
-        time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        delivery: 'unavailable',
-      }]);
+      if (activeChatIdRef.current === requestChatId) {
+        setProxyChatMessages(prev => [...prev, {
+          id: crypto.randomUUID(),
+          sender: 'proxy',
+          text: String(error?.message || 'Proxy Manager is temporarily unavailable.'),
+          time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          delivery: 'unavailable',
+        }]);
+      }
     } finally {
-      setProxyChatLoading(false);
+      proxyLoadingChatIdsRef.current.delete(requestChatId);
+      if (activeChatIdRef.current === requestChatId) setProxyChatLoading(false);
     }
   }, [activeChatId, proxyAttachments, proxyChatInput, proxyChatLoading, proxyModelSelection, proxyPinnedItems]);
 
@@ -8374,7 +8391,7 @@ function DeepWorkUI() {
                           return (
                             <div
                               ref={proxyChatWindowRef}
-                              className="eterx-proxy-chat-window pointer-events-auto fixed right-6 bottom-20 z-[9990] max-h-[calc(100vh-32px)] max-w-[calc(100vw-24px)] overflow-hidden rounded-[24px] border border-white/[0.14] bg-[#181818]/[0.98] shadow-[0_16px_44px_rgba(0,0,0,0.38),inset_0_1px_0_rgba(255,255,255,0.04)] flex flex-col transition-[box-shadow] duration-200"
+                              className="eterx-proxy-chat-window pointer-events-auto fixed right-6 bottom-20 z-[9990] max-h-[calc(100vh-32px)] max-w-[calc(100vw-24px)] overflow-hidden rounded-[24px] border border-white/[0.12] bg-[#171717] shadow-[0_20px_60px_rgba(0,0,0,0.52),inset_0_1px_0_rgba(255,255,255,0.035)] flex flex-col transition-[box-shadow] duration-200"
                               style={{
                                 width: proxyChatWindow.width,
                                 height: proxyChatWindow.height,
@@ -8384,7 +8401,7 @@ function DeepWorkUI() {
                               {/* Header */}
                               <div
                                 onPointerDown={(event) => startProxyWindowInteraction('drag', event)}
-                                className="eterx-proxy-chat-header flex min-h-[56px] cursor-grab items-center justify-between rounded-t-[24px] border-b border-white/[0.06] bg-gradient-to-b from-white/[0.025] to-transparent px-5 py-3 shrink-0 active:cursor-grabbing select-none touch-none"
+                                className="eterx-proxy-chat-header flex min-h-[56px] cursor-grab items-center justify-between rounded-t-[24px] border-b border-white/[0.06] bg-[#191919] px-5 py-3 shrink-0 active:cursor-grabbing select-none touch-none"
                               >
                                 <div className="flex min-w-0 items-center gap-2.5">
                                   <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border border-white/[0.08] bg-white/[0.05]">
@@ -8436,8 +8453,7 @@ function DeepWorkUI() {
                               )}
 
                               {/* Message Feed */}
-                              <div className="relative flex-1 min-h-0 overflow-y-auto overflow-x-hidden p-4 flex flex-col gap-3 eterx-scrollbar bg-transparent [scrollbar-gutter:stable]">
-                                <div className="eterx-proxy-chat-fade-top pointer-events-none absolute inset-x-0 top-0 z-10 h-7 bg-gradient-to-b from-[#181818] to-transparent" />
+                              <div className="eterx-proxy-message-feed relative flex-1 min-h-0 overflow-y-auto overflow-x-hidden p-4 flex flex-col gap-3 eterx-scrollbar overscroll-contain bg-[#171717] [scrollbar-gutter:stable]">
                                 {visibleProxyChatMessages.length === 0 ? (
                                   <div className="flex-1 flex flex-col items-center justify-center text-center p-4">
                                     <div className="flex h-10 w-10 items-center justify-center rounded-2xl border border-white/[0.07] bg-white/[0.035]">
@@ -8514,7 +8530,7 @@ function DeepWorkUI() {
                                     </span>
                                   </div>
                                 )}
-                                <div className="eterx-proxy-chat-fade-bottom pointer-events-none absolute inset-x-0 bottom-0 z-10 h-5 bg-gradient-to-t from-[#181818] to-transparent" />
+                                <div ref={proxyMessagesEndRef} className="h-px shrink-0" />
                               </div>
 
                               {/* Redesigned Input Form matching the upload */}
@@ -8523,9 +8539,9 @@ function DeepWorkUI() {
                                   e.preventDefault();
                                   handleSendProxyMessage();
                                 }}
-                                className="p-3 pt-0 bg-transparent shrink-0 border-none outline-none shadow-none"
+                                className="eterx-proxy-composer border-t border-white/[0.045] bg-[#171717] p-3 pt-3 shrink-0 outline-none shadow-none"
                               >
-                                <div className="eterx-proxy-input-wrapper relative rounded-2xl border border-white/[0.08] bg-[#2d2d2d] flex flex-col p-2 gap-1.5">
+                                <div className="eterx-proxy-input-wrapper relative rounded-2xl border border-white/[0.08] bg-[#262626] flex flex-col p-2 gap-1.5">
                                     {/* Interactive Top Height Resizer Drag Handle */}
                                     <div
                                       onPointerDown={startInputHeightResize}
