@@ -4119,12 +4119,14 @@ function DeepWorkUI() {
           log?.type === 'user_action' &&
           String(log.runId || log.turnId || '').trim() === incomingRunId
         );
-        if (alreadyPresent) return Array.isArray(existingLogs) ? [...existingLogs] : [];
         const successorTraces = traces.map((trace: any) => ({
           ...trace,
           runId: incomingRunId,
           turnId: incomingRunId,
         }));
+        if (alreadyPresent) {
+          return processServerTraces(successorTraces, existingLogs);
+        }
         return [
           ...(Array.isArray(existingLogs) ? existingLogs : []),
           ...processServerTraces(successorTraces, []),
