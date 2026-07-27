@@ -2569,6 +2569,11 @@ function DeepWorkUI() {
   }, [activeChatId, activeRunLocation, activeWorkspacePath, revealNetworkBanner]);
 
   const stopLiveSession = useCallback(() => {
+    const stoppedChatId = liveChatIdRef.current;
+    const discardEmptyRoom = Boolean(
+      stoppedChatId &&
+      liveEphemeralChatIdRef.current === stoppedChatId
+    );
     liveSessionTokenRef.current = null;
     if (liveSessionRef.current) {
       liveSessionRef.current.disconnect();
@@ -2589,6 +2594,16 @@ function DeepWorkUI() {
     liveInputTextRef.current = '';
     liveOutputTextRef.current = '';
     liveCommandsRef.current = [];
+
+    if (discardEmptyRoom) {
+      liveEphemeralChatIdRef.current = null;
+      lastLiveLogsSnapshotRef.current = [];
+      if (activeChatIdRef.current === stoppedChatId) {
+        activeChatIdRef.current = null;
+        setActiveChatId(null);
+        setTraceLogs([]);
+      }
+    }
   }, []);
 
   const toggleLiveMicMute = useCallback(() => {
@@ -3239,6 +3254,9 @@ function DeepWorkUI() {
   }, [handleAgentChange, updateInputValue]);
 
   const createNewChat = useCallback(() => {
+    if (liveEphemeralChatIdRef.current) {
+      stopLiveSession();
+    }
     setActiveSubAgentTab(null);
     setSubAgentDockOpen(false);
     setOverflowDropdownOpen(false);
@@ -3274,7 +3292,7 @@ function DeepWorkUI() {
         }
       }
     }, 50);
-  }, [composerStates, applyComposerState, updateComposerState]);
+  }, [composerStates, applyComposerState, stopLiveSession, updateComposerState]);
 
   const deleteChats = useCallback((ids: string[]) => {
     const idsToDelete = [...new Set(ids)].filter(Boolean);
