@@ -1148,6 +1148,14 @@ class AgentRegistry {
     if (current && (current.status === 'running' || !current.settled)) return;
     const task = claimNextProxyTask(chatId);
     if (!task) return;
+    if (task.dependency && current && current.status !== 'completed') {
+      settleProxyTask(chatId, task.id, {
+        status: 'failed',
+        error: `Dependency unavailable because the preceding run ${current.status}.`,
+      });
+      setTimeout(() => this.startNextProxyTask(chatId), 0).unref?.();
+      return;
+    }
 
     const control = readProxyControl(chatId);
     const runtimeSettings = current?.launchSpec.runtimeSettings || buildScopedRuntimeSettings();
