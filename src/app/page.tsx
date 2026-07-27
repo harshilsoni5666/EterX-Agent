@@ -375,6 +375,11 @@ const serializeComposerAttachment = (att: ComposerAttachment) => {
 };
 
 const DEFAULT_CHAT_TITLE = 'New chat';
+const removeGeneratedEmptyChats = (chatList: ChatSession[]) => chatList.filter(chat => {
+  if ((chat.traceLogs || []).length > 0) return true;
+  const title = String(chat.title || '').trim().toLowerCase();
+  return title !== 'live conversation' && title !== DEFAULT_CHAT_TITLE.toLowerCase();
+});
 const SELECTED_AGENT_STORAGE_KEY = 'eterx_selected_agent';
 const SETTINGS_STORAGE_KEY = 'eterx_settings';
 const SETTINGS_CHANNEL = 'eterx-settings';
@@ -2684,9 +2689,10 @@ function DeepWorkUI() {
 
     const applyRestoredChats = (restoredChats: ChatSession[]) => {
       if (cancelled) return;
-      setChats(restoredChats);
+      const cleanChats = removeGeneratedEmptyChats(restoredChats);
+      setChats(cleanChats);
       const savedActiveChatId = localStorage.getItem(ACTIVE_CHAT_STORAGE_KEY);
-      const restoredActiveChat = restoredChats.find(chat => chat.id === savedActiveChatId);
+      const restoredActiveChat = cleanChats.find(chat => chat.id === savedActiveChatId);
       if (restoredActiveChat) {
         activeChatIdRef.current = restoredActiveChat.id;
         setActiveChatId(restoredActiveChat.id);
@@ -2700,7 +2706,7 @@ function DeepWorkUI() {
       const saved = localStorage.getItem('eterx_chats');
       localSavedAt = Number(localStorage.getItem('eterx_chats_saved_at') || 0);
       if (saved) {
-        localChats = sortChats(JSON.parse(saved));
+        localChats = removeGeneratedEmptyChats(sortChats(JSON.parse(saved)));
         applyRestoredChats(localChats);
       }
     } catch { }
@@ -2709,7 +2715,9 @@ function DeepWorkUI() {
       .then(response => response.ok ? response.json() : Promise.reject(new Error(`Chat restore HTTP ${ response.status }`)))
       .then(snapshot => {
         if (cancelled) return;
-        const appDataChats = Array.isArray(snapshot?.chats) ? sortChats(snapshot.chats) : [];
+        const appDataChats = Array.isArray(snapshot?.chats)
+          ? removeGeneratedEmptyChats(sortChats(snapshot.chats))
+          : [];
         const appDataSavedAt = Number(snapshot?.savedAt || 0);
         lastChatSnapshotAtRef.current = Math.max(localSavedAt, appDataSavedAt, Date.now());
 
@@ -2744,7 +2752,7 @@ function DeepWorkUI() {
             mergedById.set(cachedChat.id, mergeNewerCacheIntoDurableChat(durableChat, cachedChat));
           }
         }
-        const restoredChats = sortChats(Array.from(mergedById.values()));
+        const restoredChats = removeGeneratedEmptyChats(sortChats(Array.from(mergedById.values())));
         applyRestoredChats(restoredChats);
         persistChats(restoredChats);
       })
