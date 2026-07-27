@@ -833,6 +833,14 @@ function DeepWorkUI() {
     try {
       localStorage.setItem(`eterx_proxy_runtime_model_${ activeChatIdRef.current || 'new_chat' }`, selection);
     } catch { }
+    const chatId = activeChatIdRef.current;
+    if (chatId) {
+      fetch('/api/agent/proxy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chatId, action: 'model', modelSelection: selection }),
+      }).catch(() => undefined);
+    }
   }, [proxyModelEntries]);
 
   useEffect(() => {
@@ -1754,6 +1762,15 @@ function DeepWorkUI() {
       .then(response => response.ok ? response.json() : Promise.reject(new Error('history unavailable')))
       .then(data => {
         if (cancelled) return;
+        if (data.control && typeof data.control === 'object') {
+          setProxyEnabled(data.control.enabled !== false);
+          if (['minimal', 'normal', 'high'].includes(data.control.intervention)) {
+            setProxyIntervention(data.control.intervention);
+          }
+          if (typeof data.control.modelSelection === 'string' && data.control.modelSelection) {
+            setProxyRuntimeModelSelection(data.control.modelSelection);
+          }
+        }
         setProxyChatMessages((Array.isArray(data.messages) ? data.messages : []).map((item: any) => ({
           id: String(item.id || ''),
           sender: item.role === 'user' ? 'user' : 'proxy',
@@ -1830,6 +1847,22 @@ function DeepWorkUI() {
           text: String(data.reply || ''),
           time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         }]);
+      }
+      if (data.wakeRequested) {
+        window.setTimeout(async () => {
+          try {
+            const poll = await fetchAgentPoll(activeChatId, -1, 5000);
+            if (poll.status !== 'running') return;
+            setRunningChats(previous => new Set(previous).add(activeChatId));
+            if (poll.traces?.length) {
+              setChatLogsById(activeChatId, previous => mergeServerRunLogs(previous, poll.traces, {
+                runId: poll.runId,
+                startedAt: poll.startedAt,
+              }));
+            }
+            startPolling(activeChatId, poll.maxIndex ?? (poll.totalTraces - 1), poll.startedAt, poll.runId);
+          } catch { }
+        }, 350);
       }
       // else: server sent empty history + no reply → keep optimistic user msg
     } catch (error: any) {

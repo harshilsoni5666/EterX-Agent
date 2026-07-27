@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getProxyManagerHistory, talkToProxyManager } from '../../../../lib/agent/autonomy/proxy-manager-runtime';
 import { isModelProvider } from '../../../../lib/agent/model-selector-store';
+import { readProxyControl } from '../../../../lib/agent/autonomy/proxy-control-plane';
 import {
   attachAgentApiSessionCookie,
   cleanString,
@@ -24,7 +25,11 @@ export async function GET(req: NextRequest) {
   if (!isSafeChatId(chatId)) return attachAgentApiSessionCookie(jsonError('Valid chatId is required', 400), session);
   const ownerError = requireChatOwner(chatId, session.sessionId);
   if (ownerError) return attachAgentApiSessionCookie(ownerError, session);
-  return attachAgentApiSessionCookie(NextResponse.json({ success: true, messages: getProxyManagerHistory(chatId) }), session);
+  return attachAgentApiSessionCookie(NextResponse.json({
+    success: true,
+    messages: getProxyManagerHistory(chatId),
+    control: readProxyControl(chatId),
+  }), session);
 }
 
 export async function POST(req: NextRequest) {
