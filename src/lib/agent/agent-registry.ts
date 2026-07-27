@@ -393,7 +393,9 @@ class AgentRegistry {
       id: proxyOrigin
         ? `proxy-task-${pinnedContext?.autonomy?.proxyTaskId || execution.runId}`
         : `user-turn-${execution.runId}`,
-      text: prompt,
+      text: proxyOrigin
+        ? String(pinnedContext?.autonomy?.proxyTaskPrompt || prompt)
+        : prompt,
       source: proxyOrigin ? 'proxy_manager' : 'human',
       delegatedBy: proxyOrigin ? 'Side Proxy-Agent' : undefined,
       proxyTaskId: proxyOrigin ? pinnedContext?.autonomy?.proxyTaskId : undefined,
@@ -1162,7 +1164,7 @@ class AgentRegistry {
     const priorHistory = current
       ? buildProxyTaskHistory(
         current.launchSpec.history,
-        current.prompt,
+        String(current.launchSpec.pinnedContext?.autonomy?.proxyTaskPrompt || current.prompt),
         current.finalAnswer,
         Boolean(task.dependency),
       )
@@ -1181,6 +1183,7 @@ class AgentRegistry {
         proxyModelSelection: control.modelSelection,
         origin: 'proxy_manager',
         proxyTaskId: task.id,
+        proxyTaskPrompt: task.prompt,
       },
     };
     const result = this.startAgent(
