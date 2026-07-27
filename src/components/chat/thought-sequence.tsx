@@ -2550,6 +2550,16 @@ const getStableActionEventId = (log: any) => {
   return value === null || value === undefined ? '' : String(value);
 };
 
+const getStreamRowIdentity = (log: any, fallbackIndex: number) => String(
+  log?.thoughtId ??
+  log?.noteId ??
+  log?.id ??
+  log?.startTime ??
+  log?.timestamp ??
+  log?._traceIdx ??
+  fallbackIndex
+);
+
 const ACTION_CARD_CLASS = "eterx-action-card w-full overflow-hidden rounded-[12px] border border-white/[0.075] bg-[#151514]/60 shadow-[inset_0_1px_0_rgba(255,255,255,0.028),0_2px_10px_rgba(0,0,0,0.14)]";
 const ACTION_ROW_DIVIDER_CLASS = "eterx-action-row-divider border-t border-white/[0.052]";
 
@@ -4639,14 +4649,14 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
             seg.log.streamState !== 'closed' &&
             isLast &&
             i === segs.length - 1;
-          return <ProfessionalThought key={`t-${ seg.idx }`} text={seg.log.text} isLatest={thoughtIsLive} isThinking={thoughtIsLive} startedAt={seg.log.startTime} updatedAt={seg.log.endTime} />;
+          return <ProfessionalThought key={`t-${ getStreamRowIdentity(seg.log, seg.idx) }`} text={seg.log.text} isLatest={thoughtIsLive} isThinking={thoughtIsLive} startedAt={seg.log.startTime} updatedAt={seg.log.endTime} />;
         }
         if (seg.kind === 'note' && nextSeg?.kind === 'action_group') {
           const firstIdx = nextSeg.firstIdx ?? nextSeg.lastIdx ?? i;
           const groupKey = `phase-g-${ firstIdx }-${ getActionIdentity(nextSeg.logs[0], firstIdx) }`;
           return (
             <motion.div
-              key={`phase-${ seg.idx }-${ groupKey }`}
+              key={`phase-${ getStreamRowIdentity(seg.log, seg.idx) }-${ groupKey }`}
               layout={false}
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
@@ -4665,7 +4675,7 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
             </motion.div>
           );
         }
-        if (seg.kind === 'note') return <WorkNoteBlock key={`n-${ seg.idx }`} text={seg.log.text} isActive={isThinking && isLast && i === segs.length - 1} />;
+        if (seg.kind === 'note') return <WorkNoteBlock key={`n-${ getStreamRowIdentity(seg.log, seg.idx) }`} text={seg.log.text} isActive={isThinking && isLast && i === segs.length - 1} />;
         if (seg.kind === 'safety') return <SafetyBanner key={`sf-${ seg.idx }`} log={seg.log} />;
         if (seg.kind === 'steering') return <SteeringCard key={`steer-${ seg.idx }`} log={seg.log} onEdit={onEditUserMessage} />;
         if (seg.kind === 'subagent') return null;
