@@ -1063,6 +1063,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const goalTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const textareaWidthRef = useRef(0);
   const slashDragFrameRef = useRef<number | null>(null);
   const modelSelectorRef = useRef<HTMLDivElement>(null);
   const initialFocusAppliedRef = useRef(false);
@@ -1836,24 +1837,48 @@ const handleSelectFolderDialog = useCallback(async () => {
     return () => window.removeEventListener('click', handleClickOutside);
   }, [openPillDrop, openStatusMenu, showPinMenu, slashTrigger]);
 
-  // Auto-resize textarea dynamically based on scrollHeight
-  useEffect(() => {
-    if (textareaRef.current) {
-      // Reset height to correctly recalculate
-      textareaRef.current.style.height = '1px';
-      const scrollHeight = textareaRef.current.scrollHeight;
-      const newHeight = Math.max(24, Math.min(scrollHeight, textareaMaxHeight));
-      textareaRef.current.style.height = `${ newHeight }px`;
+  const syncTextareaOverflow = useCallback(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
 
-      const overflowing = scrollHeight > textareaMaxHeight;
-      setIsOverflowing(overflowing);
+    textarea.style.overflowY = 'hidden';
+    textarea.style.height = '1px';
+    const contentHeight = Math.ceil(textarea.scrollHeight);
+    const overflowing = textarea.value.length > 0 && contentHeight > textareaMaxHeight + 1;
+    const nextHeight = Math.max(24, Math.min(contentHeight, textareaMaxHeight));
 
-      // If we just became overflowing or changed content, check scroll position
-      if (overflowing) {
-        handleTextareaScroll();
-      }
+    textarea.style.height = `${ nextHeight }px`;
+    textarea.style.overflowY = overflowing ? 'auto' : 'hidden';
+    setIsOverflowing(overflowing);
+
+    if (overflowing) {
+      handleTextareaScroll();
+    } else {
+      textarea.scrollTop = 0;
+      setIsAtTop(true);
+      setIsAtBottom(true);
     }
-  }, [inputValue, handleTextareaScroll, textareaMaxHeight]);
+  }, [handleTextareaScroll, textareaMaxHeight]);
+
+  useEffect(() => {
+    syncTextareaOverflow();
+  }, [inputValue, syncTextareaOverflow]);
+
+  useEffect(() => {
+    const textarea = textareaRef.current;
+    const container = textarea?.parentElement;
+    if (!container || typeof ResizeObserver === 'undefined') return;
+
+    textareaWidthRef.current = container.getBoundingClientRect().width;
+    const observer = new ResizeObserver(entries => {
+      const nextWidth = entries[0]?.contentRect.width || 0;
+      if (Math.abs(nextWidth - textareaWidthRef.current) < 0.5) return;
+      textareaWidthRef.current = nextWidth;
+      syncTextareaOverflow();
+    });
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [syncTextareaOverflow]);
 
   // Generate a random ID for items
   const genId = () => Math.random().toString(36).substr(2, 9);
