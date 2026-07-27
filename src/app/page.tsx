@@ -2143,6 +2143,17 @@ function DeepWorkUI() {
   // GEMINI LIVE — Real-time voice conversation with gemini-3.1-flash-live-preview
   // ═══════════════════════════════════════════════════════════════
 
+  const discardEphemeralLiveRoom = useCallback((chatId: string | null) => {
+    if (!chatId || liveEphemeralChatIdRef.current !== chatId) return;
+    liveEphemeralChatIdRef.current = null;
+    lastLiveLogsSnapshotRef.current = [];
+    if (activeChatIdRef.current === chatId) {
+      activeChatIdRef.current = null;
+      setActiveChatId(null);
+      setTraceLogs([]);
+    }
+  }, []);
+
   const startLiveSession = useCallback(async () => {
     if (activeChatId && runningChatsRef.current.has(activeChatId)) return;
 
@@ -2533,6 +2544,12 @@ function DeepWorkUI() {
             setLiveState('error');
             setTimeout(() => {
               if (!isCurrentSession()) return;
+              liveSessionTokenRef.current = null;
+              liveSessionRef.current?.disconnect();
+              liveSessionRef.current = null;
+              liveChatIdRef.current = null;
+              setLiveChatId(null);
+              discardEphemeralLiveRoom(currentChatId);
               setLiveState('idle');
               setLiveError(null);
             }, 4000);
@@ -2567,11 +2584,17 @@ function DeepWorkUI() {
       setLiveState('error');
       setTimeout(() => {
         if (!isCurrentSession()) return;
+        liveSessionTokenRef.current = null;
+        liveSessionRef.current?.disconnect();
+        liveSessionRef.current = null;
+        liveChatIdRef.current = null;
+        setLiveChatId(null);
+        discardEphemeralLiveRoom(currentChatId);
         setLiveState('idle');
         setLiveError(null);
       }, 4000);
     }
-  }, [activeChatId, activeRunLocation, activeWorkspacePath, revealNetworkBanner]);
+  }, [activeChatId, activeRunLocation, activeWorkspacePath, discardEphemeralLiveRoom, revealNetworkBanner]);
 
   const stopLiveSession = useCallback(() => {
     const stoppedChatId = liveChatIdRef.current;
@@ -2600,16 +2623,8 @@ function DeepWorkUI() {
     liveOutputTextRef.current = '';
     liveCommandsRef.current = [];
 
-    if (discardEmptyRoom) {
-      liveEphemeralChatIdRef.current = null;
-      lastLiveLogsSnapshotRef.current = [];
-      if (activeChatIdRef.current === stoppedChatId) {
-        activeChatIdRef.current = null;
-        setActiveChatId(null);
-        setTraceLogs([]);
-      }
-    }
-  }, []);
+    if (discardEmptyRoom) discardEphemeralLiveRoom(stoppedChatId);
+  }, [discardEphemeralLiveRoom]);
 
   const toggleLiveMicMute = useCallback(() => {
     setLiveMicMuted(prev => {
@@ -7125,7 +7140,11 @@ function DeepWorkUI() {
                     );
                   }
                   const activeChat = activeChatId ? chats.find(c => c.id === activeChatId) : null;
-                  const titleText = activeChat ? activeChat.title : DEFAULT_CHAT_TITLE;
+                  const titleText = activeChat
+                    ? activeChat.title
+                    : isLiveSessionActive
+                      ? 'Live Conversation'
+                      : DEFAULT_CHAT_TITLE;
 
                   return (
                     <div className="relative min-w-0 [-webkit-app-region:no-drag]">
