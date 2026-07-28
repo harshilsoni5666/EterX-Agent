@@ -732,6 +732,7 @@ export const ProfessionalThought = React.memo(({ text, isLatest, isThinking, var
 const ProxyStatusDivider = ({ text, isActive = false }: { text: string; isActive?: boolean }) => {
   const note = useMemo(() => String(text || '').trim(), [text]);
   if (!note) return null;
+  const interventionMatch = note.match(/^(Proxy intervention set to\s+)(minimal|normal|high)([.!]?)$/i);
 
   return (
     <div
@@ -741,7 +742,17 @@ const ProxyStatusDivider = ({ text, isActive = false }: { text: string; isActive
     >
       <span className="eterx-proxy-status-divider-line" aria-hidden="true" />
       <span className="eterx-proxy-status-divider-label">
-        <span className="min-w-0 break-words text-center">{note}</span>
+        <span className="min-w-0 break-words text-center">
+          {interventionMatch ? (
+            <>
+              {interventionMatch[1]}
+              <span className={`eterx-proxy-intervention-level eterx-proxy-intervention-level-${ interventionMatch[2].toLowerCase() }`}>
+                {interventionMatch[2]}
+              </span>
+              {interventionMatch[3]}
+            </>
+          ) : note}
+        </span>
       </span>
       <span className="eterx-proxy-status-divider-line" aria-hidden="true" />
     </div>

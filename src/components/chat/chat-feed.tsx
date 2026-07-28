@@ -364,12 +364,33 @@ const chatFeedSurfaceStyles = `
     line-height: 1.45;
     letter-spacing: 0.01em;
   }
+  .eterx-proxy-intervention-level {
+    font-weight: 500;
+  }
+  .eterx-proxy-intervention-level-high {
+    color: #c99a72;
+  }
+  .eterx-proxy-intervention-level-normal {
+    color: #9aa9b7;
+  }
+  .eterx-proxy-intervention-level-minimal {
+    color: #9eae9d;
+  }
   :root[data-theme="light"] .eterx-proxy-status-divider {
     color: rgba(75, 82, 91, 0.68);
   }
   :root[data-theme="light"] .eterx-proxy-status-divider-label {
     color: rgba(75, 82, 91, 0.76);
     font-weight: 400;
+  }
+  :root[data-theme="light"] .eterx-proxy-intervention-level-high {
+    color: #a56f3f;
+  }
+  :root[data-theme="light"] .eterx-proxy-intervention-level-normal {
+    color: #5f7182;
+  }
+  :root[data-theme="light"] .eterx-proxy-intervention-level-minimal {
+    color: #5f785f;
   }
   :root[data-theme="light"] .eterx-proxy-status-divider-line {
     background: linear-gradient(90deg, transparent, rgba(75, 82, 91, 0.22));
