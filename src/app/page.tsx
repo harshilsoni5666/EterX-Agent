@@ -2406,7 +2406,6 @@ function DeepWorkUI() {
 
     const sessionToken = crypto.randomUUID();
     liveSessionTokenRef.current = sessionToken;
-    const isCurrentSession = () => liveSessionTokenRef.current === sessionToken;
 
     if (liveSessionRef.current) {
       liveSessionRef.current.disconnect();
@@ -2453,6 +2452,9 @@ function DeepWorkUI() {
     liveChatIdRef.current = currentChatId;
     setLiveChatId(currentChatId);
     setActiveView('chat');
+    const isCurrentSession = () =>
+      liveSessionTokenRef.current === sessionToken &&
+      liveChatIdRef.current === currentChatId;
 
     try {
       // Fetch an API key from the pool
@@ -2480,7 +2482,12 @@ function DeepWorkUI() {
         const globalMem = globalMemStr ? JSON.parse(globalMemStr) : [];
         pastMemories = [
           ...localMem.map((m: any) => m.fact || m),
-          ...globalMem.map((m: any) => m.fact || m)
+          // Legacy Live memory stored chat-specific facts in a global array.
+          // Only truly unscoped records or records owned by this chat may enter
+          // the Live model context.
+          ...globalMem
+            .filter((m: any) => !m?.chatId || m.chatId === currentChatId)
+            .map((m: any) => m.fact || m)
         ];
       } catch {}
 
@@ -2491,20 +2498,6 @@ function DeepWorkUI() {
           role: l.type === 'user_action' ? 'user' : 'model',
           text: l.text || ''
         }));
-
-      const allChatsOverview = [...chatsRef.current]
-        .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
-        .map(c => {
-          const lastLog = c.traceLogs?.slice(-1)[0];
-          const snippet = lastLog ? (lastLog.text || lastLog.secondary || '').slice(0, 80) : '';
-          return {
-            id: c.id,
-            title: c.title || 'Untitled Chat',
-            updatedAt: new Date(c.updatedAt || Date.now()).toLocaleString(),
-            messageCount: c.traceLogs?.length || 0,
-            snippet
-          };
-        });
 
       const commitLiveTurn = (userText: string, modelText: string, commands: any[]) => {
         const cleanUserText = userText.trim();
@@ -2527,6 +2520,7 @@ function DeepWorkUI() {
           newTraceLogs.push({
             type: 'user_action',
             text: cleanUserText,
+            chatId: currentChatId,
             isLive: true,
             runId: turnId,
             turnId,
@@ -2537,6 +2531,7 @@ function DeepWorkUI() {
         }
         newTraceLogs.push(...commands.map(command => ({
           ...command,
+          chatId: currentChatId,
           runId: turnId,
           turnId,
           timestamp: command.timestamp || completedAt,
@@ -2545,6 +2540,7 @@ function DeepWorkUI() {
           newTraceLogs.push({
             type: 'answer',
             text: cleanModelText,
+            chatId: currentChatId,
             isLive: true,
             isStreaming: false,
             isLiveTyping: false,
@@ -2658,21 +2654,17 @@ function DeepWorkUI() {
           },
           onAppControlAction: async (action, args) => {
             if (!isCurrentSession()) return { error: 'Live session is no longer active.' };
+            const ownerIsActive = activeChatIdRef.current === currentChatId;
             if (action === 'list_all_chats') {
-              const overview = [...chatsRef.current]
-                .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
-                .map(c => ({
-                  id: c.id,
-                  title: c.title || 'Untitled Chat',
-                  updatedAt: new Date(c.updatedAt || Date.now()).toLocaleString(),
-                  messageCount: c.traceLogs?.length || 0,
-                  snippet: (c.traceLogs?.slice(-1)[0]?.text || c.traceLogs?.slice(-1)[0]?.secondary || '').slice(0, 100)
-                }));
-              return { success: true, totalChats: overview.length, chats: overview };
+              return { error: 'Live sessions are isolated to their owning chat and cannot enumerate other chats.' };
             }
 
             if (action === 'read_chat_full_context') {
-              const targetChatId = args.chatId || activeChatIdRef.current;
+              const requestedChatId = String(args.chatId || currentChatId);
+              if (requestedChatId !== currentChatId) {
+                return { error: 'Live sessions cannot read another chat. End Live and open that chat first.' };
+              }
+              const targetChatId = currentChatId;
               const targetChat = chatsRef.current.find(c => c.id === targetChatId);
               if (!targetChat) {
                 return { error: `Chat session not found for ID: ${targetChatId}` };
@@ -2695,31 +2687,22 @@ function DeepWorkUI() {
             }
 
             if (action === 'switch_active_chat') {
-              if (args.createNew) {
-                createNewChat();
-                return { success: true, message: 'Created and opened a fresh new chat room.' };
-              }
-              let targetId = args.chatId;
-              if (!targetId && args.title) {
-                const searchLower = String(args.title).toLowerCase().trim();
-                const matched = chatsRef.current.find(c => (c.title || '').toLowerCase().includes(searchLower));
-                if (matched) targetId = matched.id;
-              }
-              if (targetId) {
-                loadChat(targetId);
-                const chatObj = chatsRef.current.find(c => c.id === targetId);
-                return { success: true, message: `Switched to chat "${chatObj?.title || targetId}".`, chatId: targetId };
-              }
-              return { error: 'Chat not found by specified ID or title.' };
+              return { error: 'End the current Live session before switching or creating chats.' };
             }
 
             if (action === 'select_sub_agent') {
+              if (!ownerIsActive) {
+                return { error: 'The Live owner chat is no longer active.' };
+              }
               const name = args.agentName || 'General';
               setActiveSubAgentTab(name);
               return { success: true, message: `Selected sub-agent "${name}".` };
             }
 
             if (action === 'select_model') {
+              if (!ownerIsActive) {
+                return { error: 'The Live owner chat is no longer active.' };
+              }
               if (args.modelId) {
                 handleModelSelectionChange(args.modelId);
                 return { success: true, message: `Changed AI model selection to "${args.modelId}".` };
@@ -2727,6 +2710,9 @@ function DeepWorkUI() {
             }
 
             if (action === 'add_attachment_to_prompt') {
+              if (!ownerIsActive) {
+                return { error: 'The Live owner chat is no longer active.' };
+              }
               if (args.filePath) {
                 const fileName = args.fileName || args.filePath.split(/[/\\]/).pop() || 'attachment';
                 const newAttachment: any = {
@@ -2743,6 +2729,9 @@ function DeepWorkUI() {
             }
 
             if (action === 'send_prompt_to_main_agent') {
+              if (!ownerIsActive) {
+                return { error: 'The Live owner chat is no longer active. Reopen it before dispatching Main.' };
+              }
               if (args.subAgent) {
                 const requestedAgent = String(args.subAgent).trim();
                 const normalizedAgent = requestedAgent.toLowerCase();
@@ -2754,7 +2743,7 @@ function DeepWorkUI() {
               if (args.modelId) handleModelSelectionChange(args.modelId);
               const prompt = String(args.prompt || '').trim();
               if (prompt) {
-                const dispatchChatId = activeChatIdRef.current;
+                const dispatchChatId = currentChatId;
                 if (dispatchChatId && runningChatsRef.current.has(dispatchChatId)) {
                   return { error: 'Main agent is already running in this chat. Wait for it to finish or stop it before dispatching another task.' };
                 }
@@ -2776,11 +2765,11 @@ function DeepWorkUI() {
             }
 
             if (action === 'get_main_agent_status') {
-              const targetChat = chatsRef.current.find(c => c.id === activeChatIdRef.current);
-              const isRunning = activeChatIdRef.current ? runningChatsRef.current.has(activeChatIdRef.current) : false;
+              const targetChat = chatsRef.current.find(c => c.id === currentChatId);
+              const isRunning = runningChatsRef.current.has(currentChatId);
               const recentLogs = (targetChat?.traceLogs || []).slice(-10);
               return {
-                activeChatId: activeChatIdRef.current,
+                activeChatId: currentChatId,
                 activeChatTitle: targetChat?.title || 'Untitled',
                 isRunning,
                 activeSubAgentTab,
@@ -2789,6 +2778,9 @@ function DeepWorkUI() {
             }
 
             if (action === 'control_app_ui') {
+              if (!ownerIsActive) {
+                return { error: 'The Live owner chat is no longer active.' };
+              }
               if (args.view && ['chat', 'agents', 'channels', 'projects'].includes(String(args.view))) {
                 setActiveView(args.view as ActiveView);
               }
@@ -2805,6 +2797,9 @@ function DeepWorkUI() {
             }
 
             if (action === 'stop_main_agent_run') {
+              if (!ownerIsActive) {
+                return { error: 'The Live owner chat is no longer active.' };
+              }
               handleStop();
               return { success: true, message: 'Main agent run stopped.' };
             }
@@ -2849,7 +2844,6 @@ function DeepWorkUI() {
           initialContext: {
             pastMemories,
             chatHistory,
-            allChatsOverview,
             workspacePath: activeWorkspacePath || undefined
           }
         }
@@ -2916,6 +2910,15 @@ function DeepWorkUI() {
     if (discardEmptyRoom) discardEphemeralLiveRoom(stoppedChatId);
   }, [discardEphemeralLiveRoom]);
 
+  useEffect(() => {
+    const ownerChatId = liveChatIdRef.current;
+    if (!ownerChatId || !activeChatId || activeChatId === ownerChatId) return;
+    // Live UI/transcription state is process-global. End the session as soon as
+    // navigation leaves its owner so no later callback can surface in or act on
+    // the newly selected chat.
+    stopLiveSession();
+  }, [activeChatId, stopLiveSession]);
+
   const toggleLiveMicMute = useCallback(() => {
     setLiveMicMuted(prev => {
       const next = !prev;
@@ -2956,23 +2959,28 @@ function DeepWorkUI() {
   }, [toggleLiveMicMute, toggleLiveSpeakerMute, stopLiveSession]);
 
   const getLiveTraceLogs = useCallback(() => {
-    if (liveState === 'idle' || liveState === 'error') return [];
+    if (
+      liveState === 'idle' ||
+      liveState === 'error' ||
+      !liveChatId ||
+      activeChatId !== liveChatId
+    ) return [];
 
     const logs: any[] = [];
     if (liveInputText) {
-      logs.push({ type: 'user_action', text: liveInputText, isLive: true });
+      logs.push({ type: 'user_action', text: liveInputText, chatId: liveChatId, isLive: true });
     }
 
     if (liveCommands.length > 0) {
-      logs.push(...liveCommands);
+      logs.push(...liveCommands.map(command => ({ ...command, chatId: liveChatId })));
     }
 
     if (liveOutputText) {
-      logs.push({ type: 'answer', text: liveOutputText, spokenText: liveSpokenText, isLive: true, isLiveTyping: true });
+      logs.push({ type: 'answer', text: liveOutputText, chatId: liveChatId, spokenText: liveSpokenText, isLive: true, isLiveTyping: true });
     }
 
     return logs;
-  }, [liveState, liveInputText, liveOutputText, liveSpokenText, liveCommands]);
+  }, [activeChatId, liveChatId, liveState, liveInputText, liveOutputText, liveSpokenText, liveCommands]);
 
   useEffect(() => {
     setGreeting(getCatchyGreeting());
@@ -3570,7 +3578,7 @@ function DeepWorkUI() {
   }, [handleAgentChange, updateInputValue]);
 
   const createNewChat = useCallback(() => {
-    if (liveEphemeralChatIdRef.current) {
+    if (liveChatIdRef.current) {
       stopLiveSession();
     }
     setChats(previous => {

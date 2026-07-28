@@ -34,7 +34,6 @@ export interface LiveSessionOptions {
   initialContext?: {
     pastMemories?: string[];
     chatHistory?: Array<{ role: string; text: string }>;
-    allChatsOverview?: Array<{ id: string; title: string; updatedAt: string; messageCount: number; snippet: string }>;
     workspacePath?: string;
     systemNotes?: string;
   };
@@ -240,7 +239,7 @@ export class GeminiLiveSession {
                 },
                 {
                   name: 'store_chat_memory',
-                  description: 'Store a fact, preference, or context in permanent memory for this chat and global user state.',
+                  description: 'Store a fact, preference, or context in memory for this Live session’s owning chat.',
                   parameters: {
                     type: 'OBJECT',
                     properties: {
@@ -264,41 +263,13 @@ export class GeminiLiveSession {
                   }
                 },
                 {
-                  name: 'list_all_chats',
-                  description: 'List all existing chat sessions in the user app sorted chronologically by latest activity, including title, ID, message count, and last activity time.',
-                  parameters: {
-                    type: 'OBJECT',
-                    properties: {
-                      action_verb: { type: 'STRING', description: 'A short human-readable verb for the UI (e.g., "Listing", "Fetching")' },
-                      action_target: { type: 'STRING', description: 'The target for the UI (e.g., "All Chats")' }
-                    },
-                    required: ['action_verb', 'action_target']
-                  }
-                },
-                {
                   name: 'read_chat_full_context',
-                  description: 'Read the complete conversation history, queries, tool outputs, and answers of a specific chat session or currently active chat.',
+                  description: 'Read the complete conversation history, queries, tool outputs, and answers of this Live session’s owning chat only.',
                   parameters: {
                     type: 'OBJECT',
                     properties: {
-                      chatId: { type: 'STRING', description: 'Optional chat ID to inspect (defaults to current active chat)' },
                       action_verb: { type: 'STRING', description: 'A short human-readable verb for the UI (e.g., "Reading", "Inspecting")' },
                       action_target: { type: 'STRING', description: 'The target for the UI (e.g., "Chat History")' }
-                    },
-                    required: ['action_verb', 'action_target']
-                  }
-                },
-                {
-                  name: 'switch_active_chat',
-                  description: 'Switch the app\'s active chat session to another chat by ID or title, or create a fresh new chat session.',
-                  parameters: {
-                    type: 'OBJECT',
-                    properties: {
-                      chatId: { type: 'STRING', description: 'Optional chat ID to open' },
-                      title: { type: 'STRING', description: 'Optional chat title to search and open' },
-                      createNew: { type: 'BOOLEAN', description: 'Set to true to create a fresh new chat room' },
-                      action_verb: { type: 'STRING', description: 'A short human-readable verb for the UI (e.g., "Switching", "Opening")' },
-                      action_target: { type: 'STRING', description: 'The target for the UI (e.g., "New Chat", "Chat Room")' }
                     },
                     required: ['action_verb', 'action_target']
                   }
@@ -720,14 +691,7 @@ export class GeminiLiveSession {
                     existing.push({ timestamp: Date.now(), fact });
                     localStorage.setItem(key, JSON.stringify(existing));
 
-                    // Sync to global memories as well
-                    const globalKey = `eterx_global_memories`;
-                    const globalStr = localStorage.getItem(globalKey);
-                    const globalMem = globalStr ? JSON.parse(globalStr) : [];
-                    globalMem.push({ timestamp: Date.now(), fact, chatId: this.chatId });
-                    localStorage.setItem(globalKey, JSON.stringify(globalMem));
-
-                    return { id: fc.id, name: fc.name, response: { result: 'Memory stored successfully in session and global state.' } };
+                    return { id: fc.id, name: fc.name, response: { result: 'Memory stored for this chat only.' } };
                   } catch (e: any) {
                     return { id: fc.id, name: fc.name, response: { error: e.message } };
                   }
@@ -742,7 +706,8 @@ export class GeminiLiveSession {
                     const sessionMem = existingStr ? JSON.parse(existingStr) : [];
                     const globalStr = localStorage.getItem('eterx_global_memories');
                     const globalMem = globalStr ? JSON.parse(globalStr) : [];
-                    return { id: fc.id, name: fc.name, response: { result: { sessionMemory: sessionMem, globalMemory: globalMem } } };
+                    const visibleGlobalMem = globalMem.filter((item: any) => !item?.chatId || item.chatId === this.chatId);
+                    return { id: fc.id, name: fc.name, response: { result: { sessionMemory: sessionMem, globalMemory: visibleGlobalMem } } };
                   } catch (e: any) {
                     return { id: fc.id, name: fc.name, response: { error: e.message } };
                   }
@@ -814,13 +779,6 @@ ${chatHistory.slice(-15).map(h => `${h.role === 'user' ? 'User' : 'EterX'}: ${h.
       workspaceBlock = `\nActive Workspace Path: ${workspace}`;
     }
 
-    let chatsBlock = '';
-    const allChats = this.options?.initialContext?.allChatsOverview || [];
-    if (allChats.length > 0) {
-      chatsBlock = `\n\nALL APP CHAT ROOMS (SORTED LATEST ACTIVE FIRST):
-${allChats.map((c: any, i: number) => `${i + 1}. [Title: "${c.title}"] (ID: ${c.id}) | Last Active: ${c.updatedAt} | Messages: ${c.messageCount} | Snippet: "${c.snippet}"`).join('\n')}`;
-    }
-
     return `You are EterX, a highly capable, fully autonomous AGI-level voice agent.
 You are having a real-time voice conversation. By default, keep responses SHORT, punchy, and conversational (1-3 sentences). HOWEVER, when explaining complex topics, providing detailed information, or if specifically asked to "explain more," provide comprehensive, high-quality AGI-grade answers. Sound natural and human.
 You have access to ALL tools of our agent and can autonomously do anything by itself. If the user asks what you can do, proudly state that you can autonomously do anything, and offer to select the best action for them and give them a first demo.
@@ -862,16 +820,16 @@ You are currently using the "${this.currentVoice}" voice, but you are fully awar
 Feel free to discuss your voice options with the user if they ask to change it! You can autonomously select a new voice and use your change_voice tool to apply it.
 
 5. FULL APP CONTROL & VOICE DIRECTOR ROLE:
-    - You are the central Voice Director of the EterX desktop app. You have full permission to control the app state, switch chats, create new chats, select sub-agents, change AI models, add prompt attachments, open pet widgets, or adjust agent settings using switch_active_chat, select_sub_agent, select_model, add_attachment_to_prompt, and control_app_ui.
-    - You know ALL chat rooms in the app (listed below under 'ALL APP CHAT ROOMS'). You can switch to any chat or read its full query history anytime using list_all_chats, switch_active_chat, and read_chat_full_context.
+    - You are the Voice Director for this chat. You may select sub-agents, change AI models, add prompt attachments, open pet widgets, or adjust agent settings using select_sub_agent, select_model, add_attachment_to_prompt, and control_app_ui while this owning chat remains active.
+    - This Live session is strictly isolated to the chat that created it. Never enumerate, inspect, switch to, quote, summarize, or act on another chat.
     - You can directly trigger heavy coding, building, or refactoring tasks in the main AGI text agent using send_prompt_to_main_agent.
     - You can check main agent execution status anytime using get_main_agent_status to see what the main agent is building or thinking, and describe progress to the user live in voice!
-    - When a user asks you to write complex code or build a feature, create/switch chats if needed, select appropriate sub-agents or models, attach files, dispatch the task to the main agent, and continuously loop/monitor its progress until complete!
+    - When a user asks you to write complex code or build a feature, select appropriate sub-agents or models, attach files, dispatch the task to the main agent in this same chat, and monitor its progress until complete.
 
 CURRENT SYSTEM & SESSION CONTEXT:
 Current Date: ${new Date().toLocaleDateString()}
 Current Time: ${new Date().toLocaleTimeString()}
-Current Day: ${new Date().toLocaleDateString('en-US', { weekday: 'long' })}${workspaceBlock}${memoryBlock}${historyBlock}${chatsBlock}`;
+Current Day: ${new Date().toLocaleDateString('en-US', { weekday: 'long' })}${workspaceBlock}${memoryBlock}${historyBlock}`;
   }
 
   /**
