@@ -3556,8 +3556,7 @@ const handleSelectFolderDialog = useCallback(async () => {
                             if (isStopping) return;
                             setIsStopping(true);
                             Promise.resolve(handleStop())
-                              .then(stopped => { if (stopped === false) setIsStopping(false); })
-                              .catch(() => setIsStopping(false));
+                              .finally(() => setIsStopping(false));
                           }}
                           className={`eterx-control-button eterx-composer-stop-button w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full bg-[#F2EFEA] text-black transition-all duration-200 shadow-[0_8px_22px_rgba(242,239,234,0.15),inset_0_1px_0_rgba(255,255,255,0.82)] group overflow-hidden relative ${ isStopping ? 'cursor-wait' : 'cursor-pointer hover:bg-[#F2EFEA] active:scale-[0.96]' }`}
                         >

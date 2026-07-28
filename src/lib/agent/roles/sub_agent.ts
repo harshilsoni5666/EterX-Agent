@@ -195,6 +195,7 @@ export function closeAgent(projectId: string, agentName: string, onTrace?: (trac
   const key = agentKey(projectId, agentName, expectedAgentId);
   controlAgentNames.set(key, agentName);
   agentCloseFlags.set(key, true);
+  globalSubAgentSpawner.abortAgent(projectId, agentName, expectedAgentId);
 
   // If it's paused, also resume it so it can see the close flag and exit
   const pauseState = agentPauseStates.get(key);
@@ -319,6 +320,7 @@ export function cancelAgent(chatId: string) {
   const resolvedProjectId = resolveProjectId(chatId);
   cancelFlags.set(chatId, true);
   cancelFlags.set(resolvedProjectId, true);
+  globalSubAgentSpawner.abortProject(resolvedProjectId);
 
   // A paused agent is awaiting its resume promise and cannot observe the
   // cancellation flag until that promise resolves. Wake every paused agent in
@@ -341,6 +343,7 @@ export function cancelAllSubAgents() {
   for (const key of cancelFlags.keys()) {
     cancelFlags.set(key, true);
   }
+  globalSubAgentSpawner.abortAll();
   // Wake paused agents so they can see the global cancellation immediately.
   for (const state of agentPauseStates.values()) state.resolver?.();
   agentPauseStates.clear();
@@ -499,6 +502,7 @@ interface SubAgentInstance {
   completedAt?: number;
   durationMs?: number;
   promise?: Promise<any>;
+  abortController: AbortController;
 }
 
 // === RESULT QUEUE: Sub-agent results are silently queued here ===
@@ -575,6 +579,35 @@ export class SubAgentSpawner {
     return this.pickRandomName(projectId, reservedNames);
   }
 
+  public abortAgent(projectId: string, agentName: string, agentId?: string): boolean {
+    const resolvedProjectId = resolveProjectId(projectId);
+    const instance = Array.from(this.activeAgents.values()).find(agent =>
+      agent.projectId === resolvedProjectId &&
+      agent.name === agentName &&
+      (!agentId || agent.id === agentId)
+    );
+    if (!instance || instance.abortController.signal.aborted) return false;
+    instance.abortController.abort(new Error('CANCELLED_BY_USER'));
+    return true;
+  }
+
+  public abortProject(projectId: string): void {
+    const resolvedProjectId = resolveProjectId(projectId);
+    for (const instance of this.activeAgents.values()) {
+      if (instance.projectId === resolvedProjectId && !instance.abortController.signal.aborted) {
+        instance.abortController.abort(new Error('CANCELLED_BY_USER'));
+      }
+    }
+  }
+
+  public abortAll(): void {
+    for (const instance of this.activeAgents.values()) {
+      if (!instance.abortController.signal.aborted) {
+        instance.abortController.abort(new Error('CANCELLED_BY_USER'));
+      }
+    }
+  }
+
   /** Build a TEAM-AWARE task brief for a sub-agent. */
   private buildDeepBrief(task: string, agentName: SubAgentName, projectId: string, parentContext?: string): string {
     const activeTaskByName = new Map(
@@ -628,6 +661,18 @@ export class SubAgentSpawner {
       role: 'main',
       status: 'coordinating',
     });
+    const abortController = new AbortController();
+    const parentAbortSignal = (context as any).abortSignal as AbortSignal | undefined;
+    const abortFromParent = () => {
+      if (!abortController.signal.aborted) {
+        abortController.abort(parentAbortSignal?.reason || new Error('CANCELLED_BY_USER'));
+      }
+    };
+    if (parentAbortSignal?.aborted) {
+      abortFromParent();
+    } else {
+      parentAbortSignal?.addEventListener('abort', abortFromParent, { once: true });
+    }
     const subAgentContext = {
       ...(context as any),
       agentName: name,
@@ -636,6 +681,7 @@ export class SubAgentSpawner {
       isSubAgent: true,
       subAgentId: agentId,
       subAgentChatId,
+      abortSignal: abortController.signal,
     };
     // Main owns delegation. Forward its task verbatim instead of layering a
     // personality, specialty, or redundant role prompt onto the sub-agent.
@@ -645,7 +691,7 @@ export class SubAgentSpawner {
     let lastStatusWriteAt = 0;
     const instance: SubAgentInstance = {
       id: agentId, projectId: context.projectId, name, task, deepBrief,
-      status: 'running', traceLog, startedAt: Date.now()
+      status: 'running', traceLog, startedAt: Date.now(), abortController,
     };
     this.activeAgents.set(agentId, instance);
     void agentMessageBus.writeAgentStatus(name, {
@@ -859,6 +905,7 @@ export class SubAgentSpawner {
 
       return { agentId, name, result: instance.result!, success: false, durationMs, traceLog };
     } finally {
+      parentAbortSignal?.removeEventListener('abort', abortFromParent);
       apiKeyPool.releaseSubAgentKey(context.projectId, name);
       this.activeAgents.delete(agentId);
     }

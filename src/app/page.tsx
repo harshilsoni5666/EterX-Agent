@@ -6827,7 +6827,7 @@ function DeepWorkUI() {
           id: agentIdentity,
           subAgentId: log.subAgentId || existing?.subAgentId,
           subAgentChatId: log.subAgentChatId || existing?.subAgentChatId,
-          name, status: 'working', task: log.task || log.secondary || log.text || '',
+          name, status: existing?.status === 'closed' ? 'closed' : 'working', task: log.task || log.secondary || log.text || '',
           stepCount: 0, durationMs: 0, startedAt: existing?.startedAt || getTraceEventTime(log) || firstTraceAt,
         });
       } else if (log.type === 'sub_agent_action') {
@@ -7065,6 +7065,24 @@ function DeepWorkUI() {
         if (!response.ok || payload?.success !== true || payload?.closed !== true) {
           throw new Error(payload?.error || `Stop failed (${ response.status })`);
         }
+        setChatLogsById(chatId, previous => {
+          const identity = selectedSubAgent?.subAgentChatId || selectedSubAgent?.subAgentId || activeSubAgentTab;
+          const alreadyClosed = previous.some(log =>
+            log?.type === 'sub_agent_close' &&
+            String(log.subAgentChatId || log.subAgentId || log.agentName || log.subAgent || '') === String(identity)
+          );
+          if (alreadyClosed) return previous;
+          return [...previous, {
+            type: 'sub_agent_close',
+            text: `${ agentName } stopped`,
+            timestamp: Date.now(),
+            agentName,
+            subAgent: agentName,
+            subAgentId: selectedSubAgent?.subAgentId,
+            subAgentChatId: selectedSubAgent?.subAgentChatId || activeSubAgentTab,
+            agentStatus: 'closed',
+          }];
+        });
         return true;
       } catch (error) {
         console.error(`[AgentControl] Failed to stop selected feed "${ agentName }":`, error);
