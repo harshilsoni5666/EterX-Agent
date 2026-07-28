@@ -33,7 +33,7 @@ export const Tooltip = React.memo(({
   children,
   text,
   side = 'bottom',
-  variant = 'light',
+  variant = 'dark',
   disabled = false,
 }: {
   children: React.ReactNode;
@@ -54,7 +54,7 @@ export const Tooltip = React.memo(({
     if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
     hoverTimerRef.current = setTimeout(() => {
       setVisible(true);
-    }, 120); // 120ms enter delay prevents tooltip spam on fast cursor sweep
+    }, 600);
   };
 
   const handleMouseLeave = () => {
@@ -62,7 +62,7 @@ export const Tooltip = React.memo(({
     hoverTimerRef.current = setTimeout(() => {
       setVisible(false);
       setIsPositioned(false);
-    }, 50); // 50ms leave delay acts as active window transition buffer
+    }, 40);
   };
 
   useEffect(() => {
@@ -91,15 +91,15 @@ export const Tooltip = React.memo(({
         return;
       }
       const rect = trigger.getBoundingClientRect();
-      const margin = 16;
-      const gap = 10;
-      const tooltipFont = `600 12px ${tooltipFontFamily}`;
+      const margin = 12;
+      const gap = 8;
+      const tooltipFont = `500 12px ${tooltipFontFamily}`;
       const measuredTextWidth = measureTooltipText(text, tooltipFont);
       const width = Math.min(
         window.innerWidth - margin * 2,
-        Math.max(76, Math.ceil(measuredTextWidth + 32))
+        Math.max(68, Math.ceil(measuredTextWidth + 32))
       );
-      const height = 30;
+      const height = 28;
       const centerX = rect.left + rect.width / 2;
       const centerY = rect.top + rect.height / 2;
       let left = centerX - width / 2;
@@ -122,8 +122,8 @@ export const Tooltip = React.memo(({
         left,
         top,
         width,
-        arrowLeft: clamp(centerX - left - 5, 16, width - 26),
-        arrowTop: clamp(centerY - top - 5, 10, height - 20),
+        arrowLeft: clamp(centerX - left - 4, 14, width - 24),
+        arrowTop: clamp(centerY - top - 4, 8, height - 18),
       });
       
       setIsPositioned(true);
@@ -137,7 +137,6 @@ export const Tooltip = React.memo(({
       }
     };
 
-    // Run first position update immediately
     updatePosition();
 
     window.addEventListener('resize', handleUpdate, { passive: true });
@@ -148,18 +147,10 @@ export const Tooltip = React.memo(({
     };
   }, [disabled, visible, side, text]);
 
-  const arrowClass = {
-    top: variant === 'dark' ? "border-b border-r border-white/[0.08]" : "border-b border-r border-white",
-    bottom: variant === 'dark' ? "border-t border-l border-white/[0.08]" : "border-t border-l border-white",
-    left: variant === 'dark' ? "border-t border-r border-white/[0.08]" : "border-t border-r border-white",
-    right: variant === 'dark' ? "border-b border-l border-white/[0.08]" : "border-b border-l border-white"
-  };
-
-  const arrowStyle =
-    side === 'top' ? { left: coords.arrowLeft, bottom: -5 } :
-      side === 'bottom' ? { left: coords.arrowLeft, top: -5 } :
-        side === 'left' ? { right: -5, top: coords.arrowTop } :
-          { left: -5, top: coords.arrowTop };
+  const hasHotkey = text.includes('@') || text.includes('⌘') || text.includes('Ctrl') || text.includes('Alt');
+  const mainText = hasHotkey ? text.replace(/\s*(@|⌘|Ctrl|Alt).*/, '').trim() : text;
+  const hotkeyMatch = text.match(/(@|⌘|Ctrl|Alt.*)/);
+  const hotkey = hotkeyMatch ? hotkeyMatch[0].trim() : '';
 
   return (
     <div ref={ref} className="relative flex items-center justify-center shrink-0" onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave}>
@@ -174,32 +165,28 @@ export const Tooltip = React.memo(({
                 top: coords.top, 
                 zIndex: 99999, 
                 width: coords.width,
-                opacity: isPositioned ? 1 : 0, // Prevent coordinate layout position flash
-                transition: 'opacity 80ms ease'
+                opacity: isPositioned ? 1 : 0,
+                transition: 'opacity 0ms'
               }} 
               className="pointer-events-none"
             >
               <motion.div
-                initial={{ opacity: 0, scale: 0.9, y: side === 'top' ? 4 : side === 'bottom' ? -4 : side === 'left' ? 4 : -4 }}
-                animate={{ opacity: 1, scale: 1, y: 0 }}
-                exit={{ opacity: 0, scale: 0.9 }}
-                transition={{ type: "spring", stiffness: 400, damping: 25 }}
+                initial={{ opacity: 0, scale: 0.98 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.98 }}
+                transition={{ duration: 0.04, ease: 'easeOut' }}
               >
                 <div
                   data-side={side}
-                  data-variant={variant}
-                  className={`eterx-tooltip-card relative w-full overflow-hidden text-ellipsis whitespace-nowrap rounded-[10px] px-2.5 py-1.5 text-center text-[12px] font-semibold tracking-[0.005em] shadow-[0_10px_22px_rgba(0,0,0,0.22)] ${
-                    variant === 'dark'
-                      ? 'border border-white/[0.08] bg-[#2C2C2C] text-[#D4D1CB] shadow-[0_14px_32px_rgba(0,0,0,0.38),inset_0_1px_0_rgba(255,255,255,0.05)]'
-                      : 'border border-white bg-white text-[#1F2933] shadow-[0_10px_22px_rgba(0,0,0,0.22),inset_0_1px_0_rgba(255,255,255,1)]'
-                  }`}
+                  className="eterx-tooltip-card relative w-full overflow-hidden text-ellipsis whitespace-nowrap rounded-[16px] border border-white/[0.12] bg-[#242424] px-3 py-1.5 text-center text-[12px] font-medium text-[#F2F0EC] shadow-[0_8px_24px_rgba(0,0,0,0.36)] flex items-center justify-center gap-1.5"
                   style={{ fontFamily: tooltipFontFamily, willChange: 'transform, opacity' }}
                 >
-                  {text}
-                  <div
-                    className={`eterx-tooltip-arrow absolute h-2.5 w-2.5 rotate-45 ${variant === 'dark' ? 'bg-[#2C2C2C]' : 'bg-white'} ${arrowClass[side]}`}
-                    style={arrowStyle}
-                  />
+                  <span>{mainText}</span>
+                  {hotkey && (
+                    <span className="inline-flex items-center justify-center rounded-md border border-white/[0.12] bg-white/[0.08] px-1.5 py-0.5 text-[10.5px] font-medium text-white/75 leading-none">
+                      {hotkey}
+                    </span>
+                  )}
                 </div>
               </motion.div>
             </div>

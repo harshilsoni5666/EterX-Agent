@@ -823,7 +823,7 @@ const MermaidDiagram = ({ chart }: { chart: string }) => {
   if (error && !svg) return null;
 
   return (
-    <div className={`eterx-mermaid-card group/mermaid relative my-5 mx-auto max-w-full overflow-visible ${ expanded ? 'eterx-mermaid-expanded' : '' }`} style={canvasStyle}>
+    <div className={`eterx-mermaid-card group/mermaid relative my-3.5 mx-auto max-w-full overflow-visible ${ expanded ? 'eterx-mermaid-expanded' : '' }`} style={canvasStyle}>
       <div ref={menuRef} className="eterx-mermaid-toolbar absolute right-1 top-1 z-30 flex items-center opacity-75 transition-opacity duration-200 group-hover/mermaid:opacity-100 focus-within:opacity-100">
         <button
           type="button"
@@ -1036,11 +1036,11 @@ const CodeBlock = React.memo(({ language, content, forceSource = false, ...props
           PreTag="div"
           showLineNumbers={false}
           wrapLongLines={wrapLines}
-          className="eterx-markdown-code-content code-span min-w-full text-[13.5px] leading-relaxed font-mono"
+          className="eterx-markdown-code-content code-span min-w-full text-[12.5px] leading-relaxed font-mono"
           customStyle={{
             margin: 0,
             background: 'var(--eterx-md-code-bg)',
-            padding: '1.05rem 4.35rem 1.1rem 1.1rem',
+            padding: '0.85rem 4rem 0.9rem 0.9rem',
             minWidth: '100%',
           }}
           codeTagProps={{
@@ -1117,28 +1117,28 @@ export const markdownComponents = {
       </code>
     );
   },
-  p: ({ ...props }: any) => <p className="mb-4 break-words leading-[1.75] last:mb-0" {...props} />,
+  p: ({ ...props }: any) => <p className="mb-3 break-words text-[13.5px] leading-[1.65] text-[#ECEBE6] last:mb-0" {...props} />,
   a: ({ node, href, children, ...props }: any) => {
     const localPath = decodeLocalFileHref(href);
     if (localPath) {
       return <LocalFileLinkChip filePath={localPath} label={getNodeText(children)} compact />;
     }
-    return <a className="eterx-markdown-link text-[#E2765A] underline-offset-2 hover:underline" target="_blank" rel="noopener noreferrer" href={href} {...props}>{children}</a>;
+    return <a className="eterx-markdown-link font-medium text-[#E2765A] underline-offset-3 hover:underline transition-colors" target="_blank" rel="noopener noreferrer" href={href} {...props}>{children}</a>;
   },
-  ul: ({ ...props }: any) => <ul className="eterx-markdown-list mb-4 list-disc space-y-1.5 pl-6 marker:text-[#8C8A88]" {...props} />,
-  ol: ({ ...props }: any) => <ol className="eterx-markdown-list mb-4 list-decimal space-y-1.5 pl-6 marker:text-[#8C8A88]" {...props} />,
-  li: ({ ...props }: any) => <li className="eterx-markdown-list-item leading-[1.7]" {...props} />,
+  ul: ({ ...props }: any) => <ul className="eterx-markdown-list mb-3 list-disc space-y-1 pl-5 marker:text-[#8C8A88] text-[13.5px] leading-[1.6]" {...props} />,
+  ol: ({ ...props }: any) => <ol className="eterx-markdown-list mb-3 list-decimal space-y-1 pl-5 marker:text-[#8C8A88] text-[13.5px] leading-[1.6]" {...props} />,
+  li: ({ ...props }: any) => <li className="eterx-markdown-list-item leading-[1.6] text-[#E5E3DD] pl-0.5" {...props} />,
   input: ({ type, ...props }: any) => type === 'checkbox'
-    ? <input type="checkbox" className="eterx-markdown-checkbox mr-2 h-4 w-4 translate-y-[2px] rounded border-white/20 accent-[#E2765A]" {...props} />
+    ? <input type="checkbox" className="eterx-markdown-checkbox mr-2 h-3.5 w-3.5 translate-y-[2px] rounded border-white/20 accent-[#E2765A] cursor-pointer" {...props} />
     : <input type={type} {...props} />,
-  h1: makeHeading('h1', 'mt-8 mb-4 text-[24px] font-bold leading-tight text-[#EBEAE6]'),
-  h2: makeHeading('h2', 'mt-7 mb-3 text-[20px] font-bold leading-tight text-[#EBEAE6]'),
-  h3: makeHeading('h3', 'mt-6 mb-3 text-[17px] font-bold leading-tight text-[#EBEAE6]'),
-  h4: makeHeading('h4', 'mt-5 mb-2 text-[15px] font-semibold leading-tight text-[#EBEAE6]'),
-  h5: makeHeading('h5', 'mt-4 mb-2 text-[14px] font-semibold leading-tight text-[#D5D3CE]'),
-  h6: makeHeading('h6', 'mt-3 mb-2 text-[13px] font-semibold leading-tight text-[#BCB9B4]'),
-  strong: ({ ...props }: any) => <strong className="font-bold text-[#F3F2EF]" {...props} />,
-  em: ({ ...props }: any) => <em className="italic text-[#D5D3CE]" {...props} />,
+  h1: makeHeading('h1', 'mt-5 mb-2.5 text-[17px] font-semibold tracking-tight leading-snug text-[#F4F3EF] border-b border-white/[0.08] pb-1.5 flex items-center gap-2'),
+  h2: makeHeading('h2', 'mt-4.5 mb-2 text-[15.5px] font-semibold tracking-tight leading-snug text-[#F4F3EF] border-b border-white/[0.06] pb-1'),
+  h3: makeHeading('h3', 'mt-3.5 mb-1.5 text-[14px] font-semibold tracking-tight leading-snug text-[#ECEBE6]'),
+  h4: makeHeading('h4', 'mt-3 mb-1 text-[13px] font-semibold leading-snug text-[#ECEBE6]'),
+  h5: makeHeading('h5', 'mt-2.5 mb-1 text-[12.5px] font-semibold leading-snug text-[#D8D6D0]'),
+  h6: makeHeading('h6', 'mt-2 mb-1 text-[12px] font-semibold leading-snug text-[#BEBCB6]'),
+  strong: ({ ...props }: any) => <strong className="font-semibold text-[#FFFFFF] tracking-normal" {...props} />,
+  em: ({ ...props }: any) => <em className="italic text-[#E0DDD7]" {...props} />,
   blockquote: ({ node, ...props }: any) => {
     const quoteText = getNodeText(node).trim().toLowerCase();
     const callout = quoteText.startsWith('warning:') || quoteText.startsWith('caution:')
@@ -1148,22 +1148,22 @@ export const markdownComponents = {
         : 'quote';
     return (
       <blockquote
-        className="eterx-markdown-callout my-4 rounded-r-xl border-l-[3px] border-[#E2765A]/55 bg-[#2A2927] px-4 py-3 text-[#D2CECA]"
+        className="eterx-markdown-callout my-3 rounded-lg border-l-[3px] border-[#E2765A] bg-[#222120]/70 px-3.5 py-2.5 text-[12.5px] leading-relaxed text-[#D8D5D0] shadow-sm backdrop-blur-sm"
         data-callout={callout}
         {...props}
       />
     );
   },
-  hr: ({ ...props }: any) => <hr className="eterx-markdown-hr my-6 border-white/10" {...props} />,
+  hr: ({ ...props }: any) => <hr className="eterx-markdown-hr my-4 border-white/[0.08]" {...props} />,
   table: ({ ...props }: any) => (
-    <div className="eterx-markdown-table-wrap eterx-scrollbar my-5 overflow-x-auto rounded-2xl border border-white/[0.08] shadow-sm">
-      <table className="eterx-markdown-table w-full min-w-[620px] border-collapse text-[14px]" {...props} />
+    <div className="eterx-markdown-table-wrap eterx-scrollbar my-4 w-full max-w-full overflow-x-auto overflow-y-hidden rounded-lg border border-white/[0.10] bg-[#1A1918]/90 shadow-sm">
+      <table className="eterx-markdown-table w-full min-w-full border-collapse text-left text-[12.5px]" {...props} />
     </div>
   ),
-  thead: ({ ...props }: any) => <thead className="eterx-markdown-thead bg-[#1C1B1A]" {...props} />,
-  th: ({ ...props }: any) => <th className="eterx-markdown-th border border-white/[0.06] px-4 py-2.5 text-left font-bold text-[#EBEAE6]" {...props} />,
-  td: ({ ...props }: any) => <td className="eterx-markdown-td border border-white/[0.06] px-4 py-2.5 align-top text-[#D5D3CE]" {...props} />,
-  tr: ({ ...props }: any) => <tr className="eterx-markdown-tr transition-colors hover:bg-white/[0.035]" {...props} />,
+  thead: ({ ...props }: any) => <thead className="eterx-markdown-thead bg-white/[0.04] border-b border-white/[0.08]" {...props} />,
+  th: ({ ...props }: any) => <th className="eterx-markdown-th border-b border-r border-white/[0.06] last:border-r-0 px-3 py-2 text-left font-semibold tracking-wide text-[#F4F3EF] text-[12px] bg-white/[0.03]" {...props} />,
+  td: ({ ...props }: any) => <td className="eterx-markdown-td border-b border-r border-white/[0.04] last:border-r-0 px-3 py-1.5 align-top text-[#E0DDD7] leading-normal font-normal text-[12.5px]" {...props} />,
+  tr: ({ ...props }: any) => <tr className="eterx-markdown-tr transition-colors hover:bg-white/[0.035] even:bg-white/[0.015]" {...props} />,
   img: ({ alt, ...props }: any) => (
     <figure className="eterx-markdown-figure my-5">
       <img className="eterx-markdown-image max-w-full rounded-xl border border-white/[0.08] shadow-md" alt={alt || ''} loading="lazy" {...props} />

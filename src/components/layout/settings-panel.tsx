@@ -1472,21 +1472,23 @@ const ProviderSelect: React.FC<{
         type="button"
         onClick={() => setOpen(prev => !prev)}
         onBlur={() => window.setTimeout(() => setOpen(false), 120)}
-        className="flex h-9 w-full items-center justify-between gap-3 rounded-xl border border-white/[0.08] bg-[#2D2D2D] px-3 text-left text-[13px] font-medium text-[#F2F2F2] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] outline-none transition-colors hover:bg-[#363636] focus:border-white/[0.20]"
+        className="flex h-9 w-full items-center justify-between gap-2.5 rounded-xl border border-white/[0.08] bg-[#2D2D2D] px-3 text-left text-[13px] font-medium text-[#F2F2F2] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] outline-none transition-colors hover:bg-[#363636] focus:border-white/[0.20]"
       >
         <span className="flex min-w-0 items-center gap-2">
           <ProviderMark provider={value} />
           <span className="truncate">{label}</span>
+        </span>
+        <span className="flex items-center gap-2 shrink-0">
           {currentTag && (
-            <span className="rounded-full bg-emerald-500/15 border border-emerald-500/30 px-1.5 py-0.5 text-[9.5px] font-semibold text-emerald-400">
+            <span className="rounded-full bg-emerald-500/10 border border-emerald-500/25 px-2 py-0.5 text-[9.5px] font-bold text-emerald-400 tracking-wider uppercase leading-none">
               {currentTag}
             </span>
           )}
+          <ChevronRight className={`h-4 w-4 shrink-0 text-[#A7A7A7] transition-transform ${open ? '-rotate-90' : 'rotate-90'}`} />
         </span>
-        <ChevronRight className={`h-4 w-4 shrink-0 text-[#A7A7A7] transition-transform ${open ? '-rotate-90' : 'rotate-90'}`} />
       </button>
       {open && (
-        <div className="absolute right-0 z-50 mt-2 max-h-72 w-full min-w-[260px] overflow-y-auto rounded-xl border border-white/[0.10] bg-[#242424] p-1 shadow-[0_18px_48px_rgba(0,0,0,0.45)] eterx-scrollbar">
+        <div className="absolute right-0 z-50 mt-2 max-h-72 w-full min-w-[280px] overflow-y-auto rounded-xl border border-white/[0.10] bg-[#242424] p-1.5 shadow-[0_18px_48px_rgba(0,0,0,0.45)] eterx-scrollbar">
           {providers.map(provider => {
             const tag = PROVIDER_PRICING_TAG[provider];
             return (
@@ -1498,7 +1500,7 @@ const ProviderSelect: React.FC<{
                   onChange(provider);
                   setOpen(false);
                 }}
-                className={`flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2 text-left text-[12.5px] transition-colors ${
+                className={`flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2 text-left text-[12.5px] transition-colors ${
                   value === provider ? 'bg-white/[0.08] text-[#F4F4F4]' : 'text-[#CFCFCF] hover:bg-white/[0.055] hover:text-[#F4F4F4]'
                 }`}
               >
@@ -1508,7 +1510,7 @@ const ProviderSelect: React.FC<{
                 </span>
                 <span className="flex items-center gap-1.5 shrink-0">
                   {tag && (
-                    <span className="rounded-full bg-emerald-500/15 border border-emerald-500/30 px-1.5 py-0.5 text-[9.5px] font-semibold text-emerald-400">
+                    <span className="rounded-full bg-emerald-500/10 border border-emerald-500/25 px-2 py-0.5 text-[9.5px] font-bold text-emerald-400 tracking-wider uppercase leading-none">
                       {tag}
                     </span>
                   )}

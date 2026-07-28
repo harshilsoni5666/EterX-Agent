@@ -7052,3 +7052,32 @@
     display: none !important;
   }
 }
+
+
+/* ── DeepWork Professional Markdown & Table Styling ────────────────────── */
+.eterx-markdown-table-wrap {
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.24);
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+}
+
+.eterx-markdown-table {
+  width: 100% !important;
+  min-width: 100% !important;
+  border-collapse: collapse !important;
+}
+
+.eterx-markdown-th {
+  letter-spacing: 0.02em;
+  text-transform: none;
+}
+
+.eterx-markdown-td {
+  word-break: normal;
+  overflow-wrap: break-word;
+}
+
+.eterx-md-heading {
+  font-family: var(--font-dm-sans), "Inter", system-ui, sans-serif;
+  letter-spacing: -0.015em;
+}
