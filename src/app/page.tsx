@@ -404,6 +404,7 @@ const SETTINGS_STORAGE_KEY = 'eterx_settings';
 const SETTINGS_CHANNEL = 'eterx-settings';
 const API_KEY_STORAGE_KEY = 'eterx_api_keys';
 const ACTIVE_CHAT_STORAGE_KEY = 'eterx_active_chat';
+const CHAT_INDEX_STORAGE_KEY = 'eterx_chat_index';
 
 const readStoredTerminalShell = (): string => {
   if (typeof window === 'undefined') return 'auto';
@@ -611,6 +612,52 @@ const sortChats = (chats: ChatSession[]) => {
     if (!a.isFavorite && b.isFavorite) return 1;
     return b.updatedAt - a.updatedAt;
   });
+};
+
+const traceLogIdentity = (log: any) => [
+  log?.id || '',
+  log?.type || '',
+  log?.timestamp || log?.startTime || '',
+  String(log?.text || log?.output || '').slice(0, 160),
+].join('|');
+
+const chatHasLogsMissingFromDurable = (durable: ChatSession, cached: ChatSession) => {
+  const cachedLogs = cached.traceLogs || [];
+  if (cachedLogs.length === 0) return false;
+  const lastCachedIdentity = traceLogIdentity(cachedLogs[cachedLogs.length - 1]);
+  return !(durable.traceLogs || []).some(log => traceLogIdentity(log) === lastCachedIdentity);
+};
+
+const mergeCachedChatIntoDurable = (durable: ChatSession, cached: ChatSession): ChatSession => {
+  const durableLogs = durable.traceLogs || [];
+  const cachedLogs = cached.traceLogs || [];
+  if (durableLogs.length === 0 || cachedLogs.length === 0) {
+    return {
+      ...durable,
+      ...cached,
+      traceLogs: cachedLogs.length ? cachedLogs : durableLogs,
+    };
+  }
+  const firstCachedIdentity = traceLogIdentity(cachedLogs[0]);
+  let overlapIndex = -1;
+  for (let i = durableLogs.length - 1; i >= 0; i -= 1) {
+    if (traceLogIdentity(durableLogs[i]) === firstCachedIdentity) {
+      overlapIndex = i;
+      break;
+    }
+  }
+  const mergedLogs = overlapIndex >= 0
+    ? (() => {
+        const lastCachedIdentity = traceLogIdentity(cachedLogs[cachedLogs.length - 1]);
+        const lastCachedIndex = durableLogs.findIndex(
+          (log, index) => index >= overlapIndex && traceLogIdentity(log) === lastCachedIdentity
+        );
+        return lastCachedIndex >= overlapIndex
+          ? durableLogs
+          : [...durableLogs.slice(0, overlapIndex), ...cachedLogs];
+      })()
+    : durableLogs.length >= cachedLogs.length ? durableLogs : cachedLogs;
+  return { ...durable, ...cached, traceLogs: mergedLogs };
 };
 
 const getCatchyGreeting = () => {
@@ -1498,6 +1545,10 @@ function DeepWorkUI() {
   const pendingLocalStorageWrite = useRef(false);
   const lastChatSnapshotAtRef = useRef(0);
   const persistedChatSignaturesRef = useRef<Map<string, string>>(new Map());
+  const chatSnapshotReadyRef = useRef(false);
+  const pendingChatDeletionIdsRef = useRef<Set<string>>(new Set());
+  const hydratedChatIdsRef = useRef<Set<string>>(new Set());
+  const chatDetailRequestsRef = useRef<Map<string, Promise<void>>>(new Map());
   const chatsRef = useRef<ChatSession[]>([]);
   const restoredActiveChatRef = useRef(false);
   const panelResizeCleanupRef = useRef<(() => void) | null>(null);
@@ -3000,9 +3051,14 @@ function DeepWorkUI() {
     let localChats: ChatSession[] = [];
     let localSavedAt = 0;
 
-    const applyRestoredChats = (restoredChats: ChatSession[]) => {
+    const applyRestoredChats = (
+      restoredChats: ChatSession[],
+      preserveMetadataOnlyChats = false
+    ) => {
       if (cancelled) return;
-      const cleanChats = removeGeneratedEmptyChats(restoredChats);
+      const cleanChats = preserveMetadataOnlyChats
+        ? restoredChats
+        : removeGeneratedEmptyChats(restoredChats);
       setChats(cleanChats);
       const savedActiveChatId = localStorage.getItem(ACTIVE_CHAT_STORAGE_KEY);
       const restoredActiveChat = cleanChats.find(chat => chat.id === savedActiveChatId);
@@ -3017,61 +3073,72 @@ function DeepWorkUI() {
 
     try {
       const saved = localStorage.getItem('eterx_chats');
+      const savedIndex = localStorage.getItem(CHAT_INDEX_STORAGE_KEY);
       localSavedAt = Number(localStorage.getItem('eterx_chats_saved_at') || 0);
-      if (saved) {
-        localChats = removeGeneratedEmptyChats(sortChats(JSON.parse(saved)));
-        applyRestoredChats(localChats);
+      const cachedChats = saved ? JSON.parse(saved) : [];
+      const parsedIndex = savedIndex ? JSON.parse(savedIndex) : [];
+      const indexedChats = Array.isArray(parsedIndex) ? parsedIndex : parsedIndex?.chats;
+      localSavedAt = Math.max(localSavedAt, Number(parsedIndex?.savedAt || 0));
+      if (Array.isArray(cachedChats) || Array.isArray(indexedChats)) {
+        const localById = new Map<string, ChatSession>();
+        if (Array.isArray(indexedChats)) {
+          for (const chat of indexedChats) {
+            if (chat?.id) localById.set(chat.id, { ...chat, traceLogs: [] });
+          }
+        }
+        if (Array.isArray(cachedChats)) {
+          for (const chat of cachedChats) {
+            if (chat?.id) localById.set(chat.id, chat);
+          }
+        }
+        localChats = sortChats(Array.from(localById.values()));
+        applyRestoredChats(localChats, true);
       }
     } catch { }
 
-    void fetch('/api/chats', { cache: 'no-store' })
-      .then(response => response.ok ? response.json() : Promise.reject(new Error(`Chat restore HTTP ${ response.status }`)))
+    const desktopLoad = (window as any).electronAPI?.loadChatSnapshot;
+    const restoreRequest = desktopLoad
+      ? desktopLoad()
+      : fetch('/api/chats', { cache: 'no-store' })
+          .then(response => response.ok ? response.json() : Promise.reject(new Error(`Chat restore HTTP ${ response.status }`)));
+
+    void restoreRequest
       .then(snapshot => {
         if (cancelled) return;
         const appDataChats = Array.isArray(snapshot?.chats)
-          ? removeGeneratedEmptyChats(sortChats(snapshot.chats))
+          ? removeGeneratedEmptyChats(sortChats(snapshot.chats)).filter(
+              chat => !pendingChatDeletionIdsRef.current.has(chat.id)
+            )
           : [];
+        hydratedChatIdsRef.current = new Set(appDataChats.map(chat => chat.id));
         const appDataSavedAt = Number(snapshot?.savedAt || 0);
         lastChatSnapshotAtRef.current = Math.max(localSavedAt, appDataSavedAt, Date.now());
 
-        const logIdentity = (log: any) => [
-          log?.id || '', log?.type || '', log?.timestamp || log?.startTime || '',
-          String(log?.text || log?.output || '').slice(0, 160),
-        ].join('|');
-        const mergeNewerCacheIntoDurableChat = (durable: ChatSession, cached: ChatSession): ChatSession => {
-          const durableLogs = durable.traceLogs || [];
-          const cachedLogs = cached.traceLogs || [];
-          if (durableLogs.length === 0 || cachedLogs.length === 0) return { ...durable, ...cached, traceLogs: cachedLogs.length ? cachedLogs : durableLogs };
-          const firstCachedIdentity = logIdentity(cachedLogs[0]);
-          let overlapIndex = -1;
-          for (let i = durableLogs.length - 1; i >= 0; i--) {
-            if (logIdentity(durableLogs[i]) === firstCachedIdentity) {
-              overlapIndex = i;
-              break;
-            }
-          }
-          const mergedLogs = overlapIndex >= 0
-            ? [...durableLogs.slice(0, overlapIndex), ...cachedLogs]
-            : durableLogs.length >= cachedLogs.length ? durableLogs : cachedLogs;
-          return { ...durable, ...cached, traceLogs: mergedLogs };
-        };
-
         const mergedById = new Map(appDataChats.map(chat => [chat.id, chat]));
-        for (const cachedChat of localChats) {
+        const currentLocalChats = chatsRef.current.length > 0 ? chatsRef.current : localChats;
+        for (const cachedChat of currentLocalChats) {
           const durableChat = mergedById.get(cachedChat.id);
           if (!durableChat) {
             mergedById.set(cachedChat.id, cachedChat);
-          } else if (localSavedAt > appDataSavedAt) {
-            mergedById.set(cachedChat.id, mergeNewerCacheIntoDurableChat(durableChat, cachedChat));
+          } else if (
+            localSavedAt > appDataSavedAt ||
+            cachedChat.updatedAt > durableChat.updatedAt ||
+            cachedChat.title !== durableChat.title ||
+            cachedChat.isFavorite !== durableChat.isFavorite ||
+            cachedChat.workspacePath !== durableChat.workspacePath ||
+            cachedChat.runLocation !== durableChat.runLocation ||
+            (cachedChat.traceLogs?.length || 0) > (durableChat.traceLogs?.length || 0) ||
+            chatHasLogsMissingFromDurable(durableChat, cachedChat)
+          ) {
+            mergedById.set(cachedChat.id, mergeCachedChatIntoDurable(durableChat, cachedChat));
           }
         }
         const restoredChats = removeGeneratedEmptyChats(sortChats(Array.from(mergedById.values())));
+        chatSnapshotReadyRef.current = true;
         applyRestoredChats(restoredChats);
         persistChats(restoredChats);
       })
-      .catch(() => {
-        if (localChats.length > 0) persistChats(localChats);
-      });
+      .catch(() => { /* Keep the fast local cache; retry durable hydration on next launch. */ });
 
     return () => { cancelled = true; };
   }, [applyComposerState, composerStates]);
@@ -3192,6 +3259,15 @@ function DeepWorkUI() {
       // and must stay bounded to avoid synchronous localStorage stalls.
       traceLogs: (chat.traceLogs || []).slice(-300).map(stripTraceLogForStorage),
     }));
+  const stripChatsForBrowserIndex = (chatList: ChatSession[]) =>
+    chatList.slice(0, 2000).map(chat => ({
+      id: chat.id,
+      title: chat.title,
+      updatedAt: chat.updatedAt,
+      isFavorite: chat.isFavorite,
+      workspacePath: chat.workspacePath,
+      runLocation: chat.runLocation,
+    }));
   const persistChats = async (chatList: ChatSession[], keepalive = false): Promise<void> => {
     const persistenceSignature = (chat: ChatSession) => {
       const logs = chat.traceLogs || [];
@@ -3215,9 +3291,20 @@ function DeepWorkUI() {
     const savedAt = Math.max(Date.now(), lastChatSnapshotAtRef.current + 1);
     lastChatSnapshotAtRef.current = savedAt;
     try {
+      localStorage.setItem(CHAT_INDEX_STORAGE_KEY, JSON.stringify({
+        version: 1,
+        savedAt,
+        chats: stripChatsForBrowserIndex(chatList),
+      }));
+    } catch { }
+    try {
       localStorage.setItem('eterx_chats', JSON.stringify(stripChatsForBrowserCache(chatList)));
       localStorage.setItem('eterx_chats_saved_at', String(savedAt));
     } catch { }
+    // Before the authoritative AppData snapshot is merged, some sidebar rows
+    // contain metadata or bounded cache tails only. Never let those replace a
+    // complete durable transcript.
+    if (!chatSnapshotReadyRef.current) return;
     const desktopSave = (window as any).electronAPI?.saveChatSnapshot;
     if (desktopSave) {
       const saved = await desktopSave({ savedAt, chats: stripped, chatIds, partial: true })
@@ -3395,20 +3482,57 @@ function DeepWorkUI() {
     setChatLogsById(chatId, logs => stripAgentConnectionLogs(logs));
   };
 
+  const hydrateChatHistory = (chatId: string) => {
+    if (hydratedChatIdsRef.current.has(chatId)) return;
+    if (chatDetailRequestsRef.current.has(chatId)) return;
+
+    const desktopLoad = (window as any).electronAPI?.loadChatSnapshot;
+    const detailRequest = desktopLoad
+      ? desktopLoad(chatId)
+      : fetch(`/api/chats?id=${ encodeURIComponent(chatId) }`, { cache: 'no-store' })
+          .then(response => response.ok ? response.json() : Promise.reject(new Error(`Chat load HTTP ${ response.status }`)));
+
+    const request = detailRequest
+      .then(payload => {
+        const durableChat = payload?.chat as ChatSession | null;
+        if (!durableChat?.id || durableChat.id !== chatId) return;
+        hydratedChatIdsRef.current.add(chatId);
+
+        const currentChat = chatsRef.current.find(chat => chat.id === chatId);
+        const hydratedChat = currentChat
+          ? mergeCachedChatIntoDurable(durableChat, currentChat)
+          : durableChat;
+        setChats(currentChats => currentChats.map(currentChat => {
+          if (currentChat.id !== chatId) return currentChat;
+          return mergeCachedChatIntoDurable(hydratedChat, currentChat);
+        }));
+
+        if (activeChatIdRef.current === chatId) {
+          setTraceLogs(currentLogs => {
+            if (activeChatIdRef.current !== chatId) return currentLogs;
+            return mergeCachedChatIntoDurable(
+              hydratedChat,
+              { ...hydratedChat, traceLogs: currentLogs }
+            ).traceLogs || [];
+          });
+          setActiveWorkspacePath(hydratedChat.workspacePath || null);
+        }
+      })
+      .catch(() => {
+        // The bounded browser cache remains usable while AppData is temporarily
+        // unavailable. A later open retries because the ID is not marked hydrated.
+      })
+      .finally(() => {
+        chatDetailRequestsRef.current.delete(chatId);
+      });
+
+    chatDetailRequestsRef.current.set(chatId, request);
+  };
+
   const loadChat = (id: string) => {
     // Read through the live ref so a sidebar callback from an earlier render
     // cannot hydrate the chat with an older in-memory stream snapshot.
     let chat = chatsRef.current.find(c => c.id === id);
-
-    // Local storage can still be ahead immediately after restoring a background
-    // session. Only prefer it when it contains additional committed rows.
-    try {
-      const stored = JSON.parse(localStorage.getItem('eterx_chats') || '[]');
-      const freshChat = stored.find((c: any) => c.id === id);
-      if (freshChat && (freshChat.traceLogs?.length || 0) > (chat?.traceLogs?.length || 0)) {
-        chat = { ...chat, ...freshChat };
-      }
-    } catch { /* fallback to React state */ }
 
     const queuedUpdates = backgroundChatUpdatesRef.current.get(id);
     if (chat && queuedUpdates?.length) {
@@ -3429,6 +3553,7 @@ function DeepWorkUI() {
       setActiveChatId(id);
       try { localStorage.setItem(ACTIVE_CHAT_STORAGE_KEY, id); } catch { }
       setTraceLogs(chat.traceLogs || []);
+      hydrateChatHistory(id);
       setActiveWorkspacePath(chat.workspacePath || null);
       if (typeof window !== 'undefined') {
         if (chat.workspacePath) {
@@ -3629,6 +3754,7 @@ function DeepWorkUI() {
     if (idsToDelete.length === 0) return;
 
     const deleteSet = new Set(idsToDelete);
+    idsToDelete.forEach(chatId => pendingChatDeletionIdsRef.current.add(chatId));
     if (liveChatIdRef.current && deleteSet.has(liveChatIdRef.current)) {
       stopLiveSession();
     }

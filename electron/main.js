@@ -1619,6 +1619,52 @@ ipcMain.handle('app-close', () => {
   app.quit();
 });
 
+let desktopChatSnapshotCache = null;
+let desktopChatSnapshotLoadPromise = null;
+let desktopChatSnapshotGeneration = 0;
+
+const readDesktopChatSnapshot = async () => {
+  if (desktopChatSnapshotCache) return desktopChatSnapshotCache;
+  if (desktopChatSnapshotLoadPromise) return desktopChatSnapshotLoadPromise;
+  const chatsPath = path.join(app.getPath('userData'), 'data', 'chats', 'chats.json');
+  const loadGeneration = desktopChatSnapshotGeneration;
+  desktopChatSnapshotLoadPromise = fs.promises.readFile(chatsPath, 'utf8')
+    .then(raw => {
+      const parsed = JSON.parse(raw);
+      const chats = Array.isArray(parsed?.chats)
+        ? parsed.chats.filter((chat) => chat && typeof chat === 'object' && typeof chat.id === 'string').slice(0, 2000)
+        : [];
+      const snapshot = {
+        version: 1,
+        savedAt: Number.isFinite(parsed?.savedAt) ? Math.max(0, parsed.savedAt) : 0,
+        chats,
+      };
+      if (desktopChatSnapshotGeneration === loadGeneration) {
+        desktopChatSnapshotCache = snapshot;
+      }
+      return desktopChatSnapshotCache || snapshot;
+    })
+    .catch(error => {
+      if (error?.code !== 'ENOENT') throw error;
+      const emptySnapshot = { version: 1, savedAt: 0, chats: [] };
+      if (desktopChatSnapshotGeneration === loadGeneration) {
+        desktopChatSnapshotCache = emptySnapshot;
+      }
+      return desktopChatSnapshotCache || emptySnapshot;
+    })
+    .finally(() => {
+      desktopChatSnapshotLoadPromise = null;
+    });
+  return desktopChatSnapshotLoadPromise;
+};
+
+ipcMain.handle('chat-snapshot-load', async (_event, requestedChatId) => {
+  const snapshot = await readDesktopChatSnapshot();
+  const chatId = typeof requestedChatId === 'string' ? requestedChatId.trim() : '';
+  if (chatId) return { chat: snapshot.chats.find((chat) => chat.id === chatId) || null };
+  return { ...snapshot, chats: [...snapshot.chats] };
+});
+
 ipcMain.handle('chat-snapshot-save', (_event, snapshot) => {
   const chats = Array.isArray(snapshot?.chats)
     ? snapshot.chats.filter((chat) => chat && typeof chat === 'object' && typeof chat.id === 'string').slice(0, 2000)
@@ -1630,10 +1676,13 @@ ipcMain.handle('chat-snapshot-save', (_event, snapshot) => {
 
   const chatsDir = path.join(app.getPath('userData'), 'data', 'chats');
   const chatsPath = path.join(chatsDir, 'chats.json');
-  let current = null;
+  let current = desktopChatSnapshotCache;
   try {
-    current = JSON.parse(fs.readFileSync(chatsPath, 'utf8'));
-    if (Number(current?.savedAt || 0) > savedAt) return { ok: true, savedAt: current.savedAt };
+    if (!current) current = JSON.parse(fs.readFileSync(chatsPath, 'utf8'));
+    if (Number(current?.savedAt || 0) > savedAt) {
+      desktopChatSnapshotCache = current;
+      return { ok: true, savedAt: current.savedAt };
+    }
   } catch {
     if (fs.existsSync(chatsPath)) {
       const corruptPath = path.join(chatsDir, `chats.corrupt-${Date.now()}.json`);
@@ -1653,6 +1702,8 @@ ipcMain.handle('chat-snapshot-save', (_event, snapshot) => {
   const temporaryPath = path.join(chatsDir, `.chats.electron.${process.pid}.${Date.now()}.tmp`);
   fs.writeFileSync(temporaryPath, JSON.stringify({ version: 1, savedAt, chats: chatsToWrite }), 'utf8');
   fs.renameSync(temporaryPath, chatsPath);
+  desktopChatSnapshotGeneration += 1;
+  desktopChatSnapshotCache = { version: 1, savedAt, chats: chatsToWrite };
   return { ok: true, savedAt };
 });
 

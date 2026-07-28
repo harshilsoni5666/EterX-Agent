@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { loadChatSnapshot, patchChatSnapshot, saveChatSnapshot } from '../../../lib/chat-store';
+import { loadChatById, loadChatSnapshot, patchChatSnapshot, saveChatSnapshot } from '../../../lib/chat-store';
 import { rejectCrossOrigin } from '../agent/_shared';
 
 export const dynamic = 'force-dynamic';
@@ -11,6 +11,11 @@ export async function GET(req: NextRequest) {
   const originError = rejectCrossOrigin(req);
   if (originError) return originError;
   try {
+    const chatId = req.nextUrl.searchParams.get('id')?.trim();
+    if (chatId) {
+      const chat = await loadChatById(chatId);
+      return NextResponse.json({ chat }, { headers: noStoreHeaders });
+    }
     return NextResponse.json(await loadChatSnapshot(), { headers: noStoreHeaders });
   } catch (error: any) {
     return NextResponse.json({ error: error?.message || 'Unable to load chats' }, { status: 500, headers: noStoreHeaders });

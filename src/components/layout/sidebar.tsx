@@ -13,6 +13,7 @@ const SIDEBAR_WIDTH_STORAGE_KEY = 'eterx.sidebar.width';
 const MINUTE_MS = 60 * 1000;
 const HOUR_MS = 60 * MINUTE_MS;
 const DAY_MS = 24 * HOUR_MS;
+const CHAT_RENDER_BATCH = 160;
 
 const getSidebarViewportMax = (viewportWidth: number) => {
   // Keep the existing mobile/tablet sizing untouched; this adaptive scale is
@@ -574,6 +575,29 @@ export const Sidebar = React.memo<SidebarProps>(({
   const [viewportWidth, setViewportWidth] = React.useState(1440);
   const [sidebarWidth, setSidebarWidth] = React.useState(SIDEBAR_DEFAULT_WIDTH);
   const [isResizingSidebar, setIsResizingSidebar] = React.useState(false);
+  const [visibleChatCount, setVisibleChatCount] = React.useState(CHAT_RENDER_BATCH);
+  const visibleChats = React.useMemo(
+    () => chats.slice(0, visibleChatCount),
+    [chats, visibleChatCount]
+  );
+
+  React.useEffect(() => {
+    if (!activeChatId) return;
+    const activeIndex = chats.findIndex(chat => chat.id === activeChatId);
+    if (activeIndex >= visibleChatCount) {
+      setVisibleChatCount(Math.ceil((activeIndex + 1) / CHAT_RENDER_BATCH) * CHAT_RENDER_BATCH);
+    }
+  }, [activeChatId, chats, visibleChatCount]);
+
+  const handleRecentChatsScroll = React.useCallback((event: React.UIEvent<HTMLDivElement>) => {
+    const container = event.currentTarget;
+    if (
+      visibleChatCount < chats.length &&
+      container.scrollHeight - container.scrollTop - container.clientHeight < 320
+    ) {
+      setVisibleChatCount(current => Math.min(chats.length, current + CHAT_RENDER_BATCH));
+    }
+  }, [chats.length, visibleChatCount]);
 
   const handleChatRowMouseEnter = React.useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     const row = e.currentTarget;
@@ -1244,13 +1268,14 @@ export const Sidebar = React.memo<SidebarProps>(({
 
               <div
                 ref={scrollContainerRef}
+                onScroll={handleRecentChatsScroll}
                 className="eterx-sidebar-recents-scroll flex-1 overflow-y-auto eterx-scrollbar pl-2 pr-0 mr-0 space-y-0.5 relative z-10"
                 style={{ scrollBehavior: isDragSelecting ? 'auto' : undefined, overscrollBehavior: 'contain' }}
               >
                 {chats.length === 0 ? (
                   <div className="eterx-sidebar-empty px-3 py-2 text-[12.5px] text-[var(--sidebar-muted-text)]">No recent chats</div>
                 ) : (
-                  chats.map((chat) => {
+                  visibleChats.map((chat) => {
                     const isActive = activeChatId === chat.id && activeView === 'chat';
                     const isWorking = runningChats?.has(chat.id) ?? false;
                     const hasUnread = !isActive && !isWorking && (unreadChats?.has(chat.id) ?? false);
@@ -1376,6 +1401,11 @@ export const Sidebar = React.memo<SidebarProps>(({
                       </div>
                     );
                   })
+                )}
+                {visibleChatCount < chats.length && (
+                  <div className="px-3 py-2 text-center text-[11px] text-[var(--sidebar-muted-text)]">
+                    Scroll for {chats.length - visibleChatCount} older chats
+                  </div>
                 )}
               </div>
             </div>

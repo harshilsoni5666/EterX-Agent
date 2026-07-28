@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
   restartApp: () => ipcRenderer.invoke('app-restart'),
   closeApp: () => ipcRenderer.invoke('app-close'),
+  loadChatSnapshot: (chatId) => ipcRenderer.invoke('chat-snapshot-load', chatId),
   saveChatSnapshot: (snapshot) => ipcRenderer.invoke('chat-snapshot-save', snapshot),
   showNotification: (title, body) => ipcRenderer.invoke('show-notification', title, body),
   setNativeTheme: (theme) => ipcRenderer.send('native-theme-set', theme),

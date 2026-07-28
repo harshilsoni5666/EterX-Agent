@@ -60,6 +60,12 @@ export async function loadChatSnapshot(): Promise<PersistedChatSnapshot> {
   return { ...(await readFromDisk()), chats: [...(cachedSnapshot?.chats || [])] };
 }
 
+export async function loadChatById(chatId: string): Promise<unknown | null> {
+  await writeQueue.catch(() => {});
+  const snapshot = await readFromDisk();
+  return (snapshot.chats as any[]).find(chat => chat?.id === chatId) || null;
+}
+
 export async function saveChatSnapshot(chats: unknown[], savedAt: number): Promise<PersistedChatSnapshot> {
   const requested = normalizeSnapshot({ chats, savedAt });
   writeQueue = writeQueue.catch(() => {}).then(async () => {
