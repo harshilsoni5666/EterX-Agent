@@ -3485,7 +3485,7 @@ const SubAgentCard = ({ log, onOpenAgentTeam }: { log: any; onOpenAgentTeam?: (n
         {onOpenAgentTeam && (
           <button
             type="button"
-            onClick={() => onOpenAgentTeam(agentName)}
+            onClick={() => onOpenAgentTeam(log.subAgentChatId || log.subAgentId || agentName)}
             className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[9px] text-[#756D63] transition-colors hover:bg-white/[0.045] hover:text-[#CFC8BD] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/16"
             aria-label={`Open ${ agentName } in agent team`}
           >
@@ -3533,7 +3533,11 @@ const AgentCreatedCard = ({ log, onOpenAgentTeam }: { log: any; onOpenAgentTeam?
           <div key={name} className="my-1">
             <button
               type="button"
-              onClick={() => onOpenAgentTeam?.(name)}
+              onClick={() => onOpenAgentTeam?.(
+                displayList.length === 1
+                  ? log.subAgentChatId || log.subAgentId || name
+                  : name
+              )}
               className={`w-full flex min-h-[33px] items-center gap-2.5 rounded-[9px] px-3 py-1 bg-white/[0.015] border border-white/[0.045] text-left transition-all hover:bg-white/[0.024] hover:border-white/[0.075] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/16 cursor-pointer group ${ ACTION_CARD_CLASS }`}
               aria-label={`View agent ${ name }`}
             >
@@ -3630,7 +3634,7 @@ const InterAgentCommCard = ({ log, onOpenAgentTeam }: { log: any; onOpenAgentTea
     <div className="my-1.5 overflow-hidden">
       <button
         type="button"
-        onClick={() => onOpenAgentTeam?.(focusAgent)}
+        onClick={() => onOpenAgentTeam?.(log.subAgentChatId || log.subAgentId || focusAgent)}
         className={`eterx-agent-comm-card flex min-h-[58px] w-full items-start gap-3 rounded-[8px] px-3 py-2.5 bg-white/[0.012] border border-white/[0.07] text-left transition-colors hover:bg-white/[0.024] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/16 ${ ACTION_CARD_CLASS }`}
         aria-label={`Open ${ focusAgent || 'agent team' } in agent team`}
       >
@@ -4508,7 +4512,7 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
   const NOISE_PATTERN = /reconnect|retrying|stalled|stream interrupted|model error|fallback|cancelled/i;
 
   const isFlowLog = (l: any) =>
-    ['thought_stream', 'work_note', 'command', 'exploration', 'file_edit', 'progress', 'browser', 'safety_warning', 'communication', 'sub_agent_answer', 'sub_agent_result', 'sub_agent_spawn', 'sub_agent_action', 'sub_agent_complete', 'sub_agent_error', 'inter_agent_comm', 'file_preview', 'console_output', 'ask_user', 'tool_result_preview'].includes(l.type) &&
+    ['thought_stream', 'work_note', 'command', 'tool_call', 'exploration', 'file_edit', 'progress', 'browser', 'safety_warning', 'communication', 'steering_received', 'steering_applied', 'autonomy_proxy_status', 'sub_agent_answer', 'sub_agent_result', 'sub_agent_spawn', 'sub_agent_action', 'sub_agent_complete', 'sub_agent_error', 'inter_agent_comm', 'inter_agent_message', 'file_preview', 'console_output', 'ask_user', 'tool_result_preview'].includes(l.type) &&
     !(['progress', 'command', 'exploration'].includes(l.type) && /analyz(?:e|ing) task complexity/i.test(String(l.text || ''))) &&
     !(l.type === 'progress' && NOISE_PATTERN.test(String(l.text || '')) && !isApiKeyTrace(String(l.text || ''))) &&
     !(l.type === 'work_note' && (l._connection || String(l.text || '').endsWith('is starting'))) &&
@@ -4523,23 +4527,23 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
   const flush = (idx: number) => {
     if (aBuf.length > 0) {
       const unique: any[] = [];
-      aBuf.forEach((log, i) => {
-        if (i > 0) {
-          const prev = unique[unique.length - 1];
-          const logEventId = getStableActionEventId(log);
-          const prevEventId = getStableActionEventId(prev);
-          const isSameEvent = logEventId && prevEventId
-            ? logEventId === prevEventId
-            : getActionLookupIdentity(log) === getActionLookupIdentity(prev);
-          if (isSameEvent) {
-            unique[unique.length - 1] = {
-              ...prev,
-              ...log,
-              occurrenceCount: Math.max(1, Number(prev.occurrenceCount || 1)) + Math.max(1, Number(log.occurrenceCount || 1)),
-            };
-            return;
-          }
+      const identityIndexes = new Map<string, number>();
+      aBuf.forEach((log) => {
+        const stableEventId = getStableActionEventId(log);
+        const identity = stableEventId
+          ? `event:${stableEventId}`
+          : `action:${getActionLookupIdentity(log)}`;
+        const existingIndex = identityIndexes.get(identity);
+        if (existingIndex !== undefined) {
+          const previous = unique[existingIndex];
+          unique[existingIndex] = {
+            ...previous,
+            ...log,
+            occurrenceCount: Math.max(1, Number(previous.occurrenceCount || 1)) + Math.max(1, Number(log.occurrenceCount || 1)),
+          };
+          return;
         }
+        identityIndexes.set(identity, unique.length);
         unique.push({ ...log, occurrenceCount: Math.max(1, Number(log.occurrenceCount || 1)) });
       });
       segs.push({ kind: 'action_group', logs: unique, firstIdx: aBufFirstIdx === -1 ? idx : aBufFirstIdx, lastIdx: idx });
@@ -4607,7 +4611,7 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
         pushActionLog(log, idx);
       }
     }
-    else if (log.type === 'inter_agent_comm') {
+    else if (log.type === 'inter_agent_comm' || log.type === 'inter_agent_message') {
       if (isSubAgentTab) {
         flush(idx - 1);
         segs.push({ kind: 'comm', log, idx });

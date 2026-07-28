@@ -279,6 +279,7 @@ export const taskStore = {
       const answerId = String(timedEvent.answerId || '').trim();
       for (let i = task.traceLogs.length - 1; i >= 0; i--) {
         const log = task.traceLogs[i];
+        if (log?.type === 'user_action') break;
         if (
           log?.type === 'answer' &&
           (log.isStreaming || log.isLiveTyping) &&
@@ -293,6 +294,7 @@ export const taskStore = {
       let mergeIdx = -1;
       for (let i = task.traceLogs.length - 1; i >= 0; i--) {
         const log = task.traceLogs[i];
+        if (log?.type === 'user_action') break;
         if (log?.type !== 'answer') continue;
         const sameText = String(log.text || '').trim() === String(timedEvent.text || '').trim();
         if (
@@ -328,11 +330,13 @@ export const taskStore = {
     } else if (timedEvent?.type === 'work_note_cancel') {
       const noteId = timedEvent.noteId || null;
       const subAgent = timedEvent.subAgent || null;
+      const subAgentIdentity = timedEvent.subAgentChatId || timedEvent.subAgentId || subAgent;
       for (let i = task.traceLogs.length - 1; i >= 0; i--) {
         const log = task.traceLogs[i];
+        if (log?.type === 'user_action') break;
         if (
           log?.type === 'work_note' &&
-          (log.subAgent || null) === subAgent &&
+          (log.subAgentChatId || log.subAgentId || log.subAgent || null) === subAgentIdentity &&
           (!noteId || log.noteId === noteId)
         ) {
           task.traceLogs[i] = { ...log, _streamingCancelled: true };
@@ -344,11 +348,16 @@ export const taskStore = {
       if (!noteText) return;
       const noteId = timedEvent.noteId || null;
       const subAgent = timedEvent.subAgent || null;
+      const subAgentIdentity = timedEvent.subAgentChatId || timedEvent.subAgentId || subAgent;
       const incomingIsFinal = timedEvent.isStreaming === false || timedEvent.isDelta === false;
       let mergeIdx = -1;
       for (let i = task.traceLogs.length - 1; i >= 0; i--) {
         const log = task.traceLogs[i];
-        if (log?.type !== 'work_note' || (log.subAgent || null) !== subAgent) continue;
+        if (log?.type === 'user_action') break;
+        if (
+          log?.type !== 'work_note' ||
+          (log.subAgentChatId || log.subAgentId || log.subAgent || null) !== subAgentIdentity
+        ) continue;
         const sameNote = noteId && log.noteId && log.noteId === noteId;
         const sameText = String(log.text || '').trim() === noteText;
         // Also merge final note into a streaming-cancelled placeholder
@@ -378,6 +387,7 @@ export const taskStore = {
 
       for (let i = task.traceLogs.length - 1; i >= 0; i--) {
         const log = task.traceLogs[i];
+        if (log?.type === 'user_action') break;
         if (log?.type !== 'console_output') continue;
         const sameStream = streamId && String(log.streamId || '') === streamId;
         const sameOwner = ownerTraceId && String(log.ownerTraceId || '') === ownerTraceId;

@@ -43,6 +43,7 @@ export async function POST(req: NextRequest) {
     const body = await readJsonObject(req);
     const chatId = typeof body.chatId === 'string' ? body.chatId : '';
     const message = cleanString(body.message, 12000);
+    const attachmentContext = cleanString(body.attachmentContext, 24000);
     if (!isSafeChatId(chatId)) return attachAgentApiSessionCookie(jsonError('Valid chatId is required', 400), session);
     const ownerError = requireChatOwner(chatId, session.sessionId);
     if (ownerError) return attachAgentApiSessionCookie(ownerError, session);
@@ -67,6 +68,7 @@ export async function POST(req: NextRequest) {
           talkToProxyManager({
             chatId,
             message,
+            attachmentContext,
             model: { provider, modelId },
             onProgress: progress => send({ type: 'progress', progress }),
           }).then(result => {
@@ -93,7 +95,7 @@ export async function POST(req: NextRequest) {
         },
       }), session);
     }
-    const result = await talkToProxyManager({ chatId, message, model: { provider, modelId } });
+    const result = await talkToProxyManager({ chatId, message, attachmentContext, model: { provider, modelId } });
     return attachAgentApiSessionCookie(NextResponse.json({
       success: true,
       ...result,

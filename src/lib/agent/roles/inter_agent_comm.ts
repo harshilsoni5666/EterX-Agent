@@ -53,6 +53,8 @@ export interface AgentMessage {
     confidence?: number;
     tags?: string[];
     deliveryMode?: 'interrupt' | 'defer' | 'silent';
+    subAgentId?: string;
+    subAgentChatId?: string;
   };
   read: boolean;
   readAt?: number;

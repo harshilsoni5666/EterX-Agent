@@ -6,6 +6,7 @@ import {
   getOrCreateAgentApiSession,
   isSafeChatId,
   jsonError,
+  cleanString,
   readJsonObject,
   rejectCrossOrigin,
   requireChatOwner,
@@ -31,6 +32,7 @@ export async function POST(req: NextRequest) {
 
     const body = await readJsonObject(req);
     const { chatId } = body;
+    const expectedRunId = body.runId === undefined ? undefined : cleanString(body.runId, 160);
 
     if (chatId !== undefined && chatId !== null && chatId !== '') {
       if (!isSafeChatId(chatId)) {
@@ -40,9 +42,12 @@ export async function POST(req: NextRequest) {
       if (ownerError) {
         return attachAgentApiSessionCookie(ownerError, session);
       }
+      if (body.runId !== undefined && !expectedRunId) {
+        return attachAgentApiSessionCookie(jsonError('runId must be a valid string when provided.', 400), session);
+      }
       // Per-chat stop
-      const stopped = agentRegistry.stopAgent(chatId);
-      cancelAgent(chatId); // Also set per-chat cancel flag for sub-agents
+      const stopped = agentRegistry.stopAgent(chatId, 'Stopped by user.', undefined, expectedRunId);
+      if (stopped) cancelAgent(chatId); // Also set per-chat cancel flag for sub-agents
       console.log(`[API] 🛑 Stop requested for chat ${chatId.substring(0, 8)}... — ${stopped ? 'stopped' : 'not running'}`);
       return attachAgentApiSessionCookie(NextResponse.json({ success: stopped, chatId, message: stopped ? 'Agent stopped' : 'No running agent found' }), session);
     }

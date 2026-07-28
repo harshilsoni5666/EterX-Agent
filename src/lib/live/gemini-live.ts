@@ -547,7 +547,9 @@ export class GeminiLiveSession {
         if (data.toolCall.functionCalls) {
           (async () => {
             try {
-              const responses = await Promise.all(data.toolCall.functionCalls.map(async (fc: any) => {
+              const responses: any[] = [];
+              for (const fc of data.toolCall.functionCalls) {
+                const response = await (async () => {
                 // Handle end_call function
                 if (fc.name === 'end_call') {
                   console.log('[GeminiLive] AI initiated call end:', fc.args?.reason);
@@ -621,7 +623,8 @@ export class GeminiLiveSession {
                       headers: { 'Content-Type': 'application/json' },
                       body: JSON.stringify({ query })
                     });
-                    const json = await res.json();
+                    const json = await res.json().catch(() => ({}));
+                    if (!res.ok) throw new Error(json?.error || `Web search failed (${res.status})`);
                     return { id: fc.id, name: fc.name, response: { result: json.results || json } };
                   } catch (e: any) {
                     return { id: fc.id, name: fc.name, response: { error: e.message } };
@@ -643,7 +646,10 @@ export class GeminiLiveSession {
                       headers: { 'Content-Type': 'application/json' },
                       body: JSON.stringify({ command: cmd, terminalShell })
                     });
-                    const json = await res.json();
+                    const json = await res.json().catch(() => ({}));
+                    if (!res.ok || json?.success === false) {
+                      throw new Error(json?.error || json?.stderr || `Command failed (${res.status})`);
+                    }
 
                     // --- AGI SPEED OPTIMIZATION ---
                     // Truncate massive terminal outputs to prevent the model from taking 20 seconds to process the context window
@@ -665,22 +671,6 @@ export class GeminiLiveSession {
                   if (this.callbacks.onToolAction) this.callbacks.onToolAction(verb, target);
                   return { id: fc.id, name: fc.name, response: { result: new Date().toLocaleString() } };
                 }
-                if (fc.name === 'store_chat_memory') {
-                  try {
-                    const fact = fc.args?.fact || '';
-                    const verb = fc.args?.action_verb || 'Remembering';
-                    const target = fc.args?.action_target || fact.slice(0, 20);
-                    if (this.callbacks.onToolAction) this.callbacks.onToolAction(verb, target);
-                    const key = `eterx_live_mem_${ this.chatId }`;
-                    const existingStr = localStorage.getItem(key);
-                    const existing = existingStr ? JSON.parse(existingStr) : [];
-                    existing.push({ timestamp: Date.now(), fact });
-                    localStorage.setItem(key, JSON.stringify(existing));
-                    return { id: fc.id, name: fc.name, response: { result: 'Memory stored successfully for this session.' } };
-                  } catch (e: any) {
-                    return { id: fc.id, name: fc.name, response: { error: e.message } };
-                  }
-                }
                 if (fc.name === 'read_workspace_file') {
                   try {
                     const filePath = fc.args?.filePath || '';
@@ -688,7 +678,10 @@ export class GeminiLiveSession {
                     const target = fc.args?.action_target || filePath.split(/[/\\]/).pop() || 'file';
                     if (this.callbacks.onToolAction) this.callbacks.onToolAction(verb, target);
                     const res = await fetch(`/api/code/files?filePath=${encodeURIComponent(filePath)}`);
-                    const json = await res.json();
+                    const json = await res.json().catch(() => ({}));
+                    if (!res.ok || json?.success === false) {
+                      throw new Error(json?.error || `File read failed (${res.status})`);
+                    }
                     return { id: fc.id, name: fc.name, response: { result: json } };
                   } catch (e: any) {
                     return { id: fc.id, name: fc.name, response: { error: e.message } };
@@ -706,7 +699,10 @@ export class GeminiLiveSession {
                       headers: { 'Content-Type': 'application/json' },
                       body: JSON.stringify({ filePath, content })
                     });
-                    const json = await res.json();
+                    const json = await res.json().catch(() => ({}));
+                    if (!res.ok || json?.success === false) {
+                      throw new Error(json?.error || `File write failed (${res.status})`);
+                    }
                     return { id: fc.id, name: fc.name, response: { result: json } };
                   } catch (e: any) {
                     return { id: fc.id, name: fc.name, response: { error: e.message } };
@@ -758,6 +754,9 @@ export class GeminiLiveSession {
                     if (this.callbacks.onToolAction) this.callbacks.onToolAction(verb, target);
                     if (this.callbacks.onAppControlAction) {
                       const res = await this.callbacks.onAppControlAction(fc.name, fc.args);
+                      if (res?.error) {
+                        return { id: fc.id, name: fc.name, response: { error: String(res.error) } };
+                      }
                       return { id: fc.id, name: fc.name, response: { result: res } };
                     }
                     return { id: fc.id, name: fc.name, response: { error: 'App control callback not registered.' } };
@@ -765,8 +764,10 @@ export class GeminiLiveSession {
                     return { id: fc.id, name: fc.name, response: { error: e.message } };
                   }
                 }
-                return { id: fc.id, name: fc.name, response: { result: 'Tool executed successfully' } };
-              }));
+                  return { id: fc.id, name: fc.name, response: { error: `Unsupported live tool: ${fc.name}` } };
+                })();
+                responses.push(response);
+              }
 
               this.ws?.send(JSON.stringify({
                 toolResponse: { functionResponses: responses }

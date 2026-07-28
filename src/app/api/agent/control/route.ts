@@ -1,5 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { pauseAgent, resumeAgent, closeAgent, isAgentPaused, isAgentClosed, getAgentControlStates } from '@/lib/agent/roles/sub_agent';
+import {
+  attachAgentApiSessionCookie,
+  cleanString,
+  getOrCreateAgentApiSession,
+  isSafeChatId,
+  jsonError,
+  readJsonObject,
+  rejectCrossOrigin,
+  requireChatOwner,
+} from '../_shared';
 
 /**
  * POST /api/agent/control
@@ -9,58 +19,68 @@ import { pauseAgent, resumeAgent, closeAgent, isAgentPaused, isAgentClosed, getA
  * Body: { action: 'pause' | 'resume' | 'close' | 'status', projectId: string, agentName?: string }
  */
 export async function POST(req: NextRequest) {
+  let session: ReturnType<typeof getOrCreateAgentApiSession> | null = null;
   try {
-    const body = await req.json();
-    const { action, projectId, agentName } = body;
+    const originError = rejectCrossOrigin(req);
+    if (originError) return originError;
+    session = getOrCreateAgentApiSession(req);
+    const body = await readJsonObject(req);
+    const action = cleanString(body.action, 32);
+    const projectId = cleanString(body.projectId, 180);
+    const agentName = cleanString(body.agentName, 80);
+    const agentId = cleanString(body.agentId, 240);
 
-    if (!projectId) {
-      return NextResponse.json({ success: false, error: 'projectId is required' }, { status: 400 });
+    if (!isSafeChatId(projectId)) {
+      return attachAgentApiSessionCookie(jsonError('Valid projectId is required', 400), session);
     }
+    const ownerError = requireChatOwner(projectId, session.sessionId);
+    if (ownerError) return attachAgentApiSessionCookie(ownerError, session);
 
     switch (action) {
       case 'pause': {
-        if (!agentName) {
-          return NextResponse.json({ success: false, error: 'agentName is required for pause' }, { status: 400 });
+        if (!agentName || !agentId) {
+          return attachAgentApiSessionCookie(jsonError('agentName and agentId are required for pause', 400), session);
         }
-        const result = pauseAgent(projectId, agentName);
-        return NextResponse.json({ success: true, action: 'pause', agentName, paused: result });
+        const result = pauseAgent(projectId, agentName, undefined, agentId);
+        return attachAgentApiSessionCookie(NextResponse.json({ success: result, action: 'pause', agentName, agentId, paused: result }), session);
       }
 
       case 'resume': {
-        if (!agentName) {
-          return NextResponse.json({ success: false, error: 'agentName is required for resume' }, { status: 400 });
+        if (!agentName || !agentId) {
+          return attachAgentApiSessionCookie(jsonError('agentName and agentId are required for resume', 400), session);
         }
-        const result = resumeAgent(projectId, agentName);
-        return NextResponse.json({ success: true, action: 'resume', agentName, resumed: result });
+        const result = resumeAgent(projectId, agentName, undefined, agentId);
+        return attachAgentApiSessionCookie(NextResponse.json({ success: result, action: 'resume', agentName, agentId, resumed: result }), session);
       }
 
       case 'close': {
-        if (!agentName) {
-          return NextResponse.json({ success: false, error: 'agentName is required for close' }, { status: 400 });
+        if (!agentName || !agentId) {
+          return attachAgentApiSessionCookie(jsonError('agentName and agentId are required for close', 400), session);
         }
-        const result = closeAgent(projectId, agentName);
-        return NextResponse.json({ success: true, action: 'close', agentName, closed: result });
+        const result = closeAgent(projectId, agentName, undefined, agentId);
+        return attachAgentApiSessionCookie(NextResponse.json({ success: result, action: 'close', agentName, agentId, closed: result }), session);
       }
 
       case 'status': {
         if (agentName) {
-          return NextResponse.json({
+          return attachAgentApiSessionCookie(NextResponse.json({
             success: true,
             action: 'status',
             agentName,
-            paused: isAgentPaused(projectId, agentName),
-            closed: isAgentClosed(projectId, agentName),
-          });
+            paused: isAgentPaused(projectId, agentName, agentId || undefined),
+            closed: isAgentClosed(projectId, agentName, agentId || undefined),
+          }), session);
         }
         const states = getAgentControlStates(projectId);
-        return NextResponse.json({ success: true, action: 'status', agents: states });
+        return attachAgentApiSessionCookie(NextResponse.json({ success: true, action: 'status', agents: states }), session);
       }
 
       default:
-        return NextResponse.json({ success: false, error: `Unknown action: ${action}` }, { status: 400 });
+        return attachAgentApiSessionCookie(jsonError(`Unknown action: ${action}`, 400), session);
     }
   } catch (error: any) {
     console.error('[Agent Control] Error:', error);
-    return NextResponse.json({ success: false, error: error.message || 'Internal error' }, { status: 500 });
+    const response = NextResponse.json({ success: false, error: error.message || 'Internal error' }, { status: 500 });
+    return session ? attachAgentApiSessionCookie(response, session) : response;
   }
 }

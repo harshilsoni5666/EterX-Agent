@@ -120,7 +120,14 @@ function readStore(chatId: string): ManagerStore {
 
 function writeStore(store: ManagerStore): void {
   fs.ensureDirSync(getEterxWorkspaceDir('autonomy', 'proxy-manager'));
-  fs.writeJsonSync(storePath(store.chatId), { ...store, messages: store.messages.slice(-MAX_MESSAGES), updatedAt: Date.now() }, { spaces: 2 });
+  const target = storePath(store.chatId);
+  const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    fs.writeJsonSync(temporary, { ...store, messages: store.messages.slice(-MAX_MESSAGES), updatedAt: Date.now() }, { spaces: 2 });
+    fs.moveSync(temporary, target, { overwrite: true });
+  } finally {
+    if (fs.existsSync(temporary)) fs.removeSync(temporary);
+  }
 }
 
 function extractDecision(raw: string): ManagerDecision {
@@ -224,6 +231,7 @@ export function getProxyManagerHistory(chatId: string): ProxyManagerChatMessage[
 async function runProxyManagerTurn(input: {
   chatId: string;
   message: string;
+  attachmentContext?: string;
   model?: { provider?: string; modelId?: string };
   onProgress?: (event: ProxyManagerProgress) => void;
 }): Promise<{ message: ProxyManagerChatMessage; history: ProxyManagerChatMessage[]; model: { provider: string; modelId: string }; wakeRequested: boolean }> {
@@ -232,6 +240,9 @@ async function runProxyManagerTurn(input: {
   const userMessage: ProxyManagerChatMessage = { id: randomUUID(), role: 'user', text: compact(input.message, 12000), createdAt: Date.now() };
   store.messages.push(userMessage);
   store.model = input.model;
+  // Persist the accepted user turn before model/tool work begins. A provider
+  // failure must not make the prompt disappear from the side conversation.
+  writeStore(store);
 
   const live = agentRegistry.getProxyManagerContext(input.chatId);
   if (live?.run?.status === 'idle') {
@@ -282,6 +293,9 @@ async function runProxyManagerTurn(input: {
     `LIVE MAIN + RUNTIME PROXY CONTEXT:\n${JSON.stringify(live, null, 2)}`,
     `DURABLE PER-CHAT COORDINATION MODEL:\n${JSON.stringify(store.coordinationModel, null, 2)}`,
     `THIS CHAT'S SAVED PROXY-MANAGER CONVERSATION:\n${recentConversation || '(new conversation)'}`,
+    input.attachmentContext
+      ? `USER-PROVIDED ATTACHMENT CONTEXT FOR THIS TURN:\n${compact(input.attachmentContext, 24000)}`
+      : '',
     'Return exactly one JSON object with no markdown:',
     '{"reply":"natural professional answer","operation":"none|brief_proxy|guide_adaptively|watch_condition|before_completion|queue_after_current|start_main|schedule_workflow|replace_queued_task|interrupt_main|stop_main","target":"proxy|main|both","instruction":"standalone directive for single-task operations, blank for none or schedule_workflow","intent":"goal|constraint|correction|preference|follow_up","rationale":"short private routing reason","confidence":0.0,"urgency":"low|normal|high|critical","activationCondition":"semantic activation condition or blank","scope":"current_step|current_task|next_task|persistent_mandate","supersedesDirectiveId":"prior directive id or blank","supersedesTaskId":"pending task id for replacement or blank","tasks":[{"prompt":"complete Main-ready task","dependency":"what this consumes from the prior task, blank if independent","rationale":"why this is a separate stage"}],"stateUpdate":{"activeIntent":"current durable user intent","constraints":[],"dependencies":[],"openDecisions":[],"durableOutcomes":[]}}',
   ].join('\n\n');
@@ -393,22 +407,32 @@ async function runProxyManagerTurn(input: {
       timestamp: Date.now(),
     });
     if (decision.operation === 'schedule_workflow') {
-      let firstStatus: 'pending' | 'starting' = 'pending';
-      decision.tasks.forEach((task, index) => {
+      let firstStatus: 'pending' | 'starting' | 'failed' = 'pending';
+      let firstAccepted = true;
+      for (let index = 0; index < decision.tasks.length; index += 1) {
+        const task = decision.tasks[index];
         const queued = agentRegistry.queueProxyTask(input.chatId, task.prompt, task.rationale, {
           dependency: task.dependency,
         });
-        if (index === 0) firstStatus = queued.status;
-      });
-      delivery = firstStatus === 'starting' ? 'active' : 'pending';
-      wakeRequested = firstStatus === 'starting';
+        if (index === 0) {
+          firstStatus = queued.status;
+          firstAccepted = queued.accepted;
+          if (!queued.accepted) break;
+        }
+      }
+      delivery = !firstAccepted || firstStatus === 'failed'
+        ? 'unavailable'
+        : firstStatus === 'starting' ? 'active' : 'pending';
+      wakeRequested = delivery === 'active';
     } else if (decision.operation === 'queue_after_current' || decision.operation === 'start_main' || decision.operation === 'replace_queued_task') {
       const queued = agentRegistry.queueProxyTask(input.chatId, decision.instruction, decision.rationale, {
         dependency: decision.activationCondition,
         supersedesTaskId: decision.operation === 'replace_queued_task' ? decision.supersedesTaskId : undefined,
       });
-      delivery = queued.status === 'starting' ? 'active' : 'pending';
-      wakeRequested = queued.status === 'starting';
+      delivery = !queued.accepted || queued.status === 'failed'
+        ? 'unavailable'
+        : queued.status === 'starting' ? 'active' : 'pending';
+      wakeRequested = delivery === 'active';
     } else {
       const timing = decision.operation === 'watch_condition'
         ? 'when_relevant'
@@ -472,6 +496,7 @@ async function runProxyManagerTurn(input: {
 export async function talkToProxyManager(input: {
   chatId: string;
   message: string;
+  attachmentContext?: string;
   model?: { provider?: string; modelId?: string };
   onProgress?: (event: ProxyManagerProgress) => void;
 }): Promise<{ message: ProxyManagerChatMessage; history: ProxyManagerChatMessage[]; model: { provider: string; modelId: string }; wakeRequested: boolean }> {

@@ -93,6 +93,15 @@ WHEN TO USE SPECIALIST: focused security, performance, architecture, QA, or rese
 
     // Extract the UI trace callback from context (injected by gemini.ts)
     const onTrace = context?._onTrace as ((t: any) => void) | undefined;
+    const resolveActiveAgentId = (agentName: string) =>
+      globalSubAgentSpawner.getAgentStatus()
+        .find(agent =>
+          agent.projectId === context?.projectId &&
+          agent.name === agentName &&
+          agent.status !== 'completed' &&
+          agent.status !== 'failed' &&
+          agent.status !== 'cancelled'
+        )?.id;
 
     switch (input.mode) {
       // === ADVISE: Decide orchestration without spawning ===
@@ -399,7 +408,7 @@ WHEN TO USE SPECIALIST: focused security, performance, architecture, QA, or rese
         if (!input.agentName) {
           return { mode: 'pause', agents: [], message: 'ERROR: agentName is required for pause mode.' };
         }
-        const paused = pauseAgent(context?.projectId, input.agentName, onTrace);
+        const paused = pauseAgent(context?.projectId, input.agentName, onTrace, resolveActiveAgentId(input.agentName));
         return {
           mode: 'pause',
           agents: [{ name: input.agentName, status: paused ? 'paused' : 'already_paused' }],
@@ -412,7 +421,7 @@ WHEN TO USE SPECIALIST: focused security, performance, architecture, QA, or rese
         if (!input.agentName) {
           return { mode: 'resume', agents: [], message: 'ERROR: agentName is required for resume mode.' };
         }
-        const resumed = resumeAgent(context?.projectId, input.agentName, onTrace);
+        const resumed = resumeAgent(context?.projectId, input.agentName, onTrace, resolveActiveAgentId(input.agentName));
         return {
           mode: 'resume',
           agents: [{ name: input.agentName, status: resumed ? 'working' : 'not_paused' }],
@@ -425,7 +434,7 @@ WHEN TO USE SPECIALIST: focused security, performance, architecture, QA, or rese
         if (!input.agentName) {
           return { mode: 'close', agents: [], message: 'ERROR: agentName is required for close mode.' };
         }
-        const closed = closeAgent(context?.projectId, input.agentName, onTrace);
+        const closed = closeAgent(context?.projectId, input.agentName, onTrace, resolveActiveAgentId(input.agentName));
         return {
           mode: 'close',
           agents: [{ name: input.agentName, status: 'closed' }],

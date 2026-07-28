@@ -36,9 +36,10 @@ export async function POST(req: NextRequest) {
     session = getOrCreateAgentApiSession(req);
 
     const body = await readJsonObject(req);
-    const { chatId, message, id } = body as { chatId?: string; message?: string; id?: string };
+    const { chatId, message, id, runId } = body as { chatId?: string; message?: string; id?: string; runId?: string };
     const cleanMessage = cleanString(message, 8000);
     const cleanId = id === undefined ? undefined : cleanString(id, 120);
+    const cleanRunId = runId === undefined ? undefined : cleanString(runId, 160);
 
     if (!isSafeChatId(chatId)) {
       return attachAgentApiSessionCookie(jsonError('Valid chatId is required', 400, { reason: 'Valid chatId is required' }), session);
@@ -53,8 +54,20 @@ export async function POST(req: NextRequest) {
     if (id !== undefined && !cleanId) {
       return attachAgentApiSessionCookie(jsonError('id must be a valid string when provided', 400, { reason: 'id must be a valid string when provided' }), session);
     }
+    if (runId !== undefined && !cleanRunId) {
+      return attachAgentApiSessionCookie(jsonError('runId must be a valid string when provided', 400, { reason: 'runId must be a valid string when provided' }), session);
+    }
 
-    const queued = agentRegistry.addSteeringMessage(chatId, cleanMessage, cleanId);
+    const currentRun = agentRegistry.getTraces(chatId, -1);
+    if (cleanRunId && currentRun.runId !== cleanRunId) {
+      return attachAgentApiSessionCookie(jsonError(
+        'The active run changed before this steering message could be delivered.',
+        409,
+        { reason: 'The active run changed. The message was not queued.' },
+      ), session);
+    }
+
+    const queued = agentRegistry.addSteeringMessage(chatId, cleanMessage, cleanId, undefined, cleanRunId);
 
     if (!queued) {
       const stillRunning = agentRegistry.isRunning(chatId);

@@ -19,6 +19,9 @@ const asFiniteTimestamp = (value: unknown): number | null => {
  * isolated owners so they cannot close or merge each other's thought streams.
  */
 export const getThoughtStreamOwner = (trace: any): string => {
+  const subAgentChatId = String(trace?.subAgentChatId || trace?.subAgentId || '').trim();
+  if (subAgentChatId) return `sub:${ subAgentChatId }`;
+
   const explicitSubAgent = String(trace?.subAgent || '').trim();
   if (explicitSubAgent) return `sub:${ explicitSubAgent }`;
 
@@ -211,6 +214,8 @@ export const mergeThoughtStreamTrace = (logs: any[], incoming: any): number => {
   // A genuinely new thought supersedes an unclosed stream from the same owner.
   closeThoughtStreamsForBoundary(logs, {
     type: 'thought_stream_boundary',
+    subAgentChatId: incoming?.subAgentChatId,
+    subAgentId: incoming?.subAgentId,
     subAgent: incoming?.subAgent,
     agentName: incoming?.agentName,
     startTime: incoming?.startTime,

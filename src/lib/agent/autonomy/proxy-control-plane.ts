@@ -69,12 +69,19 @@ export function readProxyControl(chatId: string): ProxyControlState {
 
 function writeProxyControl(state: ProxyControlState): void {
   fs.ensureDirSync(getEterxWorkspaceDir('autonomy', 'proxy-control'));
-  fs.writeJsonSync(controlPath(state.chatId), {
-    ...state,
-    dormantDirectives: state.dormantDirectives.slice(-MAX_DIRECTIVES),
-    taskQueue: state.taskQueue.slice(-MAX_TASKS),
-    updatedAt: Date.now(),
-  }, { spaces: 2 });
+  const target = controlPath(state.chatId);
+  const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    fs.writeJsonSync(temporary, {
+      ...state,
+      dormantDirectives: state.dormantDirectives.slice(-MAX_DIRECTIVES),
+      taskQueue: state.taskQueue.slice(-MAX_TASKS),
+      updatedAt: Date.now(),
+    }, { spaces: 2 });
+    fs.moveSync(temporary, target, { overwrite: true });
+  } finally {
+    if (fs.existsSync(temporary)) fs.removeSync(temporary);
+  }
 }
 
 export function updateProxyControl(

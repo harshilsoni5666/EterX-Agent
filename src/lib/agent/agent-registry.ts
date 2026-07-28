@@ -197,18 +197,23 @@ class AgentRegistry {
 
   public appendTrace(execution: AgentExecution, traceEvent: any, persistToTaskStore = true): TraceEvent {
     if (traceEvent?.type === 'file_preview') {
-      const existingIdx = traceEvent.ownerTraceId
-        ? execution.traceBuffer.findIndex(entry =>
-          entry.data?.type === 'file_preview' &&
-          entry.data?.ownerTraceId === traceEvent.ownerTraceId
-        )
-        : traceEvent.filepath && traceEvent.dedupe !== false
-          ? execution.traceBuffer.findIndex(entry =>
-            entry.data?.type === 'file_preview' &&
-            entry.data?.filepath === traceEvent.filepath &&
-            entry.data?.dedupe !== false
-          )
-          : -1;
+      let existingIdx = -1;
+      for (let index = execution.traceBuffer.length - 1; index >= 0; index -= 1) {
+        const existing = execution.traceBuffer[index]?.data;
+        if (existing?.type === 'user_action') break;
+        if (existing?.type !== 'file_preview') continue;
+        const sameOwner = traceEvent.ownerTraceId && existing.ownerTraceId === traceEvent.ownerTraceId;
+        const samePath =
+          !traceEvent.ownerTraceId &&
+          traceEvent.filepath &&
+          traceEvent.dedupe !== false &&
+          existing.filepath === traceEvent.filepath &&
+          existing.dedupe !== false;
+        if (sameOwner || samePath) {
+          existingIdx = index;
+          break;
+        }
+      }
       if (existingIdx >= 0) execution.traceBuffer.splice(existingIdx, 1);
     }
 
@@ -355,8 +360,16 @@ class AgentRegistry {
     // Build the trace callback that writes to the buffer
     const onTrace = (traceEvent: any) => {
       if (traceEvent && typeof traceEvent === 'object') {
-        traceEvent.runId = traceEvent.runId || execution.runId;
-        traceEvent.turnId = traceEvent.turnId || execution.runId;
+        const reportedRunId = String(traceEvent.runId || traceEvent.turnId || '').trim();
+        traceEvent = {
+          ...traceEvent,
+          ...(reportedRunId && reportedRunId !== execution.runId
+            ? { originRunId: reportedRunId }
+            : {}),
+          ownerChatId: chatId,
+          runId: execution.runId,
+          turnId: execution.runId,
+        };
       }
       writeRuntimeTrace('agent_trace', {
         chatId,
@@ -855,7 +868,7 @@ class AgentRegistry {
         if (execution.status === 'running') execution.status = terminalStatus;
         execution.completedAt = execution.completedAt || Date.now();
         if (terminalStatus !== 'stopped') {
-          setTimeout(() => this.startNextProxyTask(chatId), 0).unref?.();
+          queueMicrotask(() => void this.startNextProxyTask(chatId));
         }
       }
     })();
@@ -939,8 +952,14 @@ class AgentRegistry {
    * Stop a specific chat's agent. Per-chat — doesn't affect other chats.
    * IDEMPOTENT: Calling this multiple times for the same chat is safe.
    */
-  public stopAgent(chatId: string, reason = 'Stopped by user.', metadata?: Record<string, any>): boolean {
+  public stopAgent(
+    chatId: string,
+    reason = 'Stopped by user.',
+    metadata?: Record<string, any>,
+    expectedRunId?: string,
+  ): boolean {
     const execution = this.executions.get(chatId);
+    if (expectedRunId && execution?.runId !== expectedRunId) return false;
     const cancelledQueuedTasks = !metadata?._autonomyProxy
       ? cancelPendingProxyTasks(chatId)
       : 0;
@@ -986,9 +1005,16 @@ class AgentRegistry {
    * Also immediately emits a steering_received trace to the buffer so the UI
    * can show the user that their steering was acknowledged instantly.
    */
-  public addSteeringMessage(chatId: string, message: string, steeringId?: string, metadata?: Record<string, any>): boolean {
+  public addSteeringMessage(
+    chatId: string,
+    message: string,
+    steeringId?: string,
+    metadata?: Record<string, any>,
+    expectedRunId?: string,
+  ): boolean {
     const execution = this.findExecution(chatId);
     if (!execution || execution.status !== 'running') return false;
+    if (expectedRunId && execution.runId !== expectedRunId) return false;
 
     const trimmedMessage = message.trim().substring(0, 8000);
     if (!trimmedMessage) return false;
@@ -997,7 +1023,12 @@ class AgentRegistry {
     if (duplicate) {
       duplicate.text = trimmedMessage;
       duplicate.updatedAt = Date.now();
-      duplicate.metadata = metadata;
+      duplicate.metadata = {
+        ...(metadata || {}),
+        ownerChatId: execution.chatId,
+        runId: execution.runId,
+        turnId: execution.runId,
+      };
       return true;
     }
     if (execution.steeringQueue.length >= MAX_STEERING_QUEUE) {
@@ -1008,7 +1039,12 @@ class AgentRegistry {
       id: resolvedId,
       text: trimmedMessage,
       createdAt: Date.now(),
-      metadata,
+      metadata: {
+        ...(metadata || {}),
+        ownerChatId: execution.chatId,
+        runId: execution.runId,
+        turnId: execution.runId,
+      },
     };
     execution.steeringQueue.push(queuedMessage);
     // Completion-boundary Proxy guidance is revealed when it is applied on
@@ -1135,13 +1171,28 @@ class AgentRegistry {
     options: { dependency?: string; supersedesTaskId?: string } = {},
   ): {
     accepted: boolean;
-    status: 'pending' | 'starting';
+    status: 'pending' | 'starting' | 'failed';
     id: string;
+    error?: string;
   } {
     const task = enqueueProxyTask(chatId, prompt, rationale, options);
     const execution = this.findExecution(chatId);
     const running = execution?.status === 'running' || (execution && !execution.settled);
-    if (!running) setTimeout(() => this.startNextProxyTask(chatId), 0).unref?.();
+    // Start the handoff in the current event-loop turn. An unref'ed timer can
+    // be abandoned when the route/request scope goes idle, leaving a task
+    // permanently marked pending even though Proxy Manager reported "starting".
+    if (!running) {
+      void this.startNextProxyTask(chatId);
+      const settledTask = readProxyControl(chatId).taskQueue.find(item => item.id === task.id);
+      if (settledTask?.status === 'failed') {
+        return {
+          accepted: false,
+          status: 'failed',
+          id: task.id,
+          error: settledTask.error || 'Main could not start the delegated task.',
+        };
+      }
+    }
     return { accepted: true, status: running ? 'pending' : 'starting', id: task.id };
   }
 
@@ -1150,14 +1201,6 @@ class AgentRegistry {
     if (current && (current.status === 'running' || !current.settled)) return;
     const task = claimNextProxyTask(chatId);
     if (!task) return;
-    if (task.dependency && current && current.status !== 'completed') {
-      settleProxyTask(chatId, task.id, {
-        status: 'failed',
-        error: `Dependency unavailable because the preceding run ${current.status}.`,
-      });
-      setTimeout(() => this.startNextProxyTask(chatId), 0).unref?.();
-      return;
-    }
 
     const control = readProxyControl(chatId);
     const runtimeSettings = current?.launchSpec.runtimeSettings || buildScopedRuntimeSettings();
@@ -1189,7 +1232,7 @@ class AgentRegistry {
     const result = this.startAgent(
       chatId,
       task.dependency
-        ? `${task.prompt}\n\nDependency: ${task.dependency}. Use the immediately preceding result in conversation history as evidence. Do not repeat completed work unless a correction is required.`
+        ? `${task.prompt}\n\nDependency: ${task.dependency}. Use the immediately preceding result in conversation history as evidence. If that run failed, recover from its visible partial result or explain the unresolved dependency; do not silently skip this task. Do not repeat completed work unless a correction is required.`
         : task.prompt,
       priorHistory,
       current?.launchSpec.mode || 'think',

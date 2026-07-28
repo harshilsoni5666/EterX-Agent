@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { createPortal } from 'react-dom';
 import { Copy, RefreshCw, ChevronDown, FileText, Check, Clock, ChevronRight, MessageSquarePlus, Activity, Minimize2, CornerDownLeft, CircleStop, TriangleAlert, Sparkles } from 'lucide-react';
@@ -374,6 +374,7 @@ const chatFeedSurfaceStyles = `
 
 const WORKFLOW_COUNT_TYPES = new Set([
   'command',
+  'tool_call',
   'exploration',
   'file_edit',
   'communication',
@@ -381,10 +382,33 @@ const WORKFLOW_COUNT_TYPES = new Set([
   'sub_agent_spawn',
   'progress',
   'browser',
-  'tool_result',
-  'tool_error',
 ]);
 const HIDDEN_HELPER_TYPES = new Set(['answer', 'ask_user', 'file_preview', 'console_output', 'html_preview']);
+const RENDERABLE_TIMELINE_TYPES = new Set([
+  'thought_stream',
+  'work_note',
+  'command',
+  'tool_call',
+  'exploration',
+  'file_edit',
+  'progress',
+  'browser',
+  'safety_warning',
+  'communication',
+  'steering_received',
+  'steering_applied',
+  'autonomy_proxy_status',
+  'sub_agent_spawn',
+  'sub_agent_action',
+  'sub_agent_complete',
+  'sub_agent_error',
+  'inter_agent_comm',
+  'inter_agent_message',
+  'file_preview',
+  'console_output',
+  'ask_user',
+  'tool_result_preview',
+]);
 const USER_QUERY_PREVIEW_LIMIT = 520;
 const USER_QUERY_PREVIEW_LINES = 8;
 const INITIAL_VISIBLE_GROUPS = 40;
@@ -396,6 +420,126 @@ const normalizeTraceText = (value: any) => String(value || '')
   .replace(/\s+/g, ' ')
   .trim()
   .toLowerCase();
+
+const mergeDuplicateFeedLog = (previous: any, incoming: any) => {
+  const previousText = String(previous?.text || '');
+  const incomingText = String(incoming?.text || '');
+  const text = incomingText.length >= previousText.length ? incomingText : previousText;
+  const previousStart = Number(previous?.startTime || previous?.timestamp || 0);
+  const incomingStart = Number(incoming?.startTime || incoming?.timestamp || 0);
+  const previousEnd = Number(previous?.endTime || previous?.timestamp || 0);
+  const incomingEnd = Number(incoming?.endTime || incoming?.timestamp || 0);
+  const narrativeRank = (type: any) =>
+    type === 'autonomy_proxy_status' ? 3 : type === 'work_note' ? 2 : type === 'thought_stream' ? 1 : 0;
+  const preferredType = narrativeRank(previous?.type) > narrativeRank(incoming?.type)
+    ? previous.type
+    : incoming?.type;
+  return {
+    ...previous,
+    ...incoming,
+    type: preferredType,
+    text,
+    startTime: previousStart > 0 && incomingStart > 0
+      ? Math.min(previousStart, incomingStart)
+      : previousStart || incomingStart || undefined,
+    endTime: Math.max(previousEnd, incomingEnd) || undefined,
+    wasStreaming: Boolean(
+      previous?.wasStreaming ||
+      previous?.isStreaming ||
+      previous?.isLiveTyping ||
+      incoming?.wasStreaming ||
+      incoming?.isStreaming ||
+      incoming?.isLiveTyping
+    ),
+  };
+};
+
+const dedupeFeedLogs = (logs: any[]) => {
+  const deduped: any[] = [];
+  const stableIndexes = new Map<string, number>();
+  const userBoundaryIndexes = new Map<string, number>();
+  let semanticIndexes = new Map<string, number>();
+
+  logs.forEach((log: any) => {
+    if (!log) return;
+    const runId = String(log.runId || log.turnId || '').trim();
+    const stableId = log._traceIdx ?? log.traceId ?? log.id ?? null;
+    const stableType = log.type === 'tool_call' ? 'command' : String(log.type || '');
+    const stableKey = stableId === null || stableId === undefined
+      ? ''
+      : `${ runId }::${ String(stableId) }::${ stableType }`;
+
+    if (stableKey && stableIndexes.has(stableKey)) {
+      const index = stableIndexes.get(stableKey)!;
+      deduped[index] = mergeDuplicateFeedLog(deduped[index], log);
+      return;
+    }
+
+    if (log.type === 'user_action') {
+      const userBoundaryKey = [
+        runId,
+        String(log.source || 'human').trim().toLowerCase(),
+        normalizeTraceText(log.text),
+      ].join('::');
+      const priorBoundaryIndex = userBoundaryIndexes.get(userBoundaryKey);
+      if (priorBoundaryIndex !== undefined) {
+        const priorBoundary = deduped[priorBoundaryIndex];
+        const priorIsOptimistic = priorBoundary?._traceIdx === undefined || priorBoundary?._traceIdx === null;
+        const incomingIsOptimistic = log._traceIdx === undefined || log._traceIdx === null;
+        if (priorIsOptimistic || incomingIsOptimistic) {
+          deduped[priorBoundaryIndex] = mergeDuplicateFeedLog(priorBoundary, log);
+          if (stableKey) stableIndexes.set(stableKey, priorBoundaryIndex);
+          return;
+        }
+      }
+      const previous = deduped[deduped.length - 1];
+      const sameOptimisticBoundary = previous?.type === 'user_action' &&
+        String(previous.runId || previous.turnId || '').trim() === runId &&
+        String(previous.source || 'human') === String(log.source || 'human') &&
+        String(previous.text || '').trim() === String(log.text || '').trim();
+      if (sameOptimisticBoundary) {
+        deduped[deduped.length - 1] = mergeDuplicateFeedLog(previous, log);
+        if (stableKey) stableIndexes.set(stableKey, deduped.length - 1);
+        return;
+      }
+      semanticIndexes = new Map();
+      userBoundaryIndexes.set(userBoundaryKey, deduped.length);
+    }
+
+    const normalizedText = normalizeTraceText(log.text || log.question || log.secondary);
+    const owner = String(log.subAgentChatId || log.subAgentId || log.subAgent || log.agentName || 'main');
+    let semanticKey = '';
+    if (normalizedText && ['thought_stream', 'work_note', 'autonomy_proxy_status'].includes(log.type)) {
+      // Providers sometimes promote the same narration from thought_stream to
+      // work_note (or Proxy status) with a new type/ID. It is still one visible
+      // phase, not two consecutive rows.
+      semanticKey = `narrative::${ owner }::${ normalizedText }`;
+    } else if (
+      normalizedText &&
+      (log.isLive || log._instant) &&
+      ['command', 'tool_call', 'exploration', 'file_edit', 'progress', 'browser', 'communication'].includes(log.type)
+    ) {
+      const semanticType = log.type === 'tool_call' ? 'command' : log.type;
+      semanticKey = `live-action::${ semanticType }::${ normalizedText }::${ String(log.filepath || log.filename || log.command || '') }`;
+    } else if (log.type === 'answer' && normalizedText && (log.isLive || log.isStreaming || log.isLiveTyping)) {
+      semanticKey = `answer::${ String(log.answerId || normalizedText) }`;
+    }
+
+    if (semanticKey && semanticIndexes.has(semanticKey)) {
+      const index = semanticIndexes.get(semanticKey)!;
+      deduped[index] = mergeDuplicateFeedLog(deduped[index], log);
+      if (stableKey) stableIndexes.set(stableKey, index);
+      return;
+    }
+
+    const index = deduped.length;
+    deduped.push(log);
+    if (stableKey) stableIndexes.set(stableKey, index);
+    if (semanticKey) semanticIndexes.set(semanticKey, index);
+  });
+
+  return deduped;
+};
 
 const isNarrationThought = (value: any) => {
   const text = String(value || '').trim();
@@ -841,7 +985,7 @@ const RENDER_RELEVANT_LOG_FIELDS = [
   'id', '_traceIdx', 'type', 'text', 'secondary', 'output', 'content',
   'timestamp', 'startTime', 'endTime', 'isStreaming', 'isLiveTyping',
   'wasStreaming', 'isLive', 'answerId', 'spokenText', 'noteId', 'thoughtId',
-  'subAgent', 'subAgentId', 'agentName', 'status', 'progress', 'error',
+  'subAgent', 'subAgentId', 'subAgentChatId', 'agentName', 'status', 'progress', 'error',
   'question', 'mode', 'options', 'questions', 'context', 'defaultValue',
   'urgent', 'responseKey', 'answeredWith', 'answeredAt', 'attachments',
   'filename', 'fileName', 'filepath', 'filePath', 'path', 'preview',
@@ -903,8 +1047,8 @@ const ChatFeedMessageGroup = React.memo(({
   isSubAgentTab: boolean;
   setPreviewUserMessage: (msg: { text: string; index: number } | null) => void;
 }) => {
-  // Latch ref: once finalAnswer is computed as non-null for this group,
-  // never let a transient polling race blank the answer bubble.
+  // Retain only a fuller snapshot of an answer that is still present. An
+  // explicit cancellation or turn replacement must be able to clear it.
   const lastKnownAnswerRef = React.useRef<any>(null);
   // Reset latch when a genuinely new group mounts (groupIdx changes means a new turn)
   const lastGroupIdxRef = React.useRef(groupIdx);
@@ -1005,7 +1149,16 @@ const ChatFeedMessageGroup = React.memo(({
     !(l.type === 'command' && l.isLive) &&
     !isHiddenStatusOnlyLog(l)
   );
-  const standardLogs = rawStandardLogs.map((log: any, index: number) => {
+  const standardLogs = rawStandardLogs.map((rawLog: any, index: number) => {
+    const log = rawLog.type === 'thought' && !isInternalStatusThought(rawLog)
+      ? { ...rawLog, type: 'thought_stream', isStreaming: false, streamState: 'closed' }
+      : rawLog.type === 'tool_call'
+        ? {
+          ...rawLog,
+          type: 'command',
+          text: String(rawLog.text || rawLog.action || rawLog.toolName || rawLog.tool || rawLog.name || 'Tool call'),
+        }
+        : rawLog;
     const turnIsActive = isThinkingTurn || isLiveSessionActive;
     const isProvisionalAnswer =
       log.type === 'answer' &&
@@ -1099,12 +1252,22 @@ const ChatFeedMessageGroup = React.memo(({
     const cached = lastKnownAnswerRef.current;
     const newText = finalAnswer.text || '';
     const cachedText = cached?.text || '';
-    // Only update cache if the new answer is longer, or we're not thinking (settled)
-    if (!isThinkingTurn || newText.length >= cachedText.length) {
+    const sameAnswer = Boolean(
+      cached &&
+      (
+        (cached.answerId && finalAnswer.answerId && cached.answerId === finalAnswer.answerId) ||
+        (!cached.answerId && !finalAnswer.answerId)
+      )
+    );
+    if (!sameAnswer || !isThinkingTurn || newText.length >= cachedText.length) {
       lastKnownAnswerRef.current = finalAnswer;
     }
+  } else {
+    lastKnownAnswerRef.current = null;
   }
-  const displayFinalAnswer = finalAnswer ?? lastKnownAnswerRef.current;
+  const displayFinalAnswer = finalAnswer === null
+    ? null
+    : lastKnownAnswerRef.current ?? finalAnswer;
   // Only a real active stream may animate token-by-token. A settled answer can
   // be delivered again by polling or history restoration, but must render once
   // without replaying its entrance animation.
@@ -1119,7 +1282,10 @@ const ChatFeedMessageGroup = React.memo(({
   // Status/interruptions have their own professional notice. Keeping them in
   // the thinking timeline creates an empty "Thinking" pill because plain
   // internal status thoughts are not actionable timeline rows.
-  const rawWorkLogs = [...displayProcessLogs, ...tailLogs].filter(log => !isInternalStatusThought(log));
+  const rawWorkLogs = [...displayProcessLogs, ...tailLogs].filter(log =>
+    !isInternalStatusThought(log) &&
+    RENDERABLE_TIMELINE_TYPES.has(String(log?.type || ''))
+  );
   const isAskUserInteractionLog = (log: any) =>
     log?.type === 'ask_user' &&
     typeof log.question === 'string' &&
@@ -1206,7 +1372,7 @@ const ChatFeedMessageGroup = React.memo(({
           // Work-note ids are regenerated by some live runtimes. The visible
           // content and owning agent form the stable UI identity, so repeated
           // delivery cannot create duplicate "Working" notes.
-          const key = `${ log.subAgent || log.agentName || '' }::${ text }`;
+          const key = `${ log.subAgentChatId || log.subAgentId || log.subAgent || log.agentName || '' }::${ text }`;
           if (seenWorkNoteKeys.has(key)) isValid = false;
           else seenWorkNoteKeys.add(key);
         }
@@ -1226,6 +1392,13 @@ const ChatFeedMessageGroup = React.memo(({
 
   if (currentThoughts.length > 0 || groupIsThinking) {
     segments.push({ type: 'thoughts', logs: currentThoughts });
+  }
+
+  // Helper-only groups (done markers, raw tool results, retry bookkeeping,
+  // cancelled placeholders) have no visual row. Do not leave an empty
+  // assistant container and its margin in the primary transcript.
+  if (segments.length === 0 && !agentRunNotice && !displayFinalAnswer) {
+    return null;
   }
 
   return (
@@ -1366,12 +1539,21 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
     const nextGroups: any[][] = [];
     let currentGroup: any[] = [];
     let currentTurnIdentity = '';
+    let hasUserBoundary = false;
+    const normalizedLogs = dedupeFeedLogs(traceLogs);
+    const containsUserBoundary = normalizedLogs.some(log => log?.type === 'user_action');
 
-    traceLogs.forEach(log => {
+    normalizedLogs.forEach(log => {
       if (log.type === 'user_action') {
-        if (currentGroup.length > 0) nextGroups.push(currentGroup);
+        // Startup/reconnect helper events can precede the authoritative user
+        // boundary. If this conversation has a real user turn, those orphaned
+        // preamble rows must not become a separate assistant/thought group.
+        if (currentGroup.length > 0 && (hasUserBoundary || !containsUserBoundary)) {
+          nextGroups.push(currentGroup);
+        }
         nextGroups.push([log]);
         currentGroup = [];
+        hasUserBoundary = true;
         currentTurnIdentity = String(log.turnId || log.runId || '').trim();
       } else {
         const logTurnIdentity = String(log.turnId || log.runId || '').trim();
@@ -1708,7 +1890,45 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
           className={`eterx-chat-feed relative flex-1 min-h-0 w-full overflow-hidden ${ isEmptyNewChatFeed ? 'eterx-chat-feed-empty' : '' }`}
           data-compressed={isCompressed ? 'true' : 'false'}
         >
-          {/* Turn connection navigation indicator removed */}
+          {userTurns.length > 1 && (
+            <motion.div
+              ref={navContainerRef}
+              role="navigation"
+              aria-label="Conversation turns"
+              initial={{ opacity: 0, x: -8 }}
+              animate={{ opacity: 1, x: 0 }}
+              transition={{ duration: 0.24, ease: 'easeOut' }}
+              className="eterx-chat-turns-nav pointer-events-none absolute inset-y-0 left-2 z-[60] flex items-center"
+            >
+              <div className="pointer-events-auto flex max-h-[min(52vh,460px)] flex-col gap-0 overflow-y-auto overscroll-contain py-3 pl-1.5 pr-1.5 scroll-smooth [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                {userTurns.map((turn, k) => (
+                  <motion.button
+                    type="button"
+                    key={turn.idx}
+                    data-turn-index={k}
+                    aria-label={`Go to turn ${ k + 1 }: ${ turn.userText.slice(0, 80) }`}
+                    aria-current={activeTurnIdx === k ? 'step' : undefined}
+                    className="group relative flex min-h-[18px] w-[34px] shrink-0 items-center justify-center rounded-lg py-1 text-left outline-none transition-colors duration-150 hover:bg-[var(--muted)] focus-visible:bg-[var(--muted)] focus-visible:ring-2 focus-visible:ring-[var(--accent)]/30"
+                    whileHover={{ x: 2 }}
+                    whileTap={{ scale: 0.94 }}
+                    transition={{ type: 'spring', stiffness: 520, damping: 32 }}
+                    onMouseEnter={(event) => setHoveredTurn({ turn, rect: event.currentTarget.getBoundingClientRect() })}
+                    onMouseLeave={() => setHoveredTurn(null)}
+                    onFocus={(event) => setHoveredTurn({ turn, rect: event.currentTarget.getBoundingClientRect() })}
+                    onBlur={() => setHoveredTurn(null)}
+                    onClick={() => navigateToTurn(turn, k)}
+                  >
+                    <span
+                      className={`eterx-chat-turns-dash h-[2px] rounded-full transition-[width,background-color,opacity] duration-200 ease-out ${ activeTurnIdx === k
+                          ? 'bg-[var(--sidebar-strong-text)] w-[22px] opacity-100'
+                          : 'bg-[var(--sidebar-icon)] w-[12px] opacity-30 group-hover:w-[18px] group-hover:opacity-60'
+                        }`}
+                    />
+                  </motion.button>
+                ))}
+              </div>
+            </motion.div>
+          )}
           <div
             id="chat-container"
             className={`eterx-chat-feed-scroll relative h-full w-full flex flex-col overflow-y-auto overflow-x-hidden pb-40 eterx-scrollbar ${ isCompressed ? 'px-4 sm:px-8' : 'px-4 sm:px-14'
@@ -1780,21 +2000,6 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
               </div>
             )}
           </div>
-          {showScrollBottom && traceLogs.length > 0 && (
-            <button
-              type="button"
-              aria-label="Jump to latest message"
-              onClick={() => {
-                const container = scrollContainerRef.current;
-                if (!container) return;
-                shouldAutoFollowRef.current = true;
-                container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
-              }}
-              className="eterx-chat-scroll-latest absolute bottom-6 left-1/2 -translate-x-1/2 z-40 flex h-9 w-9 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--background)]/95 p-0 text-[var(--muted-foreground)] shadow-[0_10px_28px_rgba(0,0,0,0.18)] backdrop-blur-xl transition-colors hover:bg-[var(--muted)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/30"
-            >
-              <ChevronDown className="h-4 w-4" />
-            </button>
-          )}
         </div>
       </div>
       <AnimatePresence>

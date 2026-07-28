@@ -1,6 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { interAgentMailbox, type MessageType } from '@/lib/agent/roles/inter_agent_comm';
-import { cleanString, jsonError, parseInteger, readJsonObject, rejectCrossOrigin } from '../../agent/_shared';
+import {
+  attachAgentApiSessionCookie,
+  cleanString,
+  getOrCreateAgentApiSession,
+  isSafeChatId,
+  parseInteger,
+  readJsonObject,
+  rejectCrossOrigin,
+  requireChatOwner,
+} from '../../agent/_shared';
 
 /**
  * Inter-Agent Communication API
@@ -73,6 +82,8 @@ function buildMetadata(body: Record<string, any>, fallback?: {
     confidence,
     replyTo: fallback?.replyTo,
     deliverAfter: deliverAt ?? deliverAfterMs,
+    subAgentId: cleanString(body.subAgentId, 240) || undefined,
+    subAgentChatId: cleanString(body.subAgentChatId, 360) || undefined,
   };
 }
 
@@ -98,15 +109,28 @@ function formatMessage(message: any) {
     deliverAfter: message.metadata?.deliverAfter,
     scheduled: typeof message.metadata?.deliverAfter === 'number' ? message.metadata.deliverAfter > Date.now() : false,
     confidence: message.metadata?.confidence,
+    subAgentId: message.metadata?.subAgentId,
+    subAgentChatId: message.metadata?.subAgentChatId,
   };
 }
 
 export async function GET(request: NextRequest) {
+  let session: ReturnType<typeof getOrCreateAgentApiSession> | null = null;
   try {
+    const originError = rejectCrossOrigin(request);
+    if (originError) return originError;
+    session = getOrCreateAgentApiSession(request);
     const { searchParams } = new URL(request.url);
-    const projectId = cleanString(searchParams.get('projectId') || 'default', 120) || 'default';
+    const projectId = cleanString(searchParams.get('projectId') || '', 180);
     const agentName = cleanString(searchParams.get('agentName') || '', 120);
+    const subAgentChatId = cleanString(searchParams.get('subAgentChatId') || '', 360);
     const action = searchParams.get('action') || 'status';
+    const respond = (value: any, init?: ResponseInit) =>
+      attachAgentApiSessionCookie(NextResponse.json(value, init), session!);
+
+    if (!isSafeChatId(projectId)) return respond({ success: false, error: 'Valid projectId is required' }, { status: 400 });
+    const ownerError = requireChatOwner(projectId, session.sessionId);
+    if (ownerError) return attachAgentApiSessionCookie(ownerError, session);
 
     if (action === 'status') {
       const summaries = interAgentMailbox.getMailboxSummaries(projectId);
@@ -132,7 +156,7 @@ export async function GET(request: NextRequest) {
           latestMessage: mailbox?.latestMessage,
         };
       });
-      return NextResponse.json({
+      return respond({
         success: true,
         agents,
         mailboxes: summaries,
@@ -147,8 +171,8 @@ export async function GET(request: NextRequest) {
       const messages = interAgentMailbox.checkMailbox(projectId, agentName, {
         unreadOnly,
         limit,
-      });
-      return NextResponse.json({
+      }).filter(message => !subAgentChatId || message.metadata?.subAgentChatId === subAgentChatId);
+      return respond({
         success: true,
         agentName,
         messages: messages.map(formatMessage),
@@ -168,8 +192,8 @@ export async function GET(request: NextRequest) {
         from: from || undefined,
         to: to || undefined,
         limit,
-      });
-      return NextResponse.json({
+      }).filter(message => !subAgentChatId || message.metadata?.subAgentChatId === subAgentChatId);
+      return respond({
         success: true,
         agentName: agentName || undefined,
         messages: messages.map(formatMessage),
@@ -180,15 +204,16 @@ export async function GET(request: NextRequest) {
     if (action === 'thread') {
       const messageId = cleanString(searchParams.get('messageId') || '', 120);
       if (!messageId) {
-        return NextResponse.json({ success: false, error: 'Required: messageId' }, { status: 400 });
+        return respond({ success: false, error: 'Required: messageId' }, { status: 400 });
       }
       const normalizedAgent = agentName.toLowerCase();
       const messages = interAgentMailbox.getThread(projectId, messageId)
         .filter(message => !normalizedAgent ||
           message.to === '*' ||
           message.from.toLowerCase() === normalizedAgent ||
-          message.to.toLowerCase() === normalizedAgent);
-      return NextResponse.json({
+          message.to.toLowerCase() === normalizedAgent)
+        .filter(message => !subAgentChatId || message.metadata?.subAgentChatId === subAgentChatId);
+      return respond({
         success: true,
         messageId,
         messages: messages.map(formatMessage),
@@ -198,7 +223,7 @@ export async function GET(request: NextRequest) {
 
     if (action === 'context' && agentName) {
       const context = interAgentMailbox.buildMailboxContext(projectId, agentName);
-      return NextResponse.json({
+      return respond({
         success: true,
         agentName,
         context,
@@ -206,32 +231,41 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    return NextResponse.json({ success: false, error: 'Invalid action. Use: status, check, context, history, thread' }, { status: 400 });
+    return respond({ success: false, error: 'Invalid action. Use: status, check, context, history, thread' }, { status: 400 });
   } catch (error: any) {
-    return NextResponse.json({ success: false, error: error.message }, { status: 500 });
+    const response = NextResponse.json({ success: false, error: error.message }, { status: 500 });
+    return session ? attachAgentApiSessionCookie(response, session) : response;
   }
 }
 
 export async function POST(request: NextRequest) {
+  let session: ReturnType<typeof getOrCreateAgentApiSession> | null = null;
   try {
     const originError = rejectCrossOrigin(request);
     if (originError) return originError;
+    session = getOrCreateAgentApiSession(request);
 
     const body = await readJsonObject(request);
     const action = cleanString(body.action, 40);
-    const projectId = cleanString(body.projectId || 'default', 120) || 'default';
+    const projectId = cleanString(body.projectId || '', 180);
     const from = cleanString(body.from, 120);
     const to = cleanString(body.to, 120);
     const type = cleanString(body.type, 60);
     const subject = cleanString(body.subject, 200);
     const messageBody = cleanString(body.body, 20_000);
+    const respond = (value: any, init?: ResponseInit) =>
+      attachAgentApiSessionCookie(NextResponse.json(value, init), session!);
+
+    if (!isSafeChatId(projectId)) return respond({ success: false, error: 'Valid projectId is required' }, { status: 400 });
+    const ownerError = requireChatOwner(projectId, session.sessionId);
+    if (ownerError) return attachAgentApiSessionCookie(ownerError, session);
 
     if (action === 'send' || action === 'schedule') {
       if (!from || !to || !subject || !messageBody) {
-        return NextResponse.json({ success: false, error: 'Required: from, to, subject, body' }, { status: 400 });
+        return respond({ success: false, error: 'Required: from, to, subject, body' }, { status: 400 });
       }
       if (action === 'schedule' && typeof body.deliverAfterMs !== 'number' && typeof body.deliverAt !== 'number') {
-        return NextResponse.json({ success: false, error: 'Required for schedule: deliverAfterMs or deliverAt' }, { status: 400 });
+        return respond({ success: false, error: 'Required for schedule: deliverAfterMs or deliverAt' }, { status: 400 });
       }
       const msg = interAgentMailbox.send({
         from,
@@ -242,7 +276,7 @@ export async function POST(request: NextRequest) {
         body: messageBody,
         metadata: buildMetadata(body),
       });
-      return NextResponse.json({
+      return respond({
         success: true,
         messageId: msg.id,
         scheduled: action === 'schedule',
@@ -253,7 +287,7 @@ export async function POST(request: NextRequest) {
 
     if (action === 'broadcast') {
       if (!from || !subject || !messageBody) {
-        return NextResponse.json({ success: false, error: 'Required: from, subject, body' }, { status: 400 });
+        return respond({ success: false, error: 'Required: from, subject, body' }, { status: 400 });
       }
       const broadcastDeliveryMode = cleanString(body.deliveryMode, 40)
         ? normalizeDeliveryMode(cleanString(body.deliveryMode, 40), 'defer')
@@ -269,20 +303,20 @@ export async function POST(request: NextRequest) {
           deliveryMode: broadcastDeliveryMode,
         }),
       });
-      return NextResponse.json({ success: true, messageId: msg.id, broadcast: true, message: formatMessage(msg) });
+      return respond({ success: true, messageId: msg.id, broadcast: true, message: formatMessage(msg) });
     }
 
     if (action === 'reply') {
       const replyToId = cleanString(body.replyToId || body.messageId, 120);
       if (!from || !replyToId || !messageBody) {
-        return NextResponse.json({ success: false, error: 'Required: from, replyToId, body' }, { status: 400 });
+        return respond({ success: false, error: 'Required: from, replyToId, body' }, { status: 400 });
       }
       const original = interAgentMailbox.getProjectMessages(projectId, {
         agentName: from,
         limit: 1000,
       }).find(message => message.id === replyToId);
       if (!original) {
-        return NextResponse.json({ success: false, error: `Message ${replyToId} not found` }, { status: 404 });
+        return respond({ success: false, error: `Message ${replyToId} not found` }, { status: 404 });
       }
       const msg = interAgentMailbox.send({
         from,
@@ -297,12 +331,12 @@ export async function POST(request: NextRequest) {
           replyTo: replyToId,
         }),
       });
-      return NextResponse.json({ success: true, messageId: msg.id, to: original.from, message: formatMessage(msg) });
+      return respond({ success: true, messageId: msg.id, to: original.from, message: formatMessage(msg) });
     }
 
     if (action === 'ask_main') {
       if (!from || !subject || !messageBody) {
-        return NextResponse.json({ success: false, error: 'Required: from, subject, body' }, { status: 400 });
+        return respond({ success: false, error: 'Required: from, subject, body' }, { status: 400 });
       }
       const msg = interAgentMailbox.send({
         from,
@@ -317,12 +351,12 @@ export async function POST(request: NextRequest) {
           requiresResponse: true,
         }),
       });
-      return NextResponse.json({ success: true, messageId: msg.id, to: 'Main', message: formatMessage(msg) });
+      return respond({ success: true, messageId: msg.id, to: 'Main', message: formatMessage(msg) });
     }
 
     if (action === 'handoff_main') {
       if (!from || !subject || !messageBody) {
-        return NextResponse.json({ success: false, error: 'Required: from, subject, body' }, { status: 400 });
+        return respond({ success: false, error: 'Required: from, subject, body' }, { status: 400 });
       }
       const msg = interAgentMailbox.send({
         from,
@@ -336,23 +370,23 @@ export async function POST(request: NextRequest) {
           requiresResponse: false,
         }),
       });
-      return NextResponse.json({ success: true, messageId: msg.id, to: 'Main', message: formatMessage(msg) });
+      return respond({ success: true, messageId: msg.id, to: 'Main', message: formatMessage(msg) });
     }
 
     if (action === 'markRead' || action === 'mark_read') {
       const agentName = cleanString(body.agentName, 120);
       const messageIds = Array.isArray(body.messageIds) ? body.messageIds.slice(0, 100).map((item: any) => cleanString(item, 120)).filter(Boolean) : undefined;
       if (!agentName) {
-        return NextResponse.json({ success: false, error: 'Required: agentName' }, { status: 400 });
+        return respond({ success: false, error: 'Required: agentName' }, { status: 400 });
       }
       const count = interAgentMailbox.markRead(projectId, agentName, messageIds);
-      return NextResponse.json({ success: true, markedRead: count });
+      return respond({ success: true, markedRead: count });
     }
 
     if (action === 'register') {
       const agentName = cleanString(body.agentName, 120);
       if (!agentName) {
-        return NextResponse.json({ success: false, error: 'Required: agentName' }, { status: 400 });
+        return respond({ success: false, error: 'Required: agentName' }, { status: 400 });
       }
       interAgentMailbox.registerAgent(projectId, agentName, {
         role: body.role === 'main' || body.role === 'sub_agent' ? body.role : undefined,
@@ -360,11 +394,12 @@ export async function POST(request: NextRequest) {
         status: cleanString(body.status, 80) || undefined,
         progress: cleanString(body.progress, 1000) || undefined,
       });
-      return NextResponse.json({ success: true, registered: agentName });
+      return respond({ success: true, registered: agentName });
     }
 
-    return jsonError('Invalid action. Use: send, schedule, reply, broadcast, ask_main, handoff_main, markRead, mark_read, register', 400);
+    return respond({ success: false, error: 'Invalid action. Use: send, schedule, reply, broadcast, ask_main, handoff_main, markRead, mark_read, register' }, { status: 400 });
   } catch (error: any) {
-    return NextResponse.json({ success: false, error: error.message }, { status: 500 });
+    const response = NextResponse.json({ success: false, error: error.message }, { status: 500 });
+    return session ? attachAgentApiSessionCookie(response, session) : response;
   }
 }

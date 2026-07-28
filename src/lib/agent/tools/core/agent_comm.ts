@@ -23,6 +23,8 @@ const formatAgentMessage = (m: any) => ({
   deliverAfter: m.metadata?.deliverAfter,
   scheduled: typeof m.metadata?.deliverAfter === 'number' ? m.metadata.deliverAfter > Date.now() : false,
   confidence: m.metadata?.confidence,
+  subAgentId: m.metadata?.subAgentId,
+  subAgentChatId: m.metadata?.subAgentChatId,
   ageSeconds: Math.round((Date.now() - m.timestamp) / 1000),
 });
 
@@ -31,7 +33,9 @@ const buildMessageMetadata = (input: any, defaults?: {
   deliveryMode?: 'interrupt' | 'defer' | 'silent';
   requiresResponse?: boolean;
   replyTo?: string;
-}) => {
+  subAgentId?: string;
+  subAgentChatId?: string;
+}, context?: any) => {
   const deliverAfterMs = typeof input.deliverAfterMs === 'number'
     ? Date.now() + Math.max(0, Math.min(input.deliverAfterMs, 86_400_000))
     : undefined;
@@ -49,6 +53,8 @@ const buildMessageMetadata = (input: any, defaults?: {
     confidence: typeof input.confidence === 'number' ? input.confidence : undefined,
     replyTo: defaults?.replyTo,
     deliverAfter: deliverAt ?? deliverAfterMs,
+    subAgentId: context?.subAgentId || defaults?.subAgentId,
+    subAgentChatId: context?.subAgentChatId || defaults?.subAgentChatId,
   };
 };
 
@@ -145,7 +151,7 @@ WHEN TO USE:
             type: (input.type || 'info_share') as MessageType,
             subject: input.subject.substring(0, 100),
             body: input.body,
-            metadata: buildMessageMetadata(input),
+            metadata: buildMessageMetadata(input, undefined, context),
           });
           return {
             success: true,
@@ -202,7 +208,9 @@ WHEN TO USE:
               priority: input.priority || original.metadata?.priority || 'normal',
               deliveryMode: input.deliveryMode || original.metadata?.deliveryMode || 'defer',
               replyTo: input.replyToId,
-            }),
+              subAgentId: original.metadata?.subAgentId,
+              subAgentChatId: original.metadata?.subAgentChatId,
+            }, context),
           });
           return {
             success: true,
@@ -224,7 +232,7 @@ WHEN TO USE:
             body: input.body,
             metadata: buildMessageMetadata(input, {
               deliveryMode: input.deliveryMode || ((input.priority === 'critical' || input.type === 'alert') ? 'interrupt' : 'defer'),
-            }),
+            }, context),
           });
           return {
             success: true,
@@ -248,7 +256,7 @@ WHEN TO USE:
               priority: input.priority || 'high',
               deliveryMode: input.deliveryMode || 'interrupt',
               requiresResponse: input.requiresResponse ?? true,
-            }),
+            }, context),
           });
           return {
             success: true,
@@ -271,7 +279,7 @@ WHEN TO USE:
             metadata: buildMessageMetadata(input, {
               deliveryMode: input.deliveryMode || 'defer',
               requiresResponse: input.requiresResponse ?? false,
-            }),
+            }, context),
           });
           return {
             success: true,

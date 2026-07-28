@@ -6730,9 +6730,10 @@ The first meaningful action group in a user turn needs an update. Later boundari
         const normalizedSig = this.normalizeCallSignature(call.name, args);
         const subAgentName = String((context as any).agentName || (context as any).subAgentName || '').trim();
         const subAgentProjectId = String((context as any).projectId || (context as any).chatId || '').trim();
+        const subAgentId = String((context as any).subAgentId || '').trim();
 
         if ((context as any).isSubAgent && subAgentName && subAgentProjectId) {
-          if (isCancelled(subAgentProjectId, subAgentName)) {
+          if (isCancelled(subAgentProjectId, subAgentName, subAgentId || undefined)) {
             return {
               functionResponse: {
                 name: call.name,
@@ -6742,9 +6743,9 @@ The first meaningful action group in a user turn needs an update. Later boundari
             };
           }
 
-          await awaitIfPaused(subAgentProjectId, subAgentName);
+          await awaitIfPaused(subAgentProjectId, subAgentName, subAgentId || undefined);
 
-          if (isCancelled(subAgentProjectId, subAgentName)) {
+          if (isCancelled(subAgentProjectId, subAgentName, subAgentId || undefined)) {
             return {
               functionResponse: {
                 name: call.name,
