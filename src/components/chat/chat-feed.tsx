@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { createPortal } from 'react-dom';
-import { Copy, RefreshCw, ChevronDown, FileText, Check, Clock, ChevronRight, MessageSquarePlus, Activity, Minimize2, CornerDownLeft, CircleStop, TriangleAlert, Sparkles } from 'lucide-react';
+import { Copy, RefreshCw, ChevronDown, FileText, Check, Clock, ChevronRight, MessageSquarePlus, Activity, Minimize2, CornerDownLeft, CircleStop, TriangleAlert, ListCollapse } from 'lucide-react';
 import { ThinkingProcess, ProfessionalThought } from '../chat/thought-sequence';
 import { AskUserPrompt } from '../chat/ask-user-prompt';
 import { Tooltip } from '../ui/tooltip';
@@ -9,7 +9,7 @@ import { Shimmer } from '../ui/shimmer';
 import { notifyAgentFaceTraceLog } from './agent-face-controller';
 import ReactMarkdown from 'react-markdown';
 import { markdownComponents, normalizeMarkdownForRendering, remarkPlugins, rehypePlugins } from './markdown-renderer';
-import { isTerminalWorkTrace, isTurnWorkActive } from '../../lib/chat-feed-lifecycle';
+import { isTerminalWorkTrace, isTurnWorkActive, shouldRenderContextCompactionEvent } from '../../lib/chat-feed-lifecycle';
 
 interface ChatFeedProps {
   traceLogs: any[];
@@ -468,6 +468,7 @@ const RENDERABLE_TIMELINE_TYPES = new Set([
   'console_output',
   'ask_user',
   'tool_result_preview',
+  'context_compaction',
 ]);
 const USER_QUERY_PREVIEW_LIMIT = 520;
 const USER_QUERY_PREVIEW_LINES = 8;
@@ -695,6 +696,52 @@ const AgentRunStatusNotice = ({ notice }: { notice: AgentRunNotice }) => {
         <span className="font-semibold">{notice.title}.</span>{' '}
         <span className="eterx-agent-run-notice-detail">{notice.detail}</span>
       </span>
+    </div>
+  );
+};
+
+const ContextCompactionNotice = ({ log }: { log: any }) => {
+  const isCompacting = log?.phase === 'compacting';
+  const isRetrying = log?.phase === 'retrying';
+  const before = Number(log?.beforeTokens || 0);
+  const after = Number(log?.afterTokens || 0);
+  const detail = isRetrying
+    ? 'Run continuing · retry scheduled'
+    : !isCompacting && before > 0 && after > 0
+      ? `${Math.round(before / 1000)}k → ${Math.round(after / 1000)}k tokens`
+      : '';
+
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className="eterx-context-compaction my-3.5 flex w-full items-center gap-3.5 py-1 text-[13px] text-[var(--muted-foreground)]"
+    >
+      <span className={`h-px min-w-8 flex-1 bg-gradient-to-r from-transparent to-[var(--border)] ${isCompacting ? 'opacity-80' : 'opacity-55'}`} />
+      <span className="inline-flex min-w-0 shrink-0 items-center gap-2">
+        <ListCollapse
+          className={`h-4 w-4 shrink-0 ${isCompacting ? 'opacity-80' : 'opacity-65'}`}
+          strokeWidth={1.8}
+          aria-hidden="true"
+        />
+        <span className="font-medium tracking-[-0.01em]">
+          {isCompacting ? (
+            <Shimmer>Context automatically compacting</Shimmer>
+          ) : isRetrying ? (
+            <>
+              <span className="opacity-65">Context compaction </span>
+              <span>will retry</span>
+            </>
+          ) : (
+            <>
+              <span className="opacity-65">Context successfully </span>
+              <span>compacted</span>
+            </>
+          )}
+        </span>
+        {detail && <span className="hidden text-[11.5px] opacity-55 sm:inline">{detail}</span>}
+      </span>
+      <span className={`h-px min-w-8 flex-1 bg-gradient-to-l from-transparent to-[var(--border)] ${isCompacting ? 'opacity-80' : 'opacity-55'}`} />
     </div>
   );
 };
@@ -1062,6 +1109,7 @@ const RENDER_RELEVANT_LOG_FIELDS = [
   'message', 'detail', 'messageType', 'deliveryMode', 'deliverAfter', 'scheduled', 'updatedAt',
   'icon', 'iconCategory', 'size', '_autonomyProxy', '_streamingCancelled',
   '_autonomyCheckpoint', '_autonomyBoundaryFollowUp', '_connection', 'model', 'modelName',
+  'phase', 'compactionId', 'beforeTokens', 'afterTokens', 'contextWindow', 'modelProvider',
 ] as const;
 
 const haveSameNestedValue = (left: unknown, right: unknown) => {
@@ -1376,18 +1424,21 @@ const ChatFeedMessageGroup = React.memo(({
       preferredAskUserLogs.set(key, log);
     }
   });
-  const visibleWorkLogs = hasAskUserInteractionLog
+  const interactionFilteredWorkLogs = hasAskUserInteractionLog
     ? rawWorkLogs.filter((log: any) => {
       if (log.type !== 'ask_user') return true;
       if (!isAskUserInteractionLog(log)) return false;
       return preferredAskUserLogs.get(askUserKey(log)) === log;
     })
     : rawWorkLogs;
+  const visibleWorkLogs = interactionFilteredWorkLogs.filter((log: any, index: number, logs: any[]) =>
+    shouldRenderContextCompactionEvent(log, index, logs, isThinkingTurn)
+  );
   const hasStructuredWork = [...rawWorkLogs, ...liveCommandLogs].some((l: any) =>
     WORKFLOW_COUNT_TYPES.has(l.type) && !HIDDEN_HELPER_TYPES.has(l.type)
   );
 
-  const segments: { type: 'thoughts' | 'steering' | 'ask_user'; logs?: any[]; log?: any }[] = [];
+  const segments: { type: 'thoughts' | 'steering' | 'ask_user' | 'context'; logs?: any[]; log?: any }[] = [];
   let currentThoughts: any[] = [];
   const segmentIdentity = (seg: { logs?: any[]; log?: any }, fallback: number) => {
     const anchor = seg.log || seg.logs?.[0];
@@ -1405,7 +1456,13 @@ const ChatFeedMessageGroup = React.memo(({
   };
 
   visibleWorkLogs.forEach(log => {
-    if (log.type === 'steering_received') {
+    if (log.type === 'context_compaction') {
+      if (currentThoughts.length > 0) {
+        segments.push({ type: 'thoughts', logs: currentThoughts });
+        currentThoughts = [];
+      }
+      segments.push({ type: 'context', log });
+    } else if (log.type === 'steering_received') {
       if (currentThoughts.length > 0) {
         segments.push({ type: 'thoughts', logs: currentThoughts });
         currentThoughts = [];
@@ -1474,6 +1531,9 @@ const ChatFeedMessageGroup = React.memo(({
       className="eterx-chat-message-group w-full flex flex-col mb-8 scroll-m-20 relative"
     >
       {segments.map((seg, segIdx) => {
+        if (seg.type === 'context') {
+          return <ContextCompactionNotice key={`context-${groupIdx}-${segmentIdentity(seg, segIdx)}`} log={seg.log} />;
+        }
         if (seg.type === 'steering') {
           return <SteeringFeedCard key={`steer-${ groupIdx }-${ segmentIdentity(seg, segIdx) }`} log={seg.log} isCompressed={isCompressed} onEdit={onEditUserMessage} />;
         }

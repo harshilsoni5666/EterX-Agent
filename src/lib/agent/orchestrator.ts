@@ -3,7 +3,7 @@ import { globalMemoryManager } from './memory/store';
 import { memoryV2 } from './memory/v2';
 import { getSynapseGraphForChat, flushSynapseGraph } from './memory/synapse-graph';
 import { AgentResponse, AgentTask, ProjectContext } from './schemas';
-import { globalGeminiClient, createIsolatedClient } from './Agent';
+import { createIsolatedClient } from './Agent';
 import { globalSubAgentSpawner, resetCancelFlag } from './roles/sub_agent';
 import { globalSessionManager } from './session';
 // Critic removed — was causing false rejections on user-stopped outputs and wasting execution time
@@ -15,6 +15,7 @@ import {
   normalizeThinkingLevelForModel,
   resolveModelName,
   type MainAgentMode,
+  type MainAgentProvider,
   type MainAgentThinkingLevel,
 } from './model-routing';
 import type { ScopedRuntimeSettings } from './runtime-api-keys';
@@ -67,6 +68,12 @@ type RuntimeProjectContext = ProjectContext & {
   selectedModelName?: string;
   selectedModelProvider?: string;
   strictModelSelection?: boolean;
+  contextCompaction?: {
+    enabled?: boolean;
+    model?: { provider?: string; modelId?: string } | null;
+    customInstructions?: string;
+    activeContextWindow?: number;
+  };
   selectedThinkingLevel?: MainAgentThinkingLevel;
   terminalShell?: string;
   runtimeSettings?: ScopedRuntimeSettings | null;
@@ -438,6 +445,7 @@ export class AgentOrchestrator {
       context.telegram = pinnedContext.telegram;
       context.selectedModelProvider = String(pinnedContext.selectedModelProvider || '').trim() || undefined;
       context.strictModelSelection = pinnedContext.strictModelSelection === true;
+      context.contextCompaction = pinnedContext.contextCompaction;
       context.abortSignal = pinnedContext.abortSignal instanceof AbortSignal ? pinnedContext.abortSignal : undefined;
     }
 
@@ -508,9 +516,20 @@ export class AgentOrchestrator {
     const resolvedModelConfig = getMainAgentModelConfig(effectiveMode, runtimeSettings);
     const explicitProvider = String(pinnedContext?.selectedModelProvider || '').trim();
     const explicitModel = String(pinnedContext?.selectedModelName || '').trim();
-    const modelConfig = hasExplicitModel && explicitProvider === resolvedModelConfig.provider
-      ? { ...resolvedModelConfig, modelName: explicitModel }
+    const validExplicitProvider = new Set<MainAgentProvider>([
+      'gemini', 'mistral', 'openai', 'openrouter', 'anthropic', 'groq',
+    ]).has(explicitProvider as MainAgentProvider);
+    const modelConfig = hasExplicitModel && validExplicitProvider
+      ? {
+          ...resolvedModelConfig,
+          provider: explicitProvider as MainAgentProvider,
+          modelName: explicitModel,
+        }
       : resolvedModelConfig;
+    const routedMode: MainAgentMode =
+      hasExplicitModel && validExplicitProvider && explicitProvider !== 'gemini'
+        ? explicitProvider as MainAgentMode
+        : effectiveMode;
     const modelThinkingCapability = normalizeModelThinkingCapabilities(pinnedContext?.modelThinkingCapability);
     const selectedThinkingLevel = normalizeThinkingLevelForModel(
       pinnedContext?.thinkingLevel,
@@ -518,10 +537,10 @@ export class AgentOrchestrator {
       modelConfig.modelName,
       modelThinkingCapability,
     );
-    context.selectedModelMode = effectiveMode;
+    context.selectedModelMode = routedMode;
     context.selectedModelName = modelConfig.modelName;
     context.selectedModelProvider = modelConfig.provider;
-    context.strictModelSelection = hasExplicitModel && pinnedContext?.strictModelSelection === true;
+    context.strictModelSelection = hasExplicitModel && validExplicitProvider && pinnedContext?.strictModelSelection === true;
     context.selectedThinkingLevel = selectedThinkingLevel;
     (context as any).modelThinkingCapability = modelThinkingCapability;
 
@@ -586,7 +605,7 @@ export class AgentOrchestrator {
         if (!flowResult.success) throw new Error(flowResult.message || 'Workflow execution failed.');
         finalAnswer = flowResult.finalOutput || 'Workflow completed without a text response.';
       } else if (modelConfig.provider !== 'gemini') {
-        const routedClient = createIsolatedClient(projectId, effectiveMode, runtimeSettings);
+        const routedClient = createIsolatedClient(projectId, routedMode, runtimeSettings);
         finalAnswer = (await routedClient.executeMessageLoop(
           context,
           effectiveRequest,
@@ -598,7 +617,7 @@ export class AgentOrchestrator {
         effectiveApiKey = '';
       } else if (leasedApiKey || runtimeSettings) {
         // Isolated client — recreate with effective mode
-        const routedClient = createIsolatedClient(leasedApiKey || '', effectiveMode, runtimeSettings);
+        const routedClient = createIsolatedClient(leasedApiKey || '', routedMode, runtimeSettings);
         finalAnswer = (await routedClient.executeMessageLoop(
           context,
           effectiveRequest,
@@ -609,8 +628,8 @@ export class AgentOrchestrator {
         )).text;
         effectiveApiKey = routedClient.getCurrentApiKey();
       } else {
-        globalGeminiClient.setMode(effectiveMode);
-        finalAnswer = (await globalGeminiClient.executeMessageLoop(
+        const routedClient = createIsolatedClient('', routedMode);
+        finalAnswer = (await routedClient.executeMessageLoop(
           context,
           effectiveRequest,
           history,

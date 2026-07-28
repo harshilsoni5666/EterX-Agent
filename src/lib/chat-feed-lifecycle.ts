@@ -53,3 +53,35 @@ export const isTurnWorkActive = (
   if (!running || hasFinalAnswer) return false;
   return !turnLogs.some(isTerminalWorkTrace);
 };
+
+/**
+ * Context compaction is a replace-in-place lifecycle. Only the newest phase
+ * for a transaction is renderable. Unterminated starts/retries disappear when
+ * the turn settles, and a later real work event proves an orphaned start is no
+ * longer active.
+ */
+export const shouldRenderContextCompactionEvent = (
+  log: any,
+  index: number,
+  logs: any[],
+  isThinkingTurn: boolean,
+): boolean => {
+  if (log?.type !== 'context_compaction') return true;
+  const compactionId = String(log.compactionId || '');
+  const latestIndex = logs.reduce(
+    (found, candidate, candidateIndex) =>
+      candidate?.type === 'context_compaction' &&
+      String(candidate.compactionId || '') === compactionId
+        ? candidateIndex
+        : found,
+    -1,
+  );
+  if (latestIndex !== index) return false;
+  if (log.phase === 'retrying' && !isThinkingTurn) return false;
+  if (log.phase !== 'compacting') return true;
+  if (!isThinkingTurn) return false;
+  return !logs.slice(index + 1).some(candidate =>
+    candidate?.type !== 'context_usage' &&
+    candidate?.type !== 'context_compaction'
+  );
+};

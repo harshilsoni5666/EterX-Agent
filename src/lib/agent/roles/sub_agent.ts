@@ -4,6 +4,7 @@ import fs from 'fs-extra';
 import { apiKeyPool, KeyLease } from '../api-key-pool';
 import { interAgentMailbox } from './inter_agent_comm';
 import { getEterxWorkspaceDir } from '../storage-paths';
+import type { MainAgentMode, MainAgentProvider, MainAgentThinkingLevel } from '../model-routing';
 
 /**
  * Sub-Agent Spawner v5 — Parallel API Keys, Fire-and-Forget, Non-Blocking
@@ -28,6 +29,14 @@ const AGENT_NAMES = [
 ] as const;
 
 export type SubAgentName = string;
+export type SubAgentTaskSpec = {
+  task: string;
+  name?: SubAgentName;
+  mode?: MainAgentMode;
+  provider?: MainAgentProvider;
+  model?: string;
+  thinkingLevel?: MainAgentThinkingLevel;
+};
 
 const MAX_PENDING_RESULTS_PER_PROJECT = 100;
 const MAX_PENDING_RESULTS_TOTAL = 1000;
@@ -642,7 +651,8 @@ export class SubAgentSpawner {
     _agentIndex: number,
     parentContext?: string,
     onTrace?: (trace: any) => void,
-    customName?: SubAgentName
+    customName?: SubAgentName,
+    modelOverride?: Omit<SubAgentTaskSpec, 'task' | 'name'>,
   ): Promise<{ agentId: string, name: SubAgentName, result: string, success: boolean, durationMs: number, traceLog: string[] }> {
     const name = customName || this.resolveAgentName(context.projectId);
     const agentId = `${safeAgentSegment(context.projectId, 'project')}_${safeAgentSegment(name, 'agent')}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -683,6 +693,24 @@ export class SubAgentSpawner {
       subAgentChatId,
       abortSignal: abortController.signal,
     };
+    if (modelOverride?.mode) {
+      subAgentContext.selectedModelMode = modelOverride.mode;
+    }
+    if (modelOverride?.provider && modelOverride?.model) {
+      subAgentContext.selectedModelProvider = modelOverride.provider;
+      subAgentContext.selectedModelName = modelOverride.model;
+      if (modelOverride.provider !== 'gemini') {
+        subAgentContext.selectedModelMode = modelOverride.provider;
+      }
+      subAgentContext.strictModelSelection = true;
+    } else if (modelOverride?.mode) {
+      subAgentContext.selectedModelProvider = undefined;
+      subAgentContext.selectedModelName = undefined;
+      subAgentContext.strictModelSelection = false;
+    }
+    if (modelOverride?.thinkingLevel) {
+      subAgentContext.selectedThinkingLevel = modelOverride.thinkingLevel;
+    }
     // Main owns delegation. Forward its task verbatim instead of layering a
     // personality, specialty, or redundant role prompt onto the sub-agent.
     const deepBrief = task;
@@ -918,7 +946,7 @@ export class SubAgentSpawner {
    * Main agent calls 'collect' later to get results.
    */
   public spawnParallelFireAndForget(
-    tasks: Array<{ task: string, name?: SubAgentName }>,
+    tasks: SubAgentTaskSpec[],
     context: ProjectContext,
     parentContext?: string,
     onTrace?: (trace: any) => void
@@ -976,7 +1004,7 @@ export class SubAgentSpawner {
         }
         
         // Minimal stagger: 500ms (was 2s) — each agent has its own key, minimal collision risk
-        await this.spawnAgent(t.task, context, index, parentContext, onTrace, name);
+        await this.spawnAgent(t.task, context, index, parentContext, onTrace, name, t);
       })()
         .catch((error) => {
           console.error(`[SubAgent] Background run failed for ${ name }:`, error);
@@ -1002,7 +1030,7 @@ export class SubAgentSpawner {
    * Use this only when the main agent needs all results before continuing.
    */
   public async spawnParallel(
-    tasks: Array<{ task: string, name?: SubAgentName }>,
+    tasks: SubAgentTaskSpec[],
     context: ProjectContext,
     parentContext?: string,
     onTrace?: (trace: any) => void
@@ -1051,7 +1079,7 @@ export class SubAgentSpawner {
           return;
         }
         // Minimal stagger: 500ms (was 2s) — each agent has its own key now
-        const result = await this.spawnAgent(t.task, context, index, parentContext, onTrace, name);
+        const result = await this.spawnAgent(t.task, context, index, parentContext, onTrace, name, t);
         resolve(result);
       });
     });

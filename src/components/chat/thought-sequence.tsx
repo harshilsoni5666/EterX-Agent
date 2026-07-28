@@ -2762,26 +2762,6 @@ const formatTerminalMetaDuration = (durationMs?: number) => {
   return durationMs < 1000 ? `${ Math.round(durationMs) }ms` : `${ (durationMs / 1000).toFixed(1) }s`;
 };
 
-const findLatestConsoleOutput = (logs: any[], commandSnippet: string) => {
-  if (!commandSnippet) {
-    // No command snippet — return last console_output if any
-    for (let i = logs.length - 1; i >= 0; i -= 1) {
-      if (logs[i]?.type === 'console_output') return logs[i];
-    }
-    return null;
-  }
-  for (let i = logs.length - 1; i >= 0; i -= 1) {
-    const candidate = logs[i];
-    if (candidate?.type === 'console_output' && (
-      String(candidate.command || '').includes(commandSnippet) ||
-      commandSnippet.includes(String(candidate.command || '').substring(0, 20))
-    )) {
-      return candidate;
-    }
-  }
-  return null;
-};
-
 const TerminalTraceCard = ({
   log,
   preview,
@@ -3202,14 +3182,6 @@ const ActionChip = ({
     const ownerPreview = findOwnerPreview(searchLogs) || findOwnerPreview(allLogs);
     if (ownerPreview) return ownerPreview;
     if (log.type === 'command') {
-      const cmd = getTerminalCommandText(log, undefined, String(log.secondary || ''));
-      // Search forward from this log first
-      const forwardResult = findLatestConsoleOutput(searchLogs, cmd.substring(0, 20));
-      if (forwardResult) return forwardResult;
-      // Fallback: search all logs only if command index was not found (handles reordered or late-arriving console_output)
-      if (myIdx === -1) {
-        return findLatestConsoleOutput(allLogs, cmd.substring(0, 20));
-      }
       return null;
     }
     if (isEdit) {

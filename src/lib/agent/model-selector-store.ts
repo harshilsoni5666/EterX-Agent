@@ -9,8 +9,10 @@ export const MODEL_OVERRIDE_STORAGE_KEY = 'eterx_model_overrides';
 export const MODEL_CATALOG_STORAGE_KEY = 'eterx_model_catalog';
 export const MODEL_SELECTOR_STORAGE_KEY = 'eterx_model_selector_entries';
 export const MODEL_THINKING_CAPABILITIES_STORAGE_KEY = 'eterx_model_thinking_capabilities';
+export const MODEL_CONTEXT_WINDOWS_STORAGE_KEY = 'eterx_model_context_windows';
 export const MODEL_API_KEYS_STORAGE_KEY = 'eterx_model_api_keys';
 export const CHAT_MODEL_SELECTION_STORAGE_KEY = 'eterx_chat_model_selection';
+export const CHAT_CONTEXT_WINDOW_OVERRIDES_STORAGE_KEY = 'eterx_chat_context_window_overrides';
 export const AUTO_MODEL_SELECTION = 'auto';
 
 export const MODEL_PROVIDER_ORDER: MainAgentProvider[] = ['gemini', 'mistral', 'openai', 'openrouter', 'groq', 'anthropic'];
@@ -149,6 +151,48 @@ export const composeApiKeysForSelection = (
   const selectedPool = modelApiKeys[selectedKey];
   if (selectedPool?.trim()) next[selectedEntry.provider] = selectedPool.trim();
   return next;
+};
+
+/**
+ * Builds one server-side credential snapshot for every model that can be used
+ * during a run. The first selection remains preferred, while model-specific
+ * pools for secondary services (for example context compaction) are retained.
+ * Keys are deduplicated without exposing model-key mappings to the run request.
+ */
+export const composeApiKeysForSelections = (
+  baseApiKeys: Record<string, string>,
+  modelApiKeys: Record<string, string>,
+  entries: ModelSelectorEntry[],
+  selectionKeys: string[],
+) => {
+  const selectedByProvider = new Map<MainAgentProvider, string[]>();
+
+  selectionKeys.forEach(selectionKey => {
+    const selectedEntry = parseModelEntryKey(selectionKey)
+      || (selectionKey === AUTO_MODEL_SELECTION ? pickAutoModelEntry(entries, baseApiKeys, modelApiKeys) : null);
+    if (!selectedEntry) return;
+    const selectedPool = splitStoredKeyPool(modelApiKeys[modelEntryKey(selectedEntry.provider, selectedEntry.modelId)]);
+    if (selectedPool.length === 0) return;
+    selectedByProvider.set(
+      selectedEntry.provider,
+      [...(selectedByProvider.get(selectedEntry.provider) || []), ...selectedPool],
+    );
+  });
+
+  const providers = new Set<string>([
+    ...Object.keys(baseApiKeys),
+    ...selectedByProvider.keys(),
+  ]);
+  const composed: Record<string, string> = {};
+  providers.forEach(provider => {
+    const values = [
+      ...(isModelProvider(provider) ? selectedByProvider.get(provider) || [] : []),
+      ...splitStoredKeyPool(baseApiKeys[provider]),
+    ];
+    const uniqueValues = Array.from(new Set(values));
+    if (uniqueValues.length > 0) composed[provider] = uniqueValues.join('\n');
+  });
+  return composed;
 };
 
 export const pickAutoModelEntry = (

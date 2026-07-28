@@ -32,15 +32,23 @@ const measureTooltipText = (text: string, font: string) => {
 export const Tooltip = React.memo(({
   children,
   text,
+  content,
+  contentWidth,
+  contentHeight,
   side = 'bottom',
   variant = 'dark',
   disabled = false,
+  delay = 600,
 }: {
   children: React.ReactNode;
-  text: string;
+  text?: string;
+  content?: React.ReactNode;
+  contentWidth?: number;
+  contentHeight?: number;
   side?: 'top' | 'bottom' | 'left' | 'right';
   variant?: 'light' | 'dark';
   disabled?: boolean;
+  delay?: number;
 }) => {
   const [visible, setVisible] = useState(false);
   const [isPositioned, setIsPositioned] = useState(false);
@@ -52,9 +60,13 @@ export const Tooltip = React.memo(({
   const handleMouseEnter = () => {
     if (disabled) return;
     if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
+    if (delay <= 0) {
+      setVisible(true);
+      return;
+    }
     hoverTimerRef.current = setTimeout(() => {
       setVisible(true);
-    }, 600);
+    }, delay);
   };
 
   const handleMouseLeave = () => {
@@ -94,12 +106,14 @@ export const Tooltip = React.memo(({
       const margin = 12;
       const gap = 8;
       const tooltipFont = `500 12px ${tooltipFontFamily}`;
-      const measuredTextWidth = measureTooltipText(text, tooltipFont);
+      const measuredTextWidth = measureTooltipText(text || '', tooltipFont);
       const width = Math.min(
         window.innerWidth - margin * 2,
-        Math.max(68, Math.ceil(measuredTextWidth + 32))
+        content
+          ? Math.max(68, contentWidth || 248)
+          : Math.max(68, Math.ceil(measuredTextWidth + 32))
       );
-      const height = 28;
+      const height = content ? Math.max(28, contentHeight || 96) : 28;
       const centerX = rect.left + rect.width / 2;
       const centerY = rect.top + rect.height / 2;
       let left = centerX - width / 2;
@@ -145,11 +159,12 @@ export const Tooltip = React.memo(({
       window.removeEventListener('resize', handleUpdate);
       window.removeEventListener('scroll', handleUpdate, { capture: true });
     };
-  }, [disabled, visible, side, text]);
+  }, [content, contentHeight, contentWidth, disabled, visible, side, text]);
 
-  const hasHotkey = text.includes('@') || text.includes('⌘') || text.includes('Ctrl') || text.includes('Alt');
-  const mainText = hasHotkey ? text.replace(/\s*(@|⌘|Ctrl|Alt).*/, '').trim() : text;
-  const hotkeyMatch = text.match(/(@|⌘|Ctrl|Alt.*)/);
+  const tooltipText = text || '';
+  const hasHotkey = tooltipText.includes('@') || tooltipText.includes('⌘') || tooltipText.includes('Ctrl') || tooltipText.includes('Alt');
+  const mainText = hasHotkey ? tooltipText.replace(/\s*(@|⌘|Ctrl|Alt).*/, '').trim() : tooltipText;
+  const hotkeyMatch = tooltipText.match(/(@|⌘|Ctrl|Alt.*)/);
   const hotkey = hotkeyMatch ? hotkeyMatch[0].trim() : '';
 
   return (
@@ -178,14 +193,18 @@ export const Tooltip = React.memo(({
               >
                 <div
                   data-side={side}
-                  className="eterx-tooltip-card relative w-full overflow-hidden text-ellipsis whitespace-nowrap rounded-[16px] border border-white/[0.12] bg-[#242424] px-3 py-1.5 text-center text-[12px] font-medium text-[#F2F0EC] shadow-[0_8px_24px_rgba(0,0,0,0.36)] flex items-center justify-center gap-1.5"
+                  className={`eterx-tooltip-card relative w-full overflow-hidden rounded-[16px] border border-white/[0.12] bg-[#242424] text-[12px] font-medium text-[#F2F0EC] shadow-[0_8px_24px_rgba(0,0,0,0.36)] ${content ? '' : 'flex items-center justify-center gap-1.5 whitespace-nowrap px-3 py-1.5 text-center text-ellipsis'}`}
                   style={{ fontFamily: tooltipFontFamily, willChange: 'transform, opacity' }}
                 >
-                  <span>{mainText}</span>
-                  {hotkey && (
-                    <span className="inline-flex items-center justify-center rounded-md border border-white/[0.12] bg-white/[0.08] px-1.5 py-0.5 text-[10.5px] font-medium text-white/75 leading-none">
-                      {hotkey}
-                    </span>
+                  {content || (
+                    <>
+                      <span>{mainText}</span>
+                      {hotkey && (
+                        <span className="inline-flex items-center justify-center rounded-md border border-white/[0.12] bg-white/[0.08] px-1.5 py-0.5 text-[10.5px] font-medium text-white/75 leading-none">
+                          {hotkey}
+                        </span>
+                      )}
+                    </>
                   )}
                 </div>
               </motion.div>

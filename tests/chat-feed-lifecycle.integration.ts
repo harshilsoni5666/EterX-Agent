@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict';
-import { isTerminalWorkTrace, isTurnWorkActive } from '../src/lib/chat-feed-lifecycle';
+import {
+  isTerminalWorkTrace,
+  isTurnWorkActive,
+  shouldRenderContextCompactionEvent,
+} from '../src/lib/chat-feed-lifecycle';
 
 const action = { type: 'command', text: 'Running tests' };
 
@@ -55,6 +59,34 @@ assert.equal(
   isTerminalWorkTrace({ type: 'done' }),
   true,
   'a main-agent done trace should be terminal',
+);
+
+const compacting = { type: 'context_compaction', phase: 'compacting', compactionId: 'ctx-a' };
+const compacted = { type: 'context_compaction', phase: 'compacted', compactionId: 'ctx-a' };
+assert.equal(
+  shouldRenderContextCompactionEvent(compacting, 0, [compacting], true),
+  true,
+  'the active compaction start should be visible',
+);
+assert.equal(
+  shouldRenderContextCompactionEvent(compacting, 0, [compacting, action], true),
+  false,
+  'an orphaned start must disappear after later real work',
+);
+assert.equal(
+  shouldRenderContextCompactionEvent(compacting, 0, [compacting], false),
+  false,
+  'an unfinished historical start must not remain visible',
+);
+assert.equal(
+  shouldRenderContextCompactionEvent(compacting, 0, [compacting, compacted], true),
+  false,
+  'the start phase must be replaced by its terminal phase',
+);
+assert.equal(
+  shouldRenderContextCompactionEvent(compacted, 1, [compacting, compacted], false),
+  true,
+  'a completed compaction remains as the single settled lifecycle row',
 );
 
 console.log('Chat feed lifecycle integration checks passed.');

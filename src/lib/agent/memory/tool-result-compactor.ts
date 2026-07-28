@@ -14,12 +14,12 @@ interface CompactionResult {
 }
 
 /** Size thresholds for compaction activation */
-const COMPACT_THRESHOLD = 30_000;     // 30KB — below this, keep as-is
-const MAX_COMPACT_SIZE = 50_000;      // 50KB max output
-const CODE_LINE_LIMIT = 500;          // Max lines for code file reads
-const SEARCH_RESULT_LIMIT = 30;       // Max search results to keep
-const SHELL_TAIL_LINES = 80;          // Keep last N lines of shell output
-const SHELL_HEAD_LINES = 20;          // Keep first N lines of shell output
+const COMPACT_THRESHOLD = 16_000;     // Compact before one result dominates the next turn
+const MAX_COMPACT_SIZE = 30_000;      // Preserve evidence while bounding token cost
+const CODE_LINE_LIMIT = 300;
+const SEARCH_RESULT_LIMIT = 20;
+const SHELL_TAIL_LINES = 60;
+const SHELL_HEAD_LINES = 16;
 
 export class ToolResultCompactor {
   
@@ -176,7 +176,7 @@ export class ToolResultCompactor {
     if (typeof result === 'string') {
       if (result.length < COMPACT_THRESHOLD) return result;
       // Just head+tail for string results
-      return result.substring(0, 35000) + `\n\n...[search results compacted]...\n\n` + result.substring(result.length - 10000);
+      return result.substring(0, 22_000) + `\n\n...[search results compacted]...\n\n` + result.substring(result.length - 6_000);
     }
 
     if (result?.results && Array.isArray(result.results)) {
@@ -223,7 +223,7 @@ export class ToolResultCompactor {
     if (typeof result === 'string') {
       if (result.length < COMPACT_THRESHOLD) return result;
       // Keep first 30KB + last 10KB
-      return result.substring(0, 30000) + '\n\n...[search results truncated]...\n\n' + result.substring(result.length - 10000);
+      return result.substring(0, 22_000) + '\n\n...[search results truncated]...\n\n' + result.substring(result.length - 6_000);
     }
 
     if (result?.results && Array.isArray(result.results)) {
@@ -293,14 +293,14 @@ export class ToolResultCompactor {
   private compactBrowserResult(args: Record<string, any>, result: any): any {
     if (typeof result === 'string') {
       if (result.length < COMPACT_THRESHOLD) return result;
-      return result.substring(0, 40000) + '\n...[browser output compacted]';
+      return result.substring(0, 28_000) + '\n...[browser output compacted]';
     }
     
     // For snapshot/read_page results, keep the DOM structure summary
     if (result?.pageContent && typeof result.pageContent === 'string' && result.pageContent.length > COMPACT_THRESHOLD) {
       return {
         ...result,
-        pageContent: result.pageContent.substring(0, 40000) + '\n...[page content compacted]',
+        pageContent: result.pageContent.substring(0, 28_000) + '\n...[page content compacted]',
         _compacted: true,
       };
     }
@@ -312,8 +312,8 @@ export class ToolResultCompactor {
   private compactGeneric(result: any): any {
     if (typeof result === 'string') {
       if (result.length <= MAX_COMPACT_SIZE) return result;
-      const headSize = 35_000;
-      const tailSize = 10_000;
+      const headSize = 22_000;
+      const tailSize = 6_000;
       return `${result.substring(0, headSize)}\n\n...[${((result.length - headSize - tailSize) / 1024).toFixed(0)}KB compacted]...\n\n${result.substring(result.length - tailSize)}`;
     }
 
@@ -323,7 +323,7 @@ export class ToolResultCompactor {
       for (const key of Object.keys(compacted)) {
         if (typeof compacted[key] === 'string' && compacted[key].length > MAX_COMPACT_SIZE) {
           const val = compacted[key];
-          compacted[key] = val.substring(0, 35000) + `\n...[${key} compacted: ${((val.length) / 1024).toFixed(0)}KB total]...\n` + val.substring(val.length - 10000);
+          compacted[key] = val.substring(0, 22_000) + `\n...[${key} compacted: ${((val.length) / 1024).toFixed(0)}KB total]...\n` + val.substring(val.length - 6_000);
         }
       }
       compacted._compacted = true;

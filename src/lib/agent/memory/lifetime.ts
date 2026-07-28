@@ -40,7 +40,9 @@ const BRAIN_DIR = getEterxWorkspaceDir('.brain');
 const EVENTS_FILE = path.join(BRAIN_DIR, 'lifetime_events.jsonl');
 const INDEX_FILE = path.join(BRAIN_DIR, 'lifetime_index.json');
 const ARCHIVE_DIR = path.join(BRAIN_DIR, 'archive');
-const MAX_HOT_EVENTS = 5_000;
+const MAX_HOT_EVENTS = 10_000;
+const MAX_HOT_EVENTS_PER_SCOPE = 500;
+const MAX_INDEX_EVENTS_PER_SCOPE = 300;
 const MAX_FILE_BYTES = 15 * 1024 * 1024; // 15MB before rotation
 const MAX_BOOT_FILES = 8;
 const MAX_BOOT_CMDS = 6;
@@ -98,6 +100,7 @@ interface LifetimeIndex {
   recentTasks: Array<{ title: string; status: string; ts: number; chatId: string; projectId?: string; durationMs?: number }>;
   recentErrors: Array<{ tool: string; error: string; fixed: boolean; ts: number; chatId: string; projectId?: string }>;
   learnedFacts: Array<{ fact: string; ts: number; confidence: number; tags: string[]; chatId?: string; projectId?: string }>;
+  recentEventsByScope: Record<string, LifetimeEvent[]>;
   lastChatId: string;
   lastProjectId: string;
   modelProven: Record<string, string>; // mode → proven model name
@@ -112,10 +115,73 @@ const EMPTY_INDEX: LifetimeIndex = {
   recentTasks: [],
   recentErrors: [],
   learnedFacts: [],
+  recentEventsByScope: {},
   lastChatId: '',
   lastProjectId: '',
   modelProven: {},
 };
+
+function scopeKey(entry: { chatId?: string; projectId?: string }): string {
+  return JSON.stringify([String(entry.chatId || ''), String(entry.projectId || '')]);
+}
+
+function sameScope(
+  left: { chatId?: string; projectId?: string },
+  right: { chatId?: string; projectId?: string },
+): boolean {
+  return String(left.chatId || '') === String(right.chatId || '') &&
+    String(left.projectId || '') === String(right.projectId || '');
+}
+
+function retainRecentPerScope<T extends { chatId?: string; projectId?: string }>(
+  entries: T[],
+  perScopeLimit: number,
+  totalLimit: number,
+): T[] {
+  const counts = new Map<string, number>();
+  const kept: T[] = [];
+  for (const entry of entries) {
+    const key = scopeKey(entry);
+    const count = counts.get(key) || 0;
+    if (count >= perScopeLimit) continue;
+    kept.push(entry);
+    counts.set(key, count + 1);
+    if (kept.length >= totalLimit) break;
+  }
+  return kept;
+}
+
+function redactLifetimeText(value: string): string {
+  return value
+    .replace(/(AIza[0-9A-Za-z_-]{20,})/g, '[REDACTED_GOOGLE_KEY]')
+    .replace(/(sk-[A-Za-z0-9_-]{20,})/g, '[REDACTED_API_KEY]')
+    .replace(/(Bearer\s+)[A-Za-z0-9._-]+/gi, '$1[REDACTED_TOKEN]')
+    .replace(/((?:password|passwd|secret|api[_-]?key|access[_-]?token)\s*[=:]\s*)[^\s,;]+/gi, '$1[REDACTED]');
+}
+
+function sanitizeLifetimeValue(value: unknown): any {
+  if (typeof value === 'string') return redactLifetimeText(value);
+  if (Array.isArray(value)) return value.map(sanitizeLifetimeValue);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .map(([key, item]) => [key, sanitizeLifetimeValue(item)]),
+    );
+  }
+  return value;
+}
+
+function sanitizeLifetimeEvent(event: LifetimeEvent): LifetimeEvent {
+  return {
+    ...event,
+    title: redactLifetimeText(String(event.title || '')),
+    detail: redactLifetimeText(String(event.detail || '')),
+    tags: Array.isArray(event.tags)
+      ? event.tags.map(tag => redactLifetimeText(String(tag)))
+      : [],
+    metadata: sanitizeLifetimeValue(event.metadata),
+  };
+}
 
 // ─── BM25-inspired scoring ────────────────────────────────────────────────────
 
@@ -232,6 +298,7 @@ class LifetimeBrain {
             try {
               const event = JSON.parse(line) as LifetimeEvent;
               this.hotCache.push(event);
+              this._rememberScopedEvent(event);
             } catch { /* skip corrupt lines */ }
           }
         } catch { /* file unreadable → start fresh */ }
@@ -262,20 +329,32 @@ class LifetimeBrain {
   }
 
   private async _writeEvent(partial: Omit<LifetimeEvent, 'id' | 'ts'>): Promise<void> {
+    const chatId = String(partial.chatId || '').trim();
+    const projectId = String(partial.projectId || '').trim();
+    if (!chatId || !projectId) return;
     const event: LifetimeEvent = {
       id: crypto.randomUUID().substring(0, 16),
       ts: Date.now(),
       ...partial,
-      title: String(partial.title || '').substring(0, 120),
-      detail: String(partial.detail || '').substring(0, 4000),
-      tags: Array.isArray(partial.tags) ? partial.tags.slice(0, 20) : [],
+      chatId,
+      projectId,
+      title: redactLifetimeText(String(partial.title || '')).substring(0, 120),
+      detail: redactLifetimeText(String(partial.detail || '')).substring(0, 4000),
+      tags: Array.isArray(partial.tags)
+        ? partial.tags.slice(0, 20).map(tag => redactLifetimeText(String(tag)))
+        : [],
       importance: Math.min(10, Math.max(0, partial.importance ?? 5)),
+      metadata: sanitizeLifetimeValue(partial.metadata),
     };
 
     // Add to hot cache
     this.hotCache.push(event);
     if (this.hotCache.length > MAX_HOT_EVENTS) {
-      this.hotCache = this.hotCache.slice(-MAX_HOT_EVENTS);
+      this.hotCache = retainRecentPerScope(
+        [...this.hotCache].reverse(),
+        MAX_HOT_EVENTS_PER_SCOPE,
+        MAX_HOT_EVENTS,
+      ).reverse();
     }
 
     // Update index
@@ -316,6 +395,7 @@ class LifetimeBrain {
     this.index.lastEventAt = event.ts;
     this.index.lastChatId = event.chatId || this.index.lastChatId;
     this.index.lastProjectId = event.projectId || this.index.lastProjectId;
+    this._rememberScopedEvent(event);
 
     switch (event.type) {
       case 'file_write':
@@ -324,7 +404,9 @@ class LifetimeBrain {
         const filename = event.metadata?.filename || event.metadata?.path || '';
         if (filename) {
           // Deduplicate — keep latest for each file
-          this.index.recentFiles = this.index.recentFiles.filter(f => f.filename !== filename);
+          this.index.recentFiles = this.index.recentFiles.filter(
+            f => !(f.filename === filename && sameScope(f, event)),
+          );
           this.index.recentFiles.unshift({
             filename: String(filename),
             action: event.type.replace('file_', ''),
@@ -333,7 +415,7 @@ class LifetimeBrain {
             projectId: event.projectId,
             summary: event.title,
           });
-          this.index.recentFiles = this.index.recentFiles.slice(0, 30);
+          this.index.recentFiles = retainRecentPerScope(this.index.recentFiles, 30, 2_000);
         }
         break;
       }
@@ -348,7 +430,7 @@ class LifetimeBrain {
           chatId: event.chatId,
           projectId: event.projectId,
         });
-        this.index.recentCmds = this.index.recentCmds.slice(0, 20);
+        this.index.recentCmds = retainRecentPerScope(this.index.recentCmds, 20, 2_000);
         break;
       }
 
@@ -356,7 +438,9 @@ class LifetimeBrain {
       case 'task_failed':
       case 'task_start': {
         // Deduplicate by title
-        this.index.recentTasks = this.index.recentTasks.filter(t => t.title !== event.title);
+        this.index.recentTasks = this.index.recentTasks.filter(
+          t => !(t.title === event.title && sameScope(t, event)),
+        );
         this.index.recentTasks.unshift({
           title: event.title,
           status: event.type === 'task_complete' ? 'completed' : event.type === 'task_failed' ? 'failed' : 'started',
@@ -365,7 +449,7 @@ class LifetimeBrain {
           projectId: event.projectId,
           durationMs: event.metadata?.durationMs,
         });
-        this.index.recentTasks = this.index.recentTasks.slice(0, 20);
+        this.index.recentTasks = retainRecentPerScope(this.index.recentTasks, 20, 2_000);
         break;
       }
 
@@ -379,7 +463,7 @@ class LifetimeBrain {
           chatId: event.chatId,
           projectId: event.projectId,
         });
-        this.index.recentErrors = this.index.recentErrors.slice(0, 20);
+        this.index.recentErrors = retainRecentPerScope(this.index.recentErrors, 20, 2_000);
         break;
       }
 
@@ -387,7 +471,10 @@ class LifetimeBrain {
         // Deduplicate facts
         const factText = event.title;
         this.index.learnedFacts = this.index.learnedFacts.filter(
-          f => !f.fact.toLowerCase().startsWith(factText.toLowerCase().substring(0, 30))
+          f => !(
+            sameScope(f, event) &&
+            f.fact.toLowerCase().startsWith(factText.toLowerCase().substring(0, 30))
+          )
         );
         this.index.learnedFacts.unshift({
           fact: factText,
@@ -397,10 +484,39 @@ class LifetimeBrain {
           chatId: event.chatId,
           projectId: event.projectId,
         });
-        this.index.learnedFacts = this.index.learnedFacts.slice(0, 50);
+        this.index.learnedFacts = retainRecentPerScope(this.index.learnedFacts, 50, 4_000);
         break;
       }
     }
+  }
+
+  private _rememberScopedEvent(event: LifetimeEvent): void {
+    if (!event.chatId || !event.projectId) return;
+    if (!this.index.recentEventsByScope) this.index.recentEventsByScope = {};
+    const safeEvent = sanitizeLifetimeEvent(event);
+    const key = scopeKey(safeEvent);
+    const existing = this.index.recentEventsByScope[key] || [];
+    this.index.recentEventsByScope[key] = [
+      safeEvent,
+      ...existing
+        .filter(item => item.id !== safeEvent.id)
+        .map(sanitizeLifetimeEvent),
+    ].slice(0, MAX_INDEX_EVENTS_PER_SCOPE);
+  }
+
+  private _getScopedEvents(opts?: { chatId?: string; projectId?: string }): LifetimeEvent[] {
+    const byId = new Map<string, LifetimeEvent>();
+    for (const event of this.hotCache) {
+      if (eventMatchesScope(event, opts)) byId.set(event.id, sanitizeLifetimeEvent(event));
+    }
+    for (const events of Object.values(this.index.recentEventsByScope || {})) {
+      for (const event of events) {
+        if (eventMatchesScope(event, opts) && !byId.has(event.id)) {
+          byId.set(event.id, sanitizeLifetimeEvent(event));
+        }
+      }
+    }
+    return Array.from(byId.values());
   }
 
   // ── Shortcut recorders for common events ────────────────────────────────────
@@ -571,7 +687,7 @@ class LifetimeBrain {
 
   /**
    * Recall events relevant to a query.
-   * Uses BM25-inspired scoring across the hot cache.
+   * Uses BM25-inspired scoring across chat-scoped recent memory.
    */
   public recall(opts: {
     query?: string;
@@ -588,7 +704,7 @@ class LifetimeBrain {
 
     const scored: Array<{ event: LifetimeEvent; score: number }> = [];
 
-    for (const event of this.hotCache) {
+    for (const event of this._getScopedEvents(opts)) {
       if (typeFilter && !typeFilter.has(event.type)) continue;
       if (event.importance < minImportance) continue;
       if (!eventMatchesScope(event, opts)) continue;
@@ -617,18 +733,22 @@ class LifetimeBrain {
     projectId?: string;
     query?: string;
   }): string {
-    if (!this.initialized || this.hotCache.length === 0) return '';
+    if (!this.initialized) return '';
 
     const parts: string[] = [];
     const now = Date.now();
 
     // ── Header ──
-    const ageDays = this.index.firstEventAt
-      ? Math.round((now - this.index.firstEventAt) / (24 * 60 * 60 * 1000))
+    const scopedEvents = this._getScopedEvents(opts);
+    const firstScopedEventAt = scopedEvents.reduce(
+      (oldest, event) => oldest === 0 ? event.ts : Math.min(oldest, event.ts),
+      0,
+    );
+    const ageDays = firstScopedEventAt
+      ? Math.round((now - firstScopedEventAt) / (24 * 60 * 60 * 1000))
       : 0;
-    const totalEvts = this.index.totalEvents;
     parts.push(
-      `📊 Brain: ${totalEvts.toLocaleString()} lifetime events | Active since ${ageDays === 0 ? 'today' : ageDays === 1 ? 'yesterday' : `${ageDays} days ago`}`
+      `Scoped memory: ${scopedEvents.length.toLocaleString()} recent events | Active since ${ageDays === 0 ? 'today' : ageDays === 1 ? 'yesterday' : `${ageDays} days ago`}`
     );
 
     // ── Recent Files ──
@@ -640,7 +760,7 @@ class LifetimeBrain {
         const agoMin = Math.round((now - f.ts) / 60000);
         const agoStr = agoMin < 1 ? 'just now' : agoMin < 60 ? `${agoMin}m ago` : agoMin < 1440 ? `${Math.round(agoMin/60)}h ago` : agoMin < 10080 ? `${Math.round(agoMin/1440)}d ago` : `${Math.round(agoMin/10080)}w ago`;
         const basename = f.filename.split(/[\/\\]/).pop() || f.filename;
-        return `  • ${basename} (${f.action}) — ${f.summary.substring(0, 60)} [${agoStr}]`;
+        return `  • ${redactLifetimeText(basename)} (${f.action}) — ${redactLifetimeText(f.summary).substring(0, 60)} [${agoStr}]`;
       });
       parts.push(`📁 FILES LAST WORKED ON:\n${fileLines.join('\n')}`);
     }
@@ -655,8 +775,7 @@ class LifetimeBrain {
         const agoStr = agoMin < 1 ? 'just now' : agoMin < 60 ? `${agoMin}m ago` : agoMin < 1440 ? `${Math.round(agoMin/60)}h ago` : `${Math.round(agoMin/1440)}d ago`;
         const icon = c.exitCode === 0 ? '✅' : c.exitCode === null ? '▶️' : '❌';
         const shortOutput = c.output.substring(0, 80).replace(/\n/g, ' ').trim();
-        const outputStr = shortOutput ? ` → ${shortOutput}` : '';
-        return `  • ${icon} ${c.cmd.substring(0, 80)}${outputStr} [${agoStr}]`;
+        return `  • ${icon} ${redactLifetimeText(c.cmd).substring(0, 80)}${shortOutput ? ` → ${redactLifetimeText(shortOutput)}` : ''} [${agoStr}]`;
       });
       parts.push(`💻 TERMINAL HISTORY:\n${cmdLines.join('\n')}`);
     }
@@ -669,7 +788,7 @@ class LifetimeBrain {
       const agoMin = Math.round((now - lastCompletedTask.ts) / 60000);
       const agoStr = agoMin < 60 ? `${agoMin}m ago` : agoMin < 1440 ? `${Math.round(agoMin/60)}h ago` : `${Math.round(agoMin/1440)}d ago`;
       const durStr = lastCompletedTask.durationMs ? ` | ${Math.round(lastCompletedTask.durationMs / 60000)}min` : '';
-      parts.push(`✅ LAST TASK (${agoStr}${durStr}): ${lastCompletedTask.title}`);
+      parts.push(`✅ LAST TASK (${agoStr}${durStr}): ${redactLifetimeText(lastCompletedTask.title)}`);
     }
 
     // ── Recent Errors ──
@@ -680,7 +799,7 @@ class LifetimeBrain {
       const errLines = unresolvedErrors.map(e => {
         const agoMin = Math.round((now - e.ts) / 60000);
         const agoStr = agoMin < 60 ? `${agoMin}m ago` : `${Math.round(agoMin/60)}h ago`;
-        return `  • [${e.tool}] ${e.error.substring(0, 80)} [${agoStr}]`;
+        return `  • [${redactLifetimeText(e.tool)}] ${redactLifetimeText(e.error).substring(0, 80)} [${agoStr}]`;
       });
       parts.push(`⚠️ RECENT ERRORS (unresolved):\n${errLines.join('\n')}`);
     }
@@ -690,7 +809,7 @@ class LifetimeBrain {
       .filter(e => indexEntryMatchesScope(e, opts) && e.fixed)
       .slice(0, 3);
     if (fixedErrors.length > 0) {
-      const fixLines = fixedErrors.map(e => `  • [${e.tool}] ${e.error.substring(0, 60)} → FIXED`);
+      const fixLines = fixedErrors.map(e => `  • [${redactLifetimeText(e.tool)}] ${redactLifetimeText(e.error).substring(0, 60)} → FIXED`);
       parts.push(`🔧 ERRORS FIXED PREVIOUSLY:\n${fixLines.join('\n')}`);
     }
 
@@ -699,7 +818,7 @@ class LifetimeBrain {
       .filter(f => indexEntryMatchesScope(f, opts) && f.confidence >= 0.7)
       .slice(0, MAX_BOOT_FACTS);
     if (topFacts.length > 0) {
-      const factLines = topFacts.map(f => `  • ${f.fact.substring(0, 100)}`);
+      const factLines = topFacts.map(f => `  • ${redactLifetimeText(f.fact).substring(0, 100)}`);
       parts.push(`🧠 LEARNED ABOUT THIS PROJECT:\n${factLines.join('\n')}`);
     }
 

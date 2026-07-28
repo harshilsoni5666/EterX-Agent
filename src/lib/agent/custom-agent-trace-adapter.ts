@@ -363,6 +363,7 @@ export const createCustomToolResultLogs = (
       content: resultText,
       exitCode: typeof result?.exitCode === 'number' ? result.exitCode : undefined,
       durationMs: typeof result?.durationMs === 'number' ? result.durationMs : undefined,
+      ownerTraceId: active.id,
       startTime: at,
       endTime: at,
       timestamp: at,

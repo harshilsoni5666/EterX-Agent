@@ -345,6 +345,11 @@ interface ChatInputProps {
   onRunLocationChange?: (location: 'local' | 'sandbox') => void;
   chatModelSelection?: string;
   onModelSelectionChange?: (selection: string) => void;
+  contextUsage?: {
+    usedTokens: number;
+    contextWindow: number;
+    utilizationPct: number;
+  } | null;
 }
 
 const getFileIconPath = (filepath: string) => {
@@ -1056,6 +1061,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   onRunLocationChange,
   chatModelSelection: propChatModelSelection,
   onModelSelectionChange,
+  contextUsage = null,
 }) => {
   const isAgentBuilder = Boolean(buildingAgentId || activeChatId?.startsWith('agent_builder_') || activeChatId?.includes('agent_builder'));
   const isLiveActive = liveState !== 'idle' && liveState !== 'error';
@@ -3176,6 +3182,45 @@ const handleSelectFolderDialog = useCallback(async () => {
             </div>
 
             <div className="eterx-chat-controls-right flex items-center gap-1.5">
+              {contextUsage && contextUsage.contextWindow > 0 && (
+                <Tooltip
+                  side="top"
+                  delay={0}
+                  contentWidth={224}
+                  contentHeight={84}
+                  content={(
+                    <div className="flex h-[84px] w-full flex-col items-center justify-center px-3 text-center">
+                      <div className="text-[12.5px] font-normal leading-4 text-[#AAAAAA]">Context window:</div>
+                      <div className="mt-0.5 text-[13.5px] font-medium leading-5 text-[#EDEDED]">
+                        {Math.round(contextUsage.utilizationPct)}% used ({Math.max(0, 100 - Math.round(contextUsage.utilizationPct))}% left)
+                      </div>
+                      <div className="mt-0.5 text-[13.5px] font-medium leading-5 text-[#F2F2F2]">
+                        {Math.round(contextUsage.usedTokens / 1000)}k / {Math.round(contextUsage.contextWindow / 1000)}k tokens used
+                      </div>
+                    </div>
+                  )}
+                >
+                  <span
+                    className="relative grid h-[38px] w-[26px] shrink-0 place-items-center text-[#999999]"
+                    aria-label={`Context window ${Math.round(contextUsage.utilizationPct)} percent used`}
+                  >
+                    <svg viewBox="0 0 24 24" className="h-[18px] w-[18px] -rotate-90" aria-hidden="true">
+                      <circle cx="12" cy="12" r="7.5" fill="none" stroke="currentColor" strokeWidth="2.7" opacity="0.2" />
+                      <circle
+                        cx="12"
+                        cy="12"
+                        r="7.5"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2.7"
+                        strokeLinecap="round"
+                        pathLength="100"
+                        strokeDasharray={`${Math.min(100, Math.max(0, contextUsage.utilizationPct))} 100`}
+                      />
+                    </svg>
+                  </span>
+                </Tooltip>
+              )}
               {/* Agent selector — suppressed in Agent Builder mode */}
               {!isAgentBuilder && (
                 <div ref={agentSelectorRef} className="eterx-agent-selector relative min-w-0">

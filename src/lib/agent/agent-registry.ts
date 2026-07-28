@@ -1026,7 +1026,7 @@ class AgentRegistry {
     const steeringSource = isAutonomyProxy
       ? (metadata?._proxyManager === true ? 'proxy_manager' : 'user_proxy')
       : 'human';
-    const normalizedMetadata = {
+    const normalizedMetadata: Record<string, any> = {
       ...(metadata || {}),
       _autonomyProxy: isAutonomyProxy,
       source: steeringSource,

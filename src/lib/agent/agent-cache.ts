@@ -23,10 +23,12 @@ import * as crypto from 'crypto';
 interface CacheEntry {
   /** e.g. "cachedContents/abc123" */
   name: string;
-  /** Last 8 chars of the API key this cache belongs to */
+  /** Last 8 chars used only for non-sensitive diagnostics. */
   apiKeyTail: string;
+  /** Non-reversible key fingerprint used for local ownership checks. */
+  apiKeyId: string;
   modelName: string;
-  /** SHA-1 of (staticSystemInstruction + first 500 chars of toolJSON) */
+  /** Full static prompt and tool-declaration fingerprint. */
   contentHash: string;
   /** Unix ms when the cache should be considered expired on our side */
   expiresAt: number;
@@ -55,6 +57,7 @@ const SUPPORTED_MODEL_PREFIXES = [
 
 const globalForAgentCache = globalThis as typeof globalThis & {
   __eterxAgentContextCaches?: Map<string, CacheEntry>;
+  __eterxAgentContextCacheInflight?: Map<string, Promise<string | null>>;
   /** API key tails permanently disabled after a free-tier / permission quota error */
   __eterxAgentCacheDisabledKeyTails?: Set<string>;
 };
@@ -73,6 +76,13 @@ function getDisabledKeyTails(): Set<string> {
   return globalForAgentCache.__eterxAgentCacheDisabledKeyTails;
 }
 
+function getInflightStore(): Map<string, Promise<string | null>> {
+  if (!globalForAgentCache.__eterxAgentContextCacheInflight) {
+    globalForAgentCache.__eterxAgentContextCacheInflight = new Map();
+  }
+  return globalForAgentCache.__eterxAgentContextCacheInflight;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
@@ -83,17 +93,22 @@ function isCacheSupported(modelName: string): boolean {
 }
 
 function buildContentHash(staticSystemInstruction: string, toolDeclarations: any[]): string {
-  const toolSample = JSON.stringify(toolDeclarations).slice(0, 600);
   return crypto
-    .createHash('sha1')
-    .update(staticSystemInstruction + toolSample)
+    .createHash('sha256')
+    .update(staticSystemInstruction)
+    .update('\0')
+    .update(JSON.stringify(toolDeclarations))
     .digest('hex')
-    .slice(0, 16);
+    .slice(0, 24);
 }
 
-/** Returns a stable, safe key for the in-memory store */
+function apiKeyId(apiKey: string): string {
+  return crypto.createHash('sha256').update(apiKey).digest('hex').slice(0, 24);
+}
+
+/** Returns a stable key without retaining raw key material. */
 function storeKey(apiKey: string, modelName: string): string {
-  return `${apiKey.slice(-8)}:${modelName}`;
+  return `${apiKeyId(apiKey)}:${modelName}`;
 }
 
 function clearEntry(entry: CacheEntry): void {
@@ -145,7 +160,7 @@ function startHeartbeat(ai: any, entry: CacheEntry, entryStoreKey: string): void
  *  - Model doesn't support caching
  *  - Any error during creation (silent fallback to uncached)
  */
-export async function getOrCreateAgentCache(
+async function getOrCreateAgentCacheUnlocked(
   ai: any,              // GoogleGenAI instance
   apiKey: string,
   modelName: string,
@@ -156,8 +171,8 @@ export async function getOrCreateAgentCache(
   if (!isCacheSupported(modelName)) return null;
 
   // Skip permanently-disabled keys (free-tier or permission error on a prior attempt)
-  const keyTail = apiKey.slice(-8);
-  if (getDisabledKeyTails().has(keyTail)) return null;
+  const keyId = apiKeyId(apiKey);
+  if (getDisabledKeyTails().has(keyId)) return null;
 
   const store = getCacheStore();
   const key = storeKey(apiKey, modelName);
@@ -207,6 +222,7 @@ export async function getOrCreateAgentCache(
     const entry: CacheEntry = {
       name: cacheName,
       apiKeyTail: apiKey.slice(-8),
+      apiKeyId: keyId,
       modelName,
       contentHash: hash,
       expiresAt: Date.now() + CACHE_TTL_S * 1000 - CACHE_SAFETY_BUFFER_MS,
@@ -233,7 +249,7 @@ export async function getOrCreateAgentCache(
       msg.includes('PERMISSION_DENIED') ||
       msg.includes('403');
     if (isQuotaOrPermError) {
-      getDisabledKeyTails().add(apiKey.slice(-8));
+      getDisabledKeyTails().add(keyId);
       console.warn(
         `[AgentCache] ℹ️ Context caching unavailable for this API key ` +
         `(free-tier or no permission). Falling back to uncached mode permanently. ` +
@@ -243,6 +259,41 @@ export async function getOrCreateAgentCache(
       console.warn(`[AgentCache] ⚠️ Cache creation failed (falling back to uncached): ${msg.slice(0, 120)}`);
     }
     return null;
+  }
+}
+
+export async function getOrCreateAgentCache(
+  ai: any,
+  apiKey: string,
+  modelName: string,
+  staticSystemInstruction: string,
+  toolDeclarations: any[]
+): Promise<string | null> {
+  const inflightKey = storeKey(apiKey, modelName);
+  const inflight = getInflightStore();
+  while (inflight.has(inflightKey)) {
+    const pending = inflight.get(inflightKey);
+    if (!pending) break;
+    try {
+      await pending;
+    } catch {
+      // The unlocked path returns null on provider errors, but do not let an
+      // unexpected rejection permanently block later cache attempts.
+    }
+  }
+
+  const creation = getOrCreateAgentCacheUnlocked(
+    ai,
+    apiKey,
+    modelName,
+    staticSystemInstruction,
+    toolDeclarations,
+  );
+  inflight.set(inflightKey, creation);
+  try {
+    return await creation;
+  } finally {
+    if (inflight.get(inflightKey) === creation) inflight.delete(inflightKey);
   }
 }
 
@@ -276,9 +327,10 @@ export async function handleAgentCacheNotFound(
  */
 export function invalidateAgentCacheForKey(apiKey: string): void {
   const store = getCacheStore();
-  const tail = apiKey.slice(-8);
+  const keyId = apiKeyId(apiKey);
+  const tail = keyId.slice(-8);
   for (const [k, entry] of store.entries()) {
-    if (entry.apiKeyTail === tail) {
+    if (entry.apiKeyId === keyId) {
       clearEntry(entry);
       store.delete(k);
       console.log(`[AgentCache] 🗑️ Cache invalidated after key rotation (tail: ...${tail})`);

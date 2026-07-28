@@ -29,9 +29,11 @@ import {
 } from '../lib/agent/model-routing';
 import {
   AUTO_MODEL_SELECTION,
+  CHAT_CONTEXT_WINDOW_OVERRIDES_STORAGE_KEY,
   CHAT_MODEL_SELECTION_STORAGE_KEY,
   MODEL_API_KEYS_STORAGE_KEY,
   MODEL_CATALOG_STORAGE_KEY,
+  MODEL_CONTEXT_WINDOWS_STORAGE_KEY,
   MODEL_OVERRIDE_STORAGE_KEY,
   MODEL_PROVIDER_MODE,
   MODEL_SELECTOR_STORAGE_KEY,
@@ -612,6 +614,92 @@ const sortChats = (chats: ChatSession[]) => {
     if (!a.isFavorite && b.isFavorite) return 1;
     return b.updatedAt - a.updatedAt;
   });
+};
+
+const readContextCompactionSettings = (
+  activeModelEntry?: { provider: string; modelId: string } | null,
+  chatId?: string | null,
+) => {
+  if (typeof window === 'undefined') return { enabled: true, model: null, customInstructions: '' };
+  try {
+    const saved = window.localStorage.getItem(SETTINGS_STORAGE_KEY);
+    const settings = saved ? JSON.parse(saved) : {};
+    const selection = String(settings.contextCompactionModelSelection || AUTO_MODEL_SELECTION);
+    const parsedModel = parseModelEntryKey(selection);
+    const availableModels = readRuntimeModelEntries();
+    const model = parsedModel && availableModels.some(entry =>
+      modelEntryKey(entry.provider, entry.modelId) === modelEntryKey(parsedModel.provider, parsedModel.modelId)
+    )
+      ? parsedModel
+      : null;
+    let activeContextWindow = 0;
+    if (activeModelEntry) {
+      const contextWindows = JSON.parse(window.localStorage.getItem(MODEL_CONTEXT_WINDOWS_STORAGE_KEY) || '{}');
+      const discoveredMaximum = Number(contextWindows?.[modelEntryKey(activeModelEntry.provider, activeModelEntry.modelId)] || 0);
+      const modelMaximum = Number.isFinite(discoveredMaximum) && discoveredMaximum >= 16_000
+        ? Math.floor(discoveredMaximum)
+        : resolveClientContextWindow(activeModelEntry.provider, activeModelEntry.modelId);
+      let budgetSelection = String(settings.contextWindowSizeSelection || '258000');
+      if (chatId) {
+        try {
+          const chatOverrides = JSON.parse(window.localStorage.getItem(CHAT_CONTEXT_WINDOW_OVERRIDES_STORAGE_KEY) || '{}');
+          const chatBudget = String(chatOverrides?.[chatId] || '').trim();
+          if (chatBudget) budgetSelection = chatBudget;
+        } catch { }
+      }
+      const requestedBudget = budgetSelection === 'model_max'
+        ? modelMaximum
+        : Number(budgetSelection || 258_000);
+      activeContextWindow = Math.min(
+        modelMaximum,
+        Number.isFinite(requestedBudget) && requestedBudget >= 16_000 ? Math.floor(requestedBudget) : 258_000,
+      );
+    }
+    return {
+      enabled: settings.contextCompactionEnabled !== false,
+      model: model ? { provider: model.provider, modelId: model.modelId } : null,
+      customInstructions: String(settings.contextCompactionInstructions || '').slice(0, 12000),
+      activeContextWindow: Number.isFinite(activeContextWindow) && activeContextWindow >= 16_000
+        ? Math.floor(activeContextWindow)
+        : undefined,
+    };
+  } catch {
+    return { enabled: true, model: null, customInstructions: '' };
+  }
+};
+
+function resolveClientContextWindow(provider: string, modelName: string): number {
+  const model = String(modelName || '').toLowerCase();
+  if (provider === 'gemini') return /gemini-(?:1\.5|2\.0|2\.5|3)/.test(model) ? 1_048_576 : 1_000_000;
+  if (provider === 'anthropic') return model.includes('1m') ? 1_000_000 : 200_000;
+  if (provider === 'openrouter' && model.includes('gemini')) return 1_000_000;
+  if (/gpt-5|o3|o4|gpt-4\.1/.test(model)) return 400_000;
+  if (provider === 'mistral' || /devstral|codestral/.test(model)) return 256_000;
+  if (provider === 'groq') return 131_072;
+  return 256_000;
+}
+
+const estimateLiveTraceTokens = (log: any): number => {
+  if (!log || ['context_usage', 'context_compaction', 'answer_cancel', 'work_note_cancel'].includes(String(log.type || ''))) return 0;
+  const fragments = [
+    log.text,
+    log.output,
+    log.command,
+    log.toolResult,
+    log.result,
+    log.question,
+    log.answeredWith,
+  ];
+  let chars = 0;
+  for (const fragment of fragments) {
+    if (typeof fragment === 'string') chars += fragment.length;
+    else if (fragment && typeof fragment === 'object') {
+      try {
+        chars += JSON.stringify(fragment).length;
+      } catch { }
+    }
+  }
+  return chars > 0 ? Math.ceil(chars / 4) + 4 : 0;
 };
 
 const traceLogIdentity = (log: any) => [
@@ -3113,7 +3201,7 @@ function DeepWorkUI() {
           .then(response => response.ok ? response.json() : Promise.reject(new Error(`Chat restore HTTP ${ response.status }`)));
 
     void restoreRequest
-      .then(snapshot => {
+      .then((snapshot: any) => {
         if (cancelled) return;
         const appDataChats = Array.isArray(snapshot?.chats)
           ? removeGeneratedEmptyChats(sortChats(snapshot.chats)).filter(
@@ -3508,7 +3596,7 @@ function DeepWorkUI() {
           .then(response => response.ok ? response.json() : Promise.reject(new Error(`Chat load HTTP ${ response.status }`)));
 
     const request = detailRequest
-      .then(payload => {
+      .then((payload: any) => {
         const durableChat = payload?.chat as ChatSession | null;
         if (!durableChat?.id || durableChat.id !== chatId) return;
         hydratedChatIdsRef.current.add(chatId);
@@ -5796,7 +5884,7 @@ function DeepWorkUI() {
         filePaths,
         timestamp: sentAt,
       };
-      const log = interAgentMessageLog(message, agentName, subAgentIdentity);
+      const log = interAgentMessageLog(message, agentName, subAgentIdentity || undefined);
       setChatLogsById(chatId, previousLogs => {
         const existingIds = new Set(previousLogs.map((item: any) => item.messageId || item.id).filter(Boolean));
         if (existingIds.has(log.messageId) || existingIds.has(log.id)) return previousLogs;
@@ -5858,6 +5946,11 @@ function DeepWorkUI() {
     const runAgentMode = runModelEntry
       ? MODEL_PROVIDER_MODE[runModelEntry.provider]
       : readRuntimeAgentMode(composerRuntimeSelectionRef.current.agentMode, runModelSelection);
+    const fallbackRunModel = MAIN_AGENT_MODEL_OPTIONS.find(option => option.id === runAgentMode) || MAIN_AGENT_MODEL_OPTIONS[0];
+    const contextBudgetModelEntry = runModelEntry || {
+      provider: fallbackRunModel.provider,
+      modelId: fallbackRunModel.modelName,
+    };
     const runThinkingLevel = composerRuntimeSelectionRef.current.thinkingLevel;
     const runSelectedAgent = composerRuntimeSelectionRef.current.selectedAgent;
     const runSelectedAgentId = runSelectedAgent.agentId;
@@ -6230,6 +6323,7 @@ function DeepWorkUI() {
 
     const requestPinnedContext = {
       terminalShell: readStoredTerminalShell(),
+      contextCompaction: readContextCompactionSettings(contextBudgetModelEntry, chatIdToUse),
       ...(pinnedItems.length > 0 ? { paths: pinnedItems.map(p => p.path) } : {}),
       ...(isBuilderChat ? { agentRuntime: 'agent_builder', agentId: builderAgentId } : {}),
       ...(runSelectedAgentId === 'coding' && !isBuilderChat ? { agentRuntime: 'main_coding_agent', agentProfile: 'eterx-code' } : {}),
@@ -7029,6 +7123,77 @@ function DeepWorkUI() {
   // Which logs to show in ChatFeed — main or sub-agent
   const autonomousSelected = selectedAgent === 'autonomous';
   const effectiveDisplayLogs = activeSubAgentTab && !autonomousSelected ? subAgentDisplayLogs : displayTraceLogs;
+  const composerContextUsage = useMemo(() => {
+    // Keep the empty New Chat surface clean. The indicator begins with the
+    // first real user boundary and remains isolated to this active chat.
+    if (!traceLogs.some((log: any) => log?.type === 'user_action')) return null;
+
+    const explicitEntry = parseModelEntryKey(activeModelSelection);
+    const autoEntry = explicitEntry
+      ? null
+      : pickAutoModelEntry(proxyModelEntries, readRuntimeBaseApiKeys(), readRuntimeModelApiKeys()) || proxyModelEntries[0] || null;
+    const selectedEntry = explicitEntry || autoEntry;
+    const fallbackConfig = MAIN_AGENT_MODEL_OPTIONS.find(option => option.id === agentMode) || MAIN_AGENT_MODEL_OPTIONS[0];
+    const provider = selectedEntry?.provider || fallbackConfig.provider;
+    const modelId = selectedEntry?.modelId || fallbackConfig.modelName;
+
+    let contextWindow = 0;
+    try {
+      const discovered = JSON.parse(localStorage.getItem(MODEL_CONTEXT_WINDOWS_STORAGE_KEY) || '{}');
+      contextWindow = Number(discovered?.[modelEntryKey(provider, modelId)] || 0);
+    } catch { }
+    if (!Number.isFinite(contextWindow) || contextWindow < 16_000) {
+      contextWindow = resolveClientContextWindow(provider, modelId);
+    }
+    try {
+      const savedSettings = JSON.parse(localStorage.getItem(SETTINGS_STORAGE_KEY) || '{}');
+      let budgetSelection = String(savedSettings.contextWindowSizeSelection || '258000');
+      if (activeChatId) {
+        const chatOverrides = JSON.parse(localStorage.getItem(CHAT_CONTEXT_WINDOW_OVERRIDES_STORAGE_KEY) || '{}');
+        const chatBudget = String(chatOverrides?.[activeChatId] || '').trim();
+        if (chatBudget) budgetSelection = chatBudget;
+      }
+      const requestedBudget = budgetSelection === 'model_max'
+        ? contextWindow
+        : Number(budgetSelection || 258_000);
+      if (Number.isFinite(requestedBudget) && requestedBudget >= 16_000) {
+        contextWindow = Math.min(contextWindow, Math.floor(requestedBudget));
+      }
+    } catch {
+      contextWindow = Math.min(contextWindow, 258_000);
+    }
+    const configuredContextWindow = contextWindow;
+
+    let latestUsageIndex = -1;
+    for (let index = traceLogs.length - 1; index >= 0; index -= 1) {
+      const log = traceLogs[index];
+      if (
+        log?.type === 'context_usage' &&
+        (!log.ownerChatId || !activeChatId || log.ownerChatId === activeChatId)
+      ) {
+        latestUsageIndex = index;
+        break;
+      }
+    }
+    const authoritative = latestUsageIndex >= 0 ? traceLogs[latestUsageIndex] : null;
+    const authoritativeWindow = Number(authoritative?.contextWindow || 0);
+    if (Number.isFinite(authoritativeWindow) && authoritativeWindow >= 16_000) {
+      contextWindow = Math.min(authoritativeWindow, configuredContextWindow);
+    }
+    const baseline = authoritative ? Number(authoritative.usedTokens || 0) : 0;
+    const estimateFrom = authoritative ? latestUsageIndex + 1 : 0;
+    const liveGrowth = traceLogs
+      .slice(estimateFrom)
+      .reduce((total: number, log: any) => total + estimateLiveTraceTokens(log), 0);
+    const draftTokens = inputValue.trim() ? Math.ceil(inputValue.length / 4) + 4 : 0;
+    const usedTokens = Math.max(0, Math.round(baseline + liveGrowth + draftTokens));
+
+    return {
+      usedTokens,
+      contextWindow,
+      utilizationPct: contextWindow > 0 ? Math.min(100, (usedTokens / contextWindow) * 100) : 0,
+    };
+  }, [activeChatId, activeModelSelection, agentMode, inputValue, proxyModelEntries, traceLogs]);
   // Compute effective thinking state
   const effectiveIsThinking = activeSubAgentTab && !autonomousSelected
     ? currentSubAgents.some(a => (a.id || a.name) === activeSubAgentTab && a.status === 'working')
@@ -9558,6 +9723,7 @@ function DeepWorkUI() {
                       onRunLocationChange={handleRunLocationChange}
                       chatModelSelection={activeModelSelection}
                       onModelSelectionChange={handleModelSelectionChange}
+                      contextUsage={composerContextUsage}
                       onOpenAgents={() => {
                         setBuildingAgentId(null);
                         setActiveView('agents');

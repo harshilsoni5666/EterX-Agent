@@ -54,7 +54,14 @@ WHEN TO USE SPECIALIST: focused security, performance, architecture, QA, or rese
       .describe('advise = choose the right orchestration pattern without spawning, spawn = fire-and-forget launch, status = check progress, collect = get results, clear = cleanup, consensus = 3-agent panel, debate = multi-round adversarial panel, specialist = one expert role, pause/resume/close = control an agent'),
     tasks: z.array(z.object({
       task: z.string().min(1).max(200_000).describe('Detailed task description for this sub-agent'),
-      name: z.string().optional().describe('Optional agent name (auto-assigned if not provided)')
+      name: z.string().optional().describe('Optional agent name (auto-assigned if not provided)'),
+      mode: z.enum(['think', 'fast', 'mistral', 'openai', 'openrouter', 'anthropic', 'groq']).optional()
+        .describe('Optional provider mode for this worker; otherwise inherit the parent mode'),
+      provider: z.enum(['gemini', 'mistral', 'openai', 'openrouter', 'anthropic', 'groq']).optional()
+        .describe('Optional exact provider; use together with model'),
+      model: z.string().min(1).optional().describe('Optional exact model ID; use together with provider'),
+      thinkingLevel: z.enum(['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']).optional()
+        .describe('Optional thinking level for this worker')
     })).max(20).optional().describe('Array of tasks for spawn, consensus, debate, or specialist mode'),
     request: z.string().optional().describe('Original user request for advise mode. Falls back to the first task if omitted.'),
     specialistRole: z.enum(SPECIALIST_ROLES).optional().describe('Required for specialist mode.'),
@@ -68,7 +75,14 @@ WHEN TO USE SPECIALIST: focused security, performance, architecture, QA, or rese
   }),
   execute: async (input: {
     mode: string,
-    tasks?: Array<{ task: string, name?: string }>,
+    tasks?: Array<{
+      task: string,
+      name?: string,
+      mode?: 'think' | 'fast' | 'mistral' | 'openai' | 'openrouter' | 'anthropic' | 'groq',
+      provider?: 'gemini' | 'mistral' | 'openai' | 'openrouter' | 'anthropic' | 'groq',
+      model?: string,
+      thinkingLevel?: 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max',
+    }>,
     request?: string,
     specialistRole?: SpecialistRole,
     maxAgents?: number,
@@ -126,7 +140,11 @@ WHEN TO USE SPECIALIST: focused security, performance, architecture, QA, or rese
 
         const taskList = input.tasks.map(t => ({
           task: t.task,
-          name: t.name as SubAgentName | undefined
+          name: t.name as SubAgentName | undefined,
+          mode: t.mode,
+          provider: t.provider,
+          model: t.model,
+          thinkingLevel: t.thinkingLevel,
         }));
 
         const parentContext = `Main agent spawned ${ taskList.length } parallel sub-agents. Each agent works independently on its assigned task. Do NOT mark the full project as complete — you are only doing YOUR assigned part.`;

@@ -57,6 +57,7 @@ async function writeJsonAtomic(filePath: string, data: unknown): Promise<void> {
  */
 interface CacheEntry {
   key: string;
+  scope: string;
   toolName: string;
   args: any;
   result: any;
@@ -93,27 +94,57 @@ const UNCACHEABLE_TOOLS = new Set([
   'get_skill_guidelines', // Skills should load fresh content each time
 ]);
 
+const INVALIDATES_SCOPED_CACHE_TOOLS = new Set([
+  'workspace_write_file', 'workspace_str_replace', 'workspace_apply_patch',
+  'workspace_edit_file', 'workspace_edit_many_files', 'system_shell',
+  'workspace_run_command', 'workspace_verify_code', 'git_operations',
+  'process_manager', 'run_macro', 'create_dynamic_tool',
+]);
+
+const WORKSPACE_DERIVED_CACHE_TOOLS = new Set([
+  'workspace_read_file', 'workspace_list_directory', 'workspace_search_text',
+  'workspace_analyze', 'realtime_verify',
+]);
+
 export class IntelligentCache {
   private memoryCache: Map<string, CacheEntry> = new Map();
   private stats = { hits: 0, misses: 0, saves: 0 };
 
-  /** Generate a deterministic cache key from tool name + args */
-  private generateKey(toolName: string, args: any): string {
-    const sortedArgs: any = {};
-    if (args && typeof args === 'object') {
-      Object.keys(args).sort().forEach(k => {
-        sortedArgs[k] = args[k];
-      });
-    }
-    const normalized = JSON.stringify({ tool: toolName, args: sortedArgs });
+  private stableValue(value: any): any {
+    if (Array.isArray(value)) return value.map(item => this.stableValue(item));
+    if (!value || typeof value !== 'object') return value;
+    return Object.keys(value).sort().reduce((result, key) => {
+      result[key] = this.stableValue(value[key]);
+      return result;
+    }, {} as Record<string, any>);
+  }
+
+  /** Generate a deterministic cache key from scope + tool name + nested args. */
+  private generateKey(toolName: string, args: any, scope: string): string {
+    const normalized = JSON.stringify({
+      scope: String(scope || 'global'),
+      tool: toolName,
+      args: this.stableValue(args || {}),
+    });
     return crypto.createHash('md5').update(normalized).digest('hex');
   }
 
-  /** Check if a cached result exists and is still valid */
-  get(toolName: string, args: any): any | null {
-    if (UNCACHEABLE_TOOLS.has(toolName)) return null;
+  private cloneValue<T>(value: T): T | null {
+    try {
+      return structuredClone(value);
+    } catch {
+      return null;
+    }
+  }
 
-    const key = this.generateKey(toolName, args);
+  /** Check if a cached result exists and is still valid */
+  get(toolName: string, args: any, scope = 'global'): any | null {
+    if (UNCACHEABLE_TOOLS.has(toolName)) {
+      if (INVALIDATES_SCOPED_CACHE_TOOLS.has(toolName)) this.invalidateScope(scope, true);
+      return null;
+    }
+
+    const key = this.generateKey(toolName, args, scope);
     const entry = this.memoryCache.get(key);
 
     if (!entry) {
@@ -132,22 +163,34 @@ export class IntelligentCache {
     entry.hits++;
     this.stats.hits++;
     console.log(`[Cache] ⚡ HIT: ${toolName} (${(age / 1000).toFixed(0)}s old, ${entry.hits} hits)`);
-    return entry.result;
+    const result = this.cloneValue(entry.result);
+    if (result === null) {
+      this.memoryCache.delete(key);
+      return null;
+    }
+    return result;
   }
 
   /** Store a result in cache */
-  set(toolName: string, args: any, result: any): void {
-    if (UNCACHEABLE_TOOLS.has(toolName)) return;
+  set(toolName: string, args: any, result: any, scope = 'global'): void {
+    if (UNCACHEABLE_TOOLS.has(toolName)) {
+      if (INVALIDATES_SCOPED_CACHE_TOOLS.has(toolName)) this.invalidateScope(scope, true);
+      return;
+    }
+    if (result && typeof result === 'object' && (result.error || result.success === false)) return;
 
     const ttl = TOOL_TTL[toolName];
     if (!ttl) return; // No TTL configured = don't cache
 
-    const key = this.generateKey(toolName, args);
+    const cachedResult = this.cloneValue(result);
+    if (cachedResult === null) return;
+    const key = this.generateKey(toolName, args, scope);
     this.memoryCache.set(key, {
       key,
+      scope,
       toolName,
       args,
-      result,
+      result: cachedResult,
       cachedAt: Date.now(),
       ttlMs: ttl,
       hits: 0
@@ -180,6 +223,17 @@ export class IntelligentCache {
   clear() {
     this.memoryCache.clear();
     this.stats = { hits: 0, misses: 0, saves: 0 };
+  }
+
+  invalidateScope(scope: string, workspaceOnly = false): number {
+    let invalidated = 0;
+    for (const [key, entry] of this.memoryCache.entries()) {
+      if (entry.scope !== scope) continue;
+      if (workspaceOnly && !WORKSPACE_DERIVED_CACHE_TOOLS.has(entry.toolName)) continue;
+      this.memoryCache.delete(key);
+      invalidated++;
+    }
+    return invalidated;
   }
 
   /** Purge only expired entries — keeps valid cross-message cache intact */

@@ -5,15 +5,18 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { MAIN_AGENT_MODEL_OPTIONS, normalizeModelThinkingCapabilities, type MainAgentMode, type MainAgentProvider, type ModelThinkingCapabilities } from '../../lib/agent/model-routing';
 import {
   AUTO_MODEL_SELECTION,
+  CHAT_CONTEXT_WINDOW_OVERRIDES_STORAGE_KEY,
   CHAT_MODEL_SELECTION_STORAGE_KEY,
   MODEL_API_KEYS_STORAGE_KEY,
   MODEL_CATALOG_STORAGE_KEY,
+  MODEL_CONTEXT_WINDOWS_STORAGE_KEY,
   MODEL_OVERRIDE_STORAGE_KEY,
   MODEL_PROVIDER_MODE,
   MODEL_PROVIDER_ORDER,
   MODEL_SELECTOR_STORAGE_KEY,
   MODEL_THINKING_CAPABILITIES_STORAGE_KEY,
   composeApiKeysForSelection,
+  composeApiKeysForSelections,
   entriesToModelCatalog,
   ensureModelSelectorEntry,
   isModelProvider,
@@ -247,6 +250,10 @@ export interface AppSettings {
   fullAccess: boolean;
   shellIntegration: boolean;
   autoOpenEditedFiles: boolean;
+  contextCompactionEnabled: boolean;
+  contextCompactionModelSelection: string;
+  contextCompactionInstructions: string;
+  contextWindowSizeSelection: string;
 
   // Advanced
   debugMode: boolean;
@@ -309,6 +316,10 @@ const DEFAULT_SETTINGS: AppSettings = {
   fullAccess: false,
   shellIntegration: true,
   autoOpenEditedFiles: true,
+  contextCompactionEnabled: true,
+  contextCompactionModelSelection: AUTO_MODEL_SELECTION,
+  contextCompactionInstructions: '',
+  contextWindowSizeSelection: '258000',
   debugMode: false,
   telemetry: false,
   experimentalFeatures: false,
@@ -332,6 +343,21 @@ const DEFAULT_SETTINGS: AppSettings = {
   liveConvoAudioInput: true,
   liveConvoAudioOutput: true,
   liveConvoSystemInstruction: '',
+};
+
+const CONTEXT_WINDOW_SIZE_OPTIONS = [
+  { value: '64000', label: '64k · Compact', description: 'Lowest cost and fastest turnover' },
+  { value: '128000', label: '128k · Standard', description: 'Balanced for ordinary work' },
+  { value: '258000', label: '258k · Recommended', description: 'Best default for deep agent work' },
+  { value: '512000', label: '512k · Broad', description: 'Retain substantially more history' },
+  { value: '1000000', label: '1M · Extended', description: 'For models with very large windows' },
+  { value: 'model_max', label: 'Model maximum', description: 'Use the full supported model window' },
+];
+
+const compactTokenLabel = (tokens: number) => {
+  if (!Number.isFinite(tokens) || tokens <= 0) return 'Not measured yet';
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(tokens % 1_000_000 === 0 ? 0 : 1)}M`;
+  return `${Math.round(tokens / 1000)}k`;
 };
 
 const getTerminalShellOptions = (platform: 'unknown' | 'windows' | 'mac' | 'linux') => {
@@ -373,6 +399,7 @@ type Tab =
   | 'shortcuts'
   | 'mcp'
   | 'hooks'
+  | 'context'
   | 'models'
   | 'api'
   | 'live-convo'
@@ -887,6 +914,14 @@ interface SettingsPanelProps {
   standalone?: boolean;
 }
 
+type ContextChatSummary = {
+  id: string;
+  title: string;
+  updatedAt: number;
+  usedTokens: number;
+  reportedWindow: number;
+};
+
 const normalizeSettingsTab = (tab: any): Tab => {
   const validTabs: Tab[] = [
     'general',
@@ -897,6 +932,7 @@ const normalizeSettingsTab = (tab: any): Tab => {
     'shortcuts',
     'mcp',
     'hooks',
+    'context',
     'models',
     'api',
     'live-convo',
@@ -1630,6 +1666,11 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
   const [modelOverrides, setModelOverrides] = useState<ModelOverrides>({});
   const [modelCatalog, setModelCatalog] = useState<ModelCatalog>({});
   const [modelEntries, setModelEntries] = useState<ModelSelectorEntry[]>([]);
+  const [contextChats, setContextChats] = useState<ContextChatSummary[]>([]);
+  const [selectedContextChatId, setSelectedContextChatId] = useState('');
+  const [activeContextChatId, setActiveContextChatId] = useState('');
+  const [contextChatOverrides, setContextChatOverrides] = useState<Record<string, string>>({});
+  const [contextChatsLoading, setContextChatsLoading] = useState(false);
   const [modelThinkingCapabilities, setModelThinkingCapabilities] = useState<Record<string, ModelThinkingCapabilities>>({});
   const [modelApiKeys, setModelApiKeys] = useState<Record<string, string>>({});
   const [selectedConnectionProvider, setSelectedConnectionProvider] = useState<MainAgentProvider>('gemini');
@@ -1716,6 +1757,87 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     if (isOpen) setActiveTab(normalizeSettingsTab(initialTab));
   }, [initialTab, isOpen]);
 
+  useEffect(() => {
+    if (!isOpen || activeTab !== 'context') return;
+    let cancelled = false;
+    setContextChatsLoading(true);
+    setActiveContextChatId(localStorage.getItem('eterx_active_chat') || '');
+
+    try {
+      const rawOverrides = JSON.parse(localStorage.getItem(CHAT_CONTEXT_WINDOW_OVERRIDES_STORAGE_KEY) || '{}');
+      setContextChatOverrides(
+        rawOverrides && typeof rawOverrides === 'object' && !Array.isArray(rawOverrides)
+          ? Object.fromEntries(
+              Object.entries(rawOverrides)
+                .map(([chatId, value]) => [String(chatId), String(value || '')])
+                .filter(([chatId, value]) => Boolean(chatId && value)),
+            )
+          : {},
+      );
+    } catch {
+      setContextChatOverrides({});
+    }
+
+    const normalizeChats = (rawChats: any[]): ContextChatSummary[] => rawChats
+      .filter(chat => chat && typeof chat.id === 'string')
+      .map(chat => {
+        const logs = Array.isArray(chat.traceLogs) ? chat.traceLogs : [];
+        const usage = [...logs].reverse().find((log: any) => log?.type === 'context_usage');
+        const estimatedTokens = logs.reduce((total: number, log: any) => {
+          const text = String(log?.text || log?.output || '');
+          return total + (text ? Math.ceil(text.length / 4) : 0);
+        }, 0);
+        return {
+          id: String(chat.id),
+          title: String(chat.title || 'Untitled chat').trim() || 'Untitled chat',
+          updatedAt: Number(chat.updatedAt || 0),
+          usedTokens: Math.max(0, Number(usage?.usedTokens || estimatedTokens || 0)),
+          reportedWindow: Math.max(0, Number(usage?.contextWindow || 0)),
+        };
+      })
+      .sort((left, right) => right.updatedAt - left.updatedAt);
+
+    const applyChats = (rawChats: any[]) => {
+      if (cancelled) return;
+      const next = normalizeChats(rawChats);
+      setContextChats(next);
+      setSelectedContextChatId(previous => {
+        if (previous && next.some(chat => chat.id === previous)) return previous;
+        const currentChatId = localStorage.getItem('eterx_active_chat') || '';
+        return next.find(chat => chat.id === currentChatId)?.id || next[0]?.id || '';
+      });
+    };
+
+    try {
+      const cached = JSON.parse(localStorage.getItem('eterx_chats') || '[]');
+      const indexPayload = JSON.parse(localStorage.getItem('eterx_chat_index') || '{}');
+      const indexed = Array.isArray(indexPayload) ? indexPayload : indexPayload?.chats;
+      const byId = new Map<string, any>();
+      if (Array.isArray(indexed)) indexed.forEach((chat: any) => chat?.id && byId.set(chat.id, chat));
+      if (Array.isArray(cached)) cached.forEach((chat: any) => chat?.id && byId.set(chat.id, { ...byId.get(chat.id), ...chat }));
+      applyChats(Array.from(byId.values()));
+    } catch {
+      applyChats([]);
+    }
+
+    const desktopLoad = (window as any)?.electronAPI?.loadChatSnapshot;
+    const durableLoad = typeof desktopLoad === 'function'
+      ? desktopLoad()
+      : fetch('/api/chats', { cache: 'no-store' }).then(response => response.ok ? response.json() : Promise.reject(new Error('Unable to load chats')));
+    Promise.resolve(durableLoad)
+      .then((snapshot: any) => {
+        if (Array.isArray(snapshot?.chats)) applyChats(snapshot.chats);
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (!cancelled) setContextChatsLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab, isOpen]);
+
   const hasAnyApiKey = useCallback((keys: Record<string, string>) =>
     Object.values(keys).some(value => Boolean(String(value || '').trim())), []);
 
@@ -1733,6 +1855,17 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       const payload = await res.json();
       if (!res.ok || !payload?.ok) throw new Error(payload?.error || 'Model discovery failed');
       setModelDirectory(payload.providers || {});
+      const discoveredContextWindows: Record<string, number> = {};
+      Object.values(payload.providers || {}).forEach((providerValue: any) => {
+        const provider = String(providerValue?.provider || '');
+        (providerValue?.models || []).forEach((model: any) => {
+          const limit = Number(model?.inputTokenLimit || model?.contextLength || 0);
+          if (provider && model?.id && Number.isFinite(limit) && limit >= 16_000) {
+            discoveredContextWindows[modelEntryKey(provider, String(model.id))] = Math.floor(limit);
+          }
+        });
+      });
+      localStorage.setItem(MODEL_CONTEXT_WINDOWS_STORAGE_KEY, JSON.stringify(discoveredContextWindows));
       setModelDirectoryUpdatedAt(payload.updatedAt || Date.now());
       setModelDirectoryStatus('ready');
     } catch (error) {
@@ -1795,9 +1928,14 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     if (!keysChangedRef.current) return;
     keysChangedRef.current = false;
     const selection = localStorage.getItem(CHAT_MODEL_SELECTION_STORAGE_KEY) || AUTO_MODEL_SELECTION;
-    const composed = composeApiKeysForSelection(apiKeys, modelApiKeys, modelEntries, selection);
+    const composed = composeApiKeysForSelections(
+      apiKeys,
+      modelApiKeys,
+      modelEntries,
+      [selection, settings.contextCompactionModelSelection || AUTO_MODEL_SELECTION],
+    );
     await syncApiKeys(composed, false, modelOverrides);
-  }, [apiKeys, modelApiKeys, modelEntries, modelOverrides, syncApiKeys]);
+  }, [apiKeys, modelApiKeys, modelEntries, modelOverrides, settings.contextCompactionModelSelection, syncApiKeys]);
 
   // Load non-sensitive preferences from localStorage and credentials only from
   // the encrypted Electron store. Existing browser-stored keys are migrated
@@ -1806,9 +1944,10 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     const loadSettings = async () => {
       try {
       const saved = localStorage.getItem('eterx_settings');
+      let nextSettings = { ...DEFAULT_SETTINGS };
       if (saved) {
         const parsedSettings = JSON.parse(saved);
-        const nextSettings = { ...DEFAULT_SETTINGS, ...parsedSettings };
+        nextSettings = { ...DEFAULT_SETTINGS, ...parsedSettings };
         if (!['auto', 'powershell', 'cmd', 'git-bash', 'wsl', 'zsh', 'bash', 'fish', 'sh'].includes(nextSettings.terminalShell)) {
           nextSettings.terminalShell = 'auto';
         }
@@ -1885,7 +2024,12 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       }
 
       const selection = localStorage.getItem(CHAT_MODEL_SELECTION_STORAGE_KEY) || AUTO_MODEL_SELECTION;
-      const configuredKeys = composeApiKeysForSelection(parsedApiKeys, parsedModelApiKeys, normalizedEntries, selection);
+      const configuredKeys = composeApiKeysForSelections(
+        parsedApiKeys,
+        parsedModelApiKeys,
+        normalizedEntries,
+        [selection, nextSettings.contextCompactionModelSelection || AUTO_MODEL_SELECTION],
+      );
       const configuredOverrides = Object.fromEntries(
         Object.entries(effectiveModelOverrides)
           .map(([provider, model]) => [provider, String(model || '').trim()])
@@ -1937,6 +2081,35 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     });
     setHasChanges(true);
   }, []);
+
+  const updateContextCompactionModelSelection = useCallback((value: string) => {
+    updateSetting('contextCompactionModelSelection', value);
+    const activeSelection = localStorage.getItem(CHAT_MODEL_SELECTION_STORAGE_KEY) || AUTO_MODEL_SELECTION;
+    const composed = composeApiKeysForSelections(
+      apiKeys,
+      modelApiKeys,
+      modelEntries,
+      [activeSelection, value || AUTO_MODEL_SELECTION],
+    );
+    void syncApiKeys(composed, true, modelOverrides);
+  }, [apiKeys, modelApiKeys, modelEntries, modelOverrides, syncApiKeys, updateSetting]);
+
+  const updateContextChatOverride = useCallback((value: string) => {
+    if (!selectedContextChatId) return;
+    setContextChatOverrides(previous => {
+      const next = { ...previous };
+      if (value === 'global') delete next[selectedContextChatId];
+      else next[selectedContextChatId] = value;
+      localStorage.setItem(CHAT_CONTEXT_WINDOW_OVERRIDES_STORAGE_KEY, JSON.stringify(next));
+      broadcastEterxSettingsUpdate({
+        type: 'context-window-overrides-updated',
+        chatId: selectedContextChatId,
+        contextWindowSizeSelection: value,
+      });
+      return next;
+    });
+    setHasChanges(true);
+  }, [selectedContextChatId]);
 
   // Apply theme to DOM — this is what triggers the CSS variable switch
   useEffect(() => {
@@ -2013,6 +2186,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     { id: 'configuration', label: 'Configuration', icon: 'configuration' },
     { id: 'personalization', label: 'Personalization', icon: 'personalization' },
     { id: 'mcp', label: 'MCP servers', icon: 'mcp' },
+    { id: 'context', label: 'Context', icon: 'models' },
     { id: 'models', label: 'Models', icon: 'models' },
     { id: 'api', label: 'API', icon: 'api' },
     { id: 'live-convo', label: 'Live Convo', icon: 'live-convo' },
@@ -2076,6 +2250,16 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
   const selectedProviderModelOptions = getProviderModelOptions(selectedConnectionProvider);
   const selectedProviderKeyCount = providerKeyCount(selectedConnectionProvider);
   const globalSelectorCount = modelEntries.length;
+  const selectedContextChat = contextChats.find(chat => chat.id === selectedContextChatId) || null;
+  const selectedContextChatBudget = selectedContextChatId
+    ? contextChatOverrides[selectedContextChatId] || 'global'
+    : 'global';
+  const effectiveSelectedChatBudget = selectedContextChatBudget === 'global'
+    ? settings.contextWindowSizeSelection
+    : selectedContextChatBudget;
+  const effectiveSelectedChatWindow = effectiveSelectedChatBudget === 'model_max'
+    ? selectedContextChat?.reportedWindow || 0
+    : Number(effectiveSelectedChatBudget || 0);
   const selectedProviderStatusText = selectedProviderDirectory
     ? (selectedProviderDirectory.connected ? `${ selectedProviderDirectory.models.length } live models loaded` : selectedProviderDirectory.error || 'Not connected')
     : 'Refresh to load live models';
@@ -2504,6 +2688,146 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                       )}
 
                       {/* ═══ AGENT TAB ═══ */}
+                      {activeTab === 'context' && (
+                        <div>
+                          <SectionHeader
+                            title="Context compaction"
+                            badge={settings.contextCompactionEnabled ? 'ACTIVE' : 'OFF'}
+                            info="Compaction runs only at a safe iteration boundary, creates a continuation capsule with the selected model, and resumes the same chat run automatically."
+                          />
+                          <SettingsStack>
+                            <SettingsStackRow
+                              title="Automatic compaction"
+                              description="Compact a chat before its active model reaches the critical part of its context window. When disabled, history remains uncompressed until the provider limit is reached."
+                            >
+                              <Toggle enabled={settings.contextCompactionEnabled} onChange={value => updateSetting('contextCompactionEnabled', value)} />
+                            </SettingsStackRow>
+                            <SettingsStackRow
+                              title="Context window size"
+                              description="Sets the working context budget used by the live counter and compaction thresholds. It never exceeds the selected model's actual limit."
+                              info="258k is recommended for strong continuity without excessive context cost. Choose a larger budget when the active task genuinely needs broader history."
+                            >
+                              <ModernSelect
+                                value={settings.contextWindowSizeSelection}
+                                onChange={value => updateSetting('contextWindowSizeSelection', value)}
+                                className="w-[360px]"
+                                options={CONTEXT_WINDOW_SIZE_OPTIONS}
+                              />
+                            </SettingsStackRow>
+                            <SettingsStackRow
+                              title="Compaction model"
+                              description="Used only to create the continuation capsule. Auto follows the model selected for the active chat run."
+                              info="The compaction request uses the API pool already configured for the chosen provider."
+                            >
+                              <ModernSelect
+                                value={settings.contextCompactionModelSelection}
+                                onChange={updateContextCompactionModelSelection}
+                                className="w-[360px]"
+                                options={[
+                                  { value: AUTO_MODEL_SELECTION, label: 'Auto · active chat model', description: 'Follow each chat run' },
+                                  ...modelEntries.map(entry => ({
+                                    value: modelEntryKey(entry.provider, entry.modelId),
+                                    label: entry.modelId,
+                                    description: PROVIDER_LABEL[entry.provider] || entry.provider,
+                                  })),
+                                ]}
+                              />
+                            </SettingsStackRow>
+                          </SettingsStack>
+
+                          <SectionHeader
+                            title="Custom instructions"
+                            info="These supplement the built-in loss-aware state-transfer prompt without replacing its continuity requirements."
+                          />
+                          <div className="rounded-xl border border-white/[0.09] bg-[#202020] p-4">
+                            <textarea
+                              value={settings.contextCompactionInstructions}
+                              onChange={event => updateSetting('contextCompactionInstructions', event.target.value.slice(0, 12000))}
+                              placeholder="Add details the context compactor should preserve or emphasize..."
+                              rows={10}
+                              className="min-h-[210px] w-full resize-y rounded-xl border border-white/[0.08] bg-[#141414] px-4 py-3 text-[13px] leading-6 text-[#F1F1F1] outline-none transition-colors placeholder:text-[#666] focus:border-white/[0.20]"
+                            />
+                            <div className="mt-2 flex items-center justify-between text-[11px] text-[#777]">
+                              <span>Applied to every model-generated capsule.</span>
+                              <span>{settings.contextCompactionInstructions.length.toLocaleString()} / 12,000</span>
+                            </div>
+                          </div>
+
+                          <SectionHeader
+                            title="Per-chat context"
+                            info="Overrides are stored by exact chat ID. Selecting a larger budget here never changes any other chat."
+                          />
+                          <div className="rounded-xl border border-white/[0.09] bg-[#202020] p-4">
+                            {contextChats.length > 0 ? (
+                              <div className="space-y-4">
+                                <div>
+                                  <div className="mb-2 text-[11.5px] font-medium text-[#9B9B9B]">Chat</div>
+                                  <ModernSelect
+                                    value={selectedContextChatId}
+                                    onChange={setSelectedContextChatId}
+                                    className="w-full"
+                                    placeholder={contextChatsLoading ? 'Loading chats…' : 'Select a chat'}
+                                    options={contextChats.map(chat => ({
+                                      value: chat.id,
+                                      label: chat.title,
+                                      description: `${compactTokenLabel(chat.usedTokens)} used${chat.id === activeContextChatId ? ' · Current chat' : ''}`,
+                                    }))}
+                                  />
+                                </div>
+                                <div>
+                                  <div className="mb-2 text-[11.5px] font-medium text-[#9B9B9B]">Context budget for this chat</div>
+                                  <ModernSelect
+                                    value={selectedContextChatBudget}
+                                    onChange={updateContextChatOverride}
+                                    className="w-full"
+                                    options={[
+                                      {
+                                        value: 'global',
+                                        label: `Use global default · ${CONTEXT_WINDOW_SIZE_OPTIONS.find(option => option.value === settings.contextWindowSizeSelection)?.label || '258k · Recommended'}`,
+                                        description: 'Automatically follows the global Context window size setting',
+                                      },
+                                      ...CONTEXT_WINDOW_SIZE_OPTIONS,
+                                    ]}
+                                  />
+                                </div>
+                                {selectedContextChat && (
+                                  <div className="grid grid-cols-2 gap-2">
+                                    <div className="rounded-xl border border-white/[0.07] bg-[#171717] px-3 py-2.5">
+                                      <div className="text-[10.5px] font-medium uppercase tracking-[0.08em] text-[#707070]">Current usage</div>
+                                      <div className="mt-1 text-[14px] font-medium text-[#EAEAEA]">{compactTokenLabel(selectedContextChat.usedTokens)}</div>
+                                    </div>
+                                    <div className="rounded-xl border border-white/[0.07] bg-[#171717] px-3 py-2.5">
+                                      <div className="text-[10.5px] font-medium uppercase tracking-[0.08em] text-[#707070]">Effective budget</div>
+                                      <div className="mt-1 text-[14px] font-medium text-[#EAEAEA]">
+                                        {effectiveSelectedChatBudget === 'model_max'
+                                          ? (effectiveSelectedChatWindow > 0 ? compactTokenLabel(effectiveSelectedChatWindow) : 'Model maximum')
+                                          : compactTokenLabel(effectiveSelectedChatWindow)}
+                                      </div>
+                                    </div>
+                                  </div>
+                                )}
+                                <p className="text-[11.5px] leading-5 text-[#777]">
+                                  The override is applied to the live counter and the compaction boundaries for this chat only.
+                                </p>
+                              </div>
+                            ) : (
+                              <div className="flex min-h-[96px] items-center justify-center text-center text-[12.5px] text-[#777]">
+                                {contextChatsLoading ? 'Loading chats…' : 'Start a chat to configure its individual context budget.'}
+                              </div>
+                            )}
+                          </div>
+
+                          <SectionHeader title="Runtime behavior" />
+                          <SettingsStack>
+                            <SettingsStackRow title="Two-stage protection" description="Normal compaction begins near 84%. Fast-growing tool runs may compact earlier only when the next cycle is forecast to approach the limit. Near 92%, recovery compaction completes before another model request." />
+                            <SettingsStackRow title="Adaptive retention" description="Information-dense work keeps a larger verbatim tail. Exact references, constraints, failures, tool continuity, and next actions are preserved in the capsule." />
+                            <SettingsStackRow title="Per-chat isolation" description="Capsules, locks, counters, and retry state are keyed by the exact chat ID." />
+                            <SettingsStackRow title="Safe boundary" description="Compaction starts between model iterations, never during a tool call, file edit, stream, or approval." />
+                            <SettingsStackRow title="Automatic resume" description="The same active run continues immediately with its capsule and recent protocol-safe tail." />
+                          </SettingsStack>
+                        </div>
+                      )}
+
                       {activeTab === 'configuration' && (
                         <div>
 
