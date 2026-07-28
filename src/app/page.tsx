@@ -628,6 +628,15 @@ const chatHasLogsMissingFromDurable = (durable: ChatSession, cached: ChatSession
   return !(durable.traceLogs || []).some(log => traceLogIdentity(log) === lastCachedIdentity);
 };
 
+const enforceChatTraceOwnership = (chat: ChatSession): ChatSession => {
+  const traceLogs = (chat.traceLogs || []).filter(
+    log => !log?.chatId || log.chatId === chat.id
+  );
+  return traceLogs.length === (chat.traceLogs || []).length
+    ? chat
+    : { ...chat, traceLogs };
+};
+
 const mergeCachedChatIntoDurable = (durable: ChatSession, cached: ChatSession): ChatSession => {
   const durableLogs = durable.traceLogs || [];
   const cachedLogs = cached.traceLogs || [];
@@ -3056,9 +3065,10 @@ function DeepWorkUI() {
       preserveMetadataOnlyChats = false
     ) => {
       if (cancelled) return;
-      const cleanChats = preserveMetadataOnlyChats
+      const cleanChats = (preserveMetadataOnlyChats
         ? restoredChats
-        : removeGeneratedEmptyChats(restoredChats);
+        : removeGeneratedEmptyChats(restoredChats))
+        .map(enforceChatTraceOwnership);
       setChats(cleanChats);
       const savedActiveChatId = localStorage.getItem(ACTIVE_CHAT_STORAGE_KEY);
       const restoredActiveChat = cleanChats.find(chat => chat.id === savedActiveChatId);
@@ -3250,14 +3260,19 @@ function DeepWorkUI() {
   const stripChatsForStorage = (chatList: ChatSession[]) =>
     chatList.map(chat => ({
       ...chat,
-      traceLogs: (chat.traceLogs || []).map(stripTraceLogForStorage)
+      traceLogs: (chat.traceLogs || [])
+        .filter(log => !log?.chatId || log.chatId === chat.id)
+        .map(stripTraceLogForStorage)
     }));
   const stripChatsForBrowserCache = (chatList: ChatSession[]) =>
     chatList.slice(0, 50).map(chat => ({
       ...chat,
       // AppData owns full history. Browser storage is only a fast/offline cache
       // and must stay bounded to avoid synchronous localStorage stalls.
-      traceLogs: (chat.traceLogs || []).slice(-300).map(stripTraceLogForStorage),
+      traceLogs: (chat.traceLogs || [])
+        .filter(log => !log?.chatId || log.chatId === chat.id)
+        .slice(-300)
+        .map(stripTraceLogForStorage),
     }));
   const stripChatsForBrowserIndex = (chatList: ChatSession[]) =>
     chatList.slice(0, 2000).map(chat => ({
@@ -3499,12 +3514,14 @@ function DeepWorkUI() {
         hydratedChatIdsRef.current.add(chatId);
 
         const currentChat = chatsRef.current.find(chat => chat.id === chatId);
-        const hydratedChat = currentChat
+        const hydratedChat = enforceChatTraceOwnership(currentChat
           ? mergeCachedChatIntoDurable(durableChat, currentChat)
-          : durableChat;
+          : durableChat);
         setChats(currentChats => currentChats.map(currentChat => {
           if (currentChat.id !== chatId) return currentChat;
-          return mergeCachedChatIntoDurable(hydratedChat, currentChat);
+          return enforceChatTraceOwnership(
+            mergeCachedChatIntoDurable(hydratedChat, currentChat)
+          );
         }));
 
         if (activeChatIdRef.current === chatId) {
@@ -3530,9 +3547,17 @@ function DeepWorkUI() {
   };
 
   const loadChat = (id: string) => {
+    const liveOwnerChatId = liveChatIdRef.current;
+    if (liveOwnerChatId && liveOwnerChatId !== id) {
+      // Navigation is a synchronous ownership boundary. Invalidate Live before
+      // changing the active chat so no callback can stream into the next feed.
+      stopLiveSession();
+    }
+
     // Read through the live ref so a sidebar callback from an earlier render
     // cannot hydrate the chat with an older in-memory stream snapshot.
     let chat = chatsRef.current.find(c => c.id === id);
+    if (chat) chat = enforceChatTraceOwnership(chat);
 
     const queuedUpdates = backgroundChatUpdatesRef.current.get(id);
     if (chat && queuedUpdates?.length) {
@@ -6638,9 +6663,12 @@ function DeepWorkUI() {
   // into traceLogs. Without this, both the live answer AND all live action logs
   // disappear simultaneously for one render frame, causing the visible flash.
   const displayTraceLogs = useMemo(() => {
+    const ownedTraceLogs = traceLogs.filter(
+      log => !log?.chatId || log.chatId === activeChatId
+    );
     const baseLogs = isLiveSessionActive
-      ? traceLogs.filter(l => l.type !== 'thought_stream')
-      : traceLogs;
+      ? ownedTraceLogs.filter(l => l.type !== 'thought_stream')
+      : ownedTraceLogs;
 
     // Filter out sub-agent details when we are in the main view
     const filteredLogs = baseLogs.filter(l => {
@@ -6671,10 +6699,10 @@ function DeepWorkUI() {
     // Check if traceLogs already has the committed answer for this turn.
     // Only then drop the snapshot — otherwise hold it to avoid the flash.
     const hasCommittedAnswer = (() => {
-      const lastUserIdx = traceLogs.reduceRight((found, l, i) =>
+      const lastUserIdx = ownedTraceLogs.reduceRight((found, l, i) =>
         found === -1 && l?.type === 'user_action' ? i : found, -1);
       if (lastUserIdx === -1) return false;
-      return traceLogs.slice(lastUserIdx + 1).some(l => l?.type === 'answer');
+      return ownedTraceLogs.slice(lastUserIdx + 1).some(l => l?.type === 'answer');
     })();
 
     // Determine which live logs to append
@@ -9364,6 +9392,8 @@ function DeepWorkUI() {
                     )}
 
                     <ChatFeed
+                      key={activeChatId || 'new-chat'}
+                      chatId={activeChatId}
                       traceLogs={effectiveDisplayLogs}
                       isThinking={effectiveIsThinking}
                       messagesEndRef={messagesEndRef}

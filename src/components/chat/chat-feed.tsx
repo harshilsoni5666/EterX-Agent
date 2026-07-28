@@ -13,6 +13,7 @@ import { isTurnWorkActive } from '../../lib/chat-feed-lifecycle';
 
 interface ChatFeedProps {
   traceLogs: any[];
+  chatId: string | null;
   isThinking: boolean;
   messagesEndRef: React.RefObject<HTMLDivElement>;
   setSidebarOpen: (o: boolean) => void;
@@ -1527,8 +1528,15 @@ const ChatFeedMessageGroup = React.memo(({
 });
 
 export const ChatFeed = React.memo<ChatFeedProps>(({
-  traceLogs, isThinking, messagesEndRef, setSidebarOpen, sidebarOpen, handleScroll: externalHandleScroll, showScrollBottom, isCompressed = false, onOpenAgentTeam, onAnswerAskUser, onEditUserMessage, isSubAgentTab = false, liveState
+  traceLogs: incomingTraceLogs, chatId, isThinking, messagesEndRef, setSidebarOpen, sidebarOpen, handleScroll: externalHandleScroll, showScrollBottom, isCompressed = false, onOpenAgentTeam, onAnswerAskUser, onEditUserMessage, isSubAgentTab = false, liveState
 }) => {
+  // Final presentation boundary: a trace carrying an owner ID can only render
+  // inside that exact chat. This protects the feed even if an upstream async
+  // state update arrives during navigation.
+  const traceLogs = useMemo(
+    () => incomingTraceLogs.filter(log => !log?.chatId || log.chatId === chatId),
+    [chatId, incomingTraceLogs]
+  );
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const navContainerRef = useRef<HTMLDivElement>(null);
   const previewCloseButtonRef = useRef<HTMLButtonElement>(null);
