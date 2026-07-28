@@ -22,6 +22,13 @@ type ProxyDecision = {
   contractUpdate?: Partial<Pick<TaskContract, 'requiredDeliverables' | 'forbiddenActions' | 'safetyConstraints' | 'completionConditions'>>;
   managerDirectiveId?: string;
   managerNotice?: string;
+  promptIntent?: {
+    outcome: string;
+    preserveRules: string[];
+    acceptanceEvidence: string;
+    strategyFreedom: 'free' | 'bounded' | 'exact';
+    whyNow: string;
+  };
   situationUpdate?: Partial<{
     progress: string;
     activeStrategy: string;
@@ -43,10 +50,14 @@ type ProxyDecision = {
 type TaskContract = {
   goal: string;
   priorUserContext: string[];
+  explicitRules: string[];
+  preferences: string[];
+  authorityBoundaries: string[];
   requiredDeliverables: string[];
   forbiddenActions: string[];
   safetyConstraints: string[];
   completionConditions: string[];
+  successEvidence: string[];
   referencedPaths: string[];
 };
 
@@ -175,9 +186,39 @@ const MIN_EVENTS_AFTER_INTERVENTION = 2;
 const REVIEW_SCORE_THRESHOLD = 10;
 
 const CADENCE_SETTINGS = {
-  quiet: { scoreThreshold: 16, minIntervalMs: 42_000, periodicMs: 100_000 },
-  normal: { scoreThreshold: REVIEW_SCORE_THRESHOLD, minIntervalMs: MIN_REVIEW_INTERVAL_MS, periodicMs: PERIODIC_REVIEW_MS },
-  close: { scoreThreshold: 6, minIntervalMs: 10_000, periodicMs: 32_000 },
+  quiet: {
+    scoreThreshold: 18,
+    minIntervalMs: 60_000,
+    periodicMs: 150_000,
+    bootstrapAfterEvents: 2,
+    failuresBeforeGuidance: 3,
+    eventsAfterIntervention: 4,
+    maxMidRunInterventions: 1,
+    confidence: 0.86,
+    completionConfidence: 0.88,
+  },
+  normal: {
+    scoreThreshold: REVIEW_SCORE_THRESHOLD,
+    minIntervalMs: MIN_REVIEW_INTERVAL_MS,
+    periodicMs: PERIODIC_REVIEW_MS,
+    bootstrapAfterEvents: 1,
+    failuresBeforeGuidance: 2,
+    eventsAfterIntervention: MIN_EVENTS_AFTER_INTERVENTION,
+    maxMidRunInterventions: 4,
+    confidence: 0.72,
+    completionConfidence: 0.76,
+  },
+  close: {
+    scoreThreshold: 5,
+    minIntervalMs: 8_000,
+    periodicMs: 24_000,
+    bootstrapAfterEvents: 1,
+    failuresBeforeGuidance: 2,
+    eventsAfterIntervention: 1,
+    maxMidRunInterventions: 8,
+    confidence: 0.66,
+    completionConfidence: 0.72,
+  },
 } as const;
 
 const compact = (value: unknown, max = 1600): string => {
@@ -208,6 +249,16 @@ function buildTaskContract(objective: string, context: any, history: any[] = [],
   const deliverableLines = lines.filter(line =>
     /\b(create|produce|write|generate|save|output|deliver|open|copy|export|report|summary|inventory|plan)\b/i.test(line),
   );
+  const explicitRules = lines.filter(line =>
+    /\b(must|required|ensure|make sure|always|exactly|only|do not|don't|never|must not|before finishing)\b/i.test(line),
+  );
+  const preferences = lines.filter(line =>
+    /\b(prefer|would like|ideally|professional|simple|concise|detailed|style|tone|format)\b/i.test(line) &&
+    !explicitRules.includes(line),
+  );
+  const authorityBoundaries = lines.filter(line =>
+    /\b(ask|approval|permission|authorize|authority|login|credential|public|private|sensitive|send|publish|upload|delete|overwrite)\b/i.test(line),
+  );
   const forbidden = lines.filter(line => /\b(do not|don't|never|must not|without changing|avoid)\b/i.test(line));
   const safety = lines.filter(line =>
     /\b(safe|safety|sensitive|personal|private|important|ambiguous|original|delete|move|overwrite|permission|approval)\b/i.test(line),
@@ -235,10 +286,17 @@ function buildTaskContract(objective: string, context: any, history: any[] = [],
   return {
     goal: compact(objective, 5000),
     priorUserContext,
+    explicitRules: unique(explicitRules, 20),
+    preferences: unique(preferences, 16),
+    authorityBoundaries: unique(authorityBoundaries, 16),
     requiredDeliverables: unique([...fileTokens, ...deliverableLines], 20),
     forbiddenActions: unique(forbidden, 16),
     safetyConstraints: unique(safety, 16),
     completionConditions: unique(completion.length > 0 ? completion : deliverableLines, 16),
+    successEvidence: unique([
+      ...completion,
+      ...deliverableLines.map(line => `Direct evidence that this outcome exists and is usable: ${line}`),
+    ], 20),
     referencedPaths: unique([...contextPaths, ...attachmentNames], 20),
   };
 }
@@ -263,12 +321,22 @@ function extractDecision(raw: string): ProxyDecision {
         : [],
       visibilityGap: compact(parsed.visibilityGap, 700),
       optionalImprovement: parsed.optionalImprovement === true,
-      reviewCadence: new Set(['quiet', 'normal', 'close']).has(parsed.reviewCadence) ? parsed.reviewCadence : undefined,
       attentionSignals: Array.isArray(parsed.attentionSignals)
         ? unique(parsed.attentionSignals.map((item: any) => String(item)), 10)
         : [],
       managerDirectiveId: compact(parsed.managerDirectiveId, 160),
       managerNotice: compact(parsed.managerNotice, 1200),
+      promptIntent: parsed.promptIntent && typeof parsed.promptIntent === 'object' ? {
+        outcome: compact(parsed.promptIntent.outcome, 900),
+        preserveRules: Array.isArray(parsed.promptIntent.preserveRules)
+          ? unique(parsed.promptIntent.preserveRules, 6)
+          : [],
+        acceptanceEvidence: compact(parsed.promptIntent.acceptanceEvidence, 700),
+        strategyFreedom: new Set(['free', 'bounded', 'exact']).has(parsed.promptIntent.strategyFreedom)
+          ? parsed.promptIntent.strategyFreedom
+          : 'free',
+        whyNow: compact(parsed.promptIntent.whyNow, 700),
+      } : undefined,
       situationUpdate: parsed.situationUpdate && typeof parsed.situationUpdate === 'object' ? {
         progress: compact(parsed.situationUpdate.progress, 1400),
         activeStrategy: compact(parsed.situationUpdate.activeStrategy, 1000),
@@ -343,6 +411,78 @@ function humanDelegatedInstruction(message: string, goalGap: string, managerMess
     : 'Please change the failing approach, continue toward the requested outcome, and report completion only after the result is verified.';
 }
 
+function outcomeLevelInstruction(message: string, goalGap: string, preserveExactMechanism = false): string {
+  const clean = compact(message, 1600);
+  if (preserveExactMechanism) return clean;
+  const micromanagesExecution =
+    /\b(?:powershell|cmd(?:\.exe)?|bash|shell|curl(?:\.exe)?|invoke-restmethod|invoke-webrequest|python|node|npm|pip|git)\b/i.test(clean) ||
+    /(?:^|\s)(?:--?[a-z][\w-]*|\/[A-Z])(?:\s|$)/.test(clean) ||
+    /[`$][({\w]|(?:\|\s*(?:convert|select|where|out)-)/i.test(clean);
+  if (!micromanagesExecution) return clean;
+  const outcome = compact(goalGap, 700);
+  return outcome
+    ? `Please continue toward this outcome: ${outcome}. Use a materially different strategy if the current approach is failing, and confirm the result with direct evidence before reporting success.`
+    : 'Please change the failing strategy, continue toward the requested outcome, and confirm the result with direct evidence before reporting success.';
+}
+
+function formHumanProxyPrompt(decision: ProxyDecision, contract: TaskContract): string {
+  const intent = decision.promptIntent;
+  const outcome = compact(intent?.outcome || decision.remainingGoalGap || contract.goal, 800);
+  const exactMechanismRequired = intent?.strategyFreedom === 'exact';
+  const raw = outcomeLevelInstruction(
+    humanDelegatedInstruction(decision.message || '', outcome, ''),
+    outcome,
+    exactMechanismRequired,
+  );
+  const internallyFramed =
+    /\b(?:main|proxy-agent|proxy agent|user proxy|runtime|directive|telemetry|evidence event)\b/i.test(raw);
+  const executionPrescription =
+    /\b(?:powershell|cmd(?:\.exe)?|bash|shell|curl(?:\.exe)?|invoke-restmethod|python|node|npm|pip)\b/i.test(raw) ||
+    /(?:^|\s)(?:--?[a-z][\w-]*|\/[A-Z])(?:\s|$)/.test(raw);
+  const outcomeAligned =
+    decision.action === 'request_real_user' ||
+    !outcome ||
+    messageSimilarity(raw, outcome) >= 0.12;
+  if (
+    raw &&
+    !internallyFramed &&
+    (!executionPrescription || exactMechanismRequired) &&
+    outcomeAligned &&
+    raw.length <= 1000
+  ) return raw;
+
+  const preserved = unique(
+    intent?.preserveRules?.length ? intent.preserveRules : contract.explicitRules,
+    2,
+  );
+  const acceptance = compact(
+    intent?.acceptanceEvidence ||
+    contract.successEvidence[0] ||
+    'direct evidence that the requested result is complete and usable',
+    500,
+  );
+  if (decision.action === 'request_real_user') {
+    const question = outcome.replace(/^(?:please\s+)?(?:clarify|confirm|decide|choose)\s+/i, '');
+    return compact(
+      question
+        ? `Before I continue, please confirm ${question.replace(/[.?!]+$/, '')}?`
+        : 'Before I continue, what outcome or authority should I use for this decision?',
+      700,
+    );
+  }
+  const parts = [
+    outcome ? `Please make sure ${outcome.replace(/^[Pp]lease\s+/, '')}` : 'Please complete the requested outcome',
+    preserved.length > 0 ? `Keep these requirements unchanged: ${preserved.join('; ')}.` : '',
+    intent?.strategyFreedom === 'exact'
+      ? 'Use the exact mechanism the user required.'
+      : intent?.strategyFreedom === 'bounded'
+        ? 'You may change the approach as long as those requirements remain intact.'
+        : 'Choose a different approach if it is more reliable.',
+    acceptance ? `Treat it as complete only after ${acceptance.replace(/^direct evidence that\s+/i, 'there is direct evidence that ')}.` : '',
+  ].filter(Boolean);
+  return compact(parts.join(' '), 1600);
+}
+
 export class UserProxyRuntime {
   private readonly options: RuntimeOptions;
   private readonly state: ProxyState;
@@ -360,6 +500,7 @@ export class UserProxyRuntime {
   private lastThoughtSampleAt = 0;
   private readonly startedAt = Date.now();
   private selectedIntervention: ProxyInterventionLevel;
+  private bootstrapReviewPending = true;
 
   constructor(options: RuntimeOptions) {
     this.options = options;
@@ -415,17 +556,18 @@ export class UserProxyRuntime {
 
   start(): void {
     this.state.status = 'watching';
+    this.bootstrapReviewPending = true;
     this.options.onTrace?.({
       type: 'autonomy_proxy_status',
-      phase: 'watching',
-      text: 'User Proxy is watching Main',
+      phase: 'independent_supervision',
+      text: 'Proxy-Agent independently supervising this task',
       _autonomyProxy: true,
       timestamp: Date.now(),
     });
     this.schedulePersist();
     if (this.state.managerDirectives.some(item => item.status === 'active')) {
       this.reviewScore = CADENCE_SETTINGS[this.state.adaptivePolicy.cadence].scoreThreshold;
-      this.scheduleReview('proxy_manager_directive');
+      if (this.scheduleReview('proxy_manager_directive')) this.bootstrapReviewPending = false;
     }
   }
 
@@ -660,17 +802,24 @@ export class UserProxyRuntime {
     this.schedulePersist();
 
     if (this.pendingGuidance || Date.now() < this.humanOverrideUntil) return;
+    const cadence = CADENCE_SETTINGS[this.state.adaptivePolicy.cadence];
+    if (
+      this.bootstrapReviewPending &&
+      this.state.events.length >= cadence.bootstrapAfterEvents &&
+      (this.state.adaptivePolicy.cadence === 'close' || event.kind !== 'intent')
+    ) {
+      if (this.scheduleReview('task_bootstrap')) this.bootstrapReviewPending = false;
+    }
     const initialSilence = this.state.adaptivePolicy.cadence === 'quiet'
       ? INITIAL_SILENCE_MS * 1.5
       : this.state.adaptivePolicy.cadence === 'close' ? 4_000 : INITIAL_SILENCE_MS;
     if (Date.now() - this.startedAt < initialSilence && !event.risk) return;
 
     const eventsAfterIntervention = event.id - this.state.lastInterventionEventId;
-    if (eventsAfterIntervention < MIN_EVENTS_AFTER_INTERVENTION && !event.risk) return;
+    if (eventsAfterIntervention < cadence.eventsAfterIntervention && !event.risk) return;
 
-    const cadence = CADENCE_SETTINGS[this.state.adaptivePolicy.cadence];
     const reviewAge = Date.now() - this.state.lastDecisionAt;
-    const urgent = event.risk || this.consecutiveFailures >= 2 || event.repeated;
+    const urgent = event.risk || this.consecutiveFailures >= cadence.failuresBeforeGuidance || event.repeated;
     const materialCheckpoint = this.reviewScore >= cadence.scoreThreshold;
     const periodicCheckpoint = reviewAge >= cadence.periodicMs && this.reviewScore >= Math.max(4, cadence.scoreThreshold / 2);
     if (urgent || materialCheckpoint || periodicCheckpoint) {
@@ -951,15 +1100,15 @@ export class UserProxyRuntime {
     return 'consecutive_execution_failures';
   }
 
-  private scheduleReview(trigger: string): void {
-    if (this.reviewPromise || this.reviewTimer || this.stopped || this.pendingGuidance || this.mainPhase === 'composing' || this.mainPhase === 'completion_review') return;
+  private scheduleReview(trigger: string): boolean {
+    if (this.reviewPromise || this.reviewTimer || this.stopped || this.pendingGuidance || this.mainPhase === 'composing' || this.mainPhase === 'completion_review') return false;
     const elapsed = Date.now() - this.state.lastDecisionAt;
     const urgent = trigger !== 'material_execution_checkpoint';
     // Do not arm a delayed background review that can wake while Main is
     // silently composing a response. Non-urgent reviews wait for the next
     // observable execution boundary once cadence permits; urgent evidence is
     // reviewed immediately.
-    if (!urgent && elapsed < CADENCE_SETTINGS[this.state.adaptivePolicy.cadence].minIntervalMs) return;
+    if (!urgent && elapsed < CADENCE_SETTINGS[this.state.adaptivePolicy.cadence].minIntervalMs) return false;
     const delay = 0;
     this.reviewTimer = setTimeout(() => {
       this.reviewTimer = null;
@@ -984,6 +1133,7 @@ export class UserProxyRuntime {
         });
     }, delay);
     this.reviewTimer.unref?.();
+    return true;
   }
 
   private async runReview(trigger: string, completionCandidate = ''): Promise<ProxyDecision> {
@@ -991,7 +1141,25 @@ export class UserProxyRuntime {
     this.state.lastDecisionAt = Date.now();
     this.state.status = 'reviewing';
 
-    const evidenceWindow = this.state.events.slice(-24);
+    const recentRisk = this.state.events.slice(-10).some(event => event.risk || event.repeated);
+    const posture = this.state.adaptivePolicy.cadence;
+    const reviewDepth: 'scan' | 'standard' | 'deep' =
+      completionCandidate || recentRisk || trigger === 'possible_constraint_or_safety_violation'
+        ? 'deep'
+        : trigger === 'task_bootstrap' ||
+          trigger === 'proxy_manager_directive' ||
+          trigger === 'intervention_changed' ||
+          this.consecutiveFailures >= 2 ||
+          (posture === 'close' && trigger === 'material_execution_checkpoint')
+          ? 'standard'
+          : 'scan';
+    const evidenceLimit = reviewDepth === 'deep' ? 24 : reviewDepth === 'standard' ? 16 : 10;
+    const investigationBudget = reviewDepth === 'deep'
+      ? posture === 'close' ? 4 : posture === 'normal' ? 3 : 2
+      : reviewDepth === 'standard'
+        ? posture === 'close' ? 2 : posture === 'normal' ? 1 : 0
+        : 0;
+    const evidenceWindow = this.state.events.slice(-evidenceLimit);
     const reviewThroughEventId = evidenceWindow.reduce((highest, event) => Math.max(highest, event.id), this.state.lastReviewedEventId);
     const recent = evidenceWindow.map(event =>
       `#${event.id} [${event.kind}/${event.type}${event.tool ? `/${event.tool}` : ''}${event.failed ? '/FAILED' : ''}${event.risk ? '/RISK' : ''}${event.repeated ? '/REPEATED' : ''}] ${event.text}`,
@@ -1010,6 +1178,7 @@ export class UserProxyRuntime {
         '- Do not intervene for a merely better approach, missing optional polish, uncertain telemetry, or a recoverable mistake Main can reasonably notice and repair.',
         '- Require a large counterfactual benefit: without your message, the task is likely to become materially wrong, unsafe, unauthorized, or falsely complete.',
         '- Prefer dormant attention and completion review over mid-task steering. One precise late correction is better than several preventative suggestions.',
+        '- A command or tool failure is not an intervention trigger by itself. Allow Main room to repair recoverable failures, but act immediately when one failure proves a binding assumption false, exposes missing authority, or makes the strategy non-credible.',
         '- Escalate immediately only for concrete critical risk or an explicit urgent user directive.',
       ].join('\n')
       : this.state.adaptivePolicy.cadence === 'close'
@@ -1018,6 +1187,7 @@ export class UserProxyRuntime {
           '- Act as an active expert supervisor. Inspect strategy transitions, dependencies, user constraints, evidence quality, recovery behavior, and completion claims early.',
           '- Intervene before substantial rework when evidence shows Main is committing to a materially wrong path, silently dropping a required dependency, or repeatedly operating without needed evidence.',
           '- High initiative does not mean frequent commentary. Consolidate related concerns into one actionable instruction and then give Main room to apply it.',
+          '- Review the first failure early and interpret what it changes. Intervene immediately when it exposes a false assumption, missing authority, non-credible strategy, consequential drift, or concrete risk; otherwise watch the recovery with patience.',
           '- Challenge weak assumptions when they affect the outcome; redirect when the current strategy is no longer credible; interrupt only when the next action would create concrete harm or major wasted work.',
           '- Track unresolved risks across reviews and close them at the most useful natural boundary. Never manufacture urgency from incomplete visibility.',
         ].join('\n')
@@ -1026,32 +1196,46 @@ export class UserProxyRuntime {
           '- Balance uninterrupted execution with timely expert supervision. Let healthy work proceed, but intervene when a consequential gap is supported and waiting would noticeably reduce quality or increase rework.',
           '- Review material checkpoints, strategy changes, repeated failures, important artifacts, explicit user constraints, and the completion boundary.',
           '- Prefer a concise steer at the next model boundary. Redirect only for a materially wrong strategy; challenge only when Main must reassess a consequential assumption.',
+          '- Let Main repair an isolated mechanical error. Intervene after one failure when its meaning is structural—for example a false assumption, unavailable authority, invalid target, or infeasible strategy—or when waiting would create consequential rework.',
           '- Combine related observations, avoid duplicate guidance, and allow Main a fair opportunity to self-correct before escalating.',
           '- Treat optional improvements as silent notes, not blockers.',
         ].join('\n');
 
     const prompt = [
-      'You are the persistent USER PROXY in a two-agent autonomous loop. Main performs the work. You act like a perceptive expert user who protects intent, notices consequential gaps, and otherwise stays silent.',
+      'You are the persistent USER PROXY in a two-agent autonomous loop. Main performs the work. You remain actively engaged as a perceptive expert user: understand the trajectory, interpret failures, protect intent, and communicate with proportionate timing and firmness.',
       'ROLE SEPARATION: you are the live execution supervisor. You do not hold a parallel user conversation, invent new goals, or perform Main\'s task yourself. Proxy Manager is the user-facing coordinator; Main is the executor. You exclusively maintain task fidelity, supervise evidence, choose intervention timing, and guard completion.',
+      'INDEPENDENCE: your mandate begins from the original task contract and Main telemetry. You never wait for Proxy Manager, a side conversation, or an external directive before supervising. Manager directives are optional additional context; they do not activate you and their absence never makes you passive.',
+      'At task start, independently form a compact supervision model: intended outcome, hard constraints, required evidence, likely failure modes, irreversible boundaries, and completion gates. Update it from Main evidence rather than repeatedly re-planning the task.',
+      'Intent hierarchy: (1) explicit user prohibitions, requirements, authority limits, and exact mechanisms are binding; (2) requested deliverables and success conditions define completion; (3) user preferences guide quality when compatible; (4) inferred implementation tactics are disposable. Never protect a failing tactic at the expense of the user\'s actual outcome.',
+      'Pivot doctrine: preserve the goal and binding rules while allowing Main to replace tools, commands, services, sequence, decomposition, or implementation technique. Recommend a pivot only when evidence makes the current strategy non-credible, not merely because another approach exists.',
+      'AI failure model: watch for local optimization that loses the global goal, action inertia after a tactic stops working, confirmation bias toward earlier claims, misreading tool output, confusing generated artifacts with usable deliverables, context decay that drops old constraints, premature satisficing, scope expansion, and confident completion without outcome evidence. These are attention hypotheses, never assumed defects.',
+      'Intervention-cost model: interruption fragments Main\'s working context, competes with self-correction, and can anchor execution on your local diagnosis. Repeated prompts are especially harmful. Speak only when the counterfactual is clear: without this message, a consequential user outcome is likely to worsen.',
+      'Resource economics: supervision also consumes latency, model tokens, and tool capacity. Spend them in proportion to uncertainty and consequence. Reuse the durable situation model, inspect only facts that could change the decision, and never perform broad research merely to make an observe decision feel more thorough.',
       'Your observations are incomplete telemetry, not omniscience. Never claim an action failed, a file is missing, or a constraint was violated unless the supplied evidence supports it. Lack of visibility is not proof of failure.',
       'Thought streams, streaming work notes, and partially composed response text are unfinished internal activity. Never ask Main to provide a full answer, full code, or final response based on those fragments. Only completion_candidate contains a finished response that may be judged for completeness.',
       'Use intelligent counterfactual judgment, not fixed patterns: predict what a capable Main will naturally do next. Before speaking, compare the expected benefit of intervention with the cost of interrupting flow. If Main is likely to handle the issue correctly without you, observe—even if you can imagine an improvement.',
       'Questions are expensive. Infer ordinary implementation details, use available evidence, and trust Main on routine choices. Ask for real-user involvement only when the information or authority is genuinely human-exclusive and the outcome materially depends on it.',
-      'Intervene only for: a concrete safety/constraint violation; repeated or blocked execution Main is not correcting; a materially wrong strategy; an unresolved decision requiring the real user; or a required completion gap.',
+      'Intervene for: a concrete safety/constraint violation; execution Main is not credibly recovering; a failure that changes feasibility, authority, or a binding assumption; a materially wrong strategy; an unresolved decision requiring the real user; or a required completion gap.',
+      'Failure temperament: classify before reacting. Distinguish malformed invocation, transient service failure, missing capability, missing credential/authority, invalid assumption, and fundamentally infeasible strategy. Give mechanical recovery patience, but do not wait for repetition when one evidenced failure already invalidates the plan. Respond to the meaning and consequence of failure, never its mere existence. Do not become an interactive command debugger.',
+      'Recovery ladder: first observe self-correction; then steer the missing outcome or constraint; redirect only when the strategy is no longer credible; request the real user only for genuinely human-exclusive information or authority; stop only for critical active harm. Never escalate merely because a tool is inconvenient.',
       'You are Main\'s runtime supervisor, not merely an adviser. You may steer Main at a model boundary, redirect its strategy, or interrupt it. Use stop_main only for a critical active safety/authority violation or an explicit user-authorized stop request carried by an active Proxy Manager directive. Never stop merely because progress is imperfect, slow, or uncertain.',
       'Proxy Manager directives are user-facing requests to you, not commands injected straight into Main. Semantically decide whether to absorb them into your mandate, deliver now, defer to a natural boundary, or reject them as redundant/harmful. When acting on one, return its exact managerDirectiveId. Prefer one consolidated high-value instruction over repeated incremental coaching.',
       'Any message delivered to Main appears as a real user message. Write it directly in a calm human voice. Never say "Main", "the agent", "Proxy-Agent", "User Proxy", "runtime", "directive", or describe what another component is doing. State the desired outcome or correction itself.',
-      'Do not coach shell syntax one command at a time. After one failed correction for the same tactic or service, either redirect to a materially different strategy, ask for genuinely missing authority, or stay silent. Never resend the same diagnosis with different wording.',
+      'Message formation: write like a capable human correcting the work, not a debugger controlling keystrokes. State the unmet outcome, the constraint that must hold, and the evidence that will count as done. Do not prescribe PowerShell, shell syntax, commands, flags, tool names, or code snippets unless the original user explicitly required that exact mechanism. Never resend the same diagnosis with different wording.',
+      'The message field is the exact final user prompt Main will see. It must stand alone and sound natural. Use the shortest shape that fits: correction = unmet outcome + binding rule + done evidence; pivot = unchanged outcome + freedom to replace the failing tactic; clarification = one human-exclusive decision; completion gap = missing required result + proof needed; safety = boundary that must not be crossed. Do not include your rationale or component names.',
+      'promptIntent is the private semantic frame used to validate that message. outcome states what must change; preserveRules lists only binding rules relevant now; acceptanceEvidence states observable proof; strategyFreedom is free unless the user constrained the method, bounded when some methods are excluded, and exact only when the user explicitly required a mechanism; whyNow explains the evidence-backed timing privately.',
       'A pending when_relevant directive is dormant supervisory memory. Compare its activationCondition with the evolving situation, but do not mention or deliver it until it has real present value. A before_completion directive activates only during completion review. An after_current directive remains isolated from the current objective. This lets one compressed user concept guide later work without repeated side-agent model calls.',
-      'The coordination history is two-way memory. Use it to avoid duplicate guidance and to tell whether Main consumed earlier supervision. Silence remains correct when the expected value of intervention is negative.',
-      'Do not intervene for optional polish, style preference, speculative improvement, ordinary planning, one recoverable tool failure, or activity that Main is already correcting. Silence is the normal action.',
+      'The coordination history is two-way memory. Use it to avoid duplicate guidance and to tell whether Main consumed earlier supervision. Active supervision is continuous; an external message is warranted whenever its expected value clearly exceeds its disruption cost.',
+      'Do not intervene for optional polish, style preference, speculative improvement, ordinary planning, or a mechanical failure Main is credibly correcting. Do intervene when the evidence changes the task\'s feasibility, authority, strategy credibility, constraint compliance, or completion truth.',
       'The task contract began as a conservative machine-extracted seed, not a fixed truth. Semantically refine it only from the current goal and relevant prior-user context. Do not turn optional ideas into required deliverables.',
       'Omit contractUpdate unless the seed is materially wrong. When correcting it, return the complete corrected requiredDeliverables and completionConditions. Explicit forbiddenActions and safetyConstraints may be strengthened but never weakened.',
       'The user-selected intervention posture is authoritative and cannot be changed by your response. Adapt only the task-specific attention signals within that posture.',
       interventionDoctrine,
+      'You have bounded read-only investigation tools. Use them only when a consequential factual uncertainty cannot be resolved from Main telemetry and the answer could change whether intervention is necessary. Never edit, execute Main\'s task, or use tools for routine curiosity. Tool findings are supervisory evidence, not permission to take over execution.',
+      `REVIEW DEPTH: ${reviewDepth.toUpperCase()}. Read-only investigation budget for this review: at most ${investigationBudget} tool call${investigationBudget === 1 ? '' : 's'}. ${reviewDepth === 'scan' ? 'Use telemetry and durable memory only; do not call tools.' : reviewDepth === 'standard' ? 'Resolve at most one decision-changing uncertainty.' : 'Investigate only the few consequential uncertainties needed for safety or completion judgment.'}`,
       this.state.helperUsed
-        ? 'The one temporary specialist allowance is already used. Do not call tools.'
-        : 'You may call spawn_sub_agent once in specialist mode only when a consequential uncertainty cannot be resolved from the evidence. Use exactly one focused task. Never create a panel, fleet, or general worker.',
+        ? 'The one temporary specialist allowance is already used. Continue with telemetry and bounded read-only inspection.'
+        : 'You may call spawn_sub_agent once in specialist mode only after direct read-only inspection is insufficient for a consequential domain uncertainty. Use exactly one focused task. Never create a panel, fleet, or general worker.',
       `TASK CONTRACT:\n${JSON.stringify(this.state.contract, null, 2)}`,
       'The priorUserContext field is reference context only. Treat it as part of the task only when the current goal explicitly continues or refers to it.',
       `CURRENT GOAL GAP (may be stale; revise from evidence):\n${this.state.lastGoalGap || '(unknown)'}`,
@@ -1064,6 +1248,7 @@ export class UserProxyRuntime {
       `DELIVERABLE EVIDENCE:\n${deliverables}`,
       `REVIEW TRIGGER: ${trigger}`,
       `CURRENT MAIN PHASE: ${this.mainPhase}. When this is composing, all visible answer text is partial and Main may already be producing exactly what is needed.`,
+      `INDEPENDENT STARTUP REVIEW: ${trigger === 'task_bootstrap' ? 'Build the supervision model now. Do not invent a problem and do not intervene without grounded evidence; normally return observe with useful attention signals and situation/complexity updates.' : 'The independent startup review has already occurred or this is a later evidence boundary.'}`,
       `USER-SELECTED INTERVENTION POSTURE: ${this.state.adaptivePolicy.cadence === 'quiet' ? 'MINIMAL — remain silent unless evidence shows a serious safety, constraint, blockage, or required-completion failure' : this.state.adaptivePolicy.cadence === 'close' ? 'HIGH — inspect material uncertainty and deviations earlier, while still requiring evidence and avoiding optional-polish interruptions' : 'NORMAL — balance flow protection with timely intervention on consequential gaps'}. This posture changes initiative, never the truthfulness or safety standard.`,
       `RECENT MAIN EVIDENCE:\n${recent}`,
       `PRIOR PROXY GUIDANCE (do not repeat or paraphrase):\n${prior}`,
@@ -1074,7 +1259,7 @@ export class UserProxyRuntime {
         ? 'Approve unless a required, consequential gap is supported by specific event evidence or explicitly admitted in the final answer. Optional improvements must never block completion.'
         : 'Choose observe unless intervention is necessary now. If visibility is insufficient, record visibilityGap and observe; do not nag Main for information it is likely still gathering.',
       'Return exactly one JSON object:',
-      '{"action":"observe|steer|redirect|challenge|request_real_user|interrupt_main|stop_main|approve_completion","message":"one short natural user-like instruction, blank for observe/approve","reason":"private rationale including the counterfactual necessity test","remainingGoalGap":"concrete remaining goal gap or blank","confidence":0.0,"severity":"low|medium|high|critical","evidenceEventIds":[1],"managerDirectiveId":"matching active directive id or blank","managerNotice":"only a consequential concise update worth surfacing to Proxy Manager, otherwise blank","visibilityGap":"missing telemetry, if any","optionalImprovement":false,"attentionSignals":["task-specific signal"],"situationUpdate":{"progress":"durable compact progress summary","activeStrategy":"Main current strategy","unresolvedRisks":[],"nextExpectedBoundary":"next meaningful checkpoint"},"complexityUpdate":{"level":"simple|moderate|complex|frontier","criticalPath":[],"dependencies":[],"invariants":[],"decisionPoints":[],"uncertainty":[],"recoveryBranches":[],"verificationGates":[]},"contractUpdate":null}',
+      '{"action":"observe|steer|redirect|challenge|request_real_user|interrupt_main|stop_main|approve_completion","message":"exact short natural user prompt, blank for observe/approve","reason":"private rationale including the counterfactual necessity test","remainingGoalGap":"concrete remaining goal gap or blank","confidence":0.0,"severity":"low|medium|high|critical","evidenceEventIds":[1],"promptIntent":{"outcome":"what must change now","preserveRules":["binding user rule relevant now"],"acceptanceEvidence":"observable proof of completion","strategyFreedom":"free|bounded|exact","whyNow":"private evidence-backed timing"},"managerDirectiveId":"matching active directive id or blank","managerNotice":"only a consequential concise update worth surfacing to Proxy Manager, otherwise blank","visibilityGap":"missing telemetry, if any","optionalImprovement":false,"attentionSignals":["task-specific signal"],"situationUpdate":{"progress":"durable compact progress summary","activeStrategy":"Main current strategy","unresolvedRisks":[],"nextExpectedBoundary":"next meaningful checkpoint"},"complexityUpdate":{"level":"simple|moderate|complex|frontier","criticalPath":[],"dependencies":[],"invariants":[],"decisionPoints":[],"uncertainty":[],"recoveryBranches":[],"verificationGates":[]},"contractUpdate":null}',
     ].filter(Boolean).join('\n\n');
 
     const { createIsolatedClient } = await import('../Agent');
@@ -1083,6 +1268,8 @@ export class UserProxyRuntime {
       projectId: `${this.options.context.projectId}::user-proxy`,
       agentRuntime: 'user_proxy',
       isUserProxy: true,
+      isProxyManager: false,
+      proxyRole: 'independent_runtime_supervisor',
       disableSubAgents: this.state.helperUsed,
       allowAgentSpawning: !this.state.helperUsed,
       _userProxyHelperUsed: this.state.helperUsed,
@@ -1092,7 +1279,15 @@ export class UserProxyRuntime {
       disableSharedCache: true,
       selectedModelMode: this.options.mode,
       selectedModelName: (this.options.context as any).selectedModelName,
-      selectedThinkingLevel: 'low',
+      selectedThinkingLevel: this.selectedIntervention === 'high'
+        ? 'high'
+        : this.selectedIntervention === 'minimal' ? 'low' : 'medium',
+      proxyInvestigationBudget: investigationBudget,
+      maxToolCalls: Math.max(1, investigationBudget),
+      workspacePath: (this.options.context as any).workspacePath,
+      paths: Array.isArray((this.options.context as any).paths)
+        ? [...(this.options.context as any).paths]
+        : [],
       runtimeSettings: this.options.runtimeSettings,
     };
     let response: any;
@@ -1114,36 +1309,127 @@ export class UserProxyRuntime {
     }
     this.state.helperUsed = Boolean(proxyContext._userProxyHelperUsed);
     const decision = extractDecision(response.text);
+    const investigationEvidenceIds = this.recordInvestigationEvidence(response.trace);
+    if (decision.action !== 'observe' && decision.action !== 'approve_completion' && investigationEvidenceIds.length > 0) {
+      const decisionBasis = [
+        decision.reason,
+        decision.promptIntent?.whyNow,
+        decision.promptIntent?.outcome,
+        decision.message,
+      ].filter(Boolean).join(' ');
+      const linkedInvestigationIds = investigationEvidenceIds.filter(id => {
+        const event = this.state.events.find(item => item.id === id);
+        return Boolean(event && messageSimilarity(event.text, decisionBasis) >= 0.15);
+      });
+      decision.evidenceEventIds = unique([
+        ...(decision.evidenceEventIds || []).map(String),
+        ...linkedInvestigationIds.map(String),
+      ], 8).map(Number);
+    }
     this.state.lastReviewedEventId = reviewThroughEventId;
     if (decision.managerNotice) this.addCoordinationEvent('supervisor_notice', decision.managerNotice, decision.managerDirectiveId);
     return decision;
   }
 
+  private recordInvestigationEvidence(trace: any): number[] {
+    if (!Array.isArray(trace)) return [];
+    const evidenceIds: number[] = [];
+    const findings = trace
+      .filter(item => item?.tool && item?.text)
+      .filter(item => item.success !== false && !/\b(error|failed|denied|not found|unable to)\b/i.test(String(item.text)))
+      .slice(-4);
+    for (const finding of findings) {
+      const tool = compact(finding.tool, 120);
+      const text = compact(finding.text, 1200);
+      if (!tool || !text) continue;
+      const event: ProxyEvent = {
+        id: ++this.eventCounter,
+        type: 'proxy_investigation',
+        kind: 'result',
+        text: `Read-only ${tool} finding: ${text}`,
+        tool,
+        signature: `proxy_investigation|${tool}|${text.slice(0, 240)}`.toLowerCase(),
+        failed: false,
+        risk: false,
+        repeated: false,
+        timestamp: Date.now(),
+      };
+      this.state.events.push(event);
+      evidenceIds.push(event.id);
+    }
+    if (this.state.events.length > MAX_EVENTS) this.state.events = this.state.events.slice(-MAX_EVENTS);
+    return evidenceIds;
+  }
+
   private isGroundedDecision(decision: ProxyDecision, completionReview: boolean, completionCandidate = ''): boolean {
     if (decision.action === 'observe' || decision.action === 'approve_completion') return false;
     if (decision.optionalImprovement) return false;
+    const policy = CADENCE_SETTINGS[this.state.adaptivePolicy.cadence];
     const confidence = decision.confidence ?? 0;
-    const postureOffset = this.state.adaptivePolicy.cadence === 'quiet' ? 0.1 : this.state.adaptivePolicy.cadence === 'close' ? -0.05 : 0;
-    if (confidence < Math.max(0.62, (completionReview ? 0.74 : 0.7) + postureOffset)) return false;
+    const requiredConfidence = completionReview ? policy.completionConfidence : policy.confidence;
+    if (confidence < requiredConfidence) return false;
     if (!compact(decision.message, 1600)) return false;
     const knownIds = new Set(this.state.events.map(event => event.id));
     const evidenceIds = decision.evidenceEventIds || [];
+    const citedEvents = evidenceIds
+      .filter(id => knownIds.has(id))
+      .map(id => this.state.events.find(event => event.id === id))
+      .filter((event): event is ProxyEvent => Boolean(event));
     const managerDirective = decision.managerDirectiveId
       ? this.state.managerDirectives.find(item => item.id === decision.managerDirectiveId && (item.status === 'active' || item.status === 'pending'))
       : undefined;
-    const hasEvidence = evidenceIds.some(id => {
-      if (!knownIds.has(id)) return false;
-      const event = this.state.events.find(item => item.id === id);
-      return Boolean(event && event.kind !== 'intent' && event.kind !== 'other');
-    });
+    const hasEvidence = citedEvents.some(event => event.kind !== 'intent' && event.kind !== 'other');
+    const onlyRecoverableFailureEvidence =
+      citedEvents.length > 0 &&
+      citedEvents.every(event => event.failed && !event.risk && !event.repeated);
+    const structuralFailureDecision =
+      (decision.severity === 'high' || decision.severity === 'critical') &&
+      /\b(?:invalid|false|wrong)\s+(?:assumption|target|premise)|missing\s+(?:authority|credential|capability|permission)|unauthori[sz]ed|infeasible|not viable|cannot satisfy|fundamentally blocked\b/i.test(
+        `${decision.reason || ''} ${decision.promptIntent?.whyNow || ''}`,
+      );
+    if (
+      !completionReview &&
+      onlyRecoverableFailureEvidence &&
+      this.consecutiveFailures < policy.failuresBeforeGuidance &&
+      !structuralFailureDecision
+    ) {
+      return false;
+    }
+    const midRunInterventions = this.state.interventions.filter(item =>
+      item.timestamp >= this.startedAt &&
+      item.action !== 'stop_main'
+    ).length;
+    if (
+      !completionReview &&
+      midRunInterventions >= policy.maxMidRunInterventions &&
+      decision.severity !== 'critical' &&
+      !citedEvents.some(event => event.risk)
+    ) {
+      return false;
+    }
     const candidateAdmitsGap = completionReview &&
       /\b(not completed|not created|not finished|not verified|could not|couldn't|unable to|failed to|still missing|remains incomplete)\b/i.test(completionCandidate);
+    const unverifiedDeliverables = Object.entries(this.state.deliverableEvidence)
+      .filter(([, evidence]) => !evidence.verified)
+      .map(([deliverable]) => deliverable);
+    const hasContractEvidenceGap =
+      completionReview &&
+      unverifiedDeliverables.length > 0 &&
+      Boolean(decision.promptIntent?.acceptanceEvidence) &&
+      (
+        unverifiedDeliverables.some(deliverable =>
+          messageSimilarity(deliverable, decision.promptIntent?.outcome || decision.message || '') >= 0.12
+        ) ||
+        /\b(verify|evidence|confirm|prove|exists|usable|open|read back)\b/i.test(
+          `${decision.promptIntent?.acceptanceEvidence || ''} ${decision.message || ''}`,
+        )
+      );
     const pendingCanActivate = managerDirective?.status !== 'pending' ||
       managerDirective.timing === 'when_relevant' ||
       (completionReview && managerDirective.timing === 'before_completion');
     if (managerDirective?.status === 'pending' && !pendingCanActivate) return false;
     const userAuthorizedSupervisorAction = Boolean(managerDirective && managerDirective.target !== 'proxy' && pendingCanActivate);
-    if (!hasEvidence && !candidateAdmitsGap && !userAuthorizedSupervisorAction && decision.action !== 'request_real_user') return false;
+    if (!hasEvidence && !candidateAdmitsGap && !hasContractEvidenceGap && !userAuthorizedSupervisorAction && decision.action !== 'request_real_user') return false;
     if (decision.action === 'stop_main') {
       const explicitStop = managerDirective?.requestedAction === 'stop_main' && managerDirective.urgency === 'critical';
       if (!explicitStop && !((decision.confidence ?? 0) >= 0.92 && decision.severity === 'critical' && hasEvidence)) return false;
@@ -1222,19 +1508,25 @@ export class UserProxyRuntime {
     const directive = decision.managerDirectiveId
       ? this.state.managerDirectives.find(item => item.id === decision.managerDirectiveId)
       : undefined;
-    const message = humanDelegatedInstruction(
-      decision.message || '',
-      decision.remainingGoalGap || this.state.lastGoalGap,
-      directive?.message || '',
-    );
+    const message = formHumanProxyPrompt({
+      ...decision,
+      message: decision.message || directive?.message || '',
+      remainingGoalGap: decision.remainingGoalGap || this.state.lastGoalGap,
+    }, this.state.contract);
     if (!message) return false;
     const topicKey = guidanceTopicKey(message);
     const recentInterventions = this.state.interventions.slice(-6);
+    const newMaterialEvidence = this.state.events.some(event =>
+      event.id > this.state.lastInterventionEventId &&
+      (event.failed || event.repeated || event.risk || event.kind === 'artifact' || event.kind === 'result')
+    );
     const repeatsRecentTopic = Boolean(topicKey && recentInterventions.some(item =>
       (item.topicKey || guidanceTopicKey(item.message)) === topicKey &&
-      Date.now() - item.timestamp < 10 * 60_000,
+      Date.now() - item.timestamp < 10 * 60_000 &&
+      !newMaterialEvidence,
     ));
-    if (repeatsRecentTopic || recentInterventions.some(item => messageSimilarity(item.message, message) >= 0.58)) {
+    const similarityThreshold = newMaterialEvidence ? 0.82 : 0.58;
+    if (repeatsRecentTopic || recentInterventions.some(item => messageSimilarity(item.message, message) >= similarityThreshold)) {
       this.state.status = 'watching';
       this.schedulePersist();
       return false;
