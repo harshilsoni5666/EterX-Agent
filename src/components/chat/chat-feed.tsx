@@ -9,7 +9,7 @@ import { Shimmer } from '../ui/shimmer';
 import { notifyAgentFaceTraceLog } from './agent-face-controller';
 import ReactMarkdown from 'react-markdown';
 import { markdownComponents, normalizeMarkdownForRendering, remarkPlugins, rehypePlugins } from './markdown-renderer';
-import { isTurnWorkActive } from '../../lib/chat-feed-lifecycle';
+import { isTerminalWorkTrace, isTurnWorkActive } from '../../lib/chat-feed-lifecycle';
 
 interface ChatFeedProps {
   traceLogs: any[];
@@ -807,7 +807,7 @@ const formatWorkElapsed = (seconds: number) => {
 
 const RollingTimeDisplay = ({ label }: { label: string }) => {
   return (
-    <span className="font-sans font-semibold tabular-nums tracking-normal">
+    <span className="font-sans font-medium tabular-nums tracking-[-0.01em]">
       {label}
     </span>
   );
@@ -916,8 +916,8 @@ const useWorkElapsedSeconds = (active: boolean, logs: any[], endedAt?: number | 
 };
 
 const ThoughtSequence = ({
-  logs, liveLogs = [], isThinking, isLast, hasAnswer, stepCount, turnEndedAt, onOpenAgentTeam, isSubAgentTab = false, groupIdx = 0, onEditUserMessage
-}: { logs: any[], liveLogs?: any[], isThinking: boolean, isLast: boolean, hasAnswer: boolean, stepCount: number, turnEndedAt?: number | null, onOpenAgentTeam?: (agentName?: string) => void, isSubAgentTab?: boolean, groupIdx?: number, onEditUserMessage?: (text: string) => void }) => {
+  logs, liveLogs = [], isThinking, isLast, hasAnswer, hasInteractionBoundary = false, stepCount, turnEndedAt, onOpenAgentTeam, isSubAgentTab = false, groupIdx = 0, onEditUserMessage
+}: { logs: any[], liveLogs?: any[], isThinking: boolean, isLast: boolean, hasAnswer: boolean, hasInteractionBoundary?: boolean, stepCount: number, turnEndedAt?: number | null, onOpenAgentTeam?: (agentName?: string) => void, isSubAgentTab?: boolean, groupIdx?: number, onEditUserMessage?: (text: string) => void }) => {
   // Start collapsed for completed turns, open for active/no-answer turns
   const [open, setOpen] = React.useState(false);
   const containerRef = React.useRef<HTMLDivElement>(null);
@@ -1003,7 +1003,8 @@ const ThoughtSequence = ({
   const hasCounter = stepCount > 0 || logs.length > 0;
   const isCollapsedWithAnswer = hasAnswer && !isOpen;
   const isLiveWorkCounter = isLiveThinking && hasVisibleWork && !isWaitingForFirstTrace;
-  const showWorkedSummary = !isLiveThinking && hasVisibleWork;
+  const hasTerminalBoundary = hasAnswer || hasInteractionBoundary || turnLogs.some(isTerminalWorkTrace);
+  const showWorkedSummary = !isLiveThinking && hasVisibleWork && hasTerminalBoundary;
   const shouldStickCounter = hasAnswer || isLiveWorkCounter;
   const counterColor = 'var(--muted-foreground)';
   const counterBackground = 'var(--muted)';
@@ -1020,7 +1021,7 @@ const ThoughtSequence = ({
     <div className="relative" ref={containerRef}>
       {showWorkedSummary && <div className="eterx-worked-summary mb-2 flex w-full items-center gap-4 pt-1"><div className="eterx-worked-summary-line h-px flex-1 bg-[var(--border)]" /><span className="eterx-worked-summary-label shrink-0 py-[1px] text-center text-[12px] font-medium leading-[1.35] tracking-normal text-[var(--muted-foreground)]">{`Worked for ${ workElapsedLabel }`}</span><div className="eterx-worked-summary-line h-px flex-1 bg-[var(--border)]" /></div>}
       {hasCounter && <div className={`eterx-process-summary-row ${ shouldStickCounter ? 'sticky top-3 z-20' : '' } ${ isCollapsedWithAnswer ? 'mb-2' : 'mb-1' } flex w-full items-center overflow-visible py-1.5`}>
-        {isLiveWorkCounter ? <button type="button" onClick={toggleOpen} aria-expanded={isOpen} className="eterx-process-summary-chip eterx-process-summary-chip-live group inline-flex min-h-[36px] shrink-0 items-center gap-1.5 rounded-full bg-[var(--muted)] px-3 py-[6px] text-[13px] font-semibold leading-[1.35] tracking-normal text-[var(--muted-foreground)] outline outline-1 outline-[var(--border)] transition-all duration-150 hover:bg-[var(--secondary)] hover:text-[var(--foreground)]"><span className="eterx-process-summary-label inline-flex items-center gap-1 pb-[1px] leading-[1.35]" style={{ color: 'var(--eterx-ui-working-text)' }}><Shimmer>Working for</Shimmer><RollingTimeDisplay label={workElapsedLabel} /></span>{isOpen ? <ChevronDown className="h-3 w-3 opacity-55" /> : <ChevronRight className="h-3 w-3 opacity-55" />}</button> : <button type="button" onClick={toggleOpen} aria-expanded={isOpen} className="eterx-process-summary-chip inline-flex h-[30px] items-center gap-1.5 transition-all duration-200" style={{ ...compactCounterStyle, cursor: 'pointer', position: 'relative', zIndex: 1 }} onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = 'var(--foreground)'; (e.currentTarget as HTMLElement).style.background = counterHoverBackground; }} onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = counterColor; (e.currentTarget as HTMLElement).style.background = counterBackground; }}><span className="eterx-process-summary-icon" style={{ display: 'inline-flex', width: 20, height: 20, alignItems: 'center', justifyContent: 'center', borderRadius: 8, color: 'inherit', background: 'var(--border)', outline: '1px solid var(--border)' }}><StepCounterIcon live={isLiveThinking} /></span><Shimmer active={isLiveThinking} className="eterx-process-summary-label" style={{ fontSize: 13, fontWeight: 650, letterSpacing: 0, lineHeight: 1 } as any}>{actionLabel}</Shimmer>{isOpen ? <ChevronDown style={{ width: 9, height: 9, flexShrink: 0, opacity: 0.6 }} /> : <ChevronRight style={{ width: 9, height: 9, flexShrink: 0, opacity: 0.6 }} />}</button>}
+        {isLiveWorkCounter ? <button type="button" onClick={toggleOpen} aria-expanded={isOpen} className="eterx-process-summary-chip eterx-process-summary-chip-live group inline-flex h-[32px] shrink-0 items-center gap-1.5 rounded-[9px] border border-[var(--border)] bg-[var(--muted)] px-2.5 text-[12.5px] font-medium leading-none tracking-[-0.01em] text-[var(--muted-foreground)] shadow-[0_3px_12px_rgba(0,0,0,0.08)] transition-all duration-150 hover:border-[var(--muted-foreground)] hover:bg-[var(--secondary)] hover:text-[var(--foreground)]"><span className="eterx-process-summary-label inline-flex items-center gap-1 leading-none" style={{ color: 'var(--eterx-ui-working-text)' }}><Shimmer>Working for</Shimmer><RollingTimeDisplay label={workElapsedLabel} /></span>{isOpen ? <ChevronDown className="h-3 w-3 opacity-50" /> : <ChevronRight className="h-3 w-3 opacity-50" />}</button> : <button type="button" onClick={toggleOpen} aria-expanded={isOpen} className="eterx-process-summary-chip inline-flex h-[30px] items-center gap-1.5 transition-all duration-200" style={{ ...compactCounterStyle, cursor: 'pointer', position: 'relative', zIndex: 1 }} onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = 'var(--foreground)'; (e.currentTarget as HTMLElement).style.background = counterHoverBackground; }} onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = counterColor; (e.currentTarget as HTMLElement).style.background = counterBackground; }}><span className="eterx-process-summary-icon" style={{ display: 'inline-flex', width: 20, height: 20, alignItems: 'center', justifyContent: 'center', borderRadius: 8, color: 'inherit', background: 'var(--border)', outline: '1px solid var(--border)' }}><StepCounterIcon live={isLiveThinking} /></span><Shimmer active={isLiveThinking} className="eterx-process-summary-label" style={{ fontSize: 13, fontWeight: 650, letterSpacing: 0, lineHeight: 1 } as any}>{actionLabel}</Shimmer>{isOpen ? <ChevronDown style={{ width: 9, height: 9, flexShrink: 0, opacity: 0.6 }} /> : <ChevronRight style={{ width: 9, height: 9, flexShrink: 0, opacity: 0.6 }} />}</button>}
       </div>}
 
       {isOpen && (
@@ -1336,6 +1337,11 @@ const ChatFeedMessageGroup = React.memo(({
     (displayFinalAnswer?.isLiveTyping || displayFinalAnswer?.isStreaming)
   );
   const shouldAnimateAnswerReveal = isAnswerActivelyTyping && !suppressInitialReveal;
+  const hasSettledAnswer = Boolean(
+    displayFinalAnswer &&
+    !displayFinalAnswer.isLiveTyping &&
+    !displayFinalAnswer.isStreaming
+  );
 
   // Stable deduplication set for work notes â€” keyed on noteId or content
   const seenWorkNoteKeys = new Set<string>();
@@ -1446,7 +1452,7 @@ const ChatFeedMessageGroup = React.memo(({
 
   const groupIsThinking = isTurnWorkActive(
     isThinkingTurn,
-    Boolean(displayFinalAnswer),
+    hasSettledAnswer,
     [...standardLogs, ...liveCommandLogs],
   );
 
@@ -1493,6 +1499,7 @@ const ChatFeedMessageGroup = React.memo(({
         }
 
         const isLastThoughts = segIdx === segments.length - 1 || segments.slice(segIdx + 1).every(s => s.type !== 'thoughts');
+        const hasInteractionBoundary = segments.slice(segIdx + 1).some(s => s.type === 'steering' || s.type === 'ask_user');
         const stepCount = countVisibleWorkflowActions([
           ...(seg.logs || []),
           ...(isLastThoughts ? liveCommandLogs : []),
@@ -1507,9 +1514,10 @@ const ChatFeedMessageGroup = React.memo(({
             liveLogs={isLastThoughts ? liveCommandLogs : []}
             isThinking={groupIsThinking && isLastThoughts}
             isLast={isLastThoughts}
-            hasAnswer={!!displayFinalAnswer && isLastThoughts}
+            hasAnswer={hasSettledAnswer && isLastThoughts}
+            hasInteractionBoundary={hasInteractionBoundary}
             stepCount={stepCount}
-            turnEndedAt={displayFinalAnswer?.endTime ?? displayFinalAnswer?.timestamp ?? null}
+            turnEndedAt={hasSettledAnswer ? displayFinalAnswer?.endTime ?? displayFinalAnswer?.timestamp ?? null : null}
             onOpenAgentTeam={onOpenAgentTeam}
             isSubAgentTab={isSubAgentTab}
             groupIdx={groupIdx}
