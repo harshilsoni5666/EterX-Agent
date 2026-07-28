@@ -1632,6 +1632,7 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
     else if (itemBottom > visibleBottom) navContainer.scrollTop = itemBottom - navContainer.clientHeight;
   }, [activeTurnIdx]);
   const previewScrollRef = useRef<HTMLDivElement>(null);
+  const feedContentRef = useRef<HTMLDivElement>(null);
   const prevTraceActivityRef = useRef('');
   const shouldAutoFollowRef = useRef(true);
   const lastFaceTraceRef = useRef('');
@@ -1647,6 +1648,12 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
   const isHydratingConversation = historyConversationIdentityRef.current !== conversationIdentity;
   const AUTO_FOLLOW_THRESHOLD = 24;
   const traceActivitySignature = useMemo(() => getTraceActivitySignature(traceLogs), [traceLogs]);
+
+  const pinLatestMessage = useCallback(() => {
+    const container = scrollContainerRef.current;
+    if (!container || !shouldAutoFollowRef.current) return;
+    container.scrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
+  }, []);
 
   useEffect(() => {
     setHistoryWindowSize(INITIAL_VISIBLE_GROUPS);
@@ -1707,22 +1714,41 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
     }
   }, [showScrollBottom]);
 
-  useEffect(() => {
+  React.useLayoutEffect(() => {
     const hasTraceActivity = traceActivitySignature !== prevTraceActivityRef.current;
     prevTraceActivityRef.current = traceActivitySignature;
 
     if (!hasTraceActivity && !isThinking) return;
-
-    if (!shouldAutoFollowRef.current) return;
+    pinLatestMessage();
 
     if (autoFollowFrameRef.current !== null) window.cancelAnimationFrame(autoFollowFrameRef.current);
     autoFollowFrameRef.current = window.requestAnimationFrame(() => {
       autoFollowFrameRef.current = null;
-      const container = scrollContainerRef.current;
-      if (!container || !shouldAutoFollowRef.current) return;
-      container.scrollTop = container.scrollHeight;
+      pinLatestMessage();
     });
-  }, [traceActivitySignature, isThinking]);
+  }, [traceActivitySignature, isThinking, pinLatestMessage]);
+
+  useEffect(() => {
+    const container = scrollContainerRef.current;
+    const content = feedContentRef.current;
+    if (!container || typeof ResizeObserver === 'undefined') return;
+
+    // Composer resizing, streamed content, images, and collapsing work panels
+    // can all change geometry without adding a trace. Keep a bottom-following
+    // reader pinned through those changes, but never move someone reading up.
+    const observer = new ResizeObserver(() => {
+      if (!shouldAutoFollowRef.current) return;
+      pinLatestMessage();
+      if (autoFollowFrameRef.current !== null) window.cancelAnimationFrame(autoFollowFrameRef.current);
+      autoFollowFrameRef.current = window.requestAnimationFrame(() => {
+        autoFollowFrameRef.current = null;
+        pinLatestMessage();
+      });
+    });
+    observer.observe(container);
+    if (content) observer.observe(content);
+    return () => observer.disconnect();
+  }, [conversationIdentity, pinLatestMessage]);
 
   useEffect(() => {
     return () => {
@@ -1938,7 +1964,7 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
           )}
           <div
             id="chat-container"
-            className={`eterx-chat-feed-scroll relative h-full w-full flex flex-col overflow-y-auto overflow-x-hidden pb-40 eterx-scrollbar ${ isCompressed ? 'px-4 sm:px-8' : 'px-4 sm:px-14'
+            className={`eterx-chat-feed-scroll relative h-full w-full flex flex-col overflow-y-auto overflow-x-hidden pb-40 eterx-scrollbar [overflow-anchor:none] [scrollbar-gutter:stable] ${ isCompressed ? 'px-4 sm:px-8' : 'px-4 sm:px-14'
               }`}
             ref={scrollContainerRef}
             onScroll={handleScrollWrap}
@@ -1965,7 +1991,7 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
             )}
 
             {traceLogs.length > 0 && (
-              <div className={`eterx-chat-feed-content w-full mx-auto pb-4 relative ${ isCompressed ? 'max-w-[460px] pt-14' : 'max-w-[660px] pt-16' }`}>
+              <div ref={feedContentRef} className={`eterx-chat-feed-content w-full mx-auto pb-4 relative ${ isCompressed ? 'max-w-[460px] pt-14' : 'max-w-[660px] pt-16' }`}>
                 {hiddenGroupCount > 0 && (
                   <div className="mb-7 flex justify-center">
                     <button
