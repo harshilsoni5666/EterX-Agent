@@ -360,18 +360,22 @@ const chatFeedSurfaceStyles = `
     justify-content: center;
     text-align: center;
     font-size: 12px;
-    font-weight: 500;
+    font-weight: 400;
     line-height: 1.45;
     letter-spacing: 0.01em;
   }
   :root[data-theme="light"] .eterx-proxy-status-divider {
-    color: rgba(54, 62, 72, 0.64);
+    color: rgba(75, 82, 91, 0.68);
+  }
+  :root[data-theme="light"] .eterx-proxy-status-divider-label {
+    color: rgba(75, 82, 91, 0.76);
+    font-weight: 400;
   }
   :root[data-theme="light"] .eterx-proxy-status-divider-line {
-    background: linear-gradient(90deg, transparent, rgba(46, 58, 70, 0.18));
+    background: linear-gradient(90deg, transparent, rgba(75, 82, 91, 0.22));
   }
   :root[data-theme="light"] .eterx-proxy-status-divider-line:last-child {
-    background: linear-gradient(90deg, rgba(46, 58, 70, 0.18), transparent);
+    background: linear-gradient(90deg, rgba(75, 82, 91, 0.22), transparent);
   }
   .eterx-chat-turns-nav {
     mask-image: linear-gradient(to bottom, transparent 0, #000 16px, #000 calc(100% - 16px), transparent 100%);
