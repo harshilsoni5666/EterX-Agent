@@ -1019,16 +1019,27 @@ class AgentRegistry {
     const trimmedMessage = message.trim().substring(0, 8000);
     if (!trimmedMessage) return false;
     const resolvedId = steeringId || `steer_${ Date.now() }_${ Math.random().toString(36).slice(2, 8) }`;
+    // Provenance is derived from the trusted proxy flags, never from a
+    // caller-provided display source. Normal typing-bar guidance therefore
+    // cannot accidentally inherit a Proxy-Agent label.
+    const isAutonomyProxy = metadata?._autonomyProxy === true;
+    const steeringSource = isAutonomyProxy
+      ? (metadata?._proxyManager === true ? 'proxy_manager' : 'user_proxy')
+      : 'human';
+    const normalizedMetadata = {
+      ...(metadata || {}),
+      _autonomyProxy: isAutonomyProxy,
+      source: steeringSource,
+      steeringSource,
+      ownerChatId: execution.chatId,
+      runId: execution.runId,
+      turnId: execution.runId,
+    };
     const duplicate = execution.steeringQueue.find(item => item.id === resolvedId);
     if (duplicate) {
       duplicate.text = trimmedMessage;
       duplicate.updatedAt = Date.now();
-      duplicate.metadata = {
-        ...(metadata || {}),
-        ownerChatId: execution.chatId,
-        runId: execution.runId,
-        turnId: execution.runId,
-      };
+      duplicate.metadata = normalizedMetadata;
       return true;
     }
     if (execution.steeringQueue.length >= MAX_STEERING_QUEUE) {
@@ -1039,12 +1050,7 @@ class AgentRegistry {
       id: resolvedId,
       text: trimmedMessage,
       createdAt: Date.now(),
-      metadata: {
-        ...(metadata || {}),
-        ownerChatId: execution.chatId,
-        runId: execution.runId,
-        turnId: execution.runId,
-      },
+      metadata: normalizedMetadata,
     };
     execution.steeringQueue.push(queuedMessage);
     // Completion-boundary Proxy guidance is revealed when it is applied on
@@ -1052,14 +1058,14 @@ class AgentRegistry {
     // before the fully generated answer checkpoint and make that answer appear
     // to vanish. Human guidance is acknowledged here; Proxy guidance becomes
     // a real user turn only when it is actually injected into Main.
-    if (metadata?.completionReview !== true && !metadata?._autonomyProxy) {
+    if (normalizedMetadata.completionReview !== true && !isAutonomyProxy) {
       this.appendTrace(execution, {
         type: 'steering_received',
         text: trimmedMessage,
         steeringId: queuedMessage.id,
         steeringIds: [queuedMessage.id],
         timestamp: Date.now(),
-        ...(metadata || {}),
+        ...normalizedMetadata,
       });
     }
 

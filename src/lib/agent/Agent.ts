@@ -1329,32 +1329,43 @@ export class GeminiAgentClient {
         .map(item => typeof item === 'string' ? { text: item } : item)
         .filter(item => typeof item?.text === 'string' && item.text.trim());
       if (messages.length === 0) return [];
-      const proxyMessages = messages.filter(item => item.metadata?._autonomyProxy);
-      if (proxyMessages.length > 0) {
-        const proxyManagerOrigin = proxyMessages.some(item => item.metadata?._proxyManager);
-        const proxyIds = proxyMessages.map(item => item.id).filter(Boolean);
+      messages.forEach((item, index) => {
+        const isProxy = item.metadata?._autonomyProxy === true;
+        const source = isProxy
+          ? (item.metadata?._proxyManager === true ? 'proxy_manager' : 'user_proxy')
+          : 'human';
+        const steeringIds = item.id ? [item.id] : [];
         const timestamp = Date.now();
+        if (isProxy) {
+          const delegatedBy = source === 'proxy_manager' ? 'Side Proxy-Agent' : 'Proxy-Agent';
+          onTrace?.({
+            type: 'user_action',
+            id: item.id ? `proxy-turn-${item.id}` : `proxy-turn-${timestamp}-${index}`,
+            text: item.text.trim(),
+            source,
+            delegatedBy,
+            steeringId: item.id,
+            steeringIds,
+            proxyManagerDirectiveIds: item.metadata?.proxyManagerDirectiveId
+              ? [item.metadata.proxyManagerDirectiveId]
+              : [],
+            timestamp,
+          });
+        }
+        // Keep every applied event source-pure. A human message drained in the
+        // same boundary as proxy guidance must never acquire proxy identity.
         onTrace?.({
-          type: 'user_action',
-          id: proxyIds.length > 0 ? `proxy-turn-${proxyIds.join('-')}` : `proxy-turn-${timestamp}`,
-          text: proxyMessages.map(item => item.text.trim()).join('\n\n'),
-          source: proxyManagerOrigin ? 'proxy_manager' : 'user_proxy',
-          delegatedBy: proxyManagerOrigin ? 'Side Proxy-Agent' : 'Proxy-Agent',
-          steeringId: proxyIds[0],
-          steeringIds: proxyIds,
-          proxyManagerDirectiveIds: proxyMessages
-            .map(item => item.metadata?.proxyManagerDirectiveId)
-            .filter(Boolean),
+          type: 'steering_applied',
+          text: item.text,
+          steeringId: item.id,
+          steeringIds,
+          source,
+          steeringSource: source,
+          steeringSources: [source],
+          _autonomyProxy: isProxy,
+          ...(isProxy ? { delegatedBy: source === 'proxy_manager' ? 'Side Proxy-Agent' : 'Proxy-Agent' } : {}),
           timestamp,
         });
-      }
-      onTrace?.({
-        type: 'steering_applied',
-        text: messages.map(item => item.text).join('\n\n'),
-        steeringIds: messages.map(item => item.id).filter(Boolean),
-        _autonomyProxy: messages.some(item => item.metadata?._autonomyProxy),
-        steeringSources: messages.map(item => item.metadata?._autonomyProxy ? 'user_proxy' : 'human'),
-        timestamp: Date.now(),
       });
       return messages;
     } catch (error: any) {
@@ -5585,13 +5596,6 @@ The first meaningful action group in a user turn needs an update. Later boundari
         } else {
           contents.push({ role: 'user', parts: [{ text: steeringText }] });
         }
-        trace.push({
-          type: 'steering_applied',
-          text: unifiedSteering.map(item => item.text).join('\n\n'),
-          steeringIds: unifiedSteering.map(item => item.id).filter(Boolean),
-          _autonomyProxy: unifiedSteering.some(item => item.metadata?._autonomyProxy),
-          timestamp: Date.now(),
-        });
       }
       // Compatibility fallback for older registry instances. Current
       // registries are atomically drained above, so this path remains idle.
@@ -5603,25 +5607,32 @@ The first meaningful action group in a user turn needs an update. Later boundari
             .map((item: any) => typeof item === 'string' ? { text: item } : item)
             .filter((item: any) => typeof item?.text === 'string' && item.text.trim());
           if (__steers.length > 0) {
-            const __steerText = __steers
-              .map((item: any, i: number) => `[LIVE USER STEERING ${ i + 1 }${ item.id ? ` | id=${ item.id }` : '' }]\n${ item.text }\n[/LIVE USER STEERING]`)
-              .join('\n\n');
+            const __steerText = this.formatLiveSteering(__steers);
             const __last = contents[contents.length - 1];
             if (__last?.role === 'user' && Array.isArray(__last.parts)) {
               __last.parts.push({ text: __steerText });
             } else {
               contents.push({ role: 'user', parts: [{ text: __steerText }] });
             }
-            const appliedTrace = {
-              type: 'steering_applied',
-              text: __steers.map((item: any) => item.text).join('\n\n'),
-              steeringIds: __steers.map((item: any) => item.id).filter(Boolean),
-              timestamp: Date.now(),
-            };
-            trace.push(appliedTrace);
-            if (onTrace) {
-              onTrace(appliedTrace);
-            }
+            __steers.forEach((item: any) => {
+              const isProxy = item.metadata?._autonomyProxy === true;
+              const source = isProxy
+                ? (item.metadata?._proxyManager === true ? 'proxy_manager' : 'user_proxy')
+                : 'human';
+              const appliedTrace = {
+                type: 'steering_applied',
+                text: item.text,
+                steeringId: item.id,
+                steeringIds: item.id ? [item.id] : [],
+                source,
+                steeringSource: source,
+                steeringSources: [source],
+                _autonomyProxy: isProxy,
+                timestamp: Date.now(),
+              };
+              trace.push(appliedTrace);
+              onTrace?.(appliedTrace);
+            });
             __reg.consumeSteeringQueue(context.projectId, __steersRaw.length);
             console.log(`[GeminiClient] Steering injected (${ __steers.length } msg) at iteration ${ interactions }`);
           }
@@ -5631,20 +5642,29 @@ The first meaningful action group in a user turn needs an update. Later boundari
             .map((item: any) => typeof item === 'string' ? { text: item } : item)
             .filter((item: any) => typeof item?.text === 'string' && item.text.trim());
           if (__steers.length > 0) {
-            const __steerText = __steers
-              .map((item: any, i: number) => `[LIVE USER STEERING ${ i + 1 }${ item.id ? ` | id=${ item.id }` : '' }]\n${ item.text }\n[/LIVE USER STEERING]`)
-              .join('\n\n');
+            const __steerText = this.formatLiveSteering(__steers);
             const __last = contents[contents.length - 1];
             if (__last?.role === 'user' && Array.isArray(__last.parts)) {
               __last.parts.push({ text: __steerText });
             } else {
               contents.push({ role: 'user', parts: [{ text: __steerText }] });
             }
-            trace.push({
-              type: 'steering_applied',
-              text: __steers.map((item: any) => item.text).join('\n\n'),
-              steeringIds: __steers.map((item: any) => item.id).filter(Boolean),
-              timestamp: Date.now(),
+            __steers.forEach((item: any) => {
+              const isProxy = item.metadata?._autonomyProxy === true;
+              const source = isProxy
+                ? (item.metadata?._proxyManager === true ? 'proxy_manager' : 'user_proxy')
+                : 'human';
+              trace.push({
+                type: 'steering_applied',
+                text: item.text,
+                steeringId: item.id,
+                steeringIds: item.id ? [item.id] : [],
+                source,
+                steeringSource: source,
+                steeringSources: [source],
+                _autonomyProxy: isProxy,
+                timestamp: Date.now(),
+              });
             });
             console.log(`[GeminiClient] Steering injected (${ __steers.length } msg) at iteration ${ interactions }`);
           }

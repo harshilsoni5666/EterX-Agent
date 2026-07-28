@@ -397,7 +397,6 @@ const RENDERABLE_TIMELINE_TYPES = new Set([
   'safety_warning',
   'communication',
   'steering_received',
-  'steering_applied',
   'autonomy_proxy_status',
   'sub_agent_spawn',
   'sub_agent_action',

@@ -4167,7 +4167,9 @@ const UserMessageActions = ({ text, onEdit }: { text: string; onEdit?: (text: st
 };
 
 const SteeringCard = ({ log, onEdit }: { log: any; onEdit?: (text: string) => void }) => {
-  const isProxy = Boolean(log._autonomyProxy);
+  const isProxy =
+    log._autonomyProxy === true &&
+    (log.source === 'user_proxy' || log.source === 'proxy_manager');
   return (
     <motion.div
       initial={{ opacity: 0, x: 20, y: 10, scale: 0.95 }}
@@ -4512,7 +4514,7 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
   const NOISE_PATTERN = /reconnect|retrying|stalled|stream interrupted|model error|fallback|cancelled/i;
 
   const isFlowLog = (l: any) =>
-    ['thought_stream', 'work_note', 'command', 'tool_call', 'exploration', 'file_edit', 'progress', 'browser', 'safety_warning', 'communication', 'steering_received', 'steering_applied', 'autonomy_proxy_status', 'sub_agent_answer', 'sub_agent_result', 'sub_agent_spawn', 'sub_agent_action', 'sub_agent_complete', 'sub_agent_error', 'inter_agent_comm', 'inter_agent_message', 'file_preview', 'console_output', 'ask_user', 'tool_result_preview'].includes(l.type) &&
+    ['thought_stream', 'work_note', 'command', 'tool_call', 'exploration', 'file_edit', 'progress', 'browser', 'safety_warning', 'communication', 'steering_received', 'autonomy_proxy_status', 'sub_agent_answer', 'sub_agent_result', 'sub_agent_spawn', 'sub_agent_action', 'sub_agent_complete', 'sub_agent_error', 'inter_agent_comm', 'inter_agent_message', 'file_preview', 'console_output', 'ask_user', 'tool_result_preview'].includes(l.type) &&
     !(['progress', 'command', 'exploration'].includes(l.type) && /analyz(?:e|ing) task complexity/i.test(String(l.text || ''))) &&
     !(l.type === 'progress' && NOISE_PATTERN.test(String(l.text || '')) && !isApiKeyTrace(String(l.text || ''))) &&
     !(l.type === 'work_note' && (l._connection || String(l.text || '').endsWith('is starting'))) &&
