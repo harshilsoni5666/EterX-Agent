@@ -729,9 +729,30 @@ export const ProfessionalThought = React.memo(({ text, isLatest, isThinking, var
 });
 
 // VS Code GitHub Dark — clean single-pass syntax highlighter
-const WorkNoteBlock = ({ text, isActive = false }: { text: string; isActive?: boolean }) => {
+const ProxyStatusDivider = ({ text, isActive = false }: { text: string; isActive?: boolean }) => {
   const note = useMemo(() => String(text || '').trim(), [text]);
   if (!note) return null;
+
+  return (
+    <div
+      className={`eterx-proxy-status-divider w-full px-1 py-2.5 ${ isActive ? 'eterx-proxy-status-divider-active' : '' }`}
+      role="status"
+      aria-live={isActive ? 'polite' : undefined}
+    >
+      <span className="eterx-proxy-status-divider-line" aria-hidden="true" />
+      <span className="eterx-proxy-status-divider-label">
+        <span className="min-w-0 break-words text-center">{note}</span>
+      </span>
+      <span className="eterx-proxy-status-divider-line" aria-hidden="true" />
+    </div>
+  );
+};
+
+const WorkNoteBlock = ({ text, isActive = false, isProxyStatus = false }: { text: string; isActive?: boolean; isProxyStatus?: boolean }) => {
+  const note = useMemo(() => String(text || '').trim(), [text]);
+  if (!note) return null;
+
+  if (isProxyStatus) return <ProxyStatusDivider text={note} isActive={isActive} />;
 
   return (
     <div className="eterx-work-note-block w-full px-1 py-0">
@@ -4669,7 +4690,7 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
               transition={{ duration: 0.14, ease: 'easeOut' }}
               className="eterx-phase-block w-full"
             >
-              <WorkNoteBlock text={seg.log.text} isActive={phaseIsActive} />
+              <WorkNoteBlock text={seg.log.text} isActive={phaseIsActive} isProxyStatus={seg.log.type === 'autonomy_proxy_status'} />
               <div className="mt-1">
                 <CollapsibleActionGroup
                   logs={nextSeg.logs}
@@ -4681,7 +4702,7 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
             </motion.div>
           );
         }
-        if (seg.kind === 'note') return <WorkNoteBlock key={`n-${ getStreamRowIdentity(seg.log, seg.idx) }`} text={seg.log.text} isActive={isThinking && isLast && i === segs.length - 1} />;
+        if (seg.kind === 'note') return <WorkNoteBlock key={`n-${ getStreamRowIdentity(seg.log, seg.idx) }`} text={seg.log.text} isActive={isThinking && isLast && i === segs.length - 1} isProxyStatus={seg.log.type === 'autonomy_proxy_status'} />;
         if (seg.kind === 'safety') return <SafetyBanner key={`sf-${ seg.idx }`} log={seg.log} />;
         if (seg.kind === 'steering') return <SteeringCard key={`steer-${ seg.idx }`} log={seg.log} onEdit={onEditUserMessage} />;
         if (seg.kind === 'subagent') return null;

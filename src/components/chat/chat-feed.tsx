@@ -338,6 +338,41 @@ const chatFeedSurfaceStyles = `
   .eterx-chat-feed-empty .eterx-chat-feed-content {
     background: transparent;
   }
+  .eterx-proxy-status-divider {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    color: rgba(213, 211, 206, 0.58);
+  }
+  .eterx-proxy-status-divider-line {
+    height: 1px;
+    flex: 1 1 0%;
+    min-width: 24px;
+    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.13));
+  }
+  .eterx-proxy-status-divider-line:last-child {
+    background: linear-gradient(90deg, rgba(255, 255, 255, 0.13), transparent);
+  }
+  .eterx-proxy-status-divider-label {
+    display: inline-flex;
+    max-width: min(72%, 540px);
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    font-size: 12px;
+    font-weight: 500;
+    line-height: 1.45;
+    letter-spacing: 0.01em;
+  }
+  :root[data-theme="light"] .eterx-proxy-status-divider {
+    color: rgba(54, 62, 72, 0.64);
+  }
+  :root[data-theme="light"] .eterx-proxy-status-divider-line {
+    background: linear-gradient(90deg, transparent, rgba(46, 58, 70, 0.18));
+  }
+  :root[data-theme="light"] .eterx-proxy-status-divider-line:last-child {
+    background: linear-gradient(90deg, rgba(46, 58, 70, 0.18), transparent);
+  }
   .eterx-chat-turns-nav {
     mask-image: linear-gradient(to bottom, transparent 0, #000 16px, #000 calc(100% - 16px), transparent 100%);
     -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 16px, #000 calc(100% - 16px), transparent 100%);
