@@ -109,6 +109,11 @@ const PROXY_MANAGER_READ_ONLY_TOOLS = new Set([
   'regex_text_processor',
 ]);
 
+const USER_PROXY_TOOLS = new Set([
+  ...PROXY_MANAGER_READ_ONLY_TOOLS,
+  'spawn_sub_agent',
+]);
+
 function isRunCancelled(context: any): boolean {
   return context?.abortSignal?.aborted === true || isCancelled(context?.projectId || context?.chatId);
 }
@@ -1556,8 +1561,12 @@ export class GeminiAgentClient {
     const toolCallCounts = new Map<string, number>();
     const taskDecomposerUsed = false;
     const evidenceLedger = new RuntimeEvidenceLedger(String(context.projectId || 'agent'));
+    const requestedToolBudget = Number((context as any).maxToolCalls);
+    const maxToolCalls = Number.isFinite(requestedToolBudget)
+      ? Math.max(1, Math.min(120, Math.floor(requestedToolBudget)))
+      : isTelegram ? 40 : 120;
     const executionGovernor = new ExecutionGovernor({
-      maxToolCalls: isTelegram ? 40 : 120,
+      maxToolCalls,
     });
 
     const federated = federateDynamicContextParts(dynamicContextParts, userVisibleMessage);
@@ -3326,7 +3335,9 @@ export class GeminiAgentClient {
         if ((context as any).isUserProxy) {
           if ((context as any).isProxyManager) {
             if (!PROXY_MANAGER_READ_ONLY_TOOLS.has(tool.name)) return false;
-          } else if (tool.name !== 'spawn_sub_agent') {
+          } else if (Number((context as any).proxyInvestigationBudget) <= 0) {
+            return false;
+          } else if (!USER_PROXY_TOOLS.has(tool.name)) {
             return false;
           }
         }
@@ -3840,7 +3851,7 @@ export class GeminiAgentClient {
       .filter(t => !(context as any).isUserProxy || (
         (context as any).isProxyManager
           ? PROXY_MANAGER_READ_ONLY_TOOLS.has(t.name)
-          : t.name === 'spawn_sub_agent'
+          : Number((context as any).proxyInvestigationBudget) > 0 && USER_PROXY_TOOLS.has(t.name)
       ))
       .filter(t => !((context as any).disablePlannerTools && telegramHiddenTools.has(t.name)))
       .filter(t => shouldExposeToolToRuntime(t.name, isBuilderPromptContext))
@@ -3876,6 +3887,40 @@ export class GeminiAgentClient {
     const userNameTxt = context.userName && context.userName !== 'Developer' && context.userName !== 'User'
       ? `\nPRIORITY IDENTITY\nIMPORTANT: The person you are currently serving is "${ context.userName }".\nYou MUST address them as "${ context.userName }" and NO other name.\nThe operating-system account name might show another name - IGNORE THAT. It is only the system account. Your human master is ${ context.userName }.\nIf they ask "who am I?", answer "${ context.userName }". NEVER use tools (whoami, shell, etc.) to look up a name.\n`
       : '';
+
+    if ((context as any).isUserProxy && !(context as any).isProxyManager) {
+      return `You are EterX Runtime Proxy, an independent supervisory agent representing the user's intent during one active Main-agent task.
+
+IDENTITY AND AUTHORITY
+- You are not Main, not a second executor, and not a side-chat manager.
+- Your mandate starts automatically from the original user request. You never wait for another agent to activate or brief you.
+- Explicit user rules, prohibitions, authority limits, requested deliverables, and success conditions are binding.
+- Implementation tactics are replaceable unless the user explicitly required an exact mechanism.
+
+SUPERVISION PURPOSE
+- Protect the user's real outcome across long, tool-heavy, failure-prone work.
+- Watch for goal drift, forgotten constraints, repeated tactics, activity without progress, weak evidence, context decay, unjustified assumptions, unsafe or irreversible actions, over-expansion, and false completion.
+- Predict whether a capable Main will self-correct before intervening. A recoverable error is usually Main's job.
+- Judge the whole trajectory, not isolated commands or unfinished thought fragments.
+
+INTERVENTION COST
+- Every interruption consumes attention, fragments context, and can anchor Main on an inferior local fix.
+- Every review also consumes latency, tokens, and tool capacity. Reuse durable evidence and scale investigation depth to consequence.
+- Never repeat guidance in different words, narrate what Main is doing, or debug commands one line at a time.
+- Intervene only when the expected improvement to correctness, safety, authority, or verified completion clearly exceeds the disruption cost.
+- When intervention is needed, speak like a capable human: state the unmet outcome, preserve the relevant user rule, allow an appropriate pivot, and name observable done evidence.
+
+TOOLS
+- Available tools are bounded to read-only investigation plus at most one focused specialist.
+- Use them only to resolve a consequential factual uncertainty that could change the supervision decision.
+- Never edit files, execute the user's task, or compete with Main.
+
+OUTPUT CONTRACT
+- The current user message supplies the live task contract, Main evidence, posture, and exact JSON schema.
+- Follow that schema exactly. For observe or approve_completion, leave message blank.
+- The message field, when used, is the exact natural user prompt Main will receive. Never include private rationale, component names, telemetry language, commands, flags, or tool prescriptions unless the original user explicitly required that mechanism.
+- Keep chain-of-thought private. Return only the requested decision object.`;
+    }
 
     if (isCodingAgentProfile((context as any).agentProfile)) {
       const codingTools = getCodingAgentToolSummary();
@@ -3939,6 +3984,13 @@ TRUTHFUL EXECUTION
 - A success claim from an earlier assistant answer is context, not evidence for this turn. Re-establish the result from current tool output before repeating it.
 - Unknown is a valid professional answer. Confident unsupported claims are failure.
 - When blocked: state what was completed, what could not complete, what is needed, and the next action.
+
+LIVE USER CORRECTIONS
+- A new user message received during an active run refines the current task unless it explicitly defines a separate future goal.
+- Apply the newest correction at the next safe boundary without restarting completed work or replaying failed attempts.
+- Preserve all earlier explicit requirements that do not conflict with the correction. The newest message wins only where there is a real conflict.
+- If the correction states an outcome or acceptance condition, choose the implementation strategy yourself. Do not treat it as a request for command-by-command confirmation.
+- Never discuss message routing, supervisory components, or why the correction appeared. Respond through the improved work itself.
 
 FILESYSTEM
 - Home: ${ require('os').homedir() }
