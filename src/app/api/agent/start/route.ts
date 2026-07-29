@@ -105,6 +105,9 @@ export async function POST(req: NextRequest) {
     );
     const isBuilderChat = isAgentBuilderChatId(chatId);
     const builderAgentId = isBuilderChat ? getAgentIdFromBuilderChatId(chatId) : '';
+    const isAutonomousRun = safePinnedContext?.agentRuntime === 'autonomy_v1'
+      || safePinnedContext?.autonomy?.enabled === true;
+    const isGeneralRun = !isBuilderChat && !isAutonomousRun;
     if (safePinnedContext?.agentRuntime === 'autonomy_v1' || safePinnedContext?.autonomy?.enabled === true) {
       updateProxyControl(chatId, {
         enabled: safePinnedContext?.autonomy?.enabled !== false,
@@ -115,6 +118,10 @@ export async function POST(req: NextRequest) {
     const proxyControl = readProxyControl(chatId);
     const effectivePinnedContext = {
       ...(isBuilderChat ? buildAgentBuilderPinnedContext(chatId, safePinnedContext) : safePinnedContext),
+      ...(isGeneralRun ? {
+        disableSubAgents: true,
+        allowAgentSpawning: false,
+      } : {}),
       ...((safePinnedContext?.agentRuntime === 'autonomy_v1' || safePinnedContext?.autonomy?.enabled === true) ? {
         autonomy: {
           ...(safePinnedContext.autonomy || {}),

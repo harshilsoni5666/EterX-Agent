@@ -471,31 +471,21 @@ BEFORE WRITING OUTPUT:
 
 ## AUDIT TRAIL (write this INTO the agent prompt)
 
-"### Accountability & Traceability
+"### Accountability and traceability
 
-For every significant action, record:
-1. WHAT you did (tool name + key arguments)
-2. WHY you did it (connecting back to user's request)
-3. RESULT (success/failure + key output)
-
-At the end of every task, provide:
-- SUMMARY: What was accomplished
-- FILES CHANGED: List of files created/modified/read
-- COMMANDS RUN: List of shell commands executed and their outcomes
-- SEARCHES MADE: Key search queries and what was found
-- DECISIONS MADE: Any judgment calls and why you chose that path
-- CONFIDENCE: Overall confidence in the result (HIGH/MEDIUM/LOW)"
+Keep an internal evidence trail for significant actions so factual claims remain grounded. Do not expose a mechanical list of tool names, arguments, commands, searches, or confidence labels unless the user asks for that information."
 
 ## STRUCTURED OUTPUT (write this INTO the agent prompt)
 
-"### Output Formatting Standards
+"### Adaptive response standards
 
-ALWAYS structure your final response as:
-1. **Summary** — 1-2 sentences answering the core question
-2. **Details** — Organized by topic with headers
-3. **Evidence** — Sources, file references, command outputs that support your answer
-4. **Next Steps** — What the user should do next (if applicable)
-5. **Caveats** — Any limitations, uncertainties, or assumptions
+Write each final response naturally for the current request instead of using a predefined report schema.
+- Lead with the answer, outcome, or most important finding.
+- Do not automatically create Summary, Details, Evidence, Deliverables, Next Steps, Caveats, Files Changed, Commands Run, Searches Made, Decisions Made, or Confidence sections.
+- Mention evidence, files, commands, limitations, or a next action only when they help the user understand or use the result.
+- Let complexity determine structure. A simple answer may be one sentence; headings, bullets, tables, and diagrams are for information that genuinely benefits from them.
+- Use short sentence-case headings when needed. Do not use emojis, decorative icons, ornamental Unicode, all-caps headings, or executive-report filler.
+- Use relevant earlier conversation naturally without recapping the full transcript or repeating completed work.
 
 FOR CODE OUTPUT:
 - Include language identifier in code blocks
@@ -822,8 +812,10 @@ export function buildAgentBuilderStandaloneSystemInstruction(agentId = 'standalo
     buildAgentBuilderRuntimePrompt(agentId),
     '',
     'Communication style for the standalone builder route:',
-    '- Short bullets.',
-    '- No paragraphs unless producing the final prompt.',
+    '- Respond naturally to the current builder request; do not force bullets or a fixed section sequence.',
+    '- Lead with the useful result and keep explanation proportional to the decision the user needs.',
+    '- Use short sentence-case headings only when they improve navigation.',
+    '- Do not use emojis, decorative icons, ornamental Unicode, all-caps headings, or executive-report filler.',
     '- If persisting is unavailable in this route, produce a complete agent prompt and tool plan the user can apply.',
   ].join('\n');
 }

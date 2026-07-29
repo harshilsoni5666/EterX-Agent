@@ -6324,6 +6324,10 @@ function DeepWorkUI() {
     const requestPinnedContext = {
       terminalShell: readStoredTerminalShell(),
       contextCompaction: readContextCompactionSettings(contextBudgetModelEntry, chatIdToUse),
+      ...(!runSelectedAgentId && !isBuilderChat ? {
+        disableSubAgents: true,
+        allowAgentSpawning: false,
+      } : {}),
       ...(pinnedItems.length > 0 ? { paths: pinnedItems.map(p => p.path) } : {}),
       ...(isBuilderChat ? { agentRuntime: 'agent_builder', agentId: builderAgentId } : {}),
       ...(runSelectedAgentId === 'coding' && !isBuilderChat ? { agentRuntime: 'main_coding_agent', agentProfile: 'eterx-code' } : {}),

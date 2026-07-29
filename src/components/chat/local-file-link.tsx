@@ -251,11 +251,11 @@ export const LocalFileLinkChip = React.memo(({
   return (
     <span
       onClick={openPath}
-      className={`eterx-local-file-chip inline-flex max-w-full items-center align-middle text-left ${ compact ? 'my-0.5' : 'my-1' } rounded-[10px] border border-white/[0.09] bg-[#181817] shadow-[0_7px_20px_rgba(0,0,0,0.16),inset_0_1px_0_rgba(255,255,255,0.045)] transition-colors hover:border-white/[0.14] hover:bg-[#1D1C1B] cursor-pointer`}
+      className={`eterx-local-file-chip inline-flex min-w-0 max-w-full items-center overflow-hidden align-middle text-left ${ compact ? 'my-0.5' : 'my-1' } rounded-[10px] border border-white/[0.09] bg-[#181817] shadow-[0_7px_20px_rgba(0,0,0,0.16),inset_0_1px_0_rgba(255,255,255,0.045)] transition-colors hover:border-white/[0.14] hover:bg-[#1D1C1B] cursor-pointer`}
       title={filePath}
     >
       <span
-        className={`inline-flex min-w-0 items-center gap-2 rounded-l-[10px] ${ compact ? 'px-2 py-1' : 'px-2.5 py-1.5' } text-left`}
+        className={`inline-flex min-w-0 flex-1 items-center gap-2 overflow-hidden rounded-l-[10px] ${ compact ? 'px-2 py-1' : 'px-2.5 py-1.5' } text-left`}
       >
         <LocalFileIcon fileName={name} size={compact ? 'sm' : 'md'} />
         <span className="min-w-0 truncate text-[12.75px] font-semibold leading-tight tracking-normal text-[#E8E6E3]">

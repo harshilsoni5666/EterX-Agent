@@ -3718,7 +3718,25 @@
 
 .eterx-answer-heading {
   color: var(--eterx-md-strong) !important;
-  letter-spacing: 0;
+  letter-spacing: -0.012em;
+  overflow-wrap: anywhere;
+  text-wrap: balance;
+}
+
+.eterx-answer-heading-1 {
+  font-size: clamp(1.08rem, 1.55vw, 1.2rem);
+}
+
+.eterx-answer-heading-2 {
+  font-size: clamp(1.01rem, 1.3vw, 1.08rem);
+}
+
+.eterx-answer-heading-3 {
+  font-size: clamp(0.96rem, 1.1vw, 1rem);
+}
+
+.eterx-answer-heading-4 {
+  font-size: clamp(0.91rem, 0.95vw, 0.95rem);
 }
 
 .eterx-answer-heading-muted {
@@ -4371,7 +4389,7 @@
 }
 
 .eterx-markdown-table {
-  table-layout: auto;
+  table-layout: fixed;
 }
 
 .eterx-markdown-thead {
@@ -4381,11 +4399,40 @@
 .eterx-markdown-th,
 .eterx-markdown-td {
   border-color: var(--eterx-md-border) !important;
-  min-width: 9rem;
+  min-width: 7rem;
   max-width: 34rem;
   overflow-wrap: anywhere;
   word-break: normal;
   line-height: 1.55;
+}
+
+.eterx-markdown-td > *,
+.eterx-markdown-th > * {
+  max-width: 100%;
+  min-width: 0;
+}
+
+.eterx-markdown-td .eterx-local-file-chip {
+  display: flex;
+  width: 100%;
+}
+
+@media (max-width: 640px) {
+  .eterx-markdown-th,
+  .eterx-markdown-td {
+    min-width: 6.25rem;
+    padding: 0.45rem 0.55rem !important;
+    font-size: 0.72rem !important;
+  }
+
+  .eterx-markdown-table-wrap {
+    margin-block: 0.8rem !important;
+    border-radius: 0.6rem !important;
+  }
+
+  .eterx-local-file-chip {
+    border-radius: 0.5rem !important;
+  }
 }
 
 .eterx-markdown-th {

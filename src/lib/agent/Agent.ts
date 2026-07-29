@@ -583,6 +583,7 @@ export class GeminiAgentClient {
       'Reply naturally in Telegram based on the user message and any supplied Tavily web context.',
       'Do not use canned responses or templates.',
       'Keep the answer short, professional, and direct unless the user asks for detail.',
+      'Do not use emojis, decorative icons, ornamental Unicode, or all-caps section headings.',
       `Current date: ${ dateStr }.`,
       'Do not mention tools, internal state, memory, projects, or background work.',
       'If Tavily web context is supplied, use it as the source of truth for current facts.'
@@ -1333,25 +1334,14 @@ export class GeminiAgentClient {
 
   private finalizeEvidenceBoundAnswer(
     finalText: string,
-    evidenceLedger: RuntimeEvidenceLedger,
-    toolCallCounts: Map<string, number>,
-    chatId?: string | null,
+    _evidenceLedger: RuntimeEvidenceLedger,
+    _toolCallCounts: Map<string, number>,
+    _chatId?: string | null,
   ): string {
-    const text = String(finalText || '').trim();
-    if (!text) return finalText;
-
-    const evidenceGate = evidenceLedger.buildCompletionGate({
-      finalText: text,
-      toolsUsed: Array.from(toolCallCounts.keys()),
-    });
-    const alreadyDisclaimsVerification = /\bverification\b[\s\S]{0,160}\b(not recorded|not run|not verified|unable to verify|could not verify|was not run)\b/i.test(text);
-    let finalized = evidenceGate.shouldAppendCaveat && !alreadyDisclaimsVerification
-      ? `${text}${evidenceGate.caveat}`
-      : text;
-    if (this.getActivePlanCompletionContext(chatId) && !/unfinished plan|plan remains (?:active|unfinished)/i.test(finalized)) {
-      finalized += '\n\nExecution note: the task plan remains active with unfinished work; this answer is not a verified completion of the full task.';
-    }
-    return finalized;
+    // Evidence remains available to execution and completion decisions, but
+    // final user-facing prose belongs to the model. Do not append verification
+    // labels, plan notices, receipts, or canned sections after generation.
+    return String(finalText || '').trim();
   }
 
   private drainLiveSteering(projectId: string, onTrace?: (t: any) => void): Array<{ id?: string; text: string; metadata?: Record<string, any> }> {
@@ -4141,7 +4131,7 @@ export class GeminiAgentClient {
     } = options;
     const runtimePlatformPrompt = buildRuntimePlatformPrompt((context as any).terminalShell || 'auto');
 
-    return `You are EterX, a local autonomous agent. Complete the latest user request with real actions and evidence. Be concise, accurate, and decisive.
+    return `You are EterX, a capable local agent. Complete the latest user request with real actions and evidence. Be concise, accurate, and decisive.
 ${userNameText}
 INSTRUCTION PRIORITY
 - System rules and the latest user-role request control.
@@ -4193,9 +4183,13 @@ EFFICIENCY AND CONTEXT
 COMPLETION
 - Final claims must be supported by observed tool, file, command, browser, or test evidence.
 - For reviews, lead with severity-ordered findings and file references; do not edit unless asked.
-- For changed work, report what changed, verification and result, plus any blocker, skipped check, or residual risk.
+- Write the final answer for this specific conversation, not from a reusable report template or predefined section schema.
+- Lead with the answer or outcome. Let the request determine the shape and length: a simple reply can be one sentence or a few paragraphs; use bullets, headings, tables, or diagrams only when they materially improve understanding.
+- Do not automatically create sections such as Summary, Details, Evidence, Deliverables, Next Steps, Caveats, Files Changed, or Verification. Mention relevant work, evidence, limitations, or file links naturally and only when they help the user.
+- Do not use emojis, decorative icons, ornamental Unicode, or all-caps headings in user-facing prose. Keep headings short and sentence case, and avoid a heading when plain prose is clearer.
+- In long chats, use relevant prior work and decisions to answer the current request without recapping the transcript, repeating completed work, or treating old output as a new objective.
 - Never ask the user to say "continue" when in-scope work can continue now.
-- Use concise GitHub-flavored Markdown; use Mermaid when a diagram materially improves a complex relationship.
+- Use concise GitHub-flavored Markdown when useful; use Mermaid only when a diagram materially improves a complex relationship.
 
 CONTEXT
 Project: ${context.projectId}
@@ -6966,9 +6960,8 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
             console.warn('[GeminiClient] Cognitive Core final answer assessment failed (non-blocking):', err.message);
           }
 
-          // Preserve the model's context-aware answer wording. Reliability
-          // gates may append evidence caveats, but regex rewriting must not
-          // impose a canned voice or damage intentional prose/code.
+          // Preserve the model's context-aware answer wording. Runtime
+          // evidence informs execution but does not rewrite user-facing prose.
           let cleanText = finalText;
           const toolsUsedList = Array.from(callHistory).map(s => s.split(':')[0]);
           cleanText = this.finalizeEvidenceBoundAnswer(cleanText, evidenceLedger, toolCallCounts, chatId);
@@ -8411,19 +8404,8 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
       // If it was a work task, enrich the final response with what was done
       if (wasWorkTask && responseText.length < 100 && filesWritten.length > 0) {
         // Agent finished work but gave a very short response â€” enrich it
-        const enrichment = '\n\n**Files created/modified:** ' + filesWritten.join(', ');
-        loopAccumulatedText = (loopAccumulatedText || '') + enrichment;
       }
 
-      const evidenceGate = evidenceLedger.buildCompletionGate({
-        finalText: loopAccumulatedText || responseText,
-        toolsUsed,
-      });
-      const finalEvidenceText = loopAccumulatedText || responseText || '';
-      const alreadyDisclaimsVerification = /\bverification\b[\s\S]{0,160}\b(not recorded|not run|not verified|unable to verify|could not verify|was not run)\b/i.test(finalEvidenceText);
-      if (evidenceGate.shouldAppendCaveat && !alreadyDisclaimsVerification) {
-        loopAccumulatedText = (loopAccumulatedText || responseText || '') + evidenceGate.caveat;
-      }
     } catch { /* self-assessment is advisory */ }
 
     const fallbackText = loopAccumulatedText || ' ';

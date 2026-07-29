@@ -118,8 +118,14 @@ export async function POST(req: NextRequest) {
     const builderAgentId = isBuilderChat ? getAgentIdFromBuilderChatId(chatId) : '';
     const selectedRuntimeId = typeof customAgentId === 'string' ? customAgentId.trim() : '';
     const isCustomAgentRun = !isBuilderChat && selectedRuntimeId.length > 0;
+    const isAutonomousRun = safePinnedContext?.agentRuntime === 'autonomy_v1';
+    const isGeneralRun = !isBuilderChat && !isCustomAgentRun && !isAutonomousRun;
     let effectivePinnedContext: Record<string, any> = {
       ...(isBuilderChat ? buildAgentBuilderPinnedContext(chatId, safePinnedContext) : safePinnedContext),
+      ...(isGeneralRun ? {
+        disableSubAgents: true,
+        allowAgentSpawning: false,
+      } : {}),
       thinkingLevel: safeThinkingLevel,
       ...(exactModelName ? {
         selectedModelName: exactModelName,

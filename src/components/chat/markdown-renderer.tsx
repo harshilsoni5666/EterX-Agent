@@ -1131,10 +1131,10 @@ export const markdownComponents = {
   input: ({ type, ...props }: any) => type === 'checkbox'
     ? <input type="checkbox" className="eterx-markdown-checkbox mr-2 h-3.5 w-3.5 translate-y-[2px] rounded border-white/20 accent-[#E2765A] cursor-pointer" {...props} />
     : <input type={type} {...props} />,
-  h1: makeHeading('h1', 'mt-5 mb-2.5 text-[17px] font-semibold tracking-tight leading-snug text-[#F4F3EF] border-b border-white/[0.08] pb-1.5 flex items-center gap-2'),
-  h2: makeHeading('h2', 'mt-4.5 mb-2 text-[15.5px] font-semibold tracking-tight leading-snug text-[#F4F3EF] border-b border-white/[0.06] pb-1'),
-  h3: makeHeading('h3', 'mt-3.5 mb-1.5 text-[14px] font-semibold tracking-tight leading-snug text-[#ECEBE6]'),
-  h4: makeHeading('h4', 'mt-3 mb-1 text-[13px] font-semibold leading-snug text-[#ECEBE6]'),
+  h1: makeHeading('h1', 'eterx-answer-heading-1 mt-5 mb-2.5 font-semibold tracking-tight leading-[1.25] text-[#F4F3EF]'),
+  h2: makeHeading('h2', 'eterx-answer-heading-2 mt-4.5 mb-2 font-semibold tracking-tight leading-[1.3] text-[#F4F3EF]'),
+  h3: makeHeading('h3', 'eterx-answer-heading-3 mt-3.5 mb-1.5 font-semibold tracking-tight leading-[1.35] text-[#ECEBE6]'),
+  h4: makeHeading('h4', 'eterx-answer-heading-4 mt-3 mb-1 font-semibold leading-[1.4] text-[#ECEBE6]'),
   h5: makeHeading('h5', 'mt-2.5 mb-1 text-[12.5px] font-semibold leading-snug text-[#D8D6D0]'),
   h6: makeHeading('h6', 'mt-2 mb-1 text-[12px] font-semibold leading-snug text-[#BEBCB6]'),
   strong: ({ ...props }: any) => <strong className="font-semibold text-[#FFFFFF] tracking-normal" {...props} />,

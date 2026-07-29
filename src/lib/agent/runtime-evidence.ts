@@ -19,37 +19,6 @@ export interface RuntimeEvidenceNode {
   targets: string[];
 }
 
-export interface CompletionEvidenceGateInput {
-  finalText: string;
-  toolsUsed: string[];
-}
-
-export interface CompletionEvidenceGateResult {
-  shouldAppendCaveat: boolean;
-  caveat: string;
-  evidenceSummary: string[];
-  hasVerificationEvidence: boolean;
-  hasWorkEvidence: boolean;
-}
-
-const WORK_TOOLS = new Set([
-  'workspace_write_file',
-  'workspace_str_replace',
-  'workspace_apply_patch',
-  'workspace_edit_file',
-  'workspace_edit_many_files',
-  'workspace_run_command',
-  'system_shell',
-  'process_manager',
-  'background_task',
-  'browser_control',
-  'docx_generator',
-  'office_artifact_builder',
-  'chart_generator',
-  'image_generator',
-  'project_scaffolder',
-]);
-
 const VERIFICATION_TOOLS = new Set([
   'workspace_verify_code',
   'realtime_verify',
@@ -129,10 +98,6 @@ function summarizeToolResult(toolName: string, args: Record<string, any>, result
   return target ? `${ toolName }: ${ truncate(target) }` : `${ toolName } completed`;
 }
 
-export function isRuntimeWorkTool(toolName: string): boolean {
-  return WORK_TOOLS.has(toolName);
-}
-
 export class RuntimeEvidenceLedger {
   private readonly nodes: RuntimeEvidenceNode[] = [];
   private sequence = 0;
@@ -173,20 +138,4 @@ export class RuntimeEvidenceLedger {
       .map(node => `${ node.kind }: ${ node.summary }`);
   }
 
-  buildCompletionGate(input: CompletionEvidenceGateInput): CompletionEvidenceGateResult {
-    const hasVerificationEvidence = this.hasVerificationEvidence();
-    const hasWorkEvidence = this.hasWorkEvidence() || input.toolsUsed.some(isRuntimeWorkTool);
-    const claimsVerification = /\b(verified|tested|tests? pass(?:ed)?|build pass(?:ed)?|lint pass(?:ed)?|works|working)\b/i.test(input.finalText);
-    const shouldAppendCaveat = hasWorkEvidence && !hasVerificationEvidence;
-    const claimWarning = claimsVerification
-      ? ' Runtime evidence did not include a verification tool result, so verification claims should be treated as unproven.'
-      : '';
-    return {
-      shouldAppendCaveat,
-      caveat: `\n\n**Verification:** Not recorded by the runtime evidence ledger.${ claimWarning }`,
-      evidenceSummary: this.summarize(),
-      hasVerificationEvidence,
-      hasWorkEvidence,
-    };
-  }
 }

@@ -114,10 +114,23 @@ const writeJsonAtomic = async (filePath: string, value: unknown) => {
   await fs.ensureDir(path.dirname(filePath));
   const temporaryPath = path.join(
     path.dirname(filePath),
-    `.${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`,
+    `.${path.basename(filePath)}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`,
   );
   await fs.writeJson(temporaryPath, value, { spaces: 2 });
   await fs.move(temporaryPath, filePath, { overwrite: true });
+};
+
+const persistJournalBestEffort = async (filePath: string, value: ContextCompactionJournal) => {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      await writeJsonAtomic(filePath, value);
+      return true;
+    } catch {
+      // A transient antivirus/file-lock race must not discard a committed
+      // capsule. Retry with a fresh atomic temporary name.
+    }
+  }
+  return false;
 };
 
 export const normalizeContextCompactionSettings = (
@@ -684,6 +697,65 @@ This capsule is authoritative continuity from earlier turns in this same chat. I
 ${capsule}
 [END COMPACTED CONTEXT CAPSULE]`;
 
+const capsuleCarrierText = (message: any): string | null => {
+  if (!message || typeof message !== 'object') return null;
+  if (message.role === 'system' && typeof message.content === 'string') {
+    return message.content;
+  }
+  if (message.role !== 'user') return null;
+  if (Array.isArray(message.parts) && message.parts.length === 1 && typeof message.parts[0]?.text === 'string') {
+    return message.parts[0].text;
+  }
+  if (
+    Array.isArray(message.content) &&
+    message.content.length === 1 &&
+    message.content[0]?.type === 'text' &&
+    typeof message.content[0]?.text === 'string'
+  ) {
+    return message.content[0].text;
+  }
+  return null;
+};
+
+const reconcileJournalCapsules = (
+  contents: any[],
+  journal: ContextCompactionJournal,
+) => {
+  const latest = journal.generations[journal.generations.length - 1] || null;
+  if (!latest) return { contents, hasLatest: false, removedOlder: false };
+  const latestMarker = capsuleMarker(latest.summary, latest.compactionId);
+  const knownMarkers = new Set(
+    journal.generations.map(generation => capsuleMarker(generation.summary, generation.compactionId)),
+  );
+  let hasLatest = false;
+  let removedOlder = false;
+  const reconciled = contents.filter(message => {
+    const text = capsuleCarrierText(message);
+    if (!text || !knownMarkers.has(text)) return true;
+    if (text === latestMarker && !hasLatest) {
+      hasLatest = true;
+      return true;
+    }
+    removedOlder = true;
+    return false;
+  });
+  return { contents: reconciled, hasLatest, removedOlder };
+};
+
+const stripJournalCapsules = (
+  contents: any[],
+  journal: ContextCompactionJournal,
+) => {
+  const knownMarkers = new Set(
+    journal.generations.map(generation => capsuleMarker(generation.summary, generation.compactionId)),
+  );
+  if (knownMarkers.size === 0) return contents;
+  return contents.filter(message => {
+    const text = capsuleCarrierText(message);
+    return !text || !knownMarkers.has(text);
+  });
+};
+
 const selectGeminiTailStart = (contents: any[], tokenBudget: number) => {
   let start = Math.max(1, contents.length - RECENT_GEMINI_TURNS);
   let used = estimateTokens(JSON.stringify(contents.slice(start)));
@@ -813,18 +885,21 @@ export const compactContextAtBoundary = async (input: CompactInput): Promise<{
     ? Math.floor(requestedContextWindow)
     : resolveModelContextWindow(input.activeModel.provider, input.activeModel.modelId);
   let restoredPriorCapsule = false;
-  if (settings.enabled) {
-    const hasCapsule = JSON.stringify(input.contents).includes('[SYSTEM - COMPACTED CONTEXT CAPSULE');
-    if (!hasCapsule) {
-      const journal = await readJournal(input.chatId);
-      const latest = journal.generations[journal.generations.length - 1];
-      if (latest?.summary) {
-        const restoreTailBudget = Math.max(12_000, Math.floor(contextWindow * 0.30));
-        input.contents = input.kind === 'gemini'
-          ? injectGeminiCapsule(input.contents, latest.summary, latest.compactionId, restoreTailBudget)
-          : injectProviderCapsule(input.contents, latest.summary, latest.compactionId, restoreTailBudget, input.activeModel.provider);
-        restoredPriorCapsule = true;
-      }
+  // Disabling automatic *future* compaction must never erase continuity that
+  // was already committed for this chat. Reconcile only exact, hash-validated
+  // journal capsules; arbitrary user text containing a marker is not trusted.
+  const continuityJournal = await readJournal(input.chatId);
+  const latestContinuityCapsule = continuityJournal.generations[continuityJournal.generations.length - 1];
+  if (latestContinuityCapsule?.summary) {
+    const reconciled = reconcileJournalCapsules(input.contents, continuityJournal);
+    input.contents = reconciled.contents;
+    restoredPriorCapsule = reconciled.removedOlder;
+    if (!reconciled.hasLatest) {
+      const restoreTailBudget = Math.max(12_000, Math.floor(contextWindow * 0.30));
+      input.contents = input.kind === 'gemini'
+        ? injectGeminiCapsule(input.contents, latestContinuityCapsule.summary, latestContinuityCapsule.compactionId, restoreTailBudget)
+        : injectProviderCapsule(input.contents, latestContinuityCapsule.summary, latestContinuityCapsule.compactionId, restoreTailBudget, input.activeModel.provider);
+      restoredPriorCapsule = true;
     }
   }
   const usage = measureRuntimeContext({
@@ -893,6 +968,7 @@ export const compactContextAtBoundary = async (input: CompactInput): Promise<{
     const compactionId = pendingRetry?.compactionId || `ctx_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const model = settings.model!;
     let usedModel = model;
+    let compactionContents = input.contents;
     emit({
       type: 'context_compaction',
       phase: 'compacting',
@@ -908,16 +984,20 @@ export const compactContextAtBoundary = async (input: CompactInput): Promise<{
       const statePath = journalPathForChat(input.chatId);
       const journal = await readJournal(input.chatId);
       const previous = journal.generations[journal.generations.length - 1] || null;
+      // The previous capsule is supplied explicitly as rolling state. Removing
+      // its trusted carrier from the transcript avoids duplicate summaries and
+      // prevents old capsule system messages from accumulating indefinitely.
+      compactionContents = stripJournalCapsules(input.contents, journal);
       let source = input.kind === 'gemini'
-        ? serializeGeminiTurns(input.contents.slice(1, Math.max(1, input.contents.length - RECENT_GEMINI_TURNS)))
-        : serializeProviderMessages(input.contents.filter(message => message?.role !== 'system').slice(0, -RECENT_PROVIDER_MESSAGES));
+        ? serializeGeminiTurns(compactionContents.slice(1, Math.max(1, compactionContents.length - RECENT_GEMINI_TURNS)))
+        : serializeProviderMessages(compactionContents.filter(message => message?.role !== 'system').slice(0, -RECENT_PROVIDER_MESSAGES));
       if (estimateTokens(source) < 2_000) {
         // A short "older history" slice means the recent protocol-safe tail is
         // what occupies the window. Compact the complete conversational payload
         // so an emitted lifecycle can never be abandoned without a terminal event.
         source = input.kind === 'gemini'
-          ? serializeGeminiTurns(input.contents)
-          : serializeProviderMessages(input.contents.filter(message => message?.role !== 'system'));
+          ? serializeGeminiTurns(compactionContents)
+          : serializeProviderMessages(compactionContents.filter(message => message?.role !== 'system'));
       }
       let generatedSummary = '';
       let recoveryMode: 'selected_model' | 'active_model' | 'deterministic' = 'selected_model';
@@ -1008,8 +1088,8 @@ export const compactContextAtBoundary = async (input: CompactInput): Promise<{
       const fixedTokens = usage.systemTokens + usage.toolTokens + estimateTokens(capsuleMarker(summary, compactionId));
       const tailTokenBudget = Math.max(8_000, targetTokens - fixedTokens);
       const nextContents = input.kind === 'gemini'
-        ? injectGeminiCapsule(input.contents, summary, compactionId, tailTokenBudget)
-        : injectProviderCapsule(input.contents, summary, compactionId, tailTokenBudget, input.activeModel.provider);
+        ? injectGeminiCapsule(compactionContents, summary, compactionId, tailTokenBudget)
+        : injectProviderCapsule(compactionContents, summary, compactionId, tailTokenBudget, input.activeModel.provider);
       const nextUsage = measureRuntimeContext({
         contents: nextContents,
         systemInstruction: input.systemInstruction,
@@ -1024,8 +1104,8 @@ export const compactContextAtBoundary = async (input: CompactInput): Promise<{
         summary = coverage.summary;
         const minimumTailBudget = 4_000;
         const recoveredContents = input.kind === 'gemini'
-          ? injectGeminiCapsule(input.contents, summary, compactionId, minimumTailBudget)
-          : injectProviderCapsule(input.contents, summary, compactionId, minimumTailBudget, input.activeModel.provider);
+          ? injectGeminiCapsule(compactionContents, summary, compactionId, minimumTailBudget)
+          : injectProviderCapsule(compactionContents, summary, compactionId, minimumTailBudget, input.activeModel.provider);
         nextContents.splice(0, nextContents.length, ...recoveredContents);
       }
       let finalUsage = measureRuntimeContext({
@@ -1037,7 +1117,7 @@ export const compactContextAtBoundary = async (input: CompactInput): Promise<{
       if (isHardBlocked && finalUsage.usedTokens >= hardBlockTokens) {
         const capsuleOnly = input.kind === 'gemini'
           ? injectGeminiCapsuleOnly(summary, compactionId)
-          : injectProviderCapsuleOnly(input.contents, summary, compactionId, input.activeModel.provider);
+          : injectProviderCapsuleOnly(compactionContents, summary, compactionId, input.activeModel.provider);
         nextContents.splice(0, nextContents.length, ...capsuleOnly);
         finalUsage = measureRuntimeContext({
           contents: nextContents,
@@ -1057,7 +1137,7 @@ export const compactContextAtBoundary = async (input: CompactInput): Promise<{
         };
         const emergencyContents = input.kind === 'gemini'
           ? injectGeminiCapsuleOnly(summary, compactionId)
-          : injectProviderCapsuleOnly(input.contents, summary, compactionId, input.activeModel.provider);
+          : injectProviderCapsuleOnly(compactionContents, summary, compactionId, input.activeModel.provider);
         nextContents.splice(0, nextContents.length, ...emergencyContents);
         finalUsage = measureRuntimeContext({
           contents: nextContents,
@@ -1112,7 +1192,7 @@ export const compactContextAtBoundary = async (input: CompactInput): Promise<{
         updatedAt: Date.now(),
         generations: [...journal.generations, capsule].slice(-4),
       };
-      await writeJsonAtomic(statePath, nextJournal).catch(() => undefined);
+      await persistJournalBestEffort(statePath, nextJournal);
       journalCache.set(input.chatId, nextJournal);
       retryState.delete(input.chatId);
       successfulCompactionState.set(input.chatId, {
@@ -1152,11 +1232,11 @@ export const compactContextAtBoundary = async (input: CompactInput): Promise<{
     } catch (error: any) {
       if (String(error?.message || error) === 'CANCELLED_BY_USER') throw error;
       let recoverySummary = buildDeterministicRecoveryCapsule(
-        input.kind === 'gemini' ? serializeGeminiTurns(input.contents) : serializeProviderMessages(input.contents),
+        input.kind === 'gemini' ? serializeGeminiTurns(compactionContents) : serializeProviderMessages(compactionContents),
       );
       let fallback = input.kind === 'gemini'
-        ? injectGeminiCapsule(input.contents, recoverySummary, compactionId, 4_000)
-        : injectProviderCapsule(input.contents, recoverySummary, compactionId, 4_000, input.activeModel.provider);
+        ? injectGeminiCapsule(compactionContents, recoverySummary, compactionId, 4_000)
+        : injectProviderCapsule(compactionContents, recoverySummary, compactionId, 4_000, input.activeModel.provider);
       let recoveredUsage = measureRuntimeContext({
         contents: fallback,
         systemInstruction: input.systemInstruction,
@@ -1166,7 +1246,7 @@ export const compactContextAtBoundary = async (input: CompactInput): Promise<{
       if (isHardBlocked && recoveredUsage.usedTokens >= hardBlockTokens) {
         fallback = input.kind === 'gemini'
           ? injectGeminiCapsuleOnly(recoverySummary, compactionId)
-          : injectProviderCapsuleOnly(input.contents, recoverySummary, compactionId, input.activeModel.provider);
+          : injectProviderCapsuleOnly(compactionContents, recoverySummary, compactionId, input.activeModel.provider);
         recoveredUsage = measureRuntimeContext({
           contents: fallback,
           systemInstruction: input.systemInstruction,
@@ -1176,11 +1256,11 @@ export const compactContextAtBoundary = async (input: CompactInput): Promise<{
       }
       if (isHardBlocked && recoveredUsage.usedTokens >= hardBlockTokens) {
         recoverySummary = buildEmergencyRecoveryCapsule(
-          input.kind === 'gemini' ? serializeGeminiTurns(input.contents) : serializeProviderMessages(input.contents),
+          input.kind === 'gemini' ? serializeGeminiTurns(compactionContents) : serializeProviderMessages(compactionContents),
         );
         fallback = input.kind === 'gemini'
           ? injectGeminiCapsuleOnly(recoverySummary, compactionId)
-          : injectProviderCapsuleOnly(input.contents, recoverySummary, compactionId, input.activeModel.provider);
+          : injectProviderCapsuleOnly(compactionContents, recoverySummary, compactionId, input.activeModel.provider);
         recoveredUsage = measureRuntimeContext({
           contents: fallback,
           systemInstruction: input.systemInstruction,
@@ -1235,7 +1315,7 @@ export const compactContextAtBoundary = async (input: CompactInput): Promise<{
           updatedAt: Date.now(),
           generations: [...recoveryJournal.generations, recoveryCapsule].slice(-4),
         };
-        await writeJsonAtomic(journalPathForChat(input.chatId), nextRecoveryJournal).catch(() => undefined);
+        await persistJournalBestEffort(journalPathForChat(input.chatId), nextRecoveryJournal);
         journalCache.set(input.chatId, nextRecoveryJournal);
       } catch {
         // In-memory recovery remains authoritative for the active run even when
