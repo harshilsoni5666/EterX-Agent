@@ -82,7 +82,7 @@ const TOOL_TTL: Record<string, number> = {
 
 // Tools that should NEVER be cached (have side effects or need fresh results)
 const UNCACHEABLE_TOOLS = new Set([
-  'workspace_write_file', 'workspace_str_replace', 'workspace_apply_patch', 'workspace_edit_file', 'workspace_edit_many_files', 'system_shell',
+  'workspace_apply_patch', 'workspace_run_command',
   'workspace_run_command', 'workspace_verify_code', 'git_operations',
   'docx_generator', 'task_decomposer', 'spawn_sub_agent', 'background_task',
   'create_dynamic_tool', 'run_macro', 'screenshot_capture',
@@ -95,8 +95,7 @@ const UNCACHEABLE_TOOLS = new Set([
 ]);
 
 const INVALIDATES_SCOPED_CACHE_TOOLS = new Set([
-  'workspace_write_file', 'workspace_str_replace', 'workspace_apply_patch',
-  'workspace_edit_file', 'workspace_edit_many_files', 'system_shell',
+  'workspace_apply_patch', 'workspace_run_command',
   'workspace_run_command', 'workspace_verify_code', 'git_operations',
   'process_manager', 'run_macro', 'create_dynamic_tool',
 ]);
@@ -325,12 +324,12 @@ export class SmartQueryRouter {
       estimatedSteps = 1;
     } else if (hasCode && hasResearch) {
       strategy = 'multi_tool_sequential';
-      suggestedTools = ['web_search', 'workspace_write_file', 'workspace_verify_code'];
+      suggestedTools = ['web_search', 'workspace_apply_patch', 'workspace_verify_code'];
       complexity = 'complex';
       estimatedSteps = 5;
     } else if (hasCode) {
       strategy = 'code_heavy';
-      suggestedTools = ['workspace_write_file', 'workspace_str_replace', 'workspace_apply_patch', 'workspace_verify_code', 'workspace_run_command'];
+      suggestedTools = ['workspace_apply_patch', 'workspace_verify_code', 'workspace_run_command'];
       complexity = wordCount > 30 ? 'complex' : 'moderate';
       estimatedSteps = wordCount > 30 ? 8 : 4;
     } else if (hasResearch) {
@@ -340,7 +339,7 @@ export class SmartQueryRouter {
       estimatedSteps = 3;
     } else if (hasDoc) {
       strategy = 'document_heavy';
-      suggestedTools = ['workspace_write_file', 'docx_generator'];
+      suggestedTools = ['workspace_apply_patch', 'docx_generator'];
       complexity = 'moderate';
       estimatedSteps = 5;
     } else if (hasCreative) {

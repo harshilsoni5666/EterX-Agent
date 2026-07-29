@@ -4,10 +4,33 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import path from 'path';
 import fs from 'fs-extra';
+import net from 'net';
 import { resolveReadableWorkspacePathForContext, resolveWorkspaceDirectoryForContext } from '../../workspace/path_resolver';
 import { authorizeToolCommand } from '../security/command_broker';
 
 const execAsync = promisify(exec);
+
+function canConnectToLocalPort(host: string, port: number): Promise<boolean> {
+  return new Promise(resolve => {
+    const socket = net.createConnection({ host, port });
+    let settled = false;
+    const finish = (active: boolean) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve(active);
+    };
+    socket.setTimeout(1500);
+    socket.once('connect', () => finish(true));
+    socket.once('timeout', () => finish(false));
+    socket.once('error', () => finish(false));
+  });
+}
+
+async function isLocalPortActive(port: number): Promise<boolean> {
+  if (await canConnectToLocalPort('127.0.0.1', port)) return true;
+  return canConnectToLocalPort('::1', port);
+}
 
 /**
  * Real-Time Verification Tool — Internal Quality Control Engine
@@ -301,25 +324,21 @@ Use this to self-verify before reporting completion.`,
 
         // ─── PORT CHECK ───────────────────────────────────────────
         case 'port_check': {
-          const port = parseInt(input.target);
-          if (isNaN(port)) {
+          const port = Number(input.target);
+          if (!Number.isInteger(port) || port < 1 || port > 65535) {
             return { passed: false, mode: 'port_check', details: '❌ Invalid port number', evidence: '' };
           }
 
           try {
-            const { stdout } = await execAsync(
-              `powershell -Command "Get-NetTCPConnection -LocalPort ${port} -ErrorAction SilentlyContinue | Select-Object -First 1 | Format-List"`,
-              { timeout: 5000 }
-            );
-            const isActive = stdout.trim().length > 0;
+            const isActive = await isLocalPortActive(port);
             return {
               passed: isActive,
               mode: 'port_check',
               details: isActive ? `✅ Port ${port} is ACTIVE` : `❌ Port ${port} is NOT in use`,
-              evidence: stdout.trim() || 'No connection found'
+              evidence: isActive ? 'Local TCP connection succeeded' : 'No local TCP listener accepted a connection',
             };
-          } catch {
-            return { passed: false, mode: 'port_check', details: `❌ Port ${port} check failed`, evidence: 'Command error' };
+          } catch (error: any) {
+            return { passed: false, mode: 'port_check', details: `❌ Port ${port} check failed`, evidence: error.message };
           }
         }
 

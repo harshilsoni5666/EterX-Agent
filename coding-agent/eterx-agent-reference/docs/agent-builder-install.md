@@ -10,7 +10,7 @@ Use this file when creating an EterX custom agent from this pack.
 - `responseStyle`: Direct, technical, concise, evidence-based.
 - `behaviorRules`: Use the rules from `AGENTS.md`.
 - `safetyRules`: Use the security section from `agent.md`.
-- `toolUsePolicy`: Use `prompts/tool-routing-contract.md`.
+- `toolUsePolicy`: Use the runtime tool declarations and the single-editor contract.
 - `completionCriteria`: Use `docs/verification-artifacts.md`.
 
 ## Direct Main Tools To Attach

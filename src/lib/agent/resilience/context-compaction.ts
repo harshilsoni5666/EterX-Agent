@@ -5,6 +5,8 @@ import { GoogleGenAI } from '@google/genai';
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
 import type { MainAgentProvider } from '../model-routing';
+import { isModelProvider } from '../model-selector-store';
+import { getProviderBaseURL, isLocalModelProvider } from '../provider-runtime';
 import type { ScopedRuntimeSettings } from '../runtime-api-keys';
 import { getScopedRuntimeApiKeyValues } from '../runtime-api-keys';
 import { getEterxWorkspaceDir } from '../storage-paths';
@@ -140,8 +142,7 @@ export const normalizeContextCompactionSettings = (
   const source = raw && typeof raw === 'object' ? raw as Record<string, any> : {};
   const provider = String(source?.model?.provider || '').trim();
   const modelId = String(source?.model?.modelId || '').trim();
-  const allowedProviders: MainAgentProvider[] = ['gemini', 'mistral', 'openai', 'openrouter', 'groq', 'anthropic'];
-  const model = allowedProviders.includes(provider as MainAgentProvider) && modelId
+  const model = isModelProvider(provider) && modelId
     ? { provider: provider as MainAgentProvider, modelId: modelId.slice(0, 220) }
     : activeModel;
   return {
@@ -498,13 +499,6 @@ ${priorCapsule ? `[PRIOR ROLLING CAPSULE]\n${priorCapsule}\n[END PRIOR ROLLING C
 ${source}
 [END TRANSCRIPT PART]`;
 
-const openAIBaseUrl = (provider: MainAgentProvider) => {
-  if (provider === 'openai') return process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1';
-  if (provider === 'openrouter') return process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1';
-  if (provider === 'groq') return process.env.GROQ_BASE_URL || 'https://api.groq.com/openai/v1';
-  return process.env.MISTRAL_BASE_URL || process.env.MISTRAL_API_BASE_URL || 'https://api.mistral.ai/v1';
-};
-
 const generateCapsulePartWithKey = async (
   prompt: string,
   model: ContextCompactionModel,
@@ -538,7 +532,7 @@ const generateCapsulePartWithKey = async (
   }
   const client = new OpenAI({
     apiKey,
-    baseURL: openAIBaseUrl(model.provider),
+    baseURL: getProviderBaseURL(model.provider),
     defaultHeaders: model.provider === 'openrouter' ? {
       'HTTP-Referer': process.env.OPENROUTER_HTTP_REFERER || 'http://localhost:3000',
       'X-Title': 'EterX Agent',
@@ -565,9 +559,11 @@ const generateCapsulePart = async (
   chatId: string,
   abortSignal?: AbortSignal,
 ): Promise<string> => {
-  const apiKeys = Array.from(new Set(
-    getScopedRuntimeApiKeyValues(runtimeSettings, model.provider).filter(Boolean),
-  ));
+  const apiKeys = isLocalModelProvider(model.provider)
+    ? ['local-no-key-required']
+    : Array.from(new Set(
+        getScopedRuntimeApiKeyValues(runtimeSettings, model.provider).filter(Boolean),
+      ));
   if (apiKeys.length === 0) {
     throw new Error(`No ${model.provider} API key is available for context compaction.`);
   }

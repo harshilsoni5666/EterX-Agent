@@ -12,6 +12,8 @@ interface Agent {
   accessType: 'Full Access' | 'Selected Access' | 'Agent Decides';
   isSetup?: boolean;
   toolCount?: number;
+  preferredModel?: string;
+  preferredThinkingLevel?: 'minimal' | 'low' | 'medium' | 'high';
   builderMessages?: {role: 'user' | 'assistant', content: string}[];
 }
 
@@ -52,6 +54,18 @@ export const AgentsView = React.memo(({
   }, [agents]);
 
   useEffect(() => {
+    const refreshLocalAgents = () => {
+      try {
+        const parsed = JSON.parse(localStorage.getItem('eterx_agents') || '[]');
+        if (!Array.isArray(parsed)) return;
+        setAgents(previous => JSON.stringify(previous) === JSON.stringify(parsed) ? previous : parsed);
+      } catch { }
+    };
+    window.addEventListener('eterx_agents_updated', refreshLocalAgents);
+    return () => window.removeEventListener('eterx_agents_updated', refreshLocalAgents);
+  }, []);
+
+  useEffect(() => {
     let cancelled = false;
 
     const syncServerAgents = async () => {
@@ -66,6 +80,7 @@ export const AgentsView = React.memo(({
 
         setAgents(prev => {
           const serverIds = new Set<string>();
+          const existingById = new Map(prev.map(agent => [agent.id, agent]));
           const byId = new Map(
             prev
               .filter(agent => agent.id === 'default-1' || agent.isSetup !== true || !agent.id.startsWith('eterxagent-'))
@@ -76,7 +91,7 @@ export const AgentsView = React.memo(({
             const id = String(serverAgent.agentId || '').trim();
             if (!id) continue;
             serverIds.add(id);
-            const existing = byId.get(id);
+            const existing = existingById.get(id);
             byId.set(id, {
               id,
               name: serverAgent.name || existing?.name || id,
@@ -84,6 +99,8 @@ export const AgentsView = React.memo(({
               accessType: existing?.accessType || 'Agent Decides',
               isSetup: serverAgent.status === 'ready',
               toolCount: serverAgent.toolCount,
+              preferredModel: existing?.preferredModel,
+              preferredThinkingLevel: existing?.preferredThinkingLevel,
               builderMessages: existing?.builderMessages || [],
             });
           }
@@ -696,6 +713,22 @@ export const AgentsView = React.memo(({
                     <span className="text-[#8C8A88]">Access Type</span>
                     <span className="text-white px-2 py-0.5 rounded bg-white/5 border border-white/10">{settingsAgent.accessType}</span>
                   </div>
+                  {settingsAgent.preferredModel && (
+                    <div className="flex items-center justify-between gap-3 text-[13px]">
+                      <span className="text-[#8C8A88]">Preferred model</span>
+                      <span className="max-w-[260px] truncate text-white px-2 py-0.5 rounded bg-white/5 border border-white/10">
+                        {settingsAgent.preferredModel}
+                      </span>
+                    </div>
+                  )}
+                  {settingsAgent.preferredThinkingLevel && (
+                    <div className="flex items-center justify-between text-[13px]">
+                      <span className="text-[#8C8A88]">Thinking level</span>
+                      <span className="capitalize text-white px-2 py-0.5 rounded bg-white/5 border border-white/10">
+                        {settingsAgent.preferredThinkingLevel}
+                      </span>
+                    </div>
+                  )}
                 </div>
 
                 <div className="w-full h-[1px] bg-white/5 my-2"></div>

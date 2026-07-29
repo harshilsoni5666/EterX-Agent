@@ -29,12 +29,12 @@ const BUDGET_WARN_THRESHOLD = 350;
 export const CODING_AGENT_SPEED_RULES = `
 CODING FAST MODE:
 - Use task_decomposer, sub-agents, and background scouting only when they create real leverage: broad scope, independent review, long-running checks, or UI/server workflows.
-- Explore with workspace_semantic_search + workspace_symbol_lookup before broad reads.
+- Explore with workspace_semantic_search + workspace_search_text before broad reads.
 - Batch reads with workspace_read_many_files. Never read the same file twice in one task unless it changed.
-- Default edit tool: workspace_str_replace. One precise change per call. It returns diff + readback automatically.
-- NEVER use workspace_write_file on existing files. That tool is ONLY for creating new files.
-- NEVER rewrite an entire file. Use workspace_str_replace for targeted edits.
-- If workspace_str_replace fails, re-read the target lines, copy exact text, and retry.
+- Use workspace_write_file only for a new file.
+- Use workspace_edit_file for targeted changes to an existing file.
+- Never create persistent source files through shell commands.
+- If an edit fails, re-read the exact target lines and retry once with corrected context.
 - If a tool errors once, read exact context and retry once with corrected args. Do not loop blindly.
 - Verify with the smallest meaningful command after edits.
 - Stop as soon as the requested change is done and verified.
@@ -42,10 +42,9 @@ CODING FAST MODE:
 
 export const CODING_ERROR_RECOVERY = `
 TOOL ERROR RECOVERY (coding only):
-- "old_string not found" -> workspace_read_file the target range, copy exact text, retry workspace_str_replace.
-- "patch failed" -> read current file, switch to workspace_str_replace or smaller patch hunks.
+- "edit failed" -> read the exact current file range, then retry workspace_edit_file with corrected search text or line ranges.
 - "file not found" -> workspace_find_files or workspace_semantic_search, then retry with correct path.
-- "ambiguous match" -> add surrounding context lines to old_string or use workspace_apply_patch.
+- "ambiguous match" -> add surrounding context to the search text or use a validated line range with workspace_edit_file.
 - "command failed" -> read stderr, fix root cause, rerun closest smaller verification command.
 `.trim();
 
@@ -53,8 +52,7 @@ export const CODING_LONG_TASK_RULES = `
 LONG TASK RULES (active after 10+ iterations):
 - After 10+ iterations, re-read the user request to stay precisely on-task. Do not drift.
 - After 15+ edits, run workspace_verify_code or a targeted test before continuing.
-- Use workspace_edit_session action=summary periodically to stay oriented on what changed.
-- Use workspace_edit_session action=checkpoint before risky changes.
+- Keep each workspace_edit_file call focused on one file and group its related edits.
 - If approaching 400+ iterations, summarize all work done and ask if the user wants to continue.
 - Keep edits focused. Do not refactor unrelated code during long sessions.
 - After completing a logical sub-task, emit a brief progress note before moving to the next.
@@ -346,13 +344,13 @@ export function buildCodingProfileToolBlock(): string {
 export function formatCodingToolFailure(toolName: string, output: string): string {
   const text = String(output || '');
   if (/old_string not found|search block not found|Could not find search/i.test(text)) {
-    return `${text}\n\nRECOVERY: Read the exact target range with workspace_read_file, then retry workspace_str_replace with copied text.`;
+    return `${text}\n\nRECOVERY: Read the exact target range with workspace_read_file, then retry workspace_edit_file with current context.`;
   }
   if (/ambiguous|matched \d+ times/i.test(text)) {
-    return `${text}\n\nRECOVERY: Add more surrounding context to old_string, or use workspace_apply_patch with context lines.`;
+    return `${text}\n\nRECOVERY: Add more surrounding context to the search text, or use workspace_edit_file with a validated line range.`;
   }
   if (/patch failed|context line/i.test(text)) {
-    return `${text}\n\nRECOVERY: Read the current file section and use workspace_str_replace or a smaller patch hunk.`;
+    return `${text}\n\nRECOVERY: Read the current file section and retry workspace_edit_file with corrected input.`;
   }
   if (/file not found|directory not found/i.test(text)) {
     return `${text}\n\nRECOVERY: Use workspace_find_files or workspace_semantic_search to locate the correct path.`;

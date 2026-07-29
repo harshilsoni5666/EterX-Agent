@@ -15,7 +15,14 @@ export const CHAT_MODEL_SELECTION_STORAGE_KEY = 'eterx_chat_model_selection';
 export const CHAT_CONTEXT_WINDOW_OVERRIDES_STORAGE_KEY = 'eterx_chat_context_window_overrides';
 export const AUTO_MODEL_SELECTION = 'auto';
 
-export const MODEL_PROVIDER_ORDER: MainAgentProvider[] = ['gemini', 'mistral', 'openai', 'openrouter', 'groq', 'anthropic'];
+export const MODEL_PROVIDER_ORDER: MainAgentProvider[] = [
+  'gemini', 'openai', 'anthropic', 'mistral', 'openrouter', 'groq',
+  'deepseek', 'grok', 'cerebras', 'together', 'fireworks', 'sambanova',
+  'perplexity', 'deepinfra', 'huggingface', 'nvidia', 'cloudflare',
+  'ollama', 'lmstudio', 'vllm', 'llamacpp',
+  'novita', 'qwen', 'mimo', 'tokenhub', 'zai', 'kimi', 'stepfun', 'minimax',
+  'ollamacloud', 'arcee', 'gmi', 'kilo', 'opencode', 'upstage', 'custom',
+];
 
 export const MODEL_PROVIDER_MODE: Record<MainAgentProvider, MainAgentMode> = {
   gemini: 'think',
@@ -24,6 +31,36 @@ export const MODEL_PROVIDER_MODE: Record<MainAgentProvider, MainAgentMode> = {
   openrouter: 'openrouter',
   groq: 'groq',
   anthropic: 'anthropic',
+  deepseek: 'deepseek',
+  grok: 'grok',
+  cerebras: 'cerebras',
+  together: 'together',
+  fireworks: 'fireworks',
+  sambanova: 'sambanova',
+  perplexity: 'perplexity',
+  deepinfra: 'deepinfra',
+  huggingface: 'huggingface',
+  nvidia: 'nvidia',
+  cloudflare: 'cloudflare',
+  ollama: 'ollama',
+  lmstudio: 'lmstudio',
+  vllm: 'vllm',
+  llamacpp: 'llamacpp',
+  novita: 'novita',
+  qwen: 'qwen',
+  mimo: 'mimo',
+  tokenhub: 'tokenhub',
+  zai: 'zai',
+  kimi: 'kimi',
+  stepfun: 'stepfun',
+  minimax: 'minimax',
+  ollamacloud: 'ollamacloud',
+  arcee: 'arcee',
+  gmi: 'gmi',
+  kilo: 'kilo',
+  opencode: 'opencode',
+  upstage: 'upstage',
+  custom: 'custom',
 };
 
 export const isModelProvider = (value: unknown): value is MainAgentProvider =>

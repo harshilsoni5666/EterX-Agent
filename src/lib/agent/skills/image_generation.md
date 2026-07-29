@@ -9,7 +9,7 @@ Use this skill when the requested deliverable is a bitmap image asset or an edit
 
 ## Routing
 
-- Use `chart_generator` for real data charts. Do not use AI image generation for charts that need accurate values.
+- Use `office_artifact_builder` for accurate data charts in spreadsheet artifacts. Do not use AI image generation for charts that need exact values.
 - Use code-native SVG, HTML/CSS, canvas, or existing icon components when the output should be deterministic, editable, or consistent with an existing design system.
 - Use `image_generator` for creative raster outputs: photos, illustrations, product shots, UI mockups, visual concepts, covers, backgrounds, sprites, and bitmap infographics.
 - If the image is for a DOCX/PDF/PPTX/report about real facts, prefer real source images/logos/screenshots/charts over generated images unless the user explicitly asks for generated art.

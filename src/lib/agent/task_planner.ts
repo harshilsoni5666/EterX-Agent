@@ -70,19 +70,13 @@ const BASE_PLANNER_TOOLS = new Set([
   'workspace_search_text',
   'workspace_find_files',
   'workspace_semantic_search',
-  'workspace_symbol_lookup',
   'workspace_file_outline',
-  'smart_file_analyzer',
-  'workspace_str_replace',
-  'workspace_apply_patch',
-  'workspace_edit_file',
-  'workspace_edit_many_files',
   'workspace_write_file',
+  'workspace_edit_file',
   'workspace_run_command',
   'workspace_verify_code',
   'browser_control',
   'realtime_verify',
-  'screenshot_capture',
   'web_search',
   'web_scraper',
   'deep_research',
@@ -92,38 +86,28 @@ const BASE_PLANNER_TOOLS = new Set([
   'get_skill_guidelines',
   'docx_generator',
   'office_artifact_builder',
-  'chart_generator',
   'csv_data_analyzer',
-  'json_yaml_transform',
-  'markdown_to_html',
-  'code_execution_js',
-  'calculator',
   'image_generator',
   'image_asset_search',
   'api_caller',
-  'smart_api_hub',
   'ask_user',
-  'git_operations',
 ]);
 
 const TOOL_ALIASES: Record<string, string> = {
-  system_shell: 'workspace_run_command',
   shell_command: 'workspace_run_command',
   workspace_shell: 'workspace_run_command',
   read_file: 'workspace_read_file',
   read_many_files: 'workspace_read_many_files',
   search_text: 'workspace_search_text',
   find_files: 'workspace_find_files',
-  apply_patch: 'workspace_apply_patch',
-  edit_file: 'workspace_str_replace',
+  write_file: 'workspace_write_file',
+  edit_file: 'workspace_edit_file',
   semantic_search: 'workspace_semantic_search',
-  symbol_lookup: 'workspace_symbol_lookup',
   csv_analyzer: 'csv_data_analyzer',
   data_analyzer: 'csv_data_analyzer',
   js_execution: 'code_execution_js',
   code_execution: 'code_execution_js',
   browser: 'browser_control',
-  screenshot: 'screenshot_capture',
   scraper: 'web_scraper',
   pdf_parser: 'parse_pdf',
 };
@@ -196,14 +180,14 @@ Rules:
 7. Use exact filenames, folders, UI areas, tools, constraints, and deliverables from the request/context when present.
 8. Dependencies must point only to earlier step numbers.
 9. Tools must be real tool names from this set when relevant:
-   workspace_read_file, workspace_read_many_files, workspace_list_directory, workspace_search_text, workspace_find_files, workspace_semantic_search, workspace_symbol_lookup, workspace_file_outline, smart_file_analyzer,
-   workspace_str_replace, workspace_apply_patch, workspace_edit_file, workspace_edit_many_files, workspace_write_file,
+   workspace_read_file, workspace_read_many_files, workspace_list_directory, workspace_search_text, workspace_find_files, workspace_semantic_search, workspace_file_outline,
+   workspace_write_file, workspace_edit_file,
    workspace_run_command, workspace_verify_code,
-   browser_control, realtime_verify, screenshot_capture,
+   browser_control, realtime_verify,
    web_search, web_scraper, deep_research, parse_pdf, youtube_transcript, rss_feed_reader,
    get_skill_guidelines,
-   docx_generator, office_artifact_builder, chart_generator, csv_data_analyzer, json_yaml_transform, markdown_to_html,
-   code_execution_js, calculator, image_generator, image_asset_search, api_caller, smart_api_hub, ask_user, git_operations.
+   docx_generator, office_artifact_builder, csv_data_analyzer,
+   image_generator, image_asset_search, api_caller, ask_user.
 
 Return ONLY valid JSON:
 {
@@ -508,13 +492,13 @@ function inferTools(type: PlannerStepType, task: string, context = ''): string[]
     case 'research':
       return profile.isResearch ? ['web_search', 'web_scraper'] : ['workspace_search_text', 'workspace_read_file'];
     case 'configure':
-      return ['workspace_read_file', 'workspace_apply_patch'];
+      return ['workspace_read_file', 'workspace_edit_file'];
     case 'edit':
-      return ['workspace_apply_patch', 'workspace_str_replace'];
+      return ['workspace_edit_file'];
     case 'create':
       if (profile.isDocument) return ['docx_generator', 'workspace_write_file'];
       if (profile.isData) return ['csv_data_analyzer', 'office_artifact_builder'];
-      return ['workspace_write_file', 'workspace_apply_patch'];
+      return ['workspace_write_file'];
     case 'run':
       return ['workspace_run_command'];
     case 'verify':
@@ -573,7 +557,6 @@ function normalizeToolList(value: unknown, type: PlannerStepType, task: string, 
     .filter(tool => {
       if (!tool) return false;
       if (DISALLOWED_PLANNER_TOOLS.has(tool)) return false;
-      if (tool === 'git_operations' && !profile.gitIntent) return false;
       if (EXTERNAL_COMMS_TOOLS.has(tool) && !profile.externalCommsIntent) return false;
       return registered.has(tool);
     });

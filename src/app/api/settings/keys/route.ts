@@ -8,6 +8,7 @@ import {
   getRuntimeModelOverrides,
 } from '../../../../lib/agent/runtime-api-keys';
 import { rejectCrossOrigin } from '../../agent/_shared';
+import { applyRuntimeProviderBaseURLs, getRuntimeProviderBaseURLs } from '../../../../lib/agent/provider-runtime';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -20,6 +21,7 @@ export async function POST(req: NextRequest) {
     const body = await req.json().catch(() => ({}));
     const hasExplicitApiKeys = Boolean(body && typeof body === 'object' && Object.prototype.hasOwnProperty.call(body, 'apiKeys'));
     const hasModelOverrides = Boolean(body && typeof body === 'object' && Object.prototype.hasOwnProperty.call(body, 'modelOverrides'));
+    const hasBaseURLs = Boolean(body && typeof body === 'object' && Object.prototype.hasOwnProperty.call(body, 'baseURLs'));
     const currentProviderStatus = getRuntimeApiKeyStatus();
     const result = hasExplicitApiKeys
       ? applyRuntimeApiKeys(body.apiKeys)
@@ -40,6 +42,9 @@ export async function POST(req: NextRequest) {
         .filter(([, model]) => Boolean(model))
         .map(([provider, model]) => ({ provider: provider as any, accepted: true, model }));
     const pool = apiKeyPool.getPoolStatus();
+    const baseURLs = hasBaseURLs
+      ? applyRuntimeProviderBaseURLs(body.baseURLs)
+      : getRuntimeProviderBaseURLs();
 
     return NextResponse.json({
       ok: true,
@@ -47,6 +52,7 @@ export async function POST(req: NextRequest) {
       rejectedCount: result.rejectedCount,
       providers: result.providers,
       modelOverrides,
+      baseURLs,
       pool: {
         totalKeys: pool.totalKeys,
         availableKeys: pool.availableKeys,
@@ -87,6 +93,7 @@ export async function GET() {
       },
       providers,
       modelOverrides: getRuntimeModelOverrides(),
+      baseURLs: getRuntimeProviderBaseURLs(),
     });
   } catch (error: any) {
     return NextResponse.json(

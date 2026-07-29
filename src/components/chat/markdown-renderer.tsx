@@ -12,15 +12,30 @@ import rehypeKatex from 'rehype-katex';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 // @ts-ignore
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
-import { Check, ChevronDown, Copy, Download, Maximize2, Minimize2, MoreHorizontal, WrapText } from 'lucide-react';
+import { Check, ChevronDown, Copy, Download, Globe2, Maximize2, Minimize2, MoreHorizontal, WrapText } from 'lucide-react';
 import { CopyButton, safeCopyTextToClipboard } from '../ui/copy-button';
 import { Tooltip } from '../ui/tooltip';
 import { LiveArtifact } from './live-artifact';
 import { LocalFileLinkChip, decodeLocalFileHref, isLocalFilePath, linkifyLocalFilePaths } from './local-file-link';
 
 /** Re-export remark/rehype plugins for use in other components */
-export const remarkPlugins = [remarkGfm, remarkMath];
-export const rehypePlugins = [rehypeKatex];
+export const remarkPlugins: any[] = [
+  remarkGfm,
+  [remarkMath, { singleDollarTextMath: true }],
+];
+export const rehypePlugins: any[] = [[rehypeKatex, {
+  throwOnError: false,
+  strict: 'ignore',
+  trust: false,
+  output: 'htmlAndMathml',
+  macros: {
+    '\\RR': '\\mathbb{R}',
+    '\\NN': '\\mathbb{N}',
+    '\\ZZ': '\\mathbb{Z}',
+    '\\QQ': '\\mathbb{Q}',
+    '\\CC': '\\mathbb{C}',
+  },
+}]];
 
 const MERMAID_LANGUAGE_ALIASES = new Set(['mermaid', 'mmd']);
 const PLAIN_TEXT_LANGUAGE_ALIASES = new Set(['', 'text', 'txt', 'plain', 'plaintext']);
@@ -29,6 +44,32 @@ const CODE_FENCE_SPLIT = /(```[\s\S]*?```|~~~[\s\S]*?~~~)/g;
 const MERMAID_FONT_FAMILY = 'var(--font-dm-sans), "DM Sans", Inter, system-ui, sans-serif';
 const ACCIDENTAL_MARKDOWN_FENCE_LANGUAGES = new Set(['', 'md', 'markdown', 'text', 'txt', 'plain', 'plaintext', 'answer', 'response']);
 const TABLE_SEPARATOR_PATTERN = /^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$/;
+const PROTECTED_MARKDOWN_CODE_SPLIT = /(```[\s\S]*?```|~~~[\s\S]*?~~~|`+[^`\n]*?`+)/g;
+const PROTECTED_MARKDOWN_MATH_AND_CODE_SPLIT = /(```[\s\S]*?```|~~~[\s\S]*?~~~|`+[^`\n]*?`+|\$\$[\s\S]*?\$\$|\$(?:\\.|[^$\n])+\$)/g;
+const DISPLAY_MATH_ENVIRONMENTS = [
+  'equation',
+  'align',
+  'alignat',
+  'gather',
+  'multline',
+  'flalign',
+  'split',
+  'aligned',
+  'gathered',
+  'cases',
+  'matrix',
+  'pmatrix',
+  'bmatrix',
+  'Bmatrix',
+  'vmatrix',
+  'Vmatrix',
+  'array',
+  'smallmatrix',
+].join('|');
+const DISPLAY_MATH_ENVIRONMENT_PATTERN = new RegExp(
+  `\\\\begin\\{(${DISPLAY_MATH_ENVIRONMENTS})\\*?\\}([\\s\\S]*?)\\\\end\\{\\1\\*?\\}`,
+  'g',
+);
 
 const slugify = (value: string) =>
   value
@@ -49,21 +90,201 @@ const getNodeText = (value: any): string => {
   return '';
 };
 
-const normalizeLatexOutsideCode = (value: string) =>
-  value.split(CODE_FENCE_SPLIT).map((chunk) => {
-    if (/^(```|~~~)/.test(chunk)) return chunk;
+const getWebsiteLinkMeta = (href?: string) => {
+  if (!href) return null;
+  try {
+    const url = new URL(href);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+    const hostname = url.hostname.replace(/^www\./i, '');
+    return {
+      hostname,
+      faviconUrl: `${url.origin}/favicon.ico`,
+    };
+  } catch {
+    return null;
+  }
+};
+
+export const WebsiteLink = React.memo(({
+  href,
+  children,
+  className = '',
+  ...props
+}: React.AnchorHTMLAttributes<HTMLAnchorElement>) => {
+  const website = useMemo(() => getWebsiteLinkMeta(href), [href]);
+  const [failedFaviconUrl, setFailedFaviconUrl] = useState('');
+
+  if (!website) {
+    return (
+      <a
+        className={`eterx-markdown-link font-medium underline-offset-3 transition-colors hover:underline ${className}`}
+        target="_blank"
+        rel="noopener noreferrer"
+        href={href}
+        {...props}
+      >
+        {children}
+      </a>
+    );
+  }
+
+  return (
+    <a
+      className={`eterx-website-link ${className}`}
+      target="_blank"
+      rel="noopener noreferrer"
+      href={href}
+      data-website-url={href}
+      aria-label={`${getNodeText(children) || website.hostname} — ${href}`}
+      {...props}
+    >
+      <span className="eterx-website-link-icon" aria-hidden="true">
+        {failedFaviconUrl !== website.faviconUrl ? (
+          <img
+            src={website.faviconUrl}
+            alt=""
+            loading="lazy"
+            onError={() => setFailedFaviconUrl(website.faviconUrl)}
+          />
+        ) : (
+          <Globe2 />
+        )}
+      </span>
+      <span className="eterx-website-link-label">{children}</span>
+    </a>
+  );
+});
+WebsiteLink.displayName = 'WebsiteLink';
+
+const ResponsiveMath = React.memo(({
+  children,
+  className = '',
+  ...props
+}: React.HTMLAttributes<HTMLSpanElement>) => {
+  const ref = useRef<HTMLSpanElement>(null);
+
+  useEffect(() => {
+    const element = ref.current;
+    if (!element) return;
+
+    let animationFrame = 0;
+    let lastAvailableWidth = 0;
+    const fitEquation = () => {
+      window.cancelAnimationFrame(animationFrame);
+      animationFrame = window.requestAnimationFrame(() => {
+        const equation = element.querySelector<HTMLElement>(':scope > .katex');
+        if (!equation) return;
+
+        const availableWidth = Math.max(1, element.clientWidth - 12);
+        if (Math.abs(availableWidth - lastAvailableWidth) < 0.5) return;
+        lastAvailableWidth = availableWidth;
+        element.style.setProperty('--eterx-math-scale', '1');
+        const naturalWidth = Math.max(equation.scrollWidth, equation.getBoundingClientRect().width);
+        const scale = naturalWidth > availableWidth
+          ? Math.max(0.01, Math.min(1, availableWidth / naturalWidth))
+          : 1;
+        element.style.setProperty('--eterx-math-scale', scale.toFixed(4));
+      });
+    };
+
+    fitEquation();
+    const observer = typeof ResizeObserver !== 'undefined'
+      ? new ResizeObserver(fitEquation)
+      : null;
+    observer?.observe(element);
+
+    return () => {
+      window.cancelAnimationFrame(animationFrame);
+      observer?.disconnect();
+    };
+  }, [children]);
+
+  return (
+    <span ref={ref} className={className} {...props}>
+      {children}
+    </span>
+  );
+});
+ResponsiveMath.displayName = 'ResponsiveMath';
+
+const normalizeLatexOutsideCode = (value: string) => {
+  const normalizedDelimiters = value.split(PROTECTED_MARKDOWN_CODE_SPLIT).map((chunk) => {
+    if (/^(```|~~~|`)/.test(chunk)) return chunk;
     return chunk
-      .replace(/\\\[((?:.|\n)*?)\\\]/g, (_match, inner) => `\n\n$$\n${ String(inner).trim() }\n$$\n\n`)
-      .replace(/\\\((.*?)\\\)/g, (_match, inner) => `$${ String(inner).trim() }$`)
-      .replace(/\\begin\{(equation\*?|align\*?|gather\*?|multline\*?)\}([\s\S]*?)\\end\{\1\}/g, (_match, env, body) => (
-        `\n\n$$\n\\begin{${ env }}\n${ String(body).trim() }\n\\end{${ env }}\n$$\n\n`
-      ));
+      .replace(
+        /^([ \t]*)\$\$[ \t]*([^\n]+?)[ \t]*\$\$[ \t]*$/gm,
+        (_match, indentation, inner) => `${indentation}$$\n${String(inner).trim()}\n${indentation}$$`,
+      )
+      .replace(/\\\[([\s\S]*?)\\\]/g, (_match, inner) => `\n\n$$\n${String(inner).trim()}\n$$\n\n`)
+      .replace(/\\\(([\s\S]*?)\\\)/g, (_match, inner) => `$${String(inner).trim()}$`);
   }).join('');
+
+  return normalizedDelimiters.split(PROTECTED_MARKDOWN_MATH_AND_CODE_SPLIT).map((chunk) => {
+    if (/^(```|~~~|`|\$)/.test(chunk)) return chunk;
+    return chunk.replace(DISPLAY_MATH_ENVIRONMENT_PATTERN, (match, environment, body) => {
+      const normalizedEnvironment = match.match(/^\\begin\{([^}]+)\}/)?.[1] || environment;
+      return `\n\n$$\n\\begin{${normalizedEnvironment}}\n${String(body).trim()}\n\\end{${normalizedEnvironment}}\n$$\n\n`;
+    });
+  }).join('');
+};
 
 const splitMarkdownTableCells = (line: string) => {
   const trimmed = line.trim();
-  const body = trimmed.replace(/^\|/, '').replace(/\|$/, '');
-  return body.split('|').map(cell => cell.trim());
+  let body = trimmed.startsWith('|') ? trimmed.slice(1) : trimmed;
+  if (body.endsWith('|') && !body.endsWith('\\|')) body = body.slice(0, -1);
+  const cells: string[] = [];
+  let cell = '';
+  let escaped = false;
+  let codeFenceLength = 0;
+  let mathDelimiterLength = 0;
+
+  for (let index = 0; index < body.length; index += 1) {
+    const character = body[index];
+
+    if (escaped) {
+      cell += character;
+      escaped = false;
+      continue;
+    }
+
+    if (character === '\\') {
+      cell += character;
+      escaped = true;
+      continue;
+    }
+
+    if (character === '`' && mathDelimiterLength === 0) {
+      let runLength = 1;
+      while (body[index + runLength] === '`') runLength += 1;
+      const marker = '`'.repeat(runLength);
+      cell += marker;
+      index += runLength - 1;
+      if (codeFenceLength === 0) codeFenceLength = runLength;
+      else if (codeFenceLength === runLength) codeFenceLength = 0;
+      continue;
+    }
+
+    if (character === '$' && codeFenceLength === 0) {
+      const runLength = body[index + 1] === '$' ? 2 : 1;
+      const marker = '$'.repeat(runLength);
+      cell += marker;
+      index += runLength - 1;
+      if (mathDelimiterLength === 0) mathDelimiterLength = runLength;
+      else if (mathDelimiterLength === runLength) mathDelimiterLength = 0;
+      continue;
+    }
+
+    if (character === '|' && codeFenceLength === 0 && mathDelimiterLength === 0) {
+      cells.push(cell.trim());
+      cell = '';
+      continue;
+    }
+
+    cell += character;
+  }
+
+  cells.push(cell.trim());
+  return cells;
 };
 
 const isMarkdownTableSeparator = (line: string) => TABLE_SEPARATOR_PATTERN.test(line.trim());
@@ -97,11 +318,22 @@ const repairMarkdownTablesOutsideCode = (value: string) =>
       const isSeparator = isMarkdownTableSeparator(line);
       const isRow = isPotentialMarkdownTableRow(line);
       const nextLine = lines[i + 1] || '';
+      const secondNextLine = lines[i + 2] || '';
       const nextIsSeparator = isMarkdownTableSeparator(nextLine);
       const nextIsRow = isPotentialMarkdownTableRow(nextLine);
-      const isDelimitedRow = line.trim().startsWith('|') || line.trim().endsWith('|');
+      const separatorAfterBlankLine = !nextLine.trim() && isMarkdownTableSeparator(secondNextLine);
+
+      if (!line.trim() && inTable && nextIsRow) {
+        continue;
+      }
 
       repaired.push(line);
+
+      if (isRow && separatorAfterBlankLine) {
+        inTable = true;
+        i += 1;
+        continue;
+      }
 
       if (isSeparator) {
         inTable = true;
@@ -109,7 +341,7 @@ const repairMarkdownTablesOutsideCode = (value: string) =>
       }
 
       if (isRow) {
-        if (!inTable && !nextIsSeparator && (nextIsRow || isDelimitedRow)) {
+        if (!inTable && !nextIsSeparator && nextIsRow) {
           repaired.push(makeMarkdownTableSeparator(line));
           inTable = true;
         }
@@ -474,10 +706,11 @@ const getMermaidDisplayWidth = ({ width, height }: { width: number; height: numb
   const safeHeight = Math.max(1, height || 460);
   const aspect = safeWidth / safeHeight;
 
-  if (safeWidth >= 900) return Math.min(safeWidth, 1080);
-  if (aspect < 0.45) return Math.min(520, Math.max(340, safeWidth * 1.35));
-  if (aspect < 0.9) return Math.min(700, Math.max(440, safeWidth * 1.35));
-  return Math.min(940, Math.max(560, safeWidth * 1.08));
+  if (safeWidth <= 420 && safeHeight <= 340) return Math.min(440, Math.max(280, safeWidth + 24));
+  if (aspect < 0.5) return Math.min(430, Math.max(300, safeWidth * 1.08));
+  if (aspect < 0.9) return Math.min(500, Math.max(340, safeWidth * 1.04));
+  if (safeWidth >= 900) return 620;
+  return Math.min(600, Math.max(380, safeWidth));
 };
 
 type MermaidThemeName = 'light' | 'dark';
@@ -651,7 +884,8 @@ const MermaidDiagram = ({ chart }: { chart: string }) => {
   const [menuOpen, setMenuOpen] = useState(false);
   const [actionStatus, setActionStatus] = useState('');
   const [previewOpen, setPreviewOpen] = useState(false);
-  const [svgSize, setSvgSize] = useState({ width: 720, height: 460 });
+  const [previewZoom, setPreviewZoom] = useState(1);
+  const [svgSize, setSvgSize] = useState({ width: 460, height: 300 });
   const renderTokenRef = useRef(0);
   const errorTimerRef = useRef<number | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -681,11 +915,19 @@ const MermaidDiagram = ({ chart }: { chart: string }) => {
           flowchart: {
             curve: 'basis',
             htmlLabels: false,
-            nodeSpacing: 34,
-            rankSpacing: 48,
-            padding: 12,
+            nodeSpacing: 26,
+            rankSpacing: 38,
+            padding: 10,
           },
-          sequence: { showSequenceNumbers: false, mirrorActors: false },
+          sequence: {
+            showSequenceNumbers: false,
+            mirrorActors: false,
+            actorMargin: 36,
+            boxMargin: 8,
+            messageMargin: 26,
+            diagramMarginX: 16,
+            diagramMarginY: 16,
+          },
           themeCSS: getMermaidThemeCss(theme),
           themeVariables: {
             background: palette.background,
@@ -713,7 +955,7 @@ const MermaidDiagram = ({ chart }: { chart: string }) => {
             noteBkgColor: palette.noteFill,
             noteBorderColor: palette.noteStroke,
             noteTextColor: palette.text,
-            fontSize: '15px',
+            fontSize: '14px',
             fontFamily: MERMAID_FONT_FAMILY,
           },
         });
@@ -776,6 +1018,20 @@ const MermaidDiagram = ({ chart }: { chart: string }) => {
     };
   }, [menuOpen]);
 
+  useEffect(() => {
+    if (!previewOpen) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setPreviewOpen(false);
+    };
+    window.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [previewOpen]);
+
   const flashStatus = (message: string) => {
     setActionStatus(message);
     window.setTimeout(() => setActionStatus(''), 1800);
@@ -818,13 +1074,30 @@ const MermaidDiagram = ({ chart }: { chart: string }) => {
 
   const canvasStyle = {
     '--eterx-mermaid-display-width': `${ displayWidth }px`,
+    '--eterx-mermaid-intrinsic-width': `${ Math.max(1, svgSize.width) }px`,
   } as React.CSSProperties;
 
-  if (error && !svg) return null;
-
   return (
-    <div className={`eterx-mermaid-card group/mermaid relative my-3.5 mx-auto max-w-full overflow-visible ${ expanded ? 'eterx-mermaid-expanded' : '' }`} style={canvasStyle}>
-      <div ref={menuRef} className="eterx-mermaid-toolbar absolute right-1 top-1 z-30 flex items-center opacity-75 transition-opacity duration-200 group-hover/mermaid:opacity-100 focus-within:opacity-100">
+    <div
+      className={`eterx-mermaid-card group/mermaid relative my-3.5 mx-auto max-w-full overflow-visible ${ expanded ? 'eterx-mermaid-expanded' : '' }`}
+      style={canvasStyle}
+      data-diagram-shape={svgSize.height > svgSize.width * 1.4 ? 'tall' : svgSize.width > svgSize.height * 1.7 ? 'wide' : 'balanced'}
+    >
+      <div ref={menuRef} className="eterx-mermaid-toolbar absolute right-1 top-1 z-30 flex items-center gap-1 opacity-80 transition-opacity duration-200 group-hover/mermaid:opacity-100 focus-within:opacity-100">
+        <Tooltip text="Open large view" side="bottom">
+          <button
+            type="button"
+            className="eterx-mermaid-trigger"
+            aria-label="Open large diagram view"
+            disabled={!svg}
+            onClick={() => {
+              setPreviewZoom(1);
+              setPreviewOpen(true);
+            }}
+          >
+            <Maximize2 className="h-4 w-4" />
+          </button>
+        </Tooltip>
         <button
           type="button"
           className="eterx-mermaid-trigger"
@@ -863,7 +1136,10 @@ const MermaidDiagram = ({ chart }: { chart: string }) => {
               <span>Download .mmd</span>
             </button>
             <div className="eterx-mermaid-menu-separator" />
-            <button type="button" className="eterx-mermaid-menu-item" disabled={!svg} onClick={() => runAction(() => setPreviewOpen(true))}>
+            <button type="button" className="eterx-mermaid-menu-item" disabled={!svg} onClick={() => runAction(() => {
+              setPreviewZoom(1);
+              setPreviewOpen(true);
+            })}>
               <Maximize2 className="h-4 w-4" />
               <span>Open large view</span>
             </button>
@@ -884,13 +1160,23 @@ const MermaidDiagram = ({ chart }: { chart: string }) => {
         </div>
       )}
 
-      <div className="eterx-mermaid-stage eterx-scrollbar overflow-auto">
+      <div className="eterx-mermaid-stage">
         {svg ? (
           <div
             className="eterx-mermaid-canvas mx-auto"
             style={canvasStyle}
+            role="img"
+            aria-label="Rendered Mermaid diagram"
             dangerouslySetInnerHTML={{ __html: svg }}
           />
+        ) : error ? (
+          <div className="eterx-mermaid-error" role="status">
+            <div className="eterx-mermaid-error-title">Diagram could not be rendered</div>
+            <div className="eterx-mermaid-error-message">The Mermaid source is still available for review or correction.</div>
+            <button type="button" className="eterx-mermaid-error-action" onClick={() => setShowSource(true)}>
+              Show source
+            </button>
+          </div>
         ) : (
           <div className="eterx-mermaid-skeleton" style={canvasStyle}>
             <div className="eterx-mermaid-skeleton-title" />
@@ -912,13 +1198,39 @@ const MermaidDiagram = ({ chart }: { chart: string }) => {
         <div className="eterx-mermaid-popout" role="dialog" aria-modal="true" aria-label="Large diagram view" onClick={() => setPreviewOpen(false)}>
           <div className="eterx-mermaid-popout-panel" onClick={(event) => event.stopPropagation()}>
             <div className="eterx-mermaid-popout-toolbar">
-              <div className="min-w-0 flex-1 truncate text-[13px] font-semibold text-[#D0CDC7]">Diagram preview</div>
+              <div className="eterx-mermaid-popout-title min-w-0 flex-1 truncate">Diagram preview</div>
+              <div className="eterx-mermaid-zoom-controls" aria-label="Diagram zoom controls">
+                <button
+                  type="button"
+                  className="eterx-mermaid-popout-button"
+                  disabled={previewZoom <= 1}
+                  onClick={() => setPreviewZoom(value => Math.max(1, value - 0.25))}
+                >
+                  Zoom out
+                </button>
+                <span className="eterx-mermaid-zoom-value">{Math.round(previewZoom * 100)}%</span>
+                <button
+                  type="button"
+                  className="eterx-mermaid-popout-button"
+                  disabled={previewZoom >= 2}
+                  onClick={() => setPreviewZoom(value => Math.min(2, value + 0.25))}
+                >
+                  Zoom in
+                </button>
+                <button type="button" className="eterx-mermaid-popout-button" onClick={() => setPreviewZoom(1)}>Fit</button>
+              </div>
               <button type="button" className="eterx-mermaid-popout-button" onClick={() => runAction(copyPng)}>Copy image</button>
               <button type="button" className="eterx-mermaid-popout-button" onClick={() => runAction(downloadPng)}>Download PNG</button>
               <button type="button" className="eterx-mermaid-popout-close" aria-label="Close large diagram view" onClick={() => setPreviewOpen(false)}>Close</button>
             </div>
             <div className="eterx-mermaid-popout-stage eterx-scrollbar">
-              <div className="eterx-mermaid-popout-canvas" dangerouslySetInnerHTML={{ __html: svg }} />
+              <div
+                className="eterx-mermaid-popout-canvas"
+                style={{ width: `${previewZoom * 100}%`, height: `${previewZoom * 100}%` }}
+                role="img"
+                aria-label="Large Mermaid diagram view"
+                dangerouslySetInnerHTML={{ __html: svg }}
+              />
             </div>
           </div>
         </div>,
@@ -1068,42 +1380,43 @@ const makeHeading = (Tag: keyof JSX.IntrinsicElements, className: string) => {
       {
         ...props,
         id,
-        className: `${ className } eterx-md-heading group/heading scroll-mt-28`,
+        className: `${ className } eterx-md-heading scroll-mt-28`,
       },
-      <>
-        <a
-          href={`#${ id }`}
-          className="eterx-md-heading-anchor mr-2 inline-flex translate-y-[-1px] text-[#5E5A55] opacity-0 transition-opacity group-hover/heading:opacity-100"
-          aria-label={`Link to ${ text || 'section' }`}
-        >
-          #
-        </a>
-        {children}
-      </>
+      children,
     );
   };
   return Heading;
 };
 
 export const markdownComponents = {
-  code({ inline, className, children, ...props }: any) {
+  span: ({ node, className = '', children, ...props }: any) => (
+    String(className).split(/\s+/).includes('katex-display')
+      ? <ResponsiveMath className={className} {...props}>{children}</ResponsiveMath>
+      : <span className={className} {...props}>{children}</span>
+  ),
+  code({ inline, className, children, node, ...props }: any) {
     const match = /language-([^\s]+)/.exec(className || '');
     const language = match ? match[1].toLowerCase() : '';
     const content = String(children).replace(/\n$/, '');
+    const isInlineCode = inline === true || (
+      inline !== false &&
+      !language &&
+      node?.position?.start?.line === node?.position?.end?.line
+    );
 
-    if (!inline && language === 'js-preview') {
+    if (!isInlineCode && language === 'js-preview') {
       return <LiveArtifact js={content} title="JS Logic Preview" />;
     }
 
-    if (!inline && language === 'html-preview') {
+    if (!isInlineCode && language === 'html-preview') {
       return <LiveArtifact html={content} title="HTML Preview" />;
     }
 
-    if (!inline && (language === 'react-preview' || language === 'preview')) {
+    if (!isInlineCode && (language === 'react-preview' || language === 'preview')) {
       return <LiveArtifact html={content} title="Preview" />;
     }
 
-    if (!inline) {
+    if (!isInlineCode) {
       return <CodeBlock language={language} content={content} {...props} />;
     }
 
@@ -1123,7 +1436,7 @@ export const markdownComponents = {
     if (localPath) {
       return <LocalFileLinkChip filePath={localPath} label={getNodeText(children)} compact />;
     }
-    return <a className="eterx-markdown-link font-medium text-[#E2765A] underline-offset-3 hover:underline transition-colors" target="_blank" rel="noopener noreferrer" href={href} {...props}>{children}</a>;
+    return <WebsiteLink href={href} {...props}>{children}</WebsiteLink>;
   },
   ul: ({ ...props }: any) => <ul className="eterx-markdown-list mb-3 list-disc space-y-1 pl-5 marker:text-[#8C8A88] text-[13.5px] leading-[1.6]" {...props} />,
   ol: ({ ...props }: any) => <ol className="eterx-markdown-list mb-3 list-decimal space-y-1 pl-5 marker:text-[#8C8A88] text-[13.5px] leading-[1.6]" {...props} />,
@@ -1135,8 +1448,8 @@ export const markdownComponents = {
   h2: makeHeading('h2', 'eterx-answer-heading-2 mt-4.5 mb-2 font-semibold tracking-tight leading-[1.3] text-[#F4F3EF]'),
   h3: makeHeading('h3', 'eterx-answer-heading-3 mt-3.5 mb-1.5 font-semibold tracking-tight leading-[1.35] text-[#ECEBE6]'),
   h4: makeHeading('h4', 'eterx-answer-heading-4 mt-3 mb-1 font-semibold leading-[1.4] text-[#ECEBE6]'),
-  h5: makeHeading('h5', 'mt-2.5 mb-1 text-[12.5px] font-semibold leading-snug text-[#D8D6D0]'),
-  h6: makeHeading('h6', 'mt-2 mb-1 text-[12px] font-semibold leading-snug text-[#BEBCB6]'),
+  h5: makeHeading('h5', 'eterx-answer-heading-5 mt-2.5 mb-1 font-semibold leading-snug text-[#D8D6D0]'),
+  h6: makeHeading('h6', 'eterx-answer-heading-6 mt-2 mb-1 font-semibold leading-snug text-[#BEBCB6]'),
   strong: ({ ...props }: any) => <strong className="font-semibold text-[#FFFFFF] tracking-normal" {...props} />,
   em: ({ ...props }: any) => <em className="italic text-[#E0DDD7]" {...props} />,
   blockquote: ({ node, ...props }: any) => {
@@ -1155,15 +1468,20 @@ export const markdownComponents = {
     );
   },
   hr: ({ ...props }: any) => <hr className="eterx-markdown-hr my-4 border-white/[0.08]" {...props} />,
-  table: ({ ...props }: any) => (
-    <div className="eterx-markdown-table-wrap eterx-scrollbar my-4 w-full max-w-full overflow-x-auto overflow-y-hidden rounded-lg border border-white/[0.10] bg-[#1A1918]/90 shadow-sm">
+  table: ({ node, ...props }: any) => (
+    <div
+      className="eterx-markdown-table-wrap my-4 w-full max-w-full overflow-hidden rounded-lg border border-white/[0.10] bg-[#1A1918]/90 shadow-sm"
+      role="region"
+      aria-label="Data table"
+    >
       <table className="eterx-markdown-table w-full min-w-full border-collapse text-left text-[12.5px]" {...props} />
     </div>
   ),
-  thead: ({ ...props }: any) => <thead className="eterx-markdown-thead bg-white/[0.04] border-b border-white/[0.08]" {...props} />,
-  th: ({ ...props }: any) => <th className="eterx-markdown-th border-b border-r border-white/[0.06] last:border-r-0 px-3 py-2 text-left font-semibold tracking-wide text-[#F4F3EF] text-[12px] bg-white/[0.03]" {...props} />,
-  td: ({ ...props }: any) => <td className="eterx-markdown-td border-b border-r border-white/[0.04] last:border-r-0 px-3 py-1.5 align-top text-[#E0DDD7] leading-normal font-normal text-[12.5px]" {...props} />,
-  tr: ({ ...props }: any) => <tr className="eterx-markdown-tr transition-colors hover:bg-white/[0.035] even:bg-white/[0.015]" {...props} />,
+  thead: ({ node, ...props }: any) => <thead className="eterx-markdown-thead bg-white/[0.04] border-b border-white/[0.08]" {...props} />,
+  tbody: ({ node, ...props }: any) => <tbody className="eterx-markdown-tbody" {...props} />,
+  th: ({ node, ...props }: any) => <th className="eterx-markdown-th border-b border-r border-white/[0.06] last:border-r-0 px-3 py-2 text-left font-semibold text-[#F4F3EF] bg-white/[0.03]" {...props} />,
+  td: ({ node, ...props }: any) => <td className="eterx-markdown-td border-b border-r border-white/[0.04] last:border-r-0 px-3 py-2 align-top text-[#E0DDD7] font-normal" {...props} />,
+  tr: ({ node, ...props }: any) => <tr className="eterx-markdown-tr transition-colors hover:bg-white/[0.035] even:bg-white/[0.015]" {...props} />,
   img: ({ alt, ...props }: any) => (
     <figure className="eterx-markdown-figure my-5">
       <img className="eterx-markdown-image max-w-full rounded-xl border border-white/[0.08] shadow-md" alt={alt || ''} loading="lazy" {...props} />

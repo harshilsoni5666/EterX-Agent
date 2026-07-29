@@ -42,9 +42,9 @@ const isGlobalTerminalBoundary = (trace: any): boolean => {
 };
 
 const getTraceTimestamp = (trace: any): number =>
-  asFiniteTimestamp(trace?.startTime) ??
-  asFiniteTimestamp(trace?.timestamp) ??
   asFiniteTimestamp(trace?.endTime) ??
+  asFiniteTimestamp(trace?.timestamp) ??
+  asFiniteTimestamp(trace?.startTime) ??
   Date.now();
 
 const getThoughtUpdateTimestamp = (trace: any): number =>
@@ -141,9 +141,9 @@ const mergeThoughtText = (existing: any, incoming: any): string => {
 
 const findThoughtIndexForExplicitFinal = (logs: any[], incoming: any): number => {
   const thoughtId = String(incoming?.thoughtId || '').trim();
-  if (!thoughtId) return -1;
-
   const owner = getThoughtStreamOwner(incoming);
+  const incomingStart = asFiniteTimestamp(incoming?.startTime);
+  const incomingText = String(incoming?.text || '');
   for (let index = logs.length - 1; index >= 0; index -= 1) {
     const candidate = logs[index];
     if (!candidate) continue;
@@ -151,7 +151,16 @@ const findThoughtIndexForExplicitFinal = (logs: any[], incoming: any): number =>
     if (
       candidate.type === 'thought_stream' &&
       getThoughtStreamOwner(candidate) === owner &&
-      String(candidate.thoughtId || '').trim() === thoughtId
+      (
+        (thoughtId && String(candidate.thoughtId || '').trim() === thoughtId) ||
+        (
+          !thoughtId &&
+          (
+            (incomingStart !== null && asFiniteTimestamp(candidate.startTime) === incomingStart) ||
+            (incomingText && String(candidate.text || '') === incomingText)
+          )
+        )
+      )
     ) {
       return index;
     }
@@ -212,18 +221,18 @@ export const mergeThoughtStreamTrace = (logs: any[], incoming: any): number => {
   }
 
   // A genuinely new thought supersedes an unclosed stream from the same owner.
+  const startedAt = asFiniteTimestamp(incoming?.startTime) ?? incomingEnd;
   closeThoughtStreamsForBoundary(logs, {
     type: 'thought_stream_boundary',
     subAgentChatId: incoming?.subAgentChatId,
     subAgentId: incoming?.subAgentId,
     subAgent: incoming?.subAgent,
     agentName: incoming?.agentName,
-    startTime: incoming?.startTime,
-    timestamp: incoming?.timestamp,
-    endTime: incoming?.endTime,
+    startTime: startedAt,
+    timestamp: startedAt,
+    endTime: startedAt,
   });
 
-  const startedAt = asFiniteTimestamp(incoming?.startTime) ?? incomingEnd;
   logs.push({
     ...incoming,
     type: 'thought_stream',

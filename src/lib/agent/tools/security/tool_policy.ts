@@ -35,16 +35,11 @@ const CAPABILITY_BY_TOOL: Record<string, string> = {
   youtube_transcript: 'network.public',
   http_server: 'network.listen',
 
-  system_shell: 'command.raw',
   background_task: 'command.raw',
   process_manager: 'command.raw',
   workspace_run_command: 'command.workspace',
-  workspace_execute_script: 'command.workspace',
   workspace_verify_code: 'command.workspace',
-  chart_generator: 'command.workspace',
   code_execution_js: 'code.dynamic',
-  git_operations: 'vcs.local',
-  git_intelligence: 'vcs.local',
   spawn_sub_agent: 'agent.spawn',
   create_dynamic_tool: 'code.dynamic',
   run_macro: 'tool.utility',
@@ -74,7 +69,6 @@ const CAPABILITY_BY_TOOL: Record<string, string> = {
   docx_generator: 'filesystem.write',
   office_artifact_builder: 'filesystem.write',
   local_database: 'filesystem.write',
-  project_scaffolder: 'filesystem.write',
 };
 
 const DEFAULT_ALLOWED_CAPABILITIES = new Set([

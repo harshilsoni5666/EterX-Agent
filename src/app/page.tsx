@@ -8,6 +8,11 @@ import { applyEterxTheme, broadcastEterxSettingsUpdate } from '../components/the
 import { ChatInput } from '../components/layout/chat-input';
 import { ChatFeed } from '../components/chat/chat-feed';
 import { FloatingLiveWidget } from '../components/chat/FloatingLiveWidget';
+import {
+  LiveMissionStrip,
+  type LiveMissionEntry,
+  type LiveMissionState,
+} from '../components/chat/LiveMissionStrip';
 // @ts-ignore — react-markdown's runtime types vary between desktop bundles.
 import ReactMarkdown from 'react-markdown';
 import { markdownComponents, normalizeMarkdownForRendering, remarkPlugins, rehypePlugins } from '../components/chat/markdown-renderer';
@@ -60,6 +65,12 @@ import { FilePanelProvider, useGlobalFilePanel } from '../contexts/FilePanelCont
 import { isProjectFile, getFileIconPath } from '../lib/utils/file-icon-utils';
 import { WorkMenuSectionButton, WorkMenuEmptyState, WorkMenuStatusIndicator } from '../components/layout/WorkMenuHelpers';
 import { FloatingPetMonitor, PetThinkingLabel, getLatestPetMonitorText } from '../components/chat/FloatingPetMonitor';
+import {
+  computeNextScheduledRun,
+  normalizeScheduledTask,
+  type ScheduledTaskRecord,
+  type ScheduledTaskRun,
+} from '../lib/scheduled-tasks';
 
 const CommandPalette = dynamic(
   () => import('../components/layout/command-palette').then(mod => mod.CommandPalette),
@@ -1045,6 +1056,9 @@ function DeepWorkUI() {
   // Admission is scoped per chat. A process-wide latch made a send in chat A
   // silently block chat B until the first request was accepted or timed out.
   const sendAdmissionsRef = useRef<Map<string, number>>(new Map());
+  const scheduledTaskRunAdmissionsRef = useRef<Set<string>>(new Set());
+  const scheduledTaskIntervalsRef = useRef<Map<string, number>>(new Map());
+  const schedulerMountedAtRef = useRef(Date.now());
   const runStartReadinessRef = useRef<Map<string, Promise<void>>>(new Map());
   const stopRequestsRef = useRef<Map<string, Promise<boolean>>>(new Map());
   const steeringAdmissionsRef = useRef<Set<string>>(new Set());
@@ -1575,11 +1589,20 @@ function DeepWorkUI() {
   const liveInputTextRef = useRef('');
   const liveOutputTextRef = useRef('');
   const liveCommandsRef = useRef<any[]>([]);
+  const liveRichResponseRef = useRef<string | null>(null);
+  const liveTurnIdRef = useRef<string | null>(null);
   // A live-frame snapshot is only valid for the turn that produced it. Clear it
   // synchronously whenever navigation or a regular send starts so a previous
   // answer/tool sequence can never be rendered beneath the next user message.
-  const lastLiveLogsSnapshotRef = useRef<{ chatId: string | null; logs: any[] }>({
+  const lastLiveLogsSnapshotRef = useRef<{
+    chatId: string | null;
+    turnId: string | null;
+    commitKey: string | null;
+    logs: any[];
+  }>({
     chatId: null,
+    turnId: null,
+    commitKey: null,
     logs: [],
   });
   const [liveMicVolume, setLiveMicVolume] = useState(0);
@@ -1587,8 +1610,16 @@ function DeepWorkUI() {
   const [liveActiveTool, setLiveActiveTool] = useState<string | null>(null);
   const [liveMicMuted, setLiveMicMuted] = useState(false);
   const [liveSpeakerMuted, setLiveSpeakerMuted] = useState(false);
+  const [liveCameraEnabled, setLiveCameraEnabled] = useState(false);
+  const [liveScreenShareEnabled, setLiveScreenShareEnabled] = useState(false);
+  const [liveActivityLabel, setLiveActivityLabel] = useState<string | null>(null);
+  const [liveMission, setLiveMission] = useState<LiveMissionState | null>(null);
+  const liveMissionRef = useRef<LiveMissionState | null>(null);
+  const liveActiveActivityIdRef = useRef<string | null>(null);
   const liveSessionRef = useRef<GeminiLiveSession | null>(null);
   const liveSessionTokenRef = useRef<string | null>(null);
+  const liveCommitTurnRef = useRef<((userText: string, modelText: string, commands: any[]) => void) | null>(null);
+  const liveProgressAnnouncementAtRef = useRef<Map<string, number>>(new Map());
   const liveMainDispatchRef = useRef(false);
   const liveChatIdRef = useRef<string | null>(null);
   const [liveChatId, setLiveChatId] = useState<string | null>(null);
@@ -1606,6 +1637,80 @@ function DeepWorkUI() {
     activeChatId !== liveChatId &&
     liveState !== 'idle' &&
     liveState !== 'error';
+
+  const updateLiveMission = useCallback((
+    updater: (mission: LiveMissionState | null) => LiveMissionState | null
+  ) => {
+    setLiveMission(previous => {
+      const next = updater(previous);
+      liveMissionRef.current = next;
+      return next;
+    });
+  }, []);
+
+  const upsertLiveMissionEntry = useCallback((entry: LiveMissionEntry) => {
+    updateLiveMission(previous => {
+      const base: LiveMissionState = previous || {
+        id: `mission_${crypto.randomUUID()}`,
+        goal: liveInputTextRef.current.trim() || 'Coordinate the requested work',
+        entries: [],
+        updatedAt: Date.now(),
+      };
+      const existingIndex = base.entries.findIndex(item => item.id === entry.id);
+      const entries = existingIndex >= 0 ? [...base.entries] : [...base.entries, entry];
+      if (existingIndex >= 0) entries[existingIndex] = { ...entries[existingIndex], ...entry };
+      return {
+        ...base,
+        entries: entries.slice(-16),
+        updatedAt: Date.now(),
+      };
+    });
+  }, [updateLiveMission]);
+
+  const syncLiveMissionTask = useCallback((
+    chatId: string,
+    label: string,
+    detail: string,
+    status: LiveMissionEntry['status'],
+  ) => {
+    updateLiveMission(previous => {
+      const base: LiveMissionState = previous || {
+        id: `mission_${crypto.randomUUID()}`,
+        goal: liveInputTextRef.current.trim() || 'Coordinate the requested work',
+        entries: [],
+        updatedAt: Date.now(),
+      };
+      const existingIndex = base.entries.findIndex(entry =>
+        entry.kind === 'task' && entry.chatId === chatId
+      );
+      const existing = existingIndex >= 0 ? base.entries[existingIndex] : null;
+      const nextEntry: LiveMissionEntry = {
+        id: existing?.id || `task_${chatId}`,
+        kind: 'task',
+        label: String(label || existing?.label || 'Background task').slice(0, 120),
+        detail: String(detail || existing?.detail || '').slice(0, 260) || undefined,
+        status,
+        chatId,
+        updatedAt: Date.now(),
+      };
+      const entries = [...base.entries];
+      if (existingIndex >= 0) entries[existingIndex] = nextEntry;
+      else entries.push(nextEntry);
+      return { ...base, entries: entries.slice(-16), updatedAt: Date.now() };
+    });
+  }, [updateLiveMission]);
+
+  useEffect(() => {
+    const snapshot = lastLiveLogsSnapshotRef.current;
+    if (snapshot.chatId && snapshot.chatId !== activeChatId) {
+      lastLiveLogsSnapshotRef.current = {
+        chatId: null,
+        turnId: null,
+        commitKey: null,
+        logs: [],
+      };
+    }
+  }, [activeChatId]);
   const isThinking = (activeChatId ? runningChats.has(activeChatId) : false);
   const sidebarRunningChats = useMemo(() => {
     if (!liveChatId || liveState === 'idle' || liveState === 'error') return runningChats;
@@ -1692,15 +1797,36 @@ function DeepWorkUI() {
       try {
         const raw = localStorage.getItem('eterx_scheduled_tasks');
         if (!raw) return;
-        const tasks: any[] = JSON.parse(raw);
+        const parsed = JSON.parse(raw);
+        const tasks: ScheduledTaskRecord[] = Array.isArray(parsed) ? parsed.map(normalizeScheduledTask) : [];
         const now = Date.now();
         let updated = false;
+        const dueTasks: ScheduledTaskRecord[] = [];
 
         tasks.forEach(task => {
           if (task.status === 'scheduled' && now >= task.scheduledTimestamp) {
             task.status = 'queued';
+            task.updatedAt = now;
             updated = true;
-            window.dispatchEvent(new CustomEvent('eterx_trigger_scheduled_task', { detail: { task } }));
+            dueTasks.push(task);
+          } else if (task.status === 'queued' && now >= task.scheduledTimestamp) {
+            dueTasks.push(task);
+          } else if (
+            task.status === 'running' &&
+            task.chatId &&
+            now - schedulerMountedAtRef.current > 30_000 &&
+            !runningChatsRef.current.has(task.chatId)
+          ) {
+            const latestRun = task.history?.[task.history.length - 1];
+            if (latestRun && now - latestRun.startedAt > 2 * 60 * 1000) {
+              latestRun.status = 'failed';
+              latestRun.completedAt = now;
+              latestRun.error = 'The app restarted before this scheduled run could be reattached. Review its chat before running it again.';
+              task.status = 'failed';
+              task.updatedAt = now;
+              task.lastError = latestRun.error;
+              updated = true;
+            }
           }
         });
 
@@ -1708,6 +1834,9 @@ function DeepWorkUI() {
           localStorage.setItem('eterx_scheduled_tasks', JSON.stringify(tasks));
           window.dispatchEvent(new CustomEvent('eterx_scheduled_tasks_updated'));
         }
+        dueTasks.forEach(task => {
+          window.dispatchEvent(new CustomEvent('eterx_trigger_scheduled_task', { detail: { task } }));
+        });
       } catch { }
     };
 
@@ -2535,7 +2664,7 @@ function DeepWorkUI() {
   const discardEphemeralLiveRoom = useCallback((chatId: string | null) => {
     if (!chatId || liveEphemeralChatIdRef.current !== chatId) return;
     liveEphemeralChatIdRef.current = null;
-    lastLiveLogsSnapshotRef.current = { chatId: null, logs: [] };
+    lastLiveLogsSnapshotRef.current = { chatId: null, turnId: null, commitKey: null, logs: [] };
     setChats(previous => {
       const updated = removeGeneratedEmptyChats(previous);
       if (updated.length === previous.length) return previous;
@@ -2567,13 +2696,20 @@ function DeepWorkUI() {
     setLiveSpokenText('');
     setLiveCommands([]);
     setLiveActiveTool(null);
+    setLiveActivityLabel(null);
+    setLiveMission(null);
+    liveMissionRef.current = null;
+    liveActiveActivityIdRef.current = null;
+    setLiveCameraEnabled(false);
+    setLiveScreenShareEnabled(false);
     setLiveMicVolume(0);
     setLiveModelVolume(0);
     liveInputTextRef.current = '';
     liveOutputTextRef.current = '';
     liveCommandsRef.current = [];
+    liveTurnIdRef.current = null;
     liveConversationRef.current = [];
-    lastLiveLogsSnapshotRef.current = { chatId: null, logs: [] };
+    lastLiveLogsSnapshotRef.current = { chatId: null, turnId: null, commitKey: null, logs: [] };
 
     let currentChatId = activeChatId;
     const selectedChat = currentChatId
@@ -2647,22 +2783,68 @@ function DeepWorkUI() {
           text: l.text || ''
         }));
 
+      const ensureLiveTurnId = () => {
+        if (!liveTurnIdRef.current) {
+          liveTurnIdRef.current = `live_${ crypto.randomUUID() }`;
+        }
+        return liveTurnIdRef.current;
+      };
+
       const commitLiveTurn = (userText: string, modelText: string, commands: any[]) => {
         const cleanUserText = userText.trim();
         const cleanModelText = modelText.trim();
         if (!cleanUserText && !cleanModelText && commands.length === 0) return;
-        // A Live callback can arrive after it delegated a prompt to Main. Never
-        // persist that callback inside Main's independently-owned run boundary.
-        if (runningChatsRef.current.has(currentChatId)) return;
+        const liveTurnId = ensureLiveTurnId();
+        const commitKey = `live_commit_${ crypto.randomUUID() }`;
+        // When Live delegates or steers Main, the Main prompt/steering event is
+        // already the run's user boundary. Preserve concise tool outcomes while
+        // transient thought and spoken pacing remain inside the Live orb.
+        // same run—without inserting a duplicate user message or answer row.
+        if (runningChatsRef.current.has(currentChatId)) {
+          const ownerChat = chatsRef.current.find(chat => chat.id === currentChatId);
+          const ownerUserLog = [...(ownerChat?.traceLogs || [])]
+            .reverse()
+            .find((log: any) => log?.type === 'user_action');
+          const ownerRunId = String(ownerUserLog?.runId || ownerUserLog?.turnId || '').trim();
+          if (!ownerRunId) {
+            lastLiveLogsSnapshotRef.current = { chatId: null, turnId: null, commitKey: null, logs: [] };
+            return;
+          }
+          const completedAt = Date.now();
+          const sidecarLogs = [
+            ...commands.map(command => ({
+              ...command,
+              chatId: currentChatId,
+              runId: ownerRunId,
+              turnId: ownerRunId,
+              _liveCommitKey: commitKey,
+              isLive: true,
+              timestamp: command.timestamp || completedAt,
+            })),
+          ];
+          if (sidecarLogs.length === 0) {
+            lastLiveLogsSnapshotRef.current = { chatId: null, turnId: null, commitKey: null, logs: [] };
+            return;
+          }
+          lastLiveLogsSnapshotRef.current = {
+            chatId: currentChatId,
+            turnId: liveTurnId,
+            commitKey,
+            logs: sidecarLogs,
+          };
+          setChatLogsById(currentChatId, previous => [...previous, ...sidecarLogs], { touchUpdatedAt: true });
+          return;
+        }
         if (
           liveEphemeralChatIdRef.current === currentChatId &&
           !cleanUserText
         ) {
+          lastLiveLogsSnapshotRef.current = { chatId: null, turnId: null, commitKey: null, logs: [] };
           return;
         }
 
         const completedAt = Date.now();
-        const turnId = `live_${ crypto.randomUUID() }`;
+        const turnId = liveTurnId;
         const newTraceLogs: any[] = [];
         if (cleanUserText) {
           newTraceLogs.push({
@@ -2672,6 +2854,7 @@ function DeepWorkUI() {
             isLive: true,
             runId: turnId,
             turnId,
+            _liveCommitKey: commitKey,
             startTime: completedAt,
             endTime: completedAt,
             timestamp: completedAt,
@@ -2682,6 +2865,7 @@ function DeepWorkUI() {
           chatId: currentChatId,
           runId: turnId,
           turnId,
+          _liveCommitKey: commitKey,
           timestamp: command.timestamp || completedAt,
         })));
         if (cleanModelText) {
@@ -2695,11 +2879,19 @@ function DeepWorkUI() {
             wasStreaming: true,
             runId: turnId,
             turnId,
+            _liveCommitKey: commitKey,
             startTime: completedAt,
             endTime: completedAt,
             timestamp: completedAt,
           });
         }
+
+        lastLiveLogsSnapshotRef.current = {
+          chatId: currentChatId,
+          turnId,
+          commitKey,
+          logs: newTraceLogs,
+        };
 
         const liveTitle = (cleanUserText || cleanModelText || 'Live conversation').slice(0, 50);
         liveEphemeralChatIdRef.current = null;
@@ -2750,7 +2942,10 @@ function DeepWorkUI() {
         liveInputTextRef.current = '';
         liveOutputTextRef.current = '';
         liveCommandsRef.current = [];
+        liveRichResponseRef.current = null;
+        liveTurnIdRef.current = null;
       };
+      liveCommitTurnRef.current = commitLiveTurn;
 
       const session = new GeminiLiveSession(
         apiKey,
@@ -2775,49 +2970,199 @@ function DeepWorkUI() {
             if (!isCurrentSession()) return;
             setLiveActiveTool(toolName);
           },
-          onToolAction: (text, secondary) => {
+          onCameraStateChange: (enabled) => {
             if (!isCurrentSession()) return;
-            const cmd = { type: 'command', text, secondary, isLive: true };
-            setLiveCommands(prev => [...prev, cmd]);
-            liveCommandsRef.current = [...liveCommandsRef.current, cmd];
+            setLiveCameraEnabled(enabled);
+          },
+          onScreenShareStateChange: (enabled) => {
+            if (!isCurrentSession()) return;
+            setLiveScreenShareEnabled(enabled);
+          },
+          onAgentActivity: (activity) => {
+            if (!isCurrentSession()) return;
+            const isActive = activity.phase === 'started' || activity.phase === 'running';
+            const activityTurnId = liveTurnIdRef.current || (isActive ? ensureLiveTurnId() : null);
+            if (isActive) {
+              liveActiveActivityIdRef.current = activity.id;
+              setLiveActivityLabel(
+                activity.kind === 'thinking'
+                  ? activity.detail || activity.label
+                  : activity.label
+              );
+            } else if (liveActiveActivityIdRef.current === activity.id) {
+              liveActiveActivityIdRef.current = null;
+              setLiveActivityLabel(null);
+            }
+            // Native thought summaries are transient orb state, not chat logs.
+            if (activity.kind === 'thinking') return;
+            if (!activityTurnId) return;
+            const trace = {
+              type: 'command',
+              text: activity.label,
+              secondary: activity.resultSummary || undefined,
+              tool: activity.toolName,
+              toolName: activity.toolName,
+              toolCallId: activity.id,
+              isLive: true,
+              runId: activityTurnId,
+              turnId: activityTurnId,
+              isStreaming: isActive,
+              phase: activity.phase,
+              startTime: activity.startedAt,
+              endTime: activity.completedAt,
+              timestamp: activity.startedAt,
+            };
+            upsertLiveMissionEntry({
+              id: activity.id,
+              kind: activity.kind === 'delegation' ? 'task' : 'step',
+              label: activity.label,
+              detail: activity.resultSummary || activity.detail,
+              status: isActive
+                ? 'active'
+                : activity.phase === 'completed'
+                  ? 'done'
+                  : 'blocked',
+              updatedAt: activity.completedAt || Date.now(),
+            });
+
+            const upsertActivity = (previous: any[]) => {
+              const index = previous.findIndex(item =>
+                item.noteId === activity.id || item.toolCallId === activity.id
+              );
+              const next = index < 0 ? [...previous, trace] : [...previous];
+              if (index >= 0) {
+                next[index] = {
+                  ...previous[index],
+                  ...trace,
+                  startTime: previous[index].startTime || trace.startTime,
+                  timestamp: previous[index].timestamp || trace.timestamp,
+                };
+              }
+              return next.slice(-4);
+            };
+
+            liveCommandsRef.current = upsertActivity(liveCommandsRef.current);
+            setLiveCommands(previous => upsertActivity(previous));
           },
           onInputTranscription: (text) => {
             if (!isCurrentSession()) return;
+            ensureLiveTurnId();
             liveInputTextRef.current = text;
+            const cleanGoal = text.trim().replace(/\s+/g, ' ');
+            if (cleanGoal) {
+              updateLiveMission(previous => {
+                const next = previous || {
+                  id: `mission_${crypto.randomUUID()}`,
+                  goal: cleanGoal,
+                  entries: [],
+                  updatedAt: Date.now(),
+                };
+                // Provider transcription arrives incrementally before the
+                // mission acquires evidence; keep the goal aligned to the full
+                // utterance without overwriting a later model-refined goal.
+                if (next.entries.length > 0) return next;
+                return { ...next, goal: cleanGoal.slice(0, 280), updatedAt: Date.now() };
+              });
+            }
             setLiveInputText(text);
           },
           onOutputTranscription: (text) => {
             if (!isCurrentSession()) return;
+            ensureLiveTurnId();
             liveOutputTextRef.current = text;
             setLiveOutputText(text);
           },
           onOutputPlaybackProgress: (spokenText) => {
             if (!isCurrentSession()) return;
+            if (spokenText) ensureLiveTurnId();
             setLiveSpokenText(spokenText);
           },
-          onTurnComplete: (userText, modelText) => {
+          onTurnComplete: (userText, modelText, metadata) => {
             if (!isCurrentSession()) return;
-            commitLiveTurn(userText, modelText, liveCommandsRef.current);
+            if (metadata?.systemEvent) {
+              clearLiveTurn();
+              return;
+            }
+            const richResponse = liveRichResponseRef.current;
+            commitLiveTurn(userText, richResponse || modelText, liveCommandsRef.current);
             clearLiveTurn();
           },
           onAppControlAction: async (action, args) => {
             if (!isCurrentSession()) return { error: 'Live session is no longer active.' };
             const ownerIsActive = activeChatIdRef.current === currentChatId;
+            if (action === 'update_live_mission') {
+              const operation = String(args.operation || 'get').trim().toLowerCase();
+              if (operation === 'get') return { mission: liveMissionRef.current };
+              if (operation === 'reset') {
+                const goal = String(args.goal || '').trim();
+                const next: LiveMissionState = {
+                  id: `mission_${crypto.randomUUID()}`,
+                  goal: goal || 'Coordinate the requested work',
+                  entries: [],
+                  updatedAt: Date.now(),
+                };
+                liveMissionRef.current = next;
+                setLiveMission(next);
+                return { success: true, mission: next };
+              }
+              if (operation === 'set_goal') {
+                const goal = String(args.goal || '').trim();
+                if (!goal) return { error: 'A non-empty mission goal is required.' };
+                updateLiveMission(previous => ({
+                  id: previous?.id || `mission_${crypto.randomUUID()}`,
+                  goal: goal.slice(0, 280),
+                  entries: previous?.entries || [],
+                  updatedAt: Date.now(),
+                }));
+                return { success: true, goal };
+              }
+              if (operation === 'upsert') {
+                const label = String(args.label || '').trim();
+                if (!label) return { error: 'A concise mission item label is required.' };
+                const allowedKinds = new Set(['step', 'task', 'evidence', 'decision', 'blocker']);
+                const allowedStatuses = new Set(['queued', 'active', 'done', 'blocked']);
+                const kind = allowedKinds.has(String(args.kind)) ? String(args.kind) : 'step';
+                const status = allowedStatuses.has(String(args.status)) ? String(args.status) : 'active';
+                const entry: LiveMissionEntry = {
+                  id: String(args.item_id || args.itemId || `mission_item_${crypto.randomUUID()}`),
+                  kind: kind as LiveMissionEntry['kind'],
+                  label: label.slice(0, 120),
+                  detail: String(args.detail || '').trim().slice(0, 260) || undefined,
+                  status: status as LiveMissionEntry['status'],
+                  chatId: String(args.chat_id || args.chatId || '').trim() || undefined,
+                  updatedAt: Date.now(),
+                };
+                upsertLiveMissionEntry(entry);
+                return { success: true, item: entry };
+              }
+              return { error: `Unsupported mission operation: ${operation}` };
+            }
             if (action === 'list_all_chats') {
-              return { error: 'Live sessions are isolated to their owning chat and cannot enumerate other chats.' };
+              const visibleChats = chatsRef.current.slice(0, 100);
+              return {
+                liveOwnerChatId: currentChatId,
+                activeChatId: activeChatIdRef.current,
+                totalChats: chatsRef.current.length,
+                truncated: chatsRef.current.length > visibleChats.length,
+                chats: visibleChats.map(chat => ({
+                  id: chat.id,
+                  title: chat.title || 'Untitled',
+                  isActive: chat.id === activeChatIdRef.current,
+                  isLiveOwner: chat.id === currentChatId,
+                  isRunning: runningChatsRef.current.has(chat.id),
+                  updatedAt: chat.updatedAt,
+                })),
+              };
             }
 
             if (action === 'read_chat_full_context') {
-              const requestedChatId = String(args.chatId || currentChatId);
-              if (requestedChatId !== currentChatId) {
-                return { error: 'Live sessions cannot read another chat. End Live and open that chat first.' };
-              }
-              const targetChatId = currentChatId;
+              const targetChatId = String(args.chat_id || args.chatId || currentChatId);
               const targetChat = chatsRef.current.find(c => c.id === targetChatId);
               if (!targetChat) {
                 return { error: `Chat session not found for ID: ${targetChatId}` };
               }
-              const transcript = (targetChat.traceLogs || [])
+              const boundedLogs = (targetChat.traceLogs || []).slice(-160);
+              const transcript = boundedLogs
                 .map((log: any, idx: number) => {
                   if (log.type === 'user_action') return `[Message #${idx + 1}] USER QUERY: ${log.text}`;
                   if (log.type === 'answer') return `[Message #${idx + 1}] AGENT RESPONSE: ${log.text}`;
@@ -2830,12 +3175,24 @@ function DeepWorkUI() {
                 chatId: targetChat.id,
                 title: targetChat.title,
                 totalMessages: targetChat.traceLogs?.length || 0,
-                fullTranscript: transcript || '(No messages in this chat yet)'
+                returnedItems: boundedLogs.length,
+                truncated: (targetChat.traceLogs?.length || 0) > boundedLogs.length,
+                fullTranscript: transcript || '(No messages in this chat yet)',
               };
             }
 
             if (action === 'switch_active_chat') {
-              return { error: 'End the current Live session before switching or creating chats.' };
+              const targetChatId = String(args.chat_id || args.chatId || '').trim();
+              if (!targetChatId || !chatsRef.current.some(chat => chat.id === targetChatId)) {
+                return { error: `Chat session not found for ID: ${targetChatId || '(missing)'}` };
+              }
+              loadChat(targetChatId);
+              return {
+                success: true,
+                activeChatId: targetChatId,
+                liveOwnerChatId: currentChatId,
+                message: 'Chat opened. Live remains attached to its owner chat.',
+              };
             }
 
             if (action === 'select_sub_agent') {
@@ -2847,13 +3204,40 @@ function DeepWorkUI() {
               return { success: true, message: `Selected sub-agent "${name}".` };
             }
 
+            if (action === 'list_available_models') {
+              const entries = readRuntimeModelEntries();
+              return {
+                selectedModelId: composerRuntimeSelectionRef.current.modelSelection,
+                models: entries.map(entry => ({
+                  id: modelEntryKey(entry.provider, entry.modelId),
+                  provider: entry.provider,
+                  modelId: entry.modelId,
+                })),
+              };
+            }
+
             if (action === 'select_model') {
               if (!ownerIsActive) {
                 return { error: 'The Live owner chat is no longer active.' };
               }
               if (args.modelId) {
-                handleModelSelectionChange(args.modelId);
-                return { success: true, message: `Changed AI model selection to "${args.modelId}".` };
+                const requestedModelId = String(args.modelId).trim();
+                const entries = readRuntimeModelEntries();
+                const matchedEntry = entries.find(entry =>
+                  modelEntryKey(entry.provider, entry.modelId) === requestedModelId ||
+                  entry.modelId === requestedModelId
+                );
+                if (!matchedEntry) {
+                  return { error: 'That model is not configured. Call list_available_models and use an exact returned ID.' };
+                }
+                const selectionId = modelEntryKey(matchedEntry.provider, matchedEntry.modelId);
+                handleModelSelectionChange(selectionId);
+                return {
+                  success: true,
+                  modelId: selectionId,
+                  provider: matchedEntry.provider,
+                  message: `Changed external worker model to "${matchedEntry.modelId}".`,
+                };
               }
             }
 
@@ -2877,58 +3261,599 @@ function DeepWorkUI() {
             }
 
             if (action === 'send_prompt_to_main_agent') {
-              if (!ownerIsActive) {
-                return { error: 'The Live owner chat is no longer active. Reopen it before dispatching Main.' };
+              const prompt = String(args.prompt || '').trim();
+              if (!prompt) return { error: 'A non-empty prompt is required.' };
+              const createNewChat = args.create_new_chat === true || args.createNewChat === true;
+              const dispatchChatId = createNewChat
+                ? crypto.randomUUID()
+                : String(args.chat_id || args.chatId || currentChatId).trim();
+              const dispatchChat = chatsRef.current.find(chat => chat.id === dispatchChatId);
+              if (!dispatchChat && !createNewChat) return { error: `Chat session not found for ID: ${dispatchChatId}` };
+              if (runningChatsRef.current.has(dispatchChatId)) {
+                const followUpMode = String(args.follow_up_mode || args.followUpMode || 'auto').trim().toLowerCase();
+                if (followUpMode === 'queue') {
+                  const queuedItem: QueuedFollowUp = {
+                    id: crypto.randomUUID(),
+                    chatId: dispatchChatId,
+                    text: prompt,
+                    attachments: [],
+                    createdAt: Date.now(),
+                  };
+                  setQueuedFollowUps(previous => [...previous, queuedItem]);
+                  syncLiveMissionTask(
+                    dispatchChatId,
+                    dispatchChat?.title || 'Queued background task',
+                    prompt,
+                    'queued',
+                  );
+                  return {
+                    success: true,
+                    mode: 'queued_next_run',
+                    queueId: queuedItem.id,
+                    chatId: dispatchChatId,
+                    chatTitle: dispatchChat?.title || 'Untitled',
+                    message: `Follow-up queued after the active run in "${dispatchChat?.title || 'Untitled'}".`,
+                  };
+                }
+                const steered = await sendSteeringMessageToChat(dispatchChatId, prompt);
+                if (steered) {
+                  syncLiveMissionTask(
+                    dispatchChatId,
+                    dispatchChat?.title || 'Background task',
+                    prompt,
+                    'active',
+                  );
+                  return {
+                    success: true,
+                    mode: 'steered_existing_run',
+                    chatId: dispatchChatId,
+                    chatTitle: dispatchChat?.title || 'Untitled',
+                    message: `Instruction delivered to the running task in "${dispatchChat?.title || 'Untitled'}".`,
+                  };
+                }
+                // The run may have completed between the state read and the
+                // steering admission. Re-evaluate and fall through to a fresh
+                // dispatch only when it is now genuinely idle.
+                if (runningChatsRef.current.has(dispatchChatId)) {
+                  return { error: 'Main agent is already running and could not accept the update.' };
+                }
               }
+              const requestedWorkerModelId = args.modelId ? String(args.modelId).trim() : '';
+              const matchedWorkerModel = requestedWorkerModelId
+                ? readRuntimeModelEntries().find(entry =>
+                    modelEntryKey(entry.provider, entry.modelId) === requestedWorkerModelId ||
+                    entry.modelId === requestedWorkerModelId
+                  )
+                : null;
+              if (requestedWorkerModelId && !matchedWorkerModel) {
+                return { error: 'Requested worker model is not configured. Call list_available_models and use an exact returned ID.' };
+              }
+              let requestedWorkerAgent: SelectedAgentState | undefined;
               if (args.subAgent) {
                 const requestedAgent = String(args.subAgent).trim();
                 const normalizedAgent = requestedAgent.toLowerCase();
-                handleAgentChange(
-                  normalizedAgent === 'general' ? null : normalizedAgent,
-                  requestedAgent,
-                );
-              }
-              if (args.modelId) handleModelSelectionChange(args.modelId);
-              const prompt = String(args.prompt || '').trim();
-              if (prompt) {
-                const dispatchChatId = currentChatId;
-                if (dispatchChatId && runningChatsRef.current.has(dispatchChatId)) {
-                  return { error: 'Main agent is already running in this chat. Wait for it to finish or stop it before dispatching another task.' };
+                requestedWorkerAgent = {
+                  agentId: normalizedAgent === 'general' ? null : normalizedAgent,
+                  agentName: normalizedAgent === 'general' ? 'General' : requestedAgent,
+                };
+              } else if (args.executionMode) {
+                const executionMode = String(args.executionMode).trim().toLowerCase();
+                if (executionMode === 'autonomous' || executionMode === 'team') {
+                  requestedWorkerAgent = { agentId: 'autonomous', agentName: 'Autonomous' };
+                } else if (executionMode === 'coding') {
+                  requestedWorkerAgent = { agentId: 'coding', agentName: 'Coding' };
+                } else if (executionMode === 'general') {
+                  requestedWorkerAgent = { agentId: null, agentName: 'General' };
                 }
-                // The normal composer correctly blocks human sends during a
-                // Live call. This explicit Live tool is the one authorized
-                // bridge and must bypass only that guard for this invocation.
-                liveMainDispatchRef.current = true;
-                try {
-                  const dispatched = await handleSend(prompt);
-                  if (!dispatched) {
-                    return { error: 'Main did not accept the prompt. The chat may have changed, another send may already be admitted, or startup failed.' };
+              }
+              // The normal composer correctly blocks human sends during a
+              // Live call. This explicit Live tool is the one authorized
+              // bridge and must bypass only that guard for this invocation.
+              liveMainDispatchRef.current = true;
+              try {
+                const dispatched = await handleSend(prompt, [], dispatchChatId, {
+                  modelSelection: matchedWorkerModel
+                    ? modelEntryKey(matchedWorkerModel.provider, matchedWorkerModel.modelId)
+                    : undefined,
+                  selectedAgent: requestedWorkerAgent,
+                  thinkingLevel: args.thinkingLevel as MainAgentThinkingLevel | undefined,
+                  createNewChat,
+                  backgroundChat: createNewChat,
+                  initialTitle: String(args.chat_title || args.chatTitle || '').trim() || undefined,
+                });
+                if (!dispatched) {
+                  // The inverse race is also possible: another run can become
+                  // active while the fresh dispatch is being admitted. Deliver
+                  // the same intent as steering rather than making the caller
+                  // choose or repeat the instruction.
+                  if (runningChatsRef.current.has(dispatchChatId)) {
+                    const steered = await sendSteeringMessageToChat(dispatchChatId, prompt);
+                    if (steered) {
+                      syncLiveMissionTask(
+                        dispatchChatId,
+                        dispatchChat?.title || 'Background task',
+                        prompt,
+                        'active',
+                      );
+                      return {
+                        success: true,
+                        mode: 'steered_existing_run',
+                        chatId: dispatchChatId,
+                        chatTitle: dispatchChat?.title || 'Untitled',
+                        message: `Instruction delivered to the run that became active in "${dispatchChat?.title || 'Untitled'}".`,
+                      };
+                    }
                   }
-                } finally {
-                  liveMainDispatchRef.current = false;
+                  return { error: 'Main did not accept the prompt. The chat may have changed, another send may already be admitted, or startup failed.' };
                 }
-                return { success: true, message: `Dispatched task to main agent: "${prompt.slice(0, 60)}..."` };
+              } finally {
+                liveMainDispatchRef.current = false;
               }
-              return { error: 'A non-empty prompt is required.' };
+              const dispatchedChatTitle =
+                dispatchChat?.title ||
+                String(args.chat_title || args.chatTitle || '').trim() ||
+                fallbackTitleFromPrompt(prompt);
+              syncLiveMissionTask(dispatchChatId, dispatchedChatTitle, prompt, 'active');
+              return {
+                success: true,
+                mode: 'started_new_run',
+                chatId: dispatchChatId,
+                chatTitle: dispatchedChatTitle,
+                createdChat: createNewChat,
+                message: createNewChat
+                  ? 'A new background task chat was created and started.'
+                  : `Task started in "${dispatchChat?.title || 'Untitled'}".`,
+              };
+            }
+
+            if (action === 'manage_scheduled_tasks') {
+              const operation = String(args.operation || 'list').toLowerCase();
+              let tasks: ScheduledTaskRecord[] = [];
+              try {
+                const saved = JSON.parse(localStorage.getItem('eterx_scheduled_tasks') || '[]');
+                tasks = Array.isArray(saved) ? saved.map(normalizeScheduledTask) : [];
+              } catch {
+                tasks = [];
+              }
+              const saveScheduledTasks = (next: ScheduledTaskRecord[]) => {
+                localStorage.setItem('eterx_scheduled_tasks', JSON.stringify(next));
+                window.dispatchEvent(new CustomEvent('eterx_scheduled_tasks_updated'));
+              };
+              const resolveTaskModel = (requested: unknown): { value?: string; error?: string } => {
+                const modelId = String(requested || '').trim();
+                if (!modelId || modelId === AUTO_MODEL_SELECTION || modelId.toLowerCase() === 'auto') {
+                  return { value: AUTO_MODEL_SELECTION };
+                }
+                const match = readRuntimeModelEntries().find(entry =>
+                  modelEntryKey(entry.provider, entry.modelId) === modelId ||
+                  entry.modelId === modelId
+                );
+                return match
+                  ? { value: modelEntryKey(match.provider, match.modelId) }
+                  : { error: 'That model is not configured. Call list_available_models and use an exact returned ID.' };
+              };
+              const resolveTaskAgent = (requestedId: unknown, requestedName: unknown) => {
+                const agentId = String(requestedId || '').trim();
+                if (!agentId || agentId === 'general') return { agentId: null, agentName: 'General' };
+                if (agentId === 'coding') return { agentId, agentName: 'Coding' };
+                if (agentId === 'autonomous') return { agentId, agentName: 'Autonomous' };
+                let savedAgents: any[] = [];
+                try {
+                  const parsed = JSON.parse(localStorage.getItem('eterx_agents') || '[]');
+                  savedAgents = Array.isArray(parsed) ? parsed : [];
+                } catch { }
+                const match = savedAgents.find(agent => agent.id === agentId && agent.isSetup !== false);
+                return match
+                  ? { agentId, agentName: String(match.name || requestedName || agentId) }
+                  : { error: `Ready custom agent not found for ID: ${agentId}` };
+              };
+              if (operation === 'list') {
+                return {
+                  totalTasks: tasks.length,
+                  tasks: tasks.slice(0, 100).map(task => ({
+                    ...task,
+                    history: task.history?.slice(-5) || [],
+                  })),
+                };
+              }
+              const taskId = String(args.task_id || '').trim();
+              const existingTask = taskId ? tasks.find(item => item.id === taskId) : undefined;
+              if (operation === 'history') {
+                if (!existingTask) return { error: `Scheduled task not found for ID: ${taskId || '(missing)'}` };
+                return {
+                  taskId,
+                  title: existingTask.title,
+                  runCount: existingTask.runCount || existingTask.history?.length || 0,
+                  history: [...(existingTask.history || [])].reverse(),
+                };
+              }
+              if (operation === 'create') {
+                const title = String(args.title || '').trim();
+                const description = String(args.description || title).trim();
+                if (!title || !description) return { error: 'A title and task description are required.' };
+                const resolvedModel = resolveTaskModel(args.modelId);
+                if (resolvedModel.error) return { error: resolvedModel.error };
+                const resolvedAgent = resolveTaskAgent(args.agentId, args.agentName);
+                if ('error' in resolvedAgent) return { error: resolvedAgent.error };
+                const requestedTime = args.scheduled_at ? Date.parse(String(args.scheduled_at)) : Date.now();
+                if (!Number.isFinite(requestedTime)) return { error: 'scheduled_at must be a valid ISO date/time.' };
+                const scheduledDate = new Date(requestedTime);
+                const recurrence = String(args.recurrence || 'none').trim().toLowerCase();
+                if (
+                  !['none', 'once', 'hourly', 'daily', 'weekdays', 'weekly'].includes(recurrence) &&
+                  (!recurrence.startsWith('custom:') || computeNextScheduledRun(recurrence, requestedTime) === null)
+                ) return { error: 'Invalid recurrence. Use none, hourly, daily, weekdays, weekly, or custom:<interval/5-field cron>.' };
+                const localDate = [
+                  scheduledDate.getFullYear(),
+                  String(scheduledDate.getMonth() + 1).padStart(2, '0'),
+                  String(scheduledDate.getDate()).padStart(2, '0'),
+                ].join('-');
+                const task = normalizeScheduledTask({
+                  id: `task_${Date.now()}_${Math.floor(Math.random() * 10000)}`,
+                  title,
+                  description,
+                  model: resolvedModel.value,
+                  thinkingLevel: ['minimal', 'low', 'medium', 'high'].includes(String(args.thinkingLevel))
+                    ? args.thinkingLevel
+                    : undefined,
+                  agentId: resolvedAgent.agentId,
+                  agentName: resolvedAgent.agentName,
+                  priority: ['low', 'medium', 'high'].includes(String(args.priority).toLowerCase())
+                    ? String(args.priority).toLowerCase() as ScheduledTaskRecord['priority']
+                    : 'medium',
+                  recurrence,
+                  triggerTime: scheduledDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }),
+                  dateOption: 'custom',
+                  customDate: localDate,
+                  sources: Array.isArray(args.sources)
+                    ? args.sources
+                        .filter((source: any) => String(source?.path || '').trim())
+                        .map((source: any) => ({
+                          id: crypto.randomUUID(),
+                          path: String(source.path),
+                          name: String(source.name || source.path.split(/[/\\]/).pop() || 'Source'),
+                          type: String(source.type || 'file'),
+                        }))
+                    : [],
+                  createdAt: Date.now(),
+                  updatedAt: Date.now(),
+                  scheduledTimestamp: requestedTime,
+                  status: 'scheduled',
+                  history: [],
+                  runCount: 0,
+                });
+                tasks = [task, ...tasks];
+                saveScheduledTasks(tasks);
+                if (requestedTime <= Date.now()) {
+                  task.status = 'queued';
+                  saveScheduledTasks(tasks);
+                  window.dispatchEvent(new CustomEvent('eterx_trigger_scheduled_task', { detail: { task } }));
+                }
+                return { success: true, taskId: task.id, task, message: `Scheduled "${title}".` };
+              }
+              if (!existingTask) return { error: `Scheduled task not found for ID: ${taskId || '(missing)'}` };
+              if (operation === 'update') {
+                if (existingTask.status === 'running') return { error: 'A running task cannot be edited. Stop its chat run first or wait for completion.' };
+                if (args.title !== undefined) {
+                  const title = String(args.title).trim();
+                  if (!title) return { error: 'Task title cannot be empty.' };
+                  existingTask.title = title;
+                }
+                if (args.description !== undefined) {
+                  const description = String(args.description).trim();
+                  if (!description) return { error: 'Task description cannot be empty.' };
+                  existingTask.description = description;
+                }
+                if (args.modelId !== undefined) {
+                  const resolvedModel = resolveTaskModel(args.modelId);
+                  if (resolvedModel.error) return { error: resolvedModel.error };
+                  existingTask.model = resolvedModel.value!;
+                }
+                if (args.agentId !== undefined) {
+                  const resolvedAgent = resolveTaskAgent(args.agentId, args.agentName);
+                  if ('error' in resolvedAgent) return { error: resolvedAgent.error };
+                  existingTask.agentId = resolvedAgent.agentId;
+                  existingTask.agentName = resolvedAgent.agentName;
+                }
+                if (args.priority !== undefined) {
+                  const priority = String(args.priority).toLowerCase();
+                  if (!['low', 'medium', 'high'].includes(priority)) return { error: 'Priority must be low, medium, or high.' };
+                  existingTask.priority = priority as ScheduledTaskRecord['priority'];
+                }
+                if (args.thinkingLevel !== undefined) {
+                  const level = String(args.thinkingLevel);
+                  if (!['minimal', 'low', 'medium', 'high'].includes(level)) return { error: 'Thinking level must be minimal, low, medium, or high.' };
+                  existingTask.thinkingLevel = level as ScheduledTaskRecord['thinkingLevel'];
+                }
+                if (args.recurrence !== undefined) {
+                  const recurrence = String(args.recurrence).trim().toLowerCase();
+                  if (
+                    !['none', 'once', 'hourly', 'daily', 'weekdays', 'weekly'].includes(recurrence) &&
+                    (!recurrence.startsWith('custom:') || computeNextScheduledRun(recurrence, Date.now()) === null)
+                  ) return { error: 'Invalid recurrence rule.' };
+                  existingTask.recurrence = recurrence;
+                }
+                if (args.scheduled_at !== undefined) {
+                  const requestedTime = Date.parse(String(args.scheduled_at));
+                  if (!Number.isFinite(requestedTime)) return { error: 'scheduled_at must be a valid ISO date/time.' };
+                  const date = new Date(requestedTime);
+                  existingTask.scheduledTimestamp = requestedTime;
+                  existingTask.triggerTime = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+                  existingTask.customDate = [
+                    date.getFullYear(),
+                    String(date.getMonth() + 1).padStart(2, '0'),
+                    String(date.getDate()).padStart(2, '0'),
+                  ].join('-');
+                  existingTask.dateOption = 'custom';
+                  existingTask.status = 'scheduled';
+                }
+                if (Array.isArray(args.sources)) {
+                  existingTask.sources = args.sources
+                    .filter((source: any) => String(source?.path || '').trim())
+                    .map((source: any) => ({
+                      id: crypto.randomUUID(),
+                      path: String(source.path),
+                      name: String(source.name || source.path.split(/[/\\]/).pop() || 'Source'),
+                      type: String(source.type || 'file'),
+                    }));
+                }
+                existingTask.updatedAt = Date.now();
+                saveScheduledTasks(tasks);
+                return { success: true, taskId, task: existingTask, message: `Updated "${existingTask.title}".` };
+              }
+              if (operation === 'run_now') {
+                if (existingTask.status === 'running') return { error: `"${existingTask.title}" is already running.` };
+                existingTask.status = 'queued';
+                existingTask.scheduledTimestamp = Date.now();
+                existingTask.updatedAt = Date.now();
+                saveScheduledTasks(tasks);
+                window.dispatchEvent(new CustomEvent('eterx_trigger_scheduled_task', { detail: { task: existingTask } }));
+                return { success: true, taskId, message: `Started "${existingTask.title}".` };
+              }
+              if (operation === 'remove') {
+                if (existingTask.status === 'running') {
+                  return { error: 'A running scheduled task cannot be removed. Stop its chat run first.' };
+                }
+                tasks = tasks.filter(item => item.id !== taskId);
+                saveScheduledTasks(tasks);
+                return { success: true, taskId, message: `Removed "${existingTask.title}".` };
+              }
+              return { error: `Unsupported scheduled-task operation: ${operation}` };
+            }
+
+            if (action === 'manage_custom_agents') {
+              const operation = String(args.operation || 'list').toLowerCase();
+              let localAgents: any[] = [];
+              try {
+                localAgents = JSON.parse(localStorage.getItem('eterx_agents') || '[]');
+                if (!Array.isArray(localAgents)) localAgents = [];
+              } catch {
+                localAgents = [];
+              }
+              let serverAgents: any[] = [];
+              try {
+                const response = await fetch('/api/agents/list', { cache: 'no-store' });
+                const payload = response.ok ? await response.json() : {};
+                serverAgents = Array.isArray(payload.agents) ? payload.agents : [];
+              } catch { }
+              const agentsById = new Map<string, any>();
+              for (const agent of localAgents) agentsById.set(String(agent.id), { ...agent });
+              for (const agent of serverAgents) {
+                const id = String(agent.agentId || agent.id || '').trim();
+                if (!id) continue;
+                const local = agentsById.get(id);
+                agentsById.set(id, {
+                  ...local,
+                  ...agent,
+                  id,
+                  name: agent.name || local?.name || id,
+                  description: local?.description || agent.mission || '',
+                  isSetup: agent.status === 'ready',
+                });
+              }
+              const agents = Array.from(agentsById.values());
+              const resolveAgentModel = (requested: unknown): { value?: string; error?: string } => {
+                const modelId = String(requested || '').trim();
+                if (!modelId || modelId === AUTO_MODEL_SELECTION || modelId.toLowerCase() === 'auto') {
+                  return { value: AUTO_MODEL_SELECTION };
+                }
+                const match = readRuntimeModelEntries().find(entry =>
+                  modelEntryKey(entry.provider, entry.modelId) === modelId ||
+                  entry.modelId === modelId
+                );
+                return match
+                  ? { value: modelEntryKey(match.provider, match.modelId) }
+                  : { error: 'That model is not configured. Call list_available_models and use an exact returned ID.' };
+              };
+              if (operation === 'list') {
+                return {
+                  agents: agents.map(agent => ({
+                    id: agent.id,
+                    name: agent.name,
+                    description: agent.description,
+                    mission: agent.mission,
+                    isSetup: agent.isSetup,
+                    status: agent.status || (agent.isSetup === false ? 'draft' : 'ready'),
+                    accessType: agent.accessType,
+                    toolCount: agent.toolCount,
+                    preferredModel: agent.preferredModel,
+                    preferredThinkingLevel: agent.preferredThinkingLevel,
+                    updatedAt: agent.updatedAt,
+                  })),
+                };
+              }
+              const requestedAgentId = String(args.agentId || '').trim();
+              const requestedAgent = agents.find(item => item.id === requestedAgentId);
+              if (operation === 'inspect') {
+                if (!requestedAgent) return { error: `Custom agent not found for ID: ${requestedAgentId || '(missing)'}` };
+                try {
+                  const response = await fetch(`/api/agents/list?agentId=${encodeURIComponent(requestedAgentId)}`, { cache: 'no-store' });
+                  const payload = response.ok ? await response.json() : {};
+                  return {
+                    agent: requestedAgent,
+                    profile: payload.profile || null,
+                  };
+                } catch {
+                  return { agent: requestedAgent, profile: null };
+                }
+              }
+              if (operation === 'select') {
+                if (!requestedAgent) return { error: `Custom agent not found for ID: ${requestedAgentId || '(missing)'}` };
+                if (requestedAgent.isSetup === false || requestedAgent.status === 'draft') {
+                  return { error: `"${requestedAgent.name}" is still a draft. Open its builder and finish setup first.` };
+                }
+                const selectedModel = resolveAgentModel(args.modelId ?? requestedAgent.preferredModel);
+                if (selectedModel.error) return { error: selectedModel.error };
+                const selectedThinking = args.thinkingLevel !== undefined ? String(args.thinkingLevel) : undefined;
+                if (selectedThinking && !['minimal', 'low', 'medium', 'high'].includes(selectedThinking)) {
+                  return { error: 'Thinking level must be minimal, low, medium, or high.' };
+                }
+                handleAgentChange(requestedAgent.id, requestedAgent.name);
+                if (args.modelId !== undefined || requestedAgent.preferredModel) {
+                  handleModelSelectionChange(selectedModel.value!);
+                }
+                const effectiveThinking = selectedThinking || requestedAgent.preferredThinkingLevel;
+                if (effectiveThinking) setThinkingLevel(effectiveThinking as MainAgentThinkingLevel);
+                return {
+                  success: true,
+                  agentId: requestedAgentId,
+                  modelId: args.modelId !== undefined || requestedAgent.preferredModel ? selectedModel.value : undefined,
+                  message: `Selected "${requestedAgent.name}".`,
+                };
+              }
+              if (operation === 'open_builder' || operation === 'create' || operation === 'configure') {
+                const agentId = operation === 'create'
+                  ? `eterxagent-live-${Date.now()}`
+                  : requestedAgentId;
+                if (!agentId) return { error: 'An exact agent ID is required.' };
+                if (operation !== 'create' && !requestedAgent) {
+                  return { error: `Custom agent not found for ID: ${agentId}` };
+                }
+                const builderModel = resolveAgentModel(args.modelId ?? requestedAgent?.preferredModel);
+                if (builderModel.error) return { error: builderModel.error };
+                const builderThinking = args.thinkingLevel !== undefined ? String(args.thinkingLevel) : undefined;
+                if (builderThinking && !['minimal', 'low', 'medium', 'high'].includes(builderThinking)) {
+                  return { error: 'Thinking level must be minimal, low, medium, or high.' };
+                }
+                handleOpenAgentBuilder(agentId);
+                if (operation === 'create' || operation === 'configure') {
+                  const requirements = String(args.requirements || '').trim();
+                  if (!requirements) return { error: 'Agent requirements are required for builder configuration.' };
+                  const builderRequest = [
+                    operation === 'create'
+                      ? `Create and fully configure the custom agent "${String(args.agentName || agentId)}".`
+                      : `Update and fully revalidate the existing custom agent "${requestedAgent?.name || agentId}".`,
+                    '',
+                    'Requirements:',
+                    requirements,
+                    '',
+                    `Preferred runtime model: ${builderModel.value || AUTO_MODEL_SELECTION}.`,
+                    'Infer professional defaults where the request is already clear. Build the complete prompt, behavior rules, safety rules, skills, tool access, completion criteria, and save/finalize the real agent profile. Ask only for genuinely missing consequential requirements.',
+                  ].join('\n');
+                  const builderDispatched = await new Promise<boolean>(resolve => {
+                    window.setTimeout(async () => {
+                      liveMainDispatchRef.current = true;
+                      try {
+                        resolve(await handleSend(builderRequest, [], `agent_builder_${agentId}`, {
+                          modelSelection: builderModel.value,
+                          thinkingLevel: builderThinking as MainAgentThinkingLevel | undefined,
+                        }));
+                      } catch {
+                        resolve(false);
+                      } finally {
+                        liveMainDispatchRef.current = false;
+                      }
+                    }, 0);
+                  });
+                  if (!builderDispatched) return { error: 'The agent builder opened but could not start its setup run.' };
+                  let savedProfile: any = null;
+                  try {
+                    const response = await fetch(`/api/agents/list?agentId=${encodeURIComponent(agentId)}`, { cache: 'no-store' });
+                    const payload = response.ok ? await response.json() : {};
+                    savedProfile = payload.profile || null;
+                  } catch { }
+                  const localEntry = {
+                    id: agentId,
+                    name: savedProfile?.name || String(args.agentName || requestedAgent?.name || agentId),
+                    description: savedProfile?.mission || requirements.slice(0, 240),
+                    accessType: requestedAgent?.accessType || 'Agent Decides',
+                    isSetup: savedProfile?.status === 'ready',
+                    toolCount: savedProfile
+                      ? (savedProfile.directMainTools?.length || 0) + (savedProfile.customTools?.length || 0)
+                      : requestedAgent?.toolCount || 0,
+                    preferredModel: builderModel.value || requestedAgent?.preferredModel || AUTO_MODEL_SELECTION,
+                    preferredThinkingLevel: builderThinking || requestedAgent?.preferredThinkingLevel,
+                    builderMessages: requestedAgent?.builderMessages || [],
+                  };
+                  const nextAgents = [localEntry, ...localAgents.filter(agent => agent.id !== agentId)];
+                  localStorage.setItem('eterx_agents', JSON.stringify(nextAgents));
+                  window.dispatchEvent(new CustomEvent('eterx_agents_updated'));
+                }
+                return {
+                  success: true,
+                  agentId,
+                  message: operation === 'create'
+                    ? `Agent builder processed the setup requirements for "${String(args.agentName || agentId)}".`
+                    : operation === 'configure'
+                      ? `Agent builder processed the new requirements for "${requestedAgent?.name || agentId}".`
+                      : 'Agent builder opened.',
+                };
+              }
+              return { error: `Unsupported custom-agent operation: ${operation}` };
+            }
+
+            if (action === 'present_rich_response') {
+              const markdown = String(args.markdown || '').trim();
+              if (!markdown) return { error: 'A non-empty Markdown response is required.' };
+              if (markdown.length > 60000) {
+                return { error: 'The rich response is too large. Condense it to the essential explanation.' };
+              }
+              liveRichResponseRef.current = markdown;
+              return {
+                success: true,
+                chatId: currentChatId,
+                format: 'markdown',
+                message: 'Rich response staged for the current Live turn.',
+              };
             }
 
             if (action === 'get_main_agent_status') {
-              const targetChat = chatsRef.current.find(c => c.id === currentChatId);
-              const isRunning = runningChatsRef.current.has(currentChatId);
-              const recentLogs = (targetChat?.traceLogs || []).slice(-10);
+              const targetChatId = String(args.chat_id || args.chatId || currentChatId);
+              const targetChat = chatsRef.current.find(c => c.id === targetChatId);
+              if (!targetChat) return { error: `Chat session not found for ID: ${targetChatId}` };
+              const isRunning = runningChatsRef.current.has(targetChatId);
+              const recentLogs = (targetChat.traceLogs || []).slice(-25);
+              const delegatedAgents = Array.from(new Map(
+                recentLogs
+                  .filter((log: any) => log.subAgent || log.agentName)
+                  .map((log: any) => {
+                    const name = String(log.subAgent || log.agentName);
+                    return [name, {
+                      name,
+                      id: log.subAgentId || log.subAgentChatId,
+                      status: log.status || (log.isStreaming ? 'working' : undefined),
+                    }] as const;
+                  })
+              ).values());
               return {
-                activeChatId: currentChatId,
-                activeChatTitle: targetChat?.title || 'Untitled',
+                chatId: targetChatId,
+                chatTitle: targetChat.title || 'Untitled',
                 isRunning,
-                activeSubAgentTab,
-                recentLogsSummary: recentLogs.map(l => ({ type: l.type, text: (l.text || l.secondary || '').slice(0, 100) }))
+                isActive: targetChatId === activeChatIdRef.current,
+                isLiveOwner: targetChatId === currentChatId,
+                delegatedAgents,
+                recentLogsSummary: recentLogs.map((log: any) => ({
+                  type: log.type,
+                  text: (log.text || log.secondary || '').slice(0, 160),
+                  agent: log.subAgent || log.agentName,
+                  tool: log.toolName || log.tool,
+                  status: log.status,
+                  isStreaming: Boolean(log.isStreaming),
+                }))
               };
             }
 
             if (action === 'control_app_ui') {
-              if (!ownerIsActive) {
-                return { error: 'The Live owner chat is no longer active.' };
-              }
               if (args.view && ['chat', 'agents', 'channels', 'projects'].includes(String(args.view))) {
                 setActiveView(args.view as ActiveView);
               }
@@ -2945,20 +3870,24 @@ function DeepWorkUI() {
             }
 
             if (action === 'stop_main_agent_run') {
-              if (!ownerIsActive) {
-                return { error: 'The Live owner chat is no longer active.' };
-              }
-              handleStop();
-              return { success: true, message: 'Main agent run stopped.' };
+              const targetChatId = String(args.chat_id || args.chatId || currentChatId);
+              const stopped = await stopChatAgent(targetChatId);
+              return stopped
+                ? { success: true, chatId: targetChatId, message: 'Main-agent task stopped.' }
+                : { error: 'No running task was stopped in that chat.' };
             }
 
             return { error: 'Unknown app control action' };
           },
-          onInterrupted: () => {
+          onInterrupted: (metadata) => {
             if (!isCurrentSession()) return;
+            if (metadata?.systemEvent) {
+              clearLiveTurn();
+              return;
+            }
             commitLiveTurn(
               liveInputTextRef.current,
-              liveOutputTextRef.current,
+              liveRichResponseRef.current || liveOutputTextRef.current,
               liveCommandsRef.current
             );
             clearLiveTurn();
@@ -2968,7 +3897,7 @@ function DeepWorkUI() {
             console.error('[LiveSession] Error:', error);
             commitLiveTurn(
               liveInputTextRef.current,
-              liveOutputTextRef.current,
+              liveRichResponseRef.current || liveOutputTextRef.current,
               liveCommandsRef.current
             );
             clearLiveTurn();
@@ -2988,7 +3917,8 @@ function DeepWorkUI() {
           },
         },
         {
-          thinkingBudget: 2048,
+          thinkingLevel: 'high',
+          includeThoughts: true,
           initialContext: {
             pastMemories,
             chatHistory,
@@ -3025,7 +3955,7 @@ function DeepWorkUI() {
         setLiveError(null);
       }, 4000);
     }
-  }, [activeChatId, activeRunLocation, activeWorkspacePath, discardEphemeralLiveRoom, revealNetworkBanner]);
+  }, [activeChatId, activeRunLocation, activeWorkspacePath, discardEphemeralLiveRoom, revealNetworkBanner, syncLiveMissionTask, updateLiveMission, upsertLiveMissionEntry]);
 
   const stopLiveSession = useCallback(() => {
     const stoppedChatId = liveChatIdRef.current;
@@ -3033,7 +3963,21 @@ function DeepWorkUI() {
       stoppedChatId &&
       liveEphemeralChatIdRef.current === stoppedChatId
     );
+    const hadPendingTurn = Boolean(
+      liveInputTextRef.current.trim() ||
+      liveOutputTextRef.current.trim() ||
+      liveRichResponseRef.current?.trim() ||
+      liveCommandsRef.current.length > 0
+    );
+    if (hadPendingTurn) {
+      liveCommitTurnRef.current?.(
+        liveInputTextRef.current,
+        liveRichResponseRef.current || liveOutputTextRef.current,
+        liveCommandsRef.current
+      );
+    }
     liveSessionTokenRef.current = null;
+    liveCommitTurnRef.current = null;
     if (liveSessionRef.current) {
       liveSessionRef.current.disconnect();
       liveSessionRef.current = null;
@@ -3046,6 +3990,10 @@ function DeepWorkUI() {
     setLiveOutputText('');
     setLiveSpokenText('');
     setLiveActiveTool(null);
+    setLiveCameraEnabled(false);
+    setLiveScreenShareEnabled(false);
+    setLiveActivityLabel(null);
+    liveActiveActivityIdRef.current = null;
     setLiveCommands([]);
     setLiveMicVolume(0);
     setLiveModelVolume(0);
@@ -3053,19 +4001,13 @@ function DeepWorkUI() {
     liveInputTextRef.current = '';
     liveOutputTextRef.current = '';
     liveCommandsRef.current = [];
-    lastLiveLogsSnapshotRef.current = { chatId: null, logs: [] };
+    liveTurnIdRef.current = null;
+    if (!hadPendingTurn || !lastLiveLogsSnapshotRef.current.commitKey) {
+      lastLiveLogsSnapshotRef.current = { chatId: null, turnId: null, commitKey: null, logs: [] };
+    }
 
     if (discardEmptyRoom) discardEphemeralLiveRoom(stoppedChatId);
   }, [discardEphemeralLiveRoom]);
-
-  useEffect(() => {
-    const ownerChatId = liveChatIdRef.current;
-    if (!ownerChatId || !activeChatId || activeChatId === ownerChatId) return;
-    // Live UI/transcription state is process-global. End the session as soon as
-    // navigation leaves its owner so no later callback can surface in or act on
-    // the newly selected chat.
-    stopLiveSession();
-  }, [activeChatId, stopLiveSession]);
 
   const toggleLiveMicMute = useCallback(() => {
     setLiveMicMuted(prev => {
@@ -3083,6 +4025,28 @@ function DeepWorkUI() {
     });
   }, []);
 
+  const toggleLiveCamera = useCallback(async () => {
+    const session = liveSessionRef.current;
+    if (!session) return;
+    if (session.isCameraEnabled()) {
+      session.stopCamera();
+      return;
+    }
+    const result = await session.startCamera('user');
+    setLiveError(result.success ? null : result.message);
+  }, []);
+
+  const toggleLiveScreenShare = useCallback(async () => {
+    const session = liveSessionRef.current;
+    if (!session) return;
+    if (session.isScreenShareEnabled()) {
+      session.stopScreenShare();
+      return;
+    }
+    const result = await session.startScreenShare();
+    setLiveError(result.success ? null : result.message);
+  }, []);
+
   useEffect(() => {
     if (typeof window === 'undefined' || !(window as any).electronAPI?.onPetReply) return;
 
@@ -3090,9 +4054,23 @@ function DeepWorkUI() {
       try {
         const data = typeof rawMessage === 'string' && rawMessage.startsWith('{') ? JSON.parse(rawMessage) : { action: rawMessage };
         if (data.action === 'toggle-mic') {
-          toggleLiveMicMute();
+          if (typeof data.muted === 'boolean') {
+            setLiveMicMuted(data.muted);
+            liveSessionRef.current?.setMicMuted(data.muted);
+          } else {
+            toggleLiveMicMute();
+          }
         } else if (data.action === 'toggle-speaker') {
-          toggleLiveSpeakerMute();
+          if (typeof data.muted === 'boolean') {
+            setLiveSpeakerMuted(data.muted);
+            liveSessionRef.current?.setSpeakerMuted(data.muted);
+          } else {
+            toggleLiveSpeakerMute();
+          }
+        } else if (data.action === 'toggle-camera') {
+          void toggleLiveCamera();
+        } else if (data.action === 'toggle-screen-share') {
+          void toggleLiveScreenShare();
         } else if (data.action === 'stop' || data.action === 'close') {
           stopLiveSession();
         }
@@ -3104,7 +4082,7 @@ function DeepWorkUI() {
     return () => {
       if (typeof unsubscribe === 'function') unsubscribe();
     };
-  }, [toggleLiveMicMute, toggleLiveSpeakerMute, stopLiveSession]);
+  }, [toggleLiveCamera, toggleLiveMicMute, toggleLiveScreenShare, toggleLiveSpeakerMute, stopLiveSession]);
 
   const getLiveTraceLogs = useCallback(() => {
     if (
@@ -3115,16 +4093,41 @@ function DeepWorkUI() {
     ) return [];
 
     const logs: any[] = [];
+    const turnId = liveTurnIdRef.current;
+    if (!turnId) return logs;
     if (liveInputText) {
-      logs.push({ type: 'user_action', text: liveInputText, chatId: liveChatId, isLive: true });
+      logs.push({
+        type: 'user_action',
+        text: liveInputText,
+        chatId: liveChatId,
+        isLive: true,
+        runId: turnId,
+        turnId,
+      });
     }
 
     if (liveCommands.length > 0) {
-      logs.push(...liveCommands.map(command => ({ ...command, chatId: liveChatId })));
+      logs.push(...liveCommands.map(command => ({
+        ...command,
+        chatId: liveChatId,
+        isLive: true,
+        runId: turnId,
+        turnId,
+      })));
     }
 
-    if (liveOutputText) {
-      logs.push({ type: 'answer', text: liveOutputText, chatId: liveChatId, spokenText: liveSpokenText, isLive: true, isLiveTyping: true });
+    const visibleOutputText = liveOutputText.trim() || liveSpokenText.trim();
+    if (visibleOutputText) {
+      logs.push({
+        type: 'answer',
+        text: visibleOutputText,
+        chatId: liveChatId,
+        spokenText: liveSpokenText,
+        isLive: true,
+        isLiveTyping: true,
+        runId: turnId,
+        turnId,
+      });
     }
 
     return logs;
@@ -3635,13 +4638,6 @@ function DeepWorkUI() {
   };
 
   const loadChat = (id: string) => {
-    const liveOwnerChatId = liveChatIdRef.current;
-    if (liveOwnerChatId && liveOwnerChatId !== id) {
-      // Navigation is a synchronous ownership boundary. Invalidate Live before
-      // changing the active chat so no callback can stream into the next feed.
-      stopLiveSession();
-    }
-
     // Read through the live ref so a sidebar callback from an earlier render
     // cannot hydrate the chat with an older in-memory stream snapshot.
     let chat = chatsRef.current.find(c => c.id === id);
@@ -3791,6 +4787,7 @@ function DeepWorkUI() {
       };
       setChats(prev => {
         const updated = [chat!, ...prev];
+        chatsRef.current = updated;
         persistChats(updated);
         return updated;
       });
@@ -3816,9 +4813,6 @@ function DeepWorkUI() {
   }, [handleAgentChange, updateInputValue]);
 
   const createNewChat = useCallback(() => {
-    if (liveChatIdRef.current) {
-      stopLiveSession();
-    }
     setChats(previous => {
       const updated = removeGeneratedEmptyChats(previous);
       if (updated.length === previous.length) return previous;
@@ -3860,7 +4854,7 @@ function DeepWorkUI() {
         }
       }
     }, 50);
-  }, [composerStates, applyComposerState, stopLiveSession, updateComposerState]);
+  }, [composerStates, applyComposerState, updateComposerState]);
 
   const deleteChats = useCallback((ids: string[]) => {
     const idsToDelete = [...new Set(ids)].filter(Boolean);
@@ -4743,6 +5737,40 @@ function DeepWorkUI() {
 
           // Track idle responses — stop after 30 seconds of continuous idle
           // (agent never started, or server restarted)
+          for (const trace of data.traces) {
+            const traceIdentity = String(
+              trace?.id || trace?._traceIdx || trace?.responseKey || trace?.timestamp || Date.now()
+            );
+            if (trace?.type === 'ask_user') {
+              announceLiveTaskEvent(
+                chatId,
+                'blocked',
+                String(trace.question || trace.text || 'The task needs your input to continue.'),
+                `${ serverRunId || expectedRunId || 'run' }_${ traceIdentity }`,
+              );
+            } else if (trace?.type === 'sub_agent_complete') {
+              const agentName = String(trace.agentName || trace.subAgent || 'A delegated agent');
+              announceLiveTaskEvent(
+                chatId,
+                'progress',
+                `${ agentName } finished its part of the task. ${ String(trace.text || trace.summary || '') }`,
+                `${ serverRunId || expectedRunId || 'run' }_${ traceIdentity }`,
+              );
+            } else if (trace?.type === 'progress') {
+              const progressText = String(trace.text || trace.summary || '').trim();
+              const lastAnnouncementAt = liveProgressAnnouncementAtRef.current.get(chatId) || 0;
+              if (progressText && Date.now() - lastAnnouncementAt >= 45000) {
+                liveProgressAnnouncementAtRef.current.set(chatId, Date.now());
+                announceLiveTaskEvent(
+                  chatId,
+                  'progress',
+                  progressText,
+                  `${ serverRunId || expectedRunId || 'run' }_${ traceIdentity }`,
+                );
+              }
+            }
+          }
+
           if (data.status === 'idle') {
             if (!handleStartPending()) return;
             return; // Don't process â€” agent hasn't started yet
@@ -5208,7 +6236,16 @@ function DeepWorkUI() {
             clearAgentConnectionStatus(chatId);
             stopPolling(chatId);
             removeRunningChat(chatId);
+            liveProgressAnnouncementAtRef.current.delete(chatId);
             markChatUnreadIfBackground(chatId);
+            if (data.status === 'completed' || data.status === 'failed') {
+              announceLiveTaskEvent(
+                chatId,
+                data.status,
+                String(data.finalAnswer || data.error || ''),
+                String(serverRunId || expectedRunId || ''),
+              );
+            }
 
             // Title generation uses the same provider credentials as agents.
             // Run it only after execution ends so a cosmetic request never
@@ -5366,7 +6403,18 @@ function DeepWorkUI() {
             startPolling(chatId, data.maxIndex ?? (data.totalTraces - 1), data.startedAt, data.runId);
           } else if (isTerminalAgentStatus(data.status) || (data.status === 'idle' && runningChatsRef.current.has(chatId))) {
             removeRunningChat(chatId);
-            if (isTerminalAgentStatus(data.status)) markChatUnreadIfBackground(chatId);
+            liveProgressAnnouncementAtRef.current.delete(chatId);
+            if (isTerminalAgentStatus(data.status)) {
+              markChatUnreadIfBackground(chatId);
+              if (data.status === 'completed' || data.status === 'failed') {
+                announceLiveTaskEvent(
+                  chatId,
+                  data.status,
+                  String(data.finalAnswer || data.error || ''),
+                  String(data.runId || ''),
+                );
+              }
+            }
           }
         } catch {
           // Keep the UI quiet here; the normal poller/backoff path will recover.
@@ -5382,8 +6430,7 @@ function DeepWorkUI() {
     };
   }, [activeChatId]); // eslint-disable-line react-hooks/exhaustive-deps — intentionally excludes runningChats to prevent self-reinforcing re-fire loop
 
-  const handleStop = (): Promise<boolean> => {
-    const chatId = activeChatIdRef.current;
+  const stopChatAgent = (chatId: string): Promise<boolean> => {
     if (!chatId || !runningChatsRef.current.has(chatId)) return Promise.resolve(false);
     const existingRequest = stopRequestsRef.current.get(chatId);
     if (existingRequest) return existingRequest;
@@ -5413,6 +6460,7 @@ function DeepWorkUI() {
         abortControllersRef.current.delete(chatId);
         stopPolling(chatId);
         removeRunningChat(chatId);
+        liveProgressAnnouncementAtRef.current.delete(chatId);
         notifiedChatIdsRef.current.delete(chatId);
         setChatLogsById(chatId, previous => {
           const cleared = previous.map((log, index, logs) => {
@@ -5451,6 +6499,11 @@ function DeepWorkUI() {
     return stopRequest;
   };
 
+  const handleStop = (): Promise<boolean> => {
+    const chatId = activeChatIdRef.current;
+    return chatId ? stopChatAgent(chatId) : Promise.resolve(false);
+  };
+
   // Remove pending steering messages when they appear in traceLogs
   useEffect(() => {
     if (pendingSteering.length === 0) return;
@@ -5482,9 +6535,8 @@ function DeepWorkUI() {
    * The message is queued server-side and injected into the model context
    * at the next free ReAct iteration (non-disruptive, agent is never paused).
    */
-  const sendSteeringMessage = useCallback(async (message: string) => {
+  const sendSteeringMessageToChat = useCallback(async (targetChatId: string, message: string) => {
     const steerMessage = message.trim();
-    const targetChatId = activeChatIdRef.current;
     if (!targetChatId || !steerMessage || steeringAdmissionsRef.current.has(targetChatId)) return false;
     steeringAdmissionsRef.current.add(targetChatId);
     const newSteering = { id: crypto.randomUUID(), text: steerMessage, chatId: targetChatId };
@@ -5527,6 +6579,11 @@ function DeepWorkUI() {
       steeringAdmissionsRef.current.delete(targetChatId);
     }
   }, [revealNetworkBanner, updateInputValue]);
+
+  const sendSteeringMessage = useCallback(async (message: string) => {
+    const targetChatId = activeChatIdRef.current;
+    return targetChatId ? sendSteeringMessageToChat(targetChatId, message) : false;
+  }, [sendSteeringMessageToChat]);
 
   const handleSteer = async () => {
     if (!inputValue.trim() && attachments.length === 0) return;
@@ -5802,6 +6859,49 @@ function DeepWorkUI() {
     setAgentTeamOpen(true);
   }, []);
 
+  const announceLiveTaskEvent = useCallback((
+    chatId: string,
+    status: 'completed' | 'failed' | 'blocked' | 'progress',
+    summary: string,
+    runId?: string,
+  ) => {
+    const chat = chatsRef.current.find(item => item.id === chatId);
+    const cleanSummary = String(summary || '').replace(/<[^>]*>?/gm, '').replace(/[*#_`]/g, '').trim();
+    syncLiveMissionTask(
+      chatId,
+      chat?.title || 'Background task',
+      cleanSummary,
+      status === 'completed'
+        ? 'done'
+        : status === 'progress'
+          ? 'active'
+          : 'blocked',
+    );
+    const session = liveSessionRef.current;
+    if (!session) return false;
+    return session.announceSystemEvent({
+      id: `agent_${ chatId }_${ runId || status }_${ status }`,
+      type: status === 'completed'
+        ? 'task_completed'
+        : status === 'blocked'
+          ? 'task_blocked'
+          : status === 'progress'
+            ? 'task_progress'
+            : 'task_failed',
+      sourceChatId: chatId,
+      sourceChatTitle: chat?.title || 'Background task',
+      summary: cleanSummary.slice(0, 600) || (
+        status === 'completed'
+          ? 'The requested work is complete and ready to review.'
+          : status === 'blocked'
+            ? 'The task needs additional input before it can continue.'
+            : status === 'progress'
+              ? 'A meaningful part of the task has finished.'
+            : 'The task ended with an error and needs attention.'
+      ),
+    });
+  }, [syncLiveMissionTask]);
+
   const handleSendSubAgentMessage = useCallback(async () => {
     const selectedAgentLog = [...traceLogs].reverse().find((log: any) => {
       const name = log?.agentName || log?.subAgent;
@@ -5902,7 +7002,19 @@ function DeepWorkUI() {
     }
   }, [activeChatId, activeSubAgentTab, attachments, inputValue, isRecording, revealNetworkBanner, traceLogs, updateAttachments, updateInputValue]);
 
-  const handleSend = async (overridePrompt?: string, overrideAttachments?: ComposerAttachment[]) => {
+  const handleSend = async (
+    overridePrompt?: string,
+    overrideAttachments?: ComposerAttachment[],
+    targetChatIdOverride?: string,
+    runOptionsOverride?: {
+      modelSelection?: string;
+      selectedAgent?: SelectedAgentState;
+      thinkingLevel?: MainAgentThinkingLevel;
+      createNewChat?: boolean;
+      backgroundChat?: boolean;
+      initialTitle?: string;
+    },
+  ) => {
     if (isRecording && mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
       mediaRecorderRef.current.stop();
       setIsRecording(false);
@@ -5910,7 +7022,12 @@ function DeepWorkUI() {
     const promptText = (typeof overridePrompt === 'string' ? overridePrompt : inputValue).trim();
     const requestedAttachments = overrideAttachments ?? attachments;
     if (!promptText && requestedAttachments.length === 0) return false;
-    const targetChatIdAtSend = activeChatIdRef.current;
+    const targetChatIdAtSend = targetChatIdOverride || activeChatIdRef.current;
+    const targetChatExists = targetChatIdAtSend
+      ? chatsRef.current.some(chat => chat.id === targetChatIdAtSend)
+      : false;
+    const shouldCreateTargetChat = Boolean(runOptionsOverride?.createNewChat && targetChatIdAtSend && !targetChatExists);
+    if (targetChatIdOverride && !targetChatExists && !shouldCreateTargetChat) return false;
     const targetHasLiveSession =
       targetChatIdAtSend !== null &&
       targetChatIdAtSend === liveChatIdRef.current &&
@@ -5937,7 +7054,7 @@ function DeepWorkUI() {
       }
     } catch { }
 
-    const runModelSelection = composerRuntimeSelectionRef.current.modelSelection;
+    const runModelSelection = runOptionsOverride?.modelSelection || composerRuntimeSelectionRef.current.modelSelection;
     const explicitRunModelEntry = parseModelEntryKey(runModelSelection);
     const autoRunModelEntry = explicitRunModelEntry
       ? null
@@ -5951,8 +7068,8 @@ function DeepWorkUI() {
       provider: fallbackRunModel.provider,
       modelId: fallbackRunModel.modelName,
     };
-    const runThinkingLevel = composerRuntimeSelectionRef.current.thinkingLevel;
-    const runSelectedAgent = composerRuntimeSelectionRef.current.selectedAgent;
+    const runThinkingLevel = runOptionsOverride?.thinkingLevel || composerRuntimeSelectionRef.current.thinkingLevel;
+    const runSelectedAgent = runOptionsOverride?.selectedAgent || composerRuntimeSelectionRef.current.selectedAgent;
     const runSelectedAgentId = runSelectedAgent.agentId;
     const runSelectedAgentName = runSelectedAgent.agentName;
     const currentAttachments = [...requestedAttachments];
@@ -5968,10 +7085,10 @@ function DeepWorkUI() {
       startTime: runStartedAt,
       endTime: runStartedAt,
     };
-    const historySourceLogs = targetChatIdAtSend
+    const historySourceLogs = targetChatIdAtSend && !shouldCreateTargetChat
       ? stripAgentConnectionLogs(chatsRef.current.find(chat => chat.id === targetChatIdAtSend)?.traceLogs || [])
       : [];
-    lastLiveLogsSnapshotRef.current = { chatId: null, logs: [] };
+    lastLiveLogsSnapshotRef.current = { chatId: null, turnId: null, commitKey: null, logs: [] };
     clearDraftComposerState(targetChatIdAtSend);
 
     let chatIdToUse = targetChatIdAtSend;
@@ -5990,15 +7107,17 @@ function DeepWorkUI() {
       fileUri: undefined,
     }));
 
-    if (!chatIdToUse) {
-      chatIdToUse = crypto.randomUUID();
+    if (!chatIdToUse || shouldCreateTargetChat) {
+      chatIdToUse = chatIdToUse || crypto.randomUUID();
       try {
         localStorage.setItem(`eterx_proxy_controls_${ chatIdToUse }`, JSON.stringify({ enabled: proxyEnabled, intervention: proxyIntervention }));
         localStorage.setItem(`eterx_proxy_manager_model_${ chatIdToUse }`, proxyModelSelection);
         localStorage.setItem(`eterx_proxy_runtime_model_${ chatIdToUse }`, proxyRuntimeModelSelection);
       } catch { }
-      activeChatIdRef.current = chatIdToUse;
-      setActiveChatId(chatIdToUse);
+      if (!runOptionsOverride?.backgroundChat) {
+        activeChatIdRef.current = chatIdToUse;
+        setActiveChatId(chatIdToUse);
+      }
       const createdComposerState: ChatComposerState = {
         inputValue: '',
         runLocation: activeRunLocation,
@@ -6015,7 +7134,7 @@ function DeepWorkUI() {
         return next;
       });
 
-      const initialTitle = fallbackTitleFromPrompt(promptText);
+      const initialTitle = String(runOptionsOverride?.initialTitle || '').trim() || fallbackTitleFromPrompt(promptText);
       const newChat: ChatSession = {
         id: chatIdToUse,
         title: initialTitle,
@@ -6027,10 +7146,11 @@ function DeepWorkUI() {
 
       setChats(prev => {
         const updated = [newChat, ...prev];
+        chatsRef.current = updated;
         persistChats(updated);
         return updated;
       });
-      setTraceLogs([userLog]);
+      if (!runOptionsOverride?.backgroundChat) setTraceLogs([userLog]);
 
       const titleChatId = chatIdToUse;
       const initialTitleHistory = [{ role: 'user', parts: [{ text: promptText }] }];
@@ -6063,9 +7183,9 @@ function DeepWorkUI() {
       }
     }
 
-    clearUnreadChat(chatIdToUse);
+    if (!runOptionsOverride?.backgroundChat) clearUnreadChat(chatIdToUse);
 
-    if (window.innerWidth < 960) setSidebarOpen(false);
+    if (!runOptionsOverride?.backgroundChat && window.innerWidth < 960) setSidebarOpen(false);
 
     // Mark this chat as running
     setRunningChats(prev => new Set(prev).add(chatIdToUse!));
@@ -6488,117 +7608,172 @@ function DeepWorkUI() {
     }
     return serverAccepted;
   };
+  const handleSendLatestRef = useRef(handleSend);
+  handleSendLatestRef.current = handleSend;
+  const scheduledRunContextRef = useRef({ activeWorkspacePath, activeRunLocation });
+  scheduledRunContextRef.current = { activeWorkspacePath, activeRunLocation };
 
   // Queue mode creates real follow-up turns rather than injecting text into an
   // in-flight response. Process one item at a time after the current run has
   // fully left the running state so history and trace ownership stay ordered.
   useEffect(() => {
-    if (isThinking || !activeChatId) return;
-    const next = queuedFollowUps.find(item => item.chatId === activeChatId);
+    const next = queuedFollowUps.find(item => !runningChats.has(item.chatId));
     if (!next || queuedFollowUpDispatchRef.current.has(next.id)) return;
 
     queuedFollowUpDispatchRef.current.add(next.id);
     setQueuedFollowUps(previous => previous.filter(item => item.id !== next.id));
     window.setTimeout(() => {
-      void handleSend(next.text, next.attachments).finally(() => {
+      void handleSend(next.text, next.attachments, next.chatId).finally(() => {
         queuedFollowUpDispatchRef.current.delete(next.id);
       });
     }, 0);
-  }, [activeChatId, isThinking, queuedFollowUps]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [queuedFollowUps, runningChats]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Automated real-time agent execution when scheduled task triggers
   useEffect(() => {
     const handleTriggerTask = (e: CustomEvent<{ task: any }>) => {
-      const task = e.detail?.task;
-      if (!task || !task.id) return;
-
-      // Mark task status as running
-      try {
-        const raw = localStorage.getItem('eterx_scheduled_tasks');
-        if (raw) {
-          const tasks: any[] = JSON.parse(raw);
-          const target = tasks.find((t: any) => t.id === task.id);
-          if (target && target.status !== 'completed') {
-            target.status = 'running';
-            localStorage.setItem('eterx_scheduled_tasks', JSON.stringify(tasks));
-            window.dispatchEvent(new CustomEvent('eterx_scheduled_tasks_updated'));
-          }
-        }
-      } catch { }
+      const rawTask = e.detail?.task;
+      if (!rawTask?.id) return;
+      const task = normalizeScheduledTask(rawTask);
+      if (scheduledTaskRunAdmissionsRef.current.has(task.id)) return;
+      scheduledTaskRunAdmissionsRef.current.add(task.id);
 
       const taskChatId = crypto.randomUUID();
-      const taskPrompt = task.description || task.title;
+      const taskRunId = `scheduled_run_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const runStartedAt = Date.now();
+      const sourceContext = task.sources.length > 0
+        ? `\n\nScheduled task sources:\n${task.sources.map(source => `- ${source.name}: ${source.path}`).join('\n')}`
+        : '';
+      const taskPrompt = `${task.description || task.title}${sourceContext}`;
+      const scheduledRunContext = scheduledRunContextRef.current;
+      const updateStoredTask = (mutate: (target: ScheduledTaskRecord, run: ScheduledTaskRun | undefined) => void) => {
+        try {
+          const parsed = JSON.parse(localStorage.getItem('eterx_scheduled_tasks') || '[]');
+          const tasks = Array.isArray(parsed) ? parsed.map(normalizeScheduledTask) : [];
+          const target = tasks.find(item => item.id === task.id);
+          if (!target) return;
+          mutate(target, target.history?.find(run => run.id === taskRunId));
+          target.updatedAt = Date.now();
+          localStorage.setItem('eterx_scheduled_tasks', JSON.stringify(tasks));
+          window.dispatchEvent(new CustomEvent('eterx_scheduled_tasks_updated'));
+        } catch { }
+      };
+      updateStoredTask(target => {
+        const run: ScheduledTaskRun = {
+          id: taskRunId,
+          chatId: taskChatId,
+          status: 'running',
+          startedAt: runStartedAt,
+          model: task.model,
+          agentId: task.agentId,
+          agentName: task.agentName,
+        };
+        target.status = 'running';
+        target.chatId = taskChatId;
+        target.lastError = undefined;
+        target.history = [...(target.history || []), run].slice(-100);
+        target.runCount = (target.runCount || 0) + 1;
+      });
 
-      // Create and register real ChatSession so task run appears in Sidebar Recents!
       const newChatSession: ChatSession = {
         id: taskChatId,
         title: task.title || fallbackTitleFromPrompt(taskPrompt),
         updatedAt: Date.now(),
         traceLogs: [],
-        workspacePath: activeWorkspacePath,
-        runLocation: activeRunLocation,
+        workspacePath: scheduledRunContext.activeWorkspacePath,
+        runLocation: scheduledRunContext.activeRunLocation,
       };
 
       setChats(prev => {
         const updated = [newChatSession, ...prev.filter(c => c.id !== taskChatId)];
+        chatsRef.current = updated;
         persistChats(updated);
         return updated;
       });
 
-      activeChatIdRef.current = taskChatId;
-      setActiveChatId(taskChatId);
-
-      // Apply agent & model preferences to the task chat, not whichever chat
-      // happened to be active when the scheduler event arrived.
-      handleAgentChange(task.agentId || null, task.agentName || 'General');
       const resolvedModel = task.model || AUTO_MODEL_SELECTION;
-      handleModelSelectionChange(resolvedModel);
-
-      // Save model + agent + prompt into this chat's composer state so it persists when opened
-      updateComposerState(state => ({
-        ...state,
-        inputValue: taskPrompt,
-        chatModelSelection: resolvedModel,
+      const dispatchPromise = handleSendLatestRef.current(taskPrompt, [], taskChatId, {
+        modelSelection: resolvedModel,
         selectedAgent: {
           agentId: task.agentId || null,
           agentName: task.agentName || 'General',
         },
-      }));
-      setInputValue(taskPrompt);
+        thinkingLevel: task.thinkingLevel,
+      });
 
-      // Runtime refs above are updated synchronously by the selectors, so this
-      // run starts with the task's exact agent/model without waiting for React.
-      void handleSend(taskPrompt, []);
-
-      // Monitor completion: wait until task has actually started running, then mark completed when done!
       let hasStartedRunning = false;
-      const checkInterval = setInterval(() => {
+      let settled = false;
+      const finishRun = (status: 'completed' | 'failed', error?: string) => {
+        if (settled) return;
+        settled = true;
+        clearInterval(checkInterval);
+        scheduledTaskIntervalsRef.current.delete(task.id);
+        updateStoredTask((target, run) => {
+          const completedAt = Date.now();
+          if (run) {
+            run.status = status;
+            run.completedAt = completedAt;
+            run.error = error;
+          }
+          target.executedAt = completedAt;
+          target.chatId = taskChatId;
+          target.lastError = error;
+          const nextRun = status === 'completed'
+            ? computeNextScheduledRun(target.recurrence, completedAt)
+            : null;
+          if (nextRun !== null) {
+            target.status = 'scheduled';
+            target.scheduledTimestamp = nextRun;
+            const nextDate = new Date(nextRun);
+            target.triggerTime = nextDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+            target.customDate = [
+              nextDate.getFullYear(),
+              String(nextDate.getMonth() + 1).padStart(2, '0'),
+              String(nextDate.getDate()).padStart(2, '0'),
+            ].join('-');
+            target.dateOption = 'custom';
+          } else {
+            target.status = status;
+          }
+        });
+        scheduledTaskRunAdmissionsRef.current.delete(task.id);
+      };
+      const checkInterval = window.setInterval(() => {
         const isRunning = runningChatsRef.current?.has(taskChatId);
         if (isRunning) {
           hasStartedRunning = true;
         } else if (hasStartedRunning) {
-          clearInterval(checkInterval);
-          try {
-            const raw = localStorage.getItem('eterx_scheduled_tasks');
-            if (raw) {
-              const tasks: any[] = JSON.parse(raw);
-              const target = tasks.find((t: any) => t.id === task.id);
-              if (target) {
-                target.status = 'completed';
-                target.executedAt = Date.now();
-                target.chatId = taskChatId;
-                localStorage.setItem('eterx_scheduled_tasks', JSON.stringify(tasks));
-                window.dispatchEvent(new CustomEvent('eterx_scheduled_tasks_updated'));
-              }
-            }
-          } catch { }
+          const taskChat = chatsRef.current.find(chat => chat.id === taskChatId);
+          const terminalLog = [...(taskChat?.traceLogs || [])].reverse().find((log: any) =>
+            log?.type === 'agent_status' ||
+            ['completed', 'failed', 'error', 'stopped', 'cancelled', 'blocked'].includes(String(log?.status || '').toLowerCase())
+          );
+          const terminalStatus = String(terminalLog?.status || '').toLowerCase();
+          const failed = ['failed', 'error', 'stopped', 'cancelled', 'blocked'].includes(terminalStatus);
+          finishRun(
+            failed ? 'failed' : 'completed',
+            failed ? String(terminalLog?.secondary || terminalLog?.text || `Task ${terminalStatus}.`) : undefined,
+          );
         }
-      }, 1000);
+      }, 500);
+      scheduledTaskIntervalsRef.current.set(task.id, checkInterval);
+      void dispatchPromise
+        .then(accepted => {
+          if (!accepted) finishRun('failed', 'The scheduled agent run was not accepted.');
+        })
+        .catch(error => {
+          finishRun('failed', String(error?.message || error || 'Scheduled execution failed.'));
+        });
     };
 
     window.addEventListener('eterx_trigger_scheduled_task', handleTriggerTask as EventListener);
-    return () => window.removeEventListener('eterx_trigger_scheduled_task', handleTriggerTask as EventListener);
-  }, [handleAgentChange, handleModelSelectionChange, handleSend, updateComposerState]);
+    return () => {
+      window.removeEventListener('eterx_trigger_scheduled_task', handleTriggerTask as EventListener);
+      scheduledTaskIntervalsRef.current.forEach(intervalId => window.clearInterval(intervalId));
+      scheduledTaskIntervalsRef.current.clear();
+      scheduledTaskRunAdmissionsRef.current.clear();
+    };
+  }, []);
 
   // ═══════════════════════════════════════════════════════════════
   // STARTUP REHYDRATION: On page load, check for running agents
@@ -6764,9 +7939,9 @@ function DeepWorkUI() {
     const ownedTraceLogs = traceLogs.filter(
       log => !log?.chatId || log.chatId === activeChatId
     );
-    const baseLogs = isLiveSessionActive
-      ? ownedTraceLogs.filter(l => l.type !== 'thought_stream')
-      : ownedTraceLogs;
+    const baseLogs = ownedTraceLogs.filter(log =>
+      !(log?.isLive && (log.type === 'thought_stream' || log.type === 'work_note'))
+    );
 
     // Filter out sub-agent details when we are in the main view
     const filteredLogs = baseLogs.filter(l => {
@@ -6785,31 +7960,70 @@ function DeepWorkUI() {
     });
 
     const freshLiveLogs = isLiveSessionActive ? getLiveTraceLogs() : [];
+    const freshLiveTurnId = String(
+      freshLiveLogs[0]?.turnId || freshLiveLogs[0]?.runId || ''
+    ).trim();
 
     // Update snapshot whenever we get non-empty live logs
-    if (freshLiveLogs.length > 0 && activeChatId && activeChatId === liveChatId) {
+    if (
+      freshLiveLogs.length > 0 &&
+      activeChatId &&
+      activeChatId === liveChatId &&
+      !(
+        lastLiveLogsSnapshotRef.current.commitKey &&
+        lastLiveLogsSnapshotRef.current.turnId === freshLiveTurnId
+      )
+    ) {
+      const freshTurnId = freshLiveTurnId;
+      const previousSnapshot = lastLiveLogsSnapshotRef.current;
+      const canMerge = previousSnapshot.chatId === activeChatId &&
+        previousSnapshot.turnId === freshTurnId &&
+        !previousSnapshot.commitKey;
+      const previousLogs = canMerge ? previousSnapshot.logs : [];
+      const pickStableTextLog = (type: string) => {
+        const incoming = freshLiveLogs.find(log => log?.type === type);
+        const previous = previousLogs.find(log => log?.type === type);
+        if (!incoming) return previous;
+        if (!previous) return incoming;
+        return String(incoming.text || '').length >= String(previous.text || '').length
+          ? incoming
+          : previous;
+      };
+      const userLog = pickStableTextLog('user_action');
+      const answerLog = pickStableTextLog('answer');
+      const incomingActions = freshLiveLogs.filter(
+        log => log?.type !== 'user_action' && log?.type !== 'answer'
+      );
+      const actionLogs = incomingActions.length > 0
+        ? incomingActions
+        : previousLogs.filter(log => log?.type !== 'user_action' && log?.type !== 'answer');
       lastLiveLogsSnapshotRef.current = {
         chatId: activeChatId,
-        logs: freshLiveLogs,
+        turnId: freshTurnId || null,
+        commitKey: null,
+        logs: [
+          ...(userLog ? [userLog] : []),
+          ...actionLogs,
+          ...(answerLog ? [answerLog] : []),
+        ],
       };
     }
 
     // Check if traceLogs already has the committed answer for this turn.
     // Only then drop the snapshot — otherwise hold it to avoid the flash.
-    const hasCommittedAnswer = (() => {
-      const lastUserIdx = ownedTraceLogs.reduceRight((found, l, i) =>
-        found === -1 && l?.type === 'user_action' ? i : found, -1);
-      if (lastUserIdx === -1) return false;
-      return ownedTraceLogs.slice(lastUserIdx + 1).some(l => l?.type === 'answer');
-    })();
+    const snapshot = lastLiveLogsSnapshotRef.current;
+    const hasCommittedSnapshot = Boolean(
+      snapshot.commitKey &&
+      ownedTraceLogs.some(log => log?._liveCommitKey === snapshot.commitKey)
+    );
 
     // Determine which live logs to append
     let liveLogs: any[];
     if (freshLiveLogs.length > 0) {
       // Fresh live data — use it directly
-      liveLogs = freshLiveLogs;
+      liveLogs = lastLiveLogsSnapshotRef.current.logs;
     } else if (
-      !hasCommittedAnswer &&
+      !hasCommittedSnapshot &&
       lastLiveLogsSnapshotRef.current.chatId === activeChatId &&
       lastLiveLogsSnapshotRef.current.logs.length > 0
     ) {
@@ -6818,7 +8032,7 @@ function DeepWorkUI() {
     } else {
       // traceLogs has the answer — safe to drop the snapshot
       if (lastLiveLogsSnapshotRef.current.chatId === activeChatId) {
-        lastLiveLogsSnapshotRef.current = { chatId: null, logs: [] };
+        lastLiveLogsSnapshotRef.current = { chatId: null, turnId: null, commitKey: null, logs: [] };
       }
       liveLogs = [];
     }
@@ -8008,7 +9222,7 @@ function DeepWorkUI() {
         <>
           <div className={`eterx-main-panel ${ !sidebarOpen ? 'eterx-main-panel-sidebar-closed' : '' } flex-1 flex flex-col relative overflow-hidden`}>
             <div className="eterx-main-header relative z-50 flex h-[var(--eterx-main-header-height)] shrink-0 items-center justify-between gap-4 border-b border-[var(--border)] pl-3 pr-6 [-webkit-app-region:drag]">
-              <div className="flex min-w-0 flex-1 overflow-hidden items-center gap-2 pointer-events-auto [-webkit-app-region:no-drag]">
+              <div className="flex min-w-0 flex-1 overflow-visible items-center gap-2 pointer-events-auto [-webkit-app-region:no-drag]">
                 <div id="agent-builder-back-portal" className="flex items-center">
                   {buildingAgentId && (
                     <button
@@ -8058,11 +9272,12 @@ function DeepWorkUI() {
                       : DEFAULT_CHAT_TITLE;
 
                   return (
-                    <div className="relative min-w-0 [-webkit-app-region:no-drag]">
+                    <div className="relative z-[70] min-w-0 overflow-visible [-webkit-app-region:no-drag]">
                       <div
                         data-open={headerMenuOpen ? 'true' : 'false'}
                         onClick={() => {
                           if (!isEditingChatTitle) {
+                            setChatActionMenuOpen(false);
                             setHeaderMenuOpen(!headerMenuOpen);
                           }
                         }}
@@ -8104,12 +9319,13 @@ function DeepWorkUI() {
                             onClick={(e) => {
                               e.stopPropagation();
                               if (!isEditingChatTitle) {
-                                setChatActionMenuOpen(!chatActionMenuOpen);
+                                setChatActionMenuOpen(false);
+                                setHeaderMenuOpen(!headerMenuOpen);
                               }
                             }}
                             className="w-[24px] h-[24px] flex items-center justify-center rounded-full hover:bg-white/10 active:bg-white/15 text-[#555350] hover:text-white transition-all duration-150"
                           >
-                            <ChevronDown className={`w-3.5 h-3.5 shrink-0 transition-transform duration-200 ${ chatActionMenuOpen ? 'rotate-180 text-white' : '' }`} strokeWidth={1.6} />
+                            <ChevronDown className={`w-3.5 h-3.5 shrink-0 transition-transform duration-200 ${ headerMenuOpen ? 'rotate-180 text-white' : '' }`} strokeWidth={1.6} />
                           </div>
 
                           <AnimatePresence>
@@ -8192,7 +9408,7 @@ function DeepWorkUI() {
                               exit={{ opacity: 0, y: -5, scale: 0.98 }}
                               transition={{ duration: 0.15, ease: "easeOut" }}
                               onClick={(e) => e.stopPropagation()}
-                              className="absolute left-0 top-[calc(100%+8px)] w-[300px] z-50 bg-[#1E1E1E]/95 backdrop-blur-xl border border-white/[0.08] rounded-xl shadow-[0_12px_36px_rgba(0,0,0,0.5)] p-1.5 flex flex-col max-h-[400px]"
+                              className="eterx-thread-switcher absolute left-0 top-[calc(100%+8px)] w-[300px] z-[80] bg-[#1E1E1E]/95 backdrop-blur-xl border border-white/[0.08] rounded-xl shadow-[0_12px_36px_rgba(0,0,0,0.5)] p-1.5 flex flex-col max-h-[400px]"
                             >
                               <div className="flex items-center justify-between px-2.5 mb-2 mt-1 h-6">
                                 {!headerSearchOpen ? (
@@ -8969,6 +10185,10 @@ function DeepWorkUI() {
                 <ProjectsView
                   selectedSection={selectedProjectSection}
                   setSelectedSection={setSelectedProjectSection}
+                  onOpenChat={(chatId) => {
+                    setActiveView('chat');
+                    loadChat(chatId);
+                  }}
                 />
               ) : (
                 <>
@@ -9647,7 +10867,7 @@ function DeepWorkUI() {
                     )}
 
                     {showScrollBottom && traceLogs.length > 0 && (
-                      <div className={`w-full ${ isRightPanelVisible ? 'max-w-[760px]' : 'max-w-[800px]' } mx-auto relative h-0 overflow-visible z-50`}>
+                      <div className={`w-full ${ isRightPanelVisible ? 'max-w-[760px]' : 'max-w-[800px]' } mx-auto relative h-0 overflow-visible z-20`}>
                         <button
                           type="button"
                           aria-label="Jump to latest message"
@@ -9659,7 +10879,7 @@ function DeepWorkUI() {
                               messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
                             }
                           }}
-                          className="absolute -top-36 right-5 flex h-8 w-8 items-center justify-center rounded-full border border-white/10 bg-[#252525]/95 text-white/70 shadow-[0_8px_20px_rgba(0,0,0,0.35)] backdrop-blur-xl transition-all hover:bg-[#333333] hover:text-white hover:scale-105 active:scale-95 cursor-pointer"
+                          className="eterx-chat-scroll-latest absolute -top-24 right-5 flex h-8 w-8 items-center justify-center rounded-full border border-white/10 bg-[#252525]/95 text-white/70 shadow-[0_8px_20px_rgba(0,0,0,0.35)] backdrop-blur-xl transition-all hover:bg-[#333333] hover:text-white hover:scale-105 active:scale-95 cursor-pointer"
                         >
                           <ChevronDown className="h-4 w-4" />
                         </button>
@@ -9925,15 +11145,29 @@ function DeepWorkUI() {
         loadChat={loadChat}
       />
 
+      <LiveMissionStrip
+        mission={liveMission}
+        visible={isLiveSessionActive}
+        onOpenChat={(chatId) => {
+          loadChat(chatId);
+          setActiveView('chat');
+        }}
+      />
+
       <FloatingLiveWidget
         liveState={liveState}
         liveMicVolume={liveMicVolume}
         liveModelVolume={liveModelVolume}
         isMicMuted={liveMicMuted}
         isSpeakerMuted={liveSpeakerMuted}
+        isCameraEnabled={liveCameraEnabled}
+        isScreenSharing={liveScreenShareEnabled}
         liveActiveTool={liveActiveTool}
+        liveActivityLabel={liveActivityLabel}
         onToggleMicMute={toggleLiveMicMute}
         onToggleSpeakerMute={toggleLiveSpeakerMute}
+        onToggleCamera={toggleLiveCamera}
+        onToggleScreenShare={toggleLiveScreenShare}
         onLiveStop={stopLiveSession}
       />
 

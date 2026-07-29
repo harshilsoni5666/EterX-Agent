@@ -69,11 +69,11 @@ export class ExecutionVelocityMonitor {
     }
     // File editing
     else if (/\b(edit|fix|change|update|modify|refactor|rename)\b/i.test(lower) && /\b(file|code|function|class|method)\b/i.test(lower)) {
-      this.taskProfile = { type: 'file_edit', expectedIterations: [2, 15], expectedTools: ['workspace_read_file', 'workspace_str_replace', 'workspace_apply_patch', 'workspace_write_file'] };
+      this.taskProfile = { type: 'file_edit', expectedIterations: [2, 15], expectedTools: ['workspace_read_file', 'workspace_apply_patch'] };
     }
     // Project creation
     else if (/\b(create|build|make|scaffold|generate|setup|initialize)\b.*\b(project|app|website|api|server|tool)\b/i.test(lower)) {
-      this.taskProfile = { type: 'project_creation', expectedIterations: [5, 40], expectedTools: ['workspace_write_file', 'system_shell'] };
+      this.taskProfile = { type: 'project_creation', expectedIterations: [5, 40], expectedTools: ['workspace_apply_patch', 'workspace_run_command'] };
     }
     // Research
     else if (/\b(research|find|search|look up|investigate|analyze|compare)\b/i.test(lower)) {
@@ -109,7 +109,7 @@ export class ExecutionVelocityMonitor {
     this.lastCallTime = Date.now();
 
     // Track file creation
-    if (['workspace_write_file', 'workspace_str_replace', 'workspace_apply_patch', 'workspace_edit_file', 'workspace_edit_many_files'].includes(tool) && success) {
+    if (tool === 'workspace_apply_patch' && success) {
       this.fileArtifactsCreated++;
     }
 

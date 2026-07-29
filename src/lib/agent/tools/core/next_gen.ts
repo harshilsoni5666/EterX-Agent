@@ -127,7 +127,7 @@ Define steps as an array:
 
 Steps execute IN ORDER. If any step fails, the macro stops.
 
-EXAMPLE: Research then write
+EXAMPLE: Research then create a report
 {
   steps: [
     { tool: "web_search", args: { query: "latest AI news" }, outputKey: "research" },

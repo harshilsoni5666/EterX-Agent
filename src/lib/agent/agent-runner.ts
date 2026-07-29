@@ -61,6 +61,10 @@ export interface AgentRunnerConfig {
   pinnedContext?: any;
 }
 
+type AsyncSettlement<T> =
+  | { status: 'fulfilled'; value: T }
+  | { status: 'rejected'; error: any };
+
 /**
  * Returns true only for Gemini models that support thinkingBudget.
  * Only gemini-2.5-pro and gemini-2.5-flash (non-lite) variants support it.
@@ -98,12 +102,52 @@ function resolveGeminiRunnerModel(config: AgentRunnerConfig): string {
     : GEMINI_THINK_FALLBACK_CHAIN[0];
 }
 
+function waitWithAbort(ms: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.reject(new Error('CANCELLED_BY_USER'));
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', onAbort);
+      reject(new Error('CANCELLED_BY_USER'));
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+function serializeToolResult(result: unknown, maxLength: number): string {
+  if (typeof result === 'string') return result.substring(0, maxLength);
+  try {
+    return JSON.stringify(result ?? {}).substring(0, maxLength);
+  } catch {
+    return String(result ?? '').substring(0, maxLength);
+  }
+}
+
+function normalizeConversationTurns(contents: any[]): any[] {
+  const normalized: any[] = [];
+  for (const turn of contents) {
+    if (!turn || !Array.isArray(turn.parts) || turn.parts.length === 0) continue;
+    const previous = normalized[normalized.length - 1];
+    if (previous?.role === turn.role) {
+      previous.parts.push(...turn.parts);
+    } else {
+      normalized.push({ ...turn, parts: [...turn.parts] });
+    }
+  }
+  return normalized;
+}
+
 // ═══════════════════════════════════════════════════════════════
 // Agent Runner Class
 // ═══════════════════════════════════════════════════════════════
 
 export class AgentRunner {
   private profile: AgentBuilderProfile | null = null;
+  private loadedAgentId: string | null = null;
   private resolvedTools: ResolvedTool[] = [];
   private toolPrompt = '';
   private cancelled = false;
@@ -120,6 +164,7 @@ export class AgentRunner {
     }
 
     this.profile = profile;
+    this.loadedAgentId = agentId;
     const { tools, toolPrompt } = resolveAgentTools(profile);
     this.resolvedTools = tools;
     this.toolPrompt = toolPrompt;
@@ -300,7 +345,8 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
 
     if (isFlow) {
       this.cancelled = false;
-      this.cancelController = new AbortController();
+      const flowAbortController = new AbortController();
+      this.cancelController = flowAbortController;
       const userMessage = messages[messages.length - 1]?.content || '';
       const agentName = config.agentId;
       yield {
@@ -365,69 +411,68 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
         }
       };
 
-      const runPromise = agentBuilderRunFlowTool.execute(
-        { flowId: config.agentId, input: userMessage },
-        {
-          projectId: config.chatId || `flow-${config.agentId}`,
-          runtimeSettings: config.runtimeSettings,
-          pinnedContext: config.pinnedContext,
-          runLocation: config.runLocation,
-          abortSignal: this.cancelController?.signal,
-          signal: this.cancelController?.signal,
-          _onTrace: onTrace
-        }
-      );
-
-      while (true) {
-        while (eventQueue.length > 0) {
-          yield eventQueue.shift()!;
-        }
-
-        const settled = await Promise.race([
-          runPromise.then(
-            value => ({ status: 'fulfilled' as const, value }),
-            error => ({ status: 'rejected' as const, error }),
-          ),
-          new Promise<null>(resolve => setTimeout(() => resolve(null), 100)),
-        ]);
-
-        if (settled) {
-          while (eventQueue.length > 0) {
-            yield eventQueue.shift()!;
+      try {
+        let flowSettled: AsyncSettlement<any> | null = null;
+        void agentBuilderRunFlowTool.execute(
+          { flowId: config.agentId, input: userMessage },
+          {
+            projectId: config.chatId || `flow-${config.agentId}`,
+            runtimeSettings: config.runtimeSettings,
+            pinnedContext: config.pinnedContext,
+            runLocation: config.runLocation,
+            abortSignal: flowAbortController.signal,
+            signal: flowAbortController.signal,
+            _onTrace: onTrace
           }
+        ).then(
+          value => { flowSettled = { status: 'fulfilled', value }; },
+          error => { flowSettled = { status: 'rejected', error }; },
+        );
 
-          if (settled.status === 'rejected') {
-            throw settled.error;
-          }
-
-          const flowResult = settled.value;
-          if (flowResult.success) {
-            yield {
-              type: 'text',
-              text: flowResult.finalOutput,
-              agentName,
-              timestamp: Date.now()
-            };
-          } else {
-            yield {
-              type: 'error',
-              text: flowResult.message || 'Flow execution failed.',
-              timestamp: Date.now()
-            };
-          }
-          break;
+        while (!flowSettled) {
+          const pendingEvents = eventQueue.splice(0, eventQueue.length);
+          for (const event of pendingEvents) yield event;
+          await new Promise(resolve => setTimeout(resolve, 100));
         }
+
+        const pendingEvents = eventQueue.splice(0, eventQueue.length);
+        for (const event of pendingEvents) yield event;
+
+        const settledFlow = flowSettled as AsyncSettlement<any>;
+        if (settledFlow.status === 'rejected') throw settledFlow.error;
+
+        const flowResult = settledFlow.value;
+        if (flowResult.success) {
+          yield {
+            type: 'text',
+            text: flowResult.finalOutput,
+            agentName,
+            timestamp: Date.now()
+          };
+        } else {
+          yield {
+            type: 'error',
+            text: flowResult.message || 'Flow execution failed.',
+            timestamp: Date.now()
+          };
+        }
+        return;
+      } finally {
+        if (this.cancelController === flowAbortController) this.cancelController = null;
       }
-      return;
     }
 
-    if (!this.profile) {
+    if (!this.profile || this.loadedAgentId !== config.agentId) {
       await this.loadAgent(config.agentId);
     }
 
     this.cancelled = false;
-    this.cancelController = new AbortController();
-    const maxIter = config.maxIterations || 20;
+    const runAbortController = new AbortController();
+    this.cancelController = runAbortController;
+    const requestedMaxIterations = Number(config.maxIterations ?? 20);
+    const maxIter = Number.isFinite(requestedMaxIterations)
+      ? Math.max(1, Math.min(100, Math.floor(requestedMaxIterations)))
+      : 20;
     const agentName = this.profile?.name || config.agentId;
     const TOOL_TIMEOUT_MS = 45_000; // Default non-terminal tool guard
 
@@ -454,14 +499,15 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
 
     try {
       const ai = new GoogleGenAI({ apiKey: lease.apiKey });
-      let systemInstruction = '';
-      let funcDecls: any[] = [];
+      const systemInstruction = this.buildSystemInstruction();
+      const funcDecls = this.buildFunctionDeclarations();
+      const resolvedModel = resolveGeminiRunnerModel(config);
 
       // Format conversation history
-      const contents = messages.map(m => ({
+      let contents = normalizeConversationTurns(messages.map(m => ({
         role: m.role === 'user' ? 'user' as const : 'model' as const,
         parts: [{ text: m.content }],
-      }));
+      })));
 
       // ═══════════════════════════════════════════════════════════════
       // CONTEXT COMPACTION — keep the agent fast on long conversations
@@ -475,20 +521,17 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
         const trimEnd = contents.length - keepLast;
         if (trimEnd > trimStart) {
           // Compact middle turns — keep role/structure but trim large payloads
-          for (let i = trimStart; i < trimEnd; i++) {
-            const turn = contents[i];
-            if (turn.parts && Array.isArray(turn.parts)) {
-              for (let j = 0; j < turn.parts.length; j++) {
-                const part = turn.parts[j] as any;
-                if (part.text && part.text.length > 500) {
-                  turn.parts[j] = { text: part.text.substring(0, 200) + '\n...[earlier context compacted]' } as any;
-                }
-                if (part.functionResponse) {
-                  part.functionResponse.response = { result: '[compacted]' };
-                }
-              }
-            }
-          }
+          const omittedTurns = trimEnd - trimStart;
+          contents = normalizeConversationTurns([
+            ...contents.slice(0, keepFirst),
+            {
+              role: 'user',
+              parts: [{
+                text: `[SYSTEM - EARLIER CONVERSATION COMPACTED]\n${omittedTurns} older turns were omitted to keep this run responsive. Use the retained original and recent turns as the authoritative context.`,
+              }],
+            },
+            ...contents.slice(trimEnd),
+          ]);
           console.log(`[AgentRunner] Compacted ${trimEnd - trimStart} middle turns (${contents.length} total)`);
         }
       }
@@ -504,19 +547,20 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
       let consecutiveErrors = 0;
       let totalToolCalls = 0;
       let generateConfig: any = null; // Hoisted so catch block can inspect/modify it
+      let thinkingConfigDisabled = false;
+      let hadSuccessfulModelResponse = false;
+      let completedNaturally = false;
+      let iterationsStarted = 0;
 
       // ReAct loop
       for (let iteration = 0; iteration < maxIter; iteration++) {
+        iterationsStarted++;
         if (this.cancelled) {
           yield { type: 'status', text: 'Cancelled by user.', timestamp: Date.now() };
           break;
         }
 
-        systemInstruction = this.buildSystemInstruction();
-        funcDecls = this.buildFunctionDeclarations();
-
         try {
-          const resolvedModel = resolveGeminiRunnerModel(config);
           const supportsThinking = modelSupportsThinking(resolvedModel);
 
           generateConfig = {
@@ -525,11 +569,12 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
             config: {
               systemInstruction,
               temperature: config.temperature ?? 0.4,
+              abortSignal: runAbortController.signal,
             },
           };
 
           // Only add thinkingConfig for models that support it
-          if (supportsThinking) {
+          if (supportsThinking && !thinkingConfigDisabled) {
             const level = config.pinnedContext?.thinkingLevel || config.pinnedContext?.selectedThinkingLevel || 'medium';
             let budget = 2048;
             if (level === 'low') budget = 1024;
@@ -545,23 +590,33 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
 
           const responseStream = await ai.models.generateContentStream(generateConfig);
           const streamedParts: any[] = [];
-          let liveStreamedText = false;
+          let latestCandidate: any = null;
+          let streamedThought = false;
+          let bufferedVisibleText = '';
           for await (const chunk of responseStream as any) {
-            const parts = chunk?.candidates?.[0]?.content?.parts || [];
+            latestCandidate = chunk?.candidates?.[0] || latestCandidate;
+            const parts = latestCandidate?.content?.parts || [];
             for (const part of parts) {
               streamedParts.push(part);
               if (part.thought && part.text) {
-                liveStreamedText = true;
+                streamedThought = true;
                 yield { type: 'status', text: String(part.text).substring(0, 500), agentName, timestamp: Date.now() };
               } else if (part.text && !part.thought) {
-                liveStreamedText = true;
-                yield { type: 'text', text: part.text, agentName, timestamp: Date.now() };
+                // Buffer visible text until the response boundary is known.
+                // Text accompanying a function call is a work note, not a
+                // final answer, and cannot be retracted by this event protocol.
+                bufferedVisibleText += String(part.text);
               }
             }
           }
-          const response: any = { candidates: [{ content: { parts: streamedParts } }] };
+          const response: any = {
+            candidates: [{
+              ...(latestCandidate || {}),
+              content: { ...(latestCandidate?.content || {}), parts: streamedParts },
+            }],
+          };
           const candidate = response?.candidates?.[0];
-          if (!candidate?.content?.parts) {
+          if (!Array.isArray(candidate?.content?.parts) || candidate.content.parts.length === 0) {
             // Check for safety/blocking reasons
             const finishReason = candidate?.finishReason;
             if (finishReason === 'SAFETY') {
@@ -569,16 +624,37 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
             } else {
               yield { type: 'text', text: 'Agent completed with no output.', timestamp: Date.now() };
             }
+            hadSuccessfulModelResponse = true;
+            completedNaturally = true;
             break;
           }
 
+          hadSuccessfulModelResponse = true;
           consecutiveErrors = 0; // Reset on success
           let hasToolCalls = false;
           const toolResultParts: any[] = [];
+          const responseHasToolCalls = candidate.content.parts.some((part: any) => !!part.functionCall);
+          let visibleTextEmitted = false;
+          if (bufferedVisibleText) {
+            visibleTextEmitted = true;
+            yield responseHasToolCalls
+              ? {
+                  type: 'status',
+                  text: bufferedVisibleText.substring(0, 500),
+                  agentName,
+                  timestamp: Date.now(),
+                }
+              : {
+                  type: 'text',
+                  text: bufferedVisibleText,
+                  agentName,
+                  timestamp: Date.now(),
+                };
+          }
 
           for (const part of candidate.content.parts) {
             // Extract thinking/reasoning trace
-            if ((part as any).thought && !liveStreamedText) {
+            if ((part as any).thought && !streamedThought) {
               yield {
                 type: 'status',
                 text: String((part as any).thought).substring(0, 500),
@@ -588,7 +664,7 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
             }
 
             // Text response
-            if (part.text && !liveStreamedText) {
+            if (part.text && !part.thought && !visibleTextEmitted) {
               yield { type: 'text', text: part.text, agentName, timestamp: Date.now() };
             }
 
@@ -620,30 +696,49 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
                     timestamp: Number(trace.timestamp || Date.now()),
                   } as AgentRunnerEvent);
                 };
-                const execPromise = this.executeToolSafe(name || '', args || {}, config, pushSideEvent);
-                const toolTimeoutMs = this.resolveToolTimeoutMs(name || '', args || {}, TOOL_TIMEOUT_MS);
-                const timeoutPromise = new Promise<never>((_, reject) =>
-                  setTimeout(() => reject(new Error(`Tool "${name}" timed out after ${toolTimeoutMs / 1000}s`)), toolTimeoutMs)
+                const toolAbortController = new AbortController();
+                const abortTool = () => toolAbortController.abort();
+                runAbortController.signal.addEventListener('abort', abortTool, { once: true });
+                const execPromise = this.executeToolSafe(
+                  name || '',
+                  args || {},
+                  config,
+                  pushSideEvent,
+                  toolAbortController.signal,
                 );
-                const resultPromise = Promise.race([execPromise, timeoutPromise]);
+                const toolTimeoutMs = this.resolveToolTimeoutMs(name || '', args || {}, TOOL_TIMEOUT_MS);
+                let toolSettled: AsyncSettlement<unknown> | null = null;
+                const timeoutHandle = setTimeout(() => {
+                  toolAbortController.abort();
+                  toolSettled = {
+                    status: 'rejected',
+                    error: new Error(`Tool "${name}" timed out after ${toolTimeoutMs / 1000}s`),
+                  };
+                }, toolTimeoutMs);
+                void execPromise.then(
+                  value => {
+                    if (!toolSettled) toolSettled = { status: 'fulfilled', value };
+                  },
+                  error => {
+                    if (!toolSettled) toolSettled = { status: 'rejected', error };
+                  },
+                );
 
-                while (true) {
-                  const settled = await Promise.race([
-                    resultPromise.then(
-                      value => ({ status: 'fulfilled' as const, value }),
-                      error => ({ status: 'rejected' as const, error }),
-                    ),
-                    new Promise<null>(resolve => setTimeout(() => resolve(null), 100)),
-                  ]);
-
-                  while (sideEvents.length > 0) {
-                    yield sideEvents.shift()!;
+                try {
+                  while (!toolSettled) {
+                    const pendingEvents = sideEvents.splice(0, sideEvents.length);
+                    for (const event of pendingEvents) yield event;
+                    await new Promise(resolve => setTimeout(resolve, 100));
                   }
 
-                  if (!settled) continue;
-                  if (settled.status === 'rejected') throw settled.error;
-                  result = settled.value;
-                  break;
+                  const pendingEvents = sideEvents.splice(0, sideEvents.length);
+                  for (const event of pendingEvents) yield event;
+                  const settledTool = toolSettled as AsyncSettlement<unknown>;
+                  if (settledTool.status === 'rejected') throw settledTool.error;
+                  result = settledTool.value;
+                } finally {
+                  clearTimeout(timeoutHandle);
+                  runAbortController.signal.removeEventListener('abort', abortTool);
                 }
               } catch (err: any) {
                 result = { error: err.message || 'Tool execution failed' };
@@ -658,13 +753,12 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
               };
 
               // Build function response for next turn
-              const resultStr = typeof result === 'string'
-                ? result
-                : JSON.stringify(result || {}).substring(0, 16000);
+              const resultStr = serializeToolResult(result, 16000);
               toolResultParts.push({
                 functionResponse: {
                   name,
                   response: { result: resultStr },
+                  ...(part.functionCall.id ? { id: part.functionCall.id } : {}),
                 },
               });
             }
@@ -685,6 +779,7 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
           }
 
           // No tool calls — agent is done
+          completedNaturally = true;
           break;
 
         } catch (err: any) {
@@ -699,6 +794,7 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
           ) {
             if (generateConfig?.config?.thinkingConfig) {
               delete generateConfig.config.thinkingConfig;
+              thinkingConfigDisabled = true;
               consecutiveErrors = 0;
               console.warn(`[AgentRunner] thinkingConfig not supported by model "${generateConfig.model}" — retrying without it`);
               continue;
@@ -724,13 +820,21 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
 
           // Transient errors — exponential backoff
           if (errMsg.includes('429') || errMsg.includes('503') || errMsg.includes('RESOURCE_EXHAUSTED')) {
+            if (consecutiveErrors >= 3) {
+              yield {
+                type: 'error',
+                text: `Stopping after ${consecutiveErrors} consecutive model service errors: ${errMsg.substring(0, 240)}`,
+                timestamp: Date.now(),
+              };
+              break;
+            }
             const backoffMs = Math.min(2000 * Math.pow(2, consecutiveErrors - 1), 30000);
             yield {
               type: 'status',
               text: `Rate limited. Retrying in ${Math.round(backoffMs / 1000)}s... (attempt ${consecutiveErrors})`,
               timestamp: Date.now(),
             };
-            await new Promise(r => setTimeout(r, backoffMs));
+            await waitWithAbort(backoffMs, runAbortController.signal);
             continue;
           }
 
@@ -745,12 +849,25 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
         }
       }
 
-      apiKeyPool.reportSuccess(sessionId);
+      if (
+        iterationsStarted >= maxIter &&
+        !completedNaturally &&
+        totalToolCalls > 0 &&
+        !this.cancelled
+      ) {
+        yield {
+          type: 'error',
+          text: `${agentName} reached the ${maxIter}-iteration safety limit before producing a final response.`,
+          agentName,
+          timestamp: Date.now(),
+        };
+      }
+      if (hadSuccessfulModelResponse) apiKeyPool.reportSuccess(sessionId);
       yield { type: 'done', agentName, agentId: config.agentId, timestamp: Date.now() };
 
     } finally {
       apiKeyPool.releaseKey(sessionId);
-      this.cancelController = null;
+      if (this.cancelController === runAbortController) this.cancelController = null;
     }
   }
 
@@ -782,7 +899,8 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
     toolName: string,
     args: any,
     config: AgentRunnerConfig,
-    onTrace?: (trace: any) => void
+    onTrace?: (trace: any) => void,
+    abortSignal?: AbortSignal,
   ): Promise<unknown> {
     const agentId = config.agentId;
     const chatId = config.chatId || `custom-agent-${agentId}`;
@@ -878,9 +996,9 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
       allowRawCommand: isSandboxRun ? false : config.pinnedContext?.allowRawCommand !== false,
       allowVcs: isSandboxRun ? false : config.pinnedContext?.allowVcs !== false,
       _onTrace: onTrace,
-      abortSignal: this.cancelController?.signal,
-      signal: this.cancelController?.signal,
-      isCancelled: () => this.cancelled || this.cancelController?.signal.aborted === true,
+      abortSignal: abortSignal || this.cancelController?.signal,
+      signal: abortSignal || this.cancelController?.signal,
+      isCancelled: () => this.cancelled || abortSignal?.aborted === true || this.cancelController?.signal.aborted === true,
     };
     const canonicalToolName = normalizeRegistryToolName(toolName);
     const registryTool = globalToolRegistry.getTool(canonicalToolName);
@@ -932,24 +1050,26 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
  * Deep-clean a JSON schema for strict Gemini API compatibility.
  *
  * Gemini function declarations only support a narrow subset of JSON Schema:
- *   - type: STRING | NUMBER | INTEGER | BOOLEAN | OBJECT
+ *   - type: STRING | NUMBER | INTEGER | BOOLEAN | OBJECT | ARRAY
  *   - properties (for OBJECT)
+ *   - items (for ARRAY)
  *   - description
  *   - enum
+ *   - required
  *   - nullable
  *
  * Everything else — $schema, additionalProperties, default, format, examples,
  * $ref, items, required, anyOf, oneOf, allOf, patternProperties, minItems,
  * maxItems, minimum, maximum, pattern — must be stripped or the API returns 400.
  *
- * Array parameters are downgraded to STRING with a note in the description,
- * because Gemini function calling doesn't support ARRAY type natively.
+ * Arrays retain their item schema so generated arguments match runtime
+ * validation.
  */
 const GEMINI_BLOCKED_KEYS = new Set([
   '$schema', '$ref', '$id', '$comment', '$defs', 'definitions',
   'additionalProperties', 'additionalItems', 'patternProperties',
   'default', 'format', 'examples', 'example',
-  'required', 'items', 'prefixItems',
+  'prefixItems',
   'anyOf', 'oneOf', 'allOf', 'if', 'then', 'else', 'not',
   'minItems', 'maxItems', 'minLength', 'maxLength',
   'minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum',
@@ -966,10 +1086,10 @@ function cleanSchemaForGemini(schema: any, depth = 0): any {
 
   // Handle array type → downgrade to STRING with hint
   if (schema.type === 'array') {
-    const itemDesc = schema.items?.description || schema.items?.type || 'items';
     return {
-      type: 'STRING',
-      description: `${schema.description || ''} (JSON array of ${itemDesc})`.trim(),
+      type: 'ARRAY',
+      items: cleanSchemaForGemini(schema.items || { type: 'string' }, depth + 1),
+      ...(schema.description ? { description: String(schema.description).substring(0, 400) } : {}),
       ...(schema.nullable ? { nullable: true } : {}),
     };
   }
@@ -993,7 +1113,7 @@ function cleanSchemaForGemini(schema: any, depth = 0): any {
       const t = String(value).toUpperCase();
       const TYPE_MAP: Record<string, string> = {
         STRING: 'STRING', NUMBER: 'NUMBER', INTEGER: 'INTEGER',
-        BOOLEAN: 'BOOLEAN', OBJECT: 'OBJECT', ARRAY: 'STRING',
+        BOOLEAN: 'BOOLEAN', OBJECT: 'OBJECT', ARRAY: 'ARRAY',
         NULL: 'STRING',
       };
       cleaned.type = TYPE_MAP[t] || 'STRING';
@@ -1024,6 +1144,14 @@ function cleanSchemaForGemini(schema: any, depth = 0): any {
       cleaned.enum = value.filter(v => typeof v === 'string' || typeof v === 'number');
       continue;
     }
+    if (key === 'required' && Array.isArray(value)) {
+      cleaned.required = value.filter(v => typeof v === 'string');
+      continue;
+    }
+    if (key === 'items' && typeof value === 'object' && value !== null) {
+      cleaned.items = cleanSchemaForGemini(value, depth + 1);
+      continue;
+    }
     if (key === 'nullable' && typeof value === 'boolean') {
       cleaned.nullable = value;
       continue;
@@ -1040,6 +1168,13 @@ function cleanSchemaForGemini(schema: any, depth = 0): any {
         cleaned[key] = value;
       }
     }
+  }
+
+  if (Array.isArray(cleaned.required) && cleaned.properties) {
+    cleaned.required = cleaned.required.filter((name: string) =>
+      Object.prototype.hasOwnProperty.call(cleaned.properties, name)
+    );
+    if (cleaned.required.length === 0) delete cleaned.required;
   }
 
   return cleaned;
@@ -1060,6 +1195,11 @@ function addUiTraceFieldsToSchema(schema: any): any {
     enum: ['computer', 'agent', 'terminal', 'image', 'file_read', 'file_create', 'file_edit', 'folder_read', 'folder_create', 'search', 'web_search', 'verification'],
     description: 'Timeline icon category: computer, agent, terminal, image, file_read, file_create, file_edit, folder_read, folder_create, search, web_search, or verification.',
   };
+  next.required = Array.from(new Set([
+    ...(Array.isArray(next.required) ? next.required : []),
+    'uiActionText',
+    'uiIcon',
+  ]));
 
   return next;
 }

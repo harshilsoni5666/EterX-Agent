@@ -2,29 +2,12 @@
 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ChevronDown, Plus, Mic, ArrowUp, Check, ChevronRight, ChevronLeft, Calendar, Clock, Bot, Play, Trash2, ExternalLink, AlertCircle, CheckCircle2, Loader2 } from 'lucide-react';
+import { ChevronDown, Plus, Mic, ArrowUp, Check, ChevronRight, ChevronLeft, Calendar, Clock, Bot, Play, Trash2, ExternalLink, AlertCircle, CheckCircle2, Loader2, Search } from 'lucide-react';
 import { PremiumSend } from '../ui/premium-icons';
 import { Shimmer } from '../ui/shimmer';
+import { normalizeScheduledTask, type ScheduledTaskRecord } from '../../lib/scheduled-tasks';
 
-export interface ScheduledTaskItem {
-  id: string;
-  title: string;
-  description: string;
-  model: string;
-  agentId: string | null;
-  agentName: string;
-  priority: 'low' | 'medium' | 'high';
-  recurrence: string;
-  triggerTime: string;
-  dateOption: 'today' | 'tomorrow' | 'custom';
-  customDate?: string;
-  sources: Array<{ id: string; name: string; type: string; path: string }>;
-  createdAt: number;
-  scheduledTimestamp: number;
-  status: 'scheduled' | 'queued' | 'running' | 'completed' | 'failed';
-  executedAt?: number;
-  chatId?: string;
-}
+export type ScheduledTaskItem = ScheduledTaskRecord;
 import {
   MAIN_AGENT_MODEL_OPTIONS,
   doesModelSupportThinking as modelSupportsThinking,
@@ -90,6 +73,16 @@ const MODEL_PROVIDER_LABEL: Record<MainAgentProvider, string> = {
   openrouter: 'OpenRouter',
   groq: 'Groq',
   anthropic: 'Anthropic',
+  deepseek: 'DeepSeek', grok: 'xAI Grok', cerebras: 'Cerebras', together: 'Together AI',
+  fireworks: 'Fireworks AI', sambanova: 'SambaNova', perplexity: 'Perplexity',
+  deepinfra: 'DeepInfra', huggingface: 'Hugging Face', nvidia: 'NVIDIA NIM',
+  cloudflare: 'Cloudflare Workers AI', ollama: 'Ollama Local', lmstudio: 'LM Studio',
+  vllm: 'vLLM', llamacpp: 'llama.cpp',
+  novita: 'Novita AI', qwen: 'Qwen Cloud', mimo: 'Xiaomi MiMo',
+  tokenhub: 'Tencent TokenHub', zai: 'Z.AI / GLM', kimi: 'Kimi / Moonshot',
+  stepfun: 'StepFun', minimax: 'MiniMax', ollamacloud: 'Ollama Cloud',
+  arcee: 'Arcee AI', gmi: 'GMI Cloud', kilo: 'Kilo Gateway',
+  opencode: 'OpenCode Zen', upstage: 'Upstage Solar', custom: 'Custom endpoint',
 };
 
 const readStringRecord = (storageKey: string): Record<string, string> => {
@@ -198,14 +191,17 @@ const emitModelSettingsUpdate = (detail: unknown) => {
 interface ProjectsViewProps {
   selectedSection: string;
   setSelectedSection: (section: string) => void;
+  onOpenChat?: (chatId: string) => void;
 }
 
 export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
   selectedSection,
   setSelectedSection,
+  onOpenChat,
 }) => {
   const [inputValue, setInputValue] = useState("");
   const [showModelMenu, setShowModelMenu] = useState(false);
+  const [modelSearch, setModelSearch] = useState('');
   const [showThinkingLevels, setShowThinkingLevels] = useState(false);
   const modelSelectorRef = useRef<HTMLDivElement>(null);
 
@@ -225,6 +221,10 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
 
   const [priority, setPriority] = useState('medium');
   const [formModel, setFormModel] = useState(AUTO_MODEL_SELECTION);
+  const [formThinkingLevel, setFormThinkingLevel] = useState<MainAgentThinkingLevel>(() => {
+    if (typeof window === 'undefined') return 'medium';
+    return normalizeMainAgentThinkingLevel(window.localStorage.getItem('eterx_chat_thinking_level') || 'medium');
+  });
   const [triggerTime, setTriggerTime] = useState('09:00');
 
   // Agent selector state
@@ -245,7 +245,8 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
   const [scheduledTasks, setScheduledTasks] = useState<ScheduledTaskItem[]>(() => {
     if (typeof window !== 'undefined') {
       try {
-        return JSON.parse(localStorage.getItem('eterx_scheduled_tasks') || '[]');
+        const saved = JSON.parse(localStorage.getItem('eterx_scheduled_tasks') || '[]');
+        return Array.isArray(saved) ? saved.map(normalizeScheduledTask) : [];
       } catch {
         return [];
       }
@@ -267,17 +268,23 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
 
   // Load custom agents
   useEffect(() => {
-    try {
-      const custom = JSON.parse(localStorage.getItem('eterx_agents') || '[]');
-      const formatted = custom
-        .filter((a: any) => a.id !== 'default-1' && a.isSetup !== false)
-        .map((a: any) => ({ id: a.id as string, name: a.name as string }));
-      setAvailableAgents([
-        { id: null, name: 'General' },
-        { id: 'coding', name: 'Coding' },
-        ...formatted,
-      ]);
-    } catch { }
+    const refreshAgents = () => {
+      try {
+        const custom = JSON.parse(localStorage.getItem('eterx_agents') || '[]');
+        const formatted = custom
+          .filter((a: any) => a.id !== 'default-1' && a.isSetup !== false)
+          .map((a: any) => ({ id: a.id as string, name: a.name as string }));
+        setAvailableAgents([
+          { id: null, name: 'General' },
+          { id: 'coding', name: 'Coding' },
+          { id: 'autonomous', name: 'Autonomous' },
+          ...formatted,
+        ]);
+      } catch { }
+    };
+    refreshAgents();
+    window.addEventListener('eterx_agents_updated', refreshAgents);
+    return () => window.removeEventListener('eterx_agents_updated', refreshAgents);
   }, []);
 
   // Listen for background task updates
@@ -285,7 +292,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
     const handleSync = () => {
       try {
         const tasks = JSON.parse(localStorage.getItem('eterx_scheduled_tasks') || '[]');
-        setScheduledTasks(tasks);
+        setScheduledTasks(Array.isArray(tasks) ? tasks.map(normalizeScheduledTask) : []);
       } catch { }
     };
     window.addEventListener('eterx_scheduled_tasks_updated', handleSync);
@@ -375,6 +382,46 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
       .sort((a, b) => (b.executedAt || b.createdAt) - (a.executedAt || a.createdAt));
   }, [scheduledTasks]);
 
+  const renderRunHistory = useCallback((task: ScheduledTaskItem) => {
+    const recentRuns = [...(task.history || [])].reverse().slice(0, 3);
+    if (recentRuns.length === 0) return null;
+    return (
+      <div className="flex flex-col gap-1.5 pt-2 border-t border-white/[0.04]">
+        <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-white/35">
+          Recent runs
+        </span>
+        {recentRuns.map(run => (
+          <div key={run.id} className="flex items-center justify-between gap-3 rounded-lg bg-white/[0.025] px-2.5 py-1.5">
+            <div className="min-w-0 flex items-center gap-2">
+              <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+                run.status === 'completed' ? 'bg-emerald-400' :
+                run.status === 'failed' ? 'bg-rose-400' :
+                'bg-amber-400'
+              }`} />
+              <span className="truncate text-[10.5px] text-white/55">
+                {new Date(run.startedAt).toLocaleString([], {
+                  month: 'short',
+                  day: 'numeric',
+                  hour: '2-digit',
+                  minute: '2-digit',
+                })} · {run.agentName} · {run.status}
+              </span>
+            </div>
+            {run.chatId && onOpenChat && (
+              <button
+                type="button"
+                onClick={() => onOpenChat(run.chatId)}
+                className="shrink-0 text-[10.5px] font-medium text-white/55 hover:text-white transition-colors cursor-pointer"
+              >
+                Open chat
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
+    );
+  }, [onOpenChat]);
+
   const handleScheduleTaskSubmit = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     if (!taskTitle.trim()) return;
@@ -386,6 +433,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
       title: taskTitle.trim(),
       description: taskDescription.trim(),
       model: formModel,
+      thinkingLevel: formThinkingLevel,
       agentId: formAgent.id,
       agentName: formAgent.name,
       priority: priority as 'low' | 'medium' | 'high',
@@ -503,7 +551,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
         setShowThinkingLevels(false);
       }
       if (
-        (activePopover === 'model' || activePopover === 'agent' || activePopover === 'priority') &&
+        (activePopover === 'model' || activePopover === 'thinking' || activePopover === 'agent' || activePopover === 'priority') &&
         detailsRef.current && !detailsRef.current.contains(e.target as Node)
       ) {
         setActivePopover(null);
@@ -588,6 +636,19 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
 
   const getModelOptionLabel = useCallback((option: ChatModelOption) => option.label, []);
   const modelDisplayLabel = getModelOptionLabel(selectedModel);
+  const selectedFormModel = useMemo(
+    () => allModelOptions.find(option => option.optionKey === formModel) || autoModelOption,
+    [allModelOptions, autoModelOption, formModel],
+  );
+  const formThinkingOptions = useMemo(
+    () => getThinkingLevelOptions(selectedFormModel),
+    [getThinkingLevelOptions, selectedFormModel],
+  );
+
+  useEffect(() => {
+    if (formThinkingOptions.some(option => option.id === formThinkingLevel)) return;
+    setFormThinkingLevel(formThinkingOptions[1]?.id || formThinkingOptions[0]?.id || 'medium');
+  }, [formThinkingLevel, formThinkingOptions]);
 
   const selectChatModelOption = useCallback((option: ChatModelOption) => {
     if (typeof window !== 'undefined') {
@@ -644,7 +705,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
   ], [myListTasks.length, queueTasks.length, completedTasks.length]);
 
   const getRecurrenceLabel = (value: string) => {
-    if (value === 'none') return 'None';
+    if (value === 'none' || value === 'once') return 'None';
     if (value.startsWith('custom:')) {
       return `Custom (${ value.split(':')[1] })`;
     }
@@ -882,7 +943,10 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
                           <div ref={modelSelectorRef} className="relative min-w-0 overflow-visible">
                             <button
                               type="button"
-                              onClick={() => setShowModelMenu(prev => !prev)}
+                              onClick={() => {
+                                setShowModelMenu(prev => !prev);
+                                setModelSearch('');
+                              }}
                               className="flex items-center gap-1.5 text-[11.5px] font-semibold text-[#F4F4F4] bg-[#2D2D2D] hover:bg-[#333333] px-3 py-1 rounded-full cursor-pointer select-none transition-colors mr-2.5 group relative"
                             >
                               <span className="truncate max-w-[120px]">{modelDisplayLabel}</span>
@@ -901,8 +965,26 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
                                   aria-label="Model settings"
                                   onClick={(e) => e.stopPropagation()}
                                 >
+                                  {allModelOptions.length > 6 && (
+                                    <div className="relative mb-1 shrink-0">
+                                      <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#777]" />
+                                      <input
+                                        autoFocus
+                                        value={modelSearch}
+                                        onChange={event => setModelSearch(event.target.value)}
+                                        onKeyDown={event => {
+                                          if (event.key === 'Escape') setShowModelMenu(false);
+                                        }}
+                                        placeholder={`Search ${allModelOptions.length} models`}
+                                        className="h-9 w-full rounded-lg border border-white/[0.08] bg-[#171717] pl-8 pr-3 text-[12px] text-[#F4F1EA] outline-none placeholder:text-[#777] focus:border-white/[0.18]"
+                                      />
+                                    </div>
+                                  )}
                                   <div className="max-h-[280px] overflow-y-auto pr-1 eterx-scrollbar">
-                                    {allModelOptions.map((option) => {
+                                    {allModelOptions.filter(option => {
+                                      const query = modelSearch.trim().toLowerCase();
+                                      return !query || `${getModelOptionLabel(option)} ${MODEL_PROVIDER_LABEL[option.provider]} ${option.modelName}`.toLowerCase().includes(query);
+                                    }).map((option) => {
                                       const selected = option.optionKey === selectedModel.optionKey;
                                       const optionLabel = getModelOptionLabel(option);
                                       return (
@@ -926,6 +1008,12 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
                                         </button>
                                       );
                                     })}
+                                    {allModelOptions.filter(option => {
+                                      const query = modelSearch.trim().toLowerCase();
+                                      return !query || `${getModelOptionLabel(option)} ${MODEL_PROVIDER_LABEL[option.provider]} ${option.modelName}`.toLowerCase().includes(query);
+                                    }).length === 0 && (
+                                      <div className="px-2.5 py-4 text-center text-[11px] text-[#A3A19E]">No matching models</div>
+                                    )}
                                   </div>
 
                                   {doesModelSupportThinking(selectedModel) && (
@@ -1095,6 +1183,53 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
                         </div>
 
                         {/* Separator Line */}
+                        <div className="h-px bg-white/[0.03] mx-3.5" />
+
+                        {/* Details - Thinking Row */}
+                        <div className="relative">
+                          <button
+                            type="button"
+                            onClick={() => setActivePopover(prev => prev === 'thinking' ? null : 'thinking')}
+                            className="w-full flex items-center justify-between px-3.5 py-2 hover:bg-white/[0.02] transition-colors cursor-pointer"
+                          >
+                            <span className="text-[12.5px] text-white/50 font-medium">Thinking</span>
+                            <div className="flex items-center gap-1">
+                              <span className="text-[12.5px] text-white/90 font-medium capitalize">{formThinkingLevel}</span>
+                              <ChevronDown className="w-3.5 h-3.5 text-white/40" />
+                            </div>
+                          </button>
+                          <AnimatePresence>
+                            {activePopover === 'thinking' && (
+                              <motion.div
+                                initial={{ opacity: 0, y: 4, scale: 0.99 }}
+                                animate={{ opacity: 1, y: 0, scale: 1 }}
+                                exit={{ opacity: 0, y: 4, scale: 0.99 }}
+                                transition={{ duration: 0.12 }}
+                                className="absolute right-3.5 bottom-[calc(100%+4px)] z-[130] flex w-[180px] flex-col rounded-xl border border-white/[0.08] bg-[#161616]/95 backdrop-blur-xl p-1 shadow-[0_12px_36px_rgba(0,0,0,0.5)]"
+                              >
+                                {formThinkingOptions.map(option => (
+                                  <button
+                                    type="button"
+                                    key={option.id}
+                                    onClick={() => {
+                                      setFormThinkingLevel(option.id);
+                                      setActivePopover(null);
+                                    }}
+                                    className={`flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-[12px] text-left capitalize transition-colors cursor-pointer ${
+                                      option.id === formThinkingLevel
+                                        ? 'bg-white/[0.08] text-white font-medium'
+                                        : 'text-white/70 hover:bg-white/[0.04] hover:text-white'
+                                    }`}
+                                  >
+                                    <span>{option.label || option.id}</span>
+                                    {option.id === formThinkingLevel && <Check className="w-3.5 h-3.5 text-white" strokeWidth={2.2} />}
+                                  </button>
+                                ))}
+                              </motion.div>
+                            )}
+                          </AnimatePresence>
+                        </div>
+
                         <div className="h-px bg-white/[0.03] mx-3.5" />
 
                         {/* Details - Agent Row */}
@@ -1632,6 +1767,11 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
                           <span className="px-2.5 py-0.5 rounded-full bg-white/[0.05] border border-white/[0.08] text-[11px] text-white/80 font-medium">
                             Model: {t.model}
                           </span>
+                          {t.thinkingLevel && (
+                            <span className="px-2.5 py-0.5 rounded-full bg-white/[0.05] border border-white/[0.08] text-[11px] text-white/80 font-medium">
+                              Thinking: {t.thinkingLevel}
+                            </span>
+                          )}
                           <span className="px-2.5 py-0.5 rounded-full bg-white/[0.05] border border-white/[0.08] text-[11px] text-white/80 font-medium">
                             Scheduled: {formatScheduledTimeLabel(t)}
                           </span>
@@ -1644,6 +1784,8 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
                             </span>
                           )}
                         </div>
+
+                        {renderRunHistory(t)}
 
                         <div className="flex items-center justify-end gap-2 pt-2 border-t border-white/[0.03]">
                           <button
@@ -1713,6 +1855,11 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
                           <span className="px-2.5 py-0.5 rounded-full bg-white/[0.05] border border-white/[0.08] text-[11px] text-white/80 font-medium">
                             Model: {t.model}
                           </span>
+                          {t.thinkingLevel && (
+                            <span className="px-2.5 py-0.5 rounded-full bg-white/[0.05] border border-white/[0.08] text-[11px] text-white/80 font-medium">
+                              Thinking: {t.thinkingLevel}
+                            </span>
+                          )}
                           <span className="px-2.5 py-0.5 rounded-full bg-white/[0.05] border border-white/[0.08] text-[11px] text-white/80 font-medium">
                             Execution Time: {formatScheduledTimeLabel(t)}
                           </span>
@@ -1773,12 +1920,19 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
                           <span className="px-2.5 py-0.5 rounded-full bg-white/[0.05] border border-white/[0.08] text-[11px] text-white/80 font-medium">
                             Model: {t.model}
                           </span>
+                          {t.thinkingLevel && (
+                            <span className="px-2.5 py-0.5 rounded-full bg-white/[0.05] border border-white/[0.08] text-[11px] text-white/80 font-medium">
+                              Thinking: {t.thinkingLevel}
+                            </span>
+                          )}
                           {t.executedAt && (
                             <span className="px-2.5 py-0.5 rounded-full bg-white/[0.05] border border-white/[0.08] text-[11px] text-white/80 font-medium">
                               Executed: {new Date(t.executedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                             </span>
                           )}
                         </div>
+
+                        {renderRunHistory(t)}
 
                         <div className="flex items-center justify-end gap-2 pt-2 border-t border-white/[0.03]">
                           <button

@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { GoogleGenAI } from '@google/genai';
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
-import { getMainAgentModelConfig, normalizeMainAgentMode, isOpenAIReasoningModel, isAnthropicAdaptiveThinkingModel } from '../../../../lib/agent/model-routing';
+import { getMainAgentModelConfig, normalizeMainAgentMode, isOpenAIReasoningModel, isAnthropicAdaptiveThinkingModel, type MainAgentMode, type MainAgentProvider } from '../../../../lib/agent/model-routing';
+import { getProviderBaseURL, isLocalModelProvider } from '../../../../lib/agent/provider-runtime';
 import {
   buildScopedRuntimeSettings,
   getScopedRuntimeApiKey,
@@ -83,7 +84,7 @@ const cleanTitle = (rawTitle: unknown, history: any[] = []) => {
 };
 
 async function generateTitleWithProvider(
-  provider: string,
+  provider: MainAgentProvider,
   modelName: string,
   prompt: string,
   runtimeSettings: ScopedRuntimeSettings,
@@ -158,24 +159,14 @@ async function generateTitleWithProvider(
   }
 
   // Other OpenAI-compatible providers: openai, openrouter, groq, mistral
-  const apiKey = provider === 'openai'
-    ? getScopedRuntimeApiKey(runtimeSettings, 'openai')
-    : provider === 'openrouter'
-      ? getScopedRuntimeApiKey(runtimeSettings, 'openrouter')
-      : provider === 'groq'
-        ? getScopedRuntimeApiKey(runtimeSettings, 'groq')
-        : getScopedRuntimeApiKey(runtimeSettings, 'mistral');
+  const apiKey = isLocalModelProvider(provider)
+    ? (getScopedRuntimeApiKey(runtimeSettings, provider) || 'local-no-key-required')
+    : getScopedRuntimeApiKey(runtimeSettings, provider);
   if (!apiKey) throw new Error(`Missing ${provider} API key`);
 
   const client = new OpenAI({
     apiKey,
-    baseURL: provider === 'openai'
-      ? (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1')
-      : provider === 'openrouter'
-        ? (process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1')
-        : provider === 'groq'
-          ? (process.env.GROQ_BASE_URL || 'https://api.groq.com/openai/v1')
-          : (process.env.MISTRAL_BASE_URL || process.env.MISTRAL_API_BASE_URL || 'https://api.mistral.ai/v1'),
+    baseURL: getProviderBaseURL(provider),
     defaultHeaders: provider === 'openrouter'
       ? {
         'HTTP-Referer': process.env.OPENROUTER_HTTP_REFERER || 'http://localhost:3000',
@@ -248,7 +239,7 @@ export async function POST(req: NextRequest) {
     }
 
     // 2. Fallback: Loop through other providers to find one with an active key
-    const fallbackProviders: { provider: string; modelName: string }[] = [];
+    const fallbackProviders: { provider: MainAgentProvider; modelName: string }[] = [];
     
     // Add gemini as the preferred fallback if it wasn't the primary
     if (modelConfig.provider !== 'gemini') {
@@ -257,7 +248,7 @@ export async function POST(req: NextRequest) {
     }
     
     // Add other potential providers in order
-    const orderedProviders: { mode: 'openai' | 'anthropic' | 'openrouter' | 'groq' | 'mistral'; provider: string }[] = [
+    const orderedProviders: { mode: MainAgentMode; provider: MainAgentProvider }[] = [
       { mode: 'openai', provider: 'openai' },
       { mode: 'anthropic', provider: 'anthropic' },
       { mode: 'openrouter', provider: 'openrouter' },

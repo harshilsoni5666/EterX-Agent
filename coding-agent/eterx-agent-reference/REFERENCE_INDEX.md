@@ -55,13 +55,11 @@
 - `prompts/current-request-guard.md`
   - Prevents old memory or prior tasks from hijacking the current request.
 
-- `prompts/tool-routing-contract.md`
   - Compact tool usage policy for runtime injection.
 
 - `prompts/review-and-verification-gates.md`
   - Done criteria and failure recovery.
 
-- `prompts/eterx-code-professional-prompt.md`
   - A single injection-ready prompt assembled from the main design.
 
 - `prompts/frontier-autonomy-kernel.md`

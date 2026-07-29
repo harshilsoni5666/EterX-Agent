@@ -11,8 +11,8 @@ import { enforceToolCapability } from '../security/tool_policy';
  * AI Image Generator Tool
  *
  * Use for creative raster images only: photos, illustrations, product shots,
- * UI mockups, visual concepts, and bitmap assets. For charts or accurate data
- * visualization, use chart_generator instead.
+ * UI mockups, visual concepts, and bitmap assets. For accurate data
+ * visualization, use office_artifact_builder spreadsheet charts instead.
  */
 
 const STYLE_ENHANCERS: Record<string, string> = {
@@ -42,7 +42,7 @@ export const imageGenTool: ToolDefinition = {
 
 Use for creative images: photos, illustrations, product shots, UI mockups, cover art, sprites, visual concepts, and bitmap assets.
 
-Do NOT use for accurate charts or data visualizations; use chart_generator.
+Do NOT use for accurate charts or data visualizations; use office_artifact_builder spreadsheet charts.
 Do NOT return SVG/HTML placeholders when the user requested a generated raster image.
 
 Styles: realistic, illustration, diagram, icon, abstract, photo, 3d, anime, logo, ui, product, landscape.`,

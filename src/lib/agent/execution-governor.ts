@@ -51,15 +51,10 @@ type ToolAttempt = {
 
 const MUTATION_TOOLS = new Set([
   'workspace_write_file',
-  'workspace_str_replace',
-  'workspace_apply_patch',
   'workspace_edit_file',
-  'workspace_edit_many_files',
   'office_artifact_builder',
   'docx_generator',
-  'chart_generator',
   'image_generator',
-  'project_scaffolder',
 ]);
 
 const VERIFICATION_TOOLS = new Set([
@@ -76,7 +71,6 @@ const REFRESH_SENSITIVE_TOOLS = new Set([
   'workspace_read_many_files',
   'workspace_search_text',
   'workspace_semantic_search',
-  'workspace_symbol_lookup',
   'workspace_file_outline',
   'workspace_list_directory',
   'workspace_find_files',
@@ -123,7 +117,7 @@ function isSemanticallyDuplicateSignature(sigA: string, sigB: string): boolean {
   const argsB = sigB.slice(colonB + 1);
 
   // Path-based tools: normalize paths before comparing
-  if (toolA.startsWith('workspace_') || toolA === 'system_shell') {
+  if (toolA.startsWith('workspace_')) {
     if (normalizePath(argsA) === normalizePath(argsB)) return true;
     // Collapse whitespace for command strings
     if (argsA.replace(/\s+/g, ' ').trim() === argsB.replace(/\s+/g, ' ').trim()) return true;
@@ -246,7 +240,7 @@ export class ExecutionGovernor {
     const success = outputSucceeded(output);
     const isMutation = MUTATION_TOOLS.has(normalizedName);
     const isVerification = VERIFICATION_TOOLS.has(normalizedName) ||
-      ((normalizedName === 'workspace_run_command' || normalizedName === 'system_shell') && commandLooksLikeVerification(args));
+      (normalizedName === 'workspace_run_command' && commandLooksLikeVerification(args));
     const materialProgress = success && (isMutation || isVerification || outputHasArtifact(output));
 
     this.attempts.push({

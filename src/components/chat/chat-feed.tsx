@@ -854,7 +854,7 @@ const formatWorkElapsed = (seconds: number) => {
 
 const RollingTimeDisplay = ({ label }: { label: string }) => {
   return (
-    <span className="font-sans font-medium tabular-nums tracking-[-0.01em]">
+    <span className="inline-block min-w-[3ch] whitespace-nowrap font-sans font-[550] tabular-nums tracking-[-0.015em]">
       {label}
     </span>
   );
@@ -1068,7 +1068,7 @@ const ThoughtSequence = ({
     <div className="relative" ref={containerRef}>
       {showWorkedSummary && <div className="eterx-worked-summary mb-2 flex w-full items-center gap-4 pt-1"><div className="eterx-worked-summary-line h-px flex-1 bg-[var(--border)]" /><span className="eterx-worked-summary-label shrink-0 py-[1px] text-center text-[12px] font-medium leading-[1.35] tracking-normal text-[var(--muted-foreground)]">{`Worked for ${ workElapsedLabel }`}</span><div className="eterx-worked-summary-line h-px flex-1 bg-[var(--border)]" /></div>}
       {hasCounter && <div className={`eterx-process-summary-row ${ shouldStickCounter ? 'sticky top-3 z-20' : '' } ${ isCollapsedWithAnswer ? 'mb-2' : 'mb-1' } flex w-full items-center overflow-visible py-1.5`}>
-        {isLiveWorkCounter ? <button type="button" onClick={toggleOpen} aria-expanded={isOpen} className="eterx-process-summary-chip eterx-process-summary-chip-live group inline-flex h-[32px] shrink-0 items-center gap-1.5 rounded-[9px] border border-[var(--border)] bg-[var(--muted)] px-2.5 text-[12.5px] font-medium leading-none tracking-[-0.01em] text-[var(--muted-foreground)] shadow-[0_3px_12px_rgba(0,0,0,0.08)] transition-all duration-150 hover:border-[var(--muted-foreground)] hover:bg-[var(--secondary)] hover:text-[var(--foreground)]"><span className="eterx-process-summary-label inline-flex items-center gap-1 leading-none" style={{ color: 'var(--eterx-ui-working-text)' }}><Shimmer>Working for</Shimmer><RollingTimeDisplay label={workElapsedLabel} /></span>{isOpen ? <ChevronDown className="h-3 w-3 opacity-50" /> : <ChevronRight className="h-3 w-3 opacity-50" />}</button> : <button type="button" onClick={toggleOpen} aria-expanded={isOpen} className="eterx-process-summary-chip inline-flex h-[30px] items-center gap-1.5 transition-all duration-200" style={{ ...compactCounterStyle, cursor: 'pointer', position: 'relative', zIndex: 1 }} onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = 'var(--foreground)'; (e.currentTarget as HTMLElement).style.background = counterHoverBackground; }} onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = counterColor; (e.currentTarget as HTMLElement).style.background = counterBackground; }}><span className="eterx-process-summary-icon" style={{ display: 'inline-flex', width: 20, height: 20, alignItems: 'center', justifyContent: 'center', borderRadius: 8, color: 'inherit', background: 'var(--border)', outline: '1px solid var(--border)' }}><StepCounterIcon live={isLiveThinking} /></span><Shimmer active={isLiveThinking} className="eterx-process-summary-label" style={{ fontSize: 13, fontWeight: 650, letterSpacing: 0, lineHeight: 1 } as any}>{actionLabel}</Shimmer>{isOpen ? <ChevronDown style={{ width: 9, height: 9, flexShrink: 0, opacity: 0.6 }} /> : <ChevronRight style={{ width: 9, height: 9, flexShrink: 0, opacity: 0.6 }} />}</button>}
+        {isLiveWorkCounter ? <button type="button" onClick={toggleOpen} aria-expanded={isOpen} className="eterx-process-summary-chip eterx-process-summary-chip-live group inline-flex h-[34px] shrink-0 items-center gap-1.5 whitespace-nowrap rounded-[9px] border border-[var(--border)] bg-[var(--muted)] px-2.5 text-[13px] font-medium leading-normal tracking-[-0.01em] text-[var(--muted-foreground)] shadow-[0_3px_12px_rgba(0,0,0,0.08)] transition-all duration-150 hover:border-[var(--muted-foreground)] hover:bg-[var(--secondary)] hover:text-[var(--foreground)]"><Shimmer className="eterx-process-summary-label inline-flex -translate-y-[0.5px] items-center gap-[7px] pb-[2px] leading-[1.2]" style={{ color: 'var(--eterx-ui-working-text)' }} durationMs={1900} spread="calc(4ch + 36px)"><span>Working for</span><RollingTimeDisplay label={workElapsedLabel} /></Shimmer>{isOpen ? <ChevronDown className="h-3 w-3 -translate-y-[0.5px] opacity-50" /> : <ChevronRight className="h-3 w-3 -translate-y-[0.5px] opacity-50" />}</button> : <button type="button" onClick={toggleOpen} aria-expanded={isOpen} className="eterx-process-summary-chip inline-flex h-[30px] items-center gap-1.5 transition-all duration-200" style={{ ...compactCounterStyle, cursor: 'pointer', position: 'relative', zIndex: 1 }} onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = 'var(--foreground)'; (e.currentTarget as HTMLElement).style.background = counterHoverBackground; }} onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = counterColor; (e.currentTarget as HTMLElement).style.background = counterBackground; }}><span className="eterx-process-summary-icon" style={{ display: 'inline-flex', width: 20, height: 20, alignItems: 'center', justifyContent: 'center', borderRadius: 8, color: 'inherit', background: 'var(--border)', outline: '1px solid var(--border)' }}><StepCounterIcon live={isLiveThinking} /></span><Shimmer active={isLiveThinking} className="eterx-process-summary-label" style={{ fontSize: 13, fontWeight: 650, letterSpacing: 0, lineHeight: 1 } as any}>{actionLabel}</Shimmer>{isOpen ? <ChevronDown style={{ width: 9, height: 9, flexShrink: 0, opacity: 0.6 }} /> : <ChevronRight style={{ width: 9, height: 9, flexShrink: 0, opacity: 0.6 }} />}</button>}
       </div>}
 
       {isOpen && (
@@ -1271,6 +1271,7 @@ const ChatFeedMessageGroup = React.memo(({
     const turnIsActive = isThinkingTurn || isLiveSessionActive;
     const isProvisionalAnswer =
       log.type === 'answer' &&
+      !log.isLive &&
       turnIsActive &&
       (
         log.isStreaming === true ||
@@ -1371,12 +1372,11 @@ const ChatFeedMessageGroup = React.memo(({
     if (!sameAnswer || !isThinkingTurn || newText.length >= cachedText.length) {
       lastKnownAnswerRef.current = finalAnswer;
     }
-  } else {
+  } else if (!isThinkingTurn && !isLiveSessionActive) {
     lastKnownAnswerRef.current = null;
   }
-  const displayFinalAnswer = finalAnswer === null
-    ? null
-    : lastKnownAnswerRef.current ?? finalAnswer;
+  const displayFinalAnswer = finalAnswer ??
+    ((isThinkingTurn || isLiveSessionActive) ? lastKnownAnswerRef.current : null);
   // Only a real active stream may animate token-by-token. A settled answer can
   // be delivered again by polling or history restoration, but must render once
   // without replaying its entrance animation.
@@ -1674,6 +1674,7 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
     const nextGroups: any[][] = [];
     let currentGroup: any[] = [];
     let currentTurnIdentity = '';
+    const assistantGroupsByTurn = new Map<string, any[]>();
     let hasUserBoundary = false;
     const normalizedLogs = dedupeFeedLogs(traceLogs);
     const containsUserBoundary = normalizedLogs.some(log => log?.type === 'user_action');
@@ -1690,11 +1691,28 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
         currentGroup = [];
         hasUserBoundary = true;
         currentTurnIdentity = String(log.turnId || log.runId || '').trim();
+        if (currentTurnIdentity) assistantGroupsByTurn.set(currentTurnIdentity, currentGroup);
       } else {
         const logTurnIdentity = String(log.turnId || log.runId || '').trim();
-        // Trace indices restart for every server run. If stale recovery data ever
-        // reaches the view, never render it as work or an answer for another turn.
-        if (currentTurnIdentity && logTurnIdentity && logTurnIdentity !== currentTurnIdentity) return;
+        const owningGroup = logTurnIdentity && logTurnIdentity !== currentTurnIdentity
+          ? assistantGroupsByTurn.get(logTurnIdentity)
+          : null;
+        if (owningGroup) {
+          // Late polling can append an older run after a newer user boundary.
+          // Put it back beside its owning query instead of leaking it into the
+          // current conversation or hiding it.
+          if (!nextGroups.includes(owningGroup)) {
+            const ownerUserIndex = nextGroups.findLastIndex(candidate =>
+              candidate[0]?.type === 'user_action' &&
+              String(candidate[0]?.turnId || candidate[0]?.runId || '').trim() === logTurnIdentity
+            );
+            nextGroups.splice(ownerUserIndex >= 0 ? ownerUserIndex + 1 : nextGroups.length, 0, owningGroup);
+          }
+          owningGroup.push(log);
+          return;
+        }
+        // Child/delegated run IDs may not have their own visible user boundary;
+        // those actions correctly remain in the active owner's sequence.
         currentGroup.push(log);
       }
     });
@@ -2110,7 +2128,7 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
 
 
 
-            {traceLogs.length === 0 && (liveState === 'connecting' || liveState === 'listening' || liveState === 'speaking') && (
+            {traceLogs.length === 0 && liveState === 'connecting' && (
               <div className="flex-1 flex flex-col items-center justify-center min-h-[380px] p-6 my-auto text-center select-none bg-transparent">
                 <Shimmer className="inline-block text-2xl font-semibold tracking-wide text-white">
                   Connecting...

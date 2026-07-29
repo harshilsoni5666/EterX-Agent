@@ -77,6 +77,27 @@ const MODEL_PROVIDER_LABEL: Record<MainAgentProvider, string> = {
   openrouter: 'OpenRouter',
   groq: 'Groq',
   anthropic: 'Anthropic',
+  deepseek: 'DeepSeek', grok: 'xAI Grok', cerebras: 'Cerebras', together: 'Together AI',
+  fireworks: 'Fireworks AI', sambanova: 'SambaNova', perplexity: 'Perplexity',
+  deepinfra: 'DeepInfra', huggingface: 'Hugging Face', nvidia: 'NVIDIA NIM',
+  cloudflare: 'Cloudflare Workers AI', ollama: 'Ollama Local', lmstudio: 'LM Studio',
+  vllm: 'vLLM', llamacpp: 'llama.cpp',
+  novita: 'Novita AI', qwen: 'Qwen Cloud', mimo: 'Xiaomi MiMo',
+  tokenhub: 'Tencent TokenHub', zai: 'Z.AI / GLM', kimi: 'Kimi / Moonshot',
+  stepfun: 'StepFun', minimax: 'MiniMax', ollamacloud: 'Ollama Cloud',
+  arcee: 'Arcee AI', gmi: 'GMI Cloud', kilo: 'Kilo Gateway',
+  opencode: 'OpenCode Zen', upstage: 'Upstage Solar', custom: 'Custom endpoint',
+};
+
+const modelSupportsImageAttachment = (provider: MainAgentProvider, modelName: string) => {
+  const model = String(modelName || '').toLowerCase();
+  if (provider === 'gemini' || provider === 'anthropic') return true;
+  if (provider === 'openai') return /\b(gpt-4o|gpt-4\.1|gpt-5|o[134](?:\b|-)|chatgpt)/.test(model);
+  if (provider === 'mistral') return /(pixtral|vision|ministral|mistral-(?:small|medium)-3)/.test(model);
+  if (provider === 'groq') return /(qwen.*(?:vl|vision)|llama-4|vision)/.test(model);
+  if (provider === 'openrouter') return /(gemini|claude|gpt-4o|gpt-4\.1|gpt-5|grok|pixtral|qwen.*(?:vl|vision)|llama-4|vision)/.test(model);
+  if (provider === 'grok') return /(grok-(?:4|3|2)|vision)/.test(model);
+  return /(vision|(?:^|[/:_-])vl(?:$|[/:_-])|llava|omni|gemma[34]|qwen.*vl|llama-4|glm-.*v)/.test(model);
 };
 
 const readStringRecord = (storageKey: string): Record<string, string> => {
@@ -310,7 +331,7 @@ interface ChatInputProps {
   pinnedItems?: any[];
   setPinnedItems?: (items: any[]) => void;
   // ═══ Gemini Live Session ═══
-  liveState?: 'idle' | 'connecting' | 'connected' | 'listening' | 'speaking' | 'error';
+  liveState?: 'idle' | 'connecting' | 'connected' | 'listening' | 'thinking' | 'speaking' | 'error';
   hasBackgroundLiveSession?: boolean;
   onLiveStart?: () => void;
   onLiveSendText?: (text: string) => void;
@@ -1083,6 +1104,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const [isStopping, setIsStopping] = useState(false);
   const [hasDraftInputText, setHasDraftInputText] = useState(() => Boolean(inputValue.trim()));
   const [showModelMenu, setShowModelMenu] = useState(false);
+  const [modelSearch, setModelSearch] = useState('');
   const [showAgentMenu, setShowAgentMenu] = useState(false);
   const [openStatusMenu, setOpenStatusMenu] = useState<StatusRailMenu>(null);
   const [projectSearch, setProjectSearch] = useState('');
@@ -1105,6 +1127,21 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const [isConvertingDoc, setIsConvertingDoc] = useState(false);
   const [convertedPdfPath, setConvertedPdfPath] = useState<string | null>(null);
   const [conversionError, setConversionError] = useState(false);
+  const [composerNotice, setComposerNotice] = useState<{ title: string; message: string } | null>(null);
+  const composerNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const showComposerNotice = useCallback((title: string, message: string) => {
+    if (composerNoticeTimerRef.current) clearTimeout(composerNoticeTimerRef.current);
+    setComposerNotice({ title, message });
+    composerNoticeTimerRef.current = setTimeout(() => {
+      setComposerNotice(null);
+      composerNoticeTimerRef.current = null;
+    }, 5200);
+  }, []);
+
+  useEffect(() => () => {
+    if (composerNoticeTimerRef.current) clearTimeout(composerNoticeTimerRef.current);
+  }, []);
 
   useEffect(() => {
     const handlePreviewDoc = async (e: Event) => {
@@ -1984,19 +2021,64 @@ const handleSelectFolderDialog = useCallback(async () => {
   const hasErroredAttachments = attachments.some(att => att.uploadStatus === 'error');
   const hasPromptText = hasDraftInputText || Boolean(inputValue.trim());
   const hasComposerPayload = hasPromptText || attachments.length > 0;
+  const getAttachmentCompatibilityIssue = useCallback(() => {
+    if (attachments.length === 0) return null;
+    const selection = propChatModelSelection !== undefined
+      ? propChatModelSelection
+      : storedModelSettings.chatModelSelection;
+    const exact = selection === AUTO_MODEL_SELECTION
+      ? null
+      : storedModelSettings.modelEntries.find(entry => modelEntryKey(entry.provider, entry.modelId) === selection);
+    const fallback = getMainAgentModelConfig(agentMode);
+    const provider = exact?.provider || fallback.provider;
+    const modelName = exact?.modelId || fallback.modelName;
+    const modelLabel = exact?.modelId || `${MODEL_PROVIDER_LABEL[provider]} automatic model`;
+
+    const unsupportedImage = attachments.find(attachment => {
+      const name = String(attachment.name || attachment.file?.name || '').toLowerCase();
+      const mime = String(attachment.file?.type || '').toLowerCase();
+      return (mime.startsWith('image/') || /\.(png|jpe?g|gif|webp|bmp|heic|heif|svg)$/.test(name))
+        && !modelSupportsImageAttachment(provider, modelName);
+    });
+    if (unsupportedImage) {
+      return {
+        title: 'Attachment not supported',
+        message: `${modelLabel} cannot receive images. Choose a vision-capable model or remove ${unsupportedImage.name || unsupportedImage.file?.name || 'the image'}.`,
+      };
+    }
+
+    const unsupportedMedia = attachments.find(attachment => {
+      const name = String(attachment.name || attachment.file?.name || '').toLowerCase();
+      const mime = String(attachment.file?.type || '').toLowerCase();
+      return (mime.startsWith('audio/') || mime.startsWith('video/') || /\.(mp3|wav|m4a|aac|ogg|mp4|mov|mkv|webm)$/.test(name))
+        && provider !== 'gemini';
+    });
+    if (unsupportedMedia) {
+      return {
+        title: 'Media not supported',
+        message: `${modelLabel} cannot receive this audio or video attachment. Choose a compatible Gemini model or remove ${unsupportedMedia.name || unsupportedMedia.file?.name || 'the file'}.`,
+      };
+    }
+    return null;
+  }, [agentMode, attachments, propChatModelSelection, storedModelSettings.chatModelSelection, storedModelSettings.modelEntries]);
 
   useEffect(() => {
     if (!queuedSendRef.current || hasPreparingAttachments || hasErroredAttachments) return;
     if (!inputValue.trim() && attachments.length === 0) return;
     if (isNetworkPaused) return;
     queuedSendRef.current = false;
+    const attachmentIssue = getAttachmentCompatibilityIssue();
+    if (attachmentIssue) {
+      showComposerNotice(attachmentIssue.title, attachmentIssue.message);
+      return;
+    }
     if (isThinking) {
       if (hasComposerPayload) handleSteer();
       return;
     }
     notifyAgentFaceSend();
     handleSend();
-  }, [attachments.length, handleSend, handleSteer, hasComposerPayload, hasErroredAttachments, hasPreparingAttachments, inputValue, isNetworkPaused, isThinking]);
+  }, [attachments.length, getAttachmentCompatibilityIssue, handleSend, handleSteer, hasComposerPayload, hasErroredAttachments, hasPreparingAttachments, inputValue, isNetworkPaused, isThinking, showComposerNotice]);
 
   const submitPrompt = useCallback(() => {
     if (isNetworkPaused) {
@@ -2005,9 +2087,18 @@ const handleSelectFolderDialog = useCallback(async () => {
     }
     if (hasPreparingAttachments) {
       queuedSendRef.current = true;
+      showComposerNotice('Preparing attachments', 'Your message will send as soon as every attachment is ready.');
       return;
     }
-    if (hasErroredAttachments) return;
+    if (hasErroredAttachments) {
+      showComposerNotice('Attachment upload failed', 'Remove the failed attachment or add it again before sending.');
+      return;
+    }
+    const attachmentIssue = getAttachmentCompatibilityIssue();
+    if (attachmentIssue) {
+      showComposerNotice(attachmentIssue.title, attachmentIssue.message);
+      return;
+    }
 
     if (isLiveActive) {
       const textToSubmit = inputValue.trim();
@@ -2030,7 +2121,7 @@ const handleSelectFolderDialog = useCallback(async () => {
     if (!hasComposerPayload) return;
     notifyAgentFaceSend();
     handleSend();
-  }, [attachments.length, handleSend, handleSteer, hasComposerPayload, hasErroredAttachments, hasPreparingAttachments, inputValue, isLiveActive, isNetworkPaused, isThinking, onLiveSendText, onNetworkPausedAction, setInputValue]);
+  }, [attachments.length, getAttachmentCompatibilityIssue, handleSend, handleSteer, hasComposerPayload, hasErroredAttachments, hasPreparingAttachments, inputValue, isLiveActive, isNetworkPaused, isThinking, onLiveSendText, onNetworkPausedAction, setInputValue, showComposerNotice]);
 
   const handleTextareaKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (slashTrigger) {
@@ -3111,7 +3202,7 @@ const handleSelectFolderDialog = useCallback(async () => {
           {!isLiveActive && (
           <div className={`eterx-chat-controls ${ isCompressed ? 'px-2.5' : 'px-3.5' } mt-0 relative z-10 transition-all duration-300`}>
             <div className="eterx-chat-controls-left">
-              <Tooltip text="Attach files" side="top">
+              <Tooltip text="Attach images, PDFs, Office files, code, audio, or video" side="top">
                 <button
                   onClick={() => fileInputRef.current?.click()}
                   className={inputControlButton}
@@ -3378,6 +3469,7 @@ const handleSelectFolderDialog = useCallback(async () => {
                   onClick={() => {
                     if (isModelLocked) return;
                     setShowModelMenu(prev => !prev);
+                    setModelSearch('');
                   }}
                   className={`eterx-model-button ${ isCompressed ? 'mr-0 max-w-[160px] pl-2.5 pr-1' : 'mr-1 pl-3.5 pr-1' } flex h-[38px] w-full min-w-0 items-center justify-between gap-1.5 rounded-full border border-transparent bg-[#2D2D2D] text-[#F4F4F4] transition-colors duration-150 hover:bg-[#333333] hover:text-white hover:border-transparent active:bg-[#333333] group cursor-pointer ${ showModelMenu ? '!bg-[#333333] !border-transparent !text-white' : '' } ${ isModelLocked ? 'cursor-not-allowed opacity-70 hover:bg-[#2D2D2D] hover:text-[#F4F4F4] hover:border-transparent active:bg-[#2D2D2D]' : '' }`}
                 >
@@ -3425,8 +3517,28 @@ const handleSelectFolderDialog = useCallback(async () => {
                     role="dialog"
                     aria-label="Model and thinking settings"
                   >
+                    {allModelOptions.length > 6 && (
+                      <div className="relative mb-1 shrink-0">
+                        <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#777]" />
+                        <input
+                          autoFocus
+                          value={modelSearch}
+                          onChange={event => setModelSearch(event.target.value)}
+                          onKeyDown={event => {
+                            if (event.key === 'Escape') setShowModelMenu(false);
+                          }}
+                          onClick={event => event.stopPropagation()}
+                          placeholder={`Search ${allModelOptions.length} models`}
+                          className="h-9 w-full rounded-lg border border-white/[0.08] bg-[#171717] pl-8 pr-3 text-[12px] text-[#F4F1EA] outline-none placeholder:text-[#777] focus:border-white/[0.18]"
+                        />
+                      </div>
+                    )}
                     <div className={`overflow-y-auto pr-1 eterx-scrollbar ${ isNewChatHome ? 'max-h-[min(180px,calc(100vh-420px))]' : 'max-h-[min(280px,40vh)]' }`}>
-                      {allModelOptions.map((option) => {
+                      {allModelOptions.filter(option => {
+                        const query = modelSearch.trim().toLowerCase();
+                        if (!query) return true;
+                        return `${getModelOptionLabel(option)} ${MODEL_PROVIDER_LABEL[option.provider]} ${option.modelName}`.toLowerCase().includes(query);
+                      }).map((option) => {
                         const selected = option.optionKey === selectedModel.optionKey;
                         const optionLabel = getModelOptionLabel(option);
                         return (
@@ -3454,6 +3566,14 @@ const handleSelectFolderDialog = useCallback(async () => {
                       {modelOptions.length === 0 && (
                         <div className="px-2.5 pb-2.5 pt-1 text-[11.5px] leading-4 text-[#A3A19E]">
                           Add models in Settings to make exact choices available here.
+                        </div>
+                      )}
+                      {modelOptions.length > 0 && allModelOptions.filter(option => {
+                        const query = modelSearch.trim().toLowerCase();
+                        return !query || `${getModelOptionLabel(option)} ${MODEL_PROVIDER_LABEL[option.provider]} ${option.modelName}`.toLowerCase().includes(query);
+                      }).length === 0 && (
+                        <div className="px-2.5 py-4 text-center text-[11.5px] text-[#A3A19E]">
+                          No matching models
                         </div>
                       )}
                     </div>
@@ -3938,6 +4058,34 @@ const handleSelectFolderDialog = useCallback(async () => {
       </div>
 
       {/* Lightbox Preview Modal */}
+      {composerNotice && typeof window !== 'undefined' && createPortal(
+        <motion.div
+          initial={{ opacity: 0, y: -12, scale: 0.97 }}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          exit={{ opacity: 0, y: -8, scale: 0.98 }}
+          role="alert"
+          aria-live="assertive"
+          className="fixed right-5 top-5 z-[11000] flex w-[360px] max-w-[calc(100vw-32px)] items-start gap-3 rounded-2xl border border-red-400/30 bg-[#351411]/95 p-4 text-[#FFF4F1] shadow-[0_18px_50px_rgba(0,0,0,0.48)] backdrop-blur-xl"
+        >
+          <span className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-full border border-red-300/30 bg-red-300/10">
+            <AlertCircle className="h-4 w-4 text-[#FFB5A8]" strokeWidth={2.2} />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block text-[13.5px] font-semibold leading-5">{composerNotice.title}</span>
+            <span className="mt-0.5 block text-[12.5px] leading-5 text-[#EBC8C1]">{composerNotice.message}</span>
+          </span>
+          <button
+            type="button"
+            onClick={() => setComposerNotice(null)}
+            className="grid h-7 w-7 shrink-0 place-items-center rounded-lg text-[#D5A8A0] transition-colors hover:bg-white/10 hover:text-white"
+            aria-label="Dismiss notification"
+          >
+            <X className="h-4 w-4" strokeWidth={2.2} />
+          </button>
+        </motion.div>,
+        document.body,
+      )}
+
       {previewImage && typeof window !== 'undefined' && createPortal(
         <div
           onClick={() => {

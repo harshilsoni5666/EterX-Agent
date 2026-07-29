@@ -33,7 +33,6 @@ import type {
 
 export const SANDBOX_BLOCKED_TOOLS = new Set<string>([
   // Raw shell — use workspace_run_command instead
-  'system_shell',
   // Long-running processes
   'background_task',
   'process_manager',
@@ -62,8 +61,6 @@ export const SANDBOX_BLOCKED_TOOLS = new Set<string>([
   'api_key_vault',
   'env_manager',
   // Git (could push to remote)
-  'git_operations',
-  'git_intelligence',
 ]);
 
 // Capabilities allowed in sandbox mode — very restricted

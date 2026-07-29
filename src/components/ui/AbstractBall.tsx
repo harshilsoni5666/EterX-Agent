@@ -1,6 +1,11 @@
 import React, { useEffect, useRef } from 'react';
 import * as THREE from 'three';
 
+const ORB_STARTUP_FALLBACK = `
+  radial-gradient(circle at 62% 72%, rgba(255,255,255,0.96) 0 15%, rgba(224,239,255,0.92) 34%, transparent 58%),
+  linear-gradient(180deg, #3158ec 0%, #668ff4 54%, #eef6ff 100%)
+`;
+
 const vertexShaderSource = `varying vec3 vNormal;
 varying vec3 vPosition;
 varying vec3 vLocalPos;
@@ -220,7 +225,8 @@ void main() {
   float normY = vLocalPos.y + cloudDensity * 0.35;
   float splitFactor = smoothstep(-0.45, 0.45, normY);
 
-  vec3 baseColor = mix(blueCloud, whiteCloud, splitFactor);
+  // Deep blue above, with the soft cloud bank settling toward the bottom.
+  vec3 baseColor = mix(whiteCloud, blueCloud, splitFactor);
 
   vec3 viewDir = normalize(-vPosition);
   float fresnel = pow(1.0 - max(dot(vNormal, viewDir), 0.0), 2.2);
@@ -247,7 +253,7 @@ export interface AbstractBallProps {
   cameraZoom?: number;
   className?: string;
   style?: React.CSSProperties;
-  liveState?: 'idle' | 'connecting' | 'connected' | 'listening' | 'speaking';
+  liveState?: 'idle' | 'connecting' | 'connected' | 'listening' | 'thinking' | 'speaking';
   audioVolume?: number;
 }
 
@@ -274,17 +280,28 @@ const AbstractBall: React.FC<AbstractBallProps> = (props) => {
   useEffect(() => {
     if (!mountRef.current) return;
     const container = mountRef.current;
-    const width = container.clientWidth || 115;
-    const height = container.clientHeight || 115;
+    const width = Math.max(1, container.clientWidth || 115);
+    const height = Math.max(1, container.clientHeight || 115);
 
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(20, width / height, 1, 1000);
     camera.position.set(0, 5, cameraZoom);
 
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: 'high-performance' });
+    let renderer: THREE.WebGLRenderer;
+    try {
+      renderer = new THREE.WebGLRenderer({
+        antialias: true,
+        alpha: true,
+        premultipliedAlpha: false,
+        powerPreference: 'high-performance',
+      });
+    } catch (error) {
+      console.warn('[AbstractBall] WebGL unavailable; keeping the circular fallback.', error);
+      return;
+    }
     renderer.setClearColor(0x000000, 0);
-    renderer.setSize(width, height);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    renderer.setSize(width, height, false);
     renderer.domElement.style.background = 'transparent';
     renderer.domElement.style.backgroundColor = 'transparent';
     renderer.domElement.style.border = 'none';
@@ -296,10 +313,12 @@ const AbstractBall: React.FC<AbstractBallProps> = (props) => {
     (renderer.domElement.style as any).webkitClipPath = 'circle(50% at 50% 50%)';
     renderer.domElement.style.width = '100%';
     renderer.domElement.style.height = '100%';
+    renderer.domElement.style.position = 'absolute';
+    renderer.domElement.style.inset = '0';
+    renderer.domElement.style.opacity = '0';
+    renderer.domElement.style.transition = 'opacity 180ms ease-out';
+    renderer.domElement.style.pointerEvents = 'none';
 
-    while (container.firstChild) {
-      container.removeChild(container.firstChild);
-    }
     container.appendChild(renderer.domElement);
 
     const geometry = new THREE.IcosahedronGeometry(11, 5);
@@ -315,6 +334,7 @@ const AbstractBall: React.FC<AbstractBallProps> = (props) => {
     const material = new THREE.ShaderMaterial({
       uniforms,
       side: THREE.DoubleSide,
+      transparent: true,
       vertexShader: vertexShaderSource,
       fragmentShader: fragmentShaderSource,
     });
@@ -323,10 +343,19 @@ const AbstractBall: React.FC<AbstractBallProps> = (props) => {
     mesh.rotation.set(0, 0, 0);
     scene.add(mesh);
 
-    let animationFrameId: number;
+    let animationFrameId = 0;
+    let fallbackClearTimer: number | null = null;
     let clock = 0;
+    let disposed = false;
+    let firstFramePresented = false;
+    let pageVisible = document.visibilityState !== 'hidden';
 
     const animate = () => {
+      if (disposed) return;
+      if (!pageVisible) {
+        animationFrameId = requestAnimationFrame(animate);
+        return;
+      }
       const p = propsRef.current;
       const curPerlinTime = p.perlinTime ?? 25.0;
       const curPerlinMorph = p.perlinMorph ?? 25.0;
@@ -345,6 +374,9 @@ const AbstractBall: React.FC<AbstractBallProps> = (props) => {
       } else if (state === 'connecting') {
         speedMult = 2.0;
         morphBoost = 1.4;
+      } else if (state === 'thinking') {
+        speedMult = 1.9;
+        morphBoost = 1.45 + Math.sin(clock * 1.8) * 0.12;
       }
 
       clock += (curPerlinTime / 4200) * speedMult;
@@ -355,24 +387,60 @@ const AbstractBall: React.FC<AbstractBallProps> = (props) => {
 
       camera.lookAt(scene.position);
       renderer.render(scene, camera);
+      if (!firstFramePresented) {
+        firstFramePresented = true;
+        requestAnimationFrame(() => {
+          if (disposed) return;
+          renderer.domElement.style.opacity = '1';
+          fallbackClearTimer = window.setTimeout(() => {
+            if (!disposed) container.style.background = 'transparent';
+          }, 190);
+        });
+      }
       animationFrameId = requestAnimationFrame(animate);
     };
 
-    animate();
+    animationFrameId = requestAnimationFrame(animate);
 
     const handleResize = () => {
-      if (!container) return;
-      const w = container.clientWidth || 115;
-      const h = container.clientHeight || 115;
-      renderer.setSize(w, h);
+      if (disposed) return;
+      const w = Math.max(1, container.clientWidth || 115);
+      const h = Math.max(1, container.clientHeight || 115);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+      renderer.setSize(w, h, false);
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
     };
+    const handleContextLost = (event: Event) => {
+      event.preventDefault();
+      if (fallbackClearTimer !== null) window.clearTimeout(fallbackClearTimer);
+      container.style.background = ORB_STARTUP_FALLBACK;
+      renderer.domElement.style.opacity = '0';
+    };
+    const handleContextRestored = () => {
+      firstFramePresented = false;
+    };
+    const handleVisibilityChange = () => {
+      pageVisible = document.visibilityState !== 'hidden';
+    };
+    const resizeObserver = typeof ResizeObserver !== 'undefined'
+      ? new ResizeObserver(handleResize)
+      : null;
+    resizeObserver?.observe(container);
     window.addEventListener('resize', handleResize);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    renderer.domElement.addEventListener('webglcontextlost', handleContextLost);
+    renderer.domElement.addEventListener('webglcontextrestored', handleContextRestored);
 
     return () => {
+      disposed = true;
+      resizeObserver?.disconnect();
       window.removeEventListener('resize', handleResize);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      renderer.domElement.removeEventListener('webglcontextlost', handleContextLost);
+      renderer.domElement.removeEventListener('webglcontextrestored', handleContextRestored);
       cancelAnimationFrame(animationFrameId);
+      if (fallbackClearTimer !== null) window.clearTimeout(fallbackClearTimer);
       if (container && renderer.domElement && container.contains(renderer.domElement)) {
         container.removeChild(renderer.domElement);
       }
@@ -386,8 +454,8 @@ const AbstractBall: React.FC<AbstractBallProps> = (props) => {
     <div
       ref={mountRef}
       style={{
-        background: 'transparent',
-        backgroundColor: 'transparent',
+        background: ORB_STARTUP_FALLBACK,
+        backgroundColor: '#5278ef',
         border: 'none',
         outline: 'none',
         boxShadow: 'none',
@@ -395,9 +463,13 @@ const AbstractBall: React.FC<AbstractBallProps> = (props) => {
         clipPath: 'circle(50% at 50% 50%)',
         WebkitClipPath: 'circle(50% at 50% 50%)',
         overflow: 'hidden',
+        position: 'relative',
+        isolation: 'isolate',
+        contain: 'strict',
+        transform: 'translateZ(0)',
         ...style,
       }}
-      className={`bg-transparent ${ className || '' }`}
+      className={className || ''}
     />
   );
 };

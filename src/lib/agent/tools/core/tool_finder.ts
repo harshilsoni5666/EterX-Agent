@@ -24,16 +24,16 @@ function scoreTool(query: string, name: string, description: string): number {
 }
 
 const TOOL_CHAINS: Array<{ pattern: RegExp; tools: string[] }> = [
-  { pattern: /\b(how does|how do|where is|what handles|architecture|flow|works?)\b/i, tools: ['workspace_semantic_search', 'workspace_symbol_lookup', 'workspace_read_many_files', 'code_intelligence'] },
-  { pattern: /\b(symbol|definition|reference|usage|called from)\b/i, tools: ['workspace_symbol_lookup', 'workspace_search_text', 'workspace_read_file'] },
-  { pattern: /\b(outline|structure|imports|exports)\b/i, tools: ['workspace_file_outline', 'code_intelligence'] },
+  { pattern: /\b(how does|how do|where is|what handles|architecture|flow|works?)\b/i, tools: ['workspace_semantic_search', 'workspace_search_text', 'workspace_read_many_files'] },
+  { pattern: /\b(symbol|definition|reference|usage|called from)\b/i, tools: ['workspace_search_text', 'workspace_read_file'] },
+  { pattern: /\b(outline|structure|imports|exports)\b/i, tools: ['workspace_file_outline', 'workspace_search_text'] },
   { pattern: /\b(find|locate|which file|where is)\b/i, tools: ['workspace_semantic_search', 'workspace_find_files', 'workspace_search_text', 'workspace_read_file'] },
   { pattern: /\b(read|inspect|open|view)\b/i, tools: ['workspace_read_many_files', 'workspace_read_file'] },
-  { pattern: /\b(edit|patch|fix|change|replace|refactor)\b/i, tools: ['workspace_str_replace', 'workspace_apply_patch', 'workspace_edit_file', 'workspace_edit_many_files'] },
-  { pattern: /\b(create|write|new file|scaffold)\b/i, tools: ['workspace_write_file', 'workspace_apply_patch'] },
+  { pattern: /\b(edit|patch|fix|change|replace|refactor)\b/i, tools: ['workspace_edit_file'] },
+  { pattern: /\b(create|write|new file|scaffold)\b/i, tools: ['workspace_write_file'] },
   { pattern: /\b(test|build|lint|verify|typecheck)\b/i, tools: ['workspace_verify_code', 'workspace_run_command'] },
   { pattern: /\b(search|grep|symbol|usage)\b/i, tools: ['workspace_search_text', 'workspace_find_files'] },
-  { pattern: /\b(script|transform|migration|analyze data)\b/i, tools: ['workspace_execute_script', 'workspace_run_command'] },
+  { pattern: /\b(script|transform|migration|analyze data)\b/i, tools: ['workspace_run_command', 'csv_data_analyzer'] },
 ];
 
 export const toolFinderTool: ToolDefinition = {

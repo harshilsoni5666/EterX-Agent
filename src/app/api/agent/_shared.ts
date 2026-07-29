@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'crypto';
+import { normalizeAttachmentMime } from '../../../lib/agent/attachment-pipeline';
 
 export const MAX_AGENT_ID_LENGTH = 96;
 export const MAX_CHAT_ID_LENGTH = 160;
@@ -275,7 +276,10 @@ export function normalizeMediaAttachments(raw: unknown): any[] {
   return raw.slice(0, 20)
     .map((item: any, index) => {
       const name = cleanPathLike(item?.name || item?.file?.name, 260) || `attachment_${index + 1}`;
-      const mimeType = cleanString(item?.mimeType || item?.file?.type, 120) || 'application/octet-stream';
+      const mimeType = normalizeAttachmentMime(
+        name,
+        cleanString(item?.mimeType || item?.file?.type, 120) || 'application/octet-stream',
+      );
       const path = cleanPathLike(item?.path, 1200);
       const data = cleanString(item?.data, 12_000_000);
       const inlineDataValue = typeof item?.inlineData === 'string'

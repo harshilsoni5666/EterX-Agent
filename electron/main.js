@@ -29,7 +29,7 @@ try {
 
 const http = require('http');
 const https = require('https');
-const { app, BrowserWindow, ipcMain, dialog, shell, screen, Menu, nativeImage, safeStorage } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, screen, desktopCapturer, Menu, nativeImage, safeStorage } = require('electron');
 // Disable HTTP Cache globally in development to prevent aggressive cache storage of stylesheets and scripts
 app.commandLine.appendSwitch('disable-http-cache');
 app.setName('EterX');
@@ -104,10 +104,15 @@ const APP_ICON_PATH = app.isPackaged
 const NATIVE_THEME_FILE = 'eterx-native-theme.json';
 const SECURE_RUNTIME_SETTINGS_FILE = 'eterx-runtime-settings.bin';
 const SECURE_RUNTIME_SETTINGS_PROVIDERS = new Set([
-  'gemini', 'mistral', 'openrouter', 'anthropic', 'openai', 'groq', 'tavily', 'github',
+  'gemini', 'mistral', 'openrouter', 'anthropic', 'openai', 'groq', 'deepseek', 'grok',
+  'cerebras', 'together', 'fireworks', 'sambanova', 'perplexity', 'deepinfra',
+  'huggingface', 'nvidia', 'cloudflare', 'ollama', 'lmstudio', 'vllm', 'llamacpp',
+  'novita', 'qwen', 'mimo', 'tokenhub', 'zai', 'kimi', 'stepfun', 'minimax',
+  'ollamacloud', 'arcee', 'gmi', 'kilo', 'opencode', 'upstage', 'custom',
+  'tavily', 'github',
 ]);
 const SECURE_RUNTIME_MODEL_PROVIDERS = new Set([
-  'gemini', 'mistral', 'openrouter', 'anthropic', 'openai', 'groq',
+  ...SECURE_RUNTIME_SETTINGS_PROVIDERS,
 ]);
 const DESKTOP_RUNTIME_SETTING_ENV_KEYS = new Set([
   'GEMINI_API_KEY',
@@ -119,6 +124,36 @@ const DESKTOP_RUNTIME_SETTING_ENV_KEYS = new Set([
   'ANTHROPIC_API_KEY',
   'OPENAI_API_KEY',
   'GROQ_API_KEY',
+  'DEEPSEEK_API_KEY',
+  'XAI_API_KEY',
+  'CEREBRAS_API_KEY',
+  'TOGETHER_API_KEY',
+  'FIREWORKS_API_KEY',
+  'SAMBANOVA_API_KEY',
+  'PERPLEXITY_API_KEY',
+  'DEEPINFRA_API_KEY',
+  'HUGGINGFACE_API_KEY',
+  'NVIDIA_API_KEY',
+  'CLOUDFLARE_API_KEY',
+  'OLLAMA_API_KEY',
+  'LMSTUDIO_API_KEY',
+  'VLLM_API_KEY',
+  'LLAMACPP_API_KEY',
+  'NOVITA_API_KEY',
+  'DASHSCOPE_API_KEY',
+  'MIMO_API_KEY',
+  'TOKENHUB_API_KEY',
+  'ZAI_API_KEY',
+  'MOONSHOT_API_KEY',
+  'STEPFUN_API_KEY',
+  'MINIMAX_API_KEY',
+  'OLLAMA_CLOUD_API_KEY',
+  'ARCEE_API_KEY',
+  'GMI_API_KEY',
+  'KILO_API_KEY',
+  'OPENCODE_API_KEY',
+  'UPSTAGE_API_KEY',
+  'CUSTOM_API_KEY',
   'TAVILY_API_KEY',
   'VITE_TAVILY_API_KEY',
   'GITHUB_TOKEN',
@@ -135,6 +170,36 @@ const DESKTOP_RUNTIME_SETTING_ENV_KEYS = new Set([
   'CLAUDE_MODEL',
   'GROQ_MODEL',
   'GROQ_MODEL_NAME',
+  'DEEPSEEK_MODEL',
+  'XAI_MODEL',
+  'CEREBRAS_MODEL',
+  'TOGETHER_MODEL',
+  'FIREWORKS_MODEL',
+  'SAMBANOVA_MODEL',
+  'PERPLEXITY_MODEL',
+  'DEEPINFRA_MODEL',
+  'HUGGINGFACE_MODEL',
+  'NVIDIA_MODEL',
+  'CLOUDFLARE_MODEL',
+  'OLLAMA_MODEL',
+  'LMSTUDIO_MODEL',
+  'VLLM_MODEL',
+  'LLAMACPP_MODEL',
+  'NOVITA_MODEL',
+  'QWEN_MODEL',
+  'MIMO_MODEL',
+  'TOKENHUB_MODEL',
+  'ZAI_MODEL',
+  'KIMI_MODEL',
+  'STEPFUN_MODEL',
+  'MINIMAX_MODEL',
+  'OLLAMA_CLOUD_MODEL',
+  'ARCEE_MODEL',
+  'GMI_MODEL',
+  'KILO_MODEL',
+  'OPENCODE_MODEL',
+  'UPSTAGE_MODEL',
+  'CUSTOM_MODEL',
 ]);
 const NATIVE_FRAME_HEIGHT = 38;
 const nativeThemedWindows = new Set();
@@ -342,6 +407,36 @@ function secureRuntimeSettingsEnvironment(settings) {
     anthropic: 'ANTHROPIC_API_KEY',
     openai: 'OPENAI_API_KEY',
     groq: 'GROQ_API_KEY',
+    deepseek: 'DEEPSEEK_API_KEY',
+    grok: 'XAI_API_KEY',
+    cerebras: 'CEREBRAS_API_KEY',
+    together: 'TOGETHER_API_KEY',
+    fireworks: 'FIREWORKS_API_KEY',
+    sambanova: 'SAMBANOVA_API_KEY',
+    perplexity: 'PERPLEXITY_API_KEY',
+    deepinfra: 'DEEPINFRA_API_KEY',
+    huggingface: 'HUGGINGFACE_API_KEY',
+    nvidia: 'NVIDIA_API_KEY',
+    cloudflare: 'CLOUDFLARE_API_KEY',
+    ollama: 'OLLAMA_API_KEY',
+    lmstudio: 'LMSTUDIO_API_KEY',
+    vllm: 'VLLM_API_KEY',
+    llamacpp: 'LLAMACPP_API_KEY',
+    novita: 'NOVITA_API_KEY',
+    qwen: 'DASHSCOPE_API_KEY',
+    mimo: 'MIMO_API_KEY',
+    tokenhub: 'TOKENHUB_API_KEY',
+    zai: 'ZAI_API_KEY',
+    kimi: 'MOONSHOT_API_KEY',
+    stepfun: 'STEPFUN_API_KEY',
+    minimax: 'MINIMAX_API_KEY',
+    ollamacloud: 'OLLAMA_CLOUD_API_KEY',
+    arcee: 'ARCEE_API_KEY',
+    gmi: 'GMI_API_KEY',
+    kilo: 'KILO_API_KEY',
+    opencode: 'OPENCODE_API_KEY',
+    upstage: 'UPSTAGE_API_KEY',
+    custom: 'CUSTOM_API_KEY',
     tavily: 'TAVILY_API_KEY',
     github: 'GITHUB_TOKEN',
   };
@@ -352,6 +447,36 @@ function secureRuntimeSettingsEnvironment(settings) {
     anthropic: 'ANTHROPIC_MODEL',
     openai: 'OPENAI_MODEL',
     groq: 'GROQ_MODEL',
+    deepseek: 'DEEPSEEK_MODEL',
+    grok: 'XAI_MODEL',
+    cerebras: 'CEREBRAS_MODEL',
+    together: 'TOGETHER_MODEL',
+    fireworks: 'FIREWORKS_MODEL',
+    sambanova: 'SAMBANOVA_MODEL',
+    perplexity: 'PERPLEXITY_MODEL',
+    deepinfra: 'DEEPINFRA_MODEL',
+    huggingface: 'HUGGINGFACE_MODEL',
+    nvidia: 'NVIDIA_MODEL',
+    cloudflare: 'CLOUDFLARE_MODEL',
+    ollama: 'OLLAMA_MODEL',
+    lmstudio: 'LMSTUDIO_MODEL',
+    vllm: 'VLLM_MODEL',
+    llamacpp: 'LLAMACPP_MODEL',
+    novita: 'NOVITA_MODEL',
+    qwen: 'QWEN_MODEL',
+    mimo: 'MIMO_MODEL',
+    tokenhub: 'TOKENHUB_MODEL',
+    zai: 'ZAI_MODEL',
+    kimi: 'KIMI_MODEL',
+    stepfun: 'STEPFUN_MODEL',
+    minimax: 'MINIMAX_MODEL',
+    ollamacloud: 'OLLAMA_CLOUD_MODEL',
+    arcee: 'ARCEE_MODEL',
+    gmi: 'GMI_MODEL',
+    kilo: 'KILO_MODEL',
+    opencode: 'OPENCODE_MODEL',
+    upstage: 'UPSTAGE_MODEL',
+    custom: 'CUSTOM_MODEL',
   };
   const env = {};
 
@@ -1178,8 +1303,25 @@ function isSettingsUrl(url = '') {
 function sendPetStatus(status) {
   latestPetStatus = {
     title: String(status?.title || 'EterX agent').slice(0, 160),
-    text: String(status?.text || 'Thinking').slice(0, 500),
-    isThinking: status?.isThinking !== false,
+    text: String(status?.text ?? latestPetStatus?.text ?? '').slice(0, 500),
+    isThinking: typeof status?.isThinking === 'boolean'
+      ? status.isThinking
+      : latestPetStatus?.isThinking === true,
+    isMicMuted: typeof status?.isMicMuted === 'boolean'
+      ? status.isMicMuted
+      : latestPetStatus?.isMicMuted === true,
+    isSpeakerMuted: typeof status?.isSpeakerMuted === 'boolean'
+      ? status.isSpeakerMuted
+      : latestPetStatus?.isSpeakerMuted === true,
+    isCameraEnabled: typeof status?.isCameraEnabled === 'boolean'
+      ? status.isCameraEnabled
+      : latestPetStatus?.isCameraEnabled === true,
+    isScreenSharing: typeof status?.isScreenSharing === 'boolean'
+      ? status.isScreenSharing
+      : latestPetStatus?.isScreenSharing === true,
+    liveState: typeof status?.liveState === 'string'
+      ? status.liveState
+      : latestPetStatus?.liveState || 'listening',
   };
 
   if (petWindow && !petWindow.isDestroyed()) {
@@ -1256,13 +1398,27 @@ async function openPetWindow(status) {
     return;
   }
 
-  const workArea = screen.getPrimaryDisplay().workArea;
-  const petSize = PET_WINDOW_SIZES[DEFAULT_PET_WINDOW_SIZE];
+  const anchorBounds = mainWindow && !mainWindow.isDestroyed()
+    ? mainWindow.getBounds()
+    : screen.getPrimaryDisplay().workArea;
+  const workArea = screen.getDisplayMatching(anchorBounds).workArea;
+  const windowWidth = 176;
+  const windowHeight = 176;
+  const preferredX = Math.round(anchorBounds.x + (anchorBounds.width - windowWidth) / 2);
+  const preferredY = Math.round(anchorBounds.y + anchorBounds.height - windowHeight - 124);
+  const initialX = Math.min(
+    Math.max(preferredX, workArea.x),
+    workArea.x + workArea.width - windowWidth
+  );
+  const initialY = Math.min(
+    Math.max(preferredY, workArea.y),
+    workArea.y + workArea.height - windowHeight
+  );
   petWindow = new BrowserWindow({
-    width: 220,
-    height: 220,
-    x: Math.max(workArea.x + 8, workArea.x + workArea.width - 236),
-    y: Math.max(workArea.y + 8, workArea.y + workArea.height - 240),
+    width: windowWidth,
+    height: windowHeight,
+    x: initialX,
+    y: initialY,
     frame: false,
     transparent: true,
     resizable: false,
@@ -1271,6 +1427,7 @@ async function openPetWindow(status) {
     alwaysOnTop: true,
     hasShadow: false,
     backgroundColor: '#00000000',
+    show: false,
     title: 'EterX Live Agent',
     webPreferences: {
       nodeIntegration: false,
@@ -1465,9 +1622,10 @@ function createWindow() {
       });
   });
 
-  // Handle Permissions (Microphone, Camera) automatically
+  // Handle Live media permissions. Screen sharing still requires a visible
+  // source picker or explicit confirmation at the moment capture begins.
   mainWindow.webContents.session.setPermissionRequestHandler((webContents, permission, callback) => {
-    const allowedPermissions = ['media', 'audioCapture', 'videoCapture'];
+    const allowedPermissions = ['media', 'audioCapture', 'videoCapture', 'display-capture'];
     if (allowedPermissions.includes(permission)) {
       callback(true);
     } else {
@@ -1476,9 +1634,40 @@ function createWindow() {
   });
 
   mainWindow.webContents.session.setPermissionCheckHandler((webContents, permission) => {
-    const allowedPermissions = ['media', 'audioCapture', 'videoCapture'];
+    const allowedPermissions = ['media', 'audioCapture', 'videoCapture', 'display-capture'];
     return allowedPermissions.includes(permission);
   });
+
+  if (typeof mainWindow.webContents.session.setDisplayMediaRequestHandler === 'function') {
+    mainWindow.webContents.session.setDisplayMediaRequestHandler(async (_request, callback) => {
+      try {
+        const confirmation = await dialog.showMessageBox(mainWindow, {
+          type: 'question',
+          title: 'Share your screen with EterX Live?',
+          message: 'EterX Live requested visual access to your screen.',
+          detail: 'Your screen is sampled only while the visible Live sharing control is active. You can stop sharing at any time.',
+          buttons: ['Share screen', 'Cancel'],
+          defaultId: 0,
+          cancelId: 1,
+          noLink: true,
+        });
+        if (confirmation.response !== 0) {
+          callback({});
+          return;
+        }
+        const sources = await desktopCapturer.getSources({
+          types: ['screen'],
+          thumbnailSize: { width: 0, height: 0 },
+          fetchWindowIcons: false,
+        });
+        const primaryDisplay = screen.getPrimaryDisplay();
+        const source = sources.find(candidate => candidate.display_id === String(primaryDisplay.id)) || sources[0];
+        callback(source ? { video: source } : {});
+      } catch {
+        callback({});
+      }
+    }, { useSystemPicker: true });
+  }
 
   mainWindow.on('closed', function () {
     mainWindow = null;

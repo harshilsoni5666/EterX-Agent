@@ -12,6 +12,7 @@ import { globalToolRegistry } from './tools/registry';
 import { observeUserProxy, startUserProxyRuntime, stopUserProxyRuntime, pauseUserProxyRuntime, resumeUserProxyRuntime, setUserProxyIntervention, setUserProxyModel, getUserProxyManagerSnapshot, deliverUserProxyManagerDirective, type ProxyInterventionLevel, type ProxyManagerDirective } from './autonomy/user-proxy-runtime';
 import { cancelPendingProxyTasks, claimDormantProxyDirectives, claimNextProxyTask, enqueueProxyTask, getPendingProxyTaskCount, readProxyControl, saveDormantProxyDirective, settleProxyTask, updateProxyControl } from './autonomy/proxy-control-plane';
 import { cancelAgent, cancelAllSubAgents, clearCancelState, globalSubAgentSpawner } from './roles/sub_agent';
+import { normalizeAttachmentMime } from './attachment-pipeline';
 
 // Ensure tools are bootstrapped
 import './tools/index';
@@ -526,7 +527,10 @@ class AgentRegistry {
         if (hasMediaAttachments) {
           for (let attachmentIndex = 0; attachmentIndex < mediaAttachments.length; attachmentIndex++) {
             const att = mediaAttachments[attachmentIndex];
-            const mimeType = att.mimeType || 'application/octet-stream';
+            const mimeType = normalizeAttachmentMime(
+              att.name || att.path || `attachment_${attachmentIndex}`,
+              att.mimeType,
+            );
 
             if (att.path && await fs.pathExists(att.path)) {
               const sourcePath = path.resolve(att.path);
@@ -562,7 +566,9 @@ class AgentRegistry {
         const preUploadedFiles = mediaFiles.filter(f => f.fileUri);
         const needsUploadFiles = mediaFiles.filter(f => !f.fileUri && GEMINI_NATIVE_MIMES.has(f.mimeType));
         const currentGeminiNativeFiles = [...preUploadedFiles, ...needsUploadFiles];
-        const textFallbackFiles = mediaFiles.filter(f => !f.fileUri && !GEMINI_NATIVE_MIMES.has(f.mimeType));
+        const textFallbackFiles = mediaFiles.filter(file =>
+          !file.fileUri && !GEMINI_NATIVE_MIMES.has(file.mimeType),
+        );
 
         // Media attachments are current-turn only. Re-attaching earlier images
         // makes the model see stale screenshots/photos on unrelated later turns.
@@ -578,17 +584,17 @@ class AgentRegistry {
         }
 
         // ═══════════════════════════════════════════════════════════
-        // Upload Gemini-native media with the same leased key used by the model call.
-        // This keeps the renderer fast and avoids base64 payloads in the chat input.
+        // Documents that require the Gemini Files API are uploaded with the
+        // leased key. Images stay on their real local path and are attached
+        // inline by Agent in the same generateContent request.
         // ═══════════════════════════════════════════════════════════
         const uploadedImageParts: { fileData: { fileUri: string, mimeType: string } }[] = [];
-        let hasNewImages = false;
-
         if (!isExternalProvider) {
           const geminiAI = new (require('@google/genai').GoogleGenAI)({ apiKey: lease!.apiKey });
         for (const file of geminiNativeFiles) {
           try {
             const isImage = String(file.mimeType || '').startsWith('image/');
+            if (isImage) continue;
 
             // If the file has a URI from VISUAL MEMORY (previously uploaded with this key ecosystem), reuse it
             if (file.fileUri && !currentGeminiNativeFiles.some(f => f.name === file.name)) {
@@ -604,7 +610,6 @@ class AgentRegistry {
             }
 
             console.log(`[AgentRegistry] Preparing media via Files API: ${ file.name } (${ file.mimeType })`);
-            onTrace({ type: 'progress', text: `Preparing ${ isImage ? 'image' : 'file' }`, percent: 8 });
             const uploadResult = await geminiAI.files.upload({
               file: file.path,
               config: { mimeType: file.mimeType }
@@ -613,7 +618,6 @@ class AgentRegistry {
             if (uploadResult && uploadResult.uri) {
               file.fileUri = uploadResult.uri; // Save URI back to the object
               uploadedImageParts.push({ fileData: { fileUri: uploadResult.uri, mimeType: uploadResult.mimeType || file.mimeType } });
-              hasNewImages = file.mimeType.startsWith('image/') || hasNewImages;
               console.log(`[AgentRegistry] ✅ Uploaded: ${ uploadResult.name } → ${ uploadResult.uri }`);
             }
           } catch (uploadErr: any) {
@@ -640,40 +644,8 @@ class AgentRegistry {
           enrichedPrompt += `[MULTIMODAL CONTEXT] ${ imageCount } image(s) are attached to this message. You CAN see them. When the user asks about an image, analyze it thoroughly — describe content, colors, text, layout, objects, people, code, UI elements, or anything visible. Do NOT say you cannot see images. You are a multimodal model with full vision capability.\n\n`;
         }
 
-        const TEXT_EXTS = new Set([
-          '.txt', '.md', '.json', '.csv', '.js', '.ts', '.tsx', '.jsx', '.py', '.java', '.c', '.cpp', '.h',
-          '.html', '.css', '.xml', '.yaml', '.yml', '.env', '.log', '.ini', '.cfg', '.sh', '.bat', '.ps1',
-          '.sql', '.rb', '.go', '.rs', '.php', '.swift', '.kt', '.r', '.m', '.lua', '.toml', '.conf',
-          '.gitignore', '.dockerignore', '.editorconfig', '.prettierrc', '.eslintrc',
-        ]);
-
         for (const file of textFallbackFiles) {
-          try {
-            const ext = path.extname(file.name).toLowerCase();
-            if (ext === '.pdf') {
-              try {
-                const pdfParse = require('pdf-parse');
-                const dataBuffer = await fs.readFile(file.path);
-                const data = await pdfParse(dataBuffer);
-                enrichedPrompt += `[Attached PDF: ${ file.name }]\n\`\`\`\n${ (data.text || '').slice(0, 50000) }\n\`\`\`\n\n`;
-              } catch { enrichedPrompt += `[Attached PDF: ${ file.name }] — use parse_pdf tool\n\n`; }
-            } else if (ext === '.docx') {
-              try {
-                const AdmZip = require('adm-zip');
-                const zip = new AdmZip(await fs.readFile(file.path));
-                const entry = zip.getEntry('word/document.xml');
-                const xml = entry ? entry.getData().toString('utf-8').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 50000) : '[Could not read]';
-                enrichedPrompt += `[Attached DOCX: ${ file.name }]\n\`\`\`\n${ xml }\n\`\`\`\n\n`;
-              } catch { enrichedPrompt += `[Attached DOCX: ${ file.name }] — saved at ${ file.path }\n\n`; }
-            } else if (TEXT_EXTS.has(ext) || file.mimeType.startsWith('text/')) {
-              const content = String(await fs.readFile(file.path, 'utf-8')).slice(0, 50000);
-              enrichedPrompt += `[Attached File: ${ file.name }]\n\`\`\`\n${ content }\n\`\`\`\n\n`;
-            } else {
-              enrichedPrompt += `[Attached File: ${ file.name }] — saved at ${ file.path }\n\n`;
-            }
-          } catch {
-            enrichedPrompt += `[Attached File: ${ file.name }] — saved at ${ file.path }\n\n`;
-          }
+          enrichedPrompt += `[Attached file: ${ file.name } (${ file.mimeType })] — real file available at ${ file.path }. Read it on demand with workspace file tools; do not inline or duplicate the entire file unless the user explicitly requests extraction.\n\n`;
         }
 
         enrichedPrompt += `[USER REQUEST]\n${ prompt }`;

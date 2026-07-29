@@ -20,9 +20,16 @@ import {
   getScopedModelOverride,
   type ScopedRuntimeSettings,
 } from './runtime-api-keys';
+import { getProviderRuntime } from './provider-runtime';
 
-export type MainAgentProvider = 'gemini' | 'mistral' | 'openai' | 'openrouter' | 'anthropic' | 'groq';
-export type MainAgentMode = 'think' | 'fast' | 'mistral' | 'openai' | 'openrouter' | 'anthropic' | 'groq';
+export type MainAgentProvider =
+  | 'gemini' | 'mistral' | 'openai' | 'openrouter' | 'anthropic' | 'groq'
+  | 'deepseek' | 'grok' | 'cerebras' | 'together' | 'fireworks' | 'sambanova'
+  | 'perplexity' | 'deepinfra' | 'huggingface' | 'nvidia' | 'cloudflare'
+  | 'ollama' | 'lmstudio' | 'vllm' | 'llamacpp' | 'novita' | 'qwen'
+  | 'mimo' | 'tokenhub' | 'zai' | 'kimi' | 'stepfun' | 'minimax'
+  | 'ollamacloud' | 'arcee' | 'gmi' | 'kilo' | 'opencode' | 'upstage' | 'custom';
+export type MainAgentMode = 'think' | 'fast' | Exclude<MainAgentProvider, 'gemini'>;
 /**
  * A provider-neutral value persisted by the composer.  Individual providers
  * expose only the values that their selected model actually accepts.
@@ -54,6 +61,7 @@ export type MainAgentModelConfig = {
 // ─── Static fallback chains (newest → oldest stable) ─────────────────────────
 // These are tried IN ORDER when the primary model fails with a model-not-found error.
 export const GEMINI_THINK_FALLBACK_CHAIN: readonly string[] = [
+  'gemini-3.6-flash',
   'gemini-3.5-flash',
   'gemini-3-flash-preview',
   'gemini-3.1-pro-preview',
@@ -62,6 +70,7 @@ export const GEMINI_THINK_FALLBACK_CHAIN: readonly string[] = [
 ];
 
 export const GEMINI_FAST_FALLBACK_CHAIN: readonly string[] = [
+  'gemini-3.6-flash',
   'gemini-3.5-flash',
   'gemini-3-flash-preview',
   'gemini-3.1-flash-lite',
@@ -95,6 +104,9 @@ export const OPENAI_FALLBACK_CHAIN: readonly string[] = [
 ];
 
 export const OPENROUTER_FALLBACK_CHAIN: readonly string[] = [
+  'openrouter/auto',
+  'openai/gpt-oss-120b',
+  'openai/gpt-oss-20b',
   'openai/gpt-5.6-sol',
   'openai/gpt-5.6-luna',
   'openai/gpt-5.6-terra',
@@ -115,8 +127,9 @@ export const ANTHROPIC_FALLBACK_CHAIN: readonly string[] = [
 ];
 
 export const GROQ_FALLBACK_CHAIN: readonly string[] = [
-  'llama-3.3-70b-versatile',
-  'llama-3.1-8b-instant',
+  'openai/gpt-oss-120b',
+  'openai/gpt-oss-20b',
+  'qwen/qwen3.6-27b',
 ];
 
 // ─── Proven model cache — survives the entire process lifetime ────────────────
@@ -143,6 +156,13 @@ export function clearProvenModel(mode: MainAgentMode): void {
  */
 export function resolveModelName(mode: MainAgentMode, runtimeSettings?: ScopedRuntimeSettings | null): string {
   const overrides = getRuntimeModelOverrides();
+  if (!['think', 'fast', 'mistral', 'openai', 'openrouter', 'anthropic', 'groq'].includes(mode)) {
+    const provider = mode as MainAgentProvider;
+    const scopedOverride = getScopedModelOverride(runtimeSettings, provider);
+    if (scopedOverride) return scopedOverride;
+    if (overrides[provider]) return overrides[provider];
+    return getProvenModel(mode) || getProviderRuntime(provider)?.defaultModel || '';
+  }
   switch (mode) {
     case 'think': {
       const scopedOverride = getScopedModelOverride(runtimeSettings, 'gemini');
@@ -259,7 +279,7 @@ export const MAIN_AGENT_MODE_CONFIG: Record<MainAgentMode, MainAgentModelConfig>
   think: {
     id: 'think',
     provider: 'gemini',
-    label: 'Gemini 3.5 Flash',
+    label: 'Gemini 3.6 Flash',
     compactLabel: 'Gemini',
     get modelName() { return resolveModelName('think'); },
     selectable: true,
@@ -312,6 +332,36 @@ export const MAIN_AGENT_MODE_CONFIG: Record<MainAgentMode, MainAgentModelConfig>
     get modelName() { return resolveModelName('groq'); },
     selectable: true,
   },
+  deepseek: { id: 'deepseek', provider: 'deepseek', label: 'DeepSeek', compactLabel: 'DeepSeek', get modelName() { return resolveModelName('deepseek'); }, selectable: true },
+  grok: { id: 'grok', provider: 'grok', label: 'xAI Grok', compactLabel: 'Grok', get modelName() { return resolveModelName('grok'); }, selectable: true },
+  cerebras: { id: 'cerebras', provider: 'cerebras', label: 'Cerebras', compactLabel: 'Cerebras', get modelName() { return resolveModelName('cerebras'); }, selectable: true },
+  together: { id: 'together', provider: 'together', label: 'Together AI', compactLabel: 'Together', get modelName() { return resolveModelName('together'); }, selectable: true },
+  fireworks: { id: 'fireworks', provider: 'fireworks', label: 'Fireworks AI', compactLabel: 'Fireworks', get modelName() { return resolveModelName('fireworks'); }, selectable: true },
+  sambanova: { id: 'sambanova', provider: 'sambanova', label: 'SambaNova', compactLabel: 'SambaNova', get modelName() { return resolveModelName('sambanova'); }, selectable: true },
+  perplexity: { id: 'perplexity', provider: 'perplexity', label: 'Perplexity', compactLabel: 'Perplexity', get modelName() { return resolveModelName('perplexity'); }, selectable: true },
+  deepinfra: { id: 'deepinfra', provider: 'deepinfra', label: 'DeepInfra', compactLabel: 'DeepInfra', get modelName() { return resolveModelName('deepinfra'); }, selectable: true },
+  huggingface: { id: 'huggingface', provider: 'huggingface', label: 'Hugging Face', compactLabel: 'HF', get modelName() { return resolveModelName('huggingface'); }, selectable: true },
+  nvidia: { id: 'nvidia', provider: 'nvidia', label: 'NVIDIA NIM', compactLabel: 'NVIDIA', get modelName() { return resolveModelName('nvidia'); }, selectable: true },
+  cloudflare: { id: 'cloudflare', provider: 'cloudflare', label: 'Cloudflare Workers AI', compactLabel: 'Cloudflare', get modelName() { return resolveModelName('cloudflare'); }, selectable: true },
+  ollama: { id: 'ollama', provider: 'ollama', label: 'Ollama Local', compactLabel: 'Ollama', get modelName() { return resolveModelName('ollama'); }, selectable: true },
+  lmstudio: { id: 'lmstudio', provider: 'lmstudio', label: 'LM Studio Local', compactLabel: 'LM Studio', get modelName() { return resolveModelName('lmstudio'); }, selectable: true },
+  vllm: { id: 'vllm', provider: 'vllm', label: 'vLLM Local', compactLabel: 'vLLM', get modelName() { return resolveModelName('vllm'); }, selectable: true },
+  llamacpp: { id: 'llamacpp', provider: 'llamacpp', label: 'llama.cpp Local', compactLabel: 'llama.cpp', get modelName() { return resolveModelName('llamacpp'); }, selectable: true },
+  novita: { id: 'novita', provider: 'novita', label: 'Novita AI', compactLabel: 'Novita', get modelName() { return resolveModelName('novita'); }, selectable: true },
+  qwen: { id: 'qwen', provider: 'qwen', label: 'Qwen Cloud', compactLabel: 'Qwen', get modelName() { return resolveModelName('qwen'); }, selectable: true },
+  mimo: { id: 'mimo', provider: 'mimo', label: 'Xiaomi MiMo', compactLabel: 'MiMo', get modelName() { return resolveModelName('mimo'); }, selectable: true },
+  tokenhub: { id: 'tokenhub', provider: 'tokenhub', label: 'Tencent TokenHub', compactLabel: 'TokenHub', get modelName() { return resolveModelName('tokenhub'); }, selectable: true },
+  zai: { id: 'zai', provider: 'zai', label: 'Z.AI / GLM', compactLabel: 'GLM', get modelName() { return resolveModelName('zai'); }, selectable: true },
+  kimi: { id: 'kimi', provider: 'kimi', label: 'Kimi / Moonshot', compactLabel: 'Kimi', get modelName() { return resolveModelName('kimi'); }, selectable: true },
+  stepfun: { id: 'stepfun', provider: 'stepfun', label: 'StepFun Step Plan', compactLabel: 'StepFun', get modelName() { return resolveModelName('stepfun'); }, selectable: true },
+  minimax: { id: 'minimax', provider: 'minimax', label: 'MiniMax', compactLabel: 'MiniMax', get modelName() { return resolveModelName('minimax'); }, selectable: true },
+  ollamacloud: { id: 'ollamacloud', provider: 'ollamacloud', label: 'Ollama Cloud', compactLabel: 'Ollama Cloud', get modelName() { return resolveModelName('ollamacloud'); }, selectable: true },
+  arcee: { id: 'arcee', provider: 'arcee', label: 'Arcee AI', compactLabel: 'Arcee', get modelName() { return resolveModelName('arcee'); }, selectable: true },
+  gmi: { id: 'gmi', provider: 'gmi', label: 'GMI Cloud', compactLabel: 'GMI', get modelName() { return resolveModelName('gmi'); }, selectable: true },
+  kilo: { id: 'kilo', provider: 'kilo', label: 'Kilo Gateway', compactLabel: 'Kilo', get modelName() { return resolveModelName('kilo'); }, selectable: true },
+  opencode: { id: 'opencode', provider: 'opencode', label: 'OpenCode Zen', compactLabel: 'OpenCode', get modelName() { return resolveModelName('opencode'); }, selectable: true },
+  upstage: { id: 'upstage', provider: 'upstage', label: 'Upstage Solar', compactLabel: 'Upstage', get modelName() { return resolveModelName('upstage'); }, selectable: true },
+  custom: { id: 'custom', provider: 'custom', label: 'Custom endpoint', compactLabel: 'Custom', get modelName() { return resolveModelName('custom'); }, selectable: true },
 };
 
 export const MAIN_AGENT_MODEL_OPTIONS = Object.values(MAIN_AGENT_MODE_CONFIG).filter(o => o.selectable);
@@ -332,13 +382,13 @@ const thinkingOptions = (...levels: MainAgentThinkingLevel[]): ModelThinkingOpti
   levels.map(id => MAIN_AGENT_THINKING_LEVEL_OPTIONS.find(option => option.id === id)!);
 
 export const isOpenAIReasoningModel = (model: string) =>
-  /(?:^|[/:_-])(?:o1|o3|o4)(?:$|[/:_-])|gpt-5|luna|terra|sol/i.test(model);
+  /(?:^|[/:_-])(?:o1|o3|o4)(?:$|[/:_-])|gpt-5|gpt-oss|luna|terra|sol/i.test(model);
 
 const isClaudeEffortModel = (model: string) =>
-  /(?:claude-(?:fable|mythos|sonnet-5|sonnet-4-6|opus-4-(?:6|7|8)))/i.test(model);
+  /(?:claude-(?:fable|mythos|sonnet-5|sonnet-4-6|opus-5|opus-4-(?:6|7|8)))/i.test(model);
 
 const isClaudeXHighModel = (model: string) =>
-  /(?:claude-(?:fable|mythos|sonnet-5|opus-4-(?:7|8)))/i.test(model);
+  /(?:claude-(?:fable|mythos|sonnet-5|opus-5|opus-4-(?:7|8)))/i.test(model);
 
 const isMistralReasoningModel = (model: string) =>
   /(?:mistral-small(?:-latest)?|mistral-medium-3-5)/i.test(model);
@@ -363,11 +413,10 @@ export function getModelThinkingOptions(
   if (provider === 'gemini') {
     // Gemini 3 uses thinkingLevel. "minimal" is the lowest effort; these
     // models do not provide a true thinking-off setting.
-    if (model.includes('gemini-3.1-flash-lite')) return thinkingOptions('minimal', 'low', 'medium', 'high');
-    if (model.includes('gemini-3.5') || model.includes('gemini-3-flash')) {
+    if (model.includes('gemini-3') && model.includes('pro')) return thinkingOptions('low', 'medium', 'high');
+    if (model.includes('gemini-3')) {
       return thinkingOptions('minimal', 'low', 'medium', 'high');
     }
-    if (model.includes('gemini-3.1-pro')) return thinkingOptions('low', 'medium', 'high');
     // Gemini 2.5 uses thinkingBudget, not thinkingLevel.
     if (model.includes('gemini-2.5-pro')) return thinkingOptions('low', 'medium', 'high');
     if (model.includes('gemini-2.5-flash-lite')) return [];
@@ -383,16 +432,17 @@ export function getModelThinkingOptions(
   if (provider === 'anthropic') {
     if (!model.includes('claude')) return [];
     return isClaudeXHighModel(model)
-      ? thinkingOptions('off', 'low', 'medium', 'high', 'xhigh', 'max')
+      ? thinkingOptions('low', 'medium', 'high', 'xhigh', 'max')
       : isClaudeEffortModel(model)
-        ? thinkingOptions('off', 'low', 'medium', 'high', 'max')
+        ? thinkingOptions('low', 'medium', 'high', 'max')
         : [];
   }
 
   if (provider === 'openai') {
-    return isOpenAIReasoningModel(model)
-      ? thinkingOptions('off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max')
-      : [];
+    if (!isOpenAIReasoningModel(model)) return [];
+    if (model.includes('gpt-5.6')) return thinkingOptions('off', 'low', 'medium', 'high', 'xhigh', 'max');
+    if (model.includes('gpt-oss')) return thinkingOptions('low', 'medium', 'high');
+    return thinkingOptions('off', 'minimal', 'low', 'medium', 'high', 'xhigh');
   }
 
   if (provider === 'openrouter') {
@@ -411,8 +461,27 @@ export function getModelThinkingOptions(
       return getModelThinkingOptions('gemini', model.replace(/^google\//, ''));
     }
     if (isOpenAIReasoningModel(model) || model.includes('grok')) {
-      return thinkingOptions('off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max');
+      if (model.includes('gpt-5.6')) return thinkingOptions('off', 'low', 'medium', 'high', 'xhigh', 'max');
+      if (model.includes('gpt-oss')) return thinkingOptions('low', 'medium', 'high');
+      return thinkingOptions('off', 'low', 'medium', 'high');
     }
+  }
+
+  if (provider === 'groq' && model.includes('gpt-oss')) {
+    return thinkingOptions('low', 'medium', 'high');
+  }
+
+  if (provider === 'deepseek' && /deepseek-(?:v4|reasoner)/.test(model)) {
+    return thinkingOptions('off', 'low', 'medium', 'high');
+  }
+  if (provider === 'grok' && /grok-(?:4|3)/.test(model)) {
+    return thinkingOptions('off', 'low', 'medium', 'high');
+  }
+  if (
+    ['cerebras', 'together', 'fireworks', 'sambanova', 'deepinfra', 'huggingface', 'nvidia', 'cloudflare', 'ollama', 'lmstudio', 'vllm', 'llamacpp', 'novita', 'qwen', 'mimo', 'tokenhub', 'zai', 'kimi', 'stepfun', 'minimax', 'ollamacloud', 'arcee', 'gmi', 'kilo', 'opencode', 'upstage', 'custom'].includes(provider)
+    && /(?:gpt-oss|deepseek|reason|thinking|qwq|qwen3)/.test(model)
+  ) {
+    return thinkingOptions('off', 'low', 'medium', 'high');
   }
 
   return [];
@@ -501,10 +570,9 @@ export function normalizeThinkingLevelForModel(
 }
 
 /** Provider adapters use this to turn the persisted level into API values. */
-export function toOpenAIReasoningEffort(level: MainAgentThinkingLevel): 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' {
+export function toOpenAIReasoningEffort(level: MainAgentThinkingLevel): 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' {
   if (level === 'off') return 'none';
-  if (level === 'max') return 'xhigh';
-  return level === 'minimal' || level === 'low' || level === 'medium' || level === 'high' || level === 'xhigh'
+  return level === 'minimal' || level === 'low' || level === 'medium' || level === 'high' || level === 'xhigh' || level === 'max'
     ? level
     : 'medium';
 }
@@ -533,7 +601,7 @@ export function getAnthropicThinkingBudget(level: MainAgentThinkingLevel): numbe
 }
 
 export function isAnthropicAdaptiveThinkingModel(modelName: string): boolean {
-  return /(?:claude-(?:fable|mythos|sonnet-5|sonnet-4-6|opus-4-(?:6|7|8)))/i.test(modelName);
+  return /(?:claude-(?:fable|mythos|sonnet-5|sonnet-4-6|opus-5|opus-4-(?:6|7|8)))/i.test(modelName);
 }
 
 export function isOpenAIMiniReasoningModel(modelName: string): boolean {

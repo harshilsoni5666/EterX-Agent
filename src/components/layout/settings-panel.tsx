@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { MAIN_AGENT_MODEL_OPTIONS, normalizeModelThinkingCapabilities, type MainAgentMode, type MainAgentProvider, type ModelThinkingCapabilities } from '../../lib/agent/model-routing';
+import { MAIN_AGENT_MODEL_OPTIONS, getModelThinkingOptions, normalizeModelThinkingCapabilities, type MainAgentMode, type MainAgentProvider, type ModelThinkingCapabilities } from '../../lib/agent/model-routing';
 import {
   AUTO_MODEL_SELECTION,
   CHAT_CONTEXT_WINDOW_OVERRIDES_STORAGE_KEY,
@@ -29,6 +29,7 @@ import {
 import { applyEterxTheme, broadcastEterxSettingsUpdate } from '../theme/theme-bridge';
 
 type SettingsGlyphProps = React.SVGProps<SVGSVGElement> & { strokeWidth?: number };
+const PROVIDER_BASE_URLS_STORAGE_KEY = 'eterx_provider_base_urls';
 
 const SettingsGlyph = ({
   children,
@@ -434,13 +435,14 @@ type ModelDirectoryProvider = {
     capabilities?: string[];
     thinking?: ModelThinkingCapabilities;
   }>;
+  excludedCount?: number;
   error?: string;
 };
 
 type ModelDirectory = Record<string, ModelDirectoryProvider>;
 type ModelOverrides = Record<string, string>;
 type ModelCatalog = Record<string, string[]>;
-type ProviderModelOption = { id: string; label: string; source: 'selected' | 'saved' | 'official' | 'live' };
+type ProviderModelOption = { id: string; label: string; source: 'selected' | 'saved' | 'live' };
 type DesktopUpdateState = {
   status: 'idle' | 'development' | 'checking' | 'available' | 'downloading' | 'current' | 'ready' | 'error';
   currentVersion: string;
@@ -686,6 +688,24 @@ const PROVIDER_LABEL: Record<string, string> = {
   ollama: 'Ollama Local',
   lmstudio: 'LM Studio',
   vllm: 'vLLM Engine',
+  llamacpp: 'llama.cpp',
+  cloudflare: 'Cloudflare Workers AI',
+  nvidia: 'NVIDIA NIM',
+  novita: 'Novita AI',
+  qwen: 'Qwen Cloud / DashScope',
+  mimo: 'Xiaomi MiMo',
+  tokenhub: 'Tencent TokenHub',
+  zai: 'Z.AI / GLM',
+  kimi: 'Kimi / Moonshot',
+  stepfun: 'StepFun Step Plan',
+  minimax: 'MiniMax',
+  ollamacloud: 'Ollama Cloud',
+  arcee: 'Arcee AI',
+  gmi: 'GMI Cloud',
+  kilo: 'Kilo Gateway',
+  opencode: 'OpenCode Zen',
+  upstage: 'Upstage Solar',
+  custom: 'Custom endpoint',
 };
 const PROVIDER_MODE: Record<MainAgentProvider, MainAgentMode> = MODEL_PROVIDER_MODE;
 const PROVIDER_ACCENT: Record<string, string> = {
@@ -1447,22 +1467,50 @@ const ModernSelect: React.FC<{
   className?: string;
 }> = ({ value, onChange, options, placeholder = 'Select', className = '' }) => {
   const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const rootRef = useRef<HTMLDivElement>(null);
   const selected = options.find(option => option.value === value);
+  const searchable = options.length > 6;
+  const normalizedQuery = query.trim().toLowerCase();
+  const visibleOptions = normalizedQuery
+    ? options.filter(option => `${option.label} ${option.value} ${option.description || ''}`.toLowerCase().includes(normalizedQuery))
+    : options;
 
   return (
-    <div className={`relative ${className}`}>
+    <div ref={rootRef} className={`relative ${className}`}>
       <button
         type="button"
-        onClick={() => setOpen(prev => !prev)}
-        onBlur={() => window.setTimeout(() => setOpen(false), 120)}
+        onClick={() => {
+          setOpen(prev => !prev);
+          setQuery('');
+        }}
+        onBlur={() => window.setTimeout(() => {
+          if (!rootRef.current?.contains(document.activeElement)) setOpen(false);
+        }, 0)}
         className="flex h-9 w-full items-center justify-between gap-3 rounded-xl border border-white/[0.08] bg-[#2D2D2D] px-3 text-left text-[13px] font-medium text-[#F2F2F2] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] outline-none transition-colors hover:bg-[#363636] focus:border-white/[0.20]"
       >
         <span className="truncate">{selected?.label || placeholder}</span>
         <ChevronRight className={`h-4 w-4 shrink-0 text-[#A7A7A7] transition-transform ${open ? '-rotate-90' : 'rotate-90'}`} />
       </button>
       {open && (
-        <div className="absolute right-0 z-50 mt-2 max-h-72 w-full min-w-[240px] overflow-y-auto rounded-xl border border-white/[0.10] bg-[#242424] p-1 shadow-[0_18px_48px_rgba(0,0,0,0.45)] eterx-scrollbar">
-          {options.map(option => (
+        <div className="absolute right-0 z-50 mt-2 flex max-h-72 w-full min-w-[240px] flex-col rounded-xl border border-white/[0.10] bg-[#242424] p-1 shadow-[0_18px_48px_rgba(0,0,0,0.45)]">
+          {searchable && (
+            <div className="relative mb-1 shrink-0">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#777]" />
+              <input
+                autoFocus
+                value={query}
+                onChange={event => setQuery(event.target.value)}
+                onKeyDown={event => {
+                  if (event.key === 'Escape') setOpen(false);
+                }}
+                placeholder={`Search ${options.length} options`}
+                className="h-9 w-full rounded-lg border border-white/[0.08] bg-[#191919] pl-8 pr-3 text-[12px] text-[#F2F2F2] outline-none placeholder:text-[#707070] focus:border-white/[0.18]"
+              />
+            </div>
+          )}
+          <div className="min-h-0 overflow-y-auto eterx-scrollbar">
+          {visibleOptions.map(option => (
             <button
               key={option.value}
               type="button"
@@ -1486,6 +1534,10 @@ const ModernSelect: React.FC<{
               {value === option.value && <Check className="ml-2 h-3.5 w-3.5 shrink-0" />}
             </button>
           ))}
+          {visibleOptions.length === 0 && (
+            <div className="px-3 py-4 text-center text-[12px] text-[#888]">No matching options</div>
+          )}
+          </div>
         </div>
       )}
     </div>
@@ -1499,15 +1551,27 @@ const ProviderSelect: React.FC<{
   className?: string;
 }> = ({ value, onChange, providers, className = '' }) => {
   const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const rootRef = useRef<HTMLDivElement>(null);
   const label = PROVIDER_LABEL[value] || value || 'Select provider';
   const currentTag = PROVIDER_PRICING_TAG[value];
+  const searchable = providers.length > 6;
+  const normalizedQuery = query.trim().toLowerCase();
+  const visibleProviders = normalizedQuery
+    ? providers.filter(provider => `${PROVIDER_LABEL[provider] || provider} ${provider}`.toLowerCase().includes(normalizedQuery))
+    : providers;
 
   return (
-    <div className={`relative ${className}`}>
+    <div ref={rootRef} className={`relative ${className}`}>
       <button
         type="button"
-        onClick={() => setOpen(prev => !prev)}
-        onBlur={() => window.setTimeout(() => setOpen(false), 120)}
+        onClick={() => {
+          setOpen(prev => !prev);
+          setQuery('');
+        }}
+        onBlur={() => window.setTimeout(() => {
+          if (!rootRef.current?.contains(document.activeElement)) setOpen(false);
+        }, 0)}
         className="flex h-9 w-full items-center justify-between gap-2.5 rounded-xl border border-white/[0.08] bg-[#2D2D2D] px-3 text-left text-[13px] font-medium text-[#F2F2F2] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] outline-none transition-colors hover:bg-[#363636] focus:border-white/[0.20]"
       >
         <span className="flex min-w-0 items-center gap-2">
@@ -1524,8 +1588,24 @@ const ProviderSelect: React.FC<{
         </span>
       </button>
       {open && (
-        <div className="absolute right-0 z-50 mt-2 max-h-72 w-full min-w-[280px] overflow-y-auto rounded-xl border border-white/[0.10] bg-[#242424] p-1.5 shadow-[0_18px_48px_rgba(0,0,0,0.45)] eterx-scrollbar">
-          {providers.map(provider => {
+        <div className="absolute right-0 z-50 mt-2 flex max-h-72 w-full min-w-[280px] flex-col rounded-xl border border-white/[0.10] bg-[#242424] p-1.5 shadow-[0_18px_48px_rgba(0,0,0,0.45)]">
+          {searchable && (
+            <div className="relative mb-1 shrink-0">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#777]" />
+              <input
+                autoFocus
+                value={query}
+                onChange={event => setQuery(event.target.value)}
+                onKeyDown={event => {
+                  if (event.key === 'Escape') setOpen(false);
+                }}
+                placeholder={`Search ${providers.length} providers`}
+                className="h-9 w-full rounded-lg border border-white/[0.08] bg-[#191919] pl-8 pr-3 text-[12px] text-[#F2F2F2] outline-none placeholder:text-[#707070] focus:border-white/[0.18]"
+              />
+            </div>
+          )}
+          <div className="min-h-0 overflow-y-auto eterx-scrollbar">
+          {visibleProviders.map(provider => {
             const tag = PROVIDER_PRICING_TAG[provider];
             return (
               <button
@@ -1555,6 +1635,10 @@ const ProviderSelect: React.FC<{
               </button>
             );
           })}
+          {visibleProviders.length === 0 && (
+            <div className="px-3 py-4 text-center text-[12px] text-[#888]">No matching providers</div>
+          )}
+          </div>
         </div>
       )}
     </div>
@@ -1673,6 +1757,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
   const [contextChatsLoading, setContextChatsLoading] = useState(false);
   const [modelThinkingCapabilities, setModelThinkingCapabilities] = useState<Record<string, ModelThinkingCapabilities>>({});
   const [modelApiKeys, setModelApiKeys] = useState<Record<string, string>>({});
+  const [providerBaseURLs, setProviderBaseURLs] = useState<Record<string, string>>({});
   const [selectedConnectionProvider, setSelectedConnectionProvider] = useState<MainAgentProvider>('gemini');
   const [selectedApiProviderValue, setSelectedApiProviderValue] = useState<MainAgentProvider>('gemini');
   const [selectedApiModelValue, setSelectedApiModelValue] = useState('');
@@ -1842,7 +1927,12 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     Object.values(keys).some(value => Boolean(String(value || '').trim())), []);
 
   const refreshModelDirectory = useCallback(async (
-    keys: Record<string, string> = composeApiKeysForSelection(apiKeys, modelApiKeys, modelEntries, AUTO_MODEL_SELECTION),
+    keys: Record<string, string> = composeApiKeysForSelections(
+      apiKeys,
+      modelApiKeys,
+      modelEntries,
+      [AUTO_MODEL_SELECTION, ...modelEntries.map(entry => modelEntryKey(entry.provider, entry.modelId))],
+    ),
     overrides: ModelOverrides = modelOverrides,
   ) => {
     setModelDirectoryStatus('loading');
@@ -1854,7 +1944,79 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       });
       const payload = await res.json();
       if (!res.ok || !payload?.ok) throw new Error(payload?.error || 'Model discovery failed');
-      setModelDirectory(payload.providers || {});
+      const nextDirectory = payload.providers || {};
+      setModelDirectory(nextDirectory);
+      const discoveredThinkingCapabilities: Record<string, ModelThinkingCapabilities> = {};
+      Object.values(nextDirectory).forEach((providerValue: any) => {
+        const provider = String(providerValue?.provider || '');
+        (providerValue?.models || []).forEach((model: any) => {
+          const thinking = normalizeModelThinkingCapabilities(model?.thinking);
+          if (provider && model?.id && thinking) {
+            discoveredThinkingCapabilities[modelEntryKey(provider, String(model.id))] = thinking;
+          }
+        });
+      });
+      setModelThinkingCapabilities(previous => {
+        const next = { ...previous, ...discoveredThinkingCapabilities };
+        localStorage.setItem(MODEL_THINKING_CAPABILITIES_STORAGE_KEY, JSON.stringify(next));
+        broadcastEterxSettingsUpdate({
+          type: 'model-thinking-capabilities-updated',
+          thinkingCapabilities: next,
+        });
+        return next;
+      });
+      const reconciledOverrides = { ...overrides };
+      let removedInvalidOverride = false;
+      Object.entries(reconciledOverrides).forEach(([provider, modelId]) => {
+        const providerDirectory = nextDirectory[provider] as ModelDirectoryProvider | undefined;
+        if (!providerDirectory?.connected) return;
+        if (!providerDirectory.models.some(model => model.id === modelId)) {
+          delete reconciledOverrides[provider];
+          removedInvalidOverride = true;
+        }
+      });
+      if (removedInvalidOverride) {
+        setModelOverrides(reconciledOverrides);
+        localStorage.setItem(MODEL_OVERRIDE_STORAGE_KEY, JSON.stringify(reconciledOverrides));
+        void persistDesktopRuntimeSettings(apiKeys, modelApiKeys, reconciledOverrides);
+        broadcastEterxSettingsUpdate({
+          type: 'model-overrides-updated',
+          modelOverrides: reconciledOverrides,
+        });
+      }
+      setModelEntries(previousEntries => {
+        const reconciled = previousEntries.filter(entry => {
+          const providerDirectory = nextDirectory[entry.provider] as ModelDirectoryProvider | undefined;
+          if (!providerDirectory?.connected) return true;
+          return providerDirectory.models.some(model => model.id === entry.modelId);
+        });
+        const discoveredDefaults = MODEL_PROVIDER_ORDER.flatMap(provider => {
+          const providerDirectory = nextDirectory[provider] as ModelDirectoryProvider | undefined;
+          if (!providerDirectory?.connected || providerDirectory.models.length === 0) return [];
+          if (reconciled.some(entry => entry.provider === provider)) return [];
+          const preferred = providerDirectory.models[0];
+          return preferred ? [{ provider, modelId: preferred.id } as ModelSelectorEntry] : [];
+        });
+        const syncedEntries = normalizeModelSelectorEntries([...reconciled, ...discoveredDefaults], {});
+        if (
+          syncedEntries.length === previousEntries.length
+          && syncedEntries.every((entry, index) => modelEntryKey(entry.provider, entry.modelId) === modelEntryKey(previousEntries[index].provider, previousEntries[index].modelId))
+        ) return previousEntries;
+        const nextCatalog = entriesToModelCatalog(syncedEntries) as ModelCatalog;
+        setModelCatalog(nextCatalog);
+        localStorage.setItem(MODEL_SELECTOR_STORAGE_KEY, JSON.stringify(syncedEntries));
+        localStorage.setItem(MODEL_CATALOG_STORAGE_KEY, JSON.stringify(nextCatalog));
+        const currentSelection = localStorage.getItem(CHAT_MODEL_SELECTION_STORAGE_KEY);
+        if (currentSelection && currentSelection !== AUTO_MODEL_SELECTION && !syncedEntries.some(entry => modelEntryKey(entry.provider, entry.modelId) === currentSelection)) {
+          localStorage.setItem(CHAT_MODEL_SELECTION_STORAGE_KEY, AUTO_MODEL_SELECTION);
+        }
+        broadcastEterxSettingsUpdate({
+          type: 'model-selector-updated',
+          modelEntries: syncedEntries,
+          modelCatalog: nextCatalog,
+        });
+        return syncedEntries;
+      });
       const discoveredContextWindows: Record<string, number> = {};
       Object.values(payload.providers || {}).forEach((providerValue: any) => {
         const provider = String(providerValue?.provider || '');
@@ -1871,7 +2033,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     } catch (error) {
       setModelDirectoryStatus('error');
     }
-  }, [apiKeys, modelApiKeys, modelEntries, modelOverrides]);
+  }, [apiKeys, modelApiKeys, modelEntries, modelOverrides, persistDesktopRuntimeSettings]);
 
   const syncApiKeys = useCallback(async (keys: Record<string, string>, silent = false, overrides: ModelOverrides = {}) => {
     const cleanKeys = Object.fromEntries(
@@ -1959,10 +2121,12 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       const savedModelEntries = localStorage.getItem(MODEL_SELECTOR_STORAGE_KEY);
       const savedModelApiKeys = localStorage.getItem(MODEL_API_KEYS_STORAGE_KEY);
       const savedThinkingCapabilities = localStorage.getItem(MODEL_THINKING_CAPABILITIES_STORAGE_KEY);
+      const savedProviderBaseURLs = localStorage.getItem(PROVIDER_BASE_URLS_STORAGE_KEY);
       const parsedModelOverrides = savedModelOverrides ? JSON.parse(savedModelOverrides) : {};
       const parsedModelCatalog = savedModelCatalog ? JSON.parse(savedModelCatalog) : {};
       const legacyModelApiKeys = savedModelApiKeys ? JSON.parse(savedModelApiKeys) : {};
       const parsedThinkingCapabilities = savedThinkingCapabilities ? JSON.parse(savedThinkingCapabilities) : {};
+      const parsedProviderBaseURLs = savedProviderBaseURLs ? JSON.parse(savedProviderBaseURLs) : {};
       const migratedEntries = normalizeModelSelectorEntries(
         savedModelEntries ? JSON.parse(savedModelEntries) : [],
         parsedModelCatalog,
@@ -2015,6 +2179,14 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       localStorage.setItem(MODEL_CATALOG_STORAGE_KEY, JSON.stringify(normalizedCatalog));
       setModelOverrides(effectiveModelOverrides);
       setApiKeys(parsedApiKeys);
+      const effectiveBaseURLs = parsedProviderBaseURLs && typeof parsedProviderBaseURLs === 'object' && !Array.isArray(parsedProviderBaseURLs)
+        ? Object.fromEntries(
+            Object.entries(parsedProviderBaseURLs as Record<string, unknown>)
+              .map(([provider, value]) => [provider, typeof value === 'string' ? value.trim() : ''])
+              .filter(([provider, value]) => isModelProvider(provider) && Boolean(value)),
+          )
+        : {};
+      setProviderBaseURLs(effectiveBaseURLs);
 
       const usingLegacyBrowserKeys = !secureApiKeys && Boolean(savedKeys || savedModelApiKeys);
       if (usingLegacyBrowserKeys) {
@@ -2039,7 +2211,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
         await fetch('/api/settings/keys', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ apiKeys: configuredKeys, modelOverrides: configuredOverrides }),
+          body: JSON.stringify({ apiKeys: configuredKeys, modelOverrides: configuredOverrides, baseURLs: effectiveBaseURLs }),
         });
       }
       } catch (error) {
@@ -2048,6 +2220,15 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     };
     void loadSettings();
   }, [persistDesktopRuntimeSettings]);
+
+  useEffect(() => {
+    localStorage.setItem(PROVIDER_BASE_URLS_STORAGE_KEY, JSON.stringify(providerBaseURLs));
+    void fetch('/api/settings/keys', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ baseURLs: providerBaseURLs }),
+    }).catch(() => {});
+  }, [providerBaseURLs]);
 
   // Fetch active provider key connection status when panel opens
   useEffect(() => {
@@ -2232,9 +2413,6 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
 
     push(modelOverrides[provider], modelOverrides[provider], 'selected');
     modelCatalog[provider]?.forEach(modelId => push(modelId, modelId, 'saved'));
-    OFFICIAL_PROVIDER_GUIDE[provider]?.families.forEach(family => {
-      if (family.id) push(family.id, family.name, 'official');
-    });
     modelDirectory[provider]?.models?.forEach(model => {
       push(model.id, model.name || model.id, 'live');
     });
@@ -2261,7 +2439,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     ? selectedContextChat?.reportedWindow || 0
     : Number(effectiveSelectedChatBudget || 0);
   const selectedProviderStatusText = selectedProviderDirectory
-    ? (selectedProviderDirectory.connected ? `${ selectedProviderDirectory.models.length } live models loaded` : selectedProviderDirectory.error || 'Not connected')
+    ? (selectedProviderDirectory.connected
+      ? `${ selectedProviderDirectory.models.length } agent-compatible models${ selectedProviderDirectory.excludedCount ? ` · ${ selectedProviderDirectory.excludedCount } incompatible hidden` : '' }`
+      : selectedProviderDirectory.error || 'Not connected')
     : 'Refresh to load live models';
   const selectedProviderCapabilities = [
     selectedProviderKeyCount > 0 ? `${ selectedProviderKeyCount } key${ selectedProviderKeyCount === 1 ? '' : 's' } in pool` : 'Key not connected',
@@ -2890,8 +3070,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                             </SettingsStackRow>
                             <SettingsStackRow
                               title="Model"
-                              description={selectedProviderModel ? 'Exact provider model id active for the next run.' : `Auto fallback: ${ selectedProviderFallbackModel || 'provider default' }`}
-                              info="Choosing a model pins the runtime to that exact provider model and adds it to the global chat model list."
+                              description={selectedProviderModel ? 'Exact live model active for the next run.' : `Auto fallback: ${ selectedProviderFallbackModel || 'provider default' }`}
+                              info="The list is built from the provider API and hides embeddings, speech, image, expired, and non-agent models."
                             >
                               <ModernSelect
                                 value={selectedProviderModel}
@@ -2909,11 +3089,55 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                   { value: '', label: 'Auto runtime default', description: PROVIDER_LABEL[selectedConnectionProvider] || selectedConnectionProvider },
                                   ...selectedProviderModelOptions.map(option => ({
                                     value: option.id,
-                                    label: option.id,
-                                    description: PROVIDER_LABEL[selectedConnectionProvider] || selectedConnectionProvider,
+                                    label: option.label,
+                                    description: (() => {
+                                      if (option.source !== 'live') return option.source === 'selected' ? 'Current selection' : 'Saved selection';
+                                      const liveModel = selectedProviderDirectory?.models.find(model => model.id === option.id);
+                                      const levels = getModelThinkingOptions(
+                                        selectedConnectionProvider,
+                                        option.id,
+                                        liveModel?.thinking,
+                                      );
+                                      const context = Number(liveModel?.inputTokenLimit || liveModel?.contextLength || 0);
+                                      return [
+                                        'Live · agent compatible',
+                                        levels.length ? `${ levels.map(level => level.label).join('/') } reasoning` : 'standard',
+                                        context ? `${ Math.round(context / 1000) }K context` : '',
+                                      ].filter(Boolean).join(' · ');
+                                    })(),
                                   })),
                                 ]}
                               />
+                            </SettingsStackRow>
+                            <SettingsStackRow
+                              title="API base URL"
+                              description="Optional OpenAI-compatible endpoint override. Use this for remote servers, Docker hosts, gateways, or a custom provider."
+                              info="HTTP and HTTPS URLs work on Windows, macOS, and Linux. Leave blank to use the provider's official or local default."
+                            >
+                              <div className="flex w-[360px] items-center gap-2">
+                                <input
+                                  value={providerBaseURLs[selectedConnectionProvider] || ''}
+                                  onChange={(event) => {
+                                    const value = event.target.value;
+                                    setProviderBaseURLs(previous => {
+                                      const next = { ...previous };
+                                      if (value) next[selectedConnectionProvider] = value;
+                                      else delete next[selectedConnectionProvider];
+                                      return next;
+                                    });
+                                  }}
+                                  placeholder={selectedConnectionProvider === 'custom' ? 'https://host.example/v1' : 'Use provider default'}
+                                  spellCheck={false}
+                                  className="h-9 min-w-0 flex-1 rounded-xl border border-white/[0.08] bg-[#141414] px-3 text-[12px] font-mono text-[#F1F1F1] outline-none transition-colors placeholder:text-[#666] focus:border-white/[0.20]"
+                                />
+                                {providerBaseURLs[selectedConnectionProvider] && (
+                                  <SoftButton onClick={() => setProviderBaseURLs(previous => {
+                                    const next = { ...previous };
+                                    delete next[selectedConnectionProvider];
+                                    return next;
+                                  })}>Default</SoftButton>
+                                )}
+                              </div>
                             </SettingsStackRow>
                             <SettingsStackRow
                               title={selectedConnectionProvider === 'openrouter' ? 'Exact OpenRouter model' : selectedConnectionProvider === 'groq' ? 'Exact Groq model' : 'Exact model ID'}
@@ -2922,7 +3146,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                 : selectedConnectionProvider === 'groq'
                                   ? 'Paste any Groq model id, for example openai/gpt-oss-120b or llama-3.3-70b-versatile.'
                                 : 'Use a provider-specific model ID when it is not listed yet in live discovery.'}
-                              info="Use this for models that are new, custom, or not returned by live discovery yet."
+                              info="Advanced override. The runtime will use this exact ID; refresh discovery afterward to confirm the provider exposes it."
                             >
                               <div className="flex w-[280px] items-center gap-2">
                                 <input
@@ -2965,12 +3189,21 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                     {modelEntries.map(entry => {
                                       const selected = modelOverrides[entry.provider] === entry.modelId;
                                       const entryProviderLabel = PROVIDER_LABEL[entry.provider] || entry.provider;
+                                      const entryThinkingOptions = getModelThinkingOptions(
+                                        entry.provider,
+                                        entry.modelId,
+                                        modelThinkingCapabilities[modelEntryKey(entry.provider, entry.modelId)],
+                                      );
                                       return (
                                         <div key={modelEntryKey(entry.provider, entry.modelId)} className="flex items-center gap-2 rounded-lg px-2 py-2 hover:bg-white/[0.04]">
                                           <div className="min-w-0 flex-1">
                                             <div className="truncate font-mono text-[11.5px] font-semibold text-[#F1F1F1]">{entry.modelId}</div>
                                             <div className="mt-0.5 truncate text-[11px] text-[#777]">
                                               {selected ? 'Active runtime target' : entryProviderLabel}
+                                              {' · '}
+                                              {entryThinkingOptions.length
+                                                ? `${ entryThinkingOptions.map(option => option.label).join(' / ') } reasoning`
+                                                : 'Standard generation'}
                                             </div>
                                           </div>
                                           <SoftButton onClick={() => selectCatalogModel(entry.provider, entry.modelId)}>

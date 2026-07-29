@@ -64,9 +64,91 @@ interface PreparedOperation {
   operation: FileOperation;
   resolvedPath: string;
   existed: boolean;
+  mode?: number;
   beforeContent: string;
   afterContent: string | null;
   change: PatchChange;
+}
+
+function normalizePatchPath(filePath: string): string {
+  const trimmed = filePath.trim().replace(/^(['"])(.*)\1$/, '$2');
+  if (!trimmed || path.isAbsolute(trimmed)) return trimmed;
+  return trimmed.replace(/[\\/]+/g, path.sep);
+}
+
+function splitTextContent(content: string): { lines: string[]; bom: string; lineEnding: '\r\n' | '\n' } {
+  const bom = content.charCodeAt(0) === 0xfeff ? '\uFEFF' : '';
+  const body = bom ? content.slice(1) : content;
+  const crlfCount = (body.match(/\r\n/g) || []).length;
+  const lfCount = (body.match(/(?<!\r)\n/g) || []).length;
+  return {
+    lines: body.replace(/\r\n/g, '\n').split('\n'),
+    bom,
+    lineEnding: crlfCount > lfCount ? '\r\n' : '\n',
+  };
+}
+
+async function canonicalizePatchTarget(targetPath: string, context?: any): Promise<string> {
+  if (await fse.pathExists(targetPath)) {
+    const canonical = await fs.realpath(targetPath);
+    return resolveWorkspacePathForContext(canonical, context);
+  }
+
+  const missingSegments: string[] = [];
+  let existingAncestor = path.resolve(targetPath);
+  while (!await fse.pathExists(existingAncestor)) {
+    const parent = path.dirname(existingAncestor);
+    if (parent === existingAncestor) break;
+    missingSegments.unshift(path.basename(existingAncestor));
+    existingAncestor = parent;
+  }
+
+  const canonicalAncestor = await fs.realpath(existingAncestor);
+  return resolveWorkspacePathForContext(
+    path.join(canonicalAncestor, ...missingSegments),
+    context,
+  );
+}
+
+function comparablePath(filePath: string): string {
+  const normalized = path.resolve(filePath).normalize('NFC');
+  return process.platform === 'linux' ? normalized : normalized.toLowerCase();
+}
+
+function makeTemporaryPath(targetPath: string, sequence: number): string {
+  return path.join(
+    path.dirname(targetPath),
+    `.eterx-patch-${process.pid}-${Date.now()}-${sequence}.tmp`,
+  );
+}
+
+async function writeTargetAtomically(
+  targetPath: string,
+  content: string,
+  mode: number | undefined,
+  sequence: number,
+): Promise<void> {
+  const tempPath = makeTemporaryPath(targetPath, sequence);
+  try {
+    await fs.writeFile(tempPath, content, {
+      encoding: 'utf-8',
+      flag: 'wx',
+      mode: mode === undefined ? undefined : mode & 0o777,
+    });
+    if (mode !== undefined && process.platform !== 'win32') {
+      await fs.chmod(tempPath, mode & 0o777);
+    }
+    try {
+      await fs.rename(tempPath, targetPath);
+    } catch (error: any) {
+      if (!['EEXIST', 'EPERM', 'EACCES', 'ENOTEMPTY'].includes(String(error?.code || ''))) {
+        throw error;
+      }
+      await fse.move(tempPath, targetPath, { overwrite: true });
+    }
+  } finally {
+    try { await fs.unlink(tempPath); } catch { /* already moved or best-effort cleanup */ }
+  }
 }
 
 function buildOperationDiff(operation: FileOperation, beforeContent: string): string {
@@ -89,7 +171,7 @@ function buildOperationDiff(operation: FileOperation, beforeContent: string): st
  * Parse a *** Begin Patch / *** End Patch block into structured FileOperations.
  */
 function parsePatch(patchText: string): FileOperation[] {
-  const lines = patchText.replace(/\r\n/g, '\n').split('\n');
+  const lines = patchText.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').split('\n');
   const operations: FileOperation[] = [];
   let i = 0;
 
@@ -110,7 +192,7 @@ function parsePatch(patchText: string): FileOperation[] {
 
     // *** Add File: path
     if (line.startsWith('*** Add File:')) {
-      const filePath = line.substring('*** Add File:'.length).trim();
+      const filePath = normalizePatchPath(line.substring('*** Add File:'.length));
       i++;
       const contentLines: string[] = [];
       while (i < lines.length) {
@@ -133,7 +215,7 @@ function parsePatch(patchText: string): FileOperation[] {
 
     // *** Delete File: path
     if (line.startsWith('*** Delete File:')) {
-      const filePath = line.substring('*** Delete File:'.length).trim();
+      const filePath = normalizePatchPath(line.substring('*** Delete File:'.length));
       i++;
       operations.push({ type: 'delete', filePath, hunks: [] });
       continue;
@@ -141,7 +223,7 @@ function parsePatch(patchText: string): FileOperation[] {
 
     // *** Update File: path
     if (line.startsWith('*** Update File:')) {
-      const filePath = line.substring('*** Update File:'.length).trim();
+      const filePath = normalizePatchPath(line.substring('*** Update File:'.length));
       i++;
       const hunks: PatchHunk[] = [];
       let currentHunk: PatchHunk | null = null;
@@ -472,13 +554,13 @@ async function applyOperations(
     let resolvedPath: string;
     try {
       resolvedPath = resolveWorkspacePathForContext(operation.filePath, context);
+      resolvedPath = await canonicalizePatchTarget(resolvedPath, context);
     } catch (error: any) {
       emptyResult.errors.push(`${operation.filePath}: ${error.message}`);
       continue;
     }
 
-    const absolutePath = path.resolve(resolvedPath);
-    const pathKey = process.platform === 'win32' ? absolutePath.toLowerCase() : absolutePath;
+    const pathKey = comparablePath(resolvedPath);
     if (seenPaths.has(pathKey)) {
       emptyResult.errors.push(`Duplicate file operation for ${operation.filePath}. Combine changes for a file under one patch header.`);
       continue;
@@ -497,13 +579,18 @@ async function applyOperations(
       if (operation.type !== 'add' && !existed) throw new Error('File not found. Use *** Add File for new files.');
 
       const beforeContent = existed ? await fs.readFile(resolvedPath, 'utf-8') : '';
+      if (existed && (beforeContent.includes('\0') || beforeContent.includes('\uFFFD'))) {
+        throw new Error('Binary or non-UTF-8 files are not supported by the text patch editor.');
+      }
+      const mode = existed ? (await fs.stat(resolvedPath)).mode : undefined;
       let afterContent: string | null = null;
       let appliedHunks = 0;
 
       if (operation.type === 'add') {
         afterContent = (operation.newFileContent || []).join('\n');
       } else if (operation.type === 'update') {
-        let fileLines = beforeContent.replace(/\r\n/g, '\n').split('\n');
+        const textFormat = splitTextContent(beforeContent);
+        let fileLines = textFormat.lines;
         let searchFrom = 0;
         for (let hunkIndex = 0; hunkIndex < operation.hunks.length; hunkIndex++) {
           const hunk = operation.hunks[hunkIndex];
@@ -518,7 +605,7 @@ async function applyOperations(
           }
         }
         if (appliedHunks === 0) throw new Error('Update contains no changed lines.');
-        afterContent = fileLines.join(beforeContent.includes('\r\n') ? '\r\n' : '\n');
+        afterContent = `${textFormat.bom}${fileLines.join(textFormat.lineEnding)}`;
         if (afterContent === beforeContent) throw new Error('Patch produced no content change.');
       }
 
@@ -536,6 +623,7 @@ async function applyOperations(
         operation,
         resolvedPath,
         existed,
+        mode,
         beforeContent,
         afterContent,
         change: {
@@ -557,9 +645,9 @@ async function applyOperations(
 
   // Commit as one transaction and restore already-written targets on failure.
   const committed: PreparedOperation[] = [];
-  const temporaryPaths = new Set<string>();
   try {
-    for (const item of prepared) {
+    for (let itemIndex = 0; itemIndex < prepared.length; itemIndex++) {
+      const item = prepared[itemIndex];
       const existsNow = await fse.pathExists(item.resolvedPath);
       if (item.existed !== existsNow) {
         throw new Error(`${item.operation.filePath} changed after patch validation (existence mismatch).`);
@@ -571,25 +659,34 @@ async function applyOperations(
         }
       }
       await fse.ensureDir(path.dirname(item.resolvedPath));
+      // Track before mutating so rollback also covers a partially failed write.
+      committed.push(item);
       if (item.afterContent === null) {
         await fs.unlink(item.resolvedPath);
       } else {
-        const tempPath = `${item.resolvedPath}.patch_tmp_${process.pid}_${Date.now()}`;
-        temporaryPaths.add(tempPath);
-        await fs.writeFile(tempPath, item.afterContent, 'utf-8');
-        await fse.move(tempPath, item.resolvedPath, { overwrite: true });
-        temporaryPaths.delete(tempPath);
+        await writeTargetAtomically(
+          item.resolvedPath,
+          item.afterContent,
+          item.mode,
+          itemIndex,
+        );
       }
-      committed.push(item);
     }
   } catch (error: any) {
     const rollbackErrors: string[] = [];
-    for (const tempPath of temporaryPaths) {
-      try { await fs.unlink(tempPath); } catch { /* best effort */ }
-    }
-    for (const item of [...committed].reverse()) {
+    const rollbackItems = [...committed].reverse();
+    for (let rollbackIndex = 0; rollbackIndex < rollbackItems.length; rollbackIndex++) {
+      const item = rollbackItems[rollbackIndex];
       try {
-        if (item.existed) await fs.writeFile(item.resolvedPath, item.beforeContent, 'utf-8');
+        if (item.existed) {
+          await fse.ensureDir(path.dirname(item.resolvedPath));
+          await writeTargetAtomically(
+            item.resolvedPath,
+            item.beforeContent,
+            item.mode,
+            prepared.length + rollbackIndex,
+          );
+        }
         else if (await fse.pathExists(item.resolvedPath)) await fs.unlink(item.resolvedPath);
       } catch (rollbackError: any) {
         rollbackErrors.push(`${item.resolvedPath}: ${rollbackError.message}`);
@@ -622,11 +719,12 @@ async function applyOperations(
 
 export const workspaceApplyPatchTool: ToolDefinition = {
   name: 'workspace_apply_patch',
-  description: 'Apply precise structural edits to files using a patch format. Supports adding new files, updating existing files with context-matched hunks, and deleting files. The most reliable way to edit code — uses context lines to locate exact positions.\n\nFormat:\n*** Begin Patch\n*** Update File: path/to/file.ts\n context line (space prefix)\n-removed line\n+added line\n*** Add File: path/to/new.ts\n+content line\n*** Delete File: path/to/old.ts\n*** End Patch',
+  description: 'The single file-editing tool. Apply precise, atomic changes across one or more files using context-matched patch hunks. Supports updating existing files, creating new files, and deleting files. Returns per-file diffs and readbacks.',
   category: 'workspace',
   inputSchema: z.object({
     patch: z.string().describe(
       'The patch content in *** Begin Patch / *** End Patch format.\n' +
+      'Relative paths may use / or \\\\ separators and are normalized for Windows, macOS, and Linux.\n' +
       'Use "*** Update File: path" for editing existing files with context-based matching.\n' +
       'Use "*** Add File: path" to create new files (lines start with +).\n' +
       'Use "*** Delete File: path" to remove files.\n' +

@@ -253,7 +253,7 @@ export const workspaceReadTool: ToolDefinition = {
 
 export const workspaceWriteTool: ToolDefinition = {
   name: 'workspace_write_file',
-  description: 'Create a NEW file or append to an existing file. For MODIFYING existing files, ALWAYS use workspace_str_replace or workspace_apply_patch instead — never rewrite a whole file. This tool is only for brand-new files that do not exist yet.',
+  description: 'Create a NEW file or append to an existing file and show the created-file preview in the UI. For modifying an existing file, use workspace_edit_file instead of rewriting it.',
   category: 'workspace',
   inputSchema: z.object({
     filename: z.string().describe('File path — absolute or relative to workspace'),
@@ -342,7 +342,7 @@ export const workspaceWriteTool: ToolDefinition = {
           if (!input.overwrite) {
             return {
               success: false,
-              error: `Refusing to overwrite existing file: ${filePath}. Use workspace_str_replace/workspace_apply_patch for edits, append=true to append, or overwrite=true only when replacing the whole file is intentional.`,
+              error: `Refusing to overwrite existing file: ${filePath}. Use workspace_edit_file for targeted edits, append=true to append, or overwrite=true only when replacing the whole file is intentional.`,
               path: filePath,
             };
           }
@@ -351,14 +351,14 @@ export const workspaceWriteTool: ToolDefinition = {
           
           // Allow small files (likely configs, new stubs) but warn on large ones
           if (existingLines > 50 && input.content.length > 500) {
-            console.warn(`[workspace_write_file] ⚠️ OVERWRITE WARNING: ${filePath} has ${existingLines} lines. Agent should use workspace_str_replace instead.`);
+            console.warn(`[workspace_write_file] ⚠️ OVERWRITE WARNING: ${filePath} has ${existingLines} lines. Agent should use workspace_edit_file instead.`);
             // Don't block — but inject a warning into the result
             await fs.writeFile(filePath, input.content, 'utf-8');
             return {
               success: true,
               path: filePath,
               size: input.content.length,
-              warning: `⚠️ You overwrote an existing ${existingLines}-line file. For future edits, use workspace_str_replace (targeted edits) instead of workspace_write_file (full overwrite). Only use workspace_write_file for NEW files.`,
+              warning: `⚠️ You overwrote an existing ${existingLines}-line file. For future edits, use workspace_edit_file instead of workspace_write_file. Only use workspace_write_file for NEW files.`,
               overwrittenLines: existingLines,
             };
           }
@@ -592,7 +592,7 @@ export const workspaceSearchTextTool: ToolDefinition = {
 // ════════════════════════════════════════════════════════════════════
 export const workspaceEditFileTool: ToolDefinition = {
   name: 'workspace_edit_file',
-  description: 'Edit ANY file using search/replace or line-based replacement. Supports absolute and relative paths. For complex multi-hunk edits, prefer workspace_apply_patch.',
+  description: 'Edit an existing file using exact search/replace or line-based replacement and show an expandable real diff in the UI. Supports absolute and workspace-relative paths.',
   category: 'workspace',
   inputSchema: z.object({
     filename: z.string().describe('File path — absolute or relative'),
@@ -669,7 +669,7 @@ export const workspaceEditFileTool: ToolDefinition = {
         if (occurrences > 1 && !replaceAll) {
           return {
             success: false,
-            error: `Search text matched ${occurrences} times in ${input.filename} (edit #${editIdx + 1}). Add more context, use startLine/endLine, use workspace_apply_patch, or set replaceAll=true intentionally.`,
+            error: `Search text matched ${occurrences} times in ${input.filename} (edit #${editIdx + 1}). Add more context, use startLine/endLine, or set replaceAll=true intentionally.`,
             path: filePath,
             filename: input.filename,
             occurrences,

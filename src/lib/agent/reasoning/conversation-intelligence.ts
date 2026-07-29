@@ -204,24 +204,13 @@ export class ConversationIntelligenceEngine {
 
     // After debugging, suggest testing
     const usedEditTool = toolsUsed.some(tool => [
-      'workspace_str_replace',
-      'workspace_apply_patch',
+      'workspace_write_file',
       'workspace_edit_file',
-      'workspace_edit_many_files',
     ].includes(tool));
     if (this.snapshot.intentPhase === 'debugging' && usedEditTool) {
       suggestions.push({
         text: 'Run tests to verify the fix works correctly',
         confidence: 0.85,
-        category: 'next_step',
-      });
-    }
-
-    // After building, suggest git commit
-    if (this.snapshot.intentPhase === 'building' && filesCreated.length >= 3 && !toolsUsed.includes('git_operations')) {
-      suggestions.push({
-        text: 'Commit changes to git',
-        confidence: 0.6,
         category: 'next_step',
       });
     }

@@ -3,14 +3,17 @@ import {
   applyRuntimeApiKeys,
   applyRuntimeModelOverrides,
   getRuntimeApiKey,
+  getRuntimeApiKeyStatus,
   getRuntimeApiKeyValues,
   type RuntimeApiKeyProvider,
 } from '../../../../lib/agent/runtime-api-keys';
 import {
   getModelThinkingOptions,
   normalizeModelThinkingCapabilities,
+  type MainAgentProvider,
   type ModelThinkingCapabilities,
 } from '../../../../lib/agent/model-routing';
+import { getProviderBaseURL, isLocalModelProvider } from '../../../../lib/agent/provider-runtime';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -28,6 +31,7 @@ type ProviderModel = {
   outputTokenLimit?: number;
   capabilities?: string[];
   thinking?: ModelThinkingCapabilities;
+  createdAt?: number;
 };
 
 type ProviderModelResult = {
@@ -35,6 +39,7 @@ type ProviderModelResult = {
   connected: boolean;
   source: 'live' | 'unavailable';
   models: ProviderModel[];
+  excludedCount?: number;
   error?: string;
 };
 
@@ -54,9 +59,83 @@ const withTimeout = async <T,>(promise: Promise<T>, ms = MODEL_FETCH_TIMEOUT_MS)
   }
 };
 
-const trimModels = (models: ProviderModel[]) =>
-  models
-    .filter(model => model.id);
+const NON_AGENT_MODEL_ID = /(?:^|[/:._-])(?:audio|embed(?:ding)?s?|image|moderation|orpheus|realtime|speech|transcri(?:be|ption)|translate|tts|whisper|guard|rerank|search|video)(?:$|[/:._-])/i;
+
+const isExpired = (value: unknown) => {
+  if (!value) return false;
+  const timestamp = typeof value === 'number'
+    ? (value > 10_000_000_000 ? value : value * 1000)
+    : Date.parse(String(value));
+  return Number.isFinite(timestamp) && timestamp <= Date.now();
+};
+
+const isAgentCompatibleModel = (model: ProviderModel) => {
+  const id = String(model.id || '').trim();
+  if (!id || NON_AGENT_MODEL_ID.test(id) || isExpired(model.deprecationDate)) return false;
+  const lifecycle = String(model.lifecycle || '').toLowerCase();
+  return !['deprecated', 'retired', 'disabled', 'expired', 'unavailable'].some(status => lifecycle.includes(status));
+};
+
+const trimModels = (models: ProviderModel[]) => {
+  const seen = new Set<string>();
+  return models.filter(model => {
+    if (!isAgentCompatibleModel(model) || seen.has(model.id)) return false;
+    seen.add(model.id);
+    return true;
+  });
+};
+
+const preferredModelScore = (provider: string, model: ProviderModel) => {
+  const id = model.id.toLowerCase();
+  let score = Number(model.createdAt || 0) / 1_000_000_000;
+  if (/preview|experimental|\bexp\b/.test(id)) score -= 20;
+  if (provider === 'gemini') {
+    if (id === 'gemini-3.6-flash') score += 1000;
+    else if (id.startsWith('gemini-3.5-flash')) score += 900;
+    else if (id.startsWith('gemini-3.1-pro')) score += 850;
+    else if (id.startsWith('gemini-3')) score += 800;
+    else if (id.startsWith('gemini-2.5')) score += 600;
+  } else if (provider === 'openai') {
+    if (id === 'gpt-5.6' || id === 'gpt-5.6-sol') score += 1000;
+    else if (id.includes('gpt-5.6-terra')) score += 900;
+    else if (id.includes('gpt-5.6-luna')) score += 850;
+    else if (id.startsWith('gpt-5')) score += 700;
+  } else if (provider === 'openrouter') {
+    if (id === 'openrouter/auto') score += 1200;
+    else if (id === 'openai/gpt-oss-120b') score += 1000;
+    else if (id === 'openai/gpt-oss-20b') score += 900;
+  } else if (provider === 'groq') {
+    if (id === 'openai/gpt-oss-120b') score += 1000;
+    else if (id === 'openai/gpt-oss-20b') score += 900;
+    else if (id === 'qwen/qwen3.6-27b') score += 800;
+  } else if (provider === 'anthropic') {
+    if (id.includes('claude-sonnet-5')) score += 1000;
+    else if (id.includes('claude-opus-5')) score += 950;
+    else if (id.includes('claude-fable-5')) score += 900;
+  } else if (provider === 'mistral') {
+    if (id.includes('mistral-medium-3-5')) score += 1000;
+    else if (id.includes('mistral-large')) score += 900;
+    else if (id.includes('mistral-small')) score += 800;
+  }
+  return score;
+};
+
+const resultWithExcluded = (
+  provider: RuntimeApiKeyProvider,
+  rawModels: ProviderModel[],
+): ProviderModelResult => {
+  const models = trimModels(rawModels)
+    .map((model, index) => ({ model, index }))
+    .sort((a, b) => preferredModelScore(provider, b.model) - preferredModelScore(provider, a.model) || a.index - b.index)
+    .map(({ model }) => model);
+  return {
+    provider,
+    connected: true,
+    source: 'live',
+    models,
+    excludedCount: Math.max(0, rawModels.length - models.length),
+  };
+};
 
 /** Normalize live model metadata without assuming a provider-specific schema. */
 const readThinkingCapabilities = (model: any, parameter: ModelThinkingCapabilities['parameter']) => {
@@ -108,7 +187,7 @@ async function fetchGeminiModels(): Promise<ProviderModelResult> {
       if (!pageToken) break;
     }
 
-    const models = trimModels(rawModels
+    const mappedModels = rawModels
       .filter((model: any) => Array.isArray(model.supportedGenerationMethods) && model.supportedGenerationMethods.includes('generateContent'))
       .map((model: any) => ({
         id: String(model.baseModelId || model.name || '').replace(/^models\//, ''),
@@ -125,9 +204,16 @@ async function fetchGeminiModels(): Promise<ProviderModelResult> {
           model.inputTokenLimit ? 'text-input' : undefined,
           model.thinking ? 'thinking' : undefined,
         ].filter(Boolean),
-        thinking: readThinkingCapabilities(model, 'thinkingLevel') || undefined,
-      })));
-    return { provider: 'gemini', connected: true, source: 'live', models };
+        thinking: readThinkingCapabilities(model, 'thinkingLevel') || (model.thinking
+          ? {
+            levels: getModelThinkingOptions('gemini', String(model.baseModelId || model.name || '')).map(option => option.id),
+            defaultLevel: 'medium' as const,
+            parameter: 'thinkingLevel' as const,
+            source: 'provider' as const,
+          }
+          : undefined),
+      }));
+    return resultWithExcluded('gemini', mappedModels);
   } catch (error) {
     return providerError('gemini', error);
   }
@@ -147,15 +233,22 @@ async function fetchOpenAIModels(): Promise<ProviderModelResult> {
     }));
     if (!res.ok) throw new Error(`OpenAI models request failed (${ res.status })`);
     const data = await res.json();
-    const models = trimModels((data.data || [])
+    const mappedModels = (data.data || [])
+      .filter((model: any) => /^(?:ft:)?(?:gpt-|o[1-9](?:-|$)|chatgpt-)/i.test(String(model.id || '')))
       .map((model: any) => ({
         id: String(model.id || ''),
         name: String(model.id || ''),
         description: model.owned_by ? `Owned by ${ model.owned_by }` : undefined,
-        thinking: readThinkingCapabilities(model, 'reasoning_effort') || undefined,
+        createdAt: Number(model.created) || undefined,
+        thinking: readThinkingCapabilities(model, 'reasoning_effort') || (() => {
+          const levels = getModelThinkingOptions('openai', String(model.id || '')).map(option => option.id);
+          return levels.length > 0
+            ? { levels, defaultLevel: levels.includes('medium') ? 'medium' as const : levels[0], parameter: 'reasoning_effort' as const, source: 'provider' as const }
+            : undefined;
+        })(),
       }))
-      .sort((a: ProviderModel, b: ProviderModel) => a.id.localeCompare(b.id)));
-    return { provider: 'openai', connected: true, source: 'live', models };
+      .sort((a: ProviderModel, b: ProviderModel) => (b.createdAt || 0) - (a.createdAt || 0) || a.id.localeCompare(b.id));
+    return resultWithExcluded('openai', mappedModels);
   } catch (error) {
     return providerError('openai', error);
   }
@@ -176,20 +269,41 @@ async function fetchOpenRouterModels(): Promise<ProviderModelResult> {
     }));
     if (!res.ok) throw new Error(`OpenRouter models request failed (${ res.status })`);
     const data = await res.json();
-    const models = trimModels((data.data || []).map((model: any) => ({
-      id: String(model.id || ''),
-      name: model.name || model.id,
-      description: model.description,
-      contextLength: model.context_length,
-      capabilities: [
-        ...(model.architecture?.input_modalities || []),
-        ...(model.architecture?.output_modalities || []),
-        model.architecture?.instruct_type,
-        ...(model.supported_parameters || []),
-      ].filter(Boolean),
-      thinking: readThinkingCapabilities(model, 'reasoning') || undefined,
-    })));
-    return { provider: 'openrouter', connected: true, source: 'live', models };
+    const mappedModels = (data.data || [])
+      .filter((model: any) => {
+        const outputs = Array.isArray(model.architecture?.output_modalities) ? model.architecture.output_modalities : [];
+        const parameters = Array.isArray(model.supported_parameters) ? model.supported_parameters : [];
+        return (outputs.length === 0 || outputs.includes('text'))
+          && parameters.includes('tools')
+          && !isExpired(model.expiration_date);
+      })
+      .map((model: any) => {
+        const supportedParameters = Array.isArray(model.supported_parameters) ? model.supported_parameters : [];
+        const inferredThinking = getModelThinkingOptions('openrouter', String(model.id || '')).map(option => option.id);
+        const genericReasoning = supportedParameters.includes('reasoning')
+          ? (inferredThinking.length > 0 ? inferredThinking : ['off', 'low', 'medium', 'high'])
+          : [];
+        return {
+          id: String(model.id || ''),
+          name: model.name || model.id,
+          description: model.description,
+          contextLength: model.context_length,
+          outputTokenLimit: Number(model.top_provider?.max_completion_tokens) || undefined,
+          deprecationDate: model.expiration_date || undefined,
+          createdAt: Number(model.created) || undefined,
+          capabilities: [
+            ...(model.architecture?.input_modalities || []),
+            ...(model.architecture?.output_modalities || []),
+            model.architecture?.instruct_type,
+            ...supportedParameters,
+          ].filter(Boolean),
+          thinking: readThinkingCapabilities(model, 'reasoning') || (genericReasoning.length > 0
+            ? { levels: genericReasoning, defaultLevel: genericReasoning.includes('medium') ? 'medium' : genericReasoning[0], parameter: 'reasoning', source: 'provider' }
+            : undefined),
+        } as ProviderModel;
+      })
+      .sort((a: ProviderModel, b: ProviderModel) => (b.createdAt || 0) - (a.createdAt || 0));
+    return resultWithExcluded('openrouter', mappedModels);
   } catch (error) {
     return providerError('openrouter', error);
   }
@@ -212,16 +326,23 @@ async function fetchGroqModels(): Promise<ProviderModelResult> {
     }));
     if (!res.ok) throw new Error(`Groq models request failed (${ res.status })`);
     const data = await res.json();
-    const models = trimModels((data.data || [])
+    const mappedModels = (data.data || [])
       .map((model: any) => ({
         id: String(model.id || ''),
         name: String(model.id || ''),
         description: model.owned_by ? `Owned by ${ model.owned_by }` : undefined,
         contextLength: model.context_window,
-        thinking: readThinkingCapabilities(model, 'reasoning_effort') || undefined,
+        thinking: readThinkingCapabilities(model, 'reasoning_effort') || (/gpt-oss/i.test(String(model.id || ''))
+          ? {
+            levels: ['low', 'medium', 'high'],
+            defaultLevel: 'medium',
+            parameter: 'reasoning_effort',
+            source: 'provider',
+          } as ModelThinkingCapabilities
+          : undefined),
       }))
-      .sort((a: ProviderModel, b: ProviderModel) => a.id.localeCompare(b.id)));
-    return { provider: 'groq', connected: true, source: 'live', models };
+      .sort((a: ProviderModel, b: ProviderModel) => a.id.localeCompare(b.id));
+    return resultWithExcluded('groq', mappedModels);
   } catch (error) {
     return providerError('groq', error);
   }
@@ -241,16 +362,26 @@ async function fetchMistralModels(): Promise<ProviderModelResult> {
     }));
     if (!res.ok) throw new Error(`Mistral models request failed (${ res.status })`);
     const data = await res.json();
-    const models = trimModels((data.data || []).map((model: any) => ({
+    const mappedModels = (data.data || [])
+      .filter((model: any) => {
+        const capabilities = model.capabilities || {};
+        return capabilities.completion_chat !== false && capabilities.function_calling !== false;
+      })
+      .map((model: any) => ({
       id: String(model.id || ''),
       name: model.name || model.id,
       description: model.description,
         capabilities: Object.entries(model.capabilities || {})
           .filter(([, enabled]) => Boolean(enabled))
           .map(([name]) => name),
-        thinking: readThinkingCapabilities(model, 'reasoning_effort') || undefined,
-    })));
-    return { provider: 'mistral', connected: true, source: 'live', models };
+        thinking: readThinkingCapabilities(model, 'reasoning_effort') || (() => {
+          const levels = getModelThinkingOptions('mistral', String(model.id || '')).map(option => option.id);
+          return levels.length > 0
+            ? { levels, defaultLevel: levels.includes('high') ? 'high' as const : levels[0], parameter: 'reasoning_effort' as const, source: 'provider' as const }
+            : undefined;
+        })(),
+      }));
+    return resultWithExcluded('mistral', mappedModels);
   } catch (error) {
     return providerError('mistral', error);
   }
@@ -273,7 +404,7 @@ async function fetchAnthropicModels(): Promise<ProviderModelResult> {
     }));
     if (!res.ok) throw new Error(`Anthropic models request failed (${ res.status })`);
     const data = await res.json();
-    const models = trimModels((data.data || []).map((model: any) => {
+    const mappedModels = (data.data || []).map((model: any) => {
       const capabilities = model.capabilities && typeof model.capabilities === 'object'
         ? Object.entries(model.capabilities)
           .filter(([, value]) => Boolean((value as any)?.supported ?? value))
@@ -299,8 +430,8 @@ async function fetchAnthropicModels(): Promise<ProviderModelResult> {
             : undefined;
         })(),
       };
-    }));
-    return { provider: 'anthropic', connected: true, source: 'live', models };
+    });
+    return resultWithExcluded('anthropic', mappedModels);
   } catch (error) {
     return providerError('anthropic', error);
   }
@@ -454,11 +585,82 @@ async function fetchLMStudioModels(): Promise<ProviderModelResult> {
   }
 }
 
+async function fetchCompatibleModels(provider: MainAgentProvider): Promise<ProviderModelResult> {
+  const runtimeProvider = provider as RuntimeApiKeyProvider;
+  const apiKey = getRuntimeApiKeyValues(runtimeProvider)[0];
+  if (!apiKey && !isLocalModelProvider(provider)) {
+    return {
+      provider: runtimeProvider,
+      connected: false,
+      source: 'unavailable',
+      models: [],
+      error: `Missing ${provider} API key`,
+    };
+  }
+
+  const baseURL = getProviderBaseURL(provider);
+  if (!baseURL) {
+    return {
+      provider: runtimeProvider,
+      connected: false,
+      source: 'unavailable',
+      models: [],
+      error: `${provider} requires a configured base URL`,
+    };
+  }
+
+  try {
+    const headers: Record<string, string> = {};
+    if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+    const res = await withTimeout(fetch(`${baseURL.replace(/\/+$/, '')}/models`, {
+      cache: 'no-store',
+      headers,
+    }), isLocalModelProvider(provider) ? 4_000 : MODEL_FETCH_TIMEOUT_MS);
+    if (!res.ok) throw new Error(`${provider} models request failed (${res.status})`);
+    const payload = await res.json();
+    const raw = Array.isArray(payload) ? payload : payload?.data || payload?.models || [];
+    return resultWithExcluded(runtimeProvider, raw.map((model: any) => ({
+      id: String(model?.id || model?.name || model?.model || ''),
+      name: String(model?.display_name || model?.name || model?.id || model?.model || ''),
+      description: model?.description || model?.owned_by || undefined,
+      contextLength: Number(model?.context_length || model?.max_context_length || model?.max_model_len || 0) || undefined,
+      createdAt: Number(model?.created || model?.created_at || 0) || undefined,
+      capabilities: Array.isArray(model?.capabilities)
+        ? model.capabilities
+        : model?.capabilities && typeof model.capabilities === 'object'
+          ? Object.entries(model.capabilities).filter(([, enabled]) => enabled === true).map(([name]) => name)
+          : undefined,
+      thinking: readThinkingCapabilities(model, 'reasoning_effort')
+        || (getModelThinkingOptions(provider, String(model?.id || model?.name || '')).length
+          ? {
+              levels: getModelThinkingOptions(provider, String(model?.id || model?.name || '')).map(option => option.id),
+              defaultLevel: 'medium',
+              parameter: 'reasoning_effort',
+              source: 'provider',
+            } as ModelThinkingCapabilities
+          : undefined),
+    })));
+  } catch (error) {
+    return providerError(runtimeProvider, error);
+  }
+}
+
 
 export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({}));
-  applyRuntimeApiKeys(body?.apiKeys);
-  applyRuntimeModelOverrides(body?.modelOverrides);
+  if (body && typeof body === 'object' && Object.prototype.hasOwnProperty.call(body, 'apiKeys')) {
+    const mergedKeys = Object.keys(getRuntimeApiKeyStatus()).reduce<Record<string, string[]>>((acc, provider) => {
+      acc[provider] = getRuntimeApiKeyValues(provider as RuntimeApiKeyProvider);
+      return acc;
+    }, {});
+    Object.entries(body.apiKeys && typeof body.apiKeys === 'object' ? body.apiKeys : {}).forEach(([provider, value]) => {
+      mergedKeys[provider] = Array.isArray(value) ? value.map(String) : [String(value || '')];
+    });
+    applyRuntimeApiKeys(mergedKeys);
+  }
+  if (body && typeof body === 'object' && Object.prototype.hasOwnProperty.call(body, 'modelOverrides')) {
+    applyRuntimeModelOverrides(body.modelOverrides);
+  }
 
   const requested = Array.isArray(body?.providers) && body.providers.length > 0
     ? new Set(body.providers.map((provider: unknown) => String(provider)))
@@ -478,6 +680,30 @@ export async function POST(req: NextRequest) {
   if (!requested || requested.has('elevenlabs')) jobs.push(fetchElevenLabsVoices());
   if (!requested || requested.has('ollama')) jobs.push(fetchOllamaModels());
   if (!requested || requested.has('lmstudio')) jobs.push(fetchLMStudioModels());
+  if (!requested || requested.has('fireworks')) jobs.push(fetchCompatibleModels('fireworks'));
+  if (!requested || requested.has('sambanova')) jobs.push(fetchCompatibleModels('sambanova'));
+  if (!requested || requested.has('perplexity')) jobs.push(fetchCompatibleModels('perplexity'));
+  if (!requested || requested.has('deepinfra')) jobs.push(fetchCompatibleModels('deepinfra'));
+  if (!requested || requested.has('huggingface')) jobs.push(fetchCompatibleModels('huggingface'));
+  if (!requested || requested.has('nvidia')) jobs.push(fetchCompatibleModels('nvidia'));
+  if (!requested || requested.has('cloudflare')) jobs.push(fetchCompatibleModels('cloudflare'));
+  if (!requested || requested.has('vllm')) jobs.push(fetchCompatibleModels('vllm'));
+  if (!requested || requested.has('llamacpp')) jobs.push(fetchCompatibleModels('llamacpp'));
+  if (!requested || requested.has('novita')) jobs.push(fetchCompatibleModels('novita'));
+  if (!requested || requested.has('qwen')) jobs.push(fetchCompatibleModels('qwen'));
+  if (!requested || requested.has('mimo')) jobs.push(fetchCompatibleModels('mimo'));
+  if (!requested || requested.has('tokenhub')) jobs.push(fetchCompatibleModels('tokenhub'));
+  if (!requested || requested.has('zai')) jobs.push(fetchCompatibleModels('zai'));
+  if (!requested || requested.has('kimi')) jobs.push(fetchCompatibleModels('kimi'));
+  if (!requested || requested.has('stepfun')) jobs.push(fetchCompatibleModels('stepfun'));
+  if (!requested || requested.has('minimax')) jobs.push(fetchCompatibleModels('minimax'));
+  if (!requested || requested.has('ollamacloud')) jobs.push(fetchCompatibleModels('ollamacloud'));
+  if (!requested || requested.has('arcee')) jobs.push(fetchCompatibleModels('arcee'));
+  if (!requested || requested.has('gmi')) jobs.push(fetchCompatibleModels('gmi'));
+  if (!requested || requested.has('kilo')) jobs.push(fetchCompatibleModels('kilo'));
+  if (!requested || requested.has('opencode')) jobs.push(fetchCompatibleModels('opencode'));
+  if (!requested || requested.has('upstage')) jobs.push(fetchCompatibleModels('upstage'));
+  if (!requested || requested.has('custom')) jobs.push(fetchCompatibleModels('custom'));
 
   const results = await Promise.all(jobs);
   return NextResponse.json({
@@ -511,6 +737,30 @@ export async function GET(req: NextRequest) {
   if (!requested || requested.has('elevenlabs')) jobs.push(fetchElevenLabsVoices());
   if (!requested || requested.has('ollama')) jobs.push(fetchOllamaModels());
   if (!requested || requested.has('lmstudio')) jobs.push(fetchLMStudioModels());
+  if (!requested || requested.has('fireworks')) jobs.push(fetchCompatibleModels('fireworks'));
+  if (!requested || requested.has('sambanova')) jobs.push(fetchCompatibleModels('sambanova'));
+  if (!requested || requested.has('perplexity')) jobs.push(fetchCompatibleModels('perplexity'));
+  if (!requested || requested.has('deepinfra')) jobs.push(fetchCompatibleModels('deepinfra'));
+  if (!requested || requested.has('huggingface')) jobs.push(fetchCompatibleModels('huggingface'));
+  if (!requested || requested.has('nvidia')) jobs.push(fetchCompatibleModels('nvidia'));
+  if (!requested || requested.has('cloudflare')) jobs.push(fetchCompatibleModels('cloudflare'));
+  if (!requested || requested.has('vllm')) jobs.push(fetchCompatibleModels('vllm'));
+  if (!requested || requested.has('llamacpp')) jobs.push(fetchCompatibleModels('llamacpp'));
+  if (!requested || requested.has('novita')) jobs.push(fetchCompatibleModels('novita'));
+  if (!requested || requested.has('qwen')) jobs.push(fetchCompatibleModels('qwen'));
+  if (!requested || requested.has('mimo')) jobs.push(fetchCompatibleModels('mimo'));
+  if (!requested || requested.has('tokenhub')) jobs.push(fetchCompatibleModels('tokenhub'));
+  if (!requested || requested.has('zai')) jobs.push(fetchCompatibleModels('zai'));
+  if (!requested || requested.has('kimi')) jobs.push(fetchCompatibleModels('kimi'));
+  if (!requested || requested.has('stepfun')) jobs.push(fetchCompatibleModels('stepfun'));
+  if (!requested || requested.has('minimax')) jobs.push(fetchCompatibleModels('minimax'));
+  if (!requested || requested.has('ollamacloud')) jobs.push(fetchCompatibleModels('ollamacloud'));
+  if (!requested || requested.has('arcee')) jobs.push(fetchCompatibleModels('arcee'));
+  if (!requested || requested.has('gmi')) jobs.push(fetchCompatibleModels('gmi'));
+  if (!requested || requested.has('kilo')) jobs.push(fetchCompatibleModels('kilo'));
+  if (!requested || requested.has('opencode')) jobs.push(fetchCompatibleModels('opencode'));
+  if (!requested || requested.has('upstage')) jobs.push(fetchCompatibleModels('upstage'));
+  if (!requested || requested.has('custom')) jobs.push(fetchCompatibleModels('custom'));
 
   const results = await Promise.all(jobs);
   return NextResponse.json({

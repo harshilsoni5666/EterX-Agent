@@ -4,14 +4,20 @@ import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import AbstractBall from '../../components/ui/AbstractBall';
 import { PremiumMic, PremiumMicOff, PremiumVolume2, PremiumVolumeX } from '../../components/ui/premium-icons';
-import { X } from 'lucide-react';
+import { Camera, CameraOff, Monitor, X } from 'lucide-react';
+
+const LIVE_ORB_SIZE = 132;
+const LIVE_ORB_CONTROL_TOP = 107;
 
 export default function LiveOverlayPage() {
   const [liveState, setLiveState] = useState<string>('listening');
   const [isMicMuted, setIsMicMuted] = useState(false);
   const [isSpeakerMuted, setIsSpeakerMuted] = useState(false);
+  const [isCameraEnabled, setIsCameraEnabled] = useState(false);
+  const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
   const hoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const isDraggingRef = useRef(false);
 
   const [statusText, setStatusText] = useState<string | null>(null);
 
@@ -26,24 +32,35 @@ export default function LiveOverlayPage() {
       (window as any).electronAPI.setIgnoreMouseEvents(true, { forward: true });
     }
 
+    let unsubscribe: (() => void) | undefined;
     if (typeof window !== 'undefined' && (window as any).electronAPI?.onPetStatus) {
-      (window as any).electronAPI.onPetStatus((status: any) => {
-        const text = status?.text || '';
-        if (text) {
-          const toolLower = text.toLowerCase();
-          if (toolLower.includes('search') || toolLower.includes('web')) setStatusText('Searching');
-          else if (toolLower.includes('read') || toolLower.includes('file')) setStatusText('Reading');
-          else if (toolLower.includes('write')) setStatusText('Writing');
-          else if (toolLower.includes('send') || toolLower.includes('prompt')) setStatusText('Dispatching');
-          else if (toolLower.includes('switch') || toolLower.includes('chat')) setStatusText('Switching');
-          else if (toolLower.includes('thinking')) setStatusText('Thinking');
-          else if (toolLower.includes('executing') || toolLower.includes('tool')) setStatusText('Executing');
-          else setStatusText(null);
-        } else {
-          setStatusText(null);
+      unsubscribe = (window as any).electronAPI.onPetStatus((status: any) => {
+        if (typeof status?.isMicMuted === 'boolean') {
+          setIsMicMuted(status.isMicMuted);
         }
+        if (typeof status?.isSpeakerMuted === 'boolean') {
+          setIsSpeakerMuted(status.isSpeakerMuted);
+        }
+        if (typeof status?.isCameraEnabled === 'boolean') {
+          setIsCameraEnabled(status.isCameraEnabled);
+        }
+        if (typeof status?.isScreenSharing === 'boolean') {
+          setIsScreenSharing(status.isScreenSharing);
+        }
+        const nextState = typeof status?.liveState === 'string'
+          ? status.liveState
+          : status?.isThinking
+            ? 'thinking'
+            : 'listening';
+        setLiveState(nextState);
+        const text = String(status?.text || '').trim().replace(/\s+/g, ' ').slice(0, 28);
+        setStatusText(text || (nextState === 'thinking' ? 'Thinking' : null));
       });
     }
+    return () => {
+      unsubscribe?.();
+      if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
+    };
   }, []);
 
   const handlePillEnter = (e?: React.MouseEvent) => {
@@ -76,6 +93,7 @@ export default function LiveOverlayPage() {
   };
 
   const handleMouseLeave = () => {
+    if (isDraggingRef.current) return;
     if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
     hoverTimeoutRef.current = setTimeout(() => {
       setIsHovered(false);
@@ -99,6 +117,7 @@ export default function LiveOverlayPage() {
     if (typeof window !== 'undefined' && (window as any).electronAPI?.setIgnoreMouseEvents) {
       (window as any).electronAPI.setIgnoreMouseEvents(false);
     }
+    isDraggingRef.current = true;
 
     const startScreenX = e.screenX;
     const startScreenY = e.screenY;
@@ -124,6 +143,7 @@ export default function LiveOverlayPage() {
     };
 
     const onUp = () => {
+      isDraggingRef.current = false;
       if (animFrameId !== null) {
         cancelAnimationFrame(animFrameId);
         animFrameId = null;
@@ -157,7 +177,9 @@ export default function LiveOverlayPage() {
     <>
       <style dangerouslySetInnerHTML={{
         __html: `
-        html, body, #__next, main { background: transparent !important; background-color: transparent !important; margin: 0; padding: 0; overflow: hidden; pointer-events: none; }
+        :root, html, body, #__next, main { background: transparent !important; background-color: transparent !important; margin: 0; padding: 0; overflow: hidden; pointer-events: none; color-scheme: dark; }
+        body::before, body::after { display: none !important; content: none !important; }
+        canvas { background: transparent !important; }
         button, a, input { pointer-events: auto !important; }
         @keyframes eterx-shimmer-anim {
           0% { background-position: 200% 0; }
@@ -168,16 +190,22 @@ export default function LiveOverlayPage() {
         className="w-screen h-screen flex flex-col items-center justify-center select-none"
         style={{ background: 'transparent', pointerEvents: 'none' }}
       >
-        <div className="flex flex-col items-center w-[175px] pointer-events-none relative">
-          {/* 175px PERFECT CIRCULAR ORB */}
+        <div className="flex flex-col items-center pointer-events-none relative" style={{ width: LIVE_ORB_SIZE }}>
+          {/* Compact circular Live orb */}
           <div
-            className="w-[175px] h-[175px] rounded-full overflow-hidden relative pointer-events-auto cursor-grab active:cursor-grabbing shrink-0"
+            className="rounded-full overflow-hidden relative pointer-events-auto cursor-grab active:cursor-grabbing shrink-0"
             style={{
+              width: LIVE_ORB_SIZE,
+              height: LIVE_ORB_SIZE,
+              boxSizing: 'border-box',
               clipPath: 'circle(50% at 50% 50%)',
               WebkitClipPath: 'circle(50% at 50% 50%)',
               border: 'none',
               outline: 'none',
               boxShadow: 'none',
+              background: 'transparent',
+              transformOrigin: '50% 50%',
+              backfaceVisibility: 'hidden',
             }}
           >
             <AbstractBall
@@ -186,10 +214,10 @@ export default function LiveOverlayPage() {
               chromaRGBr={7.5}
               chromaRGBg={5.0}
               chromaRGBb={7.0}
-              cameraZoom={70}
+              cameraZoom={58.5}
               cameraSpeedX={0.3}
               cameraSpeedY={0.4}
-              style={{ width: '175px', height: '175px', borderRadius: '50%', clipPath: 'circle(50% at 50% 50%)', WebkitClipPath: 'circle(50% at 50% 50%)', pointerEvents: 'none', border: 'none', boxShadow: 'none', outline: 'none' }}
+              style={{ width: '100%', height: '100%', borderRadius: '50%', clipPath: 'circle(50% at 50% 50%)', WebkitClipPath: 'circle(50% at 50% 50%)', pointerEvents: 'none', border: 'none', boxShadow: 'none', outline: 'none' }}
               liveState={liveState as any}
             />
 
@@ -197,13 +225,15 @@ export default function LiveOverlayPage() {
             {statusText && (
               <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10">
                 <span
-                  className="text-[16px] font-semibold tracking-wide whitespace-nowrap select-none text-transparent bg-clip-text"
+                  className="select-none text-center text-[12px] font-semibold leading-[1.18] tracking-[0.01em] text-transparent bg-clip-text"
                   style={{
                     fontWeight: 600,
+                    maxWidth: 104,
+                    overflowWrap: 'break-word',
                     backgroundImage: 'linear-gradient(90deg, #09090b 0%, #e4e4e7 50%, #09090b 100%)',
                     backgroundSize: '200% 100%',
                     animation: 'eterx-shimmer-anim 3.5s linear infinite',
-                    filter: 'drop-shadow(0 0 6px rgba(255, 255, 255, 0.95)) drop-shadow(0 1px 2px rgba(255, 255, 255, 0.8))'
+                    filter: 'none'
                   }}
                 >
                   {statusText}
@@ -213,7 +243,16 @@ export default function LiveOverlayPage() {
 
             {/* Transparent overlay — reliable circular drag + hover detection */}
             <div
-              className="absolute inset-0 rounded-full cursor-grab active:cursor-grabbing z-20"
+              className="absolute inset-0 rounded-full pointer-events-none z-30"
+              style={{
+                boxSizing: 'border-box',
+                border: '1px solid rgba(255, 255, 255, 0.62)',
+                transform: 'translateZ(0)',
+              }}
+            />
+
+            <div
+              className="absolute inset-0 rounded-full cursor-grab active:cursor-grabbing z-40"
               style={{
                 clipPath: 'circle(50% at 50% 50%)',
                 WebkitClipPath: 'circle(50% at 50% 50%)',
@@ -234,13 +273,14 @@ export default function LiveOverlayPage() {
                 animate={{ opacity: 1, x: '-50%', y: 0, scale: 1 }}
                 exit={{ opacity: 0, x: '-50%', y: 4, scale: 0.95 }}
                 transition={{ type: 'spring', stiffness: 500, damping: 30 }}
-                className="absolute top-[140px] flex items-center gap-1.5 px-3 py-1.5 rounded-full pointer-events-auto z-20 shrink-0"
+                className="absolute flex items-center gap-px p-1 rounded-full pointer-events-auto z-30 shrink-0"
                 style={{
+                  top: LIVE_ORB_CONTROL_TOP,
                   left: '50%',
                   background: 'rgba(255, 255, 255, 0.96)',
                   backdropFilter: 'blur(24px) saturate(1.8)',
                   WebkitBackdropFilter: 'blur(24px) saturate(1.8)',
-                  boxShadow: '0 4px 20px rgba(0, 0, 0, 0.15), 0 0 0 1px rgba(0, 0, 0, 0.05)',
+                  boxShadow: '0 0 0 1px rgba(15, 23, 42, 0.08)',
                   whiteSpace: 'nowrap',
                   pointerEvents: 'auto',
                   WebkitAppRegion: 'no-drag',
@@ -260,13 +300,49 @@ export default function LiveOverlayPage() {
                       (window as any).electronAPI.petReply(JSON.stringify({ action: 'toggle-speaker', muted: next }));
                     }
                   }}
-                  className="w-7 h-7 flex items-center justify-center rounded-full transition-all duration-150 active:scale-90 hover:bg-black/10 pointer-events-auto cursor-pointer"
+                  className="w-[26px] h-[26px] flex items-center justify-center rounded-full transition-colors duration-150 hover:bg-black/[0.07] pointer-events-auto cursor-pointer"
                   style={{ color: isSpeakerMuted ? '#ef4444' : '#374151', pointerEvents: 'auto' }}
                   title={isSpeakerMuted ? "Unmute Audio" : "Mute Audio"}
                 >
                   {isSpeakerMuted
-                    ? <PremiumVolumeX className="w-4 h-4 text-red-500 pointer-events-none" />
-                    : <PremiumVolume2 className="w-4 h-4 text-gray-700 pointer-events-none" />}
+                    ? <PremiumVolumeX className="w-3.5 h-3.5 text-red-500 pointer-events-none" />
+                    : <PremiumVolume2 className="w-3.5 h-3.5 text-gray-600 pointer-events-none" />}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handlePillEnter(e);
+                    if (typeof window !== 'undefined' && (window as any).electronAPI?.petReply) {
+                      (window as any).electronAPI.petReply(JSON.stringify({ action: 'toggle-camera' }));
+                    }
+                  }}
+                  className="w-[26px] h-[26px] flex items-center justify-center rounded-full transition-colors duration-150 hover:bg-black/[0.07] pointer-events-auto cursor-pointer"
+                  style={{ color: isCameraEnabled ? '#1688EE' : '#374151', pointerEvents: 'auto' }}
+                  title={isCameraEnabled ? 'Stop Camera' : 'Start Camera'}
+                  aria-pressed={isCameraEnabled}
+                >
+                  {isCameraEnabled
+                    ? <Camera className="w-3.5 h-3.5 pointer-events-none" />
+                    : <CameraOff className="w-3.5 h-3.5 text-gray-600 pointer-events-none" />}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handlePillEnter(e);
+                    if (typeof window !== 'undefined' && (window as any).electronAPI?.petReply) {
+                      (window as any).electronAPI.petReply(JSON.stringify({ action: 'toggle-screen-share' }));
+                    }
+                  }}
+                  className="w-[26px] h-[26px] flex items-center justify-center rounded-full transition-colors duration-150 hover:bg-black/[0.07] pointer-events-auto cursor-pointer"
+                  style={{ color: isScreenSharing ? '#1688EE' : '#374151', pointerEvents: 'auto' }}
+                  title={isScreenSharing ? 'Stop sharing screen' : 'Share screen with Live'}
+                  aria-pressed={isScreenSharing}
+                >
+                  <Monitor className="w-3.5 h-3.5 pointer-events-none" />
                 </button>
 
                 <button
@@ -280,13 +356,13 @@ export default function LiveOverlayPage() {
                       (window as any).electronAPI.petReply(JSON.stringify({ action: 'toggle-mic', muted: next }));
                     }
                   }}
-                  className="w-7 h-7 flex items-center justify-center rounded-full transition-all duration-150 active:scale-90 hover:bg-black/10 pointer-events-auto cursor-pointer"
+                  className="w-[26px] h-[26px] flex items-center justify-center rounded-full transition-colors duration-150 hover:bg-black/[0.07] pointer-events-auto cursor-pointer"
                   style={{ color: isMicMuted ? '#ef4444' : '#374151', pointerEvents: 'auto' }}
                   title={isMicMuted ? "Unmute Microphone" : "Mute Microphone"}
                 >
                   {isMicMuted
-                    ? <PremiumMicOff className="w-4 h-4 text-red-500 pointer-events-none" />
-                    : <PremiumMic className="w-4 h-4 text-gray-700 pointer-events-none" />}
+                    ? <PremiumMicOff className="w-3.5 h-3.5 text-red-500 pointer-events-none" />
+                    : <PremiumMic className="w-3.5 h-3.5 text-gray-600 pointer-events-none" />}
                 </button>
 
                 <button
@@ -296,16 +372,16 @@ export default function LiveOverlayPage() {
                     handlePillEnter(e);
                     handleClose();
                   }}
-                  className="w-7 h-7 flex items-center justify-center rounded-full transition-all duration-150 active:scale-90 hover:opacity-90 pointer-events-auto cursor-pointer"
+                  className="w-[26px] h-[26px] flex items-center justify-center rounded-full transition-colors duration-150 hover:brightness-105 pointer-events-auto cursor-pointer"
                   style={{
-                    background: 'linear-gradient(135deg, #27272a, #09090b)',
+                    background: 'linear-gradient(145deg, #39A9FF, #1688EE)',
                     color: '#ffffff',
-                    boxShadow: '0 2px 8px rgba(0, 0, 0, 0.25)',
+                    boxShadow: 'none',
                     pointerEvents: 'auto',
                   }}
                   title="Close Overlay"
                 >
-                  <X className="w-3.5 h-3.5 stroke-[2.5] pointer-events-none" />
+                  <X className="w-3.5 h-3.5 stroke-[2.35] pointer-events-none" />
                 </button>
               </motion.div>
             )}

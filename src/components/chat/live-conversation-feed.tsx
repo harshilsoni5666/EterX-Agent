@@ -7,7 +7,7 @@ import {
 import ReactMarkdown from 'react-markdown';
 
 interface LiveConversationFeedProps {
-  liveState: 'idle' | 'connecting' | 'connected' | 'listening' | 'speaking' | 'error';
+  liveState: 'idle' | 'connecting' | 'connected' | 'listening' | 'thinking' | 'speaking' | 'error';
   liveInputText: string;
   liveOutputText: string;
   liveSpokenText?: string;
@@ -50,6 +50,7 @@ export const LiveConversationFeed: React.FC<LiveConversationFeedProps> = ({
 
   const isSpeaking = liveState === 'speaking';
   const isListening = liveState === 'listening';
+  const isThinking = liveState === 'thinking';
   const isConnecting = liveState === 'connecting';
 
   // Filter completed live trace logs for preview
@@ -137,6 +138,7 @@ export const LiveConversationFeed: React.FC<LiveConversationFeedProps> = ({
         <p className="mt-3 text-[12px] font-medium text-[#A09D98] tracking-wide">
           {isConnecting && 'Connecting to Gemini Live API...'}
           {isListening && (isMicMuted ? 'Microphone Muted' : 'Listening for your voice...')}
+          {isThinking && 'Thinking and coordinating work...'}
           {isSpeaking && 'AI is speaking...'}
         </p>
       </div>

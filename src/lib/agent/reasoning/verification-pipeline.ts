@@ -112,7 +112,7 @@ const VERIFICATION_RULES: VerificationRule[] = [
   // ── Command: Check exit code ──
   {
     name: 'command_exit_code',
-    triggerTool: 'system_shell',
+    triggerTool: 'workspace_run_command',
     condition: (_args, result) => result?.exitCode !== undefined || result?.code !== undefined,
     verify: (_args, result) => {
       const exitCode = result?.exitCode ?? result?.code ?? 0;
@@ -180,7 +180,7 @@ const VERIFICATION_RULES: VerificationRule[] = [
 
   {
     name: 'str_replace_applied',
-    triggerTool: 'workspace_str_replace',
+    triggerTool: 'workspace_edit_file',
     condition: (_args, result) => !result?.error,
     verify: (args, result) => {
       if (result?.error) {
@@ -207,7 +207,7 @@ const VERIFICATION_RULES: VerificationRule[] = [
 
   {
     name: 'patch_applied',
-    triggerTool: 'workspace_apply_patch',
+    triggerTool: 'workspace_edit_file',
     condition: (_args, result) => !result?.error,
     verify: (args, result) => {
       if (result?.error) {
@@ -266,7 +266,7 @@ const VERIFICATION_RULES: VerificationRule[] = [
           detail: `Code verification found ${result.errors.length} error(s)`,
           severity: 'critical',
           autoFixable: true,
-          suggestedTool: 'workspace_str_replace',
+          suggestedTool: 'workspace_edit_file',
         };
       }
       if (hasIssues) {

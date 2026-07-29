@@ -4,8 +4,12 @@ import { globalSubAgentSpawner, agentMessageBus, SubAgentName, getPendingResults
 import { interAgentMailbox } from '../../roles/inter_agent_comm';
 import { buildSubAgentStrategy, type SpecialistRole } from '../../roles/sub_agent_strategy';
 import { enforceToolCapability } from '../security/tool_policy';
+import { MODEL_PROVIDER_ORDER } from '../../model-selector-store';
+import type { MainAgentMode, MainAgentProvider } from '../../model-routing';
 
 const SPECIALIST_ROLES = ['security_auditor', 'performance_analyst', 'architect', 'qa_tester', 'researcher'] as const;
+const MODEL_PROVIDER_ENUM = MODEL_PROVIDER_ORDER as [MainAgentProvider, ...MainAgentProvider[]];
+const MODEL_MODE_ENUM = ['think', 'fast', ...MODEL_PROVIDER_ORDER.filter(provider => provider !== 'gemini')] as [MainAgentMode, ...MainAgentMode[]];
 
 /**
  * Spawn Sub-Agent Tool v2 — Fire-and-Forget Parallel Agent Spawner
@@ -55,9 +59,9 @@ WHEN TO USE SPECIALIST: focused security, performance, architecture, QA, or rese
     tasks: z.array(z.object({
       task: z.string().min(1).max(200_000).describe('Detailed task description for this sub-agent'),
       name: z.string().optional().describe('Optional agent name (auto-assigned if not provided)'),
-      mode: z.enum(['think', 'fast', 'mistral', 'openai', 'openrouter', 'anthropic', 'groq']).optional()
+      mode: z.enum(MODEL_MODE_ENUM).optional()
         .describe('Optional provider mode for this worker; otherwise inherit the parent mode'),
-      provider: z.enum(['gemini', 'mistral', 'openai', 'openrouter', 'anthropic', 'groq']).optional()
+      provider: z.enum(MODEL_PROVIDER_ENUM).optional()
         .describe('Optional exact provider; use together with model'),
       model: z.string().min(1).optional().describe('Optional exact model ID; use together with provider'),
       thinkingLevel: z.enum(['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']).optional()
@@ -78,8 +82,8 @@ WHEN TO USE SPECIALIST: focused security, performance, architecture, QA, or rese
     tasks?: Array<{
       task: string,
       name?: string,
-      mode?: 'think' | 'fast' | 'mistral' | 'openai' | 'openrouter' | 'anthropic' | 'groq',
-      provider?: 'gemini' | 'mistral' | 'openai' | 'openrouter' | 'anthropic' | 'groq',
+      mode?: MainAgentMode,
+      provider?: MainAgentProvider,
       model?: string,
       thinkingLevel?: 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max',
     }>,

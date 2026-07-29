@@ -22,6 +22,7 @@ import type { ScopedRuntimeSettings } from './runtime-api-keys';
 import { DEFAULT_MAIN_AGENT_ALLOWED_CAPABILITIES } from './tools/security/tool_policy';
 import { AGENT_FLOW_RUNTIME, CUSTOM_AGENT_RUNTIME, loadCustomAgentProfile } from './builder-agent';
 import { agentBuilderRunFlowTool } from './tools/automation/agent_builder';
+import { isModelProvider } from './model-selector-store';
 
 /**
  * The Enhanced Orchestrator v2
@@ -516,9 +517,7 @@ export class AgentOrchestrator {
     const resolvedModelConfig = getMainAgentModelConfig(effectiveMode, runtimeSettings);
     const explicitProvider = String(pinnedContext?.selectedModelProvider || '').trim();
     const explicitModel = String(pinnedContext?.selectedModelName || '').trim();
-    const validExplicitProvider = new Set<MainAgentProvider>([
-      'gemini', 'mistral', 'openai', 'openrouter', 'anthropic', 'groq',
-    ]).has(explicitProvider as MainAgentProvider);
+    const validExplicitProvider = isModelProvider(explicitProvider);
     const modelConfig = hasExplicitModel && validExplicitProvider
       ? {
           ...resolvedModelConfig,

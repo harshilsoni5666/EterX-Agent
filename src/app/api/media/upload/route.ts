@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { rejectCrossOrigin } from '../../agent/_shared';
+import { normalizeAttachmentMime } from '../../../../lib/agent/attachment-pipeline';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -57,6 +58,7 @@ export async function POST(req: NextRequest) {
     const stem = path.basename(safeBaseName, ext).slice(0, 140) || 'upload';
     const safeName = `${Date.now()}_${randomUUID().slice(0, 8)}_${stem}${ext}`;
     const destPath = path.join(workspaceTemp, safeName);
+    mimeType = normalizeAttachmentMime(safeBaseName, mimeType);
 
     if (fileBuffer) {
       await fsp.writeFile(destPath, fileBuffer);

@@ -7,6 +7,36 @@ export type RuntimeApiKeyProvider =
   | 'anthropic'
   | 'openai'
   | 'groq'
+  | 'deepseek'
+  | 'grok'
+  | 'cerebras'
+  | 'together'
+  | 'fireworks'
+  | 'sambanova'
+  | 'perplexity'
+  | 'deepinfra'
+  | 'huggingface'
+  | 'nvidia'
+  | 'cloudflare'
+  | 'ollama'
+  | 'lmstudio'
+  | 'vllm'
+  | 'llamacpp'
+  | 'novita'
+  | 'qwen'
+  | 'mimo'
+  | 'tokenhub'
+  | 'zai'
+  | 'kimi'
+  | 'stepfun'
+  | 'minimax'
+  | 'ollamacloud'
+  | 'arcee'
+  | 'gmi'
+  | 'kilo'
+  | 'opencode'
+  | 'upstage'
+  | 'custom'
   | 'tavily'
   | 'github';
 
@@ -50,6 +80,36 @@ const PROVIDERS: RuntimeApiKeyProvider[] = [
   'anthropic',
   'openai',
   'groq',
+  'deepseek',
+  'grok',
+  'cerebras',
+  'together',
+  'fireworks',
+  'sambanova',
+  'perplexity',
+  'deepinfra',
+  'huggingface',
+  'nvidia',
+  'cloudflare',
+  'ollama',
+  'lmstudio',
+  'vllm',
+  'llamacpp',
+  'novita',
+  'qwen',
+  'mimo',
+  'tokenhub',
+  'zai',
+  'kimi',
+  'stepfun',
+  'minimax',
+  'ollamacloud',
+  'arcee',
+  'gmi',
+  'kilo',
+  'opencode',
+  'upstage',
+  'custom',
   'tavily',
   'github',
 ];
@@ -73,7 +133,9 @@ const runtimeApiKeyCursor: Record<RuntimeApiKeyProvider, number> =
     return acc;
   }, {} as Record<RuntimeApiKeyProvider, number>));
 
-const MODEL_PROVIDERS: RuntimeModelProvider[] = ['gemini', 'mistral', 'openai', 'openrouter', 'anthropic', 'groq'];
+const MODEL_PROVIDERS: RuntimeModelProvider[] = PROVIDERS.filter(
+  (provider): provider is RuntimeModelProvider => provider !== 'tavily' && provider !== 'github',
+);
 
 const runtimeModelOverrides: Record<RuntimeModelProvider, string> =
   (globalThis as typeof globalThis & { __eterxRuntimeModelOverrides?: Record<RuntimeModelProvider, string> }).__eterxRuntimeModelOverrides ||
@@ -132,6 +194,38 @@ const isValidProviderKey = (provider: RuntimeApiKeyProvider, key: string): boole
       return key.length >= 20;
     case 'mistral':
       return key.length >= 16;
+    case 'ollama':
+    case 'lmstudio':
+    case 'vllm':
+    case 'llamacpp':
+      return key.length >= 1;
+    case 'deepseek':
+    case 'grok':
+    case 'cerebras':
+    case 'together':
+    case 'fireworks':
+    case 'sambanova':
+    case 'perplexity':
+    case 'deepinfra':
+    case 'huggingface':
+    case 'nvidia':
+    case 'cloudflare':
+    case 'novita':
+    case 'qwen':
+    case 'mimo':
+    case 'tokenhub':
+    case 'zai':
+    case 'kimi':
+    case 'stepfun':
+    case 'minimax':
+    case 'ollamacloud':
+    case 'arcee':
+    case 'gmi':
+    case 'kilo':
+    case 'opencode':
+    case 'upstage':
+    case 'custom':
+      return key.length >= 8;
     case 'tavily':
       return key.length >= 12;
     case 'github':

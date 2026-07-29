@@ -2093,6 +2093,19 @@
   opacity: 0.8 !important;
 }
 
+:root[data-theme="light"] .eterx-chat-scroll-latest {
+  background: rgba(255, 255, 255, 0.96) !important;
+  border-color: rgba(31, 31, 29, 0.14) !important;
+  color: #5F5B55 !important;
+  box-shadow: 0 8px 24px rgba(31, 31, 29, 0.14) !important;
+}
+
+:root[data-theme="light"] .eterx-chat-scroll-latest:hover {
+  background: #F5F2ED !important;
+  border-color: rgba(31, 31, 29, 0.2) !important;
+  color: #1F1F1D !important;
+}
+
 /* Ultra-modern Light Theme Dropdowns, Popovers & Selection Menus */
 :root[data-theme="light"] .eterx-work-menu,
 :root[data-theme="light"] .eterx-work-menu-flyout {

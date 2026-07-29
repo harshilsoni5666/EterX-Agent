@@ -1,11 +1,11 @@
 import { z } from 'zod';
 import { ToolDefinition } from '../../schemas';
 import os from 'os';
-import { exec, execFile } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { enforceToolCapability } from '../security/tool_policy';
+import { resolveTerminalShell } from './shell_resolver';
 
-const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
 
 export const systemMonitorTool: ToolDefinition = {
@@ -105,24 +105,27 @@ export const systemMonitorTool: ToolDefinition = {
             };
           });
         }
-        const { stdout } = await execAsync('wmic logicaldisk get size,freespace,caption /format:csv', { shell: 'powershell.exe' });
-        const lines = stdout.trim().split('\n').filter(l => l.trim());
-        const disks: any[] = [];
-        for (let i = 1; i < lines.length; i++) {
-          const parts = lines[i].split(',').map(s => s.trim());
-          if (parts.length >= 4 && parts[2]) {
-            const free = parseInt(parts[2]) || 0;
-            const total = parseInt(parts[3]) || 0;
-            const used = total - free;
-            disks.push({
-              drive: parts[1],
-              total: `${(total / 1073741824).toFixed(1)} GB`,
-              free: `${(free / 1073741824).toFixed(1)} GB`,
-              used: `${(used / 1073741824).toFixed(1)} GB`,
-              usagePercent: total > 0 ? `${((used / total) * 100).toFixed(1)}%` : 'N/A'
-            });
-          }
-        }
+        const powerShell = String(resolveTerminalShell('powershell'));
+        const { stdout } = await execFileAsync(powerShell, [
+          '-NoProfile',
+          '-NonInteractive',
+          '-Command',
+          'Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" | Select-Object DeviceID,Size,FreeSpace | ConvertTo-Json -Compress',
+        ]);
+        const parsed = JSON.parse(stdout.trim() || '[]');
+        const rows = Array.isArray(parsed) ? parsed : [parsed];
+        const disks = rows.filter(Boolean).map((row: any) => {
+          const free = Number(row.FreeSpace) || 0;
+          const total = Number(row.Size) || 0;
+          const used = total - free;
+          return {
+            drive: row.DeviceID || 'Unknown',
+            total: `${(total / 1073741824).toFixed(1)} GB`,
+            free: `${(free / 1073741824).toFixed(1)} GB`,
+            used: `${(used / 1073741824).toFixed(1)} GB`,
+            usagePercent: total > 0 ? `${((used / total) * 100).toFixed(1)}%` : 'N/A',
+          };
+        });
         return disks.length > 0 ? disks : [{ info: 'Could not parse disk info' }];
       } catch (e: any) {
         return [{ error: e.message }];
@@ -135,10 +138,13 @@ export const systemMonitorTool: ToolDefinition = {
           const { stdout } = await execFileAsync('ps', ['-axo', 'pid=,comm=,rss=,%cpu=', '-r']);
           return stdout.trim().split(/\r?\n/).slice(0, 15).join('\n');
         }
-        const { stdout } = await execAsync(
+        const powerShell = String(resolveTerminalShell('powershell'));
+        const { stdout } = await execFileAsync(powerShell, [
+          '-NoProfile',
+          '-NonInteractive',
+          '-Command',
           'Get-Process | Sort-Object -Property WorkingSet64 -Descending | Select-Object -First 15 Name, Id, @{Name="MemMB";Expression={[math]::Round($_.WorkingSet64/1MB,1)}}, CPU | Format-Table -AutoSize | Out-String -Width 200',
-          { shell: 'powershell.exe' }
-        );
+        ]);
         return stdout.trim();
       } catch (e: any) {
         return `Error fetching processes: ${e.message}`;

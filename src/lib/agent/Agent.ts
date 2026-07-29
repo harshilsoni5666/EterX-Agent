@@ -89,6 +89,9 @@ import {
 import * as pathLib from 'path';
 import { getEterxAssetPath } from './storage-paths';
 import * as fsExtra from 'fs-extra';
+import { isReadableAttachment, normalizeAttachmentMime, providerAcceptsDirectImage } from './attachment-pipeline';
+import { isModelProvider } from './model-selector-store';
+import { getProviderBaseURL, isLocalModelProvider, providerModelSupportsVision } from './provider-runtime';
 import {
   basenameForTrace,
   buildLineDiffPreview,
@@ -144,6 +147,8 @@ type AgentMediaFile = {
   mimeType: string;
   name?: string;
   fileUri?: string;
+  data?: string;
+  inlineData?: { data?: string; mimeType?: string } | string;
 };
 
 function positiveIntEnv(name: string, fallback: number): number {
@@ -240,83 +245,8 @@ function getSafeGeminiHistorySliceStart(contents: any[], requestedStart: number)
   return Math.max(1, Math.min(start, contents.length));
 }
 
-let cachedMainAgentPromptContext: { key: string; value: string } | null = null;
-
-const MAIN_AGENT_PROMPT_FILES = [
-  { label: 'Current request guard', filename: 'current-request-guard.md' },
-  { label: 'Tool routing contract', filename: 'tool-routing-contract.md' },
-  { label: 'UI trace kernel', filename: 'ui-trace-kernel.md' },
-  { label: 'Progress timeline kernel', filename: 'progress-timeline-kernel.md' },
-  { label: 'Review and verification gates', filename: 'review-and-verification-gates.md' },
-  { label: 'Evidence graph kernel', filename: 'evidence-graph-kernel.md' },
-  { label: 'Frontier autonomy kernel', filename: 'frontier-autonomy-kernel.md' },
-  { label: 'Specialist swarm kernel', filename: 'specialist-swarm-kernel.md' },
-];
-
 async function buildMainAgentPromptContext(): Promise<string> {
-  // Keep the runtime kernels available in both source and packaged-desktop
-  // layouts.  "Codign agent" was an old typo, which meant the production
-  // prompt loader silently injected no main-agent kernels at all.
-  const referenceRootCandidates = [
-    getEterxAssetPath('agent-prompts'),
-    pathLib.resolve(process.cwd(), 'coding-agent', 'eterx-agent-reference'),
-    pathLib.resolve(process.cwd(), 'eterx-agent-reference'),
-    pathLib.resolve(process.cwd(), 'Codign agent', 'eterx-agent-reference'), // legacy fallback
-  ];
-  let referenceRoot = referenceRootCandidates[0];
-  for (const candidate of referenceRootCandidates) {
-    if (await fsExtra.pathExists(candidate)) {
-      referenceRoot = candidate;
-      break;
-    }
-  }
-
-  const statsParts: string[] = [referenceRoot];
-  for (const file of MAIN_AGENT_PROMPT_FILES) {
-    const filePath = pathLib.join(referenceRoot, 'prompts', file.filename);
-    try {
-      const stat = await fsExtra.stat(filePath);
-      statsParts.push(`${ file.filename }:${ stat.size }:${ stat.mtimeMs }`);
-    } catch {
-      statsParts.push(`${ file.filename }:missing`);
-    }
-  }
-  const cacheKey = statsParts.join('|');
-  if (cachedMainAgentPromptContext?.key === cacheKey) {
-    return cachedMainAgentPromptContext.value;
-  }
-
-  const chunks: string[] = [];
-  for (const file of MAIN_AGENT_PROMPT_FILES) {
-    const filePath = pathLib.join(referenceRoot, 'prompts', file.filename);
-    if (!(await fsExtra.pathExists(filePath))) continue;
-
-    try {
-      let content = await fsExtra.readFile(filePath, 'utf-8');
-      content = content.replace(/\r\n/g, '\n').trim();
-      if (content) {
-        chunks.push([
-          `## ${ file.label }`,
-          `Source: prompts/${ file.filename }`,
-          content,
-        ].join('\n'));
-      }
-    } catch {
-      // Ignore
-    }
-  }
-
-  const value = chunks.length > 0
-    ? [
-      '--- ETERX GENERAL MAIN-AGENT CONTEXT & KERNELS ---',
-      'The following instruction kernels and rules apply to your execution. They define tool routing, UI tracing, review gates, autonomy parameters, and evidence requirements. Always prioritize safety rules and the latest user request.',
-      chunks.join('\n\n'),
-      '--- END ETERX GENERAL MAIN-AGENT CONTEXT & KERNELS ---',
-    ].join('\n\n')
-    : '';
-
-  cachedMainAgentPromptContext = { key: cacheKey, value };
-  return value;
+  return '';
 }
 
 /**
@@ -450,6 +380,9 @@ export class GeminiAgentClient {
   }
 
   private getProviderKeyInfo(provider: MainAgentProvider): { apiKey: string; index: number; poolType: string } {
+    if (isLocalModelProvider(provider)) {
+      return { apiKey: 'local-no-key-required', index: 0, poolType: 'local endpoint' };
+    }
     const runtimeProvider = provider === 'gemini' ? 'gemini' : provider as RuntimeApiKeyProvider;
     const scopedKeys = getScopedRuntimeApiKeyValues(this.runtimeSettings, runtimeProvider);
     const isCustom = !!(this.runtimeSettings?.apiKeys?.[runtimeProvider]?.length);
@@ -471,13 +404,8 @@ export class GeminiAgentClient {
   }
 
   private createMistralClientWithKey(apiKey: string): OpenAI {
-    const baseURL = this.activeProvider === 'openai'
-      ? (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1')
-      : this.activeProvider === 'openrouter'
-        ? (process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1')
-        : this.activeProvider === 'groq'
-          ? (process.env.GROQ_BASE_URL || 'https://api.groq.com/openai/v1')
-          : (process.env.MISTRAL_BASE_URL || process.env.MISTRAL_API_BASE_URL || 'https://api.mistral.ai/v1');
+    const baseURL = getProviderBaseURL(this.activeProvider);
+    if (!baseURL) throw new Error(`${this.activeProvider} requires a configured API base URL.`);
 
     return new OpenAI({
       apiKey,
@@ -805,13 +733,15 @@ export class GeminiAgentClient {
     for (const file of mediaFiles) {
       const mimeType = String(file.mimeType || 'application/octet-stream').toLowerCase();
       if (!this.isGeminiFilesApiMime(mimeType)) continue;
+      // Images are attached inline from their original local path in the same
+      // model request. Do not create a separate Files API upload/action.
+      if (mimeType.startsWith('image/')) continue;
       if (!file.path || !fs.existsSync(file.path)) continue;
 
       try {
-        const isImage = mimeType.startsWith('image/');
         onTrace?.({
           type: 'progress',
-          text: isImage ? 'Preparing image' : traceLabel,
+          text: traceLabel,
           percent: 8,
         });
         const uploadedMedia = await this.waitForGeminiFileReady(await this.ai.files.upload({
@@ -875,6 +805,7 @@ export class GeminiAgentClient {
   }
 
   private getProviderApiKey(provider: MainAgentProvider): string {
+    if (isLocalModelProvider(provider)) return 'local-no-key-required';
     const runtimeProvider = provider as RuntimeApiKeyProvider;
     const scopedKeys = getScopedRuntimeApiKeyValues(this.runtimeSettings, runtimeProvider);
     if (scopedKeys.length > 0) {
@@ -895,13 +826,8 @@ export class GeminiAgentClient {
   }
 
   private createMistralClient(): OpenAI {
-    const baseURL = this.activeProvider === 'openai'
-      ? (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1')
-      : this.activeProvider === 'openrouter'
-        ? (process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1')
-        : this.activeProvider === 'groq'
-          ? (process.env.GROQ_BASE_URL || 'https://api.groq.com/openai/v1')
-          : (process.env.MISTRAL_BASE_URL || process.env.MISTRAL_API_BASE_URL || 'https://api.mistral.ai/v1');
+    const baseURL = getProviderBaseURL(this.activeProvider);
+    if (!baseURL) throw new Error(`${this.activeProvider} requires a configured API base URL.`);
 
     return new OpenAI({
       apiKey: this.getMistralApiKey(),
@@ -918,25 +844,45 @@ export class GeminiAgentClient {
   private async buildOpenAIUserContent(text: string, mediaFiles: AgentMediaFile[]): Promise<any[]> {
     const content: any[] = [{ type: 'text', text }];
     for (const file of mediaFiles || []) {
-      const mimeType = String(file.mimeType || '').toLowerCase();
-      if (!mimeType.startsWith('image/')) {
+      const fileName = file.name || pathLib.basename(file.path || 'file');
+      const mimeType = normalizeAttachmentMime(fileName, file.mimeType);
+      const isDirectImage = mimeType.startsWith('image/')
+        && (
+          providerAcceptsDirectImage(this.activeProvider, this.mistralModelName)
+          || providerModelSupportsVision(this.activeProvider, this.mistralModelName)
+        );
+      const isDirectFile = (
+        this.activeProvider === 'openai'
+        && !mimeType.startsWith('image/')
+        && isReadableAttachment(file)
+      ) || (
+        this.activeProvider === 'openrouter'
+        && mimeType === 'application/pdf'
+      );
+
+      if (!isDirectImage && !isDirectFile) {
         content.push({
           type: 'text',
-          text: `Attached file: ${file.name || pathLib.basename(file.path || 'file')} (${mimeType || 'unknown type'}). This Chat Completions adapter supports image inputs directly; use workspace tools to read other local files.`,
+          text: `Attached file: ${fileName} (${mimeType || 'unknown type'}) at ${file.path}. Readable document content is included in the request when extraction succeeds; otherwise use workspace tools to inspect this exact local file.`,
         });
         continue;
       }
 
       try {
-        let base64 = String((file as any).data || (file as any).inlineData?.data || '').trim();
+        const inlineData = typeof file.inlineData === 'string' ? file.inlineData : file.inlineData?.data;
+        let base64 = String(file.data || inlineData || '').trim();
         if (!base64 && file.path && await fsExtra.pathExists(file.path)) {
           base64 = (await fsExtra.readFile(file.path)).toString('base64');
         }
         if (!base64) continue;
         const dataUrl = base64.startsWith('data:') ? base64 : `data:${mimeType};base64,${base64}`;
-        content.push({ type: 'image_url', image_url: { url: dataUrl, detail: 'auto' } });
+        if (isDirectFile) {
+          content.push({ type: 'file', file: { filename: fileName, file_data: dataUrl } });
+        } else {
+          content.push({ type: 'image_url', image_url: { url: dataUrl, detail: 'auto' } });
+        }
       } catch (error: any) {
-        console.warn(`[OpenAI] Failed to prepare image attachment ${file.name || file.path}:`, error?.message || error);
+        console.warn(`[${this.activeProvider}] Failed to prepare attachment ${fileName}:`, error?.message || error);
       }
     }
     return content;
@@ -1794,10 +1740,8 @@ export class GeminiAgentClient {
       workspace_read_file: { text: 'Reading file', type: 'exploration', iconCategory: 'file_read', argKey: 'filename' },
       workspace_read_many_files: { text: 'Reading files', type: 'exploration', iconCategory: 'file_read', argKey: 'files' },
       workspace_search_text: { text: 'Searching codebase', type: 'exploration', iconCategory: 'search', argKey: 'pattern' },
-      workspace_str_replace: { text: 'Editing file', type: 'file_edit', iconCategory: 'file_edit', argKey: 'filename' },
-      workspace_write_file: { text: 'Writing artifact', type: 'file_edit', iconCategory: 'file_create', argKey: 'filename' },
+      workspace_write_file: { text: 'Creating file', type: 'file_edit', iconCategory: 'file_create', argKey: 'filename' },
       workspace_edit_file: { text: 'Editing file', type: 'file_edit', iconCategory: 'file_edit', argKey: 'filename' },
-      workspace_edit_many_files: { text: 'Editing files', type: 'file_edit', iconCategory: 'file_edit', argKey: 'files' },
       workspace_verify_code: { text: 'Verifying code', type: 'command', iconCategory: 'verification', argKey: 'checkType' },
       browser_control: { text: 'Using browser', type: 'browser', iconCategory: 'computer', argKey: 'action' },
       deep_research: { text: 'Deep researching', type: 'exploration', iconCategory: 'web_search', argKey: 'topic' },
@@ -2055,7 +1999,7 @@ export class GeminiAgentClient {
       ...this.convertHistoryToMistralMessages(history),
       {
         role: 'user',
-        content: this.activeProvider === 'openai'
+        content: mediaFiles.length > 0
           ? await this.buildOpenAIUserContent([
           '[CURRENT USER REQUEST - EXECUTE ONLY THIS]',
           message,
@@ -2130,7 +2074,12 @@ export class GeminiAgentClient {
         }
       }
 
-      if (interactions > 0) {
+      const shouldCheckContextBoundary =
+        interactions === 1 ||
+        (messages.length >= 16 && interactions % 2 === 0) ||
+        interactions % 3 === 0 ||
+        lastObservedContextInputTokens >= 120_000;
+      if (shouldCheckContextBoundary) {
         try {
           const compacted = await compactContextAtBoundary({
             chatId: context.projectId,
@@ -2157,13 +2106,24 @@ export class GeminiAgentClient {
         (context as any).selectedThinkingLevel || 'low',
         this.activeProvider,
         this.mistralModelName,
+        (context as any).modelThinkingCapability,
       );
-      const currentSupportsThinking = getModelThinkingOptions(this.activeProvider, this.mistralModelName).length > 0;
+      const currentSupportsThinking = getModelThinkingOptions(
+        this.activeProvider,
+        this.mistralModelName,
+        (context as any).modelThinkingCapability,
+      ).length > 0;
 
       const params: any = {
         model: this.mistralModelName,
         messages,
       };
+      if (
+        this.activeProvider === 'openrouter'
+        && mediaFiles.some(file => normalizeAttachmentMime(file.name || file.path, file.mimeType) === 'application/pdf')
+      ) {
+        params.plugins = [{ id: 'file-parser', pdf: { engine: 'cloudflare-ai' } }];
+      }
       if (tools.length > 0) {
         params.tools = tools;
         params.tool_choice = 'auto';
@@ -2612,10 +2572,12 @@ export class GeminiAgentClient {
               text: `[Attached file: ${ file.name || 'unnamed file' }]\n${ buffer.toString('utf8') }`,
             });
           } else {
-            onTrace?.({
-              type: 'progress',
-              text: `Attachment ${ file.name || file.path } was skipped because Anthropic does not support MIME type ${ mimeType } in this request.`,
-            });
+            if (!isReadableAttachment(file)) {
+              onTrace?.({
+                type: 'progress',
+                text: `Attachment ${ file.name || file.path } is available at ${ file.path }; use workspace tools because this model does not accept MIME type ${ mimeType } directly.`,
+              });
+            }
           }
         } catch (err: any) {
           console.warn(`[Anthropic] Failed to load media attachment ${file.path}:`, err.message);
@@ -2736,7 +2698,12 @@ export class GeminiAgentClient {
         }
       }
 
-      if (interactions > 0) {
+      const shouldCheckAnthropicContextBoundary =
+        interactions === 1 ||
+        (messages.length >= 16 && interactions % 2 === 0) ||
+        interactions % 3 === 0 ||
+        lastObservedContextInputTokens >= 120_000;
+      if (shouldCheckAnthropicContextBoundary) {
         try {
           const compacted = await compactContextAtBoundary({
             chatId: context.projectId,
@@ -2764,8 +2731,13 @@ export class GeminiAgentClient {
         (context as any).selectedThinkingLevel || 'low',
         'anthropic',
         this.mistralModelName,
+        (context as any).modelThinkingCapability,
       );
-      const currentSupportsThinking = getModelThinkingOptions('anthropic', this.mistralModelName).length > 0;
+      const currentSupportsThinking = getModelThinkingOptions(
+        'anthropic',
+        this.mistralModelName,
+        (context as any).modelThinkingCapability,
+      ).length > 0;
 
       const params: any = {
         model: this.mistralModelName,
@@ -3535,7 +3507,6 @@ export class GeminiAgentClient {
       'env_manager',
       'json_yaml_transform',
       'markdown_to_html',
-      'chart_generator',
       'image_generator',
       'file_compression',
       'system_shell',
@@ -4162,9 +4133,8 @@ EXECUTION LOOP
 
 TOOL ROUTING
 - ${toolCount} function tools are provided in the API tool declarations; those declarations are the authoritative names and schemas. Never invent tools or arguments.
-- Existing files: workspace_str_replace for a precise edit; workspace_apply_patch for structural/multi-hunk work; workspace_edit_many_files for coordinated edits.
-- workspace_write_file is for brand-new files only.
-- Explore with semantic/symbol/search/find tools, then targeted reads; batch known reads.
+- workspace_write_file creates new files and emits the real created-file preview. workspace_edit_file makes targeted changes to existing files and emits the expandable real diff.
+- Explore with semantic search, text search, file discovery, outlines, and targeted reads; batch known reads.
 - Use workspace_run_command for finite commands and process_manager/background_task for servers or long-running work.
 - If a command returns stillRunning/backgroundTaskId, do not rerun it; wait and check that task.
 - Use web tools for current external facts and read primary sources before relying on them.
@@ -4188,6 +4158,11 @@ COMPLETION
 - Do not automatically create sections such as Summary, Details, Evidence, Deliverables, Next Steps, Caveats, Files Changed, or Verification. Mention relevant work, evidence, limitations, or file links naturally and only when they help the user.
 - Do not use emojis, decorative icons, ornamental Unicode, or all-caps headings in user-facing prose. Keep headings short and sentence case, and avoid a heading when plain prose is clearer.
 - In long chats, use relevant prior work and decisions to answer the current request without recapping the transcript, repeating completed work, or treating old output as a new objective.
+- For web references, use descriptive Markdown link text that names the destination, product, or document instead of exposing a raw URL. Place links naturally in the relevant sentence or list; do not create a sources section unless it improves the answer or the user asks for one.
+- When several parallel results genuinely benefit from scanning, a brief lead followed by compact bullets is useful, but it is never a required response template.
+- Write mathematical notation as valid LaTeX using $...$ for inline expressions and $$...$$ on separate lines for display equations. Keep delimiters balanced, never place equations in code fences, and use inline math rather than multiline display math inside Markdown tables.
+- When a table materially improves comparison, emit valid GitHub-flavored Markdown with a header and separator row. Keep complex proofs and long derivations outside tables where they remain readable.
+- Use Mermaid only when relationships or sequence are materially clearer as a diagram. Keep inline diagrams focused, labels concise, and the main flow easy to scan; split very large systems into multiple purposeful diagrams instead of producing one unreadable canvas.
 - Never ask the user to say "continue" when in-scope work can continue now.
 - Use concise GitHub-flavored Markdown when useful; use Mermaid only when a diagram materially improves a complex relationship.
 
@@ -4382,14 +4357,14 @@ FILESYSTEM
 - SAVE LOCATION: Never default to Desktop. Save to user-specified path or project directory.
 - Use .workspaces/sandbox/ for ALL temp/intermediate work. Never put temp scripts on Desktop.
 - Use absolute paths. Resolve "desktop" via the Shell API path above.
-- CRITICAL PATH RULE: When workspace_write_file creates a file, reuse the absolute path returned by the tool in subsequent commands. Never reconstruct it or assume Windows/POSIX separators because the shell CWD and operating system may differ.
+- Reuse absolute paths returned by workspace tools. Never reconstruct them or assume Windows/POSIX separators.
 
 AUTONOMOUS EXECUTION PROTOCOL
 This is the MOST IMPORTANT section. Follow this religiously:
 
 1. JUST DO IT — Don't plan. Don't explain. Don't ask permission. Execute.
 2. CHAIN FAST — research → write → verify → next file. No gaps.
-3. SCOPED PATCHES — For editing existing files, use workspace_apply_patch with context matching to make precise, modular edits. Do NOT rewrite the entire file. For new files, write them completely without placeholders or TODOs.
+3. SCOPED FILE CHANGES — For existing files, use workspace_edit_file with exact search text or validated line ranges. For new files, use workspace_write_file with complete content and no placeholders or TODOs.
 4. FIX AND CONTINUE — If something breaks, analyze the error/stderr carefully, patch the root cause, and verify again. One corrected retry is reasonable; after it fails, change the underlying strategy or report the real blocker. Cosmetic command rewrites, shell-wrapper changes, and repeated calls to the same broken service are not new strategies.
 5. ITERATE UNTIL DONE — A task is done when it is verified to work (e.g. by running compiling/tests or reading back the file), not when you just wrote something. Verify outcomes.
 6. WORK AUTONOMOUSLY — Make decisions. Pick the best approach. Execute it.
@@ -4448,37 +4423,32 @@ DEEP WORK PROTOCOL
 FOR CODING (CRITICAL - this is your primary workflow):
 
 SPEED PROTOCOL - Inspect -> Edit -> Verify -> Fix -> Continue:
-1. Locate the relevant files with semantic search, symbol lookup, find-files, or targeted reads.
-2. For existing files, use workspace_str_replace for precise replacements or workspace_apply_patch for multi-hunk/multi-file edits.
-3. Use workspace_write_file only for brand-new files with complete content.
+1. Locate the relevant files with semantic search, text search, file discovery, outlines, or targeted reads.
+2. Use workspace_write_file for new files and workspace_edit_file for targeted changes to existing files.
 4. Run the narrowest meaningful verification command after related edits.
 5. If stderr/stdout gives an exact, unambiguous file/line/fix, patch directly. If local context is ambiguous, re-read only the narrow target range before editing.
 
 TARGETED READBACK RULE:
-- workspace_str_replace returns diff + readback; avoid redundant re-reads when that result is sufficient.
-- workspace_apply_patch returns a diff; re-read only when the patch result, later errors, or ambiguity requires current context.
-- workspace_write_file is for new files. For existing files, use targeted edit tools instead of rewriting.
+- workspace_edit_file produces the real UI diff; re-read only when the edit result, later errors, or ambiguity requires current context.
 - Use workspace_read_many_files for several known ranges instead of reading whole files one by one.
 - Never re-read broad files just to regain context; read the smallest range that answers the question.
 
 EDIT TOOL SAFETY CONTRACT:
 - Before editing an existing file, you must have current local context from search, outline, a targeted read, a recent tool readback, or exact verification error output.
 - Do not prepend, append, or duplicate initialization blocks unless the surrounding file structure proves that is the intended insertion point.
-- For one precise replacement, use workspace_str_replace. For several related hunks or several files, use workspace_apply_patch or workspace_edit_many_files in one coordinated batch.
-- Search/replace edit tools reject ambiguous repeated matches by default. If the tool reports multiple matches, add surrounding context, use startLine/endLine, or use workspace_apply_patch. Set replaceAll/replace_all only when every occurrence is intentionally being changed.
+- Use workspace_edit_file for precise replacements and call it once per affected existing file.
 - If a patch fails due to whitespace/context, read the narrow target range and patch the exact current text. Do not switch to whole-file rewrite unless the file is tiny and full replacement is explicitly safest.
 - Treat edit counts and success as tool output only. Never infer "+lines" from the requested content before the write/edit tool has returned and readback/diff evidence exists.
 - After an edit, use the returned diff/readback as the source of truth. Verify with tests, typecheck, syntax, browser, or focused file_content checks depending on risk.
 
 MULTI-ERROR FIX PATTERN:
 - When tsc/eslint/pytest outputs 5 errors across 3 files, fix ALL of them in one pass:
-  - Use workspace_str_replace for single-file fixes (one call per file)
-  - Use workspace_apply_patch or workspace_edit_many_files for coordinated multi-file fixes
+  - Use workspace_edit_file with all related edits for that file and sufficient context
   - Do NOT fix error 1, re-verify, fix error 2, re-verify. Fix ALL then verify ONCE.
 
 ERROR-DRIVEN EDITING (use stderr plus targeted context):
   Error: "src/App.tsx(15,7): error TS2322: Type 'string' not assignable to type 'number'"
-  -> You know: file=src/App.tsx, line=15, issue=type mismatch. Fix directly if the line context is already known; otherwise read lines around 15, then use workspace_str_replace.
+  -> You know: file=src/App.tsx, line=15, issue=type mismatch. Fix directly if the line context is already known; otherwise read lines around 15, then use workspace_edit_file.
 
   Error: "Module not found: Can't resolve './components/Header'"
   -> Check the path with workspace_find_files or a narrow directory read, then fix the import or create the missing file.
@@ -4576,33 +4546,26 @@ TOOL MASTERY
 You have ${ toolCount } tools:
 
 TERMINAL:
-- system_shell / workspace_run_command: Run shell commands using the selected integrated shell (automatic OS default when unset). Use for npm, tsc, pytest, git, and rg.
-  - NEVER prefix commands with "cd path;". Use the workingDir/cwd parameter with an ABSOLUTE PATH instead.
-  - Detect the operating system and shell from terminal_access before using platform-specific syntax. On Windows/PowerShell:
-    mkdir -p → New-Item -ItemType Directory -Force -Path "path" (auto-translated but prefer native)
-    rm -rf → Remove-Item -Recurse -Force "path"
-    touch → New-Item -ItemType File -Force -Path "path"
-    cat → Get-Content
-  - On macOS/Linux use the selected POSIX shell and native commands; on Windows use PowerShell/cmd/Git Bash/WSL syntax matching the selected shell.
-  - Code search: "rg 'pattern' -n --type ts" or "rg 'pattern' --json" (ripgrep — fastest code search)
+- workspace_run_command: Run finite commands using the selected integrated shell and explicit cwd.
+  - Never prefix commands with a shell-specific "cd" chain. Use the cwd parameter.
+  - Generate syntax only for the runtime OS and selected shell reported above.
+  - Use workspace_search_text and workspace_find_files for portable repository search.
   - If result has stillRunning/backgroundTaskId, the command is already alive in the background.
 - process_manager: anything long-running (dev servers, watchers, databases). Use action="start" with cwd.
-- terminal_access: read-only terminal capability check.
 
 LONG-RUNNING COMMAND PROTOCOL (CRITICAL — follow this exactly):
   npm install / pip install / cargo build / yarn → timeout auto-set to 120s. Just run normally.
-  Dev servers (npm run dev, vite, flask) → ALWAYS use process_manager action="start". NEVER system_shell.
+  Dev servers (npm run dev, vite, flask) → ALWAYS use process_manager action="start".
   If a command STILL times out at 120s:
     1. background_task mode="launch" command="same command" cwd="same absolute path"
     2. wait_timer seconds=60
     3. background_task mode="check" taskId="returned ID"
     4. Repeat step 2-3 until complete.
-  NEVER retry the exact same timed-out command with system_shell/workspace_run_command — it WILL time out again.
+  NEVER retry the exact same timed-out workspace_run_command — it WILL time out again.
 - Terminal handoff protocol: never rerun a handed-off command. Read stdout/stderr, call wait_timer for the suggested interval, then call background_task with mode="check" and the returned taskId. If the check still says running and no independent work remains, wait again instead of stopping or guessing. Continue work only after final output/exitCode arrives.
 
-FILE EDITING (use targeted edits for existing files):
-- workspace_str_replace: default edit tool for precise one-file replacements after reading enough context.
-- workspace_apply_patch: multi-hunk or multi-file structural edits. Uses context-line matching for precision.
+FILE EDITING:
+- workspace_write_file is the new-file creator. workspace_edit_file is the existing-file editor and is wired to the expandable real-diff UI.
   Format:
   *** Begin Patch
   *** Update File: path/to/file.ts
@@ -4616,16 +4579,13 @@ FILE EDITING (use targeted edits for existing files):
   *** End Patch
   RULES: Include 2-3 unchanged context lines before/after each change.
   For new files use *** Add File (lines start with +). For deletion use *** Delete File.
-- workspace_edit_file: Simple search/replace or line-range edits on one file.
-- workspace_write_file: Create entirely new files only. Do not use it for existing source-file replacements.
-- workspace_edit_many_files / smart_refactor: Coordinated multi-file changes.
 
 FILE INSPECTION:
 - workspace_semantic_search: meaning-based codebase search for architecture/behavior questions
-- workspace_find_files / workspace_search_text: fast discovery (search_text uses ripgrep internally)
+- workspace_find_files / workspace_search_text: portable discovery with native fallbacks when ripgrep is unavailable
 - workspace_read_file with startLine/endLine: targeted inspection — returns numbered lines for reference
 - workspace_read_many_files: batch reads
-- code_intelligence: analyze structure without reading full files
+- workspace_file_outline: inspect imports, exports, functions, and classes without loading the whole file
 
 VERIFICATION:
 - workspace_verify_code: lint/build/test after edits
@@ -4636,14 +4596,12 @@ RESEARCH:
 - deep_research: multi-angle parallel research with source reading.
 
 COMPUTER CONTROL:
-- screen_agent / computer: desktop automation in isolated EterX Computer
+- ${process.platform === 'win32' ? 'computer: isolated Windows desktop automation' : 'Native desktop automation is not exposed on this platform; use browser_control for web UI work'}
 - browser_control: Chrome automation via CDP + Playwright
 
 CREATION:
-- chart_generator: data visualizations (bar, line, pie, scatter, etc.)
 - image_generator: creative images (logos, illustrations, photos)
-- docx_generator / office_artifact_builder: Office documents
-- project_scaffolder: complete project templates
+- docx_generator / office_artifact_builder: documents, PDFs, slides, workbooks, and spreadsheet charts
 
 SUB-AGENTS:
 - spawn_sub_agent: bounded parallel agents for independent tasks
@@ -4709,10 +4667,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
   ): Promise<{ text: string, trace: any[] }> {
     const selectedModelName = String((context as any).selectedModelName || '').trim();
     const selectedModelProvider = String((context as any).selectedModelProvider || '').trim();
-    const supportedProviders = new Set<MainAgentProvider>([
-      'gemini', 'anthropic', 'openai', 'mistral', 'openrouter', 'groq',
-    ]);
-    if (selectedModelName && supportedProviders.has(selectedModelProvider as MainAgentProvider)) {
+    if (selectedModelName && isModelProvider(selectedModelProvider)) {
       this.activeProvider = selectedModelProvider as MainAgentProvider;
     }
 
@@ -4732,6 +4687,31 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
       }
     }
     const activeModelName = this.activeProvider === 'gemini' ? this.modelName : this.mistralModelName;
+    if (mediaFiles.length > 0) {
+      const unsupportedImage = mediaFiles.find(file => {
+        const mime = normalizeAttachmentMime(file.name || file.path, file.mimeType);
+        return mime.startsWith('image/')
+          && this.activeProvider !== 'gemini'
+          && this.activeProvider !== 'anthropic'
+          && !providerAcceptsDirectImage(this.activeProvider, activeModelName);
+      });
+      if (unsupportedImage) {
+        throw new Error(
+          `ATTACHMENT_NOT_SUPPORTED: ${activeModelName} cannot receive images through ${this.activeProvider}. `
+          + `Choose a vision-capable model or remove ${unsupportedImage.name || pathLib.basename(unsupportedImage.path)}.`,
+        );
+      }
+      const unsupportedMedia = mediaFiles.find(file => {
+        const mime = normalizeAttachmentMime(file.name || file.path, file.mimeType);
+        return (mime.startsWith('audio/') || mime.startsWith('video/')) && this.activeProvider !== 'gemini';
+      });
+      if (unsupportedMedia) {
+        throw new Error(
+          `ATTACHMENT_NOT_SUPPORTED: ${activeModelName} cannot receive this audio or video attachment through ${this.activeProvider}. `
+          + `Choose a compatible Gemini model or remove ${unsupportedMedia.name || pathLib.basename(unsupportedMedia.path)}.`,
+        );
+      }
+    }
     const selectionEvent = {
       type: 'model_selection',
       provider: this.activeProvider,
@@ -5069,8 +5049,6 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
       'web_search',
       'deep_research',
       'get_skill_guidelines',
-      'task_decomposer',
-      'task_checkpoint',
       'calculator',
       'json_yaml_transform',
       'regex_text_processor',
@@ -5102,17 +5080,37 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
     return false;
   }
 
+  private isAutomaticRetrySafeToolCall(toolName: string): boolean {
+    // Keep automatic retries to cheap local reads/in-memory transforms. Remote
+    // research calls can be slow or rate-limited, and mutations may have
+    // committed their side effect before throwing.
+    return new Set([
+      'workspace_semantic_search',
+      'workspace_symbol_lookup',
+      'workspace_file_outline',
+      'workspace_find_files',
+      'workspace_read_file',
+      'workspace_read_many_files',
+      'workspace_view_file',
+      'workspace_search_text',
+      'workspace_list_directory',
+      'workspace_analyze',
+      'get_skill_guidelines',
+      'calculator',
+      'json_yaml_transform',
+      'regex_text_processor',
+    ]).has(toolName);
+  }
+
   private isParallelSafeToolCall(call: any): boolean {
     if (this.isStatelessTool(String(call?.name || ''))) return true;
     const name = String(call?.name || '');
     const args = call?.args || {};
 
-    // Explicit background launches only register independent processes and
-    // return task handles, so several may start together without blocking the
-    // model loop. Foreground commands and file mutations remain ordered.
-    if (name === 'background_task') return ['launch', 'check', 'list'].includes(String(args.mode || ''));
-    if (name === 'workspace_run_command') return args.background === true;
-    if (name === 'process_manager') return ['start', 'status', 'logs', 'list'].includes(String(args.action || ''));
+    // Status reads are safe to parallelize. Launching a background command can
+    // still mutate the same files/process registry, so starts remain ordered.
+    if (name === 'background_task') return ['check', 'list'].includes(String(args.mode || ''));
+    if (name === 'process_manager') return ['status', 'logs', 'list'].includes(String(args.action || ''));
     return false;
   }
 
@@ -5441,9 +5439,9 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
       contents = ConversationCompressor.compress(contents);
     }
 
-    // Build the user parts incorporating media references.
-    // Primary path: Gemini Files API parts prepared by agent-registry with the
-    // same leased key used by this model request. Inline bytes are fallback only.
+    // Build the user parts incorporating media references. Images are attached
+    // directly from their real local path in this same model request. Gemini
+    // Files API references remain available for documents that require them.
     let initialUserParts: any[] = [];
     const hasFileApiImageParts = !!imageBackupParts?.some((part) =>
       String(part?.fileData?.mimeType || '').startsWith('image/')
@@ -5460,25 +5458,27 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
       }
     }
 
-    // Fallback only: if Files API image preparation failed, use local inline bytes
-    // server-side so the renderer never pays the base64 cost.
+    // Direct image path: read server-side and attach inline to this request.
+    // The renderer never stores or transports base64.
     if (!hasFileApiImageParts && mediaFiles && mediaFiles.length > 0) {
       const fs = require('fs');
       for (const meta of mediaFiles) {
-        if (meta.mimeType.startsWith('image/') && fs.existsSync(meta.path)) {
+        const imageMimeType = normalizeAttachmentMime(meta.name || meta.path, meta.mimeType);
+        if (imageMimeType.startsWith('image/') && fs.existsSync(meta.path)) {
           try {
             const imgBuffer = fs.readFileSync(meta.path);
-            if (imgBuffer.length < 10 * 1024 * 1024) {
-              initialUserParts.push({
-                inlineData: {
-                  mimeType: meta.mimeType,
-                  data: imgBuffer.toString('base64')
-                }
-              });
-              console.log(`[GeminiClient] \u{1F4F7} Server-side inline image fallback: ${ meta.name || 'image' } (${ (imgBuffer.length / 1024).toFixed(1) }KB)`);
+            if (imgBuffer.length > 20 * 1024 * 1024) {
+              throw new Error(`Image ${meta.name || 'attachment'} exceeds the 20 MB direct-attachment limit.`);
             }
+            initialUserParts.push({
+              inlineData: {
+                mimeType: imageMimeType,
+                data: imgBuffer.toString('base64')
+              }
+            });
+            console.log(`[GeminiClient] Direct image attachment: ${ meta.name || 'image' } (${ (imgBuffer.length / 1024).toFixed(1) }KB)`);
           } catch (e: any) {
-            console.warn(`[GeminiClient] \u26A0\uFE0F Inline fallback failed: ${ e.message?.substring(0, 80) }`);
+            throw new Error(`ATTACHMENT_PREPARATION_FAILED: ${e.message || 'Could not read the image attachment.'}`);
           }
         }
       }
@@ -5944,7 +5944,12 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
 
       // Context compaction is an iteration-boundary transaction. No tool,
       // stream, edit, or approval is active at this point.
-      if (interactions > 0) {
+      const shouldCheckGeminiContextBoundary =
+        interactions === 1 ||
+        (contents.length >= 16 && interactions % 2 === 0) ||
+        interactions % 3 === 0 ||
+        lastObservedContextInputTokens >= 120_000;
+      if (shouldCheckGeminiContextBoundary) {
         try {
           const ctxResult = await compactContextAtBoundary({
             chatId: context.projectId,
@@ -7104,14 +7109,10 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
         workspace_read_file: { text: 'Reading file', type: 'exploration', iconCategory: 'file_read', argKey: 'filename' },
         workspace_read_many_files: { text: 'Reading files', type: 'exploration', iconCategory: 'file_read', argKey: 'files' },
         workspace_search_text: { text: 'Searching codebase', type: 'exploration', iconCategory: 'search', argKey: 'pattern' },
-        workspace_str_replace: { text: 'Editing file', type: 'file_edit', iconCategory: 'file_edit', argKey: 'filename' },
-        workspace_write_file: { text: 'Writing artifact', type: 'file_edit', iconCategory: 'file_create', argKey: 'filename' },
-        workspace_edit_file: { text: 'Editing file', type: 'file_edit', iconCategory: 'file_edit', argKey: 'filename' },
-        workspace_edit_many_files: { text: 'Editing files', type: 'file_edit', iconCategory: 'file_edit', argKey: 'files' },
         workspace_run_command: { text: 'Running project command', type: 'command', iconCategory: 'terminal', argKey: 'command' },
         workspace_verify_code: { text: 'Verifying code', type: 'command', iconCategory: 'verification', argKey: 'checkType' },
-        workspace_apply_patch: { text: 'Patching files', type: 'file_edit', iconCategory: 'file_edit', argKey: 'patch' },
-        workspace_edit_session: { text: 'Reviewing session', type: 'exploration', iconCategory: 'file_read', argKey: 'action' },
+        workspace_write_file: { text: 'Creating file', type: 'file_edit', iconCategory: 'file_create', argKey: 'filename' },
+        workspace_edit_file: { text: 'Editing file', type: 'file_edit', iconCategory: 'file_edit', argKey: 'filename' },
         get_skill_guidelines: { text: 'Loading skill', type: 'exploration', iconCategory: 'folder_read', argKey: 'skill_name' },
         git_operations: { text: 'Git operation', type: 'command', iconCategory: 'terminal', argKey: 'operation' },
         screenshot_capture: { text: 'Capturing screen', type: 'exploration', iconCategory: 'computer', argKey: 'target' },
@@ -7158,12 +7159,9 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
         spawn_sub_agent: { text: 'Creating agents', type: 'command', iconCategory: 'agent', argKey: 'mode' },
         deep_research: { text: 'Deep researching', type: 'exploration', iconCategory: 'web_search', argKey: 'topic' },
         code_intelligence: { text: 'Analyzing code', type: 'exploration', iconCategory: 'search', argKey: 'target' },
-        smart_refactor: { text: 'Refactoring code', type: 'file_edit', iconCategory: 'file_edit', argKey: 'file' },
         project_scaffolder: { text: 'Scaffolding project', type: 'file_edit', iconCategory: 'folder_create', argKey: 'name' },
         env_manager: { text: 'Managing environment', type: 'command', iconCategory: 'computer', argKey: 'mode' },
         auto_docs: { text: 'Generating docs', type: 'file_edit', iconCategory: 'file_create', argKey: 'target' },
-        git_intelligence: { text: 'Git operation', type: 'command', iconCategory: 'terminal', argKey: 'mode' },
-        chart_generator: { text: 'Generating chart', type: 'file_edit', iconCategory: 'file_create', argKey: 'title' },
         smart_file_analyzer: { text: 'Analyzing files', type: 'exploration', iconCategory: 'search', argKey: 'path' },
         background_task: { text: 'Checking background task', type: 'command', iconCategory: 'terminal', argKey: 'taskId' },
         wait_timer: { text: 'Waiting for check-in', type: 'command', iconCategory: 'terminal', argKey: 'title' },
@@ -8092,8 +8090,9 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
                     };
                   }
                 }
-              } else {
-                // Standard retry
+              } else if (this.isAutomaticRetrySafeToolCall(canonicalToolName)) {
+                // Read-only operations are safe to repeat after a transient
+                // exception. Stateful failures return to the model first.
                 try {
                   toolExec.throwIfCancelled();
                   toolOutput = await tool.execute(effectiveArgs as any, toolExec.context);
@@ -8106,6 +8105,12 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
                     _suggestion: `Tool ${ canonicalToolName } failed twice. Try a different approach.`
                   };
                 }
+              } else {
+                toolOutput = {
+                  error: err.message,
+                  _retryFailed: false,
+                  _suggestion: `Tool ${ canonicalToolName } may have changed state before failing. Inspect the current state before deciding whether to retry.`,
+                };
               }
 
               // Learn from error â€” both knowledge and persistent memory
@@ -8398,7 +8403,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
       const wasWorkTask = toolsUsed.some(t =>
         ['workspace_write_file', 'workspace_str_replace', 'workspace_apply_patch', 'workspace_edit_file', 'workspace_edit_many_files', 'system_shell', 'workspace_run_command',
           'process_manager', 'browser_control', 'docx_generator', 'office_artifact_builder',
-          'chart_generator', 'image_generator', 'project_scaffolder'].includes(t)
+          'image_generator'].includes(t)
       );
 
       // If it was a work task, enrich the final response with what was done

@@ -11,7 +11,7 @@ import {
 } from 'lucide-react';
 // @ts-ignore
 import ReactMarkdown from 'react-markdown';
-import { markdownComponents, normalizeMarkdownForRendering, remarkPlugins, rehypePlugins } from './markdown-renderer';
+import { markdownComponents, normalizeMarkdownForRendering, remarkPlugins, rehypePlugins, WebsiteLink } from './markdown-renderer';
 import { LocalFileIcon, LocalFileLinkChip, decodeLocalFileHref, isLocalFilePath } from './local-file-link';
 import { AGENT_ICONS, resolveAgentIcon, AgentAssetIcon, SubAgentIdentityIcon } from './agent-icons';
 import { AgentFace } from './agent-face';
@@ -49,7 +49,7 @@ const TEXT_REVEAL_SPEEDS = {
   },
 } satisfies Record<'workNote' | 'answer', RevealSpeed>;
 
-const markdownRevealChunkPattern = /(```[\s\S]*?```|~~~[\s\S]*?~~~)/g;
+const markdownRevealChunkPattern = /(```[\s\S]*?```|~~~[\s\S]*?~~~|\$\$[\s\S]*?\$\$|\$(?:\\.|[^$\n])+\$)/g;
 const fenceStartPattern = /^ {0,3}(`{3,}|~{3,})/;
 
 const splitWordsWithSpacing = (value: string) => {
@@ -66,9 +66,16 @@ const getReactNodeText = (value: React.ReactNode): string => {
 };
 
 const hasOpenInlineMarkdown = (value: string) => {
+  const lastInlineMathOpen = value.lastIndexOf('\\(');
+  const lastInlineMathClose = value.lastIndexOf('\\)');
+  if (lastInlineMathOpen > lastInlineMathClose) return true;
+
   const sanitized = value.replace(/\\./g, '');
   const backticks = sanitized.match(/`/g)?.length || 0;
   if (backticks % 2 === 1) return true;
+
+  const dollars = sanitized.match(/\$/g)?.length || 0;
+  if (dollars % 2 === 1) return true;
 
   const boldA = sanitized.match(/\*\*/g)?.length || 0;
   const boldB = sanitized.match(/__/g)?.length || 0;
@@ -143,6 +150,11 @@ const tokenizeMarkdownForReveal = (value: string) => {
       return;
     }
 
+    if (/^\${1,2}/.test(part)) {
+      chunks.push(part);
+      return;
+    }
+
     const lines = part.split(/(?<=\n)/);
     for (let i = 0; i < lines.length; i += 1) {
       const line = lines[i];
@@ -162,8 +174,8 @@ const tokenizeMarkdownForReveal = (value: string) => {
             break;
           }
         }
-        chunks.push(block);
         if (!closed) break;
+        chunks.push(block);
         continue;
       }
 
@@ -178,8 +190,8 @@ const tokenizeMarkdownForReveal = (value: string) => {
             break;
           }
         }
-        chunks.push(block);
         if (!closed) break;
+        chunks.push(block);
         continue;
       }
 
@@ -502,6 +514,7 @@ const useThinkTimer = (isLive: boolean, startedAt?: number, updatedAt?: number) 
   const [secs, setSecs] = useState(0);
   const fallbackStartRef = useRef<number | null>(null);
   const frozenRef = useRef<number | null>(null);
+  const lastElapsedRef = useRef(0);
   const startMs = asTimestamp(startedAt);
   const updateMs = asTimestamp(updatedAt);
 
@@ -518,19 +531,28 @@ const useThinkTimer = (isLive: boolean, startedAt?: number, updatedAt?: number) 
     if (isLive) {
       if (fallbackStartRef.current === null) fallbackStartRef.current = startMs ?? Date.now();
       frozenRef.current = null;
-      setSecs(elapsedFrom(Date.now()));
+      const updateElapsed = () => {
+        const elapsed = Math.max(lastElapsedRef.current, elapsedFrom(Date.now()));
+        lastElapsedRef.current = elapsed;
+        setSecs(elapsed);
+      };
+      updateElapsed();
       const id = setInterval(() => {
-        setSecs(elapsedFrom(Date.now()));
+        updateElapsed();
       }, THOUGHT_ELAPSED_TICK_MS);
       return () => clearInterval(id);
     }
 
-    const frozen = startMs !== null && updateMs !== null
+    const measured = startMs !== null && updateMs !== null
       ? frozenElapsedFrom(updateMs)
       : fallbackStartRef.current !== null
         ? frozenElapsedFrom(Date.now())
         : 0;
+    // A late/fallback close event must never make a counter jump backwards
+    // (for example, "Thinking... 3s" becoming "Thought for 1s").
+    const frozen = Math.max(measured, lastElapsedRef.current);
     frozenRef.current = frozen;
+    lastElapsedRef.current = frozen;
     fallbackStartRef.current = null;
     setSecs(frozen);
   }, [isLive, startMs, updateMs]);
@@ -626,8 +648,8 @@ export const ProfessionalThought = React.memo(({ text, isLatest, isThinking, var
     h2: ({ node, ...props }: any) => <h2 className="eterx-answer-heading eterx-answer-heading-2 mt-4.5 first:mt-0 mb-2.5 font-semibold leading-[1.3]" {...props} />,
     h3: ({ node, ...props }: any) => <h3 className="eterx-answer-heading eterx-answer-heading-3 mt-4 first:mt-0 mb-2 font-semibold leading-[1.35]" {...props} />,
     h4: ({ node, ...props }: any) => <h4 className="eterx-answer-heading eterx-answer-heading-4 mt-3.5 first:mt-0 mb-1.5 font-semibold leading-[1.4]" {...props} />,
-    h5: ({ node, ...props }: any) => <h5 className="eterx-answer-heading eterx-answer-heading-muted mt-4 first:mt-0 mb-2 text-[14px] font-semibold leading-tight" {...props} />,
-    h6: ({ node, ...props }: any) => <h6 className="eterx-answer-heading eterx-answer-heading-muted mt-3 first:mt-0 mb-2 text-[13px] font-semibold leading-tight" {...props} />,
+    h5: ({ node, ...props }: any) => <h5 className="eterx-answer-heading eterx-answer-heading-5 eterx-answer-heading-muted mt-4 first:mt-0 mb-2 font-semibold leading-tight" {...props} />,
+    h6: ({ node, ...props }: any) => <h6 className="eterx-answer-heading eterx-answer-heading-6 eterx-answer-heading-muted mt-3 first:mt-0 mb-2 font-semibold leading-tight" {...props} />,
     ul: ({ node, ...props }: any) => <ul className="eterx-answer-list my-3 list-disc space-y-1.5 pl-6" {...props} />,
     ol: ({ node, ...props }: any) => <ol className="eterx-answer-list my-3 list-decimal space-y-1.5 pl-6" {...props} />,
     li: ({ node, ...props }: any) => <li className="eterx-answer-list-item pl-1.5 leading-[1.68]" {...props} />,
@@ -636,7 +658,7 @@ export const ProfessionalThought = React.memo(({ text, isLatest, isThinking, var
     a: ({ node, href, children, ...props }: any) => {
       const localPath = decodeLocalFileHref(href);
       if (localPath) return <LocalFileLinkChip filePath={localPath} label={getReactNodeText(children)} compact={isNote} />;
-      return <a className="eterx-answer-link hover:underline" target="_blank" rel="noopener" href={href} {...props}>{children}</a>;
+      return <WebsiteLink href={href} {...props}>{children}</WebsiteLink>;
     },
   }), [isNote]);
   const renderProfessionalMarkdown = (value: string) => (
@@ -692,7 +714,7 @@ export const ProfessionalThought = React.memo(({ text, isLatest, isThinking, var
                     a: ({ node, href, children, ...props }: any) => {
                       const localPath = decodeLocalFileHref(href);
                       if (localPath) return <LocalFileLinkChip filePath={localPath} label={getReactNodeText(children)} compact />;
-                      return <a className="text-[#E2765A] hover:underline" target="_blank" rel="noopener" href={href} {...props}>{children}</a>;
+                      return <WebsiteLink href={href} {...props}>{children}</WebsiteLink>;
                     },
                   }}>{renderText}</ReactMarkdown>
                 </div>
