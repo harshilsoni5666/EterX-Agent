@@ -1812,6 +1812,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
   const [eggQuoteIndex] = useState(0);
   const [defaultPermsActive, setDefaultPermsActive] = useState(true);
   const [fullAccessActive, setFullAccessActive] = useState(true);
+  const [gatewayConfig, setGatewayConfig] = useState<any>(null);
+  const [gatewayRunning, setGatewayRunning] = useState(false);
   const [updateState, setUpdateState] = useState<DesktopUpdateState>({
     status: 'development',
     currentVersion: 'development',
@@ -1855,6 +1857,33 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     }
     return () => unsubscribe?.();
   }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const desktopApi = (window as any)?.electronAPI;
+    if (typeof desktopApi?.getGatewayState !== 'function') return;
+    desktopApi.getGatewayState().then((state: any) => {
+      if (state?.config) setGatewayConfig(state.config);
+      setGatewayRunning(Boolean(state?.status?.running));
+    }).catch(() => {});
+    const unsubscribe = desktopApi.onGatewayStatus?.((status: any) => setGatewayRunning(Boolean(status?.running)));
+    return () => unsubscribe?.();
+  }, [isOpen]);
+
+  const saveGatewayPatch = useCallback(async (patch: Record<string, unknown>) => {
+    const desktopApi = (window as any)?.electronAPI;
+    if (!gatewayConfig || typeof desktopApi?.saveGatewayConfig !== 'function') return;
+    const next = { ...gatewayConfig, ...patch };
+    setGatewayConfig(next);
+    try {
+      const result = await desktopApi.saveGatewayConfig(next);
+      if (result?.config) setGatewayConfig(result.config);
+      if (result?.status) setGatewayRunning(Boolean(result.status.running));
+    } catch (error) {
+      console.warn('Could not update background companion settings:', error);
+      setGatewayConfig(gatewayConfig);
+    }
+  }, [gatewayConfig]);
 
   const persistDesktopRuntimeSettings = useCallback(async (
     nextApiKeys: Record<string, string>,
@@ -2780,6 +2809,15 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
 
                           <SectionHeader title="General" />
                           <SettingsStack>
+                            <SettingsStackRow title="Background tasks and channels" description="Keep active chats, scheduled tasks, and messaging channels working after the main window closes." tall>
+                              <div className="flex items-center gap-3">
+                                <span className={`text-[11px] font-semibold ${gatewayRunning ? 'text-emerald-400' : 'text-white/35'}`}>{gatewayRunning ? 'RUNNING' : 'OFF'}</span>
+                                <Toggle enabled={Boolean(gatewayConfig?.enabled && gatewayConfig?.keepRunningOnClose)} onChange={value => void saveGatewayPatch({ enabled: value, keepRunningOnClose: value })} />
+                              </div>
+                            </SettingsStackRow>
+                            <SettingsStackRow title="Start background companion at sign-in" description="Resume channels and due tasks automatically on Windows, macOS, or Linux.">
+                              <Toggle enabled={Boolean(gatewayConfig?.launchAtLogin)} onChange={value => void saveGatewayPatch({ launchAtLogin: value })} />
+                            </SettingsStackRow>
                             <SettingsStackRow title="Default open destination" description="Where files and folders open by default">
                               <SelectControl
                                 value={settings.openDestination}
@@ -3663,25 +3701,12 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
 
                       {activeTab === 'mcp' && (
                         <div>
-                          <SectionHeader title="MCP servers" />
-                          <SettingRow icon={<PlugZap className="w-4 h-4" />} title="Enable MCP tools" description="Allow configured MCP servers to expose tools and resources to the local agent runtime.">
-                            <Toggle enabled={settings.mcpServersEnabled} onChange={v => updateSetting('mcpServersEnabled', v)} />
+                          <SectionHeader title="MCP" />
+                          <SettingRow icon={<PlugZap className="w-4 h-4" />} title="Enable MCP bridge" description="Expose the EterX gateway to an MCP client when the gateway is running.">
+                            <Toggle enabled={settings.mcpServersEnabled} onChange={async v => { updateSetting('mcpServersEnabled', v); const gatewayApi = (window as any).electronAPI; const state = await gatewayApi?.getGatewayState?.(); if (state?.config && gatewayApi?.saveGatewayConfig) await gatewayApi.saveGatewayConfig({ ...state.config, mcpBridgeEnabled: v }); }} />
                           </SettingRow>
-                          <div className="grid gap-3 md:grid-cols-2">
-                            {[
-                              ['Filesystem', 'Local workspace file tools', 'Built in'],
-                              ['Browser', 'Local browser inspection and screenshots', 'Available'],
-                              ['Canva', 'Design generation and editing connector', 'Connector'],
-                              ['Linear', 'Issue and project workflow connector', 'Connector'],
-                            ].map(([name, description, status]) => (
-                              <div key={name} className="rounded-xl border border-white/[0.08] bg-[#202020] p-5">
-                                <div className="flex items-center justify-between gap-3">
-                                  <div className="text-[16px] font-medium text-[#F1F1F1]">{name}</div>
-                                  <span className="rounded-full border border-white/[0.10] bg-white/[0.045] px-2 py-0.5 text-[10px] uppercase text-[#AFAFAF]">{status}</span>
-                                </div>
-                                <p className="mt-2 text-[14px] text-[#A5A5A5]">{description}</p>
-                              </div>
-                            ))}
+                          <div className="mt-4 rounded-xl border border-white/[0.08] bg-[#202020] px-4 py-3 text-[13px] leading-5 text-[#A5A5A5]">
+                            The gateway's Advanced settings provide a secure MCP endpoint and copyable client configuration. Platform connectors are configured under Channels, so unavailable services are never shown as active here.
                           </div>
                         </div>
                       )}

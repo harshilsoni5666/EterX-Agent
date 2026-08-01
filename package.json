@@ -128,6 +128,7 @@
     "three": "^0.183.2",
     "topojson-client": "^3.1.0",
     "userland": "^0.4.3",
+    "ws": "^8.20.0",
     "zod": "^3.25.76",
     "zod-to-json-schema": "^3.25.1",
     "zustand": "^5.0.12"
@@ -157,6 +158,7 @@
     "buildDependenciesFromSource": false,
     "files": [
       "electron/**/*",
+      "src/lib/agent/gateways/**/*.cjs",
       "package.json",
       {
         "from": "desktop-runtime",

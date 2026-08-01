@@ -1,225 +1,316 @@
 "use client";
 
-import React, { CSSProperties, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { Activity, CheckCircle2, MessageCircle, Settings2, ShieldCheck } from 'lucide-react';
+import { ArrowLeft, CheckCircle2, Copy, Eye, EyeOff, Loader2, MessageCircle, Radio, RefreshCw, Save, Search, Server, Settings2, ShieldCheck, Activity, Wifi, WifiOff, Undo2, Redo2 } from 'lucide-react';
 import { PremiumAgent } from '../ui/premium-icons';
 
-type OrbitIcon = {
-  id: string;
-  label: string;
-  logo: string;
-  size: number;
-  delay: string;
+type PlatformId = 'telegram' | 'whatsapp' | 'discord' | 'signal' | 'generic';
+type PlatformConfig = { enabled: boolean; mode: string; configured?: boolean; token?: string; webhookSecret?: string; appSecret?: string; publicKey?: string; accountId?: string; apiVersion?: string; endpoint?: string; accessPolicy?: 'open' | 'allowlist' | 'pairing'; allowlist?: string[]; groupSessionsPerUser?: boolean };
+type GatewayConfig = { enabled: boolean; keepRunningOnClose: boolean; launchAtLogin: boolean; autoDispatch: boolean; busyInputMode: 'queue' | 'steer' | 'interrupt'; mcpBridgeEnabled: boolean; host: string; port: number; platforms: Record<PlatformId, PlatformConfig>; connectorProfiles?: Record<string, Record<string, string>> };
+type GatewayStatus = { running: boolean; conversationCount: number; eventCount: number; lastEventAt: number | null; mcpEndpoint?: string | null; platforms: Record<string, { enabled: boolean; state: string; lastError?: string }> };
+type GatewayApproval = { id: string; platform: PlatformId; displayName: string; status: string };
+type ConnectorCatalogItem = { id: string; label: string; description: string; setup: string; transport: string; credential: string; kind: 'native' | 'mcp' | 'pathway'; logo?: string; guideUrl?: string };
+
+const PLATFORMS: Array<{ id: PlatformId; label: string; description: string; logo: string; mode: string; credential: string }> = [
+  { id: 'telegram', label: 'Telegram', description: 'Bot messages and groups', logo: '/icons/connectors/telegram.svg', mode: 'polling', credential: 'Bot token' },
+  { id: 'whatsapp', label: 'WhatsApp Cloud', description: 'Meta Cloud API messages', logo: '/icons/connectors/whatsapp.svg', mode: 'webhook', credential: 'Access token' },
+  { id: 'discord', label: 'Discord', description: 'Channels through a bot', logo: '/icons/connectors/discord.svg', mode: 'gateway', credential: 'Bot token' },
+  { id: 'signal', label: 'Signal', description: 'Optional local signal-cli bridge', logo: '/icons/connectors/signal.svg', mode: 'bridge', credential: 'Account number' },
+  { id: 'generic', label: 'Custom webhook', description: 'Connect another messaging app', logo: '/icons/ui/channel-chain-icons8.png', mode: 'webhook', credential: 'Webhook secret' },
+];
+
+const CONNECTOR_LOGOS: Record<string, string> = { matrix: '/icons/connectors/matrix.svg', mattermost: '/icons/connectors/mattermost.svg', slack: '/icons/connectors/slack.svg', line: '/icons/connectors/line.svg', email: '/icons/connectors/email.svg', sms: '/icons/connectors/sms.svg', dingtalk: '/icons/connectors/dingtalk.svg', feishu: '/icons/connectors/feishu.svg', irc: '/icons/connectors/irc.svg', 'google-chat': '/icons/connectors/google_calendar.svg', 'homeassistant': '/icons/connectors/homeassistant.svg', mcp: '/icons/connectors/linear.svg', skills: '/icons/connectors/linear.svg' };
+
+const CONNECTOR_REQUIREMENTS: Record<string, { setup: string; credential: string }> = {
+  telegram: { setup: '1. Create a bot with @BotFather. 2. Copy the bot token. 3. Add allowed user IDs if you use pairing or an allowlist. 4. Save and send a test message.', credential: 'Bot token; optional allowed user IDs' },
+  whatsapp: { setup: '1. Create a Meta app with WhatsApp enabled. 2. Add the webhook URL and verify token. 3. Add the phone number ID, access token, and app secret. 4. Subscribe to messages and send a test message.', credential: 'Access token; phone number ID; app secret; verify token' },
+  discord: { setup: '1. Create a Discord application and bot. 2. Enable Message Content Intent. 3. Copy the bot token. 4. Invite the bot with message permissions and save.', credential: 'Bot token; optional interactions public key' },
+  signal: { setup: '1. Run signal-cli daemon on loopback. 2. Register or link the account. 3. Enter the bridge endpoint and account number. 4. Send a test message from Signal.', credential: 'signal-cli endpoint; account number' },
+  generic: { setup: '1. Create a webhook in the source app. 2. Point it at the generated EterX URL. 3. Use the signing secret or bearer token. 4. POST a normalized message to verify the connection.', credential: 'Webhook secret; source app callback' },
+  slack: { setup: '1. Create a Slack app from a manifest. 2. Enable Socket Mode. 3. Add bot and app-level tokens. 4. Subscribe to message events, invite the bot, then test a DM.', credential: 'Bot token xoxb; app token xapp; signing secret' },
+  mattermost: { setup: '1. Create a Mattermost bot account. 2. Copy its token and server URL. 3. Configure WebSocket access and allowed channels. 4. Invite the bot and send a test message.', credential: 'Bot token; server URL; channel allowlist' },
+  matrix: { setup: '1. Choose a homeserver. 2. Create a dedicated Matrix user. 3. Create an access token. 4. Add the bot to a room and verify sync permissions.', credential: 'Homeserver URL; access token; room IDs' },
+  bluebubbles: { setup: '1. Install BlueBubbles Server on a Mac signed into iMessage. 2. Enable its private API. 3. Copy the server URL and password. 4. Add a test chat.', credential: 'Private API URL; password; Mac host' },
+  homeassistant: { setup: '1. Create a long-lived access token in Home Assistant. 2. Enter the instance URL. 3. Choose the webhook or conversation endpoint. 4. Send an Assist test event.', credential: 'Instance URL; long-lived access token' },
+  email: { setup: '1. Choose an IMAP inbox. 2. Add SMTP sender credentials. 3. Configure TLS and polling interval. 4. Send a test email and confirm the reply.', credential: 'IMAP host; SMTP host; username; app password' },
+  sms: { setup: '1. Create a Twilio account and phone number. 2. Copy Account SID and Auth Token. 3. Set the inbound webhook. 4. Send a test SMS.', credential: 'Account SID; auth token; Twilio number' },
+  dingtalk: { setup: '1. Create a DingTalk custom bot. 2. Copy its webhook URL and signing secret. 3. Configure keyword or signature validation. 4. Send a test group message.', credential: 'Webhook URL; signing secret; keywords' },
+  feishu: { setup: '1. Create a Feishu/Lark app. 2. Enable bot capability and event subscriptions. 3. Add app ID, app secret, and verification token. 4. Publish the app and test.', credential: 'App ID; app secret; verification token' },
+  'google-chat': { setup: '1. Create a Google Chat app in Google Cloud. 2. Select an HTTPS endpoint. 3. Configure service-account authentication. 4. Add the app to a space and test.', credential: 'Google Cloud project; service account; HTTPS URL' },
+  'wecom-group': { setup: '1. Add a WeCom group robot. 2. Copy webhook key and optional IP restrictions. 3. Configure signature validation. 4. Send a group test.', credential: 'Webhook key; optional IP allowlist' },
+  'wecom-app': { setup: '1. Create a WeCom application. 2. Configure callback URL and token. 3. Add Corp ID and secret. 4. Publish and test a direct message.', credential: 'Corp ID; agent ID; secret; callback token' },
+  weixin: { setup: '1. Run an approved local WeChat bridge. 2. Pair the account. 3. Enter the bridge endpoint and secret. 4. Send a private test message.', credential: 'Bridge endpoint; pairing secret' },
+  qq: { setup: '1. Create a QQ bot application. 2. Configure intents and callback URL. 3. Add App ID and secret. 4. Invite the bot and test.', credential: 'App ID; app secret; callback URL' },
+  yuanbao: { setup: '1. Start a supported Yuanbao bridge. 2. Pair the account. 3. Enter its endpoint and credentials. 4. Send a test conversation.', credential: 'Bridge endpoint; bridge credentials' },
+  'api-server': { setup: '1. Keep the gateway bound to loopback. 2. Use the generated bearer token. 3. Call the control API or MCP endpoint. 4. Confirm with a channels_list request.', credential: 'Gateway URL; bearer token' },
+  webhooks: { setup: '1. Copy the custom webhook URL. 2. Add it to the source app. 3. Sign requests with the webhook secret. 4. POST a normalized event and confirm it appears in EterX.', credential: 'Webhook URL; HMAC secret or bearer token' },
+  photon: { setup: '1. Install Photon on macOS. 2. Pair it with Messages. 3. Enter the local bridge URL and password. 4. Send a test iMessage.', credential: 'Photon bridge URL; password; macOS host' },
+  irc: { setup: '1. Choose an IRC server and TLS port. 2. Create a dedicated nick and optional SASL credentials. 3. Add channel allowlist. 4. Join and test.', credential: 'Server; TLS port; nick; SASL credentials' },
+  line: { setup: '1. Create a LINE Messaging API channel. 2. Copy the channel access token and secret. 3. Set the webhook URL. 4. Verify the webhook and send a test.', credential: 'Channel access token; channel secret' },
+  mcp: { setup: '1. Enable the gateway MCP bridge. 2. Start the background companion. 3. Copy the authenticated client configuration. 4. Paste it into your MCP client and call tools/list.', credential: 'MCP URL; bearer token' },
 };
 
-const ORBIT_ICONS: OrbitIcon[] = [
-  {
-    id: 'whatsapp',
-    label: 'WhatsApp',
-    logo: '/icons/connectors/whatsapp.svg',
-    size: 64,
-    delay: '-0.85s',
-  },
-  {
-    id: 'telegram',
-    label: 'Telegram',
-    logo: '/icons/connectors/telegram.svg',
-    size: 64,
-    delay: '-2.25s',
-  },
-  {
-    id: 'messenger',
-    label: 'Messenger',
-    logo: '/icons/connectors/messenger.svg',
-    size: 68,
-    delay: '-4.1s',
-  },
-  {
-    id: 'line',
-    label: 'LINE',
-    logo: '/icons/connectors/line.svg',
-    size: 64,
-    delay: '-6.0s',
-  },
-  {
-    id: 'slack',
-    label: 'Slack',
-    logo: '/icons/connectors/slack.svg',
-    size: 58,
-    delay: '-7.4s',
-  },
-];
+const CONNECTOR_GUIDES: Record<string, string> = {
+  telegram: 'https://core.telegram.org/bots/tutorial', whatsapp: 'https://developers.facebook.com/docs/whatsapp/cloud-api/get-started', discord: 'https://discord.com/developers/docs/quick-start/getting-started', signal: 'https://github.com/AsamK/signal-cli', generic: 'https://docs.openclaw.ai/channels/webhook', slack: 'https://docs.slack.dev/tools/bolt-js/concepts/socket-mode', mattermost: 'https://developers.mattermost.com/integrate/reference/bot-accounts/', matrix: 'https://spec.matrix.org/latest/client-server-api/', bluebubbles: 'https://bluebubbles.app/install', homeassistant: 'https://developers.home-assistant.io/docs/auth_api/', email: 'https://support.google.com/accounts/answer/185833', sms: 'https://www.twilio.com/docs/usage/webhooks/getting-started-twilio-webhooks', dingtalk: 'https://open.dingtalk.com/document/orgapp/custom-robot-access', feishu: 'https://open.feishu.cn/document/home/index', 'google-chat': 'https://developers.google.com/workspace/chat/quickstart', 'wecom-group': 'https://developer.work.weixin.qq.com/document/path/91770', 'wecom-app': 'https://developer.work.weixin.qq.com/document/path/90236', weixin: 'https://developers.weixin.qq.com/doc/', qq: 'https://bot.q.qq.com/wiki/', yuanbao: 'https://platform.tencent.com/', 'api-server': 'https://docs.openclaw.ai/gateway', webhooks: 'https://docs.openclaw.ai/channels/webhook', photon: 'https://github.com/RichardBronosky/photon', irc: 'https://modern.ircdocs.horse/', line: 'https://developers.line.biz/en/docs/messaging-api/getting-started/', mcp: 'https://modelcontextprotocol.io/docs/concepts/architecture'
+};
 
-const FEATURE_CARDS = [
-  {
-    icon: ShieldCheck,
-    title: 'Trusted agent identity',
-    desc: 'One voice, policy, and escalation path across every customer touchpoint.',
-  },
-  {
-    icon: Activity,
-    title: 'Context that follows',
-    desc: 'Carry customer history, tool state, and decisions from one channel to the next.',
-  },
-  {
-    icon: Settings2,
-    title: 'Skill routing',
-    desc: 'Send every request to the right workflow, tool, or specialist agent automatically.',
-  },
-  {
-    icon: MessageCircle,
-    title: 'Native handoff',
-    desc: 'Meet customers on WhatsApp, Telegram, Slack, Messenger, LINE, and web.',
-  },
-];
+const CONNECTOR_CATALOG: ConnectorCatalogItem[] = ([
+  ...PLATFORMS.map((platform) => ({ id: platform.id, label: platform.label, description: platform.description, setup: 'Configure this connection here.', transport: platform.mode, credential: platform.credential, kind: 'native' as const, logo: platform.logo })),
+  { id: 'slack', label: 'Slack', description: 'Workspaces, DMs, channels, and threads', setup: 'Create a Slack app with Socket Mode, then add the bot and app tokens.', transport: 'WebSocket', credential: 'Bot token + app token', kind: 'pathway' },
+  { id: 'mattermost', label: 'Mattermost', description: 'Self-hosted team messaging', setup: 'Create a bot account and connect the Mattermost WebSocket endpoint.', transport: 'WebSocket', credential: 'Bot token + server URL', kind: 'pathway' },
+  { id: 'matrix', label: 'Matrix', description: 'Federated rooms and private messages', setup: 'Add a Matrix user, homeserver, and access token.', transport: 'Sync API', credential: 'Homeserver + access token', kind: 'pathway' },
+  { id: 'bluebubbles', label: 'BlueBubbles (iMessage)', description: 'iMessage bridge for macOS', setup: 'Run BlueBubbles Server on a Mac and provide its private API URL.', transport: 'HTTP bridge', credential: 'Server URL + password', kind: 'pathway' },
+  { id: 'homeassistant', label: 'Home Assistant', description: 'Assist conversations and automations', setup: 'Create a long-lived Home Assistant access token.', transport: 'REST + webhook', credential: 'Instance URL + token', kind: 'pathway' },
+  { id: 'email', label: 'Email', description: 'Inbound and outbound email', setup: 'Choose an IMAP inbox and SMTP sender.', transport: 'IMAP + SMTP', credential: 'Mailbox credentials', kind: 'pathway' },
+  { id: 'sms', label: 'SMS (Twilio)', description: 'SMS messages through Twilio', setup: 'Add a Twilio number and signed webhook.', transport: 'REST + webhook', credential: 'Account SID + auth token', kind: 'pathway' },
+  { id: 'dingtalk', label: 'DingTalk', description: 'DingTalk bot messages', setup: 'Create a DingTalk custom bot and configure its signing secret.', transport: 'Webhook', credential: 'Webhook URL + secret', kind: 'pathway' },
+  { id: 'feishu', label: 'Feishu / Lark', description: 'Workplace chats and events', setup: 'Create a Feishu app with event subscriptions.', transport: 'Webhook', credential: 'App ID + app secret', kind: 'pathway' },
+  { id: 'google-chat', label: 'Google Chat', description: 'Spaces and direct messages', setup: 'Create a Google Chat app with an HTTPS endpoint.', transport: 'Webhook', credential: 'Service account', kind: 'pathway' },
+  { id: 'wecom-group', label: 'WeCom group bot', description: 'WeCom group robot messages', setup: 'Add a WeCom group bot and signing key.', transport: 'Webhook', credential: 'Webhook key', kind: 'pathway' },
+  { id: 'wecom-app', label: 'WeCom app', description: 'WeCom application messages', setup: 'Create a WeCom application and callback.', transport: 'Webhook', credential: 'Corp ID + secret', kind: 'pathway' },
+  { id: 'weixin', label: 'Weixin / WeChat', description: 'Personal WeChat bridge', setup: 'Connect an approved local WeChat bridge.', transport: 'Bridge', credential: 'Bridge endpoint', kind: 'pathway' },
+  { id: 'qq', label: 'QQ Bot', description: 'QQ bot conversations', setup: 'Create a QQ bot application and callback endpoint.', transport: 'Webhook', credential: 'App ID + secret', kind: 'pathway' },
+  { id: 'yuanbao', label: 'Yuanbao', description: 'Yuanbao conversations', setup: 'Provide the supported Yuanbao bridge endpoint.', transport: 'Bridge', credential: 'Bridge credentials', kind: 'pathway' },
+  { id: 'api-server', label: 'API server', description: 'Bring your own client or service', setup: 'Use the authenticated gateway control API.', transport: 'HTTP', credential: 'Bearer token', kind: 'pathway' },
+  { id: 'webhooks', label: 'Webhooks', description: 'Receive normalized events from any app', setup: 'Post signed JSON to the custom webhook URL.', transport: 'HTTP webhook', credential: 'Signing secret', kind: 'pathway' },
+  { id: 'photon', label: 'iMessage via Photon', description: 'iMessage through a local Photon bridge', setup: 'Run Photon on macOS and provide its local bridge URL.', transport: 'Bridge', credential: 'Bridge URL', kind: 'pathway' },
+  { id: 'irc', label: 'IRC', description: 'Channels and direct messages', setup: 'Provide the IRC server, nick, and channel allowlist.', transport: 'IRC', credential: 'Server + nick', kind: 'pathway' },
+  { id: 'line', label: 'LINE', description: 'LINE Official Account messages', setup: 'Create a LINE Messaging API channel and webhook.', transport: 'Webhook', credential: 'Channel access token', kind: 'pathway' },
+  { id: 'skills', label: 'Skills', description: 'Reusable agent skills and workflows', setup: 'Choose the skills this gateway may expose to connected conversations.', transport: 'Agent runtime', credential: 'Enabled skills and permissions', kind: 'pathway' },
+  { id: 'mcp', label: 'MCP server', description: 'Expose EterX tools to an MCP client', setup: 'Enable the gateway MCP bridge and copy the client configuration.', transport: 'Streamable HTTP', credential: 'Gateway bearer token', kind: 'mcp' },
+] as ConnectorCatalogItem[]).map((connector) => ({ ...connector, ...CONNECTOR_REQUIREMENTS[connector.id], guideUrl: CONNECTOR_GUIDES[connector.id], logo: connector.logo || CONNECTOR_LOGOS[connector.id] || '/icons/ui/channel-chain-icons8.png' }));
 
-const HEADLINE_LINES = [
-  'Launch your agent across every customer channel',
-  'Deploy one agent across every conversation',
-  'Route every message to the right specialist agent',
-  'Keep every customer handoff context-aware',
-];
+const defaultConfig = (): GatewayConfig => ({ enabled: false, keepRunningOnClose: true, launchAtLogin: false, autoDispatch: true, busyInputMode: 'queue', mcpBridgeEnabled: true, host: '127.0.0.1', port: 47821, connectorProfiles: {}, platforms: { telegram: { enabled: false, mode: 'polling', accessPolicy: 'pairing', allowlist: [], groupSessionsPerUser: true }, whatsapp: { enabled: false, mode: 'webhook', apiVersion: 'v23.0', accessPolicy: 'pairing', allowlist: [], groupSessionsPerUser: true }, discord: { enabled: false, mode: 'gateway', accessPolicy: 'pairing', allowlist: [], groupSessionsPerUser: true }, signal: { enabled: false, mode: 'bridge', endpoint: 'http://127.0.0.1:8080', accessPolicy: 'pairing', allowlist: [], groupSessionsPerUser: true }, generic: { enabled: false, mode: 'webhook', accessPolicy: 'allowlist', allowlist: [], groupSessionsPerUser: true } } });
 
-const CTA_ICONS = [
-  '/icons/connectors/telegram.svg',
-  '/icons/connectors/whatsapp.svg',
-  '/icons/connectors/messenger.svg',
-  '/icons/connectors/line.svg',
-  '/icons/connectors/slack.svg',
-];
+const Toggle = ({ checked, onChange, disabled = false, label = 'Toggle setting' }: { checked: boolean; onChange: (value: boolean) => void; disabled?: boolean; label?: string }) => <button type="button" role="switch" aria-label={label} aria-checked={checked} title={`${label}: ${checked ? 'enabled' : 'disabled'}`} disabled={disabled} onClick={() => onChange(!checked)} className={`inline-flex h-6 w-11 shrink-0 items-center rounded-full p-1 transition-colors focus:outline-none focus:ring-2 focus:ring-[#1d8cff]/35 ${checked ? 'justify-end bg-[#1d8cff]' : 'justify-start bg-black/15 dark:bg-white/15'} ${disabled ? 'cursor-not-allowed opacity-45' : ''}`}><span className="block h-4 w-4 shrink-0 rounded-full bg-white shadow-[0_1px_3px_rgba(0,0,0,0.22)] transition-transform" /></button>;
+const stateTone = (state: string) => state === 'connected' || state === 'listening' ? 'text-emerald-600 dark:text-emerald-400' : state === 'retrying' || state === 'connecting' ? 'text-amber-600 dark:text-amber-400' : 'text-black/40 dark:text-white/40';
 
-const connectorImage = (src: string, size: number, className = 'h-[58%] w-[58%]') => (
-  <img
-    src={src}
-    alt=""
-    width={size}
-    height={size}
-    loading="eager"
-    decoding="async"
-    fetchPriority="high"
-    className={`${className} object-contain`}
-    draggable={false}
-  />
-);
+function ModernSelect({ value, onChange, options }: { value: string; onChange: (value: string) => void; options: Array<{ value: string; label: string }> }) {
+  const [open, setOpen] = useState(false);
+  useEffect(() => { if (!open) return; const closeOnEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') setOpen(false); }; window.addEventListener('keydown', closeOnEscape); return () => window.removeEventListener('keydown', closeOnEscape); }, [open]);
+  useEffect(() => { if (!open) return; const closeOnOutsidePointer = (event: PointerEvent) => { const target = event.target as Element | null; if (!target?.closest('.eterx-modern-select')) setOpen(false); }; const closeAfterOptionClick = (event: MouseEvent) => { const target = event.target as Element | null; if (target?.closest('.eterx-modern-select [role="option"]')) setOpen(false); }; document.addEventListener('pointerdown', closeOnOutsidePointer, true); document.addEventListener('click', closeAfterOptionClick); return () => { document.removeEventListener('pointerdown', closeOnOutsidePointer, true); document.removeEventListener('click', closeAfterOptionClick); }; }, [open]);
+  const selected = options.find((option) => option.value === value) || options[0];
+  return <div className="eterx-modern-select relative"><button type="button" aria-haspopup="listbox" aria-expanded={open} onClick={() => setOpen((current) => !current)} className="flex h-12 w-full items-center justify-between rounded-[14px] border border-black/10 bg-white px-4 text-left text-[14px] font-medium text-black/80 shadow-sm transition hover:border-[#1d8cff]/45 focus:outline-none focus:ring-2 focus:ring-[#1d8cff]/25 dark:border-white/12 dark:bg-[#1b1b1b] dark:text-white/85"><span>{selected.label}</span><span className={`text-black/40 transition-transform dark:text-white/45 ${open ? 'rotate-180' : ''}`}>⌄</span></button>{open && <><button type="button" aria-label="Close options" onClick={() => setOpen(false)} className="fixed inset-0 z-[80] cursor-default" /><div role="listbox" className="absolute left-0 right-0 top-[calc(100%+6px)] z-[90] overflow-hidden rounded-[14px] border border-black/10 bg-white p-1.5 shadow-[0_16px_40px_rgba(0,0,0,0.16)] dark:border-white/12 dark:bg-[#1b1b1b] dark:shadow-[0_18px_44px_rgba(0,0,0,0.5)]">{options.map((option) => <button key={option.value} type="button" role="option" aria-selected={option.value === value} onMouseDown={(event) => { event.preventDefault(); onChange(option.value); setOpen(false); }} className={`flex w-full items-center rounded-[10px] px-3 py-2.5 text-left text-[14px] transition ${option.value === value ? 'bg-[#e8f3ff] font-semibold text-[#126fc1] dark:bg-[#183047] dark:text-[#b9dcff]' : 'text-black/75 hover:bg-black/[0.05] dark:text-white/75 dark:hover:bg-white/[0.08]'}`}>{option.label}</button>)}</div></>}</div>;
+}
 
-export const AgentChannelsView = React.memo(() => {
-  const [headlineIndex, setHeadlineIndex] = useState(0);
+function NativeSetupFields({ platform, item, patchPlatform, revealed, setRevealed }: { platform: typeof PLATFORMS[number]; item: PlatformConfig; patchPlatform: (id: PlatformId, patch: Partial<PlatformConfig>) => void; revealed: Record<string, boolean>; setRevealed: React.Dispatch<React.SetStateAction<Record<string, boolean>>> }) {
+  return <div className="grid gap-4 sm:grid-cols-2"><label><span className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-black/45 dark:text-white/45">Access policy</span><ModernSelect value={item.accessPolicy || 'pairing'} onChange={(value) => patchPlatform(platform.id, { accessPolicy: value as PlatformConfig['accessPolicy'] })} options={[{ value: 'pairing', label: 'Pair new people' }, { value: 'allowlist', label: 'Allowlist only' }, { value: 'open', label: 'Open access' }]} /></label>{item.accessPolicy === 'allowlist' && <label><span className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-black/45 dark:text-white/45">Allowed IDs</span><input value={(item.allowlist || []).join(', ')} onChange={(event) => patchPlatform(platform.id, { allowlist: event.target.value.split(',').map((value) => value.trim()).filter(Boolean) })} placeholder="123456, @username" className="h-10 w-full rounded-lg border border-black/10 bg-white px-3 text-[12px] outline-none dark:border-white/10 dark:bg-white/[0.04]" /></label>}{platform.id !== 'signal' && <label className="relative"><span className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-black/45 dark:text-white/45">{platform.credential}</span><input type={revealed[`${platform.id}:token`] ? 'text' : 'password'} placeholder={item.configured ? 'Saved securely - enter to replace' : platform.credential} value={item.token || (platform.id === 'generic' ? item.webhookSecret || '' : '')} onChange={(event) => patchPlatform(platform.id, platform.id === 'generic' ? { webhookSecret: event.target.value } : { token: event.target.value })} className="h-10 w-full rounded-lg border border-black/10 bg-white px-3 pr-9 text-[12px] outline-none dark:border-white/10 dark:bg-white/[0.04]" /><button type="button" onClick={() => setRevealed((current) => ({ ...current, [`${platform.id}:token`]: !current[`${platform.id}:token`] }))} className="absolute bottom-0 right-0 flex h-10 w-9 items-center justify-center text-black/35 dark:text-white/35">{revealed[`${platform.id}:token`] ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}</button></label>}{platform.id === 'whatsapp' && <><label><span className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-black/45 dark:text-white/45">Phone number ID</span><input value={item.accountId || ''} onChange={(event) => patchPlatform(platform.id, { accountId: event.target.value })} className="h-10 w-full rounded-lg border border-black/10 bg-white px-3 text-[12px] outline-none dark:border-white/10 dark:bg-white/[0.04]" /></label><label><span className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-black/45 dark:text-white/45">Meta app secret</span><input type="password" value={item.appSecret || ''} onChange={(event) => patchPlatform(platform.id, { appSecret: event.target.value })} placeholder="App secret" className="h-10 w-full rounded-lg border border-black/10 bg-white px-3 text-[12px] outline-none dark:border-white/10 dark:bg-white/[0.04]" /></label><label><span className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-black/45 dark:text-white/45">Verify token</span><input type="password" value={item.webhookSecret || ''} onChange={(event) => patchPlatform(platform.id, { webhookSecret: event.target.value })} placeholder="Webhook verification token" className="h-10 w-full rounded-lg border border-black/10 bg-white px-3 text-[12px] outline-none dark:bg-white/[0.04]" /></label></>}{platform.id === 'telegram' && <label><span className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-black/45 dark:text-white/45">Webhook secret (optional)</span><input type="password" value={item.webhookSecret || ''} onChange={(event) => patchPlatform(platform.id, { webhookSecret: event.target.value })} className="h-10 w-full rounded-lg border border-black/10 bg-white px-3 text-[12px] outline-none dark:bg-white/[0.04]" /></label>}{platform.id === 'discord' && <label><span className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-black/45 dark:text-white/45">Interactions public key</span><input type="password" value={item.publicKey || ''} onChange={(event) => patchPlatform(platform.id, { publicKey: event.target.value })} placeholder="Ed25519 public key" className="h-10 w-full rounded-lg border border-black/10 bg-white px-3 text-[12px] outline-none dark:bg-white/[0.04]" /></label>}{platform.id === 'signal' && <><label><span className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-black/45 dark:text-white/45">signal-cli endpoint</span><input value={item.endpoint || ''} onChange={(event) => patchPlatform(platform.id, { endpoint: event.target.value })} className="h-10 w-full rounded-lg border border-black/10 bg-white px-3 text-[12px] outline-none dark:bg-white/[0.04]" /></label><label><span className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-black/45 dark:text-white/45">Account number</span><input value={item.accountId || ''} onChange={(event) => patchPlatform(platform.id, { accountId: event.target.value })} placeholder="+15551234567" className="h-10 w-full rounded-lg border border-black/10 bg-white px-3 text-[12px] outline-none dark:bg-white/[0.04]" /></label></>}</div>;
+}
 
-  useEffect(() => {
-    const id = window.setInterval(() => {
-      setHeadlineIndex(index => (index + 1) % HEADLINE_LINES.length);
-    }, 4200);
+function GatewayModeTabs({ active, onChange }: { active: 'communication' | 'mcp' | 'skills'; onChange: (mode: 'communication' | 'mcp' | 'skills') => void }) {
+  const items = [{ id: 'communication' as const, label: 'Communication' }, { id: 'mcp' as const, label: 'MCP' }, { id: 'skills' as const, label: 'Skills' }];
+  return <div className="eterx-gateway-mode-tabs mb-4 inline-flex items-center gap-1 rounded-full border border-black/10 bg-white/80 p-1 shadow-sm dark:border-white/10 dark:bg-white/[0.06]">{items.map((item) => <button key={item.id} type="button" onClick={() => onChange(item.id)} className={`relative rounded-full px-4 py-2 text-[13px] font-semibold transition-colors ${active === item.id ? 'text-[#126fc1] dark:text-[#b9dcff]' : 'text-black/50 hover:text-black/80 dark:text-white/50 dark:hover:text-white/80'}`}>{active === item.id && <span className="eterx-gateway-mode-pill" aria-hidden="true" /> }<span className="relative z-10">{item.label}</span></button>)}</div>;
+}
 
-    return () => window.clearInterval(id);
-  }, []);
+type McpServerDraft = { id: string; name: string; transport: 'stdio' | 'streamable-http'; endpoint: string; command: string; args: string; status: 'ready' | 'connected' };
 
-  return (
-    <div className="eterx-channels-view flex h-full min-h-0 w-full overflow-hidden bg-[var(--eterx-channel-surface)] px-5 py-4 text-[#33302d] md:px-8 md:py-5">
-      <div className="mx-auto flex h-full w-full max-w-[1420px] flex-col items-center justify-center">
-        <motion.div
-          initial={{ opacity: 0, y: 14 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.36, ease: [0.22, 1, 0.36, 1] }}
-          className="eterx-channel-orbit-stage relative h-[282px] w-full max-w-[520px] shrink-0"
-        >
-          <div className="eterx-channel-phone absolute left-1/2 top-[68px] z-10 h-[206px] w-[252px] -translate-x-1/2 rounded-[34px] border-[5px] border-[#D9D8D5] bg-[linear-gradient(180deg,#F9F9F8_0%,#ECEBE8_100%)] shadow-[0_30px_72px_rgba(45,45,45,0.08)]" />
-          <span className="absolute left-1/2 top-[100px] z-20 h-6 w-6 -translate-x-1/2 opacity-95 drop-shadow-[0_8px_18px_rgba(45,45,45,0.10)]">
-            <img src="/logo-black.png" alt="" className="h-full w-full object-contain dark:hidden" draggable={false} />
-            <img src="/logo-white.png" alt="" className="hidden h-full w-full object-contain dark:block" draggable={false} />
-          </span>
-          <div className="eterx-channel-agent-card absolute left-1/2 top-[142px] z-30 flex h-[72px] w-[372px] -translate-x-1/2 items-center gap-3 rounded-[18px] border border-[#E5E2DE] bg-white/95 px-4 shadow-[0_20px_50px_rgba(34,34,34,0.12)] backdrop-blur-sm">
-            <span className="eterx-channel-agent-avatar flex h-[46px] w-[46px] shrink-0 items-center justify-center rounded-full border border-[#EEEAE4] bg-[#F7F5F2] text-[#34312f] shadow-[0_10px_24px_rgba(44,40,36,0.08)]">
-              <PremiumAgent className="h-[23px] w-[23px] brightness-0" />
-            </span>
-            <span className="min-w-0 flex-1">
-              <span className="flex items-center gap-1.5 text-[18px] font-semibold leading-none text-[#33302d]">
-                EterX
-                <CheckCircle2 className="h-4 w-4 text-[#1398FF]" fill="#1398FF" stroke="white" strokeWidth={2.2} />
-              </span>
-              <span className="mt-2 block truncate text-[11.5px] font-medium leading-4 text-[#85817c]">
-                Enterprise assistant ready
-              </span>
-              <span className="block truncate text-[11px] leading-4 text-[#8A8680]">
-                Connected across critical channels
-              </span>
-            </span>
-          </div>
-
-          {ORBIT_ICONS.map(item => {
-            const iconStyle = {
-              '--delay': item.delay,
-              width: item.size,
-              height: item.size,
-            } as CSSProperties;
-
-            return (
-              <span
-                key={item.id}
-                aria-label={item.label}
-                className="eterx-channel-orbit-icon absolute left-1/2 top-[146px] flex items-center justify-center rounded-full bg-white shadow-[0_20px_52px_rgba(40,40,40,0.14)] ring-1 ring-[#ECE9E5]"
-                style={iconStyle}
-              >
-                {connectorImage(item.logo, Math.round(item.size * 0.58))}
-              </span>
-            );
-          })}
-        </motion.div>
-
-        <h1 className="relative mt-1 flex h-[62px] w-full items-center justify-center overflow-visible whitespace-nowrap text-center font-sans text-[clamp(31px,2.45vw,44px)] font-semibold leading-none tracking-normal text-[#3B3835]">
-          <AnimatePresence mode="wait">
-            <motion.span
-              key={HEADLINE_LINES[headlineIndex]}
-              initial={{ opacity: 0, y: 12, filter: 'blur(10px)' }}
-              animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
-              exit={{ opacity: 0, y: -10, filter: 'blur(9px)' }}
-              transition={{ duration: 0.58, ease: [0.22, 1, 0.36, 1] }}
-              className="block w-full text-[#3B3835]"
-            >
-              {HEADLINE_LINES[headlineIndex]}
-            </motion.span>
-          </AnimatePresence>
-        </h1>
-
-        <div className="mt-5 grid w-full grid-cols-4 gap-4">
-          {FEATURE_CARDS.map(item => (
-            <div
-              key={item.title}
-              className="eterx-channel-feature-card min-h-[150px] rounded-[20px] border border-[#DEDBD6] bg-white px-5 py-5 text-left shadow-[0_16px_42px_rgba(50,45,40,0.035)]"
-            >
-              <item.icon className="h-6 w-6 text-[#34312f]" strokeWidth={1.85} />
-              <h2 className="mt-5 max-w-[240px] text-[19px] font-semibold leading-snug tracking-normal text-[#3B3835]">
-                {item.title}
-              </h2>
-              <p className="mt-2 max-w-[270px] text-[15px] leading-[1.45] tracking-normal text-[#85817c]">
-                {item.desc}
-              </p>
-            </div>
-          ))}
-        </div>
-
-        <button
-          type="button"
-          className="eterx-channel-cta mt-5 inline-flex h-[48px] items-center gap-3 rounded-[14px] border border-[#DCD7CF] bg-[#F1EFEB] px-6 text-[16px] font-bold text-[#353230] shadow-[0_16px_36px_rgba(62,56,48,0.10)] transition hover:bg-[#E9E5DE] active:scale-[0.98]"
-        >
-          <span className="flex -space-x-2">
-            {CTA_ICONS.map(src => (
-              <span key={src} className="eterx-channel-cta-icon flex h-7 w-7 items-center justify-center rounded-full border-2 border-[#F1EFEB] bg-white shadow-[0_4px_12px_rgba(50,45,40,0.12)]">
-                {connectorImage(src, 20, 'h-5 w-5')}
-              </span>
-            ))}
-          </span>
-          <span>Get started</span>
-        </button>
-
-        <div className="mt-3 flex w-full max-w-[420px] items-center gap-5 text-[15px] font-semibold text-[#8A8680]">
-          <span className="h-px flex-1 bg-[#ECE9E5]" />
-          Coming soon
-          <span className="h-px flex-1 bg-[#ECE9E5]" />
-        </div>
-      </div>
+function McpGatewayPanel({ baseUrl, endpoint, enabled, onToggle, onCopy, onNotice, servers, setServers }: { baseUrl: string; endpoint: string; enabled: boolean; onToggle: (value: boolean) => void; onCopy: () => void; onNotice: (value: string) => void; servers: McpServerDraft[]; setServers: React.Dispatch<React.SetStateAction<McpServerDraft[]>> }) {
+  const [adding, setAdding] = useState(false);
+  const [name, setName] = useState('');
+  const [transport, setTransport] = useState<McpServerDraft['transport']>('streamable-http');
+  const [serverEndpoint, setServerEndpoint] = useState('');
+  const [command, setCommand] = useState('');
+  const [args, setArgs] = useState('');
+  const saveDraft = () => {
+    if (!name.trim()) return onNotice('Enter a server name first.');
+    setServers((current) => [...current, { id: `${Date.now()}`, name: name.trim(), transport, endpoint: serverEndpoint.trim(), command: command.trim(), args: args.trim(), status: 'ready' }]);
+    setName(''); setServerEndpoint(''); setCommand(''); setArgs(''); setAdding(false); onNotice('MCP server saved. Connect it from this workspace when its adapter is available.');
+  };
+  return <section className="eterx-mcp-panel mt-7 space-y-4">
+    <div className="rounded-2xl border border-black/[0.08] bg-white p-5 shadow-[0_12px_38px_rgba(0,0,0,0.035)] dark:border-white/[0.08] dark:bg-white/[0.035]">
+      <div className="flex flex-wrap items-start justify-between gap-4"><div className="flex items-start gap-3"><span className="flex h-11 w-11 items-center justify-center rounded-xl bg-[#1d8cff]/10 text-[#126fc1] dark:text-[#8bc8ff]"><Server className="h-5 w-5" /></span><div><h2 className="text-[22px] font-semibold tracking-[-0.03em]">MCP gateway</h2><p className="mt-1 max-w-xl text-[13px] leading-5 text-black/50 dark:text-white/50">Connect EterX conversations, tools, resources, and permissions to any MCP-compatible client.</p></div></div><div className="flex items-center gap-3"><span className={`rounded-full px-3 py-1.5 text-[11px] font-semibold ${enabled ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : 'bg-black/[0.05] text-black/45 dark:bg-white/[0.06] dark:text-white/45'}`}>{enabled ? 'Ready' : 'Off'}</span><Toggle checked={enabled} onChange={onToggle} label="MCP gateway" /></div></div>
+      <div className="mt-5 grid gap-3 sm:grid-cols-3"><div className="rounded-xl bg-black/[0.025] p-3 dark:bg-white/[0.045]"><div className="text-[11px] text-black/40 dark:text-white/40">Transport</div><div className="mt-1 text-[13px] font-semibold">Streamable HTTP</div></div><div className="rounded-xl bg-black/[0.025] p-3 dark:bg-white/[0.045]"><div className="text-[11px] text-black/40 dark:text-white/40">Tools</div><div className="mt-1 text-[13px] font-semibold">10 gateway tools</div></div><div className="rounded-xl bg-black/[0.025] p-3 dark:bg-white/[0.045]"><div className="text-[11px] text-black/40 dark:text-white/40">Security</div><div className="mt-1 text-[13px] font-semibold">Bearer token</div></div></div>
     </div>
-  );
-});;
+    <div className="rounded-2xl border border-black/[0.08] bg-white p-5 dark:border-white/[0.08] dark:bg-white/[0.035]"><div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="text-[15px] font-semibold">Client connection</h3><p className="mt-1 text-[12px] text-black/45 dark:text-white/45">Copy once, then paste into Cursor, Claude Desktop, Windsurf, or another MCP client.</p></div><button type="button" onClick={onCopy} className="rounded-xl bg-[#1d8cff] px-3.5 py-2 text-[12px] font-semibold text-white shadow-sm"><Copy className="mr-1.5 inline h-3.5 w-3.5" />Copy client config</button></div><div className="mt-4 flex items-center gap-2 rounded-xl border border-black/[0.08] bg-black/[0.025] px-3 py-2.5 dark:border-white/[0.08] dark:bg-white/[0.045]"><code className="min-w-0 flex-1 truncate text-[12px] text-black/60 dark:text-white/60">{endpoint}</code><button type="button" onClick={() => { void navigator.clipboard.writeText(endpoint); onNotice('MCP endpoint copied.'); }} className="rounded-lg border border-black/10 px-2.5 py-1.5 text-[11px] font-semibold dark:border-white/10"><Copy className="mr-1 inline h-3 w-3" />Copy URL</button></div></div>
+    <div className="rounded-2xl border border-black/[0.08] bg-white p-5 dark:border-white/[0.08] dark:bg-white/[0.035]"><div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="text-[15px] font-semibold">Connected servers</h3><p className="mt-1 text-[12px] text-black/45 dark:text-white/45">Add a local stdio server or a remote Streamable HTTP server.</p></div><button type="button" onClick={() => setAdding((value) => !value)} className="rounded-xl border border-black/10 px-3.5 py-2 text-[12px] font-semibold dark:border-white/10">{adding ? 'Close' : 'Add server'}</button></div>{adding && <div className="mt-4 rounded-xl border border-[#1d8cff]/20 bg-[#1d8cff]/[0.045] p-4"><div className="grid gap-3 sm:grid-cols-2"><label className="text-[12px] font-semibold">Server name<input value={name} onChange={(event) => setName(event.target.value)} placeholder="Filesystem, GitHub, browser…" className="mt-1.5 h-10 w-full rounded-lg border border-black/10 bg-white px-3 font-normal outline-none focus:border-[#1d8cff] dark:border-white/10 dark:bg-white/[0.06]" /></label><label className="text-[12px] font-semibold">Transport<select value={transport} onChange={(event) => setTransport(event.target.value as McpServerDraft['transport'])} className="mt-1.5 h-10 w-full rounded-lg border border-black/10 bg-white px-3 font-normal outline-none dark:border-white/10 dark:bg-white/[0.06]"><option value="streamable-http">Streamable HTTP</option><option value="stdio">Local stdio</option></select></label></div>{transport === 'streamable-http' ? <label className="mt-3 block text-[12px] font-semibold">Server URL<input value={serverEndpoint} onChange={(event) => setServerEndpoint(event.target.value)} placeholder="https://…/mcp" className="mt-1.5 h-10 w-full rounded-lg border border-black/10 bg-white px-3 font-normal outline-none focus:border-[#1d8cff] dark:border-white/10 dark:bg-white/[0.06]" /></label> : <div className="mt-3 grid gap-3 sm:grid-cols-2"><label className="text-[12px] font-semibold">Command<input value={command} onChange={(event) => setCommand(event.target.value)} placeholder="npx" className="mt-1.5 h-10 w-full rounded-lg border border-black/10 bg-white px-3 font-normal outline-none dark:border-white/10 dark:bg-white/[0.06]" /></label><label className="text-[12px] font-semibold">Arguments<input value={args} onChange={(event) => setArgs(event.target.value)} placeholder="-y @modelcontextprotocol/server-filesystem …" className="mt-1.5 h-10 w-full rounded-lg border border-black/10 bg-white px-3 font-normal outline-none dark:border-white/10 dark:bg-white/[0.06]" /></label></div>}<button type="button" onClick={saveDraft} className="mt-3 rounded-lg bg-[#1d8cff] px-3.5 py-2 text-[12px] font-semibold text-white">Save server</button></div>}{servers.length === 0 && !adding && <div className="mt-4 flex items-center gap-3 rounded-xl border border-dashed border-black/10 px-4 py-5 dark:border-white/10"><span className="flex h-9 w-9 items-center justify-center rounded-lg bg-black/[0.04] text-black/45 dark:bg-white/[0.06] dark:text-white/45"><Server className="h-4 w-4" /></span><div><div className="text-[13px] font-semibold">No MCP servers yet</div><div className="mt-0.5 text-[12px] text-black/45 dark:text-white/45">Add one to make its tools available to your agent.</div></div></div>}{servers.length > 0 && <div className="mt-4 space-y-2">{servers.map((server) => <div key={server.id} className="flex items-center gap-3 rounded-xl border border-black/[0.07] px-3 py-3 dark:border-white/[0.07]"><span className="h-2 w-2 rounded-full bg-emerald-500" /><div className="min-w-0 flex-1"><div className="truncate text-[13px] font-semibold">{server.name}</div><div className="truncate text-[11px] text-black/40 dark:text-white/40">{server.transport === 'stdio' ? `${server.command} ${server.args}` : server.endpoint}</div></div><span className="rounded-full bg-emerald-500/10 px-2.5 py-1 text-[10px] font-semibold text-emerald-700 dark:text-emerald-300">Saved</span></div>)}</div>}</div>
+    <div className="grid gap-3 sm:grid-cols-3"><div className="rounded-xl border border-black/[0.08] bg-white p-4 dark:border-white/[0.08] dark:bg-white/[0.035]"><div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-black/40 dark:text-white/40">Tools</div><p className="mt-2 text-[12px] text-black/55 dark:text-white/55">Send, read, list, and wait for gateway events.</p></div><div className="rounded-xl border border-black/[0.08] bg-white p-4 dark:border-white/[0.08] dark:bg-white/[0.035]"><div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-black/40 dark:text-white/40">Resources</div><p className="mt-2 text-[12px] text-black/55 dark:text-white/55">Conversation history and attachments stay addressable.</p></div><div className="rounded-xl border border-black/[0.08] bg-white p-4 dark:border-white/[0.08] dark:bg-white/[0.035]"><div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-black/40 dark:text-white/40">Permissions</div><p className="mt-2 text-[12px] text-black/55 dark:text-white/55">Pairing approvals remain under your control.</p></div></div>
+  </section>;
+}
 
+function SkillsGatewayPanel() {
+  const skills = ['Research', 'Coding', 'Files', 'Data analysis', 'Web browsing', 'Writing'];
+  return <section className="eterx-skills-panel mt-7 rounded-2xl border border-black/[0.08] bg-white p-4 shadow-[0_12px_38px_rgba(0,0,0,0.035)] dark:border-white/[0.08] dark:bg-white/[0.035]"><div className="grid h-full min-h-[430px] gap-4 lg:grid-cols-[2fr_1fr]"><div className="rounded-xl border border-black/[0.07] bg-black/[0.018] p-4 dark:border-white/[0.07] dark:bg-white/[0.025]"><div className="flex items-start justify-between gap-3"><div><h2 className="text-[20px] font-semibold tracking-[-0.03em]">Agent skills</h2><p className="mt-1 text-[12px] text-black/45 dark:text-white/45">Choose the skills available to conversations routed through Gateway.</p></div><span className="rounded-full bg-emerald-500/10 px-2.5 py-1 text-[10px] font-semibold text-emerald-700 dark:text-emerald-300">Ready</span></div><div className="mt-5 grid gap-2 sm:grid-cols-2">{skills.map((skill, index) => <button key={skill} type="button" className="flex items-center justify-between rounded-lg border border-black/[0.07] bg-white px-3 py-3 text-left text-[12px] transition hover:border-[#1d8cff]/40 dark:border-white/[0.07] dark:bg-white/[0.035]"><span><span className="block font-semibold">{skill}</span><span className="mt-0.5 block text-[10px] text-black/40 dark:text-white/40">{index % 2 === 0 ? 'Available to the agent' : 'Available when requested'}</span></span><span className="h-2 w-2 rounded-full bg-emerald-500" /></button>)}</div></div><div className="rounded-xl border border-black/[0.07] bg-black/[0.018] p-4 dark:border-white/[0.07] dark:bg-white/[0.025]"><h3 className="text-[15px] font-semibold">Skill policy</h3><p className="mt-1 text-[12px] leading-5 text-black/45 dark:text-white/45">Keep routing predictable and permission-aware.</p><div className="mt-5 space-y-2"><div className="rounded-lg bg-white px-3 py-3 text-[12px] dark:bg-white/[0.045]"><div className="text-[10px] text-black/40 dark:text-white/40">Default access</div><div className="mt-1 font-semibold">Allowlisted skills</div></div><div className="rounded-lg bg-white px-3 py-3 text-[12px] dark:bg-white/[0.045]"><div className="text-[10px] text-black/40 dark:text-white/40">Routing</div><div className="mt-1 font-semibold">Agent decides</div></div><div className="rounded-lg bg-white px-3 py-3 text-[12px] dark:bg-white/[0.045]"><div className="text-[10px] text-black/40 dark:text-white/40">Changes</div><div className="mt-1 font-semibold">New sessions</div></div></div></div></div></section>;
+}
+
+function SkillImportCard() {
+  const open = (kind: string) => window.dispatchEvent(new CustomEvent('eterx_open_skill_creator', { detail: { kind } }));
+  const optionClass = 'inline-flex items-center gap-2 rounded-xl border border-black/[0.09] bg-white px-3.5 py-2 text-[12px] font-semibold transition hover:-translate-y-px hover:border-[#1d8cff]/45 hover:bg-[#1d8cff]/[0.045] dark:border-white/[0.1] dark:bg-white/[0.035]';
+  return <div className="eterx-skill-import mt-3 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-black/[0.08] bg-white px-4 py-3 dark:border-white/[0.08] dark:bg-white/[0.035]"><div className="text-[14px] font-semibold">Bring your skills</div><div className="flex flex-wrap items-center justify-end gap-2"><button type="button" onClick={() => open('manual')} className={optionClass}>Create manually</button><button type="button" onClick={() => open('agent')} className={optionClass}>Create with Agent</button><button type="button" onClick={() => window.dispatchEvent(new CustomEvent('eterx_open_skill_import'))} className={`${optionClass} border-[#1d8cff]/25 bg-[#1d8cff]/[0.08] text-[#1268c4] dark:text-[#69b1ff]`}>Import skill</button></div></div>;
+}
+
+type LiveSkill = { id: string; name: string; description: string };
+function LiveSkillsGatewayPanel() {
+  const [skills, setSkills] = useState<LiveSkill[]>([]);
+  const [query, setQuery] = useState('');
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [content, setContent] = useState('');
+  const [saved, setSaved] = useState(true);
+  const [undoStack, setUndoStack] = useState<string[]>([]);
+  const [redoStack, setRedoStack] = useState<string[]>([]);
+  const [catalogRevision, setCatalogRevision] = useState(0);
+  const [skillDialog, setSkillDialog] = useState<{ type: 'rename' | 'delete'; id: string; name: string } | null>(null);
+  const [creatorKind, setCreatorKind] = useState<'manual' | 'agent' | null>(null);
+  const [creatorName, setCreatorName] = useState('');
+  const [skillNotice, setSkillNotice] = useState<{ text: string; error?: boolean } | null>(null);
+  useEffect(() => { fetch('/api/skills').then((response) => response.json()).then((data) => { const next = Array.isArray(data?.skills) ? data.skills : []; setSkills(next); if (!selectedId && next[0]) setSelectedId(next[0].id); }).catch(() => setSkills([])); }, [catalogRevision]);
+  useEffect(() => { if (!selectedId) return; setSaved(false); fetch(`/api/skills/${encodeURIComponent(selectedId)}`).then((response) => response.json()).then((data) => { setContent(typeof data?.content === 'string' ? data.content : ''); setUndoStack([]); setRedoStack([]); setSaved(true); }).catch(() => setContent('')); }, [selectedId]);
+  useEffect(() => { if (!selectedId || saved) return; const timer = window.setTimeout(() => { void fetch(`/api/skills/${encodeURIComponent(selectedId)}`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ content }) }).then(() => setSaved(true)); }, 700); return () => window.clearTimeout(timer); }, [content, selectedId, saved]);
+  const visible = skills.filter((skill) => `${skill.name} ${skill.description}`.toLowerCase().includes(query.toLowerCase()));
+  const selected = skills.find((skill) => skill.id === selectedId);
+  useEffect(() => {
+    const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>('.eterx-live-skills-panel aside > div:last-child > button'));
+    buttons.forEach((button, index) => { if (!button.dataset.skillId && visible[index]) button.dataset.skillId = visible[index].id; });
+    const cleanups = buttons.map((button) => {
+      if (button.dataset.actionsReady) return () => {};
+      button.dataset.actionsReady = 'true';
+      const actions = document.createElement('span'); actions.className = 'eterx-skill-row-actions';
+      const makeIcon = (paths: string[]) => { const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); svg.setAttribute('viewBox', '0 0 24 24'); svg.setAttribute('fill', 'none'); svg.setAttribute('aria-hidden', 'true'); svg.classList.add('eterx-skill-action-icon'); paths.forEach((d) => { const path = document.createElementNS('http://www.w3.org/2000/svg', 'path'); path.setAttribute('d', d); path.setAttribute('stroke', 'currentColor'); path.setAttribute('stroke-width', '1.8'); path.setAttribute('stroke-linecap', 'round'); path.setAttribute('stroke-linejoin', 'round'); svg.append(path); }); return svg; };
+      const rename = document.createElement('span'); rename.setAttribute('role', 'button'); rename.tabIndex = 0; rename.title = 'Rename skill'; rename.append(makeIcon(['M12 3H7a4 4 0 0 0-4 4v10a4 4 0 0 0 4 4h10a4 4 0 0 0 4-4v-5', 'M18.4 2.6a2.121 2.121 0 0 1 3 3L11.5 15.5l-4.5 1 1-4.5L18.4 2.6z']));
+      const remove = document.createElement('span'); remove.setAttribute('role', 'button'); remove.tabIndex = 0; remove.title = 'Delete skill'; remove.append(makeIcon(['M3 6h18', 'M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2', 'M10 11v6', 'M14 11v6']));
+      const skillId = button.getAttribute('data-skill-id') || '';
+      rename.onclick = (event) => { event.stopPropagation(); if (skillId) setSkillDialog({ type: 'rename', id: skillId, name: button.querySelector('div')?.textContent || '' }); };
+      remove.onclick = (event) => { event.stopPropagation(); if (skillId) setSkillDialog({ type: 'delete', id: skillId, name: button.querySelector('div')?.textContent || '' }); };
+      rename.onkeydown = (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); rename.onclick?.(event as any); } };
+      remove.onkeydown = (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); remove.onclick?.(event as any); } };
+      actions.append(rename, remove); button.append(actions); return () => { actions.remove(); delete button.dataset.actionsReady; };
+    });
+    return () => cleanups.forEach((cleanup) => cleanup());
+  }, [visible, selectedId]);
+  useEffect(() => {
+    if (!skillDialog) return;
+    const overlay = document.createElement('div'); overlay.className = 'eterx-skill-action-dialog';
+    const card = document.createElement('div'); card.className = 'eterx-skill-action-dialog-card';
+    const title = document.createElement('h3'); title.textContent = skillDialog.type === 'rename' ? 'Rename skill' : 'Delete skill';
+    const message = document.createElement('p'); message.textContent = skillDialog.type === 'rename' ? 'Choose a new name for this markdown skill file.' : `Delete “${skillDialog.name}” permanently?`;
+    card.append(title, message);
+    let input: HTMLInputElement | null = null;
+    if (skillDialog.type === 'rename') { input = document.createElement('input'); input.value = skillDialog.name; input.className = 'eterx-skill-action-dialog-input'; card.append(input); }
+    const actions = document.createElement('div'); actions.className = 'eterx-skill-action-dialog-actions';
+    const cancel = document.createElement('button'); cancel.textContent = 'Cancel'; cancel.onclick = () => setSkillDialog(null);
+    const confirm = document.createElement('button'); confirm.className = skillDialog.type === 'delete' ? 'danger' : 'primary'; confirm.textContent = skillDialog.type === 'rename' ? 'Rename' : 'Delete';
+    confirm.onclick = async () => { const response = await fetch(`/api/skills/${encodeURIComponent(skillDialog.id)}`, { method: skillDialog.type === 'rename' ? 'PATCH' : 'DELETE', headers: { 'content-type': 'application/json' }, body: skillDialog.type === 'rename' ? JSON.stringify({ name: input?.value || '' }) : undefined }); if (response.ok) { if (skillDialog.type === 'delete' && selectedId === skillDialog.id) setSelectedId(null); setCatalogRevision((value) => value + 1); setSkillDialog(null); } };
+    actions.append(cancel, confirm); card.append(actions); overlay.append(card); document.body.append(overlay); input?.focus();
+    return () => overlay.remove();
+  }, [skillDialog, selectedId]);
+  useEffect(() => {
+    const toast = (text: string, error = false) => { const node = document.createElement('div'); node.textContent = text; node.className = `eterx-skill-toast${error ? ' is-error' : ''}`; document.body.append(node); window.setTimeout(() => node.remove(), 4200); };
+    const openImport = () => {
+      const input = document.createElement('input'); input.type = 'file'; input.accept = '.md,text/markdown'; input.multiple = true;
+      input.onchange = async () => { const files = Array.from(input.files || []); const payload = await Promise.all(files.map(async (file) => ({ name: file.name, content: await file.text() }))); const response = await fetch('/api/skills', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ files: payload }) }); const result = await response.json().catch(() => ({})); if (result.imported?.length) toast(`${result.imported.length} skill${result.imported.length === 1 ? '' : 's'} imported.`); if (result.rejected?.length) toast(result.rejected.map((item: { reason: string }) => item.reason).join(' '), true); setCatalogRevision((value) => value + 1); };
+      input.click();
+    };
+    const openCreator = (event: Event) => { const kind = (event as CustomEvent<{ kind?: 'manual' | 'agent' }>).detail?.kind; if (!kind) return; const overlay = document.createElement('div'); overlay.className = 'eterx-skill-action-dialog'; const card = document.createElement('div'); card.className = 'eterx-skill-action-dialog-card'; card.innerHTML = `<h3>${kind === 'agent' ? 'Create with Agent' : 'Create manually'}</h3><p>Choose a name for the new markdown skill.</p>`; const input = document.createElement('input'); input.className = 'eterx-skill-action-dialog-input'; input.placeholder = 'my-skill'; const actions = document.createElement('div'); actions.className = 'eterx-skill-action-dialog-actions'; const cancel = document.createElement('button'); cancel.textContent = 'Cancel'; cancel.onclick = () => overlay.remove(); const create = document.createElement('button'); create.className = 'primary'; create.textContent = 'Create'; create.onclick = async () => { const name = input.value.trim(); if (!name) return; const response = await fetch('/api/skills', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ createName: name }) }); const result = await response.json().catch(() => ({})); if (!response.ok) { toast(result.error || 'Could not create skill.', true); return; } overlay.remove(); setCatalogRevision((value) => value + 1); window.setTimeout(() => setSelectedId(result.id), 250); toast('Skill created and opened for editing.'); }; actions.append(cancel, create); card.append(input, actions); overlay.append(card); overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); }; document.body.append(overlay); input.focus(); };
+    window.addEventListener('eterx_open_skill_import', openImport); window.addEventListener('eterx_open_skill_creator', openCreator);
+    return () => { window.removeEventListener('eterx_open_skill_import', openImport); window.removeEventListener('eterx_open_skill_creator', openCreator); };
+  }, []);
+  const createSkill = async () => { const name = creatorName.trim(); if (!name) return; const response = await fetch('/api/skills', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ createName: name }) }); const result = await response.json().catch(() => ({})); if (!response.ok) { setSkillNotice({ text: result.error || 'Could not create skill.', error: true }); return; } setCreatorKind(null); setSkillNotice({ text: 'Skill created and opened for editing.' }); setSelectedId(result.id); setCatalogRevision((value) => value + 1); };
+  const editContent = (next: string) => { setUndoStack((current) => [...current, content]); setRedoStack([]); setContent(next); setSaved(false); };
+  const undo = () => { const previous = undoStack.at(-1); if (previous === undefined) return; setRedoStack((current) => [...current, content]); setUndoStack((current) => current.slice(0, -1)); setContent(previous); setSaved(false); };
+  const redo = () => { const next = redoStack.at(-1); if (next === undefined) return; setUndoStack((current) => [...current, content]); setRedoStack((current) => current.slice(0, -1)); setContent(next); setSaved(false); };
+  return <section className="eterx-live-skills-panel mt-7 rounded-2xl border border-black/[0.08] bg-white p-4 dark:border-white/[0.08] dark:bg-white/[0.035]"><div className="grid h-full min-h-[500px] gap-4 lg:grid-cols-[1fr_2fr]"><aside className="min-h-0 rounded-xl border border-black/[0.07] bg-black/[0.018] p-3 dark:border-white/[0.07] dark:bg-white/[0.025]"><div className="flex items-center justify-between"><h2 className="text-[18px] font-semibold">Skill Catalog</h2><span className="text-[11px] text-black/45 dark:text-white/45">{skills.length}</span></div>{skills.length > 10 && <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search skills" className="mt-3 h-9 w-full rounded-lg border border-black/10 bg-white px-3 text-[12px] outline-none dark:border-white/10 dark:bg-white/[0.05]" />}<div className="mt-3 max-h-[430px] space-y-1 overflow-y-auto pr-1">{visible.map((skill) => <button type="button" key={skill.id} onClick={() => setSelectedId(skill.id)} className={`w-full rounded-lg px-3 py-2 text-left ${selectedId === skill.id ? 'bg-[#e8f3ff] text-[#126fc1] dark:bg-[#183047] dark:text-[#b9dcff]' : 'hover:bg-black/[0.04] dark:hover:bg-white/[0.05]'}`}><div className="truncate text-[12px] font-semibold">{skill.name}</div><div className="mt-0.5 truncate text-[10px] text-black/40 dark:text-white/40">{skill.description}</div></button>)}{visible.length === 0 && <div className="py-8 text-center text-[12px] text-black/40">No skills found</div>}</div></aside><main className="min-h-0 rounded-xl border border-black/[0.07] bg-black/[0.018] p-4 dark:border-white/[0.07] dark:bg-white/[0.025]"><div className="flex items-start justify-between gap-3"><div><h2 className="text-[18px] font-semibold">{selected?.name || 'Select a skill'}</h2><p className="mt-1 text-[11px] text-black/45 dark:text-white/45">{selected?.description || 'Choose a skill from the catalog to view and edit its markdown.'}</p></div><div className="flex items-center gap-2"><button type="button" onClick={undo} disabled={!undoStack.length} aria-label="Undo" title="Undo" className="rounded-lg border border-black/10 p-2 disabled:opacity-30 dark:border-white/10"><Undo2 className="h-4 w-4" /></button><button type="button" onClick={redo} disabled={!redoStack.length} aria-label="Redo" title="Redo" className="rounded-lg border border-black/10 p-2 disabled:opacity-30 dark:border-white/10"><Redo2 className="h-4 w-4" /></button><span className={`ml-1 text-[11px] ${saved ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600'}`}>{saved ? 'Saved' : 'Saving…'}</span></div></div>{selected ? <textarea value={content} onChange={(event) => editContent(event.target.value)} spellCheck={false} className="mt-4 h-[420px] w-full resize-none rounded-lg border border-black/10 bg-white p-3 font-mono text-[11px] leading-5 outline-none focus:border-[#1d8cff] dark:border-white/10 dark:bg-white/[0.04]" /> : <div className="flex h-[420px] items-center justify-center text-[14px] text-black/40">Select and edit your skill</div>}</main></div></section>;
+}
+
+const LegacyAgentChannelsView = React.memo(() => {
+  const [screen, setScreen] = useState<'landing' | 'gateway'>('landing');
+  const [landingHeadline, setLandingHeadline] = useState(0);
+  const [config, setConfig] = useState<GatewayConfig>(defaultConfig);
+  const [status, setStatus] = useState<GatewayStatus | null>(null);
+  const [approvals, setApprovals] = useState<GatewayApproval[]>([]);
+  const [revealed, setRevealed] = useState<Record<string, boolean>>({});
+  const [connectorSearch, setConnectorSearch] = useState('');
+  const [selectedConnector, setSelectedConnector] = useState('telegram');
+  const [gatewayMode, setGatewayMode] = useState<'communication' | 'mcp' | 'skills'>('communication');
+  const [mcpServers, setMcpServers] = useState<McpServerDraft[]>([]);
+  const previousConnector = useRef('telegram');
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const autosaveReady = useRef(false);
+  const lastAutosaved = useRef('');
+  const [notice, setNotice] = useState<string | null>(null);
+  const [secureStorage, setSecureStorage] = useState(true);
+  const api = typeof window !== 'undefined' ? (window as any).electronAPI : null;
+  const baseUrl = useMemo(() => `http://${config.host}:${config.port}`, [config.host, config.port]);
+  const [pathwayProfiles, setPathwayProfiles] = useState<Record<string, Record<string, string>>>({});
+  const communicationCatalog = CONNECTOR_CATALOG.filter((connector) => connector.id !== 'mcp' && connector.id !== 'skills');
+  const selected = CONNECTOR_CATALOG.find((connector) => connector.id === selectedConnector) || communicationCatalog[0];
+  const selectedNative = PLATFORMS.find((platform) => platform.id === selected.id);
+  const selectedItem = selectedNative ? config.platforms[selectedNative.id] : null;
+  const visibleConnectors = communicationCatalog.filter((connector) => `${connector.label} ${connector.description}`.toLowerCase().includes(connectorSearch.trim().toLowerCase()));
+
+  const loadState = useCallback(async () => { setLoading(true); try { if (api?.getGatewayState) { const state = await api.getGatewayState(); if (state?.config) setConfig((current) => ({ ...current, ...state.config, platforms: { ...current.platforms, ...state.config.platforms } })); setStatus(state?.status || null); setApprovals((await api.listGatewayApprovals?.()) || []); setSecureStorage(state?.available !== false); } else { const saved = window.localStorage.getItem('eterx_gateway_preview_config'); if (saved) setConfig((current) => ({ ...current, ...JSON.parse(saved) })); setSecureStorage(false); } } catch (error: any) { setNotice(error?.message || 'Could not load gateway state.'); } finally { setLoading(false); autosaveReady.current = true; } }, [api]);
+  useEffect(() => { void loadState(); }, [loadState]);
+  useEffect(() => { if (screen !== 'landing') return; const timer = window.setInterval(() => setLandingHeadline((value) => (value + 1) % 4), 4200); return () => window.clearInterval(timer); }, [screen]);
+  useEffect(() => { document.body.classList.toggle('eterx-gateway-view', screen === 'gateway'); document.body.classList.toggle('eterx-mcp-mode', screen === 'gateway' && gatewayMode === 'mcp'); document.body.classList.toggle('eterx-skills-mode', screen === 'gateway' && gatewayMode === 'skills'); return () => { document.body.classList.remove('eterx-gateway-view', 'eterx-mcp-mode', 'eterx-skills-mode'); }; }, [screen, gatewayMode]);
+  useEffect(() => { if (screen !== 'gateway' || gatewayMode !== 'communication') return; const timer = window.setTimeout(() => { document.querySelectorAll('body.eterx-gateway-view section.mt-8 > aside > .max-h-\\[500px\\].overflow-y-auto, body.eterx-gateway-view section.mt-8 > main').forEach((node) => node.classList.add('eterx-scrollbar')); }, 0); return () => window.clearTimeout(timer); }, [screen, gatewayMode, selectedConnector]);
+  useEffect(() => { if (gatewayMode === 'communication' && (selectedConnector === 'mcp' || selectedConnector === 'skills')) setSelectedConnector('telegram'); }, [gatewayMode, selectedConnector]);
+  useEffect(() => { if (selectedConnector === 'mcp' && previousConnector.current !== 'mcp') setGatewayMode('mcp'); previousConnector.current = selectedConnector; }, [selectedConnector]);
+  useEffect(() => { if (screen !== 'gateway') return; document.body.classList.remove('eterx-gateway-content-bounce'); void document.body.offsetWidth; document.body.classList.add('eterx-gateway-content-bounce'); const timer = window.setTimeout(() => document.body.classList.remove('eterx-gateway-content-bounce'), 560); return () => window.clearTimeout(timer); }, [screen, gatewayMode, selectedConnector]);
+  useEffect(() => { window.dispatchEvent(new CustomEvent('eterx_gateway_screen', { detail: screen === 'gateway' })); return () => window.dispatchEvent(new CustomEvent('eterx_gateway_screen', { detail: false })); }, [screen]);
+  useEffect(() => { const back = () => setScreen('landing'); window.addEventListener('eterx_gateway_back', back); return () => window.removeEventListener('eterx_gateway_back', back); }, []);
+  useEffect(() => { const offStatus = api?.onGatewayStatus?.((next: GatewayStatus) => setStatus(next)); return () => offStatus?.(); }, [api]);
+  useEffect(() => { if (!autosaveReady.current || screen !== 'gateway') return; const key = JSON.stringify(config); if (key === lastAutosaved.current) return; const timer = window.setTimeout(() => { lastAutosaved.current = key; void save(); }, 350); return () => window.clearTimeout(timer); }, [config, screen]);
+  useEffect(() => { if (Object.keys(pathwayProfiles).length === 0) return; setConfig((current) => ({ ...current, connectorProfiles: pathwayProfiles })); }, [pathwayProfiles]);
+  useEffect(() => { if (config.connectorProfiles && Object.keys(config.connectorProfiles).length > 0) setPathwayProfiles(config.connectorProfiles); }, [config.connectorProfiles]);
+  const patchPlatform = (id: PlatformId, patch: Partial<PlatformConfig>) => setConfig((current) => ({ ...current, platforms: { ...current.platforms, [id]: { ...current.platforms[id], ...patch } } }));
+  const save = async () => { setSaving(true); setNotice(null); try { if (api?.saveGatewayConfig) { const result = await api.saveGatewayConfig(config); if (!result?.ok) throw new Error(result?.error || 'Could not save gateway configuration.'); if (result.config) setConfig((current) => ({ ...current, ...result.config, platforms: { ...current.platforms, ...result.config.platforms } })); if (result.status) setStatus(result.status); setNotice(config.enabled ? 'Gateway saved and running in the background.' : 'Gateway settings saved.'); } else { window.localStorage.setItem('eterx_gateway_preview_config', JSON.stringify(config)); setNotice('Preview saved. Install the desktop app to run the gateway.'); } } catch (error: any) { setNotice(error?.message || 'Could not save gateway configuration.'); } finally { setSaving(false); } };
+  const copyMcpConfig = async () => { const connection = await api?.getGatewayMcpConnection?.(); if (!connection) return setNotice('Start the desktop gateway before copying its MCP connection.'); await navigator.clipboard.writeText(JSON.stringify({ mcpServers: { 'eterx-gateway': { url: connection.url, headers: connection.headers } } }, null, 2)); setNotice('MCP connection copied.'); };
+  const resolveApproval = async (id: string, approved: boolean) => { await api?.resolveGatewayApproval?.(id, approved); setApprovals((current) => current.map((item) => item.id === id ? { ...item, status: approved ? 'approved' : 'denied' } : item)); };
+
+  if (screen === 'landing') {
+    const orbit = [['whatsapp', 'WhatsApp', '/icons/connectors/whatsapp.svg', '-0.8s'], ['telegram', 'Telegram', '/icons/connectors/telegram.svg', '-2.2s'], ['messenger', 'Messenger', '/icons/connectors/messenger.svg', '-4.1s'], ['line', 'LINE', '/icons/connectors/line.svg', '-6s'], ['slack', 'Slack', '/icons/connectors/slack.svg', '-6.8s']];
+    const features = [[ShieldCheck, 'Trusted agent identity', 'One voice and policy across every customer touchpoint.'], [Activity, 'Context that follows', 'Carry history, tools, and decisions from one channel to the next.'], [Settings2, 'Skill routing', 'Send each request to the right workflow or specialist agent.'], [MessageCircle, 'Native handoff', 'Meet customers on the channels they already use.']];
+    const headlines = ['Launch your agent across every customer channel', 'Deploy one agent across every conversation', 'Route every message to the right specialist agent', 'Keep every customer handoff context-aware'];
+    return <div className="eterx-channels-view flex h-full min-h-0 w-full overflow-y-auto bg-[var(--eterx-channel-surface)] px-5 py-5 text-[#33302d] md:px-8"><div className="mx-auto flex min-h-full w-full max-w-[1420px] flex-col items-center justify-center py-4"><motion.div initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} className="eterx-channel-orbit-stage relative h-[282px] w-full max-w-[520px] shrink-0"><div className="eterx-channel-phone absolute left-1/2 top-[68px] z-10 h-[206px] w-[252px] -translate-x-1/2 rounded-[34px] border-[5px] border-[#D9D8D5] bg-[linear-gradient(180deg,#F9F9F8_0%,#ECEBE8_100%)] shadow-[0_30px_72px_rgba(45,45,45,0.08)]" /><div className="eterx-channel-agent-card absolute left-1/2 top-[142px] z-30 flex h-[72px] w-[min(372px,84vw)] -translate-x-1/2 items-center gap-3 rounded-[18px] border border-[#E5E2DE] bg-white/95 px-4 shadow-[0_20px_50px_rgba(34,34,34,0.12)] backdrop-blur-sm"><span className="flex h-[46px] w-[46px] items-center justify-center rounded-full border border-[#EEEAE4] bg-[#F7F5F2]"><PremiumAgent className="h-[23px] w-[23px] brightness-0" /></span><span className="min-w-0 flex-1"><span className="flex items-center gap-1.5 text-[18px] font-semibold">EterX <CheckCircle2 className="h-4 w-4 text-[#1398FF]" fill="#1398FF" stroke="white" /></span><span className="mt-1 block text-[11.5px] text-[#85817c]">Enterprise assistant ready</span><span className="block truncate text-[11px] text-[#8A8680]">Connected across critical channels</span></span></div>{orbit.map(([id, label, logo, delay]) => <span key={id} aria-label={label} className="eterx-channel-orbit-icon absolute left-1/2 top-[146px] flex h-16 w-16 items-center justify-center rounded-full bg-white shadow-[0_20px_52px_rgba(40,40,40,0.14)] ring-1 ring-[#ECE9E5]" style={{ '--delay': delay } as React.CSSProperties}><img src={logo} alt="" className="h-9 w-9 object-contain" /></span>)}</motion.div><div className="relative mt-1 flex min-h-[62px] w-full items-center justify-center text-center font-sans text-[clamp(30px,3vw,44px)] font-semibold leading-tight tracking-[-0.025em] text-[#3B3835]"><AnimatePresence mode="wait"><motion.h1 key={headlines[landingHeadline]} initial={{ opacity: 0, y: 10, filter: 'blur(8px)' }} animate={{ opacity: 1, y: 0, filter: 'blur(0)' }} exit={{ opacity: 0, y: -8 }} className="max-w-[900px]">{headlines[landingHeadline]}</motion.h1></AnimatePresence></div><div className="mt-5 grid w-full gap-4 md:grid-cols-2 xl:grid-cols-4">{features.map(([Icon, title, description]: any[]) => <div key={title} className="eterx-channel-feature-card min-h-[150px] rounded-[20px] border border-[#DEDBD6] bg-white px-5 py-5 text-left shadow-[0_16px_42px_rgba(50,45,40,0.035)]"><Icon className="h-6 w-6 text-[#34312f]" strokeWidth={1.85} /><h2 className="mt-5 text-[18px] font-semibold text-[#3B3835]">{title}</h2><p className="mt-2 text-[14px] leading-[1.5] text-[#85817c]">{description}</p></div>)}</div><button type="button" onClick={() => setScreen('gateway')} className="eterx-channel-cta mt-6 inline-flex h-12 items-center gap-3 rounded-[14px] border border-[#DCD7CF] bg-[#F1EFEB] px-6 text-[15px] font-bold text-[#353230] shadow-[0_16px_36px_rgba(62,56,48,0.10)] transition hover:bg-[#E9E5DE] active:scale-[0.98]">Go to gateway</button></div></div>;
+  }
+
+  const selectedStatus = selectedNative ? status?.platforms?.[selectedNative.id] : undefined;
+  const selectedState = selectedNative ? (selectedStatus?.state === 'disabled' && selectedItem?.enabled && !selectedItem?.configured ? 'needs setup' : selectedStatus?.state || (selectedItem?.enabled ? 'saved' : 'not connected')) : selected.kind === 'mcp' ? (config.mcpBridgeEnabled ? 'available' : 'off') : 'setup pathway';
+
+  return <div className="h-full min-h-0 w-full overflow-y-auto bg-[#f5f5f3] text-[#272624] dark:bg-[#0d0d0d] dark:text-[#efefed]"><div className="mx-auto w-full max-w-[1280px] px-6 pb-10 pt-16 lg:px-10 lg:pt-16"><header className="flex items-start justify-between gap-5"><div className="flex items-start gap-3"><button type="button" onClick={() => setScreen('landing')} aria-label="Back to Channels" className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-black/10 bg-white shadow-sm dark:border-white/10 dark:bg-white/[0.04]"><ArrowLeft className="h-4 w-4" /></button><div><div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-black/40 dark:text-white/40"><Radio className="h-3.5 w-3.5" /> Gateway</div><h1 className="mt-2 text-[32px] font-semibold tracking-[-0.04em]">Connect EterX</h1><p className="mt-2 max-w-xl text-[14px] leading-6 text-black/50 dark:text-white/50">Choose one connector at a time. EterX keeps the setup focused and the background companion always available.</p></div></div><div className="flex shrink-0 items-center gap-2"><button type="button" onClick={() => void loadState()} aria-label="Refresh gateway" className="flex h-10 w-10 items-center justify-center rounded-xl border border-black/10 bg-white shadow-sm dark:border-white/10 dark:bg-white/[0.04]"><RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} /></button><button type="button" onClick={() => void save()} disabled={saving} className="flex h-10 items-center gap-2 rounded-xl bg-[#1e1e1e] px-4 text-[13px] font-semibold text-white shadow-sm disabled:opacity-60 dark:bg-white dark:text-black">{saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} Save</button></div></header>
+    {notice && <div className="mt-5 rounded-xl border border-[#1d8cff]/20 bg-[#1d8cff]/[0.07] px-4 py-3 text-[13px] text-[#126fc1] dark:text-[#72baff]">{notice}</div>}
+    {!secureStorage && <div className="mt-5 flex gap-3 rounded-xl border border-amber-500/20 bg-amber-500/[0.07] px-4 py-3 text-[13px] text-amber-700 dark:text-amber-300"><ShieldCheck className="mt-0.5 h-4 w-4 shrink-0" />Credentials are available only in the desktop app secure storage.</div>}
+    <GatewayModeTabs active={gatewayMode} onChange={(mode) => { setGatewayMode(mode); if (mode === 'mcp' || mode === 'skills') setSelectedConnector(mode); }} /><section className="mt-7 rounded-2xl border border-black/[0.08] bg-white p-5 shadow-[0_12px_38px_rgba(0,0,0,0.035)] dark:border-white/[0.08] dark:bg-white/[0.035]"><div className="flex items-center justify-between gap-4"><div className="flex items-center gap-3"><span className={`flex h-10 w-10 items-center justify-center rounded-xl ${status?.running ? 'bg-emerald-500/10 text-emerald-600' : 'bg-black/[0.05] text-black/40 dark:bg-white/[0.06] dark:text-white/40'}`}>{status?.running ? <Wifi className="h-5 w-5" /> : <WifiOff className="h-5 w-5" />}</span><div><div className="text-[15px] font-semibold">Background companion</div><div className="mt-0.5 text-[12px] text-black/45 dark:text-white/45">{status?.running ? `Online - ${baseUrl}` : 'Turn on to receive messages while EterX is hidden'}</div></div></div><Toggle checked={config.enabled} onChange={(enabled) => setConfig((current) => ({ ...current, enabled }))} /></div><div className="mt-5 flex flex-wrap items-center gap-2 text-[12px]"><button type="button" onClick={() => setConfig((current) => ({ ...current, keepRunningOnClose: !current.keepRunningOnClose }))} className={`rounded-full border px-3 py-1.5 ${config.keepRunningOnClose ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : 'border-black/10 text-black/45 dark:border-white/10 dark:text-white/45'}`}>{config.keepRunningOnClose ? 'Runs after close' : 'Runs only while open'}</button><button type="button" onClick={() => setConfig((current) => ({ ...current, launchAtLogin: !current.launchAtLogin }))} className={`rounded-full border px-3 py-1.5 ${config.launchAtLogin ? 'border-[#1d8cff]/30 bg-[#1d8cff]/10 text-[#126fc1] dark:text-[#72baff]' : 'border-black/10 text-black/45 dark:border-white/10 dark:text-white/45'}`}>{config.launchAtLogin ? 'Starts at sign-in' : 'Starts manually'}</button><span className="ml-auto text-black/35 dark:text-white/35">{status?.conversationCount || 0} conversations - {status?.eventCount || 0} events</span></div><details className="mt-4 rounded-xl border border-black/[0.07] px-4 py-3 dark:border-white/[0.07]"><summary className="cursor-pointer text-[12px] font-semibold">Advanced settings</summary><div className="mt-4 grid gap-3 sm:grid-cols-2"><label className="flex items-center justify-between rounded-lg bg-black/[0.025] px-3 py-2.5 text-[12px] dark:bg-white/[0.04]"><span>Send messages to agent</span><Toggle checked={config.autoDispatch} onChange={(autoDispatch) => setConfig((current) => ({ ...current, autoDispatch }))} /></label><label className="flex items-center justify-between rounded-lg bg-black/[0.025] px-3 py-2.5 text-[12px] dark:bg-white/[0.04]"><span>MCP gateway bridge</span><Toggle checked={config.mcpBridgeEnabled} onChange={(mcpBridgeEnabled) => setConfig((current) => ({ ...current, mcpBridgeEnabled }))} /></label><label className="flex items-center gap-2 rounded-lg bg-black/[0.025] px-3 py-2.5 text-[12px] dark:bg-white/[0.04]"><Server className="h-4 w-4 text-black/35 dark:text-white/35" /><input value={config.host} readOnly className="w-24 bg-transparent outline-none" /><span className="text-black/25">:</span><input type="number" value={config.port} onChange={(event) => setConfig((current) => ({ ...current, port: Number(event.target.value) }))} className="w-16 bg-transparent outline-none" /></label><label className="flex items-center gap-2 rounded-lg bg-black/[0.025] px-3 py-2.5 text-[12px] dark:bg-white/[0.04]"><span>Busy messages</span><select value={config.busyInputMode} onChange={(event) => setConfig((current) => ({ ...current, busyInputMode: event.target.value as GatewayConfig['busyInputMode'] }))} className="ml-auto bg-transparent outline-none"><option value="queue">Queue</option><option value="steer">Steer</option><option value="interrupt">Interrupt</option></select></label></div>{config.mcpBridgeEnabled && <div className="mt-3 flex items-center gap-2"><code className="min-w-0 flex-1 truncate text-[10px] text-black/45 dark:text-white/45">{status?.mcpEndpoint || `${baseUrl}/mcp`}</code><button type="button" onClick={() => void copyMcpConfig()} className="rounded-lg border border-black/10 px-2.5 py-1.5 text-[10px] font-semibold dark:border-white/10"><Copy className="mr-1 inline h-3 w-3" />Copy MCP config</button></div>}</details></section>
+    {approvals.filter((item) => item.status === 'pending').length > 0 && <section className="mt-5 rounded-2xl border border-amber-500/20 bg-amber-500/[0.06] p-4"><div className="flex items-center gap-2 text-[13px] font-semibold text-amber-700 dark:text-amber-300"><ShieldCheck className="h-4 w-4" /> {approvals.filter((item) => item.status === 'pending').length} connection approval{approvals.filter((item) => item.status === 'pending').length === 1 ? '' : 's'} waiting</div><div className="mt-3 space-y-2">{approvals.filter((item) => item.status === 'pending').map((item) => <div key={item.id} className="flex items-center gap-3 rounded-xl bg-white/70 px-3 py-2 dark:bg-black/20"><div className="min-w-0 flex-1 truncate text-[12px]">{item.displayName} - {item.platform}</div><button type="button" onClick={() => void resolveApproval(item.id, false)} className="rounded-md px-2 py-1 text-[10px] text-red-500">Deny</button><button type="button" onClick={() => void resolveApproval(item.id, true)} className="rounded-md bg-emerald-500/10 px-2 py-1 text-[10px] font-semibold text-emerald-700 dark:text-emerald-300">Approve</button></div>)}</div></section>}
+    <section className="mt-8 grid min-h-[620px] overflow-hidden rounded-2xl border border-black/[0.08] bg-white dark:border-white/[0.08] dark:bg-white/[0.035] lg:grid-cols-[280px_minmax(0,1fr)]"><aside className="border-b border-black/[0.07] p-3 dark:border-white/[0.07] lg:border-b-0 lg:border-r"><div className="px-2 pb-3 text-[12px] font-semibold uppercase tracking-[0.14em] text-black/40 dark:text-white/40">Connections <span className="ml-1 normal-case tracking-normal">{CONNECTOR_CATALOG.length}</span></div><label className="flex items-center gap-2 rounded-xl border border-black/10 bg-black/[0.02] px-3 py-2 dark:border-white/10 dark:bg-white/[0.04]"><Search className="h-4 w-4 text-black/35 dark:text-white/35" /><input value={connectorSearch} onChange={(event) => setConnectorSearch(event.target.value)} placeholder="Search connections" className="min-w-0 flex-1 bg-transparent text-[12px] outline-none" /></label><div className="mt-3 max-h-[500px] space-y-1 overflow-y-auto pr-1">{visibleConnectors.map((connector) => { const active = selectedConnector === connector.id; const native = PLATFORMS.find((platform) => platform.id === connector.id); const state = native ? (status?.platforms?.[native.id]?.state || (config.platforms[native.id].enabled ? 'saved' : '')) : connector.kind === 'mcp' ? 'MCP' : ''; return <button type="button" key={connector.id} onClick={() => setSelectedConnector(connector.id)} className={`flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left transition ${active ? 'bg-[#e8f3ff] text-[#126fc1] dark:bg-[#183047] dark:text-[#9dceff]' : 'text-black/60 hover:bg-black/[0.04] dark:text-white/60 dark:hover:bg-white/[0.05]'}`}><span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-black/[0.045] text-[10px] font-bold dark:bg-white/[0.07]">{connector.logo ? <img src={connector.logo} alt="" className="h-5 w-5 object-contain" /> : connector.label.slice(0, 1)}</span><span className="min-w-0 flex-1 truncate text-[12px] font-medium">{connector.label}</span>{state && <span className={`max-w-[66px] truncate text-[9px] ${native && stateTone(state)}`}>{state}</span>}</button>; })}{visibleConnectors.length === 0 && <div className="px-2 py-8 text-center text-[11px] text-black/40 dark:text-white/40">No matches</div>}</div></aside><main className="min-w-0 p-6 lg:p-8">{selectedNative && selectedItem ? <><div className="flex flex-wrap items-start justify-between gap-4"><div className="flex items-start gap-3"><span className="flex h-11 w-11 items-center justify-center rounded-xl bg-black/[0.045] dark:bg-white/[0.07]"><img src={selectedNative.logo} alt="" className="h-7 w-7 object-contain" /></span><div><h2 className="text-[24px] font-semibold tracking-[-0.03em]">{selectedNative.label}</h2><p className="mt-1 text-[13px] text-black/45 dark:text-white/45">{selected.description}</p></div></div><div className="flex items-center gap-3"><span className={`rounded-full bg-black/[0.045] px-3 py-1.5 text-[10px] font-semibold ${stateTone(selectedState)}`}>{selectedState}</span><Toggle checked={selectedItem.enabled} onChange={(enabled) => patchPlatform(selectedNative.id, { enabled })} /></div></div><div className="mt-8 rounded-xl border border-black/[0.07] bg-black/[0.018] p-4 dark:border-white/[0.07] dark:bg-white/[0.025]"><div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-black/40 dark:text-white/40">Setup</div><p className="mt-2 text-[13px] leading-5 text-black/55 dark:text-white/55">{selected.setup}</p></div><div className="mt-7"><NativeSetupFields platform={selectedNative} item={selectedItem} patchPlatform={patchPlatform} revealed={revealed} setRevealed={setRevealed} /></div>{selectedNative.id !== 'signal' && <div className="mt-6 flex items-center gap-2 rounded-xl border border-black/[0.07] bg-black/[0.018] px-3 py-2.5 dark:border-white/[0.07] dark:bg-white/[0.025]"><code className="min-w-0 flex-1 truncate text-[11px] text-black/50 dark:text-white/50">{baseUrl}/webhooks/{selectedNative.id}</code><button type="button" onClick={() => navigator.clipboard.writeText(`${baseUrl}/webhooks/${selectedNative.id}`)} className="rounded-lg border border-black/10 p-2 dark:border-white/10"><Copy className="h-3.5 w-3.5" /></button></div>}{selectedStatus?.lastError && <div className="mt-4 text-[12px] text-red-500">{selectedStatus.lastError}</div>}</> : selected.kind === 'mcp' ? <><div className="flex items-start justify-between gap-4"><div><h2 className="text-[24px] font-semibold tracking-[-0.03em]">MCP server</h2><p className="mt-1 text-[13px] text-black/45 dark:text-white/45">Expose EterX gateway conversations and channel actions to an MCP client.</p></div><Toggle checked={config.mcpBridgeEnabled} onChange={(mcpBridgeEnabled) => setConfig((current) => ({ ...current, mcpBridgeEnabled }))} /></div><div className="mt-8 rounded-xl border border-black/[0.07] bg-black/[0.018] p-4 text-[13px] leading-5 text-black/55 dark:border-white/[0.07] dark:bg-white/[0.025] dark:text-white/55">{selected.setup}</div><div className="mt-5 flex items-center gap-2"><code className="min-w-0 flex-1 truncate rounded-lg bg-black/[0.035] px-3 py-2 text-[11px] text-black/50 dark:bg-white/[0.06] dark:text-white/50">{status?.mcpEndpoint || `${baseUrl}/mcp`}</code><button type="button" onClick={() => void copyMcpConfig()} className="rounded-lg border border-black/10 px-3 py-2 text-[11px] font-semibold dark:border-white/10"><Copy className="mr-1 inline h-3.5 w-3.5" />Copy config</button></div></> : <><div className="flex items-start gap-3"><span className="flex h-11 w-11 items-center justify-center rounded-xl bg-black/[0.045] text-lg font-bold dark:bg-white/[0.07]">{selected.logo ? <img src={selected.logo} alt="" className="h-7 w-7 object-contain" /> : selected.label.slice(0, 1)}</span><div><h2 className="text-[24px] font-semibold tracking-[-0.03em]">{selected.label}</h2><p className="mt-1 text-[13px] text-black/45 dark:text-white/45">{selected.description}</p></div></div><div className="mt-8 rounded-xl border border-[#1d8cff]/15 bg-[#1d8cff]/[0.05] p-5"><div className="text-[11px] font-semibold tracking-[0.14em] text-[#126fc1] dark:text-[#72baff]">Setup pathway</div><p className="mt-3 text-[14px] leading-6 text-black/60 dark:text-white/60">{selected.setup}</p><div className="mt-5 grid gap-3 sm:grid-cols-2"><div className="rounded-lg bg-white/70 px-3 py-2.5 text-[12px] dark:bg-black/20"><span className="block text-[10px] text-black/35 dark:text-white/35">Transport</span><span className="mt-1 block font-medium">{selected.transport}</span></div><div className="rounded-lg bg-white/70 px-3 py-2.5 text-[12px] dark:bg-black/20"><span className="block text-[10px] text-black/35 dark:text-white/35">Required</span><span className="mt-1 block font-medium">{selected.credential}</span></div></div></div><PathwaySetup connector={selected} profile={pathwayProfiles[selected.id] || {}} onChange={(key, value) => setPathwayProfiles((current) => ({ ...current, [selected.id]: { ...(current[selected.id] || {}), [key]: value } }))} /></>}</main></section>
+    {gatewayMode === 'mcp' && <McpGatewayPanel baseUrl={baseUrl} endpoint={status?.mcpEndpoint || `${baseUrl}/mcp`} enabled={config.mcpBridgeEnabled} onToggle={(mcpBridgeEnabled) => setConfig((current) => ({ ...current, mcpBridgeEnabled }))} onCopy={() => void copyMcpConfig()} onNotice={setNotice} servers={mcpServers} setServers={setMcpServers} />}
+    {gatewayMode === 'skills' && <><LiveSkillsGatewayPanel /><SkillImportCard /></>}
+  </div></div>;
+});
+
+const PATHWAY_FIELDS: Record<string, Array<{ key: string; label: string; placeholder: string; secret?: boolean }>> = {
+  mattermost: [{ key: 'serverUrl', label: 'Server URL', placeholder: 'https://chat.example.com' }, { key: 'botToken', label: 'Bot token', placeholder: 'Paste the bot token', secret: true }, { key: 'allowedChannels', label: 'Allowed channels', placeholder: 'town-square, support' }],
+  matrix: [{ key: 'homeserverUrl', label: 'Homeserver URL', placeholder: 'https://matrix.example.org' }, { key: 'accessToken', label: 'Access token', placeholder: 'Paste the Matrix access token', secret: true }, { key: 'userId', label: 'Bot user ID', placeholder: '@eterx:example.org' }, { key: 'roomIds', label: 'Room IDs', placeholder: '!room:example.org, !support:example.org' }],
+  slack: [{ key: 'botToken', label: 'Bot token', placeholder: 'xoxb-…', secret: true }, { key: 'appToken', label: 'App-level token', placeholder: 'xapp-…', secret: true }, { key: 'signingSecret', label: 'Signing secret', placeholder: 'Paste signing secret', secret: true }],
+  bluebubbles: [{ key: 'serverUrl', label: 'Private API URL', placeholder: 'http://mac.local:1234' }, { key: 'password', label: 'API password', placeholder: 'Paste password', secret: true }],
+  homeassistant: [{ key: 'instanceUrl', label: 'Instance URL', placeholder: 'http://homeassistant.local:8123' }, { key: 'accessToken', label: 'Long-lived access token', placeholder: 'Paste token', secret: true }],
+  email: [{ key: 'imapHost', label: 'IMAP host', placeholder: 'imap.example.com' }, { key: 'smtpHost', label: 'SMTP host', placeholder: 'smtp.example.com' }, { key: 'username', label: 'Mailbox username', placeholder: 'agent@example.com' }, { key: 'appPassword', label: 'App password', placeholder: 'Paste app password', secret: true }],
+  sms: [{ key: 'accountSid', label: 'Account SID', placeholder: 'AC…' }, { key: 'authToken', label: 'Auth token', placeholder: 'Paste auth token', secret: true }, { key: 'phoneNumber', label: 'Twilio phone number', placeholder: '+1…' }],
+  dingtalk: [{ key: 'webhookUrl', label: 'Webhook URL', placeholder: 'https://oapi.dingtalk.com/robot/send?...' }, { key: 'signingSecret', label: 'Signing secret', placeholder: 'Paste secret', secret: true }],
+  feishu: [{ key: 'appId', label: 'App ID', placeholder: 'cli_…' }, { key: 'appSecret', label: 'App secret', placeholder: 'Paste app secret', secret: true }, { key: 'verificationToken', label: 'Verification token', placeholder: 'Paste token', secret: true }],
+  'google-chat': [{ key: 'serviceAccountJson', label: 'Service account JSON', placeholder: 'Paste or upload JSON', secret: true }, { key: 'webhookUrl', label: 'HTTPS endpoint', placeholder: 'https://example.com/google-chat' }],
+  'wecom-group': [{ key: 'webhookKey', label: 'Webhook key', placeholder: 'Paste key', secret: true }],
+  'wecom-app': [{ key: 'corpId', label: 'Corp ID', placeholder: 'ww…' }, { key: 'agentId', label: 'Agent ID', placeholder: '1000002' }, { key: 'secret', label: 'App secret', placeholder: 'Paste secret', secret: true }, { key: 'callbackToken', label: 'Callback token', placeholder: 'Paste token', secret: true }],
+  weixin: [{ key: 'bridgeEndpoint', label: 'Bridge endpoint', placeholder: 'http://127.0.0.1:8787' }, { key: 'pairingSecret', label: 'Pairing secret', placeholder: 'Paste secret', secret: true }],
+  qq: [{ key: 'appId', label: 'App ID', placeholder: 'Paste App ID' }, { key: 'appSecret', label: 'App secret', placeholder: 'Paste app secret', secret: true }, { key: 'callbackUrl', label: 'Callback URL', placeholder: 'https://example.com/qq' }],
+  yuanbao: [{ key: 'bridgeEndpoint', label: 'Bridge endpoint', placeholder: 'http://127.0.0.1:8787' }, { key: 'credential', label: 'Bridge credential', placeholder: 'Paste credential', secret: true }],
+  'api-server': [{ key: 'url', label: 'Gateway URL', placeholder: 'http://127.0.0.1:47821' }, { key: 'bearerToken', label: 'Bearer token', placeholder: 'Paste token', secret: true }],
+  webhooks: [{ key: 'webhookSecret', label: 'Signing secret', placeholder: 'Paste HMAC secret', secret: true }],
+  photon: [{ key: 'bridgeUrl', label: 'Photon bridge URL', placeholder: 'http://127.0.0.1:2080' }, { key: 'password', label: 'Bridge password', placeholder: 'Paste password', secret: true }],
+  irc: [{ key: 'server', label: 'IRC server', placeholder: 'irc.example.net' }, { key: 'port', label: 'TLS port', placeholder: '6697' }, { key: 'nick', label: 'Bot nickname', placeholder: 'eterx-bot' }, { key: 'saslPassword', label: 'SASL password', placeholder: 'Optional password', secret: true }],
+  line: [{ key: 'channelAccessToken', label: 'Channel access token', placeholder: 'Paste token', secret: true }, { key: 'channelSecret', label: 'Channel secret', placeholder: 'Paste secret', secret: true }, { key: 'webhookUrl', label: 'Webhook URL', placeholder: 'https://example.com/line' }],
+  skills: [{ key: 'skillAllowlist', label: 'Enabled skills', placeholder: 'research, coding, files' }, { key: 'skillPolicy', label: 'Skill policy', placeholder: 'Allowlisted skills only' }],
+};
+
+function PathwaySetup({ connector, profile, onChange }: { connector: ConnectorCatalogItem; profile: Record<string, string>; onChange: (key: string, value: string) => void }) {
+  const fields = PATHWAY_FIELDS[connector.id] || [{ key: 'credential', label: 'Connection credential', placeholder: connector.credential }];
+  return <div className="mt-6 space-y-4"><div className="flex flex-wrap items-center justify-between gap-3"><div className="text-[12px] font-semibold text-black/60 dark:text-white/60">Connection details</div>{connector.guideUrl && <a href={connector.guideUrl} target="_blank" rel="noreferrer" className="text-[12px] font-semibold text-[#126fc1] underline-offset-4 hover:underline dark:text-[#72baff]">Open official setup guide ↗</a>}</div><div className="grid gap-4 sm:grid-cols-2">{fields.map((field) => <label key={field.key} className="block"><span className="mb-1.5 block text-[12px] font-semibold text-black/65 dark:text-white/65">{field.label}</span><input type={field.secret ? 'password' : 'text'} value={profile[field.key] || ''} onChange={(event) => onChange(field.key, event.target.value)} placeholder={field.placeholder} className="h-11 w-full rounded-xl border border-black/10 bg-black/[0.025] px-3 text-[13px] outline-none transition placeholder:text-black/30 focus:border-[#1d8cff] dark:border-white/10 dark:bg-white/[0.04] dark:placeholder:text-white/30" /></label>)}</div><div className="rounded-xl border border-emerald-500/20 bg-emerald-500/[0.06] px-4 py-3 text-[12px] leading-5 text-emerald-800 dark:text-emerald-200">These details are saved with this connector and are ready for its matching adapter or bridge.</div></div>;
+}
+
+LegacyAgentChannelsView.displayName = 'LegacyAgentChannelsView';
+
+// Keep the established Channels experience as the public entry point. The
+// gateway screen inside it owns the connector rail and per-connector setup
+// pathway, so navigation does not reset the existing UI state.
+export const AgentChannelsView = LegacyAgentChannelsView;
 export default AgentChannelsView;

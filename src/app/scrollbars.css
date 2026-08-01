@@ -7,8 +7,8 @@
  */
 
 :root {
-  --eterx-sb-size: 12px;
-  --eterx-sb-inset: 2px;
+  --eterx-sb-size: 9px;
+  --eterx-sb-inset: 0px;
   --eterx-sb-radius: 999px;
   --eterx-sb-thumb: rgba(0, 0, 0, 0.12);
   --eterx-sb-thumb-hover: rgba(0, 0, 0, 0.20);
@@ -59,7 +59,7 @@
 
 ::-webkit-scrollbar-thumb,
 *::-webkit-scrollbar-thumb {
-  min-width: var(--eterx-sb-size) !important;
+  min-width: 12px !important;
   min-height: 44px !important;
   border: var(--eterx-sb-inset) solid transparent !important;
   border-radius: var(--eterx-sb-radius) !important;

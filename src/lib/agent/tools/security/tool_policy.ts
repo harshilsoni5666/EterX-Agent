@@ -58,6 +58,7 @@ const CAPABILITY_BY_TOOL: Record<string, string> = {
   slack_controller: 'communication.external',
   telegram_user_controller: 'communication.external',
   whatsapp_controller: 'communication.external',
+  gateway_bridge: 'communication.external',
   email_manager: 'communication.external',
 
   api_key_vault: 'secrets.manage',

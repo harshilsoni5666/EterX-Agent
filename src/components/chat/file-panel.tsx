@@ -1582,8 +1582,8 @@ export const IdePanel = () => {
                       hideCursorInOverviewRuler: true,
                       renderValidationDecorations: 'off',
                       scrollbar: {
-                        verticalScrollbarSize: 12,
-                        horizontalScrollbarSize: 12,
+                        verticalScrollbarSize: 9,
+                        horizontalScrollbarSize: 9,
                         arrowSize: 0,
                         verticalHasArrows: false,
                         horizontalHasArrows: false,

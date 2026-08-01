@@ -1,76 +1,218 @@
----
-name: "api-design-reviewer"
-description: Use when reviewing, designing, linting, or evolving HTTP APIs, REST APIs, OpenAPI/Swagger specs, endpoint contracts, API versioning, error formats, pagination, authentication, authorization, rate limits, or breaking changes.
----
+# Plugin JSON sample spec
 
-# API Design Reviewer
-
-Review API designs from the actual routes, handlers, schemas, OpenAPI files, client usage, and tests in the workspace. Do not rely on a generic checklist when source evidence is available.
-
-## Review Workflow
-
-1. Identify the API surface: route files, controllers, OpenAPI specs, generated clients, SDKs, tests, and docs.
-2. Determine the audience and compatibility level: internal service, public API, partner API, mobile/backend contract, or generated client contract.
-3. Check consistency across endpoints before judging individual routes.
-4. Separate breaking changes from non-breaking improvements.
-5. Recommend concrete edits to specs, handlers, docs, tests, and migration notes.
-6. Run available validation commands when safe and relevant.
-
-## Design Checks
-
-| Area | What to verify |
-|---|---|
-| Resource model | Noun-based resources, consistent nesting, clear ownership boundaries |
-| Methods/status | Correct method semantics, idempotency, status codes, redirects, async operations |
-| Request shape | Validation, required vs optional fields, enum growth, unknown-field behavior |
-| Response shape | Stable envelope, sparse fields, nullability, timestamps, IDs, links when useful |
-| Errors | Consistent error object, machine-readable codes, request IDs, safe messages |
-| Pagination | Cursor/page/offset choice, stable ordering, limits, next tokens, total semantics |
-| Filtering/sorting | Explicit supported operators, index-aware defaults, safe query limits |
-| AuthN/AuthZ | Authentication scheme, object-level authorization, scopes, tenant boundaries |
-| Versioning | URI/header/media strategy, deprecation policy, migration path |
-| Performance | Caching, ETags, compression, batch endpoints, N+1 risk, payload size |
-| Observability | Request IDs, audit events, metrics, useful logs without secrets |
-| Documentation | Examples, schemas, auth docs, error docs, changelog, SDK impact |
-
-## Breaking Change Rules
-
-Treat these as breaking unless the repository documents a different compatibility contract:
-
-- Removing or renaming endpoints, fields, enum values, or status codes clients depend on.
-- Making optional request fields required.
-- Changing field type, nullability, precision, time zone, or ID format.
-- Changing pagination token semantics or sort order guarantees.
-- Tightening validation in a way existing clients may fail.
-- Changing auth requirements, scopes, tenant visibility, or rate limits.
-
-Usually safe changes: adding optional request fields, adding response fields, adding endpoints, adding nullable fields, documenting an existing behavior, and adding stricter server-side protections that do not reject valid existing clients.
-
-## Useful Tooling
-
-Prefer tools already configured in the repo. Common options:
-
-```bash
-npx @stoplight/spectral-cli lint openapi.json
-npx @redocly/cli lint openapi.json
-npx openapi-diff openapi-v1.json openapi-v2.json
+```json
+{
+  "name": "plugin-name",
+  "version": "1.2.0",
+  "description": "Brief plugin description",
+  "author": {
+    "name": "Author Name",
+    "email": "author@example.com",
+    "url": "https://github.com/author"
+  },
+  "homepage": "https://docs.example.com/plugin",
+  "repository": "https://github.com/author/plugin",
+  "license": "MIT",
+  "keywords": ["keyword1", "keyword2"],
+  "skills": "./skills/",
+  "hooks": "./hooks.json",
+  "mcpServers": "./.mcp.json",
+  "apps": "./.app.json",
+  "interface": {
+    "displayName": "Plugin Display Name",
+    "shortDescription": "Short description for subtitle",
+    "longDescription": "Long description for details page",
+    "developerName": "OpenAI",
+    "category": "Productivity",
+    "capabilities": ["Interactive", "Write"],
+    "websiteURL": "https://openai.com/",
+    "privacyPolicyURL": "https://openai.com/policies/row-privacy-policy/",
+    "termsOfServiceURL": "https://openai.com/policies/row-terms-of-use/",
+    "defaultPrompt": [
+      "Summarize my inbox and draft replies for me.",
+      "Find open bugs and turn them into Linear tickets.",
+      "Review today's meetings and flag scheduling gaps."
+    ],
+    "brandColor": "#3B82F6",
+    "composerIcon": "./assets/icon.png",
+    "logo": "./assets/logo.png",
+    "logoDark": "./assets/logo-dark.png",
+    "screenshots": [
+      "./assets/screenshot1.png",
+      "./assets/screenshot2.png",
+      "./assets/screenshot3.png"
+    ]
+  }
+}
 ```
 
-Also use the project test runner for contract tests, generated-client tests, handler integration tests, and authorization regression tests.
+## Field guide
 
-## Output Format
+### Top-level fields
 
-Lead with findings, ordered by severity:
+- `name` (`string`): Plugin identifier (kebab-case, no spaces). Required if `plugin.json` is provided and used as manifest name and component namespace.
+- `version` (`string`): Plugin semantic version.
+- `description` (`string`): Short purpose summary.
+- `author` (`object`): Publisher identity.
+  - `name` (`string`): Author or team name.
+  - `email` (`string`): Contact email.
+  - `url` (`string`): Author/team homepage or profile URL.
+- `homepage` (`string`): Documentation URL for plugin usage.
+- `repository` (`string`): Source code URL.
+- `license` (`string`): License identifier (for example `MIT`, `Apache-2.0`).
+- `keywords` (`array` of `string`): Search/discovery tags.
+- `skills` (`string`): Relative path to skill directories/files.
+- `hooks` (`string`): Hook config path.
+- `mcpServers` (`string` or `object`): MCP config path, or an object whose keys are MCP server names and whose values are MCP server config objects.
+- `apps` (`string`): App manifest path for plugin integrations.
+- `interface` (`object`): Interface/UX metadata block for plugin presentation.
 
-```text
-[P1] Breaking response change in GET /api/v1/orders
-Evidence: openapi-v2.json removes order.total.currency; mobile client reads it in ...
-Impact: Existing clients can fail or display totals incorrectly.
-Recommendation: Keep the field through v1, add replacement field as optional, document deprecation, and add a contract test.
+`mcpServers` may be declared as a companion file path:
+
+```json
+{
+  "mcpServers": "./.mcp.json"
+}
 ```
 
-Then include:
+Or as an object directly in `plugin.json`:
 
-- Open questions or assumptions.
-- Commands/checks run and results.
-- Suggested next edits or migration plan.
+```json
+{
+  "mcpServers": {
+    "counter": {
+      "type": "http",
+      "url": "https://sample.example/counter/mcp"
+    }
+  }
+}
+```
+
+### `interface` fields
+
+- `displayName` (`string`): User-facing title shown for the plugin.
+- `shortDescription` (`string`): Brief subtitle used in compact views.
+- `longDescription` (`string`): Longer description used on details screens.
+- `developerName` (`string`): Human-readable publisher name.
+- `category` (`string`): Plugin category bucket.
+- `capabilities` (`array` of `string`): Capability list from implementation.
+- `websiteURL` (`string`): Public website for the plugin.
+- `privacyPolicyURL` (`string`): Privacy policy URL.
+- `termsOfServiceURL` (`string`): Terms of service URL.
+- `defaultPrompt` (`array` of `string`): Starter prompts shown in composer/UX context.
+  - Include at most 3 strings. Entries after the first 3 are ignored and will not be included.
+  - Each string is capped at 128 characters. Longer entries are truncated.
+  - Prefer short starter prompts around 50 characters so they scan well in the UI.
+- `brandColor` (`string`): Theme color for the plugin card.
+- `composerIcon` (`string`): Path to icon asset.
+- `logo` (`string`): Path to logo asset.
+- `logoDark` (`string`): Optional path to the logo asset used in dark mode.
+- `screenshots` (`array` of `string`): List of screenshot asset paths.
+  - Screenshot entries must be PNG filenames and stored under `./assets/`.
+  - Keep file paths relative to plugin root.
+
+### Path conventions and defaults
+
+- Path values should be relative and begin with `./`.
+- `skills`, `hooks`, and string-valued `mcpServers` are supplemented on top of default component discovery; they do not replace defaults.
+- Custom path values must follow the plugin root convention and naming/namespacing rules.
+- This repo’s scaffold writes `.codex-plugin/plugin.json`; treat that as the manifest location this skill generates.
+
+# Marketplace JSON sample spec
+
+`marketplace.json` depends on where the plugin should live. New plugin creation defaults to the
+personal marketplace unless the caller explicitly requests a repo-local destination:
+
+- Personal plugin: `~/.agents/plugins/marketplace.json`
+- Repo/team plugin: `<repo-root>/.agents/plugins/marketplace.json`
+
+```json
+{
+  "name": "openai-curated",
+  "interface": {
+    "displayName": "ChatGPT Official"
+  },
+  "plugins": [
+    {
+      "name": "linear",
+      "source": {
+        "source": "local",
+        "path": "./plugins/linear"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}
+```
+
+## Marketplace field guide
+
+### Top-level fields
+
+- `name` (`string`): Marketplace identifier or catalog name.
+- `interface` (`object`, optional): Marketplace presentation metadata.
+- `plugins` (`array`): Ordered plugin entries. This order determines how Codex renders plugins.
+
+### `interface` fields
+
+- `displayName` (`string`, optional): User-facing marketplace title.
+
+### Plugin entry fields
+
+- `name` (`string`): Plugin identifier. Match the plugin folder name and `plugin.json` `name`.
+- `source` (`object`): Plugin source descriptor.
+  - `source` (`string`): Use `local` for this repo workflow.
+  - `path` (`string`): Relative plugin path based on the marketplace root.
+    - Personal plugin in `~/.agents/plugins/marketplace.json`: `./plugins/<plugin-name>`
+    - Repo/team plugin: `./plugins/<plugin-name>`
+  - The same relative path convention is used for both personal and repo/team marketplaces.
+    - Example: with `~/.agents/plugins/marketplace.json`, `./plugins/<plugin-name>` resolves to
+      `~/plugins/<plugin-name>`.
+- `policy` (`object`): Marketplace policy block. Always include it.
+  - `installation` (`string`): Availability policy.
+    - Allowed values: `NOT_AVAILABLE`, `AVAILABLE`, `INSTALLED_BY_DEFAULT`
+    - Default for new entries: `AVAILABLE`
+  - `authentication` (`string`): Authentication timing policy.
+    - Allowed values: `ON_INSTALL`, `ON_USE`
+    - Default for new entries: `ON_INSTALL`
+  - `products` (`array` of `string`, optional): Product override for this plugin entry. Omit it unless product gating is explicitly requested.
+- `category` (`string`): Display category bucket. Always include it.
+
+### Marketplace generation rules
+
+- `displayName` belongs under the top-level `interface` object, not individual plugin entries.
+- When creating a new marketplace file from scratch, seed `interface.displayName` alongside top-level `name`.
+- Always include `policy.installation`, `policy.authentication`, and `category` on every generated or updated plugin entry.
+- Treat `policy.products` as an override and omit it unless explicitly requested.
+- Append new entries unless the user explicitly requests reordering.
+- Replace an existing entry for the same plugin only when overwrite is intentional.
+- Default new plugin creation to the personal marketplace.
+- Use a repo/team marketplace only when the user specifically requests that destination.
+- Only override the marketplace `name` when the default `personal` name is already taken or
+  installed and you need to seed a different new marketplace file.
+- Choose marketplace location to match the selected destination:
+  - Personal plugin: `~/.agents/plugins/marketplace.json`
+  - Repo/team plugin: `<repo-root>/.agents/plugins/marketplace.json`
+
+### Plugin validation notes
+
+- The validator mirrors the workspace plugin ingestion schema so generated plugins follow the same
+  manifest contract from the start.
+- Plugin manifests must include real values for `name`, `version`, `description`,
+  `author.name`, and the required `interface` fields.
+- `version` must use strict semver.
+- `websiteURL`, `privacyPolicyURL`, and `termsOfServiceURL` must be absolute `https://` URLs when
+  present.
+- `composerIcon`, `logo`, `logoDark`, and `screenshots` must point to real files inside the plugin archive when
+  present.
+- `apps` should appear in `plugin.json` only when `.app.json` actually exists.
+- `mcpServers` may point to `.mcp.json` or contain the MCP server object directly in
+  `plugin.json`.
+- Validation rejects unsupported manifest fields such as `hooks`, so the scaffold keeps them out of
+  generated manifests.
+- Run `scripts/validate_plugin.py <plugin-path>` before handing back a generated plugin. It adds one
+  intentional preflight check that rejects leftover `[TODO: ...]` placeholders.

@@ -1,69 +1,218 @@
----
-name: algorithmic-art
-description: Create original generative or algorithmic art with code, including p5.js, Canvas, SVG, WebGL/Three.js, shaders, particle systems, flow fields, simulations, procedural patterns, and interactive controls. Use when the user asks for code-made art, generative visuals, creative coding, visual experiments, or interactive art artifacts.
-license: Complete terms in LICENSE.txt
----
+# Plugin JSON sample spec
 
-# Algorithmic Art
+```json
+{
+  "name": "plugin-name",
+  "version": "1.2.0",
+  "description": "Brief plugin description",
+  "author": {
+    "name": "Author Name",
+    "email": "author@example.com",
+    "url": "https://github.com/author"
+  },
+  "homepage": "https://docs.example.com/plugin",
+  "repository": "https://github.com/author/plugin",
+  "license": "MIT",
+  "keywords": ["keyword1", "keyword2"],
+  "skills": "./skills/",
+  "hooks": "./hooks.json",
+  "mcpServers": "./.mcp.json",
+  "apps": "./.app.json",
+  "interface": {
+    "displayName": "Plugin Display Name",
+    "shortDescription": "Short description for subtitle",
+    "longDescription": "Long description for details page",
+    "developerName": "OpenAI",
+    "category": "Productivity",
+    "capabilities": ["Interactive", "Write"],
+    "websiteURL": "https://openai.com/",
+    "privacyPolicyURL": "https://openai.com/policies/row-privacy-policy/",
+    "termsOfServiceURL": "https://openai.com/policies/row-terms-of-use/",
+    "defaultPrompt": [
+      "Summarize my inbox and draft replies for me.",
+      "Find open bugs and turn them into Linear tickets.",
+      "Review today's meetings and flag scheduling gaps."
+    ],
+    "brandColor": "#3B82F6",
+    "composerIcon": "./assets/icon.png",
+    "logo": "./assets/logo.png",
+    "logoDark": "./assets/logo-dark.png",
+    "screenshots": [
+      "./assets/screenshot1.png",
+      "./assets/screenshot2.png",
+      "./assets/screenshot3.png"
+    ]
+  }
+}
+```
 
-This skill guides creative coding. It should expand the design space, not force a house template, fixed branding, or one visual language.
+## Field guide
 
-## Core Principles
+### Top-level fields
 
-- Start from the user's subject, mood, medium, and constraints.
-- Choose the rendering approach that fits the idea: p5.js, raw Canvas, SVG, CSS, WebGL, shaders, or a small React/Vite artifact.
-- Make the output real and inspectable: a runnable `.html`, project file, or source module, not just a description.
-- Preserve creative freedom. Examples are references, not required layouts.
-- Use seeded randomness when reproducibility matters; skip it when live improvisation matters more.
-- Keep controls only when they help exploration. Do not add sliders, seed panels, sidebars, or download buttons by default.
+- `name` (`string`): Plugin identifier (kebab-case, no spaces). Required if `plugin.json` is provided and used as manifest name and component namespace.
+- `version` (`string`): Plugin semantic version.
+- `description` (`string`): Short purpose summary.
+- `author` (`object`): Publisher identity.
+  - `name` (`string`): Author or team name.
+  - `email` (`string`): Contact email.
+  - `url` (`string`): Author/team homepage or profile URL.
+- `homepage` (`string`): Documentation URL for plugin usage.
+- `repository` (`string`): Source code URL.
+- `license` (`string`): License identifier (for example `MIT`, `Apache-2.0`).
+- `keywords` (`array` of `string`): Search/discovery tags.
+- `skills` (`string`): Relative path to skill directories/files.
+- `hooks` (`string`): Hook config path.
+- `mcpServers` (`string` or `object`): MCP config path, or an object whose keys are MCP server names and whose values are MCP server config objects.
+- `apps` (`string`): App manifest path for plugin integrations.
+- `interface` (`object`): Interface/UX metadata block for plugin presentation.
 
-## Workflow
+`mcpServers` may be declared as a companion file path:
 
-1. Interpret the brief: subject, atmosphere, palette, motion level, interaction level, and target format.
-2. Pick the algorithmic language:
-   - Flow fields, particles, reaction-diffusion, cellular automata, L-systems, Voronoi, signed-distance fields, shaders, geometry, typographic systems, audio reactivity, or data-driven visuals.
-3. Decide the artifact shape:
-   - Single self-contained HTML for quick delivery.
-   - Project-integrated component when working inside an app.
-   - Separate `.js`/`.ts` modules when maintainability matters.
-4. Implement the piece with clear names and bounded performance.
-5. Verify the artifact runs and the canvas/SVG is nonblank. If browser checks are unavailable, inspect the generated file and run available build/static checks.
+```json
+{
+  "mcpServers": "./.mcp.json"
+}
+```
 
-## Creative Direction
+Or as an object directly in `plugin.json`:
 
-The art should feel intentional:
+```json
+{
+  "mcpServers": {
+    "counter": {
+      "type": "http",
+      "url": "https://sample.example/counter/mcp"
+    }
+  }
+}
+```
 
-- Use rhythm, density, hierarchy, contrast, and negative space.
-- Tune parameters until the result has composition, not just noise.
-- Match style to the prompt: scientific, playful, meditative, brutalist, luxurious, educational, surreal, nostalgic, or utilitarian.
-- Prefer originality over copying a known artist's exact style.
-- Avoid generic "AI art UI" shells unless the user asked for an explorer interface.
+### `interface` fields
 
-## Interaction Options
+- `displayName` (`string`): User-facing title shown for the plugin.
+- `shortDescription` (`string`): Brief subtitle used in compact views.
+- `longDescription` (`string`): Longer description used on details screens.
+- `developerName` (`string`): Human-readable publisher name.
+- `category` (`string`): Plugin category bucket.
+- `capabilities` (`array` of `string`): Capability list from implementation.
+- `websiteURL` (`string`): Public website for the plugin.
+- `privacyPolicyURL` (`string`): Privacy policy URL.
+- `termsOfServiceURL` (`string`): Terms of service URL.
+- `defaultPrompt` (`array` of `string`): Starter prompts shown in composer/UX context.
+  - Include at most 3 strings. Entries after the first 3 are ignored and will not be included.
+  - Each string is capped at 128 characters. Longer entries are truncated.
+  - Prefer short starter prompts around 50 characters so they scan well in the UI.
+- `brandColor` (`string`): Theme color for the plugin card.
+- `composerIcon` (`string`): Path to icon asset.
+- `logo` (`string`): Path to logo asset.
+- `logoDark` (`string`): Optional path to the logo asset used in dark mode.
+- `screenshots` (`array` of `string`): List of screenshot asset paths.
+  - Screenshot entries must be PNG filenames and stored under `./assets/`.
+  - Keep file paths relative to plugin root.
 
-Add these only when useful:
+### Path conventions and defaults
 
-- Seed controls for reproducible series.
-- Palette controls for exploration.
-- Sliders for visible physical parameters.
-- Play/pause/reset for simulations.
-- Export PNG/SVG/WebM when the user needs downloadable output.
-- Gallery mode for comparing variants.
+- Path values should be relative and begin with `./`.
+- `skills`, `hooks`, and string-valued `mcpServers` are supplemented on top of default component discovery; they do not replace defaults.
+- Custom path values must follow the plugin root convention and naming/namespacing rules.
+- This repo’s scaffold writes `.codex-plugin/plugin.json`; treat that as the manifest location this skill generates.
 
-## Technical Standards
+# Marketplace JSON sample spec
 
-- Keep animation on `requestAnimationFrame` or the framework's native loop.
-- Bound particle counts and canvas resolution for responsive performance.
-- Respect `prefers-reduced-motion` when the page contains large or persistent motion.
-- Avoid external dependencies unless they clearly improve the result.
-- If using CDNs, pick stable public URLs and keep the artifact usable when possible.
+`marketplace.json` depends on where the plugin should live. New plugin creation defaults to the
+personal marketplace unless the caller explicitly requests a repo-local destination:
 
-## Output
+- Personal plugin: `~/.agents/plugins/marketplace.json`
+- Repo/team plugin: `<repo-root>/.agents/plugins/marketplace.json`
 
-Deliver the format that matches the request:
+```json
+{
+  "name": "openai-curated",
+  "interface": {
+    "displayName": "ChatGPT Official"
+  },
+  "plugins": [
+    {
+      "name": "linear",
+      "source": {
+        "source": "local",
+        "path": "./plugins/linear"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}
+```
 
-- Quick standalone visual: one `.html` file with inline CSS/JS.
-- App integration: components/modules that match the project stack.
-- Study or concept: a short design note plus runnable code.
+## Marketplace field guide
 
-Mention what was created, how to run it, and any verification performed.
+### Top-level fields
+
+- `name` (`string`): Marketplace identifier or catalog name.
+- `interface` (`object`, optional): Marketplace presentation metadata.
+- `plugins` (`array`): Ordered plugin entries. This order determines how Codex renders plugins.
+
+### `interface` fields
+
+- `displayName` (`string`, optional): User-facing marketplace title.
+
+### Plugin entry fields
+
+- `name` (`string`): Plugin identifier. Match the plugin folder name and `plugin.json` `name`.
+- `source` (`object`): Plugin source descriptor.
+  - `source` (`string`): Use `local` for this repo workflow.
+  - `path` (`string`): Relative plugin path based on the marketplace root.
+    - Personal plugin in `~/.agents/plugins/marketplace.json`: `./plugins/<plugin-name>`
+    - Repo/team plugin: `./plugins/<plugin-name>`
+  - The same relative path convention is used for both personal and repo/team marketplaces.
+    - Example: with `~/.agents/plugins/marketplace.json`, `./plugins/<plugin-name>` resolves to
+      `~/plugins/<plugin-name>`.
+- `policy` (`object`): Marketplace policy block. Always include it.
+  - `installation` (`string`): Availability policy.
+    - Allowed values: `NOT_AVAILABLE`, `AVAILABLE`, `INSTALLED_BY_DEFAULT`
+    - Default for new entries: `AVAILABLE`
+  - `authentication` (`string`): Authentication timing policy.
+    - Allowed values: `ON_INSTALL`, `ON_USE`
+    - Default for new entries: `ON_INSTALL`
+  - `products` (`array` of `string`, optional): Product override for this plugin entry. Omit it unless product gating is explicitly requested.
+- `category` (`string`): Display category bucket. Always include it.
+
+### Marketplace generation rules
+
+- `displayName` belongs under the top-level `interface` object, not individual plugin entries.
+- When creating a new marketplace file from scratch, seed `interface.displayName` alongside top-level `name`.
+- Always include `policy.installation`, `policy.authentication`, and `category` on every generated or updated plugin entry.
+- Treat `policy.products` as an override and omit it unless explicitly requested.
+- Append new entries unless the user explicitly requests reordering.
+- Replace an existing entry for the same plugin only when overwrite is intentional.
+- Default new plugin creation to the personal marketplace.
+- Use a repo/team marketplace only when the user specifically requests that destination.
+- Only override the marketplace `name` when the default `personal` name is already taken or
+  installed and you need to seed a different new marketplace file.
+- Choose marketplace location to match the selected destination:
+  - Personal plugin: `~/.agents/plugins/marketplace.json`
+  - Repo/team plugin: `<repo-root>/.agents/plugins/marketplace.json`
+
+### Plugin validation notes
+
+- The validator mirrors the workspace plugin ingestion schema so generated plugins follow the same
+  manifest contract from the start.
+- Plugin manifests must include real values for `name`, `version`, `description`,
+  `author.name`, and the required `interface` fields.
+- `version` must use strict semver.
+- `websiteURL`, `privacyPolicyURL`, and `termsOfServiceURL` must be absolute `https://` URLs when
+  present.
+- `composerIcon`, `logo`, `logoDark`, and `screenshots` must point to real files inside the plugin archive when
+  present.
+- `apps` should appear in `plugin.json` only when `.app.json` actually exists.
+- `mcpServers` may point to `.mcp.json` or contain the MCP server object directly in
+  `plugin.json`.
+- Validation rejects unsupported manifest fields such as `hooks`, so the scaffold keeps them out of
+  generated manifests.
+- Run `scripts/validate_plugin.py <plugin-path>` before handing back a generated plugin. It adds one
+  intentional preflight check that rejects leftover `[TODO: ...]` placeholders.

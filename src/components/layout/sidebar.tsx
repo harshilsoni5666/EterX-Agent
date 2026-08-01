@@ -492,13 +492,24 @@ const lightweightSidebarCss = `
 
   .eterx-sidebar-shell .eterx-sidebar-running-indicator {
     position: relative;
-    width: 16px;
-    height: 16px;
+    width: 15px;
+    height: 15px;
     border-radius: 999px;
-    border: 2px solid var(--sidebar-running-track);
+    border: 1.5px solid var(--sidebar-running-track);
     border-right-color: var(--sidebar-running-head);
-    animation: eterx-sidebar-spin 0.82s linear infinite;
-    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.035);
+    animation: eterx-sidebar-spin 1.18s cubic-bezier(0.45, 0.05, 0.55, 0.95) infinite;
+    box-shadow:
+      inset 0 0 0 1px rgba(255, 255, 255, 0.025),
+      0 0 0 1px color-mix(in srgb, var(--sidebar-running-head) 7%, transparent);
+  }
+
+  .eterx-sidebar-shell .eterx-sidebar-running-indicator::after {
+    content: '';
+    position: absolute;
+    inset: 3px;
+    border-radius: inherit;
+    background: color-mix(in srgb, var(--sidebar-running-head) 18%, transparent);
+    animation: eterx-sidebar-running-breathe 1.8s ease-in-out infinite;
   }
 
   .eterx-sidebar-shell .eterx-sidebar-chat-active .eterx-sidebar-running-indicator {
@@ -521,6 +532,18 @@ const lightweightSidebarCss = `
   @keyframes eterx-sidebar-spin {
     to {
       transform: rotate(360deg);
+    }
+  }
+
+  @keyframes eterx-sidebar-running-breathe {
+    0%, 100% { opacity: 0.35; }
+    50% { opacity: 0.8; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .eterx-sidebar-shell .eterx-sidebar-running-indicator,
+    .eterx-sidebar-shell .eterx-sidebar-running-indicator::after {
+      animation: none;
     }
   }
 
@@ -1197,7 +1220,7 @@ export const Sidebar = React.memo<SidebarProps>(({
           {isOpen ? (
             <div className="eterx-sidebar-recents flex-1 mt-2 ml-2 mr-2 mb-1 bg-transparent rounded-[14px] border border-transparent flex flex-col py-2.5 overflow-hidden relative">
               <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-[var(--sidebar-surface-border)]" />
-              <div className="flex items-center justify-between px-3.5 mb-1.5 min-h-[26px] relative z-30">
+              <div className="flex items-center justify-between pl-3.5 pr-1.5 mb-1.5 min-h-[26px] relative z-30">
                 <div className="flex min-w-0 items-baseline gap-2">
                   <span className="eterx-sidebar-section-title text-[12px] font-medium text-[var(--sidebar-muted-text)] tracking-normal shrink-0 transition-colors duration-150">
                     {isSelectMode ? `${ selectedCount } selected` : 'Recents'}

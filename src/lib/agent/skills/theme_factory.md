@@ -1,54 +1,58 @@
 ---
-name: theme-factory
-description: Use to create or apply a coherent visual theme to documents, decks, spreadsheets, PDFs, HTML artifacts, dashboards, and other deliverables.
-license: Complete terms in LICENSE.txt
+name: skill-installer
+description: Install \ into $CODEX_HOME/skills from a curated list or a GitHub repo path. Use when a user asks to list installable skills, install a curated skill, or install a skill from another repo (including private repos).
+metadata:
+  short-description: Install curated skills from openai/skills or other repos
 ---
 
-# Theme Factory
+# Skill Installer
 
-Create themes that fit the artifact, audience, and content. Preset themes can help, but they are not required.
+Helps install skills. By default these are from \ but users can also provide other locations. Experimental skills live in https://github.com/openai/skills/tree/main/skills/.experimental and can be installed the same way.
 
-## Workflow
+Use the helper scripts based on the task:
+- List skills when the user asks what is available, or if the user uses this skill without specifying what to do. Default listing is `.curated`, but you can pass `--path skills/.experimental` when they ask about experimental skills.
+- Install from the curated list when the user provides a skill name.
+- Install from another repo when the user provides a GitHub repo/path (including private repos).
 
-1. Identify artifact type: deck, doc, workbook, web page, dashboard, report, handout, or tool.
-2. Identify tone: formal, playful, editorial, technical, luxury, academic, operational, consumer, or brand-led.
-3. Define palette roles: background, surface, primary text, muted text, border, accent, status colors, chart colors.
-4. Define typography roles: display, heading, body, mono/numeric, caption.
-5. Define layout/motion/material guidance only when relevant to the artifact.
-6. Apply the theme consistently and verify contrast/readability.
+Install skills with the helper scripts.
 
-## Theme Output
+## Communication
 
-```markdown
-# Theme: [Name]
+When listing skills, output approximately as follows, depending on the context of the user's request. If they ask about experimental skills, list from `.experimental` instead of `.curated` and label the source accordingly:
+"""
+Skills from {repo}:
+1. skill-1
+2. skill-2 (already installed)
+3. ...
+Which ones would you like installed?
+"""
 
-## Fit
-[Artifact types and audience this theme serves.]
+After installing a skill, tell the user it will be available on their next turn.
 
-## Palette
-- Background:
-- Surface:
-- Text:
-- Muted:
-- Accent:
-- Status:
-- Chart series:
+## Scripts
 
-## Typography
-- Display:
-- Heading:
-- Body:
-- Mono/Numeric:
+All of these scripts use network, so when running in the sandbox, request escalation when running them.
 
-## Usage
-- What to emphasize:
-- What to avoid:
-- Accessibility notes:
-```
+- `scripts/list-skills.py` (prints skills list with installed annotations)
+- `scripts/list-skills.py --format json`
+- Example (experimental list): `scripts/list-skills.py --path skills/.experimental`
+- `scripts/install-skill-from-github.py --repo <owner>/<repo> --path <path/to/skill> [<path/to/skill> ...]`
+- `scripts/install-skill-from-github.py --url https://github.com/<owner>/<repo>/tree/<ref>/<path>`
+- Example (experimental skill): `scripts/install-skill-from-github.py --repo openai/skills --path skills/.experimental/<skill-name>`
 
-## Rules
+## Behavior and Options
 
-- Existing brand guidelines override generated themes.
-- Do not apply decorative styling that makes the artifact harder to read.
-- Do not force a theme if the artifact already has a strong template or brand system.
-- For charts and workbooks, prioritize clarity and contrast over decoration.
+- Defaults to direct download for public GitHub repos.
+- If download fails with auth/permission errors, falls back to git sparse checkout.
+- Aborts if the destination skill directory already exists.
+- Installs into `$CODEX_HOME/skills/<skill-name>` (defaults to `~/.codex/skills`).
+- Multiple `--path` values install multiple skills in one run, each named from the path basename unless `--name` is supplied.
+- Options: `--ref <ref>` (default `main`), `--dest <path>`, `--method auto|download|git`.
+
+## Notes
+
+- Curated listing is fetched from `https://github.com/openai/skills/tree/main/skills/.curated` via the GitHub API. If it is unavailable, explain the error and exit.
+- Private GitHub repos can be accessed via existing git credentials or optional `GITHUB_TOKEN`/`GH_TOKEN` for download.
+- Git fallback tries HTTPS first, then SSH.
+- The skills at https://github.com/openai/skills/tree/main/skills/.system are preinstalled, so no need to help users install those. If they ask, just explain this. If they insist, you can download and overwrite.
+- Installed annotations come from `$CODEX_HOME/skills`.

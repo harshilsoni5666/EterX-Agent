@@ -1116,6 +1116,10 @@ function DeepWorkUI() {
   // Per-chat thinking state: Set of chatIds that have running agents
   const [runningChats, setRunningChats] = useState<Set<string>>(new Set());
   const [unreadChatIds, setUnreadChatIds] = useState<Set<string>>(new Set());
+  // Terminal updates can arrive through both the primary poller and recovery
+  // polling. Keep a bounded per-chat event ledger so the same completed/error
+  // event cannot recreate an unread dot after it has already been seen.
+  const handledUnreadEventsRef = useRef<Map<string, Set<string>>>(new Map());
   const [traceLogs, setTraceLogs] = useState<any[]>([]);
   const traceLogsLengthRef = useRef(0);
   useEffect(() => {
@@ -1133,6 +1137,7 @@ function DeepWorkUI() {
   const [audioVolume, setAudioVolume] = useState<number>(0);
   const [isProcessingVoice, setIsProcessingVoice] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [desktopPlatform, setDesktopPlatform] = useState<'windows' | 'macos' | 'linux' | 'web'>('web');
   const [cmdPaletteOpen, setCmdPaletteOpen] = useState(false);
   const [showScrollBottom, setShowScrollBottom] = useState(false);
 
@@ -1145,9 +1150,22 @@ function DeepWorkUI() {
   const [headerSearchOpen, setHeaderSearchOpen] = useState(false);
   const [headerSearchQuery, setHeaderSearchQuery] = useState("");
   const [activeView, setActiveViewState] = useState<ActiveView>('chat');
+  const [gatewayScreen, setGatewayScreen] = useState(false);
+  useEffect(() => {
+    const onGatewayScreen = (event: Event) => setGatewayScreen(Boolean((event as CustomEvent).detail));
+    window.addEventListener('eterx_gateway_screen', onGatewayScreen);
+    return () => window.removeEventListener('eterx_gateway_screen', onGatewayScreen);
+  }, []);
   const [agentMode, setAgentMode] = useState<MainAgentMode>(() => composerRuntimeSelectionRef.current.agentMode);
   const [thinkingLevel, setThinkingLevelState] = useState<MainAgentThinkingLevel>(() => composerRuntimeSelectionRef.current.thinkingLevel);
   const [selectedAgentState, setSelectedAgentState] = useState<SelectedAgentState>(() => composerRuntimeSelectionRef.current.selectedAgent);
+
+  useEffect(() => {
+    const platform = (window as any).electronAPI?.platform;
+    if (platform === 'windows' || platform === 'macos' || platform === 'linux') {
+      setDesktopPlatform(platform);
+    }
+  }, []);
 
   useEffect(() => {
     try {
@@ -1814,8 +1832,21 @@ function DeepWorkUI() {
     (typeof document === 'undefined' || document.visibilityState === 'visible')
   ), []);
 
-  const markChatUnreadIfBackground = useCallback((chatId: string) => {
-    if (!chatId || isChatCurrentlyVisible(chatId)) return;
+  const markChatUnreadIfBackground = useCallback((chatId: string, eventKey: string) => {
+    if (!chatId || !eventKey) return;
+
+    const handledForChat = handledUnreadEventsRef.current.get(chatId) ?? new Set<string>();
+    if (handledForChat.has(eventKey)) return;
+    handledForChat.add(eventKey);
+    if (handledForChat.size > 64) {
+      const oldest = handledForChat.values().next().value;
+      if (oldest) handledForChat.delete(oldest);
+    }
+    handledUnreadEventsRef.current.set(chatId, handledForChat);
+
+    // Record before checking visibility: a duplicate poll response must remain
+    // seen even if it arrives after the user navigates away.
+    if (isChatCurrentlyVisible(chatId)) return;
     setUnreadChatIds(prev => {
       if (prev.has(chatId)) return prev;
       const next = new Set(prev);
@@ -2678,6 +2709,7 @@ function DeepWorkUI() {
 
   // Track notified chats to prevent duplicate popups (StrictMode/Overlapping Fetch fix)
   const notifiedChatIdsRef = useRef<Set<string>>(new Set());
+  const gatewayReplyRunIdsRef = useRef<Set<string>>(new Set());
 
   // Custom Speech Media Refs
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -3069,7 +3101,9 @@ function DeepWorkUI() {
               : previous
           );
         }
-        markChatUnreadIfBackground(currentChatId);
+        if (cleanModelText) {
+          markChatUnreadIfBackground(currentChatId, `live:${liveTurnId}:answer`);
+        }
       };
 
       const clearLiveTurn = () => {
@@ -5070,6 +5104,7 @@ function DeepWorkUI() {
       idsToDelete.forEach(chatId => next.delete(chatId));
       return next.size === prev.size ? prev : next;
     });
+    idsToDelete.forEach(chatId => handledUnreadEventsRef.current.delete(chatId));
 
     setChats(prev => {
       const updated = prev.filter(c => !deleteSet.has(c.id));
@@ -5797,7 +5832,10 @@ function DeepWorkUI() {
       stopPolling(chatId);
       clearAgentConnectionStatus(chatId);
       removeRunningChat(chatId);
-      markChatUnreadIfBackground(chatId);
+      markChatUnreadIfBackground(
+        chatId,
+        `run:${expectedRunId || pollRunIdRef.current.get(chatId) || runStartedAfter || 'pending'}:start-error`,
+      );
       setChatLogsById(chatId, logs => [
         ...stripAgentConnectionLogs(logs),
         agentStatusLog('failed', 'Agent unavailable', message)
@@ -6402,7 +6440,12 @@ function DeepWorkUI() {
             stopPolling(chatId);
             removeRunningChat(chatId);
             liveProgressAnnouncementAtRef.current.delete(chatId);
-            markChatUnreadIfBackground(chatId);
+            if (data.status === 'completed' || data.status === 'failed') {
+              const unreadRunKey = String(
+                serverRunId || expectedRunId || data.completedAt || data.finalAnswer || data.error || 'terminal',
+              );
+              markChatUnreadIfBackground(chatId, `run:${unreadRunKey}:${data.status}`);
+            }
             if (data.status === 'completed' || data.status === 'failed') {
               announceLiveTaskEvent(
                 chatId,
@@ -6410,6 +6453,33 @@ function DeepWorkUI() {
                 String(data.finalAnswer || data.error || ''),
                 String(serverRunId || expectedRunId || ''),
               );
+            }
+
+            // Channel conversations retain the adapter's reply target. Deliver
+            // the final agent answer once per run through the desktop daemon,
+            // which owns platform credentials and outbound API details.
+            if (data.status === 'completed' && String(data.finalAnswer || '').trim() && chatId.startsWith('gateway_')) {
+              const gatewayRunKey = String(serverRunId || expectedRunId || `${chatId}:${data.completedAt || Date.now()}`);
+              if (!gatewayReplyRunIdsRef.current.has(gatewayRunKey)) {
+                gatewayReplyRunIdsRef.current.add(gatewayRunKey);
+                try {
+                  const targets = JSON.parse(localStorage.getItem('eterx_gateway_reply_targets') || '{}');
+                  const reply = targets?.[chatId];
+                  if (reply?.platform && reply?.target) {
+                    void (window as any).electronAPI?.sendGatewayMessage?.(
+                      reply.platform,
+                      reply.target,
+                      String(data.finalAnswer),
+                    ).catch((error: any) => {
+                      gatewayReplyRunIdsRef.current.delete(gatewayRunKey);
+                      console.error('[EterX Gateway] Could not deliver channel reply:', error);
+                    });
+                  }
+                } catch (error) {
+                  gatewayReplyRunIdsRef.current.delete(gatewayRunKey);
+                  console.error('[EterX Gateway] Could not read channel reply target:', error);
+                }
+              }
             }
 
             // Title generation uses the same provider credentials as agents.
@@ -6570,7 +6640,12 @@ function DeepWorkUI() {
             removeRunningChat(chatId);
             liveProgressAnnouncementAtRef.current.delete(chatId);
             if (isTerminalAgentStatus(data.status)) {
-              markChatUnreadIfBackground(chatId);
+              if (data.status === 'completed' || data.status === 'failed') {
+                const unreadRunKey = String(
+                  data.runId || data.completedAt || data.finalAnswer || data.error || 'terminal',
+                );
+                markChatUnreadIfBackground(chatId, `run:${unreadRunKey}:${data.status}`);
+              }
               if (data.status === 'completed' || data.status === 'failed') {
                 announceLiveTaskEvent(
                   chatId,
@@ -7374,6 +7449,7 @@ function DeepWorkUI() {
       let pendingCustomText = '';
       let customTraceSeq = 0;
       let customWorkNoteSeq = 0;
+      let customOutcome: 'completed' | 'failed' | null = null;
       const activeCustomToolLogs = new Map<string, CustomToolActiveTrace>();
 
       const setCustomAgentAnswer = (text: string, isLive: boolean) => {
@@ -7482,6 +7558,7 @@ function DeepWorkUI() {
         });
 
         if (!response.ok) {
+          customOutcome = 'failed';
           let message = `Custom agent start failed (${ response.status }).`;
           try {
             const payload = await response.json();
@@ -7543,6 +7620,7 @@ function DeepWorkUI() {
               activeCustomToolLogs.delete(customToolTraceKey(event));
             }
           } else if (event.type === 'error') {
+            customOutcome = 'failed';
             const message = String(event.text || 'Custom agent failed.');
             setChatLogsById(chatIdToUse!, logs => [
               ...stripAgentConnectionLogs(logs),
@@ -7550,6 +7628,7 @@ function DeepWorkUI() {
             ], { touchUpdatedAt: true });
           } else if (event.type === 'done') {
             if (pendingCustomText.trim()) {
+              customOutcome = 'completed';
               setCustomAgentAnswer(pendingCustomText, false);
               pendingCustomText = '';
             }
@@ -7578,11 +7657,13 @@ function DeepWorkUI() {
           } catch { }
         }
         if (pendingCustomText.trim()) {
+          customOutcome = 'completed';
           setCustomAgentAnswer(pendingCustomText, false);
           pendingCustomText = '';
         }
       } catch (error: any) {
         if (error.name !== 'AbortError') {
+          customOutcome = 'failed';
           setChatLogsById(chatIdToUse!, logs => [
             ...stripAgentConnectionLogs(logs),
             agentStatusLog('failed', 'Custom agent connection failed', String(error.message || error).slice(0, 180)),
@@ -7594,7 +7675,9 @@ function DeepWorkUI() {
           abortControllersRef.current.delete(chatIdToUse!);
         }
         removeRunningChat(chatIdToUse!);
-        markChatUnreadIfBackground(chatIdToUse!);
+        if (customOutcome) {
+          markChatUnreadIfBackground(chatIdToUse!, `custom:${clientRunId}:${customOutcome}`);
+        }
       }
       return true;
     }
@@ -7698,7 +7781,7 @@ function DeepWorkUI() {
         stopPolling(chatIdToUse!);
         pendingTitleRequestsRef.current.delete(chatIdToUse!);
         removeRunningChat(chatIdToUse!);
-        markChatUnreadIfBackground(chatIdToUse!);
+        markChatUnreadIfBackground(chatIdToUse!, `run:${clientRunId}:start-error`);
         setChatLogsById(chatIdToUse!, prev => [
           ...stripAgentConnectionLogs(prev),
           agentStatusLog('failed', 'Agent unavailable', message)
@@ -7750,7 +7833,7 @@ function DeepWorkUI() {
           stopPolling(chatIdToUse!);
           pendingTitleRequestsRef.current.delete(chatIdToUse!);
           removeRunningChat(chatIdToUse!);
-          markChatUnreadIfBackground(chatIdToUse!);
+          markChatUnreadIfBackground(chatIdToUse!, `run:${clientRunId}:connection-error`);
           setChatLogsById(chatIdToUse!, prev => [
             ...stripAgentConnectionLogs(prev),
             agentStatusLog('failed', 'Agent connection failed', String(error.message || error).slice(0, 180))
@@ -7777,6 +7860,73 @@ function DeepWorkUI() {
   handleSendLatestRef.current = handleSend;
   const scheduledRunContextRef = useRef({ activeWorkspacePath, activeRunLocation });
   scheduledRunContextRef.current = { activeWorkspacePath, activeRunLocation };
+
+  // The Electron gateway owns transport connections and durable dedupe state.
+  // The renderer stays alive (hidden to tray) and turns normalized channel
+  // inputs into ordinary EterX chats so they use the same agent lifecycle,
+  // policies, memory, and monitor surface as user-created work.
+  useEffect(() => {
+    const desktopApi = (window as any).electronAPI;
+    if (!desktopApi?.onGatewayInput) return;
+
+    let dispatchChain = Promise.resolve();
+    const processGatewayInput = async (input: any) => {
+      if (!input?.id || !input?.conversationId) return;
+      try {
+        const gatewayState = await desktopApi.getGatewayState?.();
+        if (gatewayState?.config?.autoDispatch === false) return;
+
+        const safeConversationId = String(input.conversationId)
+          .replace(/[^a-zA-Z0-9_-]+/g, '_')
+          .slice(0, 120);
+        const gatewayChatId = `gateway_${safeConversationId}`;
+        const platformName = String(input.platform || 'channel');
+        const actorName = input.actor?.displayName || input.actor?.username || 'Channel user';
+        const attachmentContext = Array.isArray(input.attachments) && input.attachments.length > 0
+          ? `\n\nAttachments received:\n${input.attachments.map((item: any) => `- ${item.name || item.type || 'attachment'}${item.url ? `: ${item.url}` : ''}`).join('\n')}`
+          : '';
+        const prompt = `[Incoming ${platformName} message from ${actorName}]\n\n${String(input.text || '').trim() || 'The user sent an attachment.'}${attachmentContext}`;
+        const existing = chatsRef.current.find((chat) => chat.id === gatewayChatId);
+        const session: ChatSession = existing
+          ? { ...existing, updatedAt: Date.now(), title: existing.title || `${actorName} · ${platformName}` }
+          : {
+              id: gatewayChatId,
+              title: `${actorName} · ${platformName}`,
+              updatedAt: Date.now(),
+              traceLogs: [],
+              workspacePath: scheduledRunContextRef.current.activeWorkspacePath,
+              runLocation: scheduledRunContextRef.current.activeRunLocation,
+            };
+
+        try {
+          const replyTargets = JSON.parse(localStorage.getItem('eterx_gateway_reply_targets') || '{}');
+          replyTargets[gatewayChatId] = { platform: input.platform, target: input.replyTarget, updatedAt: Date.now() };
+          localStorage.setItem('eterx_gateway_reply_targets', JSON.stringify(replyTargets));
+        } catch { }
+
+        setChats((previous) => {
+          const next = [session, ...previous.filter((chat) => chat.id !== gatewayChatId)];
+          chatsRef.current = next;
+          persistChats(next);
+          return next;
+        });
+        const accepted = await handleSendLatestRef.current(prompt, [], gatewayChatId);
+        if (accepted) await desktopApi.acknowledgeGatewayInput?.(input.id);
+      } catch (error) {
+        console.error('[EterX Gateway] Could not dispatch normalized input:', error);
+      }
+    };
+
+    const enqueue = (input: any) => {
+      dispatchChain = dispatchChain.then(() => processGatewayInput(input));
+    };
+    const unsubscribe = desktopApi.onGatewayInput(enqueue);
+    void desktopApi.claimGatewayInputs?.(50).then((pending: any[]) => {
+      for (const input of Array.isArray(pending) ? pending : []) enqueue(input);
+    });
+
+    return () => unsubscribe?.();
+  }, [markChatUnreadIfBackground]);
 
   // Queue mode creates real follow-up turns rather than injecting text into an
   // in-flight response. Process one item at a time after the current run has
@@ -9113,12 +9263,12 @@ function DeepWorkUI() {
   }, [clearUnreadChat]);
 
   return (
-    <div data-active-view={activeView} data-sidebar-open={sidebarOpen ? 'true' : 'false'} className="eterx-app-shell flex h-screen font-sans overflow-hidden selection:bg-[#E2765A]/30 transition-colors relative">
+    <div data-active-view={activeView} data-sidebar-open={sidebarOpen ? 'true' : 'false'} data-platform={desktopPlatform} className="eterx-app-shell flex h-screen font-sans overflow-hidden selection:bg-[#E2765A]/30 transition-colors relative">
       {/* Global Window Drag Bar (Independent Layer) */}
-      <div className="pointer-events-none absolute top-0 left-0 right-[150px] h-[var(--eterx-shell-topbar-height)] z-[998] [-webkit-app-region:drag]" />
+      <div className="eterx-window-drag-layer pointer-events-none absolute top-0 h-[var(--eterx-shell-topbar-height)] z-[998] [-webkit-app-region:drag]" />
 
       {/* Global Top Bar UI Container */}
-      <div className="pointer-events-none absolute top-0 left-0 right-[150px] h-[var(--eterx-shell-topbar-height)] z-[999] flex items-center overflow-hidden">
+      <div className="eterx-global-topbar pointer-events-none absolute top-0 h-[var(--eterx-shell-topbar-height)] z-[999] flex items-center overflow-hidden">
         {/* Drag spacer — pointer-events-none so sidebar toggle clicks pass through */}
         <div className="eterx-topbar-sidebar-spacer shrink-0 pointer-events-none transition-[width] duration-300" />
 
@@ -9457,12 +9607,13 @@ function DeepWorkUI() {
                   </Tooltip>
                 )}
                 {(() => {
-                  if ((activeView === 'agents' && buildingAgentId) || activeView === 'channels') return null;
-                  if (activeView === 'projects' || (activeView === 'agents' && !buildingAgentId)) {
-                    const headerLabel = activeView === 'projects' ? 'Tasks' : 'Agents';
+                  if (activeView === 'agents' && buildingAgentId) return null;
+                  if (activeView === 'projects' || activeView === 'channels' || (activeView === 'agents' && !buildingAgentId)) {
+                    const headerLabel = activeView === 'projects' ? 'Tasks' : activeView === 'channels' ? (gatewayScreen ? 'Gateway' : 'Channels') : 'Agents';
                     return (
                       <div className="relative min-w-0 [-webkit-app-region:no-drag] pl-3.5 py-1">
-                        <span className="text-[20px] font-bold text-white tracking-tight select-none">{headerLabel}</span>
+                        {activeView === 'channels' && gatewayScreen && <button type="button" aria-label="Back to Channels" onClick={() => window.dispatchEvent(new CustomEvent('eterx_gateway_back'))} className="group -ml-2 mr-2 inline-flex h-9 w-9 items-center justify-center rounded-xl border border-black/10 bg-white text-black/75 shadow-sm transition hover:-translate-x-0.5 hover:bg-black/[0.04] hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1d8cff]/40 dark:border-white/10 dark:bg-white/[0.06] dark:text-white/85 dark:hover:bg-white/10"><ArrowLeft className="h-5 w-5 stroke-[2.5] transition-transform group-hover:-translate-x-0.5" /></button>}
+                        <span className={`${gatewayScreen && activeView === 'channels' ? 'text-[24px]' : 'text-[20px]'} font-bold text-white tracking-tight select-none`}>{headerLabel}</span>
                       </div>
                     );
                   }

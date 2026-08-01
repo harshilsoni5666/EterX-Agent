@@ -1,6 +1,13 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('electronAPI', {
+  platform: process.platform === 'darwin'
+    ? 'macos'
+    : process.platform === 'win32'
+      ? 'windows'
+      : process.platform === 'linux'
+        ? 'linux'
+        : 'unknown',
   selectFolder: () => ipcRenderer.invoke('select-folder'),
   selectFiles: () => ipcRenderer.invoke('select-files'),
   getFileIcon: (path) => ipcRenderer.invoke('get-file-icon', path),
@@ -17,6 +24,30 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getSecureRuntimeSettings: () => ipcRenderer.invoke('secure-runtime-settings-get'),
   saveSecureRuntimeSettings: (settings) => ipcRenderer.invoke('secure-runtime-settings-save', settings),
   clearSecureRuntimeSettings: () => ipcRenderer.invoke('secure-runtime-settings-clear'),
+  getGatewayState: () => ipcRenderer.invoke('gateway-get-state'),
+  saveGatewayConfig: (config) => ipcRenderer.invoke('gateway-save-config', config),
+  startGateway: () => ipcRenderer.invoke('gateway-start'),
+  stopGateway: () => ipcRenderer.invoke('gateway-stop'),
+  listGatewayEvents: (limit) => ipcRenderer.invoke('gateway-list-events', limit),
+  claimGatewayInputs: (limit) => ipcRenderer.invoke('gateway-claim-inputs', limit),
+  acknowledgeGatewayInput: (eventId) => ipcRenderer.invoke('gateway-ack-input', eventId),
+  listGatewayConversations: () => ipcRenderer.invoke('gateway-list-conversations'),
+  markGatewayConversationRead: (conversationId) => ipcRenderer.invoke('gateway-mark-read', conversationId),
+  listGatewayApprovals: () => ipcRenderer.invoke('gateway-list-approvals'),
+  resolveGatewayApproval: (identityId, approved) => ipcRenderer.invoke('gateway-resolve-approval', identityId, approved),
+  callGatewayBridgeTool: (name, args) => ipcRenderer.invoke('gateway-call-bridge-tool', name, args),
+  getGatewayMcpConnection: () => ipcRenderer.invoke('gateway-get-mcp-connection'),
+  sendGatewayMessage: (platform, target, text) => ipcRenderer.invoke('gateway-send-message', platform, target, text),
+  onGatewayInput: (callback) => {
+    const listener = (_event, input) => callback(input);
+    ipcRenderer.on('gateway-input', listener);
+    return () => ipcRenderer.removeListener('gateway-input', listener);
+  },
+  onGatewayStatus: (callback) => {
+    const listener = (_event, status) => callback(status);
+    ipcRenderer.on('gateway-status', listener);
+    return () => ipcRenderer.removeListener('gateway-status', listener);
+  },
   getUpdateState: () => ipcRenderer.invoke('desktop-update-get-state'),
   checkForUpdates: () => ipcRenderer.invoke('desktop-update-check'),
   downloadUpdate: () => ipcRenderer.invoke('desktop-update-download'),

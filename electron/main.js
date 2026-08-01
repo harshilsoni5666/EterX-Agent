@@ -29,7 +29,8 @@ try {
 
 const http = require('http');
 const https = require('https');
-const { app, BrowserWindow, ipcMain, dialog, shell, screen, desktopCapturer, Menu, nativeImage, safeStorage } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, screen, desktopCapturer, Menu, nativeImage, safeStorage, Tray } = require('electron');
+const { GatewayDaemon, DEFAULT_CONFIG: DEFAULT_GATEWAY_CONFIG, mergeConfig: normalizeGatewayConfig } = require('../src/lib/agent/gateways/daemon.cjs');
 // Disable HTTP Cache globally in development to prevent aggressive cache storage of stylesheets and scripts
 app.commandLine.appendSwitch('disable-http-cache');
 app.setName('EterX');
@@ -52,6 +53,8 @@ Menu.setApplicationMenu(null);
 
 let mainWindow;
 let petWindow;
+let backgroundTray;
+let gatewayDaemon;
 let latestPetStatus = null;
 const DEFAULT_BOOT_TIMEOUT_MS = 45000;
 const MIN_SPLASH_MS = 3600;
@@ -83,6 +86,7 @@ let desktopUpdateState = {
   manualInstall: true,
   lastCheckedAt: null,
 };
+const launchInBackground = process.argv.includes('--background');
 
 app.on('second-instance', () => {
   if (!mainWindow || mainWindow.isDestroyed()) return;
@@ -103,6 +107,7 @@ const APP_ICON_PATH = app.isPackaged
 
 const NATIVE_THEME_FILE = 'eterx-native-theme.json';
 const SECURE_RUNTIME_SETTINGS_FILE = 'eterx-runtime-settings.bin';
+const SECURE_GATEWAY_SETTINGS_FILE = 'eterx-gateway-settings.bin';
 const SECURE_RUNTIME_SETTINGS_PROVIDERS = new Set([
   'gemini', 'mistral', 'openrouter', 'anthropic', 'openai', 'groq', 'deepseek', 'grok',
   'cerebras', 'together', 'fireworks', 'sambanova', 'perplexity', 'deepinfra',
@@ -399,6 +404,111 @@ function clearSecureRuntimeSettings() {
   }
 }
 
+function secureGatewaySettingsPath() {
+  return path.join(app.getPath('userData'), SECURE_GATEWAY_SETTINGS_FILE);
+}
+
+function readGatewaySettings() {
+  if (!secureStorageAvailable()) return normalizeGatewayConfig(DEFAULT_GATEWAY_CONFIG);
+  try {
+    const encrypted = fs.readFileSync(secureGatewaySettingsPath());
+    return normalizeGatewayConfig(JSON.parse(safeStorage.decryptString(encrypted)));
+  } catch {
+    return normalizeGatewayConfig(DEFAULT_GATEWAY_CONFIG);
+  }
+}
+
+function writeGatewaySettings(raw) {
+  if (!secureStorageAvailable()) {
+    return { ok: false, error: 'OS secure storage is unavailable; gateway credentials were not saved.' };
+  }
+  const settings = normalizeGatewayConfig(raw);
+  const target = secureGatewaySettingsPath();
+  const temporary = `${target}.tmp-${process.pid}`;
+  try {
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(temporary, safeStorage.encryptString(JSON.stringify(settings)), { mode: 0o600 });
+    fs.rmSync(target, { force: true });
+    fs.renameSync(temporary, target);
+    return { ok: true, settings };
+  } catch (error) {
+    try { fs.rmSync(temporary, { force: true }); } catch { }
+    return { ok: false, error: error?.message || 'Failed to save gateway settings.' };
+  }
+}
+
+function publishGatewayEvent(channel, payload) {
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) window.webContents.send(channel, payload);
+  }
+}
+
+function showMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) createWindow();
+  if (mainWindow?.isMinimized()) mainWindow.restore();
+  mainWindow?.show();
+  mainWindow?.focus();
+}
+
+function ensureBackgroundTray() {
+  if (backgroundTray || !gatewayDaemon?.config?.enabled || !gatewayDaemon?.config?.keepRunningOnClose) return;
+  try {
+    backgroundTray = new Tray(APP_ICON_PATH);
+    backgroundTray.setToolTip('EterX background companion');
+    backgroundTray.setContextMenu(Menu.buildFromTemplate([
+      { label: 'Open EterX', click: showMainWindow },
+      { label: 'Gateway status', enabled: false },
+      { type: 'separator' },
+      { label: 'Quit EterX', click: () => { isQuitting = true; app.quit(); } },
+    ]));
+    backgroundTray.on('double-click', showMainWindow);
+  } catch (error) {
+    console.warn('[EterX] Could not create background tray:', error?.message || error);
+  }
+}
+
+function setGatewayLaunchAtLogin(enabled) {
+  if (process.platform === 'linux') {
+    const directory = path.join(app.getPath('home'), '.config', 'autostart');
+    const target = path.join(directory, 'eterx-background.desktop');
+    try {
+      if (!enabled) {
+        fs.rmSync(target, { force: true });
+        return { ok: true };
+      }
+      fs.mkdirSync(directory, { recursive: true });
+      const quoteDesktopArg = (value) => `"${String(value).replace(/(["`$\\])/g, '\\$1')}"`;
+      const command = [process.execPath, ...(!app.isPackaged ? [app.getAppPath()] : []), '--background'].map(quoteDesktopArg).join(' ');
+      const entry = `[Desktop Entry]\nType=Application\nName=EterX Background Companion\nComment=Run EterX channels and scheduled tasks in the background\nExec=${command}\nTerminal=false\nX-GNOME-Autostart-enabled=true\n`;
+      fs.writeFileSync(target, entry, { encoding: 'utf8', mode: 0o600 });
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, error: error?.message || 'Could not update Linux autostart.' };
+    }
+  }
+  try {
+    app.setLoginItemSettings({ openAtLogin: Boolean(enabled), openAsHidden: Boolean(enabled), args: enabled ? ['--background'] : [] });
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: error?.message || 'Could not update login startup.' };
+  }
+}
+
+async function initializeGatewayDaemon() {
+  gatewayDaemon = new GatewayDaemon({
+    dataDir: path.join(app.getPath('userData'), 'data', 'gateways'),
+    config: readGatewaySettings(),
+    onEvent: (event) => publishGatewayEvent('gateway-input', event),
+    onStatus: (status) => publishGatewayEvent('gateway-status', status),
+  });
+  if (gatewayDaemon.config.launchAtLogin) setGatewayLaunchAtLogin(true);
+  if (gatewayDaemon.config.keepRunningOnClose) ensureBackgroundTray();
+  if (gatewayDaemon.config.enabled) {
+    try { await gatewayDaemon.start(); }
+    catch (error) { console.error('[EterX] Gateway daemon failed to start:', error); }
+  }
+}
+
 function secureRuntimeSettingsEnvironment(settings) {
   const providerEnvironment = {
     gemini: 'GEMINI_API_KEY',
@@ -521,7 +631,7 @@ function migrateLegacyUserData() {
     // Migrate only durable user-owned state. The old runtime and browser cache
     // are deliberately excluded so a new install always starts from its own
     // verified packaged resources.
-    const candidates = ['data', NATIVE_THEME_FILE, SECURE_RUNTIME_SETTINGS_FILE];
+    const candidates = ['data', NATIVE_THEME_FILE, SECURE_RUNTIME_SETTINGS_FILE, SECURE_GATEWAY_SETTINGS_FILE];
     for (const name of candidates) {
       const source = path.join(LEGACY_USER_DATA_PATH, name);
       const destination = path.join(currentUserData, name);
@@ -629,7 +739,7 @@ function applyNativeThemeToWindow(targetWindow, colors) {
     if (typeof targetWindow.setIcon === 'function') {
       targetWindow.setIcon(APP_ICON_PATH);
     }
-    if (typeof targetWindow.setTitleBarOverlay === 'function') {
+    if (process.platform !== 'darwin' && typeof targetWindow.setTitleBarOverlay === 'function') {
       targetWindow.setTitleBarOverlay({
         color: colors.titleBar,
         symbolColor: colors.titleSymbol,
@@ -666,7 +776,7 @@ function applySplashWindowTheme(theme = readNativeTheme()) {
 
   try {
     mainWindow.setBackgroundColor(colors.background);
-    if (typeof mainWindow.setTitleBarOverlay === 'function') {
+    if (process.platform !== 'darwin' && typeof mainWindow.setTitleBarOverlay === 'function') {
       mainWindow.setTitleBarOverlay({
         color: colors.titleBar,
         symbolColor: colors.titleSymbol,
@@ -1268,7 +1378,7 @@ async function showSplashScreen() {
   await mainWindow.loadFile(path.join(__dirname, 'splash.html'), {
     query: { theme, icon: getSplashIconDataUrl() },
   });
-  if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
+  if (!launchInBackground && mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
     mainWindow.show();
   }
 }
@@ -1513,6 +1623,19 @@ async function bootApp(options = {}) {
 function createWindow() {
   const initialNativeTheme = readNativeTheme();
   const initialNativeColors = nativeThemeColors(initialNativeTheme);
+  const windowChrome = process.platform === 'darwin'
+    ? {
+        titleBarStyle: 'hiddenInset',
+        trafficLightPosition: { x: 14, y: 12 },
+      }
+    : {
+        titleBarStyle: 'hidden',
+        titleBarOverlay: {
+          color: initialNativeColors.titleBar,
+          symbolColor: initialNativeColors.titleSymbol,
+          height: NATIVE_FRAME_HEIGHT,
+        },
+      };
 
   mainWindow = new BrowserWindow({
     width: 1400,
@@ -1522,12 +1645,7 @@ function createWindow() {
     backgroundColor: initialNativeColors.background,
     title: 'EterX',
     icon: APP_ICON_PATH,
-    titleBarStyle: 'hidden', // Provides the modern frame-less aesthetic while preserving OS buttons
-    titleBarOverlay: {
-      color: initialNativeColors.titleBar,
-      symbolColor: initialNativeColors.titleSymbol,
-      height: NATIVE_FRAME_HEIGHT
-    },
+    ...windowChrome,
     show: false,
     webPreferences: {
       nodeIntegration: false,
@@ -1603,11 +1721,11 @@ function createWindow() {
 
   showSplashScreen()
     .then(() => {
-      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.show();
+      if (!launchInBackground && mainWindow && !mainWindow.isDestroyed()) mainWindow.show();
     })
     .catch((error) => {
       console.error('[EterX] Could not load startup screen:', error);
-      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.show();
+      if (!launchInBackground && mainWindow && !mainWindow.isDestroyed()) mainWindow.show();
     });
 
   bootApp({ retryOnFailure: true });
@@ -1668,6 +1786,14 @@ function createWindow() {
       }
     }, { useSystemPicker: true });
   }
+
+  mainWindow.on('close', (event) => {
+    if (!isQuitting && gatewayDaemon?.config?.enabled && gatewayDaemon?.config?.keepRunningOnClose) {
+      event.preventDefault();
+      mainWindow.hide();
+      ensureBackgroundTray();
+    }
+  });
 
   mainWindow.on('closed', function () {
     mainWindow = null;
@@ -1804,8 +1930,15 @@ ipcMain.handle('app-restart', () => {
 });
 
 ipcMain.handle('app-close', () => {
+  if (gatewayDaemon?.config?.enabled && gatewayDaemon?.config?.keepRunningOnClose) {
+    mainWindow?.hide();
+    ensureBackgroundTray();
+    return { hiddenToTray: true };
+  }
+  isQuitting = true;
   stopPackagedServer();
   app.quit();
+  return { hiddenToTray: false };
 });
 
 let desktopChatSnapshotCache = null;
@@ -1910,6 +2043,67 @@ ipcMain.handle('secure-runtime-settings-get', () => readSecureRuntimeSettings())
 ipcMain.handle('secure-runtime-settings-save', (_event, settings) => writeSecureRuntimeSettings(settings));
 
 ipcMain.handle('secure-runtime-settings-clear', () => clearSecureRuntimeSettings());
+
+ipcMain.handle('gateway-get-state', () => ({
+  available: secureStorageAvailable(),
+  config: gatewayDaemon?.publicConfig() || normalizeGatewayConfig(DEFAULT_GATEWAY_CONFIG),
+  status: gatewayDaemon?.status() || null,
+  conversations: gatewayDaemon?.store.listConversations() || [],
+  events: gatewayDaemon?.store.listEvents(100) || [],
+}));
+
+ipcMain.handle('gateway-save-config', async (_event, raw) => {
+  if (!gatewayDaemon) return { ok: false, error: 'Gateway daemon is not ready.' };
+  const current = readGatewaySettings();
+  const incoming = raw && typeof raw === 'object' ? raw : {};
+  const merged = { ...current, ...incoming, platforms: {} };
+  const secretFields = ['token', 'webhookSecret', 'appSecret', 'publicKey'];
+  for (const platform of ['telegram', 'whatsapp', 'discord', 'signal', 'generic']) {
+    const previous = current.platforms?.[platform] || {};
+    const next = incoming.platforms?.[platform] || {};
+    merged.platforms[platform] = { ...previous, ...next };
+    for (const field of secretFields) {
+      if (typeof next[field] !== 'string' || !next[field].trim()) merged.platforms[platform][field] = previous[field];
+    }
+  }
+  const saved = writeGatewaySettings(merged);
+  if (!saved.ok) return saved;
+  const startup = setGatewayLaunchAtLogin(saved.settings.launchAtLogin);
+  if (!startup.ok) return startup;
+  const state = await gatewayDaemon.configure(saved.settings);
+  if (saved.settings.enabled && saved.settings.keepRunningOnClose) ensureBackgroundTray();
+  if (!saved.settings.enabled && backgroundTray) {
+    backgroundTray.destroy();
+    backgroundTray = null;
+  }
+  return { ok: true, ...state };
+});
+
+ipcMain.handle('gateway-start', async () => gatewayDaemon?.start());
+ipcMain.handle('gateway-stop', async () => gatewayDaemon?.stop());
+ipcMain.handle('gateway-list-events', (_event, limit) => gatewayDaemon?.store.listEvents(Number(limit) || 100) || []);
+ipcMain.handle('gateway-claim-inputs', (_event, limit) => gatewayDaemon?.store.listPending(Number(limit) || 25) || []);
+ipcMain.handle('gateway-ack-input', (_event, eventId) => gatewayDaemon?.store.acknowledge(String(eventId || '')) || false);
+ipcMain.handle('gateway-list-conversations', () => gatewayDaemon?.store.listConversations() || []);
+ipcMain.handle('gateway-mark-read', (_event, conversationId) => gatewayDaemon?.store.markRead(String(conversationId || '')) || false);
+ipcMain.handle('gateway-list-approvals', () => gatewayDaemon?.store.listApprovals() || []);
+ipcMain.handle('gateway-resolve-approval', (_event, identityId, approved) => gatewayDaemon?.store.resolveApproval(String(identityId || ''), Boolean(approved)) || false);
+ipcMain.handle('gateway-call-bridge-tool', async (_event, name, args) => gatewayDaemon?.callBridgeTool(String(name || ''), args || {}));
+ipcMain.handle('gateway-get-mcp-connection', () => {
+  if (!gatewayDaemon) return null;
+  const url = `http://${gatewayDaemon.config.host}:${gatewayDaemon.config.port}/mcp`;
+  return {
+    name: 'eterx-gateway',
+    transport: 'streamable-http',
+    url,
+    token: gatewayDaemon.config.controlToken,
+    headers: { Authorization: `Bearer ${gatewayDaemon.config.controlToken}` },
+  };
+});
+ipcMain.handle('gateway-send-message', async (_event, platform, target, text) => {
+  if (!gatewayDaemon) throw new Error('Gateway daemon is not ready.');
+  return gatewayDaemon.deliverMessage(String(platform || ''), target || {}, String(text || ''));
+});
 
 ipcMain.handle('desktop-update-get-state', () => desktopUpdateState);
 
@@ -2030,6 +2224,7 @@ app.on('ready', async () => {
     console.error('[EterX] Could not prepare bundled server:', error);
   }
 
+  await initializeGatewayDaemon();
   createWindow();
   initializeDesktopUpdates();
 });
@@ -2044,6 +2239,7 @@ app.on('window-all-closed', function () {
 
 app.on('before-quit', () => {
   isQuitting = true;
+  void gatewayDaemon?.stop();
   stopPackagedServer();
 });
 

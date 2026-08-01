@@ -60,6 +60,7 @@ import { rssFeedTool } from './research/rss';
 // Long-running local processes and the connector marked functional in the UI.
 import { processManagerTool } from './automation/process_manager';
 import { slackControllerTool } from './communication/slack';
+import { gatewayBridgeTool } from './communication/gateway_bridge';
 
 // Only expose native desktop tools where their required OS facilities are
 // built in and their full declared contract is implemented. Linux desktop
@@ -118,6 +119,7 @@ const BUILTIN_TOOLS = [
 
   processManagerTool,
   slackControllerTool,
+  gatewayBridgeTool,
 ];
 
 /**

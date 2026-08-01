@@ -1,0 +1,4 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Matrix">
+  <rect width="64" height="64" rx="16" fill="#0dbd8b"/>
+  <path fill="#fff" d="M17 14h4v36h-4zM43 14h4v36h-4zM24 23h5v18h-5zM35 23h5v18h-5zM27 23h10v5H27zM27 36h10v5H27z"/>
+</svg>

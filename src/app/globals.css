@@ -169,12 +169,33 @@
   }
 
   .eterx-app-shell {
+    --eterx-native-controls-left: 0px;
+    --eterx-native-controls-right: 0px;
+    --eterx-sidebar-control-width: 56px;
     background: var(--sidebar-bg);
     color: var(--foreground);
     font-size: var(--eterx-ui-font-size);
     line-height: var(--eterx-ui-line-height);
     color: var(--eterx-ui-text);
     font-family: var(--font-sans), -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+
+  .eterx-app-shell[data-platform="windows"] {
+    --eterx-native-controls-right: 150px;
+  }
+
+  .eterx-app-shell[data-platform="macos"] {
+    --eterx-native-controls-left: 78px;
+  }
+
+  .eterx-app-shell[data-platform="linux"] {
+    --eterx-native-controls-right: 138px;
+  }
+
+  .eterx-window-drag-layer,
+  .eterx-global-topbar {
+    left: 0;
+    right: var(--eterx-native-controls-right);
   }
 
   .eterx-app-shell button,
@@ -226,7 +247,7 @@
   .eterx-sidebar-closed-toggle-shell {
     position: absolute;
     top: 0;
-    left: 0;
+    left: var(--eterx-native-controls-left);
     z-index: 140;
     width: 56px;
     height: var(--eterx-shell-topbar-height);
@@ -235,6 +256,10 @@
     justify-content: center;
     background: transparent;
     -webkit-app-region: drag;
+  }
+
+  .eterx-app-shell[data-platform="macos"] .eterx-sidebar-topbar {
+    padding-left: calc(12px + var(--eterx-native-controls-left));
   }
 
   .eterx-sidebar-closed-toggle {
@@ -4772,7 +4797,6 @@
   color: #116329;
 }
 
-.eterx-sidebar-recents,
 .eterx-connectors-grid,
 .eterx-prompt-preview-scroll,
 .eterx-thought-expanded,
@@ -6090,9 +6114,10 @@
 }
 
 .eterx-channels-view {
-  --eterx-channel-surface: #f8f8f6;
-  --eterx-channel-surface-soft: rgba(248, 248, 246, 0.94);
-  --eterx-channel-surface-clear: rgba(248, 248, 246, 0);
+  position: relative;
+  --eterx-channel-surface: #ffffff;
+  --eterx-channel-surface-soft: rgba(255, 255, 255, 0.94);
+  --eterx-channel-surface-clear: rgba(255, 255, 255, 0);
   background-color: var(--eterx-channel-surface) !important;
 }
 
@@ -6880,7 +6905,7 @@
   }
 
   .eterx-topbar-sidebar-spacer {
-    width: 56px;
+    width: calc(var(--eterx-sidebar-control-width) + var(--eterx-native-controls-left));
   }
 
   .eterx-app-shell[data-sidebar-open="true"] .eterx-topbar-sidebar-spacer {
@@ -7228,6 +7253,93 @@
   box-shadow: var(--eterx-md-table-shadow);
 }
 
+.eterx-channels-view::before {
+  content: 'Channels';
+  position: fixed;
+  top: -1.5rem;
+  left: 3.2rem;
+  z-index: 20;
+  color: #3b3835;
+  font-size: 1.8rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  pointer-events: none;
+}
+
+body.eterx-gateway-view .eterx-channels-view::before {
+  content: 'Gateway';
+}
+
+@media (max-width: 900px) {
+  .eterx-channels-view::before {
+    left: 1.5rem;
+    top: -1.2rem;
+    font-size: 1.45rem;
+  }
+}
+
+:root[data-theme="dark"] .eterx-channels-view::before {
+  color: #f2f0ec;
+}
+
+:root[data-theme="light"] .eterx-channel-agent-card,
+:root[data-theme="light"] .eterx-channel-feature-card {
+  border-color: #e5e2de !important;
+  background: #f8f8f6 !important;
+  color: #33302d !important;
+  box-shadow: 0 20px 54px rgba(45, 42, 38, 0.12) !important;
+}
+
+:root[data-theme="light"] .eterx-channel-phone {
+  border-color: #d9d8d5 !important;
+  background: linear-gradient(180deg, #f9f9f8 0%, #ecebe8 100%) !important;
+}
+
+:root[data-theme="light"] .eterx-channel-cta {
+  border-color: #dcd7cf !important;
+  background: #f1efeb !important;
+  color: #353230 !important;
+}
+
+:root:not([data-theme="dark"]) .eterx-channel-feature-card,
+:root:not([data-theme="dark"]) .eterx-channel-agent-card {
+  background: #f8f8f6 !important;
+}
+
+/* Tasks use a dark-first card palette; normalize it when the app is in light mode. */
+:root[data-theme="light"] .eterx-agents-view [class*="bg-[#141414]"],
+:root[data-theme="light"] .eterx-agents-view [class*="bg-[#0A0A0A]"],
+:root[data-theme="light"] .eterx-agents-view [class*="bg-[#050505]"] {
+  background: #ffffff !important;
+  border-color: #e5e2de !important;
+  box-shadow: 0 8px 26px rgba(45, 42, 38, 0.06) !important;
+}
+
+:root[data-theme="light"] .eterx-agents-view [class*="text-white"] {
+  color: #292725 !important;
+}
+
+:root[data-theme="light"] .eterx-agents-view [class*="border-white"] {
+  border-color: #e5e2de !important;
+}
+
+:root[data-theme="light"] .eterx-connectors-panel {
+  background: #ffffff !important;
+  border-color: #e5e2de !important;
+  box-shadow: 0 24px 70px rgba(45, 42, 38, 0.16) !important;
+}
+
+:root[data-theme="light"] .eterx-connectors-grid {
+  padding: 1rem !important;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  gap: 0.6rem !important;
+}
+
+:root[data-theme="light"] .eterx-connectors-card {
+  padding: 0.7rem !important;
+  border-radius: 0.9rem !important;
+}
+
 .eterx-markdown-table {
   width: 100% !important;
   min-width: 100% !important;
@@ -7247,4 +7359,972 @@
 
 .eterx-md-heading {
   letter-spacing: -0.015em;
+}
+/* Connector setup uses sentence case labels; keep the gateway detail page calm and readable. */
+body.eterx-gateway-view [class~="uppercase"] {
+  text-transform: none !important;
+  letter-spacing: normal !important;
+}
+
+body.eterx-gateway-view select {
+  appearance: none;
+  -webkit-appearance: none;
+  min-height: 48px;
+  min-width: 210px;
+  border-radius: 14px !important;
+  padding: 0 2.75rem 0 1rem !important;
+  font-size: 14px !important;
+  font-weight: 550;
+  color: #292725 !important;
+  background-color: #ffffff !important;
+  border: 1px solid rgba(30, 30, 30, 0.14) !important;
+  -webkit-appearance: none;
+  min-height: 40px;
+  border-radius: 10px;
+  border-color: rgba(255, 255, 255, 0.12);
+  background-color: #1b1b1b;
+  background-image: linear-gradient(45deg, transparent 50%, #a9b2bd 50%), linear-gradient(135deg, #a9b2bd 50%, transparent 50%);
+  background-position: calc(100% - 17px) 17px, calc(100% - 12px) 17px;
+  background-repeat: no-repeat;
+  background-size: 5px 5px, 5px 5px;
+  color: #f1f3f5;
+  cursor: pointer;
+  padding-right: 2.4rem;
+}
+
+body.eterx-gateway-view select:focus {
+  border-color: rgba(29, 140, 255, 0.75);
+  box-shadow: 0 0 0 3px rgba(29, 140, 255, 0.14);
+}
+
+:root[data-theme="dark"] body.eterx-gateway-view select {
+  color: #f3f1ed !important;
+  background-color: #1b1b1b !important;
+  border-color: rgba(255, 255, 255, 0.16) !important;
+}
+
+body.eterx-gateway-view select option {
+  background: #ffffff;
+  color: #292725;
+  font-size: 14px;
+  padding: 0.65rem 0.8rem;
+}
+
+:root[data-theme="dark"] body.eterx-gateway-view select option {
+  background: #1b1b1b;
+  color: #f1f3f5;
+}
+
+.eterx-modern-select {
+  width: 100%;
+  min-width: 0;
+}
+
+.eterx-gateway-mode-tabs {
+  position: relative;
+  display: flex;
+  width: fit-content;
+  margin: 0 auto 0.75rem;
+}
+
+:root[data-theme="light"] .eterx-gateway-mode-tabs {
+  background: rgba(255, 255, 255, 0.92) !important;
+  border-color: #e5e2de !important;
+}
+
+:root[data-theme="dark"] .eterx-gateway-mode-tabs {
+  background: rgba(30, 30, 30, 0.92) !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+}
+
+body.eterx-gateway-view [class*="pt-16"] {
+  padding-top: 0.5rem !important;
+}
+
+body.eterx-gateway-view section.mt-7 {
+  margin-top: 0 !important;
+}
+
+body.eterx-gateway-view section.mt-8 {
+  margin-top: 0.65rem !important;
+}
+
+body.eterx-gateway-view .eterx-gateway-mode-tabs {
+  margin-bottom: 0.35rem !important;
+}
+
+.eterx-gateway-mode-tabs button {
+  position: relative;
+  isolation: isolate;
+}
+
+.eterx-gateway-mode-pill {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: 9999px;
+  background: #e8f3ff;
+  box-shadow: 0 3px 10px rgba(29, 140, 255, 0.14);
+  animation: eterx-gateway-pill-in 260ms cubic-bezier(0.22, 1.35, 0.36, 1);
+}
+
+/* Spring-like content transition shared by Communication and MCP views. */
+.eterx-gateway-mode-tabs,
+body.eterx-gateway-view section.mt-8,
+body.eterx-gateway-view .eterx-mcp-panel {
+  animation: eterx-gateway-spring-in 520ms cubic-bezier(.22, 1.18, .36, 1) both;
+}
+
+body.eterx-gateway-content-bounce section.mt-8,
+body.eterx-gateway-content-bounce .eterx-mcp-panel {
+  animation: eterx-gateway-spring-in 520ms cubic-bezier(.22, 1.18, .36, 1) both;
+}
+
+.eterx-gateway-mode-tabs button {
+  transition: color 180ms ease, transform 220ms cubic-bezier(.22, 1.18, .36, 1);
+  color: #171717 !important;
+  font-weight: 700 !important;
+}
+
+:root[data-theme="dark"] .eterx-gateway-mode-tabs button {
+  color: #f4f4f2 !important;
+}
+
+.eterx-gateway-mode-tabs button:active {
+  transform: scale(.97);
+}
+
+@keyframes eterx-gateway-spring-in {
+  0% { opacity: 0; transform: translateY(12px) scale(.985); }
+  65% { opacity: 1; transform: translateY(-2px) scale(1.002); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* The MCP and Skills tabs are focused workspaces; keep the communication rail
+   out of the way while their panels are active. */
+body.eterx-mcp-mode section.mt-8,
+body.eterx-skills-mode section.mt-8 {
+  display: none !important;
+}
+
+/* MCP has its own bridge status and client controls; the communication-only
+   background companion card should not be duplicated in that workspace. */
+body.eterx-mcp-mode section.mt-7:not(.eterx-mcp-panel):not(.eterx-skills-panel):not(.eterx-live-skills-panel) {
+  display: none !important;
+}
+
+/* Background-task controls live in Settings; Gateway stays focused on
+   communication and MCP configuration. */
+body.eterx-gateway-view section.mt-7:not(.eterx-mcp-panel):not(.eterx-skills-panel):not(.eterx-live-skills-panel) {
+  display: none !important;
+}
+
+/* Keep the Gateway surface clean without removing access to long connector
+   lists or smaller screens that still need to scroll. */
+body.eterx-gateway-view .h-full.min-h-0.w-full.overflow-y-auto,
+body.eterx-gateway-view .max-h-\[500px\].overflow-y-auto {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+body.eterx-gateway-view .h-full.min-h-0.w-full.overflow-y-auto::-webkit-scrollbar,
+body.eterx-gateway-view .max-h-\[500px\].overflow-y-auto::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+/* Single-viewport Gateway layout: the rail is compact enough to show the
+   catalog without creating a second scrollbar. */
+body.eterx-gateway-view .h-full.min-h-0.w-full.overflow-y-auto {
+  overflow: hidden !important;
+  height: 100vh !important;
+  max-height: 100vh !important;
+  min-height: 0 !important;
+}
+html:has(body.eterx-gateway-view),
+body.eterx-gateway-view {
+  overflow: hidden !important;
+}
+body.eterx-gateway-view section.mt-8 {
+  height: calc(100vh - 175px) !important;
+  min-height: 500px !important;
+  overflow: hidden !important;
+  padding-bottom: 0 !important;
+}
+body.eterx-gateway-view section.mt-8 > main {
+  height: 100% !important;
+  min-height: 0 !important;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  scrollbar-gutter: stable;
+}
+body.eterx-gateway-view section.mt-8 > aside > .max-h-\[500px\].overflow-y-auto,
+body.eterx-gateway-view section.mt-8 > main {
+  scrollbar-width: auto;
+  scrollbar-color: var(--eterx-sb-thumb) transparent;
+}
+body.eterx-gateway-view section.mt-8 > aside > .max-h-\[500px\].overflow-y-auto::-webkit-scrollbar,
+body.eterx-gateway-view section.mt-8 > main::-webkit-scrollbar {
+  width: var(--eterx-sb-size) !important;
+  height: var(--eterx-sb-size) !important;
+}
+body.eterx-gateway-view section.mt-8 > aside > .max-h-\[500px\].overflow-y-auto::-webkit-scrollbar-thumb,
+body.eterx-gateway-view section.mt-8 > main::-webkit-scrollbar-thumb {
+  background: var(--eterx-sb-thumb) !important;
+  border: var(--eterx-sb-inset) solid transparent !important;
+  border-radius: var(--eterx-sb-radius) !important;
+  background-clip: padding-box !important;
+}
+body.eterx-gateway-view section.mt-8 > aside > .max-h-\[500px\].overflow-y-auto::-webkit-scrollbar-thumb:hover,
+body.eterx-gateway-view section.mt-8 > main::-webkit-scrollbar-thumb:hover {
+  background: var(--eterx-sb-thumb-hover) !important;
+  background-clip: padding-box !important;
+}
+body.eterx-gateway-view section.mt-8 > aside {
+  height: 100% !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+}
+body.eterx-gateway-view section.mt-8 > aside > .max-h-\[500px\].overflow-y-auto {
+  max-height: none !important;
+  min-height: 0 !important;
+  overflow-y: auto !important;
+}
+
+body.eterx-mcp-mode .h-full.min-h-0.w-full.overflow-y-auto {
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  scrollbar-width: auto;
+  -ms-overflow-style: auto;
+}
+
+body.eterx-mcp-mode .h-full.min-h-0.w-full.overflow-y-auto::-webkit-scrollbar {
+  display: block;
+  width: auto;
+  height: auto;
+}
+
+body.eterx-gateway-view .max-h-\[500px\].overflow-y-auto {
+  display: block;
+  max-height: 430px !important;
+  overflow-y: auto !important;
+  overflow-x: hidden;
+  padding-right: 0.15rem;
+  scrollbar-width: auto;
+  scrollbar-color: var(--eterx-sb-thumb) transparent;
+}
+
+:root[data-theme="dark"] body.eterx-gateway-view .max-h-\[500px\].overflow-y-auto {
+  scrollbar-color: rgba(255, 255, 255, .28) transparent;
+}
+
+body.eterx-gateway-view .max-h-\[500px\].overflow-y-auto::-webkit-scrollbar {
+  display: block;
+  width: var(--eterx-sb-size) !important;
+  height: var(--eterx-sb-size) !important;
+}
+
+body.eterx-gateway-view .max-h-\[500px\].overflow-y-auto::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+body.eterx-gateway-view .max-h-\[500px\].overflow-y-auto::-webkit-scrollbar-thumb {
+  border-radius: var(--eterx-sb-radius) !important;
+  background: var(--eterx-sb-thumb) !important;
+  border: var(--eterx-sb-inset) solid transparent !important;
+  background-clip: padding-box !important;
+}
+
+body.eterx-gateway-view .max-h-\[500px\].overflow-y-auto::-webkit-scrollbar-thumb:hover {
+  background: var(--eterx-sb-thumb-hover) !important;
+  background-clip: padding-box !important;
+}
+
+:root[data-theme="dark"] body.eterx-gateway-view .max-h-\[500px\].overflow-y-auto::-webkit-scrollbar-thumb {
+  background: var(--eterx-sb-thumb) !important;
+  background-clip: padding-box !important;
+}
+
+:root[data-theme="dark"] body.eterx-gateway-view .max-h-\[500px\].overflow-y-auto::-webkit-scrollbar-thumb:hover {
+  background: var(--eterx-sb-thumb-hover) !important;
+  background-clip: padding-box !important;
+}
+
+body.eterx-gateway-view .max-h-\[500px\].overflow-y-auto > button {
+  min-width: 0;
+  padding: 0.35rem 0.4rem;
+  font-size: 0.68rem;
+}
+
+body.eterx-gateway-view .max-h-\[500px\].overflow-y-auto > button > span:nth-child(2) {
+  min-width: 0;
+}
+
+body.eterx-gateway-view section.mt-8 {
+  height: calc(100vh - 175px) !important;
+  min-height: 500px !important;
+  max-height: none !important;
+  overflow: hidden !important;
+  padding-bottom: 3rem !important;
+}
+
+body.eterx-gateway-view section.mt-8 > main {
+  min-height: 0;
+  height: 100%;
+  max-height: none;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+/* Keep the Connections rail stretched to the same bottom edge as its detail
+   pane; only the connector list itself should scroll. */
+body.eterx-gateway-view section.mt-8 > aside {
+  height: auto !important;
+  min-height: 100% !important;
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+}
+body.eterx-gateway-view section.mt-8 > aside > .max-h-\[500px\].overflow-y-auto {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none !important;
+  scrollbar-gutter: stable;
+}
+
+/* The connector catalog follows the page scroll; avoid a small nested rail. */
+body.eterx-gateway-view section.mt-8 {
+  height: auto !important;
+  min-height: 0 !important;
+  overflow: visible !important;
+}
+body.eterx-gateway-view .h-full.min-h-0.w-full.overflow-y-auto {
+  overflow: hidden !important;
+}
+body.eterx-gateway-view section.mt-8 > aside > .max-h-\[500px\].overflow-y-auto {
+  flex: none;
+  max-height: none !important;
+  overflow: visible !important;
+  scrollbar-gutter: auto;
+}
+body.eterx-gateway-view section.mt-8 > main {
+  height: auto !important;
+  overflow: visible !important;
+}
+body.eterx-gateway-view .h-full.min-h-0.w-full.overflow-y-auto {
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+}
+
+/* Keep the communication workspace pinned to the window while the detail
+   pane and catalog remain usable inside the shared panel. */
+body.eterx-gateway-view section.mt-8 {
+  height: calc(100vh - 175px) !important;
+  min-height: 500px !important;
+  overflow: hidden !important;
+  padding-bottom: 0 !important;
+  align-items: stretch !important;
+  grid-template-rows: minmax(0, 1fr) !important;
+}
+body.eterx-gateway-view section.mt-8 > aside {
+  height: auto !important;
+  min-height: 0 !important;
+  align-self: stretch !important;
+}
+body.eterx-gateway-view section.mt-8 > aside > .max-h-\[500px\].overflow-y-auto {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none !important;
+  overflow-y: auto !important;
+}
+body.eterx-gateway-view section.mt-8 > main {
+  height: auto !important;
+  min-height: 0;
+  overflow: visible !important;
+}
+
+body.eterx-gateway-view section.mt-8 {
+  height: auto !important;
+  min-height: 0 !important;
+  overflow: visible !important;
+}
+
+body.eterx-gateway-view .eterx-mcp-panel {
+  height: auto;
+  min-height: 0;
+  max-height: none;
+  overflow: visible;
+  padding-bottom: 2rem;
+  gap: .65rem !important;
+}
+
+body.eterx-gateway-view .eterx-mcp-panel > .rounded-2xl {
+  padding: .9rem !important;
+}
+
+body.eterx-gateway-view .eterx-mcp-panel > .grid {
+  gap: .65rem !important;
+}
+
+/* The bridge stats and connection controls already cover these concepts; the
+   repeated footer cards only add height and visual noise. */
+body.eterx-gateway-view .eterx-mcp-panel > .grid:last-child {
+  display: none !important;
+}
+
+body.eterx-gateway-view .eterx-mcp-panel h2 {
+  font-size: 1.25rem;
+}
+
+body.eterx-gateway-view .eterx-mcp-panel h3 {
+  font-size: .9rem;
+}
+
+/* Connector surfaces use the app-wide EterX scrollbar. */
+body.eterx-gateway-view .max-h-\[500px\].overflow-y-auto {
+  scrollbar-width: auto;
+  scrollbar-color: var(--eterx-sb-thumb) transparent;
+}
+
+body.eterx-gateway-view .max-h-\[500px\].overflow-y-auto::-webkit-scrollbar {
+  width: var(--eterx-sb-size) !important;
+  height: var(--eterx-sb-size) !important;
+}
+
+body.eterx-gateway-view .max-h-\[500px\].overflow-y-auto::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+body.eterx-gateway-view .max-h-\[500px\].overflow-y-auto::-webkit-scrollbar-thumb {
+  border-radius: var(--eterx-sb-radius) !important;
+  background: var(--eterx-sb-thumb) !important;
+  border: 1px solid transparent;
+  background-clip: padding-box;
+}
+
+:root[data-theme="dark"] body.eterx-gateway-view .max-h-\[500px\].overflow-y-auto {
+  scrollbar-color: rgba(255, 255, 255, .3) transparent;
+}
+
+:root[data-theme="dark"] body.eterx-gateway-view .max-h-\[500px\].overflow-y-auto::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, .3);
+  background-clip: padding-box;
+}
+
+
+body.eterx-mcp-mode .eterx-mcp-panel {
+  animation: eterx-gateway-panel-in 180ms ease-out both;
+}
+
+body.eterx-gateway-view .eterx-skills-panel {
+  height: calc(100vh - 235px);
+  min-height: 430px;
+  max-height: none;
+  overflow: hidden;
+}
+
+body.eterx-gateway-view .eterx-skills-panel h2 {
+  font-size: 0;
+}
+
+body.eterx-gateway-view .eterx-skills-panel h2::after {
+  content: 'Skill policy';
+  font-size: 1.25rem;
+}
+
+body.eterx-gateway-view .eterx-skills-panel h3 {
+  font-size: 0;
+}
+
+body.eterx-gateway-view .eterx-skills-panel h3::after {
+  content: 'Skill Catalog';
+  font-size: .9rem;
+}
+
+/* Keep the policy panel intentionally open for future controls. */
+body.eterx-gateway-view .eterx-skills-panel > div > div:nth-child(2) > *:not(h3) {
+  display: none !important;
+}
+
+body.eterx-gateway-view .eterx-skills-panel > div > div:nth-child(2) {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+body.eterx-gateway-view .eterx-skills-panel > div > div:nth-child(2) h3 {
+  width: 100%;
+  text-align: center;
+}
+
+body.eterx-gateway-view .eterx-skills-panel > div > div:nth-child(2)::after {
+  content: '';
+  display: block;
+  flex: 1;
+  min-height: 250px;
+  margin-top: 1rem;
+  border: 1px dashed rgba(120, 120, 120, .22);
+  border-radius: .75rem;
+}
+
+body.eterx-gateway-view .eterx-skills-panel > div > div:first-child {
+  position: relative;
+}
+
+body.eterx-gateway-view .eterx-skills-panel > div > div:first-child > .mt-5 {
+  display: none !important;
+}
+
+body.eterx-gateway-view .eterx-skills-panel > div > div:first-child::after {
+  content: 'Select and edit your skill';
+  position: absolute;
+  inset: 50% 1rem auto;
+  transform: translateY(-50%);
+  text-align: center;
+  color: rgba(120, 120, 120, .72);
+  font-size: 1.25rem;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+body.eterx-gateway-view .eterx-skills-panel > div > div:first-child > div,
+body.eterx-gateway-view .eterx-skills-panel > div > div:first-child > span {
+  visibility: hidden;
+}
+
+body.eterx-gateway-view .eterx-skill-import {
+  min-height: 0;
+}
+
+body.eterx-gateway-view .eterx-skills-panel > div {
+  min-height: 0;
+}
+
+body.eterx-gateway-view .eterx-live-skills-panel {
+  height: calc(100vh - 235px);
+  min-height: 520px;
+  overflow: hidden;
+}
+
+body.eterx-gateway-view .eterx-live-skills-panel > div {
+  min-height: 0;
+  display: grid !important;
+  grid-template-columns: minmax(300px, 1.2fr) minmax(0, 2fr) !important;
+  align-items: stretch;
+}
+
+body.eterx-gateway-view .eterx-live-skills-panel aside,
+body.eterx-gateway-view .eterx-live-skills-panel main {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+body.eterx-gateway-view .eterx-live-skills-panel main {
+  display: flex;
+  flex-direction: column;
+}
+
+body.eterx-gateway-view .eterx-live-skills-panel main textarea {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto !important;
+  max-height: none;
+  overflow: auto;
+}
+
+body.eterx-gateway-view .eterx-live-skills-panel aside {
+  display: flex;
+  flex-direction: column;
+}
+
+body.eterx-gateway-view .eterx-live-skills-panel aside > div:last-child {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none !important;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: .2rem;
+  border-radius: .6rem;
+}
+
+body.eterx-gateway-view .eterx-live-skills-panel aside > div:last-child > button {
+  border: 1px solid transparent;
+  transition: transform 180ms cubic-bezier(.22, 1.18, .36, 1), background-color 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
+}
+
+body.eterx-gateway-view .eterx-live-skills-panel aside > div:last-child > button:hover {
+  transform: translateX(3px);
+  border-color: rgba(29, 140, 255, .28);
+  background: rgba(29, 140, 255, .08);
+  box-shadow: 0 5px 16px rgba(29, 140, 255, .08);
+}
+
+body.eterx-gateway-view .eterx-live-skills-panel aside > div:last-child > button {
+  position: relative;
+  padding-right: 4.5rem !important;
+}
+
+body.eterx-gateway-view .eterx-live-skills-panel aside > div:last-child > button::after {
+  content: none;
+  position: absolute;
+  right: .65rem;
+  top: 50%;
+  transform: translateY(-50%);
+  color: rgba(120, 120, 120, .72);
+  font-size: .98rem;
+  font-weight: 600;
+  letter-spacing: .2rem;
+  opacity: 0;
+  transition: opacity 140ms ease, color 140ms ease;
+}
+
+body.eterx-gateway-view .eterx-skill-row-actions {
+  position: absolute;
+  right: .5rem;
+  top: 50%;
+  display: inline-flex;
+  gap: .2rem;
+  transform: translateY(-50%);
+  opacity: 0;
+  transition: opacity 140ms ease;
+}
+
+body.eterx-gateway-view .eterx-live-skills-panel aside > div:last-child > button:hover .eterx-skill-row-actions,
+body.eterx-gateway-view .eterx-live-skills-panel aside > div:last-child > button:focus-within .eterx-skill-row-actions {
+  opacity: 1;
+}
+
+.eterx-skill-row-actions span {
+  display: grid;
+  width: 1.7rem;
+  height: 1.7rem;
+  place-items: center;
+  border-radius: .45rem;
+  color: rgba(120, 120, 120, .82);
+  font-size: .9rem;
+  transition: background-color 140ms ease, color 140ms ease;
+}
+
+.eterx-skill-action-icon {
+  width: 1rem;
+  height: 1rem;
+  display: block;
+}
+
+.eterx-skill-row-actions span:hover,
+.eterx-skill-row-actions span:focus-visible {
+  background: rgba(29, 140, 255, .14);
+  color: #1d8cff;
+}
+
+.eterx-skill-action-dialog {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, .28);
+  backdrop-filter: blur(5px);
+}
+
+.eterx-skill-action-dialog-card {
+  width: min(380px, calc(100vw - 32px));
+  border: 1px solid rgba(120, 120, 120, .2);
+  border-radius: 16px;
+  padding: 20px;
+  background: var(--eterx-channel-surface, #fff);
+  color: var(--eterx-channel-ink, #171717);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, .25);
+}
+
+.eterx-skill-action-dialog-card h3 { font-size: 17px; font-weight: 700; }
+.eterx-skill-toast { position: fixed; right: 24px; bottom: 24px; z-index: 220; max-width: min(420px, calc(100vw - 48px)); border: 1px solid rgba(16, 185, 129, .28); border-radius: 12px; padding: 11px 14px; background: var(--eterx-channel-surface, #fff); color: #047857; box-shadow: 0 14px 35px rgba(0,0,0,.16); font-size: 12px; font-weight: 600; }
+.eterx-skill-toast.is-error { border-color: rgba(239, 68, 68, .35); color: #dc2626; }
+:root[data-theme="dark"] .eterx-skill-toast { background: #171717; color: #6ee7b7; }
+:root[data-theme="dark"] .eterx-skill-toast.is-error { color: #fca5a5; }
+/* Monochrome fallback connector artwork needs contrast on dark surfaces. */
+:root[data-theme="dark"] body.eterx-gateway-view img[src*="channel-chain-icons8"] { filter: invert(1) brightness(1.7); opacity: .9; }
+.eterx-skill-action-dialog-card p { margin-top: 7px; color: rgba(120, 120, 120, .85); font-size: 12px; line-height: 1.5; }
+.eterx-skill-action-dialog-input { width: 100%; height: 40px; margin-top: 14px; border: 1px solid rgba(120, 120, 120, .24); border-radius: 9px; padding: 0 11px; background: transparent; color: inherit; outline: none; }
+.eterx-skill-action-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+.eterx-skill-action-dialog-actions button { border: 1px solid rgba(120, 120, 120, .24); border-radius: 9px; padding: 8px 13px; font-size: 12px; font-weight: 600; }
+.eterx-skill-action-dialog-actions .primary { border-color: #1d8cff; background: #1d8cff; color: white; }
+.eterx-skill-action-dialog-actions .danger { border-color: #ef4444; background: #ef4444; color: white; }
+:root[data-theme="dark"] .eterx-skill-action-dialog-card { background: #171717; color: #f2f2f0; }
+
+body.eterx-gateway-view .eterx-live-skills-panel aside > div:last-child > button:hover::after,
+body.eterx-gateway-view .eterx-live-skills-panel aside > div:last-child > button:focus-visible::after {
+  opacity: 1;
+}
+
+:root[data-theme="light"] body.eterx-gateway-view .eterx-live-skills-panel,
+:root[data-theme="light"] body.eterx-gateway-view .eterx-skill-import {
+  background: #fff !important;
+  border-color: #e5e2de !important;
+}
+
+:root[data-theme="dark"] body.eterx-gateway-view .eterx-live-skills-panel,
+:root[data-theme="dark"] body.eterx-gateway-view .eterx-skill-import {
+  background: #111 !important;
+  border-color: rgba(255, 255, 255, .12) !important;
+}
+
+:root[data-theme="dark"] body.eterx-gateway-view .eterx-live-skills-panel {
+  color: #f1f1ef;
+}
+
+:root[data-theme="dark"] body.eterx-gateway-view .eterx-live-skills-panel input,
+:root[data-theme="dark"] body.eterx-gateway-view .eterx-live-skills-panel textarea {
+  color: #f1f1ef !important;
+  background: #151515 !important;
+  border-color: rgba(255, 255, 255, .14) !important;
+}
+
+:root[data-theme="dark"] body.eterx-gateway-view .eterx-live-skills-panel input::placeholder {
+  color: rgba(241, 241, 239, .55) !important;
+}
+
+:root[data-theme="dark"] body.eterx-gateway-view .eterx-live-skills-panel .text-black\/40,
+:root[data-theme="dark"] body.eterx-gateway-view .eterx-live-skills-panel .text-black\/45 {
+  color: rgba(241, 241, 239, .62) !important;
+}
+
+body.eterx-gateway-view .eterx-live-skills-panel aside > input {
+  height: 2.7rem !important;
+  min-height: 2.7rem !important;
+  padding-left: .9rem;
+  font-size: .95rem;
+}
+
+@keyframes eterx-gateway-panel-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+:root[data-theme="dark"] .eterx-gateway-mode-pill {
+  background: #183047;
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.28);
+}
+
+@keyframes eterx-gateway-pill-in {
+  0% { transform: scaleX(0.72) scaleY(0.82); opacity: 0.35; }
+  65% { transform: scaleX(1.04) scaleY(1.04); opacity: 1; }
+  100% { transform: scale(1); }
+}
+
+/* Outside clicks are handled at document level; do not render a full-screen
+   backdrop over the form while the menu is open. */
+.eterx-modern-select > button[aria-label="Close options"] {
+  display: none !important;
+}
+
+.eterx-modern-select > button:first-child {
+  width: 100% !important;
+  height: 40px !important;
+  min-height: 40px !important;
+  padding: 0 12px !important;
+  border-radius: 10px !important;
+  border-color: rgba(30, 30, 30, 0.12) !important;
+  background: #ffffff !important;
+  color: #292725 !important;
+  box-shadow: none !important;
+  font-family: inherit !important;
+  font-size: 14px !important;
+  line-height: 1.25 !important;
+  letter-spacing: -0.01em;
+}
+
+.eterx-modern-select > button:first-child > span:last-child {
+  width: 9px;
+  height: 9px;
+  margin-top: -4px;
+  font-size: 0;
+  border-right: 1.8px solid currentColor;
+  border-bottom: 1.8px solid currentColor;
+  transform: rotate(45deg) !important;
+}
+
+.eterx-modern-select > button:first-child > span:last-child.rotate-180 {
+  transform: rotate(225deg) !important;
+  margin-top: 4px;
+}
+
+.eterx-modern-select [role="listbox"] {
+  width: 100%;
+  box-sizing: border-box;
+  height: auto !important;
+  max-height: 6.5rem;
+  padding: 0.2rem !important;
+  border-radius: 13px !important;
+  border-color: rgba(30, 30, 30, 0.12) !important;
+  background: #ffffff !important;
+  box-shadow: 0 12px 30px rgba(30, 28, 25, 0.14) !important;
+}
+
+:root[data-theme="dark"] .eterx-modern-select > button:first-child {
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  background: #1b1b1b !important;
+  color: #f3f1ed !important;
+}
+
+.eterx-modern-select [role="option"] {
+  height: 30px !important;
+  min-height: 30px !important;
+  padding: 0.2rem 0.7rem !important;
+  border-radius: 8px !important;
+  font-size: 13px !important;
+  line-height: 1.2 !important;
+  font-family: inherit !important;
+  letter-spacing: -0.005em;
+  color: #353230 !important;
+  background: transparent !important;
+}
+
+.eterx-modern-select [role="option"].is-selected,
+.eterx-modern-select [role="option"][aria-selected="true"] {
+  color: #126fc1 !important;
+  background: #e8f3ff !important;
+}
+
+:root[data-theme="dark"] .eterx-modern-select [role="listbox"] {
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  background: #1b1b1b !important;
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.48) !important;
+}
+
+:root[data-theme="dark"] .eterx-modern-select [role="option"] {
+  color: rgba(255, 255, 255, 0.82) !important;
+}
+
+:root[data-theme="dark"] .eterx-modern-select [role="option"][aria-selected="true"] {
+  color: #b9dcff !important;
+  background: #183047 !important;
+}
+
+/* Gateway settings persist automatically; keep the header focused on navigation. */
+body.eterx-gateway-view header > div:last-child {
+  display: none !important;
+}
+
+/* Navigation now lives in the shared app header. */
+body.eterx-gateway-view header > div:first-child > button,
+body.eterx-gateway-view header > div:first-child > div > div:first-child {
+  display: none !important;
+}
+
+:root[data-theme="light"] body.eterx-gateway-view [class*="bg-[#f5f5f3]"] {
+  background: #ffffff !important;
+}
+
+:root[data-theme="dark"] body.eterx-gateway-view [class*="bg-[#f5f5f3]"] {
+  background: #0d0d0d !important;
+}
+
+:root[data-theme="dark"] body.eterx-gateway-view [class*="bg-white"] {
+  background: #151515 !important;
+}
+
+:root[data-theme="dark"] body.eterx-gateway-view [class*="text-[#272624]"] {
+  color: #efefed !important;
+}
+
+body.eterx-gateway-view header h1,
+body.eterx-gateway-view header h1 + p,
+body.eterx-gateway-view header + .mt-5 {
+  display: none !important;
+}
+
+body.eterx-gateway-view section.mt-7 {
+  padding: 1rem !important;
+}
+
+body.eterx-gateway-view section.mt-7 > .mt-5 {
+  margin-top: 0.65rem !important;
+}
+
+body.eterx-gateway-view section.mt-7 details.mt-4 {
+  margin-top: 0.65rem !important;
+  padding: 0.65rem 0.8rem !important;
+}
+
+body.eterx-gateway-view main a {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+/* Channels uses the shared app header, just like Agents and Tasks. */
+.eterx-channels-view::before {
+  content: none !important;
+  display: none !important;
+}
+
+.eterx-channel-cta::after {
+  content: '›';
+  position: absolute;
+  right: 1rem;
+  display: inline-block;
+  font-size: 1.8rem;
+  font-weight: 500;
+  font-weight: 600;
+  line-height: 1;
+  transition: transform 160ms ease;
+}
+
+.eterx-channel-cta:hover::after {
+  transform: translateX(3px);
+}
+
+.eterx-channel-cta {
+  position: relative;
+  min-width: 172px;
+  min-height: 42px;
+  border-radius: 9999px !important;
+  justify-content: flex-start;
+  padding-left: 1.5rem !important;
+  padding-right: 2.75rem !important;
+  font-size: 15px !important;
+  letter-spacing: -0.01em;
+}
+
+/* Final Gateway communication layout: fixed outer window, full-height panel,
+   and one internal scrollbar for the connector rail. */
+body.eterx-gateway-view .h-full.min-h-0.w-full.overflow-y-auto {
+  height: 100vh !important;
+  max-height: 100vh !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+}
+html:has(body.eterx-gateway-view),
+body.eterx-gateway-view { overflow: hidden !important; }
+body.eterx-gateway-view section.mt-8 {
+  height: calc(100vh - 175px) !important;
+  min-height: 500px !important;
+  max-height: calc(100vh - 175px) !important;
+  overflow: hidden !important;
+  padding-bottom: 0 !important;
+  grid-template-rows: minmax(0, 1fr) !important;
+  align-items: stretch !important;
+}
+body.eterx-gateway-view section.mt-8 > aside {
+  height: auto !important;
+  min-height: 0 !important;
+  align-self: stretch !important;
+  overflow: hidden !important;
+}
+body.eterx-gateway-view section.mt-8 > aside > .max-h-\[500px\].overflow-y-auto {
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  max-height: none !important;
+  overflow-y: auto !important;
+}
+body.eterx-gateway-view section.mt-8 > main {
+  height: 100% !important;
+  max-height: 100% !important;
+  min-height: 0 !important;
+  overflow-y: scroll !important;
+  overflow-x: hidden !important;
+  display: block !important;
 }
