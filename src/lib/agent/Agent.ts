@@ -2148,8 +2148,9 @@ export class GeminiAgentClient {
         try {
           let accumulatedContent = '';
           let accumulatedReasoning = '';
-          const thoughtStartTime = Date.now();
-          const thoughtId = `thought_${ interactions }_${ thoughtStartTime }`;
+          const responseStartTime = Date.now();
+          let thoughtStartTime = 0;
+          let thoughtId = '';
           const toolCallsAccumulated = new Map<number, any>();
           let lastUsage: any = null;
 
@@ -2173,6 +2174,10 @@ export class GeminiAgentClient {
             const delta = choice?.delta;
             if (delta) {
               if (delta.reasoning_content) {
+                if (!thoughtStartTime) {
+                  thoughtStartTime = Date.now();
+                  thoughtId = `thought_${ interactions }_${ thoughtStartTime }`;
+                }
                 accumulatedReasoning += delta.reasoning_content;
                 if (onTrace) {
                   onTrace({
@@ -2198,7 +2203,7 @@ export class GeminiAgentClient {
                     isDelta: false,
                     wasStreaming: true,
                     answerId: provisionalAnswerId,
-                    startTime: thoughtStartTime,
+                    startTime: thoughtStartTime || responseStartTime,
                     timestamp: Date.now(),
                   });
                 }
@@ -2761,8 +2766,9 @@ export class GeminiAgentClient {
         try {
           let accumulatedText = '';
           let accumulatedThought = '';
-          const thoughtStartTime = Date.now();
-          const thoughtId = `thought_${ interactions }_${ thoughtStartTime }`;
+          const responseStartTime = Date.now();
+          let thoughtStartTime = 0;
+          let thoughtId = '';
           let hasToolUseBlock = false;
 
           writeRuntimeTrace('model_request', {
@@ -2783,6 +2789,10 @@ export class GeminiAgentClient {
             } else if (event.type === 'content_block_delta') {
               const delta = event.delta as any;
               if (delta.type === 'thinking_delta' && delta.thinking) {
+                if (!thoughtStartTime) {
+                  thoughtStartTime = Date.now();
+                  thoughtId = `thought_${ interactions }_${ thoughtStartTime }`;
+                }
                 accumulatedThought += delta.thinking;
                 if (onTrace) {
                   onTrace({
@@ -2807,7 +2817,7 @@ export class GeminiAgentClient {
                     isDelta: false,
                     wasStreaming: true,
                     answerId: provisionalAnswerId,
-                    startTime: thoughtStartTime,
+                    startTime: thoughtStartTime || responseStartTime,
                     timestamp: Date.now(),
                   });
                 }
@@ -6329,8 +6339,9 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
       // Accumulate the full response parts for function calling
       let accumulatedText = '';
       let accumulatedThought = '';
-      const thoughtStartTime = Date.now();
-      const thoughtId = `thought_${ interactions }_${ thoughtStartTime }`;
+      const responseStartTime = Date.now();
+      let thoughtStartTime = 0;
+      let thoughtId = '';
       let workNoteEmitted = false;
       let emittedWorkNoteText = '';
       let functionCalls: any[] = [];
@@ -6380,6 +6391,10 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
 
             // 1. EXPLICIT THINKING (Native reasoning field)
             if (part.thought && part.text) {
+              if (!thoughtStartTime) {
+                thoughtStartTime = Date.now();
+                thoughtId = `thought_${ interactions }_${ thoughtStartTime }`;
+              }
               accumulatedThought += part.text;
               const thoughtEvt = { type: 'thought_stream', text: accumulatedThought, isDelta: false, isStreaming: true, thoughtId, startTime: thoughtStartTime, endTime: Date.now() };
               if (onTrace) onTrace(thoughtEvt);
@@ -6401,7 +6416,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
                   isDelta: false,
                   wasStreaming: true,
                   answerId: provisionalAnswerId,
-                  startTime: thoughtStartTime,
+                  startTime: thoughtStartTime || responseStartTime,
                   timestamp: Date.now(),
                 });
               }

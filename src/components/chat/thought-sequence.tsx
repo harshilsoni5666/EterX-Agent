@@ -4679,8 +4679,7 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
             isThinking &&
             seg.log.isStreaming !== false &&
             seg.log.streamState !== 'closed' &&
-            isLast &&
-            i === segs.length - 1;
+            isLast;
           return <ProfessionalThought key={`t-${ getStreamRowIdentity(seg.log, seg.idx) }`} text={seg.log.text} isLatest={thoughtIsLive} isThinking={thoughtIsLive} startedAt={seg.log.startTime} updatedAt={seg.log.endTime} />;
         }
         if (seg.kind === 'note' && nextSeg?.kind === 'action_group') {

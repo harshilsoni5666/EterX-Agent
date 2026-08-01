@@ -66,13 +66,16 @@ const closeThoughtAt = (log: any, endedAt: number) => {
 };
 
 /**
- * Close the currently open reasoning stream before visible text, a tool, a
- * retry/status event, a terminal event, or a new user turn.
+ * Close reasoning only at a real lifecycle boundary. Ordinary tool, answer,
+ * note, and status traces are allowed to interleave with provider reasoning;
+ * treating them as an implicit end is what caused counters to stop early.
  */
 export const closeThoughtStreamsForBoundary = (logs: any[], boundary: any): void => {
   if (!boundary || boundary.type === 'thought_stream') return;
 
   const closeAll = boundary.type === 'user_action' || isGlobalTerminalBoundary(boundary);
+  const closeOwner = boundary.type === 'thought_stream_boundary';
+  if (!closeAll && !closeOwner) return;
   const boundaryOwner = getThoughtStreamOwner(boundary);
   const endedAt = getTraceTimestamp(boundary);
   const ownersClosed = new Set<string>();
@@ -88,21 +91,18 @@ export const closeThoughtStreamsForBoundary = (logs: any[], boundary: any): void
     if (!closeAll && owner !== boundaryOwner) continue;
     if (ownersClosed.has(owner)) continue;
 
-    if (log.type !== 'thought_stream') {
-      ownersClosed.add(owner);
-      continue;
-    }
+    if (log.type !== 'thought_stream') continue;
+    if (log.isStreaming === false || log.streamState === 'closed') continue;
 
     ownersClosed.add(owner);
-    if (log.isStreaming !== false && log.streamState !== 'closed') {
-      logs[index] = closeThoughtAt(log, endedAt);
-    }
+    logs[index] = closeThoughtAt(log, endedAt);
   }
 };
 
 const findMergeableThoughtIndex = (logs: any[], incoming: any): number => {
   const owner = getThoughtStreamOwner(incoming);
   const incomingThoughtId = String(incoming?.thoughtId || '').trim();
+  const incomingStart = asFiniteTimestamp(incoming?.startTime);
   const incomingIsFinal = incoming?.isStreaming === false || incoming?.streamState === 'closed';
 
   for (let index = logs.length - 1; index >= 0; index -= 1) {
@@ -111,12 +111,22 @@ const findMergeableThoughtIndex = (logs: any[], incoming: any): number => {
     if (candidate.type === 'user_action') break;
     if (getThoughtStreamOwner(candidate) !== owner) continue;
 
-    // The nearest event from this owner is the lifecycle boundary. Never scan
-    // backward through tools, answers, notes, retries, or an older thought.
-    if (candidate.type !== 'thought_stream') return -1;
+    // Provider stream IDs (or their stable start timestamp fallback) remain
+    // authoritative even when tool/answer traces are delivered in between.
+    if (candidate.type !== 'thought_stream') {
+      if (!incomingThoughtId && incomingStart === null) return -1;
+      continue;
+    }
 
     const existingThoughtId = String(candidate.thoughtId || '').trim();
-    if (incomingThoughtId && existingThoughtId && incomingThoughtId !== existingThoughtId) return -1;
+    const existingStart = asFiniteTimestamp(candidate.startTime);
+    if (incomingThoughtId) {
+      if (existingThoughtId !== incomingThoughtId) continue;
+    } else if (incomingStart !== null) {
+      if (existingStart !== incomingStart) continue;
+    } else if (existingThoughtId) {
+      return -1;
+    }
 
     const candidateIsOpen = candidate.isStreaming !== false && candidate.streamState !== 'closed';
     const repeatedFinalForSameId =
