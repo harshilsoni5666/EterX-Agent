@@ -271,6 +271,7 @@ export interface AppSettings {
   worktreesEnabled: boolean;
   browserAccess: boolean;
   computerUse: boolean;
+  showTokenCount: boolean;
   archiveRetention: '30' | '90' | 'forever';
 
   // Live Convo
@@ -335,6 +336,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   worktreesEnabled: false,
   browserAccess: true,
   computerUse: false,
+  showTokenCount: false,
   archiveRetention: '90',
   liveConvoEnabled: true,
   liveConvoProvider: 'gemini-live',
@@ -977,6 +979,60 @@ type ContextChatSummary = {
   updatedAt: number;
   usedTokens: number;
   reportedWindow: number;
+};
+
+const formatTokenMetric = (tokens: number) => {
+  if (!Number.isFinite(tokens) || tokens <= 0) return '0';
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
+  if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(1)}k`;
+  return Math.round(tokens).toLocaleString();
+};
+
+type TokenStats = {
+  lifetimeTokens: number;
+  peakTokens: number;
+  longestChatMinutes: number;
+  currentStreak: number;
+  longestStreak: number;
+  daily: Record<string, number>;
+};
+
+type TokenChatSummary = {
+  id: string;
+  title: string;
+  updatedAt: number;
+  totalTokens: number;
+  recentRunUsage: number;
+  model: string;
+  actions: Array<{ id: string; label: string; kind: string; tokens: number; timestamp: number }>;
+};
+
+const EMPTY_TOKEN_STATS: TokenStats = {
+  lifetimeTokens: 0,
+  peakTokens: 0,
+  longestChatMinutes: 0,
+  currentStreak: 0,
+  longestStreak: 0,
+  daily: {},
+};
+
+const tokenCountForStoredLog = (log: any): number => {
+  if (!log || log.type !== 'model_usage') return 0;
+  const prompt = Number(log.promptTokens ?? log.prompt_tokens ?? log.inputTokens ?? log.input_tokens ?? 0);
+  const completion = Number(log.completionTokens ?? log.completion_tokens ?? log.outputTokens ?? log.output_tokens ?? 0);
+  const total = Number(log.totalTokens ?? log.total_tokens ?? 0);
+  if (total > 0) return total;
+  if (prompt > 0 || completion > 0) return Math.max(0, prompt) + Math.max(0, completion);
+  return 0;
+};
+
+const dayKey = (value: number) => {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return '';
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 };
 
 const normalizeSettingsTab = (tab: any): Tab => {
@@ -1803,6 +1859,10 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
   const [activeContextChatId, setActiveContextChatId] = useState('');
   const [contextChatOverrides, setContextChatOverrides] = useState<Record<string, string>>({});
   const [contextChatsLoading, setContextChatsLoading] = useState(false);
+  const [tokenStats, setTokenStats] = useState<TokenStats>(EMPTY_TOKEN_STATS);
+  const [tokenChats, setTokenChats] = useState<TokenChatSummary[]>([]);
+  const [selectedTokenChatId, setSelectedTokenChatId] = useState('');
+  const [hoveredToken, setHoveredToken] = useState<{ value: number; date: string; x: number; y: number; recentRunUsage?: number; model?: string } | null>(null);
   const [modelThinkingCapabilities, setModelThinkingCapabilities] = useState<Record<string, ModelThinkingCapabilities>>({});
   const [modelApiKeys, setModelApiKeys] = useState<Record<string, string>>({});
   const [providerBaseURLs, setProviderBaseURLs] = useState<Record<string, string>>({});
@@ -1997,6 +2057,159 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
 
     return () => {
       cancelled = true;
+    };
+  }, [activeTab, isOpen]);
+
+  useEffect(() => {
+    if (!isOpen || (activeTab !== 'profile' && activeTab !== 'tokens')) return;
+
+    if (!localStorage.getItem('eterx_app_launch_at')) {
+      localStorage.setItem('eterx_app_launch_at', String(Date.now()));
+    }
+
+    const refreshTokenStats = async (event?: Event) => {
+      try {
+      const cached = JSON.parse(localStorage.getItem('eterx_chats') || '[]');
+      let chats = Array.isArray(cached) ? cached : [];
+      const shouldLoadDurable = !event || (event instanceof CustomEvent && event.detail?.durable === true);
+      if (shouldLoadDurable) {
+        try {
+          const desktopLoad = (window as any)?.electronAPI?.loadChatSnapshot;
+          const snapshot = typeof desktopLoad === 'function'
+            ? await desktopLoad()
+            : await fetch('/api/chats', { cache: 'no-store' }).then(response => response.ok ? response.json() : Promise.reject(new Error('Unable to load chats')));
+          if (Array.isArray(snapshot?.chats)) chats = snapshot.chats;
+        } catch { /* keep the latest local snapshot while durable storage catches up */ }
+      }
+      const uniqueProviderUsageLogs = (logs: any[]) => {
+        const seen = new Set<string>();
+        return logs.filter((log: any) => {
+          if (log?.type !== 'model_usage' || tokenCountForStoredLog(log) <= 0) return false;
+          const key = String(
+            log.usageId ||
+            log._traceIdx ||
+            `${log.runId || log.turnId || ''}:${log.provider || ''}:${log.model || ''}:${log.interaction ?? ''}:${log.timestamp || log.endTime || ''}:${tokenCountForStoredLog(log)}`
+          );
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+      };
+      const nextTokenChats: TokenChatSummary[] = chats
+        .filter((chat: any) => chat && typeof chat.id === 'string')
+        .map((chat: any) => {
+          const logs = Array.isArray(chat.traceLogs) ? chat.traceLogs : [];
+          const usageLogs = uniqueProviderUsageLogs(logs);
+          const recent = usageLogs[usageLogs.length - 1] || {};
+          const modelTotals = usageLogs.reduce((totals: Record<string, number>, log: any) => {
+            const model = String(log.model || chat.model || 'Unknown model').trim() || 'Unknown model';
+            totals[model] = (totals[model] || 0) + tokenCountForStoredLog(log);
+            return totals;
+          }, {});
+          const dominantModel = Object.entries(modelTotals)
+            .sort((left, right) => right[1] - left[1])[0]?.[0] || String(recent.model || chat.model || 'Unmeasured');
+          const lastUserIndex = logs.findLastIndex((log: any) => log?.type === 'user_action');
+          const recentRunUsage = uniqueProviderUsageLogs(lastUserIndex >= 0 ? logs.slice(lastUserIndex + 1) : logs)
+            .reduce((sum: number, log: any) => sum + tokenCountForStoredLog(log), 0);
+          const actions = usageLogs
+            .slice(-100)
+            .map((log: any, index: number) => {
+              const provider = String(log.provider || 'Provider');
+              const model = String(log.model || chat.model || 'Model');
+              const phase = log.phase === 'chat_title'
+                ? 'Chat title'
+                : log.phase === 'telegram_fast'
+                  ? 'Telegram response'
+                  : Number.isFinite(Number(log.interaction))
+                    ? `Model run ${Number(log.interaction)}`
+                    : 'Model run';
+              return {
+                id: String(log.id || `${chat.id}-${index}`),
+                label: `${phase} · ${provider} · ${model}`,
+                kind: 'Usage',
+                tokens: tokenCountForStoredLog(log),
+                timestamp: Number(log.timestamp || log.endTime || log.startTime || chat.updatedAt || Date.now()),
+              };
+            });
+          return {
+            id: String(chat.id),
+            title: String(chat.title || 'Untitled chat').trim() || 'Untitled chat',
+            updatedAt: Number(chat.updatedAt || 0),
+            totalTokens: usageLogs.reduce((sum: number, log: any) => sum + tokenCountForStoredLog(log), 0),
+            recentRunUsage,
+            model: dominantModel,
+            actions,
+          };
+        })
+        .sort((left, right) => right.updatedAt - left.updatedAt);
+      setTokenChats(nextTokenChats);
+      setSelectedTokenChatId(previous => previous && nextTokenChats.some(chat => chat.id === previous) ? previous : nextTokenChats[0]?.id || '');
+      const daily: Record<string, number> = {};
+      let lifetimeTokens = 0;
+      let peakTokens = 0;
+      let longestChatMinutes = 0;
+
+      chats.forEach((chat: any) => {
+        const logs = Array.isArray(chat?.traceLogs) ? chat.traceLogs : [];
+        let chatTokens = 0;
+        let firstAt = Number(chat?.createdAt || chat?.updatedAt || 0);
+        let lastAt = Number(chat?.updatedAt || firstAt);
+        logs.forEach((log: any) => {
+          const at = Number(log?.timestamp || log?.endTime || log?.startTime || 0);
+          if (at > 0) {
+            firstAt = firstAt > 0 ? Math.min(firstAt, at) : at;
+            lastAt = Math.max(lastAt, at);
+          }
+        });
+        uniqueProviderUsageLogs(logs).forEach((log: any) => {
+          const at = Number(log?.timestamp || log?.endTime || log?.startTime || chat?.updatedAt || Date.now());
+          const count = tokenCountForStoredLog(log);
+          if (count <= 0) return;
+          chatTokens += count;
+          const key = dayKey(at || Number(chat?.updatedAt || Date.now()));
+          if (key) daily[key] = (daily[key] || 0) + count;
+        });
+        peakTokens = Math.max(peakTokens, chatTokens);
+        lifetimeTokens += chatTokens;
+        if (lastAt > firstAt) longestChatMinutes = Math.max(longestChatMinutes, Math.round((lastAt - firstAt) / 60000));
+      });
+
+      const activeDays = Object.keys(daily).filter(key => daily[key] > 0).sort();
+      let longestStreak = 0;
+      let streak = 0;
+      let previousDay = '';
+      activeDays.forEach(key => {
+        const current = new Date(`${key}T00:00:00Z`).getTime();
+        const previous = previousDay ? new Date(`${previousDay}T00:00:00Z`).getTime() : 0;
+        streak = previous && current - previous === 86400000 ? streak + 1 : 1;
+        longestStreak = Math.max(longestStreak, streak);
+        previousDay = key;
+      });
+      let currentStreak = 0;
+      const today = new Date();
+      for (let offset = 0; offset < activeDays.length + 1; offset += 1) {
+        const date = new Date(today);
+        date.setHours(0, 0, 0, 0);
+        date.setDate(today.getDate() - offset);
+        const key = dayKey(date.getTime());
+        if (!daily[key]) break;
+        currentStreak += 1;
+      }
+      setTokenStats({ lifetimeTokens, peakTokens, longestChatMinutes, currentStreak, longestStreak, daily });
+      } catch {
+        setTokenStats(EMPTY_TOKEN_STATS);
+      }
+    };
+    refreshTokenStats();
+    const interval = window.setInterval(refreshTokenStats, 5000);
+    window.addEventListener('storage', refreshTokenStats);
+    window.addEventListener('eterx_chats_updated', refreshTokenStats);
+    window.addEventListener('eterx-settings-updated', refreshTokenStats);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener('storage', refreshTokenStats);
+      window.removeEventListener('eterx_chats_updated', refreshTokenStats);
+      window.removeEventListener('eterx-settings-updated', refreshTokenStats);
     };
   }, [activeTab, isOpen]);
 
@@ -2448,9 +2661,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     { id: 'configuration', label: 'Configuration', icon: 'configuration' },
     { id: 'personalization', label: 'Personalization', icon: 'personalization' },
     { id: 'mcp', label: 'MCP servers', icon: 'mcp' },
+    { id: 'tokens', label: 'Tokens', icon: 'tokens' },
     { id: 'context', label: 'Context', icon: 'context' },
     { id: 'models', label: 'Models', icon: 'models' },
-    { id: 'tokens', label: 'Tokens', icon: 'tokens' },
     { id: 'api', label: 'API', icon: 'api' },
     { id: 'live-convo', label: 'Live Convo', icon: 'live-convo' },
     { id: 'git', label: 'Git', icon: 'git' },
@@ -2746,7 +2959,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                 <div className="h-11 shrink-0 border-b border-white/[0.075] bg-[#151515]" />
 
                 {/* Scrollable Body */}
-                <div className="flex-1 overflow-y-auto eterx-scrollbar px-6 py-8">
+                <div className={`flex-1 eterx-scrollbar px-6 ${activeTab === 'tokens' ? 'overflow-hidden py-4' : `overflow-y-auto ${activeTab === 'profile' ? 'py-4' : 'py-8'}`}`}>
                   <AnimatePresence mode="wait">
                     <motion.div
                       key={activeTab}
@@ -2754,9 +2967,12 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                       animate={{ opacity: 1, x: 0 }}
                       exit={{ opacity: 0, x: -10 }}
                       transition={{ duration: 0.2 }}
-                      className="mx-auto w-full max-w-[560px] pb-8"
+                      className={`mx-auto w-full ${activeTab === 'profile' || activeTab === 'tokens' ? 'max-w-[980px]' : 'max-w-[560px]'} pb-8`}
                     >
-                      <h3 className="mb-6 text-[22px] font-semibold leading-tight tracking-[-0.01em] text-[#F4F4F4]">{tabs.find(t => t.id === activeTab)?.label}</h3>
+                      <div className="mb-6 flex items-center justify-between gap-4">
+                        <h3 className="text-[22px] font-semibold leading-tight tracking-[-0.01em] text-[#F4F4F4]">{tabs.find(t => t.id === activeTab)?.label}</h3>
+                        {activeTab === 'tokens' && <div className="flex items-center gap-3"><span className="text-[12px] text-[#999]">Show token count</span><Toggle enabled={settings.showTokenCount} onChange={value => updateSetting('showTokenCount', value)} /></div>}
+                      </div>
 
                       {/* ═══ GENERAL TAB ═══ */}
                       {activeTab === 'general' && (
@@ -3099,19 +3315,79 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                         </div>
                       )}
 
-                      {activeTab === 'tokens' && (
+                      {(activeTab === 'profile' || activeTab === 'tokens') && (
                         <div>
-                          <SectionHeader title="Tokens" />
-                          <p className="-mt-2 mb-5 text-[14px] leading-relaxed text-[#A5A5A5]">See token use for the active chat and the context window available to your selected model.</p>
-                          <SettingsStack>
-                            <SettingsStackRow title="Current chat" description={activeContextChatId ? 'Estimated tokens used by the active chat.' : 'Open a chat to see token usage.'}>
-                              <span className="text-[14px] font-semibold text-[#F1F1F1]">{activeContextChatId ? compactTokenLabel(selectedContextChat?.usedTokens || 0) : 'Not measured'}</span>
-                            </SettingsStackRow>
-                            <SettingsStackRow title="Context window" description="Maximum context available for the selected model.">
-                              <span className="text-[14px] font-semibold text-[#F1F1F1]">{effectiveSelectedChatWindow > 0 ? compactTokenLabel(effectiveSelectedChatWindow) : 'Model maximum'}</span>
-                            </SettingsStackRow>
-                          </SettingsStack>
-                          <button type="button" onClick={() => setActiveTab('context')} className="mt-5 text-[13px] font-medium text-[#9BCBFF] transition-colors hover:text-white">Open context settings</button>
+                          {activeTab === 'profile' && <div className="flex items-center gap-3 rounded-2xl border border-white/[0.08] bg-[#1A1A1A] px-4 py-2.5">
+                            <div className="grid h-10 w-10 shrink-0 place-items-center rounded-full border border-white/[0.12] bg-[#2A2A2A] text-base font-semibold text-[#F1F1F1]">{settings.userName?.charAt(0).toUpperCase() || 'U'}</div>
+                            <input aria-label="Profile name" value={settings.userName || ''} onChange={e => updateSetting('userName', e.target.value)} className="min-w-0 flex-1 border-b border-white/[0.10] bg-transparent pb-0.5 text-[16px] font-semibold text-[#F1F1F1] outline-none focus:border-white/[0.25]" />
+                          </div>}
+                          {activeTab === 'profile' ? <>
+                          <div className="mb-2 mt-5"><h4 className="text-[17px] font-semibold tracking-[-0.02em] text-[#F1F1F1]">Token activity</h4></div>
+                          <div className="relative z-20 overflow-visible rounded-2xl border border-white/[0.08] bg-[#171717] p-3">
+                            <div className="relative z-20 grid w-full grid-flow-col grid-rows-5 grid-cols-[repeat(26,minmax(0,1fr))] gap-x-1 gap-y-1">
+                              {Array.from({ length: 130 }, (_, index) => {
+                                const launchDate = new Date(Number(localStorage.getItem('eterx_app_launch_at')) || Date.now());
+                                launchDate.setDate(1);
+                                launchDate.setHours(0, 0, 0, 0);
+                                const date = new Date(launchDate);
+                                date.setDate(date.getDate() + index);
+                                const key = dayKey(date.getTime());
+                                const value = tokenStats.daily[key] || 0;
+                                const max = Math.max(1, ...Object.values(tokenStats.daily));
+                                const intensity = value <= 0 ? 0 : Math.max(1, Math.ceil((value / max) * 4));
+                                return (
+                                  <span
+                                    key={key}
+                                    aria-label={`${formatTokenMetric(value)} tokens on ${date.toLocaleDateString()}`}
+                                    onMouseEnter={event => setHoveredToken({ value, date: date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }), x: event.clientX, y: event.clientY })}
+                                    onMouseLeave={() => setHoveredToken(null)}
+                                    className={`h-3.5 w-3.5 justify-self-center rounded-[3px] transition-colors duration-150 ease-out ${intensity === 0 ? 'bg-white/[0.045]' : intensity === 1 ? 'bg-[#24415D]' : intensity === 2 ? 'bg-[#356B96]' : intensity === 3 ? 'bg-[#4D96CE]' : 'bg-[#76BFFF]'}`}
+                                  />
+                                );
+                              })}
+                            </div>
+                            <div className="mt-3 grid w-full grid-cols-5 text-[11px] text-[#858585]">
+                              {Array.from({ length: 5 }, (_, index) => {
+                                const month = new Date(Number(localStorage.getItem('eterx_app_launch_at')) || Date.now());
+                                month.setDate(1);
+                                month.setMonth(month.getMonth() + index);
+                                return <span key={month.toISOString()}>{month.toLocaleString(undefined, { month: 'short' })}</span>;
+                              })}
+                            </div>
+                          </div>
+                          {hoveredToken && (
+                            <div className="pointer-events-none fixed z-[10000] min-w-[220px] rounded-xl border border-white/[0.12] bg-[#292929] px-3 py-2.5 text-[12px] text-[#F1F1F1] shadow-[0_8px_24px_rgba(0,0,0,0.38)]" style={{ left: Math.min(hoveredToken.x + 12, window.innerWidth - 250), top: Math.max(8, hoveredToken.y - 72) }}>
+                              {hoveredToken.model ? <div className="space-y-1"><div className="flex justify-between gap-6"><span className="text-[#999]">Total Token</span><span className="font-semibold">{formatTokenMetric(hoveredToken.value)}</span></div><div className="flex justify-between gap-6"><span className="text-[#999]">Recent Run Usage</span><span className="font-semibold">{formatTokenMetric(hoveredToken.recentRunUsage || 0)}</span></div><div className="flex justify-between gap-6"><span className="text-[#999]">Model</span><span className="max-w-[120px] truncate font-semibold">{hoveredToken.model}</span></div></div> : `${formatTokenMetric(hoveredToken.value)} tokens on ${hoveredToken.date}`}
+                            </div>
+                          )}
+                          </> : (() => {
+                              const selected = tokenChats.find(chat => chat.id === selectedTokenChatId) || tokenChats[0];
+                              const hoverChat = (event: React.MouseEvent, value: number, recentRunUsage: number, model: string, date: string) => setHoveredToken({ value, recentRunUsage, model, date, x: event.clientX, y: event.clientY });
+                              return <div className="mt-4 flex h-[calc(100vh-230px)] min-h-[340px] flex-col overflow-hidden rounded-2xl border border-white/[0.08] bg-[#171717]">
+                                <div className="flex min-h-0 flex-1 flex-col border-b border-white/[0.08] p-2">
+                                  <div className="px-3 py-2 text-[11px] font-medium tracking-[0.02em] text-[#777]">All chats</div>
+                                  <div className="min-h-0 flex-1 overflow-y-auto eterx-scrollbar pr-1">
+                                    {tokenChats.length > 0 ? tokenChats.map(chat => (
+                                      <button key={chat.id} type="button" onClick={event => { setSelectedTokenChatId(chat.id); hoverChat(event, chat.totalTokens, chat.recentRunUsage, chat.model, new Date(chat.updatedAt || Date.now()).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })); }} onMouseEnter={event => hoverChat(event, chat.totalTokens, chat.recentRunUsage, chat.model, new Date(chat.updatedAt || Date.now()).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }))} onMouseLeave={() => setHoveredToken(null)} className={`mb-1 flex w-full items-center justify-between gap-3 rounded-xl px-3 py-2.5 text-left transition-colors ${selectedTokenChatId === chat.id ? 'bg-white/[0.10]' : 'hover:bg-white/[0.055]'}`}>
+                                        <span className="min-w-0 truncate text-[13px] text-[#E8E8E8]">{chat.title}</span>
+                                        {settings.showTokenCount && <span className="shrink-0 text-[11px] text-[#888]">{formatTokenMetric(chat.totalTokens)}</span>}
+                                      </button>
+                                    )) : <div className="px-3 py-8 text-center text-[13px] text-[#777]">No saved chats yet.</div>}
+                                  </div>
+                                </div>
+                                <div className="flex min-h-0 flex-1 flex-col p-2">
+                                  <div className="flex items-center justify-between px-3 py-2"><span className="text-[11px] font-medium tracking-[0.02em] text-[#777]">Action usage</span><span className="max-w-[55%] truncate text-[12px] text-[#888]">{selected?.title || 'Choose a chat'}</span></div>
+                                  <div className="min-h-0 flex-1 overflow-y-auto eterx-scrollbar pr-1">
+                                    {selected?.actions?.length ? selected.actions.slice().reverse().map(action => (
+                                      <button key={action.id} type="button" onClick={event => hoverChat(event, selected.totalTokens, selected.recentRunUsage, selected.model, action.label)} onMouseEnter={event => hoverChat(event, selected.totalTokens, selected.recentRunUsage, selected.model, action.label)} onMouseLeave={() => setHoveredToken(null)} className="mb-1 flex w-full items-center justify-between gap-3 rounded-xl px-3 py-2.5 text-left transition-colors hover:bg-white/[0.055]">
+                                        <span className="min-w-0 truncate"><span className="mr-2 normal-case text-[10px] tracking-[0.04em] text-[#666]">{action.kind.charAt(0).toUpperCase() + action.kind.slice(1).toLowerCase()}</span><span className="text-[13px] text-[#D8D8D8]">{action.label}</span></span>
+                                        {settings.showTokenCount && <span className="shrink-0 text-[11px] text-[#888]">{formatTokenMetric(action.tokens)}</span>}
+                                      </button>
+                                    )) : <div className="px-3 py-8 text-center text-[13px] text-[#777]">No recorded actions for this chat.</div>}
+                                  </div>
+                                </div>
+                              </div>;
+                            })()}
                         </div>
                       )}
 
@@ -3950,7 +4226,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                       )}
 
                       {/* ═══ ACCOUNT TAB ═══ */}
-                      {activeTab === 'profile' && (
+                      {false && activeTab === 'profile' && (
                         <div>
                           <SectionHeader title="Profile" />
                           <div className="bg-white/[0.02] rounded-xl border border-white/[0.05] p-5 flex items-center gap-4 mb-4">
@@ -3977,7 +4253,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                             <div className="bg-white/[0.02] rounded-xl border border-white/[0.05] p-4">
                               <div className="text-[11px] text-[#555] uppercase tracking-wider mb-1">Total Chats</div>
                               <div className="text-[24px] font-bold text-[#E8E6E3]">
-                                {(() => { try { const c = localStorage.getItem('eterx_chats'); return c ? JSON.parse(c).length : 0; } catch { return 0; } })()}
+                                {(() => { try { const c = localStorage.getItem('eterx_chats') || '[]'; return JSON.parse(c).length; } catch { return 0; } })()}
                               </div>
                             </div>
                             <div className="bg-white/[0.02] rounded-xl border border-white/[0.05] p-4">
@@ -3986,15 +4262,6 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                             </div>
                           </div>
 
-                          <SectionHeader title="Workspace" />
-                          <SettingRow icon={<FolderOpen className="w-4 h-4" />} title="Workspace Directory" description="Root directory for all agent workspace files">
-                            <span className="text-[12px] font-mono text-[#666] truncate max-w-[200px] block">.workspaces/</span>
-                          </SettingRow>
-                          <SettingRow icon={<Lock className="w-4 h-4" />} title="Security" description="All operations are sandboxed to local filesystem only">
-                            <span className="flex items-center gap-1.5 text-[12px] text-emerald-400/80">
-                              <Shield className="w-3 h-3" /> Secured
-                            </span>
-                          </SettingRow>
                         </div>
                       )}
 

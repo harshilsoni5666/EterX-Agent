@@ -68,11 +68,10 @@ export function applyOpenAIPromptCachePolicy(
 export function removeOpenAIPromptCachePolicy(params: Record<string, any>): void {
   delete params.prompt_cache_key;
   delete params.prompt_cache_retention;
-  delete params.stream_options;
 }
 
 export function isUnsupportedOpenAICacheOptionError(message: string): boolean {
-  return /(?:unknown|unsupported|unrecognized|invalid).{0,80}(?:prompt_cache|stream_options)|(?:prompt_cache|stream_options).{0,80}(?:unknown|unsupported|unrecognized|invalid)/i.test(message);
+  return /(?:unknown|unsupported|unrecognized|invalid).{0,80}prompt_cache|prompt_cache.{0,80}(?:unknown|unsupported|unrecognized|invalid)/i.test(message);
 }
 
 export function normalizeProviderCacheUsage(
@@ -81,29 +80,49 @@ export function normalizeProviderCacheUsage(
 ): Record<string, number> {
   if (!usage) return {};
   if (provider === 'anthropic') {
-    return {
-      promptTokens: usage.input_tokens ?? 0,
-      completionTokens: usage.output_tokens ?? 0,
-      cacheReadTokens: usage.cache_read_input_tokens ?? 0,
-      cacheCreationTokens: usage.cache_creation_input_tokens ?? 0,
-    };
-  }
-  if (provider === 'gemini') {
-    const promptTokens = usage.promptTokenCount ?? usage.inputTokenCount ?? 0;
-    const completionTokens = usage.candidatesTokenCount ?? usage.outputTokenCount ?? 0;
+    const directInputTokens = Number(usage.input_tokens ?? 0);
+    const cacheReadTokens = Number(usage.cache_read_input_tokens ?? 0);
+    const cacheCreationTokens = Number(usage.cache_creation_input_tokens ?? 0);
+    const promptTokens = directInputTokens + cacheReadTokens + cacheCreationTokens;
+    const completionTokens = Number(usage.output_tokens ?? 0);
     return {
       promptTokens,
       completionTokens,
-      totalTokens: usage.totalTokenCount ?? (promptTokens + completionTokens),
-      cachedTokens: usage.cachedContentTokenCount ?? 0,
+      totalTokens: promptTokens + completionTokens,
+      cacheReadTokens,
+      cacheCreationTokens,
+      cachedTokens: cacheReadTokens,
     };
   }
+  if (provider === 'gemini') {
+    const promptTokens = Number(usage.promptTokenCount ?? usage.inputTokenCount ?? 0);
+    const visibleOutputTokens = Number(usage.candidatesTokenCount ?? usage.outputTokenCount ?? 0);
+    const reasoningTokens = Number(usage.thoughtsTokenCount ?? usage.thoughtTokenCount ?? 0);
+    const completionTokens = visibleOutputTokens + reasoningTokens;
+    return {
+      promptTokens,
+      completionTokens,
+      totalTokens: Number(usage.totalTokenCount ?? (promptTokens + completionTokens)),
+      cachedTokens: Number(usage.cachedContentTokenCount ?? 0),
+      reasoningTokens,
+      toolUsePromptTokens: Number(usage.toolUsePromptTokenCount ?? 0),
+    };
+  }
+  const promptTokens = Number(usage.prompt_tokens ?? usage.input_tokens ?? 0);
+  const completionTokens = Number(usage.completion_tokens ?? usage.output_tokens ?? 0);
+  const reasoningTokens = Number(
+    usage.completion_tokens_details?.reasoning_tokens ??
+    usage.output_tokens_details?.reasoning_tokens ??
+    0,
+  );
   return {
-    promptTokens: usage.prompt_tokens ?? usage.input_tokens ?? 0,
-    completionTokens: usage.completion_tokens ?? usage.output_tokens ?? 0,
+    promptTokens,
+    completionTokens,
+    totalTokens: Number(usage.total_tokens ?? usage.totalTokens ?? (promptTokens + completionTokens)),
     cachedTokens:
-      usage.prompt_tokens_details?.cached_tokens ??
+      Number(usage.prompt_tokens_details?.cached_tokens ??
       usage.input_tokens_details?.cached_tokens ??
-      0,
+      0),
+    reasoningTokens,
   };
 }

@@ -101,6 +101,28 @@ import {
   normalizeTracePath,
 } from './tool-trace';
 
+const createProviderUsageTrace = (
+  provider: MainAgentProvider,
+  model: string,
+  usage: any,
+  details: Record<string, unknown> = {},
+) => {
+  const normalized = normalizeProviderCacheUsage(provider, usage);
+  const totalTokens = Number(normalized.totalTokens || 0);
+  if (!Number.isFinite(totalTokens) || totalTokens <= 0) return null;
+  const timestamp = Date.now();
+  return {
+    type: 'model_usage',
+    usageId: `usage_${provider}_${timestamp}_${Math.random().toString(36).slice(2, 9)}`,
+    source: 'provider',
+    provider,
+    model,
+    ...normalized,
+    ...details,
+    timestamp,
+  };
+};
+
 const PROXY_MANAGER_READ_ONLY_TOOLS = new Set([
   'web_search',
   'calculator',
@@ -582,6 +604,12 @@ export class GeminiAgentClient {
           const promptTokens = u.promptTokenCount ?? u.inputTokenCount ?? 0;
           const completionTokens = u.candidatesTokenCount ?? u.outputTokenCount ?? 0;
           const totalTokens = u.totalTokenCount ?? (promptTokens + completionTokens);
+          const usageTrace = createProviderUsageTrace('gemini', this.modelName, u, { phase: 'telegram_fast' });
+          if (usageTrace) {
+            trace.push(usageTrace);
+            onTrace?.(usageTrace);
+            writeRuntimeTrace('model_usage', usageTrace);
+          }
           console.log(`[GeminiClient] 📊 Fast Response Token Usage: Input: ${ promptTokens } | Output: ${ completionTokens } | Total: ${ totalTokens }`);
         }
 
@@ -2163,6 +2191,7 @@ export class GeminiAgentClient {
       if (tools.length > 0) {
         params.parallel_tool_calls = true;
       }
+      params.stream_options = { ...(params.stream_options || {}), include_usage: true };
 
       if (currentSupportsThinking) {
         if (this.activeProvider === 'mistral') {
@@ -2277,15 +2306,18 @@ export class GeminiAgentClient {
           if (lastUsage) {
             const reportedInputTokens = Number(lastUsage.prompt_tokens || lastUsage.input_tokens || 0);
             if (reportedInputTokens > 0) lastObservedContextInputTokens = reportedInputTokens;
-            writeRuntimeTrace('model_usage', {
-              provider: this.activeProvider,
-              model: this.mistralModelName,
-              ...normalizeProviderCacheUsage(this.activeProvider, lastUsage),
+            const usageTrace = createProviderUsageTrace(this.activeProvider, this.mistralModelName, lastUsage, {
+              interaction: interactions,
               cacheMode:
                 this.activeProvider === 'openai' && !params.prompt_cache_key
                   ? 'implicit-prefix'
                   : resolveProviderPromptCacheMode(this.activeProvider, contextCacheEnabled),
             });
+            if (usageTrace) {
+              trace.push(usageTrace);
+              onTrace?.(usageTrace);
+              writeRuntimeTrace('model_usage', usageTrace);
+            }
           }
 
           if (accumulatedReasoning && onTrace) {
@@ -2350,6 +2382,12 @@ export class GeminiAgentClient {
           ) {
             removeOpenAIPromptCachePolicy(params);
             console.warn('[OpenAI] Cache hint unsupported by this model/API; continuing with automatic prefix caching.');
+            continue;
+          }
+
+          if (params.stream_options && /(?:unknown|unsupported|unrecognized|invalid).{0,80}stream_options|stream_options.{0,80}(?:unknown|unsupported|unrecognized|invalid)/i.test(errorMsg)) {
+            delete params.stream_options;
+            console.warn(`[${this.activeProvider}] Stream usage metadata is unsupported; continuing without an estimated token count.`);
             continue;
           }
 
@@ -2940,12 +2978,15 @@ export class GeminiAgentClient {
               + Number(response.usage.cache_read_input_tokens || 0)
               + Number(response.usage.cache_creation_input_tokens || 0);
             if (reportedInputTokens > 0) lastObservedContextInputTokens = reportedInputTokens;
-            writeRuntimeTrace('model_usage', {
-              provider: 'anthropic',
-              model: this.mistralModelName,
-              ...normalizeProviderCacheUsage('anthropic', response.usage),
+            const usageTrace = createProviderUsageTrace('anthropic', this.mistralModelName, response.usage, {
+              interaction: interactions,
               cacheMode: resolveProviderPromptCacheMode('anthropic', cacheEnabled),
             });
+            if (usageTrace) {
+              trace.push(usageTrace);
+              onTrace?.(usageTrace);
+              writeRuntimeTrace('model_usage', usageTrace);
+            }
           }
 
           if (response && response.stop_reason === 'refusal') {
@@ -6738,16 +6779,19 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
         const completionTokens = lastUsageMetadata.candidatesTokenCount ?? lastUsageMetadata.outputTokenCount ?? 0;
         const totalTokens = lastUsageMetadata.totalTokenCount ?? (promptTokens + completionTokens);
         const cachedTokens = lastUsageMetadata.cachedContentTokenCount ?? 0;
-        writeRuntimeTrace('model_usage', {
-          provider: 'gemini',
-          model: this.modelName,
-          ...normalizeProviderCacheUsage('gemini', lastUsageMetadata),
+        const usageTrace = createProviderUsageTrace('gemini', currentModel, lastUsageMetadata, {
+          interaction: interactions,
           cacheMode: resolveProviderPromptCacheMode(
             'gemini',
             process.env.ETERX_DISABLE_CONTEXT_CACHE !== '1',
             !!_cachedContentName,
           ),
         });
+        if (usageTrace) {
+          trace.push(usageTrace);
+          onTrace?.(usageTrace);
+          writeRuntimeTrace('model_usage', usageTrace);
+        }
         console.log(`[GeminiClient] 📊 Token Usage: Input: ${ promptTokens } | Cached: ${ cachedTokens } | Output: ${ completionTokens } | Total: ${ totalTokens }`);
       }
 

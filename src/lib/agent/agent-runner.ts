@@ -23,6 +23,7 @@ import { DEFAULT_MAIN_AGENT_ALLOWED_CAPABILITIES, enforceToolCapability } from '
 import { getPathResolverInfo } from './workspace/path_resolver';
 import { buildRuntimePlatformPrompt } from './runtime/platform-context';
 import { createToolExecutionContext, isToolCancellationError } from './cancellation';
+import { normalizeProviderCacheUsage } from './provider-prompt-cache';
 import type { ScopedRuntimeSettings } from './runtime-api-keys';
 import {
   GEMINI_FAST_FALLBACK_CHAIN,
@@ -591,10 +592,12 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
           const responseStream = await ai.models.generateContentStream(generateConfig);
           const streamedParts: any[] = [];
           let latestCandidate: any = null;
+          let latestUsageMetadata: any = null;
           let streamedThought = false;
           let bufferedVisibleText = '';
           for await (const chunk of responseStream as any) {
             latestCandidate = chunk?.candidates?.[0] || latestCandidate;
+            latestUsageMetadata = chunk?.usageMetadata || latestUsageMetadata;
             const parts = latestCandidate?.content?.parts || [];
             for (const part of parts) {
               streamedParts.push(part);
@@ -615,6 +618,22 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
               content: { ...(latestCandidate?.content || {}), parts: streamedParts },
             }],
           };
+          if (latestUsageMetadata) {
+            const normalizedUsage = normalizeProviderCacheUsage('gemini', latestUsageMetadata);
+            if (Number(normalizedUsage.totalTokens || 0) > 0) {
+              yield {
+                type: 'model_usage',
+                usageId: `usage_gemini_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+                source: 'provider',
+                provider: 'gemini',
+                model: resolvedModel,
+                ...normalizedUsage,
+                interaction: iteration + 1,
+                agentName,
+                timestamp: Date.now(),
+              };
+            }
+          }
           const candidate = response?.candidates?.[0];
           if (!Array.isArray(candidate?.content?.parts) || candidate.content.parts.length === 0) {
             // Check for safety/blocking reasons

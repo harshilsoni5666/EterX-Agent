@@ -4,6 +4,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
 import { getMainAgentModelConfig, normalizeMainAgentMode, isOpenAIReasoningModel, isAnthropicAdaptiveThinkingModel, type MainAgentMode, type MainAgentProvider } from '../../../../lib/agent/model-routing';
 import { getProviderBaseURL, isLocalModelProvider } from '../../../../lib/agent/provider-runtime';
+import { normalizeProviderCacheUsage } from '../../../../lib/agent/provider-prompt-cache';
 import {
   buildScopedRuntimeSettings,
   getScopedRuntimeApiKey,
@@ -89,7 +90,7 @@ async function generateTitleWithProvider(
   prompt: string,
   runtimeSettings: ScopedRuntimeSettings,
   safeHistory: any[]
-): Promise<string> {
+): Promise<{ title: string; provider: MainAgentProvider; model: string; usage?: Record<string, number> }> {
   if (provider === 'anthropic') {
     const apiKey = getScopedRuntimeApiKey(runtimeSettings, 'anthropic');
     if (!apiKey) throw new Error('Missing Anthropic API key');
@@ -113,7 +114,7 @@ async function generateTitleWithProvider(
         .filter(Boolean)
         .join('')
       : '';
-    return cleanTitle(titleText, safeHistory);
+    return { title: cleanTitle(titleText, safeHistory), provider, model: modelName, usage: normalizeProviderCacheUsage(provider, (result as any).usage) };
   }
 
   if (provider === 'gemini') {
@@ -155,7 +156,7 @@ async function generateTitleWithProvider(
     }
     const candidates = result.candidates || [];
     const titleText = candidates[0]?.content?.parts?.find(p => 'text' in p)?.text;
-    return cleanTitle(titleText, safeHistory);
+    return { title: cleanTitle(titleText, safeHistory), provider, model: modelName, usage: normalizeProviderCacheUsage(provider, (result as any).usageMetadata) };
   }
 
   // Other OpenAI-compatible providers: openai, openrouter, groq, mistral
@@ -186,7 +187,7 @@ async function generateTitleWithProvider(
     completionsParams.max_tokens = 24;
   }
   const result = await client.chat.completions.create(completionsParams);
-  return cleanTitle(result.choices?.[0]?.message?.content, safeHistory);
+  return { title: cleanTitle(result.choices?.[0]?.message?.content, safeHistory), provider, model: modelName, usage: normalizeProviderCacheUsage(provider, (result as any).usage) };
 }
 
 export async function POST(req: NextRequest) {
@@ -224,15 +225,15 @@ export async function POST(req: NextRequest) {
 
     // 1. Try primary provider first
     try {
-      const title = await generateTitleWithProvider(
+      const generated = await generateTitleWithProvider(
         modelConfig.provider,
         modelConfig.modelName,
         prompt,
         runtimeSettings,
         safeHistory
       );
-      if (title && !isDefaultChatTitle(title)) {
-        return NextResponse.json({ title });
+      if (generated.title && !isDefaultChatTitle(generated.title)) {
+        return NextResponse.json(generated);
       }
     } catch (e: any) {
       console.warn(`[Title] Primary provider ${modelConfig.provider} (${modelConfig.modelName}) failed:`, e.message || e);
@@ -283,15 +284,15 @@ export async function POST(req: NextRequest) {
 
       try {
         console.log(`[Title] Attempting fallback with provider: ${fb.provider} (${fb.modelName})`);
-        const title = await generateTitleWithProvider(
+        const generated = await generateTitleWithProvider(
           fb.provider,
           fb.modelName,
           prompt,
           runtimeSettings,
           safeHistory
         );
-        if (title && !isDefaultChatTitle(title)) {
-          return NextResponse.json({ title });
+        if (generated.title && !isDefaultChatTitle(generated.title)) {
+          return NextResponse.json(generated);
         }
       } catch (e: any) {
         console.warn(`[Title] Fallback provider ${fb.provider} (${fb.modelName}) failed:`, e.message || e);

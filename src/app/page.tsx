@@ -4605,6 +4605,7 @@ function DeepWorkUI() {
     try {
       localStorage.setItem('eterx_chats', JSON.stringify(stripChatsForBrowserCache(chatList)));
       localStorage.setItem('eterx_chats_saved_at', String(savedAt));
+      window.dispatchEvent(new CustomEvent('eterx_chats_updated', { detail: { savedAt } }));
     } catch { }
     // Before the authoritative AppData snapshot is merged, some sidebar rows
     // contain metadata or bounded cache tails only. Never let those replace a
@@ -4615,7 +4616,10 @@ function DeepWorkUI() {
       const saved = await desktopSave({ savedAt, chats: stripped, chatIds, partial: true })
         .then(() => true)
         .catch(() => false);
-      if (saved) persistedChatSignaturesRef.current = nextSignatures;
+      if (saved) {
+        persistedChatSignaturesRef.current = nextSignatures;
+        window.dispatchEvent(new CustomEvent('eterx_chats_updated', { detail: { savedAt, durable: true } }));
+      }
       return;
     }
     const saved = await fetch('/api/chats', {
@@ -4624,7 +4628,10 @@ function DeepWorkUI() {
       body: JSON.stringify({ savedAt, chats: stripped, chatIds, partial: true }),
       keepalive,
     }).then(response => response.ok).catch(() => false);
-    if (saved) persistedChatSignaturesRef.current = nextSignatures;
+    if (saved) {
+      persistedChatSignaturesRef.current = nextSignatures;
+      window.dispatchEvent(new CustomEvent('eterx_chats_updated', { detail: { savedAt, durable: true } }));
+    }
   };
   useEffect(() => {
     const flushChatSnapshot = () => {
@@ -5145,7 +5152,7 @@ function DeepWorkUI() {
     });
   }, []);
 
-  const fetchGeneratedTitle = async (history: any[], currentTitle?: string, mode: MainAgentMode = agentMode): Promise<string | null> => {
+  const fetchGeneratedTitle = async (history: any[], currentTitle?: string, mode: MainAgentMode = agentMode): Promise<{ title: string; provider?: string; model?: string; usage?: Record<string, number> } | null> => {
     const res = await fetch('/api/chat/title', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -5160,7 +5167,7 @@ function DeepWorkUI() {
 
     const data = await res.json();
     const title = String(data.title || '').trim();
-    return title && !isDefaultChatTitle(title) ? title : null;
+    return title && !isDefaultChatTitle(title) ? { ...data, title } : null;
   };
 
   const generateTitle = async (chatId: string, history: any[], currentTitle?: string, mode: MainAgentMode = agentMode) => {
@@ -5168,12 +5175,32 @@ function DeepWorkUI() {
       // Use passed title or fall back to finding in current state (for background updates)
       const existingTitle = currentTitle || chats.find(c => c.id === chatId)?.title || DEFAULT_CHAT_TITLE;
 
-      const title = await fetchGeneratedTitle(history, existingTitle, mode);
-      if (title && title !== existingTitle) {
+      const generated = await fetchGeneratedTitle(history, existingTitle, mode);
+      if (generated) {
         setChats(prev => {
-          const updated = prev.map(c =>
-            c.id === chatId ? { ...c, title, updatedAt: Date.now() } : c
-          );
+          const updated = prev.map(c => {
+            if (c.id !== chatId) return c;
+            const totalTokens = Number(generated.usage?.totalTokens || 0);
+            const latestUser = [...(c.traceLogs || [])].reverse().find((log: any) => log?.type === 'user_action');
+            const usageLog = totalTokens > 0 ? {
+              type: 'model_usage',
+              usageId: `usage_title_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+              source: 'provider',
+              provider: generated.provider,
+              model: generated.model,
+              ...(generated.usage || {}),
+              phase: 'chat_title',
+              runId: latestUser?.runId || latestUser?.turnId,
+              turnId: latestUser?.turnId || latestUser?.runId,
+              timestamp: Date.now(),
+            } : null;
+            return {
+              ...c,
+              title: generated.title !== existingTitle ? generated.title : c.title,
+              updatedAt: Date.now(),
+              traceLogs: usageLog ? [...(c.traceLogs || []), usageLog] : c.traceLogs,
+            };
+          });
           const sorted = sortChats(updated);
           persistChats(sorted);
           return sorted;

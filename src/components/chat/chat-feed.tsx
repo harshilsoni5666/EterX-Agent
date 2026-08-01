@@ -254,6 +254,13 @@ const formatShortTime = (timestamp: number | string | undefined | null): string 
   }
 };
 
+const formatProviderTokenCount = (tokens: number): string => {
+  if (!Number.isFinite(tokens) || tokens <= 0) return '';
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(tokens >= 10_000_000 ? 0 : 1)}M`;
+  if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(tokens >= 10_000 ? 0 : 1)}k`;
+  return String(Math.round(tokens));
+};
+
 const UserMessageActions = React.memo(({ text, onEdit, timestamp }: { text: string; onEdit?: (text: string) => void; timestamp?: number | string | null }) => {
   const [copied, setCopied] = useState(false);
   const handleCopy = async (event: React.MouseEvent) => {
@@ -850,6 +857,7 @@ const HIDDEN_MODEL_STATUS_PATTERN = /^(?:(?:using|starting|selected)\s+)?(?:mode
 const DASH_ONLY_STATUS_PATTERN = /^[\s\-â€“â€”]{2,}$/;
 
 const isHiddenStatusOnlyLog = (log: any) => {
+  if (log?.type === 'model_usage') return true;
   if (log?.type === 'work_note_cancel') return true;
   if (log?.type === 'answer_cancel') return true;
   if (log?.type === 'task_plan') return true;
@@ -1135,6 +1143,8 @@ const RENDER_RELEVANT_LOG_FIELDS = [
   'icon', 'iconCategory', 'size', '_autonomyProxy', '_streamingCancelled',
   '_autonomyCheckpoint', '_autonomyBoundaryFollowUp', '_connection', 'model', 'modelName',
   'phase', 'compactionId', 'beforeTokens', 'afterTokens', 'contextWindow', 'modelProvider',
+  'provider', 'source', 'promptTokens', 'completionTokens', 'totalTokens', 'cachedTokens',
+  'reasoningTokens', 'interaction', 'usageId', 'runId', 'turnId',
 ] as const;
 
 const haveSameNestedValue = (left: unknown, right: unknown) => {
@@ -1168,6 +1178,7 @@ const ChatFeedMessageGroup = React.memo(({
   onEditUserMessage,
   isSubAgentTab,
   setPreviewUserMessage,
+  showTokenCount,
 }: {
   group: any[];
   groupIdx: number;
@@ -1180,6 +1191,7 @@ const ChatFeedMessageGroup = React.memo(({
   onEditUserMessage?: (text: string) => void;
   isSubAgentTab: boolean;
   setPreviewUserMessage: (msg: { text: string; index: number } | null) => void;
+  showTokenCount: boolean;
 }) => {
   // Retain only a fuller snapshot of an answer that is still present. An
   // explicit cancellation or turn replacement must be able to clear it.
@@ -1273,6 +1285,19 @@ const ChatFeedMessageGroup = React.memo(({
       </div>
     );
   }
+
+  const answerTokenCount = (() => {
+    const seen = new Set<string>();
+    return group.reduce((total: number, log: any) => {
+      if (log?.type !== 'model_usage') return total;
+      const tokenTotal = Number(log.totalTokens ?? log.total_tokens ?? 0);
+      if (!Number.isFinite(tokenTotal) || tokenTotal <= 0) return total;
+      const key = String(log.usageId || log._traceIdx || `${log.runId || log.turnId || ''}:${log.provider || ''}:${log.model || ''}:${log.interaction ?? ''}:${log.timestamp || ''}:${tokenTotal}`);
+      if (seen.has(key)) return total;
+      seen.add(key);
+      return total + tokenTotal;
+    }, 0);
+  })();
 
   // Bug 9: Empty groups (appended for live thinking indicator) must not
   // render a blank mb-8 div when the group truly has no content yet.
@@ -1654,6 +1679,11 @@ const ChatFeedMessageGroup = React.memo(({
                           {formatShortTime(displayFinalAnswer.endTime ?? displayFinalAnswer.timestamp)}
                         </span>
                       )}
+                      {showTokenCount && answerTokenCount > 0 && (
+                        <span className="ml-1.5 text-[11px] font-medium tabular-nums leading-none text-[#746F67] select-none whitespace-nowrap">
+                          {formatProviderTokenCount(answerTokenCount)} tokens
+                        </span>
+                      )}
                     </div>
                   </div>
                 ) : undefined}
@@ -1671,6 +1701,7 @@ const ChatFeedMessageGroup = React.memo(({
   if (previous.suppressInitialReveal !== next.suppressInitialReveal) return false;
   if (previous.isCompressed !== next.isCompressed) return false;
   if (previous.isSubAgentTab !== next.isSubAgentTab) return false;
+  if (previous.showTokenCount !== next.showTokenCount) return false;
   if (previous.onOpenAgentTeam !== next.onOpenAgentTeam) return false;
   if (previous.onAnswerAskUser !== next.onAnswerAskUser) return false;
   if (previous.onEditUserMessage !== next.onEditUserMessage) return false;
@@ -1744,6 +1775,25 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
   const previewCloseButtonRef = useRef<HTMLButtonElement>(null);
   const previewRestoreFocusRef = useRef<HTMLElement | null>(null);
   const previewTitleId = React.useId();
+  const [showTokenCount, setShowTokenCount] = useState(false);
+
+  useEffect(() => {
+    const refreshTokenCountPreference = () => {
+      try {
+        const saved = JSON.parse(localStorage.getItem('eterx_settings') || '{}');
+        setShowTokenCount(saved?.showTokenCount === true);
+      } catch {
+        setShowTokenCount(false);
+      }
+    };
+    refreshTokenCountPreference();
+    window.addEventListener('storage', refreshTokenCountPreference);
+    window.addEventListener('eterx-settings-updated', refreshTokenCountPreference);
+    return () => {
+      window.removeEventListener('storage', refreshTokenCountPreference);
+      window.removeEventListener('eterx-settings-updated', refreshTokenCountPreference);
+    };
+  }, []);
 
   const groups = useMemo(() => {
     const nextGroups: any[][] = [];
@@ -2257,6 +2307,7 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
                         onEditUserMessage={onEditUserMessage}
                         isSubAgentTab={isSubAgentTab}
                         setPreviewUserMessage={setPreviewUserMessage}
+                        showTokenCount={showTokenCount}
                       />
                     </React.Fragment>
                   );
