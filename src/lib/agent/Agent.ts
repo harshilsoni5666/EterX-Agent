@@ -2426,7 +2426,31 @@ export class GeminiAgentClient {
         return { text: finalText, trace };
       }
 
-      const visibleNoteText = contentText;
+      let visibleNoteText = contentText;
+      if (!visibleNoteText) {
+        visibleNoteText = await this.generateMissingActionWorkNote(message, toolCalls, async prompt => {
+          const noteParams: any = {
+            model: this.mistralModelName,
+            messages: [
+              {
+                role: 'system',
+                content: 'Write one natural user-facing work note for an action that is about to happen. Return only the finished note, never analysis or drafting.',
+              },
+              { role: 'user', content: prompt },
+            ],
+          };
+          if (this.activeProvider === 'openai' && isOpenAIReasoningModel(this.mistralModelName)) {
+            noteParams.max_completion_tokens = 420;
+            noteParams.reasoning_effort = 'low';
+          } else {
+            noteParams.max_tokens = 220;
+          }
+          const noteResponse: any = await client.chat.completions.create(noteParams);
+          return this.extractMistralContent(noteResponse?.choices?.[0]?.message?.content);
+        }, {
+          previousNotes: visibleWorkNoteTexts,
+        });
+      }
 
       if (visibleNoteText) {
         lastAnswer = contentText;
@@ -3042,7 +3066,20 @@ export class GeminiAgentClient {
         return { text: finalText, trace };
       }
 
-      const visibleNoteText = contentText;
+      let visibleNoteText = contentText;
+      if (!visibleNoteText) {
+        visibleNoteText = await this.generateMissingActionWorkNote(message, toolUses, async prompt => {
+          const noteResponse: any = await client.messages.create({
+            model: this.mistralModelName,
+            max_tokens: 220,
+            system: 'Write one natural user-facing work note for an action that is about to happen. Return only the finished note, never analysis or drafting.',
+            messages: [{ role: 'user', content: prompt }],
+          });
+          return this.extractAnthropicContent(Array.isArray(noteResponse?.content) ? noteResponse.content : []);
+        }, {
+          previousNotes: visibleWorkNoteTexts,
+        });
+      }
 
       if (visibleNoteText) {
         lastAnswer = contentText;
@@ -3150,6 +3187,47 @@ export class GeminiAgentClient {
 
   private formatVisibleWorkNote(value: string, _maxLength = 720, suppressFinalAnswers = false): string {
     return formatCleanVisibleWorkNote(value, _maxLength, suppressFinalAnswers);
+  }
+
+  private async generateMissingActionWorkNote(
+    message: string,
+    actions: any[],
+    generate: (prompt: string) => Promise<string>,
+    communicationContext: { previousNotes?: string[] } = {}
+  ): Promise<string> {
+    const actionContext = actions.slice(0, 4).map(action => {
+      const name = String(action?.function?.name || action?.name || action?.id || 'action');
+      const rawArguments = action?.function?.arguments ?? action?.input ?? action?.args ?? {};
+      const argumentsText = typeof rawArguments === 'string' ? rawArguments : JSON.stringify(rawArguments);
+      return `${ name }: ${ this.compactText(argumentsText, 360) }`;
+    }).join('\n');
+    const previousNotes = (communicationContext.previousNotes || [])
+      .slice(-3)
+      .map(note => this.compactText(note, 420))
+      .join('\n');
+    const prompt = [
+      'Write the work note that naturally belongs immediately before these actions.',
+      'Speak directly to the user in your own voice. You may state your intent, what you are doing now, a future action you are about to take, why it matters, or a useful finding.',
+      'This is progress communication, not private thought, a restatement of instructions, an approval request, a notification, or a final answer.',
+      'Do not describe how you are composing the note. Do not ask whether to proceed. Return only the finished work note in normal prose or simple bullets.',
+      '',
+      `User request: ${ this.compactText(message, 1500) }`,
+      ...(previousNotes ? ['', 'Work notes already shown; do not repeat them:', previousNotes] : []),
+      '',
+      'Actions beginning now:',
+      actionContext,
+    ].join('\n');
+
+    try {
+      const generated = await Promise.race([
+        generate(prompt),
+        new Promise<string>((_, reject) => setTimeout(() => reject(new Error('WORK_NOTE_GENERATION_TIMEOUT')), 12_000)),
+      ]);
+      return String(generated || '').trim();
+    } catch (error: any) {
+      console.warn('[Agent] Could not generate an action work note:', String(error?.message || error));
+      return '';
+    }
   }
 
   private cleanSchemaStructure(obj: any, path = ''): any {
@@ -6686,6 +6764,28 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
         delete (config as any).cachedContent;
         delete (config as any).tools;
         _cachedContentName = null;
+      }
+
+      if (functionCalls.length > 0 && !accumulatedText && !emittedWorkNoteText) {
+        const generatedNote = await this.generateMissingActionWorkNote(message, functionCalls, async prompt => {
+          const thinkingConfig = getGeminiThinkingConfig('minimal', this.modelName, false);
+          const noteResponse: any = await this.ai.models.generateContent({
+            model: this.modelName,
+            contents: [{ role: 'user', parts: [{ text: prompt }] }],
+            config: {
+              maxOutputTokens: 350,
+              systemInstruction: 'Write one natural user-facing work note for an action that is about to happen. Return only the finished note, never analysis or drafting.',
+              ...(thinkingConfig ? { thinkingConfig } : {}),
+            },
+          });
+          return String(noteResponse?.candidates?.[0]?.content?.parts
+            ?.filter((part: any) => !part?.thought)
+            .map((part: any) => part?.text || '')
+            .join('') || '');
+        }, {
+          previousNotes: visibleWorkNoteTexts,
+        });
+        if (generatedNote) emitVisibleWorkNote(generatedNote);
       }
 
       if (functionCalls.length > 0 && (accumulatedText || emittedWorkNoteText)) {
