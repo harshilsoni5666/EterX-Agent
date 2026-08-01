@@ -148,6 +148,12 @@ function positiveIntEnv(name: string, fallback: number): number {
   return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : fallback;
 }
 
+function isUnsupportedParallelToolCallsError(value: unknown): boolean {
+  const message = String(value || '').toLowerCase();
+  return message.includes('parallel_tool_calls') &&
+    /unsupported|unknown|unrecognized|unexpected|invalid|extra|not (?:allowed|permitted)/.test(message);
+}
+
 function isSyntheticLoopCompletionText(value: unknown): boolean {
   const text = String(value || '').trim();
   if (!text) return false;
@@ -185,31 +191,60 @@ function cleanConsecutiveRoles(rawContents: any[]): any[] {
 
 function stripPriorWorkingMemoryInjections(rawContents: any[]): any[] {
   const clean: any[] = [];
-  let removedStringInjection = false;
+  let removedWorkingMemoryInjection = false;
   for (const content of rawContents) {
     if (typeof content?.content === 'string' && content.content.startsWith('[SYSTEM - WORKING MEMORY]')) {
-      removedStringInjection = true;
+      removedWorkingMemoryInjection = true;
       continue;
+    }
+    if (Array.isArray(content?.content)) {
+      const remainingContent = content.content.filter((block: any) =>
+        !(block?.type === 'text' && typeof block?.text === 'string' && block.text.startsWith('[SYSTEM - WORKING MEMORY]'))
+      );
+      if (remainingContent.length !== content.content.length) {
+        removedWorkingMemoryInjection = remainingContent.length === 0;
+        if (remainingContent.length > 0) clean.push({ ...content, content: remainingContent });
+        continue;
+      }
     }
     if (
-      removedStringInjection &&
+      removedWorkingMemoryInjection &&
       content?.role === 'assistant' &&
-      content?.content === 'Understood. Continuing.'
+      (
+        content?.content === 'Understood. Continuing.' ||
+        (
+          Array.isArray(content?.content) &&
+          content.content.length === 1 &&
+          content.content[0]?.type === 'text' &&
+          content.content[0]?.text === 'Understood. Continuing.'
+        )
+      )
     ) {
-      removedStringInjection = false;
+      removedWorkingMemoryInjection = false;
       continue;
     }
-    removedStringInjection = false;
     if (!Array.isArray(content?.parts)) {
+      removedWorkingMemoryInjection = false;
       clean.push(content);
       continue;
     }
+    const hadWorkingMemoryInjection = content.parts.some((part: any) =>
+      typeof part?.text === 'string' && part.text.startsWith('[SYSTEM - WORKING MEMORY]')
+    );
     const parts = content.parts.filter((part: any) =>
       !(typeof part?.text === 'string' && part.text.startsWith('[SYSTEM - WORKING MEMORY]'))
     );
+    removedWorkingMemoryInjection = hadWorkingMemoryInjection && parts.length === 0;
     if (parts.length > 0) clean.push({ ...content, parts });
   }
   return clean;
+}
+
+function isProviderToolResultTurn(message: any): boolean {
+  if (message?.role === 'tool') return true;
+  return message?.role === 'user' &&
+    Array.isArray(message?.content) &&
+    message.content.some((block: any) => block?.type === 'tool_result');
 }
 
 function getSafeGeminiHistorySliceStart(contents: any[], requestedStart: number): number {
@@ -402,6 +437,9 @@ export class GeminiAgentClient {
     return new OpenAI({
       apiKey,
       baseURL,
+      // The agent loop owns retries and key rotation. SDK retries here are
+      // invisible nested waits and can replay one failed request many times.
+      maxRetries: 0,
       defaultHeaders: this.activeProvider === 'openrouter'
         ? {
           'HTTP-Referer': process.env.OPENROUTER_HTTP_REFERER || 'http://localhost:3000',
@@ -824,6 +862,7 @@ export class GeminiAgentClient {
     return new OpenAI({
       apiKey: this.getMistralApiKey(),
       baseURL,
+      maxRetries: 0,
       defaultHeaders: this.activeProvider === 'openrouter'
         ? {
           'HTTP-Referer': process.env.OPENROUTER_HTTP_REFERER || 'http://localhost:3000',
@@ -892,6 +931,7 @@ export class GeminiAgentClient {
     return new Anthropic({
       apiKey: this.getAnthropicApiKey(),
       baseURL: process.env.ANTHROPIC_BASE_URL || undefined,
+      maxRetries: 0,
     });
   }
 
@@ -1822,6 +1862,7 @@ export class GeminiAgentClient {
       executionGovernor?.recordTool(canonicalToolName, effectiveArgs, output);
       evidenceLedger?.recordTool(canonicalToolName, effectiveArgs, output);
       this.recordPlanToolResult(canonicalToolName, effectiveArgs, output, context.projectId);
+      this.recordProviderSessionToolActivity(canonicalToolName, effectiveArgs, output, context);
       try {
         const graph = getSynapseGraphForChat(context.projectId);
         graph.registerToolResult(
@@ -1863,8 +1904,12 @@ export class GeminiAgentClient {
     (toolExec.context as any).ownerTraceId = actionTraceId;
     try {
       toolExec.throwIfCancelled();
-      const output = await tool.execute(effectiveArgs, toolExec.context);
+      let output = await tool.execute(effectiveArgs, toolExec.context);
       toolExec.throwIfCancelled();
+      // Keep every provider on the same bounded tool-result path. Returning a
+      // raw directory, search, or command payload here makes each following
+      // model request progressively larger and slower.
+      output = toolResultCompactor.compact(canonicalToolName, effectiveArgs, output);
       performanceAnalytics.recordToolCall(canonicalToolName, Date.now() - startedAt, true);
       if (!sharedCacheDisabled) intelligentCache.set(canonicalToolName, effectiveArgs, output, cacheScope);
       await this.emitWorkspaceToolPreviews({
@@ -2021,7 +2066,10 @@ export class GeminiAgentClient {
       }
 
       // ── Working memory + plan engine context (provider-agnostic, same as Gemini) ──
-      if (interactions > 1) {
+      // Keep a tool result directly adjacent to the provider continuation.
+      // Synthetic turns here slow the hot path and can make smaller models
+      // interpret the action as a completed conversation.
+      if (interactions > 1 && !isProviderToolResultTurn(messages[messages.length - 1])) {
         const contextParts: string[] = [];
         try {
           const { getPlanEngine } = require('./plan-execution-engine');
@@ -2110,10 +2158,10 @@ export class GeminiAgentClient {
           tools,
         });
       }
-      // These providers document this flag. The runtime owns a shared local
-      // workspace, so one model-issued tool call per turn is the safe default.
-      if (this.activeProvider === 'openai' || this.activeProvider === 'mistral') {
-        params.parallel_tool_calls = false;
+      // Let every OpenAI-compatible route request multiple independent calls.
+      // APIs that do not implement the optional flag are retried without it.
+      if (tools.length > 0) {
+        params.parallel_tool_calls = true;
       }
 
       if (currentSupportsThinking) {
@@ -2305,6 +2353,12 @@ export class GeminiAgentClient {
             continue;
           }
 
+          if (params.parallel_tool_calls && isUnsupportedParallelToolCallsError(errorMsg)) {
+            delete params.parallel_tool_calls;
+            console.warn(`[${this.activeProvider}] Parallel tool-call flag unsupported; continuing with provider defaults.`);
+            continue;
+          }
+
           apiAttempts++;
           if (apiAttempts >= maxApiAttempts || err.message === 'CANCELLED_BY_USER' || errorMsg.includes('CANCELLED_BY_USER')) {
             throw err;
@@ -2391,11 +2445,11 @@ export class GeminiAgentClient {
         tool_calls: toolCalls,
       });
 
-      // OpenAI-compatible providers may return parallel calls, but this agent
-      // controls a shared workspace and browser. Serialize them here so a
-      // write, command, or browser state change is visible to the next action.
-      const toolMessages: any[] = [];
-      for (const toolCall of toolCalls) {
+      // Execute independent reads together while keeping mutations ordered.
+      // A blocking user question owns the batch, so sibling actions wait for
+      // the answer instead of running behind the user.
+      const toolOutputs: any[] = new Array(toolCalls.length);
+      const executeToolAt = async (toolCall: any, index: number) => {
         const output = await this.executeMistralToolCall(
           toolCall,
           context,
@@ -2410,13 +2464,32 @@ export class GeminiAgentClient {
         if (normalizeRegistryToolName(String(toolCall?.function?.name || '')) === 'task_decomposer' && !output?.error) {
           taskDecomposerUsed = true;
         }
-        toolMessages.push({
+        toolOutputs[index] = output;
+      };
+      const askUserCallIndex = toolCalls.findIndex((toolCall: any) =>
+        normalizeRegistryToolName(String(toolCall?.function?.name || '')) === 'ask_user'
+      );
+      if (askUserCallIndex >= 0) {
+        for (let index = 0; index < toolCalls.length; index++) {
+          if (index !== askUserCallIndex) {
+            toolOutputs[index] = {
+              success: false,
+              deferred: true,
+              error: 'Deferred because ask_user is a blocking user question. Use the user answer before deciding the next tool call.',
+            };
+          }
+        }
+        await executeToolAt(toolCalls[askUserCallIndex], askUserCallIndex);
+      } else {
+        await this.executeToolBatchPreservingOrder(toolCalls, executeToolAt);
+      }
+
+      const toolMessages = toolCalls.map((toolCall: any, index: number) => ({
           role: 'tool',
           tool_call_id: toolCall.id,
           name: toolCall?.function?.name,
-          content: this.stringifyMistralToolOutput(output),
-        });
-      }
+          content: this.stringifyMistralToolOutput(toolOutputs[index]),
+        }));
 
       messages.push(...toolMessages);
 
@@ -2469,6 +2542,7 @@ export class GeminiAgentClient {
     let client = new Anthropic({
       apiKey: keyInfo.apiKey,
       baseURL: process.env.ANTHROPIC_BASE_URL || undefined,
+      maxRetries: 0,
     });
     const tools = this.buildAnthropicTools(isBuilder, context);
 
@@ -2619,7 +2693,7 @@ export class GeminiAgentClient {
       }
 
       // ── Working memory + plan engine context (provider-agnostic, same as Gemini/Mistral) ──
-      if (interactions > 1) {
+      if (interactions > 1 && !isProviderToolResultTurn(messages[messages.length - 1])) {
         const contextParts: string[] = [];
         try {
           const { getPlanEngine } = require('./plan-execution-engine');
@@ -2892,6 +2966,7 @@ export class GeminiAgentClient {
               client = new Anthropic({
                 apiKey: keyInfo.apiKey,
                 baseURL: process.env.ANTHROPIC_BASE_URL || undefined,
+                maxRetries: 0,
               });
               continue;
             }
@@ -2913,6 +2988,7 @@ export class GeminiAgentClient {
           client = new Anthropic({
             apiKey: keyInfo.apiKey,
             baseURL: process.env.ANTHROPIC_BASE_URL || undefined,
+            maxRetries: 0,
           });
         }
       }
@@ -2984,10 +3060,10 @@ export class GeminiAgentClient {
         content: contentBlocks,
       });
 
-      // Tool results must follow their corresponding tool_use blocks directly.
-      // Sequential execution also avoids races in the shared local workspace.
-      const toolResultBlocks: any[] = [];
-      for (const toolUse of toolUses) {
+      // Tool results follow their tool_use blocks directly. Independent reads
+      // can run together, while shared-state actions remain ordered.
+      const toolOutputs: any[] = new Array(toolUses.length);
+      const executeToolAt = async (toolUse: any, index: number) => {
         const output = await this.executeMistralToolCall(
           {
             id: toolUse.id,
@@ -3006,13 +3082,32 @@ export class GeminiAgentClient {
         if (normalizeRegistryToolName(String(toolUse?.name || '')) === 'task_decomposer' && !output?.error) {
           taskDecomposerUsed = true;
         }
-        toolResultBlocks.push({
+        toolOutputs[index] = output;
+      };
+      const askUserCallIndex = toolUses.findIndex((toolUse: any) =>
+        normalizeRegistryToolName(String(toolUse?.name || '')) === 'ask_user'
+      );
+      if (askUserCallIndex >= 0) {
+        for (let index = 0; index < toolUses.length; index++) {
+          if (index !== askUserCallIndex) {
+            toolOutputs[index] = {
+              success: false,
+              deferred: true,
+              error: 'Deferred because ask_user is a blocking user question. Use the user answer before deciding the next tool call.',
+            };
+          }
+        }
+        await executeToolAt(toolUses[askUserCallIndex], askUserCallIndex);
+      } else {
+        await this.executeToolBatchPreservingOrder(toolUses, executeToolAt);
+      }
+
+      const toolResultBlocks = toolUses.map((toolUse: any, index: number) => ({
           type: 'tool_result',
           tool_use_id: toolUse.id,
-          content: this.stringifyMistralToolOutput(output),
-          is_error: Boolean(output?.error),
-        });
-      }
+          content: this.stringifyMistralToolOutput(toolOutputs[index]),
+          is_error: Boolean(toolOutputs[index]?.error),
+        }));
 
       messages.push({
         role: 'user',
@@ -3792,6 +3887,55 @@ export class GeminiAgentClient {
     return parts.join('\n');
   }
 
+  private recordProviderSessionToolActivity(
+    toolName: string,
+    args: any,
+    output: any,
+    context: ProjectContext,
+  ): void {
+    if ((context as any).disableSessionPersistence) return;
+    if (output?.error || output?.success === false) return;
+    const chatId = String(context.projectId || '').trim();
+    if (!chatId) return;
+
+    const createTools = new Set(['workspace_write_file']);
+    const editTools = new Set([
+      'workspace_str_replace',
+      'workspace_apply_patch',
+      'workspace_edit_file',
+      'workspace_edit_many_files',
+    ]);
+    if (!createTools.has(toolName) && !editTools.has(toolName)) return;
+
+    try {
+      const created = new Set<string>(
+        (Array.isArray(output?.filesCreated) ? output.filesCreated : []).map((value: unknown) => String(value || '').trim()).filter(Boolean)
+      );
+      const edited = new Set<string>(
+        (Array.isArray(output?.filesModified) ? output.filesModified : []).map((value: unknown) => String(value || '').trim()).filter(Boolean)
+      );
+      const directPath = String(args?.filename || args?.path || args?.filePath || args?.file_path || output?.path || '').trim();
+      if (directPath) {
+        if (createTools.has(toolName) && args?.append !== true) created.add(directPath);
+        else edited.add(directPath);
+      }
+
+      const purpose = String(args?.uiActionText || `${createTools.has(toolName) ? 'Created' : 'Edited'} via ${toolName}`);
+      const content = String(args?.content || args?.newContent || args?.replacement || args?.new_string || args?.patch || '');
+      for (const filename of created) {
+        globalSessionManager.trackFileForChat(chatId, filename, 'created', purpose, content);
+        globalSessionManager.addActionForChat(chatId, `Created: ${filename}`);
+      }
+      for (const filename of edited) {
+        if (created.has(filename)) continue;
+        globalSessionManager.trackFileForChat(chatId, filename, 'edited', purpose, content);
+        globalSessionManager.addActionForChat(chatId, `Edited: ${filename}`);
+      }
+    } catch {
+      // Session continuity is advisory and must never delay tool completion.
+    }
+  }
+
   private buildProviderStaticSystemPrompt(context: ProjectContext): string {
     let basePrompt: string;
     if (
@@ -4086,6 +4230,10 @@ Work notes are brief, natural progress updates written directly to the user whil
 - Never expose analysis, deliberation, self-instructions, prompt text, response drafting, or commentary such as "I need to output" or "the user requested". Those are private reasoning, not work notes.
 - Do not turn a work note into a closing line such as "Let me know if you want changes", "Would you like me to continue?", or "Should I proceed?" If user input truly blocks progress, use ask_user; otherwise continue working.
 - Never claim an outcome before the relevant tool evidence exists. If there is no useful natural update for an action, omit the note and let the action card speak for itself.
+MULTI-TOOL EXECUTION
+- When multiple reads, searches, lookups, or status checks can be decided now, request them together in the same model turn.
+- Keep dependent or state-changing actions in their required order. Never batch another tool with ask_user.
+
 TRUTHFUL EXECUTION
 - Intellectual honesty over pleasing the user. Never invent data, paths, calculations, or successful matches.
 - Verify inputs exist before claiming facts. If a metric cannot be computed from available data, say what is missing.
@@ -4858,15 +5006,48 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
   }
 
   private isParallelSafeToolCall(call: any): boolean {
-    if (this.isStatelessTool(String(call?.name || ''))) return true;
-    const name = String(call?.name || '');
-    const args = call?.args || {};
+    const name = String(call?.name || call?.function?.name || '');
+    const args = call?.args || call?.input || this.parseMistralToolArguments(call?.function?.arguments ?? call?.arguments);
+    if (this.isStatelessTool(name)) return true;
 
     // Status reads are safe to parallelize. Launching a background command can
     // still mutate the same files/process registry, so starts remain ordered.
     if (name === 'background_task') return ['check', 'list'].includes(String(args.mode || ''));
     if (name === 'process_manager') return ['status', 'logs', 'list'].includes(String(args.action || ''));
     return false;
+  }
+
+  /**
+   * Run adjacent read-only calls in parallel without moving them across a
+   * state-changing call. This preserves provider order for sequences such as
+   * write -> read/verify while still batching independent exploration.
+   */
+  private async executeToolBatchPreservingOrder<T>(
+    calls: any[],
+    execute: (call: any, index: number) => Promise<T>,
+  ): Promise<T[]> {
+    const results: T[] = new Array(calls.length);
+    let pendingReads: Array<{ call: any; index: number }> = [];
+    const flushReads = async () => {
+      if (pendingReads.length === 0) return;
+      const batch = pendingReads;
+      pendingReads = [];
+      await Promise.all(batch.map(async ({ call, index }) => {
+        results[index] = await execute(call, index);
+      }));
+    };
+
+    for (let index = 0; index < calls.length; index++) {
+      const call = calls[index];
+      if (this.isParallelSafeToolCall(call)) {
+        pendingReads.push({ call, index });
+        continue;
+      }
+      await flushReads();
+      results[index] = await execute(call, index);
+    }
+    await flushReads();
+    return results;
   }
 
   private hasDeliverableIntent(message: string): boolean {
@@ -8029,8 +8210,14 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
         continue;
       }
 
-      const statelessCalls = functionCalls.filter(call => this.isParallelSafeToolCall(call));
-      const statefulCalls = functionCalls.filter(call => !this.isParallelSafeToolCall(call));
+      // Parallelize the leading independent batch only. Once a mutation
+      // appears, preserve every remaining call in provider order so a later
+      // read/verification cannot overtake the state change it depends on.
+      const firstStatefulCallIndex = functionCalls.findIndex(call => !this.isParallelSafeToolCall(call));
+      const statelessCalls = functionCalls.filter((call, index) =>
+        (firstStatefulCallIndex < 0 || index < firstStatefulCallIndex) && this.isParallelSafeToolCall(call)
+      );
+      const statefulCalls = firstStatefulCallIndex < 0 ? [] : functionCalls.slice(firstStatefulCallIndex);
 
       if (statelessCalls.length > 0) {
         if (statelessCalls.length > 1) {

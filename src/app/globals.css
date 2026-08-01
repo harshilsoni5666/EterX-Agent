@@ -77,8 +77,8 @@
     --eterx-ui-working-text: #4B5563;
     --eterx-ui-working-highlight: #171717;
 
-    --sb-size: 12px;
-    --sb-button-size: 12px;
+    --sb-size: 10px;
+    --sb-button-size: 0px;
     --sb-track: transparent;
     --sb-track-solid: transparent;
     --sb-track-edge: transparent;
@@ -86,8 +86,8 @@
     --sb-thumb-hover: rgba(0, 0, 0, 0.50);
     --sb-thumb-active: rgba(0, 0, 0, 0.65);
     --sb-radius: 9999px;
-    --sb-inset: 2px;
-    --chat-feed-sb-size: 13px;
+    --sb-inset: 1px;
+    --chat-feed-sb-size: 10px;
 
     /* Scrollbar SVG variables (Light Mode) */
     --sb-arrow-up: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA4IDUnIGZpbGw9JyMwMDAwMDAnIGZpbGwtb3BhY2l0eT0nMC4zNScgc3Ryb2tlPScjMDAwMDAwJyBzdHJva2Utb3BhY2l0eT0nMC4zNScgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00wLjc1IDQuMjUgTDcuMjUgNC4yNSBMNCAwLjc1IFonLz48L3N2Zz4=");
@@ -174,9 +174,9 @@
     --sb-track: transparent;
     --sb-track-solid: transparent;
     --sb-track-edge: transparent;
-    --sb-thumb: rgba(255, 255, 255, 0.30);
-    --sb-thumb-hover: rgba(255, 255, 255, 0.45);
-    --sb-thumb-active: rgba(255, 255, 255, 0.60);
+    --sb-thumb: rgba(255, 255, 255, 0.24);
+    --sb-thumb-hover: rgba(255, 255, 255, 0.36);
+    --sb-thumb-active: rgba(255, 255, 255, 0.50);
 
     /* Scrollbar SVG variables (Dark Mode) */
     --sb-arrow-up: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA4IDUnIGZpbGw9JyNmZmZmZmYnIGZpbGwtb3BhY2l0eT0nMC4zMCcgc3Ryb2tlPScjZmZmZmZmJyBzdHJva2Utb3BhY2l0eT0nMC4zMCcgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00wLjc1IDQuMjUgTDcuMjUgNC4yNSBMNCAwLjc1IFonLz48L3N2Zz4=");
@@ -1785,6 +1785,13 @@
 }
 
 /* Global modern scrollbar styling. Chrome/Electron use WebKit pseudos so thumb rounding works. */
+html,
+body,
+* {
+  scrollbar-color: var(--sb-thumb) transparent;
+  scrollbar-width: thin;
+}
+
 ::-webkit-scrollbar,
 *::-webkit-scrollbar {
   width: var(--sb-size, 12px) !important;
@@ -1934,6 +1941,30 @@
 ::-webkit-scrollbar-button:single-button:horizontal:increment:active,
 *::-webkit-scrollbar-button:single-button:horizontal:increment:active {
   background-image: var(--sb-arrow-right-active) !important;
+}
+
+/* Keep legacy arrow declarations above inert: modern scrollbars use only a
+   rounded thumb with clean ends, matching the chat/feed treatment. */
+::-webkit-scrollbar-button,
+*::-webkit-scrollbar-button,
+::-webkit-scrollbar-button:single-button,
+*::-webkit-scrollbar-button:single-button,
+::-webkit-scrollbar-button:single-button:vertical:decrement,
+*::-webkit-scrollbar-button:single-button:vertical:decrement,
+::-webkit-scrollbar-button:single-button:vertical:increment,
+*::-webkit-scrollbar-button:single-button:vertical:increment,
+::-webkit-scrollbar-button:single-button:horizontal:decrement,
+*::-webkit-scrollbar-button:single-button:horizontal:decrement,
+::-webkit-scrollbar-button:single-button:horizontal:increment,
+*::-webkit-scrollbar-button:single-button:horizontal:increment {
+  display: none !important;
+  visibility: hidden !important;
+  opacity: 0 !important;
+  width: 0 !important;
+  height: 0 !important;
+  background: transparent !important;
+  background-image: none !important;
+  border: 0 !important;
 }
 
 /* Complete hide utilities */
