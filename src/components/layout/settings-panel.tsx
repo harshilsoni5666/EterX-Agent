@@ -2455,7 +2455,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     { id: 'live-convo', label: 'Live Convo', icon: 'live-convo' },
     { id: 'git', label: 'Git', icon: 'git' },
     { id: 'environments', label: 'Environments', icon: 'environments' },
-    { id: 'browser', label: 'Search web', icon: 'browser' },
+    { id: 'browser', label: 'Web search', icon: 'browser' },
     { id: 'computer', label: 'Computer use', icon: 'computer' },
     { id: 'updates', label: 'Updates', icon: 'updates' },
   ];
@@ -3768,7 +3768,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
 
                       {activeTab === 'browser' && (
                         <div>
-                          <SectionHeader title="Search web" />
+                          <SectionHeader title="Web search" />
                           <SettingRow icon={<Globe className="w-4 h-4" />} title="Browser access" description="Allow the agent to inspect local app pages, capture screenshots, and verify UI behavior.">
                             <Toggle enabled={settings.browserAccess} onChange={v => updateSetting('browserAccess', v)} />
                           </SettingRow>
