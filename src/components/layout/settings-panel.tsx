@@ -397,8 +397,8 @@ type Tab =
   | 'appearance'
   | 'configuration'
   | 'personalization'
-  | 'connections'
   | 'shortcuts'
+  | 'tokens'
   | 'mcp'
   | 'hooks'
   | 'context'
@@ -986,8 +986,8 @@ const normalizeSettingsTab = (tab: any): Tab => {
     'appearance',
     'configuration',
     'personalization',
-    'connections',
     'shortcuts',
+    'tokens',
     'mcp',
     'hooks',
     'context',
@@ -1015,7 +1015,7 @@ const normalizeSettingsTab = (tab: any): Tab => {
     case 'live-convo':
       return 'live-convo';
     case 'connections':
-      return 'connections';
+      return 'models';
     case 'advanced':
       return 'environments';
     default:
@@ -1470,14 +1470,16 @@ const SETTINGS_PNG_ICONS = new Set([
 ]);
 
 const SettingsIconAsset: React.FC<{ name: string; className?: string }> = ({ name, className = 'h-4 w-4' }) => {
-  const ext = SETTINGS_PNG_ICONS.has(name) ? 'png' : 'svg';
+  const isTokenIcon = name === 'tokens';
+  const ext = isTokenIcon || SETTINGS_PNG_ICONS.has(name) ? 'png' : 'svg';
+  const iconUrl = isTokenIcon ? '/tokens.png' : `/icons/settings/${name}.${ext}`;
   return (
     <span
       aria-hidden="true"
       className={`inline-block shrink-0 bg-current ${className}`}
       style={{
-        WebkitMask: `url(/icons/settings/${name}.${ext}) center / contain no-repeat`,
-        mask: `url(/icons/settings/${name}.${ext}) center / contain no-repeat`,
+        WebkitMask: `url(${iconUrl}) center / contain no-repeat`,
+        mask: `url(${iconUrl}) center / contain no-repeat`,
       }}
     />
   );
@@ -2445,20 +2447,16 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     { id: 'appearance', label: 'Appearance', icon: 'appearance' },
     { id: 'configuration', label: 'Configuration', icon: 'configuration' },
     { id: 'personalization', label: 'Personalization', icon: 'personalization' },
-    { id: 'connections', label: 'Connections', icon: 'connections' },
-    { id: 'shortcuts', label: 'Shortcuts', icon: 'shortcuts' },
     { id: 'mcp', label: 'MCP servers', icon: 'mcp' },
-    { id: 'hooks', label: 'Hooks', icon: 'hooks' },
     { id: 'context', label: 'Context', icon: 'context' },
     { id: 'models', label: 'Models', icon: 'models' },
+    { id: 'tokens', label: 'Tokens', icon: 'tokens' },
     { id: 'api', label: 'API', icon: 'api' },
     { id: 'live-convo', label: 'Live Convo', icon: 'live-convo' },
     { id: 'git', label: 'Git', icon: 'git' },
     { id: 'environments', label: 'Environments', icon: 'environments' },
     { id: 'browser', label: 'Search web', icon: 'browser' },
     { id: 'computer', label: 'Computer use', icon: 'computer' },
-    { id: 'worktrees', label: 'Worktrees', icon: 'worktrees' },
-    { id: 'archives', label: 'Archives', icon: 'archives' },
     { id: 'updates', label: 'Updates', icon: 'updates' },
   ];
 
@@ -3101,6 +3099,22 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                         </div>
                       )}
 
+                      {activeTab === 'tokens' && (
+                        <div>
+                          <SectionHeader title="Tokens" />
+                          <p className="-mt-2 mb-5 text-[14px] leading-relaxed text-[#A5A5A5]">See token use for the active chat and the context window available to your selected model.</p>
+                          <SettingsStack>
+                            <SettingsStackRow title="Current chat" description={activeContextChatId ? 'Estimated tokens used by the active chat.' : 'Open a chat to see token usage.'}>
+                              <span className="text-[14px] font-semibold text-[#F1F1F1]">{activeContextChatId ? compactTokenLabel(selectedContextChat?.usedTokens || 0) : 'Not measured'}</span>
+                            </SettingsStackRow>
+                            <SettingsStackRow title="Context window" description="Maximum context available for the selected model.">
+                              <span className="text-[14px] font-semibold text-[#F1F1F1]">{effectiveSelectedChatWindow > 0 ? compactTokenLabel(effectiveSelectedChatWindow) : 'Model maximum'}</span>
+                            </SettingsStackRow>
+                          </SettingsStack>
+                          <button type="button" onClick={() => setActiveTab('context')} className="mt-5 text-[13px] font-medium text-[#9BCBFF] transition-colors hover:text-white">Open context settings</button>
+                        </div>
+                      )}
+
                       {activeTab === 'configuration' && (
                         <div>
 
@@ -3715,74 +3729,6 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                           <div className="mt-4 rounded-xl border border-white/[0.08] bg-[#202020] px-4 py-3 text-[13px] leading-5 text-[#A5A5A5]">
                             The gateway's Advanced settings provide a secure MCP endpoint and copyable client configuration. Platform connectors are configured under Channels, so unavailable services are never shown as active here.
                           </div>
-                        </div>
-                      )}
-
-                      {activeTab === 'connections' && (
-                        <div>
-                          <SectionHeader title="Connections" />
-                          <p className="-mt-2 mb-5 text-[14px] leading-relaxed text-[#A5A5A5]">Manage the services EterX can connect to. API keys and model connections stay in their dedicated settings.</p>
-                          <SettingsStack>
-                            <SettingsStackRow title="API connections" description="Add and manage provider keys for agent requests.">
-                              <SoftButton onClick={() => setActiveTab('api')}>Open API</SoftButton>
-                            </SettingsStackRow>
-                            <SettingsStackRow title="Model connections" description="Choose providers, models, and fallback priority.">
-                              <SoftButton onClick={() => setActiveTab('models')}>Open models</SoftButton>
-                            </SettingsStackRow>
-                          </SettingsStack>
-                        </div>
-                      )}
-
-                      {activeTab === 'shortcuts' && (
-                        <div>
-                          <SectionHeader title="Shortcuts" />
-                          <SettingsStack>
-                            <SettingsStackRow title="Keyboard shortcuts" description="Enable keyboard shortcuts throughout the app.">
-                              <Toggle enabled={settings.keyboardShortcuts} onChange={v => updateSetting('keyboardShortcuts', v)} />
-                            </SettingsStackRow>
-                          </SettingsStack>
-                        </div>
-                      )}
-
-                      {activeTab === 'hooks' && (
-                        <div>
-                          <SectionHeader title="Hooks" />
-                          <SettingsStack>
-                            <SettingsStackRow title="Enable hooks" description="Allow configured hooks to run at supported workflow events.">
-                              <Toggle enabled={settings.hooksEnabled} onChange={v => updateSetting('hooksEnabled', v)} />
-                            </SettingsStackRow>
-                          </SettingsStack>
-                        </div>
-                      )}
-
-                      {activeTab === 'worktrees' && (
-                        <div>
-                          <SectionHeader title="Worktrees" />
-                          <SettingsStack>
-                            <SettingsStackRow title="Worktree support" description="Allow isolated Git worktrees for parallel agent tasks.">
-                              <Toggle enabled={settings.worktreesEnabled} onChange={v => updateSetting('worktreesEnabled', v)} />
-                            </SettingsStackRow>
-                          </SettingsStack>
-                        </div>
-                      )}
-
-                      {activeTab === 'archives' && (
-                        <div>
-                          <SectionHeader title="Archives" />
-                          <SettingsStack>
-                            <SettingsStackRow title="Archive retention" description="Choose how long completed chats remain available in local archives.">
-                              <ModernSelect
-                                value={settings.archiveRetention}
-                                onChange={value => updateSetting('archiveRetention', value as AppSettings['archiveRetention'])}
-                                className="w-[180px]"
-                                options={[
-                                  { value: '30', label: '30 days' },
-                                  { value: '90', label: '90 days' },
-                                  { value: 'forever', label: 'Keep forever' },
-                                ]}
-                              />
-                            </SettingsStackRow>
-                          </SettingsStack>
                         </div>
                       )}
 
