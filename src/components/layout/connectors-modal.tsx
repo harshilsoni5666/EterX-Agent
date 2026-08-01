@@ -148,7 +148,7 @@ export const ConnectorsModal: React.FC<ConnectorsModalProps> = ({ open, onClose,
             </div>
 
             {/* Category tabs */}
-            <div className="eterx-connectors-tabs flex items-center gap-1 px-7 py-3 border-b border-white/[0.05] shrink-0 overflow-x-auto">
+            <div className="eterx-connectors-tabs eterx-scrollbar flex items-center gap-1 px-7 py-3 border-b border-white/[0.05] shrink-0 overflow-x-auto">
               {categories.map(cat => (
                 <button
                   key={cat}

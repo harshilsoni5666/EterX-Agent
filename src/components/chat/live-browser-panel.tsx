@@ -278,7 +278,7 @@ export const LiveBrowserPanel: React.FC<LiveBrowserPanelProps> = ({
 
           {/* Live screenshot from agent browser */}
           {hasLiveFrame && (
-            <div className="absolute inset-0 flex items-start justify-center overflow-auto bg-[#080808]">
+            <div className="eterx-scrollbar absolute inset-0 flex items-start justify-center overflow-auto bg-[#080808]">
               <div style={{ transform: `scale(${zoom})`, transformOrigin: 'top center', transition: 'transform 0.15s ease' }}>
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
@@ -329,7 +329,7 @@ export const LiveBrowserPanel: React.FC<LiveBrowserPanelProps> = ({
                 <span className="text-[10px] font-bold text-[#555] uppercase tracking-widest">Activity</span>
                 <button onClick={() => setLogs([])} className="text-[10px] text-[#444] hover:text-[#888] transition-colors">Clear</button>
               </div>
-              <div className="flex-1 overflow-y-auto min-h-0 py-1">
+              <div className="eterx-scrollbar flex-1 overflow-y-auto min-h-0 py-1">
                 {logs.length === 0 && (
                   <div className="px-3 py-2 text-[11px] text-[#333] italic">No activity yet</div>
                 )}

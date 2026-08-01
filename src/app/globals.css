@@ -77,31 +77,6 @@
     --eterx-ui-working-text: #4B5563;
     --eterx-ui-working-highlight: #171717;
 
-    --sb-size: 10px;
-    --sb-button-size: 0px;
-    --sb-track: transparent;
-    --sb-track-solid: transparent;
-    --sb-track-edge: transparent;
-    --sb-thumb: rgba(0, 0, 0, 0.35);
-    --sb-thumb-hover: rgba(0, 0, 0, 0.50);
-    --sb-thumb-active: rgba(0, 0, 0, 0.65);
-    --sb-radius: 9999px;
-    --sb-inset: 1px;
-    --chat-feed-sb-size: 10px;
-
-    /* Scrollbar SVG variables (Light Mode) */
-    --sb-arrow-up: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA4IDUnIGZpbGw9JyMwMDAwMDAnIGZpbGwtb3BhY2l0eT0nMC4zNScgc3Ryb2tlPScjMDAwMDAwJyBzdHJva2Utb3BhY2l0eT0nMC4zNScgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00wLjc1IDQuMjUgTDcuMjUgNC4yNSBMNCAwLjc1IFonLz48L3N2Zz4=");
-    --sb-arrow-up-hover: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA4IDUnIGZpbGw9JyMwMDAwMDAnIGZpbGwtb3BhY2l0eT0nMC41MCcgc3Ryb2tlPScjMDAwMDAwJyBzdHJva2Utb3BhY2l0eT0nMC41MCcgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00wLjc1IDQuMjUgTDcuMjUgNC4yNSBMNCAwLjc1IFonLz48L3N2Zz4=");
-    --sb-arrow-up-active: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA4IDUnIGZpbGw9JyMwMDAwMDAnIGZpbGwtb3BhY2l0eT0nMC42NScgc3Ryb2tlPScjMDAwMDAwJyBzdHJva2Utb3BhY2l0eT0nMC42NScgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00wLjc1IDQuMjUgTDcuMjUgNC4yNSBMNCAwLjc1IFonLz48L3N2Zz4=");
-    --sb-arrow-down: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA4IDUnIGZpbGw9JyMwMDAwMDAnIGZpbGwtb3BhY2l0eT0nMC4zNScgc3Ryb2tlPScjMDAwMDAwJyBzdHJva2Utb3BhY2l0eT0nMC4zNScgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00wLjc1IDAuNzUgTDcuMjUgMC43NSBMNCA0LjI1IFonLz48L3N2Zz4=");
-    --sb-arrow-down-hover: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA4IDUnIGZpbGw9JyMwMDAwMDAnIGZpbGwtb3BhY2l0eT0nMC41MCcgc3Ryb2tlPScjMDAwMDAwJyBzdHJva2Utb3BhY2l0eT0nMC41MCcgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00wLjc1IDAuNzUgTDcuMjUgMC43NSBMNCA0LjI1IFonLz48L3N2Zz4=");
-    --sb-arrow-down-active: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA4IDUnIGZpbGw9JyMwMDAwMDAnIGZpbGwtb3BhY2l0eT0nMC42NScgc3Ryb2tlPScjMDAwMDAwJyBzdHJva2Utb3BhY2l0eT0nMC42NScgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00wLjc1IDAuNzUgTDcuMjUgMC43NSBMNCA0LjI1IFonLz48L3N2Zz4=");
-    --sb-arrow-left: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA1IDgnIGZpbGw9JyMwMDAwMDAnIGZpbGwtb3BhY2l0eT0nMC4zNScgc3Ryb2tlPScjMDAwMDAwJyBzdHJva2Utb3BhY2l0eT0nMC4zNScgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J000LjI1IDAuNzUgTDQuMjUgNy4yNSBMMC43NSA0IFonLz48L3N2Zz4=");
-    --sb-arrow-left-hover: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA1IDgnIGZpbGw9JyMwMDAwMDAnIGZpbGwtb3BhY2l0eT0nMC41MCcgc3Ryb2tlPScjMDAwMDAwJyBzdHJva2Utb3BhY2l0eT0nMC41MCcgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J000LjI1IDAuNzUgTDQuMjUgNy4yNSBMMC43NSA0IFonLz48L3N2Zz4=");
-    --sb-arrow-left-active: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA1IDgnIGZpbGw9JyMwMDAwMDAnIGZpbGwtb3BhY2l0eT0nMC42NScgc3Ryb2tlPScjMDAwMDAwJyBzdHJva2Utb3BhY2l0eT0nMC42NScgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J000LjI1IDAuNzUgTDQuMjUgNy4yNSBMMC43NSA0IFonLz48L3N2Zz4=");
-    --sb-arrow-right: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA1IDgnIGZpbGw9JyMwMDAwMDAnIGZpbGwtb3BhY2l0eT0nMC4zNScgc3Ryb2tlPScjMDAwMDAwJyBzdHJva2Utb3BhY2l0eT0nMC4zNScgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00wLjc1IDAuNzUgTDAuNzUgNy4yNSBMNC4yNSA0IFonLz48L3N2Zz4=");
-    --sb-arrow-right-hover: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA1IDgnIGZpbGw9JyMwMDAwMDAnIGZpbGwtb3BhY2l0eT0nMC41MCcgc3Ryb2tlPScjMDAwMDAwJyBzdHJva2Utb3BhY2l0eT0nMC41MCcgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00wLjc1IDAuNzUgTDAuNzUgNy4yNSBMNC4yNSA0IFonLz48L3N2Zz4=");
-    --sb-arrow-right-active: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA1IDgnIGZpbGw9JyMwMDAwMDAnIGZpbGwtb3BhY2l0eT0nMC42NScgc3Ryb2tlPScjMDAwMDAwJyBzdHJva2Utb3BhY2l0eT0nMC42NScgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00wLjc1IDAuNzUgTDAuNzUgNy4yNSBMNC4yNSA0IFonLz48L3N2Zz4=");
   }
 
   :root[data-theme="dark"],
@@ -171,26 +146,6 @@
     --eterx-ui-working-text: #A3A3A3;
     --eterx-ui-working-highlight: #E5E5E5;
 
-    --sb-track: transparent;
-    --sb-track-solid: transparent;
-    --sb-track-edge: transparent;
-    --sb-thumb: rgba(255, 255, 255, 0.24);
-    --sb-thumb-hover: rgba(255, 255, 255, 0.36);
-    --sb-thumb-active: rgba(255, 255, 255, 0.50);
-
-    /* Scrollbar SVG variables (Dark Mode) */
-    --sb-arrow-up: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA4IDUnIGZpbGw9JyNmZmZmZmYnIGZpbGwtb3BhY2l0eT0nMC4zMCcgc3Ryb2tlPScjZmZmZmZmJyBzdHJva2Utb3BhY2l0eT0nMC4zMCcgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00wLjc1IDQuMjUgTDcuMjUgNC4yNSBMNCAwLjc1IFonLz48L3N2Zz4=");
-    --sb-arrow-up-hover: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA4IDUnIGZpbGw9JyNmZmZmZmYnIGZpbGwtb3BhY2l0eT0nMC40NScgc3Ryb2tlPScjZmZmZmZmJyBzdHJva2Utb3BhY2l0eT0nMC40NScgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00wLjc1IDQuMjUgTDcuMjUgNC4yNSBMNCAwLjc1IFonLz48L3N2Zz4=");
-    --sb-arrow-up-active: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA4IDUnIGZpbGw9JyNmZmZmZmYnIGZpbGwtb3BhY2l0eT0nMC42MCcgc3Ryb2tlPScjZmZmZmZmJyBzdHJva2Utb3BhY2l0eT0nMC42MCcgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00wLjc1IDQuMjUgTDcuMjUgNC4yNSBMNCAwLjc1IFonLz48L3N2Zz4=");
-    --sb-arrow-down: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA4IDUnIGZpbGw9JyNmZmZmZmYnIGZpbGwtb3BhY2l0eT0nMC4zMCcgc3Ryb2tlPScjZmZmZmZmJyBzdHJva2Utb3BhY2l0eT0nMC4zMCcgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00wLjc1IDAuNzUgTDcuMjUgMC43NSBMNCA0LjI1IFonLz48L3N2Zz4=");
-    --sb-arrow-down-hover: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA4IDUnIGZpbGw9JyNmZmZmZmYnIGZpbGwtb3BhY2l0eT0nMC40NScgc3Ryb2tlPScjZmZmZmZmJyBzdHJva2Utb3BhY2l0eT0nMC40NScgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00wLjc1IDAuNzUgTDcuMjUgMC43NSBMNCA0LjI1IFonLz48L3N2Zz4=");
-    --sb-arrow-down-active: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA4IDUnIGZpbGw9JyNmZmZmZmYnIGZpbGwtb3BhY2l0eT0nMC42MCcgc3Ryb2tlPScjZmZmZmZmJyBzdHJva2Utb3BhY2l0eT0nMC42MCcgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00wLjc1IDAuNzUgTDcuMjUgMC43NSBMNCA0LjI1IFonLz48L3N2Zz4=");
-    --sb-arrow-left: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA1IDgnIGZpbGw9JyNmZmZmZmYnIGZpbGwtb3BhY2l0eT0nMC4zMCcgc3Ryb2tlPScjZmZmZmZmJyBzdHJva2Utb3BhY2l0eT0nMC4zMCcgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J000LjI1IDAuNzUgTDQuMjUgNy4yNSBMMC43NSA0IFonLz48L3N2Zz4=");
-    --sb-arrow-left-hover: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA1IDgnIGZpbGw9JyNmZmZmZmYnIGZpbGwtb3BhY2l0eT0nMC40NScgc3Ryb2tlPScjZmZmZmZmJyBzdHJva2Utb3BhY2l0eT0nMC40NScgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J000LjI1IDAuNzUgTDQuMjUgNy4yNSBMMC43NSA0IFonLz48L3N2Zz4=");
-    --sb-arrow-left-active: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA1IDgnIGZpbGw9JyNmZmZmZmYnIGZpbGwtb3BhY2l0eT0nMC42MCcgc3Ryb2tlPScjZmZmZmZmJyBzdHJva2Utb3BhY2l0eT0nMC42MCcgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J000LjI1IDAuNzUgTDQuMjUgNy4yNSBMMC43NSA0IFonLz48L3N2Zz4=");
-    --sb-arrow-right: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA1IDgnIGZpbGw9JyNmZmZmZmYnIGZpbGwtb3BhY2l0eT0nMC4zMCcgc3Ryb2tlPScjZmZmZmZmJyBzdHJva2Utb3BhY2l0eT0nMC4zMCcgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00wLjc1IDAuNzUgTDAuNzUgNy4yNSBMNC4yNSA0IFonLz48L3N2Zz4=");
-    --sb-arrow-right-hover: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA1IDgnIGZpbGw9JyNmZmZmZmYnIGZpbGwtb3BhY2l0eT0nMC40NScgc3Ryb2tlPScjZmZmZmZmJyBzdHJva2Utb3BhY2l0eT0nMC40NScgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00wLjc1IDAuNzUgTDAuNzUgNy4yNSBMNC4yNSA0IFonLz48L3N2Zz4=");
-    --sb-arrow-right-active: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA1IDgnIGZpbGw9JyNmZmZmZmYnIGZpbGwtb3BhY2l0eT0nMC42MCcgc3Ryb2tlPScjZmZmZmZmJyBzdHJva2Utb3BhY2l0eT0nMC42MCcgc3Ryb2tlLXdpZHRoPScxLjUnIHN0cm9rZS1saW5lam9pbj0ncm91bmQnPjxwYXRoIGQ9J00wLjc1IDAuNzUgTDAuNzUgNy4yNSBMNC4yNSA0IFonLz48L3N2Zz4=");
   }
 
   html,
@@ -1739,7 +1694,7 @@
 [data-theme="light"] .eterx-chat-input-dock-active::before {
   content: "";
   position: absolute;
-  inset: auto var(--chat-feed-sb-size, var(--sb-size, 0px)) 0 0;
+  inset: auto var(--eterx-sb-size, 18px) 0 0;
   height: min(260px, 30vh);
   pointer-events: none;
   z-index: -1;
@@ -1784,235 +1739,6 @@
 
 }
 
-/* Global modern scrollbar styling. Chrome/Electron use WebKit pseudos so thumb rounding works. */
-html,
-body,
-* {
-  scrollbar-color: var(--sb-thumb) transparent;
-  scrollbar-width: thin;
-}
-
-::-webkit-scrollbar,
-*::-webkit-scrollbar {
-  width: var(--sb-size, 12px) !important;
-  height: var(--sb-size, 12px) !important;
-  background: transparent !important;
-}
-
-::-webkit-scrollbar-corner,
-*::-webkit-scrollbar-corner {
-  background: transparent !important;
-  background-color: transparent !important;
-}
-
-::-webkit-scrollbar-track,
-*::-webkit-scrollbar-track {
-  background: var(--sb-track, transparent) !important;
-}
-
-::-webkit-scrollbar-thumb,
-*::-webkit-scrollbar-thumb {
-  background-color: var(--sb-thumb) !important;
-  border-radius: var(--sb-radius, 9999px) !important;
-  border: var(--sb-inset, 2px) solid transparent !important;
-  background-clip: padding-box !important;
-}
-
-::-webkit-scrollbar-thumb:hover,
-*::-webkit-scrollbar-thumb:hover {
-  background-color: var(--sb-thumb-hover) !important;
-}
-
-::-webkit-scrollbar-thumb:active,
-*::-webkit-scrollbar-thumb:active {
-  background-color: var(--sb-thumb-active) !important;
-}
-
-/* Hide duplicate/non-single scrollbar buttons */
-::-webkit-scrollbar-button:not(:single-button),
-*::-webkit-scrollbar-button:not(:single-button) {
-  display: none !important;
-  width: 0 !important;
-  height: 0 !important;
-  background: transparent !important;
-}
-
-/* Vertical scrollbar buttons (Up/Down arrows) - Single buttons only */
-::-webkit-scrollbar-button:single-button:vertical:decrement,
-*::-webkit-scrollbar-button:single-button:vertical:decrement {
-  display: block !important;
-  visibility: visible !important;
-  opacity: 1 !important;
-  width: var(--sb-size, 12px) !important;
-  height: var(--sb-size, 12px) !important;
-  background-color: transparent !important;
-  background-repeat: no-repeat !important;
-  background-position: center !important;
-  background-size: calc(var(--sb-size) - 4px) calc((var(--sb-size) - 4px) * 0.625) !important;
-  border: 0 !important;
-  box-shadow: none !important;
-  background-image: var(--sb-arrow-up) !important;
-}
-
-::-webkit-scrollbar-button:single-button:vertical:decrement:hover,
-*::-webkit-scrollbar-button:single-button:vertical:decrement:hover {
-  background-image: var(--sb-arrow-up-hover) !important;
-}
-
-::-webkit-scrollbar-button:single-button:vertical:decrement:active,
-*::-webkit-scrollbar-button:single-button:vertical:decrement:active {
-  background-image: var(--sb-arrow-up-active) !important;
-}
-
-::-webkit-scrollbar-button:single-button:vertical:increment,
-*::-webkit-scrollbar-button:single-button:vertical:increment {
-  display: block !important;
-  visibility: visible !important;
-  opacity: 1 !important;
-  width: var(--sb-size, 12px) !important;
-  height: var(--sb-size, 12px) !important;
-  background-color: transparent !important;
-  background-repeat: no-repeat !important;
-  background-position: center !important;
-  background-size: calc(var(--sb-size) - 4px) calc((var(--sb-size) - 4px) * 0.625) !important;
-  border: 0 !important;
-  box-shadow: none !important;
-  background-image: var(--sb-arrow-down) !important;
-}
-
-::-webkit-scrollbar-button:single-button:vertical:increment:hover,
-*::-webkit-scrollbar-button:single-button:vertical:increment:hover {
-  background-image: var(--sb-arrow-down-hover) !important;
-}
-
-::-webkit-scrollbar-button:single-button:vertical:increment:active,
-*::-webkit-scrollbar-button:single-button:vertical:increment:active {
-  background-image: var(--sb-arrow-down-active) !important;
-}
-
-/* Horizontal scrollbar buttons (Left/Right arrows) - Single buttons only */
-::-webkit-scrollbar-button:single-button:horizontal:decrement,
-*::-webkit-scrollbar-button:single-button:horizontal:decrement {
-  display: block !important;
-  visibility: visible !important;
-  opacity: 1 !important;
-  width: var(--sb-size, 12px) !important;
-  height: var(--sb-size, 12px) !important;
-  background-color: transparent !important;
-  background-repeat: no-repeat !important;
-  background-position: center !important;
-  background-size: calc((var(--sb-size) - 4px) * 0.625) calc(var(--sb-size) - 4px) !important;
-  border: 0 !important;
-  box-shadow: none !important;
-  background-image: var(--sb-arrow-left) !important;
-}
-
-::-webkit-scrollbar-button:single-button:horizontal:decrement:hover,
-*::-webkit-scrollbar-button:single-button:horizontal:decrement:hover {
-  background-image: var(--sb-arrow-left-hover) !important;
-}
-
-::-webkit-scrollbar-button:single-button:horizontal:decrement:active,
-*::-webkit-scrollbar-button:single-button:horizontal:decrement:active {
-  background-image: var(--sb-arrow-left-active) !important;
-}
-
-::-webkit-scrollbar-button:single-button:horizontal:increment,
-*::-webkit-scrollbar-button:single-button:horizontal:increment {
-  display: block !important;
-  visibility: visible !important;
-  opacity: 1 !important;
-  width: var(--sb-size, 12px) !important;
-  height: var(--sb-size, 12px) !important;
-  background-color: transparent !important;
-  background-repeat: no-repeat !important;
-  background-position: center !important;
-  background-size: calc((var(--sb-size) - 4px) * 0.625) calc(var(--sb-size) - 4px) !important;
-  border: 0 !important;
-  box-shadow: none !important;
-  background-image: var(--sb-arrow-right) !important;
-}
-
-::-webkit-scrollbar-button:single-button:horizontal:increment:hover,
-*::-webkit-scrollbar-button:single-button:horizontal:increment:hover {
-  background-image: var(--sb-arrow-right-hover) !important;
-}
-
-::-webkit-scrollbar-button:single-button:horizontal:increment:active,
-*::-webkit-scrollbar-button:single-button:horizontal:increment:active {
-  background-image: var(--sb-arrow-right-active) !important;
-}
-
-/* Keep legacy arrow declarations above inert: modern scrollbars use only a
-   rounded thumb with clean ends, matching the chat/feed treatment. */
-::-webkit-scrollbar-button,
-*::-webkit-scrollbar-button,
-::-webkit-scrollbar-button:single-button,
-*::-webkit-scrollbar-button:single-button,
-::-webkit-scrollbar-button:single-button:vertical:decrement,
-*::-webkit-scrollbar-button:single-button:vertical:decrement,
-::-webkit-scrollbar-button:single-button:vertical:increment,
-*::-webkit-scrollbar-button:single-button:vertical:increment,
-::-webkit-scrollbar-button:single-button:horizontal:decrement,
-*::-webkit-scrollbar-button:single-button:horizontal:decrement,
-::-webkit-scrollbar-button:single-button:horizontal:increment,
-*::-webkit-scrollbar-button:single-button:horizontal:increment {
-  display: none !important;
-  visibility: hidden !important;
-  opacity: 0 !important;
-  width: 0 !important;
-  height: 0 !important;
-  background: transparent !important;
-  background-image: none !important;
-  border: 0 !important;
-}
-
-/* Complete hide utilities */
-.scrollbar-hide::-webkit-scrollbar,
-.scrollbar-hide::-webkit-scrollbar-button,
-.eterx-tab-strip-scroll::-webkit-scrollbar,
-.eterx-tab-strip-scroll::-webkit-scrollbar-button {
-  display: none !important;
-  width: 0 !important;
-  height: 0 !important;
-  background: transparent !important;
-}
-
-/* Hide scrollbar buttons utility */
-.scrollbar-no-buttons::-webkit-scrollbar-button,
-.scrollbar-no-buttons::-webkit-scrollbar-button:single-button,
-.scrollbar-no-buttons::-webkit-scrollbar-button:single-button:vertical,
-.scrollbar-no-buttons::-webkit-scrollbar-button:single-button:vertical:decrement,
-.scrollbar-no-buttons::-webkit-scrollbar-button:single-button:vertical:increment,
-.scrollbar-no-buttons::-webkit-scrollbar-button:single-button:horizontal,
-.scrollbar-no-buttons::-webkit-scrollbar-button:single-button:horizontal:decrement,
-.scrollbar-no-buttons::-webkit-scrollbar-button:single-button:horizontal:increment {
-  display: none !important;
-  visibility: hidden !important;
-  opacity: 0 !important;
-  width: 0 !important;
-  height: 0 !important;
-  background: transparent !important;
-  background-image: none !important;
-  border: 0 !important;
-  box-shadow: none !important;
-}
-
-/* Monaco Editor scrollbar and corner fixes */
-.monaco-editor .scrollbar-corner,
-.monaco-scrollable-element>.scrollbar-corner,
-.monaco-editor .decorationsOverviewRuler {
-  background: transparent !important;
-  background-color: transparent !important;
-}
-
-@supports (-moz-appearance: none) {
-  * {
-    scrollbar-width: thin;
-    scrollbar-color: var(--sb-thumb) transparent;
-  }
-}
-
 @media (prefers-reduced-motion: reduce) {
 
   *,
@@ -2026,15 +1752,11 @@ body,
 }
 
 .eterx-chat-top-fade {
-  right: var(--chat-feed-sb-size, var(--sb-size, 0px)) !important;
+  right: var(--eterx-sb-size, 18px) !important;
 }
 
 
 
-
-.eterx-chat-feed-scroll {
-  --sb-size: var(--chat-feed-sb-size);
-}
 
 .eterx-composer-shell {
   container-type: inline-size;
@@ -5714,7 +5436,7 @@ body,
 :root[data-theme="dark"] .eterx-chat-input-dock-active::before {
   content: "";
   position: absolute;
-  inset: auto var(--chat-feed-sb-size, var(--sb-size, 0px)) 0 0;
+  inset: auto var(--eterx-sb-size, 18px) 0 0;
   height: min(170px, 22vh);
   pointer-events: none;
   z-index: -1;

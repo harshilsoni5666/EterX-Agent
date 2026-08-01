@@ -26,9 +26,6 @@
   --info: #516B8A;
   --success: #15803D;
   --destructive: #C93333;
-  --sb-thumb: rgba(31, 31, 29, 0.15);
-  --sb-thumb-hover: rgba(31, 31, 29, 0.28);
-  --sb-thumb-active: rgba(31, 31, 29, 0.42);
 
   /* Terminal ANSI Colors for high-contrast light theme display */
   --terminal-red: #C93333;

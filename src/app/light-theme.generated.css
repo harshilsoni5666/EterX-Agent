@@ -18,9 +18,6 @@
   --success: #047857;
   --destructive: #dc2626;
   --info: #2563eb;
-  --sb-thumb: rgba(31, 31, 29, 0.20);
-  --sb-thumb-hover: rgba(31, 31, 29, 0.32);
-  --sb-thumb-active: rgba(31, 31, 29, 0.46);
   color-scheme: light;
 }
 

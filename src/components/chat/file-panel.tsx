@@ -1581,7 +1581,14 @@ export const IdePanel = () => {
                       overviewRulerBorder: false,
                       hideCursorInOverviewRuler: true,
                       renderValidationDecorations: 'off',
-                      scrollbar: { verticalScrollbarSize: 4, horizontalScrollbarSize: 4 },
+                      scrollbar: {
+                        verticalScrollbarSize: 12,
+                        horizontalScrollbarSize: 12,
+                        arrowSize: 0,
+                        verticalHasArrows: false,
+                        horizontalHasArrows: false,
+                        useShadows: false,
+                      },
                     }}
                     loading={
                       <div className="flex flex-col items-center justify-center h-full" style={{ background: editorBackground }}>

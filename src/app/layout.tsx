@@ -3,6 +3,7 @@ import { Inter, JetBrains_Mono, Lora } from 'next/font/google';
 import './globals.css';
 import './light-theme.generated.css';
 import './light-theme.enterprise.css';
+import './scrollbars.css';
 import 'katex/dist/katex.min.css';
 import { ThemeBridge } from '../components/theme/theme-bridge';
 
