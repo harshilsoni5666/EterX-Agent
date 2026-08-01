@@ -143,11 +143,6 @@ fs.cpSync(
   { recursive: true, force: true },
 );
 fs.cpSync(
-  path.join(repositoryRoot, 'coding-agent', 'eterx-agent-reference', 'prompts'),
-  path.join(assetsRoot, 'agent-prompts', 'prompts'),
-  { recursive: true, force: true },
-);
-fs.cpSync(
   path.join(repositoryRoot, 'src', 'lib', 'agent', 'browser', 'extension'),
   path.join(assetsRoot, 'browser-extension'),
   { recursive: true, force: true },
@@ -200,7 +195,6 @@ const required = [
   'server.js',
   'dependencies.asar',
   path.join('assets', 'skills'),
-  path.join('assets', 'agent-prompts', 'prompts'),
   path.join('.next', 'BUILD_ID'),
   path.join('.next', 'server', 'app-paths-manifest.json'),
 ];

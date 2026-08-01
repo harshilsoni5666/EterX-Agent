@@ -168,9 +168,6 @@ export default function LiveOverlayPage() {
     if (typeof window !== 'undefined' && (window as any).electronAPI?.petReply) {
       (window as any).electronAPI.petReply(JSON.stringify({ action: 'stop' }));
     }
-    if (typeof window !== 'undefined' && (window as any).electronAPI?.closePetWindow) {
-      (window as any).electronAPI.closePetWindow();
-    }
   };
 
   return (

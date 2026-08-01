@@ -890,7 +890,10 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
                     transition={{ delay: 0.1, duration: 0.3 }}
                     className="mb-5 shrink-0"
                   >
-                    <img src="/logo.png" alt="App Logo" className="w-12 h-12 object-contain opacity-90 select-none pointer-events-none" />
+                    <span className="w-12 h-12 inline-block select-none pointer-events-none">
+                      <img src="/logo-black.png" alt="App Logo" className="w-full h-full object-contain opacity-90 dark:hidden" />
+                      <img src="/logo-white.png" alt="App Logo" className="hidden w-full h-full object-contain opacity-90 dark:block" />
+                    </span>
                   </motion.div>
 
                   <motion.p

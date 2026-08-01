@@ -6,6 +6,7 @@ import { browserEngine } from '../../browser/engine';
 import { domSnapshot } from '../../browser/snapshot';
 import { browserSessionManager } from '../../browser/session';
 import { networkMonitor } from '../../browser/network';
+import { nativeCurrentBrowser } from '../../browser/native-current-browser';
 import { monitorEmitter } from '../../monitor/emitter';
 import {
   resolveReadableWorkspacePathForContext,
@@ -19,12 +20,17 @@ import {
 const SCREENSHOTS_DIR = path.resolve(process.cwd(), '.workspaces', 'temp', 'screenshots');
 const BROWSER_LOG = path.resolve(process.cwd(), '.workspaces', 'temp', 'browser_actions.log');
 const PDF_DIR = path.resolve(process.cwd(), '.workspaces', 'temp', 'pdfs');
+const lastBrowserMonitorUrl = new Map<string, string>();
 
 async function emitBrowserMonitorFrame(page: any, chatId?: string | null) {
   try {
     if (!page || page.isClosed?.()) return;
     const url = page.url?.() || '';
-    if (url) monitorEmitter.browserNav(url, chatId || undefined);
+    const streamKey = chatId || '__global__';
+    if (url && lastBrowserMonitorUrl.get(streamKey) !== url) {
+      lastBrowserMonitorUrl.set(streamKey, url);
+      monitorEmitter.browserNav(url, chatId || undefined);
+    }
     const frame = await page.screenshot({
       fullPage: false,
       type: 'png',
@@ -37,6 +43,36 @@ async function emitBrowserMonitorFrame(page: any, chatId?: string | null) {
   } catch {
     // Monitor frames are best-effort and must never slow or fail browser work.
   }
+}
+
+let browserMonitorTimer: ReturnType<typeof setTimeout> | null = null;
+let browserMonitorUntil = 0;
+let browserMonitorChatId: string | undefined;
+
+function stopBrowserMonitorStream() {
+  browserMonitorUntil = 0;
+  if (browserMonitorTimer) clearTimeout(browserMonitorTimer);
+  browserMonitorTimer = null;
+}
+
+function keepBrowserMonitorLive(chatId?: string) {
+  browserMonitorChatId = chatId || browserMonitorChatId;
+  browserMonitorUntil = Date.now() + 15_000;
+  if (browserMonitorTimer) return;
+
+  const capture = async () => {
+    browserMonitorTimer = null;
+    if (!browserEngine.connected || Date.now() > browserMonitorUntil) return;
+    try {
+      const page = await browserEngine.getActivePage();
+      await emitBrowserMonitorFrame(page, browserMonitorChatId);
+    } catch {}
+    if (browserEngine.connected && Date.now() <= browserMonitorUntil) {
+      browserMonitorTimer = setTimeout(capture, 750);
+    }
+  };
+
+  void capture();
 }
 
 const BROWSER_VISUAL_BOOTSTRAP = `
@@ -69,6 +105,7 @@ const BROWSER_VISUAL_BOOTSTRAP = `
         '.eterx-hud-brand{position:relative;z-index:1;width:34px;height:34px;display:grid;place-items:center;border:1px solid rgba(125,211,252,.22);border-radius:10px;background:linear-gradient(145deg,rgba(14,165,233,.22),rgba(37,99,235,.12));color:#e0f2fe;font:800 14px/1 ui-sans-serif,system-ui,sans-serif;flex:0 0 auto}.eterx-hud-dot{position:absolute;right:-2px;bottom:-2px;width:8px;height:8px;border:2px solid #15171b;border-radius:999px;background:#34d399;box-shadow:0 0 0 3px rgba(52,211,153,.12);animation:eterx-control-live-dot 1.8s ease-in-out infinite}',
         '.eterx-hud-body{position:relative;z-index:1;min-width:116px;display:flex;flex-direction:column;gap:3px;flex:1 1 auto;max-width:310px}.eterx-hud-title,.eterx-hud-detail{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.eterx-hud-title{font-weight:730;letter-spacing:-.01em}.eterx-hud-detail{color:rgba(255,255,255,.62);font-size:10.5px;font-weight:540}.eterx-hud-actions{position:relative;z-index:1;display:flex;align-items:center;gap:6px;margin-left:3px}.eterx-hud-button{height:36px;padding:0 12px;border:1px solid rgba(255,255,255,.08);border-radius:10px;background:rgba(255,255,255,.08);color:rgba(255,255,255,.92);cursor:pointer;touch-action:manipulation;font:680 11.5px/1 ui-sans-serif,system-ui,sans-serif;transition:background 140ms ease,border-color 140ms ease,transform 100ms ease}.eterx-hud-button:hover{background:rgba(255,255,255,.14);border-color:rgba(255,255,255,.14)}.eterx-hud-button:active{transform:scale(.97)}.eterx-hud-button:focus-visible{outline:2px solid #7dd3fc;outline-offset:2px}.eterx-hud-button.resume{display:none;background:rgba(14,165,233,.2);border-color:rgba(56,189,248,.3)}.eterx-hud-button.stop{background:rgba(248,113,113,.11);border-color:rgba(248,113,113,.17);color:#fecaca}.eterx-hud-button.stop:hover{background:rgba(239,68,68,.2);border-color:rgba(248,113,113,.3)}#eterx-control-hud.eterx-paused .eterx-hud-dot{background:#fbbf24;animation:none}#eterx-control-hud.eterx-paused .eterx-hud-button.take{display:none}#eterx-control-hud.eterx-paused .eterx-hud-button.resume{display:inline-flex;align-items:center}',
         '@media(max-width:560px){#eterx-control-hud{bottom:max(10px,env(safe-area-inset-bottom));width:calc(100vw - 20px);max-width:none;min-height:58px;padding:7px;border-radius:15px;gap:8px}.eterx-hud-brand{width:32px;height:32px}.eterx-hud-body{min-width:0;max-width:none}.eterx-hud-title{font-size:11.5px}.eterx-hud-detail{font-size:10px}.eterx-hud-actions{gap:5px;margin-left:0}.eterx-hud-button{height:38px;padding:0 10px}.eterx-hud-button.take,.eterx-hud-button.resume{font-size:0}.eterx-hud-button.take:after{content:"Pause";font-size:11px}.eterx-hud-button.resume:after{content:"Resume";font-size:11px}}@media(max-width:380px){.eterx-hud-brand{display:none}.eterx-hud-body{min-width:72px}.eterx-hud-button{padding:0 8px}}@media(prefers-reduced-motion:reduce){#eterx-control-frame:before,.eterx-hud-dot{animation:none!important}#eterx-control-hud,#eterx-control-frame{transition:none!important}}',
+        '#eterx-control-hud{display:none!important}',
         '#eterx-control-cursor{position:fixed;left:0;top:0;width:18px;height:22px;pointer-events:none;z-index:2147483647;opacity:0;transform:translate(-100px,-100px);transition:opacity 120ms ease,filter 130ms ease;will-change:transform,opacity;filter:drop-shadow(0 8px 12px rgba(0,0,0,.42))}',
         '#eterx-control-cursor.eterx-active{opacity:1}',
         '#eterx-control-cursor svg{display:block;width:18px;height:22px;transform-origin:4px 4px;transition:transform 90ms ease}',
@@ -745,6 +782,7 @@ async function installVisualFeedback(page: any): Promise<void> {
           opacity: 0;
           transition: opacity 180ms ease, transform 180ms cubic-bezier(.2,.8,.2,1);
           font: 750 14px/1.15 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+          display: none !important;
         }
         #eterx-control-hud.eterx-active {
           opacity: 1;
@@ -1226,7 +1264,11 @@ function visualTitle(action: string): string {
     new_tab: 'Opening tab',
     switch_or_open_tab: 'Opening tab',
     switch_tab: 'Switching tab',
+    next_tab: 'Switching tab',
+    previous_tab: 'Switching tab',
+    duplicate_tab: 'Duplicating tab',
     close_tab: 'Closing tab',
+    close_other_tabs: 'Closing other tabs',
     wait: 'Waiting',
     wait_for: 'Waiting for page',
     ask_user_browser: 'Waiting for user',
@@ -1296,7 +1338,11 @@ function visualBubbleLabel(action: string, input: any): string {
     new_tab: 'Opening tab',
     switch_or_open_tab: 'Opening tab',
     switch_tab: 'Switching tab',
+    next_tab: 'Switching tab',
+    previous_tab: 'Switching tab',
+    duplicate_tab: 'Duplicating tab',
     close_tab: 'Closing tab',
+    close_other_tabs: 'Closing other tabs',
     list_tabs: 'Checking tabs',
     wait: 'Waiting page',
     wait_for: 'Waiting page',
@@ -1768,7 +1814,7 @@ async function clickElementHuman(page: any, element: any, button: 'left' | 'righ
 
 export const browserControlTool: ToolDefinition = {
   name: 'browser_control',
-  description: `🌐 NEXT-GEN BROWSER CONTROL — Full Chrome Automation via CDP + Playwright + Snapshot/Ref System.
+  description: `BROWSER CONTROL — Real browser automation through CDP, Playwright, and stable page references.
 
 ARCHITECTURE: Three-layer system
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1776,16 +1822,16 @@ Layer 1: You (the AI) — read snapshots, decide actions
 Layer 2: This tool — resolves refs, executes actions, returns results
 Layer 3: CDP + Playwright — drives actual browser
 
-🧠 THE SNAPSHOT/REF SYSTEM (KEY INNOVATION):
+SNAPSHOT/REF SYSTEM:
 Instead of guessing CSS selectors, do this:
 1. snapshot → See ALL interactive elements with numeric refs
 2. click(ref: 14) → Click element [14] from the snapshot
 3. type(ref: 8, text: "hello") → Type into element [8]
 
-This is 10x more reliable than selectors. ALWAYS snapshot first.
+Prefer refs over selectors. Refresh the snapshot after navigation or page changes.
 
 WORKFLOW for ANY web task:
-1. launch → Start browser (or connect to existing Chrome)
+1. launch → Connect to the user's signed-in default browser
 2. goto → Navigate to URL
 3. snapshot → SEE the page with element refs
 4. click/type/select → Interact using refs
@@ -1796,7 +1842,7 @@ When you use browser_control, make it the only tool call in that model turn. Wai
 
 BROWSER UI SESSION:
 - Use start_browser_session when beginning a multi-step visible browser workflow.
-- Run normal browser actions in between; the animated frame, cursor, pill, and bubble stay alive across those actions.
+- Run normal browser actions in between; live cursor and target feedback stay active across those actions.
 - Use end_browser_session when the browser workflow is finished so the UI disappears cleanly.
 - If end_browser_session is missed, the UI auto-closes after a short idle window with no browser actions.
 
@@ -1810,13 +1856,14 @@ USER CHECKPOINTS:
 - Prefer ask_user_browser over chat ask_user whenever the user's attention should stay in the browser context.
 
 CONNECTION MODES:
-- managed: Launch new Chrome (clean, isolated)
-- cdp: Connect to user's Chrome (keeps sessions/logins)
+- cdp: Default. Connect to the installed signed-in Chromium browser
+- native current-window fallback: automatically controls an already-open default browser when CDP is unavailable
+- managed: Explicit opt-in. Launch an isolated persistent browser profile
 - remote: Connect to cloud browser via WebSocket
 
 SESSION PERSISTENCE:
 - Use profile="myprofile" to save cookies/sessions across restarts
-- Once you login, the session persists forever
+- Managed-profile sessions persist until the user clears or deletes them
 - List profiles with: profiles action
 
 ELEMENT TARGETING (priority order):
@@ -1841,7 +1888,7 @@ USE THIS WHEN THE USER ASKS TO:
   inputSchema: z.object({
     action: z.enum([
       // ── Connection & Lifecycle ──
-      'launch', 'connect', 'disconnect', 'start_browser_session', 'end_browser_session',
+      'launch', 'connect', 'disconnect', 'status', 'capabilities', 'start_browser_session', 'end_browser_session',
       
       // ── Navigation ──
       'goto', 'back', 'forward', 'reload',
@@ -1857,7 +1904,8 @@ USE THIS WHEN THE USER ASKS TO:
       'scroll', 'scroll_to',
       
       // ── Tab Management ──
-      'new_tab', 'switch_or_open_tab', 'switch_tab', 'close_tab', 'list_tabs',
+      'new_tab', 'switch_or_open_tab', 'switch_tab', 'next_tab', 'previous_tab',
+      'duplicate_tab', 'close_tab', 'close_other_tabs', 'list_tabs',
       
       // ── Wait & User Checkpoints ──
       'wait', 'wait_for', 'ask_user_browser',
@@ -1891,9 +1939,9 @@ USE THIS WHEN THE USER ASKS TO:
     ]).describe('Browser action to perform. Start with "launch" then "goto" then "snapshot".'),
 
     // ── Connection ──
-    mode: z.enum(['managed', 'cdp', 'remote']).optional().describe('Connection mode. managed=new Chrome, cdp=existing Chrome, remote=cloud'),
+    mode: z.enum(['managed', 'cdp', 'remote']).optional().default('cdp').describe('Connection mode. Default cdp uses the installed signed-in browser. managed is an explicit isolated-profile opt-in.'),
     profile: z.string().optional().describe('Named profile for session persistence (cookies survive restarts)'),
-    headless: z.boolean().optional().describe('Run headless without opening a host Chrome window. Default: true for EterX Computer isolation.'),
+    headless: z.boolean().optional().describe('Run an explicitly managed browser without a visible window. Signed-in browser control is always visible.'),
     cdpEndpoint: z.string().optional().describe('CDP endpoint for cdp mode: http://127.0.0.1:9222'),
     wsEndpoint: z.string().optional().describe('WebSocket endpoint for remote mode'),
 
@@ -2032,7 +2080,7 @@ USE THIS WHEN THE USER ASKS TO:
 
     throwIfBrowserCancelled(context);
 
-    const unsafeLaunch = action === 'launch' && (input.mode === 'cdp' || input.mode === 'remote');
+    const unsafeLaunch = action === 'launch' && input.mode === 'remote';
     if ((SENSITIVE_BROWSER_ACTIONS.has(action) || unsafeLaunch) && !hasUnsafeBrowserCapability(context)) {
       return fail(
         action,
@@ -2055,14 +2103,44 @@ USE THIS WHEN THE USER ASKS TO:
       // ═══════════════════════════════════════
 
       if (action === 'launch' || action === 'connect') {
-        page = await waitWithBrowserCancellation(browserEngine.launch({
-          mode: input.mode || 'managed',
-          headless: input.headless ?? true,
-          profile: input.profile,
-          cdpEndpoint: input.cdpEndpoint,
-          wsEndpoint: input.wsEndpoint,
-          viewport: input.width && input.height ? { width: input.width, height: input.height } : null,
-        }), context);
+        try {
+          page = await waitWithBrowserCancellation(browserEngine.launch({
+            mode: input.mode || 'cdp',
+            headless: input.headless ?? false,
+            profile: input.profile,
+            cdpEndpoint: input.cdpEndpoint,
+            wsEndpoint: input.wsEndpoint,
+            viewport: input.width && input.height ? { width: input.width, height: input.height } : null,
+          }), context);
+        } catch (launchError) {
+          if ((input.mode || 'cdp') !== 'cdp' || input.cdpEndpoint) throw launchError;
+          const nativeResult = await nativeCurrentBrowser.connect(
+            input.url ? normalizeBrowserUrl(input.url) : undefined,
+          );
+          if (!nativeResult.success) {
+            return {
+              ...nativeResult,
+              elapsedMs: Date.now() - startedAt,
+            };
+          }
+          if (nativeResult.screenshotBase64) {
+            monitorEmitter.browserScreenshot(
+              nativeResult.screenshotBase64,
+              nativeResult.currentUrl,
+              typeof input.chatId === 'string' ? input.chatId : context?.chatId,
+            );
+          }
+          if (nativeResult.currentUrl) {
+            monitorEmitter.browserNav(
+              nativeResult.currentUrl,
+              typeof input.chatId === 'string' ? input.chatId : context?.chatId,
+            );
+          }
+          return {
+            ...nativeResult,
+            elapsedMs: Date.now() - startedAt,
+          };
+        }
         throwIfBrowserCancelled(context);
 
         // Restore session if profile specified
@@ -2073,12 +2151,12 @@ USE THIS WHEN THE USER ASKS TO:
         // Navigate if URL provided
         if (input.url) {
           const url = normalizeBrowserUrl(input.url);
-          await withTimeout(
-            page.goto(url, { waitUntil: 'domcontentloaded', timeout: actionTimeout(input, 15000, 30000) }),
-            actionTimeout(input, 15000, 30000) + 1000,
-            'browser launch navigation',
-            context
-          );
+          const target = await waitWithBrowserCancellation(browserEngine.switchOrOpenPage(url, {
+            match: input.tabMatch || 'exact',
+            navigateIfBlank: true,
+            openIfMissing: true,
+          }), context);
+          page = target.page;
         }
 
         // Auto-start network monitoring (non-fatal)
@@ -2123,11 +2201,58 @@ USE THIS WHEN THE USER ASKS TO:
       }
 
       if (action === 'disconnect') {
+        stopBrowserMonitorStream();
+        nativeCurrentBrowser.disconnect();
         if (_browserVisualSessionPage) {
           await endBrowserActivity(_browserVisualSessionPage, 0).catch(() => {});
         }
         await browserEngine.disconnect();
         return { success: true, action, result: 'Browser disconnected. All sessions closed.', elapsedMs: Date.now() - startedAt };
+      }
+
+      if (action === 'status' || action === 'capabilities') {
+        const info = nativeCurrentBrowser.connected ? nativeCurrentBrowser.info : browserEngine.connectionInfo;
+        const tabs = nativeCurrentBrowser.connected
+          ? nativeCurrentBrowser.tabs
+          : info.connected ? await browserEngine.getPageListDetailed().catch(() => []) : [];
+        return {
+          success: true,
+          action,
+          result: action === 'status' ? { ...info, tabs } : {
+            connection: ['signed-in local Chromium via CDP', 'explicit managed profile', 'remote Playwright browser'],
+            navigation: ['goto', 'back', 'forward', 'reload'],
+            tabs: ['list', 'switch', 'reuse matching', 'open', 'close', 'popup tracking'],
+            reading: ['DOM snapshot with refs', 'page text', 'HTML', 'screenshots', 'console', 'network'],
+            interaction: ['click', 'double click', 'hover', 'focus', 'fill', 'type', 'select', 'check', 'keyboard', 'mouse', 'drag and drop', 'scroll'],
+            files: ['upload', 'download tracking', 'PDF'],
+            sessions: ['cookies', 'local/session storage', 'named profiles', 'import/export'],
+            devices: ['responsive viewport', 'device emulation', 'geolocation'],
+            safety: ['sequential actions', 'human checkpoints', 'cancellation', 'state verification', 'no silent profile fallback'],
+            live: ['real-time screenshots', 'navigation events', 'cursor and target feedback'],
+          },
+          elapsedMs: Date.now() - startedAt,
+        };
+      }
+
+      if (nativeCurrentBrowser.connected && !browserEngine.connected) {
+        const nativeResult = await nativeCurrentBrowser.execute(action, input);
+        if (nativeResult.screenshotBase64) {
+          monitorEmitter.browserScreenshot(
+            nativeResult.screenshotBase64,
+            nativeResult.currentUrl,
+            typeof input.chatId === 'string' ? input.chatId : context?.chatId,
+          );
+        }
+        if (nativeResult.currentUrl) {
+          monitorEmitter.browserNav(
+            nativeResult.currentUrl,
+            typeof input.chatId === 'string' ? input.chatId : context?.chatId,
+          );
+        }
+        return {
+          ...nativeResult,
+          elapsedMs: Date.now() - startedAt,
+        };
       }
 
       // For all other actions, the browser must be connected
@@ -2176,10 +2301,11 @@ USE THIS WHEN THE USER ASKS TO:
             const reused = await waitWithBrowserCancellation(browserEngine.switchOrOpenPage(url, {
               match: input.tabMatch || 'exact',
               navigateIfBlank: true,
-              openIfMissing: false,
+              openIfMissing: true,
             }), context);
             page = reused.page;
             activityPage = page;
+            try { await networkMonitor.startIntercepting(page); } catch {}
             if (reused.reused && reused.reason !== 'blank') {
               result = {
                 navigated: url,
@@ -2827,6 +2953,7 @@ USE THIS WHEN THE USER ASKS TO:
             : await browserEngine.newPage(url);
           const { page: newPage, id } = tab;
           page = newPage;
+          try { await networkMonitor.startIntercepting(page); } catch {}
           if (input.visualFeedback !== false) {
             ensureVisualHooks(page);
             activityPage = page;
@@ -2853,6 +2980,7 @@ USE THIS WHEN THE USER ASKS TO:
         case 'switch_tab': {
           if (!input.tabId) return fail(action, 'tabId required');
           page = await browserEngine.switchPage(input.tabId);
+          try { await networkMonitor.startIntercepting(page); } catch {}
           if (input.visualFeedback !== false) {
             ensureVisualHooks(page);
             activityPage = page;
@@ -2863,10 +2991,49 @@ USE THIS WHEN THE USER ASKS TO:
           break;
         }
 
+        case 'next_tab':
+        case 'previous_tab': {
+          const cycled = await browserEngine.cyclePage(action === 'next_tab' ? 'next' : 'previous');
+          page = cycled.page;
+          activityPage = page;
+          try { await networkMonitor.startIntercepting(page); } catch {}
+          if (input.visualFeedback !== false) {
+            ensureVisualHooks(page);
+            await showBrowserAction(page, action, input);
+          }
+          result = { switched: cycled.id, url: page.url() };
+          domSnapshot.invalidate();
+          break;
+        }
+
+        case 'duplicate_tab': {
+          const duplicated = await browserEngine.duplicatePage(input.tabId);
+          page = duplicated.page;
+          activityPage = page;
+          try { await networkMonitor.startIntercepting(page); } catch {}
+          if (input.visualFeedback !== false) {
+            ensureVisualHooks(page);
+            await showBrowserAction(page, action, input);
+          }
+          result = { duplicated: input.tabId || 'active', tabId: duplicated.id, url: page.url() };
+          domSnapshot.invalidate();
+          break;
+        }
+
         case 'close_tab': {
           if (!input.tabId) return fail(action, 'tabId required');
           await browserEngine.closePage(input.tabId);
           result = { closed: input.tabId };
+          break;
+        }
+
+        case 'close_other_tabs': {
+          const keepId = input.tabId || browserEngine.activeTabId;
+          const closed = await browserEngine.closeOtherPages(keepId);
+          page = await browserEngine.getActivePage();
+          activityPage = page;
+          result = { retained: keepId, closed, count: closed.length };
+          domSnapshot.invalidate();
           break;
         }
 
@@ -3349,6 +3516,12 @@ USE THIS WHEN THE USER ASKS TO:
         domSnapshot.invalidate();
         recovery = 'The snapshot is stale. Take a fresh snapshot, then use the new ref.';
         nextAction = 'snapshot';
+      } else if (msg.includes('browser control is not enabled')) {
+        recovery = 'Close every window of the default browser once, then launch again. EterX will reopen the same signed-in profile with control enabled.';
+        nextAction = 'launch';
+      } else if (msg.includes('not a supported Chromium browser')) {
+        recovery = 'Set Chrome, Edge, or Brave as the system default browser, then launch again.';
+        nextAction = 'launch';
       } else if (msg.includes('not connected')) {
         recovery = 'Browser is not connected.';
         nextAction = 'launch';
@@ -3414,6 +3587,7 @@ USE THIS WHEN THE USER ASKS TO:
             .then((activePage: any) => emitBrowserMonitorFrame(activePage, monitorChatId))
             .catch(() => undefined);
         }
+        if (browserEngine.connected) keepBrowserMonitorLive(monitorChatId);
       }
     }
     }); // end withBrowserLock

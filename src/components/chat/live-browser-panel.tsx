@@ -10,7 +10,7 @@
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Monitor, RefreshCw, ExternalLink, X, Maximize2, Minimize2, Globe, Wifi, WifiOff, ZoomIn, ZoomOut } from 'lucide-react';
+import { Monitor, Maximize2, Minimize2, Globe, Wifi, WifiOff, ZoomIn, ZoomOut } from 'lucide-react';
 
 interface BrowserFrame {
   screenshot?: string;  // base64 PNG
@@ -30,7 +30,7 @@ export interface LiveBrowserPanelProps {
   onClose?: () => void;
   isFullscreen?: boolean;
   onToggleFullscreen?: () => void;
-  /** Optional static URL to show in the address bar (e.g. from localhost proxy) */
+  /** Legacy caller compatibility; live browser events are the authoritative URL source. */
   initialUrl?: string;
 }
 
@@ -57,61 +57,21 @@ const redactRuntimeText = (value: unknown, maxLength = 900) => {
   ), clipped);
 };
 
-function normalizeBrowserAddress(input: string) {
-  const trimmed = input.trim();
-  if (!trimmed) return '';
-
-  const hostMatch = trimmed.match(/^(localhost|127\.0\.0\.1|\[::1\]|::1)(?::(\d+))?(\/.*)?$/i);
-  if (hostMatch) {
-    const host = hostMatch[1];
-    const port = hostMatch[2] || '3000';
-    const rest = hostMatch[3] || '/';
-    return `http://${host}:${port}${rest}`;
-  }
-
-  const portOnlyMatch = trimmed.match(/^:?(3000|[1-9]\d{1,4})(\/.*)?$/);
-  if (portOnlyMatch) {
-    return `http://localhost:${portOnlyMatch[1]}${portOnlyMatch[2] || '/'}`;
-  }
-
-  if (/^https?:\/\//i.test(trimmed)) return trimmed;
-  return '';
-}
-
-function getProxiedUrl(address: string): string {
-  const normalized = normalizeBrowserAddress(address);
-  if (!normalized) return address;
-  const localMatch = normalized.match(/^https?:\/\/(?:localhost|127\.0\.0\.1|::1|\[::1\]):(\d+)(.*)/i);
-  if (localMatch) {
-    const port = localMatch[1];
-    const rest = localMatch[2] || '/';
-    const cleanRest = rest.startsWith('/') ? rest.substring(1) : rest;
-    return `/api/proxy/${port}/${cleanRest}`;
-  }
-  return normalized;
-}
-
 export const LiveBrowserPanel: React.FC<LiveBrowserPanelProps> = ({
   chatId,
-  onClose,
   isFullscreen,
   onToggleFullscreen,
-  initialUrl,
 }) => {
-  const initialBrowserTarget = normalizeBrowserAddress(initialUrl || '');
   const [frame, setFrame] = useState<BrowserFrame | null>(null);
   const [logs, setLogs] = useState<BrowserLog[]>([]);
   const [connected, setConnected] = useState(false);
-  const [currentUrl, setCurrentUrl] = useState(initialBrowserTarget || initialUrl || '');
-  const [urlInput, setUrlInput] = useState(initialBrowserTarget || initialUrl || '');
+  const [currentUrl, setCurrentUrl] = useState('');
   const [showLogs, setShowLogs] = useState(false);
   const [zoom, setZoom] = useState(1);
   const [lastActivity, setLastActivity] = useState<string>('Waiting for browser activity...');
   const [isAgentActive, setIsAgentActive] = useState(false);
   const [frameCount, setFrameCount] = useState(0);
-  const [iframeUrl, setIframeUrl] = useState<string | null>(initialUrl ? getProxiedUrl(initialUrl) : null);
 
-  const iframeRef = useRef<HTMLIFrameElement>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
   const activityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const logsEndRef = useRef<HTMLDivElement>(null);
@@ -167,6 +127,7 @@ export const LiveBrowserPanel: React.FC<LiveBrowserPanelProps> = ({
 
           if (data.type === 'screenshot' && data.base64) {
             setFrame({ screenshot: data.base64, url: data.url, ts: data.ts, type: 'screenshot' });
+            if (data.url) setCurrentUrl(data.url);
             setFrameCount(c => c + 1);
             markActive('Browser active');
             return;
@@ -174,8 +135,7 @@ export const LiveBrowserPanel: React.FC<LiveBrowserPanelProps> = ({
 
           if (data.type === 'nav' && data.url) {
             setCurrentUrl(data.url);
-            setUrlInput(data.url);
-            addLog({ ts: data.ts, type: 'nav', text: `→ ${data.url}` });
+            addLog({ ts: data.ts, type: 'nav', text: `Opened ${data.url}` });
             let destination = 'new page';
             try { destination = new URL(data.url).hostname || destination; } catch { /* non-standard browser URL */ }
             markActive(`Navigating to ${destination}`);
@@ -183,7 +143,7 @@ export const LiveBrowserPanel: React.FC<LiveBrowserPanelProps> = ({
           }
 
           if (data.type === 'activity') {
-            const label = data.eventType === 'tool_start' ? `▶ ${data.tool}` : `✓ ${data.tool}`;
+            const label = data.eventType === 'tool_start' ? `Running ${data.tool}` : `Completed ${data.tool}`;
             addLog({ ts: data.ts, type: 'activity', text: label });
             markActive(label);
             return;
@@ -201,7 +161,7 @@ export const LiveBrowserPanel: React.FC<LiveBrowserPanelProps> = ({
           }
 
           if (data.type === 'file' && data.path) {
-            addLog({ ts: data.ts, type: 'file', text: `${data.action === 'file_write' ? '✎' : '◎'} ${data.path.split(/[\\/]/).pop()}` });
+            addLog({ ts: data.ts, type: 'file', text: `${data.action === 'file_write' ? 'Updated' : 'Read'} ${data.path.split(/[\\/]/).pop()}` });
             return;
           }
         } catch { /* ignore malformed events */ }
@@ -225,18 +185,8 @@ export const LiveBrowserPanel: React.FC<LiveBrowserPanelProps> = ({
     }
   }, [logs, showLogs]);
 
-  // Navigate the proxy iframe
-  const navigateIframe = (nextInput = urlInput) => {
-    const target = normalizeBrowserAddress(nextInput);
-    if (!target) return;
-    setUrlInput(target);
-    setCurrentUrl(target);
-    setIframeUrl(getProxiedUrl(target));
-  };
-
   const frameTimestamp = frame ? new Date(frame.ts).toLocaleTimeString() : null;
   const hasLiveFrame = !!frame?.screenshot;
-  const hasIframe = !!iframeUrl;
 
   return (
     <div className="flex flex-col h-full bg-[#0A0A0C] select-none">
@@ -245,39 +195,16 @@ export const LiveBrowserPanel: React.FC<LiveBrowserPanelProps> = ({
         className="flex items-center gap-2 px-3 py-2 shrink-0 border-b border-white/[0.06]"
         style={{ background: 'linear-gradient(180deg,#1A1A1C 0%,#151517 100%)' }}
       >
-        {/* Traffic lights */}
-        <div className="flex items-center gap-1.5 shrink-0">
-          <div className="w-2.5 h-2.5 rounded-full bg-[#FF5F57] shadow-sm border border-black/20" />
-          <div className="w-2.5 h-2.5 rounded-full bg-[#FEBC2E] shadow-sm border border-black/20" />
-          <div className="w-2.5 h-2.5 rounded-full bg-[#28C840] shadow-sm border border-black/20" />
-        </div>
-
         {/* Address bar */}
         <div className="flex items-center flex-1 gap-1 min-w-0 bg-[#0D0D10] border border-white/[0.07] rounded-[8px] px-2.5 py-1.5 shadow-inner">
           <Globe className="w-3 h-3 text-[#555350] shrink-0" />
-          <input
-            value={urlInput}
-            onChange={e => setUrlInput(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter') navigateIframe(); }}
-            placeholder="localhost:3000 or paste URL..."
-            className="flex-1 min-w-0 bg-transparent text-[11px] font-mono text-[#C8C6C3] outline-none placeholder-[#3A3A3A]"
-          />
-          {urlInput && (
-            <button onClick={() => { setUrlInput(''); setIframeUrl(null); }} className="shrink-0 text-[#555350] hover:text-white transition-colors">
-              <X className="w-3 h-3" />
-            </button>
-          )}
+          <div className="flex-1 min-w-0 truncate text-[11px] font-mono text-[#C8C6C3]">
+            {currentUrl || 'Waiting for the controlled browser'}
+          </div>
         </div>
 
         {/* Controls */}
         <div className="flex items-center gap-1 shrink-0">
-          <button
-            onClick={() => navigateIframe()}
-            className="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-bold bg-white/[0.06] text-[#C8C6C3] hover:bg-white/[0.10] hover:text-white transition-colors border border-white/[0.06]"
-          >
-            Go
-          </button>
-
           <button
             onClick={() => setZoom(z => Math.max(0.3, z - 0.1))}
             className="p-1.5 rounded-md text-[#555350] hover:text-white hover:bg-white/[0.06] transition-colors"
@@ -346,29 +273,16 @@ export const LiveBrowserPanel: React.FC<LiveBrowserPanelProps> = ({
       {/* ── Main content area ─────────────────────────────── */}
       <div className="flex flex-1 min-h-0">
 
-        {/* Primary view: iframe (proxy) or live screenshot */}
+        {/* Primary view: real-time frames from the controlled browser */}
         <div className="flex-1 relative overflow-hidden bg-[#0A0A0C]">
 
-          {/* Proxy iframe — shown when user types a URL */}
-          {hasIframe && (
-            <div className="absolute inset-0" style={{ transformOrigin: 'top left', transform: `scale(${zoom})`, width: `${100 / zoom}%`, height: `${100 / zoom}%` }}>
-              <iframe
-                ref={iframeRef}
-                src={iframeUrl!}
-                className="w-full h-full border-0"
-                sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
-                title="Preview"
-              />
-            </div>
-          )}
-
           {/* Live screenshot from agent browser */}
-          {!hasIframe && hasLiveFrame && (
+          {hasLiveFrame && (
             <div className="absolute inset-0 flex items-start justify-center overflow-auto bg-[#080808]">
               <div style={{ transform: `scale(${zoom})`, transformOrigin: 'top center', transition: 'transform 0.15s ease' }}>
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
-                  src={`data:image/png;base64,${frame!.screenshot}`}
+                  src={`data:${frame!.screenshot!.startsWith('/9j/') ? 'image/jpeg' : 'image/png'};base64,${frame!.screenshot}`}
                   alt="Browser screenshot"
                   className="max-w-none shadow-2xl"
                   draggable={false}
@@ -378,44 +292,27 @@ export const LiveBrowserPanel: React.FC<LiveBrowserPanelProps> = ({
           )}
 
           {/* Empty state */}
-          {!hasIframe && !hasLiveFrame && (
+          {!hasLiveFrame && (
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 text-[#333]">
               <Monitor className="w-12 h-12 opacity-20" />
               <div className="text-center">
-                <div className="text-[14px] font-semibold text-[#555] mb-1">No Preview Active</div>
+                <div className="text-[14px] font-semibold text-[#555] mb-1">Browser stream inactive</div>
                 <div className="text-[12px] text-[#3A3A3A]">
                   {connected
-                    ? 'Enter a localhost URL above, or wait for the agent to open a browser'
+                    ? 'Waiting for the first live frame from the controlled browser'
                     : 'Connecting to live stream...'}
                 </div>
               </div>
-              {connected && (
-                <div className="flex flex-col items-center gap-2 mt-2">
-                  <div className="text-[11px] text-[#4A4A4A] font-mono">Try: localhost:3000</div>
-                  <button
-                    onClick={() => navigateIframe('localhost:3000')}
-                    className="px-3 py-1.5 rounded-lg bg-white/[0.05] border border-white/[0.08] text-[12px] text-[#888] hover:text-white hover:bg-white/[0.10] transition-colors"
-                  >
-                    Open localhost:3000
-                  </button>
-                </div>
-              )}
             </div>
           )}
 
           {/* Screenshot timestamp badge */}
-          {!hasIframe && hasLiveFrame && frameTimestamp && (
+          {hasLiveFrame && frameTimestamp && (
             <div className="absolute bottom-3 right-3 px-2 py-1 rounded-full bg-black/60 border border-white/[0.08] text-[10px] font-mono text-[#888] backdrop-blur-sm">
               {frameTimestamp}
             </div>
           )}
 
-          {/* URL chip overlay */}
-          {!hasIframe && currentUrl && (
-            <div className="absolute top-2 left-1/2 -translate-x-1/2 max-w-[80%] truncate px-2.5 py-1 rounded-full bg-black/70 border border-white/[0.08] text-[10px] font-mono text-[#888] backdrop-blur-sm">
-              {currentUrl}
-            </div>
-          )}
         </div>
 
         {/* Activity log sidebar */}

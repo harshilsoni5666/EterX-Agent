@@ -30,7 +30,6 @@ const requiredFiles = [
   'runtime/server.js',
   'runtime/.next/BUILD_ID',
   'runtime/assets/skills',
-  'runtime/assets/agent-prompts/prompts',
 ];
 const requiredDependencies = [
   'node_modules/next/package.json',

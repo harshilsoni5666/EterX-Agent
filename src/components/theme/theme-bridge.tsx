@@ -12,9 +12,12 @@ const readThemePreference = (): ThemePreference => {
   try {
     const saved = window.localStorage.getItem(SETTINGS_STORAGE_KEY);
     const settings = saved ? JSON.parse(saved) : {};
-    return settings.theme === 'dark' || settings.theme === 'system' ? settings.theme : 'light';
+    if (settings.theme === 'dark' || settings.theme === 'light' || settings.theme === 'system') {
+      return settings.theme;
+    }
+    return 'system';
   } catch {
-    return 'light';
+    return 'system';
   }
 };
 

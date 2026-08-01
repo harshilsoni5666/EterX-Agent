@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { createPortal } from 'react-dom';
-import { Copy, RefreshCw, ChevronDown, FileText, Check, Clock, ChevronRight, MessageSquarePlus, Activity, Minimize2, CornerDownLeft, CircleStop, TriangleAlert, ListCollapse } from 'lucide-react';
+import { Copy, RefreshCw, ChevronDown, FileText, Check, Clock, ChevronRight, MessageSquarePlus, Activity, Minimize2, CornerDownLeft, CircleStop, TriangleAlert } from 'lucide-react';
 import { ThinkingProcess, ProfessionalThought } from '../chat/thought-sequence';
 import { AskUserPrompt } from '../chat/ask-user-prompt';
 import { Tooltip } from '../ui/tooltip';
@@ -239,7 +239,22 @@ const UserMessageActionButton = ({
   );
 };
 
-const UserMessageActions = React.memo(({ text, onEdit }: { text: string; onEdit?: (text: string) => void }) => {
+const formatShortTime = (timestamp: number | string | undefined | null): string => {
+  if (!timestamp) return '';
+  const ts = Number(timestamp);
+  if (!Number.isFinite(ts) || ts <= 0) return '';
+  // Normalize seconds → milliseconds
+  const ms = ts < 10_000_000_000 ? ts * 1000 : ts;
+  try {
+    const d = new Date(ms);
+    if (isNaN(d.getTime())) return '';
+    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+  } catch {
+    return '';
+  }
+};
+
+const UserMessageActions = React.memo(({ text, onEdit, timestamp }: { text: string; onEdit?: (text: string) => void; timestamp?: number | string | null }) => {
   const [copied, setCopied] = useState(false);
   const handleCopy = async (event: React.MouseEvent) => {
     event.stopPropagation();
@@ -250,8 +265,15 @@ const UserMessageActions = React.memo(({ text, onEdit }: { text: string; onEdit?
     }
   };
 
+  const timeLabel = formatShortTime(timestamp);
+
   return (
     <div className="eterx-user-message-actions absolute right-full top-1/2 mr-2 flex -translate-y-1/2 shrink-0 items-center gap-0.5 opacity-0 pointer-events-none transition-opacity duration-150 group-hover/user:opacity-100 group-hover/user:pointer-events-auto group-hover/steer:opacity-100 group-hover/steer:pointer-events-auto focus-within:opacity-100 focus-within:pointer-events-auto">
+      {timeLabel && (
+        <span className="mr-1 text-[11px] font-medium tabular-nums leading-none text-[#736E67] select-none whitespace-nowrap">
+          {timeLabel}
+        </span>
+      )}
       <UserMessageActionButton label={copied ? "Copied" : "Copy message"} onClick={handleCopy}>
         {copied ? <Check className="h-[18px] w-[18px] text-emerald-400" strokeWidth={2.15} /> : <Copy className="h-[18px] w-[18px]" strokeWidth={2.15} />}
       </UserMessageActionButton>
@@ -715,31 +737,34 @@ const ContextCompactionNotice = ({ log }: { log: any }) => {
     <div
       role="status"
       aria-live="polite"
-      className="eterx-context-compaction my-3.5 flex w-full items-center gap-3.5 py-1 text-[13px] text-[var(--muted-foreground)]"
+      className="eterx-context-compaction my-3.5 flex w-full items-center gap-3.5 py-1 text-[13px] text-[#1D1D1B] dark:text-[#F4F4F4]"
     >
       <span className={`h-px min-w-8 flex-1 bg-gradient-to-r from-transparent to-[var(--border)] ${isCompacting ? 'opacity-80' : 'opacity-55'}`} />
       <span className="inline-flex min-w-0 shrink-0 items-center gap-2">
-        <ListCollapse
-          className={`h-4 w-4 shrink-0 ${isCompacting ? 'opacity-80' : 'opacity-65'}`}
-          strokeWidth={1.8}
+        <span
           aria-hidden="true"
+          className={`inline-block h-4 w-4 shrink-0 bg-current transition-opacity ${isCompacting ? 'opacity-90' : 'opacity-100'}`}
+          style={{
+            WebkitMask: 'url(/icons/settings/context.png) center / contain no-repeat',
+            mask: 'url(/icons/settings/context.png) center / contain no-repeat',
+          }}
         />
         <span className="font-medium tracking-[-0.01em]">
           {isCompacting ? (
             <Shimmer>Context automatically compacting</Shimmer>
           ) : isRetrying ? (
             <>
-              <span className="opacity-65">Context compaction </span>
+              <span className="opacity-80">Context compaction </span>
               <span>will retry</span>
             </>
           ) : (
             <>
-              <span className="opacity-65">Context successfully </span>
+              <span className="opacity-80">Context successfully </span>
               <span>compacted</span>
             </>
           )}
         </span>
-        {detail && <span className="hidden text-[11.5px] opacity-55 sm:inline">{detail}</span>}
+        {detail && <span className="hidden text-[11.5px] font-normal text-[#666664] dark:text-[#B0B0B0] sm:inline">{detail}</span>}
       </span>
       <span className={`h-px min-w-8 flex-1 bg-gradient-to-l from-transparent to-[var(--border)] ${isCompacting ? 'opacity-80' : 'opacity-55'}`} />
     </div>
@@ -1180,7 +1205,7 @@ const ChatFeedMessageGroup = React.memo(({
       <div data-chat-group-index={groupIdx} className="eterx-chat-message-group mt-8 mb-6 flex w-full scroll-m-20 justify-end group/user">
         <div className="flex w-full justify-end">
           <div data-delegated={delegatedSource ? 'true' : undefined} className={`eterx-user-message-bubble eterx-chat-feed-user-bubble flex min-w-0 flex-col items-end rounded-[18px] border ${ delegatedSource ? 'border-white/[0.24] bg-[#181818] shadow-[0_5px_22px_rgba(0,0,0,0.24),inset_0_1px_0_rgba(255,255,255,0.05)]' : 'border-white/[0.06] bg-[#20201F] shadow-[0_4px_18px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(255,255,255,0.025)]' } px-4 py-2.5 text-[13.5px] leading-[1.56] text-[#F4F2EE] selection:bg-[#D98B6A]/25 relative whitespace-pre-wrap select-text ${ isCompressed ? 'max-w-[92%]' : 'max-w-[520px]' }`}>
-            <UserMessageActions text={userText} onEdit={onEditUserMessage} />
+            <UserMessageActions text={userText} onEdit={onEditUserMessage} timestamp={first.timestamp} />
 
             {delegatedSource && (
               <div className="eterx-delegated-source-header mb-1.5 w-full border-b border-white/[0.09] pb-1.5 text-left text-[11px] font-medium tracking-[0.01em] text-white/55">
@@ -1624,6 +1649,11 @@ const ChatFeedMessageGroup = React.memo(({
                           </button>
                         </Tooltip>
                       )}
+                      {formatShortTime(displayFinalAnswer.endTime ?? displayFinalAnswer.timestamp) && (
+                        <span className="ml-1 text-[11px] font-medium tabular-nums leading-none text-[#746F67] select-none whitespace-nowrap">
+                          {formatShortTime(displayFinalAnswer.endTime ?? displayFinalAnswer.timestamp)}
+                        </span>
+                      )}
                     </div>
                   </div>
                 ) : undefined}
@@ -1653,6 +1683,51 @@ const ChatFeedMessageGroup = React.memo(({
   }
   return true;
 });
+
+const getGroupDateKey = (group: any[]): string => {
+  for (const log of group) {
+    const raw = log?.timestamp ?? log?.startTime ?? log?.endTime;
+    const ts = normalizeWorkTimestamp(raw);
+    if (ts !== null) {
+      const d = new Date(ts);
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    }
+  }
+  return '';
+};
+
+const formatDateLabel = (dateKey: string): string => {
+  if (!dateKey) return '';
+  const [year, month, day] = dateKey.split('-').map(Number);
+  const messageDate = new Date(year, month - 1, day);
+  const today = new Date();
+  const todayKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
+  const yesterdayKey = `${yesterday.getFullYear()}-${String(yesterday.getMonth() + 1).padStart(2, '0')}-${String(yesterday.getDate()).padStart(2, '0')}`;
+  if (dateKey === todayKey) return 'Today';
+  if (dateKey === yesterdayKey) return 'Yesterday';
+  const isThisYear = messageDate.getFullYear() === today.getFullYear();
+  return messageDate.toLocaleDateString('en-US', {
+    weekday: 'long',
+    month: 'long',
+    day: 'numeric',
+    ...(isThisYear ? {} : { year: 'numeric' }),
+  });
+};
+
+const ChatDateDivider = React.memo(({ label }: { label: string }) => (
+  <div
+    aria-label={label}
+    className="eterx-date-divider flex w-full items-center gap-3 py-2 my-1 select-none"
+  >
+    <span className="h-px flex-1 bg-gradient-to-r from-transparent to-[var(--border)] opacity-40" />
+    <span className="shrink-0 text-[11px] font-medium tracking-[0.02em] text-[var(--muted-foreground)] opacity-60 leading-none">
+      {label}
+    </span>
+    <span className="h-px flex-1 bg-gradient-to-l from-transparent to-[var(--border)] opacity-40" />
+  </div>
+));
 
 export const ChatFeed = React.memo<ChatFeedProps>(({
   traceLogs: incomingTraceLogs, chatId, isThinking, messagesEndRef, setSidebarOpen, sidebarOpen, handleScroll: externalHandleScroll, showScrollBottom, isCompressed = false, onOpenAgentTeam, onAnswerAskUser, onEditUserMessage, isSubAgentTab = false, liveState
@@ -2157,21 +2232,33 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
                     liveState !== undefined &&
                     liveState !== 'idle' &&
                     liveState !== 'error';
+
+                  // --- Date divider logic ---
+                  const thisDateKey = getGroupDateKey(group);
+                  const prevGroup = visibleGroupIdx > 0 ? visibleGroups[visibleGroupIdx - 1] : null;
+                  const prevDateKey = prevGroup ? getGroupDateKey(prevGroup) : '';
+                  const showDateDivider = thisDateKey && thisDateKey !== prevDateKey;
+                  const dateLabel = showDateDivider ? formatDateLabel(thisDateKey) : '';
+
                   return (
-                    <ChatFeedMessageGroup
-                      key={`group-${ conversationIdentity }-${ getGroupMountIdentity(group, groupIdx) }`}
-                      group={group}
-                      groupIdx={groupIdx}
-                      isThinkingTurn={isThinkingTurn}
-                      isLiveSessionActive={isLiveSessionActive}
-                      suppressInitialReveal={isHydratingConversation}
-                      isCompressed={isCompressed}
-                      onOpenAgentTeam={onOpenAgentTeam}
-                      onAnswerAskUser={onAnswerAskUser}
-                      onEditUserMessage={onEditUserMessage}
-                      isSubAgentTab={isSubAgentTab}
-                      setPreviewUserMessage={setPreviewUserMessage}
-                    />
+                    <React.Fragment key={`group-${ conversationIdentity }-${ getGroupMountIdentity(group, groupIdx) }`}>
+                      {showDateDivider && dateLabel && (
+                        <ChatDateDivider label={dateLabel} />
+                      )}
+                      <ChatFeedMessageGroup
+                        group={group}
+                        groupIdx={groupIdx}
+                        isThinkingTurn={isThinkingTurn}
+                        isLiveSessionActive={isLiveSessionActive}
+                        suppressInitialReveal={isHydratingConversation}
+                        isCompressed={isCompressed}
+                        onOpenAgentTeam={onOpenAgentTeam}
+                        onAnswerAskUser={onAnswerAskUser}
+                        onEditUserMessage={onEditUserMessage}
+                        isSubAgentTab={isSubAgentTab}
+                        setPreviewUserMessage={setPreviewUserMessage}
+                      />
+                    </React.Fragment>
                   );
                 })}
 

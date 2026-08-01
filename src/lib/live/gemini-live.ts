@@ -70,7 +70,7 @@ interface LiveVisualWatch {
   timer: ReturnType<typeof setInterval>;
 }
 
-interface LiveInteractionPolicy {
+export interface LiveInteractionPolicy {
   notificationLevel: 'all' | 'important' | 'critical';
   responseDetail: 'brief' | 'balanced' | 'detailed';
   proactiveUpdates: boolean;
@@ -103,6 +103,10 @@ export interface LiveSessionOptions {
   thinkingBudget?: number;
   includeThoughts?: boolean;
   model?: string;
+  voice?: string;
+  audioInputEnabled?: boolean;
+  audioOutputEnabled?: boolean;
+  interactionPolicy?: Partial<LiveInteractionPolicy>;
   initialContext?: {
     pastMemories?: string[];
     chatHistory?: Array<{ role: string; text: string }>;
@@ -112,6 +116,7 @@ export interface LiveSessionOptions {
 }
 
 const LIVE_WS_URL = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent';
+const LIVE_INTERACTION_POLICY_STORAGE_KEY = 'eterx_live_interaction_policy_v1';
 
 export class GeminiLiveSession {
   private ws: WebSocket | null = null;
@@ -149,6 +154,8 @@ export class GeminiLiveSession {
   private activeSystemEvent: LiveSystemEvent | null = null;
   private systemEventDrainTimer: ReturnType<typeof setTimeout> | null = null;
   private lastUserSpeechAt = 0;
+  private bargeInCandidateFrames = 0;
+  private lastBargeInCandidateAt = 0;
   private activeObjective: LiveObjectiveLedger | null = null;
   private coordinatedTasks = new Map<string, CoordinatedLiveTask>();
   private cameraStream: MediaStream | null = null;
@@ -186,6 +193,51 @@ export class GeminiLiveSession {
     this.chatId = chatId;
     this.callbacks = callbacks;
     this.options = options;
+    this.currentVoice = String(options?.voice || 'Kore').trim() || 'Kore';
+    this.micMuted = options?.audioInputEnabled === false;
+    this.speakerMuted = options?.audioOutputEnabled === false;
+    this.restoreInteractionPolicy();
+    if (options?.interactionPolicy) {
+      this.interactionPolicy = {
+        ...this.interactionPolicy,
+        ...options.interactionPolicy,
+      };
+      this.persistInteractionPolicy();
+    }
+  }
+
+  private restoreInteractionPolicy(): void {
+    try {
+      const saved = JSON.parse(localStorage.getItem(LIVE_INTERACTION_POLICY_STORAGE_KEY) || '{}');
+      if (['all', 'important', 'critical'].includes(saved.notificationLevel)) {
+        this.interactionPolicy.notificationLevel = saved.notificationLevel;
+      }
+      if (['brief', 'balanced', 'detailed'].includes(saved.responseDetail)) {
+        this.interactionPolicy.responseDetail = saved.responseDetail;
+      }
+      if (typeof saved.proactiveUpdates === 'boolean') {
+        this.interactionPolicy.proactiveUpdates = saved.proactiveUpdates;
+      }
+      if (typeof saved.silenceUntilImportant === 'boolean') {
+        this.interactionPolicy.silenceUntilImportant = saved.silenceUntilImportant;
+      }
+      if (typeof saved.autoFollowThrough === 'boolean') {
+        this.interactionPolicy.autoFollowThrough = saved.autoFollowThrough;
+      }
+    } catch {
+      // Invalid or unavailable local preferences fall back to safe defaults.
+    }
+  }
+
+  private persistInteractionPolicy(): void {
+    try {
+      localStorage.setItem(
+        LIVE_INTERACTION_POLICY_STORAGE_KEY,
+        JSON.stringify(this.interactionPolicy),
+      );
+    } catch {
+      // The current session still keeps the preference if storage is unavailable.
+    }
   }
 
   private setState(newState: LiveSessionState) {
@@ -828,8 +880,23 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
         return;
       }
       const distance = this.visualSignatureDistance(watch.lastSignature, signature);
+      if (distance < watch.sensitivity) {
+        watch.lastSignature = signature;
+        return;
+      }
+      const userQuietForMs = Date.now() - this.lastUserSpeechAt;
+      if (
+        this.state === 'speaking' ||
+        this.state === 'thinking' ||
+        this.activeSources.length > 0 ||
+        userQuietForMs < 1400
+      ) {
+        // Keep the previous baseline so the meaningful change is evaluated at
+        // the next natural pause rather than being lost or interrupting audio.
+        return;
+      }
       watch.lastSignature = signature;
-      if (distance < watch.sensitivity || Date.now() - watch.lastTriggerAt < 4000) return;
+      if (Date.now() - watch.lastTriggerAt < 4000) return;
       watch.lastTriggerAt = Date.now();
       if (source === 'screen') this.sendScreenFrame();
       else this.sendCameraFrame();
@@ -873,19 +940,26 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
    * Connect to the Gemini Live API and start the audio session.
    */
   async connect(): Promise<void> {
-    if (this.state !== 'idle') return;
+    // Resumable reconnects deliberately keep the public state at connecting
+    // so the orb remains mounted. Accept that internal reconnect state here.
+    if (this.state !== 'idle' && this.state !== 'connecting') return;
+    const isContinuation = this.state === 'connecting';
     this.manualDisconnect = false;
     this.setState('connecting');
-    this.outputTranscript = '';
-    this.inputTranscript = '';
-    this.turnOutputTranscript = '';
-    this.turnInputTranscript = '';
+    if (!isContinuation) {
+      this.outputTranscript = '';
+      this.inputTranscript = '';
+      this.turnOutputTranscript = '';
+      this.turnInputTranscript = '';
+    }
 
     try {
       const url = `${ LIVE_WS_URL }?key=${ this.apiKey }`;
-      this.ws = new WebSocket(url);
+      const socket = new WebSocket(url);
+      this.ws = socket;
 
-      this.ws.onopen = () => {
+      socket.onopen = () => {
+        if (this.ws !== socket) return;
         console.log('[GeminiLive] WebSocket opened, sending setup/config...');
 
         const systemText = this.buildSystemInstructionText();
@@ -1410,11 +1484,13 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
         this.ws!.send(JSON.stringify(setupMessage));
       };
 
-      this.ws.onmessage = (event) => {
+      socket.onmessage = (event) => {
+        if (this.ws !== socket) return;
         this.handleMessage(event);
       };
 
-      this.ws.onerror = () => {
+      socket.onerror = () => {
+        if (this.ws !== socket) return;
         console.error('[GeminiLive] WebSocket error');
         if (!this.manualDisconnect && this.resumptionHandle) return;
         this.callbacks.onError('WebSocket connection error. Check your API key and network.');
@@ -1422,7 +1498,8 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
         this.setState('error');
       };
 
-      this.ws.onclose = (event) => {
+      socket.onclose = (event) => {
+        if (this.ws !== socket) return;
         console.log('[GeminiLive] WebSocket closed:', event.code, event.reason);
         if (!this.manualDisconnect && this.resumptionHandle && (this.resumeRequested || event.code !== 1000)) {
           this.resumeRequested = false;
@@ -1431,7 +1508,7 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
           // WebSocket resumes. Re-requesting display capture would open another
           // picker and make visual context appear to be forgotten.
           this.cleanup(true);
-          this.setState('idle');
+          this.setState('connecting');
           setTimeout(() => {
             void this.connect();
           }, 350);
@@ -1480,7 +1557,11 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
         // The remote session is connected before local microphone setup
         // finishes, so clear the connecting UI immediately.
         this.setState('connected');
-        await this.startAudioCapture();
+        if (this.options?.audioInputEnabled !== false) {
+          await this.startAudioCapture();
+        } else {
+          this.callbacks.onMicVolume?.(0);
+        }
         this.setState('listening');
         this.playConnectionSound();
         this.resetSilenceTimer();
@@ -1672,7 +1753,7 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
                         // A voice change reconnects the audio model, not the
                         // user's visual context. Preserve authorized capture.
                         this.cleanup(true);
-                        this.setState('idle');
+                        this.setState('connecting');
 
                         setTimeout(() => {
                           this.connect().then(() => {
@@ -1799,6 +1880,7 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
                   if (typeof fc.args?.auto_follow_through === 'boolean') {
                     this.interactionPolicy.autoFollowThrough = fc.args.auto_follow_through;
                   }
+                  this.persistInteractionPolicy();
                   return {
                     id: fc.id,
                     name: fc.name,
@@ -2118,6 +2200,17 @@ ${chatHistory.slice(-15).map(h => `${h.role === 'user' ? 'User' : 'EterX'}: ${h.
     if (workspace) {
       workspaceBlock = `\nActive Workspace Path: ${workspace}`;
     }
+    const systemNotes = String(this.options?.initialContext?.systemNotes || '').trim();
+    const systemNotesBlock = systemNotes
+      ? `\n\nUSER-CONFIGURED LIVE POLICY AND MODEL ROUTING:\n${systemNotes.slice(0, 12000)}`
+      : '';
+    const interactionPolicyBlock = `\nCurrent durable Live interaction policy:
+- notification level: ${this.interactionPolicy.notificationLevel}
+- response detail: ${this.interactionPolicy.responseDetail}
+- proactive updates: ${this.interactionPolicy.proactiveUpdates ? 'enabled' : 'disabled'}
+- silence until important: ${this.interactionPolicy.silenceUntilImportant ? 'enabled' : 'disabled'}
+- autonomous follow-through: ${this.interactionPolicy.autoFollowThrough ? 'enabled' : 'disabled'}
+Apply this policy from the first turn. The user may change it naturally at any time with configure_live_behavior.`;
 
     return `You are EterX Live, a highly capable realtime voice agent and task coordinator.
 You are having a live voice conversation. Default to short, direct, natural responses (usually 1-3 sentences). When the user requests depth or the subject genuinely needs it, give a structured, complete answer without artificial brevity.
@@ -2228,7 +2321,7 @@ BROWSER & COMPUTER CONTROL:
 CURRENT SYSTEM & SESSION CONTEXT:
 Current Date: ${new Date().toLocaleDateString()}
 Current Time: ${new Date().toLocaleTimeString()}
-Current Day: ${new Date().toLocaleDateString('en-US', { weekday: 'long' })}${workspaceBlock}${memoryBlock}${historyBlock}`;
+Current Day: ${new Date().toLocaleDateString('en-US', { weekday: 'long' })}${workspaceBlock}${interactionPolicyBlock}${systemNotesBlock}${memoryBlock}${historyBlock}`;
   }
 
   /**
@@ -2278,10 +2371,26 @@ Current Day: ${new Date().toLocaleDateString('en-US', { weekday: 'long' })}${wor
         const rms = Math.sqrt(sumSq / inputData.length);
         const normalizedVolume = Math.min(100, Math.round(rms * 400)); // 0-100 scale
 
-        // Instant Voice Barge-In (Interruption): flush AI audio playback when user speaks over the AI
+        // Confirm voice barge-in before flushing playback. One noisy 256 ms
+        // chunk or speaker leakage must not cancel an otherwise healthy reply.
         if (this.state === 'speaking') {
-          if (normalizedVolume > 8) {
+          const now = Date.now();
+          const sustainedVoice = normalizedVolume >= 12;
+          if (sustainedVoice) {
+            this.bargeInCandidateFrames =
+              now - this.lastBargeInCandidateAt <= 420
+                ? this.bargeInCandidateFrames + 1
+                : 1;
+            this.lastBargeInCandidateAt = now;
+          } else {
+            this.bargeInCandidateFrames = 0;
+          }
+          const confirmedBargeIn =
+            normalizedVolume >= 28 ||
+            this.bargeInCandidateFrames >= 2;
+          if (confirmedBargeIn) {
             console.log('[GeminiLive] Instant voice barge-in triggered (volume:', normalizedVolume, ')');
+            this.bargeInCandidateFrames = 0;
             this.flushPlayback();
             this.turnInputTranscript = '';
             this.turnOutputTranscript = '';
@@ -2295,6 +2404,8 @@ Current Day: ${new Date().toLocaleDateString('en-US', { weekday: 'long' })}${wor
             // Drop routine mic background noise while AI speaks to avoid acoustic feedback
             return;
           }
+        } else {
+          this.bargeInCandidateFrames = 0;
         }
 
         // Reset silence timer if user makes noise
@@ -2542,14 +2653,28 @@ Current Day: ${new Date().toLocaleDateString('en-US', { weekday: 'long' })}${wor
     }
     this.toolActivityStarts.clear();
     this.cancelledToolCallIds.clear();
-    this.systemEventQueue = [];
-    this.queuedSystemEventIds.clear();
-    this.activeSystemEvent = null;
+    this.bargeInCandidateFrames = 0;
+    this.lastBargeInCandidateAt = 0;
+    if (preserveVisualCapture) {
+      const interruptedEvent = this.activeSystemEvent;
+      this.activeSystemEvent = null;
+      if (interruptedEvent) {
+        this.deliveredSystemEventIds.delete(interruptedEvent.id);
+        if (!this.queuedSystemEventIds.has(interruptedEvent.id)) {
+          this.systemEventQueue.unshift(interruptedEvent);
+          this.queuedSystemEventIds.add(interruptedEvent.id);
+        }
+      }
+    } else {
+      this.systemEventQueue = [];
+      this.queuedSystemEventIds.clear();
+      this.activeSystemEvent = null;
+      this.activeObjective = null;
+    }
     if (this.systemEventDrainTimer) {
       clearTimeout(this.systemEventDrainTimer);
       this.systemEventDrainTimer = null;
     }
-    this.activeObjective = null;
     cancelAnimationFrame(this.modelVolumeLoopId);
     // Stop audio capture
     if (this.scriptProcessor) {

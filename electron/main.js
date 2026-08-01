@@ -1966,7 +1966,23 @@ ipcMain.on('pet-window-resize', (_event, options) => {
 ipcMain.on('pet-window-move', (_event, pos) => {
   if (petWindow && !petWindow.isDestroyed() && pos && typeof pos.x === 'number' && typeof pos.y === 'number') {
     try {
-      petWindow.setPosition(Math.round(pos.x), Math.round(pos.y), false);
+      const bounds = petWindow.getBounds();
+      const requestedX = Math.round(pos.x);
+      const requestedY = Math.round(pos.y);
+      const targetDisplay = screen.getDisplayNearestPoint({
+        x: requestedX + Math.round(bounds.width / 2),
+        y: requestedY + Math.round(bounds.height / 2),
+      });
+      const workArea = targetDisplay.workArea;
+      const safeX = Math.min(
+        Math.max(requestedX, workArea.x),
+        workArea.x + workArea.width - bounds.width
+      );
+      const safeY = Math.min(
+        Math.max(requestedY, workArea.y),
+        workArea.y + workArea.height - bounds.height
+      );
+      petWindow.setPosition(safeX, safeY, false);
     } catch { }
   }
 });

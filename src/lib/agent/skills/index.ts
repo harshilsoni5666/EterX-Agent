@@ -61,6 +61,28 @@ export const SKILL_REGISTRY: Record<string, AgentSkill> = {
   ...MD_SKILLS,
 };
 
+export const SKILL_CATALOG = Object.freeze(
+  Object.values(SKILL_REGISTRY)
+    .map(skill => ({
+      id: skill.id,
+      name: skill.name,
+      description: String(skill.description || '').replace(/\s+/g, ' ').trim(),
+    }))
+    .sort((a, b) => a.id.localeCompare(b.id)),
+);
+
+export const SKILL_PATHWAYS_PROMPT = [
+  'SKILL PATHWAYS',
+  '- The complete skill folder is indexed once when EterX starts. The catalog below is already available; do not search, list, or reread the skill folder to discover a skill.',
+  '- Do not choose skills through keyword or word matching. Decide whether a specialist is required from the actual deliverable and the work that must be performed.',
+  '- When specialist instructions materially apply, call get_skill_guidelines with the exact catalog ID immediately before that specialized work.',
+  '- Load an applicable skill once. Keep using the returned instructions for the current task and do not request the same skill again.',
+  '- If no specialist materially applies, continue with the normal agent workflow without loading a skill.',
+  '',
+  'Available skill pathways:',
+  ...SKILL_CATALOG.map(skill => `- ${skill.id}: ${skill.description || skill.name}`),
+].join('\n');
+
 // ── Registry Summary ─────────────────────────────────────────────────────────
 const staticCount = Object.keys(STATIC_SKILLS).length;
 const mdCount = mdSkills.length;

@@ -1,1 +1,7 @@
-<svg fill="#FFAF00" role="img" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><title>Mistral AI</title><path d="M17.143 3.429v3.428h-3.429v3.429h-3.428V6.857H6.857V3.43H3.43v13.714H0v3.428h10.286v-3.428H6.857v-3.429h3.429v3.429h3.429v-3.429h3.428v3.429h-3.428v3.428H24v-3.428h-3.43V3.429z"/></svg>
+<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect x="2" y="3" width="4" height="4" rx="0.8" fill="#F7A000"/>
+  <rect x="18" y="3" width="4" height="4" rx="0.8" fill="#F7A000"/>
+  <rect x="2" y="9" width="8" height="4" rx="0.8" fill="#F76B00"/>
+  <rect x="14" y="9" width="8" height="4" rx="0.8" fill="#F76B00"/>
+  <rect x="2" y="15" width="20" height="4" rx="0.8" fill="#FF4500"/>
+</svg>

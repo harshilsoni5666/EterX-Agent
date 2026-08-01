@@ -24,7 +24,6 @@ import fs from 'fs-extra';
 import { exec, execSync } from 'child_process';
 import { promisify } from 'util';
 import net from 'net';
-import { getEterxAssetPath } from '../storage-paths';
 
 const execAsync = promisify(exec);
 
@@ -39,7 +38,10 @@ function getPlaywright(): any {
 }
 
 function allowUserChromeAccess(): boolean {
-  return process.env.ETERX_ALLOW_USER_CHROME === '1' || process.env.ETERX_ALLOW_UNSAFE_HOST_COMPUTER === '1';
+  // Browser control is a user-facing desktop capability. Keep an explicit
+  // opt-out for managed deployments, but do not require a hidden environment
+  // flag before the app can use the browser the user deliberately opened.
+  return process.env.ETERX_ALLOW_USER_CHROME !== '0';
 }
 
 function shouldRunHeadless(requested?: boolean): boolean {
@@ -156,6 +158,7 @@ export class BrowserEngine {
   private connectionMode: ConnectionMode = 'managed';
   private isConnected: boolean = false;
   private ownsBrowserConnection: boolean = false;
+  private pageSequence: number = 0;
 
   // Per-page state
   private consoleLogs: Map<string, ConsoleEntry[]> = new Map();
@@ -171,7 +174,8 @@ export class BrowserEngine {
 
   /**
    * Launch or connect to a browser based on the specified mode.
-   * Priority: reuse existing → CDP auto-detect → user's Chrome with debug port → managed Playwright
+   * Priority: reuse an existing connection, attach to the signed-in default
+   * browser, or launch an explicitly requested managed/remote browser.
    */
   async launch(options: LaunchOptions = {}): Promise<any> {
     this.pruneClosedPages();
@@ -180,21 +184,26 @@ export class BrowserEngine {
       try {
         const page = await this.getActivePage();
         if (page && !page.isClosed()) {
-          console.log(`[BrowserEngine] ♻️ Reusing existing browser connection`);
+          console.log('[BrowserEngine] Reusing existing browser connection');
           return page;
         }
       } catch {}
     }
 
-    const mode = options.mode || 'managed';
+    const mode = options.mode || 'cdp';
     const userChromeAllowed = allowUserChromeAccess();
 
-    // ─── 2. AUTO-DETECT: Try CDP first (user's Chrome with debug port already running) ───
+    // Attach to the OS-default Chromium browser when control is already enabled.
     if (userChromeAllowed && mode === 'cdp') {
       try {
-        const port = await this.findChromeDebugPort();
+        if (options.cdpEndpoint) {
+          this.connectionMode = 'cdp';
+          return await this.connectCDP(options);
+        }
+        const install = await this.findBrowserInstall();
+        const port = await this.findDebugPortForInstall(install);
         if (port) {
-          console.log(`[BrowserEngine] 🔍 Found Chrome debug port ${port}, connecting via CDP...`);
+          console.log(`[BrowserEngine] Found ${install.displayName} control port ${port}; connecting`);
           this.connectionMode = 'cdp';
           return await this.connectCDP({ ...options, cdpEndpoint: `http://127.0.0.1:${port}` });
         }
@@ -203,13 +212,18 @@ export class BrowserEngine {
       }
     }
 
-    // ─── 3. LAUNCH USER'S CHROME with debug port (uses their actual logins!) ───
-    if (userChromeAllowed && options.mode === 'cdp') {
+    // Otherwise reopen the same signed-in default-browser profile with control enabled.
+    if (userChromeAllowed && mode === 'cdp') {
       try {
         const page = await this.launchUserChromeWithDebug(options);
         if (page) return page;
+        throw new Error(
+          'The signed-in default browser could not be opened for control. ' +
+          'Confirm Chrome, Edge, or Brave is the default browser and retry.'
+        );
       } catch (err: any) {
-        console.log(`[BrowserEngine] User Chrome launch failed: ${err.message?.substring(0, 80)}`);
+        console.log(`[BrowserEngine] Signed-in browser launch failed: ${err.message?.substring(0, 80)}`);
+        throw err;
       }
     }
 
@@ -231,16 +245,15 @@ export class BrowserEngine {
       }
     } catch (err: any) {
       console.error(`[BrowserEngine] Launch failed (${mode}):`, err.message);
-      if (mode !== 'managed') {
-        console.log(`[BrowserEngine] Falling back to managed mode...`);
-        return await this.launchManaged(options);
-      }
+      // Never replace a requested signed-in or remote browser with an isolated
+      // profile. That changes the account/session the user asked us to use.
       throw err;
     }
   }
 
   /**
-   * Try to launch the user's actual Chrome with --remote-debugging-port.
+   * Try to launch the user's actual default Chromium browser with a local
+   * control port.
    * This gives access to their real profile (logins, bookmarks, extensions, cookies).
    * Returns null if it can't be done (e.g., profile locked by already-running Chrome).
    */
@@ -260,11 +273,12 @@ export class BrowserEngine {
     }
 
     if (!userDataDir) {
-      console.log(`[BrowserEngine] No Chrome user data directory found`);
+      console.log(`[BrowserEngine] No ${install.displayName} user data directory found`);
       return null;
     }
 
-    // Check if Chrome is already running (profile would be locked)
+    // Check if the browser is already running (the signed-in profile is locked).
+    let runningWithoutControl = false;
     try {
       const { stdout } = process.platform === 'win32'
         ? await execAsync(`tasklist /FI "IMAGENAME eq ${install.processName}" /NH`, {
@@ -277,40 +291,37 @@ export class BrowserEngine {
           });
       
       if (stdout.toLowerCase().includes(install.processName.toLowerCase())) {
-        // Chrome is already running — check if it has debug port
-        const port = await this.findChromeDebugPort();
+        // The browser is already running; check whether control is enabled.
+        const port = await this.findDebugPortForInstall(install);
         if (port) {
           // It has debug port! Connect to it
-          console.log(`[BrowserEngine] 🔗 Chrome already running with debug port ${port}`);
+          console.log(`[BrowserEngine] ${install.displayName} is already available for browser control on port ${port}`);
           this.connectionMode = 'cdp';
           return await this.connectCDP({ ...options, cdpEndpoint: `http://127.0.0.1:${port}` });
         }
         
-        // Chrome is running but WITHOUT debug port
-        // We can't use their profile (locked), fall back to our persistent profile
-        console.log(`[BrowserEngine] ⚠️ Chrome is running without debug port. Using persistent profile instead.`);
-        console.log(`[BrowserEngine] 💡 TIP: Close Chrome and let the agent open it, or launch Chrome with: chrome.exe --remote-debugging-port=9222`);
-        return null;
+        // Do not silently switch to a different profile.
+        console.log(`[BrowserEngine] ${install.displayName} is running without browser control enabled`);
+        runningWithoutControl = true;
       }
     } catch {}
+    if (runningWithoutControl) {
+      throw new Error(
+        `${install.displayName} is open but browser control is not enabled. ` +
+        `Close every ${install.displayName} window once, then retry. EterX will reopen the same signed-in profile.`
+      );
+    }
 
-    // Chrome is NOT running — we can launch it with their profile + debug port!
+    // The browser is not running; launch its real profile with control enabled.
     const debugPort = await this.findAvailableDebugPort([9222, 9223, 9333, 18800, 18801, 18802]);
     if (!debugPort) {
-      console.log(`[BrowserEngine] No available Chrome debug port found`);
+      console.log('[BrowserEngine] No available local browser-control port found');
       return null;
     }
-    console.log(`[BrowserEngine] 🚀 Launching user's Chrome with debug port ${debugPort}...`);
+    console.log(`[BrowserEngine] Launching signed-in ${install.displayName} with browser control on port ${debugPort}`);
 
     try {
-      const bundledExtensionDir = getEterxAssetPath('browser-extension');
-      const extensionDir = await fs.pathExists(bundledExtensionDir)
-        ? bundledExtensionDir
-        : path.resolve(process.cwd(), 'src', 'lib', 'agent', 'browser', 'extension');
-      const extensionArgs = await fs.pathExists(extensionDir)
-        ? [`--disable-extensions-except=${extensionDir}`, `--load-extension=${extensionDir}`]
-        : [];
-      // Launch Chrome as a detached subprocess
+      // Launch the browser as a detached subprocess.
       const { spawn } = require('child_process');
       const chromeProcess = spawn(chromePath, [
         `--remote-debugging-port=${debugPort}`,
@@ -320,7 +331,6 @@ export class BrowserEngine {
         '--disable-features=TranslateUI',
         '--disable-infobars',
         '--new-window',
-        ...extensionArgs,
       ], {
         detached: true,
         stdio: 'ignore',
@@ -330,8 +340,8 @@ export class BrowserEngine {
 
       // Poll aggressively so a fresh Chrome window becomes usable without a long blank-tab pause.
       let connected = false;
-      for (let i = 0; i < 25; i++) {
-        await new Promise(r => setTimeout(r, 120));
+      for (let i = 0; i < 40; i++) {
+        await new Promise(r => setTimeout(r, 150));
         try {
           const response = await fetch(`http://127.0.0.1:${debugPort}/json/version`, {
             signal: AbortSignal.timeout(550),
@@ -344,15 +354,15 @@ export class BrowserEngine {
       }
 
       if (connected) {
-        console.log(`[BrowserEngine] ✅ User's Chrome is ready on port ${debugPort}`);
+        console.log(`[BrowserEngine] Signed-in ${install.displayName} is ready on port ${debugPort}`);
         this.connectionMode = 'cdp';
         return await this.connectCDP({ ...options, cdpEndpoint: `http://127.0.0.1:${debugPort}` });
       } else {
-        console.log(`[BrowserEngine] ⏱️ Chrome didn't respond in time, falling back to managed`);
+        console.log(`[BrowserEngine] ${install.displayName} did not expose its browser-control endpoint in time`);
         return null;
       }
     } catch (err: any) {
-      console.log(`[BrowserEngine] Chrome subprocess launch failed: ${err.message?.substring(0, 60)}`);
+      console.log(`[BrowserEngine] Browser subprocess launch failed: ${err.message?.substring(0, 60)}`);
       return null;
     }
   }
@@ -396,15 +406,7 @@ export class BrowserEngine {
       launchArgs.push(`--remote-debugging-port=${debugPort}`);
     }
 
-    const bundledExtensionDir = getEterxAssetPath('browser-extension');
-    const extensionDir = await fs.pathExists(bundledExtensionDir)
-      ? bundledExtensionDir
-      : path.resolve(process.cwd(), 'src', 'lib', 'agent', 'browser', 'extension');
-    if (!headless && await fs.pathExists(extensionDir)) {
-      launchArgs.push(`--disable-extensions-except=${extensionDir}`, `--load-extension=${extensionDir}`);
-    }
-
-    const chromePath = await this.findChromePath();
+    const chromePath = await this.findChromePath(false);
     const browserLaunchOptions: Record<string, any> = {
       headless,
       args: launchArgs,
@@ -432,14 +434,14 @@ export class BrowserEngine {
 
     // Get or create the first page
     let pages = this.context.pages();
-    const page = pages.length > 0 ? pages[0] : await this.context.newPage();
+    const page = this.selectBestExistingPage(pages) || await this.context.newPage();
     pages = this.context.pages();
     pages.forEach((p: any, i: number) => {
       const id = i === 0 ? 'main' : `tab_${Date.now()}_${i}`;
       this.pages.set(id, p);
       this.setupPageHandlers(p, id);
     });
-    this.activePageId = 'main';
+    this.activePageId = [...this.pages.entries()].find(([, candidate]) => candidate === page)?.[0] || 'main';
     this.isConnected = true;
     await page.bringToFront().catch(() => {});
     
@@ -476,7 +478,7 @@ export class BrowserEngine {
     this.setupContextHandlers();
 
     let pages = this.context.pages();
-    const page = pages.length > 0 ? pages[0] : await this.context.newPage();
+    const page = this.selectBestExistingPage(pages) || await this.context.newPage();
     pages = this.context.pages();
     
     // Register all existing pages
@@ -486,7 +488,7 @@ export class BrowserEngine {
       this.setupPageHandlers(p, id);
     });
 
-    this.activePageId = 'main';
+    this.activePageId = [...this.pages.entries()].find(([, candidate]) => candidate === page)?.[0] || 'main';
     this.isConnected = true;
     await page.bringToFront().catch(() => {});
     
@@ -611,7 +613,7 @@ export class BrowserEngine {
     if (!this.context) throw new Error('Browser not connected');
 
     const page = await this.context.newPage();
-    const id = `tab_${Date.now()}`;
+    const id = `tab_${Date.now()}_${++this.pageSequence}`;
     this.pages.set(id, page);
     this.setupPageHandlers(page, id);
     this.activePageId = id;
@@ -706,6 +708,41 @@ export class BrowserEngine {
     return true;
   }
 
+  async duplicatePage(id?: string): Promise<{ page: any; id: string }> {
+    const source = id ? await this.getPage(id) : await this.getActivePage();
+    const url = source.url();
+    return this.newPage(this.isBlankUrl(url) ? undefined : url);
+  }
+
+  async closeOtherPages(keepId?: string): Promise<string[]> {
+    const retained = keepId || this.activePageId;
+    const closed: string[] = [];
+    for (const [id, page] of [...this.pages.entries()]) {
+      if (id === retained) continue;
+      try {
+        if (!page.isClosed()) await page.close();
+        closed.push(id);
+      } catch {}
+      this.pages.delete(id);
+      this.consoleLogs.delete(id);
+    }
+    if (this.pages.has(retained)) this.activePageId = retained;
+    return closed;
+  }
+
+  async cyclePage(direction: 'next' | 'previous'): Promise<{ page: any; id: string }> {
+    this.pruneClosedPages();
+    const entries = [...this.pages.entries()];
+    if (!entries.length) throw new Error('No browser tabs are open');
+    const currentIndex = Math.max(0, entries.findIndex(([id]) => id === this.activePageId));
+    const delta = direction === 'next' ? 1 : -1;
+    const index = (currentIndex + delta + entries.length) % entries.length;
+    const [id, page] = entries[index];
+    this.activePageId = id;
+    await page.bringToFront().catch(() => {});
+    return { page, id };
+  }
+
   /**
    * List all open tabs.
    */
@@ -795,6 +832,23 @@ export class BrowserEngine {
     return this.activePageId;
   }
 
+  get connectionInfo(): {
+    connected: boolean;
+    mode: ConnectionMode;
+    activeTabId: string;
+    tabCount: number;
+    ownsBrowserConnection: boolean;
+  } {
+    this.pruneClosedPages();
+    return {
+      connected: this.isConnected,
+      mode: this.connectionMode,
+      activeTabId: this.activePageId,
+      tabCount: this.pages.size,
+      ownsBrowserConnection: this.ownsBrowserConnection,
+    };
+  }
+
   get browserContext(): any {
     return this.context;
   }
@@ -815,13 +869,26 @@ export class BrowserEngine {
     }
   }
 
+  private selectBestExistingPage(pages: any[]): any | null {
+    const usable = pages.filter((page) => {
+      try {
+        const url = String(page.url?.() || '');
+        return !page.isClosed?.() && !url.startsWith('devtools://') && !url.startsWith('chrome-extension://');
+      } catch {
+        return false;
+      }
+    });
+    return usable.find((page) => !this.isBlankUrl(page.url())) || usable[0] || null;
+  }
+
   private setupContextHandlers(): void {
     if (!this.context) return;
 
     // Track new pages opened by the app (popups, window.open, etc.)
     this.context.on('page', (page: any) => {
-      const id = `popup_${Date.now()}`;
+      const id = `popup_${Date.now()}_${++this.pageSequence}`;
       this.pages.set(id, page);
+      this.activePageId = id;
       this.setupPageHandlers(page, id);
       console.log(`[BrowserEngine] 📄 New page detected: ${id} → ${page.url()}`);
     });
@@ -942,7 +1009,7 @@ export class BrowserEngine {
   /**
    * Find Chrome executable path on Windows.
    */
-  private async findBrowserInstall(): Promise<BrowserInstall> {
+  private async findBrowserInstall(requireSystemDefault = true): Promise<BrowserInstall> {
     const localAppData = process.env.LOCALAPPDATA || '';
     const home = os.homedir();
     const candidates: Array<Omit<BrowserInstall, 'executablePath'> & { executablePaths: string[] }> = [
@@ -956,12 +1023,27 @@ export class BrowserEngine {
         processName: 'Brave Browser',
         executablePaths: ['/Applications/Brave Browser.app/Contents/MacOS/Brave Browser'],
         userDataDirCandidates: [path.join(home, 'Library', 'Application Support', 'BraveSoftware', 'Brave-Browser')],
+      }, {
+        displayName: 'Edge',
+        processName: 'Microsoft Edge',
+        executablePaths: ['/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge'],
+        userDataDirCandidates: [path.join(home, 'Library', 'Application Support', 'Microsoft Edge')],
       }] : []),
       ...(process.platform === 'linux' ? [{
         displayName: 'Chrome',
         processName: 'chrome',
         executablePaths: ['/usr/bin/google-chrome', '/usr/bin/google-chrome-stable', '/usr/bin/chromium', '/usr/bin/chromium-browser'],
         userDataDirCandidates: [path.join(home, '.config', 'google-chrome'), path.join(home, '.config', 'chromium')],
+      }, {
+        displayName: 'Brave',
+        processName: 'brave',
+        executablePaths: ['/usr/bin/brave-browser', '/usr/bin/brave'],
+        userDataDirCandidates: [path.join(home, '.config', 'BraveSoftware', 'Brave-Browser')],
+      }, {
+        displayName: 'Edge',
+        processName: 'msedge',
+        executablePaths: ['/usr/bin/microsoft-edge', '/usr/bin/microsoft-edge-stable'],
+        userDataDirCandidates: [path.join(home, '.config', 'microsoft-edge')],
       }] : []),
       {
         displayName: 'Chrome',
@@ -1001,7 +1083,21 @@ export class BrowserEngine {
       },
     ];
 
-    for (const candidate of candidates) {
+    const defaultBrowser = this.detectDefaultChromiumBrowser();
+    if (requireSystemDefault && defaultBrowser === 'unsupported') {
+      throw new Error(
+        'The system default browser is not a supported Chromium browser. ' +
+        'Set Chrome, Edge, or Brave as the default browser, then retry browser control.'
+      );
+    }
+    const orderedCandidates = requireSystemDefault && defaultBrowser && defaultBrowser !== 'unsupported'
+      ? [...candidates].sort((a, b) => (
+          Number(b.displayName.toLowerCase() === defaultBrowser) -
+          Number(a.displayName.toLowerCase() === defaultBrowser)
+        ))
+      : candidates;
+
+    for (const candidate of orderedCandidates) {
       for (const executablePath of candidate.executablePaths.filter(Boolean)) {
         if (await fs.pathExists(executablePath)) {
           return {
@@ -1038,8 +1134,77 @@ export class BrowserEngine {
     };
   }
 
-  async findChromePath(): Promise<string> {
-    return (await this.findBrowserInstall()).executablePath;
+  async findChromePath(requireSystemDefault = true): Promise<string> {
+    return (await this.findBrowserInstall(requireSystemDefault)).executablePath;
+  }
+
+  private detectDefaultChromiumBrowser(): 'chrome' | 'brave' | 'edge' | 'unsupported' | null {
+    try {
+      if (process.platform === 'win32') {
+        const output = execSync(
+          'reg query "HKCU\\Software\\Microsoft\\Windows\\Shell\\Associations\\UrlAssociations\\https\\UserChoice" /v ProgId',
+          { encoding: 'utf-8', timeout: 2500, windowsHide: true }
+        ).toLowerCase();
+        if (output.includes('brave')) return 'brave';
+        if (output.includes('msedge') || output.includes('microsoftedge')) return 'edge';
+        if (output.includes('chrome')) return 'chrome';
+        if (output.includes('progid')) return 'unsupported';
+      } else if (process.platform === 'darwin') {
+        const output = execSync(
+          `osascript -e 'id of app (path to default application for URL "https://example.com")'`,
+          { encoding: 'utf-8', timeout: 2500 }
+        ).toLowerCase();
+        if (output.includes('com.brave.browser')) return 'brave';
+        if (output.includes('com.microsoft.edgemac')) return 'edge';
+        if (output.includes('com.google.chrome')) return 'chrome';
+        if (output.trim()) return 'unsupported';
+      } else {
+        const output = execSync('xdg-settings get default-web-browser', {
+          encoding: 'utf-8',
+          timeout: 2500,
+        }).toLowerCase();
+        if (output.includes('brave')) return 'brave';
+        if (output.includes('edge')) return 'edge';
+        if (output.includes('chrome') || output.includes('chromium')) return 'chrome';
+        if (output.trim()) return 'unsupported';
+      }
+    } catch {
+      // Use the first installed supported browser when the OS has no readable default.
+    }
+    return null;
+  }
+
+  private async findDebugPortForInstall(install: BrowserInstall): Promise<number | null> {
+    try {
+      const command = process.platform === 'win32'
+        ? `Get-CimInstance Win32_Process -Filter "Name='${install.processName.replace(/'/g, "''")}'" | Select-Object -ExpandProperty CommandLine`
+        : 'ps -ax -o command=';
+      const { stdout } = await execAsync(command, {
+        shell: process.platform === 'win32' ? 'powershell.exe' : (process.env.SHELL || '/bin/sh'),
+        timeout: 3000,
+        windowsHide: true,
+      });
+      const executableName = path.basename(install.executablePath).toLowerCase();
+      const commandLines = stdout.split(/\r?\n/).filter((line) => {
+        const normalized = line.toLowerCase();
+        return process.platform === 'win32'
+          ? true
+          : normalized.includes(executableName) || normalized.includes(install.processName.toLowerCase());
+      });
+      for (const line of commandLines) {
+        const match = line.match(/--remote-debugging-port(?:=|\s+)(\d{2,5})/i);
+        if (!match) continue;
+        const port = Number(match[1]);
+        if (!Number.isInteger(port) || port < 1 || port > 65535) continue;
+        try {
+          const response = await fetch(`http://127.0.0.1:${port}/json/version`, {
+            signal: AbortSignal.timeout(700),
+          });
+          if (response.ok) return port;
+        } catch {}
+      }
+    } catch {}
+    return null;
   }
 
   private async findAvailableDebugPort(candidates: number[]): Promise<number | null> {

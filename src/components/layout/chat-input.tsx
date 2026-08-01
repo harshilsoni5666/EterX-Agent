@@ -370,8 +370,20 @@ interface ChatInputProps {
     usedTokens: number;
     contextWindow: number;
     utilizationPct: number;
+    isEstimated?: boolean;
   } | null;
 }
+
+const formatContextTokenCount = (value: number) => {
+  const safeValue = Math.max(0, Math.round(Number.isFinite(value) ? value : 0));
+  if (safeValue < 1_000) return safeValue.toLocaleString();
+  if (safeValue < 1_000_000) {
+    const thousands = safeValue / 1_000;
+    return `${thousands < 100 && !Number.isInteger(thousands) ? thousands.toFixed(1) : Math.round(thousands)}k`;
+  }
+  const millions = safeValue / 1_000_000;
+  return `${millions < 10 ? millions.toFixed(1).replace(/\.0$/, '') : Math.round(millions)}m`;
+};
 
 const getFileIconPath = (filepath: string) => {
   const ext = filepath.split('.').pop()?.toLowerCase();
@@ -3273,45 +3285,57 @@ const handleSelectFolderDialog = useCallback(async () => {
             </div>
 
             <div className="eterx-chat-controls-right flex items-center gap-1.5">
-              {contextUsage && contextUsage.contextWindow > 0 && (
+              {contextUsage && Number.isFinite(contextUsage.contextWindow) && contextUsage.contextWindow > 0 && (() => {
+                const safeContextWindow = Math.max(1, Math.round(contextUsage.contextWindow));
+                const safeUsedTokens = Math.max(0, Math.round(
+                  Number.isFinite(contextUsage.usedTokens) ? contextUsage.usedTokens : 0,
+                ));
+                const exactUtilization = Math.max(0, Math.min(100, (safeUsedTokens / safeContextWindow) * 100));
+                const usedPercent = Math.round(exactUtilization);
+                const leftPercent = Math.max(0, 100 - usedPercent);
+                return (
                 <Tooltip
                   side="top"
                   delay={0}
-                  contentWidth={224}
-                  contentHeight={84}
+                  contentWidth={190}
+                  contentHeight={64}
+                  cardClassName="eterx-context-usage-tooltip !rounded-[10px]"
                   content={(
-                    <div className="flex h-[84px] w-full flex-col items-center justify-center px-3 text-center">
-                      <div className="text-[12.5px] font-normal leading-4 text-[#AAAAAA]">Context window:</div>
-                      <div className="mt-0.5 text-[13.5px] font-medium leading-5 text-[#EDEDED]">
-                        {Math.round(contextUsage.utilizationPct)}% used ({Math.max(0, 100 - Math.round(contextUsage.utilizationPct))}% left)
+                    <div className="flex h-[64px] w-full flex-col items-center justify-center px-2 text-center">
+                      <div className="eterx-context-usage-label text-[11px] font-medium leading-[14px]">
+                        {contextUsage.isEstimated ? 'Estimated context' : 'Context window'}
                       </div>
-                      <div className="mt-0.5 text-[13.5px] font-medium leading-5 text-[#F2F2F2]">
-                        {Math.round(contextUsage.usedTokens / 1000)}k / {Math.round(contextUsage.contextWindow / 1000)}k tokens used
+                      <div className="eterx-context-usage-primary mt-px whitespace-nowrap text-[12.5px] font-semibold leading-4">
+                        {usedPercent}% used <span className="eterx-context-usage-muted font-medium">· {leftPercent}% left</span>
+                      </div>
+                      <div className="eterx-context-usage-secondary whitespace-nowrap text-[11.5px] font-medium leading-[15px] tabular-nums">
+                        {formatContextTokenCount(safeUsedTokens)} / {formatContextTokenCount(safeContextWindow)} tokens
                       </div>
                     </div>
                   )}
                 >
                   <span
-                    className="relative grid h-[38px] w-[26px] shrink-0 place-items-center text-[#999999]"
-                    aria-label={`Context window ${Math.round(contextUsage.utilizationPct)} percent used`}
+                    className="eterx-context-usage-trigger relative grid h-[38px] w-[24px] shrink-0 place-items-center"
+                    aria-label={`${contextUsage.isEstimated ? 'Estimated context' : 'Context window'} ${usedPercent} percent used`}
                   >
                     <svg viewBox="0 0 24 24" className="h-[18px] w-[18px] -rotate-90" aria-hidden="true">
-                      <circle cx="12" cy="12" r="7.5" fill="none" stroke="currentColor" strokeWidth="2.7" opacity="0.2" />
+                      <circle cx="12" cy="12" r="7.5" fill="none" stroke="currentColor" strokeWidth="2.4" opacity="0.22" />
                       <circle
                         cx="12"
                         cy="12"
                         r="7.5"
                         fill="none"
                         stroke="currentColor"
-                        strokeWidth="2.7"
+                        strokeWidth="2.4"
                         strokeLinecap="round"
                         pathLength="100"
-                        strokeDasharray={`${Math.min(100, Math.max(0, contextUsage.utilizationPct))} 100`}
+                        strokeDasharray={`${exactUtilization} 100`}
                       />
                     </svg>
                   </span>
                 </Tooltip>
-              )}
+                );
+              })()}
               {/* Agent selector — suppressed in Agent Builder mode */}
               {!isAgentBuilder && (
                 <div ref={agentSelectorRef} className="eterx-agent-selector relative min-w-0">
@@ -3819,14 +3843,14 @@ const handleSelectFolderDialog = useCallback(async () => {
                         {looksLikePath && (
                           <button
                             type="button"
-                            className="eterx-status-menu-item bg-white/[0.04] hover:bg-white/[0.08]"
+                            className="eterx-status-menu-item bg-black/[0.04] dark:bg-white/[0.04] hover:bg-black/[0.08] dark:hover:bg-white/[0.08]"
                             onClick={() => {
                               const pathVal = projectSearch.trim();
                               handleWorkspacePathChange(pathVal);
                               try {
                                 const saved = localStorage.getItem('eterx_recent_projects');
                                 const parsed = saved ? JSON.parse(saved) : [];
-                                const name = pathVal.split(/[/\\]/).filter(Boolean).pop() || pathVal;
+                                const name = pathVal.split(/[/\/]/).filter(Boolean).pop() || pathVal;
                                 const updated = [
                                   { path: pathVal, name, openedAt: Date.now() },
                                   ...parsed.filter((p: any) => p.path !== pathVal)
@@ -3841,7 +3865,7 @@ const handleSelectFolderDialog = useCallback(async () => {
                             <FolderPlus className="eterx-status-menu-icon text-[#E2765A]" strokeWidth={1.95} />
                             <div className="min-w-0 flex-1 text-left">
                               <div className="text-[12px] font-semibold text-[#E2765A] leading-none mb-0.5">Use pasted path</div>
-                              <div className="truncate text-[10px] text-white/55 font-mono leading-none">{projectSearch.trim()}</div>
+                              <div className="truncate text-[10px] text-[var(--eterx-status-popout-muted)] font-mono leading-none">{projectSearch.trim()}</div>
                             </div>
                           </button>
                         )}
@@ -3858,26 +3882,24 @@ const handleSelectFolderDialog = useCallback(async () => {
                                 setOpenStatusMenu(null);
                               }}
                             >
-                              <div className="relative h-4 w-4 shrink-0 flex items-center justify-center">
-                                <Folder className="absolute inset-0 eterx-status-menu-icon group-hover:opacity-0 transition-opacity" strokeWidth={1.95} />
-                                <button
-                                  type="button"
-                                  className="absolute inset-0 h-4 w-4 rounded-sm flex items-center justify-center bg-transparent text-black/55 dark:text-white/55 hover:text-black dark:hover:text-white hover:bg-black/10 dark:hover:bg-white/10 opacity-0 group-hover:opacity-100 transition-all duration-150 cursor-pointer"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    handleRemoveRecentProject(project.path);
-                                  }}
-                                  title="Remove from list"
-                                >
-                                  <X className="h-3 w-3" strokeWidth={2.5} />
-                                </button>
-                              </div>
+                              <Folder className="eterx-status-menu-icon shrink-0" strokeWidth={1.95} />
                               <span className="min-w-0 flex-1 truncate text-left text-[13px] font-medium">{project.name}</span>
-                              {selected && <Check className="h-4 w-4 shrink-0" strokeWidth={2.35} />}
+                              {selected && <Check className="h-4 w-4 shrink-0 text-emerald-500 dark:text-emerald-400" strokeWidth={2.35} />}
+                              <button
+                                type="button"
+                                className="h-5 w-5 rounded-md flex items-center justify-center text-[var(--eterx-status-popout-muted)] hover:text-[var(--eterx-status-popout-text)] hover:bg-black/10 dark:hover:bg-white/10 opacity-0 group-hover:opacity-100 transition-all duration-150 cursor-pointer ml-1 shrink-0"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleRemoveRecentProject(project.path);
+                                }}
+                                title="Remove from list"
+                              >
+                                <X className="h-3.5 w-3.5" strokeWidth={2} />
+                              </button>
                             </button>
                           );
                         }) : !looksLikePath && (
-                          <div className="eterx-status-empty text-xs py-4 text-center text-white/30">No recent folders found</div>
+                          <div className="eterx-status-empty text-xs py-4 text-center text-[var(--eterx-status-popout-muted)]">No recent folders found</div>
                         )}
                       </div>
                       
@@ -3892,7 +3914,7 @@ const handleSelectFolderDialog = useCallback(async () => {
                         }}
                       >
                         <Plus className="eterx-status-menu-icon" strokeWidth={1.95} />
-                        <span className="min-w-0 flex-1 truncate text-left text-[13px] font-medium text-[#F4F1EA]">New project</span>
+                        <span className="min-w-0 flex-1 truncate text-left text-[13px] font-medium text-current">New project</span>
                       </button>
                     </motion.div>
                   )}

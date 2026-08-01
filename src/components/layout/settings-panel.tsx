@@ -691,7 +691,6 @@ const PROVIDER_LABEL: Record<string, string> = {
   llamacpp: 'llama.cpp',
   cloudflare: 'Cloudflare Workers AI',
   nvidia: 'NVIDIA NIM',
-  novita: 'Novita AI',
   qwen: 'Qwen Cloud / DashScope',
   mimo: 'Xiaomi MiMo',
   tokenhub: 'Tencent TokenHub',
@@ -719,11 +718,48 @@ const PROVIDER_ACCENT: Record<string, string> = {
 
 const PROVIDER_ICON_PATH: Record<string, string> = {
   gemini: '/icons/providers/gemini.svg',
-  mistral: '/icons/providers/mistral.svg',
   openai: '/icons/providers/openai.svg',
-  openrouter: '/icons/providers/openrouter.svg',
-  groq: '/icons/providers/groq.svg',
   anthropic: '/icons/providers/anthropic.svg',
+  grok: '/icons/providers/grok.svg',
+  deepseek: '/icons/providers/deepseek.svg',
+  mistral: '/icons/providers/mistral.svg',
+  groq: '/icons/providers/groq.svg',
+  cerebras: '/icons/providers/cerebras.svg',
+  sambanova: '/icons/providers/sambanova.svg',
+  together: '/icons/providers/together.svg',
+  fireworks: '/icons/providers/fireworks.svg',
+  openrouter: '/icons/providers/openrouter.svg',
+  perplexity: '/icons/providers/perplexity.svg',
+  cohere: '/icons/providers/cohere.svg',
+  deepinfra: '/icons/providers/deepinfra.svg',
+  replicate: '/icons/providers/replicate.svg',
+  novita: '/icons/providers/novita.svg',
+  huggingface: '/icons/providers/huggingface.svg',
+  elevenlabs: '/icons/providers/elevenlabs.svg',
+  deepgram: '/icons/providers/deepgram.svg',
+  hume: '/icons/providers/hume.svg',
+  cartesia: '/icons/providers/cartesia.svg',
+  playht: '/icons/providers/playht.svg',
+  ollama: '/icons/providers/ollama.svg',
+  lmstudio: '/icons/providers/lmstudio.svg',
+  vllm: '/icons/providers/vllm.svg',
+  llamacpp: '/icons/providers/llamacpp.svg',
+  cloudflare: '/icons/providers/cloudflare.svg',
+  nvidia: '/icons/providers/nvidia.svg',
+  qwen: '/icons/providers/qwen.svg',
+  mimo: '/icons/providers/mimo.svg',
+  tokenhub: '/icons/providers/tokenhub.svg',
+  zai: '/icons/providers/zai.svg',
+  kimi: '/icons/providers/kimi.svg',
+  stepfun: '/icons/providers/stepfun.svg',
+  minimax: '/icons/providers/minimax.svg',
+  ollamacloud: '/icons/providers/ollamacloud.svg',
+  arcee: '/icons/providers/arcee.svg',
+  gmi: '/icons/providers/gmi.svg',
+  kilo: '/icons/providers/kilo.svg',
+  opencode: '/icons/providers/opencode.svg',
+  upstage: '/icons/providers/upstage.svg',
+  custom: '/icons/providers/custom.svg',
 };
 
 const PROVIDER_ICON_COLOR: Record<string, string> = {
@@ -1426,16 +1462,24 @@ const ApiKeyPoolEditor: React.FC<{
   );
 };
 
-const SettingsIconAsset: React.FC<{ name: string; className?: string }> = ({ name, className = 'h-4 w-4' }) => (
-  <span
-    aria-hidden="true"
-    className={`inline-block shrink-0 bg-current ${className}`}
-    style={{
-      WebkitMask: `url(/icons/settings/${name}.svg) center / contain no-repeat`,
-      mask: `url(/icons/settings/${name}.svg) center / contain no-repeat`,
-    }}
-  />
-);
+const SETTINGS_PNG_ICONS = new Set([
+  'api', 'browser', 'computer', 'configuration', 'connections', 'context',
+  'live-convo', 'mcp', 'models', 'personalization', 'profile'
+]);
+
+const SettingsIconAsset: React.FC<{ name: string; className?: string }> = ({ name, className = 'h-4 w-4' }) => {
+  const ext = SETTINGS_PNG_ICONS.has(name) ? 'png' : 'svg';
+  return (
+    <span
+      aria-hidden="true"
+      className={`inline-block shrink-0 bg-current ${className}`}
+      style={{
+        WebkitMask: `url(/icons/settings/${name}.${ext}) center / contain no-repeat`,
+        mask: `url(/icons/settings/${name}.${ext}) center / contain no-repeat`,
+      }}
+    />
+  );
+};
 
 const ProviderIconAsset: React.FC<{ provider: string; className?: string }> = ({ provider, className = 'h-4 w-4' }) => {
   const iconPath = PROVIDER_ICON_PATH[provider];
@@ -1493,7 +1537,7 @@ const ModernSelect: React.FC<{
         <ChevronRight className={`h-4 w-4 shrink-0 text-[#A7A7A7] transition-transform ${open ? '-rotate-90' : 'rotate-90'}`} />
       </button>
       {open && (
-        <div className="absolute right-0 z-50 mt-2 flex max-h-72 w-full min-w-[240px] flex-col rounded-xl border border-white/[0.10] bg-[#242424] p-1 shadow-[0_18px_48px_rgba(0,0,0,0.45)]">
+        <div className="absolute right-0 z-50 mt-2 flex max-h-72 w-full min-w-[240px] flex-col rounded-xl border border-black/10 dark:border-white/[0.10] bg-white dark:bg-[#242424] p-1 shadow-xl text-neutral-900 dark:text-neutral-100">
           {searchable && (
             <div className="relative mb-1 shrink-0">
               <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#777]" />
@@ -1505,7 +1549,7 @@ const ModernSelect: React.FC<{
                   if (event.key === 'Escape') setOpen(false);
                 }}
                 placeholder={`Search ${options.length} options`}
-                className="h-9 w-full rounded-lg border border-white/[0.08] bg-[#191919] pl-8 pr-3 text-[12px] text-[#F2F2F2] outline-none placeholder:text-[#707070] focus:border-white/[0.18]"
+                className="h-9 w-full rounded-lg border border-black/10 dark:border-white/[0.08] bg-neutral-100 dark:bg-[#191919] pl-8 pr-3 text-[12px] text-neutral-900 dark:text-[#F2F2F2] outline-none placeholder:text-neutral-400 dark:placeholder:text-[#707070] focus:border-black/20 dark:focus:border-white/[0.18]"
               />
             </div>
           )}
@@ -1520,7 +1564,7 @@ const ModernSelect: React.FC<{
                 setOpen(false);
               }}
               className={`flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-[12.5px] transition-colors ${
-                value === option.value ? 'bg-white/[0.08] text-[#F4F4F4]' : 'text-[#CFCFCF] hover:bg-white/[0.055] hover:text-[#F4F4F4]'
+                value === option.value ? 'bg-black/5 dark:bg-white/[0.08] text-neutral-900 dark:text-[#F4F4F4] font-medium' : 'text-neutral-700 dark:text-[#CFCFCF] hover:bg-black/5 dark:hover:bg-white/[0.055] hover:text-neutral-900 dark:hover:text-[#F4F4F4]'
               }`}
             >
               <span className="min-w-0 flex-1">
@@ -1588,7 +1632,7 @@ const ProviderSelect: React.FC<{
         </span>
       </button>
       {open && (
-        <div className="absolute right-0 z-50 mt-2 flex max-h-72 w-full min-w-[280px] flex-col rounded-xl border border-white/[0.10] bg-[#242424] p-1.5 shadow-[0_18px_48px_rgba(0,0,0,0.45)]">
+        <div className="absolute right-0 z-50 mt-2 flex max-h-72 w-full min-w-[280px] flex-col rounded-xl border border-black/10 dark:border-white/[0.10] bg-white dark:bg-[#242424] p-1.5 shadow-xl text-neutral-900 dark:text-neutral-100">
           {searchable && (
             <div className="relative mb-1 shrink-0">
               <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#777]" />
@@ -1600,7 +1644,7 @@ const ProviderSelect: React.FC<{
                   if (event.key === 'Escape') setOpen(false);
                 }}
                 placeholder={`Search ${providers.length} providers`}
-                className="h-9 w-full rounded-lg border border-white/[0.08] bg-[#191919] pl-8 pr-3 text-[12px] text-[#F2F2F2] outline-none placeholder:text-[#707070] focus:border-white/[0.18]"
+                className="h-9 w-full rounded-lg border border-black/10 dark:border-white/[0.08] bg-neutral-100 dark:bg-[#191919] pl-8 pr-3 text-[12px] text-neutral-900 dark:text-[#F2F2F2] outline-none placeholder:text-neutral-400 dark:placeholder:text-[#707070] focus:border-black/20 dark:focus:border-white/[0.18]"
               />
             </div>
           )}
@@ -1617,7 +1661,7 @@ const ProviderSelect: React.FC<{
                   setOpen(false);
                 }}
                 className={`flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2 text-left text-[12.5px] transition-colors ${
-                  value === provider ? 'bg-white/[0.08] text-[#F4F4F4]' : 'text-[#CFCFCF] hover:bg-white/[0.055] hover:text-[#F4F4F4]'
+                  value === provider ? 'bg-black/5 dark:bg-white/[0.08] text-neutral-900 dark:text-[#F4F4F4] font-medium' : 'text-neutral-700 dark:text-[#CFCFCF] hover:bg-black/5 dark:hover:bg-white/[0.055] hover:text-neutral-900 dark:hover:text-[#F4F4F4]'
                 }`}
               >
                 <span className="flex min-w-0 items-center gap-2">
@@ -2367,7 +2411,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     { id: 'configuration', label: 'Configuration', icon: 'configuration' },
     { id: 'personalization', label: 'Personalization', icon: 'personalization' },
     { id: 'mcp', label: 'MCP servers', icon: 'mcp' },
-    { id: 'context', label: 'Context', icon: 'models' },
+    { id: 'context', label: 'Context', icon: 'context' },
     { id: 'models', label: 'Models', icon: 'models' },
     { id: 'api', label: 'API', icon: 'api' },
     { id: 'live-convo', label: 'Live Convo', icon: 'live-convo' },

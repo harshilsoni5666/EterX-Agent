@@ -35,6 +35,7 @@ export const Tooltip = React.memo(({
   content,
   contentWidth,
   contentHeight,
+  cardClassName = '',
   side = 'bottom',
   variant = 'dark',
   disabled = false,
@@ -45,6 +46,7 @@ export const Tooltip = React.memo(({
   content?: React.ReactNode;
   contentWidth?: number;
   contentHeight?: number;
+  cardClassName?: string;
   side?: 'top' | 'bottom' | 'left' | 'right';
   variant?: 'light' | 'dark';
   disabled?: boolean;
@@ -193,7 +195,7 @@ export const Tooltip = React.memo(({
               >
                 <div
                   data-side={side}
-                  className={`eterx-tooltip-card relative w-full overflow-hidden rounded-[16px] border border-white/[0.12] bg-[#242424] text-[12px] font-medium text-[#F2F0EC] shadow-[0_8px_24px_rgba(0,0,0,0.36)] ${content ? '' : 'flex items-center justify-center gap-1.5 whitespace-nowrap px-3 py-1.5 text-center text-ellipsis'}`}
+                  className={`eterx-tooltip-card relative w-full overflow-hidden rounded-[16px] border border-white/[0.12] bg-[#242424] text-[12px] font-medium text-[#F2F0EC] shadow-[0_8px_24px_rgba(0,0,0,0.36)] ${content ? '' : 'flex items-center justify-center gap-1.5 whitespace-nowrap px-3 py-1.5 text-center text-ellipsis'} ${cardClassName}`}
                   style={{ fontFamily: tooltipFontFamily, willChange: 'transform, opacity' }}
                 >
                   {content || (

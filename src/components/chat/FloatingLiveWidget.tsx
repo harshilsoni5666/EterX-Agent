@@ -43,7 +43,12 @@ export const FloatingLiveWidget: React.FC<FloatingLiveWidgetProps> = ({
 }) => {
   const [mounted, setMounted] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
+  const [nativeOverlayFailed, setNativeOverlayFailed] = useState(false);
   const hoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const nativeReopenTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const liveStateRef = useRef(liveState);
+  const nativeStatusRef = useRef<Record<string, unknown> | null>(null);
+  liveStateRef.current = liveState;
 
   const isElectron = typeof window !== 'undefined' && Boolean((window as any).electronAPI?.openPetWindow);
 
@@ -51,6 +56,7 @@ export const FloatingLiveWidget: React.FC<FloatingLiveWidgetProps> = ({
     setMounted(true);
     return () => {
       if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
+      if (nativeReopenTimeoutRef.current) clearTimeout(nativeReopenTimeoutRef.current);
     };
   }, []);
 
@@ -72,7 +78,7 @@ export const FloatingLiveWidget: React.FC<FloatingLiveWidgetProps> = ({
           statusStr = 'Thinking';
         }
         statusStr = statusStr.replace(/\s+/g, ' ').slice(0, 28);
-        (window as any).electronAPI.openPetWindow({
+        const nativeStatus = {
           title: 'EterX Live Agent',
           text: statusStr,
           liveState,
@@ -81,14 +87,53 @@ export const FloatingLiveWidget: React.FC<FloatingLiveWidgetProps> = ({
           isSpeakerMuted,
           isCameraEnabled,
           isScreenSharing,
-        });
+        };
+        nativeStatusRef.current = nativeStatus;
+        Promise.resolve((window as any).electronAPI.openPetWindow(nativeStatus))
+          .then(() => setNativeOverlayFailed(false))
+          .catch(() => setNativeOverlayFailed(true));
       } else {
+        nativeStatusRef.current = null;
         (window as any).electronAPI.closePetWindow?.();
       }
     }
   }, [liveState, liveActiveTool, liveActivityLabel, isElectron, isMicMuted, isSpeakerMuted, isCameraEnabled, isScreenSharing]);
 
-  if (!mounted || liveState === 'idle' || liveState === 'error' || isElectron) return null;
+  useEffect(() => {
+    if (!isElectron) return;
+    const api = (window as any).electronAPI;
+    const unsubscribe = api?.onPetWindowClosed?.(() => {
+      if (nativeReopenTimeoutRef.current) clearTimeout(nativeReopenTimeoutRef.current);
+      nativeReopenTimeoutRef.current = setTimeout(() => {
+        nativeReopenTimeoutRef.current = null;
+        const currentState = liveStateRef.current;
+        const currentStatus = nativeStatusRef.current;
+        if (
+          currentStatus &&
+          currentState !== 'idle' &&
+          currentState !== 'error'
+        ) {
+          Promise.resolve(api.openPetWindow(currentStatus))
+            .then(() => setNativeOverlayFailed(false))
+            .catch(() => setNativeOverlayFailed(true));
+        }
+      }, 280);
+    });
+    return () => {
+      unsubscribe?.();
+      if (nativeReopenTimeoutRef.current) {
+        clearTimeout(nativeReopenTimeoutRef.current);
+        nativeReopenTimeoutRef.current = null;
+      }
+    };
+  }, [isElectron]);
+
+  if (
+    !mounted ||
+    liveState === 'idle' ||
+    liveState === 'error' ||
+    (isElectron && !nativeOverlayFailed)
+  ) return null;
 
   const isSpeaking = liveState === 'speaking';
   const isListening = liveState === 'listening';

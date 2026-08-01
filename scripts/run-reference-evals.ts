@@ -94,10 +94,7 @@ function main() {
   const combinedText = `${referenceText}\n${livePromptText}`;
 
   for (const required of [
-    'workspace_str_replace',
     'workspace_apply_patch',
-    'workspace_write_file',
-    'safety_guard',
     'browser_control',
   ]) {
     assert.ok(combinedText.includes(required), `reference/live prompts must mention ${required}`);

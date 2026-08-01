@@ -47,6 +47,7 @@ import {
   composeApiKeysForSelection,
   entriesToModelCatalog,
   ensureModelSelectorEntry,
+  isModelProvider,
   normalizeModelSelectorEntries,
   parseModelEntryKey,
   pickAutoModelEntry,
@@ -691,9 +692,29 @@ function resolveClientContextWindow(provider: string, modelName: string): number
 }
 
 const estimateLiveTraceTokens = (log: any): number => {
-  if (!log || ['context_usage', 'context_compaction', 'answer_cancel', 'work_note_cancel'].includes(String(log.type || ''))) return 0;
+  if (!log) return 0;
+  const type = String(log.type || '');
+  if ([
+    'context_usage',
+    'context_compaction',
+    'answer_cancel',
+    'work_note',
+    'work_note_cancel',
+    'progress',
+    'tool_result_preview',
+    'agent_decision',
+    'done',
+  ].includes(type)) return 0;
+  const textCanEnterContext = [
+    'user_action',
+    'answer',
+    'thought_stream',
+    'tool_result',
+    'ask_user',
+    'steering_applied',
+  ].includes(type);
   const fragments = [
-    log.text,
+    textCanEnterContext ? log.text : null,
     log.output,
     log.command,
     log.toolResult,
@@ -702,15 +723,39 @@ const estimateLiveTraceTokens = (log: any): number => {
     log.answeredWith,
   ];
   let chars = 0;
+  const seen = new Set<string>();
   for (const fragment of fragments) {
-    if (typeof fragment === 'string') chars += fragment.length;
+    if (typeof fragment === 'string') {
+      if (!seen.has(fragment)) {
+        seen.add(fragment);
+        chars += fragment.length;
+      }
+    }
     else if (fragment && typeof fragment === 'object') {
       try {
-        chars += JSON.stringify(fragment).length;
+        const serialized = JSON.stringify(fragment);
+        if (!seen.has(serialized)) {
+          seen.add(serialized);
+          chars += serialized.length;
+        }
       } catch { }
     }
   }
   return chars > 0 ? Math.ceil(chars / 4) + 4 : 0;
+};
+
+const contextTraceEstimateIdentity = (log: any): string => {
+  const eventId = String(
+    log?.thoughtId ||
+    log?.answerId ||
+    log?.toolCallId ||
+    log?.callId ||
+    log?.questionId ||
+    log?.id ||
+    '',
+  ).trim();
+  if (!eventId) return '';
+  return `${String(log?.runId || log?.turnId || '')}|${String(log?.type || '')}|${eventId}`;
 };
 
 const traceLogIdentity = (log: any) => [
@@ -2741,6 +2786,96 @@ function DeepWorkUI() {
       liveChatIdRef.current === currentChatId;
 
     try {
+      let storedLiveSettings: any = {};
+      try {
+        storedLiveSettings = JSON.parse(localStorage.getItem(SETTINGS_STORAGE_KEY) || '{}');
+      } catch {}
+      if (storedLiveSettings.liveConvoEnabled === false) {
+        throw new Error('Live Convo is disabled in Settings.');
+      }
+      const normalizedLiveProvider = String(
+        storedLiveSettings.liveConvoProvider || 'gemini'
+      ).replace(/-live|-voice|-local|-realtime|-speech/g, '');
+      const configuredLiveProvider = isModelProvider(normalizedLiveProvider)
+        ? normalizedLiveProvider
+        : 'gemini';
+      const configuredLiveModel = String(storedLiveSettings.liveConvoModel || 'auto').trim() || 'auto';
+      let resolvedLiveWorkerModel = configuredLiveModel === 'auto' ? '' : configuredLiveModel;
+
+      // Auto is resolved from a fresh provider catalog at the moment a Live
+      // session starts. The stored preference remains "auto", so future model
+      // launches automatically follow provider catalog changes.
+      if (configuredLiveModel === 'auto') {
+        try {
+          const catalogResponse = await fetch('/api/settings/models', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ providers: [configuredLiveProvider] }),
+          });
+          const catalogPayload = await catalogResponse.json();
+          const currentModels = catalogPayload?.providers?.[configuredLiveProvider]?.models;
+          if (catalogResponse.ok && Array.isArray(currentModels) && currentModels[0]?.id) {
+            resolvedLiveWorkerModel = String(currentModels[0].id);
+          }
+        } catch {}
+      }
+      if (!resolvedLiveWorkerModel) {
+        resolvedLiveWorkerModel =
+          readRuntimeModelEntries().find(entry => entry.provider === configuredLiveProvider)?.modelId ||
+          '';
+      }
+      const defaultLiveWorker = resolvedLiveWorkerModel
+        ? {
+            provider: configuredLiveProvider,
+            modelId: resolvedLiveWorkerModel,
+            selection: modelEntryKey(configuredLiveProvider, resolvedLiveWorkerModel),
+          }
+        : null;
+      if (defaultLiveWorker) {
+        const registeredEntries = ensureModelSelectorEntry(
+          readRuntimeModelEntries(),
+          defaultLiveWorker.provider,
+          defaultLiveWorker.modelId,
+        );
+        const registeredCatalog = entriesToModelCatalog(registeredEntries);
+        localStorage.setItem(MODEL_SELECTOR_STORAGE_KEY, JSON.stringify(registeredEntries));
+        localStorage.setItem(MODEL_CATALOG_STORAGE_KEY, JSON.stringify(registeredCatalog));
+        broadcastEterxSettingsUpdate({
+          type: 'model-selector-updated',
+          modelEntries: registeredEntries,
+          modelCatalog: registeredCatalog,
+        });
+      }
+      const configuredLiveVoice = String(storedLiveSettings.liveConvoVoice || 'auto').trim() || 'auto';
+      let resolvedLiveVoice = configuredLiveVoice === 'auto' ? 'Kore' : configuredLiveVoice;
+      try {
+        const voiceResponse = await fetch('/api/settings/live-voices', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            provider: configuredLiveProvider,
+            modelId: resolvedLiveWorkerModel || configuredLiveModel,
+          }),
+        });
+        const voicePayload = await voiceResponse.json();
+        const availableVoices = Array.isArray(voicePayload?.voices)
+          ? voicePayload.voices
+              .map((voice: any) => String(voice?.value || voice?.id || '').trim())
+              .filter(Boolean)
+          : [];
+        const defaultVoice = String(voicePayload?.defaultVoice || 'Kore').trim() || 'Kore';
+        if (
+          voiceResponse.ok &&
+          voicePayload?.ok &&
+          (configuredLiveVoice === 'auto' || !availableVoices.includes(configuredLiveVoice))
+        ) {
+          resolvedLiveVoice = defaultVoice;
+        }
+      } catch {
+        // The compatible media default keeps Live usable if discovery is
+        // temporarily unavailable.
+      }
+
       // Fetch an API key from the pool
       const res = await fetch('/api/live/key', {
         method: 'POST',
@@ -3324,7 +3459,7 @@ function DeepWorkUI() {
                     modelEntryKey(entry.provider, entry.modelId) === requestedWorkerModelId ||
                     entry.modelId === requestedWorkerModelId
                   )
-                : null;
+                : defaultLiveWorker;
               if (requestedWorkerModelId && !matchedWorkerModel) {
                 return { error: 'Requested worker model is not configured. Call list_available_models and use an exact returned ID.' };
               }
@@ -3353,7 +3488,7 @@ function DeepWorkUI() {
               try {
                 const dispatched = await handleSend(prompt, [], dispatchChatId, {
                   modelSelection: matchedWorkerModel
-                    ? modelEntryKey(matchedWorkerModel.provider, matchedWorkerModel.modelId)
+                    ? modelEntryKey(matchedWorkerModel.provider as any, matchedWorkerModel.modelId)
                     : undefined,
                   selectedAgent: requestedWorkerAgent,
                   thinkingLevel: args.thinkingLevel as MainAgentThinkingLevel | undefined,
@@ -3917,12 +4052,38 @@ function DeepWorkUI() {
           },
         },
         {
-          thinkingLevel: 'high',
+          thinkingLevel: storedLiveSettings.liveConvoLatencyMode === 'ultra-low'
+            ? 'minimal'
+            : storedLiveSettings.liveConvoLatencyMode === 'balanced'
+              ? 'medium'
+              : 'high',
           includeThoughts: true,
+          voice: resolvedLiveVoice,
+          audioInputEnabled: storedLiveSettings.liveConvoAudioInput !== false,
+          audioOutputEnabled: storedLiveSettings.liveConvoAudioOutput !== false,
+          interactionPolicy: {
+            notificationLevel: ['all', 'important', 'critical'].includes(storedLiveSettings.liveConvoNotificationLevel)
+              ? storedLiveSettings.liveConvoNotificationLevel
+              : 'important',
+            responseDetail: ['brief', 'balanced', 'detailed'].includes(storedLiveSettings.liveConvoResponseDetail)
+              ? storedLiveSettings.liveConvoResponseDetail
+              : 'balanced',
+            proactiveUpdates: storedLiveSettings.liveConvoProactiveUpdates !== false,
+            silenceUntilImportant:
+              storedLiveSettings.liveConvoSilenceUntilImportant === true ||
+              storedLiveSettings.liveConvoNotificationLevel === 'critical',
+            autoFollowThrough: storedLiveSettings.liveConvoAutoFollowThrough !== false,
+          },
           initialContext: {
             pastMemories,
             chatHistory,
-            workspacePath: activeWorkspacePath || undefined
+            workspacePath: activeWorkspacePath || undefined,
+            systemNotes: [
+              defaultLiveWorker
+                ? `Default Live worker model: ${defaultLiveWorker.provider}/${defaultLiveWorker.modelId}. For substantive research, coding, creation, or multi-step action, call send_prompt_to_main_agent without inventing another model ID; the app will route to this configured worker unless the user explicitly selects a different model.`
+                : 'No default external Live worker model was resolved. Use list_available_models before delegating substantial work.',
+              String(storedLiveSettings.liveConvoSystemInstruction || '').trim(),
+            ].filter(Boolean).join('\n\n'),
           }
         }
       );
@@ -7927,7 +8088,7 @@ function DeepWorkUI() {
     { icon: <PenTool className="w-3.5 h-3.5" />, text: "Write" },
     { icon: <GraduationCap className="w-3.5 h-3.5" />, text: "Learn" },
     { icon: <MessageSquare className="w-3.5 h-3.5" />, text: "Life stuff" },
-    { icon: <img src="/logo.png" alt="Logo" className="w-4 h-4 object-contain brightness-0 invert opacity-80" />, text: "EterX's choice" }
+    { icon: <span className="w-4 h-4 inline-block"><img src="/logo-black.png" alt="Logo" className="w-full h-full object-contain dark:hidden" /><img src="/logo-white.png" alt="Logo" className="hidden w-full h-full object-contain dark:block" /></span>, text: "EterX's choice" }
   ];
   // No longer use full-screen initializing state — always show ChatFeed immediately
   const isInitializingChat = false;
@@ -8382,36 +8543,73 @@ function DeepWorkUI() {
     }
     const configuredContextWindow = contextWindow;
 
-    let latestUsageIndex = -1;
-    for (let index = traceLogs.length - 1; index >= 0; index -= 1) {
-      const log = traceLogs[index];
-      if (
-        log?.type === 'context_usage' &&
-        (!log.ownerChatId || !activeChatId || log.ownerChatId === activeChatId)
-      ) {
-        latestUsageIndex = index;
-        break;
+    const ownedLogs = traceLogs.filter((log: any) =>
+      !log?.ownerChatId || !activeChatId || log.ownerChatId === activeChatId
+    );
+    let displayTokens = 0;
+    let authoritative: any = null;
+    let allowCompactionReset = false;
+    const estimatedByIdentity = new Map<string, number>();
+
+    // Build one monotonic display ledger. Provider/local measurements can vary
+    // slightly between boundaries, but the visible count must never move
+    // backwards unless a completed compaction explicitly reset the context.
+    for (const log of ownedLogs) {
+      if (log?.type === 'context_compaction' && log?.phase === 'compacted') {
+        const compactedTokens = Number(log?.afterTokens);
+        if (Number.isFinite(compactedTokens) && compactedTokens >= 0) {
+          displayTokens = compactedTokens;
+          allowCompactionReset = false;
+        } else {
+          allowCompactionReset = true;
+        }
+        continue;
+      }
+
+      if (log?.type === 'context_usage') {
+        const measuredTokens = Number(log?.usedTokens);
+        if (!Number.isFinite(measuredTokens) || measuredTokens < 0) continue;
+        displayTokens = allowCompactionReset
+          ? measuredTokens
+          : Math.max(displayTokens, measuredTokens);
+        allowCompactionReset = false;
+        authoritative = log;
+        continue;
+      }
+
+      const estimate = estimateLiveTraceTokens(log);
+      if (estimate <= 0) continue;
+      const identity = contextTraceEstimateIdentity(log);
+      if (!identity) {
+        displayTokens += estimate;
+        continue;
+      }
+      const previousEstimate = estimatedByIdentity.get(identity) || 0;
+      if (estimate > previousEstimate) {
+        displayTokens += estimate - previousEstimate;
+        estimatedByIdentity.set(identity, estimate);
       }
     }
-    const authoritative = latestUsageIndex >= 0 ? traceLogs[latestUsageIndex] : null;
+
     const authoritativeWindow = Number(authoritative?.contextWindow || 0);
-    if (Number.isFinite(authoritativeWindow) && authoritativeWindow >= 16_000) {
-      contextWindow = Math.min(authoritativeWindow, configuredContextWindow);
+    // While a run is active, its pinned server window is authoritative. Once
+    // idle, use the current setting so increasing a chat budget is reflected
+    // immediately instead of remaining stuck at an older smaller window.
+    if (isThinking && Number.isFinite(authoritativeWindow) && authoritativeWindow >= 16_000) {
+      contextWindow = authoritativeWindow;
+    } else {
+      contextWindow = configuredContextWindow;
     }
-    const baseline = authoritative ? Number(authoritative.usedTokens || 0) : 0;
-    const estimateFrom = authoritative ? latestUsageIndex + 1 : 0;
-    const liveGrowth = traceLogs
-      .slice(estimateFrom)
-      .reduce((total: number, log: any) => total + estimateLiveTraceTokens(log), 0);
     const draftTokens = inputValue.trim() ? Math.ceil(inputValue.length / 4) + 4 : 0;
-    const usedTokens = Math.max(0, Math.round(baseline + liveGrowth + draftTokens));
+    const usedTokens = Math.max(0, Math.round(displayTokens + draftTokens));
 
     return {
       usedTokens,
       contextWindow,
-      utilizationPct: contextWindow > 0 ? Math.min(100, (usedTokens / contextWindow) * 100) : 0,
+      utilizationPct: contextWindow > 0 ? Math.max(0, Math.min(100, (usedTokens / contextWindow) * 100)) : 0,
+      isEstimated: !authoritative,
     };
-  }, [activeChatId, activeModelSelection, agentMode, inputValue, proxyModelEntries, traceLogs]);
+  }, [activeChatId, activeModelSelection, agentMode, inputValue, isThinking, proxyModelEntries, traceLogs]);
   // Compute effective thinking state
   const effectiveIsThinking = activeSubAgentTab && !autonomousSelected
     ? currentSubAgents.some(a => (a.id || a.name) === activeSubAgentTab && a.status === 'working')
@@ -8841,9 +9039,13 @@ function DeepWorkUI() {
   useEffect(() => {
     if (!isThinking) {
       setPetWidgetOpen(false);
-      (window as any).electronAPI?.closePetWindow?.();
+      // Main's task monitor and Live share the native overlay window. Main
+      // becoming idle must never close an active Live orb.
+      if (liveState === 'idle' || liveState === 'error') {
+        (window as any).electronAPI?.closePetWindow?.();
+      }
     }
-  }, [isThinking]);
+  }, [isThinking, liveState]);
 
   useEffect(() => {
     if (!nativePetAvailable || !petWidgetOpen || !isThinking) return;
@@ -10816,20 +11018,6 @@ function DeepWorkUI() {
                       liveState={isLiveSessionActive ? liveState : 'idle'}
                     />
 
-                    {/* Pending Steering Queue */}
-                    {!activeSubAgentTab && pendingSteering.some(message => message.chatId === activeChatId) && (
-                      <div className={`eterx-chat-auxiliary-stack px-4 ${ isRightPanelVisible ? 'sm:px-4' : 'sm:px-12' } w-full max-w-[760px] mx-auto flex flex-col gap-2 pb-2`}>
-                        <div className="text-xs text-neutral-500 font-medium px-1 flex items-center gap-1.5">
-                          Pending messages <span className="w-4 h-4 inline-flex items-center justify-center rounded-full bg-neutral-800 text-[10px] text-neutral-400">i</span>
-                        </div>
-                        {pendingSteering.filter(message => message.chatId === activeChatId).map(msg => (
-                          <div key={msg.id} className="bg-[#242424] rounded-xl py-2.5 px-3.5 flex items-center gap-3 text-sm text-neutral-200 shadow-sm border border-white/[0.04]">
-                            <span className="truncate">{msg.text}</span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
                     {!activeSubAgentTab && queuedFollowUps.some(message => message.chatId === activeChatId) && (
                       <div className={`eterx-chat-auxiliary-stack px-4 ${ isRightPanelVisible ? 'sm:px-4' : 'sm:px-12' } w-full max-w-[760px] mx-auto flex flex-col gap-2 pb-2`}>
                         <div className="text-xs text-neutral-500 font-medium px-1">Queued follow-ups</div>
@@ -10867,7 +11055,7 @@ function DeepWorkUI() {
                     )}
 
                     {showScrollBottom && traceLogs.length > 0 && (
-                      <div className={`w-full ${ isRightPanelVisible ? 'max-w-[760px]' : 'max-w-[800px]' } mx-auto relative h-0 overflow-visible z-20`}>
+                      <div>
                         <button
                           type="button"
                           aria-label="Jump to latest message"
@@ -10879,7 +11067,7 @@ function DeepWorkUI() {
                               messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
                             }
                           }}
-                          className="eterx-chat-scroll-latest absolute -top-24 right-5 flex h-8 w-8 items-center justify-center rounded-full border border-white/10 bg-[#252525]/95 text-white/70 shadow-[0_8px_20px_rgba(0,0,0,0.35)] backdrop-blur-xl transition-all hover:bg-[#333333] hover:text-white hover:scale-105 active:scale-95 cursor-pointer"
+                          className="eterx-chat-scroll-latest fixed bottom-[90px] right-14 z-[9999] flex h-8 w-8 items-center justify-center rounded-full border border-white/10 bg-[#252525]/95 text-white/70 shadow-[0_8px_20px_rgba(0,0,0,0.35)] backdrop-blur-xl transition-all hover:bg-[#333333] hover:text-white hover:scale-105 active:scale-95 cursor-pointer"
                         >
                           <ChevronDown className="h-4 w-4" />
                         </button>
@@ -11552,3 +11740,4 @@ function DeepWorkUI() {
     </div>
   );
 }
+

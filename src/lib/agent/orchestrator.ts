@@ -57,7 +57,6 @@ type RuntimeProjectContext = ProjectContext & {
   disableSharedCache?: boolean;
   disableWorkspaceContext?: boolean;
   disablePlannerTools?: boolean;
-  disableSkillAutoLoad?: boolean;
   disableOverdelivery?: boolean;
   disableTaskStore?: boolean;
   disableWorkspaceInit?: boolean;
@@ -434,7 +433,6 @@ export class AgentOrchestrator {
       context.disableSharedCache = !!pinnedContext.disableSharedCache;
       context.disableWorkspaceContext = !!pinnedContext.disableWorkspaceContext;
       context.disablePlannerTools = !!pinnedContext.disablePlannerTools;
-      context.disableSkillAutoLoad = !!pinnedContext.disableSkillAutoLoad;
       context.disableOverdelivery = !!pinnedContext.disableOverdelivery;
       context.disableTaskStore = !!pinnedContext.disableTaskStore;
       context.disableWorkspaceInit = !!pinnedContext.disableWorkspaceInit;

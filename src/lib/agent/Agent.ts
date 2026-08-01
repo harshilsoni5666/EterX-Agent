@@ -13,7 +13,7 @@ import { normalizeRegistryToolArgs, validateRegistryToolArgs } from './tools/too
 import { DEFAULT_MAIN_AGENT_ALLOWED_CAPABILITIES, enforceToolCapability } from './tools/security/tool_policy';
 import { ProjectContext } from './schemas';
 import { zodToJsonSchema } from 'zod-to-json-schema';
-import { SKILL_REGISTRY } from './skills';
+import { SKILL_PATHWAYS_PROMPT, SKILL_REGISTRY } from './skills';
 import { workspaceIntelligence, AgentReflectionEngine, dynamicSkillEngine } from './engines';
 import { agentMemory, ContextWindowManager } from './memory';
 import { memoryV2 } from './memory/v2';
@@ -128,14 +128,6 @@ const USER_PROXY_TOOLS = new Set([
 function isRunCancelled(context: any): boolean {
   return context?.abortSignal?.aborted === true || isCancelled(context?.projectId || context?.chatId);
 }
-
-type SkillCandidate = {
-  id: string;
-  name: string;
-  description: string;
-  score: number;
-  reason: string;
-};
 
 type GeminiAgentClientOptions = {
   provider?: MainAgentProvider;
@@ -1660,20 +1652,6 @@ export class GeminiAgentClient {
       if (orchestrationSignals.length > 0) dynamicContextParts.push(orchestrationSignals.join('\n'));
     } catch { /* intelligence hints never block a request */ }
 
-    if (!(context as any).disableSkillAutoLoad) {
-      try {
-        const loadedSkills = new Set<string>();
-        const skillRouting = this.buildSkillRouting(userVisibleMessage, loadedSkills);
-        if (skillRouting.context) dynamicContextParts.push(skillRouting.context);
-        for (const skillId of skillRouting.autoLoadIds) {
-          const skill = SKILL_REGISTRY[skillId];
-          if (skill?.systemPromptAddendum) {
-            dynamicContextParts.push(skill.systemPromptAddendum);
-          }
-        }
-      } catch { /* skill context is advisory */ }
-    }
-
     try {
       await lifetimeBrain.initialize();
       const brainContext = lifetimeBrain.getBootContext({
@@ -3192,123 +3170,6 @@ export class GeminiAgentClient {
     }
   }
 
-  private skillText(skill: any): string {
-    return [
-      skill?.id,
-      skill?.name,
-      skill?.description,
-      String(skill?.systemPromptAddendum || '').slice(0, 1200),
-    ].filter(Boolean).join(' ').toLowerCase();
-  }
-
-  private addSkillCandidate(
-    candidates: Map<string, SkillCandidate>,
-    skillId: string,
-    score: number,
-    reason: string
-  ): void {
-    const skill = SKILL_REGISTRY[skillId];
-    if (!skill) return;
-    const existing = candidates.get(skillId);
-    const nextScore = (existing?.score || 0) + score;
-    candidates.set(skillId, {
-      id: skillId,
-      name: skill.name,
-      description: skill.description || this.compactText(String(skill.systemPromptAddendum || ''), 220),
-      score: nextScore,
-      reason: existing?.reason ? `${ existing.reason }; ${ reason }` : reason,
-    });
-  }
-
-  private buildSkillRouting(message: string, loadedSkills: Set<string>): { context: string; autoLoadIds: string[] } {
-    const text = String(message || '').toLowerCase();
-    if (!text.trim()) return { context: '', autoLoadIds: [] };
-
-    const candidates = new Map<string, SkillCandidate>();
-    const add = (skillId: string, score: number, reason: string) =>
-      this.addSkillCandidate(candidates, skillId, score, reason);
-    const addMany = (ids: string[], score: number, reason: string) =>
-      ids.forEach((id, index) => add(id, Math.max(1, score - index * 4), reason));
-
-    const rules: Array<{ pattern: RegExp; ids: string[]; score: number; reason: string }> = [
-      { pattern: /\b(docx|word doc|word document|letter|memo|formal report|professional report)\b/i, ids: ['docx', 'doc_coauthoring'], score: 92, reason: 'Word/document deliverable' },
-      { pattern: /\b(pdf|merge pdf|split pdf|ocr|watermark)\b/i, ids: ['pdf'], score: 92, reason: 'PDF input or output' },
-      { pattern: /\b(pptx|powerpoint|slides?|deck|presentation)\b/i, ids: ['pptx'], score: 92, reason: 'Presentation deliverable' },
-      { pattern: /\b(xlsx|excel|spreadsheet|csv|workbook|sheet|table|data cleaning|dataset)\b/i, ids: ['xlsx', 'data_analyst'], score: 92, reason: 'Spreadsheet/data workflow' },
-      { pattern: /\b(data analysis|analy[sz]e data|statistics|kpi|dashboard|business intelligence|visuali[sz]ation)\b/i, ids: ['data_analyst', 'xlsx'], score: 78, reason: 'Analysis workflow' },
-      { pattern: /\b(website|web app|landing page|web page|frontend|html|css|react|next\.?js|tailwind|component)\b/i, ids: ['senior_frontend', 'web_artifacts_builder', 'component_architecture', 'responsive_layout'], score: 72, reason: 'Frontend/web work' },
-      { pattern: /\b(ui|ux|design system|component library|reusable|variant|layout|typography|color palette|theme)\b/i, ids: ['component_architecture', 'typography_system', 'color_systems', 'theme_factory'], score: 68, reason: 'UI/design-system work' },
-      { pattern: /\b(animation|animate|motion|transition|scroll effect|parallax|micro[- ]?interaction|hover|loading animation)\b/i, ids: ['motion_animations', 'micro_interactions', 'hover_effects'], score: 70, reason: 'Motion/interaction work' },
-      { pattern: /\b(cinematic|immersive|premium|awwwards|apple-style|scrollytelling|parallax|alive)\b/i, ids: ['epic_design', 'motion_animations'], score: 70, reason: 'Premium visual web design' },
-      { pattern: /\b(browser|chrome|scrape|fill form|screenshot|automate website|web automation)\b/i, ids: ['browser_automation'], score: 82, reason: 'Browser automation' },
-      { pattern: /\b(api|backend|server|auth|database|postgres|graphql|rest|microservice)\b/i, ids: ['senior_backend', 'api_design_reviewer', 'database_designer'], score: 74, reason: 'Backend/API work' },
-      { pattern: /\b(docker|container|compose|deployment|deploy|ci\/cd|github actions|pipeline|nginx|server)\b/i, ids: ['docker_development', 'devops'], score: 82, reason: 'DevOps/infrastructure work' },
-      { pattern: /\b(security|vulnerability|owasp|pentest|penetration|secret|audit|cve)\b/i, ids: ['security_auditor', 'security_pen_testing'], score: 84, reason: 'Security work' },
-      { pattern: /\b(test|tests|jest|playwright|coverage|e2e|unit test|qa)\b/i, ids: ['senior_qa', 'code_verify'], score: 70, reason: 'Testing/verification work' },
-      { pattern: /\b(bug|fix|debug|error|stack trace|not working|broken|issue)\b/i, ids: ['focused_fix', 'debug', 'self_healing_code'], score: 66, reason: 'Debug/fix workflow' },
-      { pattern: /\b(performance|slow|lag|optimi[sz]e|bundle|memory|speed)\b/i, ids: ['performance_optimization', 'performance_profiler'], score: 70, reason: 'Performance work' },
-      { pattern: /\b(read file|uploaded file|parse file|extract from|file content|pdf attached|xlsx attached)\b/i, ids: ['file_reading'], score: 76, reason: 'File-reading router' },
-      { pattern: /\b(prompt|agent prompt|system prompt|skill routing|orchestration|sub-agent|agent architecture)\b/i, ids: ['advanced_prompting', 'agent_designer'], score: 68, reason: 'Agent/prompt workflow' },
-      { pattern: /\b(image|generate image|edit image|mockup|poster|sprite|visual asset|infographic)\b/i, ids: ['image_generation'], score: 78, reason: 'Raster image workflow' },
-      { pattern: /\b(slack|channel|message workspace)\b/i, ids: ['slack'], score: 86, reason: 'Slack workflow' },
-      { pattern: /\b(memory|remember|store preference|save this)\b/i, ids: ['remember_memory'], score: 82, reason: 'Memory workflow' },
-    ];
-
-    for (const rule of rules) {
-      if (rule.pattern.test(text)) addMany(rule.ids, rule.score, rule.reason);
-    }
-
-    const words = new Set(
-      text
-        .replace(/[^a-z0-9+#.]+/g, ' ')
-        .split(/\s+/)
-        .filter(word => word.length >= 4)
-    );
-
-    for (const [skillId, skill] of Object.entries(SKILL_REGISTRY)) {
-      const haystack = this.skillText(skill);
-      if (!haystack) continue;
-      let score = 0;
-      for (const word of words) {
-        if (haystack.includes(word)) score += word.length > 7 ? 4 : 2;
-      }
-      if (score >= 8) add(skillId, Math.min(score, 32), 'metadata match');
-    }
-
-    const ranked = Array.from(candidates.values())
-      .filter(candidate => candidate.score >= 16)
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 8);
-
-    if (ranked.length === 0) return { context: '', autoLoadIds: [] };
-
-    const hardDeliverableIds = new Set(['pdf', 'docx', 'pptx', 'xlsx', 'file_reading', 'slack']);
-    const autoLoadIds = ranked
-      .filter(candidate => !loadedSkills.has(candidate.id))
-      .filter(candidate => hardDeliverableIds.has(candidate.id) && candidate.score >= 72)
-      .slice(0, 2)
-      .map(candidate => candidate.id);
-
-    const lines = ranked.map((candidate, index) => {
-      const description = this.compactText(candidate.description || '', 180);
-      const status = loadedSkills.has(candidate.id) ? 'already loaded' : (autoLoadIds.includes(candidate.id) ? 'auto-load candidate' : 'candidate');
-      return `${ index + 1 }. ${ candidate.id } (${ candidate.name }) - ${ status }; ${ candidate.reason }. ${ description }`;
-    });
-
-    return {
-      autoLoadIds,
-      context: [
-        'SMART SKILL ROUTING',
-        'Use the latest user request to choose specialist skill guidelines. Do not default every website/UI task to one generic builder.',
-        'If a listed skill is needed and not already loaded/auto-loaded, call get_skill_guidelines once before specialized work.',
-        'Load only the skills that materially improve this task; skip skills that are merely adjacent.',
-        'For web work, choose based on intent: senior_frontend for React/Next/code, web_artifacts_builder for standalone rich artifacts, component_architecture for reusable UI systems, motion_animations/epic_design for motion-heavy premium design.',
-        'Ranked candidates:',
-        ...lines,
-      ].join('\n'),
-    };
-  }
-
   private cleanSchemaStructure(obj: any, path = ''): any {
     if (!obj || typeof obj !== 'object') return obj;
     if (Array.isArray(obj)) return obj.map(x => this.cleanSchemaStructure(x, path));
@@ -4045,20 +3906,23 @@ export class GeminiAgentClient {
   }
 
   private buildProviderStaticSystemPrompt(context: ProjectContext): string {
+    let basePrompt: string;
     if (
       isCodingAgentProfile((context as any).agentProfile) ||
       isCustomAgentRuntimeContext(context) ||
       isAgentBuilderRuntimeContext(context) ||
       (context as any).isUserProxy
     ) {
-      return this.generateSystemPrompt({
+      basePrompt = this.generateSystemPrompt({
         ...context,
         uploadedFiles: [],
         userPreferences: {},
         errorHistory: [],
       } as ProjectContext, '');
+    } else {
+      basePrompt = this.generateCacheableSystemPrompt();
     }
-    return this.generateCacheableSystemPrompt();
+    return `${basePrompt}\n\n${SKILL_PATHWAYS_PROMPT}`;
   }
 
   private buildUniversalPromptParts(
@@ -4624,8 +4488,10 @@ Workflow:
 1. launch with URL -> 2. snapshot/read_page for refs -> 3. interact (click/fill/type) -> 4. snapshot to verify
 
 Rules:
-- Default: managed EterX browser, not user's Chrome.
-- Never connect to user's Chrome unless ETERX_ALLOW_USER_CHROME=1.
+- Default: connect to the user's installed signed-in Chromium browser.
+- If CDP is unavailable because that browser is already open normally, browser_control automatically uses the current-window native bridge; continue using browser_control actions.
+- Never silently fall back to an isolated profile when signed-in browser attachment fails.
+- Preserve existing tabs; reuse a matching tab or open a new tab for a new destination.
 - read_page for understanding, snapshot for refs, evaluate for bulk DOM ops.
 
 ACTION ICONS (uiIcon)
@@ -5253,7 +5119,6 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
     const sessionPersistenceDisabled = !!(context as any).disableSessionPersistence;
     const longTermMemoryDisabled = !!(context as any).disableLongTermMemory;
     const sharedCacheDisabled = !!(context as any).disableSharedCache;
-    const skillAutoLoadDisabled = !!(context as any).disableSkillAutoLoad;
     const isBuilder = isAgentBuilderRuntimeContext(context) || message.includes('We are currently in the Agent Builder room');
     const lightweightTelegramMode = (context as any).source === 'telegram' || !!(context as any).forceFastMode;
     const userVisibleMessage = (context as any).source === 'telegram'
@@ -5402,7 +5267,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
     await Promise.all([
       longTermMemoryDisabled ? Promise.resolve() : initializeAdaptiveIntelligence(),
       longTermMemoryDisabled ? Promise.resolve() : initializeNextGenSystems(),
-      skillAutoLoadDisabled ? Promise.resolve() : dynamicSkillEngine.initialize(),
+      dynamicSkillEngine.initialize(),
     ]);
 
     if (!cognitiveSession.hasStarted()) {
@@ -5570,15 +5435,6 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
     if (sessionSummary) dynamicContextParts.push(sessionSummary);
     if (intelligenceSignals.length > 0) dynamicContextParts.push(intelligenceSignals.join('\n'));
 
-    let smartSkillAutoLoadIds: string[] = [];
-    if (!skillAutoLoadDisabled) {
-      try {
-        const skillRouting = this.buildSkillRouting(userVisibleMessage, loadedSkills);
-        smartSkillAutoLoadIds = skillRouting.autoLoadIds;
-        if (skillRouting.context) dynamicContextParts.push(skillRouting.context);
-      } catch { /* skill routing is advisory */ }
-    }
-
     // === WORKSPACE INTELLIGENCE: Inject project stack info ===
     try {
       const wsContext = (context as any).disableWorkspaceContext ? '' : await workspaceIntelligence.getWorkspaceContext();
@@ -5678,36 +5534,6 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
       } catch { /* silent */ }
     }
 
-    // === AUTO-SKILL INJECTION: Load relevant skills based on message keywords ===
-    // This puts skill guidelines directly in the system prompt where they CAN'T
-    // be trimmed away by ContextWindowManager. Fixes the "skill connection lost" bug.
-    try {
-      if (!skillAutoLoadDisabled) {
-        const msgLower = message.toLowerCase();
-        const autoSkillMap: Array<{ keywords: RegExp; skillId: string }> = smartSkillAutoLoadIds.length > 0
-          ? smartSkillAutoLoadIds.map(skillId => ({ keywords: /[\s\S]*/, skillId }))
-          : [
-            { keywords: /\b(pdf|make pdf|create pdf|generate pdf)\b/, skillId: 'pdf' },
-            { keywords: /\b(docx|word doc|document|word file)\b/, skillId: 'docx' },
-            { keywords: /\b(pptx|powerpoint|slides|presentation)\b/, skillId: 'pptx' },
-            { keywords: /\b(xlsx|excel|sheet|spreadsheet)\b/, skillId: 'xlsx' },
-            { keywords: /\b(slack|chat|message|channel)\b/, skillId: 'slack' }
-          ];
-
-        for (const item of autoSkillMap) {
-          if (item.keywords.test(msgLower) && !loadedSkills.has(item.skillId)) {
-            try {
-              const skill = SKILL_REGISTRY[item.skillId];
-              if (skill && skill.systemPromptAddendum) {
-                dynamicContextParts.push(skill.systemPromptAddendum);
-                loadedSkills.add(item.skillId);
-                console.log(`[GeminiClient] ðŸ“¥ Auto-loaded skill context: ${ item.skillId }`);
-              }
-            } catch { /* ignore load error */ }
-          }
-        }
-      }
-    } catch { }
     // === COGNITIVE CORE SYSTEM PROMPT ENHANCEMENT ===
     try {
       const availableTools = globalToolRegistry.getAllTools().map(t => t.name);
@@ -7475,7 +7301,17 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
 
         // 4. Skill dedup â€” track loaded skills specifically
         if (call.name === 'get_skill_guidelines') {
-          const skillName = String(args?.skill_name || '').toLowerCase().trim();
+          const skillName = String(args?.skill_name || '').toLowerCase().trim().replace(/-/g, '_');
+          args.skill_name = skillName;
+          if (!SKILL_REGISTRY[skillName]) {
+            return {
+              functionResponse: {
+                name: call.name,
+                response: { output: { error: `Skill "${ skillName }" is not in the cached skill catalog. Use an exact catalog ID.` } },
+                ...(call.id ? { id: call.id } : {})
+              }
+            };
+          }
           if (loadedSkills.has(skillName)) {
             console.warn(`[GeminiClient] ðŸš« SKILL ALREADY LOADED: ${ skillName } (silent block)`);
             // Don't emit a visible trace event â€” just silently block

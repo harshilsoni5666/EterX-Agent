@@ -1,59 +1,17 @@
 /**
  * ═══════════════════════════════════════════════════════════════
- * ETERX COMPUTER VIEW — Screenshot Watch SSE Endpoint
- * Watches the screenshots directory for new files and streams
- * them as base64 PNG via SSE. This powers the live "Computer View"
- * panel that shows exactly what the agent's browser sees.
+ * EterX live browser stream.
+ * Streams current browser frames and activity events over SSE without
+ * replaying stale screenshots from previous sessions.
  * ═══════════════════════════════════════════════════════════════
  */
 
 import { NextRequest } from 'next/server';
-import path from 'path';
-import fs from 'fs';
 import { monitorEmitter } from '../../../../lib/agent/monitor/emitter';
 import { rejectCrossOrigin } from '../../agent/_shared';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-
-const SCREENSHOTS_DIR = path.resolve(process.cwd(), '.workspaces', 'temp', 'screenshots');
-
-// Ensure dir exists
-fs.mkdirSync(SCREENSHOTS_DIR, { recursive: true });
-
-function resolveUnder(parent: string, ...segments: string[]): string {
-  const root = path.resolve(parent);
-  const resolved = path.resolve(root, ...segments);
-  const relative = path.relative(root, resolved);
-  if (relative && (relative.startsWith('..') || path.isAbsolute(relative))) {
-    throw new Error(`Blocked screenshot path traversal: ${resolved}`);
-  }
-  return resolved;
-}
-
-function readFileAsBase64(filePath: string): string | null {
-  try {
-    const buf = fs.readFileSync(filePath);
-    return buf.toString('base64');
-  } catch {
-    return null;
-  }
-}
-
-function getLatestScreenshot(): { path: string; ts: number } | null {
-  try {
-    const files = fs.readdirSync(SCREENSHOTS_DIR)
-      .filter(f => f.endsWith('.png'))
-      .map(f => ({
-        path: resolveUnder(SCREENSHOTS_DIR, f),
-        ts: fs.statSync(resolveUnder(SCREENSHOTS_DIR, f)).mtimeMs,
-      }))
-      .sort((a, b) => b.ts - a.ts);
-    return files[0] || null;
-  } catch {
-    return null;
-  }
-}
 
 export async function GET(req: NextRequest) {
   const originError = rejectCrossOrigin(req);
@@ -66,8 +24,6 @@ export async function GET(req: NextRequest) {
   const stream = new ReadableStream({
     start(controller) {
       let closed = false;
-      let lastScreenshotPath = '';
-      let lastEventTs = 0;
 
       const send = (data: Record<string, any>) => {
         if (closed) return;
@@ -81,58 +37,8 @@ export async function GET(req: NextRequest) {
       // Send connection confirmation
       send({ type: 'connected', ts: Date.now() });
 
-      // Send the latest existing screenshot immediately
-      const latest = chatId ? null : getLatestScreenshot();
-      if (latest) {
-        const base64 = readFileAsBase64(latest.path);
-        if (base64) {
-          send({
-            type: 'screenshot',
-            ts: latest.ts,
-            path: latest.path,
-            filename: path.basename(latest.path),
-            base64,
-          });
-          lastScreenshotPath = latest.path;
-          lastEventTs = latest.ts;
-        }
-      }
-
-      // Watch screenshots directory for new files
-      let watcher: fs.FSWatcher | null = null;
-      try {
-        if (chatId) throw new Error('chat-scoped stream uses monitor events');
-        watcher = fs.watch(SCREENSHOTS_DIR, { persistent: false }, (eventType, filename) => {
-          if (!filename || !filename.endsWith('.png') || closed) return;
-          let filePath = '';
-          try {
-            filePath = resolveUnder(SCREENSHOTS_DIR, filename);
-          } catch {
-            return;
-          }
-          // Small delay to ensure file is fully written
-          setTimeout(() => {
-            if (closed) return;
-            try {
-              const stat = fs.statSync(filePath);
-              if (stat.mtimeMs <= lastEventTs) return;
-              const base64 = fs.readFileSync(filePath).toString('base64');
-              if (!base64) return;
-              lastScreenshotPath = filePath;
-              lastEventTs = stat.mtimeMs;
-              send({
-                type: 'screenshot',
-                ts: stat.mtimeMs,
-                path: filePath,
-                filename,
-                base64,
-              });
-            } catch { /* file may not exist yet */ }
-          }, 120);
-        });
-      } catch { /* fs.watch may not be supported */ }
-
-      // Also subscribe to monitor emitter for browser_screenshot events
+      // Stream only live monitor events. Stale files from previous sessions are
+      // intentionally excluded so the panel always reflects the real browser.
       const onMonitorEvent = (ev: any) => {
         if (closed) return;
         if (ev.type === 'browser_screenshot' && ev.screenshot) {
@@ -155,7 +61,7 @@ export async function GET(req: NextRequest) {
         }
       };
       const unsubMonitor = chatId
-        ? monitorEmitter.subscribeForChat(chatId, onMonitorEvent, { replay: true, replayLimit: 20, includeVisual: true })
+        ? monitorEmitter.subscribeForChat(chatId, onMonitorEvent, { replay: false, includeVisual: true })
         : monitorEmitter.subscribe(onMonitorEvent);
 
       // Heartbeat every 10s
@@ -166,7 +72,6 @@ export async function GET(req: NextRequest) {
 
       req.signal.addEventListener('abort', () => {
         closed = true;
-        watcher?.close();
         unsubMonitor();
         clearInterval(heartbeat);
         try { controller.close(); } catch { }
@@ -184,22 +89,17 @@ export async function GET(req: NextRequest) {
   });
 }
 
-// Poll endpoint — returns latest screenshot as base64
+// Polling intentionally does not return cached frames; use the live SSE stream.
 export async function POST(req: NextRequest) {
   try {
     const originError = rejectCrossOrigin(req);
     if (originError) return originError;
 
-    const latest = getLatestScreenshot();
-    if (!latest) {
-      return Response.json({ screenshot: null, ts: Date.now() });
-    }
-    const base64 = readFileAsBase64(latest.path);
     return Response.json({
-      screenshot: base64,
-      filename: path.basename(latest.path),
-      path: latest.path,
-      ts: latest.ts,
+      screenshot: null,
+      liveOnly: true,
+      message: 'Browser frames are available only from the live SSE stream.',
+      ts: Date.now(),
     });
   } catch (e: any) {
     return Response.json({ error: e.message }, { status: 500 });

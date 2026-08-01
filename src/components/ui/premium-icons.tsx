@@ -10,10 +10,10 @@ const SIDEBAR_ICON_URLS = {
 const PremiumSidebarIcon = ({ className, src }: { className?: string; src: string }) => (
   <span
     aria-hidden="true"
-    className={`inline-block shrink-0 bg-current ${className || ''}`}
+    className={`inline-block shrink-0 bg-current ${ className || '' }`}
     style={{
-      WebkitMaskImage: `url(${src})`,
-      maskImage: `url(${src})`,
+      WebkitMaskImage: `url(${ src })`,
+      maskImage: `url(${ src })`,
       WebkitMaskRepeat: 'no-repeat',
       maskRepeat: 'no-repeat',
       WebkitMaskPosition: 'center',
@@ -115,8 +115,8 @@ export const PremiumTrash = ({ className, strokeWidth = 2 }: any) => (
   <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
     <path d="M3 6h18" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
     <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" fill="currentColor" fillOpacity="0.15" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
-    <path d="M10 11v6" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" opacity="0.5"/>
-    <path d="M14 11v6" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" opacity="0.5"/>
+    <path d="M10 11v6" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" opacity="0.5" />
+    <path d="M14 11v6" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" opacity="0.5" />
   </svg>
 );
 
@@ -182,7 +182,7 @@ export const PremiumPanelLeft = ({ className, strokeWidth = 2 }: any) => (
 
 export const PremiumDownload = ({ className, strokeWidth = 2 }: any) => (
   <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
-    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" opacity="0.5"/>
+    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" opacity="0.5" />
     <path d="M12 3v12" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" />
     <path d="M7 10l5 5 5-5" fill="currentColor" fillOpacity="0.15" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
   </svg>
@@ -215,8 +215,8 @@ export const PremiumVolume2 = ({ className, strokeWidth = 2 }: any) => (
 export const PremiumVolumeX = ({ className, strokeWidth = 2 }: any) => (
   <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
     <path d="M11 5L6 9H2v6h4l5 4V5z" fill="currentColor" fillOpacity="0.15" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
-    <path d="M23 9l-6 6" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" opacity="0.8"/>
-    <path d="M17 9l6 6" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" opacity="0.8"/>
+    <path d="M23 9l-6 6" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" opacity="0.8" />
+    <path d="M17 9l6 6" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" opacity="0.8" />
   </svg>
 );
 

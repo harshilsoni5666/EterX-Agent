@@ -124,17 +124,10 @@ export const AgentChannelsView = React.memo(() => {
           className="eterx-channel-orbit-stage relative h-[282px] w-full max-w-[520px] shrink-0"
         >
           <div className="eterx-channel-phone absolute left-1/2 top-[68px] z-10 h-[206px] w-[252px] -translate-x-1/2 rounded-[34px] border-[5px] border-[#D9D8D5] bg-[linear-gradient(180deg,#F9F9F8_0%,#ECEBE8_100%)] shadow-[0_30px_72px_rgba(45,45,45,0.08)]" />
-          <img
-            src="/logo.png"
-            alt=""
-            width={28}
-            height={28}
-            loading="eager"
-            decoding="async"
-            fetchPriority="high"
-            className="absolute left-1/2 top-[100px] z-20 h-6 w-6 -translate-x-1/2 object-contain opacity-95 drop-shadow-[0_8px_18px_rgba(45,45,45,0.10)]"
-            draggable={false}
-          />
+          <span className="absolute left-1/2 top-[100px] z-20 h-6 w-6 -translate-x-1/2 opacity-95 drop-shadow-[0_8px_18px_rgba(45,45,45,0.10)]">
+            <img src="/logo-black.png" alt="" className="h-full w-full object-contain dark:hidden" draggable={false} />
+            <img src="/logo-white.png" alt="" className="hidden h-full w-full object-contain dark:block" draggable={false} />
+          </span>
           <div className="eterx-channel-agent-card absolute left-1/2 top-[142px] z-30 flex h-[72px] w-[372px] -translate-x-1/2 items-center gap-3 rounded-[18px] border border-[#E5E2DE] bg-white/95 px-4 shadow-[0_20px_50px_rgba(34,34,34,0.12)] backdrop-blur-sm">
             <span className="eterx-channel-agent-avatar flex h-[46px] w-[46px] shrink-0 items-center justify-center rounded-full border border-[#EEEAE4] bg-[#F7F5F2] text-[#34312f] shadow-[0_10px_24px_rgba(44,40,36,0.08)]">
               <PremiumAgent className="h-[23px] w-[23px] brightness-0" />
