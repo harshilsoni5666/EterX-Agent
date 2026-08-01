@@ -2002,7 +2002,6 @@ export class GeminiAgentClient {
     let lastAnswer = '';
     let prematurePlanFinals = 0;
     const visibleWorkNoteTexts: string[] = [];
-    const recentActionEvidence: string[] = [];
     const maxLoopIterations = 240;
     let provisionalAnswerId: string | null = null;
     const cancelProvisionalAnswer = () => {
@@ -2370,33 +2369,7 @@ export class GeminiAgentClient {
         return { text: finalText, trace };
       }
 
-      let visibleNoteText = contentText;
-      if (!visibleNoteText) {
-        visibleNoteText = await this.generateMissingActionWorkNote(message, toolCalls, async (prompt, onPartial) => {
-          const noteParams: any = {
-            model: this.mistralModelName,
-            messages: [{ role: 'user', content: prompt }],
-          };
-          if (this.activeProvider === 'openai' && isOpenAIReasoningModel(this.mistralModelName)) {
-            noteParams.max_completion_tokens = 700;
-            noteParams.reasoning_effort = 'low';
-          } else {
-            noteParams.max_tokens = 320;
-          }
-          const noteStream: any = await client.chat.completions.create({ ...noteParams, stream: true });
-          let noteText = '';
-          for await (const chunk of noteStream) {
-            const delta = this.extractMistralContent(chunk?.choices?.[0]?.delta?.content);
-            if (!delta) continue;
-            noteText += delta;
-            onPartial?.(noteText);
-          }
-          return noteText;
-        }, {
-          previousNotes: visibleWorkNoteTexts,
-          recentEvidence: recentActionEvidence,
-        }, onTrace);
-      }
+      const visibleNoteText = contentText;
 
       if (visibleNoteText) {
         lastAnswer = contentText;
@@ -2434,8 +2407,6 @@ export class GeminiAgentClient {
         if (normalizeRegistryToolName(String(toolCall?.function?.name || '')) === 'task_decomposer' && !output?.error) {
           taskDecomposerUsed = true;
         }
-        recentActionEvidence.push(`${ String(toolCall?.function?.name || 'action') }: ${ this.compactText(this.stringifyMistralToolOutput(output), 760) }`);
-
         toolMessages.push({
           role: 'tool',
           tool_call_id: toolCall.id,
@@ -2592,7 +2563,6 @@ export class GeminiAgentClient {
     let lastAnswer = '';
     let prematurePlanFinals = 0;
     const visibleWorkNoteTexts: string[] = [];
-    const recentActionEvidence: string[] = [];
     const maxLoopIterations = 240;
     const maxTokens = positiveIntEnv('ANTHROPIC_MAX_TOKENS', 8192);
     let provisionalAnswerId: string | null = null;
@@ -2990,27 +2960,7 @@ export class GeminiAgentClient {
         return { text: finalText, trace };
       }
 
-      let visibleNoteText = contentText;
-      if (!visibleNoteText) {
-        visibleNoteText = await this.generateMissingActionWorkNote(message, toolUses, async (prompt, onPartial) => {
-          const noteStream: any = client.messages.stream({
-            model: this.mistralModelName,
-            max_tokens: 320,
-            messages: [{ role: 'user', content: prompt }],
-          });
-          let noteText = '';
-          for await (const event of noteStream) {
-            const delta = event?.type === 'content_block_delta' ? String(event?.delta?.text || '') : '';
-            if (!delta) continue;
-            noteText += delta;
-            onPartial?.(noteText);
-          }
-          return noteText;
-        }, {
-          previousNotes: visibleWorkNoteTexts,
-          recentEvidence: recentActionEvidence,
-        }, onTrace);
-      }
+      const visibleNoteText = contentText;
 
       if (visibleNoteText) {
         lastAnswer = contentText;
@@ -3050,8 +3000,6 @@ export class GeminiAgentClient {
         if (normalizeRegistryToolName(String(toolUse?.name || '')) === 'task_decomposer' && !output?.error) {
           taskDecomposerUsed = true;
         }
-        recentActionEvidence.push(`${ String(toolUse?.name || 'action') }: ${ this.compactText(this.stringifyMistralToolOutput(output), 760) }`);
-
         toolResultBlocks.push({
           type: 'tool_result',
           tool_use_id: toolUse.id,
@@ -3101,73 +3049,6 @@ export class GeminiAgentClient {
 
   private formatVisibleWorkNote(value: string, _maxLength = 720, suppressFinalAnswers = false): string {
     return formatCleanVisibleWorkNote(value, _maxLength, suppressFinalAnswers);
-  }
-
-  private async generateMissingActionWorkNote(
-    message: string,
-    actions: any[],
-    generate: (prompt: string, onPartial?: (text: string) => void) => Promise<string>,
-    communicationContext: {
-      previousNotes?: string[];
-      recentEvidence?: string[];
-    } = {},
-    onTrace?: (trace: any) => void
-  ): Promise<string> {
-    const actionContext = actions.slice(0, 4).map(action => {
-      const name = String(action?.function?.name || action?.name || action?.id || 'action');
-      const rawArguments = action?.function?.arguments ?? action?.input ?? action?.args ?? {};
-      const argumentsText = typeof rawArguments === 'string'
-        ? rawArguments
-        : JSON.stringify(rawArguments);
-      return `${ name }: ${ this.compactText(argumentsText, 420) }`;
-    }).join('\n');
-
-    const previousNotes = (communicationContext.previousNotes || [])
-      .slice(-3)
-      .map(note => this.compactText(note, 520))
-      .join('\n');
-    const recentEvidence = (communicationContext.recentEvidence || [])
-      .slice(-4)
-      .map(evidence => this.compactText(evidence, 620))
-      .join('\n');
-
-    const prompt = [
-      'An active task response selected actions but omitted its user-facing communication.',
-      'Supply the communication that belongs with this action from the same live situation. Do not apply a template, cadence, phase taxonomy, or fixed writing style. First person is available when it is natural. Keep private reasoning private and do not claim unfinished actions are complete. Return only the user-facing communication.',
-      '',
-      'Current user request:',
-      this.compactText(message, 1800),
-      ...(previousNotes ? ['', 'Recent visible updates:', previousNotes] : []),
-      ...(recentEvidence ? ['', 'Recent completed-action evidence:', recentEvidence] : []),
-      '',
-      'Actions about to run:',
-      actionContext,
-    ].join('\n');
-
-    const streamingNoteId = `work_note_stream_${ Date.now() }`;
-    try {
-      const generated = await Promise.race([
-        generate(prompt, partial => {
-          const noteText = this.formatVisibleWorkNote(partial, 720, false);
-          if (noteText) {
-            onTrace?.({
-              type: 'work_note',
-              text: noteText,
-              isDelta: false,
-              isStreaming: true,
-              isLiveTyping: true,
-              wasStreaming: true,
-              noteId: streamingNoteId,
-            });
-          }
-        }),
-        new Promise<string>((_, reject) => setTimeout(() => reject(new Error('WORK_NOTE_GENERATION_TIMEOUT')), 15_000)),
-      ]);
-      return String(generated || '').trim();
-    } catch (error: any) {
-      console.warn('[Agent] Could not recover omitted action communication:', String(error?.message || error));
-      return '';
-    }
   }
 
   private cleanSchemaStructure(obj: any, path = ''): any {
@@ -4192,11 +4073,13 @@ CORE IDENTITY
 - Work like a principal engineer on a deadline: focused, efficient, zero fluff.
 
 WORK NOTES
-Work notes are ordinary user-facing communication during execution, generated from the current request, observed evidence, and the next action.
-- Communicate before the first meaningful action group in each user turn, then again when the work meaningfully changes direction, reaches a milestone, fails, recovers, or moves into verification.
-- Choose the wording naturally for the live situation. First person is welcome when it helps communicate ownership or intent, but no perspective, opening, sentence shape, or house style is mandatory.
-- Keep private reasoning private. Share only the decisions, observations, actions, and evidence that help the user follow the work.
-- Never claim an outcome before the relevant tool evidence exists.
+Work notes are brief, natural progress updates written directly to the user while real work is happening. They are not thoughts, approval requests, notifications, or miniature final answers.
+- Before the first meaningful action, communicate naturally from the live situation. A note may express your intent, what you are doing now, what you will do next, why that action matters, or a relevant finding. Future actions are valid work notes when they describe work you are actually about to perform.
+- Keep a free, human voice. There is no required opening, perspective, sentence count, cadence, or template. Use normal prose or simple bullets according to what communicates the moment best.
+- Later, update when the work meaningfully changes direction, reveals something useful, hits or recovers from a failure, reaches a milestone, or moves into verification. A useful note may naturally combine a finding with the action it leads to.
+- Never expose analysis, deliberation, self-instructions, prompt text, response drafting, or commentary such as "I need to output" or "the user requested". Those are private reasoning, not work notes.
+- Do not turn a work note into a closing line such as "Let me know if you want changes", "Would you like me to continue?", or "Should I proceed?" If user input truly blocks progress, use ask_user; otherwise continue working.
+- Never claim an outcome before the relevant tool evidence exists. If there is no useful natural update for an action, omit the note and let the action card speak for itself.
 TRUTHFUL EXECUTION
 - Intellectual honesty over pleasing the user. Never invent data, paths, calculations, or successful matches.
 - Verify inputs exist before claiming facts. If a metric cannot be computed from available data, say what is missing.
@@ -5674,7 +5557,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
         .join(', ');
       const recentContext = recentTools ? ` Recent action evidence came from: ${ recentTools }.` : '';
 
-      return `PROGRESS BOUNDARY ${iteration}: Update the user before the first meaningful action group, then only for a material phase change, milestone, failure/recovery, or verification. Keep it brief and keep private reasoning private.${recentContext}`;
+      return `PROGRESS BOUNDARY ${iteration}: If this boundary needs a work note, speak naturally about your intent, the live action, a future action you are about to take, or a useful finding before calling tools. Keep your own voice; this is progress communication, not private deliberation, an approval request, or a closing sentence. Omit the note when the action card is sufficient.${recentContext}`;
     };
 
     // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -6448,7 +6331,6 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
       let accumulatedThought = '';
       const thoughtStartTime = Date.now();
       const thoughtId = `thought_${ interactions }_${ thoughtStartTime }`;
-      let accumulatedWorkNote = '';
       let workNoteEmitted = false;
       let emittedWorkNoteText = '';
       let functionCalls: any[] = [];
@@ -6506,7 +6388,6 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
             // 2. TEXT PARTS (Visible work note or final answer)
             if (!part.thought && part.text) {
               accumulatedText += part.text;
-              accumulatedWorkNote = accumulatedText;
               // Stream direct responses as they arrive. If this response later
               // reveals a tool call, the provisional answer is cancelled and
               // the same text is finalized as a work note below.
@@ -6615,35 +6496,6 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
         delete (config as any).cachedContent;
         delete (config as any).tools;
         _cachedContentName = null;
-      }
-
-      if (functionCalls.length > 0 && !accumulatedText && !emittedWorkNoteText) {
-        const generatedNote = await this.generateMissingActionWorkNote(message, functionCalls, async (prompt, onPartial) => {
-          const thinkingConfig = getGeminiThinkingConfig('minimal', this.modelName, false);
-          const noteStream = await this.ai.models.generateContentStream({
-            model: this.modelName,
-            contents: [{ role: 'user', parts: [{ text: prompt }] }],
-            config: {
-              maxOutputTokens: 700,
-              ...(thinkingConfig ? { thinkingConfig } : {}),
-            },
-          });
-          let noteText = '';
-          for await (const chunk of noteStream as any) {
-            const delta = String(chunk?.candidates?.[0]?.content?.parts?.map((part: any) => part?.text || '').join('') || '');
-            if (!delta) continue;
-            noteText += delta;
-            onPartial?.(noteText);
-          }
-          return noteText;
-        }, {
-          previousNotes: visibleWorkNoteTexts,
-          recentEvidence: toolResultDigest.slice(-4).map(entry => `${ entry.tool }: ${ entry.result }`),
-        }, onTrace);
-        if (generatedNote) {
-          accumulatedWorkNote = generatedNote;
-          emitVisibleWorkNote(generatedNote);
-        }
       }
 
       if (functionCalls.length > 0 && (accumulatedText || emittedWorkNoteText)) {

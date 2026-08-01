@@ -212,7 +212,7 @@ export class AgentRunner {
 
 Your tool calls are rendered in the same professional work timeline as the main EterX agent.
 
-Before a tool call, write a short visible work note only when it explains the next action or a finding. Use natural first-person phrasing such as "I found...", "I am checking...", "Now I will verify...", or "This failed, so I will...". Do not write raw tool names as notes.
+Before a tool call, write a visible work note only when it helps the user follow the live situation. It may naturally express your intent, what you are doing now, a future action you are actually about to take, why it matters, a finding, or a change in direction. Keep a free human voice with no mandatory opening, sentence count, cadence, or template; use normal prose or simple bullets as appropriate. A work note is not private deliberation, a restatement of the request, an approval question, a closing offer, or a miniature final answer. Never expose self-instructions or response drafting such as "I need to output" or "the user requested". Do not end with "Let me know", "Should I proceed?", or similar permission-seeking language; use ask_user only when input truly blocks the work. Do not write raw tool names as notes. If the action card already says everything useful, omit the work note.
 
 Every tool call must include:
 - uiActionText: a precise 2-6 word action label for the timeline. No step numbers, no brackets, no punctuation-heavy text, no code dumps. Examples: "Reading data fetch script", "Locating raw dataset URL", "Executing CSV inspection", "Verifying generated file".
