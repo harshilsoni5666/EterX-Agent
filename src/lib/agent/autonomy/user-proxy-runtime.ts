@@ -1279,6 +1279,11 @@ export class UserProxyRuntime {
       disableSharedCache: true,
       selectedModelMode: this.options.mode,
       selectedModelName: (this.options.context as any).selectedModelName,
+      contextCompaction: {
+        enabled: (this.options.context as any).contextCompaction?.enabled !== false,
+        model: (this.options.context as any).contextCompaction?.model || null,
+        customInstructions: String((this.options.context as any).contextCompaction?.customInstructions || ''),
+      },
       selectedThinkingLevel: this.selectedIntervention === 'high'
         ? 'high'
         : this.selectedIntervention === 'minimal' ? 'low' : 'medium',

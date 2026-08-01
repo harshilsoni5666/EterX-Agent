@@ -697,7 +697,9 @@ class AgentRegistry {
           fallbackRuntimeSettings: runtimeSettings,
           history,
           attachments: mediaAttachments,
-          onTrace,
+          onTrace: trace => onTrace(trace && typeof trace === 'object'
+            ? { ...trace, auxiliaryRuntime: true, contextOwner: 'user_proxy' }
+            : trace),
           steer: (message, metadata) => this.addSteeringMessage(chatId, message, undefined, metadata),
           stopMain: (reason, metadata) => this.stopAgent(chatId, reason, metadata),
           queueNext: (message, rationale) => this.queueProxyTask(chatId, message, rationale).accepted,

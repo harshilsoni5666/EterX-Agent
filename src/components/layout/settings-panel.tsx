@@ -2072,6 +2072,10 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
         });
       });
       localStorage.setItem(MODEL_CONTEXT_WINDOWS_STORAGE_KEY, JSON.stringify(discoveredContextWindows));
+      broadcastEterxSettingsUpdate({
+        type: 'model-context-windows-updated',
+        contextWindows: discoveredContextWindows,
+      });
       setModelDirectoryUpdatedAt(payload.updatedAt || Date.now());
       setModelDirectoryStatus('ready');
     } catch (error) {

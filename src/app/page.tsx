@@ -910,6 +910,7 @@ function DeepWorkUI() {
     thinkingLevel: 'low' as MainAgentThinkingLevel,
   });
   const [proxyModelEntries, setProxyModelEntries] = useState(() => readRuntimeModelEntries());
+  const [contextSettingsRevision, setContextSettingsRevision] = useState(0);
   const [proxyModelSelection, setProxyModelSelection] = useState<string>(AUTO_MODEL_SELECTION);
   const [proxyRuntimeModelSelection, setProxyRuntimeModelSelection] = useState<string>(AUTO_MODEL_SELECTION);
   const [showProxyAttachMenu, setShowProxyAttachMenu] = useState(false);
@@ -1084,7 +1085,10 @@ function DeepWorkUI() {
   }, [proxyModelEntries]);
 
   useEffect(() => {
-    const refreshProxyModels = () => setProxyModelEntries(readRuntimeModelEntries());
+    const refreshProxyModels = () => {
+      setProxyModelEntries(readRuntimeModelEntries());
+      setContextSettingsRevision(revision => revision + 1);
+    };
     window.addEventListener('storage', refreshProxyModels);
     window.addEventListener('focus', refreshProxyModels);
     window.addEventListener('eterx-settings-updated', refreshProxyModels);
@@ -8544,35 +8548,31 @@ function DeepWorkUI() {
     const configuredContextWindow = contextWindow;
 
     const ownedLogs = traceLogs.filter((log: any) =>
-      !log?.ownerChatId || !activeChatId || log.ownerChatId === activeChatId
+      (!log?.ownerChatId || !activeChatId || log.ownerChatId === activeChatId)
+      && log?.auxiliaryRuntime !== true
     );
     let displayTokens = 0;
     let authoritative: any = null;
-    let allowCompactionReset = false;
     const estimatedByIdentity = new Map<string, number>();
 
-    // Build one monotonic display ledger. Provider/local measurements can vary
-    // slightly between boundaries, but the visible count must never move
-    // backwards unless a completed compaction explicitly reset the context.
+    // Authoritative measurements describe the current model payload, not a
+    // lifetime total for the chat. Estimates only fill the gap between those
+    // measurements so bounded history and a new run can lower the live count.
     for (const log of ownedLogs) {
       if (log?.type === 'context_compaction' && log?.phase === 'compacted') {
+        if (log?.chatId && activeChatId && log.chatId !== activeChatId) continue;
         const compactedTokens = Number(log?.afterTokens);
         if (Number.isFinite(compactedTokens) && compactedTokens >= 0) {
           displayTokens = compactedTokens;
-          allowCompactionReset = false;
-        } else {
-          allowCompactionReset = true;
         }
         continue;
       }
 
       if (log?.type === 'context_usage') {
+        if (log?.chatId && activeChatId && log.chatId !== activeChatId) continue;
         const measuredTokens = Number(log?.usedTokens);
         if (!Number.isFinite(measuredTokens) || measuredTokens < 0) continue;
-        displayTokens = allowCompactionReset
-          ? measuredTokens
-          : Math.max(displayTokens, measuredTokens);
-        allowCompactionReset = false;
+        displayTokens = measuredTokens;
         authoritative = log;
         continue;
       }
@@ -8609,7 +8609,7 @@ function DeepWorkUI() {
       utilizationPct: contextWindow > 0 ? Math.max(0, Math.min(100, (usedTokens / contextWindow) * 100)) : 0,
       isEstimated: !authoritative,
     };
-  }, [activeChatId, activeModelSelection, agentMode, inputValue, isThinking, proxyModelEntries, traceLogs]);
+  }, [activeChatId, activeModelSelection, agentMode, contextSettingsRevision, inputValue, isThinking, proxyModelEntries, traceLogs]);
   // Compute effective thinking state
   const effectiveIsThinking = activeSubAgentTab && !autonomousSelected
     ? currentSubAgents.some(a => (a.id || a.name) === activeSubAgentTab && a.status === 'working')

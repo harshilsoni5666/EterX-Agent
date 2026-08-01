@@ -2051,11 +2051,9 @@ export class GeminiAgentClient {
         }
       }
 
-      const shouldCheckContextBoundary =
-        interactions === 1 ||
-        (messages.length >= 16 && interactions % 2 === 0) ||
-        interactions % 3 === 0 ||
-        lastObservedContextInputTokens >= 120_000;
+      // A single large tool result can cross the hard limit, so every model
+      // request must pass through the safe context boundary.
+      const shouldCheckContextBoundary = true;
       if (shouldCheckContextBoundary) {
         try {
           const compacted = await compactContextAtBoundary({
@@ -2651,11 +2649,9 @@ export class GeminiAgentClient {
         }
       }
 
-      const shouldCheckAnthropicContextBoundary =
-        interactions === 1 ||
-        (messages.length >= 16 && interactions % 2 === 0) ||
-        interactions % 3 === 0 ||
-        lastObservedContextInputTokens >= 120_000;
+      // A single large tool result can cross the hard limit, so every model
+      // request must pass through the safe context boundary.
+      const shouldCheckAnthropicContextBoundary = true;
       if (shouldCheckAnthropicContextBoundary) {
         try {
           const compacted = await compactContextAtBoundary({
@@ -5663,11 +5659,9 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
 
       // Context compaction is an iteration-boundary transaction. No tool,
       // stream, edit, or approval is active at this point.
-      const shouldCheckGeminiContextBoundary =
-        interactions === 1 ||
-        (contents.length >= 16 && interactions % 2 === 0) ||
-        interactions % 3 === 0 ||
-        lastObservedContextInputTokens >= 120_000;
+      // A single large tool result can cross the hard limit, so every model
+      // request must pass through the safe context boundary.
+      const shouldCheckGeminiContextBoundary = true;
       if (shouldCheckGeminiContextBoundary) {
         try {
           const ctxResult = await compactContextAtBoundary({
