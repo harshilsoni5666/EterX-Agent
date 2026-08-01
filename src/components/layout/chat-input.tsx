@@ -3297,19 +3297,19 @@ const handleSelectFolderDialog = useCallback(async () => {
                 <Tooltip
                   side="top"
                   delay={0}
-                  contentWidth={180}
-                  contentHeight={58}
+                  contentWidth={170}
+                  contentHeight={68}
                   cardClassName="eterx-context-usage-tooltip !rounded-[10px]"
                   content={(
-                    <div className="flex h-[58px] w-full flex-col items-center justify-center px-2 text-center">
+                    <div className="flex h-[68px] w-full flex-col items-center justify-center px-2 text-center">
                       <div className="eterx-context-usage-label text-[11px] font-medium leading-[14px]">
-                        {contextUsage.isEstimated ? 'Estimated context' : 'Context window'}
+                        {contextUsage.isEstimated ? 'Estimated context:' : 'Context window:'}
                       </div>
                       <div className="eterx-context-usage-primary mt-px whitespace-nowrap text-[12.5px] font-semibold leading-4">
-                        {usedPercent}% used <span className="eterx-context-usage-muted font-medium">· {leftPercent}% left</span>
+                        {usedPercent}% used <span className="eterx-context-usage-muted font-medium">({leftPercent}% left)</span>
                       </div>
                       <div className="eterx-context-usage-secondary whitespace-nowrap text-[11.5px] font-medium leading-[15px] tabular-nums">
-                        {formatContextTokenCount(safeUsedTokens)} / {formatContextTokenCount(safeContextWindow)} tokens
+                        {formatContextTokenCount(safeUsedTokens)} / {formatContextTokenCount(safeContextWindow)} tokens used
                       </div>
                     </div>
                   )}
