@@ -3297,11 +3297,11 @@ const handleSelectFolderDialog = useCallback(async () => {
                 <Tooltip
                   side="top"
                   delay={0}
-                  contentWidth={190}
-                  contentHeight={64}
+                  contentWidth={180}
+                  contentHeight={58}
                   cardClassName="eterx-context-usage-tooltip !rounded-[10px]"
                   content={(
-                    <div className="flex h-[64px] w-full flex-col items-center justify-center px-2 text-center">
+                    <div className="flex h-[58px] w-full flex-col items-center justify-center px-2 text-center">
                       <div className="eterx-context-usage-label text-[11px] font-medium leading-[14px]">
                         {contextUsage.isEstimated ? 'Estimated context' : 'Context window'}
                       </div>
