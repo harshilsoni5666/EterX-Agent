@@ -5,6 +5,7 @@ import OpenAI from 'openai';
 import { getMainAgentModelConfig, normalizeMainAgentMode, isOpenAIReasoningModel, isAnthropicAdaptiveThinkingModel, type MainAgentMode, type MainAgentProvider } from '../../../../lib/agent/model-routing';
 import { getProviderBaseURL, isLocalModelProvider } from '../../../../lib/agent/provider-runtime';
 import { normalizeProviderCacheUsage } from '../../../../lib/agent/provider-prompt-cache';
+import { isModelProvider } from '../../../../lib/agent/model-selector-store';
 import {
   buildScopedRuntimeSettings,
   getScopedRuntimeApiKey,
@@ -15,6 +16,11 @@ import { readJsonObject, rejectCrossOrigin } from '../../agent/_shared';
 export const runtime = 'nodejs';
 
 const DEFAULT_CHAT_TITLE = 'New chat';
+
+type RequestedTitleModel = {
+  provider: MainAgentProvider;
+  modelName: string;
+};
 
 const isDefaultChatTitle = (title: unknown) =>
   !String(title || '').trim() || String(title || '').trim().toLowerCase() === DEFAULT_CHAT_TITLE.toLowerCase();
@@ -84,6 +90,17 @@ const cleanTitle = (rawTitle: unknown, history: any[] = []) => {
   return fallbackTitleFromHistory(history);
 };
 
+const normalizeRequestedTitleModel = (value: unknown): RequestedTitleModel | null => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const source = value as Record<string, unknown>;
+  const provider = String(source.provider || '').trim().toLowerCase();
+  const modelName = String(source.modelId || source.modelName || source.model || '').trim();
+  if (!isModelProvider(provider) || !modelName || modelName.length > 220 || /[\r\n\t]/.test(modelName)) {
+    return null;
+  }
+  return { provider, modelName };
+};
+
 async function generateTitleWithProvider(
   provider: MainAgentProvider,
   modelName: string,
@@ -122,38 +139,10 @@ async function generateTitleWithProvider(
     if (!apiKey) throw new Error('Missing Gemini API key');
 
     const genAI = new GoogleGenAI({ apiKey });
-    let result;
-    try {
-      result = await genAI.models.generateContent({
-        model: modelName,
-        contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        config: {
-          thinkingConfig: {
-            thinkingLevel: 'minimal' as any,
-            includeThoughts: false,
-          },
-        },
-      });
-    } catch (err: any) {
-      const errMsg = String(err.message || '').toLowerCase();
-      if (
-        errMsg.includes('thinking') ||
-        errMsg.includes('config') ||
-        errMsg.includes('parameter') ||
-        errMsg.includes('invalid') ||
-        errMsg.includes('unsupported') ||
-        errMsg.includes('fields') ||
-        errMsg.includes('argument')
-      ) {
-        console.log(`[Title] Model ${modelName} does not support thinkingConfig, retrying without it.`);
-        result = await genAI.models.generateContent({
-          model: modelName,
-          contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        });
-      } else {
-        throw err;
-      }
-    }
+    const result = await genAI.models.generateContent({
+      model: modelName,
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+    });
     const candidates = result.candidates || [];
     const titleText = candidates[0]?.content?.parts?.find(p => 'text' in p)?.text;
     return { title: cleanTitle(titleText, safeHistory), provider, model: modelName, usage: normalizeProviderCacheUsage(provider, (result as any).usageMetadata) };
@@ -194,12 +183,15 @@ export async function POST(req: NextRequest) {
   try {
     const originError = rejectCrossOrigin(req);
     if (originError) return originError;
-    const { history, currentTitle, mode } = await readJsonObject(req);
+    const { history, currentTitle, mode, selectedModel } = await readJsonObject(req);
     const runtimeSettings = buildScopedRuntimeSettings();
     const safeHistory = Array.isArray(history) ? history : [];
     const latestUserText = getLatestUserText(safeHistory);
     const safeMode = normalizeMainAgentMode(mode);
     const modelConfig = getMainAgentModelConfig(safeMode, runtimeSettings);
+    const requestedTitleModel = normalizeRequestedTitleModel(selectedModel);
+    const primaryProvider = requestedTitleModel?.provider || modelConfig.provider;
+    const primaryModelName = requestedTitleModel?.modelName || modelConfig.modelName;
 
     const prompt = `
       Generate a fresh short title for the CURRENT chat.
@@ -223,11 +215,12 @@ export async function POST(req: NextRequest) {
       ${ JSON.stringify(safeHistory.slice(-10)) }
     `.trim();
 
-    // 1. Try primary provider first
+    // Use only the model that ran this chat. Title generation must not switch
+    // providers or silently consume a different model's quota.
     try {
       const generated = await generateTitleWithProvider(
-        modelConfig.provider,
-        modelConfig.modelName,
+        primaryProvider,
+        primaryModelName,
         prompt,
         runtimeSettings,
         safeHistory
@@ -236,71 +229,11 @@ export async function POST(req: NextRequest) {
         return NextResponse.json(generated);
       }
     } catch (e: any) {
-      console.warn(`[Title] Primary provider ${modelConfig.provider} (${modelConfig.modelName}) failed:`, e.message || e);
+      console.warn(`[Title] Selected provider ${primaryProvider} (${primaryModelName}) failed:`, e.message || e);
     }
 
-    // 2. Fallback: Loop through other providers to find one with an active key
-    const fallbackProviders: { provider: MainAgentProvider; modelName: string }[] = [];
-    
-    // Add gemini as the preferred fallback if it wasn't the primary
-    if (modelConfig.provider !== 'gemini') {
-      const geminiConfig = getMainAgentModelConfig('think', runtimeSettings);
-      fallbackProviders.push({ provider: 'gemini', modelName: geminiConfig.modelName });
-    }
-    
-    // Add other potential providers in order
-    const orderedProviders: { mode: MainAgentMode; provider: MainAgentProvider }[] = [
-      { mode: 'openai', provider: 'openai' },
-      { mode: 'anthropic', provider: 'anthropic' },
-      { mode: 'openrouter', provider: 'openrouter' },
-      { mode: 'groq', provider: 'groq' },
-      { mode: 'mistral', provider: 'mistral' }
-    ];
-    
-    for (const p of orderedProviders) {
-      if (p.provider !== modelConfig.provider) {
-        const config = getMainAgentModelConfig(p.mode, runtimeSettings);
-        fallbackProviders.push({ provider: p.provider, modelName: config.modelName });
-      }
-    }
-
-    for (const fb of fallbackProviders) {
-      // Check if this provider has an API key in settings
-      const key = fb.provider === 'gemini'
-        ? (runtimeSettings.preferredGeminiApiKey || getScopedRuntimeApiKey(runtimeSettings, 'gemini'))
-        : fb.provider === 'openai'
-          ? getScopedRuntimeApiKey(runtimeSettings, 'openai')
-          : fb.provider === 'anthropic'
-            ? getScopedRuntimeApiKey(runtimeSettings, 'anthropic')
-            : fb.provider === 'openrouter'
-              ? getScopedRuntimeApiKey(runtimeSettings, 'openrouter')
-              : fb.provider === 'groq'
-                ? getScopedRuntimeApiKey(runtimeSettings, 'groq')
-                : fb.provider === 'mistral'
-                  ? getScopedRuntimeApiKey(runtimeSettings, 'mistral')
-                  : null;
-      
-      if (!key) continue;
-
-      try {
-        console.log(`[Title] Attempting fallback with provider: ${fb.provider} (${fb.modelName})`);
-        const generated = await generateTitleWithProvider(
-          fb.provider,
-          fb.modelName,
-          prompt,
-          runtimeSettings,
-          safeHistory
-        );
-        if (generated.title && !isDefaultChatTitle(generated.title)) {
-          return NextResponse.json(generated);
-        }
-      } catch (e: any) {
-        console.warn(`[Title] Fallback provider ${fb.provider} (${fb.modelName}) failed:`, e.message || e);
-      }
-    }
-
-    // 3. Absolute fallback: generate from history locally (no API call)
-    console.log('[Title] All API title generation attempts failed. Using local history-based fallback.');
+    // No alternate model: keep the chat usable with a deterministic local title.
+    console.log('[Title] Selected model title generation failed. Using local history-based fallback.');
     const title = fallbackTitleFromHistory(safeHistory);
     return NextResponse.json({ title });
   } catch (error: any) {

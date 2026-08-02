@@ -18,6 +18,14 @@ import { AgentFace } from './agent-face';
 import { Shimmer } from '../ui/shimmer';
 import { safeCopyTextToClipboard } from '../ui/copy-button';
 
+type SubAgentAssetIndexes = Record<string, number>;
+
+const getSubAgentAssetIndex = (assetIndexes: SubAgentAssetIndexes | undefined, name?: string) => {
+  const cleanName = String(name || '').trim();
+  if (!assetIndexes || !cleanName) return undefined;
+  return assetIndexes[cleanName] ?? assetIndexes[cleanName.toLowerCase()];
+};
+
 
 type RevealSpeed = {
   baseDelayMs: number;
@@ -475,8 +483,15 @@ const useTypewriter = (targetText: string, _isActive: boolean) => {
 };
 
 // Live-second counter. Prefer trace timestamps so a finished thought never keeps counting.
-const asTimestamp = (value: unknown) =>
-  typeof value === 'number' && Number.isFinite(value) ? value : null;
+const asTimestamp = (value: unknown) => {
+  const raw = Number(value);
+  if (!Number.isFinite(raw) || raw <= 0) return null;
+  let timestamp = raw < 10_000_000_000 ? raw * 1000 : raw;
+  while (timestamp > 10_000_000_000_000) timestamp /= 1000;
+  const now = Date.now();
+  if (timestamp < Date.UTC(2020, 0, 1) || timestamp > now + 60_000) return null;
+  return timestamp;
+};
 
 const LIVE_THOUGHT_FRESH_MS = 2400;
 const LIVE_ACTION_SETTLE_MS = 1400;
@@ -513,12 +528,23 @@ const isDeepWorkLog = (log: any) => {
 const useThinkTimer = (isLive: boolean, startedAt?: number, updatedAt?: number) => {
   const [secs, setSecs] = useState(0);
   const fallbackStartRef = useRef<number | null>(null);
+  const latestUpdateRef = useRef<number | null>(null);
   const frozenRef = useRef<number | null>(null);
   const lastElapsedRef = useRef(0);
   const startMs = asTimestamp(startedAt);
   const updateMs = asTimestamp(updatedAt);
 
   useEffect(() => {
+    latestUpdateRef.current = updateMs;
+  }, [updateMs]);
+
+  useEffect(() => {
+    if (startMs !== null) {
+      fallbackStartRef.current = fallbackStartRef.current === null
+        ? startMs
+        : Math.min(fallbackStartRef.current, startMs);
+    }
+
     const elapsedFrom = (endMs: number) => {
       const origin = startMs ?? fallbackStartRef.current ?? endMs;
       return Math.max(0, Math.floor((endMs - origin) / 1000));
@@ -543,8 +569,8 @@ const useThinkTimer = (isLive: boolean, startedAt?: number, updatedAt?: number) 
       return () => clearInterval(id);
     }
 
-    const measured = startMs !== null && updateMs !== null
-      ? frozenElapsedFrom(updateMs)
+    const measured = (startMs !== null || fallbackStartRef.current !== null) && latestUpdateRef.current !== null
+      ? frozenElapsedFrom(latestUpdateRef.current)
       : fallbackStartRef.current !== null
         ? frozenElapsedFrom(Date.now())
         : 0;
@@ -555,7 +581,7 @@ const useThinkTimer = (isLive: boolean, startedAt?: number, updatedAt?: number) 
     lastElapsedRef.current = frozen;
     fallbackStartRef.current = null;
     setSecs(frozen);
-  }, [isLive, startMs, updateMs]);
+  }, [isLive, startMs]);
 
   // Always return the frozen value if available (never re-tick after done)
   return frozenRef.current !== null ? frozenRef.current : secs;
@@ -1314,6 +1340,42 @@ ObjectCard.displayName = 'ObjectCard';
 // ─── Main component ────────────────────────────────────────────────────────
 const ToolResultPreview = React.memo(({ toolName, args, result, flush = false }: { toolName: string; args: any; result: any; flush?: boolean }) => {
 
+  // Skill guidelines are long-form documents, not scalar metadata. Rendering
+  // them through the generic key/value fallback puts the whole document in a
+  // two-column tile, which makes it narrow and lets it run behind the composer.
+  // Keep the document full width and bound it to the viewport with its own
+  // scroll surface so the chat feed remains usable while reading it.
+  if (toolName === 'get_skill_guidelines' || toolName === 'skill_loader') {
+    const guidelines = typeof result === 'string'
+      ? result
+      : String(result?.guidelines ?? result?.output?.guidelines ?? result?.content ?? result?.output ?? result?.text ?? result?.message ?? '');
+    const skillName = String(args?.skill_name ?? args?.skillId ?? args?.skill ?? '').trim();
+
+    return (
+      <TrpCard flush={flush}>
+        <div className="eterx-guidelines-preview min-w-0">
+          <div className="mb-2 flex min-w-0 items-center justify-between gap-3">
+            <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.14em] text-[#6A6460]">
+              Guidelines
+            </span>
+            {skillName && (
+              <span className="min-w-0 truncate font-mono text-[10px] text-[#817A70]" title={skillName}>
+                {skillName}
+              </span>
+            )}
+          </div>
+          {guidelines ? (
+            <div className="eterx-guidelines-scroll max-h-[min(58vh,560px)] min-h-0 overflow-y-auto overflow-x-hidden overscroll-contain pr-2 eterx-scrollbar [scrollbar-gutter:stable]">
+              <TrpMarkdown content={guidelines} />
+            </div>
+          ) : (
+            <div className="py-5 text-center text-[12px] text-[#817A70] italic">No guidelines returned.</div>
+          )}
+        </div>
+      </TrpCard>
+    );
+  }
+
   // ── 1. deep_research ──────────────────────────────────────────────────────
   if (toolName === 'deep_research' || toolName === 'research_report') {
     const report: string = result?.report || result?.content || result?.text || '';
@@ -1539,7 +1601,7 @@ const ToolResultPreview = React.memo(({ toolName, args, result, flush = false }:
                 )}
                 <span className="truncate select-all text-[#E2DFDA] group-hover:text-white font-medium">{name}</span>
                 {!isDir && size && (
-                  <span className="ml-auto shrink-0 rounded-[4px] border border-white/[0.06] bg-white/[0.025] px-1.5 py-0.5 font-mono text-[10px] font-medium text-[#8D867C] tabular-nums">{size}</span>
+                  <span className="eterx-professional-number ml-auto shrink-0 rounded-[4px] border border-white/[0.06] bg-white/[0.025] px-1.5 py-0.5 text-[10px] font-medium text-[#8D867C]">{size}</span>
                 )}
               </div>
             );
@@ -1622,7 +1684,7 @@ const ToolResultPreview = React.memo(({ toolName, args, result, flush = false }:
   // Primary message/text
   const getPrimaryText = () => {
     if (typeof result === 'string') return result;
-    const candidates = ['message', 'content', 'text', 'output', 'stdout', 'stderr', 'logs', 'response', 'result', 'summary', 'answer', 'report'];
+    const candidates = ['message', 'content', 'guidelines', 'text', 'output', 'stdout', 'stderr', 'logs', 'response', 'result', 'summary', 'answer', 'report'];
     for (const key of candidates) {
       if (typeof obj[key] === 'string' && obj[key].trim().length > 0) {
         return obj[key];
@@ -1646,7 +1708,7 @@ const ToolResultPreview = React.memo(({ toolName, args, result, flush = false }:
 
   // Scalar fields to show as key-value tiles
   const SKIP_SCALAR = new Set([
-    'success', 'passed', 'ok', 'error', 'message', 'content', 'text',
+    'success', 'passed', 'ok', 'error', 'message', 'content', 'guidelines', 'text',
     'output', 'stdout', 'stderr', 'logs', 'response', 'result', 'summary',
     'answer', 'report', '_cached', '_traceIdx', 'timestamp', 'data'
   ]);
@@ -2604,15 +2666,14 @@ const getStableActionEventId = (log: any) => {
   return value === null || value === undefined ? '' : String(value);
 };
 
-const getStreamRowIdentity = (log: any, fallbackIndex: number) => String(
-  log?.thoughtId ??
-  log?.noteId ??
-  log?.id ??
-  log?.startTime ??
-  log?.timestamp ??
-  log?._traceIdx ??
-  fallbackIndex
-);
+const getStreamRowIdentity = (log: any, fallbackIndex: number) => {
+  const primary = String(log?.thoughtId || log?.noteId || log?.id || '').trim();
+  const anchor = log?.startTime ?? log?.streamStartedAt ?? log?.timestamp ?? log?._traceIdx ?? fallbackIndex;
+  // IDs can be reused by providers after a tool/retry boundary. Keep the
+  // stream start in the React key so a new phase cannot inherit an old row's
+  // text, open state, or frozen timer.
+  return primary ? `${ primary }:${ String(anchor) }` : String(anchor);
+};
 
 const ACTION_CARD_CLASS = "eterx-action-card w-full overflow-hidden rounded-[12px] border border-white/[0.075] bg-[#151514]/60 shadow-[inset_0_1px_0_rgba(255,255,255,0.028),0_2px_10px_rgba(0,0,0,0.14)]";
 const ACTION_ROW_DIVIDER_CLASS = "eterx-action-row-divider border-t border-white/[0.052]";
@@ -3424,13 +3485,6 @@ const ActionChip = ({
           {preview && (
             <ChevronRight className={`h-3.5 w-3.5 shrink-0 transition-all ${ isExpanded ? 'rotate-90 text-[#C8C1B8]' : 'text-[#898176]' } group-hover:text-[#C8C1B8]`} />
           )}
-          {hasFile && fullPath.toLowerCase().match(/\.(html|htm)$/) && (
-            <button
-              type="button"
-              onClick={(e) => { e.stopPropagation(); openPanel({ filename: fileName, filepath: fullPath, content: typeof preview?.content === 'string' ? preview.content : undefined, lineCount: preview?.lineCount, totalLines: preview?.totalLines ?? preview?.lineCount, truncated: preview?.truncated, activeTabMode: 'preview' }); }}
-              className="flex items-center gap-1 rounded-[7px] border border-white/[0.07] bg-white/[0.035] px-2 py-0.5 text-[10px] font-semibold uppercase text-[#C8C1B8] transition-colors hover:border-[#94C7E0]/25 hover:bg-white/[0.055] hover:text-[#B9DCEB] shrink-0"
-            ><Monitor className="w-2.5 h-2.5" /> Preview</button>
-          )}
         </span>
       </div>
       <AnimatePresence initial={false}>
@@ -3462,7 +3516,7 @@ const ActionChip = ({
 };
 
 // Sub-agent card — professional with status indicator
-const SubAgentCard = ({ log, onOpenAgentTeam }: { log: any; onOpenAgentTeam?: (name?: string) => void }) => {
+const SubAgentCard = ({ log, onOpenAgentTeam, assetIndexes }: { log: any; onOpenAgentTeam?: (name?: string) => void; assetIndexes?: SubAgentAssetIndexes }) => {
   const [open, setOpen] = useState(false);
   const agentName = log.agentName || log.subAgent || log.secondary || 'Sub-agent';
   const isComplete = log.type === 'sub_agent_complete' || log.agentStatus === 'completed' || log.status === 'done';
@@ -3490,7 +3544,7 @@ const SubAgentCard = ({ log, onOpenAgentTeam }: { log: any; onOpenAgentTeam?: (n
           onClick={() => setOpen(value => !value)}
           className="flex min-w-0 flex-1 items-center gap-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/16"
         >
-          <SubAgentIdentityIcon name={agentName} status={identityStatus} size={34} />
+          <SubAgentIdentityIcon name={agentName} status={identityStatus} size={34} assetIndex={getSubAgentAssetIndex(assetIndexes, agentName)} />
 
           {/* Info */}
           <span className="min-w-0 flex-1 text-left">
@@ -3513,7 +3567,7 @@ const SubAgentCard = ({ log, onOpenAgentTeam }: { log: any; onOpenAgentTeam?: (n
             type="button"
             onClick={() => onOpenAgentTeam(log.subAgentChatId || log.subAgentId || agentName)}
             className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[9px] text-[#756D63] transition-colors hover:bg-white/[0.045] hover:text-[#CFC8BD] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/16"
-            aria-label={`Open ${ agentName } in agent team`}
+            aria-label={`View ${ agentName }`}
           >
             <ExternalLink className="h-3.5 w-3.5" />
           </button>
@@ -3533,7 +3587,7 @@ const SubAgentCard = ({ log, onOpenAgentTeam }: { log: any; onOpenAgentTeam?: (n
 };
 
 // Agent created card — minimal, enterprise-grade card shown when sub-agents are created
-const AgentCreatedCard = ({ log, onOpenAgentTeam }: { log: any; onOpenAgentTeam?: (name?: string) => void }) => {
+const AgentCreatedCard = ({ log, onOpenAgentTeam, assetIndexes }: { log: any; onOpenAgentTeam?: (name?: string) => void; assetIndexes?: SubAgentAssetIndexes }) => {
   const agents = log.agentDetails || log.spawnedAgents || [];
   const agentList = Array.isArray(agents)
     ? agents.map((a: any) => typeof a === 'string' ? a : a.name).filter(Boolean)
@@ -3542,19 +3596,9 @@ const AgentCreatedCard = ({ log, onOpenAgentTeam }: { log: any; onOpenAgentTeam?
   const singleName = log.agentName || log.subAgent || '';
   const displayList = agentList.length > 0 ? agentList : (singleName ? [singleName] : ['Agent']);
 
-  // Known sub-agent names that have profile images
-  const SUB_AGENT_NAMES = [
-    'einstein', 'heisenberg', 'sam', 'dario', 'elon',
-    'tesla', 'newton', 'turing', 'ada', 'curie',
-    'feynman', 'darwin', 'hawking', 'galileo', 'davinci',
-    'aristotle', 'oppenheimer', 'gates', 'jobs', 'pascal'
-  ];
-
   return (
     <>
-      {displayList.map((name: string) => {
-        const lowerName = String(name).toLowerCase().trim();
-        const hasImage = SUB_AGENT_NAMES.includes(lowerName);
+      {displayList.map((name: string, index: number) => {
         return (
           <div key={name} className="my-1">
             <button
@@ -3567,17 +3611,7 @@ const AgentCreatedCard = ({ log, onOpenAgentTeam }: { log: any; onOpenAgentTeam?
               className={`w-full flex min-h-[33px] items-center gap-2.5 rounded-[9px] px-3 py-1 bg-white/[0.015] border border-white/[0.045] text-left transition-all hover:bg-white/[0.024] hover:border-white/[0.075] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/16 cursor-pointer group ${ ACTION_CARD_CLASS }`}
               aria-label={`View agent ${ name }`}
             >
-              {hasImage ? (
-                <span className="flex h-[22px] w-[22px] shrink-0 items-center justify-center overflow-hidden rounded-full border border-white/[0.08] bg-black/10 shadow-[0_2px_8px_rgba(0,0,0,0.12)]">
-                  <img
-                    src={`/icons/sub-agents/${ lowerName }.png`}
-                    alt={name}
-                    className="w-full h-full object-cover select-none"
-                  />
-                </span>
-              ) : (
-                <SubAgentIdentityIcon name={name} status="spawning" size={22} />
-              )}
+              <SubAgentIdentityIcon name={name} status="spawning" size={24} assetIndex={getSubAgentAssetIndex(assetIndexes, name) ?? index} />
               <span className="text-[11.5px] font-medium text-[#C8C1B8] group-hover:text-[#E0DAD2] transition-colors">
                 Created <span className="text-[#E0DAD2]">{name}</span>
               </span>
@@ -3591,7 +3625,7 @@ const AgentCreatedCard = ({ log, onOpenAgentTeam }: { log: any; onOpenAgentTeam?
 
 
 // Inter-agent communication card — shows messages between agents
-const SubAgentActionCard = ({ log }: { log: any }) => {
+const SubAgentActionCard = ({ log, assetIndexes }: { log: any; assetIndexes?: SubAgentAssetIndexes }) => {
   const agentName = log.agentName || log.subAgent || 'Sub-agent';
   const actionText = String(log.text || log.currentAction || log.secondary || 'Working').trim();
   const detailText = String(log.secondary && log.secondary !== actionText ? log.secondary : log.task || '').trim();
@@ -3605,7 +3639,7 @@ const SubAgentActionCard = ({ log }: { log: any }) => {
       transition={{ duration: 0.18, ease: 'easeOut' }}
       className={`my-1.5 flex min-h-[46px] items-center gap-3 px-3 py-2.5 ${ ACTION_CARD_CLASS }`}
     >
-      <SubAgentIdentityIcon name={agentName} status="working" size={32} />
+      <SubAgentIdentityIcon name={agentName} status="working" size={32} assetIndex={getSubAgentAssetIndex(assetIndexes, agentName)} />
       <span className="min-w-0 flex-1">
         <span className="flex min-w-0 items-center gap-2">
           <span className="shrink-0 text-[12px] font-medium text-[#D8D1C8]">{agentName}</span>
@@ -3625,7 +3659,7 @@ const SubAgentActionCard = ({ log }: { log: any }) => {
   );
 };
 
-const InterAgentCommCard = ({ log, onOpenAgentTeam }: { log: any; onOpenAgentTeam?: (name?: string) => void }) => {
+const InterAgentCommCard = ({ log, onOpenAgentTeam, assetIndexes }: { log: any; onOpenAgentTeam?: (name?: string) => void; assetIndexes?: SubAgentAssetIndexes }) => {
   const fromAgent = log.from || log.agentName || 'Agent';
   const toAgent = log.to || log.secondary || 'Main';
   const msgType = log.messageType || log.commType || 'info_share';
@@ -3662,12 +3696,12 @@ const InterAgentCommCard = ({ log, onOpenAgentTeam }: { log: any; onOpenAgentTea
         type="button"
         onClick={() => onOpenAgentTeam?.(log.subAgentChatId || log.subAgentId || focusAgent)}
         className={`eterx-agent-comm-card flex min-h-[58px] w-full items-start gap-3 rounded-[8px] px-3 py-2.5 bg-white/[0.012] border border-white/[0.07] text-left transition-colors hover:bg-white/[0.024] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/16 ${ ACTION_CARD_CLASS }`}
-        aria-label={`Open ${ focusAgent || 'agent team' } in agent team`}
+        aria-label={`View ${ focusAgent || 'agent activity' }`}
       >
         <span className="eterx-agent-comm-identities mt-0.5 flex shrink-0 items-center gap-1.5">
-          <SubAgentIdentityIcon name={fromAgent} status="working" size={28} />
+          <SubAgentIdentityIcon name={fromAgent} status="working" size={28} assetIndex={getSubAgentAssetIndex(assetIndexes, fromAgent) ?? 0} />
           <ArrowRight className="h-3.5 w-3.5 text-[#6F685F]" />
-          <SubAgentIdentityIcon name={toAgent === '*' ? 'All agents' : toAgent} status="idle" size={28} />
+          <SubAgentIdentityIcon name={toAgent === '*' ? 'All agents' : toAgent} status="idle" size={28} assetIndex={getSubAgentAssetIndex(assetIndexes, toAgent === '*' ? 'All agents' : toAgent) ?? 1} />
         </span>
         <span className="min-w-0 flex-1">
           <span className="flex min-w-0 flex-wrap items-center gap-1.5">
@@ -3695,7 +3729,7 @@ const InterAgentCommCard = ({ log, onOpenAgentTeam }: { log: any; onOpenAgentTea
 };
 
 // Sub-agent error card
-const SubAgentErrorCard = ({ log }: { log: any }) => {
+const SubAgentErrorCard = ({ log, assetIndexes }: { log: any; assetIndexes?: SubAgentAssetIndexes }) => {
   const agentName = log.agentName || log.subAgent || 'Agent';
   return (
     <motion.div
@@ -3703,7 +3737,7 @@ const SubAgentErrorCard = ({ log }: { log: any }) => {
       animate={{ opacity: 1, scale: 1 }}
       className={`my-1.5 flex min-h-[46px] items-center gap-3 rounded-[12px] px-3 py-2.5 ${ ACTION_CARD_CLASS }`}
     >
-      <SubAgentIdentityIcon name={agentName} status="error" size={36} />
+      <SubAgentIdentityIcon name={agentName} status="error" size={36} assetIndex={getSubAgentAssetIndex(assetIndexes, agentName)} />
       <span className="min-w-0 flex-1">
         <span className="block text-[13.5px] font-medium text-[#E5B2AD]">{agentName} {log.errorType === 'cancelled' ? 'stopped' : 'encountered an error'}</span>
         <span className="block text-[12px] font-medium text-[#A07B76] mt-0.5 truncate">{log.secondary || ''}</span>
@@ -4535,7 +4569,7 @@ const HtmlPreviewCard = ({ log }: { log: any }) => {
 };
 
 
-export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showLiveIndicator = false, onOpenAgentTeam, isSubAgentTab = false, onEditUserMessage }: { logs: any[], liveLogs?: any[], isThinking: boolean, isLast: boolean, showLiveIndicator?: boolean, onOpenAgentTeam?: (agentName?: string) => void, isSubAgentTab?: boolean, onEditUserMessage?: (text: string) => void }) => {
+export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showLiveIndicator = false, onOpenAgentTeam, isSubAgentTab = false, onEditUserMessage, assetIndexes }: { logs: any[], liveLogs?: any[], isThinking: boolean, isLast: boolean, showLiveIndicator?: boolean, onOpenAgentTeam?: (agentName?: string) => void, isSubAgentTab?: boolean, onEditUserMessage?: (text: string) => void, assetIndexes?: SubAgentAssetIndexes }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const NOISE_PATTERN = /reconnect|retrying|stalled|stream interrupted|model error|fallback|cancelled/i;
 
@@ -4678,8 +4712,7 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
           const thoughtIsLive =
             isThinking &&
             seg.log.isStreaming !== false &&
-            seg.log.streamState !== 'closed' &&
-            isLast;
+            seg.log.streamState !== 'closed';
           return <ProfessionalThought key={`t-${ getStreamRowIdentity(seg.log, seg.idx) }`} text={seg.log.text} isLatest={thoughtIsLive} isThinking={thoughtIsLive} startedAt={seg.log.startTime} updatedAt={seg.log.endTime} />;
         }
         if (seg.kind === 'note' && nextSeg?.kind === 'action_group') {
@@ -4712,16 +4745,16 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
         if (seg.kind === 'subagent') return null;
         if (seg.kind === 'comm') {
           return isSubAgentTab
-            ? <InterAgentCommCard key={`comm-${ seg.idx }`} log={seg.log} onOpenAgentTeam={onOpenAgentTeam} />
+            ? <InterAgentCommCard key={`comm-${ seg.idx }`} log={seg.log} onOpenAgentTeam={onOpenAgentTeam} assetIndexes={assetIndexes} />
             : null;
         }
         if (seg.kind === 'subagent_action') return null;
-        if (seg.kind === 'subagent_spawn') return <AgentCreatedCard key={`ss-${ seg.idx }`} log={seg.log} onOpenAgentTeam={onOpenAgentTeam} />;
+        if (seg.kind === 'subagent_spawn') return <AgentCreatedCard key={`ss-${ seg.idx }`} log={seg.log} onOpenAgentTeam={onOpenAgentTeam} assetIndexes={assetIndexes} />;
         if (seg.kind === 'subagent_complete') {
-          return isSubAgentTab ? <SubAgentCard key={`sc-${ seg.idx }`} log={seg.log} onOpenAgentTeam={onOpenAgentTeam} /> : null;
+          return isSubAgentTab ? <SubAgentCard key={`sc-${ seg.idx }`} log={seg.log} onOpenAgentTeam={onOpenAgentTeam} assetIndexes={assetIndexes} /> : null;
         }
         if (seg.kind === 'subagent_error') {
-          return isSubAgentTab ? <SubAgentErrorCard key={`se-${ seg.idx }`} log={seg.log} /> : null;
+          return isSubAgentTab ? <SubAgentErrorCard key={`se-${ seg.idx }`} log={seg.log} assetIndexes={assetIndexes} /> : null;
         }
         if (seg.kind === 'ask_user') return <AskUserTimelineCard key={`ask-tl-${ seg.idx }`} log={seg.log} isLive={isThinking && isLast && i === segs.length - 1 && !seg.log.answeredWith} />;
         if (seg.kind === 'console') return <TerminalTraceCard key={`console-${ seg.idx }`} log={seg.log} preview={seg.log} isLiveChip={isThinking && isLast && i === segs.length - 1} />;

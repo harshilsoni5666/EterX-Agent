@@ -21,11 +21,37 @@
 import path from 'path';
 import os from 'os';
 import fs from 'fs-extra';
-import { exec, execSync } from 'child_process';
+import { execFile, execFileSync, spawn } from 'child_process';
 import { promisify } from 'util';
 import net from 'net';
+import { buildTerminalShellInvocation } from '../tools/core/shell_resolver';
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
+
+async function runPowerShellCommand(script: string, timeout = 8000, maxBuffer = 5 * 1024 * 1024): Promise<{ stdout: string; stderr: string }> {
+  const invocation = buildTerminalShellInvocation(script, 'powershell');
+  return execFileAsync(invocation.file, invocation.args, {
+    timeout,
+    maxBuffer,
+    windowsHide: true,
+  });
+}
+
+function findExecutableOnPath(candidate: string): string | null {
+  if (!candidate) return null;
+  if (path.isAbsolute(candidate)) return fs.pathExistsSync(candidate) ? candidate : null;
+  const pathEntries = String(process.env.PATH || '').split(path.delimiter).filter(Boolean);
+  const extensions = process.platform === 'win32'
+    ? String(process.env.PATHEXT || '.EXE;.CMD;.BAT').split(';')
+    : [''];
+  for (const directory of pathEntries) {
+    for (const extension of extensions) {
+      const resolved = path.join(directory, extension && path.extname(candidate) ? candidate : `${candidate}${extension}`);
+      if (fs.pathExistsSync(resolved)) return resolved;
+    }
+  }
+  return null;
+}
 
 // Dynamic import to bypass Next.js webpack bundling
 let _pw: any = null;
@@ -281,12 +307,11 @@ export class BrowserEngine {
     let runningWithoutControl = false;
     try {
       const { stdout } = process.platform === 'win32'
-        ? await execAsync(`tasklist /FI "IMAGENAME eq ${install.processName}" /NH`, {
-            shell: process.env.ComSpec || 'cmd.exe',
+        ? await execFileAsync('tasklist', ['/FI', `IMAGENAME eq ${install.processName}`, '/NH'], {
             timeout: 3000,
+            windowsHide: true,
           })
-        : await execAsync(`pgrep -f "${install.processName.replace(/"/g, '')}"`, {
-            shell: process.env.SHELL || '/bin/sh',
+        : await execFileAsync('pgrep', ['-f', install.processName.replace(/"/g, '')], {
             timeout: 3000,
           });
       
@@ -322,7 +347,6 @@ export class BrowserEngine {
 
     try {
       // Launch the browser as a detached subprocess.
-      const { spawn } = require('child_process');
       const chromeProcess = spawn(chromePath, [
         `--remote-debugging-port=${debugPort}`,
         `--user-data-dir=${userDataDir}`,
@@ -994,13 +1018,10 @@ export class BrowserEngine {
 
     // Fallback: check netstat
     if (process.platform === 'win32') try {
-      const { stdout } = await execAsync(
-        'netstat -ano | findstr "LISTENING" | findstr /R ":9222 :9223 :9333"',
-        { shell: process.env.ComSpec || 'cmd.exe', timeout: 1200 }
-      );
-      if (stdout.includes('9223')) return 9223;
-      if (stdout.includes('9222')) return 9222;
-      if (stdout.includes('9333')) return 9333;
+      const { stdout } = await execFileAsync('netstat', ['-ano'], { timeout: 1200, windowsHide: true });
+      if (/:(?:9223)\s+.*LISTENING/i.test(stdout)) return 9223;
+      if (/:(?:9222)\s+.*LISTENING/i.test(stdout)) return 9222;
+      if (/:(?:9333)\s+.*LISTENING/i.test(stdout)) return 9333;
     } catch {}
 
     return null;
@@ -1032,17 +1053,17 @@ export class BrowserEngine {
       ...(process.platform === 'linux' ? [{
         displayName: 'Chrome',
         processName: 'chrome',
-        executablePaths: ['/usr/bin/google-chrome', '/usr/bin/google-chrome-stable', '/usr/bin/chromium', '/usr/bin/chromium-browser'],
+        executablePaths: ['/usr/bin/google-chrome', '/usr/bin/google-chrome-stable', '/usr/bin/chromium', '/usr/bin/chromium-browser', 'google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser'],
         userDataDirCandidates: [path.join(home, '.config', 'google-chrome'), path.join(home, '.config', 'chromium')],
       }, {
         displayName: 'Brave',
         processName: 'brave',
-        executablePaths: ['/usr/bin/brave-browser', '/usr/bin/brave'],
+        executablePaths: ['/usr/bin/brave-browser', '/usr/bin/brave', 'brave-browser', 'brave'],
         userDataDirCandidates: [path.join(home, '.config', 'BraveSoftware', 'Brave-Browser')],
       }, {
         displayName: 'Edge',
         processName: 'msedge',
-        executablePaths: ['/usr/bin/microsoft-edge', '/usr/bin/microsoft-edge-stable'],
+        executablePaths: ['/usr/bin/microsoft-edge', '/usr/bin/microsoft-edge-stable', 'microsoft-edge', 'microsoft-edge-stable'],
         userDataDirCandidates: [path.join(home, '.config', 'microsoft-edge')],
       }] : []),
       {
@@ -1052,6 +1073,7 @@ export class BrowserEngine {
           'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
           'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
           localAppData ? path.join(localAppData, 'Google', 'Chrome', 'Application', 'chrome.exe') : '',
+          'chrome.exe',
         ],
         userDataDirCandidates: [
           localAppData ? path.join(localAppData, 'Google', 'Chrome', 'User Data') : '',
@@ -1064,6 +1086,7 @@ export class BrowserEngine {
           'C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe',
           'C:\\Program Files (x86)\\BraveSoftware\\Brave-Browser\\Application\\brave.exe',
           localAppData ? path.join(localAppData, 'BraveSoftware', 'Brave-Browser', 'Application', 'brave.exe') : '',
+          'brave.exe',
         ],
         userDataDirCandidates: [
           localAppData ? path.join(localAppData, 'BraveSoftware', 'Brave-Browser', 'User Data') : '',
@@ -1076,6 +1099,7 @@ export class BrowserEngine {
           'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
           'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
           localAppData ? path.join(localAppData, 'Microsoft', 'Edge', 'Application', 'msedge.exe') : '',
+          'msedge.exe',
         ],
         userDataDirCandidates: [
           localAppData ? path.join(localAppData, 'Microsoft', 'Edge', 'User Data') : '',
@@ -1099,10 +1123,11 @@ export class BrowserEngine {
 
     for (const candidate of orderedCandidates) {
       for (const executablePath of candidate.executablePaths.filter(Boolean)) {
-        if (await fs.pathExists(executablePath)) {
+        const resolvedExecutablePath = findExecutableOnPath(executablePath);
+        if (resolvedExecutablePath) {
           return {
             displayName: candidate.displayName,
-            executablePath,
+            executablePath: resolvedExecutablePath,
             processName: candidate.processName,
             userDataDirCandidates: candidate.userDataDirCandidates,
           };
@@ -1111,9 +1136,10 @@ export class BrowserEngine {
     }
 
     if (process.platform === 'win32') try {
-      const result = execSync(
-        'reg query "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\chrome.exe" /ve',
-        { encoding: 'utf-8', timeout: 3000 }
+      const result = execFileSync(
+        'reg.exe',
+        ['query', 'HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\chrome.exe', '/ve'],
+        { encoding: 'utf-8', timeout: 3000, windowsHide: true }
       );
       const match = result.match(/REG_SZ\s+(.+\.exe)/i);
       if (match) {
@@ -1126,12 +1152,10 @@ export class BrowserEngine {
       }
     } catch {}
 
-    return {
-      displayName: 'Chrome',
-      executablePath: process.platform === 'darwin' ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : process.platform === 'win32' ? 'chrome.exe' : 'google-chrome',
-      processName: process.platform === 'win32' ? 'chrome.exe' : 'chrome',
-      userDataDirCandidates: candidates[0].userDataDirCandidates,
-    };
+    throw new Error(
+      `No supported Chromium browser was found on ${process.platform}. ` +
+      'Install Chrome, Edge, or Brave, then retry browser control.'
+    );
   }
 
   async findChromePath(requireSystemDefault = true): Promise<string> {
@@ -1141,8 +1165,9 @@ export class BrowserEngine {
   private detectDefaultChromiumBrowser(): 'chrome' | 'brave' | 'edge' | 'unsupported' | null {
     try {
       if (process.platform === 'win32') {
-        const output = execSync(
-          'reg query "HKCU\\Software\\Microsoft\\Windows\\Shell\\Associations\\UrlAssociations\\https\\UserChoice" /v ProgId',
+        const output = execFileSync(
+          'reg.exe',
+          ['query', 'HKCU\\Software\\Microsoft\\Windows\\Shell\\Associations\\UrlAssociations\\https\\UserChoice', '/v', 'ProgId'],
           { encoding: 'utf-8', timeout: 2500, windowsHide: true }
         ).toLowerCase();
         if (output.includes('brave')) return 'brave';
@@ -1150,8 +1175,9 @@ export class BrowserEngine {
         if (output.includes('chrome')) return 'chrome';
         if (output.includes('progid')) return 'unsupported';
       } else if (process.platform === 'darwin') {
-        const output = execSync(
-          `osascript -e 'id of app (path to default application for URL "https://example.com")'`,
+        const output = execFileSync(
+          'osascript',
+          ['-e', 'id of app (path to default application for URL "https://example.com")'],
           { encoding: 'utf-8', timeout: 2500 }
         ).toLowerCase();
         if (output.includes('com.brave.browser')) return 'brave';
@@ -1159,7 +1185,7 @@ export class BrowserEngine {
         if (output.includes('com.google.chrome')) return 'chrome';
         if (output.trim()) return 'unsupported';
       } else {
-        const output = execSync('xdg-settings get default-web-browser', {
+        const output = execFileSync('xdg-settings', ['get', 'default-web-browser'], {
           encoding: 'utf-8',
           timeout: 2500,
         }).toLowerCase();
@@ -1176,14 +1202,12 @@ export class BrowserEngine {
 
   private async findDebugPortForInstall(install: BrowserInstall): Promise<number | null> {
     try {
-      const command = process.platform === 'win32'
-        ? `Get-CimInstance Win32_Process -Filter "Name='${install.processName.replace(/'/g, "''")}'" | Select-Object -ExpandProperty CommandLine`
-        : 'ps -ax -o command=';
-      const { stdout } = await execAsync(command, {
-        shell: process.platform === 'win32' ? 'powershell.exe' : (process.env.SHELL || '/bin/sh'),
-        timeout: 3000,
-        windowsHide: true,
-      });
+      const { stdout } = process.platform === 'win32'
+        ? await runPowerShellCommand(
+            `Get-CimInstance Win32_Process -Filter "Name='${install.processName.replace(/'/g, "''")}'" | Select-Object -ExpandProperty CommandLine`,
+            3000,
+          )
+        : await execFileAsync('ps', ['-ax', '-o', 'command='], { timeout: 3000 });
       const executableName = path.basename(install.executablePath).toLowerCase();
       const commandLines = stdout.split(/\r?\n/).filter((line) => {
         const normalized = line.toLowerCase();
@@ -1253,7 +1277,12 @@ export class BrowserEngine {
   }
 
   private getUserAgent(): string {
-    return 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+    const platformToken = process.platform === 'win32'
+      ? 'Windows NT 10.0; Win64; x64'
+      : process.platform === 'darwin'
+        ? 'Macintosh; Intel Mac OS X 10_15_7'
+        : 'X11; Linux x86_64';
+    return `Mozilla/5.0 (${platformToken}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36`;
   }
 }
 

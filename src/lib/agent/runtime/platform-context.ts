@@ -1,6 +1,5 @@
 import os from 'os';
-import path from 'path';
-import { getPathResolverInfo } from '../workspace/path_resolver';
+import { getPathResolverInfo, getUserDocumentsPath, getUserDownloadsPath } from '../workspace/path_resolver';
 import { normalizeTerminalShell, resolveTerminalShell } from '../tools/core/shell_resolver';
 
 export type SupportedRuntimePlatform = 'windows' | 'macos' | 'linux';
@@ -41,8 +40,8 @@ export function getRuntimePlatformContext(shellPreference: unknown = 'auto'): Ru
     pathSeparator: platform === 'windows' ? '\\' : '/',
     homePath,
     desktopPath: getPathResolverInfo().desktopPath,
-    documentsPath: path.join(homePath, 'Documents'),
-    downloadsPath: path.join(homePath, 'Downloads'),
+    documentsPath: getUserDocumentsPath(),
+    downloadsPath: getUserDownloadsPath(),
   };
 }
 

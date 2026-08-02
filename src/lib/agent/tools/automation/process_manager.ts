@@ -1,13 +1,10 @@
 import { z } from 'zod';
 import { ToolDefinition } from '../../schemas';
-import { exec, spawn, ChildProcess } from 'child_process';
-import { promisify } from 'util';
+import { execFile, spawn, ChildProcess } from 'child_process';
 import fs from 'fs-extra';
 import { resolveWorkspaceDirectoryForContext } from '../../workspace/path_resolver';
 import { authorizeToolCommand } from '../security/command_broker';
-import { resolveTerminalShell } from '../core/shell_resolver';
-
-const execAsync = promisify(exec);
+import { buildTerminalShellInvocation, resolveTerminalShell } from '../core/shell_resolver';
 
 /**
  * Process Manager — Long-Running Task Controller
@@ -97,12 +94,14 @@ export const processManagerTool: ToolDefinition = {
               : context?.terminalShell
           );
 
-          const child = spawn(input.command, [], {
-            shell,
+          const invocation = buildTerminalShellInvocation(input.command, shell);
+          const child = spawn(invocation.file, invocation.args, {
+            shell: invocation.shell,
             cwd: authorization.cwd,
             stdio: ['pipe', 'pipe', 'pipe'],
-            detached: false,
-            env: authorization.env
+            detached: process.platform !== 'win32',
+            windowsHide: true,
+            env: authorization.env,
           });
 
           const managed: ManagedProcess = {
@@ -132,6 +131,10 @@ export const processManagerTool: ToolDefinition = {
           });
 
           child.on('exit', (code) => {
+            if (managed.status === 'stopped') {
+              managed.exitCode = code;
+              return;
+            }
             managed.status = code === 0 ? 'stopped' : 'crashed';
             managed.exitCode = code;
             console.log(`[ProcessManager] Process "${id}" exited with code ${code}`);
@@ -159,23 +162,11 @@ export const processManagerTool: ToolDefinition = {
 
           try {
             if (proc.process && proc.status === 'running') {
-              if (process.platform === 'win32' && proc.pid) {
-                const { exec } = require('child_process');
-                exec(`taskkill /PID ${proc.pid} /T /F`, { windowsHide: true }, () => {});
-              } else {
-                proc.process.kill('SIGTERM');
-              }
+              terminateManagedProcess(proc.pid, false);
               proc.status = 'stopped';
             }
           } catch (e) {
-            // Force kill via shell
-            if (proc.pid) {
-              if (process.platform === 'win32') {
-                await execAsync(`taskkill /PID ${proc.pid} /T /F`, { shell: process.env.ComSpec || 'cmd.exe' }).catch(() => {});
-              } else {
-                await execAsync(`kill -9 ${proc.pid}`).catch(() => {});
-              }
-            }
+            if (proc.pid) terminateManagedProcess(proc.pid, true);
             proc.status = 'stopped';
           }
           return { success: true, message: `🛑 Process "${proc.id}" (PID: ${proc.pid}) stopped.` };
@@ -199,7 +190,7 @@ export const processManagerTool: ToolDefinition = {
           const proc = findProcess(input.processId || input.name);
           if (!proc) return { success: false, message: 'Process not found' };
 
-          const maxLines = Math.min(input.maxLines || 100, 200);
+          const maxLines = Math.max(1, Math.min(Math.floor(input.maxLines || 100), 200));
           const recentOutput = proc.output.slice(-maxLines).join('\n');
           const recentErrors = proc.errors.slice(-Math.round(maxLines / 2)).join('\n');
           return {
@@ -231,12 +222,7 @@ export const processManagerTool: ToolDefinition = {
           for (const proc of Array.from(managedProcesses.values())) {
             if (proc.status === 'running' && proc.process) {
               try {
-                if (process.platform === 'win32' && proc.pid) {
-                  const { exec } = require('child_process');
-                  exec(`taskkill /PID ${proc.pid} /T /F`, { windowsHide: true }, () => {});
-                } else {
-                  proc.process.kill('SIGTERM');
-                }
+                terminateManagedProcess(proc.pid, false);
               } catch { }
               proc.status = 'stopped';
               killed++;
@@ -272,10 +258,36 @@ function parseStringRecord(value: Record<string, string> | string | undefined): 
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
     const normalized: Record<string, string> = {};
     for (const [key, recordValue] of Object.entries(parsed)) {
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
       normalized[key] = String(recordValue);
     }
     return normalized;
   } catch {
     return {};
+  }
+}
+
+function terminateManagedProcess(pid: number, force: boolean): void {
+  if (!pid) return;
+  if (process.platform === 'win32') {
+    execFile('taskkill.exe', ['/PID', String(pid), '/T', '/F'], { windowsHide: true }, () => undefined);
+    return;
+  }
+
+  const signal: NodeJS.Signals = force ? 'SIGKILL' : 'SIGTERM';
+  let signalled = false;
+  try {
+    process.kill(-pid, signal);
+    signalled = true;
+  } catch {
+    // The process may predate detached process groups; use its direct PID.
+  }
+  if (!signalled) {
+    try { process.kill(pid, signal); } catch { /* already stopped */ }
+  }
+
+  if (!force) {
+    const timer = setTimeout(() => terminateManagedProcess(pid, true), 2_000);
+    timer.unref?.();
   }
 }

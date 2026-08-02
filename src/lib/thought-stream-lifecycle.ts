@@ -1,3 +1,5 @@
+import { mergeStreamingText } from './streaming-lifecycle';
+
 const TERMINAL_STREAM_TYPES = new Set(['done', 'error', 'agent_status', 'run_status']);
 const TERMINAL_STREAM_STATUSES = new Set([
   'completed',
@@ -7,6 +9,14 @@ const TERMINAL_STREAM_STATUSES = new Set([
   'cancelled',
   'canceled',
   'error',
+]);
+const THOUGHT_CLOSING_BOUNDARY_TYPES = new Set([
+  'thought_stream_boundary',
+  'command',
+  'tool_call',
+  'action',
+  'answer',
+  'work_note',
 ]);
 
 const asFiniteTimestamp = (value: unknown): number | null => {
@@ -41,6 +51,11 @@ const isGlobalTerminalBoundary = (trace: any): boolean => {
   );
 };
 
+const isThoughtClosingBoundary = (trace: any): boolean => {
+  const type = String(trace?.type || '').trim().toLowerCase();
+  return THOUGHT_CLOSING_BOUNDARY_TYPES.has(type);
+};
+
 const getTraceTimestamp = (trace: any): number =>
   asFiniteTimestamp(trace?.endTime) ??
   asFiniteTimestamp(trace?.timestamp) ??
@@ -65,16 +80,23 @@ const closeThoughtAt = (log: any, endedAt: number) => {
   };
 };
 
+const isThoughtFinalEvent = (trace: any): boolean =>
+  trace?.final === true ||
+  trace?.done === true ||
+  trace?.isStreaming === false ||
+  trace?.streamState === 'closed';
+
 /**
- * Close reasoning only at a real lifecycle boundary. Ordinary tool, answer,
- * note, and status traces are allowed to interleave with provider reasoning;
- * treating them as an implicit end is what caused counters to stop early.
+ * Close reasoning at a real lifecycle boundary. Provider final payloads may
+ * arrive after the visible boundary; mergeThoughtStreamTrace keeps those
+ * payloads in the already-closed row so the timer stays frozen and text is
+ * not lost.
  */
 export const closeThoughtStreamsForBoundary = (logs: any[], boundary: any): void => {
   if (!boundary || boundary.type === 'thought_stream') return;
 
   const closeAll = boundary.type === 'user_action' || isGlobalTerminalBoundary(boundary);
-  const closeOwner = boundary.type === 'thought_stream_boundary';
+  const closeOwner = isThoughtClosingBoundary(boundary);
   if (!closeAll && !closeOwner) return;
   const boundaryOwner = getThoughtStreamOwner(boundary);
   const endedAt = getTraceTimestamp(boundary);
@@ -103,7 +125,7 @@ const findMergeableThoughtIndex = (logs: any[], incoming: any): number => {
   const owner = getThoughtStreamOwner(incoming);
   const incomingThoughtId = String(incoming?.thoughtId || '').trim();
   const incomingStart = asFiniteTimestamp(incoming?.startTime);
-  const incomingIsFinal = incoming?.isStreaming === false || incoming?.streamState === 'closed';
+  const incomingIsFinal = isThoughtFinalEvent(incoming);
 
   for (let index = logs.length - 1; index >= 0; index -= 1) {
     const candidate = logs[index];
@@ -140,13 +162,24 @@ const findMergeableThoughtIndex = (logs: any[], incoming: any): number => {
   return -1;
 };
 
-const mergeThoughtText = (existing: any, incoming: any): string => {
-  const nextText = String(incoming?.text || '');
-  if (incoming?.isDelta !== true) return nextText;
+const mergeThoughtText = (existing: any, incoming: any): string =>
+  mergeStreamingText(existing?.text, incoming?.text, incoming?.isDelta === true);
 
-  const previousText = String(existing?.text || '');
-  if (!nextText || previousText.endsWith(nextText)) return previousText;
-  return previousText + nextText;
+const getTraceIndex = (trace: any): number | null => {
+  const value = Number(trace?._traceIdx);
+  return Number.isFinite(value) ? value : null;
+};
+
+const isOlderThoughtUpdate = (existing: any, incoming: any): boolean => {
+  const existingIndex = getTraceIndex(existing);
+  const incomingIndex = getTraceIndex(incoming);
+  if (existingIndex !== null && incomingIndex !== null) {
+    return incomingIndex < existingIndex;
+  }
+
+  const existingTime = asFiniteTimestamp(existing?.endTime) ?? asFiniteTimestamp(existing?.timestamp);
+  const incomingTime = asFiniteTimestamp(incoming?.endTime) ?? asFiniteTimestamp(incoming?.timestamp);
+  return existingTime !== null && incomingTime !== null && incomingTime < existingTime;
 };
 
 const findThoughtIndexForExplicitFinal = (logs: any[], incoming: any): number => {
@@ -183,7 +216,7 @@ const findThoughtIndexForExplicitFinal = (logs: any[], incoming: any): number =>
  * Providers may send cumulative text or deltas and may omit/reuse stream IDs.
  */
 export const mergeThoughtStreamTrace = (logs: any[], incoming: any): number => {
-  const incomingIsFinal = incoming?.isStreaming === false || incoming?.streamState === 'closed';
+  const incomingIsFinal = isThoughtFinalEvent(incoming);
   const explicitFinalIndex = incomingIsFinal
     ? findThoughtIndexForExplicitFinal(logs, incoming)
     : -1;
@@ -193,11 +226,15 @@ export const mergeThoughtStreamTrace = (logs: any[], incoming: any): number => {
   // not append a duplicate or extend reasoning time through visible output.
   if (explicitFinalIndex >= 0) {
     const existing = logs[explicitFinalIndex];
-    const existingWasClosed = existing?.isStreaming === false || existing?.streamState === 'closed';
     const incomingEnd = getThoughtUpdateTimestamp(incoming);
+    const existingEnd = asFiniteTimestamp(existing?.endTime) ?? asFiniteTimestamp(existing?.timestamp);
+    const existingWasClosed = existing?.isStreaming === false || existing?.streamState === 'closed';
+    // A late provider close is text reconciliation only. Once a tool/answer
+    // boundary froze this row, its timer must never include delivery latency
+    // after that boundary.
     const finalEnd = existingWasClosed
-      ? asFiniteTimestamp(existing?.endTime) ?? incomingEnd
-      : incomingEnd;
+      ? existingEnd ?? incomingEnd
+      : existingEnd === null ? incomingEnd : Math.max(existingEnd, incomingEnd);
     logs[explicitFinalIndex] = {
       ...existing,
       ...incoming,
@@ -212,18 +249,19 @@ export const mergeThoughtStreamTrace = (logs: any[], incoming: any): number => {
   }
 
   const mergeIndex = findMergeableThoughtIndex(logs, incoming);
-  const incomingIsOpen = incoming?.isStreaming !== false && incoming?.streamState !== 'closed';
+  const incomingIsOpen = !isThoughtFinalEvent(incoming);
   const incomingEnd = getThoughtUpdateTimestamp(incoming);
 
   if (mergeIndex >= 0) {
     const existing = logs[mergeIndex];
+    if (!incomingIsFinal && isOlderThoughtUpdate(existing, incoming)) return mergeIndex;
     logs[mergeIndex] = {
       ...existing,
       ...incoming,
       text: mergeThoughtText(existing, incoming),
       startTime: asFiniteTimestamp(existing?.startTime) ?? asFiniteTimestamp(incoming?.startTime) ?? incomingEnd,
-      endTime: incomingEnd,
-      timestamp: incomingEnd,
+      endTime: Math.max(asFiniteTimestamp(existing?.endTime) ?? incomingEnd, incomingEnd),
+      timestamp: Math.max(asFiniteTimestamp(existing?.timestamp) ?? incomingEnd, incomingEnd),
       isStreaming: incomingIsOpen,
       streamState: incomingIsOpen ? 'open' : 'closed',
     };

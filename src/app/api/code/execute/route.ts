@@ -29,14 +29,21 @@ export async function POST(req: NextRequest) {
       workingDir = path.isAbsolute(cwd) ? cwd : path.resolve(defaultDir, cwd);
     }
 
+    const checkInTimeoutMs = checkInSeconds !== undefined && checkInSeconds !== null
+      ? Number(checkInSeconds) * 1000
+      : checkInMs;
+    const hardTimeoutValueMs = hardTimeoutSeconds !== undefined && hardTimeoutSeconds !== null
+      ? Number(hardTimeoutSeconds) * 1000
+      : hardTimeoutMs;
+
     const result = await runTerminalCommandWithCheckIn({
       command,
       cwd: workingDir,
       source: 'code_terminal',
       shell: resolveTerminalShell(normalizeTerminalShell(terminalShell)),
       env: { ...process.env, FORCE_COLOR: '0' },
-      checkInMs: checkInSeconds ?? checkInMs ?? timeoutSeconds ?? timeoutMs,
-      hardTimeoutMs: hardTimeoutSeconds ?? hardTimeoutMs,
+      checkInMs: checkInTimeoutMs ?? timeoutSeconds ?? timeoutMs,
+      hardTimeoutMs: hardTimeoutValueMs,
       maxOutputChars: 10 * 1024 * 1024,
       traceThrottleMs: 150,
       immediateHandoff: background === true,

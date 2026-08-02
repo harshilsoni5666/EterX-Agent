@@ -469,7 +469,10 @@ function ensureBackgroundTray() {
 
 function setGatewayLaunchAtLogin(enabled) {
   if (process.platform === 'linux') {
-    const directory = path.join(app.getPath('home'), '.config', 'autostart');
+    // Respect XDG_CONFIG_HOME (used by many Linux desktop environments and
+    // portable installations) instead of always writing to ~/.config.
+    const configHome = String(process.env.XDG_CONFIG_HOME || '').trim() || path.join(app.getPath('home'), '.config');
+    const directory = path.join(configHome, 'autostart');
     const target = path.join(directory, 'eterx-background.desktop');
     try {
       if (!enabled) {
@@ -650,9 +653,15 @@ function migrateLegacyUserData() {
 
 function migrateLegacySourceBootstrapData(currentUserData) {
   const home = app.getPath('home');
+  // Source-bootstrap installs historically used the platform's normal
+  // per-user application-data directory. Keep migration platform-aware so a
+  // macOS install does not accidentally look in the Linux XDG directory and
+  // leave the user's old workspaces behind.
   const sourceBase = process.platform === 'win32'
     ? path.join(process.env.LOCALAPPDATA || currentUserData, 'EterX')
-    : path.join(process.env.XDG_DATA_HOME || path.join(home, '.local', 'share'), 'eterx');
+    : process.platform === 'darwin'
+      ? path.join(home, 'Library', 'Application Support', 'EterX')
+      : path.join(process.env.XDG_DATA_HOME || path.join(home, '.local', 'share'), 'eterx');
   const legacyWorkspace = path.join(sourceBase, 'data');
   const legacySource = path.join(sourceBase, 'source');
   const destinationData = path.join(currentUserData, 'data');
@@ -1919,6 +1928,19 @@ ipcMain.handle('show-notification', (event, title, body) => {
 });
 
 // IPC: Open URL in system default browser
+ipcMain.handle('open-path', async (event, rawPath) => {
+  try {
+    if (typeof rawPath !== 'string' || !rawPath.trim() || rawPath.includes('\0')) return false;
+    const targetPath = path.resolve(rawPath.trim());
+    const target = fs.existsSync(targetPath) ? targetPath : path.dirname(targetPath);
+    if (!target || !fs.existsSync(target)) return false;
+    const error = await shell.openPath(target);
+    return !error;
+  } catch {
+    return false;
+  }
+});
+
 ipcMain.handle('open-external', async (event, url) => {
   await shell.openExternal(url);
 });

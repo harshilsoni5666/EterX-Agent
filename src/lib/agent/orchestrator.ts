@@ -53,6 +53,7 @@ type RuntimeProjectContext = ProjectContext & {
   disableSubAgents?: boolean;
   disableMemoryHydration?: boolean;
   disableLongTermMemory?: boolean;
+  synapseGraphEnabled?: boolean;
   disableSessionPersistence?: boolean;
   disableSharedCache?: boolean;
   disableWorkspaceContext?: boolean;
@@ -317,7 +318,8 @@ export class AgentOrchestrator {
     const workspace = new WorkspaceManager(userId, projectId);
 
     // PARALLEL INIT — all disk I/O runs concurrently instead of sequentially
-    const synapseGraph = shouldHydrateMemory ? getSynapseGraphForChat(projectId) : null;
+    const shouldUseSynapseGraph = shouldHydrateMemory && shouldPersistLongTermMemory && pinnedContext?.synapseGraphEnabled === true;
+    const synapseGraph = shouldUseSynapseGraph ? getSynapseGraphForChat(projectId) : null;
     await Promise.all([
       shouldInitializeMemory ? globalMemoryManager.initialize() : Promise.resolve(),
       shouldInitializeMemory ? memoryV2.initialize() : Promise.resolve(),
@@ -429,6 +431,7 @@ export class AgentOrchestrator {
     if (pinnedContext) {
       context.disableMemoryHydration = !!pinnedContext.disableMemoryHydration;
       context.disableLongTermMemory = !!pinnedContext.disableLongTermMemory;
+      context.synapseGraphEnabled = shouldPersistLongTermMemory && pinnedContext.synapseGraphEnabled === true;
       context.disableSessionPersistence = pinnedContext.persistSession === false;
       context.disableSharedCache = !!pinnedContext.disableSharedCache;
       context.disableWorkspaceContext = !!pinnedContext.disableWorkspaceContext;

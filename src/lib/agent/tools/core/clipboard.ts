@@ -2,26 +2,42 @@ import { z } from 'zod';
 import { ToolDefinition } from '../../schemas';
 import { execFile, spawn } from 'child_process';
 import { enforceToolCapability } from '../security/tool_policy';
+import { buildTerminalShellInvocation } from './shell_resolver';
 
 function runClipboardCommand(command: string, args: string[] = [], input?: string): Promise<string> {
   return new Promise((resolve, reject) => {
+    const timeoutMs = 5_000;
     if (input === undefined) {
-      execFile(command, args, { windowsHide: true }, (error, stdout) => error ? reject(error) : resolve(stdout));
+      execFile(command, args, { windowsHide: true, timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024 }, (error, stdout) => error ? reject(error) : resolve(stdout));
       return;
     }
     const child = spawn(command, args, { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    const timeout = setTimeout(() => {
+      child.kill();
+      reject(new Error(`${command} timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+    timeout.unref?.();
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', chunk => { stdout += chunk.toString(); });
     child.stderr.on('data', chunk => { stderr += chunk.toString(); });
-    child.on('error', reject);
-    child.on('close', code => code === 0 ? resolve(stdout) : reject(new Error(stderr.trim() || `${command} exited with code ${code}`)));
+    child.on('error', error => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+    child.on('close', code => {
+      clearTimeout(timeout);
+      code === 0 ? resolve(stdout) : reject(new Error(stderr.trim() || `${command} exited with code ${code}`));
+    });
     child.stdin.end(input);
   });
 }
 
 async function readClipboard(): Promise<string> {
-  if (process.platform === 'win32') return runClipboardCommand('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', 'Get-Clipboard -Raw']);
+  if (process.platform === 'win32') {
+    const invocation = buildTerminalShellInvocation('Get-Clipboard -Raw', 'powershell');
+    return runClipboardCommand(invocation.file, invocation.args);
+  }
   if (process.platform === 'darwin') return runClipboardCommand('pbpaste');
   const candidates: Array<[string, string[]]> = [
     ['wl-paste', ['--no-newline']],
@@ -36,7 +52,8 @@ async function readClipboard(): Promise<string> {
 
 async function writeClipboard(content: string): Promise<void> {
   if (process.platform === 'win32') {
-    await runClipboardCommand('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', '$input | Set-Clipboard'], content);
+    const invocation = buildTerminalShellInvocation('$input | Set-Clipboard', 'powershell');
+    await runClipboardCommand(invocation.file, invocation.args, content);
     return;
   }
   if (process.platform === 'darwin') {
@@ -78,7 +95,7 @@ export const clipboardTool: ToolDefinition = {
       if (input.action === 'read') {
         return { content: await readClipboard(), success: true };
       } else if (input.action === 'write') {
-        if (!input.content) {
+        if (input.content === undefined) {
           return { content: '', success: false, error: 'Content is required for write action' };
         }
         await writeClipboard(input.content);

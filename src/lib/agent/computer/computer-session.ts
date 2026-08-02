@@ -1,6 +1,7 @@
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { monitorEmitter } from '../monitor/emitter';
+import { resolveTerminalShell } from '../tools/core/shell_resolver';
 
 const execFileAsync = promisify(execFile);
 
@@ -48,8 +49,9 @@ function psQuote(value: string) {
 async function runPowerShell(script: string, timeout = 5000): Promise<string> {
   if (process.platform !== 'win32') return '';
   try {
+    const powershell = resolveTerminalShell('powershell');
     const { stdout } = await execFileAsync(
-      'powershell.exe',
+      powershell,
       ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script],
       { timeout, maxBuffer: 2 * 1024 * 1024 },
     );

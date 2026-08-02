@@ -9,6 +9,7 @@ import {
   initializeSandbox,
 } from './policy';
 import { SandboxCommandInput, SandboxCommandResult, SandboxSession } from './types';
+import { buildTerminalShellInvocation } from '../agent/tools/core/shell_resolver';
 
 export async function runSandboxCommand(
   session: SandboxSession,
@@ -49,9 +50,10 @@ export async function runSandboxCommand(
   });
 
   return new Promise((resolve) => {
-    const child = spawn(input.command, [], {
+    const invocation = buildTerminalShellInvocation(input.command);
+    const child = spawn(invocation.file, invocation.args, {
       cwd,
-      shell: process.platform === 'win32' ? 'powershell.exe' : true,
+      shell: invocation.shell,
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
       env,

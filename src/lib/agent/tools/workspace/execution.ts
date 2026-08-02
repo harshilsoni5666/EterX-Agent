@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { ToolDefinition } from '../../schemas';
-import { exec, ChildProcess } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 import path from 'path';
 import fs from 'fs-extra';
@@ -17,9 +17,9 @@ import {
 import { authorizeToolCommand } from '../security/command_broker';
 import { runTerminalCommandWithCheckIn } from '../core/terminal_background';
 import { monitorEmitter } from '../../monitor/emitter';
-import { resolveTerminalShell } from '../core/shell_resolver';
+import { buildTerminalShellInvocation, resolveTerminalShell } from '../core/shell_resolver';
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 import { referencesDesktopHelperScript } from '../shared/desktop_guard';
 
@@ -69,15 +69,6 @@ export const workspaceRunCommandTool: ToolDefinition = {
     const timeoutMs = autoTimeout > 0 && !explicitTimeout
       ? normalizeTimeoutMs(autoTimeout)
       : normalizeTimeoutMs(explicitTimeout);
-
-    const portableSampling = getPortableSamplingRequest(input.command);
-    if (portableSampling) {
-      return {
-        stdout: await runPortableSampling(portableSampling, runDir),
-        stderr: '',
-        exitCode: 0
-      };
-    }
 
     if (!await fs.pathExists(runDir)) {
       return {
@@ -290,12 +281,17 @@ export const workspaceVerifyCodeTool: ToolDefinition = {
           timeoutMs,
         };
       }
-      const { stdout, stderr } = await execAsync(command, { 
+      const invocation = buildTerminalShellInvocation(
+        command,
+        resolveTerminalShell(context?.terminalShell),
+      );
+      const { stdout, stderr } = await execFileAsync(invocation.file, invocation.args, {
         cwd: authorization.cwd,
         env: authorization.env,
         maxBuffer: 10 * 1024 * 1024,
         timeout: timeoutMs,
         signal: context?.abortSignal,
+        windowsHide: true,
       });
       const output = stdout + stderr;
       

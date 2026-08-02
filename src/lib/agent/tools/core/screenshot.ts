@@ -1,14 +1,19 @@
 import { z } from 'zod';
 import { ToolDefinition } from '../../schemas';
-import { exec, execFile } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 import path from 'path';
 import fs from 'fs-extra';
 import { resolveFinalArtifactPathForContext } from '../../workspace/path_resolver';
 import { enforceToolCapability } from '../security/tool_policy';
+import { buildTerminalShellInvocation } from './shell_resolver';
 
-const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
+
+async function runPowerShell(script: string): Promise<{ stdout: string; stderr: string }> {
+  const invocation = buildTerminalShellInvocation(script, 'powershell');
+  return execFileAsync(invocation.file, invocation.args, { timeout: 15_000, windowsHide: true });
+}
 
 function psQuote(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
@@ -42,18 +47,23 @@ export const screenshotTool: ToolDefinition = {
 
     try {
       if (process.platform === 'darwin') {
-        await execFileAsync('screencapture', ['-x', filePath]);
+        await execFileAsync('screencapture', input.target === 'active_window'
+          ? ['-x', '-w', filePath]
+          : ['-x', filePath], { timeout: 15_000, windowsHide: true });
       } else if (process.platform !== 'win32') {
         const candidates: Array<[string, string[]]> = [
-          ['gnome-screenshot', ['-f', filePath]],
-          ['scrot', [filePath]],
+          ['grim', [filePath]],
+          ['gnome-screenshot', input.target === 'active_window' ? ['-w', '-f', filePath] : ['-f', filePath]],
+          ['spectacle', input.target === 'active_window' ? ['-a', '-b', '-n', '-o', filePath] : ['-b', '-n', '-o', filePath]],
+          ['scrot', input.target === 'active_window' ? ['-u', filePath] : [filePath]],
+          ['maim', [filePath]],
           ['import', ['-window', 'root', filePath]]
         ];
         let captured = false;
         let lastError: any;
         for (const [command, args] of candidates) {
           try {
-            await execFileAsync(command, args);
+            await execFileAsync(command, args, { timeout: 15_000, windowsHide: true });
             captured = true;
             break;
           } catch (error) {
@@ -107,7 +117,7 @@ export const screenshotTool: ToolDefinition = {
         `.trim();
       }
 
-      await execAsync(psScript, { shell: 'powershell.exe' });
+      await runPowerShell(psScript);
       }
 
       if (await fs.pathExists(filePath)) {

@@ -26,7 +26,7 @@ import {
   removeModelSelectorEntry,
   type ModelSelectorEntry,
 } from '../../lib/agent/model-selector-store';
-import { applyEterxTheme, broadcastEterxSettingsUpdate } from '../theme/theme-bridge';
+import { transitionEterxTheme, broadcastEterxSettingsUpdate } from '../theme/theme-bridge';
 
 type SettingsGlyphProps = React.SVGProps<SVGSVGElement> & { strokeWidth?: number };
 const PROVIDER_BASE_URLS_STORAGE_KEY = 'eterx_provider_base_urls';
@@ -243,6 +243,7 @@ export interface AppSettings {
   autoSubAgents: boolean;
   maxSubAgents: number;
   memoryHydration: boolean;
+  synapseGraphEnabled: boolean;
   groundingSearch: boolean;
   streamResponses: boolean;
   maxRetries: number;
@@ -310,6 +311,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   autoSubAgents: true,
   maxSubAgents: 5,
   memoryHydration: true,
+  synapseGraphEnabled: false,
   groundingSearch: true,
   streamResponses: true,
   maxRetries: 2,
@@ -363,33 +365,37 @@ const compactTokenLabel = (tokens: number) => {
   return `${Math.round(tokens / 1000)}k`;
 };
 
-const getTerminalShellOptions = (platform: 'unknown' | 'windows' | 'mac' | 'linux') => {
+const getTerminalShellOptions = (platform: 'unknown' | 'windows' | 'mac' | 'linux', availableShells: string[] = []) => {
+  const filterAvailable = (options: Array<{ value: string; label: string }>) => {
+    if (!availableShells.length) return options.filter(option => option.value === 'auto');
+    return options.filter(option => option.value === 'auto' || availableShells.includes(option.value));
+  };
   if (platform === 'mac') {
-    return [
+    return filterAvailable([
       { value: 'auto', label: 'Smart (auto-detect)' },
       { value: 'zsh', label: 'Z shell (zsh)' },
       { value: 'bash', label: 'Bash' },
       { value: 'fish', label: 'Fish' },
       { value: 'powershell', label: 'PowerShell (pwsh)' },
-    ];
+    ]);
   }
   if (platform === 'linux') {
-    return [
+    return filterAvailable([
       { value: 'auto', label: 'Smart (auto-detect)' },
       { value: 'bash', label: 'Bash' },
       { value: 'zsh', label: 'Z shell (zsh)' },
       { value: 'fish', label: 'Fish' },
       { value: 'sh', label: 'POSIX shell (sh)' },
       { value: 'powershell', label: 'PowerShell (pwsh)' },
-    ];
+    ]);
   }
-  if (platform === 'windows') return [
+  if (platform === 'windows') return filterAvailable([
     { value: 'auto', label: 'Smart (auto-detect)' },
     { value: 'powershell', label: 'PowerShell' },
     { value: 'cmd', label: 'Command Prompt' },
     { value: 'git-bash', label: 'Git Bash' },
     { value: 'wsl', label: 'WSL' },
-  ];
+  ]);
   return [{ value: 'auto', label: 'Smart (auto-detect)' }];
 };
 
@@ -1018,12 +1024,14 @@ const EMPTY_TOKEN_STATS: TokenStats = {
 
 const tokenCountForStoredLog = (log: any): number => {
   if (!log || log.type !== 'model_usage') return 0;
-  const prompt = Number(log.promptTokens ?? log.prompt_tokens ?? log.inputTokens ?? log.input_tokens ?? 0);
-  const completion = Number(log.completionTokens ?? log.completion_tokens ?? log.outputTokens ?? log.output_tokens ?? 0);
-  const total = Number(log.totalTokens ?? log.total_tokens ?? 0);
-  if (total > 0) return total;
-  if (prompt > 0 || completion > 0) return Math.max(0, prompt) + Math.max(0, completion);
-  return 0;
+  const usage = log.usageMetadata || log.usage || log;
+  const prompt = Number(log.promptTokens ?? log.prompt_tokens ?? log.inputTokens ?? log.input_tokens ?? usage.promptTokens ?? usage.prompt_tokens ?? usage.inputTokens ?? usage.input_tokens ?? 0);
+  const completion = Number(log.completionTokens ?? log.completion_tokens ?? log.outputTokens ?? log.output_tokens ?? usage.completionTokens ?? usage.completion_tokens ?? usage.outputTokens ?? usage.output_tokens ?? 0);
+  const total = Number(log.totalTokens ?? log.total_tokens ?? usage.totalTokens ?? usage.total_tokens ?? usage.totalTokenCount ?? 0);
+  const componentTotal = Math.max(0, Number.isFinite(prompt) ? prompt : 0) + Math.max(0, Number.isFinite(completion) ? completion : 0);
+  // Some providers report a total before adding reasoning/tool-use tokens.
+  // Never let that smaller aggregate hide measured component usage.
+  return Math.max(Number.isFinite(total) && total > 0 ? total : 0, componentTotal);
 };
 
 const dayKey = (value: number) => {
@@ -1844,6 +1852,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
   const [activeTab, setActiveTab] = useState<Tab>(normalizeSettingsTab(initialTab));
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [terminalPlatform, setTerminalPlatform] = useState<'unknown' | 'windows' | 'mac' | 'linux'>('unknown');
+  const [availableTerminalShells, setAvailableTerminalShells] = useState<string[]>([]);
   const [apiKeys, setApiKeys] = useState<Record<string, string>>({});
   const [apiSyncStatus, setApiSyncStatus] = useState<'idle' | 'syncing' | 'synced' | 'error'>('idle');
   const [apiSyncMessage, setApiSyncMessage] = useState('Runtime keys are local until synced.');
@@ -1862,7 +1871,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
   const [tokenStats, setTokenStats] = useState<TokenStats>(EMPTY_TOKEN_STATS);
   const [tokenChats, setTokenChats] = useState<TokenChatSummary[]>([]);
   const [selectedTokenChatId, setSelectedTokenChatId] = useState('');
-  const [hoveredToken, setHoveredToken] = useState<{ value: number; date: string; x: number; y: number; recentRunUsage?: number; model?: string } | null>(null);
+  const [hoveredToken, setHoveredToken] = useState<{ value: number; date: string; x: number; y: number; cellKey?: string; recentRunUsage?: number; model?: string } | null>(null);
   const [modelThinkingCapabilities, setModelThinkingCapabilities] = useState<Record<string, ModelThinkingCapabilities>>({});
   const [modelApiKeys, setModelApiKeys] = useState<Record<string, string>>({});
   const [providerBaseURLs, setProviderBaseURLs] = useState<Record<string, string>>({});
@@ -1884,12 +1893,59 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     percent: 0,
     message: 'Desktop updates are available in the installed application.',
   });
-  const terminalShellOptions = getTerminalShellOptions(terminalPlatform);
+  const terminalShellOptions = getTerminalShellOptions(terminalPlatform, availableTerminalShells);
 
   useEffect(() => {
     const userAgent = `${navigator.platform || ''} ${navigator.userAgent || ''}`.toLowerCase();
-    setTerminalPlatform(/mac|darwin/.test(userAgent) ? 'mac' : /win/.test(userAgent) ? 'windows' : 'linux');
+    const fallbackPlatform = /mac|darwin/.test(userAgent) ? 'mac' : /win/.test(userAgent) ? 'windows' : 'linux';
+    setTerminalPlatform(fallbackPlatform);
+
+    fetch('/api/runtime/platform', { cache: 'no-store' })
+      .then(response => response.ok ? response.json() : null)
+      .then(payload => {
+        if (!payload) return;
+        if (payload.platform === 'windows' || payload.platform === 'mac' || payload.platform === 'linux') {
+          setTerminalPlatform(payload.platform);
+        }
+        if (Array.isArray(payload.shells)) {
+          const shells = payload.shells.map(String);
+          setAvailableTerminalShells(shells);
+          setSettings(previous => {
+            if (shells.includes(previous.terminalShell)) return previous;
+            const next = { ...previous, terminalShell: 'auto' as const };
+            try {
+              const saved = JSON.parse(localStorage.getItem('eterx_settings') || '{}');
+              const nextStored = { ...saved, terminalShell: 'auto' };
+              localStorage.setItem('eterx_settings', JSON.stringify(nextStored));
+              broadcastEterxSettingsUpdate(nextStored);
+            } catch { }
+            return next;
+          });
+        }
+      })
+      .catch(() => {
+        // If the runtime probe is unavailable, keep only the portable auto
+        // choice so an unverified shell is never offered or persisted.
+        setAvailableTerminalShells(['auto']);
+        setSettings(previous => {
+          if (previous.terminalShell === 'auto') return previous;
+          try {
+            const saved = JSON.parse(localStorage.getItem('eterx_settings') || '{}');
+            const nextStored = { ...saved, terminalShell: 'auto' };
+            localStorage.setItem('eterx_settings', JSON.stringify(nextStored));
+            broadcastEterxSettingsUpdate(nextStored);
+          } catch { }
+          return { ...previous, terminalShell: 'auto' };
+        });
+      });
   }, []);
+
+  useEffect(() => {
+    if (!availableTerminalShells.length) return;
+    setSettings(previous => availableTerminalShells.includes(previous.terminalShell)
+      ? previous
+      : { ...previous, terminalShell: 'auto' });
+  }, [availableTerminalShells]);
 
   const handleToggleDefaultPerms = useCallback((v: boolean) => {
     if (!v) {
@@ -1927,7 +1983,11 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     const desktopApi = (window as any)?.electronAPI;
     if (typeof desktopApi?.getGatewayState !== 'function') return;
     desktopApi.getGatewayState().then((state: any) => {
-      if (state?.config) setGatewayConfig(state.config);
+      if (state?.config) {
+        setGatewayConfig(state.config);
+        localStorage.setItem('eterx_background_active_chats', String(Boolean(state.config.enabled && state.config.keepActiveChatsOnClose !== false)));
+        localStorage.setItem('eterx_background_scheduled_tasks', String(Boolean(state.config.enabled && state.config.runScheduledTasksInBackground !== false)));
+      }
       setGatewayRunning(Boolean(state?.status?.running));
     }).catch(() => {});
     const unsubscribe = desktopApi.onGatewayStatus?.((status: any) => setGatewayRunning(Boolean(status?.running)));
@@ -1939,6 +1999,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     if (!gatewayConfig || typeof desktopApi?.saveGatewayConfig !== 'function') return;
     const next = { ...gatewayConfig, ...patch };
     setGatewayConfig(next);
+    localStorage.setItem('eterx_background_active_chats', String(Boolean(next.enabled && next.keepActiveChatsOnClose !== false)));
+    localStorage.setItem('eterx_background_scheduled_tasks', String(Boolean(next.enabled && next.runScheduledTasksInBackground !== false)));
+    window.dispatchEvent(new CustomEvent('eterx-background-settings-updated', { detail: next }));
     try {
       const result = await desktopApi.saveGatewayConfig(next);
       if (result?.config) setGatewayConfig(result.config);
@@ -1946,8 +2009,25 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     } catch (error) {
       console.warn('Could not update background companion settings:', error);
       setGatewayConfig(gatewayConfig);
+      localStorage.setItem('eterx_background_active_chats', String(Boolean(gatewayConfig.enabled && gatewayConfig.keepActiveChatsOnClose !== false)));
+      localStorage.setItem('eterx_background_scheduled_tasks', String(Boolean(gatewayConfig.enabled && gatewayConfig.runScheduledTasksInBackground !== false)));
     }
   }, [gatewayConfig]);
+
+  const saveBackgroundMode = useCallback((mode: 'chats' | 'schedules', enabled: boolean) => {
+    if (!gatewayConfig) return;
+    const keepActiveChatsOnClose = mode === 'chats' ? enabled : gatewayConfig.keepActiveChatsOnClose !== false;
+    const runScheduledTasksInBackground = mode === 'schedules' ? enabled : gatewayConfig.runScheduledTasksInBackground !== false;
+    const hasEnabledChannel = Object.values(gatewayConfig.platforms || {}).some((platform: any) => Boolean(platform?.enabled));
+    const companionNeeded = keepActiveChatsOnClose || runScheduledTasksInBackground || hasEnabledChannel;
+    void saveGatewayPatch({
+      keepActiveChatsOnClose,
+      runScheduledTasksInBackground,
+      enabled: companionNeeded,
+      keepRunningOnClose: companionNeeded,
+      launchAtLogin: companionNeeded ? Boolean(gatewayConfig.launchAtLogin) : false,
+    });
+  }, [gatewayConfig, saveGatewayPatch]);
 
   const persistDesktopRuntimeSettings = useCallback(async (
     nextApiKeys: Record<string, string>,
@@ -2550,7 +2630,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     setSettings(prev => {
       const next = { ...prev, [key]: value };
       localStorage.setItem('eterx_settings', JSON.stringify(next));
-      if (key === 'theme') applyEterxTheme(value as AppSettings['theme']);
+      if (key === 'theme') transitionEterxTheme(value as AppSettings['theme']);
       broadcastEterxSettingsUpdate(next);
       return next;
     });
@@ -2585,31 +2665,6 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     });
     setHasChanges(true);
   }, [selectedContextChatId]);
-
-  // Apply theme to DOM — this is what triggers the CSS variable switch
-  useEffect(() => {
-    const applyTheme = (theme: string) => {
-      const resolvedTheme = theme === 'system'
-        ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
-        : theme;
-      const safeTheme = resolvedTheme === 'dark' ? 'dark' : 'light';
-      document.documentElement.setAttribute('data-theme', safeTheme);
-      document.documentElement.classList.toggle('dark', safeTheme === 'dark');
-      document.documentElement.classList.toggle('light', safeTheme === 'light');
-      document.documentElement.style.colorScheme = safeTheme;
-      (window as any).electronAPI?.setNativeTheme?.(safeTheme);
-    };
-    const themeForPanel = settings.theme;
-    applyTheme(themeForPanel);
-
-    // Listen for OS theme changes when set to 'system'
-    if (settings.theme === 'system') {
-      const mql = window.matchMedia('(prefers-color-scheme: dark)');
-      const handler = (e: MediaQueryListEvent) => applyTheme('system');
-      mql.addEventListener('change', handler);
-      return () => mql.removeEventListener('change', handler);
-    }
-  }, [settings.theme]);
 
   const handleClose = useCallback(() => {
     void performSync();
@@ -2960,15 +3015,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
 
                 {/* Scrollable Body */}
                 <div className={`flex-1 eterx-scrollbar px-6 ${activeTab === 'tokens' ? 'overflow-hidden py-4' : `overflow-y-auto ${activeTab === 'profile' ? 'py-4' : 'py-8'}`}`}>
-                  <AnimatePresence mode="wait">
-                    <motion.div
-                      key={activeTab}
-                      initial={{ opacity: 0, x: 10 }}
-                      animate={{ opacity: 1, x: 0 }}
-                      exit={{ opacity: 0, x: -10 }}
-                      transition={{ duration: 0.2 }}
-                      className={`mx-auto w-full ${activeTab === 'profile' || activeTab === 'tokens' ? 'max-w-[980px]' : 'max-w-[560px]'} pb-8`}
-                    >
+                  <div className={`mx-auto w-full ${activeTab === 'profile' || activeTab === 'tokens' ? 'max-w-[980px]' : 'max-w-[560px]'} pb-8`}>
                       <div className="mb-6 flex items-center justify-between gap-4">
                         <h3 className="text-[22px] font-semibold leading-tight tracking-[-0.01em] text-[#F4F4F4]">{tabs.find(t => t.id === activeTab)?.label}</h3>
                         {activeTab === 'tokens' && <div className="flex items-center gap-3"><span className="text-[12px] text-[#999]">Show token count</span><Toggle enabled={settings.showTokenCount} onChange={value => updateSetting('showTokenCount', value)} /></div>}
@@ -3030,14 +3077,25 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
 
                           <SectionHeader title="General" />
                           <SettingsStack>
-                            <SettingsStackRow title="Background tasks and channels" description="Keep active chats, scheduled tasks, and messaging channels working after the main window closes." tall>
+                            <SettingsStackRow title="Continue active chats in background" description="Normal chat runs keep working when the EterX window is closed or hidden." tall>
                               <div className="flex items-center gap-3">
                                 <span className={`text-[11px] font-semibold ${gatewayRunning ? 'text-emerald-400' : 'text-white/35'}`}>{gatewayRunning ? 'RUNNING' : 'OFF'}</span>
-                                <Toggle enabled={Boolean(gatewayConfig?.enabled && gatewayConfig?.keepRunningOnClose)} onChange={value => void saveGatewayPatch({ enabled: value, keepRunningOnClose: value })} />
+                                <Toggle enabled={Boolean(gatewayConfig?.enabled && gatewayConfig?.keepActiveChatsOnClose !== false)} onChange={value => saveBackgroundMode('chats', value)} />
                               </div>
                             </SettingsStackRow>
-                            <SettingsStackRow title="Start background companion at sign-in" description="Resume channels and due tasks automatically on Windows, macOS, or Linux.">
-                              <Toggle enabled={Boolean(gatewayConfig?.launchAtLogin)} onChange={value => void saveGatewayPatch({ launchAtLogin: value })} />
+                            <SettingsStackRow title="Run scheduled chats in background" description="Wake due tasks, create or continue their full chats, and record every run while the window is hidden." tall>
+                              <Toggle enabled={Boolean(gatewayConfig?.enabled && gatewayConfig?.runScheduledTasksInBackground !== false)} onChange={value => saveBackgroundMode('schedules', value)} />
+                            </SettingsStackRow>
+                            <SettingsStackRow title="Start background companion at sign-in" description="Resume enabled background chats, channels, and due schedules automatically on Windows, macOS, or Linux.">
+                              <Toggle enabled={Boolean(gatewayConfig?.launchAtLogin)} onChange={value => void saveGatewayPatch({
+                                launchAtLogin: value,
+                                ...(value && !gatewayConfig?.enabled ? {
+                                  enabled: true,
+                                  keepRunningOnClose: true,
+                                  keepActiveChatsOnClose: true,
+                                  runScheduledTasksInBackground: true,
+                                } : {}),
+                              })} />
                             </SettingsStackRow>
                             <SettingsStackRow title="Default open destination" description="Where files and folders open by default">
                               <SelectControl
@@ -3056,6 +3114,18 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                 onChange={(value) => updateSetting('terminalShell', value as AppSettings['terminalShell'])}
                                 options={terminalShellOptions}
                               />
+                            </SettingsStackRow>
+                            <SettingsStackRow
+                              title="Synapse Graph"
+                              description="Optional local graph memory for topic continuity, tool evidence, and verified file changes. Existing context and memory systems continue to work when this is off."
+                              info="Synapse Graph is off by default. Turn it on only if you want EterX to add its local graph-based context routing to agent runs."
+                            >
+                              <div className="flex items-center gap-3">
+                                <span className={`text-[11px] font-semibold ${settings.synapseGraphEnabled ? 'text-emerald-400' : 'text-white/35'}`}>
+                                  {settings.synapseGraphEnabled ? 'ON' : 'OFF'}
+                                </span>
+                                <Toggle enabled={settings.synapseGraphEnabled} onChange={value => updateSetting('synapseGraphEnabled', value)} />
+                              </div>
                             </SettingsStackRow>
 
                             <SettingsStackRow title="Follow-up behavior" description="Queue follow-ups while EterX runs or steer the current run.">
@@ -3317,46 +3387,53 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
 
                       {(activeTab === 'profile' || activeTab === 'tokens') && (
                         <div>
-                          {activeTab === 'profile' && <div className="flex items-center gap-3 rounded-2xl border border-white/[0.08] bg-[#1A1A1A] px-4 py-2.5">
-                            <div className="grid h-10 w-10 shrink-0 place-items-center rounded-full border border-white/[0.12] bg-[#2A2A2A] text-base font-semibold text-[#F1F1F1]">{settings.userName?.charAt(0).toUpperCase() || 'U'}</div>
+                          {activeTab === 'profile' && <div className="flex items-center gap-3 rounded-2xl border border-white/[0.08] bg-[#1A1A1A]/95 px-4 py-2.5">
+                            <div className="grid h-10 w-10 shrink-0 place-items-center rounded-full border border-white/[0.12] bg-[#1D1D1D] text-base font-semibold text-[#F1F1F1]">{settings.userName?.charAt(0).toUpperCase() || 'U'}</div>
                             <input aria-label="Profile name" value={settings.userName || ''} onChange={e => updateSetting('userName', e.target.value)} className="min-w-0 flex-1 border-b border-white/[0.10] bg-transparent pb-0.5 text-[16px] font-semibold text-[#F1F1F1] outline-none focus:border-white/[0.25]" />
                           </div>}
                           {activeTab === 'profile' ? <>
                           <div className="mb-2 mt-5"><h4 className="text-[17px] font-semibold tracking-[-0.02em] text-[#F1F1F1]">Token activity</h4></div>
                           <div className="relative z-20 overflow-visible rounded-2xl border border-white/[0.08] bg-[#171717] p-3">
-                            <div className="relative z-20 grid w-full grid-flow-col grid-rows-5 grid-cols-[repeat(26,minmax(0,1fr))] gap-x-1 gap-y-1">
-                              {Array.from({ length: 130 }, (_, index) => {
-                                const launchDate = new Date(Number(localStorage.getItem('eterx_app_launch_at')) || Date.now());
-                                launchDate.setDate(1);
-                                launchDate.setHours(0, 0, 0, 0);
-                                const date = new Date(launchDate);
-                                date.setDate(date.getDate() + index);
+                            <div className="relative z-20 grid w-full grid-flow-col grid-rows-5 grid-cols-[repeat(40,minmax(0,1fr))] gap-x-px gap-y-px" onMouseLeave={() => setHoveredToken(null)}>
+                              {Array.from({ length: 200 }, (_, index) => {
+                                const today = new Date();
+                                today.setDate(1);
+                                today.setHours(0, 0, 0, 0);
+                                const date = new Date(today);
+                                date.setDate(today.getDate() + index);
                                 const key = dayKey(date.getTime());
                                 const value = tokenStats.daily[key] || 0;
                                 const max = Math.max(1, ...Object.values(tokenStats.daily));
                                 const intensity = value <= 0 ? 0 : Math.max(1, Math.ceil((value / max) * 4));
+                                const intensityColor = intensity === 0
+                                  ? (settings.theme === 'light' ? 'rgba(31,31,29,0.12)' : 'rgba(255,255,255,0.055)')
+                                  : ['#24415D', '#356B96', '#4D96CE', '#76BFFF'][intensity - 1];
                                 return (
                                   <span
                                     key={key}
                                     aria-label={`${formatTokenMetric(value)} tokens on ${date.toLocaleDateString()}`}
-                                    onMouseEnter={event => setHoveredToken({ value, date: date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }), x: event.clientX, y: event.clientY })}
-                                    onMouseLeave={() => setHoveredToken(null)}
-                                    className={`h-3.5 w-3.5 justify-self-center rounded-[3px] transition-colors duration-150 ease-out ${intensity === 0 ? 'bg-white/[0.045]' : intensity === 1 ? 'bg-[#24415D]' : intensity === 2 ? 'bg-[#356B96]' : intensity === 3 ? 'bg-[#4D96CE]' : 'bg-[#76BFFF]'}`}
+                                    onMouseEnter={event => setHoveredToken({ value, date: date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }), cellKey: key, x: event.clientX, y: event.clientY })}
+                                    className="h-3.5 w-3.5 justify-self-center rounded-[3px] transition-[transform,filter] duration-75 ease-out"
+                                    style={{ backgroundColor: hoveredToken?.cellKey === key
+                                      ? (settings.theme === 'light' ? (intensity === 0 ? '#B8B8B8' : '#347FB5') : (intensity === 0 ? '#474747' : '#9BD1FF'))
+                                      : intensityColor, opacity: 1, transform: 'scale(1)' }}
                                   />
                                 );
                               })}
                             </div>
-                            <div className="mt-3 grid w-full grid-cols-5 text-[11px] text-[#858585]">
-                              {Array.from({ length: 5 }, (_, index) => {
-                                const month = new Date(Number(localStorage.getItem('eterx_app_launch_at')) || Date.now());
-                                month.setDate(1);
-                                month.setMonth(month.getMonth() + index);
-                                return <span key={month.toISOString()}>{month.toLocaleString(undefined, { month: 'short' })}</span>;
+                            <div className="mt-3 grid w-full grid-cols-7 text-[11px] text-[#858585]">
+                              {Array.from({ length: 7 }, (_, index) => {
+                                const today = new Date();
+                                today.setDate(1);
+                                today.setHours(0, 0, 0, 0);
+                                const month = new Date(today);
+                                month.setMonth(today.getMonth() + index);
+                                return <span key={`${month.getFullYear()}-${month.getMonth()}`}>{month.toLocaleString(undefined, { month: 'short' })}</span>;
                               })}
                             </div>
                           </div>
                           {hoveredToken && (
-                            <div className="pointer-events-none fixed z-[10000] min-w-[220px] rounded-xl border border-white/[0.12] bg-[#292929] px-3 py-2.5 text-[12px] text-[#F1F1F1] shadow-[0_8px_24px_rgba(0,0,0,0.38)]" style={{ left: Math.min(hoveredToken.x + 12, window.innerWidth - 250), top: Math.max(8, hoveredToken.y - 72) }}>
+                            <div className="pointer-events-none fixed z-[10000] w-max max-w-[220px] whitespace-nowrap rounded-xl border border-white/[0.12] bg-[#292929] px-2.5 py-2 text-[12px] text-[#F1F1F1] shadow-[0_8px_24px_rgba(0,0,0,0.38)]" style={{ left: Math.min(Math.max(8, hoveredToken.x + 10), window.innerWidth - 240), top: Math.max(8, hoveredToken.y - 48) }}>
                               {hoveredToken.model ? <div className="space-y-1"><div className="flex justify-between gap-6"><span className="text-[#999]">Total Token</span><span className="font-semibold">{formatTokenMetric(hoveredToken.value)}</span></div><div className="flex justify-between gap-6"><span className="text-[#999]">Recent Run Usage</span><span className="font-semibold">{formatTokenMetric(hoveredToken.recentRunUsage || 0)}</span></div><div className="flex justify-between gap-6"><span className="text-[#999]">Model</span><span className="max-w-[120px] truncate font-semibold">{hoveredToken.model}</span></div></div> : `${formatTokenMetric(hoveredToken.value)} tokens on ${hoveredToken.date}`}
                             </div>
                           )}
@@ -4265,8 +4342,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                         </div>
                       )}
 
-                    </motion.div>
-                  </AnimatePresence>
+                  </div>
                 </div>
 
                 {/* Footer save indicator */}
@@ -4331,7 +4407,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                           onClick={() => {
                             setSettings(DEFAULT_SETTINGS);
                             localStorage.setItem('eterx_settings', JSON.stringify(DEFAULT_SETTINGS));
-                            applyEterxTheme(DEFAULT_SETTINGS.theme);
+                            transitionEterxTheme(DEFAULT_SETTINGS.theme);
                             broadcastEterxSettingsUpdate(DEFAULT_SETTINGS);
                             setHasChanges(false);
                             setShowResetConfirm(false);

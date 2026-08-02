@@ -22,11 +22,12 @@
 
 import path from 'path';
 import fs from 'fs-extra';
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { monitorEmitter } from '../monitor/emitter';
+import { buildTerminalShellInvocation } from '../tools/core/shell_resolver';
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 const SCREENSHOTS_DIR = path.resolve(process.cwd(), '.workspaces', 'temp', 'screenshots');
 
 function isPathInside(parent: string, candidate: string): boolean {
@@ -99,7 +100,11 @@ async function runPS(script: string, timeout = 12000): Promise<string> {
     throw new Error(`Windows UI automation is unavailable on ${process.platform}.`);
   }
   try {
-    const { stdout } = await execAsync(script, { shell: 'powershell.exe', timeout });
+    const invocation = buildTerminalShellInvocation(script, 'powershell');
+    const { stdout } = await execFileAsync(invocation.file, invocation.args, {
+      timeout,
+      windowsHide: true,
+    });
     return stdout.trim();
   } catch (e: any) {
     return `ERROR: ${e.message?.substring(0, 200)}`;

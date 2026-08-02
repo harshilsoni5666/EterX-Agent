@@ -1,5 +1,5 @@
-export type ScheduledTaskStatus = 'scheduled' | 'queued' | 'running' | 'completed' | 'failed';
-export type ScheduledTaskRunStatus = 'queued' | 'running' | 'completed' | 'failed';
+export type ScheduledTaskStatus = 'scheduled' | 'paused' | 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+export type ScheduledTaskRunStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
 
 export interface ScheduledTaskRun {
   id: string;
@@ -38,25 +38,29 @@ export interface ScheduledTaskRecord {
   lastError?: string;
 }
 
+export const SCHEDULED_TASKS_STORAGE_KEY = 'eterx_scheduled_tasks';
+export const SCHEDULED_TASKS_UPDATED_EVENT = 'eterx_scheduled_tasks_updated';
+
 const fieldMatches = (value: number, field: string, min: number, max: number): boolean => {
   const token = String(field || '*').trim();
   if (token === '*') return true;
   return token.split(',').some(part => {
-    const stepMatch = part.match(/^\*\/(\d+)$/);
-    if (stepMatch) {
-      const step = Number(stepMatch[1]);
-      return step > 0 && value % step === 0;
-    }
-    const rangeMatch = part.match(/^(\d+)-(\d+)$/);
+    const [base, rawStep] = part.split('/');
+    const step = rawStep === undefined ? 1 : Number(rawStep);
+    if (!Number.isInteger(step) || step <= 0) return false;
+    if (base === '*') return (value - min) % step === 0;
+    const rangeMatch = base.match(/^(\d+)-(\d+)$/);
     if (rangeMatch) {
       const start = Math.max(min, Number(rangeMatch[1]));
       const end = Math.min(max, Number(rangeMatch[2]));
-      return value >= start && value <= end;
+      return value >= start && value <= end && (value - start) % step === 0;
     }
-    const exact = Number(part);
+    const exact = Number(base);
     return Number.isInteger(exact) && exact >= min && exact <= max && value === exact;
   });
 };
+
+const cronFieldRestricted = (field: string) => String(field || '*').trim() !== '*';
 
 const nextCronOccurrence = (expression: string, after: number): number | null => {
   const fields = expression.trim().split(/\s+/);
@@ -67,12 +71,17 @@ const nextCronOccurrence = (expression: string, after: number): number | null =>
   candidate.setMinutes(candidate.getMinutes() + 1);
   const limit = 60 * 24 * 366 * 2;
   for (let offset = 0; offset < limit; offset += 1) {
+    const dayOfMonthMatches = fieldMatches(candidate.getDate(), dayOfMonth, 1, 31);
+    const dayOfWeekMatches = fieldMatches(candidate.getDay(), dayOfWeek, 0, 7) ||
+      (candidate.getDay() === 0 && fieldMatches(7, dayOfWeek, 0, 7));
+    const dayMatches = cronFieldRestricted(dayOfMonth) && cronFieldRestricted(dayOfWeek)
+      ? dayOfMonthMatches || dayOfWeekMatches
+      : dayOfMonthMatches && dayOfWeekMatches;
     if (
       fieldMatches(candidate.getMinutes(), minute, 0, 59) &&
       fieldMatches(candidate.getHours(), hour, 0, 23) &&
-      fieldMatches(candidate.getDate(), dayOfMonth, 1, 31) &&
-      fieldMatches(candidate.getMonth() + 1, month, 1, 12) &&
-      fieldMatches(candidate.getDay(), dayOfWeek, 0, 6)
+      dayMatches &&
+      fieldMatches(candidate.getMonth() + 1, month, 1, 12)
     ) return candidate.getTime();
     candidate.setMinutes(candidate.getMinutes() + 1);
   }
@@ -134,7 +143,7 @@ export function normalizeScheduledTask(task: Partial<ScheduledTaskRecord>): Sche
     createdAt,
     updatedAt: Number(task.updatedAt || createdAt),
     scheduledTimestamp: Number(task.scheduledTimestamp || Date.now()),
-    status: ['scheduled', 'queued', 'running', 'completed', 'failed'].includes(String(task.status))
+    status: ['scheduled', 'paused', 'queued', 'running', 'completed', 'failed', 'cancelled'].includes(String(task.status))
       ? task.status as ScheduledTaskStatus
       : 'scheduled',
     executedAt: task.executedAt,

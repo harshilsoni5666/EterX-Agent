@@ -1,14 +1,15 @@
 import { z } from 'zod';
 import { ToolDefinition } from '../../schemas';
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 import path from 'path';
 import fs from 'fs-extra';
 import net from 'net';
 import { resolveReadableWorkspacePathForContext, resolveWorkspaceDirectoryForContext } from '../../workspace/path_resolver';
 import { authorizeToolCommand } from '../security/command_broker';
+import { buildTerminalShellInvocation, resolveTerminalShell } from './shell_resolver';
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 function canConnectToLocalPort(host: string, port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -183,7 +184,11 @@ Use this to self-verify before reporting completion.`,
                 evidence: authorization.reason || 'Command not authorized',
               };
             }
-            const { stdout, stderr } = await execAsync(input.target, {
+            const invocation = buildTerminalShellInvocation(
+              input.target,
+              resolveTerminalShell(context?.terminalShell),
+            );
+            const { stdout, stderr } = await execFileAsync(invocation.file, invocation.args, {
               timeout: 30000,
               maxBuffer: 5 * 1024 * 1024,
               cwd: authorization.cwd,
@@ -264,7 +269,11 @@ Use this to self-verify before reporting completion.`,
                 evidence: authorization.reason || 'Command not authorized',
               };
             }
-            const { stdout, stderr } = await execAsync(command, {
+            const invocation = buildTerminalShellInvocation(
+              command,
+              resolveTerminalShell(context?.terminalShell),
+            );
+            const { stdout, stderr } = await execFileAsync(invocation.file, invocation.args, {
               timeout: 30000,
               cwd: authorization.cwd,
               env: authorization.env,

@@ -80,6 +80,7 @@ ${runtimePlatformPrompt}
 - Explore with workspace_semantic_search, workspace_find_files, workspace_search_text, workspace_file_outline, and targeted reads.
 - Use workspace_run_command for finite workspace commands.
 - Use process_manager or background_task for long-running processes.
+- Use scheduled_tasks when the user asks for coding or any other work later, after a delay, at a date/time, or repeatedly. Resolve natural timing from the runtime clock, preserve explicit model/thinking/agent choices, and create/update the real Tasks-tab schedule instead of only describing it.
 - Use browser_control only when visible runtime behavior needs evidence.
 - Use current web sources only when external facts can change.
 - Use sub-agents only for genuinely independent work.

@@ -40,6 +40,25 @@ export const applyEterxTheme = (theme: ThemePreference = readThemePreference()):
   return resolved;
 };
 
+export const transitionEterxTheme = (theme: ThemePreference): ResolvedTheme => {
+  if (typeof window === 'undefined') return 'light';
+
+  const documentWithViewTransition = document as Document & {
+    startViewTransition?: (callback: () => void) => { finished: Promise<unknown> };
+  };
+
+  if (documentWithViewTransition.startViewTransition) {
+    const transition = documentWithViewTransition.startViewTransition(() => {
+      applyEterxTheme(theme);
+    });
+    transition.finished.catch(() => undefined);
+  } else {
+    return applyEterxTheme(theme);
+  }
+
+  return resolveTheme(theme);
+};
+
 export const broadcastEterxSettingsUpdate = (settings: unknown) => {
   if (typeof window === 'undefined') return;
   window.dispatchEvent(new CustomEvent('eterx-settings-updated', { detail: settings }));
@@ -65,7 +84,15 @@ export const ThemeBridge = React.memo(() => {
       if (event.key === SETTINGS_STORAGE_KEY) applyStoredTheme();
     };
 
-    window.addEventListener('eterx-settings-updated', applyStoredTheme);
+    const onLocalSettingsUpdate = (event: Event) => {
+      const detail = (event as CustomEvent).detail;
+      // Theme callers already perform the animated update. Reapplying it here
+      // would interrupt the View Transition with a second raw DOM update.
+      if (detail && typeof detail === 'object' && 'theme' in detail) return;
+      applyStoredTheme();
+    };
+
+    window.addEventListener('eterx-settings-updated', onLocalSettingsUpdate);
     window.addEventListener('storage', onStorage);
     media?.addEventListener('change', onSystemThemeChange);
 
@@ -78,7 +105,7 @@ export const ThemeBridge = React.memo(() => {
     }
 
     return () => {
-      window.removeEventListener('eterx-settings-updated', applyStoredTheme);
+      window.removeEventListener('eterx-settings-updated', onLocalSettingsUpdate);
       window.removeEventListener('storage', onStorage);
       media?.removeEventListener('change', onSystemThemeChange);
       channel?.close();

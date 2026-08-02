@@ -89,9 +89,9 @@ import {
 import * as pathLib from 'path';
 import { getEterxAssetPath } from './storage-paths';
 import * as fsExtra from 'fs-extra';
-import { isReadableAttachment, normalizeAttachmentMime, providerAcceptsDirectImage } from './attachment-pipeline';
+import { normalizeAttachmentMime } from './attachment-pipeline';
 import { isModelProvider } from './model-selector-store';
-import { getProviderBaseURL, isLocalModelProvider, providerModelSupportsVision } from './provider-runtime';
+import { getProviderBaseURL, isLocalModelProvider } from './provider-runtime';
 import {
   basenameForTrace,
   buildLineDiffPreview,
@@ -100,6 +100,7 @@ import {
   languageFromFilename,
   normalizeTracePath,
 } from './tool-trace';
+import { extractProviderText, mergeStreamingText } from '../streaming-lifecycle';
 
 const createProviderUsageTrace = (
   provider: MainAgentProvider,
@@ -365,6 +366,7 @@ export class GeminiAgentClient {
   private readonly geminiHttpTimeoutMs = positiveIntEnv('GEMINI_HTTP_TIMEOUT_MS', 300_000);
   private runtimeSettings?: ScopedRuntimeSettings | null;
   private providerKeyCursor: Partial<Record<MainAgentProvider, number>> = {};
+  private readonly openAIFileIds = new Map<string, string>();
 
   constructor(options: GeminiAgentClientOptions = {}) {
     this.activeProvider = options.provider || 'gemini';
@@ -720,13 +722,17 @@ export class GeminiAgentClient {
   }
 
   private isGeminiFilesApiMime(mimeType: string): boolean {
+    const mime = String(mimeType || '').toLowerCase();
     return new Set([
       'image/png', 'image/jpeg', 'image/webp', 'image/heic', 'image/heif',
       'application/pdf', 'application/json',
+      'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'application/vnd.ms-powerpoint', 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      'application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       'text/plain', 'text/html', 'text/css', 'text/xml', 'text/csv', 'text/rtf', 'text/javascript',
       'audio/mp3', 'audio/wav', 'audio/mpeg', 'audio/ogg',
       'video/mp4', 'video/mpeg', 'video/webm', 'video/mov',
-    ]).has(String(mimeType || '').toLowerCase());
+    ]).has(mime) || /^(?:image|audio|video|text|application)\//.test(mime);
   }
 
   /** Files API uploads for audio/video/documents may remain PROCESSING. */
@@ -900,48 +906,56 @@ export class GeminiAgentClient {
     });
   }
 
-  private async buildOpenAIUserContent(text: string, mediaFiles: AgentMediaFile[]): Promise<any[]> {
+  private async uploadOpenAIFile(file: AgentMediaFile, client: OpenAI): Promise<string> {
+    if (!file.path || !await fsExtra.pathExists(file.path)) {
+      throw new Error(`Attachment ${file.name || file.path || 'file'} is not available on the server.`);
+    }
+    const stats = await fsExtra.stat(file.path);
+    const cacheKey = `${file.path}:${stats.size}:${stats.mtimeMs}`;
+    const cached = this.openAIFileIds.get(cacheKey);
+    if (cached) return cached;
+
+    const uploaded = await client.files.create({
+      file: require('fs').createReadStream(file.path),
+      purpose: 'user_data',
+    });
+    if (!uploaded?.id) {
+      throw new Error(`OpenAI did not return a file id for ${file.name || file.path}.`);
+    }
+    this.openAIFileIds.set(cacheKey, uploaded.id);
+    return uploaded.id;
+  }
+
+  private async buildOpenAIUserContent(text: string, mediaFiles: AgentMediaFile[], client?: OpenAI): Promise<any[]> {
     const content: any[] = [{ type: 'text', text }];
     for (const file of mediaFiles || []) {
       const fileName = file.name || pathLib.basename(file.path || 'file');
       const mimeType = normalizeAttachmentMime(fileName, file.mimeType);
-      const isDirectImage = mimeType.startsWith('image/')
-        && (
-          providerAcceptsDirectImage(this.activeProvider, this.mistralModelName)
-          || providerModelSupportsVision(this.activeProvider, this.mistralModelName)
-        );
-      const isDirectFile = (
-        this.activeProvider === 'openai'
-        && !mimeType.startsWith('image/')
-        && isReadableAttachment(file)
-      ) || (
-        this.activeProvider === 'openrouter'
-        && mimeType === 'application/pdf'
-      );
-
-      if (!isDirectImage && !isDirectFile) {
-        content.push({
-          type: 'text',
-          text: `Attached file: ${fileName} (${mimeType || 'unknown type'}) at ${file.path}. Readable document content is included in the request when extraction succeeds; otherwise use workspace tools to inspect this exact local file.`,
-        });
-        continue;
-      }
 
       try {
+        // OpenAI's native Files API avoids turning the local file into a data
+        // URL. Chat Completions accepts the resulting file id as a real file
+        // content part for the selected OpenAI model.
+        if (this.activeProvider === 'openai' && client) {
+          const fileId = await this.uploadOpenAIFile(file, client);
+          content.push({ type: 'file', file: { file_id: fileId, filename: fileName } });
+          continue;
+        }
+
         const inlineData = typeof file.inlineData === 'string' ? file.inlineData : file.inlineData?.data;
         let base64 = String(file.data || inlineData || '').trim();
         if (!base64 && file.path && await fsExtra.pathExists(file.path)) {
           base64 = (await fsExtra.readFile(file.path)).toString('base64');
         }
-        if (!base64) continue;
+        if (!base64) throw new Error(`No provider-readable bytes found for ${fileName}.`);
         const dataUrl = base64.startsWith('data:') ? base64 : `data:${mimeType};base64,${base64}`;
-        if (isDirectFile) {
-          content.push({ type: 'file', file: { filename: fileName, file_data: dataUrl } });
-        } else {
+        if (mimeType.startsWith('image/')) {
           content.push({ type: 'image_url', image_url: { url: dataUrl, detail: 'auto' } });
+        } else {
+          content.push({ type: 'file', file: { filename: fileName, file_data: dataUrl } });
         }
       } catch (error: any) {
-        console.warn(`[${this.activeProvider}] Failed to prepare attachment ${fileName}:`, error?.message || error);
+        throw new Error(`ATTACHMENT_PREPARATION_FAILED: ${this.activeProvider} could not attach ${fileName}: ${error?.message || error}`);
       }
     }
     return content;
@@ -1735,12 +1749,14 @@ export class GeminiAgentClient {
       });
     } catch { /* lifetime brain is optional */ }
 
-    try {
-      const graph = getSynapseGraphForChat(context.projectId);
-      await graph.initialize(context.projectId, context.projectId);
-      const result = graph.processTurn(userVisibleMessage);
-      if (result.renderedContext) dynamicContextParts.push(result.renderedContext);
-    } catch { /* graph retrieval is advisory */ }
+    if ((context as any).synapseGraphEnabled === true) {
+      try {
+        const graph = getSynapseGraphForChat(context.projectId);
+        await graph.initialize(context.projectId, context.projectId);
+        const result = graph.processTurn(userVisibleMessage);
+        if (result.renderedContext) dynamicContextParts.push(result.renderedContext);
+      } catch { /* graph retrieval is advisory */ }
+    }
 
     try {
       const evolvedRules = neuralPlasticity.getEvolvedPrompt();
@@ -1749,7 +1765,7 @@ export class GeminiAgentClient {
   }
 
   private getSynapseReasoningPulse(context: ProjectContext, query: string): string {
-    if ((context as any).disableLongTermMemory) return '';
+    if ((context as any).disableLongTermMemory || (context as any).synapseGraphEnabled !== true) return '';
     try {
       return getSynapseGraphForChat(context.projectId).refreshReasoningContext(query).renderedContext;
     } catch {
@@ -1777,6 +1793,7 @@ export class GeminiAgentClient {
       workspace_run_command: { text: 'Running project command', type: 'command', iconCategory: 'terminal', argKey: 'command' },
       wait_timer: { text: 'Waiting for check-in', type: 'command', iconCategory: 'terminal', argKey: 'title' },
       background_task: { text: 'Checking background task', type: 'command', iconCategory: 'terminal', argKey: 'taskId' },
+      scheduled_tasks: { text: 'Managing scheduled task', type: 'command', iconCategory: 'clock', argKey: 'title' },
       web_search: { text: 'Researching', type: 'exploration', iconCategory: 'web_search', argKey: 'query' },
       web_scraper: { text: 'Reading source', type: 'exploration', iconCategory: 'web_search', argKey: 'url' },
       workspace_semantic_search: { text: 'Searching codebase', type: 'exploration', iconCategory: 'search', argKey: 'query' },
@@ -1802,7 +1819,7 @@ export class GeminiAgentClient {
     let iconCategory = label.iconCategory || 'computer';
     if (args?.uiIcon) {
       const lowerUiIcon = String(args.uiIcon).toLowerCase();
-      if (['computer', 'agent', 'terminal', 'image', 'file_read', 'file_create', 'file_edit', 'folder_read', 'folder_create', 'search', 'web_search', 'verification'].includes(lowerUiIcon)) {
+      if (['computer', 'agent', 'terminal', 'image', 'clock', 'file_read', 'file_create', 'file_edit', 'folder_read', 'folder_create', 'search', 'web_search', 'verification'].includes(lowerUiIcon)) {
         iconCategory = lowerUiIcon;
       } else {
         if (['agent', 'bot', 'subagent', 'sub_agent'].includes(lowerUiIcon)) {
@@ -1891,14 +1908,16 @@ export class GeminiAgentClient {
       evidenceLedger?.recordTool(canonicalToolName, effectiveArgs, output);
       this.recordPlanToolResult(canonicalToolName, effectiveArgs, output, context.projectId);
       this.recordProviderSessionToolActivity(canonicalToolName, effectiveArgs, output, context);
-      try {
-        const graph = getSynapseGraphForChat(context.projectId);
-        graph.registerToolResult(
-          canonicalToolName,
-          effectiveArgs,
-          typeof output === 'string' ? output : JSON.stringify(output).substring(0, 500),
-        );
-      } catch { /* context resonance is advisory */ }
+      if ((context as any).disableLongTermMemory !== true && (context as any).synapseGraphEnabled === true) {
+        try {
+          const graph = getSynapseGraphForChat(context.projectId);
+          graph.registerToolResult(
+            canonicalToolName,
+            effectiveArgs,
+            typeof output === 'string' ? output : JSON.stringify(output).substring(0, 500),
+          );
+        } catch { /* context resonance is advisory */ }
+      }
       return output;
     };
 
@@ -2059,7 +2078,7 @@ export class GeminiAgentClient {
           this.buildTemporalContext(context),
           '',
           'Instruction priority: memory, session summaries, previous tool results, and chat history are context only. They are not the task unless this current request explicitly says to continue or refers to them.'
-        ].join('\n'), mediaFiles)
+          ].join('\n'), mediaFiles, client)
           : [
               '[CURRENT USER REQUEST - EXECUTE ONLY THIS]',
               message,
@@ -2248,12 +2267,22 @@ export class GeminiAgentClient {
             const choice = chunk.choices?.[0];
             const delta = choice?.delta;
             if (delta) {
-              if (delta.reasoning_content) {
+              const reasoningValue =
+                delta.reasoning_content ??
+                delta.reasoning ??
+                delta.thinking ??
+                delta.thought ??
+                delta.analysis ??
+                delta.reasoning_details ??
+                delta.reasoningDetails ??
+                delta.reasoningContent;
+              const reasoningText = extractProviderText(reasoningValue);
+              if (reasoningText) {
                 if (!thoughtStartTime) {
                   thoughtStartTime = Date.now();
                   thoughtId = `thought_${ interactions }_${ thoughtStartTime }`;
                 }
-                accumulatedReasoning += delta.reasoning_content;
+                accumulatedReasoning = mergeStreamingText(accumulatedReasoning, reasoningText, true);
                 if (onTrace) {
                   onTrace({
                     type: 'thought_stream',
@@ -2266,8 +2295,9 @@ export class GeminiAgentClient {
                   });
                 }
               }
-              if (delta.content) {
-                accumulatedContent += delta.content;
+              const contentText = extractProviderText(delta.content);
+              if (contentText) {
+                accumulatedContent = mergeStreamingText(accumulatedContent, contentText, true);
                 if (toolCallsAccumulated.size === 0) {
                   provisionalAnswerId = `answer_stream_${ this.activeProvider }_${ interactions }`;
                   onTrace?.({
@@ -2297,7 +2327,13 @@ export class GeminiAgentClient {
                   const existing = toolCallsAccumulated.get(idx);
                   if (tc.id) existing.id = tc.id;
                   if (tc.function?.name) existing.function.name = tc.function.name;
-                  if (tc.function?.arguments) existing.function.arguments += tc.function.arguments;
+                  if (tc.function?.arguments) {
+                    existing.function.arguments = mergeStreamingText(
+                      existing.function.arguments,
+                      tc.function.arguments,
+                      true,
+                    );
+                  }
                 }
               }
             }
@@ -2454,6 +2490,7 @@ export class GeminiAgentClient {
           isStreaming: false,
           isLiveTyping: false,
           wasStreaming: Boolean(provisionalAnswerId),
+          answerId: provisionalAnswerId || undefined,
         };
         trace.push(answerEvt);
         onTrace?.(answerEvt);
@@ -2608,67 +2645,31 @@ export class GeminiAgentClient {
     });
     const tools = this.buildAnthropicTools(isBuilder, context);
 
-    // Read and format media attachments for Anthropic if present
+    // Anthropic's native Files API is the attachment path for Claude. Upload
+    // the original local stream once, then reference the returned file id in
+    // the beta Messages API. This preserves images and office files as files;
+    // it never converts them to extracted text.
     const anthropicMediaBlocks: any[] = [];
+    let anthropicUsesFilesApi = false;
     if (mediaFiles && mediaFiles.length > 0) {
       const fs = require('fs');
-      const maxAttachmentBytes = positiveIntEnv('ANTHROPIC_MAX_ATTACHMENT_BYTES', 10 * 1024 * 1024);
-      const textMimeTypes = new Set([
-        'text/plain', 'text/markdown', 'text/csv', 'text/html', 'text/xml',
-        'application/json', 'application/xml',
-      ]);
       for (const file of mediaFiles) {
-        if (!file.path || !fs.existsSync(file.path)) continue;
+        if (!file.path || !fs.existsSync(file.path)) {
+          throw new Error(`ATTACHMENT_PREPARATION_FAILED: ${file.name || file.path || 'attachment'} is not available.`);
+        }
         const mimeType = String(file.mimeType || 'application/octet-stream').toLowerCase();
         try {
-          const fileSize = fs.statSync(file.path).size;
-          if (fileSize > maxAttachmentBytes) {
-            onTrace?.({
-              type: 'progress',
-              text: `Attachment ${ file.name || file.path } was skipped because it exceeds the Anthropic limit of ${ Math.round(maxAttachmentBytes / (1024 * 1024)) } MB.`,
-            });
-            continue;
-          }
-          const buffer = fs.readFileSync(file.path);
-          const base64Data = buffer.toString('base64');
-          
-          if (mimeType.startsWith('image/')) {
-            let cleanMime = mimeType;
-            if (mimeType === 'image/jpg') cleanMime = 'image/jpeg';
-            if (['image/jpeg', 'image/png', 'image/gif', 'image/webp'].includes(cleanMime)) {
-              anthropicMediaBlocks.push({
-                type: 'image',
-                source: {
-                  type: 'base64',
-                  media_type: cleanMime,
-                  data: base64Data
-                }
-              });
-            }
-          } else if (mimeType === 'application/pdf') {
-            anthropicMediaBlocks.push({
-              type: 'document',
-              source: {
-                type: 'base64',
-                media_type: 'application/pdf',
-                data: base64Data
-              }
-            });
-          } else if (textMimeTypes.has(mimeType)) {
-            anthropicMediaBlocks.push({
-              type: 'text',
-              text: `[Attached file: ${ file.name || 'unnamed file' }]\n${ buffer.toString('utf8') }`,
-            });
-          } else {
-            if (!isReadableAttachment(file)) {
-              onTrace?.({
-                type: 'progress',
-                text: `Attachment ${ file.name || file.path } is available at ${ file.path }; use workspace tools because this model does not accept MIME type ${ mimeType } directly.`,
-              });
-            }
-          }
+          onTrace?.({ type: 'progress', text: `Uploading ${file.name || 'attachment'} to Anthropic Files`, percent: 8 });
+          const uploaded = await client.beta.files.upload({
+            file: fs.createReadStream(file.path),
+          });
+          if (!uploaded?.id) throw new Error('Anthropic did not return a file id.');
+          anthropicUsesFilesApi = true;
+          anthropicMediaBlocks.push(mimeType.startsWith('image/')
+            ? { type: 'image', source: { type: 'file', file_id: uploaded.id } }
+            : { type: 'document', title: file.name || undefined, source: { type: 'file', file_id: uploaded.id } });
         } catch (err: any) {
-          console.warn(`[Anthropic] Failed to load media attachment ${file.path}:`, err.message);
+          throw new Error(`ATTACHMENT_PREPARATION_FAILED: Anthropic could not attach ${file.name || file.path}: ${err?.message || err}`);
         }
       }
     }
@@ -2909,7 +2910,9 @@ export class GeminiAgentClient {
             request: params,
             interaction: interactions,
           });
-          const runner = client.messages.stream(params);
+          const runner = anthropicUsesFilesApi
+            ? client.beta.messages.stream(params)
+            : client.messages.stream(params);
 
           for await (const event of runner) {
             if (isRunCancelled(context)) {
@@ -2925,7 +2928,7 @@ export class GeminiAgentClient {
                   thoughtStartTime = Date.now();
                   thoughtId = `thought_${ interactions }_${ thoughtStartTime }`;
                 }
-                accumulatedThought += delta.thinking;
+                accumulatedThought = mergeStreamingText(accumulatedThought, delta.thinking, true);
                 if (onTrace) {
                   onTrace({
                     type: 'thought_stream',
@@ -2938,7 +2941,7 @@ export class GeminiAgentClient {
                   });
                 }
               } else if (delta.type === 'text_delta' && delta.text) {
-                accumulatedText += delta.text;
+                accumulatedText = mergeStreamingText(accumulatedText, delta.text, true);
                 if (!hasToolUseBlock) {
                   provisionalAnswerId = `answer_stream_anthropic_${ interactions }`;
                   onTrace?.({
@@ -3097,6 +3100,7 @@ export class GeminiAgentClient {
           isStreaming: false,
           isLiveTyping: false,
           wasStreaming: Boolean(provisionalAnswerId),
+          answerId: provisionalAnswerId || undefined,
         };
         trace.push(answerEvt);
         onTrace?.(answerEvt);
@@ -3481,6 +3485,7 @@ export class GeminiAgentClient {
       'youtube_transcript',
       'browser_control',
       'screenshot_capture',
+      'scheduled_tasks',
     ]);
     const telegramMode = context?.source === 'telegram';
     const codingMode = isCodingAgentProfile(context?.agentProfile);
@@ -3529,7 +3534,7 @@ export class GeminiAgentClient {
           };
           cleaned.properties.uiIcon = {
             type: 'string',
-            enum: ['computer', 'agent', 'terminal', 'image', 'file_read', 'file_create', 'file_edit', 'folder_read', 'folder_create', 'search', 'web_search', 'verification'],
+            enum: ['computer', 'agent', 'terminal', 'image', 'clock', 'file_read', 'file_create', 'file_edit', 'folder_read', 'folder_create', 'search', 'web_search', 'verification'],
             description: 'Timeline action category.'
           };
           cleaned.required = Array.isArray(cleaned.required) ? [...cleaned.required, 'uiActionText', 'uiIcon'] : ['uiActionText', 'uiIcon'];
@@ -4155,7 +4160,14 @@ TOOL ROUTING
 - Browser/desktop controls are sequential: observe, act, then verify state.
 - Use sub-agents only for independent lanes or valuable specialist review; Main owns integration and final claims.
 - ask_user is blocking and exclusive. Ask one compact question only when progress truly requires user input.
-- Every tool call includes uiActionText (2-6 plain words) and uiIcon from: terminal, agent, image, file_read, computer, file_create, file_edit, folder_read, folder_create, search, web_search, verification.
+- Every tool call includes uiActionText (2-6 plain words) and uiIcon from: terminal, agent, image, clock, file_read, computer, file_create, file_edit, folder_read, folder_create, search, web_search, verification.
+
+SCHEDULED AUTONOMY
+- Use scheduled_tasks whenever the user naturally asks to do work later, at a date/time, after a delay, or on a repeating cadence. Do not merely describe how scheduling could work.
+- Infer ordinary scheduling intent from the user's language and the temporal context above. Ask only when the actual time, recurrence, target task, or permission is materially ambiguous.
+- A scheduled task creates a full normal EterX chat on its first run, then repeating occurrences continue in that same chat so prior results and context remain available. Each occurrence retains its own run-history entry, selected model, thinking level, agent, and sources. Keep instructions standalone enough to remain reliable over time.
+- Use list/get before editing an ambiguously named schedule. Update or rename an existing schedule instead of creating a duplicate. Preserve unspecified fields.
+- For model-specific scheduling, use an exact configured model selection when known; otherwise use auto. Respect explicit thinking level and agent choices. Never claim a schedule exists until scheduled_tasks confirms it.
 
 EFFICIENCY AND CONTEXT
 - Do not repeat a tool call when its result is still valid. Re-read only after relevant state changed or prior context is insufficient.
@@ -4709,31 +4721,9 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
       }
     }
     const activeModelName = this.activeProvider === 'gemini' ? this.modelName : this.mistralModelName;
-    if (mediaFiles.length > 0) {
-      const unsupportedImage = mediaFiles.find(file => {
-        const mime = normalizeAttachmentMime(file.name || file.path, file.mimeType);
-        return mime.startsWith('image/')
-          && this.activeProvider !== 'gemini'
-          && this.activeProvider !== 'anthropic'
-          && !providerAcceptsDirectImage(this.activeProvider, activeModelName);
-      });
-      if (unsupportedImage) {
-        throw new Error(
-          `ATTACHMENT_NOT_SUPPORTED: ${activeModelName} cannot receive images through ${this.activeProvider}. `
-          + `Choose a vision-capable model or remove ${unsupportedImage.name || pathLib.basename(unsupportedImage.path)}.`,
-        );
-      }
-      const unsupportedMedia = mediaFiles.find(file => {
-        const mime = normalizeAttachmentMime(file.name || file.path, file.mimeType);
-        return (mime.startsWith('audio/') || mime.startsWith('video/')) && this.activeProvider !== 'gemini';
-      });
-      if (unsupportedMedia) {
-        throw new Error(
-          `ATTACHMENT_NOT_SUPPORTED: ${activeModelName} cannot receive this audio or video attachment through ${this.activeProvider}. `
-          + `Choose a compatible Gemini model or remove ${unsupportedMedia.name || pathLib.basename(unsupportedMedia.path)}.`,
-        );
-      }
-    }
+    // Attachment capability is resolved by the selected provider adapter.
+    // Keep the original file in the request and let that provider return its
+    // native validation response instead of rejecting it in the shared loop.
     const selectionEvent = {
       type: 'model_selection',
       provider: this.activeProvider,
@@ -4969,7 +4959,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
     // workspace_read_file: agent may legitimately re-read a file after editing it
     // docx_generator: may need retry after content expansion
     // ask_user: always needs fresh interaction
-    const neverDedupTools = ['workspace_write_file', 'workspace_str_replace', 'workspace_apply_patch', 'workspace_edit_file', 'workspace_edit_many_files', 'workspace_read_file', 'workspace_read_many_files', 'docx_generator', 'ask_user', 'task_checkpoint', 'realtime_verify', 'browser_control', 'spawn_sub_agent', 'api_caller'];
+    const neverDedupTools = ['workspace_write_file', 'workspace_str_replace', 'workspace_apply_patch', 'workspace_edit_file', 'workspace_edit_many_files', 'workspace_read_file', 'workspace_read_many_files', 'docx_generator', 'ask_user', 'task_checkpoint', 'realtime_verify', 'browser_control', 'spawn_sub_agent', 'api_caller', 'scheduled_tasks'];
     const dedupToolName = normalizedSig.split(':')[0];
     if (neverDedupTools.includes(dedupToolName)) return false;
 
@@ -5678,7 +5668,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
     }
 
     // === SYNAPSE GRAPH v2: Structured record storage + 5-question decision surface ===
-    if (!longTermMemoryDisabled) {
+    if (!longTermMemoryDisabled && (context as any).synapseGraphEnabled === true) {
       try {
         const _sg = getSynapseGraphForChat(context.projectId);
         await _sg.initialize(context.projectId, context.projectId);
@@ -6689,14 +6679,14 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
                 thoughtStartTime = Date.now();
                 thoughtId = `thought_${ interactions }_${ thoughtStartTime }`;
               }
-              accumulatedThought += part.text;
+              accumulatedThought = mergeStreamingText(accumulatedThought, part.text, true);
               const thoughtEvt = { type: 'thought_stream', text: accumulatedThought, isDelta: false, isStreaming: true, thoughtId, startTime: thoughtStartTime, endTime: Date.now() };
               if (onTrace) onTrace(thoughtEvt);
             }
 
             // 2. TEXT PARTS (Visible work note or final answer)
             if (!part.thought && part.text) {
-              accumulatedText += part.text;
+              accumulatedText = mergeStreamingText(accumulatedText, part.text, true);
               // Stream direct responses as they arrive. If this response later
               // reveals a tool call, the provisional answer is cancelled and
               // the same text is finalized as a work note below.
@@ -7038,6 +7028,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
             isStreaming: false,
             isLiveTyping: false,
             wasStreaming: Boolean(provisionalAnswerId),
+            answerId: provisionalAnswerId || undefined,
           };
           const existingIdx = trace.findIndex(t => t.type === 'answer');
           if (existingIdx >= 0) trace[existingIdx] = answerEvt;
@@ -7176,6 +7167,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
         auto_docs: { text: 'Generating docs', type: 'file_edit', iconCategory: 'file_create', argKey: 'target' },
         smart_file_analyzer: { text: 'Analyzing files', type: 'exploration', iconCategory: 'search', argKey: 'path' },
         background_task: { text: 'Checking background task', type: 'command', iconCategory: 'terminal', argKey: 'taskId' },
+        scheduled_tasks: { text: 'Managing scheduled task', type: 'command', iconCategory: 'clock', argKey: 'title' },
         wait_timer: { text: 'Waiting for check-in', type: 'command', iconCategory: 'terminal', argKey: 'title' },
         realtime_verify: { text: 'Verifying output', type: 'command', iconCategory: 'verification', argKey: 'target' },
         create_dynamic_tool: { text: 'Creating tool', type: 'command', iconCategory: 'computer', argKey: 'toolName' },
@@ -7382,7 +7374,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
         let iconCategory = label.iconCategory || 'computer';
         if (args?.uiIcon) {
           const lowerUiIcon = String(args.uiIcon).toLowerCase();
-          if (['computer', 'agent', 'terminal', 'image', 'file_read', 'file_create', 'file_edit', 'folder_read', 'folder_create', 'search', 'web_search', 'verification'].includes(lowerUiIcon)) {
+          if (['computer', 'agent', 'terminal', 'image', 'clock', 'file_read', 'file_create', 'file_edit', 'folder_read', 'folder_create', 'search', 'web_search', 'verification'].includes(lowerUiIcon)) {
             iconCategory = lowerUiIcon;
           } else {
             if (['agent', 'bot', 'subagent', 'sub_agent'].includes(lowerUiIcon)) {
@@ -7678,14 +7670,16 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
                   durationMs: execDuration,
                 });
                 // === SYNAPSE GRAPH: Feed tool results for topic tracking ===
-                try {
-                  const _sg2 = getSynapseGraphForChat(context.projectId);
-                  _sg2.registerToolResult(
-                    canonicalToolName,
-                    (effectiveArgs || {}) as Record<string, any>,
-                    typeof toolOutput === 'string' ? toolOutput : JSON.stringify(toolOutput).substring(0, 500),
-                  );
-                } catch { /* non-critical */ }
+                if ((context as any).disableLongTermMemory !== true && (context as any).synapseGraphEnabled === true) {
+                  try {
+                    const _sg2 = getSynapseGraphForChat(context.projectId);
+                    _sg2.registerToolResult(
+                      canonicalToolName,
+                      (effectiveArgs || {}) as Record<string, any>,
+                      typeof toolOutput === 'string' ? toolOutput : JSON.stringify(toolOutput).substring(0, 500),
+                    );
+                  } catch { /* non-critical */ }
+                }
                 // Extend session lifetime on every successful tool call
                 if (!sessionPersistenceDisabled) globalSessionManager.extendSessionForChat(chatId);
               } catch { /* never block agent on brain writes */ }

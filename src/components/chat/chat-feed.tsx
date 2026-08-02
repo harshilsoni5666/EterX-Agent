@@ -22,6 +22,8 @@ interface ChatFeedProps {
   showScrollBottom: boolean;
   isCompressed?: boolean;
   onOpenAgentTeam?: (agentName?: string) => void;
+  subAgentAssetIndexes?: Record<string, number>;
+  isFeedActivityPaused?: boolean;
   onAnswerAskUser?: (timestamp: number, answer: string, responseKey?: string) => void;
   onEditUserMessage?: (text: string) => void;
   isSubAgentTab?: boolean;
@@ -277,7 +279,7 @@ const UserMessageActions = React.memo(({ text, onEdit, timestamp }: { text: stri
   return (
     <div className="eterx-user-message-actions absolute right-full top-1/2 mr-2 flex -translate-y-1/2 shrink-0 items-center gap-0.5 opacity-0 pointer-events-none transition-opacity duration-150 group-hover/user:opacity-100 group-hover/user:pointer-events-auto group-hover/steer:opacity-100 group-hover/steer:pointer-events-auto focus-within:opacity-100 focus-within:pointer-events-auto">
       {timeLabel && (
-        <span className="mr-1 text-[11px] font-medium tabular-nums leading-none text-[#736E67] select-none whitespace-nowrap">
+        <span className="eterx-chat-message-time eterx-professional-number mr-1 text-[11px] font-[550] leading-none tracking-[-0.015em] text-[#736E67] select-none whitespace-nowrap">
           {timeLabel}
         </span>
       )}
@@ -519,6 +521,9 @@ const mergeDuplicateFeedLog = (previous: any, incoming: any) => {
   const incomingStart = Number(incoming?.startTime || incoming?.timestamp || 0);
   const previousEnd = Number(previous?.endTime || previous?.timestamp || 0);
   const incomingEnd = Number(incoming?.endTime || incoming?.timestamp || 0);
+  const previousNarrativeClosed =
+    (previous?.type === 'thought_stream' || previous?.type === 'work_note') &&
+    (previous?.isStreaming === false || previous?.streamState === 'closed');
   const narrativeRank = (type: any) =>
     type === 'autonomy_proxy_status' ? 3 : type === 'work_note' ? 2 : type === 'thought_stream' ? 1 : 0;
   const preferredType = narrativeRank(previous?.type) > narrativeRank(incoming?.type)
@@ -532,7 +537,14 @@ const mergeDuplicateFeedLog = (previous: any, incoming: any) => {
     startTime: previousStart > 0 && incomingStart > 0
       ? Math.min(previousStart, incomingStart)
       : previousStart || incomingStart || undefined,
-    endTime: Math.max(previousEnd, incomingEnd) || undefined,
+    endTime: (previousNarrativeClosed ? previousEnd || incomingEnd : Math.max(previousEnd, incomingEnd)) || undefined,
+    ...(previousNarrativeClosed
+      ? {
+        timestamp: previous?.timestamp ?? previous?.endTime ?? incoming?.timestamp,
+        isStreaming: false,
+        streamState: 'closed',
+      }
+      : {}),
     wasStreaming: Boolean(
       previous?.wasStreaming ||
       previous?.isStreaming ||
@@ -601,9 +613,17 @@ const dedupeFeedLogs = (logs: any[]) => {
     let semanticKey = '';
     if (normalizedText && ['thought_stream', 'work_note', 'autonomy_proxy_status'].includes(log.type)) {
       // Providers sometimes promote the same narration from thought_stream to
-      // work_note (or Proxy status) with a new type/ID. It is still one visible
-      // phase, not two consecutive rows.
-      semanticKey = `narrative::${ owner }::${ normalizedText }`;
+      // work_note (or Proxy status) with a new type. The stream anchor is part
+      // of the key: text alone is not identity because two real phases can
+      // legitimately repeat the same sentence and must keep separate timers.
+      const narrativeAnchor = String(
+        log.thoughtId ||
+        log.noteId ||
+        log.startTime ||
+        log.timestamp ||
+        ''
+      ).trim();
+      semanticKey = `narrative::${ owner }::${ normalizedText }::${ narrativeAnchor }`;
     } else if (
       normalizedText &&
       (log.isLive || log._instant) &&
@@ -886,9 +906,15 @@ const formatWorkElapsed = (seconds: number) => {
 };
 
 const RollingTimeDisplay = ({ label }: { label: string }) => {
+  const parts = label.split(/(\d+)/g);
+
   return (
-    <span className="inline-block min-w-[3ch] whitespace-nowrap font-sans font-[550] tabular-nums tracking-[-0.015em]">
-      {label}
+    <span className="eterx-professional-number inline-block min-w-[3ch] whitespace-nowrap font-[550] tracking-[-0.015em]">
+      {parts.map((part, index) => /^\d+$/.test(part) ? (
+        <span key={`${part}-${index}`} className="eterx-professional-number font-[600] tracking-[-0.02em]">
+          {part}
+        </span>
+      ) : part)}
     </span>
   );
 };
@@ -960,6 +986,11 @@ const useWorkElapsedSeconds = (active: boolean, logs: any[], endedAt?: number | 
     if (active) {
       if (sessionStartRef.current === null) {
         sessionStartRef.current = actionStart ?? Date.now();
+      } else if (actionStart !== null) {
+        // The first provider event can arrive after the timer has painted.
+        // Re-anchor to its real start instead of permanently losing that
+        // portion of the live stream.
+        sessionStartRef.current = Math.min(sessionStartRef.current, actionStart);
       }
     } else {
       sessionStartRef.current = null;
@@ -996,8 +1027,8 @@ const useWorkElapsedSeconds = (active: boolean, logs: any[], endedAt?: number | 
 };
 
 const ThoughtSequence = ({
-  logs, liveLogs = [], isThinking, isLast, hasAnswer, hasInteractionBoundary = false, stepCount, turnEndedAt, onOpenAgentTeam, isSubAgentTab = false, groupIdx = 0, onEditUserMessage
-}: { logs: any[], liveLogs?: any[], isThinking: boolean, isLast: boolean, hasAnswer: boolean, hasInteractionBoundary?: boolean, stepCount: number, turnEndedAt?: number | null, onOpenAgentTeam?: (agentName?: string) => void, isSubAgentTab?: boolean, groupIdx?: number, onEditUserMessage?: (text: string) => void }) => {
+  logs, liveLogs = [], isThinking, isLast, hasAnswer, hasInteractionBoundary = false, stepCount, turnEndedAt, onOpenAgentTeam, isSubAgentTab = false, groupIdx = 0, onEditUserMessage, subAgentAssetIndexes
+}: { logs: any[], liveLogs?: any[], isThinking: boolean, isLast: boolean, hasAnswer: boolean, hasInteractionBoundary?: boolean, stepCount: number, turnEndedAt?: number | null, onOpenAgentTeam?: (agentName?: string) => void, isSubAgentTab?: boolean, groupIdx?: number, onEditUserMessage?: (text: string) => void, subAgentAssetIndexes?: Record<string, number> }) => {
   // Start collapsed for completed turns, open for active/no-answer turns
   const [open, setOpen] = React.useState(false);
   const containerRef = React.useRef<HTMLDivElement>(null);
@@ -1071,18 +1102,20 @@ const ThoughtSequence = ({
   const isOpen = open;
   const hasRealActions = stepCount > 0;
   const hasVisibleWork = logs.length > 0 || liveLogs.length > 0;
-  const workElapsedSeconds = useWorkElapsedSeconds(isLiveThinking && hasVisibleWork, turnLogs, turnEndedAt);
+  // Start the timer as soon as the turn is active. Waiting for the first
+  // trace made the live pill appear late, then disappear/reappear as polling
+  // swapped between an empty group and its first streamed event.
+  const workElapsedSeconds = useWorkElapsedSeconds(isLiveThinking, turnLogs, turnEndedAt);
   const workElapsedLabel = formatWorkElapsed(workElapsedSeconds);
 
   if (stepCount === 0 && logs.length === 0 && !isLiveThinking) return null;
 
   const isWaitingForFirstTrace = isLiveThinking && stepCount === 0 && logs.length === 0 && liveLogs.length === 0;
-  const actionLabel = stepCount > 0
-    ? `${ stepCount } action${ stepCount !== 1 ? 's' : '' }`
-    : 'Working';
-  const hasCounter = stepCount > 0 || logs.length > 0;
+  // The active turn owns the live status pill even before its first trace.
+  // This keeps the query-to-work transition visually continuous.
+  const hasCounter = isLiveThinking || stepCount > 0 || logs.length > 0;
   const isCollapsedWithAnswer = hasAnswer && !isOpen;
-  const isLiveWorkCounter = isLiveThinking && hasVisibleWork && !isWaitingForFirstTrace;
+  const isLiveWorkCounter = isLiveThinking;
   const hasTerminalBoundary = hasAnswer || hasInteractionBoundary || turnLogs.some(isTerminalWorkTrace);
   const showWorkedSummary = !isLiveThinking && hasVisibleWork && hasTerminalBoundary;
   const shouldStickCounter = hasAnswer || isLiveWorkCounter;
@@ -1099,9 +1132,9 @@ const ThoughtSequence = ({
 
   return (
     <div className="relative" ref={containerRef}>
-      {showWorkedSummary && <div className="eterx-worked-summary mb-2 flex w-full items-center gap-4 pt-1"><div className="eterx-worked-summary-line h-px flex-1 bg-[var(--border)]" /><span className="eterx-worked-summary-label shrink-0 py-[1px] text-center text-[12px] font-medium leading-[1.35] tracking-normal text-[var(--muted-foreground)]">{`Worked for ${ workElapsedLabel }`}</span><div className="eterx-worked-summary-line h-px flex-1 bg-[var(--border)]" /></div>}
+      {showWorkedSummary && <div className="eterx-worked-summary mb-2 flex w-full items-center gap-4 pt-1"><div className="eterx-worked-summary-line h-px flex-1 bg-[var(--border)]" /><span className="eterx-worked-summary-label shrink-0 py-[1px] text-center text-[12px] font-medium leading-[1.35] tracking-normal text-[var(--muted-foreground)]"><span>Worked for&nbsp;</span><RollingTimeDisplay label={workElapsedLabel} /></span><div className="eterx-worked-summary-line h-px flex-1 bg-[var(--border)]" /></div>}
       {hasCounter && <div className={`eterx-process-summary-row ${ shouldStickCounter ? 'sticky top-3 z-20' : '' } ${ isCollapsedWithAnswer ? 'mb-2' : 'mb-1' } flex w-full items-center overflow-visible py-1.5`}>
-        {isLiveWorkCounter ? <button type="button" onClick={toggleOpen} aria-expanded={isOpen} className="eterx-process-summary-chip eterx-process-summary-chip-live group inline-flex h-[34px] shrink-0 items-center gap-1.5 whitespace-nowrap rounded-[9px] border border-[var(--border)] bg-[var(--muted)] px-2.5 text-[13px] font-medium leading-normal tracking-[-0.01em] text-[var(--muted-foreground)] shadow-[0_3px_12px_rgba(0,0,0,0.08)] transition-all duration-150 hover:border-[var(--muted-foreground)] hover:bg-[var(--secondary)] hover:text-[var(--foreground)]"><Shimmer className="eterx-process-summary-label inline-flex -translate-y-[0.5px] items-center gap-[7px] pb-[2px] leading-[1.2]" style={{ color: 'var(--eterx-ui-working-text)' }} durationMs={1900} spread="calc(4ch + 36px)"><span>Working for</span><RollingTimeDisplay label={workElapsedLabel} /></Shimmer>{isOpen ? <ChevronDown className="h-3 w-3 -translate-y-[0.5px] opacity-50" /> : <ChevronRight className="h-3 w-3 -translate-y-[0.5px] opacity-50" />}</button> : <button type="button" onClick={toggleOpen} aria-expanded={isOpen} className="eterx-process-summary-chip inline-flex h-[30px] items-center gap-1.5 transition-all duration-200" style={{ ...compactCounterStyle, cursor: 'pointer', position: 'relative', zIndex: 1 }} onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = 'var(--foreground)'; (e.currentTarget as HTMLElement).style.background = counterHoverBackground; }} onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = counterColor; (e.currentTarget as HTMLElement).style.background = counterBackground; }}><span className="eterx-process-summary-icon" style={{ display: 'inline-flex', width: 20, height: 20, alignItems: 'center', justifyContent: 'center', borderRadius: 8, color: 'inherit', background: 'var(--border)', outline: '1px solid var(--border)' }}><StepCounterIcon live={isLiveThinking} /></span><Shimmer active={isLiveThinking} className="eterx-process-summary-label" style={{ fontSize: 13, fontWeight: 650, letterSpacing: 0, lineHeight: 1 } as any}>{actionLabel}</Shimmer>{isOpen ? <ChevronDown style={{ width: 9, height: 9, flexShrink: 0, opacity: 0.6 }} /> : <ChevronRight style={{ width: 9, height: 9, flexShrink: 0, opacity: 0.6 }} />}</button>}
+        {isLiveWorkCounter ? <button type="button" onClick={toggleOpen} aria-expanded={isOpen} className="eterx-process-summary-chip eterx-process-summary-chip-live group inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-[10px] border border-[var(--border)] bg-[var(--muted)] px-3 text-[13px] font-medium leading-none tracking-[-0.01em] text-[var(--muted-foreground)] shadow-[0_2px_10px_rgba(0,0,0,0.12),inset_0_1px_0_rgba(255,255,255,0.035)] backdrop-blur-[12px] transition-[background,border-color,color,box-shadow] duration-150 hover:border-[var(--muted-foreground)] hover:bg-[var(--secondary)] hover:text-[var(--foreground)]"><Shimmer active={false} className="eterx-process-summary-label inline-flex -translate-y-[0.5px] items-center gap-0 pb-[1px] leading-none" style={{ color: 'var(--eterx-ui-working-text)' }}><span>Working for&nbsp;</span><RollingTimeDisplay label={workElapsedLabel} /></Shimmer>{isOpen ? <ChevronDown className="h-3 w-3 -translate-y-[0.5px] opacity-50" /> : <ChevronRight className="h-3 w-3 -translate-y-[0.5px] opacity-50" />}</button> : <button type="button" onClick={toggleOpen} aria-expanded={isOpen} className="eterx-process-summary-chip inline-flex h-[30px] items-center gap-1.5 transition-all duration-200" style={{ ...compactCounterStyle, cursor: 'pointer', position: 'relative', zIndex: 1 }} onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = 'var(--foreground)'; (e.currentTarget as HTMLElement).style.background = counterHoverBackground; }} onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = counterColor; (e.currentTarget as HTMLElement).style.background = counterBackground; }}><span className="eterx-process-summary-icon" style={{ display: 'inline-flex', width: 20, height: 20, alignItems: 'center', justifyContent: 'center', borderRadius: 8, color: 'inherit', background: 'var(--border)', outline: '1px solid var(--border)' }}><StepCounterIcon live={isLiveThinking} /></span><Shimmer active={isLiveThinking} className="eterx-process-summary-label" style={{ fontSize: 13, fontWeight: 650, letterSpacing: 0, lineHeight: 1 } as any}>{stepCount > 0 ? <><span className="eterx-professional-number">{stepCount}</span> action{stepCount !== 1 ? 's' : ''}</> : 'Working'}</Shimmer>{isOpen ? <ChevronDown style={{ width: 9, height: 9, flexShrink: 0, opacity: 0.6 }} /> : <ChevronRight style={{ width: 9, height: 9, flexShrink: 0, opacity: 0.6 }} />}</button>}
       </div>}
 
       {isOpen && (
@@ -1113,6 +1146,7 @@ const ThoughtSequence = ({
             isLast={isLast}
             showLiveIndicator={isLiveThinking && isLast && liveLogs.length === 0}
             onOpenAgentTeam={onOpenAgentTeam}
+            assetIndexes={subAgentAssetIndexes}
             isSubAgentTab={isSubAgentTab}
             onEditUserMessage={onEditUserMessage}
           />
@@ -1174,6 +1208,7 @@ const ChatFeedMessageGroup = React.memo(({
   suppressInitialReveal,
   isCompressed,
   onOpenAgentTeam,
+  subAgentAssetIndexes,
   onAnswerAskUser,
   onEditUserMessage,
   isSubAgentTab,
@@ -1187,6 +1222,7 @@ const ChatFeedMessageGroup = React.memo(({
   suppressInitialReveal: boolean;
   isCompressed: boolean;
   onOpenAgentTeam?: (agentName?: string) => void;
+  subAgentAssetIndexes?: Record<string, number>;
   onAnswerAskUser?: (timestamp: number, answer: string, responseKey?: string) => void;
   onEditUserMessage?: (text: string) => void;
   isSubAgentTab: boolean;
@@ -1492,17 +1528,16 @@ const ChatFeedMessageGroup = React.memo(({
   let currentThoughts: any[] = [];
   const segmentIdentity = (seg: { logs?: any[]; log?: any }, fallback: number) => {
     const anchor = seg.log || seg.logs?.[0];
-    return String(
-      anchor?.thoughtId ??
-      anchor?.noteId ??
-      anchor?.responseKey ??
-      anchor?.steeringId ??
-      anchor?.id ??
-      anchor?.startTime ??
-      anchor?.timestamp ??
-      anchor?._traceIdx ??
-      fallback
-    );
+    const primary = String(
+      anchor?.thoughtId ||
+      anchor?.noteId ||
+      anchor?.responseKey ||
+      anchor?.steeringId ||
+      anchor?.id ||
+      ''
+    ).trim();
+    const timeAnchor = anchor?.startTime ?? anchor?.timestamp ?? anchor?._traceIdx ?? fallback;
+    return primary ? `${ primary }:${ String(timeAnchor) }` : String(timeAnchor);
   };
 
   visibleWorkLogs.forEach(log => {
@@ -1558,7 +1593,10 @@ const ChatFeedMessageGroup = React.memo(({
   });
 
   const groupIsThinking = isTurnWorkActive(
-    isThinkingTurn,
+    // The live transport can remain active for a short interval while the
+    // primary thinking flag catches up. Treat either signal as authoritative
+    // so the work indicator does not blink during that handoff.
+    isThinkingTurn || isLiveSessionActive,
     hasSettledAnswer,
     [...standardLogs, ...liveCommandLogs],
   );
@@ -1629,6 +1667,7 @@ const ChatFeedMessageGroup = React.memo(({
             stepCount={stepCount}
             turnEndedAt={hasSettledAnswer ? displayFinalAnswer?.endTime ?? displayFinalAnswer?.timestamp ?? null : null}
             onOpenAgentTeam={onOpenAgentTeam}
+            subAgentAssetIndexes={subAgentAssetIndexes}
             isSubAgentTab={isSubAgentTab}
             groupIdx={groupIdx}
             onEditUserMessage={onEditUserMessage}
@@ -1675,12 +1714,12 @@ const ChatFeedMessageGroup = React.memo(({
                         </Tooltip>
                       )}
                       {formatShortTime(displayFinalAnswer.endTime ?? displayFinalAnswer.timestamp) && (
-                        <span className="ml-1 text-[11px] font-medium tabular-nums leading-none text-[#746F67] select-none whitespace-nowrap">
+                        <span className="eterx-chat-message-time eterx-professional-number ml-1 text-[11px] font-[550] leading-none tracking-[-0.015em] text-[#746F67] select-none whitespace-nowrap">
                           {formatShortTime(displayFinalAnswer.endTime ?? displayFinalAnswer.timestamp)}
                         </span>
                       )}
                       {showTokenCount && answerTokenCount > 0 && (
-                        <span className="ml-1.5 text-[11px] font-medium tabular-nums leading-none text-[#746F67] select-none whitespace-nowrap">
+                        <span className="eterx-professional-number ml-1.5 text-[11px] font-medium leading-none text-[#746F67] select-none whitespace-nowrap">
                           {formatProviderTokenCount(answerTokenCount)} tokens
                         </span>
                       )}
@@ -1703,6 +1742,8 @@ const ChatFeedMessageGroup = React.memo(({
   if (previous.isSubAgentTab !== next.isSubAgentTab) return false;
   if (previous.showTokenCount !== next.showTokenCount) return false;
   if (previous.onOpenAgentTeam !== next.onOpenAgentTeam) return false;
+  if (previous.subAgentAssetIndexes !== next.subAgentAssetIndexes) return false;
+  if (previous.isFeedActivityPaused !== next.isFeedActivityPaused) return false;
   if (previous.onAnswerAskUser !== next.onAnswerAskUser) return false;
   if (previous.onEditUserMessage !== next.onEditUserMessage) return false;
   if (previous.setPreviewUserMessage !== next.setPreviewUserMessage) return false;
@@ -1761,7 +1802,7 @@ const ChatDateDivider = React.memo(({ label }: { label: string }) => (
 ));
 
 export const ChatFeed = React.memo<ChatFeedProps>(({
-  traceLogs: incomingTraceLogs, chatId, isThinking, messagesEndRef, setSidebarOpen, sidebarOpen, handleScroll: externalHandleScroll, showScrollBottom, isCompressed = false, onOpenAgentTeam, onAnswerAskUser, onEditUserMessage, isSubAgentTab = false, liveState
+  traceLogs: incomingTraceLogs, chatId, isThinking, messagesEndRef, setSidebarOpen, sidebarOpen, handleScroll: externalHandleScroll, showScrollBottom, isCompressed = false, onOpenAgentTeam, subAgentAssetIndexes, isFeedActivityPaused = false, onAnswerAskUser, onEditUserMessage, isSubAgentTab = false, liveState
 }) => {
   // Final presentation boundary: a trace carrying an owner ID can only render
   // inside that exact chat. This protects the feed even if an upstream async
@@ -1794,6 +1835,46 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
       window.removeEventListener('eterx-settings-updated', refreshTokenCountPreference);
     };
   }, []);
+
+  // Keep the presentation state alive through the short handoff between the
+  // renderer's running flag, transport state, and the next trace batch. A
+  // query should not lose its status pill just because those signals commit
+  // on adjacent render frames.
+  const activeFeedTurnLogs = useMemo(() => {
+    let latestUserIndex = -1;
+    for (let index = traceLogs.length - 1; index >= 0; index -= 1) {
+      if (traceLogs[index]?.type === 'user_action') {
+        latestUserIndex = index;
+        break;
+      }
+    }
+    return traceLogs.slice(latestUserIndex >= 0 ? latestUserIndex : 0);
+  }, [traceLogs]);
+  const activeTurnHasTerminalTrace = useMemo(
+    () => activeFeedTurnLogs.some(isTerminalWorkTrace),
+    [activeFeedTurnLogs],
+  );
+  const activeTurnHasSettledAnswer = useMemo(
+    () => activeFeedTurnLogs.some(log =>
+      log?.type === 'answer' &&
+      String(log.text || '').trim().length > 0 &&
+      log.isStreaming !== true &&
+      log.isLiveTyping !== true
+    ),
+    [activeFeedTurnLogs],
+  );
+  const liveTransportActive = !isSubAgentTab && !isFeedActivityPaused &&
+    liveState !== undefined && liveState !== 'idle' && liveState !== 'error';
+  const transportWorkActive = !isFeedActivityPaused && Boolean(isThinking || liveTransportActive);
+  const workActivityLatchRef = useRef(false);
+  if (activeTurnHasTerminalTrace || activeTurnHasSettledAnswer || isFeedActivityPaused) {
+    workActivityLatchRef.current = false;
+  } else if (transportWorkActive) {
+    workActivityLatchRef.current = true;
+  }
+  const feedWorkActive = !activeTurnHasTerminalTrace &&
+    !activeTurnHasSettledAnswer &&
+    (transportWorkActive || workActivityLatchRef.current);
 
   const groups = useMemo(() => {
     const nextGroups: any[][] = [];
@@ -1846,12 +1927,12 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
     // If the agent is currently thinking and the last recorded log is the user's prompt,
     // append an empty group so the UI instantly renders the Agent's "Thinking" container
     // before the first stream chunk arrives.
-    if (isThinking && nextGroups.length > 0 && nextGroups[nextGroups.length - 1][0]?.type === 'user_action') {
+    if (feedWorkActive && nextGroups.length > 0 && nextGroups[nextGroups.length - 1][0]?.type === 'user_action') {
       nextGroups.push([]);
     }
 
     return nextGroups;
-  }, [traceLogs, isThinking]);
+  }, [feedWorkActive, traceLogs]);
 
   const [activeTurnIdx, setActiveTurnIdx] = useState<number>(0);
   const conversationIdentity = useMemo(() => {
@@ -2235,8 +2316,12 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
           )}
           <div
             id="chat-container"
-            className={`eterx-chat-feed-scroll relative h-full w-full flex flex-col overflow-y-auto overflow-x-hidden pb-40 eterx-scrollbar [overflow-anchor:none] [scrollbar-gutter:stable] ${ isCompressed ? 'px-4 sm:px-8' : 'px-4 sm:px-14'
+            className={`eterx-chat-feed-scroll relative h-full w-full flex flex-col overflow-y-auto overflow-x-hidden eterx-scrollbar [overflow-anchor:none] [scrollbar-gutter:stable] ${ isCompressed ? 'px-4 sm:px-8' : 'px-4 sm:px-14'
               }`}
+            style={{
+              paddingBottom: 'max(10rem, var(--eterx-chat-composer-inset, 10rem))',
+              scrollPaddingBottom: 'max(10rem, var(--eterx-chat-composer-inset, 10rem))',
+            }}
             ref={scrollContainerRef}
             onScroll={handleScrollWrap}
             onWheel={(e) => {
@@ -2276,9 +2361,11 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
                 )}
                 {visibleGroups.map((group, visibleGroupIdx) => {
                   const groupIdx = hiddenGroupCount + visibleGroupIdx;
-                  const isThinkingTurn = isThinking && groupIdx === groups.length - 1;
+                  const isThinkingTurn = feedWorkActive && groupIdx === groups.length - 1;
                   const isLiveSessionActive =
                     groupIdx === groups.length - 1 &&
+                    !isFeedActivityPaused &&
+                    !isSubAgentTab &&
                     liveState !== undefined &&
                     liveState !== 'idle' &&
                     liveState !== 'error';
@@ -2303,6 +2390,7 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
                         suppressInitialReveal={isHydratingConversation}
                         isCompressed={isCompressed}
                         onOpenAgentTeam={onOpenAgentTeam}
+                        subAgentAssetIndexes={subAgentAssetIndexes}
                         onAnswerAskUser={onAnswerAskUser}
                         onEditUserMessage={onEditUserMessage}
                         isSubAgentTab={isSubAgentTab}

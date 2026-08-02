@@ -1,13 +1,19 @@
 import { z } from 'zod';
 import { ToolDefinition } from '../../schemas';
-import { exec, execFile } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { isUnsafeHostControlEnabled } from '../../computer/computer-session';
 import { resolveReadableWorkspacePathForContext } from '../../workspace/path_resolver';
 import { enforceToolCapability } from '../security/tool_policy';
+import { buildTerminalShellInvocation } from './shell_resolver';
 
-const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
+
+async function execAsync(command: string, options: Record<string, any> = {}): Promise<{ stdout: string; stderr: string }> {
+  const invocation = buildTerminalShellInvocation(command, options.shell);
+  const { shell: _shell, ...execFileOptions } = options;
+  return execFileAsync(invocation.file, invocation.args, { ...execFileOptions, windowsHide: true });
+}
 const SAFE_READONLY_ACTIONS = new Set(['battery']);
 
 function psQuote(value: unknown): string {

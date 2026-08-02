@@ -1,6 +1,8 @@
 import fs from 'fs-extra';
 import path from 'path';
 import { getEterxWorkspaceDir } from './storage-paths';
+import { closeThoughtStreamsForBoundary, mergeThoughtStreamTrace } from '../thought-stream-lifecycle';
+import { isStreamFinalEvent, mergeStreamingText, normalizeStreamTimestamp } from '../streaming-lifecycle';
 
 /**
  * TaskStore — Persistent Server-Side Task State
@@ -272,10 +274,25 @@ export const taskStore = {
     const now = Date.now();
     const compactEvent = compactTraceEvent(traceEvent);
     const timedEvent = compactEvent && typeof compactEvent === 'object'
-      ? { timestamp: now, ...compactEvent }
+      ? {
+        ...compactEvent,
+        timestamp: normalizeStreamTimestamp(compactEvent.timestamp, now),
+        ...(compactEvent.startTime !== undefined
+          ? { startTime: normalizeStreamTimestamp(compactEvent.startTime, normalizeStreamTimestamp(compactEvent.timestamp, now)) }
+          : {}),
+        ...(compactEvent.endTime !== undefined
+          ? { endTime: normalizeStreamTimestamp(compactEvent.endTime, normalizeStreamTimestamp(compactEvent.timestamp, now)) }
+          : {}),
+      }
       : compactEvent;
 
-    if (timedEvent?.type === 'answer_cancel') {
+    if (timedEvent?.type !== 'thought_stream') {
+      closeThoughtStreamsForBoundary(task.traceLogs, timedEvent);
+    }
+
+    if (timedEvent?.type === 'thought_stream') {
+      mergeThoughtStreamTrace(task.traceLogs, timedEvent);
+    } else if (timedEvent?.type === 'answer_cancel') {
       const answerId = String(timedEvent.answerId || '').trim();
       for (let i = task.traceLogs.length - 1; i >= 0; i--) {
         const log = task.traceLogs[i];
@@ -290,7 +307,11 @@ export const taskStore = {
       }
     } else if (timedEvent?.type === 'answer') {
       const answerId = String(timedEvent.answerId || '').trim();
-      const incomingIsStreaming = timedEvent.isStreaming === true || timedEvent.isLiveTyping === true;
+      const incomingIsStreaming =
+        timedEvent.isStreaming === true ||
+        timedEvent.isLiveTyping === true ||
+        timedEvent.isDelta === true ||
+        timedEvent.streamState === 'open';
       let mergeIdx = -1;
       for (let i = task.traceLogs.length - 1; i >= 0; i--) {
         const log = task.traceLogs[i];
@@ -310,6 +331,16 @@ export const taskStore = {
         task.traceLogs[mergeIdx] = {
           ...previous,
           ...timedEvent,
+          text: mergeStreamingText(previous.text, timedEvent.text, timedEvent.isDelta === true),
+          startTime: previous.startTime || timedEvent.startTime || timedEvent.timestamp,
+          endTime: Math.max(
+            Number(previous.endTime || previous.timestamp || 0),
+            Number(timedEvent.endTime || timedEvent.timestamp || 0),
+          ),
+          timestamp: Math.max(
+            Number(previous.timestamp || 0),
+            Number(timedEvent.timestamp || 0),
+          ),
           isStreaming: incomingIsStreaming,
           isLiveTyping: incomingIsStreaming,
           wasStreaming: Boolean(
@@ -344,12 +375,12 @@ export const taskStore = {
         }
       }
     } else if (timedEvent?.type === 'work_note') {
-      const noteText = String(timedEvent.text || '').trim();
-      if (!noteText) return;
+      const noteText = String(timedEvent.text || '');
+      if (!noteText.trim()) return;
       const noteId = timedEvent.noteId || null;
       const subAgent = timedEvent.subAgent || null;
       const subAgentIdentity = timedEvent.subAgentChatId || timedEvent.subAgentId || subAgent;
-      const incomingIsFinal = timedEvent.isStreaming === false || timedEvent.isDelta === false;
+      const incomingIsFinal = isStreamFinalEvent(timedEvent);
       let mergeIdx = -1;
       for (let i = task.traceLogs.length - 1; i >= 0; i--) {
         const log = task.traceLogs[i];
@@ -359,7 +390,7 @@ export const taskStore = {
           (log.subAgentChatId || log.subAgentId || log.subAgent || null) !== subAgentIdentity
         ) continue;
         const sameNote = noteId && log.noteId && log.noteId === noteId;
-        const sameText = String(log.text || '').trim() === noteText;
+        const sameText = String(log.text || '').trim() === noteText.trim();
         // Also merge final note into a streaming-cancelled placeholder
         const isCancelledPlaceholder = log._streamingCancelled && incomingIsFinal;
         if (sameNote || sameText || isCancelledPlaceholder) {
@@ -368,12 +399,22 @@ export const taskStore = {
         }
       }
       if (mergeIdx >= 0) {
+        const previous = task.traceLogs[mergeIdx];
         task.traceLogs[mergeIdx] = {
-          ...task.traceLogs[mergeIdx],
+          ...previous,
           ...timedEvent,
-          text: noteText,
+          text: mergeStreamingText(previous.text, noteText, timedEvent.isDelta === true),
           noteId,
           subAgent,
+          startTime: previous.startTime || timedEvent.startTime || timedEvent.timestamp,
+          endTime: Math.max(
+            Number(previous.endTime || previous.timestamp || 0),
+            Number(timedEvent.endTime || timedEvent.timestamp || 0),
+          ),
+          timestamp: Math.max(
+            Number(previous.timestamp || 0),
+            Number(timedEvent.timestamp || 0),
+          ),
           _streamingCancelled: undefined,
         };
       } else {

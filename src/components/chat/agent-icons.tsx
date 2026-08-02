@@ -47,6 +47,14 @@ export const TerminalIcon = ({ size = 16, color = W }: IconProps) => (
   </LineIcon>
 );
 
+export const ClockIcon = ({ size = 16, color = W }: IconProps) => (
+  <LineIcon size={size} color={color}>
+    <circle cx="12" cy="12" r="8.5" />
+    <path d="M12 7.5v5l3.2 1.9" />
+    <path d="M8.2 3.9 6.8 2.8M15.8 3.9l1.4-1.1" />
+  </LineIcon>
+);
+
 export const FileReadIcon = ({ size = 16, color = W }: IconProps) => (
   <LineIcon size={size} color={color}>
     <path d="M7 3.8h7.2L18 7.6v12.1c0 .8-.6 1.5-1.5 1.5h-9c-.8 0-1.5-.7-1.5-1.5V5.3c0-.8.7-1.5 1.5-1.5Z" />
@@ -257,16 +265,25 @@ export const SecurityIcon = CheckmarkBadge03Icon;
 
 type SubAgentIdentityStatus = 'spawning' | 'working' | 'completed' | 'error' | 'idle' | string;
 
-const SUB_AGENT_PALETTES = [
-  { a: '#58A6FF', b: '#2F81F7', glow: 'rgba(88,166,255,0.30)' },
-  { a: '#FF6B7A', b: '#F43F5E', glow: 'rgba(244,63,94,0.28)' },
-  { a: '#A78BFA', b: '#8B5CF6', glow: 'rgba(167,139,250,0.28)' },
-  { a: '#FB7A32', b: '#F97316', glow: 'rgba(251,122,50,0.28)' },
-  { a: '#34D399', b: '#10B981', glow: 'rgba(52,211,153,0.26)' },
-  { a: '#FBBF24', b: '#F59E0B', glow: 'rgba(251,191,36,0.25)' },
-  { a: '#22D3EE', b: '#06B6D4', glow: 'rgba(34,211,238,0.25)' },
-  { a: '#F472B6', b: '#EC4899', glow: 'rgba(244,114,182,0.25)' },
-];
+// Keep every sub-agent identity on the real public avatar set. Unknown or
+// generated names use a deterministic avatar from this same set instead of
+// falling back to the old pixel-grid placeholder.
+export const SUB_AGENT_ASSET_NAMES = [
+  'einstein', 'heisenberg', 'sam', 'dario', 'elon',
+  'tesla', 'newton', 'turing', 'ada', 'curie',
+  'feynman', 'darwin', 'hawking', 'galileo', 'davinci',
+  'aristotle', 'oppenheimer', 'gates', 'jobs', 'pascal',
+] as const;
+
+export const getSubAgentAssetName = (name?: string, assetIndex?: number) => {
+  const cleanName = String(name || '').trim().toLowerCase();
+  if (typeof assetIndex === 'number' && Number.isFinite(assetIndex)) {
+    const index = Math.abs(Math.floor(assetIndex)) % SUB_AGENT_ASSET_NAMES.length;
+    return SUB_AGENT_ASSET_NAMES[index];
+  }
+  if ((SUB_AGENT_ASSET_NAMES as readonly string[]).includes(cleanName)) return cleanName;
+  return SUB_AGENT_ASSET_NAMES[hashSubAgentName(cleanName || 'subagent') % SUB_AGENT_ASSET_NAMES.length];
+};
 
 const hashSubAgentName = (value: string) => {
   let hash = 2166136261;
@@ -277,100 +294,40 @@ const hashSubAgentName = (value: string) => {
   return hash >>> 0;
 };
 
-export const getSubAgentIdentity = (name?: string) => {
-  const cleanName = String(name || 'Subagent').trim() || 'Subagent';
-  const hash = hashSubAgentName(cleanName.toLowerCase());
-  const palette = SUB_AGENT_PALETTES[hash % SUB_AGENT_PALETTES.length];
-  const shortName = cleanName
-    .split(/[\s._-]+/)
-    .filter(Boolean)
-    .map(part => part[0])
-    .join('')
-    .slice(0, 2)
-    .toUpperCase() || cleanName.slice(0, 2).toUpperCase();
-
-  return { hash, palette, shortName };
-};
-
 export const SubAgentIdentityIcon = ({
   name,
-  status = 'idle',
   size = 32,
   className = '',
   title,
+  assetIndex,
 }: {
   name?: string;
   status?: SubAgentIdentityStatus;
   size?: number;
   className?: string;
   title?: string;
+  assetIndex?: number;
 }) => {
   const cleanName = String(name || 'Subagent').trim();
-  const lowerName = cleanName.toLowerCase();
-  
-  const SUB_AGENT_NAMES = [
-    'einstein', 'heisenberg', 'sam', 'dario', 'elon',
-    'tesla', 'newton', 'turing', 'ada', 'curie',
-    'feynman', 'darwin', 'hawking', 'galileo', 'davinci',
-    'aristotle', 'oppenheimer', 'gates', 'jobs', 'pascal'
-  ];
-  
-  const hasIcon = SUB_AGENT_NAMES.includes(lowerName);
-
-  if (hasIcon) {
-    return (
-      <span
-        className={`eterx-subagent-identity flex items-center justify-center overflow-hidden rounded-full border border-white/[0.08] bg-black/10 shadow-[0_4px_12px_rgba(0,0,0,0.16)] ${className}`}
-        style={{ width: size, height: size }}
-        title={title || cleanName}
-      >
-        <img
-          src={`/icons/sub-agents/${lowerName}.png`}
-          alt={cleanName}
-          className="w-full h-full object-cover select-none"
-        />
-      </span>
-    );
-  }
-
-  const identity = getSubAgentIdentity(name);
-  const normalizedStatus = ['spawning', 'working', 'completed', 'error'].includes(String(status))
-    ? String(status)
-    : 'idle';
-  const cells = Array.from({ length: 16 }, (_, index) => {
-    const row = Math.floor(index / 4);
-    const col = index % 4;
-    const mirroredCol = col < 2 ? col : 3 - col;
-    const bit = (identity.hash >> ((row * 2 + mirroredCol) % 24)) & 1;
-    return bit === 1 || (row === 1 && (col === 1 || col === 2)) || (row === 3 && col === 0);
-  });
+  const assetName = getSubAgentAssetName(name, assetIndex);
 
   return (
     <span
-      className={`eterx-subagent-identity eterx-subagent-identity-${normalizedStatus} ${className}`}
+      className={`eterx-subagent-avatar flex items-center justify-center overflow-hidden rounded-full border border-white/[0.08] bg-black/10 ${className}`}
       style={{
         width: size,
         height: size,
-        ['--eterx-subagent-a' as any]: identity.palette.a,
-        ['--eterx-subagent-b' as any]: identity.palette.b,
-        ['--eterx-subagent-glow' as any]: identity.palette.glow,
       }}
       role={title ? 'img' : undefined}
       aria-label={title}
       aria-hidden={title ? undefined : true}
       title={title}
     >
-      <span className="eterx-subagent-grid" aria-hidden="true">
-        {cells.map((active, index) => (
-          <span
-            key={index}
-            className={`eterx-subagent-pixel ${active ? 'eterx-subagent-pixel-on' : ''}`}
-            style={{ ['--eterx-subagent-delay' as any]: `${index * 42}ms` }}
-          />
-        ))}
-      </span>
-      <span className="eterx-subagent-scan" aria-hidden="true" />
-      <span className="eterx-subagent-rail" aria-hidden="true" />
+      <img
+        src={`/icons/sub-agents/${assetName}.png`}
+        alt={cleanName}
+        className="h-full w-full select-none object-cover"
+      />
     </span>
   );
 };
@@ -383,6 +340,8 @@ const CAT_MAP: Record<string, React.FC<IconProps>> = {
   agent: AgentAssetIcon,
   terminal: TerminalIcon,
   command: TerminalIcon,
+  clock: ClockIcon,
+  schedule: ClockIcon,
   image: ImageAssetIcon,
   file_read: FileReadIcon,
   file_create: FileAddIcon,
@@ -412,6 +371,7 @@ const CAT_MAP: Record<string, React.FC<IconProps>> = {
 export const AGENT_ICONS: Record<string, { Icon: React.FC<IconProps>; color: string }> = {
   'Running command': { Icon: TerminalIcon, color: W },
   'Running project command': { Icon: TerminalIcon, color: W },
+  'Managing scheduled task': { Icon: ClockIcon, color: W },
   'Reading file': { Icon: FileReadIcon, color: W },
   'Reading PDF': { Icon: FileReadIcon, color: W },
   'Scanning directory': { Icon: Folder01Icon, color: W },

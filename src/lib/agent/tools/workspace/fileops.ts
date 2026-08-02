@@ -5,18 +5,32 @@ import fse from 'fs-extra';
 import path from 'path';
 import { createReadStream } from 'fs';
 import * as readline from 'readline';
-import { execSync, spawnSync } from 'child_process';
+import { execFileSync, spawnSync } from 'child_process';
 
 import {
   checkEterXProtection,
   getPathResolverInfo,
   resolveWorkspacePathForContext,
   resolveReadableWorkspacePathForContext,
-  resolveWorkspaceDirectoryForContext,
 } from '../../workspace/path_resolver';
 import { isRgAvailable } from '../shared/rg';
+import { buildTerminalShellInvocation } from '../core/shell_resolver';
 
 const DESKTOP_SCRIPT_EXTENSIONS = new Set(['.py', '.ps1', '.js', '.mjs', '.cjs', '.bat', '.cmd', '.vbs', '.ahk']);
+
+async function writeUtf8Atomic(filePath: string, content: string): Promise<void> {
+  const tempPath = path.join(
+    path.dirname(filePath),
+    `.${path.basename(filePath)}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`,
+  );
+  await fs.writeFile(tempPath, content, 'utf8');
+  try {
+    await fse.move(tempPath, filePath, { overwrite: true });
+  } catch (error) {
+    await fs.unlink(tempPath).catch(() => undefined);
+    throw error;
+  }
+}
 
 function isDesktopHelperScript(filePath: string): boolean {
   const desktopPath = path.resolve(getPathResolverInfo().desktopPath);
@@ -40,6 +54,36 @@ function isDesktopHelperScript(filePath: string): boolean {
   return true;
 }
 
+async function extractDocumentText(filePath: string, extension: string): Promise<string> {
+  if (extension === 'docx') {
+    const AdmZip = require('adm-zip');
+    const zip = new AdmZip(filePath);
+    const xmlContent = zip.readAsText('word/document.xml', 'utf8');
+    if (!xmlContent) return '[Error: Empty or invalid DOCX document.xml]';
+    const paragraphs: string[] = [];
+    const paragraphRegex = /<w:p\b[^>]*>(.*?)<\/w:p>/g;
+    const textRegex = /<w:t\b[^>]*>(.*?)<\/w:t>/g;
+    let match: RegExpExecArray | null;
+    while ((match = paragraphRegex.exec(xmlContent)) !== null) {
+      const textMatches = match[1].match(textRegex);
+      if (!textMatches) continue;
+      paragraphs.push(textMatches
+        .map(value => value.replace(/<[^>]+>/g, ''))
+        .join('')
+        .replace(/&amp;/g, '&')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&quot;/g, '"')
+        .replace(/&apos;/g, "'"));
+    }
+    return paragraphs.join('\n');
+  }
+
+  const pdfParse = require('pdf-parse');
+  const data = await pdfParse(await fs.readFile(filePath));
+  return data.text || '';
+}
+
 async function readFileRange(
   filePath: string,
   startLine: number,
@@ -55,17 +99,23 @@ async function readFileRange(
   const hardEnd = endLine ?? Number.MAX_SAFE_INTEGER;
   const cap = Math.min(maxLines, hardEnd - start + 1);
 
-  for await (const line of rl) {
-    lineNo++;
-    if (lineNo < start) continue;
-    if (lineNo > hardEnd) break;
-    selected.push(line);
-    if (selected.length >= cap) break;
-  }
+  let totalLines = 0;
+  try {
+    for await (const line of rl) {
+      lineNo++;
+      if (lineNo < start) continue;
+      if (lineNo > hardEnd) break;
+      selected.push(line);
+      if (selected.length >= cap) break;
+    }
 
-  let totalLines = lineNo;
-  if (selected.length >= cap) {
-    for await (const _line of rl) totalLines++;
+    totalLines = lineNo;
+    if (selected.length >= cap) {
+      for await (const _line of rl) totalLines++;
+    }
+  } finally {
+    rl.close();
+    stream.destroy();
   }
 
   return { lines: selected, totalLines: Math.max(totalLines, lineNo), start, end: start + selected.length - 1 };
@@ -80,9 +130,9 @@ export const workspaceReadTool: ToolDefinition = {
   category: 'workspace',
   inputSchema: z.object({
     filename: z.string().describe('Absolute path for the current OS, or a path relative to the workspace'),
-    startLine: z.number().optional().describe('Start line number (1-indexed). Omit to start from beginning.'),
-    endLine: z.number().optional().describe('End line number (1-indexed, inclusive). Omit to read to end.'),
-    maxLines: z.number().optional().describe('Maximum number of lines to return (default: 500). Use smaller values for targeted reads.')
+    startLine: z.number().int().min(1).optional().describe('Start line number (1-indexed). Omit to start from beginning.'),
+    endLine: z.number().int().min(1).optional().describe('End line number (1-indexed, inclusive). Omit to read to end.'),
+    maxLines: z.number().int().min(1).max(5000).optional().describe('Maximum number of lines to return (default: 500). Use smaller values for targeted reads.')
   }),
   outputSchema: z.object({ content: z.string() }),
   execute: async (input: { filename: string; startLine?: number; endLine?: number; maxLines?: number }, context?: any) => {
@@ -207,8 +257,29 @@ export const workspaceReadTool: ToolDefinition = {
       throw new Error(`File too large (${ (stats.size / 1024 / 1024).toFixed(1) }MB). Use shell_command with "Get-Content -First N" or "Select-Object" to read portions.`);
     }
 
-    const maxLines = input.maxLines || 500;
-    const start = Math.max(1, input.startLine || 1);
+    const extension = path.extname(filePath).toLowerCase().slice(1);
+    if (extension === 'docx' || extension === 'pdf') {
+      const rawContent = await extractDocumentText(filePath, extension);
+      const allLines = rawContent.split('\n');
+      const start = Math.max(1, Math.floor(input.startLine || 1));
+      const end = Math.max(start, Math.floor(input.endLine ?? allLines.length));
+      const maxLines = Math.max(1, Math.min(Math.floor(input.maxLines || 500), 5000));
+      const outputLines = allLines.slice(start - 1, end).slice(0, maxLines);
+      const lastLineShown = outputLines.length ? start + outputLines.length - 1 : start - 1;
+      const content = outputLines.map((line, index) => `${start + index}| ${line}`).join('\n');
+      return {
+        content: `[File: ${path.basename(filePath)} | ${allLines.length} lines | ${(stats.size / 1024).toFixed(1)}KB | Showing lines ${start}-${lastLineShown}]\n${content}`,
+        size: stats.size,
+        path: filePath,
+        totalLines: allLines.length,
+        linesShown: outputLines.length,
+        startLine: start,
+        endLine: lastLineShown,
+      };
+    }
+
+    const maxLines = Math.max(1, Math.min(Math.floor(input.maxLines || 500), 5000));
+    const start = Math.max(1, Math.floor(input.startLine || 1));
     const ranged = await readFileRange(filePath, start, input.endLine, maxLines);
     const outputLines = ranged.lines;
     const totalLines = ranged.totalLines;
@@ -287,9 +358,9 @@ export const workspaceWriteTool: ToolDefinition = {
             finalContent = existing + input.content;
           } catch {}
         }
-        await fs.writeFile(filePath, finalContent, 'utf-8');
+        await writeUtf8Atomic(filePath, finalContent);
         await guard.audit({ type: 'file.write', path: filePath, bytes: Buffer.byteLength(finalContent) });
-        return { success: true, path: filePath, size: finalContent.length };
+        return { success: true, path: filePath, size: Buffer.byteLength(finalContent, 'utf8') };
       } else {
         // Fallback: use sandbox module directly
         const { createSandboxSession, writeSandboxFile, readSandboxFile } = require('../../../sandbox');
@@ -353,11 +424,11 @@ export const workspaceWriteTool: ToolDefinition = {
           if (existingLines > 50 && input.content.length > 500) {
             console.warn(`[workspace_write_file] ⚠️ OVERWRITE WARNING: ${filePath} has ${existingLines} lines. Agent should use workspace_edit_file instead.`);
             // Don't block — but inject a warning into the result
-            await fs.writeFile(filePath, input.content, 'utf-8');
+            await writeUtf8Atomic(filePath, input.content);
             return {
               success: true,
               path: filePath,
-              size: input.content.length,
+              size: Buffer.byteLength(input.content, 'utf8'),
               warning: `⚠️ You overwrote an existing ${existingLines}-line file. For future edits, use workspace_edit_file instead of workspace_write_file. Only use workspace_write_file for NEW files.`,
               overwrittenLines: existingLines,
             };
@@ -373,10 +444,10 @@ export const workspaceWriteTool: ToolDefinition = {
     if (input.append) {
       await fs.appendFile(filePath, input.content, 'utf-8');
     } else {
-      await fs.writeFile(filePath, input.content, 'utf-8');
+      await writeUtf8Atomic(filePath, input.content);
     }
 
-    return { success: true, path: filePath, size: input.content.length };
+    return { success: true, path: filePath, size: Buffer.byteLength(input.content, 'utf8') };
   }
 };
 
@@ -386,7 +457,7 @@ export const workspaceListDirectoryTool: ToolDefinition = {
   category: 'workspace',
   inputSchema: z.object({
     directory: z.string().optional().describe('Absolute OS path or relative workspace directory. Default: workspace root'),
-    depth: z.number().optional().describe('Maximum depth for recursive listing (default: 1 = current dir only, 2 = one level deep)')
+    depth: z.number().int().min(1).max(5).optional().describe('Maximum depth for recursive listing (default: 1 = current dir only, 2 = one level deep)')
   }),
   outputSchema: z.object({
     files: z.array(z.string()),
@@ -400,13 +471,41 @@ export const workspaceListDirectoryTool: ToolDefinition = {
     count: z.number().optional()
   }),
   execute: async (input: { directory?: string; depth?: number }, context?: any) => {
-    const walkDir = resolveWorkspaceDirectoryForContext(input.directory, context);
+    const walkDir = resolveReadableWorkspacePathForContext(input.directory || '.', context);
 
     if (!await fse.pathExists(walkDir)) {
       throw new Error(`Directory not found: ${ walkDir }`);
     }
 
     const entries = await fs.readdir(walkDir, { withFileTypes: true });
+    const maxDepth = Math.max(1, Math.min(Math.floor(input.depth ?? 1), 5));
+    const recursiveItems: Array<{ relative: string; name: string; isDir: boolean; isDirectory: () => boolean; size?: number }> = [];
+
+    const collect = async (directory: string, relativeDirectory: string, currentDepth: number): Promise<void> => {
+      if (currentDepth >= maxDepth || recursiveItems.length >= 500) return;
+      let children: import('fs').Dirent[] = [];
+      try {
+        children = await fs.readdir(directory, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      children.sort((a, b) => {
+        if (a.isDirectory() && !b.isDirectory()) return -1;
+        if (!a.isDirectory() && b.isDirectory()) return 1;
+        return a.name.localeCompare(b.name);
+      });
+      for (const child of children) {
+        if (recursiveItems.length >= 500) break;
+        const relative = relativeDirectory ? path.join(relativeDirectory, child.name) : child.name;
+        let size: number | undefined;
+        if (!child.isDirectory()) {
+          try { size = (await fs.stat(path.join(directory, child.name))).size; } catch { /* best effort */ }
+        }
+        recursiveItems.push({ relative, name: relative, isDir: child.isDirectory(), isDirectory: () => child.isDirectory(), size });
+        if (child.isDirectory()) await collect(path.join(directory, child.name), relative, currentDepth + 1);
+      }
+    };
+    await collect(walkDir, '', 0);
 
     // Sort directories first, then alphabetically
     entries.sort((a, b) => {
@@ -415,7 +514,7 @@ export const workspaceListDirectoryTool: ToolDefinition = {
       return a.name.localeCompare(b.name);
     });
 
-    let items = entries.slice(0, 500).map(e => {
+    let items = recursiveItems.slice(0, 500).map(e => {
       const type = e.isDirectory() ? '📁' : '📄';
       return `${ type } ${ e.name }`;
     });
@@ -439,11 +538,11 @@ export const workspaceListDirectoryTool: ToolDefinition = {
     }));
 
     return {
-      files: entries.map(e => e.name).slice(0, 500),
+      files: recursiveItems.map(e => e.relative).slice(0, 500),
       tree: items.join('\n'),
       entries: entriesInfo,
       path: walkDir,
-      count: entries.length
+      count: recursiveItems.length
     };
   }
 };
@@ -462,12 +561,12 @@ export const workspaceSearchTextTool: ToolDefinition = {
     fileType: z.string().optional().describe('File type filter (e.g. "ts", "py", "js"). Maps to rg --type'),
     glob: z.string().optional().describe('Glob filter for files (e.g. "*.tsx", "!**/node_modules/**")'),
     caseSensitive: z.boolean().optional().describe('Case-sensitive search (default: smart case)'),
-    maxResults: z.number().optional().describe('Maximum results to return (default: 200)')
+    maxResults: z.number().int().min(1).max(300).optional().describe('Maximum results to return (default: 200)')
   }),
   outputSchema: z.object({ results: z.array(z.any()) }),
   execute: async (input: { pattern: string; directory?: string; fileType?: string; glob?: string; caseSensitive?: boolean; maxResults?: number }, context?: any) => {
-    const searchDir = resolveWorkspaceDirectoryForContext(input.directory, context);
-    const maxResults = Math.min(input.maxResults || 200, 300);
+    const searchDir = resolveReadableWorkspacePathForContext(input.directory || '.', context);
+    const maxResults = Math.max(1, Math.min(Math.floor(input.maxResults || 200), 300));
 
     if (!await fse.pathExists(searchDir)) return { results: [] };
 
@@ -523,10 +622,14 @@ export const workspaceSearchTextTool: ToolDefinition = {
 
     // ─── Fallback: PowerShell Select-String ───
     if (process.platform === 'win32') try {
-      const psPattern = input.pattern.replace(/'/g, "''");
-      const psCmd = `Select-String -Path "${searchDir}\\*" -Pattern '${psPattern}' -Recurse -ErrorAction SilentlyContinue | Select-Object -First ${maxResults} | ForEach-Object { "$($_.RelativePath):$($_.LineNumber):$($_.Line.Trim().Substring(0, [Math]::Min(200, $_.Line.Trim().Length)))" }`;
+      const psQuote = (value: string) => `'${value.replace(/'/g, "''")}'`;
+      const psCmd = `Get-ChildItem -LiteralPath ${psQuote(searchDir)} -File -Recurse -ErrorAction SilentlyContinue | ` +
+        `Select-String -Pattern ${psQuote(input.pattern)} -ErrorAction SilentlyContinue | ` +
+        `Select-Object -First ${maxResults} | ` +
+        `ForEach-Object { [pscustomobject]@{ file=$_.Path; line=[int]$_.LineNumber; content=$_.Line.Trim().Substring(0, [Math]::Min(200, $_.Line.Trim().Length)) } | ConvertTo-Json -Compress }`;
 
-      const stdout = execSync(`powershell.exe -NoProfile -NonInteractive -Command "${psCmd.replace(/"/g, '\\"')}"`, {
+      const invocation = buildTerminalShellInvocation(psCmd, 'powershell');
+      const stdout = execFileSync(invocation.file, invocation.args, {
         cwd: searchDir,
         encoding: 'utf-8',
         timeout: 20000,
@@ -535,17 +638,15 @@ export const workspaceSearchTextTool: ToolDefinition = {
       });
 
       const results: any[] = [];
-      for (const line of stdout.split('\n').filter(Boolean)) {
+      for (const line of stdout.split(/\r?\n/).filter(Boolean)) {
         if (results.length >= maxResults) break;
-        const firstColon = line.indexOf(':');
-        const secondColon = line.indexOf(':', firstColon + 1);
-        if (firstColon > 0 && secondColon > firstColon) {
-          results.push({
-            file: line.substring(0, firstColon),
-            line: parseInt(line.substring(firstColon + 1, secondColon)) || 0,
-            content: line.substring(secondColon + 1).trim().substring(0, 200),
-          });
-        }
+        try {
+          const parsed = JSON.parse(line);
+          const relativeFile = parsed.file
+            ? path.relative(searchDir, String(parsed.file)).replace(/\\/g, '/')
+            : '';
+          results.push({ file: relativeFile || parsed.file, line: Number(parsed.line) || 0, content: String(parsed.content || '').substring(0, 200) });
+        } catch { /* skip malformed PowerShell output */ }
       }
 
       return { results, totalMatches: results.length, searchEngine: 'powershell', directory: searchDir };
@@ -554,26 +655,40 @@ export const workspaceSearchTextTool: ToolDefinition = {
     }
 
     // ─── Final fallback: Node.js readdir + includes ───
-    const files = await fs.readdir(searchDir, { recursive: true });
     const results: any[] = [];
 
-    for (const f of files) {
-      const filePath = path.join(searchDir, String(f));
+    const walkAndSearch = async (directory: string, relativeDirectory = ''): Promise<void> => {
+      if (results.length >= maxResults) return;
+      let entries: import('fs').Dirent[] = [];
       try {
-        const stat = await fs.stat(filePath);
-        if (!stat.isFile() || stat.size > 1024 * 1024) continue;
-
-        const content = await fs.readFile(filePath, 'utf-8');
-        const lines = content.split('\n');
-        lines.forEach((line, i) => {
-          if (line.includes(input.pattern) && results.length < maxResults) {
-            results.push({ file: String(f), line: i + 1, content: line.trim().substring(0, 200) });
-          }
-        });
-
+        entries = await fs.readdir(directory, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const entry of entries) {
         if (results.length >= maxResults) break;
-      } catch { continue; }
-    }
+        if (entry.name === 'node_modules' || entry.name === '.git') continue;
+        const filePath = path.join(directory, entry.name);
+        const relativePath = relativeDirectory ? path.join(relativeDirectory, entry.name) : entry.name;
+        if (entry.isDirectory()) {
+          await walkAndSearch(filePath, relativePath);
+          continue;
+        }
+        try {
+          const stat = await fs.stat(filePath);
+          if (!stat.isFile() || stat.size > 1024 * 1024) continue;
+          const content = await fs.readFile(filePath, 'utf-8');
+          for (const [index, line] of content.split('\n').entries()) {
+            if (line.includes(input.pattern) && results.length < maxResults) {
+              results.push({ file: relativePath.replace(/\\/g, '/'), line: index + 1, content: line.trim().substring(0, 200) });
+            }
+            if (results.length >= maxResults) break;
+          }
+        } catch { /* ignore unreadable or binary files */ }
+      }
+    };
+
+    await walkAndSearch(searchDir);
 
     if (results.length >= maxResults) {
       results.push({ warning: `Maximum ${maxResults} results reached. Use shell_command with rg for exhaustive search.` });
@@ -601,9 +716,9 @@ export const workspaceEditFileTool: ToolDefinition = {
       replace: z.string().describe('Replacement text'),
       replaceAll: z.boolean().optional().describe('Replace every matching occurrence. Defaults to false; ambiguous matches are rejected unless true.'),
       replace_all: z.boolean().optional().describe('Alias for replaceAll. Defaults to false.'),
-      startLine: z.number().optional().describe('Start line number (for line-replace mode, 1-indexed)'),
-      endLine: z.number().optional().describe('End line number (for line-replace mode, 1-indexed)')
-    }))
+      startLine: z.number().int().min(1).optional().describe('Start line number (for line-replace mode, 1-indexed)'),
+      endLine: z.number().int().min(1).optional().describe('End line number (for line-replace mode, 1-indexed)')
+    })).min(1).max(50)
   }),
   outputSchema: z.object({
     success: z.boolean(),
@@ -700,12 +815,12 @@ export const workspaceEditFileTool: ToolDefinition = {
         filename: input.filename,
         editsApplied: 0,
         totalLines: content.split('\n').length,
-        size: content.length,
+        size: Buffer.byteLength(content, 'utf8'),
       };
     }
 
     const finalContent = lines.join('\n');
-    await fs.writeFile(filePath, finalContent, 'utf-8');
+    await writeUtf8Atomic(filePath, finalContent);
     return {
       success: true,
       message: `Applied ${ input.edits.length } edits to ${ filePath }`,
@@ -713,7 +828,7 @@ export const workspaceEditFileTool: ToolDefinition = {
       filename: input.filename,
       editsApplied: input.edits.length,
       totalLines: finalContent.split('\n').length,
-      size: finalContent.length,
+      size: Buffer.byteLength(finalContent, 'utf8'),
     };
   }
 };

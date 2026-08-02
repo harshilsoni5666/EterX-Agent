@@ -85,6 +85,7 @@ const UNCACHEABLE_TOOLS = new Set([
   'workspace_apply_patch', 'workspace_run_command',
   'workspace_run_command', 'workspace_verify_code', 'git_operations',
   'docx_generator', 'task_decomposer', 'spawn_sub_agent', 'background_task',
+  'scheduled_tasks',
   'create_dynamic_tool', 'run_macro', 'screenshot_capture',
   'desktop_notification', 'email_sender', 'tts_engine',
   'process_manager', 'file_watcher',
@@ -643,8 +644,7 @@ export class KnowledgeEngine {
  * 1. Retry with modified args (fix common mistakes)
  * 2. Use alternative tool (e.g., web_scraper instead of web_search)
  * 3. Break into smaller sub-tasks
- * 4. Fall back to shell command
- * 5. Ask the agent to reason about the failure
+ * 4. Ask the agent to reason about the failure
  */
 interface RecoveryStrategy {
   name: string;
@@ -682,18 +682,6 @@ export class MultiStrategyRecovery {
           return { newTool: 'web_scraper', newArgs: { url: `https://www.google.com/search?q=${encodeURIComponent(args?.query || '')}` } };
         }
         return null;
-      }
-    },
-    {
-      name: 'shell_fallback',
-      condition: (tool, error) =>
-        tool === 'workspace_run_command' && error.includes('not recognized'),
-      recover: (tool, args) => {
-        // Try via PowerShell
-        return {
-          newTool: 'system_shell',
-          newArgs: { command: args?.command || '', shell: 'powershell' }
-        };
       }
     },
     {

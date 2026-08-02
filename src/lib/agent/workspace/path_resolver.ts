@@ -1,6 +1,7 @@
 import os from 'os';
 import path from 'path';
 import fs from 'fs';
+import { execFileSync } from 'child_process';
 
 // ═══════════════════════════════════════════════════════════════
 // EterX Source Protection Cloak v1.0
@@ -32,9 +33,9 @@ const PROTECTED_ROOT_FILES = [
 
 const USER_FOLDER_ALIASES = new Map<string, () => string>([
   ['desktop', getRealDesktopPath],
-  ['downloads', () => path.join(os.homedir(), 'Downloads')],
-  ['documents', () => path.join(os.homedir(), 'Documents')],
-  ['docs', () => path.join(os.homedir(), 'Documents')],
+  ['downloads', () => getUserFolderPath('DOWNLOAD', 'Downloads')],
+  ['documents', () => getUserFolderPath('DOCUMENTS', 'Documents')],
+  ['docs', () => getUserFolderPath('DOCUMENTS', 'Documents')],
 ]);
 
 function isPathInsideOrEqual(parentPath: string, candidatePath: string): boolean {
@@ -172,14 +173,53 @@ function getRealDesktopPath(): string {
     }
   }
 
-  // Standard Windows Desktop
-  const standardDesktop = path.join(homeDir, 'Desktop');
+  const standardDesktop = getUserFolderPath('DESKTOP', 'Desktop');
   if (fs.existsSync(standardDesktop)) {
     return standardDesktop;
   }
 
   // Fallback: create standard Desktop if nothing exists
   return standardDesktop;
+}
+
+const userFolderCache = new Map<string, string>();
+
+function getUserFolderPath(xdgName: 'DESKTOP' | 'DOCUMENTS' | 'DOWNLOAD', fallbackName: string): string {
+  const cached = userFolderCache.get(xdgName);
+  if (cached) return cached;
+
+  const homeDir = os.homedir();
+  let resolved = path.join(homeDir, fallbackName);
+
+  if (process.platform === 'linux') {
+    const configured = process.env[`XDG_${xdgName}_DIR`];
+    if (configured) {
+      resolved = configured.replace(/^\$HOME(?=[/\\]|$)/, homeDir).replace(/^~(?=[/\\]|$)/, homeDir);
+    } else {
+      try {
+        const output = execFileSync('xdg-user-dir', [xdgName], {
+          encoding: 'utf8',
+          timeout: 1000,
+          stdio: ['ignore', 'pipe', 'ignore'],
+        }).trim();
+        if (output) resolved = output;
+      } catch {
+        // Fall back to the conventional home directory name.
+      }
+    }
+  }
+
+  resolved = path.resolve(resolved);
+  userFolderCache.set(xdgName, resolved);
+  return resolved;
+}
+
+export function getUserDocumentsPath(): string {
+  return getUserFolderPath('DOCUMENTS', 'Documents');
+}
+
+export function getUserDownloadsPath(): string {
+  return getUserFolderPath('DOWNLOAD', 'Downloads');
 }
 
 function uniquePaths(paths: string[]): string[] {

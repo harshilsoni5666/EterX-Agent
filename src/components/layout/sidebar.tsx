@@ -171,7 +171,18 @@ const lightweightSidebarCss = `
     --sidebar-time-text: rgba(80, 91, 104, 0.62);
     --sidebar-running-track: rgba(39, 49, 63, 0.18);
     --sidebar-running-head: rgba(39, 49, 63, 0.82);
-    background: var(--sidebar-bg) !important;
+    background:
+      linear-gradient(90deg, rgba(255, 255, 255, 0.36), rgba(255, 255, 255, 0.36)),
+      radial-gradient(ellipse at 72% 22%, rgba(239, 194, 214, 0.07) 0%, rgba(239, 194, 214, 0.022) 30%, transparent 62%),
+      radial-gradient(ellipse at 38% 40%, rgba(250, 228, 173, 0.12) 0%, rgba(250, 228, 173, 0.038) 32%, transparent 64%),
+      radial-gradient(ellipse at 70% 54%, rgba(239, 210, 181, 0.11) 0%, rgba(239, 210, 181, 0.038) 32%, transparent 64%),
+      radial-gradient(ellipse at 44% 66%, rgba(190, 199, 229, 0.12) 0%, rgba(190, 199, 229, 0.040) 34%, transparent 66%),
+      radial-gradient(ellipse at 76% 80%, rgba(207, 188, 224, 0.12) 0%, rgba(207, 188, 224, 0.038) 36%, transparent 68%),
+      radial-gradient(ellipse at 34% 92%, rgba(246, 196, 188, 0.09) 0%, rgba(246, 196, 188, 0.026) 36%, transparent 68%),
+      var(--sidebar-bg) !important;
+    background-size: 100% 100%, 132% 100%, 126% 100%, 138% 100%, 132% 100%, 138% 100%, 132% 100%, 100% 100% !important;
+    animation: lightSidebarShellCycle 16s ease-in-out infinite !important;
+    will-change: background-position;
   }
 
   .eterx-sidebar-shell .eterx-sidebar-sheen,
@@ -197,9 +208,11 @@ const lightweightSidebarCss = `
   }
 
   :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-sheen {
-    background: var(--sidebar-shell-sheen) !important;
-    background-size: 180% 100% !important;
-    opacity: 0.58;
+    background: transparent !important;
+    top: 0 !important;
+    bottom: 0 !important;
+    height: auto !important;
+    opacity: 1;
     animation: none;
   }
 
@@ -228,16 +241,38 @@ const lightweightSidebarCss = `
   }
 
   :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-recents {
-    background: linear-gradient(180deg, rgba(255, 255, 255, 0.74), rgba(255, 255, 255, 0.52)) !important;
-    border-color: rgba(31, 31, 29, 0.07) !important;
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9) !important;
+    background: transparent !important;
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+    border-color: rgba(31, 31, 29, 0.06) !important;
+    box-shadow: none !important;
+  }
+
+  :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-recents-scroll {
+    -webkit-backdrop-filter: blur(14px) saturate(1.08) !important;
+    backdrop-filter: blur(14px) saturate(1.08) !important;
+    --eterx-sb-thumb: rgba(31, 31, 29, 0.16);
+    --eterx-sb-thumb-hover: rgba(31, 31, 29, 0.26);
+    --eterx-sb-thumb-active: rgba(31, 31, 29, 0.34);
   }
 
   :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-profile,
   :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-profile,
   .eterx-sidebar-shell .eterx-sidebar-profile {
+    background: rgba(255, 255, 255, 0.20) !important;
+    border-top-color: rgba(31, 31, 29, 0.065) !important;
+  }
+
+  :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-profile {
     background: transparent !important;
     border-top-color: transparent !important;
+  }
+
+  :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-profile {
+    background: transparent !important;
+    border-top-color: transparent !important;
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
   }
 
   .eterx-sidebar-resize-handle {
@@ -284,8 +319,31 @@ const lightweightSidebarCss = `
   :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-profile-card,
   :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-profile-card,
   .eterx-sidebar-shell .eterx-sidebar-profile-card {
+    background: rgba(255, 255, 255, 0.30) !important;
+    border-color: rgba(31, 31, 29, 0.065) !important;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72) !important;
+  }
+
+  :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-profile-card {
     background: transparent !important;
     border-color: transparent !important;
+    box-shadow: none !important;
+  }
+
+  :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-profile-card {
+    background: transparent !important;
+    border-color: transparent !important;
+    box-shadow: none !important;
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+  }
+
+  :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-settings-button {
+    background: transparent !important;
+    border-color: transparent !important;
+    box-shadow: none !important;
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
   }
 
   :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-profile-avatar,
@@ -404,6 +462,10 @@ const lightweightSidebarCss = `
   }
 
   .eterx-sidebar-shell .eterx-sidebar-chat-title {
+    font-size: 13.5px;
+  }
+
+  .eterx-sidebar-shell .eterx-sidebar-chat-title {
     display: inline-block !important;
     white-space: nowrap !important;
     overflow: visible !important;
@@ -492,24 +554,17 @@ const lightweightSidebarCss = `
 
   .eterx-sidebar-shell .eterx-sidebar-running-indicator {
     position: relative;
-    width: 15px;
-    height: 15px;
+    width: 16px;
+    height: 16px;
     border-radius: 999px;
-    border: 1.5px solid var(--sidebar-running-track);
+    border: 2px solid var(--sidebar-running-track);
     border-right-color: var(--sidebar-running-head);
-    animation: eterx-sidebar-spin 1.18s cubic-bezier(0.45, 0.05, 0.55, 0.95) infinite;
-    box-shadow:
-      inset 0 0 0 1px rgba(255, 255, 255, 0.025),
-      0 0 0 1px color-mix(in srgb, var(--sidebar-running-head) 7%, transparent);
+    animation: eterx-sidebar-spin 1.35s linear infinite;
+    box-shadow: none;
   }
 
   .eterx-sidebar-shell .eterx-sidebar-running-indicator::after {
-    content: '';
-    position: absolute;
-    inset: 3px;
-    border-radius: inherit;
-    background: color-mix(in srgb, var(--sidebar-running-head) 18%, transparent);
-    animation: eterx-sidebar-running-breathe 1.8s ease-in-out infinite;
+    display: none;
   }
 
   .eterx-sidebar-shell .eterx-sidebar-chat-active .eterx-sidebar-running-indicator {
@@ -535,14 +590,8 @@ const lightweightSidebarCss = `
     }
   }
 
-  @keyframes eterx-sidebar-running-breathe {
-    0%, 100% { opacity: 0.35; }
-    50% { opacity: 0.8; }
-  }
-
   @media (prefers-reduced-motion: reduce) {
-    .eterx-sidebar-shell .eterx-sidebar-running-indicator,
-    .eterx-sidebar-shell .eterx-sidebar-running-indicator::after {
+    .eterx-sidebar-shell .eterx-sidebar-running-indicator {
       animation: none;
     }
   }
@@ -1218,11 +1267,11 @@ export const Sidebar = React.memo<SidebarProps>(({
 
           {/* Expanded Recents List */}
           {isOpen ? (
-            <div className="eterx-sidebar-recents flex-1 mt-2 ml-2 mr-2 mb-1 bg-transparent rounded-[14px] border border-transparent flex flex-col py-2.5 overflow-hidden relative">
+            <div className="eterx-sidebar-recents flex-1 mt-2 ml-1 mr-1 mb-1 bg-transparent rounded-[16px] border border-transparent flex flex-col py-3 overflow-hidden relative">
               <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-[var(--sidebar-surface-border)]" />
               <div className="flex items-center justify-between pl-3.5 pr-1.5 mb-1.5 min-h-[26px] relative z-30">
                 <div className="flex min-w-0 items-baseline gap-2">
-                  <span className="eterx-sidebar-section-title text-[12px] font-medium text-[var(--sidebar-muted-text)] tracking-normal shrink-0 transition-colors duration-150">
+                  <span className="eterx-sidebar-section-title text-[13px] font-medium text-[var(--sidebar-muted-text)] tracking-normal shrink-0 transition-colors duration-150">
                     {isSelectMode ? `${ selectedCount } selected` : 'Recents'}
                   </span>
                 </div>
@@ -1385,7 +1434,10 @@ export const Sidebar = React.memo<SidebarProps>(({
                         {!isSelectMode && (
                           <div className="eterx-sidebar-chat-meta ml-1.5 flex shrink-0 items-center justify-end relative z-10">
                             {isWorking ? (
-                              <span className="eterx-sidebar-running-indicator" aria-label="Agent working" />
+                              <span
+                                className={`eterx-sidebar-running-indicator ${ isActive ? 'eterx-sidebar-active-loading-spinner' : '' }`}
+                                aria-label={isActive ? 'Loading active chat' : 'Agent working'}
+                              />
                             ) : hasUnread ? (
                               <span className="eterx-sidebar-unread-dot" aria-label="Unread agent update" />
                             ) : (
@@ -1512,7 +1564,7 @@ export const Sidebar = React.memo<SidebarProps>(({
                 className="eterx-sidebar-menu-item w-full px-3 py-2 text-[13px] font-medium text-[var(--sidebar-muted-text)] hover:text-[var(--sidebar-hover-text)] hover:bg-[var(--sidebar-hover-bg)] rounded-[10px] flex items-center gap-3 transition-colors duration-150 ease-out text-left group/btn"
               >
                 <PremiumShare className="w-4 h-4 text-[var(--sidebar-icon)] group-hover/btn:text-[var(--sidebar-hover-text)] transition-colors duration-150" />
-                {shareCopiedId === menuState.id ? <span className="text-[#34D399]">Link copied!</span> : "Share"}
+                {shareCopiedId === menuState.id ? <span className="text-[var(--sidebar-hover-text)]">Link copied!</span> : "Share"}
               </button>
               <button
                 onClick={(e) => {

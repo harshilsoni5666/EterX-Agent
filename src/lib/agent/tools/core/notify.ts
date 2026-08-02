@@ -1,11 +1,16 @@
 import { z } from 'zod';
 import { ToolDefinition } from '../../schemas';
-import { exec, execFile } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { enforceToolCapability } from '../security/tool_policy';
+import { buildTerminalShellInvocation } from './shell_resolver';
 
-const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
+
+async function runPowerShell(script: string): Promise<{ stdout: string; stderr: string }> {
+  const invocation = buildTerminalShellInvocation(script, 'powershell');
+  return execFileAsync(invocation.file, invocation.args, { windowsHide: true, timeout: 15_000 });
+}
 
 function psQuote(value: unknown): string {
   return `'${String(value ?? '').replace(/'/g, "''")}'`;
@@ -77,7 +82,7 @@ export const desktopNotifyTool: ToolDefinition = {
         [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('EterX Agent').Show($toast);
       `.trim();
 
-      await execAsync(psScript, { shell: 'powershell.exe' });
+      await runPowerShell(psScript);
       return { success: true, message: `Notification sent: "${input.title}"` };
     } catch (error: any) {
       // Fallback to simpler BurntToast or basic notification
@@ -91,7 +96,7 @@ export const desktopNotifyTool: ToolDefinition = {
           Start-Sleep -Seconds 6;
           $notify.Dispose();
         `.trim();
-        await execAsync(fallbackScript, { shell: 'powershell.exe' });
+        await runPowerShell(fallbackScript);
         return { success: true, message: `Notification sent (fallback): "${input.title}"` };
       } catch (fallbackError: any) {
         return { success: false, message: `Failed to send notification: ${fallbackError.message}` };

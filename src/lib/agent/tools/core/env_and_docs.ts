@@ -2,8 +2,6 @@ import { z } from 'zod';
 import { ToolDefinition } from '../../schemas';
 import path from 'path';
 import fs from 'fs-extra';
-import { exec } from 'child_process';
-import { promisify } from 'util';
 import {
   resolveFinalArtifactPathForContext,
   resolveReadableWorkspacePathForContext,
@@ -11,8 +9,6 @@ import {
   resolveWorkspacePathForContext,
 } from '../../workspace/path_resolver';
 import { enforceToolCapability } from '../security/tool_policy';
-
-const execAsync = promisify(exec);
 
 function normalizeEnvKey(value: unknown): string {
   const key = String(value ?? '').trim();

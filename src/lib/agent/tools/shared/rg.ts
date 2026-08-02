@@ -1,11 +1,12 @@
-import { execSync, spawnSync } from 'child_process';
+import { spawnSync } from 'child_process';
 
 let _rgAvailable: boolean | null = null;
 
 export function isRgAvailable(): boolean {
   if (_rgAvailable !== null) return _rgAvailable;
   try {
-    execSync('rg --version', { timeout: 3000, stdio: 'pipe' });
+    const result = spawnSync('rg', ['--version'], { timeout: 3000, stdio: 'pipe' });
+    if (result.error || result.status !== 0) throw result.error || new Error('rg is unavailable');
     _rgAvailable = true;
     console.log('[rg] ripgrep available');
   } catch {

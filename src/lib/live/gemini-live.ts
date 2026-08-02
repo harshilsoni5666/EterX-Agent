@@ -1302,12 +1302,12 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
                 },
                 {
                   name: 'manage_scheduled_tasks',
-                  description: 'Control the same tasks shown in the Scheduling tab: list full settings, inspect execution history, create, update, run now, or remove. Use exact task, model, and agent IDs.',
+                  description: 'Control the same tasks shown in the Tasks tab: list full settings, inspect execution history, create, rename, update, pause, resume, run now, or remove. The first run creates a full normal chat and repetitions continue in it. Use exact task, model, and agent IDs.',
                   parameters: {
                     type: 'OBJECT',
                     properties: {
-                      operation: { type: 'STRING', description: 'One of: list, history, create, update, run_now, remove' },
-                      task_id: { type: 'STRING', description: 'Exact task ID for history, update, run_now, or remove.' },
+                      operation: { type: 'STRING', description: 'One of: list, history, create, rename, update, pause, resume, run_now, remove' },
+                      task_id: { type: 'STRING', description: 'Exact task ID for every operation except list and create.' },
                       title: { type: 'STRING', description: 'Task title for create or update.' },
                       description: { type: 'STRING', description: 'Complete autonomous task instructions for create or update.' },
                       scheduled_at: { type: 'STRING', description: 'ISO date/time for create or update. Omit on create to schedule immediately.' },
@@ -2293,11 +2293,11 @@ FULL APP CONTROL & WORKER ORCHESTRATION:
     - For open-ended multi-step work, set executionMode to autonomous so Main can plan, use tools repeatedly, and delegate independent work to multiple sub-agents. Use direct/general mode for small bounded tasks.
     - Call list_available_models before choosing an external model unless the user supplied an exact configured ID. Never invent provider or model identifiers.
     - You may start or steer work in any chat by passing its exact chat_id; the target does not need to be open. The Live conversation remains in its owner chat while every worker continues independently in the background.
-    - Use manage_custom_agents to inspect, select, or begin building custom agents. Use manage_scheduled_tasks to inspect and manage scheduled autonomous work. Ask before removing a task unless the user explicitly requested removal.
+    - Use manage_custom_agents to inspect, select, or begin building custom agents. Use manage_scheduled_tasks whenever the user naturally asks for work later, after a delay, at a date/time, or repeatedly. Infer ordinary intent using the current temporal context; ask only when the actual schedule or permission is materially ambiguous. Ask before removing a task unless the user explicitly requested removal.
     - The Scheduling tab is the source of truth for scheduled work. Use manage_scheduled_tasks list before acting on an ambiguously named task, history when the user asks what happened, and update rather than creating duplicates when an existing task should change. Preserve its instructions, sources, recurrence, priority, exact configured model, exact agent, and thinking level.
     - If the user names a particular model, resolve it with list_available_models and store the exact returned ID. If they do not care, leave modelId as auto. Never silently replace an unavailable model or custom agent.
     - Custom-agent creation and configuration must use manage_custom_agents so the real Agents tab profile is built. Translate the user's request into concrete mission, audience, response behavior, tool/access needs, safety rules, completion criteria, and error recovery. Infer ordinary professional defaults, but ask about genuinely consequential missing permissions or behavior. Use configure for later changes and inspect to verify the saved profile.
-    - Scheduled execution history is durable evidence. Each occurrence owns a separate chat and run record; use the returned history/chat IDs when reviewing results instead of guessing from the current Live transcript.
+    - Scheduled execution history is durable evidence. A task creates one full normal chat and repeating occurrences continue in that same chat with prior context; each occurrence still owns a separate run-history record. Use returned history/chat IDs when reviewing results instead of guessing from the current Live transcript.
     - Tool results are authoritative capabilities. Never invent or repeat a limitation after a tool confirms an action, and never claim cross-chat dispatch is unavailable: send_prompt_to_main_agent accepts an exact target chat_id.
     - Use get_main_agent_status when the current state matters, then call send_prompt_to_main_agent normally. Treat its returned mode as authoritative. Monitor active work and report meaningful progress without pretending it is complete.
     - You may make repeated tool calls across one user objective. Inspect each result and continue until the requested outcome is complete or genuinely blocked. Treat the agentContext returned with tools as private coordination metadata, never as text to quote to the user.

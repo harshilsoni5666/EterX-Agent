@@ -1,9 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { rejectCrossOrigin } from '../../agent/_shared';
 import { normalizeAttachmentMime } from '../../../../lib/agent/attachment-pipeline';
+import { getEterxWorkspaceDir } from '../../../../lib/agent/storage-paths';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
+const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 
 /**
  * Save media files locally before send.
@@ -23,7 +25,7 @@ export async function POST(req: NextRequest) {
     const path = require('path');
     const { randomUUID } = require('crypto');
 
-    const workspaceTemp = path.resolve(process.cwd(), '.workspaces', 'temp');
+    const workspaceTemp = getEterxWorkspaceDir('temp');
     await fsp.mkdir(workspaceTemp, { recursive: true });
 
     const contentType = req.headers.get('content-type') || '';
@@ -43,6 +45,9 @@ export async function POST(req: NextRequest) {
       fileName = String(formData.get('fileName') || (file as any).name || fileName);
       mimeType = String(formData.get('mimeType') || (file as any).type || mimeType);
       fileBuffer = Buffer.from(await (file as any).arrayBuffer());
+      if (fileBuffer.length > MAX_UPLOAD_BYTES) {
+        return NextResponse.json({ error: `File exceeds the ${MAX_UPLOAD_BYTES / 1024 / 1024}MB upload limit` }, { status: 413 });
+      }
     } else {
       const body = await req.json();
       filePath = body.filePath;
@@ -63,6 +68,10 @@ export async function POST(req: NextRequest) {
     if (fileBuffer) {
       await fsp.writeFile(destPath, fileBuffer);
     } else if (filePath) {
+      const sourceStats = await fsp.stat(filePath);
+      if (sourceStats.size > MAX_UPLOAD_BYTES) {
+        return NextResponse.json({ error: `File exceeds the ${MAX_UPLOAD_BYTES / 1024 / 1024}MB upload limit` }, { status: 413 });
+      }
       if (!fs.existsSync(destPath) || filePath !== destPath) {
         await fsp.copyFile(filePath, destPath);
       }

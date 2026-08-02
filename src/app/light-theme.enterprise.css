@@ -98,14 +98,14 @@
 }
 
 :root[data-theme="light"] .eterx-sidebar-profile-card {
-  background: #ECECE9 !important;
-  border-color: rgba(31, 31, 29, 0.06) !important;
+  background: transparent !important;
+  border-color: transparent !important;
   box-shadow: none !important;
 }
 
 :root[data-theme="light"] .eterx-sidebar-settings-button {
-  background: #E5E5E2 !important;
-  border-color: rgba(31, 31, 29, 0.06) !important;
+  background: transparent !important;
+  border-color: transparent !important;
   box-shadow: none !important;
   color: #1F1F1D !important;
   transform: none !important;
@@ -136,8 +136,8 @@
 }
 
 :root[data-theme="light"] .eterx-sidebar-profile-status {
-  background: #16A34A !important;
-  box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.12) !important;
+  background: #A6A29A !important;
+  box-shadow: 0 0 0 3px rgba(166, 162, 154, 0.12) !important;
 }
 
 :root[data-theme="light"] .eterx-sidebar-profile-action,
@@ -238,7 +238,7 @@
 }
 
 :root[data-theme="light"] .ambient-glow-layer {
-  display: none !important;
+  display: block !important;
 }
 
 :root[data-theme="light"] .eterx-composer-textarea {
@@ -863,6 +863,18 @@
 :root[data-theme="light"] .eterx-composer-shell .eterx-composer-send-button:hover,
 :root[data-theme="light"] .eterx-composer-shell .eterx-composer-stop-button:hover {
   background: #11100F !important;
+}
+
+/* Keep loading indicators legible in both light-theme action surfaces:
+   stop-pending sits on a dark button, while network-paused sits on a light one. */
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-stop-pending {
+  border-color: rgba(255, 255, 255, 0.30) !important;
+  border-top-color: #FFFFFF !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-spinner {
+  border-color: rgba(31, 31, 29, 0.16) !important;
+  border-top-color: #1F1F1D !important;
 }
 
 /* Ensure the main panel and its children become perfect rectangles when the sidebar is closed. */
@@ -1691,15 +1703,23 @@
 
 /* User Turns Timeline Navigation Light Theme Overrides */
 :root[data-theme="light"] .eterx-chat-turns-dash {
-  background-color: rgba(31, 31, 29, 0.22) !important;
+  background-color: rgba(31, 31, 29, 0.34) !important;
 }
 
-:root[data-theme="light"] .eterx-chat-turns-dash.bg-\[\#F4F2EE\] {
-  background-color: #1F1F1D !important;
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-disabled-send-button {
+  background: rgba(31, 31, 29, 0.055) !important;
+  color: rgba(31, 31, 29, 0.42) !important;
+  border-color: rgba(31, 31, 29, 0.06) !important;
+  box-shadow: none !important;
+  opacity: 1 !important;
 }
 
-:root[data-theme="light"] .group:hover .eterx-chat-turns-dash:not(.bg-\[\#F4F2EE\]) {
-  background-color: rgba(31, 31, 29, 0.45) !important;
+:root[data-theme="light"] [aria-current="step"] .eterx-chat-turns-dash {
+  background-color: rgba(31, 31, 29, 0.68) !important;
+}
+
+:root[data-theme="light"] .group:hover .eterx-chat-turns-dash {
+  background-color: rgba(31, 31, 29, 0.52) !important;
 }
 
 :root[data-theme="light"] .eterx-chat-turns-popover {
@@ -2156,4 +2176,51 @@
 :root[data-theme="light"] [role="option"][data-highlighted] {
   background-color: rgba(0, 0, 0, 0.04) !important;
   color: #1F1F1D !important;
+}
+
+/* Composer contrast pass: use one light-mode slate palette instead of mixing
+   dark-theme white tokens with near-black overrides. */
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-textarea {
+  color: #364152 !important;
+  caret-color: #364152 !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-textarea-wrap > .relative > span[aria-hidden="true"] {
+  color: #7B8491 !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-agent-button,
+:root[data-theme="light"] .eterx-composer-shell .eterx-model-button,
+:root[data-theme="light"] .eterx-composer-shell .eterx-control-button {
+  color: #5F6B78 !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-agent-button .eterx-selector-label,
+:root[data-theme="light"] .eterx-composer-shell .eterx-model-button .eterx-selector-label {
+  color: #46515E !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-selector-chevron,
+:root[data-theme="light"] .eterx-composer-shell .eterx-selector-chevron-wrapper {
+  color: #66717D !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-control-icon:not(img) {
+  color: #5F6B78 !important;
+}
+
+:root[data-theme="light"] .eterx-composer-popout {
+  color: #46515E !important;
+}
+
+:root[data-theme="light"] .eterx-composer-popout .text-white,
+:root[data-theme="light"] .eterx-composer-popout .text-\[\#E8E6E3\],
+:root[data-theme="light"] .eterx-composer-popout .text-\[\#F2F0EC\],
+:root[data-theme="light"] .eterx-composer-popout .text-\[\#F4F1EA\],
+:root[data-theme="light"] .eterx-composer-popout .text-\[\#F4F4F4\] {
+  color: #46515E !important;
+}
+
+:root[data-theme="light"] .eterx-composer-popout svg {
+  color: #5F6B78 !important;
 }

@@ -3,6 +3,7 @@ import { promisify } from 'util';
 import path from 'path';
 import os from 'os';
 import fs from 'fs-extra';
+import { resolveTerminalShell } from '../tools/core/shell_resolver';
 
 const execFileAsync = promisify(execFile);
 
@@ -653,8 +654,9 @@ class NativeCurrentBrowserController {
     if (process.platform === 'linux') return this.runLinux(action, payload);
 
     const encodedScript = Buffer.from(WINDOWS_BROWSER_SCRIPT, 'utf16le').toString('base64');
+    const powershell = resolveTerminalShell('powershell');
     const { stdout } = await execFileAsync(
-      'powershell.exe',
+      powershell,
       [
         '-NoProfile',
         '-NonInteractive',

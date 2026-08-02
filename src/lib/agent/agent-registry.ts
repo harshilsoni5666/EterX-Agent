@@ -13,6 +13,7 @@ import { observeUserProxy, startUserProxyRuntime, stopUserProxyRuntime, pauseUse
 import { cancelPendingProxyTasks, claimDormantProxyDirectives, claimNextProxyTask, enqueueProxyTask, getPendingProxyTaskCount, readProxyControl, saveDormantProxyDirective, settleProxyTask, updateProxyControl } from './autonomy/proxy-control-plane';
 import { cancelAgent, cancelAllSubAgents, clearCancelState, globalSubAgentSpawner } from './roles/sub_agent';
 import { normalizeAttachmentMime } from './attachment-pipeline';
+import { normalizeStreamTimestamp } from '../streaming-lifecycle';
 
 // Ensure tools are bootstrapped
 import './tools/index';
@@ -219,10 +220,22 @@ class AgentRegistry {
     }
 
     const now = Date.now();
+    const normalizedTrace = traceEvent && typeof traceEvent === 'object'
+      ? {
+        ...traceEvent,
+        timestamp: normalizeStreamTimestamp(traceEvent.timestamp, now),
+        ...(traceEvent.startTime !== undefined
+          ? { startTime: normalizeStreamTimestamp(traceEvent.startTime, normalizeStreamTimestamp(traceEvent.timestamp, now)) }
+          : {}),
+        ...(traceEvent.endTime !== undefined
+          ? { endTime: normalizeStreamTimestamp(traceEvent.endTime, normalizeStreamTimestamp(traceEvent.timestamp, now)) }
+          : {}),
+      }
+      : traceEvent;
     const entry: TraceEvent = {
       index: execution.traceCounter++,
       timestamp: now,
-      data: traceEvent,
+      data: normalizedTrace,
     };
 
     execution.traceBuffer.push(entry);
@@ -231,12 +244,12 @@ class AgentRegistry {
       execution.peakMemoryMB = Math.max(execution.peakMemoryMB || 0, this.getProcessMemoryMB());
     }
 
-    if (traceEvent?.type === 'tool_call' || traceEvent?.type === 'action') {
+    if (normalizedTrace?.type === 'tool_call' || normalizedTrace?.type === 'action') {
       execution.toolCallCount++;
     }
 
-    if (traceEvent?.complexity) {
-      execution.complexity = traceEvent.complexity;
+    if (normalizedTrace?.complexity) {
+      execution.complexity = normalizedTrace.complexity;
     }
 
     if (execution.traceBuffer.length > MAX_TRACE_BUFFER) {
@@ -244,7 +257,7 @@ class AgentRegistry {
     }
 
     if (persistToTaskStore) {
-      const compactTrace = this.compactTracePayload(traceEvent);
+      const compactTrace = this.compactTracePayload(normalizedTrace);
       taskStore.addTrace(
         execution.chatId,
         compactTrace && typeof compactTrace === 'object'
@@ -442,14 +455,6 @@ class AgentRegistry {
         const path = require('path');
         const { randomUUID } = require('crypto');
 
-        const GEMINI_NATIVE_MIMES = new Set([
-          'image/png', 'image/jpeg', 'image/webp', 'image/heic', 'image/heif',
-          'application/pdf', 'application/json',
-          'text/plain', 'text/html', 'text/css', 'text/xml', 'text/csv', 'text/rtf', 'text/javascript',
-          'audio/mp3', 'audio/wav', 'audio/mpeg', 'audio/ogg',
-          'video/mp4', 'video/mpeg', 'video/webm', 'video/mov',
-        ]);
-
         const workspaceTemp = path.resolve(process.cwd(), '.workspaces', 'temp');
         const hasMediaAttachments = !!(mediaAttachments && mediaAttachments.length > 0);
         if (hasMediaAttachments) await fs.ensureDir(workspaceTemp);
@@ -563,12 +568,10 @@ class AgentRegistry {
           }
         }
 
-        const preUploadedFiles = mediaFiles.filter(f => f.fileUri);
-        const needsUploadFiles = mediaFiles.filter(f => !f.fileUri && GEMINI_NATIVE_MIMES.has(f.mimeType));
-        const currentGeminiNativeFiles = [...preUploadedFiles, ...needsUploadFiles];
-        const textFallbackFiles = mediaFiles.filter(file =>
-          !file.fileUri && !GEMINI_NATIVE_MIMES.has(file.mimeType),
-        );
+        // Keep every attachment as the original file. Provider adapters below
+        // decide how to upload it; nothing is downgraded to extracted text or
+        // a path-only fallback here.
+        const currentGeminiNativeFiles = [...mediaFiles];
 
         // Media attachments are current-turn only. Re-attaching earlier images
         // makes the model see stale screenshots/photos on unrelated later turns.
@@ -584,18 +587,15 @@ class AgentRegistry {
         }
 
         // ═══════════════════════════════════════════════════════════
-        // Documents that require the Gemini Files API are uploaded with the
-        // leased key. Images stay on their real local path and are attached
-        // inline by Agent in the same generateContent request.
+        // Upload every file through the leased provider key. This keeps image
+        // attachments and office documents on the provider's native Files API
+        // path instead of converting them in the renderer or extracting text.
         // ═══════════════════════════════════════════════════════════
         const uploadedImageParts: { fileData: { fileUri: string, mimeType: string } }[] = [];
         if (!isExternalProvider) {
           const geminiAI = new (require('@google/genai').GoogleGenAI)({ apiKey: lease!.apiKey });
         for (const file of geminiNativeFiles) {
           try {
-            const isImage = String(file.mimeType || '').startsWith('image/');
-            if (isImage) continue;
-
             // If the file has a URI from VISUAL MEMORY (previously uploaded with this key ecosystem), reuse it
             if (file.fileUri && !currentGeminiNativeFiles.some(f => f.name === file.name)) {
               uploadedImageParts.push({ fileData: { fileUri: file.fileUri, mimeType: file.mimeType } });
@@ -605,8 +605,7 @@ class AgentRegistry {
 
             // ALWAYS fresh upload for NEW files using the LEASED key (prevents cross-key 403)
             if (!await fs.pathExists(file.path)) {
-              console.warn(`[AgentRegistry] ⚠️ File not found for upload: ${ file.path }`);
-              continue;
+              throw new Error(`Attachment file not found: ${ file.path }`);
             }
 
             console.log(`[AgentRegistry] Preparing media via Files API: ${ file.name } (${ file.mimeType })`);
@@ -619,9 +618,13 @@ class AgentRegistry {
               file.fileUri = uploadResult.uri; // Save URI back to the object
               uploadedImageParts.push({ fileData: { fileUri: uploadResult.uri, mimeType: uploadResult.mimeType || file.mimeType } });
               console.log(`[AgentRegistry] ✅ Uploaded: ${ uploadResult.name } → ${ uploadResult.uri }`);
+            } else {
+              throw new Error(`Provider did not return a file URI for ${ file.name }`);
             }
           } catch (uploadErr: any) {
-            console.warn(`[AgentRegistry] ⚠️ Upload failed for ${ file.name }: ${ uploadErr.message?.substring(0, 100) }`);
+            const message = uploadErr?.message || String(uploadErr);
+            console.error(`[AgentRegistry] Attachment upload failed for ${ file.name }: ${ message }`);
+            throw new Error(`ATTACHMENT_PREPARATION_FAILED: ${ file.name } could not be uploaded through the selected provider.`);
           }
         }
         }
@@ -633,19 +636,13 @@ class AgentRegistry {
         let enrichedPrompt = '';
         if (geminiNativeFiles.length > 0) {
           const fileList = geminiNativeFiles.map(f => `  • ${ f.name } (${ f.mimeType })${ f.fileUri ? ' [UPLOADED ✓]' : '' }`).join('\n');
-          enrichedPrompt += isExternalProvider
-            ? `[USER ATTACHED FILES]\nThe following files are saved locally for this run:\n${ fileList }\n\nIMPORTANT: These files are available at their local paths in .workspaces/temp/. Use workspace tools to inspect/read them when needed. Do not claim direct visual access unless a tool result proves it.\n\n`
-            : `[USER ATTACHED FILES]\nThe following files are loaded into your visual context:\n${ fileList }\n\nIMPORTANT: These files (especially images) are directly visible to you in this message. You can see and analyze them. Describe what you see when the user asks about them. Files also persist at .workspaces/temp/ for re-reading.\n\n`;
+          enrichedPrompt += `[USER ATTACHED FILES]\nThe following original files are attached through the selected provider's native file/media input:\n${ fileList }\n\nDo not replace these attachments with extracted text or a local-path fallback. Analyze the native file/media inputs when the user asks about them.\n\n`;
         }
         // If images are present, add explicit analysis instruction
         const attachedImageCount = geminiNativeFiles.filter(f => String(f.mimeType || '').startsWith('image/')).length;
         if (!isExternalProvider && (uploadedImageParts.length > 0 || attachedImageCount > 0)) {
           const imageCount = attachedImageCount || uploadedImageParts.length;
           enrichedPrompt += `[MULTIMODAL CONTEXT] ${ imageCount } image(s) are attached to this message. You CAN see them. When the user asks about an image, analyze it thoroughly — describe content, colors, text, layout, objects, people, code, UI elements, or anything visible. Do NOT say you cannot see images. You are a multimodal model with full vision capability.\n\n`;
-        }
-
-        for (const file of textFallbackFiles) {
-          enrichedPrompt += `[Attached file: ${ file.name } (${ file.mimeType })] — real file available at ${ file.path }. Read it on demand with workspace file tools; do not inline or duplicate the entire file unless the user explicitly requests extraction.\n\n`;
         }
 
         enrichedPrompt += `[USER REQUEST]\n${ prompt }`;
@@ -721,6 +718,7 @@ class AgentRegistry {
             });
           }
         }
+        const providerMediaFiles = isExternalProvider ? mediaFiles : geminiNativeFiles;
         const response = await orchestrator.executePipeline(
           userId,
           projectId,
@@ -729,7 +727,7 @@ class AgentRegistry {
           onTrace,
           mode,
           { ...(pinnedContext || {}), abortSignal: execution.abortController.signal },
-          geminiNativeFiles,
+          providerMediaFiles,
           uploadedImageParts, // Files API parts instead of base64
           userName,
           isExternalProvider ? undefined : lease!.apiKey,
@@ -743,6 +741,11 @@ class AgentRegistry {
         terminalStatus = wasCancelledByResponse ? 'stopped' : responseFailed ? 'failed' : 'completed';
         execution.finalAnswer = responseText;
         if (responseFailed) execution.error = responseText;
+        // Publish the terminal state before task/key/sub-agent cleanup. A new
+        // user follow-up must never be steered into a run that has already
+        // produced its final response and is only unwinding resources.
+        execution.status = terminalStatus;
+        execution.completedAt = execution.completedAt || Date.now();
 
         // Update effective model with the model mode resolved by the orchestrator!
         const actualModelConfig = getMainAgentModelConfig(response.modelMode, runtimeSettings);
@@ -773,6 +776,11 @@ class AgentRegistry {
         terminalStatus = wasCancelled ? 'stopped' : 'failed';
         execution.error = error.message;
         execution.finalAnswer = wasCancelled ? 'Stopped by user.' : `Agent Error: ${ error.message }`;
+        // API failures (including exhausted/rate-limited keys) are terminal
+        // immediately. Cleanup still runs below, but the registry must stop
+        // advertising this execution as steerable while it is unwinding.
+        execution.status = terminalStatus;
+        execution.completedAt = execution.completedAt || Date.now();
 
         if (!wasCancelled) {
           // Check if it's an API key error — auto-failover
@@ -898,8 +906,8 @@ class AgentRegistry {
       start = low;
     }
     const newTraces = execution.traceBuffer.slice(start).map(trace => ({
-      timestamp: trace.timestamp,
       ...trace.data,
+      timestamp: normalizeStreamTimestamp(trace.data?.timestamp, trace.timestamp),
       _traceIdx: trace.index,
     }));
 
@@ -987,7 +995,13 @@ class AgentRegistry {
     expectedRunId?: string,
   ): boolean {
     const execution = this.findExecution(chatId);
-    if (!execution || execution.status !== 'running') return false;
+    if (
+      !execution ||
+      execution.status !== 'running' ||
+      execution.settled ||
+      Boolean(execution.completedAt) ||
+      execution.abortController.signal.aborted
+    ) return false;
     if (expectedRunId && execution.runId !== expectedRunId) return false;
 
     const trimmedMessage = message.trim().substring(0, 8000);

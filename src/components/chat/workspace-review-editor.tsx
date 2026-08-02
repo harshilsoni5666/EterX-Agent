@@ -330,7 +330,7 @@ function Section({
         className="group flex min-h-[32px] w-full items-center gap-2 rounded-[10px] px-4 text-left text-[13px] font-semibold tracking-normal text-white/52 transition-colors hover:bg-white/[0.025] hover:text-white/78"
       >
         <span>{title}</span>
-        <span className="rounded-full bg-white/[0.055] px-2 py-0.5 text-[11px] font-semibold text-white/34">{count}</span>
+        <span className="eterx-professional-number rounded-full bg-white/[0.055] px-2 py-0.5 text-[11px] font-semibold text-white/34">{count}</span>
         {open ? <ChevronDown className="h-3.5 w-3.5 opacity-70" /> : <ChevronRight className="h-3.5 w-3.5 opacity-70" />}
       </button>
       {open && (
@@ -389,7 +389,7 @@ function StatsButton({
         event.stopPropagation();
         onClick?.();
       }}
-      className="inline-flex h-6 items-center gap-1 rounded-full px-1.5 font-mono text-[11.5px] font-bold tabular-nums transition-all hover:bg-white/[0.08] hover:shadow-[0_8px_24px_rgba(0,0,0,0.28)] focus:outline-none focus:ring-1 focus:ring-white/18"
+      className="eterx-professional-number inline-flex h-6 items-center gap-1 rounded-full px-1.5 text-[11.5px] font-bold transition-all hover:bg-white/[0.08] hover:shadow-[0_8px_24px_rgba(0,0,0,0.28)] focus:outline-none focus:ring-1 focus:ring-white/18"
     >
       <span className="text-[#4BE37B]">+{stats.added}</span>
       <span className="text-[#FF6C63]">-{stats.removed}</span>
@@ -450,7 +450,7 @@ function SubagentDetailPanel({
           </div>
           <div className="mt-0.5 truncate text-[11.5px] text-white/38">{agent.task || agent.role || 'Parallel agent'}</div>
         </div>
-        {duration && <div className="shrink-0 rounded-full border border-white/[0.07] px-2 py-1 text-[11px] font-semibold text-white/42">{duration}</div>}
+        {duration && <div className="eterx-professional-number shrink-0 rounded-full border border-white/[0.07] px-2 py-1 text-[11px] font-semibold text-white/42">{duration}</div>}
       </div>
 
       <div className="eterx-review-scrollbar min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain p-4 [scrollbar-gutter:stable]">
@@ -696,9 +696,9 @@ function ReviewPanel({
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex h-12 shrink-0 items-center gap-3 border-b border-white/[0.055] px-5">
         <div className="text-[14px] font-semibold text-white/76">Review changes</div>
-        <div className="rounded-full bg-white/[0.045] px-2 py-0.5 text-[11px] font-semibold text-white/38">{changedFiles.length}</div>
+        <div className="eterx-professional-number rounded-full bg-white/[0.045] px-2 py-0.5 text-[11px] font-semibold text-white/38">{changedFiles.length}</div>
         {changedFiles.length > 0 && (
-          <div className="hidden items-center gap-1.5 rounded-full border border-white/[0.055] bg-white/[0.025] px-2 py-1 font-mono text-[11px] font-bold tabular-nums text-white/42 sm:flex">
+          <div className="eterx-professional-number hidden items-center gap-1.5 rounded-full border border-white/[0.055] bg-white/[0.025] px-2 py-1 text-[11px] font-bold text-white/42 sm:flex">
             <span className="text-[#4BE37B]">+{totals.added}</span>
             <span className="text-[#FF6C63]">-{totals.removed}</span>
           </div>

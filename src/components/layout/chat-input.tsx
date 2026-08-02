@@ -89,17 +89,6 @@ const MODEL_PROVIDER_LABEL: Record<MainAgentProvider, string> = {
   opencode: 'OpenCode Zen', upstage: 'Upstage Solar', custom: 'Custom endpoint',
 };
 
-const modelSupportsImageAttachment = (provider: MainAgentProvider, modelName: string) => {
-  const model = String(modelName || '').toLowerCase();
-  if (provider === 'gemini' || provider === 'anthropic') return true;
-  if (provider === 'openai') return /\b(gpt-4o|gpt-4\.1|gpt-5|o[134](?:\b|-)|chatgpt)/.test(model);
-  if (provider === 'mistral') return /(pixtral|vision|ministral|mistral-(?:small|medium)-3)/.test(model);
-  if (provider === 'groq') return /(qwen.*(?:vl|vision)|llama-4|vision)/.test(model);
-  if (provider === 'openrouter') return /(gemini|claude|gpt-4o|gpt-4\.1|gpt-5|grok|pixtral|qwen.*(?:vl|vision)|llama-4|vision)/.test(model);
-  if (provider === 'grok') return /(grok-(?:4|3|2)|vision)/.test(model);
-  return /(vision|(?:^|[/:_-])vl(?:$|[/:_-])|llava|omni|gemma[34]|qwen.*vl|llama-4|glm-.*v)/.test(model);
-};
-
 const readStringRecord = (storageKey: string): Record<string, string> => {
   if (typeof window === 'undefined') return {};
   try {
@@ -276,6 +265,8 @@ interface Attachment {
   file: File;
   name?: string;
   preview: string;
+  mimeType?: string;
+  size?: number;
   uploadStatus?: 'uploading' | 'done' | 'error';
   fileUri?: string;
   localPath?: string;
@@ -307,10 +298,17 @@ interface TaskTrackerState {
   steps?: TaskTrackerStep[];
 }
 
+interface QueuedFollowUpItem {
+  id: string;
+  text: string;
+  attachments?: unknown[];
+}
+
 interface ChatInputProps {
   inputValue: string;
   setInputValue: (val: string) => void;
   isThinking: boolean;
+  canStop?: boolean;
   isRecording: boolean;
   handleSend: () => void;
   handleStop: () => void | Promise<boolean>;
@@ -372,6 +370,9 @@ interface ChatInputProps {
     utilizationPct: number;
     isEstimated?: boolean;
   } | null;
+  queuedFollowUps?: QueuedFollowUpItem[];
+  onSendQueuedFollowUp?: (item: QueuedFollowUpItem) => Promise<boolean> | boolean;
+  onRemoveQueuedFollowUp?: (id: string) => void;
 }
 
 const formatContextTokenCount = (value: number) => {
@@ -497,6 +498,45 @@ const getAttachmentName = (file: File) => {
   if (existing) return existing;
   const ext = inferFileExtension(file.type || '');
   return `${ file.type?.startsWith('image/') ? 'pasted-image' : 'pasted-file' }-${ Date.now() }.${ ext }`;
+};
+
+const MIME_BY_EXTENSION: Record<string, string> = {
+  '.pdf': 'application/pdf',
+  '.doc': 'application/msword',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.ppt': 'application/vnd.ms-powerpoint',
+  '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  '.xls': 'application/vnd.ms-excel',
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.csv': 'text/csv',
+  '.tsv': 'text/tab-separated-values',
+  '.txt': 'text/plain',
+  '.md': 'text/markdown',
+  '.json': 'application/json',
+  '.xml': 'application/xml',
+  '.html': 'text/html',
+  '.htm': 'text/html',
+  '.yaml': 'text/yaml',
+  '.yml': 'text/yaml',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.svg': 'image/svg+xml',
+  '.mp3': 'audio/mpeg',
+  '.wav': 'audio/wav',
+  '.mp4': 'video/mp4',
+  '.webm': 'video/webm',
+};
+
+const getAttachmentMimeType = (fileName: string, suppliedMimeType?: string) => {
+  const mimeType = String(suppliedMimeType || '').trim().toLowerCase();
+  if (mimeType && mimeType !== 'application/octet-stream' && mimeType !== 'binary/octet-stream') {
+    return mimeType === 'image/jpg' ? 'image/jpeg' : mimeType;
+  }
+  const extension = `.${ String(fileName || '').split('.').pop()?.toLowerCase() || '' }`;
+  return MIME_BY_EXTENSION[extension] || mimeType || 'application/octet-stream';
 };
 
 const formatAttachmentSize = (bytes: number) => {
@@ -1062,7 +1102,7 @@ const TaskTrackerDock = React.memo(({
 })
 
 export const ChatInput: React.FC<ChatInputProps> = ({
-  inputValue, setInputValue, isThinking, isRecording, handleSend, handleStop, handleSteer = () => { },
+  inputValue, setInputValue, isThinking, canStop = false, isRecording, handleSend, handleStop, handleSteer = () => { },
   toggleSpeech, attachments, setAttachments, greeting, traceLogsLength,
   isProcessingVoice = false, audioVolume = 0, cancelVoice = () => { }, acceptVoice = () => { },
   agentMode = 'think', onModeChange = () => { },
@@ -1095,11 +1135,16 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   chatModelSelection: propChatModelSelection,
   onModelSelectionChange,
   contextUsage = null,
+  queuedFollowUps = [],
+  onSendQueuedFollowUp,
+  onRemoveQueuedFollowUp,
 }) => {
   const isAgentBuilder = Boolean(buildingAgentId || activeChatId?.startsWith('agent_builder_') || activeChatId?.includes('agent_builder'));
   const isLiveActive = liveState !== 'idle' && liveState !== 'error';
   const hasAnyLiveSession = isLiveActive || hasBackgroundLiveSession;
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const pinFileInputRef = useRef<HTMLInputElement>(null);
+  const pinFolderInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const goalTextareaRef = useRef<HTMLTextAreaElement>(null);
   const textareaWidthRef = useRef(0);
@@ -1125,8 +1170,10 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const [thinkingMenuSide, setThinkingMenuSide] = useState<'left' | 'right'>('right');
   const [availableAgents, setAvailableAgents] = useState<Array<{ agentId: string; name: string; status: string; mission: string }>>([]);
   const agentSelectorRef = useRef<HTMLDivElement>(null);
+  const composerDockRef = useRef<HTMLDivElement>(null);
   const composerShellRef = useRef<HTMLDivElement>(null);
   const [forceCollapse, setForceCollapse] = useState(false);
+  const [sendingQueuedFollowUpId, setSendingQueuedFollowUpId] = useState<string | null>(null);
   const [showThinkingLevels, setShowThinkingLevels] = useState(false);
   const thinkingTimeoutRef = useRef<any>(null);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
@@ -1263,7 +1310,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   }, [onWorkspacePathChange]);
 
   const workspaceName = useMemo(() => {
-    if (!activeWorkspacePath) return 'Choose project';
+    if (!activeWorkspacePath) return "Don't work in project";
     return activeWorkspacePath.split(/[/\\]/).filter(Boolean).pop() || activeWorkspacePath;
   }, [activeWorkspacePath]);
 
@@ -1291,7 +1338,10 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     return /^[a-zA-Z]:[\\/]/i.test(trimmed) || trimmed.includes('/') || trimmed.includes('\\');
   }, [projectSearch]);
 
-    const handleRemoveRecentProject = useCallback((projectPath: string) => {
+  const handleRemoveRecentProject = useCallback((projectPath: string) => {
+    if (projectPath === activeWorkspacePath) {
+      handleWorkspacePathChange(null);
+    }
     if (typeof window !== 'undefined') {
       try {
         const saved = localStorage.getItem('eterx_recent_projects');
@@ -1303,9 +1353,9 @@ export const ChatInput: React.FC<ChatInputProps> = ({
         }
       } catch { }
     }
-  }, []);
+  }, [activeWorkspacePath, handleWorkspacePathChange]);
 
-const handleSelectFolderDialog = useCallback(async () => {
+  const handleSelectFolderDialog = useCallback(async () => {
     const w = window as any;
     let selectedPath: string | null = null;
     if (w.electronAPI?.selectFolder) {
@@ -1337,7 +1387,7 @@ const handleSelectFolderDialog = useCallback(async () => {
   }, [handleWorkspacePathChange]);
   const refreshStoredModelSettings = useCallback(() => {
     setStoredModelSettings(readStoredModelSettings());
-  }, []);
+  }, [activeWorkspacePath, handleWorkspacePathChange]);
   const textareaMaxHeight = isCompressed ? 180 : 240;
   const isModelLocked = isThinking;
   const activeAgentDisplay = useMemo(() => {
@@ -1464,15 +1514,14 @@ const handleSelectFolderDialog = useCallback(async () => {
   }, [showAgentMenu]);
 
   useEffect(() => {
-    if (!isThinking) setIsStopping(false);
-  }, [isThinking]);
+    if (!isThinking && !canStop) setIsStopping(false);
+  }, [canStop, isThinking]);
 
   useEffect(() => {
     setHasDraftInputText(Boolean(inputValue.trim()));
   }, [inputValue]);
   useEffect(() => {
     if (isModelLocked) {
-      setShowModelMenu(false);
       setShowThinkingLevels(false);
     }
   }, [isModelLocked]);
@@ -1501,8 +1550,10 @@ const handleSelectFolderDialog = useCallback(async () => {
     if (!showModelMenu) return;
 
     const handlePointerDown = (event: PointerEvent) => {
+      const selector = modelSelectorRef.current;
+      const path = typeof event.composedPath === 'function' ? event.composedPath() : [];
       const target = event.target as Node | null;
-      if (target && modelSelectorRef.current?.contains(target)) return;
+      if (selector && (selector.contains(target) || path.includes(selector))) return;
       setShowModelMenu(false);
       setShowThinkingLevels(false);
     };
@@ -1513,10 +1564,10 @@ const handleSelectFolderDialog = useCallback(async () => {
       }
     };
 
-    document.addEventListener('pointerdown', handlePointerDown);
+    document.addEventListener('pointerdown', handlePointerDown, true);
     document.addEventListener('keydown', handleKeyDown);
     return () => {
-      document.removeEventListener('pointerdown', handlePointerDown);
+      document.removeEventListener('pointerdown', handlePointerDown, true);
       document.removeEventListener('keydown', handleKeyDown);
     };
   }, [showModelMenu]);
@@ -1807,8 +1858,10 @@ const handleSelectFolderDialog = useCallback(async () => {
         setAttachments(prev => prev.map(att => att.id === attachmentId ? {
           ...att,
           uploadStatus: 'done' as const,
+          mimeType: getAttachmentMimeType(displayName, file.type),
+          size: file.size,
           localPath: filePath,
-          preview: file.type.startsWith('image/') ? buildLocalFilePreviewUrl(filePath) : att.preview,
+          preview: getAttachmentMimeType(displayName, file.type).startsWith('image/') ? buildLocalFilePreviewUrl(filePath) : att.preview,
         } : att));
         return;
       }
@@ -1829,15 +1882,21 @@ const handleSelectFolderDialog = useCallback(async () => {
       }
 
       const data = await res.json();
+      if (!data?.localPath) {
+        throw new Error('The upload service did not return a local attachment path.');
+      }
       setAttachments(prev => prev.map(att => {
         if (att.id !== attachmentId) return att;
-        const nextPreview = file.type.startsWith('image/') && data.localPath
+        const mimeType = getAttachmentMimeType(displayName, data.mimeType || file.type);
+        const nextPreview = mimeType.startsWith('image/') && data.localPath
           ? buildLocalFilePreviewUrl(data.localPath)
           : att.preview;
         if (nextPreview !== att.preview) revokeObjectPreview(att.preview);
         return {
           ...att,
           uploadStatus: 'done' as const,
+          mimeType,
+          size: file.size,
           localPath: data.localPath,
           preview: nextPreview,
         };
@@ -1857,11 +1916,14 @@ const handleSelectFolderDialog = useCallback(async () => {
     const newAttachments = validFiles.map((file, index) => {
       const displayName = getAttachmentName(file);
       const localPath = (file as any).path;
-      const isImage = file.type.startsWith('image/') || /\.(png|jpe?g|gif|webp|bmp)$/i.test(displayName);
+      const mimeType = getAttachmentMimeType(displayName, file.type);
+      const isImage = mimeType.startsWith('image/');
       return {
         id: `${ Date.now() }-${ index }-${ Math.random().toString(36).slice(2) }`,
         file,
         name: displayName,
+        mimeType,
+        size: file.size,
         preview: isImage
           ? (localPath ? buildLocalFilePreviewUrl(localPath) : URL.createObjectURL(file))
           : '',
@@ -1956,7 +2018,9 @@ const handleSelectFolderDialog = useCallback(async () => {
         ]);
       }
     } else {
-      alert("Folder pinning requires the EterX desktop app.");
+      // Browsers cannot expose real local paths. Import the selected folder
+      // files as attachments instead, preserving agent access on every device.
+      pinFolderInputRef.current?.click();
     }
   };
 
@@ -1982,8 +2046,15 @@ const handleSelectFolderDialog = useCallback(async () => {
         }
       }
     } else {
-      alert("File pinning requires the EterX desktop app.");
+      // Browser file pickers provide File objects rather than OS paths. Upload
+      // them through the same attachment pipeline used by paste and drag/drop.
+      pinFileInputRef.current?.click();
     }
+  };
+
+  const handleBrowserPinSelection = (event: React.ChangeEvent<HTMLInputElement>) => {
+    if (event.target.files?.length) addFilesAndUpload(Array.from(event.target.files));
+    event.target.value = '';
   };
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -2033,46 +2104,11 @@ const handleSelectFolderDialog = useCallback(async () => {
   const hasErroredAttachments = attachments.some(att => att.uploadStatus === 'error');
   const hasPromptText = hasDraftInputText || Boolean(inputValue.trim());
   const hasComposerPayload = hasPromptText || attachments.length > 0;
-  const getAttachmentCompatibilityIssue = useCallback(() => {
-    if (attachments.length === 0) return null;
-    const selection = propChatModelSelection !== undefined
-      ? propChatModelSelection
-      : storedModelSettings.chatModelSelection;
-    const exact = selection === AUTO_MODEL_SELECTION
-      ? null
-      : storedModelSettings.modelEntries.find(entry => modelEntryKey(entry.provider, entry.modelId) === selection);
-    const fallback = getMainAgentModelConfig(agentMode);
-    const provider = exact?.provider || fallback.provider;
-    const modelName = exact?.modelId || fallback.modelName;
-    const modelLabel = exact?.modelId || `${MODEL_PROVIDER_LABEL[provider]} automatic model`;
-
-    const unsupportedImage = attachments.find(attachment => {
-      const name = String(attachment.name || attachment.file?.name || '').toLowerCase();
-      const mime = String(attachment.file?.type || '').toLowerCase();
-      return (mime.startsWith('image/') || /\.(png|jpe?g|gif|webp|bmp|heic|heif|svg)$/.test(name))
-        && !modelSupportsImageAttachment(provider, modelName);
-    });
-    if (unsupportedImage) {
-      return {
-        title: 'Attachment not supported',
-        message: `${modelLabel} cannot receive images. Choose a vision-capable model or remove ${unsupportedImage.name || unsupportedImage.file?.name || 'the image'}.`,
-      };
-    }
-
-    const unsupportedMedia = attachments.find(attachment => {
-      const name = String(attachment.name || attachment.file?.name || '').toLowerCase();
-      const mime = String(attachment.file?.type || '').toLowerCase();
-      return (mime.startsWith('audio/') || mime.startsWith('video/') || /\.(mp3|wav|m4a|aac|ogg|mp4|mov|mkv|webm)$/.test(name))
-        && provider !== 'gemini';
-    });
-    if (unsupportedMedia) {
-      return {
-        title: 'Media not supported',
-        message: `${modelLabel} cannot receive this audio or video attachment. Choose a compatible Gemini model or remove ${unsupportedMedia.name || unsupportedMedia.file?.name || 'the file'}.`,
-      };
-    }
-    return null;
-  }, [agentMode, attachments, propChatModelSelection, storedModelSettings.chatModelSelection, storedModelSettings.modelEntries]);
+  // Capability validation belongs to the provider adapter. The composer must
+  // never drop or block a real file just because a model catalogue entry uses
+  // an unfamiliar vision/media name; the selected provider receives the
+  // original binary and returns its native validation error if necessary.
+  const getAttachmentCompatibilityIssue = useCallback((): { title: string; message: string } | null => null, []);
 
   useEffect(() => {
     if (!queuedSendRef.current || hasPreparingAttachments || hasErroredAttachments) return;
@@ -2170,6 +2206,7 @@ const handleSelectFolderDialog = useCallback(async () => {
 
   const isEmptyHome = traceLogsLength === 0 && liveState === 'idle';
   const isNewChatHome = isEmptyHome && !activeChatId;
+  const resolvedComposerPlaceholder = composerPlaceholder || (isLiveActive ? "Type..." : isThinking ? "Send guidance to the running agent" : isNewChatHome ? "What should EterX work on?" : "Message EterX");
   const [branchName, setBranchName] = useState('main');
   const [branchesList, setBranchesList] = useState<string[]>([]);
   const [isCreatingBranch, setIsCreatingBranch] = useState(false);
@@ -2304,7 +2341,7 @@ const handleSelectFolderDialog = useCallback(async () => {
     setOpenStatusMenu(null);
     onOpenProjects();
   }, [onOpenProjects]);
-  const shellMaxWidth = isCompressed ? 'max-w-[460px]' : 'max-w-[660px]';
+  const shellMaxWidth = isCompressed ? 'max-w-[460px]' : 'max-w-[1020px]';
   const inputSidePadding = isCompressed ? 'px-11' : 'px-11 sm:px-14';
   const composerRadius = isCompressed ? 'rounded-[24px]' : 'rounded-[26px]';
   const modelOptions = useMemo<ChatModelOption[]>(() => {
@@ -2368,19 +2405,57 @@ const handleSelectFolderDialog = useCallback(async () => {
     const el = composerShellRef.current;
     if (!el) return;
 
+    const dock = composerDockRef.current;
+    const updateComposerWidth = (width: number) => {
+      dock?.style.setProperty('--eterx-composer-actual-width', `${ Math.ceil(width) }px`);
+    };
+
     const observer = new ResizeObserver((entries) => {
       for (let entry of entries) {
         const width = entry.contentRect.width;
         const isCustomAgent = selectedAgent && selectedAgent !== 'coding';
         const requiredWidth = isCustomAgent ? 474 : 424;
 
+        updateComposerWidth(width);
         setForceCollapse(width < requiredWidth);
       }
     });
 
+    updateComposerWidth(el.getBoundingClientRect().width);
     observer.observe(el);
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+      dock?.style.removeProperty('--eterx-composer-actual-width');
+    };
   }, [selectedAgent]);
+
+  // The composer is an absolute overlay. Keep the feed's bottom inset equal
+  // to the complete dock height, including the queued-follow-up rail, so the
+  // overlay never hides the latest content or changes scrollbar math.
+  useEffect(() => {
+    const dock = composerDockRef.current;
+    const column = dock?.parentElement;
+    if (!dock || !column) return;
+
+    const updateBottomInset = () => {
+      const height = Math.ceil(dock.getBoundingClientRect().height);
+      const inset = `${ Math.max(160, height + 12) }px`;
+      column.style.setProperty('--eterx-chat-composer-inset', inset);
+      column.style.setProperty('--eterx-chat-feed-bottom-space', inset);
+    };
+
+    updateBottomInset();
+    const observer = new ResizeObserver(updateBottomInset);
+    observer.observe(dock);
+    window.addEventListener('resize', updateBottomInset);
+
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', updateBottomInset);
+      column.style.removeProperty('--eterx-chat-composer-inset');
+      column.style.removeProperty('--eterx-chat-feed-bottom-space');
+    };
+  }, [isCompressed, isEmptyHome, queuedFollowUps.length]);
 
   const selectChatModelOption = useCallback((option: ChatModelOption) => {
     if (onModelSelectionChange) {
@@ -2401,7 +2476,6 @@ const handleSelectFolderDialog = useCallback(async () => {
         chatModelSelection: AUTO_MODEL_SELECTION,
       });
       syncRuntimeModelOverrides({});
-      setShowModelMenu(false);
       setShowThinkingLevels(false);
       return;
     }
@@ -2431,7 +2505,6 @@ const handleSelectFolderDialog = useCallback(async () => {
     });
     syncRuntimeModelOverrides(nextOverrides);
     onModeChange(option.id);
-    setShowModelMenu(false);
     setShowThinkingLevels(false);
   }, [agentMode, onModeChange, storedModelSettings.modelEntries, storedModelSettings.modelOverrides, onModelSelectionChange]);
   useEffect(() => {
@@ -2452,7 +2525,7 @@ const handleSelectFolderDialog = useCallback(async () => {
       syncRuntimeModelOverrides({});
     }
   }, [isModelLocked, modelOptions, activeModelSelection, propChatModelSelection, onModelSelectionChange]);
-  const controlPopoutVerticalClass = 'bottom-[calc(100%+10px)]';
+  const controlPopoutVerticalClass = 'bottom-[calc(100%+8px)]';
   const selectorPopoutVerticalClass = isNewChatHome ? 'top-[calc(100%+10px)]' : 'bottom-[calc(100%+10px)]';
   const selectorMenuOffset = 8;
   const agentMenuX = `calc(-50% + ${ agentMenuXOffset }px)`;
@@ -2463,7 +2536,7 @@ const handleSelectFolderDialog = useCallback(async () => {
   const pillPopoutVerticalClass = isEmptyHome ? 'bottom-full mb-2' : 'bottom-[calc(100%+72px)] mb-0';
   const slashMenuVisible = !!slashTrigger && !slashPanel && liveState === 'idle' && !isRecording && !isProcessingVoice;
 
-    return (<div className={`eterx-chat-input-dock ${ !isEmptyHome ? 'eterx-chat-input-dock-active' : '' } absolute left-0 flex flex-col items-center z-30 right-0 w-full ${ isEmptyHome ? `top-[45%] -translate-y-1/2 ${ inputSidePadding }` : `top-auto bottom-0 ${ isCompressed ? 'pb-4 pt-8' : 'pb-5 pt-10' } ${ inputSidePadding } bg-[linear-gradient(180deg,rgba(15,15,15,0)_0%,#0F0F0F_32%,#0F0F0F_100%)]` }`}
+    return (<div ref={composerDockRef} className={`eterx-chat-input-dock ${ !isEmptyHome ? 'eterx-chat-input-dock-active' : '' } absolute left-0 flex flex-col items-center z-30 right-0 w-full ${ isEmptyHome ? `top-[45%] -translate-y-1/2 ${ inputSidePadding }` : `top-auto bottom-0 ${ isCompressed ? 'pb-4 pt-8' : 'pb-5 pt-10' } ${ inputSidePadding } bg-[linear-gradient(180deg,rgba(15,15,15,0)_0%,#0F0F0F_32%,#0F0F0F_100%)]` }`}
       data-home={isEmptyHome ? 'true' : 'false'}
       data-compressed={isCompressed ? 'true' : 'false'}
       onDragStart={handleComposerDragStart}
@@ -2513,7 +2586,7 @@ const handleSelectFolderDialog = useCallback(async () => {
                   )}
                 </AnimatePresence>
               </div>
-              <h1 className={`eterx-home-greeting font-sans tracking-tight leading-[1.2] pb-1 font-medium text-transparent bg-clip-text bg-gradient-to-r from-[#A3A19E] via-[#E8E6E3] to-[#8C8A88] drop-shadow-[0_2px_12px_rgba(255,255,255,0.05)] bg-transparent shadow-none border-none ${ isCompressed ? 'max-w-[360px] truncate text-[30px]' : 'text-[44px] whitespace-nowrap' }`}>
+              <h1 className={`eterx-home-greeting select-none font-sans tracking-tight leading-[1.2] pb-1 font-medium text-transparent bg-clip-text bg-gradient-to-r from-[#A3A19E] via-[#E8E6E3] to-[#8C8A88] drop-shadow-[0_2px_12px_rgba(255,255,255,0.05)] bg-transparent shadow-none border-none ${ isCompressed ? 'max-w-[360px] truncate text-[30px]' : 'text-[44px] whitespace-nowrap'}`}>
                 {greeting}
               </h1>
             </div>
@@ -2521,13 +2594,80 @@ const handleSelectFolderDialog = useCallback(async () => {
         )}
       </AnimatePresence>
 
+      {!isEmptyHome && queuedFollowUps.length > 0 && (
+        <div
+          role="region"
+          aria-label="Queued follow-ups"
+          className="eterx-queued-followup-rail pointer-events-auto mb-1.5 w-full max-w-full"
+          style={{ width: 'var(--eterx-composer-actual-width, var(--eterx-composer-max, 680px))' }}
+        >
+          <div className="rounded-[16px] border border-white/[0.08] bg-[#1A1A1A]/96 p-1.5 shadow-[0_10px_26px_rgba(0,0,0,0.24),inset_0_1px_0_rgba(255,255,255,0.035)] backdrop-blur-xl">
+            <div className="flex items-center justify-between gap-3 px-2 pb-1">
+              <span className="flex min-w-0 items-center gap-2 text-[12px] font-semibold tracking-[-0.01em] text-white/58">
+                <ListTodo className="h-3.5 w-3.5 shrink-0 text-white/42" strokeWidth={1.9} />
+                <span>Queued follow-ups</span>
+              </span>
+              <span className="shrink-0 rounded-full bg-white/[0.07] px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-white/48">
+                {queuedFollowUps.length}
+              </span>
+            </div>
+            <div className="max-h-[132px] space-y-1 overflow-y-auto overscroll-contain px-0.5 pb-0.5 eterx-scrollbar">
+              {queuedFollowUps.map((message, index) => {
+                const attachmentCount = message.attachments?.length || 0;
+                const fallbackLabel = `${ attachmentCount } attachment${ attachmentCount === 1 ? '' : 's' }`;
+                const isSending = sendingQueuedFollowUpId === message.id;
+                return (
+                  <div key={message.id} className="flex min-w-0 items-center gap-2 rounded-[11px] border border-white/[0.055] bg-white/[0.035] px-2 py-1.5 text-[12px] text-white/75">
+                    <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-white/[0.07] text-[10px] font-semibold tabular-nums text-white/44">
+                      {index + 1}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate" title={message.text || fallbackLabel}>
+                      {message.text || fallbackLabel}
+                    </span>
+                    <button
+                      type="button"
+                      disabled={!onSendQueuedFollowUp || isSending}
+                      onClick={async () => {
+                        if (!onSendQueuedFollowUp || isSending) return;
+                        setSendingQueuedFollowUpId(message.id);
+                        try {
+                          const sent = await onSendQueuedFollowUp(message);
+                          if (!sent) return;
+                        } finally {
+                          setSendingQueuedFollowUpId(null);
+                        }
+                      }}
+                      className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-white/42 transition-colors hover:bg-white/[0.08] hover:text-white/90 disabled:cursor-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30"
+                      aria-label="Send queued follow-up"
+                      title="Send"
+                    >
+                      <ArrowUpRight className="h-3.5 w-3.5" strokeWidth={2.05} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onRemoveQueuedFollowUp?.(message.id)}
+                      className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-white/32 transition-colors hover:bg-white/[0.08] hover:text-white/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30"
+                      aria-label="Remove queued follow-up"
+                      title="Remove"
+                    >
+                      <X className="h-3.5 w-3.5" strokeWidth={2} />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
       <div
         ref={composerShellRef}
         className={`eterx-composer-shell w-full ${ shellMaxWidth } flex flex-col pointer-events-auto relative`}
-        data-compressed={isCompressed ? 'true' : undefined}
-        data-force-collapse={forceCollapse ? 'true' : undefined}
-        data-new-chat={isNewChatHome ? 'true' : undefined}
-        onDragStart={handleComposerDragStart}
+         data-compressed={isCompressed ? 'true' : undefined}
+         data-force-collapse={forceCollapse ? 'true' : undefined}
+         data-new-chat={isNewChatHome ? 'true' : undefined}
+         data-typing={hasPromptText ? 'true' : undefined}
+         onDragStart={handleComposerDragStart}
       >
         <TaskTrackerDock
           tracker={taskTracker}
@@ -2698,6 +2838,15 @@ const handleSelectFolderDialog = useCallback(async () => {
 `w-full ${ isLiveActive ? (inputValue.includes('\n') || inputValue.length > 55 ? 'rounded-[22px]' : 'rounded-full') : composerRadius } flex flex-col ${ isLiveActive ? 'p-1' : isCompressed ? 'pt-2 pb-2' : 'pt-2.5 pb-2' } ${ isNewChatHome ? 'eterx-new-chat-composer-surface' : '' } bg-[#202020] backdrop-blur-[28px] shadow-[0_18px_42px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(255,255,255,0.035)] ${ isLiveActive || isRecording ? 'border border-white/[0.20]' : 'border border-white/[0.075] hover:border-white/[0.11] focus-within:border-white/[0.15]' }`
           }`}>
           <input type="file" multiple ref={fileInputRef} onChange={handleFileSelect} className="hidden" />
+          <input type="file" multiple ref={pinFileInputRef} onChange={handleBrowserPinSelection} className="hidden" />
+          <input
+            type="file"
+            multiple
+            ref={pinFolderInputRef}
+            onChange={handleBrowserPinSelection}
+            className="hidden"
+            {...({ webkitdirectory: '', directory: '' } as any)}
+          />
 
           {/* ═══ LIVE MODE HEADER BANNER (Disabled per user request) ═══ */}
           {false && isLiveActive && (
@@ -3167,45 +3316,57 @@ const handleSelectFolderDialog = useCallback(async () => {
                   {isOverflowing && !isAtTop && (
                     <div className="eterx-composer-overflow-fade-top absolute -top-1 left-0 right-3 h-6 bg-gradient-to-b from-[#2F2F2F] via-[#2F2F2F]/90 to-transparent pointer-events-none z-10 transition-opacity duration-200" />
                   )}
-                  <motion.textarea
-                    ref={textareaRef}
-                    key="textarea"
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    exit={{ opacity: 0 }}
-                    value={inputValue}
-                    onChange={(e) => {
-                      const nextValue = e.target.value;
-                      setHasDraftInputText(Boolean(nextValue.trim()));
-                      notifyAgentFaceInputChange(inputValue, nextValue);
-                      setInputValue(nextValue);
-                      syncSlashTrigger(nextValue, e.target.selectionStart);
-                    }}
-                    onKeyDown={handleTextareaKeyDown}
-                    onSelect={(e) => syncSlashTrigger(inputValue, e.currentTarget.selectionStart)}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      syncSlashTrigger(inputValue, e.currentTarget.selectionStart);
-                    }}
-                    onPaste={handlePaste}
-                    onDragOver={handleDragOver}
-                    onDrop={handleDrop}
-                    onScroll={handleTextareaScroll}
-                    placeholder={composerPlaceholder || (isLiveActive ? "Type..." : isThinking ? "Send guidance to the running agent" : isNewChatHome ? "What should EterX work on?" : "Message EterX")}
-                    className={`eterx-composer-textarea w-full appearance-none border-0 bg-transparent shadow-none outline-none ring-0 text-[14.5px] font-normal text-[#F0F0F0] placeholder:text-[#8B8984] focus:border-0 focus:outline-none focus:ring-0 placeholder:font-normal min-h-[26px] max-h-[400px] resize-none leading-[1.45] selection:bg-white/15 transition-colors duration-200 relative z-0 py-1 scrollbar-no-buttons ${ isOverflowing ? 'overflow-y-auto eterx-scrollbar pr-2' : 'overflow-hidden' }`}
-                    style={{
-                      ['--eterx-composer-textarea-max' as any]: `${ textareaMaxHeight }px`,
-                      caretColor: '#F0F0F0',
-                      height: '26px',
-                      maxHeight: textareaMaxHeight,
-                      outline: 'none',
-                      boxShadow: 'none',
-                      border: 0,
-                    }}
-                  />
-                  {isOverflowing && !isAtBottom && (
-                    <div className="eterx-composer-overflow-fade-bottom absolute -bottom-1 left-0 right-3 h-6 bg-gradient-to-t from-[#242424] via-[#242424]/90 to-transparent pointer-events-none z-10 transition-opacity duration-200" />
-                  )}
+                  <div className="relative">
+                    {!inputValue && (
+                      <span
+                        aria-hidden="true"
+                        className="pointer-events-none absolute inset-x-0 top-1 z-10 select-none text-[14.5px] font-normal leading-[1.45] text-[#8B8984]"
+                      >
+                        {resolvedComposerPlaceholder}
+                      </span>
+                    )}
+                    <motion.textarea
+                      ref={textareaRef}
+                      key="textarea"
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      exit={{ opacity: 0 }}
+                      value={inputValue}
+                      onChange={(e) => {
+                        const nextValue = e.target.value;
+                        setHasDraftInputText(Boolean(nextValue.trim()));
+                        notifyAgentFaceInputChange(inputValue, nextValue);
+                        setInputValue(nextValue);
+                        syncSlashTrigger(nextValue, e.target.selectionStart);
+                      }}
+                      onKeyDown={handleTextareaKeyDown}
+                      onSelect={(e) => syncSlashTrigger(inputValue, e.currentTarget.selectionStart)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        syncSlashTrigger(inputValue, e.currentTarget.selectionStart);
+                      }}
+                      onPaste={handlePaste}
+                      onDragOver={handleDragOver}
+                      onDrop={handleDrop}
+                      onScroll={handleTextareaScroll}
+                      placeholder=""
+                      spellCheck={false}
+                      aria-label={resolvedComposerPlaceholder}
+                      className={`eterx-composer-textarea w-full appearance-none border-0 bg-transparent shadow-none outline-none ring-0 text-[14.5px] font-normal text-[#F0F0F0] focus:border-0 focus:outline-none focus:ring-0 min-h-[26px] max-h-[400px] resize-none leading-[1.45] selection:bg-white/15 transition-colors duration-200 relative z-0 py-1 scrollbar-no-buttons ${ isOverflowing ? 'overflow-y-auto eterx-scrollbar pr-2' : 'overflow-hidden' }`}
+                      style={{
+                        ['--eterx-composer-textarea-max' as any]: `${ textareaMaxHeight }px`,
+                        caretColor: '#F0F0F0',
+                        height: '26px',
+                        maxHeight: textareaMaxHeight,
+                        outline: 'none',
+                        boxShadow: 'none',
+                        border: 0,
+                      }}
+                    />
+                    {isOverflowing && !isAtBottom && (
+                      <div className="eterx-composer-overflow-fade-bottom absolute -bottom-1 left-0 right-3 h-6 bg-gradient-to-t from-[#242424] via-[#242424]/90 to-transparent pointer-events-none z-10 transition-opacity duration-200" />
+                    )}
+                  </div>
                 </div>
               )}
             </AnimatePresence>
@@ -3225,14 +3386,7 @@ const handleSelectFolderDialog = useCallback(async () => {
               </Tooltip>
               <ConnectorsButton
                 connectedCount={Object.values(connectors.connectedApps).filter(Boolean).length}
-                onToggleAction={() => connectors.setOpen(true)}
-              />
-              <ConnectorsModal
-                open={connectors.open}
-                onClose={() => connectors.setOpen(false)}
-                connectedApps={connectors.connectedApps}
-                onConnect={connectors.handleConnect}
-                onDisconnect={connectors.handleDisconnect}
+                onToggleAction={() => connectors.setOpen(previous => !previous)}
               />
               <div className="relative">
                 <Tooltip text="Pin folder or files" side="top" disabled={showPinMenu}>
@@ -3259,23 +3413,23 @@ const handleSelectFolderDialog = useCallback(async () => {
                 {showPinMenu && (
                   <div
                     style={{ transform: 'translateX(-50%)' }}
-                    className={`eterx-composer-popout eterx-pin-popout absolute ${ controlPopoutVerticalClass } left-1/2 z-[120] flex w-[150px] flex-col rounded-[15px] border border-white/[0.105] bg-[#1A1A1A]/95 backdrop-blur-2xl p-[3px] shadow-[0_16px_34px_rgba(0,0,0,0.58),inset_0_1px_0_rgba(255,255,255,0.055)]`}
+                    className={`eterx-composer-popout eterx-pin-popout absolute ${ controlPopoutVerticalClass } left-1/2 z-[120] flex w-[148px] origin-bottom flex-col rounded-[14px] border border-white/[0.105] bg-[#1A1A1A]/95 backdrop-blur-2xl p-[4px] shadow-[0_16px_34px_rgba(0,0,0,0.58),inset_0_1px_0_rgba(255,255,255,0.055)]`}
                   >
-                    <span className="eterx-composer-popout-caret pointer-events-none absolute -bottom-[5px] left-1/2 z-0 h-[10px] w-[10px] -translate-x-1/2 rotate-45 border-b border-r border-white/[0.105] bg-[#1A1A1A]/95" />
-                    <button type="button" onClick={handlePinFolder} className="group/menu relative z-10 flex h-[40px] w-full items-center gap-[9px] rounded-[12px] px-[9px] text-left text-white transition-all duration-150 hover:bg-white/[0.095] hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] focus-visible:bg-white/[0.095] focus-visible:outline-none active:scale-[0.99]">
-                      <span className="flex h-[25px] w-[25px] shrink-0 items-center justify-center text-white transition-colors">
-                        <PinFolderIcon className="h-[24px] w-[24px]" />
+                    <span className="eterx-composer-popout-caret pointer-events-none absolute -bottom-[4px] left-1/2 z-0 h-[9px] w-[9px] -translate-x-1/2 rotate-45 border-b border-r border-white/[0.105] bg-[#1A1A1A]/95" />
+                    <button type="button" onClick={handlePinFolder} className="group/menu relative z-10 flex h-[38px] w-full items-center gap-[8px] rounded-[10px] px-[8px] text-left text-white transition-all duration-150 hover:bg-white/[0.095] hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] focus-visible:bg-white/[0.095] focus-visible:outline-none active:scale-[0.99]">
+                      <span className="flex h-[23px] w-[23px] shrink-0 items-center justify-center text-white transition-colors">
+                        <PinFolderIcon className="h-[22px] w-[22px]" />
                       </span>
-                      <span className="min-w-0 text-[13.5px] font-semibold leading-none tracking-[-0.004em]">
+                      <span className="min-w-0 text-[13px] font-semibold leading-none tracking-[-0.004em]">
                         Folder
                       </span>
                     </button>
-                    <div className="relative z-10 mx-[9px] h-px bg-white/[0.05]" />
-                    <button type="button" onClick={handlePinFiles} className="group/menu relative z-10 flex h-[40px] w-full items-center gap-[9px] rounded-[12px] px-[9px] text-left text-white transition-all duration-150 hover:bg-white/[0.095] hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] focus-visible:bg-white/[0.095] focus-visible:outline-none active:scale-[0.99]">
-                      <span className="flex h-[25px] w-[25px] shrink-0 items-center justify-center text-white transition-colors">
-                        <PinFileIcon className="h-[24px] w-[24px]" />
+                    <div className="relative z-10 mx-[8px] h-px bg-white/[0.05]" />
+                    <button type="button" onClick={handlePinFiles} className="group/menu relative z-10 flex h-[38px] w-full items-center gap-[8px] rounded-[10px] px-[8px] text-left text-white transition-all duration-150 hover:bg-white/[0.095] hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] focus-visible:bg-white/[0.095] focus-visible:outline-none active:scale-[0.99]">
+                      <span className="flex h-[23px] w-[23px] shrink-0 items-center justify-center text-white transition-colors">
+                        <PinFileIcon className="h-[22px] w-[22px]" />
                       </span>
-                      <span className="min-w-0 text-[13.5px] font-semibold leading-none tracking-[-0.004em]">
+                      <span className="min-w-0 text-[13px] font-semibold leading-none tracking-[-0.004em]">
                         Files
                       </span>
                     </button>
@@ -3285,10 +3439,11 @@ const handleSelectFolderDialog = useCallback(async () => {
             </div>
 
             <div className="eterx-chat-controls-right flex items-center gap-1.5">
+              {/* Context usage indicator: show the current chat's configured window and usage. */}
               {contextUsage && Number.isFinite(contextUsage.contextWindow) && contextUsage.contextWindow > 0 && (() => {
-                const safeContextWindow = Math.max(1, Math.round(contextUsage.contextWindow));
+                const safeContextWindow = Math.max(1, Math.round(contextUsage!.contextWindow));
                 const safeUsedTokens = Math.max(0, Math.round(
-                  Number.isFinite(contextUsage.usedTokens) ? contextUsage.usedTokens : 0,
+                  Number.isFinite(contextUsage!.usedTokens) ? contextUsage!.usedTokens : 0,
                 ));
                 const exactUtilization = Math.max(0, Math.min(100, (safeUsedTokens / safeContextWindow) * 100));
                 const usedPercent = Math.round(exactUtilization);
@@ -3303,7 +3458,7 @@ const handleSelectFolderDialog = useCallback(async () => {
                   content={(
                     <div className="flex h-[68px] w-full flex-col items-center justify-center px-2 text-center">
                       <div className="eterx-context-usage-label text-[11px] font-medium leading-[14px]">
-                        {contextUsage.isEstimated ? 'Estimated context:' : 'Context window:'}
+                        {contextUsage!.isEstimated ? 'Estimated context:' : 'Context window:'}
                       </div>
                       <div className="eterx-context-usage-primary mt-px whitespace-nowrap text-[12.5px] font-semibold leading-4">
                         {usedPercent}% used <span className="eterx-context-usage-muted font-medium">({leftPercent}% left)</span>
@@ -3316,7 +3471,7 @@ const handleSelectFolderDialog = useCallback(async () => {
                 >
                   <span
                     className="eterx-context-usage-trigger relative grid h-[38px] w-[24px] shrink-0 place-items-center"
-                    aria-label={`${contextUsage.isEstimated ? 'Estimated context' : 'Context window'} ${usedPercent} percent used`}
+                    aria-label={`${contextUsage!.isEstimated ? 'Estimated context' : 'Context window'} ${usedPercent} percent used`}
                   >
                     <svg viewBox="0 0 24 24" className="h-[18px] w-[18px] -rotate-90" aria-hidden="true">
                       <circle cx="12" cy="12" r="7.5" fill="none" stroke="currentColor" strokeWidth="2.4" opacity="0.22" />
@@ -3497,15 +3652,7 @@ const handleSelectFolderDialog = useCallback(async () => {
                   }}
                   className={`eterx-model-button ${ isCompressed ? 'mr-0 max-w-[160px] pl-2.5 pr-1' : 'mr-1 pl-3.5 pr-1' } flex h-[38px] w-full min-w-0 items-center justify-between gap-1.5 rounded-full border border-transparent bg-[#2D2D2D] text-[#F4F4F4] transition-colors duration-150 hover:bg-[#333333] hover:text-white hover:border-transparent active:bg-[#333333] group cursor-pointer ${ showModelMenu ? '!bg-[#333333] !border-transparent !text-white' : '' } ${ isModelLocked ? 'cursor-not-allowed opacity-70 hover:bg-[#2D2D2D] hover:text-[#F4F4F4] hover:border-transparent active:bg-[#2D2D2D]' : '' }`}
                 >
-                  <AnimatePresence mode="wait">
-                    <motion.div
-                      key={agentMode}
-                      initial={{ opacity: 0, scale: 0.8, y: 4 }}
-                      animate={{ opacity: 1, scale: 1, y: 0 }}
-                      exit={{ opacity: 0, scale: 0.8, y: -4 }}
-                      transition={{ duration: 0.2, ease: "easeOut" }}
-                      className="flex min-w-0 items-center gap-1.5"
-                    >
+                  <div className="flex min-w-0 items-center gap-1.5">
                       <svg
                         viewBox="0 0 24 24"
                         fill="none"
@@ -3522,8 +3669,7 @@ const handleSelectFolderDialog = useCallback(async () => {
                       <span className="eterx-selector-label min-w-0 truncate text-[14px] font-semibold tracking-normal transition-colors">
                         {modelDisplayLabel}
                       </span>
-                    </motion.div>
-                  </AnimatePresence>
+                  </div>
                   <div
                     onClick={(e) => {
                       e.stopPropagation();
@@ -3676,7 +3822,7 @@ const handleSelectFolderDialog = useCallback(async () => {
                 </button>
               </Tooltip>
 
-              <Tooltip text={isLiveActive ? "End Live Conversation" : hasBackgroundLiveSession ? "Open Live Conversation" : isThinking ? "Wait for this run to finish" : "Start Live Conversation"} side="top">
+              {false && <Tooltip text={isLiveActive ? "End Live Conversation" : hasBackgroundLiveSession ? "Open Live Conversation" : isThinking ? "Wait for this run to finish" : "Start Live Conversation"} side="top">
                 <button
                   onClick={isLiveActive ? onLiveStop : onLiveStart}
                   disabled={isNetworkPaused || (!hasBackgroundLiveSession && liveState === 'idle' && isThinking)}
@@ -3685,7 +3831,7 @@ const handleSelectFolderDialog = useCallback(async () => {
                   <div className={inputControlSheen} />
                   <PremiumAudioLines className={`eterx-composer-control-icon eterx-composer-live-icon w-[20px] h-[20px] transition-all duration-200 ease-out group-hover:scale-[1.04] ${ hasAnyLiveSession ? '!text-[#10B981] scale-[1.05]' : 'text-white' }`} strokeWidth={1.85} />
                 </button>
-              </Tooltip>
+              </Tooltip>}
 
               {/* Send / Stop / Stopping-Spinner Button — 3-state with smooth AnimatePresence */}
               {liveState !== 'idle' && liveState !== 'error' ? (
@@ -3697,7 +3843,7 @@ const handleSelectFolderDialog = useCallback(async () => {
                       initial={{ opacity: 0, scale: 0.8 }}
                       animate={{ opacity: 1, scale: 1 }}
                       exit={{ opacity: 0, scale: 0.7 }}
-                      transition={{ duration: 0.18, ease: 'easeOut' }}
+                       transition={hasPromptText ? { duration: 0 } : { duration: 0.18, ease: 'easeOut' }}
                     >
                       <Tooltip text="Waiting for network" side="top">
                         <button
@@ -3712,31 +3858,13 @@ const handleSelectFolderDialog = useCallback(async () => {
                         </button>
                       </Tooltip>
                     </motion.div>
-                  ) : hasComposerPayload && !isStopping ? (
-                    /* Running agent + typed text: normal send button sends live steering */
-                    <motion.div key={isThinking ? "send-steering" : "send"}
-                      initial={{ opacity: 0, scale: 0.8 }}
-                      animate={{ opacity: 1, scale: 1 }}
-                      exit={{ opacity: 0, scale: 0.7 }}
-                      transition={{ duration: 0.18, ease: 'easeOut' }}
-                    >
-                      <Tooltip text={isThinking ? "Send to running agent" : hasErroredAttachments ? "Remove failed attachment" : hasPreparingAttachments ? "Preparing media" : "Send message"} side="top">
-                        <button
-                          onClick={submitPrompt}
-                          className="eterx-control-button eterx-composer-send-button w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full transition-all duration-200 bg-[#F2EFEA] text-black hover:bg-white shadow-[0_8px_22px_rgba(242,239,234,0.15),inset_0_1px_0_rgba(255,255,255,0.82)] active:scale-[0.96] group relative overflow-hidden"
-                        >
-                          <div className="absolute inset-0 bg-gradient-to-t from-black/0 to-black/5" />
-                          <PremiumSend className="eterx-composer-control-icon w-[20px] h-[20px] text-black group-hover:scale-[1.04] transition-all duration-200 ease-out" strokeWidth={2.05} />
-                        </button>
-                      </Tooltip>
-                    </motion.div>
-                  ) : isThinking ? (
-                    /* ── STOP button (agent running, input empty) ── */
+                  ) : isThinking || canStop ? (
+                    /* ── STOP button (agent running, draft or empty) ── */
                     <motion.div key="stop"
                       initial={{ opacity: 0, scale: 0.8 }}
                       animate={{ opacity: 1, scale: 1 }}
                       exit={{ opacity: 0, scale: 0.7 }}
-                      transition={{ duration: 0.18, ease: 'easeOut' }}
+                       transition={hasPromptText ? { duration: 0 } : { duration: 0.18, ease: 'easeOut' }}
                     >
                       <Tooltip text={isStopping ? "Stopping agent" : "Stop agent"} side="top">
                         <button
@@ -3758,13 +3886,13 @@ const handleSelectFolderDialog = useCallback(async () => {
                         </button>
                       </Tooltip>
                     </motion.div>
-                  ) : (inputValue.trim() || attachments.length > 0) ? (
+                  ) : hasComposerPayload ? (
                     /* ── SEND button ── */
                     <motion.div key="send"
                       initial={{ opacity: 0, scale: 0.8 }}
                       animate={{ opacity: 1, scale: 1 }}
                       exit={{ opacity: 0, scale: 0.7 }}
-                      transition={{ duration: 0.18, ease: 'easeOut' }}
+                       transition={hasPromptText ? { duration: 0 } : { duration: 0.18, ease: 'easeOut' }}
                     >
                       <Tooltip text={hasErroredAttachments ? "Remove failed attachment" : hasPreparingAttachments ? "Preparing media" : "Send message"} side="top">
                         <button
@@ -3777,16 +3905,23 @@ const handleSelectFolderDialog = useCallback(async () => {
                       </Tooltip>
                     </motion.div>
                   ) : (
-                    /* ── SEND button (disabled when input is empty) ── */
-                    <motion.div key="send-disabled"
+                    /* Empty composer: live replaces send until text is entered. */
+                    <motion.div key="live"
                       initial={{ opacity: 0, scale: 0.8 }}
                       animate={{ opacity: 1, scale: 1 }}
                       exit={{ opacity: 0, scale: 0.7 }}
-                      transition={{ duration: 0.18, ease: 'easeOut' }}
+                       transition={hasPromptText ? { duration: 0 } : { duration: 0.18, ease: 'easeOut' }}
                     >
-                      <div className="w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full bg-white/[0.08] text-white/30 cursor-not-allowed">
-                        <PremiumSend className="w-[20px] h-[20px] opacity-40" strokeWidth={2.05} />
-                      </div>
+                      <Tooltip text={isLiveActive ? "End Live Conversation" : hasBackgroundLiveSession ? "Open Live Conversation" : "Start Live Conversation"} side="top">
+                        <button
+                          onClick={isLiveActive ? onLiveStop : onLiveStart}
+                          disabled={isNetworkPaused}
+                          className={`eterx-control-button eterx-composer-live-button w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full border border-transparent bg-[#2D2D2D] text-white shadow-none transition-all duration-150 active:bg-[#333333] cursor-pointer group relative overflow-hidden hover:bg-[#333333] hover:border-transparent hover:text-white disabled:cursor-not-allowed disabled:opacity-45 ${ hasAnyLiveSession ? '!bg-[#252525] !text-[#10B981] !border-emerald-500/50 shadow-[0_0_16px_rgba(16,185,129,0.35)]' : '' }`}
+                        >
+                          <div className={inputControlSheen} />
+                          <PremiumAudioLines className={`eterx-composer-control-icon eterx-composer-live-icon w-[20px] h-[20px] transition-all duration-200 ease-out group-hover:scale-[1.04] ${ hasAnyLiveSession ? '!text-[#10B981] scale-[1.05]' : 'text-white' }`} strokeWidth={1.85} />
+                        </button>
+                      </Tooltip>
                     </motion.div>
                   )}
                 </AnimatePresence>
@@ -3797,13 +3932,9 @@ const handleSelectFolderDialog = useCallback(async () => {
         </motion.div>
 
         {isNewChatHome && (
-          <motion.div
-            initial={{ opacity: 0, y: -6 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -6 }}
-            transition={{ duration: 0.24, ease: 'easeOut' }}
+          <div
             className="eterx-new-chat-status-rail"
-            aria-label="New chat workspace status"
+            aria-label="Workspace status"
           >
             <div className="eterx-new-chat-status-scroll" aria-hidden={false}>
               <div className="eterx-new-chat-status-anchor">
@@ -3819,13 +3950,8 @@ const handleSelectFolderDialog = useCallback(async () => {
                   <span>{workspaceName}</span>
                   <ChevronDown className="eterx-new-chat-status-chevron" strokeWidth={2.1} />
                 </button>
-                <AnimatePresence>
-                  {openStatusMenu === 'project' && (
-                    <motion.div
-                      initial={{ opacity: 0, y: 8, scale: 0.98 }}
-                      animate={{ opacity: 1, y: 0, scale: 1 }}
-                      exit={{ opacity: 0, y: 8, scale: 0.98 }}
-                      transition={{ duration: 0.16, ease: 'easeOut' }}
+                {openStatusMenu === 'project' && (
+                    <div
                       className="eterx-composer-popout eterx-status-popout eterx-status-popout-project"
                       role="dialog"
                       aria-label="Workspace folder selector"
@@ -3840,6 +3966,19 @@ const handleSelectFolderDialog = useCallback(async () => {
                         />
                       </label>
                       <div className="eterx-status-menu-section max-h-[160px] flex-1 min-h-0 overflow-y-auto eterx-scrollbar">
+                        <button
+                          type="button"
+                          className={`eterx-status-menu-item ${!activeWorkspacePath ? 'is-selected' : ''}`}
+                          onClick={() => {
+                            handleWorkspacePathChange(null);
+                            setProjectSearch('');
+                            setOpenStatusMenu(null);
+                          }}
+                        >
+                          <CircleSlash className="eterx-status-menu-icon" strokeWidth={1.95} />
+                          <span className="min-w-0 flex-1 truncate text-left text-[13px] font-medium">Don't work in project</span>
+                          {!activeWorkspacePath && <Check className="h-4 w-4 shrink-0 text-emerald-500 dark:text-emerald-400" strokeWidth={2.35} />}
+                        </button>
                         {looksLikePath && (
                           <button
                             type="button"
@@ -3872,31 +4011,42 @@ const handleSelectFolderDialog = useCallback(async () => {
                         {filteredRecentProjects.length > 0 ? filteredRecentProjects.map(project => {
                           const selected = project.path === activeWorkspacePath;
                           return (
-                            <button
+                            <div
                               key={project.path}
-                              type="button"
                               title={project.path}
                               className={`eterx-status-menu-item group ${ selected ? 'is-selected' : '' }`}
                               onClick={() => {
                                 handleWorkspacePathChange(project.path);
                                 setOpenStatusMenu(null);
                               }}
+                              role="button"
+                              tabIndex={0}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter' || e.key === ' ') {
+                                  e.preventDefault();
+                                  handleWorkspacePathChange(project.path);
+                                  setOpenStatusMenu(null);
+                                }
+                              }}
                             >
-                              <Folder className="eterx-status-menu-icon shrink-0" strokeWidth={1.95} />
+                              <span className="eterx-project-menu-leading">
+                                <Folder className="eterx-status-menu-icon eterx-project-menu-folder" strokeWidth={1.95} />
+                                <button
+                                  type="button"
+                                  className="eterx-project-remove-button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleRemoveRecentProject(project.path);
+                                  }}
+                                  title="Remove from list"
+                                  aria-label={`Remove ${project.name} from recent projects`}
+                                >
+                                  <X className="h-3 w-3" strokeWidth={2.25} />
+                                </button>
+                              </span>
                               <span className="min-w-0 flex-1 truncate text-left text-[13px] font-medium">{project.name}</span>
-                              {selected && <Check className="h-4 w-4 shrink-0 text-emerald-500 dark:text-emerald-400" strokeWidth={2.35} />}
-                              <button
-                                type="button"
-                                className="h-5 w-5 rounded-md flex items-center justify-center text-[var(--eterx-status-popout-muted)] hover:text-[var(--eterx-status-popout-text)] hover:bg-black/10 dark:hover:bg-white/10 opacity-0 group-hover:opacity-100 transition-all duration-150 cursor-pointer ml-1 shrink-0"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleRemoveRecentProject(project.path);
-                                }}
-                                title="Remove from list"
-                              >
-                                <X className="h-3.5 w-3.5" strokeWidth={2} />
-                              </button>
-                            </button>
+                              {selected && <Check className="eterx-project-selected-check h-4 w-4 shrink-0" strokeWidth={2.45} />}
+                            </div>
                           );
                         }) : !looksLikePath && (
                           <div className="eterx-status-empty text-xs py-4 text-center text-[var(--eterx-status-popout-muted)]">No recent folders found</div>
@@ -3916,9 +4066,8 @@ const handleSelectFolderDialog = useCallback(async () => {
                         <Plus className="eterx-status-menu-icon" strokeWidth={1.95} />
                         <span className="min-w-0 flex-1 truncate text-left text-[13px] font-medium text-current">New project</span>
                       </button>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
+                    </div>
+                )}
               </div>
 
               <div className="eterx-new-chat-status-anchor">
@@ -3938,13 +4087,8 @@ const handleSelectFolderDialog = useCallback(async () => {
                   <span>{runLocation === 'local' ? "Work locally" : "Sandbox"}</span>
                   <ChevronDown className="eterx-new-chat-status-chevron" strokeWidth={2.1} />
                 </button>
-                <AnimatePresence>
-                  {openStatusMenu === 'run' && (
-                    <motion.div
-                      initial={{ opacity: 0, y: 8, scale: 0.98 }}
-                      animate={{ opacity: 1, y: 0, scale: 1 }}
-                      exit={{ opacity: 0, y: 8, scale: 0.98 }}
-                      transition={{ duration: 0.16, ease: 'easeOut' }}
+                {openStatusMenu === 'run' && (
+                    <div
                       className="eterx-composer-popout eterx-status-popout eterx-status-popout-run"
                       role="dialog"
                       aria-label="Run location menu"
@@ -3973,9 +4117,8 @@ const handleSelectFolderDialog = useCallback(async () => {
                         <span className="min-w-0 flex-1 truncate">Sandbox</span>
                         {runLocation === 'sandbox' && <Check className="h-4 w-4 shrink-0" strokeWidth={2.35} />}
                       </button>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
+                    </div>
+                )}
               </div>
 
               {isGitRepo && (
@@ -3992,13 +4135,8 @@ const handleSelectFolderDialog = useCallback(async () => {
                     <span>{branchName}</span>
                     <ChevronDown className="eterx-new-chat-status-chevron" strokeWidth={2.1} />
                   </button>
-                  <AnimatePresence>
-                    {openStatusMenu === 'branch' && (
-                      <motion.div
-                        initial={{ opacity: 0, y: 8, scale: 0.98 }}
-                        animate={{ opacity: 1, y: 0, scale: 1 }}
-                        exit={{ opacity: 0, y: 8, scale: 0.98 }}
-                        transition={{ duration: 0.16, ease: 'easeOut' }}
+                  {openStatusMenu === 'branch' && (
+                      <div
                         className="eterx-composer-popout eterx-status-popout eterx-status-popout-branch"
                         role="dialog"
                         aria-label="Branch menu"
@@ -4069,15 +4207,22 @@ const handleSelectFolderDialog = useCallback(async () => {
                             <span className="min-w-0 flex-1 truncate text-[#E2765A] font-semibold text-left">Create new branch</span>
                           </button>
                         )}
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
+                      </div>
+                  )}
                 </div>
               )}
             </div>
-          </motion.div>
+          </div>
         )}
       </div>
+
+      <ConnectorsModal
+        open={connectors.open}
+        onClose={() => connectors.setOpen(false)}
+        connectedApps={connectors.connectedApps}
+        onConnect={connectors.handleConnect}
+        onDisconnect={connectors.handleDisconnect}
+      />
 
       {/* Lightbox Preview Modal */}
       {composerNotice && typeof window !== 'undefined' && createPortal(

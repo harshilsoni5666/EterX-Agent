@@ -8,7 +8,6 @@ import * as readline from 'readline';
 import {
   checkEterXProtection,
   resolveReadableWorkspacePathForContext,
-  resolveWorkspaceDirectoryForContext,
   resolveWorkspacePathForContext,
 } from '../../workspace/path_resolver';
 import { isRgAvailable, runRgFiles } from '../shared/rg';
@@ -18,7 +17,12 @@ async function countFileLines(filePath: string): Promise<number> {
   let count = 0;
   const stream = createReadStream(filePath, { encoding: 'utf-8' });
   const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
-  for await (const _line of rl) count++;
+  try {
+    for await (const _line of rl) count++;
+  } finally {
+    rl.close();
+    stream.destroy();
+  }
   return Math.max(count, 1);
 }
 
@@ -38,19 +42,24 @@ async function readTargetedLines(
   const hardEnd = endLine ?? Number.MAX_SAFE_INTEGER;
   const cap = Math.min(maxLines, hardEnd - start + 1);
 
-  for await (const line of rl) {
-    lineNo++;
-    totalLines = lineNo;
-    if (lineNo < start) continue;
-    if (lineNo > hardEnd) break;
-    selected.push(line);
-    if (selected.length >= cap) break;
-  }
+  try {
+    for await (const line of rl) {
+      lineNo++;
+      totalLines = lineNo;
+      if (lineNo < start) continue;
+      if (lineNo > hardEnd) break;
+      selected.push(line);
+      if (selected.length >= cap) break;
+    }
 
-  if (selected.length < cap) {
-    for await (const _line of rl) totalLines++;
-  } else {
-    totalLines = await countFileLines(filePath);
+    if (selected.length < cap) {
+      for await (const _line of rl) totalLines++;
+    } else {
+      totalLines = await countFileLines(filePath);
+    }
+  } finally {
+    rl.close();
+    stream.destroy();
   }
 
   const actualEnd = start + selected.length - 1;
@@ -61,6 +70,46 @@ function formatNumberedContent(lines: string[], startLine: number): string {
   return lines.map((line, idx) => `${startLine + idx}| ${line}`).join('\n');
 }
 
+function matchesGlob(relativePath: string, pattern: string): boolean {
+  const normalizedPath = relativePath.replace(/\\/g, '/');
+  const patterns = pattern.split(',').map(value => value.trim()).filter(Boolean);
+  const positive = patterns.filter(value => !value.startsWith('!'));
+  const negative = patterns.filter(value => value.startsWith('!')).map(value => value.slice(1));
+  const matchesOne = (value: string) => {
+    const candidate = value.includes('/') ? normalizedPath : normalizedPath.split('/').pop() || normalizedPath;
+    return globToRegExp(value).test(candidate);
+  };
+  if (negative.some(matchesOne)) return false;
+  if (!positive.length) return true;
+  return positive.some(matchesOne);
+}
+
+function globToRegExp(pattern: string): RegExp {
+  const normalized = pattern.replace(/\\/g, '/');
+  let source = '^';
+  for (let index = 0; index < normalized.length; index++) {
+    const char = normalized[index];
+    if (char === '*') {
+      if (normalized[index + 1] === '*') {
+        index++;
+        if (normalized[index + 1] === '/') {
+          index++;
+          source += '(?:.*/)?';
+        } else {
+          source += '.*';
+        }
+      } else {
+        source += '[^/]*';
+      }
+    } else if (char === '?') {
+      source += '[^/]';
+    } else {
+      source += char.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+    }
+  }
+  return new RegExp(`${source}$`, 'i');
+}
+
 export const workspaceFindFilesTool: ToolDefinition = {
   name: 'workspace_find_files',
   description: 'Fast file discovery without reading contents. Equivalent to rg --files. Use before targeted reads.',
@@ -68,7 +117,7 @@ export const workspaceFindFilesTool: ToolDefinition = {
   inputSchema: z.object({
     glob: z.string().optional().describe('Glob filter, e.g. "*.tsx", "**/*.ts", "!**/node_modules/**"'),
     directory: z.string().optional().describe('Directory to search. Default: workspace root'),
-    maxResults: z.number().optional().describe('Maximum files to return (default: 400)'),
+    maxResults: z.number().int().min(1).max(1000).optional().describe('Maximum files to return (default: 400)'),
   }),
   outputSchema: z.object({
     files: z.array(z.string()),
@@ -76,8 +125,8 @@ export const workspaceFindFilesTool: ToolDefinition = {
     searchEngine: z.string(),
   }),
   execute: async (input: { glob?: string; directory?: string; maxResults?: number }, context?: any) => {
-    const searchDir = resolveWorkspaceDirectoryForContext(input.directory, context);
-    const maxResults = Math.min(input.maxResults || 400, 1000);
+    const searchDir = resolveReadableWorkspacePathForContext(input.directory || '.', context);
+    const maxResults = Math.max(1, Math.min(Math.floor(input.maxResults || 400), 1000));
 
     if (!await fse.pathExists(searchDir)) {
       return { files: [], count: 0, searchEngine: 'none', directory: searchDir, error: `Directory not found: ${searchDir}` };
@@ -85,7 +134,8 @@ export const workspaceFindFilesTool: ToolDefinition = {
 
     if (isRgAvailable()) {
       try {
-        const files = runRgFiles(searchDir, { glob: input.glob, maxResults });
+        const files = runRgFiles(searchDir, { glob: input.glob, maxResults })
+          .map(file => file.replace(/\\/g, '/').replace(/^\.\//, ''));
         return { files, count: files.length, searchEngine: 'ripgrep', directory: searchDir };
       } catch (err: any) {
         console.warn(`[workspace_find_files] rg failed: ${err.message?.substring(0, 120)}`);
@@ -93,11 +143,16 @@ export const workspaceFindFilesTool: ToolDefinition = {
     }
 
     const matches: string[] = [];
-    const globPattern = input.glob?.replace(/^\*\*\//, '') || '*';
+    const globPattern = input.glob || '*';
 
     async function walk(dir: string, rel = ''): Promise<void> {
       if (matches.length >= maxResults) return;
-      const entries = await fs.readdir(dir, { withFileTypes: true });
+      let entries: import('fs').Dirent[] = [];
+      try {
+        entries = await fs.readdir(dir, { withFileTypes: true });
+      } catch {
+        return;
+      }
       for (const entry of entries) {
         if (matches.length >= maxResults) break;
         if (entry.name === 'node_modules' || entry.name === '.git') continue;
@@ -107,7 +162,7 @@ export const workspaceFindFilesTool: ToolDefinition = {
           await walk(fullPath, relPath);
           continue;
         }
-        if (!globPattern || relPath.includes(globPattern.replace(/\*/g, '')) || relPath.endsWith(globPattern.replace(/^\*/, ''))) {
+        if (matchesGlob(relPath, globPattern)) {
           matches.push(relPath.replace(/\\/g, '/'));
         }
       }
@@ -125,17 +180,17 @@ export const workspaceReadManyFilesTool: ToolDefinition = {
   inputSchema: z.object({
     files: z.array(z.object({
       filename: z.string().describe('File path — absolute or relative'),
-      startLine: z.number().optional().describe('Start line (1-indexed)'),
-      endLine: z.number().optional().describe('End line (1-indexed, inclusive)'),
+      startLine: z.number().int().min(1).optional().describe('Start line (1-indexed)'),
+      endLine: z.number().int().min(1).optional().describe('End line (1-indexed, inclusive)'),
     })).min(1).max(20),
-    maxLinesPerFile: z.number().optional().describe('Max lines per file (default: 300)'),
+    maxLinesPerFile: z.number().int().min(1).max(500).optional().describe('Max lines per file (default: 300)'),
   }),
   outputSchema: z.object({
     files: z.array(z.any()),
     readCount: z.number(),
   }),
   execute: async (input: { files: Array<{ filename: string; startLine?: number; endLine?: number }>; maxLinesPerFile?: number }, context?: any) => {
-    const maxLinesPerFile = Math.min(input.maxLinesPerFile || 300, 500);
+    const maxLinesPerFile = Math.max(1, Math.min(Math.floor(input.maxLinesPerFile || 300), 500));
 
     const results = await Promise.all(input.files.map(async (spec) => {
       try {

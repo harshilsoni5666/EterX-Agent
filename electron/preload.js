@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   convertDocxToPdf: (path) => ipcRenderer.invoke('convert-docx-to-pdf', path),
   listFolder: (path) => ipcRenderer.invoke('list-folder', path),
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
+  openPath: (path) => ipcRenderer.invoke('open-path', path),
   restartApp: () => ipcRenderer.invoke('app-restart'),
   closeApp: () => ipcRenderer.invoke('app-close'),
   loadChatSnapshot: (chatId) => ipcRenderer.invoke('chat-snapshot-load', chatId),

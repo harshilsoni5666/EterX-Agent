@@ -13,6 +13,7 @@ export const CODE_AGENT_TOOLS = [
   'workspace_verify_code',
   'process_manager',
   'background_task',
+  'scheduled_tasks',
   'wait_timer',
   'browser_control',
   'spawn_sub_agent',

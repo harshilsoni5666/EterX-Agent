@@ -14,6 +14,8 @@ const PLATFORMS = ['telegram', 'whatsapp', 'discord', 'signal', 'generic'];
 const DEFAULT_CONFIG = Object.freeze({
   enabled: false,
   keepRunningOnClose: true,
+  keepActiveChatsOnClose: true,
+  runScheduledTasksInBackground: true,
   launchAtLogin: false,
   host: '127.0.0.1',
   port: 47821,
@@ -49,6 +51,8 @@ function mergeConfig(raw = {}) {
     ...raw,
     enabled: Boolean(raw.enabled),
     keepRunningOnClose: raw.keepRunningOnClose !== false,
+    keepActiveChatsOnClose: raw.keepActiveChatsOnClose !== false,
+    runScheduledTasksInBackground: raw.runScheduledTasksInBackground !== false,
     launchAtLogin: Boolean(raw.launchAtLogin),
     autoDispatch: raw.autoDispatch !== false,
     busyInputMode: ['queue', 'steer', 'interrupt'].includes(raw.busyInputMode) ? raw.busyInputMode : 'queue',

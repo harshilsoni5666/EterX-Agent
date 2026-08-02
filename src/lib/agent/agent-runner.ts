@@ -31,6 +31,7 @@ import {
   resolveModelName,
   type MainAgentMode,
 } from './model-routing';
+import { mergeStreamingText } from '../streaming-lifecycle';
 
 // ═══════════════════════════════════════════════════════════════
 // Types
@@ -608,7 +609,7 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
                 // Buffer visible text until the response boundary is known.
                 // Text accompanying a function call is a work note, not a
                 // final answer, and cannot be retracted by this event protocol.
-                bufferedVisibleText += String(part.text);
+                bufferedVisibleText = mergeStreamingText(bufferedVisibleText, String(part.text), true);
               }
             }
           }
@@ -631,7 +632,7 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
                 interaction: iteration + 1,
                 agentName,
                 timestamp: Date.now(),
-              };
+              } as any;
             }
           }
           const candidate = response?.candidates?.[0];

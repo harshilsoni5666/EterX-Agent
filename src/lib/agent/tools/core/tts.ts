@@ -1,14 +1,19 @@
 import { z } from 'zod';
 import { ToolDefinition } from '../../schemas';
-import { exec, execFile } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 import path from 'path';
 import fs from 'fs-extra';
 import { resolveFinalArtifactPathForContext } from '../../workspace/path_resolver';
 import { enforceToolCapability } from '../security/tool_policy';
+import { buildTerminalShellInvocation } from './shell_resolver';
 
-const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
+
+async function runPowerShell(script: string): Promise<{ stdout: string; stderr: string }> {
+  const invocation = buildTerminalShellInvocation(script, 'powershell');
+  return execFileAsync(invocation.file, invocation.args, { windowsHide: true, timeout: 30_000 });
+}
 
 function psQuote(value: unknown): string {
   return `'${String(value ?? '').replace(/'/g, "''")}'`;
@@ -85,7 +90,7 @@ export const ttsTool: ToolDefinition = {
       `.trim();
 
       const wavPath = filePath;
-      await execAsync(psScript, { shell: 'powershell.exe' });
+      await runPowerShell(psScript);
 
       // Check if file was created
       if (await fs.pathExists(wavPath)) {
@@ -116,7 +121,7 @@ export const ttsTool: ToolDefinition = {
         `.trim();
 
         const wavPath = filePath;
-        await execAsync(fallbackScript, { shell: 'powershell.exe' });
+        await runPowerShell(fallbackScript);
         
         if (await fs.pathExists(wavPath)) {
           return { success: true, filePath: wavPath, message: `Audio generated (fallback): ${path.basename(wavPath)}` };

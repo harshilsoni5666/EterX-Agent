@@ -2,10 +2,10 @@
 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ChevronDown, Plus, Mic, ArrowUp, Check, ChevronRight, ChevronLeft, Calendar, Clock, Bot, Play, Trash2, ExternalLink, AlertCircle, CheckCircle2, Loader2, Search } from 'lucide-react';
+import { ChevronDown, Plus, Mic, ArrowUp, Check, ChevronRight, ChevronLeft, Calendar, Clock, Bot, Play, Trash2, ExternalLink, AlertCircle, CheckCircle2, Loader2, Search, Pencil, Pause, RotateCcw } from 'lucide-react';
 import { PremiumSend } from '../ui/premium-icons';
 import { Shimmer } from '../ui/shimmer';
-import { normalizeScheduledTask, type ScheduledTaskRecord } from '../../lib/scheduled-tasks';
+import { normalizeScheduledTask, SCHEDULED_TASKS_STORAGE_KEY, SCHEDULED_TASKS_UPDATED_EVENT, type ScheduledTaskRecord } from '../../lib/scheduled-tasks';
 
 export type ScheduledTaskItem = ScheduledTaskRecord;
 import {
@@ -210,6 +210,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
   // Manual scheduler reference states
   const [taskTitle, setTaskTitle] = useState("");
   const [taskDescription, setTaskDescription] = useState("");
+  const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
 
   // Recurrence state loaded from default localStorage
   const [recurrence, setRecurrence] = useState(() => {
@@ -245,7 +246,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
   const [scheduledTasks, setScheduledTasks] = useState<ScheduledTaskItem[]>(() => {
     if (typeof window !== 'undefined') {
       try {
-        const saved = JSON.parse(localStorage.getItem('eterx_scheduled_tasks') || '[]');
+        const saved = JSON.parse(localStorage.getItem(SCHEDULED_TASKS_STORAGE_KEY) || '[]');
         return Array.isArray(saved) ? saved.map(normalizeScheduledTask) : [];
       } catch {
         return [];
@@ -291,19 +292,57 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
   useEffect(() => {
     const handleSync = () => {
       try {
-        const tasks = JSON.parse(localStorage.getItem('eterx_scheduled_tasks') || '[]');
+        const tasks = JSON.parse(localStorage.getItem(SCHEDULED_TASKS_STORAGE_KEY) || '[]');
         setScheduledTasks(Array.isArray(tasks) ? tasks.map(normalizeScheduledTask) : []);
       } catch { }
     };
-    window.addEventListener('eterx_scheduled_tasks_updated', handleSync);
-    return () => window.removeEventListener('eterx_scheduled_tasks_updated', handleSync);
+    const syncDurableTasks = async () => {
+      try {
+        const pendingLocalWriteAt = Number(localStorage.getItem('eterx_scheduled_tasks_sync_pending') || 0);
+        if (pendingLocalWriteAt && Date.now() - pendingLocalWriteAt < 15_000) return;
+        if (pendingLocalWriteAt) localStorage.removeItem('eterx_scheduled_tasks_sync_pending');
+        const response = await fetch('/api/scheduled-tasks', { cache: 'no-store' });
+        if (!response.ok) return;
+        const snapshot = await response.json();
+        const durable = Array.isArray(snapshot?.tasks) ? snapshot.tasks.map(normalizeScheduledTask) : [];
+        const local = JSON.parse(localStorage.getItem(SCHEDULED_TASKS_STORAGE_KEY) || '[]');
+        if (durable.length === 0 && Array.isArray(local) && local.length > 0) {
+          void fetch('/api/scheduled-tasks', {
+            method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tasks: local }),
+          });
+          return;
+        }
+        localStorage.setItem(SCHEDULED_TASKS_STORAGE_KEY, JSON.stringify(durable));
+        setScheduledTasks(durable);
+      } catch { }
+    };
+    window.addEventListener(SCHEDULED_TASKS_UPDATED_EVENT, handleSync);
+    window.addEventListener('focus', syncDurableTasks);
+    void syncDurableTasks();
+    const interval = window.setInterval(syncDurableTasks, 4000);
+    return () => {
+      window.removeEventListener(SCHEDULED_TASKS_UPDATED_EVENT, handleSync);
+      window.removeEventListener('focus', syncDurableTasks);
+      window.clearInterval(interval);
+    };
   }, []);
 
   const saveTasksState = useCallback((next: ScheduledTaskItem[]) => {
     setScheduledTasks(next);
     try {
-      localStorage.setItem('eterx_scheduled_tasks', JSON.stringify(next));
-      window.dispatchEvent(new CustomEvent('eterx_scheduled_tasks_updated'));
+      const syncToken = String(Date.now());
+      localStorage.setItem(SCHEDULED_TASKS_STORAGE_KEY, JSON.stringify(next));
+      localStorage.setItem('eterx_scheduled_tasks_sync_pending', syncToken);
+      window.dispatchEvent(new CustomEvent(SCHEDULED_TASKS_UPDATED_EVENT));
+      void fetch('/api/scheduled-tasks', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tasks: next }),
+      }).then(response => {
+        if (response.ok && localStorage.getItem('eterx_scheduled_tasks_sync_pending') === syncToken) {
+          localStorage.removeItem('eterx_scheduled_tasks_sync_pending');
+        }
+      }).catch(() => {});
     } catch { }
   }, []);
 
@@ -348,7 +387,10 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
   }, []);
 
   const formatScheduledTimeLabel = useCallback((t: ScheduledTaskItem) => {
-    const dLabel = getDateDisplayLabel(t.dateOption, t.customDate || '');
+    const scheduledDate = new Date(t.scheduledTimestamp);
+    const dLabel = Number.isFinite(scheduledDate.getTime())
+      ? scheduledDate.toLocaleDateString([], { month: 'short', day: 'numeric', year: scheduledDate.getFullYear() !== new Date().getFullYear() ? 'numeric' : undefined })
+      : getDateDisplayLabel(t.dateOption, t.customDate || '');
     const [hStr, mStr] = (t.triggerTime || '09:00').split(':');
     let h = parseInt(hStr || '9', 10);
     const m = parseInt(mStr || '0', 10);
@@ -361,7 +403,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
   // Task lists filtered & sorted per specification
   const myListTasks = useMemo(() => {
     return scheduledTasks
-      .filter(t => t.status === 'scheduled')
+      .filter(t => t.status === 'scheduled' || t.status === 'paused')
       .sort((a, b) => b.createdAt - a.createdAt);
   }, [scheduledTasks]);
 
@@ -378,7 +420,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
 
   const completedTasks = useMemo(() => {
     return scheduledTasks
-      .filter(t => t.status === 'completed' || t.status === 'failed')
+      .filter(t => t.status === 'completed' || t.status === 'failed' || t.status === 'cancelled')
       .sort((a, b) => (b.executedAt || b.createdAt) - (a.executedAt || a.createdAt));
   }, [scheduledTasks]);
 
@@ -428,8 +470,9 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
 
     const scheduledTs = computeScheduledTimestamp(triggerTime, dateOption, customDateVal);
 
-    const newTask: ScheduledTaskItem = {
-      id: `task_${Date.now()}_${Math.floor(Math.random() * 10000)}`,
+    const previous = editingTaskId ? scheduledTasks.find(task => task.id === editingTaskId) : undefined;
+    const newTask: ScheduledTaskItem = normalizeScheduledTask({
+      ...(previous || {}),
       title: taskTitle.trim(),
       description: taskDescription.trim(),
       model: formModel,
@@ -442,21 +485,55 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
       dateOption,
       customDate: customDateVal,
       sources: [...attachedPins],
-      createdAt: Date.now(),
+      id: previous?.id || `task_${Date.now()}_${Math.floor(Math.random() * 10000)}`,
+      createdAt: previous?.createdAt || Date.now(),
+      updatedAt: Date.now(),
       scheduledTimestamp: scheduledTs,
       status: 'scheduled',
-    };
+    });
 
-    saveTasksState([newTask, ...scheduledTasks]);
+    saveTasksState(previous
+      ? scheduledTasks.map(task => task.id === previous.id ? newTask : task)
+      : [newTask, ...scheduledTasks]);
 
     // Reset form fields
     setTaskTitle('');
     setTaskDescription('');
     setAttachedPins([]);
+    setEditingTaskId(null);
 
     // Automatically switch to 'my-list' tab so user immediately sees their new task!
     setSelectedSection('my-list');
   };
+
+  const handleEditTask = useCallback((task: ScheduledTaskItem) => {
+    if (task.status === 'running') return;
+    setEditingTaskId(task.id);
+    setTaskTitle(task.title);
+    setTaskDescription(task.description);
+    setFormModel(task.model || AUTO_MODEL_SELECTION);
+    setFormThinkingLevel(task.thinkingLevel || 'medium');
+    setFormAgent({ id: task.agentId, name: task.agentName });
+    setPriority(task.priority);
+    setRecurrence(task.recurrence);
+    setTriggerTime(task.triggerTime);
+    setDateOption(task.dateOption);
+    setCustomDateVal(task.customDate || new Date(task.scheduledTimestamp).toISOString().split('T')[0]);
+    setAttachedPins([...(task.sources || [])]);
+    if (task.recurrence.startsWith('custom:')) {
+      setCustomRepeatVal(task.recurrence.slice('custom:'.length));
+      setShowCustomRepeatForm(true);
+    }
+    setSelectedSection('new-tasks');
+  }, [setSelectedSection]);
+
+  const handleCancelEdit = useCallback(() => {
+    setEditingTaskId(null);
+    setTaskTitle('');
+    setTaskDescription('');
+    setAttachedPins([]);
+    setSelectedSection('my-list');
+  }, [setSelectedSection]);
 
   const handleDeleteTask = useCallback((id: string) => {
     saveTasksState(scheduledTasks.filter(t => t.id !== id));
@@ -481,9 +558,24 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
     setSelectedSection('queue');
   }, [saveTasksState, scheduledTasks, setSelectedSection]);
 
+  const handlePauseTask = useCallback((id: string) => {
+    saveTasksState(scheduledTasks.map(task => task.id === id && task.status !== 'running'
+      ? { ...task, status: 'paused' as const, updatedAt: Date.now() }
+      : task));
+    setSelectedSection('my-list');
+  }, [saveTasksState, scheduledTasks, setSelectedSection]);
+
+  const handleResumeTask = useCallback((id: string) => {
+    saveTasksState(scheduledTasks.map(task => task.id === id
+      ? { ...task, status: task.scheduledTimestamp <= Date.now() ? 'queued' as const : 'scheduled' as const, updatedAt: Date.now() }
+      : task));
+  }, [saveTasksState, scheduledTasks]);
+
   const detailsRef = useRef<HTMLDivElement>(null);
   const frequencyRef = useRef<HTMLDivElement>(null);
   const sourceMenuRef = useRef<HTMLDivElement>(null);
+  const sourceFileInputRef = useRef<HTMLInputElement>(null);
+  const sourceFolderInputRef = useRef<HTMLInputElement>(null);
 
   const [storedModelSettings, setStoredModelSettings] = useState(readStoredModelSettings);
   const [thinkingLevel, setThinkingLevel] = useState(() => {
@@ -805,6 +897,34 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
   }, [taskTitle, taskDescription]);
 
   // Real attachment operations using Electron desktop APIs
+  const importBrowserSources = async (files: File[]) => {
+    const imported: { id: string; name: string; type: string; path: string }[] = [];
+    for (const file of files.slice(0, 100)) {
+      if (!file || file.size <= 0) continue;
+      try {
+        const formData = new FormData();
+        formData.append('file', file, file.name || 'source-file');
+        formData.append('fileName', file.name || 'source-file');
+        formData.append('mimeType', file.type || 'application/octet-stream');
+        const response = await fetch('/api/media/upload', { method: 'POST', body: formData });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || !payload?.localPath) continue;
+        imported.push({
+          id: Math.random().toString(36).slice(2, 11),
+          type: 'file',
+          path: String(payload.localPath),
+          name: file.name || String(payload.fileName || 'Source file'),
+        });
+      } catch { /* keep importing the remaining selected files */ }
+    }
+    if (imported.length) setAttachedPins(previous => [...previous, ...imported.filter(item => !previous.some(pin => pin.path === item.path))]);
+  };
+
+  const handleBrowserSourceSelection = (event: React.ChangeEvent<HTMLInputElement>) => {
+    if (event.target.files?.length) void importBrowserSources(Array.from(event.target.files));
+    event.target.value = '';
+  };
+
   const handlePinFiles = async () => {
     setShowSourceMenu(false);
     const w = window as any;
@@ -824,7 +944,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
         }
       }
     } else {
-      alert("File pinning requires the EterX desktop app.");
+      sourceFileInputRef.current?.click();
     }
   };
 
@@ -845,7 +965,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
         ]);
       }
     } else {
-      alert("Folder pinning requires the EterX desktop app.");
+      sourceFolderInputRef.current?.click();
     }
   };
 
@@ -869,6 +989,15 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
 
   return (
     <div className="eterx-agents-view flex-1 w-full h-full flex flex-col px-5 py-5 md:px-8 md:pt-6 md:pb-6 overflow-hidden relative z-20 bg-transparent select-none">
+      <input type="file" multiple ref={sourceFileInputRef} onChange={handleBrowserSourceSelection} className="hidden" />
+      <input
+        type="file"
+        multiple
+        ref={sourceFolderInputRef}
+        onChange={handleBrowserSourceSelection}
+        className="hidden"
+        {...({ webkitdirectory: '', directory: '' } as any)}
+      />
       {/* Main Content split layout stretching to very top */}
       <div className="flex flex-col md:flex-row gap-6 flex-1 min-h-0 w-full">
 
@@ -1112,24 +1241,36 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
                   <div className="flex flex-col gap-4 w-full">
 
                     {/* Task Title (Borderless transparent) */}
-                    <div className="w-full">
+                    <div className="relative w-full">
+                      {!taskTitle && (
+                        <span aria-hidden="true" className="pointer-events-none absolute inset-x-0 top-2 z-10 select-none text-[18px] font-bold leading-tight text-white/25">
+                          Scheduled task title
+                        </span>
+                      )}
                       <input
                         type="text"
                         value={taskTitle}
                         onChange={(e) => setTaskTitle(e.target.value)}
-                        placeholder="Scheduled task title"
-                        className="w-full bg-transparent border-0 outline-none focus:outline-none focus:ring-0 text-[18px] font-bold text-white placeholder:text-white/25 py-2 leading-tight"
+                        placeholder=""
+                        aria-label="Scheduled task title"
+                        className="relative z-0 w-full bg-transparent border-0 outline-none focus:outline-none focus:ring-0 text-[18px] font-bold text-white py-2 leading-tight"
                       />
                     </div>
 
                     {/* Task Instructions Area (Describe what should do) */}
-                    <div className="w-full">
+                    <div className="relative w-full">
+                      {!taskDescription && (
+                        <span aria-hidden="true" className="pointer-events-none absolute left-3.5 top-2.5 z-10 select-none text-[13px] leading-relaxed text-white/25">
+                          Describe what the agent should do
+                        </span>
+                      )}
                       <textarea
                         rows={2}
                         value={taskDescription}
                         onChange={(e) => setTaskDescription(e.target.value)}
-                        placeholder="Describe what the agent should do"
-                        className="w-full bg-[#181818]/60 border border-white/[0.04] rounded-xl px-3.5 py-2.5 text-[13px] text-white placeholder:text-white/25 focus:outline-none focus:border-white/10 transition-colors resize-none leading-relaxed shadow-[inset_0_1px_2px_rgba(0,0,0,0.3)]"
+                        placeholder=""
+                        aria-label="Describe what the agent should do"
+                        className="relative z-0 w-full bg-[#181818]/60 border border-white/[0.04] rounded-xl px-3.5 py-2.5 text-[13px] text-white focus:outline-none focus:border-white/10 transition-colors resize-none leading-relaxed shadow-[inset_0_1px_2px_rgba(0,0,0,0.3)]"
                       />
                     </div>
 
@@ -1706,7 +1847,14 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
                   </div>
 
                   {/* Fixed Create Schedule Button Section at bottom */}
-                  <div className="mt-1 pt-2.5 border-t border-white/[0.03] w-full flex items-center justify-end select-none shrink-0">
+                  <div className="mt-1 pt-2.5 border-t border-white/[0.03] w-full flex items-center justify-between gap-3 select-none shrink-0">
+                    <div className="min-w-0">
+                      {editingTaskId && (
+                        <button type="button" onClick={handleCancelEdit} className="text-[12px] font-medium text-white/50 transition-colors hover:text-white">
+                          Cancel editing
+                        </button>
+                      )}
+                    </div>
                     <button
                       type="submit"
                       disabled={!isFormValid}
@@ -1716,7 +1864,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
                           : 'bg-white/5 text-white/30 border border-white/[0.04] cursor-not-allowed shadow-none'
                         }`}
                     >
-                      Schedule Task
+                      {editingTaskId ? 'Save Changes' : 'Schedule Task'}
                     </button>
                   </div>
                 </form>
@@ -1748,6 +1896,8 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
                       <div key={t.id} className="w-full bg-[#141414]/90 border border-white/[0.06] hover:border-white/[0.12] rounded-xl p-4 flex flex-col gap-2.5 transition-colors shadow-sm text-left">
                         <div className="flex items-start justify-between gap-3">
                           <span className="text-[14.5px] font-bold text-white leading-snug">{t.title}</span>
+                          <div className="flex items-center gap-1.5">
+                          {t.status === 'paused' && <span className="rounded-md border border-white/10 bg-white/[0.06] px-2 py-0.5 text-[10px] font-semibold text-white/55">Paused</span>}
                           <span className={`px-2 py-0.5 rounded-md text-[10px] font-semibold capitalize tracking-wider ${
                             t.priority === 'high' ? 'bg-rose-500/15 text-rose-300 border border-rose-500/20' :
                             t.priority === 'medium' ? 'bg-amber-500/15 text-amber-300 border border-amber-500/20' :
@@ -1755,6 +1905,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
                           }`}>
                             {t.priority}
                           </span>
+                          </div>
                         </div>
 
                         {t.description && (
@@ -1791,6 +1942,18 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
                         {renderRunHistory(t)}
 
                         <div className="flex items-center justify-end gap-2 pt-2 border-t border-white/[0.03]">
+                          {t.status === 'paused' ? (
+                            <button type="button" onClick={() => handleResumeTask(t.id)} className="inline-flex items-center gap-1 px-2.5 py-1 bg-white/10 hover:bg-white/20 text-white rounded-lg text-[11.5px] font-medium transition-colors">
+                              <RotateCcw className="h-3 w-3" /> Resume
+                            </button>
+                          ) : (
+                            <button type="button" onClick={() => handlePauseTask(t.id)} className="inline-flex items-center gap-1 px-2.5 py-1 bg-white/5 hover:bg-white/10 text-white/60 hover:text-white rounded-lg text-[11.5px] transition-colors">
+                              <Pause className="h-3 w-3" /> Pause
+                            </button>
+                          )}
+                          <button type="button" onClick={() => handleEditTask(t)} className="inline-flex items-center gap-1 px-2.5 py-1 bg-white/5 hover:bg-white/10 text-white/60 hover:text-white rounded-lg text-[11.5px] transition-colors">
+                            <Pencil className="h-3 w-3" /> Edit
+                          </button>
                           <button
                             type="button"
                             onClick={() => handleRunTaskNow(t.id)}
@@ -1869,13 +2032,16 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
                         </div>
 
                         <div className="flex items-center justify-end gap-2 pt-2 border-t border-white/[0.03]">
-                          <button
-                            type="button"
-                            onClick={() => handleDeleteTask(t.id)}
-                            className="px-2.5 py-1 bg-white/5 hover:bg-rose-500/20 text-white/50 hover:text-rose-300 rounded-lg text-[11.5px] transition-colors cursor-pointer"
-                          >
-                            Cancel Task
-                          </button>
+                          {t.chatId && onOpenChat && (
+                            <button type="button" onClick={() => onOpenChat(t.chatId!)} className="px-2.5 py-1 bg-white/5 hover:bg-white/10 text-white/60 hover:text-white rounded-lg text-[11.5px] transition-colors">
+                              Open chat
+                            </button>
+                          )}
+                          {t.status !== 'running' && (
+                            <button type="button" onClick={() => handlePauseTask(t.id)} className="px-2.5 py-1 bg-white/5 hover:bg-amber-500/15 text-white/50 hover:text-amber-200 rounded-lg text-[11.5px] transition-colors cursor-pointer">
+                              Cancel run
+                            </button>
+                          )}
                         </div>
                       </div>
                     ))
@@ -1906,7 +2072,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
                               ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/20'
                               : 'bg-rose-500/15 text-rose-300 border border-rose-500/20'
                           }`}>
-                            {t.status === 'completed' ? 'Completed' : 'Failed'}
+                            {t.status === 'completed' ? 'Completed' : t.status === 'cancelled' ? 'Cancelled' : 'Failed'}
                           </span>
                         </div>
 
@@ -1938,6 +2104,14 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
                         {renderRunHistory(t)}
 
                         <div className="flex items-center justify-end gap-2 pt-2 border-t border-white/[0.03]">
+                          {t.chatId && onOpenChat && (
+                            <button type="button" onClick={() => onOpenChat(t.chatId!)} className="px-2.5 py-1 bg-white/5 hover:bg-white/10 text-white/60 hover:text-white rounded-lg text-[11.5px] transition-colors">
+                              Open chat
+                            </button>
+                          )}
+                          <button type="button" onClick={() => handleEditTask(t)} className="inline-flex items-center gap-1 px-2.5 py-1 bg-white/5 hover:bg-white/10 text-white/60 hover:text-white rounded-lg text-[11.5px] transition-colors">
+                            <Pencil className="h-3 w-3" /> Edit
+                          </button>
                           <button
                             type="button"
                             onClick={() => handleRunTaskNow(t.id)}

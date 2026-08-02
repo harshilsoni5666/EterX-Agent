@@ -4,7 +4,7 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import dynamic from 'next/dynamic';
 import { Sidebar } from '../components/layout/sidebar';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
-import { applyEterxTheme, broadcastEterxSettingsUpdate } from '../components/theme/theme-bridge';
+import { transitionEterxTheme, broadcastEterxSettingsUpdate } from '../components/theme/theme-bridge';
 import { ChatInput } from '../components/layout/chat-input';
 import { ChatFeed } from '../components/chat/chat-feed';
 import { FloatingLiveWidget } from '../components/chat/FloatingLiveWidget';
@@ -51,6 +51,7 @@ import {
   normalizeModelSelectorEntries,
   parseModelEntryKey,
   pickAutoModelEntry,
+  type ModelSelectorEntry,
 } from '../lib/agent/model-selector-store';
 import {
   createCustomToolActionLog,
@@ -62,16 +63,36 @@ import {
 } from '../lib/agent/custom-agent-trace-adapter';
 import { formatVisibleWorkNote } from '../lib/agent/work-note';
 import { closeThoughtStreamsForBoundary, mergeThoughtStreamTrace } from '../lib/thought-stream-lifecycle';
+import { mergeStreamingText } from '../lib/streaming-lifecycle';
 import { FilePanelProvider, useGlobalFilePanel } from '../contexts/FilePanelContext';
 import { isProjectFile, getFileIconPath } from '../lib/utils/file-icon-utils';
 import { WorkMenuSectionButton, WorkMenuEmptyState, WorkMenuStatusIndicator } from '../components/layout/WorkMenuHelpers';
 import { FloatingPetMonitor, PetThinkingLabel, getLatestPetMonitorText } from '../components/chat/FloatingPetMonitor';
+import { SubAgentIdentityIcon } from '../components/chat/agent-icons';
 import {
   computeNextScheduledRun,
   normalizeScheduledTask,
+  SCHEDULED_TASKS_STORAGE_KEY,
+  SCHEDULED_TASKS_UPDATED_EVENT,
   type ScheduledTaskRecord,
   type ScheduledTaskRun,
 } from '../lib/scheduled-tasks';
+
+const persistScheduledTaskRecords = (tasks: ScheduledTaskRecord[]) => {
+  const syncToken = String(Date.now());
+  localStorage.setItem(SCHEDULED_TASKS_STORAGE_KEY, JSON.stringify(tasks));
+  localStorage.setItem('eterx_scheduled_tasks_sync_pending', syncToken);
+  window.dispatchEvent(new CustomEvent(SCHEDULED_TASKS_UPDATED_EVENT));
+  void fetch('/api/scheduled-tasks', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ tasks }),
+  }).then(response => {
+    if (response.ok && localStorage.getItem('eterx_scheduled_tasks_sync_pending') === syncToken) {
+      localStorage.removeItem('eterx_scheduled_tasks_sync_pending');
+    }
+  }).catch(() => {});
+};
 
 const CommandPalette = dynamic(
   () => import('../components/layout/command-palette').then(mod => mod.CommandPalette),
@@ -166,79 +187,20 @@ type WorkMenuSourceItem = {
 
 
 
-const SUB_AGENT_ICON_NAMES = new Set([
-  'einstein', 'heisenberg', 'sam', 'dario', 'elon',
-  'tesla', 'newton', 'turing', 'ada', 'curie',
-  'feynman', 'darwin', 'hawking', 'galileo', 'davinci',
-  'aristotle', 'oppenheimer', 'gates', 'jobs', 'pascal'
-]);
-
-const getAgentDisplayName = (name?: string) => String(name || 'Agent').trim() || 'Agent';
-
-const getAgentInitials = (name?: string) => {
-  const safeName = getAgentDisplayName(name);
-  const parts = safeName.split(/[\s_-]+/).filter(Boolean);
-  if (parts.length > 1) {
-    return `${ parts[0][0] || '' }${ parts[1][0] || '' }`.toUpperCase();
-  }
-  return safeName.slice(0, 2).toUpperCase();
-};
-
-const getSubAgentStatusTone = (status?: string) => {
-  switch (status) {
-    case 'working':
-    case 'spawning':
-      return 'emerald';
-    case 'paused':
-      return 'amber';
-    case 'completed':
-      return 'blue';
-    case 'error':
-      return 'red';
-    case 'closed':
-      return 'muted';
-    default:
-      return 'neutral';
-  }
-};
-
 const SubAgentAvatar = React.memo(({
   name,
   status,
   size = 'sm',
+  assetIndex,
 }: {
   name?: string;
   status?: string;
   size?: 'xs' | 'sm' | 'md';
+  assetIndex?: number;
 }) => {
-  const displayName = getAgentDisplayName(name);
-  const lowerName = displayName.toLowerCase().trim();
-  const hasImage = SUB_AGENT_ICON_NAMES.has(lowerName);
-  const sizeClass = size === 'md' ? 'h-7 w-7' : size === 'xs' ? 'h-[22px] w-[22px]' : 'h-6 w-6';
-  const textClass = size === 'md' ? 'text-[10px]' : 'text-[9px]';
-
-  return (
-    <span className={`relative flex ${ sizeClass } shrink-0 items-center justify-center overflow-hidden rounded-full border border-white/[0.13] bg-[radial-gradient(circle_at_30%_20%,rgba(255,255,255,0.18),rgba(255,255,255,0.04)_42%,rgba(0,0,0,0.18))] shadow-[inset_0_1px_0_rgba(255,255,255,0.18)]`}>
-      {hasImage ? (
-        <>
-          <span className={`absolute inset-0 flex items-center justify-center ${ textClass } font-bold leading-none text-white/72`}>
-            {getAgentInitials(displayName)}
-          </span>
-          <img
-            src={`/icons/sub-agents/${ lowerName }.png`}
-            alt={displayName}
-            draggable={false}
-            onError={(event) => { event.currentTarget.style.display = 'none'; }}
-            className="relative z-10 block h-full w-full select-none object-cover"
-          />
-        </>
-      ) : (
-        <span className={`${ textClass } font-bold leading-none text-white/72`}>
-          {getAgentInitials(displayName)}
-        </span>
-      )}
-    </span>
-  );
+  const displayName = String(name || 'Agent').trim() || 'Agent';
+  const sizePx = size === 'md' ? 28 : size === 'xs' ? 22 : 24;
+  return <SubAgentIdentityIcon name={displayName} status={status} size={sizePx} assetIndex={assetIndex} title={displayName} />;
 });
 
 const TaskStatusGlyphMini = React.memo(({ status, active }: { status?: string; active?: boolean }) => {
@@ -277,6 +239,8 @@ type ComposerAttachment = {
   file: File;
   name?: string;
   preview: string;
+  mimeType?: string;
+  size?: number;
   uploadStatus?: 'uploading' | 'done' | 'error';
   localPath?: string;
   fileUri?: string;
@@ -289,6 +253,18 @@ type QueuedFollowUp = {
   attachments: ComposerAttachment[];
   createdAt: number;
 };
+
+const makeFollowUpAdmissionKey = (
+  targetChatId: string,
+  message: string,
+  nextAttachments: ComposerAttachment[] = [],
+) => JSON.stringify([
+  targetChatId,
+  message.trim(),
+  nextAttachments.map(attachment => String(
+    attachment.id || attachment.name || attachment.file?.name || ''
+  )),
+]);
 
 type TaskTrackerStep = {
   id?: string;
@@ -386,7 +362,7 @@ type ActiveView = 'chat' | 'agents' | 'channels' | 'projects';
 
 const serializeComposerAttachment = (att: ComposerAttachment) => {
   const fileName = att.name || att.file?.name || 'file';
-  const mimeType = att.file?.type || 'application/octet-stream';
+  const mimeType = att.mimeType || att.file?.type || 'application/octet-stream';
   return {
     id: att.id,
     name: fileName,
@@ -395,11 +371,11 @@ const serializeComposerAttachment = (att: ComposerAttachment) => {
     localPath: att.localPath,
     fileUri: undefined,
     mimeType,
-    size: att.file?.size || 0,
+    size: att.size || att.file?.size || 0,
     file: {
       name: att.file?.name || fileName,
       type: mimeType,
-      size: att.file?.size || 0,
+      size: att.size || att.file?.size || 0,
     },
   };
 };
@@ -442,6 +418,17 @@ const readStoredMainAgentMode = (): MainAgentMode | null => {
     return MAIN_AGENT_MODEL_OPTIONS.some(option => option.id === mode) ? mode as MainAgentMode : null;
   } catch {
     return null;
+  }
+};
+
+const readStoredSynapseGraphEnabled = (): boolean => {
+  if (typeof window === 'undefined') return false;
+  try {
+    const saved = window.localStorage.getItem(SETTINGS_STORAGE_KEY);
+    const settings = saved ? JSON.parse(saved) : {};
+    return settings?.synapseGraphEnabled === true;
+  } catch {
+    return false;
   }
 };
 
@@ -547,15 +534,16 @@ const isDefaultChatTitle = (title?: string | null) =>
 const titleCaseWords = (value: string) =>
   value.toLowerCase().replace(/\b[a-z0-9]/g, letter => letter.toUpperCase());
 
-const fallbackTitleFromPrompt = (prompt: string) => {
+const fallbackTitleFromPrompt = (prompt: string, attachmentNames: string[] = []) => {
   const stopWords = new Set([
     'the', 'and', 'for', 'with', 'this', 'that', 'from', 'have', 'make', 'making',
     'fix', 'issue', 'please', 'proper', 'fast', 'best', 'okay', 'just', 'want',
     'need', 'can', 'you', 'your', 'there', 'their', 'then', 'than', 'into',
   ]);
   const seen = new Set<string>();
-  const words = String(prompt || '')
-    .replace(/[^A-Za-z0-9\s-]/g, ' ')
+  const source = String(prompt || '').trim() || attachmentNames.filter(Boolean).join(' ');
+  const words = source
+    .replace(/[^\p{L}\p{N}\s-]/gu, ' ')
     .split(/\s+/)
     .map(word => word.trim())
     .filter(word => {
@@ -568,7 +556,7 @@ const fallbackTitleFromPrompt = (prompt: string) => {
 
   if (words.length >= 2) return titleCaseWords(words.join(' '));
   if (words.length === 1) return titleCaseWords(`${ words[0] } Task`);
-  return DEFAULT_CHAT_TITLE;
+  return 'New Task Request';
 };
 
 const formatProxyManagerMarkdown = (value: string) => {
@@ -1268,7 +1256,6 @@ function DeepWorkUI() {
   const setTopbarThemeOpen = (v: boolean) => setActiveTopbarMenu(v ? 'theme' : null);
   const setTopbarHelpOpen = (v: boolean) => setActiveTopbarMenu(v ? 'help' : null);
   const [monitorOpen, setMonitorOpen] = useState(false);
-  const [agentTeamOpen, setAgentTeamOpen] = useState(false);
   const [subAgentDockOpen, setSubAgentDockOpen] = useState(false);
   const [activeSubAgentTab, setActiveSubAgentTab] = useState<string | null>(null);
   const [subAgentOrder, setSubAgentOrder] = useState<string[]>([]);
@@ -1556,45 +1543,12 @@ function DeepWorkUI() {
     setActiveViewState(view);
   }, []);
   const handleThemeChange = useCallback((newTheme: 'light' | 'dark') => {
-    console.log('[ThemeChange] Changing theme to:', newTheme);
-    const changeThemeDOM = () => {
-      try {
-        const saved = localStorage.getItem(SETTINGS_STORAGE_KEY);
-        const settings = saved ? JSON.parse(saved) : {};
-        settings.theme = newTheme;
-        localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
-
-        // Direct DOM manipulation to ensure instant update
-        const root = document.documentElement;
-        root.setAttribute('data-theme', newTheme);
-        root.classList.toggle('dark', newTheme === 'dark');
-        root.classList.toggle('light', newTheme === 'light');
-        root.style.colorScheme = newTheme;
-
-        // Sync natively
-        (window as any).electronAPI?.setNativeTheme?.(newTheme);
-
-        applyEterxTheme(newTheme);
-        broadcastEterxSettingsUpdate(settings);
-
-        window.dispatchEvent(new StorageEvent('storage', { key: SETTINGS_STORAGE_KEY }));
-      } catch (err) {
-        console.error('[ThemeChange] Error changing theme:', err);
-      }
-    };
-
-    if (typeof document !== 'undefined' && (document as any).startViewTransition) {
-      const rootClass = document.documentElement.classList;
-      rootClass.add('theme-transitioning');
-      const transition = (document as any).startViewTransition(() => {
-        changeThemeDOM();
-      });
-      transition.finished.then(() => {
-        rootClass.remove('theme-transitioning');
-      });
-    } else {
-      changeThemeDOM();
-    }
+    const saved = localStorage.getItem(SETTINGS_STORAGE_KEY);
+    const settings = saved ? JSON.parse(saved) : {};
+    settings.theme = newTheme;
+    localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+    transitionEterxTheme(newTheme);
+    broadcastEterxSettingsUpdate(settings);
     setTopbarThemeOpen(false);
   }, []);
   const openSettingsWindow = useCallback((tab?: any) => {
@@ -1803,6 +1757,7 @@ function DeepWorkUI() {
     history: any[];
     currentTitle: string;
     mode: MainAgentMode;
+    selectedModel?: ModelSelectorEntry;
   }>>(new Map());
   // Invalidates in-flight poll callbacks when a poller is restarted or stopped.
   const pollGenerationRef = useRef<Map<string, number>>(new Map());
@@ -1873,12 +1828,33 @@ function DeepWorkUI() {
 
   // Real-time scheduled tasks background runner
   useEffect(() => {
-    const checkTasks = () => {
+    let checking = false;
+    const checkTasks = async () => {
+      if (checking) return;
+      if (document.visibilityState === 'hidden' && localStorage.getItem('eterx_background_scheduled_tasks') === 'false') return;
+      checking = true;
       try {
-        const raw = localStorage.getItem('eterx_scheduled_tasks');
-        if (!raw) return;
-        const parsed = JSON.parse(raw);
-        const tasks: ScheduledTaskRecord[] = Array.isArray(parsed) ? parsed.map(normalizeScheduledTask) : [];
+        const raw = localStorage.getItem(SCHEDULED_TASKS_STORAGE_KEY);
+        const parsed = raw ? JSON.parse(raw) : [];
+        let tasks: ScheduledTaskRecord[] = Array.isArray(parsed) ? parsed.map(normalizeScheduledTask) : [];
+        try {
+          const pendingLocalWriteAt = Number(localStorage.getItem('eterx_scheduled_tasks_sync_pending') || 0);
+          if (pendingLocalWriteAt && Date.now() - pendingLocalWriteAt < 15_000) throw new Error('Local schedule write is still syncing.');
+          if (pendingLocalWriteAt) localStorage.removeItem('eterx_scheduled_tasks_sync_pending');
+          const response = await fetch('/api/scheduled-tasks', { cache: 'no-store' });
+          if (response.ok) {
+            const snapshot = await response.json();
+            const durable = Array.isArray(snapshot?.tasks) ? snapshot.tasks.map(normalizeScheduledTask) : [];
+            if (durable.length > 0 || tasks.length === 0 || Number(snapshot?.savedAt || 0) > 0) {
+              tasks = durable;
+              localStorage.setItem(SCHEDULED_TASKS_STORAGE_KEY, JSON.stringify(tasks));
+            } else if (tasks.length > 0) {
+              void fetch('/api/scheduled-tasks', {
+                method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tasks }),
+              });
+            }
+          }
+        } catch { }
         const now = Date.now();
         let updated = false;
         const dueTasks: ScheduledTaskRecord[] = [];
@@ -1902,7 +1878,15 @@ function DeepWorkUI() {
               latestRun.status = 'failed';
               latestRun.completedAt = now;
               latestRun.error = 'The app restarted before this scheduled run could be reattached. Review its chat before running it again.';
-              task.status = 'failed';
+              const recoveredNextRun = computeNextScheduledRun(task.recurrence, now);
+              task.status = recoveredNextRun === null ? 'failed' : 'scheduled';
+              if (recoveredNextRun !== null) {
+                task.scheduledTimestamp = recoveredNextRun;
+                const nextDate = new Date(recoveredNextRun);
+                task.triggerTime = `${String(nextDate.getHours()).padStart(2, '0')}:${String(nextDate.getMinutes()).padStart(2, '0')}`;
+                task.customDate = `${nextDate.getFullYear()}-${String(nextDate.getMonth() + 1).padStart(2, '0')}-${String(nextDate.getDate()).padStart(2, '0')}`;
+                task.dateOption = 'custom';
+              }
               task.updatedAt = now;
               task.lastError = latestRun.error;
               updated = true;
@@ -1911,16 +1895,27 @@ function DeepWorkUI() {
         });
 
         if (updated) {
-          localStorage.setItem('eterx_scheduled_tasks', JSON.stringify(tasks));
-          window.dispatchEvent(new CustomEvent('eterx_scheduled_tasks_updated'));
+          persistScheduledTaskRecords(tasks);
         }
         dueTasks.forEach(task => {
           window.dispatchEvent(new CustomEvent('eterx_trigger_scheduled_task', { detail: { task } }));
         });
       } catch { }
+      finally { checking = false; }
     };
 
-    checkTasks();
+    const initializeScheduler = async () => {
+      try {
+        const desktopApi = (window as any).electronAPI;
+        const state = await desktopApi?.getGatewayState?.();
+        if (state?.config) {
+          localStorage.setItem('eterx_background_active_chats', String(Boolean(state.config.enabled && state.config.keepActiveChatsOnClose !== false)));
+          localStorage.setItem('eterx_background_scheduled_tasks', String(Boolean(state.config.enabled && state.config.runScheduledTasksInBackground !== false)));
+        }
+      } catch { }
+      await checkTasks();
+    };
+    void initializeScheduler();
     const interval = setInterval(checkTasks, 5000);
     return () => clearInterval(interval);
   }, []);
@@ -1980,7 +1975,6 @@ function DeepWorkUI() {
     setActiveSubAgentTab(null);
     setSubAgentDockOpen(false);
     setOverflowDropdownOpen(false);
-    setAgentTeamOpen(false);
     updateComposerState(state => ({ ...state, selectedAgent: next }));
     try {
       localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, JSON.stringify(next));
@@ -3175,6 +3169,11 @@ function DeepWorkUI() {
               secondary: activity.resultSummary || undefined,
               tool: activity.toolName,
               toolName: activity.toolName,
+              iconCategory: activity.toolName === 'manage_scheduled_tasks'
+                ? 'clock'
+                : activity.kind === 'delegation'
+                  ? 'agent'
+                  : 'computer',
               toolCallId: activity.id,
               isLive: true,
               runId: activityTurnId,
@@ -3580,17 +3579,29 @@ function DeepWorkUI() {
             }
 
             if (action === 'manage_scheduled_tasks') {
-              const operation = String(args.operation || 'list').toLowerCase();
+              const requestedOperation = String(args.operation || 'list').toLowerCase();
+              const operation = requestedOperation === 'rename' ? 'update' : requestedOperation;
               let tasks: ScheduledTaskRecord[] = [];
               try {
-                const saved = JSON.parse(localStorage.getItem('eterx_scheduled_tasks') || '[]');
+                const saved = JSON.parse(localStorage.getItem(SCHEDULED_TASKS_STORAGE_KEY) || '[]');
                 tasks = Array.isArray(saved) ? saved.map(normalizeScheduledTask) : [];
               } catch {
                 tasks = [];
               }
+              if (!localStorage.getItem('eterx_scheduled_tasks_sync_pending')) {
+                try {
+                  const response = await fetch('/api/scheduled-tasks', { cache: 'no-store' });
+                  if (response.ok) {
+                    const snapshot = await response.json();
+                    if (Array.isArray(snapshot?.tasks)) {
+                      tasks = snapshot.tasks.map(normalizeScheduledTask);
+                      localStorage.setItem(SCHEDULED_TASKS_STORAGE_KEY, JSON.stringify(tasks));
+                    }
+                  }
+                } catch { }
+              }
               const saveScheduledTasks = (next: ScheduledTaskRecord[]) => {
-                localStorage.setItem('eterx_scheduled_tasks', JSON.stringify(next));
-                window.dispatchEvent(new CustomEvent('eterx_scheduled_tasks_updated'));
+                persistScheduledTaskRecords(next);
               };
               const resolveTaskModel = (requested: unknown): { value?: string; error?: string } => {
                 const modelId = String(requested || '').trim();
@@ -3707,6 +3718,7 @@ function DeepWorkUI() {
               if (!existingTask) return { error: `Scheduled task not found for ID: ${taskId || '(missing)'}` };
               if (operation === 'update') {
                 if (existingTask.status === 'running') return { error: 'A running task cannot be edited. Stop its chat run first or wait for completion.' };
+                if (requestedOperation === 'rename' && !String(args.title || '').trim()) return { error: 'A new title is required to rename a task.' };
                 if (args.title !== undefined) {
                   const title = String(args.title).trim();
                   if (!title) return { error: 'Task title cannot be empty.' };
@@ -3782,6 +3794,22 @@ function DeepWorkUI() {
                 saveScheduledTasks(tasks);
                 window.dispatchEvent(new CustomEvent('eterx_trigger_scheduled_task', { detail: { task: existingTask } }));
                 return { success: true, taskId, message: `Started "${existingTask.title}".` };
+              }
+              if (operation === 'pause') {
+                if (existingTask.status === 'running') return { error: 'A running scheduled task cannot be paused. Stop its chat run first or wait for completion.' };
+                existingTask.status = 'paused';
+                existingTask.updatedAt = Date.now();
+                saveScheduledTasks(tasks);
+                return { success: true, taskId, task: existingTask, message: `Paused "${existingTask.title}".` };
+              }
+              if (operation === 'resume') {
+                existingTask.status = existingTask.scheduledTimestamp <= Date.now() ? 'queued' : 'scheduled';
+                existingTask.updatedAt = Date.now();
+                saveScheduledTasks(tasks);
+                if (existingTask.status === 'queued') {
+                  window.dispatchEvent(new CustomEvent('eterx_trigger_scheduled_task', { detail: { task: existingTask } }));
+                }
+                return { success: true, taskId, task: existingTask, message: `Resumed "${existingTask.title}".` };
               }
               if (operation === 'remove') {
                 if (existingTask.status === 'running') {
@@ -4578,7 +4606,10 @@ function DeepWorkUI() {
       const logs = chat.traceLogs || [];
       const tailSignature = logs.slice(-12).map((log: any) => {
         const text = String(log?.text || log?.output || log?.content || '');
-        return [log?.id || '', log?._traceIdx ?? '', log?.type || '', log?.status || '', text.length, text.slice(-64)].join(':');
+        const usage = log?.type === 'model_usage'
+          ? [log?.usageId || '', log?.provider || '', log?.model || '', log?.promptTokens ?? log?.prompt_tokens ?? '', log?.completionTokens ?? log?.completion_tokens ?? '', log?.totalTokens ?? log?.total_tokens ?? '', log?.timestamp || ''].join(',')
+          : '';
+        return [log?.id || '', log?._traceIdx ?? '', log?.type || '', log?.status || '', text.length, text.slice(-64), usage].join(':');
       }).join('~');
       return [
         chat.updatedAt, chat.title, chat.isFavorite ? 1 : 0, chat.workspacePath || '', chat.runLocation || '',
@@ -4863,7 +4894,6 @@ function DeepWorkUI() {
       setActiveSubAgentTab(null);
       setSubAgentDockOpen(false);
       setOverflowDropdownOpen(false);
-      setAgentTeamOpen(false);
       activeChatIdRef.current = id;
       setActiveChatId(id);
       try { localStorage.setItem(ACTIVE_CHAT_STORAGE_KEY, id); } catch { }
@@ -5028,7 +5058,6 @@ function DeepWorkUI() {
     setActiveSubAgentTab(null);
     setSubAgentDockOpen(false);
     setOverflowDropdownOpen(false);
-    setAgentTeamOpen(false);
     activeChatIdRef.current = null;
     setActiveChatId(null);
     setMonitorOpen(false);
@@ -5152,14 +5181,20 @@ function DeepWorkUI() {
     });
   }, []);
 
-  const fetchGeneratedTitle = async (history: any[], currentTitle?: string, mode: MainAgentMode = agentMode): Promise<{ title: string; provider?: string; model?: string; usage?: Record<string, number> } | null> => {
+  const fetchGeneratedTitle = async (
+    history: any[],
+    currentTitle?: string,
+    mode: MainAgentMode = agentMode,
+    selectedModel?: ModelSelectorEntry,
+  ): Promise<{ title: string; provider?: string; model?: string; usage?: Record<string, number> } | null> => {
     const res = await fetch('/api/chat/title', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         history,
         currentTitle: currentTitle || DEFAULT_CHAT_TITLE,
-        mode
+        mode,
+        selectedModel: selectedModel || null,
       })
     });
 
@@ -5170,12 +5205,18 @@ function DeepWorkUI() {
     return title && !isDefaultChatTitle(title) ? { ...data, title } : null;
   };
 
-  const generateTitle = async (chatId: string, history: any[], currentTitle?: string, mode: MainAgentMode = agentMode) => {
+  const generateTitle = async (
+    chatId: string,
+    history: any[],
+    currentTitle?: string,
+    mode: MainAgentMode = agentMode,
+    selectedModel?: ModelSelectorEntry,
+  ) => {
     try {
       // Use passed title or fall back to finding in current state (for background updates)
       const existingTitle = currentTitle || chats.find(c => c.id === chatId)?.title || DEFAULT_CHAT_TITLE;
 
-      const generated = await fetchGeneratedTitle(history, existingTitle, mode);
+      const generated = await fetchGeneratedTitle(history, existingTitle, mode, selectedModel);
       if (generated) {
         setChats(prev => {
           const updated = prev.map(c => {
@@ -5445,7 +5486,12 @@ function DeepWorkUI() {
         const subAgent = trace.subAgent || null;
         const subAgentIdentity = trace.subAgentChatId || trace.subAgentId || subAgent;
         const noteId = trace.noteId || null;
-        const incomingIsFinal = trace.isStreaming === false || trace.isDelta === false;
+        const incomingIsFinal =
+          trace.isStreaming === false ||
+          (trace.isLiveTyping === false && trace.isStreaming !== true) ||
+          trace.streamState === 'closed' ||
+          trace.final === true ||
+          trace.done === true;
         const noteText = formatVisibleWorkNote(String(trace.text || ''));
         if (!noteText) continue;
         let mergeIdx = -1;
@@ -5502,13 +5548,13 @@ function DeepWorkUI() {
             ...logs[mergeIdx],
             ...trace,
             type: 'work_note',
-            text: noteText,
+            text: mergeStreamingText(logs[mergeIdx].text, noteText, trace.isDelta === true),
             subAgent,
             noteId,
             _traceIdx: trace._traceIdx ?? logs[mergeIdx]._traceIdx,
-            timestamp: traceAt,
+            timestamp: Math.max(Number(logs[mergeIdx].timestamp || 0), traceAt),
             startTime: logs[mergeIdx].startTime || processedLog.startTime,
-            endTime: traceAt,
+            endTime: Math.max(Number(logs[mergeIdx].endTime || 0), traceAt),
             _streamingCancelled: undefined,
           };
         } else {
@@ -5579,15 +5625,22 @@ function DeepWorkUI() {
           ) {
             continue;
           }
-          const incomingIsStreaming = trace.isStreaming === true || trace.isLiveTyping === true;
+          const incomingIsStreaming =
+            trace.isStreaming === true ||
+            trace.isLiveTyping === true ||
+            trace.isDelta === true ||
+            trace.streamState === 'open';
           logs[answerIdx] = {
             ...logs[answerIdx],
             ...processedLog,
-            text: trace.text,
-            _traceIdx: trace._traceIdx,
+            text: mergeStreamingText(logs[answerIdx].text, trace.text, trace.isDelta === true),
+            _traceIdx: trace._traceIdx ?? logs[answerIdx]._traceIdx,
             isLive: processedLog.isLive,
             isStreaming: incomingIsStreaming,
             isLiveTyping: incomingIsStreaming,
+            startTime: logs[answerIdx].startTime || processedLog.startTime,
+            endTime: Math.max(Number(logs[answerIdx].endTime || 0), traceAt),
+            timestamp: Math.max(Number(logs[answerIdx].timestamp || 0), traceAt),
             wasStreaming: Boolean(
               logs[answerIdx].wasStreaming ||
               logs[answerIdx].isStreaming ||
@@ -6145,7 +6198,12 @@ function DeepWorkUI() {
                   const subAgent = trace.subAgent || null;
                   const subAgentIdentity = trace.subAgentChatId || trace.subAgentId || subAgent;
                   const noteId = trace.noteId || null;
-                  const incomingIsFinal = trace.isStreaming === false || trace.isDelta === false;
+                  const incomingIsFinal =
+                    trace.isStreaming === false ||
+                    (trace.isLiveTyping === false && trace.isStreaming !== true) ||
+                    trace.streamState === 'closed' ||
+                    trace.final === true ||
+                    trace.done === true;
                   const noteText = formatVisibleWorkNote(String(trace.text || ''));
                   if (!noteText) continue;
                   let mergeIdx = -1;
@@ -6202,13 +6260,13 @@ function DeepWorkUI() {
                       ...logs[mergeIdx],
                       ...trace,
                       type: 'work_note',
-                      text: noteText,
+                      text: mergeStreamingText(logs[mergeIdx].text, noteText, trace.isDelta === true),
                       subAgent,
                       noteId,
                       _traceIdx: trace._traceIdx ?? logs[mergeIdx]._traceIdx,
-                      timestamp: traceAt,
+                      timestamp: Math.max(Number(logs[mergeIdx].timestamp || 0), traceAt),
                       startTime: logs[mergeIdx].startTime || timedTrace.startTime,
-                      endTime: traceAt,
+                      endTime: Math.max(Number(logs[mergeIdx].endTime || 0), traceAt),
                       _streamingCancelled: undefined,
                     };
                   } else {
@@ -6254,6 +6312,18 @@ function DeepWorkUI() {
                   } else {
                     logs.push(nextAskLog);
                   }
+                } else if (trace.type === 'model_usage') {
+                  // Usage is a first-class measured event. Replace only the
+                  // same provider usage id; never merge different model turns.
+                  const usageId = String(trace.usageId || '').trim();
+                  const existingUsageIdx = usageId
+                    ? logs.findIndex((log: any) => log?.type === 'model_usage' && String(log.usageId || '').trim() === usageId)
+                    : -1;
+                  if (existingUsageIdx >= 0) {
+                    logs[existingUsageIdx] = { ...logs[existingUsageIdx], ...timedTrace };
+                  } else {
+                    logs.push(timedTrace);
+                  }
                 } else if (trace.type === 'task_plan') {
                   mergeTaskPlanLog(logs, timedTrace);
                 } else if (trace.type === 'answer' && !trace.subAgent) {
@@ -6272,14 +6342,21 @@ function DeepWorkUI() {
                     ) {
                       continue;
                     }
-                    const incomingIsStreaming = trace.isStreaming === true || trace.isLiveTyping === true;
+                    const incomingIsStreaming =
+                      trace.isStreaming === true ||
+                      trace.isLiveTyping === true ||
+                      trace.isDelta === true ||
+                      trace.streamState === 'open';
                     logs[answerIdx] = {
                       ...logs[answerIdx],
                       ...timedTrace,
-                      text: trace.text,
-                      _traceIdx: trace._traceIdx,
+                      text: mergeStreamingText(logs[answerIdx].text, trace.text, trace.isDelta === true),
+                      _traceIdx: trace._traceIdx ?? logs[answerIdx]._traceIdx,
                       isStreaming: incomingIsStreaming,
                       isLiveTyping: incomingIsStreaming,
+                      startTime: logs[answerIdx].startTime || timedTrace.startTime,
+                      endTime: Math.max(Number(logs[answerIdx].endTime || 0), traceAt),
+                      timestamp: Math.max(Number(logs[answerIdx].timestamp || 0), traceAt),
                       wasStreaming: Boolean(
                         logs[answerIdx].wasStreaming ||
                         logs[answerIdx].isStreaming ||
@@ -6516,7 +6593,13 @@ function DeepWorkUI() {
             if (pendingTitle) {
               pendingTitleRequestsRef.current.delete(chatId);
               window.setTimeout(() => {
-                void generateTitle(chatId, pendingTitle.history, pendingTitle.currentTitle, pendingTitle.mode);
+                void generateTitle(
+                  chatId,
+                  pendingTitle.history,
+                  pendingTitle.currentTitle,
+                  pendingTitle.mode,
+                  pendingTitle.selectedModel,
+                );
               }, 500);
             }
 
@@ -6802,14 +6885,15 @@ function DeepWorkUI() {
    * The message is queued server-side and injected into the model context
    * at the next free ReAct iteration (non-disruptive, agent is never paused).
    */
-  const sendSteeringMessageToChat = useCallback(async (targetChatId: string, message: string) => {
+  const sendSteeringMessageToChat = useCallback(async (targetChatId: string, message: string, expectedRunId?: string) => {
     const steerMessage = message.trim();
-    if (!targetChatId || !steerMessage || steeringAdmissionsRef.current.has(targetChatId)) return false;
-    steeringAdmissionsRef.current.add(targetChatId);
+    const admissionKey = makeFollowUpAdmissionKey(targetChatId, steerMessage);
+    if (!targetChatId || !steerMessage || steeringAdmissionsRef.current.has(admissionKey)) return false;
+    steeringAdmissionsRef.current.add(admissionKey);
     const newSteering = { id: crypto.randomUUID(), text: steerMessage, chatId: targetChatId };
     const targetLogs = chatsRef.current.find(chat => chat.id === targetChatId)?.traceLogs || [];
     const targetUserLog = [...targetLogs].reverse().find((log: any) => log?.type === 'user_action');
-    const targetRunId = String(targetUserLog?.runId || targetUserLog?.turnId || '').trim();
+    const targetRunId = String(expectedRunId || targetUserLog?.runId || targetUserLog?.turnId || '').trim();
     setPendingSteering(prev => [...prev, newSteering]);
 
     try {
@@ -6843,7 +6927,7 @@ function DeepWorkUI() {
       }
       return false;
     } finally {
-      steeringAdmissionsRef.current.delete(targetChatId);
+      steeringAdmissionsRef.current.delete(admissionKey);
     }
   }, [revealNetworkBanner, updateInputValue]);
 
@@ -6852,41 +6936,85 @@ function DeepWorkUI() {
     return targetChatId ? sendSteeringMessageToChat(targetChatId, message) : false;
   }, [sendSteeringMessageToChat]);
 
-  const handleSteer = async () => {
-    if (!inputValue.trim() && attachments.length === 0) return;
-    const steerMessage = inputValue.trim();
-    let followUpBehavior: 'queue' | 'steer' = 'steer';
+  const readFollowUpBehavior = (): 'queue' | 'steer' => {
     try {
       const saved = localStorage.getItem(SETTINGS_STORAGE_KEY);
       const settings = saved ? JSON.parse(saved) : null;
-      if (settings?.followUpBehavior === 'queue') followUpBehavior = 'queue';
-    } catch { }
+      return settings?.followUpBehavior === 'queue' ? 'queue' : 'steer';
+    } catch {
+      return 'steer';
+    }
+  };
 
-    // Attachments cannot be safely injected into an in-flight model turn.
-    // Preserve the complete composer payload as the next turn instead.
-    if (followUpBehavior === 'queue' || attachments.length > 0) {
-      if (!activeChatId) return;
-      if (queuedFollowUpAdmissionsRef.current.has(activeChatId)) return;
-      queuedFollowUpAdmissionsRef.current.add(activeChatId);
-      setQueuedFollowUps(previous => [
-        ...previous,
-        {
-          id: crypto.randomUUID(),
-          chatId: activeChatId,
-          text: steerMessage,
-          attachments: [...attachments],
-          createdAt: Date.now(),
-        },
-      ]);
+  const queueFollowUpForChat = (
+    targetChatId: string,
+    message: string,
+    nextAttachments: ComposerAttachment[] = [],
+  ) => {
+    const queuedMessage = message.trim();
+    if (!targetChatId || (!queuedMessage && nextAttachments.length === 0)) return false;
+    const admissionKey = makeFollowUpAdmissionKey(targetChatId, queuedMessage, nextAttachments);
+    if (queuedFollowUpAdmissionsRef.current.has(admissionKey)) return false;
+
+    queuedFollowUpAdmissionsRef.current.add(admissionKey);
+    setQueuedFollowUps(previous => [
+      ...previous,
+      {
+        id: crypto.randomUUID(),
+        chatId: targetChatId,
+        text: queuedMessage,
+        attachments: [...nextAttachments],
+        createdAt: Date.now(),
+      },
+    ]);
+    if (activeChatIdRef.current === targetChatId) {
       updateInputValue('');
       updateAttachments([]);
-      window.setTimeout(() => queuedFollowUpAdmissionsRef.current.delete(activeChatId), 0);
-      return;
+    }
+    window.setTimeout(() => queuedFollowUpAdmissionsRef.current.delete(admissionKey), 0);
+    return true;
+  };
+
+  const deliverFollowUpToRunningChat = async (
+    targetChatId: string,
+    message: string,
+    nextAttachments: ComposerAttachment[] = [],
+    expectedRunId?: string,
+  ) => {
+    const followUpMessage = message.trim();
+    if (!targetChatId || (!followUpMessage && nextAttachments.length === 0)) return false;
+    const admissionKey = makeFollowUpAdmissionKey(targetChatId, followUpMessage, nextAttachments);
+    if (
+      steeringAdmissionsRef.current.has(admissionKey) ||
+      queuedFollowUpAdmissionsRef.current.has(admissionKey)
+    ) return false;
+
+    // Attachments must become a real next turn. Text-only guidance can be
+    // injected into the current ReAct loop when the user prefers steering.
+    if (nextAttachments.length > 0 || readFollowUpBehavior() === 'queue') {
+      return queueFollowUpForChat(targetChatId, followUpMessage, nextAttachments);
     }
 
-    if (activeChatId && steeringAdmissionsRef.current.has(activeChatId)) return;
-    updateInputValue('');
-    await sendSteeringMessage(steerMessage);
+    const steered = await sendSteeringMessageToChat(targetChatId, followUpMessage, expectedRunId);
+    if (steered) {
+      if (activeChatIdRef.current === targetChatId) updateInputValue('');
+      return true;
+    }
+
+    // The run can finish between the client state check and the steering
+    // request. Keep the user's intent instead of dropping it in that race;
+    // the queue effect will dispatch it once the run is genuinely idle.
+    return queueFollowUpForChat(targetChatId, followUpMessage, nextAttachments);
+  };
+
+  const handleSteer = async () => {
+    if (!inputValue.trim() && attachments.length === 0) return;
+    const steerMessage = inputValue.trim();
+    const targetChatId = activeChatIdRef.current;
+    if (!targetChatId) return;
+    const admissionKey = makeFollowUpAdmissionKey(targetChatId, steerMessage, attachments);
+    if (steeringAdmissionsRef.current.has(admissionKey) || queuedFollowUpAdmissionsRef.current.has(admissionKey)) return;
+    await deliverFollowUpToRunningChat(targetChatId, steerMessage, attachments);
   };
 
   const toggleSpeech = () => {
@@ -7123,7 +7251,6 @@ function DeepWorkUI() {
       }
       setSubAgentDockOpen(true);
     }
-    setAgentTeamOpen(true);
   }, []);
 
   const announceLiveTaskEvent = useCallback((
@@ -7280,6 +7407,7 @@ function DeepWorkUI() {
       createNewChat?: boolean;
       backgroundChat?: boolean;
       initialTitle?: string;
+      pinnedItems?: PinnedItem[];
     },
   ) => {
     if (isRecording && mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
@@ -7301,10 +7429,17 @@ function DeepWorkUI() {
       liveState !== 'idle' &&
       liveState !== 'error' &&
       !liveMainDispatchRef.current;
-    if (
+    const targetRunIsActive = Boolean(
       (targetChatIdAtSend && runningChatsRef.current.has(targetChatIdAtSend)) ||
       targetHasLiveSession
-    ) return false;
+    );
+    if (targetRunIsActive) {
+      // A stale renderer flag or a second submit can reach this handler even
+      // though the chat already owns a real backend execution. Deliver it as
+      // the configured steer/queue follow-up instead of silently dropping it.
+      if (!targetChatIdAtSend) return false;
+      return deliverFollowUpToRunningChat(targetChatIdAtSend, promptText, requestedAttachments);
+    }
     // React state does not update synchronously. This latch closes the gap in
     // which a double click/Enter can launch two requests before isThinking flips.
     const admissionKey = targetChatIdAtSend || '__new_chat__';
@@ -7337,6 +7472,7 @@ function DeepWorkUI() {
     };
     const runThinkingLevel = runOptionsOverride?.thinkingLevel || composerRuntimeSelectionRef.current.thinkingLevel;
     const runSelectedAgent = runOptionsOverride?.selectedAgent || composerRuntimeSelectionRef.current.selectedAgent;
+    const runPinnedItems = runOptionsOverride?.pinnedItems || pinnedItems;
     const runSelectedAgentId = runSelectedAgent.agentId;
     const runSelectedAgentName = runSelectedAgent.agentName;
     const currentAttachments = [...requestedAttachments];
@@ -7366,9 +7502,10 @@ function DeepWorkUI() {
     // Use pre-uploaded media data from background uploads (already done when attached)
     const mediaAttachments: any[] = currentAttachments.map(att => ({
       id: att.id,
-      name: att.name || att.file.name,
+      name: att.name || att.file?.name || 'attachment',
       path: (att as any).localPath || (att.file as any).path || undefined,
-      mimeType: att.file.type || 'application/octet-stream',
+      mimeType: att.mimeType || att.file?.type || 'application/octet-stream',
+      size: att.size || att.file?.size || 0,
       // Gemini file URIs are API-key scoped. The agent must upload with its
       // leased key instead of using any pre-send URI from the UI.
       fileUri: undefined,
@@ -7392,7 +7529,7 @@ function DeepWorkUI() {
         agentMode: runAgentMode,
         thinkingLevel: runThinkingLevel,
         attachments: [],
-        pinnedItems: [...pinnedItems],
+        pinnedItems: [...runPinnedItems],
         chatModelSelection: runModelSelection,
       };
       setComposerStates(previous => {
@@ -7401,7 +7538,13 @@ function DeepWorkUI() {
         return next;
       });
 
-      const initialTitle = String(runOptionsOverride?.initialTitle || '').trim() || fallbackTitleFromPrompt(promptText);
+      const requestedInitialTitle = String(runOptionsOverride?.initialTitle || '').trim();
+      const initialTitle = !isDefaultChatTitle(requestedInitialTitle)
+        ? requestedInitialTitle
+        : fallbackTitleFromPrompt(
+        promptText,
+        currentAttachments.map(attachment => attachment.name || attachment.file?.name || ''),
+      );
       const newChat: ChatSession = {
         id: chatIdToUse,
         title: initialTitle,
@@ -7425,6 +7568,7 @@ function DeepWorkUI() {
         history: initialTitleHistory,
         currentTitle: DEFAULT_CHAT_TITLE,
         mode: runAgentMode,
+        selectedModel: runModelEntry || undefined,
       });
     } else {
       const storedTargetLogs = chatsRef.current.find(chat => chat.id === chatIdToUse)?.traceLogs;
@@ -7434,7 +7578,28 @@ function DeepWorkUI() {
 
       // Adaptive renaming logic (every 5 messages)
       const userMessageCount = updatedLogs.filter(l => l.type === 'user_action').length;
-      if (userMessageCount > 1 && userMessageCount % 5 === 0) {
+      const targetChat = chatsRef.current.find(chat => chat.id === chatIdToUse);
+      const isFirstMessageInUntitledChat = userMessageCount === 1 && (
+        isDefaultChatTitle(targetChat?.title) || isGeneratedEmptyChat(targetChat)
+      );
+      if (isFirstMessageInUntitledChat) {
+        const temporaryTitle = fallbackTitleFromPrompt(
+          promptText,
+          currentAttachments.map(attachment => attachment.name || attachment.file?.name || ''),
+        );
+        setChats(currentChats => {
+          const updated = currentChats.map(chat =>
+            chat.id === chatIdToUse
+              ? { ...chat, title: temporaryTitle, updatedAt: Date.now() }
+              : chat
+          );
+          const sorted = sortChats(updated);
+          chatsRef.current = sorted;
+          persistChats(sorted);
+          return sorted;
+        });
+      }
+      if (isFirstMessageInUntitledChat || (userMessageCount > 1 && userMessageCount % 5 === 0)) {
         const chatHistory = updatedLogs
           .filter(log => log.type === 'user_action' || log.type === 'thought' || log.type === 'answer')
           .slice(-80)
@@ -7446,6 +7611,7 @@ function DeepWorkUI() {
           history: chatHistory,
           currentTitle: chatsRef.current.find(chat => chat.id === chatIdToUse)?.title || DEFAULT_CHAT_TITLE,
           mode: runAgentMode,
+          selectedModel: runModelEntry || undefined,
         });
       }
     }
@@ -7573,9 +7739,10 @@ function DeepWorkUI() {
             runLocation: runLocationVal,
             pinnedContext: {
               terminalShell: readStoredTerminalShell(),
-              ...(pinnedItems.length > 0 ? { paths: pinnedItems.map(item => item.path) } : {}),
+              synapseGraphEnabled: readStoredSynapseGraphEnabled(),
+              ...(runPinnedItems.length > 0 ? { paths: runPinnedItems.map(item => item.path) } : {}),
               ...(activeWorkspacePath ? {
-                paths: [activeWorkspacePath, ...pinnedItems.map(item => item.path)],
+                paths: [activeWorkspacePath, ...runPinnedItems.map(item => item.path)],
                 workspacePath: activeWorkspacePath,
                 isFocusedWorkspace: true,
               } : {}),
@@ -7719,11 +7886,12 @@ function DeepWorkUI() {
     const requestPinnedContext = {
       terminalShell: readStoredTerminalShell(),
       contextCompaction: readContextCompactionSettings(contextBudgetModelEntry, chatIdToUse),
+      synapseGraphEnabled: readStoredSynapseGraphEnabled(),
       ...(!runSelectedAgentId && !isBuilderChat ? {
         disableSubAgents: true,
         allowAgentSpawning: false,
       } : {}),
-      ...(pinnedItems.length > 0 ? { paths: pinnedItems.map(p => p.path) } : {}),
+      ...(runPinnedItems.length > 0 ? { paths: runPinnedItems.map(p => p.path) } : {}),
       ...(isBuilderChat ? { agentRuntime: 'agent_builder', agentId: builderAgentId } : {}),
       ...(runSelectedAgentId === 'coding' && !isBuilderChat ? { agentRuntime: 'main_coding_agent', agentProfile: 'eterx-code' } : {}),
       ...(runSelectedAgentId === 'autonomous' && !isBuilderChat ? {
@@ -7738,7 +7906,7 @@ function DeepWorkUI() {
         },
       } : {}),
       ...(activeWorkspacePath ? {
-        paths: [activeWorkspacePath, ...(pinnedItems.length > 0 ? pinnedItems.map(p => p.path) : [])],
+        paths: [activeWorkspacePath, ...(runPinnedItems.length > 0 ? runPinnedItems.map(p => p.path) : [])],
         workspacePath: activeWorkspacePath,
         isFocusedWorkspace: true
       } : {}),
@@ -7800,10 +7968,51 @@ function DeepWorkUI() {
 
       if (!response.ok) {
         let message = `Agent start failed (${ response.status }).`;
+        let errorPayload: any = {};
         try {
-          const errorPayload = await response.json();
+          errorPayload = await response.json();
           message = errorPayload.error || errorPayload.details || message;
         } catch { }
+
+        const alreadyRunning = errorPayload?.status === 'already_running' ||
+          /already running for this chat|previous run is still shutting down/i.test(String(message));
+        if (alreadyRunning && chatIdToUse) {
+          const existingRunId = String(errorPayload?.runId || '').trim();
+          if (existingRunId) {
+            // The conflict response is authoritative. Replace the attempted
+            // run ownership before reconnecting the poller to the real run.
+            pollRunStartRef.current.delete(chatIdToUse);
+            pollRunIdRef.current.set(chatIdToUse, existingRunId);
+            setRunningChats(previous => new Set(previous).add(chatIdToUse!));
+            startPolling(chatIdToUse, -1, undefined, existingRunId);
+          }
+
+          // The optimistic user boundary belongs to the attempted fresh run.
+          // Remove it before steering/queueing so a queued follow-up is not
+          // rendered twice and a steer appears as one acknowledged update.
+          setChatLogsById(chatIdToUse, previous => previous.filter(log =>
+            !(log?.type === 'user_action' && String(log.runId || log.turnId || '') === clientRunId)
+          ));
+          pendingTitleRequestsRef.current.delete(chatIdToUse);
+          const delivered = await deliverFollowUpToRunningChat(
+            chatIdToUse,
+            promptText,
+            currentAttachments,
+            existingRunId || undefined,
+          );
+          if (delivered) {
+            sendAdmissionsRef.current.delete(admissionKey);
+            return true;
+          }
+
+          // Preserve the message in the composer if the backend run changed
+          // again before either delivery path could accept it.
+          if (activeChatIdRef.current === chatIdToUse) {
+            updateInputValue(current => current.trim() ? current : promptText);
+            updateAttachments(current => current.length > 0 ? current : currentAttachments);
+          }
+          return false;
+        }
 
         stopPolling(chatIdToUse!);
         pendingTitleRequestsRef.current.delete(chatIdToUse!);
@@ -7883,6 +8092,37 @@ function DeepWorkUI() {
     }
     return serverAccepted;
   };
+
+  const sendQueuedFollowUp = async (item: QueuedFollowUp): Promise<boolean> => {
+    const targetChatId = item.chatId;
+    const nextAttachments = item.attachments || [];
+    const followUpMessage = item.text.trim();
+    if (!targetChatId || (!followUpMessage && nextAttachments.length === 0)) return false;
+    if (queuedFollowUpDispatchRef.current.has(item.id)) return false;
+
+    queuedFollowUpDispatchRef.current.add(item.id);
+    try {
+      const targetIsRunning = runningChatsRef.current.has(targetChatId);
+      // A queued text item can be sent directly into the active ReAct loop.
+      // Attachments still need a real next turn, so they remain protected in
+      // the queue until the current run is finished.
+      if (targetIsRunning && nextAttachments.length > 0) return false;
+
+      const accepted = targetIsRunning
+        ? await sendSteeringMessageToChat(targetChatId, followUpMessage)
+        : await handleSend(followUpMessage, nextAttachments, targetChatId);
+      if (!accepted) return false;
+
+      setQueuedFollowUps(previous => previous.filter(message => message.id !== item.id));
+      queuedFollowUpAdmissionsRef.current.delete(
+        makeFollowUpAdmissionKey(targetChatId, followUpMessage, nextAttachments),
+      );
+      return true;
+    } finally {
+      queuedFollowUpDispatchRef.current.delete(item.id);
+    }
+  };
+
   const handleSendLatestRef = useRef(handleSend);
   handleSendLatestRef.current = handleSend;
   const scheduledRunContextRef = useRef({ activeWorkspacePath, activeRunLocation });
@@ -7980,24 +8220,22 @@ function DeepWorkUI() {
       if (scheduledTaskRunAdmissionsRef.current.has(task.id)) return;
       scheduledTaskRunAdmissionsRef.current.add(task.id);
 
-      const taskChatId = crypto.randomUUID();
+      const taskChatId = task.chatId || crypto.randomUUID();
       const taskRunId = `scheduled_run_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
       const runStartedAt = Date.now();
       const sourceContext = task.sources.length > 0
         ? `\n\nScheduled task sources:\n${task.sources.map(source => `- ${source.name}: ${source.path}`).join('\n')}`
         : '';
       const taskPrompt = `${task.description || task.title}${sourceContext}`;
-      const scheduledRunContext = scheduledRunContextRef.current;
       const updateStoredTask = (mutate: (target: ScheduledTaskRecord, run: ScheduledTaskRun | undefined) => void) => {
         try {
-          const parsed = JSON.parse(localStorage.getItem('eterx_scheduled_tasks') || '[]');
+          const parsed = JSON.parse(localStorage.getItem(SCHEDULED_TASKS_STORAGE_KEY) || '[]');
           const tasks = Array.isArray(parsed) ? parsed.map(normalizeScheduledTask) : [];
           const target = tasks.find(item => item.id === task.id);
           if (!target) return;
           mutate(target, target.history?.find(run => run.id === taskRunId));
           target.updatedAt = Date.now();
-          localStorage.setItem('eterx_scheduled_tasks', JSON.stringify(tasks));
-          window.dispatchEvent(new CustomEvent('eterx_scheduled_tasks_updated'));
+          persistScheduledTaskRecords(tasks);
         } catch { }
       };
       updateStoredTask(target => {
@@ -8017,23 +8255,8 @@ function DeepWorkUI() {
         target.runCount = (target.runCount || 0) + 1;
       });
 
-      const newChatSession: ChatSession = {
-        id: taskChatId,
-        title: task.title || fallbackTitleFromPrompt(taskPrompt),
-        updatedAt: Date.now(),
-        traceLogs: [],
-        workspacePath: scheduledRunContext.activeWorkspacePath,
-        runLocation: scheduledRunContext.activeRunLocation,
-      };
-
-      setChats(prev => {
-        const updated = [newChatSession, ...prev.filter(c => c.id !== taskChatId)];
-        chatsRef.current = updated;
-        persistChats(updated);
-        return updated;
-      });
-
       const resolvedModel = task.model || AUTO_MODEL_SELECTION;
+      const taskChatExists = chatsRef.current.some(chat => chat.id === taskChatId);
       const dispatchPromise = handleSendLatestRef.current(taskPrompt, [], taskChatId, {
         modelSelection: resolvedModel,
         selectedAgent: {
@@ -8041,6 +8264,15 @@ function DeepWorkUI() {
           agentName: task.agentName || 'General',
         },
         thinkingLevel: task.thinkingLevel,
+        createNewChat: !taskChatExists,
+        backgroundChat: true,
+        initialTitle: task.title || fallbackTitleFromPrompt(taskPrompt),
+        pinnedItems: task.sources.map(source => ({
+          id: source.id,
+          type: source.type === 'folder' ? 'folder' as const : 'file' as const,
+          path: source.path,
+          name: source.name,
+        })),
       });
 
       let hasStartedRunning = false;
@@ -8060,9 +8292,7 @@ function DeepWorkUI() {
           target.executedAt = completedAt;
           target.chatId = taskChatId;
           target.lastError = error;
-          const nextRun = status === 'completed'
-            ? computeNextScheduledRun(target.recurrence, completedAt)
-            : null;
+          const nextRun = computeNextScheduledRun(target.recurrence, completedAt);
           if (nextRun !== null) {
             target.status = 'scheduled';
             target.scheduledTimestamp = nextRun;
@@ -8419,7 +8649,8 @@ function DeepWorkUI() {
         const name = log.agentName || log.subAgent;
         if (name === 'Main' && !mainStartedAt) mainStartedAt = getTraceEventTime(log);
         if (name !== 'Main') continue;
-        if (log.type === 'sub_agent_pause') {
+        const reportedStatus = String(log.agentStatus || '').trim().toLowerCase();
+        if (log.type === 'sub_agent_pause' || reportedStatus === 'paused') {
           mainStatus = 'paused';
         } else if (log.type === 'sub_agent_resume') {
           mainStatus = 'working';
@@ -8481,12 +8712,21 @@ function DeepWorkUI() {
           id: agentIdentity,
           subAgentId: log.subAgentId || existing?.subAgentId,
           subAgentChatId: log.subAgentChatId || existing?.subAgentChatId,
-          name, status: existing?.status === 'closed' ? 'closed' : 'working', task: log.task || log.secondary || log.text || '',
+          name,
+          status: existing?.status === 'closed' || existing?.status === 'paused' ? existing.status : 'working',
+          task: log.task || log.secondary || log.text || '',
           stepCount: 0, durationMs: 0, startedAt: existing?.startedAt || getTraceEventTime(log) || firstTraceAt,
         });
       } else if (log.type === 'sub_agent_action') {
         const a = agentMap.get(agentIdentity);
-        if (a && a.status !== 'closed') { a.status = 'working'; a.currentAction = log.text?.substring(0, 80); a.stepCount = log.agentStep || (a.stepCount + 1); }
+        const reportedStatus = String(log.agentStatus || '').trim().toLowerCase();
+        if (a && a.status !== 'closed' && a.status !== 'paused' && reportedStatus !== 'paused') {
+          a.status = 'working';
+          a.currentAction = log.text?.substring(0, 80);
+          a.stepCount = log.agentStep || (a.stepCount + 1);
+        } else if (a && reportedStatus === 'paused') {
+          a.status = 'paused';
+        }
       } else if (log.type === 'sub_agent_complete') {
         const a = agentMap.get(agentIdentity);
         if (a) { a.status = 'completed'; a.durationMs = log.durationMs || 0; a.stepCount = log.stepCount || a.stepCount; }
@@ -8498,10 +8738,13 @@ function DeepWorkUI() {
         if (a) { a.status = 'paused'; }
       } else if (log.type === 'sub_agent_resume') {
         const a = agentMap.get(agentIdentity);
-        if (a) { a.status = 'working'; }
+        if (a && a.status !== 'closed') { a.status = 'working'; }
       } else if (log.type === 'sub_agent_close') {
         const a = agentMap.get(agentIdentity);
         if (a) { a.status = 'closed'; }
+      } else if (String(log.agentStatus || '').trim().toLowerCase() === 'paused') {
+        const a = agentMap.get(agentIdentity);
+        if (a) { a.status = 'paused'; }
       }
     }
     return Array.from(agentMap.values());
@@ -8543,6 +8786,20 @@ function DeepWorkUI() {
       return finalA - finalB;
     });
   }, [realSubAgents, subAgentOrder]);
+
+  const subAgentAssetIndexes = useMemo(() => {
+    const indexes: Record<string, number> = {};
+    orderedRealSubAgents.forEach((agent: any, index: number) => {
+      const name = String(agent?.name || '').trim();
+      const identity = String(agent?.id || name).trim();
+      if (name) {
+        indexes[name] = index;
+        indexes[name.toLowerCase()] = index;
+      }
+      if (identity) indexes[identity] = index;
+    });
+    return indexes;
+  }, [orderedRealSubAgents]);
 
   const headerSubAgentTabs = useMemo(() => {
     const maxVisibleTabs = activeSubAgentTab ? 3 : 4;
@@ -8788,9 +9045,21 @@ function DeepWorkUI() {
     };
   }, [activeChatId, activeModelSelection, agentMode, contextSettingsRevision, inputValue, isThinking, proxyModelEntries, traceLogs]);
   // Compute effective thinking state
+  const mainAgentState = currentSubAgents.find(agent => agent.name === 'Main');
+  const selectedSubAgentState = activeSubAgentTab && !autonomousSelected
+    ? currentSubAgents.find(agent => (agent.id || agent.name) === activeSubAgentTab)
+    : null;
+  const mainAgentPaused = mainAgentState?.status === 'paused';
+  const selectedSubAgentActive = selectedSubAgentState?.status === 'working' || selectedSubAgentState?.status === 'spawning';
+  const selectedFeedPaused = activeSubAgentTab && !autonomousSelected
+    ? !selectedSubAgentActive
+    : mainAgentPaused;
+  const canStopSelectedFeed = activeSubAgentTab && !autonomousSelected
+    ? ['working', 'spawning', 'paused'].includes(String(selectedSubAgentState?.status || ''))
+    : mainAgentPaused;
   const effectiveIsThinking = activeSubAgentTab && !autonomousSelected
-    ? currentSubAgents.some(a => (a.id || a.name) === activeSubAgentTab && a.status === 'working')
-    : isThinking && (!currentSubAgents.some(a => a.name === 'Main' && a.status === 'paused'));
+    ? Boolean(selectedSubAgentActive)
+    : isThinking && !mainAgentPaused;
   const handleStopSelectedFeed = (): Promise<boolean> => {
     const selectedSubAgent = activeSubAgentTab
       ? currentSubAgents.find(agent => (agent.id || agent.name) === activeSubAgentTab)
@@ -8798,6 +9067,9 @@ function DeepWorkUI() {
     const agentName = activeSubAgentTab && !autonomousSelected
       ? selectedSubAgent?.name || activeSubAgentTab
       : null;
+    const selectedSubAgentId = selectedSubAgent?.subAgentId ||
+      String(selectedSubAgent?.subAgentChatId || activeSubAgentTab || '').split('::sub-agent::').pop() ||
+      undefined;
     if (!agentName) return handleStop();
 
     const chatId = activeChatIdRef.current;
@@ -8816,7 +9088,7 @@ function DeepWorkUI() {
             action: 'close',
             projectId: chatId,
             agentName,
-            agentId: selectedSubAgent?.subAgentId,
+            agentId: selectedSubAgentId,
           }),
         });
         const payload = await response.json().catch(() => ({}));
@@ -8836,7 +9108,7 @@ function DeepWorkUI() {
             timestamp: Date.now(),
             agentName,
             subAgent: agentName,
-            subAgentId: selectedSubAgent?.subAgentId,
+            subAgentId: selectedSubAgentId,
             subAgentChatId: selectedSubAgent?.subAgentChatId || activeSubAgentTab,
             agentStatus: 'closed',
           }];
@@ -9835,19 +10107,29 @@ function DeepWorkUI() {
                                     return <div className="px-2.5 py-2 text-[12px] text-white/30 italic">No threads found</div>;
                                   }
 
-                                  return filteredChats.map(chat => (
-                                    <div
-                                      key={chat.id}
-                                      onClick={() => {
-                                        loadChat(chat.id);
-                                        setHeaderMenuOpen(false);
-                                      }}
-                                      className={`w-full text-left px-2.5 py-1.5 text-[12px] rounded-md truncate transition-all duration-150 flex items-center group cursor-pointer border border-transparent active:scale-[0.98] ${ activeChatId === chat.id ? 'bg-white/[0.08] text-white font-medium shadow-sm' : 'text-[#A3A19E] hover:bg-white/[0.05] active:bg-white/10 hover:text-[#E8E6E3]' }`}
-                                    >
-                                      <MessageSquare className="w-3.5 h-3.5 mr-2.5 shrink-0 text-white/40 group-hover:text-white/60 transition-colors" strokeWidth={1.5} />
-                                      <span className="truncate font-normal">{chat.title}</span>
-                                    </div>
-                                  ));
+                                  return filteredChats.map(chat => {
+                                    const isActive = activeChatId === chat.id;
+                                    const isWorking = sidebarRunningChats.has(chat.id);
+                                    return (
+                                      <div
+                                        key={chat.id}
+                                        onClick={() => {
+                                          loadChat(chat.id);
+                                          setHeaderMenuOpen(false);
+                                        }}
+                                        className={`w-full text-left px-2.5 py-1.5 text-[12px] rounded-md truncate transition-all duration-150 flex items-center group cursor-pointer border border-transparent active:scale-[0.98] ${ isActive ? 'bg-white/[0.08] text-white font-medium shadow-sm' : 'text-[#A3A19E] hover:bg-white/[0.05] active:bg-white/10 hover:text-[#E8E6E3]' }`}
+                                      >
+                                        <MessageSquare className="w-3.5 h-3.5 mr-2.5 shrink-0 text-white/40 group-hover:text-white/60 transition-colors" strokeWidth={1.5} />
+                                        <span className="min-w-0 flex-1 truncate font-normal">{chat.title}</span>
+                                        {isWorking && (
+                                          <span
+                                            className="eterx-thread-running-indicator ml-2 h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-[1.75px] border-white/20 border-r-white/80"
+                                            aria-label={isActive ? 'Loading active chat' : 'Agent working'}
+                                          />
+                                        )}
+                                      </div>
+                                    );
+                                  });
                                 })()}
                               </div>
                             </motion.div>
@@ -9896,7 +10178,7 @@ function DeepWorkUI() {
                     className="flex items-center gap-1 min-w-0"
                     as="div"
                   >
-                    {headerSubAgentTabs.map((agent: any) => {
+                    {headerSubAgentTabs.map((agent: any, index: number) => {
                       const agentIdentity = agent.id || agent.name;
                       const isActive = activeSubAgentTab === agentIdentity;
                       const isClosed = agent.status === 'closed';
@@ -9953,7 +10235,7 @@ function DeepWorkUI() {
                               transition={{ type: 'spring', stiffness: 380, damping: 30 }}
                             />
                           )}
-                          <SubAgentAvatar name={agent.name} status={agent.status} size="xs" />
+                          <SubAgentAvatar name={agent.name} status={agent.status} size="xs" assetIndex={subAgentAssetIndexes[agent.name] ?? index} />
                           <Shimmer active={isWorking} className="eterx-agent-tab-label min-w-0 truncate">{agent.name}</Shimmer>
                           {isWorking && (
                             <svg className="animate-spin h-3.5 w-3.5 text-white/80 shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" aria-label="Working">
@@ -9990,7 +10272,7 @@ function DeepWorkUI() {
                             <div className="px-2.5 py-1 text-[9px] font-bold text-[#6A6460] uppercase tracking-wider select-none">
                               Hidden Agents
                             </div>
-                            {hiddenSubAgents.map((agent: any) => (
+                            {hiddenSubAgents.map((agent: any, index: number) => (
                               <button
                                 key={agent.id || agent.name}
                                 type="button"
@@ -10000,7 +10282,7 @@ function DeepWorkUI() {
                                 }}
                                 className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12.5px] font-medium text-white/70 transition-all hover:bg-white/5 hover:text-white active:scale-[0.98]"
                               >
-                                <SubAgentAvatar name={agent.name} status={agent.status} size="xs" />
+                                <SubAgentAvatar name={agent.name} status={agent.status} size="xs" assetIndex={subAgentAssetIndexes[agent.name] ?? headerSubAgentTabs.length + index} />
                                 <span className="truncate flex-1">{agent.name}</span>
                               </button>
                             ))}
@@ -10489,7 +10771,7 @@ function DeepWorkUI() {
                                       className="eterx-work-menu-list eterx-scrollbar"
                                     >
                                       {realSubAgents.length > 0 ? (
-                                        realSubAgents.map((agent) => {
+                                        realSubAgents.map((agent, index) => {
                                           const isClosed = agent.status === 'closed';
                                           return (
                                             <div
@@ -10500,7 +10782,7 @@ function DeepWorkUI() {
                                                 setEnvDropdownOpen(false);
                                               }}
                                             >
-                                              <SubAgentAvatar name={agent.name} status={agent.status} size="xs" />
+                                              <SubAgentAvatar name={agent.name} status={agent.status} size="xs" assetIndex={subAgentAssetIndexes[agent.name] ?? index} />
                                               {/* Agent name */}
                                               <span className={`truncate flex-1 text-[12px] font-medium ${ isClosed ? 'text-white/30 line-through' : 'text-white/75 group-hover:text-white' }`} title={agent.task}>
                                                 {agent.name}
@@ -11192,28 +11474,11 @@ function DeepWorkUI() {
                       onAnswerAskUser={handleAnswerAskUser}
                       onEditUserMessage={updateInputValue}
                       onOpenAgentTeam={handleOpenAgentTeam}
+                      subAgentAssetIndexes={subAgentAssetIndexes}
+                      isFeedActivityPaused={Boolean(selectedFeedPaused)}
                       isSubAgentTab={!!activeSubAgentTab}
                       liveState={isLiveSessionActive ? liveState : 'idle'}
                     />
-
-                    {!activeSubAgentTab && queuedFollowUps.some(message => message.chatId === activeChatId) && (
-                      <div className={`eterx-chat-auxiliary-stack px-4 ${ isRightPanelVisible ? 'sm:px-4' : 'sm:px-12' } w-full max-w-[760px] mx-auto flex flex-col gap-2 pb-2`}>
-                        <div className="text-xs text-neutral-500 font-medium px-1">Queued follow-ups</div>
-                        {queuedFollowUps.filter(message => message.chatId === activeChatId).map(message => (
-                          <div key={message.id} className="bg-[#242424] rounded-xl py-2.5 px-3.5 flex items-center gap-3 text-sm text-neutral-200 shadow-sm border border-white/[0.04]">
-                            <span className="min-w-0 flex-1 truncate">{message.text || `${ message.attachments.length } attachment${ message.attachments.length === 1 ? '' : 's' }`}</span>
-                            <button
-                              type="button"
-                              onClick={() => setQueuedFollowUps(previous => previous.filter(item => item.id !== message.id))}
-                              className="shrink-0 text-[11px] text-neutral-500 hover:text-neutral-200 transition-colors"
-                              aria-label="Remove queued follow-up"
-                            >
-                              Remove
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    )}
 
                     {activeSubAgentTab && (
                       <div className={`eterx-chat-auxiliary-stack px-4 ${ isRightPanelVisible ? 'sm:px-4' : 'sm:px-12' } w-full max-w-[760px] mx-auto pb-2`}>
@@ -11255,6 +11520,7 @@ function DeepWorkUI() {
                       inputValue={inputValue}
                       setInputValue={updateInputValue}
                       isThinking={effectiveIsThinking}
+                      canStop={Boolean(canStopSelectedFeed)}
                       isRecording={isRecording}
                       handleSend={activeSubAgentTab ? handleSendSubAgentMessage : handleSend}
                       handleStop={handleStopSelectedFeed}
@@ -11318,16 +11584,19 @@ function DeepWorkUI() {
                         setBuildingAgentId(null);
                         setActiveView('agents');
                       }}
-                      onOpenProjects={() => {
-                        setBuildingAgentId(null);
-                        setActiveView('projects');
-                      }}
-                    />
+                       onOpenProjects={() => {
+                         setBuildingAgentId(null);
+                         setActiveView('projects');
+                       }}
+                       queuedFollowUps={activeSubAgentTab ? [] : queuedFollowUps.filter(message => message.chatId === activeChatId)}
+                       onSendQueuedFollowUp={sendQueuedFollowUp}
+                       onRemoveQueuedFollowUp={(id) => setQueuedFollowUps(previous => previous.filter(item => item.id !== id))}
+                     />
 
                     {/* Disclaimer Text */}
                     {traceLogs.length === 0 && !isThinking && !isLiveSessionActive && (
                       <div className="absolute bottom-6 left-0 right-0 flex flex-col items-center pointer-events-none z-40">
-                        <div className="text-center text-[12px] text-black/60 font-medium tracking-wide mix-blend-overlay">
+                        <div className="select-none text-center text-[12px] text-black/60 font-medium tracking-wide mix-blend-overlay">
                           EterX is an AI Agent and can make Mistakes ; Please Double-Check Its Work.
                         </div>
                       </div>
@@ -11358,138 +11627,6 @@ function DeepWorkUI() {
                     <IdePanel />
                   )}
 
-                  {/* Agent Team Panel */}
-                  <AnimatePresence>
-                    {agentTeamOpen && (
-                      <motion.aside
-                        initial={{ opacity: 0, y: -8, scale: 0.98 }}
-                        animate={{ opacity: 1, y: 0, scale: 1 }}
-                        exit={{ opacity: 0, y: -8, scale: 0.98 }}
-                        transition={{ duration: 0.16 }}
-                        className="eterx-agent-team-panel absolute top-[42px] right-4 z-50 w-[320px] max-w-[calc(100vw-2rem)] overflow-hidden rounded-xl border border-white/[0.09] bg-[#151515]/95 shadow-[0_24px_80px_rgba(0,0,0,0.55)] backdrop-blur-xl pointer-events-auto"
-                      >
-                        <div className="flex items-center justify-between border-b border-white/[0.07] px-3 py-2.5">
-                          <div className="min-w-0">
-                            <div className="text-[12px] font-semibold text-white/90">Agent Team</div>
-                            <div className="text-[11px] text-white/42">
-                              {isThinking ? 'Coordinating current work' : 'Latest agent activity'}
-                            </div>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => setAgentTeamOpen(false)}
-                            className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-white/45 transition-colors hover:bg-white/[0.06] hover:text-white/80"
-                            aria-label="Close agent team"
-                          >
-                            <X className="h-3.5 w-3.5" />
-                          </button>
-                        </div>
-                        <div className="max-h-[420px] overflow-y-auto p-2 space-y-1.5 eterx-scrollbar">
-                          {realSubAgents.length === 0 ? (
-                            <div className="rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-3 text-[12px] text-white/48">
-                              No delegated agents are active yet.
-                            </div>
-                          ) : (
-                            realSubAgents.map((agent: any) => {
-                              const status = String(agent.status || 'pending');
-                              const isWorking = status === 'working' || status === 'spawning';
-                              const isPaused = status === 'paused';
-                              const isCompleted = status === 'completed';
-                              const isClosed = status === 'closed';
-                              const isError = status === 'error';
-
-                              const handleControl = async (action: string) => {
-                                try {
-                                  await fetch('/api/agent/control', {
-                                    method: 'POST',
-                                    headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify({
-                                      action,
-                                      projectId: activeChatId,
-                                      agentName: agent.name,
-                                      agentId: agent.subAgentId,
-                                    }),
-                                  });
-                                } catch (err) {
-                                  console.error(`[AgentControl] ${ action } failed:`, err);
-                                }
-                              };
-
-                              const statusBadge = isCompleted
-                                ? { bg: 'bg-emerald-500/10 text-emerald-400', label: 'Done' }
-                                : isPaused
-                                  ? { bg: 'bg-amber-500/10 text-amber-400', label: 'Paused' }
-                                  : isClosed
-                                    ? { bg: 'bg-white/[0.04] text-white/30', label: 'Closed' }
-                                    : isError
-                                      ? { bg: 'bg-red-500/10 text-red-400', label: 'Error' }
-                                      : isWorking
-                                        ? { bg: 'bg-emerald-500/10 text-emerald-400', label: 'Working' }
-                                        : { bg: 'bg-white/[0.04] text-white/40', label: status };
-
-                              return (
-                                <div key={agent.id || agent.name} className={`rounded-[12px] border border-white/[0.07] bg-[linear-gradient(180deg,rgba(255,255,255,0.055),rgba(255,255,255,0.026))] px-3 py-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] ${ isClosed ? 'opacity-45' : '' }`}>
-                                  <div className="flex items-center gap-2.5">
-                                    <SubAgentAvatar name={agent.name} status={status} size="md" />
-                                    {/* Name + status */}
-                                    <div className="min-w-0 flex-1">
-                                      <div className="flex items-center gap-2">
-                                        <span className="truncate text-[12px] font-semibold text-white/86">{agent.name}</span>
-                                        <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-[8px] font-semibold uppercase tracking-wider ${ statusBadge.bg }`}>
-                                          {isWorking ? <Shimmer>{statusBadge.label}</Shimmer> : statusBadge.label}
-                                        </span>
-                                      </div>
-                                      <div className="mt-0.5 line-clamp-1 text-[10.5px] leading-4 text-white/40">
-                                        {isWorking
-                                          ? <Shimmer>{agent.currentAction || agent.task || 'Working'}</Shimmer>
-                                          : agent.currentAction || agent.task || 'Waiting...'}
-                                      </div>
-                                    </div>
-                                    {/* Control buttons */}
-                                    {!isClosed && !isCompleted && (
-                                      <div className="flex shrink-0 items-center gap-1">
-                                        {isWorking && (
-                                          <button
-                                            type="button"
-                                            onClick={() => handleControl('pause')}
-                                            className="flex h-6 w-6 items-center justify-center rounded-md text-white/40 transition-colors hover:bg-amber-500/10 hover:text-amber-400"
-                                            aria-label={`Pause ${ agent.name }`}
-                                            title="Pause"
-                                          >
-                                            <svg viewBox="0 0 10 10" fill="currentColor" className="w-2.5 h-2.5"><rect x="1" y="1" width="3" height="8" rx="0.5" /><rect x="6" y="1" width="3" height="8" rx="0.5" /></svg>
-                                          </button>
-                                        )}
-                                        {isPaused && (
-                                          <button
-                                            type="button"
-                                            onClick={() => handleControl('resume')}
-                                            className="flex h-6 w-6 items-center justify-center rounded-md text-white/40 transition-colors hover:bg-emerald-500/10 hover:text-emerald-400"
-                                            aria-label={`Resume ${ agent.name }`}
-                                            title="Resume"
-                                          >
-                                            <svg viewBox="0 0 10 10" fill="currentColor" className="w-3 h-3"><polygon points="2,1 9,5 2,9" /></svg>
-                                          </button>
-                                        )}
-                                        <button
-                                          type="button"
-                                          onClick={() => handleControl('close')}
-                                          className="flex h-6 w-6 items-center justify-center rounded-md text-white/40 transition-colors hover:bg-red-500/10 hover:text-red-400"
-                                          aria-label={`Close ${ agent.name }`}
-                                          title="Close"
-                                        >
-                                          <X className="w-3 h-3" />
-                                        </button>
-                                      </div>
-                                    )}
-                                  </div>
-                                </div>
-                              );
-                            })
-                          )}
-                        </div>
-                      </motion.aside>
-                    )}
-                  </AnimatePresence>
                   {/* Computer Panel */}
                   <AnimatePresence>
                     {canUseMonitor && monitorOpen && (

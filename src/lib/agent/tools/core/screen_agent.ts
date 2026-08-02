@@ -51,12 +51,11 @@
 import { z } from 'zod';
 import type { ToolDefinition } from '../../schemas';
 
-import { exec } from 'child_process';
-import { promisify } from 'util';
 import path from 'path';
 import os from 'os';
 import fs from 'fs-extra';
 import { execFile } from 'child_process';
+import { promisify } from 'util';
 import { monitorEmitter } from '../../monitor/emitter';
 import { autoStreamPing } from '../../computer/live-stream';
 import {
@@ -79,8 +78,8 @@ import {
   typeManagedText,
 } from '../../computer/managed-computer';
 import { enforceToolCapability } from '../security/tool_policy';
+import { resolveTerminalShell } from './shell_resolver';
 
-const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
 
 // ─── Paths ────────────────────────────────────────────────────────────────────
@@ -91,8 +90,9 @@ async function ps(script: string, timeout = 12000): Promise<string> {
   const tmp = path.join(os.tmpdir(), `eterx_sa_${Date.now()}_${Math.random().toString(36).slice(2)}.ps1`);
   try {
     await fs.writeFile(tmp, script, 'utf8');
+    const powershell = resolveTerminalShell('powershell');
     const { stdout } = await execFileAsync(
-      'powershell.exe',
+      powershell,
       ['-NonInteractive', '-WindowStyle', 'Hidden', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', tmp],
       { timeout, maxBuffer: 80 * 1024 * 1024 }
     );

@@ -14,12 +14,13 @@
  * ═══════════════════════════════════════════════════════════════
  */
 
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { monitorEmitter } from '../monitor/emitter';
 import { bindComputerTarget, isUnsafeHostControlEnabled } from './computer-session';
+import { buildTerminalShellInvocation } from '../tools/core/shell_resolver';
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 async function ps(script: string, timeout = 8000): Promise<string> {
   if (process.platform !== 'win32') {
@@ -27,7 +28,12 @@ async function ps(script: string, timeout = 8000): Promise<string> {
   }
   if (!isUnsafeHostControlEnabled()) return '';
   try {
-    const { stdout } = await execAsync(script, { shell: 'powershell.exe', timeout, maxBuffer: 5 * 1024 * 1024 });
+    const invocation = buildTerminalShellInvocation(script, 'powershell');
+    const { stdout } = await execFileAsync(invocation.file, invocation.args, {
+      timeout,
+      maxBuffer: 5 * 1024 * 1024,
+      windowsHide: true,
+    });
     return stdout.trim();
   } catch (e: any) {
     return '';

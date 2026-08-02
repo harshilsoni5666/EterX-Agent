@@ -22,9 +22,13 @@ import { browserControlTool } from './core/browser_control';
 import { askUserTool } from './core/ask_user';
 import { checkpointTool } from './core/checkpoint';
 import { computerTool } from './core/computer';
+import { desktopControlTool } from './core/desktop_control';
+import { screenAgentTool } from './core/screen_agent';
+import { sysAutomationTool } from './core/sys_automation';
 import { waitTimerTool } from './core/wait_timer';
 import { agentCommTool } from './core/agent_comm';
 import { toolFinderTool } from './core/tool_finder';
+import { scheduledTasksTool } from './core/scheduled_tasks';
 
 // Workspace inspection and execution. These are the established file tools
 // wired to the UI's created-file preview and expandable real-diff display.
@@ -42,7 +46,10 @@ import {
 import {
   workspaceFindFilesTool,
   workspaceReadManyFilesTool,
+  workspaceEditManyFilesTool,
 } from './workspace/fast_ops';
+import { workspaceApplyPatchTool } from './workspace/apply_patch';
+import { codeGeneratorTool } from './workspace/codegen';
 import { workspaceSemanticSearchTool } from './workspace/semantic_search';
 import { workspaceFileOutlineTool } from './workspace/coding_intel';
 import { csvAnalyzerTool } from './workspace/data';
@@ -68,16 +75,17 @@ import { gatewayBridgeTool } from './communication/gateway_bridge';
 // advertised as guaranteed capabilities. The browser remains the portable UI
 // automation surface on every platform.
 const PLATFORM_TOOLS = process.platform === 'win32'
-  ? [clipboardTool, desktopNotifyTool, screenshotTool, ttsTool, computerTool]
+  ? [clipboardTool, desktopNotifyTool, screenshotTool, ttsTool, computerTool, desktopControlTool, screenAgentTool]
   : process.platform === 'darwin'
-    ? [clipboardTool, desktopNotifyTool, ttsTool]
-    : [];
+    ? [clipboardTool, desktopNotifyTool, screenshotTool, ttsTool]
+    : [clipboardTool, screenshotTool];
 
 const BUILTIN_TOOLS = [
   webSearchTool,
   apiCallerTool,
   skillLoaderTool,
   systemMonitorTool,
+  sysAutomationTool,
   ...PLATFORM_TOOLS,
   imageGenTool,
   imageAssetSearchTool,
@@ -94,6 +102,7 @@ const BUILTIN_TOOLS = [
   waitTimerTool,
   agentCommTool,
   toolFinderTool,
+  scheduledTasksTool,
 
   workspaceReadTool,
   workspaceWriteTool,
@@ -104,6 +113,9 @@ const BUILTIN_TOOLS = [
   workspaceVerifyCodeTool,
   workspaceFindFilesTool,
   workspaceReadManyFilesTool,
+  workspaceEditManyFilesTool,
+  workspaceApplyPatchTool,
+  codeGeneratorTool,
   workspaceSemanticSearchTool,
   workspaceFileOutlineTool,
   csvAnalyzerTool,

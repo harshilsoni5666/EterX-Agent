@@ -22,6 +22,24 @@ function wildcardMatcher(pattern?: string): ((name: string) => boolean) | undefi
   return (name: string) => matcher.test(path.basename(name)) || matcher.test(name.replace(/\\/g, '/'));
 }
 
+async function countDirectoryEntries(root: string): Promise<number> {
+  let count = 0;
+  const walk = async (directory: string): Promise<void> => {
+    let entries: import('fs').Dirent[] = [];
+    try {
+      entries = await fs.readdir(directory, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    count += entries.length;
+    for (const entry of entries) {
+      if (entry.isDirectory()) await walk(path.join(directory, entry.name));
+    }
+  };
+  await walk(root);
+  return count;
+}
+
 export const compressionTool: ToolDefinition = {
   name: 'file_compression',
   description: 'Compress files/folders into ZIP archives or extract ZIP files on Windows, macOS, and Linux.',
@@ -75,12 +93,12 @@ export const compressionTool: ToolDefinition = {
           : sourcePath.replace(/\.zip$/i, '_extracted');
         await fs.ensureDir(destDir);
         new AdmZip(sourcePath).extractAllTo(destDir, true);
-        const files = await fs.readdir(destDir, { recursive: true });
+        const files = await countDirectoryEntries(destDir);
         return {
           success: true,
-          message: `Extracted ${files.length} items to: ${path.basename(destDir)}`,
+          message: `Extracted ${files} items to: ${path.basename(destDir)}`,
           outputPath: destDir,
-          filesExtracted: files.length
+          filesExtracted: files
         };
       }
 

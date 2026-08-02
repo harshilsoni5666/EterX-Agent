@@ -60,6 +60,8 @@ export interface GatewayPlatformConfig {
 export interface GatewayDaemonConfig {
   enabled: boolean;
   keepRunningOnClose: boolean;
+  keepActiveChatsOnClose: boolean;
+  runScheduledTasksInBackground: boolean;
   launchAtLogin: boolean;
   host: string;
   port: number;
