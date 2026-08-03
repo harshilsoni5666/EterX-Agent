@@ -1,5 +1,6 @@
 import path from 'path';
 import fs from 'fs-extra';
+import { getEterxWorkspaceDir } from './storage-paths';
 
 /**
  * Agent Memory System — Persistent Learning Engine
@@ -17,7 +18,7 @@ import fs from 'fs-extra';
  * - sessions.json: Session summaries
  */
 
-const MEMORY_DIR = path.resolve(process.cwd(), '.workspaces', 'memory');
+const MEMORY_DIR = getEterxWorkspaceDir('memory');
 
 function isPathInside(parent: string, candidate: string): boolean {
   const relative = path.relative(parent, candidate);
@@ -37,14 +38,31 @@ async function writeJsonAtomic(filePath: string, data: unknown): Promise<void> {
   await fs.ensureDir(dir);
   const tmpPath = path.join(dir, `.${path.basename(filePath)}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`);
   await fs.writeJson(tmpPath, data, { spaces: 2 });
+  if (await fs.pathExists(filePath)) {
+    await fs.copyFile(filePath, `${filePath}.backup`).catch(() => {});
+  }
   await fs.move(tmpPath, filePath, { overwrite: true });
+}
+
+async function readJsonWithBackup(filePath: string): Promise<any | null> {
+  for (const source of [filePath, `${filePath}.backup`]) {
+    try {
+      if (!(await fs.pathExists(source))) continue;
+      return await fs.readJson(source);
+    } catch {
+      if (source === filePath) {
+        await fs.move(filePath, `${filePath}.corrupt-${Date.now()}`).catch(() => {});
+      }
+    }
+  }
+  return null;
 }
 
 interface MemoryStore {
   preferences: Record<string, any>;
   errorPatterns: Array<{ tool: string, error: string, solution: string, timestamp: number }>;
   projectKnowledge: Record<string, any>;
-  sessionSummaries: Array<{ timestamp: number, summary: string }>;
+  sessionSummaries: Array<{ timestamp: number, summary: string, chatId?: string }>;
 }
 
 class AgentMemory {
@@ -55,13 +73,16 @@ class AgentMemory {
     sessionSummaries: []
   };
   private loaded = false;
+  private loadPromise: Promise<void> | null = null;
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
   private savePending = false;
 
   /** Initialize and load from disk */
   async load(): Promise<void> {
     if (this.loaded) return;
-    try {
+    if (this.loadPromise) return this.loadPromise;
+    this.loadPromise = (async () => {
+      try {
       await fs.ensureDir(MEMORY_DIR);
 
       const prefsPath = resolveUnder(MEMORY_DIR, 'preferences.json');
@@ -71,10 +92,10 @@ class AgentMemory {
 
       // All 4 reads in parallel
       const [p, e, pr, s] = await Promise.allSettled([
-        fs.pathExists(prefsPath).then(x => x ? fs.readJson(prefsPath) : null),
-        fs.pathExists(errorsPath).then(x => x ? fs.readJson(errorsPath) : null),
-        fs.pathExists(projectsPath).then(x => x ? fs.readJson(projectsPath) : null),
-        fs.pathExists(sessionsPath).then(x => x ? fs.readJson(sessionsPath) : null),
+        readJsonWithBackup(prefsPath),
+        readJsonWithBackup(errorsPath),
+        readJsonWithBackup(projectsPath),
+        readJsonWithBackup(sessionsPath),
       ]);
 
       if (p.status === 'fulfilled' && p.value) this.store.preferences = p.value;
@@ -84,10 +105,14 @@ class AgentMemory {
 
       this.loaded = true;
       console.log(`[AgentMemory] Loaded: ${Object.keys(this.store.preferences).length} prefs, ${this.store.errorPatterns.length} error patterns, ${this.store.sessionSummaries.length} sessions`);
-    } catch (e) {
-      console.warn(`[AgentMemory] Could not load memory, starting fresh.`);
-      this.loaded = true;
-    }
+      } catch (e) {
+        console.warn(`[AgentMemory] Could not load memory, starting fresh.`);
+        this.loaded = true;
+      } finally {
+        this.loadPromise = null;
+      }
+    })();
+    return this.loadPromise;
   }
 
   /** Save current state to disk — DEBOUNCED to avoid excessive I/O */
@@ -186,7 +211,7 @@ class AgentMemory {
    * for anything related to the current query using keyword overlap.
    * This enables the agent to say "I remember working on something similar..."
    */
-  associativeRecall(query: string, maxResults: number = 5): string[] {
+  associativeRecall(query: string, maxResults: number = 5, chatId?: string): string[] {
     const queryWords = new Set(
       query.toLowerCase().split(/\s+/).filter(w => w.length > 3)
     );
@@ -196,6 +221,10 @@ class AgentMemory {
     
     // Search session summaries
     for (const session of this.store.sessionSummaries) {
+      // Session summaries are conversation-local. Legacy records without an
+      // owner are intentionally excluded when a scoped chat asks for recall;
+      // otherwise an old global summary could leak into a different chat.
+      if (chatId && session.chatId !== chatId) continue;
       const sessionWords = session.summary.toLowerCase().split(/\s+/);
       let overlap = 0;
       for (const w of queryWords) {
@@ -257,13 +286,14 @@ class AgentMemory {
   }
 
   // ── Session Summaries ──
-  addSessionSummary(summary: string) {
-    this.store.sessionSummaries.push({ timestamp: Date.now(), summary });
+  addSessionSummary(summary: string, chatId?: string) {
+    this.store.sessionSummaries.push({ timestamp: Date.now(), summary, chatId });
     this.debouncedSave();
   }
 
-  getRecentSessions(count: number = 5): string[] {
+  getRecentSessions(count: number = 5, chatId?: string): string[] {
     return this.store.sessionSummaries
+      .filter(s => !chatId || s.chatId === chatId)
       .slice(-count)
       .map(s => `[${new Date(s.timestamp).toLocaleDateString()}] ${s.summary}`);
   }
@@ -272,7 +302,7 @@ class AgentMemory {
    * Generate a memory context string for injection into system prompt.
    * Returns relevant preferences and patterns the agent should know about.
    */
-  getMemoryContext(currentQuery?: string, options: { includeRecentSessions?: boolean } = {}, _chatId?: string): string {
+  getMemoryContext(currentQuery?: string, options: { includeRecentSessions?: boolean } = {}, chatId?: string): string {
     const parts: string[] = [];
 
     const prefs = this.getAllPreferences();
@@ -287,14 +317,14 @@ class AgentMemory {
       }
     }
 
-    const sessions = options.includeRecentSessions ? this.getRecentSessions(3) : [];
+    const sessions = options.includeRecentSessions ? this.getRecentSessions(3, chatId) : [];
     if (sessions.length > 0) {
       parts.push(`Recent Sessions:\n${sessions.join('\n')}`);
     }
 
     // ASSOCIATIVE RECALL: Find relevant memories for current query
     if (currentQuery) {
-      const memories = this.associativeRecall(currentQuery, 3);
+      const memories = this.associativeRecall(currentQuery, 3, chatId);
       if (memories.length > 0) {
         parts.push(`Relevant Memories:\n${memories.map(m => `  ${m}`).join('\n')}`);
       }

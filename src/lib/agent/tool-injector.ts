@@ -195,13 +195,14 @@ export interface ResolvedTool {
  * Resolve a single direct main tool reference into a usable declaration + prompt.
  */
 export function resolveDirectTool(ref: AgentBuilderDirectTool): ResolvedTool | null {
-  const tool = globalToolRegistry.getTool(ref.toolName);
+  const canonicalToolName = normalizeRegistryToolName(ref.toolName);
+  const tool = globalToolRegistry.getTool(canonicalToolName);
   if (!tool) return null;
-  if (isBuilderOnlyToolName(ref.toolName)) return null;
+  if (isBuilderOnlyToolName(canonicalToolName)) return null;
 
   // Build prompt guidance from the attach metadata
   const lines: string[] = [
-    `### Tool: ${ref.toolName}`,
+    `### Tool: ${canonicalToolName}`,
     `**Purpose**: ${ref.purpose}`,
     `**When to use**: ${ref.whenToUse}`,
   ];
@@ -210,16 +211,16 @@ export function resolveDirectTool(ref: AgentBuilderDirectTool): ResolvedTool | n
   if (ref.promptInjection) lines.push(`**Special instructions**: ${ref.promptInjection}`);
 
   return {
-    name: tool.name,
+    name: canonicalToolName,
     description: tool.description,
     declaration: {
-      name: tool.name,
+      name: canonicalToolName,
       description: tool.description.substring(0, 420),
       // We'll use the actual schema from the registry at runtime
     },
     promptGuidance: lines.join('\n'),
     execute: tool.execute ? async (args: any, context: any) => {
-      return await runWithSelfHealing(tool.name, tool.execute!, args, context);
+      return await runWithSelfHealing(canonicalToolName, tool.execute!, args, context);
     } : undefined,
   };
 }
@@ -438,9 +439,11 @@ export function resolveAgentTools(profile: AgentBuilderProfile): {
   const promptParts: string[] = ['## Your Tools\n'];
 
   // Resolve direct main tools
+  const seenToolNames = new Set<string>();
   for (const ref of profile.directMainTools) {
     const resolved = resolveDirectTool(ref);
-    if (resolved) {
+    if (resolved && !seenToolNames.has(resolved.name)) {
+      seenToolNames.add(resolved.name);
       tools.push(resolved);
       promptParts.push(resolved.promptGuidance);
     }
@@ -449,7 +452,8 @@ export function resolveAgentTools(profile: AgentBuilderProfile): {
   // Resolve custom tools
   for (const custom of profile.customTools) {
     const resolved = resolveCustomTool(custom);
-    if (resolved) {
+    if (resolved && !seenToolNames.has(resolved.name)) {
+      seenToolNames.add(resolved.name);
       tools.push(resolved);
       promptParts.push(resolved.promptGuidance);
     }
@@ -477,6 +481,9 @@ export const agentToolLoadTool: ToolDefinition = {
       return { success: false, message: 'Dynamic tool loading is only supported during active custom agent executions.' };
     }
     const name = normalizeRegistryToolName(args.toolName);
+    if (isBuilderOnlyToolName(name) || name === 'create_dynamic_tool') {
+      return { success: false, message: `Tool "${name}" is reserved for Agent Builder and cannot be loaded by a finalized custom agent.` };
+    }
     const tool = globalToolRegistry.getTool(name);
     if (!tool) {
       return { success: false, message: `Tool "${args.toolName}" was not found in the global registry.` };

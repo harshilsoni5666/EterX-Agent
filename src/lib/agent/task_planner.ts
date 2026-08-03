@@ -75,6 +75,9 @@ const BASE_PLANNER_TOOLS = new Set([
   'workspace_edit_file',
   'workspace_run_command',
   'workspace_verify_code',
+  'calculator',
+  'json_yaml_transform',
+  'regex_text_processor',
   'browser_control',
   'realtime_verify',
   'web_search',
@@ -183,6 +186,7 @@ Rules:
    workspace_read_file, workspace_read_many_files, workspace_list_directory, workspace_search_text, workspace_find_files, workspace_semantic_search, workspace_file_outline,
    workspace_write_file, workspace_edit_file,
    workspace_run_command, workspace_verify_code,
+   calculator, json_yaml_transform, regex_text_processor,
    browser_control, realtime_verify,
    web_search, web_scraper, deep_research, parse_pdf, youtube_transcript, rss_feed_reader,
    get_skill_guidelines,
@@ -507,7 +511,10 @@ function inferTools(type: PlannerStepType, task: string, context = ''): string[]
       if (profile.isDocument || profile.isData) return ['workspace_read_file', 'workspace_verify_code'];
       return ['workspace_verify_code'];
     case 'communicate':
-      return ['ask_user'];
+      // Communication is an execution lane, not a request for permission.
+      // The selected connector tool owns its safety/approval policy; the
+      // planner must not manufacture a blocking ask_user step.
+      return [];
     case 'deliver':
       return [];
     default:

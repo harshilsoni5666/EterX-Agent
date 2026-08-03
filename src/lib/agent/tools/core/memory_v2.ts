@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { ToolDefinition } from '../../schemas';
 import { MemoryV2Scope, memoryV2 } from '../../memory/v2';
+import { getAgentConversationScope } from '../../context-scope';
 
 const validScopes = new Set<MemoryV2Scope>([
   'raw', 'session', 'project', 'user', 'tool', 'error', 'artifact', 'credential', 'self_improvement', 'eval',
@@ -110,10 +111,13 @@ Security rules:
     metadataJson: z.string().optional().describe('Optional metadata as a JSON object string'),
   }),
   outputSchema: z.object({ success: z.boolean(), message: z.string(), data: z.any().optional() }),
-  execute: async (input: any) => {
+  execute: async (input: any, context?: any) => {
     const userId = input.userId || 'user';
-    const projectId = input.projectId || 'global';
-    const chatId = input.chatId || projectId;
+    const conversationScopeId = getAgentConversationScope(context);
+    const projectId = context?.memoryScopeId
+      ? conversationScopeId
+      : (input.projectId || 'global');
+    const chatId = input.chatId || conversationScopeId;
     const metadata = parseJsonObject(input.metadataJson ?? input.metadata);
 
     try {

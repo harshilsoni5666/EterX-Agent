@@ -128,16 +128,20 @@ export function normalizeProviderCacheUsage(
     raw.reasoningTokens,
   );
   const reportedTotal = numberFrom(raw.total_tokens, raw.totalTokens, raw.totalTokenCount);
-  return {
+  const normalized: Record<string, number> = {
     promptTokens,
     completionTokens,
-    totalTokens: Math.max(reportedTotal, promptTokens + completionTokens),
-    cachedTokens: numberFrom(
+  };
+  const cachedTokens = numberFrom(
       raw.prompt_tokens_details?.cached_tokens,
       raw.input_tokens_details?.cached_tokens,
       raw.cached_tokens,
       raw.cachedTokens,
-    ),
-    reasoningTokens,
-  };
+    );
+  if (cachedTokens > 0) normalized.cachedTokens = cachedTokens;
+  // Preserve the compact legacy shape when a provider omits optional usage
+  // fields, while retaining every measured metric when it is present.
+  if (reportedTotal > 0) normalized.totalTokens = reportedTotal;
+  if (reasoningTokens > 0) normalized.reasoningTokens = reasoningTokens;
+  return normalized;
 }

@@ -25,6 +25,7 @@ import { execFile, execFileSync, spawn } from 'child_process';
 import { promisify } from 'util';
 import net from 'net';
 import { buildTerminalShellInvocation } from '../tools/core/shell_resolver';
+import { getEterxWorkspaceDir } from '../storage-paths';
 
 const execFileAsync = promisify(execFile);
 
@@ -193,8 +194,8 @@ export class BrowserEngine {
   private defaultDialogAction: 'accept' | 'dismiss' = 'accept';
 
   // Paths
-  private profilesDir = path.resolve(process.cwd(), '.workspaces', 'browser_profiles');
-  private downloadsDir = path.resolve(process.cwd(), '.workspaces', 'temp', 'downloads');
+  private profilesDir = getEterxWorkspaceDir('browser_profiles');
+  private downloadsDir = getEterxWorkspaceDir('temp', 'downloads');
 
   // ─── Connection ───
 
@@ -875,6 +876,38 @@ export class BrowserEngine {
 
   get browserContext(): any {
     return this.context;
+  }
+
+  /** Read-only readiness check used by Settings before offering signed mode. */
+  async getSignedBrowserReadiness(): Promise<{ available: boolean; reason: string; browser?: string }> {
+    try {
+      const install = await this.findBrowserInstall();
+      const debugPort = await this.findDebugPortForInstall(install);
+      if (debugPort) {
+        return { available: true, reason: `${install.displayName} is already ready for signed-in control.`, browser: install.displayName };
+      }
+
+      let running = false;
+      if (process.platform === 'win32') {
+        const { stdout } = await execFileAsync('tasklist', ['/FI', `IMAGENAME eq ${install.processName}`, '/NH'], { timeout: 3000, windowsHide: true });
+        running = stdout.toLowerCase().includes(install.processName.toLowerCase());
+      } else {
+        const { stdout } = await execFileAsync('pgrep', ['-f', install.processName], { timeout: 3000 });
+        running = Boolean(stdout.trim());
+      }
+
+      if (running) {
+        return {
+          available: false,
+          reason: `${install.displayName} is open without browser control. Close its windows once, then retry signed-in mode.`,
+          browser: install.displayName,
+        };
+      }
+
+      return { available: true, reason: `${install.displayName} can be reopened with the signed-in profile.`, browser: install.displayName };
+    } catch (error: any) {
+      return { available: false, reason: String(error?.message || 'A supported signed-in browser was not detected.').slice(0, 240) };
+    }
   }
 
   // ─── Internal Helpers ───

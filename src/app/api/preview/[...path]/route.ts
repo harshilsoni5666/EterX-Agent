@@ -52,23 +52,30 @@ function inlineFileNameHeader(filename: string) {
 
 export async function GET(req: NextRequest, { params }: { params: { path: string[] } }) {
   try {
+    // New callers send the complete native path in a query parameter. This
+    // keeps roots and special characters intact on Windows, macOS, and Linux.
+    // Keep the catch-all route as a backwards-compatible fallback for older
+    // renderer bundles and previously stored links.
+    const queryPath = req.nextUrl.searchParams.get('path');
     const parts = params.path.map(p => decodeURIComponent(p));
-    let absolutePath = '';
-    
-    const driveIndex = parts.findIndex(p => p.endsWith(':'));
-    if (driveIndex !== -1) {
-      absolutePath = parts[driveIndex] + path.sep + path.join(...parts.slice(driveIndex + 1));
-    } else {
-      absolutePath = path.join(...parts);
+    let absolutePath = queryPath?.trim() || '';
+
+    if (!absolutePath) {
+      const driveIndex = parts.findIndex(p => p.endsWith(':'));
+      if (driveIndex !== -1) {
+        absolutePath = parts[driveIndex] + path.sep + path.join(...parts.slice(driveIndex + 1));
+      } else {
+        absolutePath = path.join(...parts);
+      }
     }
-    
-    if (!fs.existsSync(absolutePath)) {
-       if (!path.isAbsolute(absolutePath)) {
-         const altPath = '/' + absolutePath;
-         if (fs.existsSync(altPath)) {
-           absolutePath = altPath;
-         }
-       }
+
+    absolutePath = path.normalize(absolutePath);
+
+    if (!fs.existsSync(absolutePath) && !path.isAbsolute(absolutePath)) {
+      // Older POSIX links dropped the leading slash while building route
+      // segments. Preserve those links without affecting native paths.
+      const altPath = path.resolve(path.sep, absolutePath);
+      if (fs.existsSync(altPath)) absolutePath = altPath;
     }
     
     if (!fs.existsSync(absolutePath)) {
@@ -130,7 +137,10 @@ export async function GET(req: NextRequest, { params }: { params: { path: string
     if (mimeType === 'text/html') {
       let html = fileBuffer.toString('utf-8');
       
-      const basePath = `/api/preview/${params.path.slice(0, -1).map(p => encodeURIComponent(p)).join('/')}/`;
+      const baseParts = queryPath
+        ? absolutePath.replace(/\\/g, '/').split('/').filter(Boolean)
+        : params.path.slice(0, -1);
+      const basePath = `/api/preview/${baseParts.map(p => encodeURIComponent(p)).join('/')}/`;
       
       if (!html.includes('<base ')) {
         const baseTag = `<base href="${basePath}" />`;

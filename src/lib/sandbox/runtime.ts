@@ -1,4 +1,4 @@
-import { spawn } from 'child_process';
+import { ChildProcess, spawn } from 'child_process';
 import path from 'path';
 import fs from 'fs-extra';
 import {
@@ -49,15 +49,47 @@ export async function runSandboxCommand(
     timeoutMs,
   });
 
-  return new Promise((resolve) => {
-    const invocation = buildTerminalShellInvocation(input.command);
-    const child = spawn(invocation.file, invocation.args, {
+  let invocation: ReturnType<typeof buildTerminalShellInvocation>;
+  try {
+    invocation = buildTerminalShellInvocation(input.command);
+  } catch (error: any) {
+    const message = String(error?.message || error);
+    await appendSandboxAudit(session, {
+      type: 'command.finished',
+      command: input.command,
       cwd,
-      shell: invocation.shell,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      windowsHide: true,
-      env,
+      exitCode: 127,
+      timedOut: false,
+      durationMs: 0,
+      reason: message,
     });
+    return {
+      command: input.command,
+      cwd,
+      stdout: '',
+      stderr: message,
+      exitCode: 127,
+      timedOut: false,
+      durationMs: 0,
+    };
+  }
+
+  return new Promise((resolve) => {
+    let child: ChildProcess;
+    try {
+      child = spawn(invocation.file, invocation.args, {
+        cwd,
+        shell: invocation.shell,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+        env,
+        detached: process.platform !== 'win32',
+      });
+    } catch (error: any) {
+      const message = String(error?.message || error);
+      resolve({ command: input.command, cwd, stdout: '', stderr: message, exitCode: 127, timedOut: false, durationMs: Date.now() - startedAt });
+      return;
+    }
 
     let stdout = '';
     let stderr = '';
@@ -172,17 +204,16 @@ function killProcessTree(pid?: number) {
     spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
     return;
   }
+  let signalled = false;
   try {
-    process.kill(pid, 'SIGTERM');
-  } catch {
-    return;
+    process.kill(-pid, 'SIGTERM');
+    signalled = true;
+  } catch { /* fall back to the direct PID */ }
+  if (!signalled) {
+    try { process.kill(pid, 'SIGTERM'); } catch { return; }
   }
   const timer = setTimeout(() => {
-    try {
-      process.kill(pid, 'SIGKILL');
-    } catch {
-      // Already stopped.
-    }
+    try { process.kill(signalled ? -pid : pid, 'SIGKILL'); } catch { /* already stopped */ }
   }, 2_000);
   timer.unref?.();
 }

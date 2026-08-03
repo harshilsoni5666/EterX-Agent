@@ -14,6 +14,8 @@ import { cancelPendingProxyTasks, claimDormantProxyDirectives, claimNextProxyTas
 import { cancelAgent, cancelAllSubAgents, clearCancelState, globalSubAgentSpawner } from './roles/sub_agent';
 import { normalizeAttachmentMime } from './attachment-pipeline';
 import { normalizeStreamTimestamp } from '../streaming-lifecycle';
+import { getEterxWorkspaceDir } from './storage-paths';
+import { stableScopeSegment } from './context-scope';
 
 // Ensure tools are bootstrapped
 import './tools/index';
@@ -88,6 +90,13 @@ interface AgentExecution {
     runtimeSettings?: ScopedRuntimeSettings | null;
   };
 }
+
+const AGENT_BUILDER_INTERNAL_REQUEST_PATTERN = /^\[AGENT BUILDER REQUEST\]\s*\r?\nTarget agent ID:[^\r\n]*\r?\n\s*\r?\n\[USER REQUEST\]\s*\r?\n?([\s\S]*)$/i;
+
+const getVisibleRunPrompt = (prompt: string): string => {
+  const match = String(prompt || '').match(AGENT_BUILDER_INTERNAL_REQUEST_PATTERN);
+  return match ? String(match[1] || '').trim() : String(prompt || '');
+};
 
 export const buildProxyTaskHistory = (
   baseHistory: any[],
@@ -170,7 +179,12 @@ class AgentRegistry {
       };
     }
 
-    if ((data.type === 'thought_stream' || data.type === 'work_note') && typeof data.text === 'string' && data.text.length > 12000) {
+    // Thought streams are cumulative snapshots. Truncating one snapshot makes
+    // the next merge treat the compacted marker as real model output and can
+    // permanently lose the remainder of the reasoning in the UI. Keep the
+    // complete thought stream; work notes remain bounded because they are
+    // user-facing summaries rather than the model's full stream.
+    if (data.type === 'work_note' && typeof data.text === 'string' && data.text.length > 12000) {
       return {
         ...data,
         text: `${ data.text.substring(0, 12000) }\n...[trace compacted]`,
@@ -301,7 +315,18 @@ class AgentRegistry {
       };
     }
 
-    const modelConfig = getMainAgentModelConfig(mode, runtimeSettings);
+    // A turn-scoped provider/model selection is authoritative for admission as
+    // well as execution.  Using only `mode` here can lease a Gemini key and
+    // reject an otherwise valid OpenAI-compatible run before the orchestrator
+    // ever gets a chance to select the requested provider.
+    const pinnedProvider = typeof pinnedContext?.selectedModelProvider === 'string'
+      && isModelProvider(pinnedContext.selectedModelProvider)
+      ? pinnedContext.selectedModelProvider
+      : '';
+    const admissionMode = pinnedProvider
+      ? MODEL_PROVIDER_MODE[pinnedProvider as keyof typeof MODEL_PROVIDER_MODE]
+      : mode;
+    const modelConfig = getMainAgentModelConfig(admissionMode, runtimeSettings);
     const isExternalProvider = modelConfig.provider !== 'gemini';
     const scopedGeminiKeys = runtimeSettings?.apiKeys?.gemini || [];
     const preferredGeminiApiKey = _preferredGeminiApiKey || runtimeSettings?.preferredGeminiApiKey || scopedGeminiKeys[0] || '';
@@ -330,6 +355,9 @@ class AgentRegistry {
     }
 
     // Create the execution record
+    const hasExactPinnedModel = typeof pinnedContext?.selectedModelName === 'string'
+      && pinnedContext.selectedModelName.trim().length > 0
+      && isModelProvider(pinnedContext?.selectedModelProvider);
     const execution: AgentExecution = {
       chatId,
       runId: requestedRunId || randomUUID(),
@@ -348,8 +376,8 @@ class AgentRegistry {
       steeringQueue: [],
       // Execution metrics
       toolCallCount: 0,
-      effectiveModel: pinnedContext?.strictModelSelection === true && typeof pinnedContext?.selectedModelName === 'string'
-        ? pinnedContext.selectedModelName
+      effectiveModel: hasExactPinnedModel
+        ? pinnedContext.selectedModelName.trim()
         : modelConfig.modelName,
       complexity: 'unknown',
       peakMemoryMB: 0,
@@ -422,7 +450,7 @@ class AgentRegistry {
         : `user-turn-${execution.runId}`,
       text: proxyOrigin
         ? String(pinnedContext?.autonomy?.proxyTaskPrompt || prompt)
-        : prompt,
+        : getVisibleRunPrompt(prompt),
       source: proxyOrigin ? 'proxy_manager' : 'human',
       delegatedBy: proxyOrigin ? 'Side Proxy-Agent' : undefined,
       proxyTaskId: proxyOrigin ? pinnedContext?.autonomy?.proxyTaskId : undefined,
@@ -455,7 +483,7 @@ class AgentRegistry {
         const path = require('path');
         const { randomUUID } = require('crypto');
 
-        const workspaceTemp = path.resolve(process.cwd(), '.workspaces', 'temp');
+        const workspaceTemp = getEterxWorkspaceDir('temp');
         const hasMediaAttachments = !!(mediaAttachments && mediaAttachments.length > 0);
         if (hasMediaAttachments) await fs.ensureDir(workspaceTemp);
 
@@ -470,10 +498,7 @@ class AgentRegistry {
         };
 
         const safeChatTempName = (value: string) => {
-          const cleaned = String(value || 'chat')
-            .replace(/[^a-zA-Z0-9_-]/g, '_')
-            .slice(0, 120);
-          return cleaned || 'chat';
+          return stableScopeSegment(value || 'chat', 120);
         };
 
         const mediaFiles: { path: string, mimeType: string, name: string, fileUri?: string }[] = [];
@@ -689,9 +714,6 @@ class AgentRegistry {
           mode: proxyRuntimeMode,
           apiKey: isExternalProvider ? projectId : (selectedProxyApiKey || proxyLease?.apiKey || lease?.apiKey || ''),
           runtimeSettings: proxyRuntimeSettings,
-          fallbackMode: mode,
-          fallbackApiKey: isExternalProvider ? projectId : (proxyLease?.apiKey || lease?.apiKey || ''),
-          fallbackRuntimeSettings: runtimeSettings,
           history,
           attachments: mediaAttachments,
           onTrace: trace => onTrace(trace && typeof trace === 'object'
@@ -749,8 +771,10 @@ class AgentRegistry {
 
         // Update effective model with the model mode resolved by the orchestrator!
         const actualModelConfig = getMainAgentModelConfig(response.modelMode, runtimeSettings);
-        execution.effectiveModel = pinnedContext?.strictModelSelection === true && typeof pinnedContext?.selectedModelName === 'string'
-          ? pinnedContext.selectedModelName
+        execution.effectiveModel = typeof pinnedContext?.selectedModelName === 'string'
+          && pinnedContext.selectedModelName.trim().length > 0
+          && isModelProvider(pinnedContext?.selectedModelProvider)
+          ? pinnedContext.selectedModelName.trim()
           : actualModelConfig.modelName;
 
         // Emit done event to trace buffer

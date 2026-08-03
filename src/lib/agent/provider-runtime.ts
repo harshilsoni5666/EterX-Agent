@@ -36,7 +36,7 @@ export function applyRuntimeProviderBaseURLs(raw: unknown): Record<string, boole
   });
   const statuses: Record<string, boolean> = {};
   for (const [provider, value] of Object.entries(raw as Record<string, unknown>)) {
-    if (!(provider in OPENAI_COMPATIBLE_PROVIDERS)) continue;
+    if (provider !== 'anthropic' && !(provider in OPENAI_COMPATIBLE_PROVIDERS)) continue;
     const normalized = normalizeBaseURL(value);
     if (normalized) runtimeBaseURLs[provider as MainAgentProvider] = normalized;
     else delete runtimeBaseURLs[provider as MainAgentProvider];
@@ -70,7 +70,7 @@ export const OPENAI_COMPATIBLE_PROVIDERS: Record<OpenAICompatibleProvider, Provi
   openrouter: {
     label: 'OpenRouter',
     compactLabel: 'Router',
-    defaultModel: 'openrouter/auto',
+    defaultModel: 'openai/gpt-oss-120b',
     baseURL: envOr('OPENROUTER_BASE_URL', 'https://openrouter.ai/api/v1'),
     visionModelPattern: /(gemini|claude|gpt-4o|gpt-4\.1|gpt-5|grok|pixtral|qwen.*(?:3\.6|vl|vision)|llama-4|vision)/i,
   },
@@ -85,7 +85,7 @@ export const OPENAI_COMPATIBLE_PROVIDERS: Record<OpenAICompatibleProvider, Provi
     label: 'DeepSeek',
     compactLabel: 'DeepSeek',
     defaultModel: 'deepseek-v4-pro',
-    baseURL: envOr('DEEPSEEK_BASE_URL', 'https://api.deepseek.com'),
+    baseURL: envOr('DEEPSEEK_BASE_URL', 'https://api.deepseek.com/v1'),
   },
   grok: {
     label: 'xAI Grok',
@@ -308,6 +308,9 @@ export function getProviderRuntime(provider: MainAgentProvider): ProviderRuntime
 export function getProviderBaseURL(provider: MainAgentProvider): string {
   const override = runtimeBaseURLs[provider];
   if (override) return override;
+  if (provider === 'anthropic') {
+    return String(process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com').replace(/\/+$/, '');
+  }
   const value = getProviderRuntime(provider)?.baseURL;
   return typeof value === 'function' ? value() : value || '';
 }

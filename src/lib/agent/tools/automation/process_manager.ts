@@ -15,6 +15,8 @@ import { buildTerminalShellInvocation, resolveTerminalShell } from '../core/shel
 
 export interface ManagedProcess {
   id: string;
+  /** Chat/project owner. Process controls must never cross chat boundaries. */
+  ownerChatId?: string;
   command: string;
   pid: number;
   status: 'running' | 'stopped' | 'crashed';
@@ -28,9 +30,14 @@ export interface ManagedProcess {
 
 export const managedProcesses: Map<string, ManagedProcess> = new Map();
 
+function ownerChatId(context: any): string | undefined {
+  const value = String(context?.chatId || context?.projectId || '').trim();
+  return value || undefined;
+}
+
 export const processManagerTool: ToolDefinition = {
   name: 'process_manager',
-  description: `Manage long-running background processes. Start servers, watch scripts, build processes, or any command that runs continuously. Monitor their output and stop them when needed.
+  description: `Manage long-running background processes owned by this chat. Start servers, watch scripts, build processes, or any command that runs continuously. Monitor their output and stop them when needed; process controls are isolated per chat.
   
   USAGE:
   - Start a dev server: action="start" command="npm run dev" cwd="/absolute/path/to/my-project"
@@ -66,8 +73,12 @@ export const processManagerTool: ToolDefinition = {
           if (!input.command) return { success: false, message: 'command is required for start action' };
 
           const requestedId = input.name || `proc_${Date.now()}`;
+          const processOwner = ownerChatId(context);
           const existingProcess = managedProcesses.get(requestedId);
-          const id = existingProcess?.status === 'running'
+          const id = existingProcess && (
+            existingProcess.status === 'running' ||
+            (processOwner !== undefined && existingProcess.ownerChatId !== processOwner)
+          )
             ? `${requestedId}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`
             : requestedId;
           const workingDir = resolveProcessCwd(input.cwd, context);
@@ -98,7 +109,9 @@ export const processManagerTool: ToolDefinition = {
           const child = spawn(invocation.file, invocation.args, {
             shell: invocation.shell,
             cwd: authorization.cwd,
-            stdio: ['pipe', 'pipe', 'pipe'],
+            // No caller writes to stdin. Keeping it open makes interactive
+            // commands wait forever, so close stdin while preserving streams.
+            stdio: ['ignore', 'pipe', 'pipe'],
             detached: process.platform !== 'win32',
             windowsHide: true,
             env: authorization.env,
@@ -106,6 +119,7 @@ export const processManagerTool: ToolDefinition = {
 
           const managed: ManagedProcess = {
             id,
+            ownerChatId: processOwner,
             command: input.command,
             pid: child.pid || 0,
             status: 'running',
@@ -157,7 +171,7 @@ export const processManagerTool: ToolDefinition = {
         }
 
         case 'stop': {
-          const proc = findProcess(input.processId || input.name);
+          const proc = findProcess(input.processId || input.name, ownerChatId(context));
           if (!proc) return { success: false, message: `Process not found: ${input.processId || input.name}` };
 
           try {
@@ -173,7 +187,7 @@ export const processManagerTool: ToolDefinition = {
         }
 
         case 'status': {
-          const proc = findProcess(input.processId || input.name);
+          const proc = findProcess(input.processId || input.name, ownerChatId(context));
           if (!proc) return { success: false, message: 'Process not found' };
 
           const uptime = proc.status === 'running' ? `${((Date.now() - proc.startedAt) / 1000).toFixed(0)}s` : 'N/A';
@@ -187,7 +201,7 @@ export const processManagerTool: ToolDefinition = {
         }
 
         case 'logs': {
-          const proc = findProcess(input.processId || input.name);
+          const proc = findProcess(input.processId || input.name, ownerChatId(context));
           if (!proc) return { success: false, message: 'Process not found' };
 
           const maxLines = Math.max(1, Math.min(Math.floor(input.maxLines || 100), 200));
@@ -201,7 +215,9 @@ export const processManagerTool: ToolDefinition = {
         }
 
         case 'list': {
-          const processes = Array.from(managedProcesses.values()).map(p => ({
+          const processes = Array.from(managedProcesses.values())
+            .filter(p => !ownerChatId(context) || p.ownerChatId === ownerChatId(context))
+            .map(p => ({
             id: p.id,
             command: p.command.substring(0, 80),
             pid: p.pid,
@@ -209,7 +225,7 @@ export const processManagerTool: ToolDefinition = {
             cwd: p.cwd,
             exitCode: p.exitCode,
             uptime: p.status === 'running' ? `${((Date.now() - p.startedAt) / 1000).toFixed(0)}s` : 'stopped'
-          }));
+            }));
           return {
             success: true,
             message: `${processes.length} managed processes.`,
@@ -220,6 +236,7 @@ export const processManagerTool: ToolDefinition = {
         case 'kill_all': {
           let killed = 0;
           for (const proc of Array.from(managedProcesses.values())) {
+            if (ownerChatId(context) && proc.ownerChatId !== ownerChatId(context)) continue;
             if (proc.status === 'running' && proc.process) {
               try {
                 terminateManagedProcess(proc.pid, false);
@@ -240,10 +257,14 @@ export const processManagerTool: ToolDefinition = {
   }
 };
 
-function findProcess(idOrName?: string): ManagedProcess | undefined {
+function findProcess(idOrName?: string, requestedOwner?: string): ManagedProcess | undefined {
   if (!idOrName) return undefined;
-  return managedProcesses.get(idOrName) ||
-    Array.from(managedProcesses.values()).find(p => p.id === idOrName || p.command.includes(idOrName));
+  const direct = managedProcesses.get(idOrName);
+  if (direct && (!requestedOwner || direct.ownerChatId === requestedOwner)) return direct;
+  return Array.from(managedProcesses.values()).find(p =>
+    (!requestedOwner || p.ownerChatId === requestedOwner) &&
+    (p.id === idOrName || p.command.includes(idOrName))
+  );
 }
 
 function resolveProcessCwd(cwd?: string, context?: any): string {

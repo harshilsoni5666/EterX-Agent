@@ -1,9 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import fs from 'fs-extra';
-import path from 'path';
-import { getEterxWorkspaceDir } from '../../../../../lib/agent/storage-paths';
-
-const CONNECTORS_FILE = path.join(getEterxWorkspaceDir(), '.connectors.json');
+import { saveConnectorRecord } from '../../../../../lib/connectors/store';
 
 /**
  * GET /api/auth/callback/slack
@@ -40,31 +36,23 @@ export async function GET(req: NextRequest) {
       return NextResponse.redirect(`${ appUrl }?connector_error=slack_token`);
     }
 
-    // Save connector data
-    await fs.ensureDir(path.dirname(CONNECTORS_FILE));
-    let connectors: Record<string, any> = {};
-    try {
-      if (await fs.pathExists(CONNECTORS_FILE)) {
-        connectors = await fs.readJson(CONNECTORS_FILE);
-      }
-    } catch { }
-
     // Use User Token (xoxp) if available, fallback to Bot Token
     const token = data.authed_user?.access_token || data.access_token;
 
-    connectors.slack = {
+    saveConnectorRecord({
+      id: 'slack',
+      kind: 'oauth',
       connected: true,
-      accessToken: token,
-      botToken: data.access_token,
-      teamId: data.team?.id,
-      teamName: data.team?.name,
-      teamIcon: data.team?.image_68,
-      authedUser: data.authed_user?.id,
-      scope: data.authed_user?.scope || data.scope,
+      credentials: { accessToken: token, botToken: data.access_token },
+      metadata: {
+        teamId: data.team?.id,
+        teamName: data.team?.name,
+        teamIcon: data.team?.image_68,
+        authedUser: data.authed_user?.id,
+        scope: data.authed_user?.scope || data.scope,
+      },
       connectedAt: Date.now(),
-    };
-
-    await fs.writeJson(CONNECTORS_FILE, connectors, { spaces: 2 });
+    });
     console.log(`[Slack OAuth] ✅ Connected workspace: ${ data.team?.name }`);
 
     // Return a simple success page instead of redirecting to the app

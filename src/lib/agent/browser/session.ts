@@ -13,6 +13,7 @@
 
 import path from 'path';
 import fs from 'fs-extra';
+import { getEterxWorkspaceDir } from '../storage-paths';
 
 function safeProfileName(name: string): string {
   const cleaned = String(name || 'default')
@@ -83,8 +84,8 @@ export class BrowserSessionManager {
   private stateDir: string;
 
   constructor() {
-    this.profilesDir = path.resolve(process.cwd(), '.workspaces', 'browser_profiles');
-    this.stateDir = path.resolve(process.cwd(), '.workspaces', 'browser_state');
+    this.profilesDir = getEterxWorkspaceDir('browser_profiles');
+    this.stateDir = getEterxWorkspaceDir('browser_state');
   }
 
   private profileDir(name: string): string {

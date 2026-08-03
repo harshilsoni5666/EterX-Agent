@@ -144,7 +144,10 @@ function splitParallelTasks(request: string, specialists: SpecialistRole[], maxA
 
 export function buildSubAgentStrategy(request: string, options?: { maxAgents?: number; forceHighRigor?: boolean }): SubAgentStrategy {
   const normalizedRequest = String(request || '').trim();
-  const maxAgents = Math.max(1, Math.min(options?.maxAgents ?? 4, 6));
+  const requestedMaxAgents = Number(options?.maxAgents);
+  const maxAgents = Number.isFinite(requestedMaxAgents)
+    ? Math.max(1, Math.floor(requestedMaxAgents))
+    : 4;
   const complexity = detectComplexity(normalizedRequest);
   const specialists = detectSpecialists(normalizedRequest);
   const highStakes = complexity === 'critical';

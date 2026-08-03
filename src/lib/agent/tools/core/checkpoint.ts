@@ -3,6 +3,9 @@ import { ToolDefinition } from '../../schemas';
 import path from 'path';
 import fs from 'fs-extra';
 import { getPlanEngine } from '../../plan-execution-engine';
+import { getEterxWorkspaceDir } from '../../storage-paths';
+import { getAgentConversationScope } from '../../context-scope';
+import { stableScopeSegment } from '../../context-scope';
 
 /**
  * Task Checkpoint Tool v2.0
@@ -24,7 +27,7 @@ import { getPlanEngine } from '../../plan-execution-engine';
  *    its prompt and uses its reasoning to determine progress.
  */
 
-const CHECKPOINT_DIR = path.resolve(process.cwd(), '.workspaces', '.checkpoints');
+const CHECKPOINT_DIR = getEterxWorkspaceDir('.checkpoints');
 
 function isPathInside(parent: string, candidate: string): boolean {
   const relative = path.relative(parent, candidate);
@@ -103,7 +106,7 @@ When a plan is active, prefer plan control actions over checkpoint save/load.`,
     planCompleted: z.boolean().optional(),
   }),
   execute: async (input: any, context?: any) => {
-    const chatId = context?.projectId || context?.chatId || 'default';
+    const chatId = getAgentConversationScope(context);
     const planEngine = getPlanEngine(chatId);
 
     // ── Plan Control Actions ──
@@ -239,7 +242,7 @@ When a plan is active, prefer plan control actions over checkpoint save/load.`,
 
     // ── Legacy Checkpoint Actions ──
     await fs.ensureDir(CHECKPOINT_DIR);
-    const safeChatId = chatId.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 64);
+    const safeChatId = stableScopeSegment(chatId, 64);
     const checkpointFile = resolveUnder(CHECKPOINT_DIR, `${safeChatId || 'default'}.json`);
 
     try {

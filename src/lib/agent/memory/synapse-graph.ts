@@ -32,6 +32,7 @@ import fs from 'fs-extra';
 import path from 'path';
 import crypto from 'crypto';
 import { getEterxWorkspaceDir } from '../storage-paths';
+import { stableScopeSegment } from '../context-scope';
 
 import {
   DivergenceEngine,
@@ -421,14 +422,28 @@ export class SynapseGraph {
 
     this.state.chatId = chatId;
     this.state.projectId = projectId;
-    const sanitized = chatId.replace(/[^a-zA-Z0-9_-]/g, '_');
-    this.graphFilePath = path.join(SYNAPSE_DIR, sanitized, 'graph.json');
-    await fs.ensureDir(path.join(SYNAPSE_DIR, sanitized));
+    const scopedId = stableScopeSegment(chatId);
+    const legacyId = chatId.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const graphDir = path.join(SYNAPSE_DIR, scopedId);
+    const legacyGraphPath = path.join(SYNAPSE_DIR, legacyId, 'graph.json');
+    this.graphFilePath = path.join(graphDir, 'graph.json');
+    await fs.ensureDir(graphDir);
 
-    if (await fs.pathExists(this.graphFilePath)) {
+    const readableGraphPath = await fs.pathExists(this.graphFilePath)
+      ? this.graphFilePath
+      : (legacyGraphPath !== this.graphFilePath && await fs.pathExists(legacyGraphPath)
+        ? legacyGraphPath
+        : null);
+    if (readableGraphPath) {
       try {
-        const raw = await fs.readJson(this.graphFilePath);
+        const raw = await fs.readJson(readableGraphPath);
+        const legacyGraph = readableGraphPath === legacyGraphPath;
+        if (legacyGraph && String(raw.chatId || '') !== chatId) {
+          throw new Error(`Graph ownership mismatch for ${chatId}`);
+        }
         this.importState(raw);
+        this.state.chatId = chatId;
+        this.state.projectId = projectId;
         console.log(
           `[SynapseGraph] 🧠 Loaded: ${this.state.records.size} records, ` +
           `${this.state.l1Nodes.size} L1, ${this.state.l2Nodes.size} L2, ` +

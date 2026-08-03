@@ -1,20 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { isModelProvider } from '../../../../lib/agent/model-selector-store';
+import { normalizeLiveProvider } from '../../../../lib/live/live-provider';
 import { GEMINI_LIVE_VOICE_OPTIONS } from '../../../../lib/live/voice-catalog';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 const buildVoiceCatalogResponse = (providerValue: unknown, modelValue: unknown) => {
-  const provider = isModelProvider(providerValue) ? providerValue : 'gemini';
+  const provider = normalizeLiveProvider(providerValue);
   const modelId = String(modelValue || 'auto').trim() || 'auto';
 
   return {
     ok: true,
-    provider,
+    provider: provider.value,
     modelId,
-    mediaProvider: 'gemini',
-    source: provider === 'gemini' ? 'native-media-catalog' : 'compatible-media-fallback',
+    mediaProvider: provider.provider,
+    source: 'native-media-catalog',
     defaultVoice: 'Kore',
     updatedAt: Date.now(),
     voices: GEMINI_LIVE_VOICE_OPTIONS,

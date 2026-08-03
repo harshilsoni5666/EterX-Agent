@@ -9,7 +9,7 @@ export const workspaceSemanticSearchTool: ToolDefinition = {
   category: 'workspace',
   inputSchema: z.object({
     query: z.string().describe('Natural-language question about code behavior, architecture, or ownership'),
-    directory: z.string().optional().describe('Optional subdirectory scope'),
+    directory: z.string().optional().describe('Optional subdirectory scope. Defaults to the active user workspace, or the runtime scratch root when no user workspace is selected.'),
     maxResults: z.number().optional().describe('Maximum hits (default: 12)'),
   }),
   outputSchema: z.object({

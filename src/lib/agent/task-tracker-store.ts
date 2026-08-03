@@ -1,6 +1,7 @@
 import fs from 'fs-extra';
 import path from 'path';
 import { getEterxWorkspaceDir } from './storage-paths';
+import { stableScopeSegment } from './context-scope';
 
 const TASKS_DIR = getEterxWorkspaceDir('.tasks');
 
@@ -69,7 +70,7 @@ export type TaskTrackerPaths = {
 
 export function safeTaskChatId(chatId?: string | null): string {
   const value = String(chatId || '_global').trim() || '_global';
-  return value.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 120) || '_global';
+  return stableScopeSegment(value, 120);
 }
 
 export function getTaskTrackerPaths(chatId?: string | null): TaskTrackerPaths {

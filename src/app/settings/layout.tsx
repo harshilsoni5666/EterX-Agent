@@ -10,8 +10,13 @@ export const metadata: Metadata = {
 const settingsShellScript = `
 (function () {
   try {
-    var saved = localStorage.getItem('eterx_settings');
-    var settings = saved ? JSON.parse(saved) : {};
+    var settings = {};
+    try {
+      // Keep compatibility with older browser-local preferences when opening
+      // the standalone settings route. The current desktop store is hydrated
+      // by ThemeBridge after the document is ready.
+      settings = JSON.parse(window.localStorage.getItem('eterx_settings') || '{}');
+    } catch (_) {}
     var requested = settings.theme === 'dark' || settings.theme === 'system' ? settings.theme : 'light';
     var resolved = requested === 'system'
       ? (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
@@ -23,10 +28,10 @@ const settingsShellScript = `
     document.documentElement.style.background = bg;
     if (document.body) document.body.style.background = bg;
   } catch (_) {
-    document.documentElement.style.setProperty('--eterx-settings-shell-bg', '#151515');
-    document.documentElement.style.setProperty('--eterx-settings-shell-fg', '#F4F4F4');
-    document.documentElement.style.background = '#151515';
-    if (document.body) document.body.style.background = '#151515';
+    document.documentElement.style.setProperty('--eterx-settings-shell-bg', '#FAFAF8');
+    document.documentElement.style.setProperty('--eterx-settings-shell-fg', '#1F1F1D');
+    document.documentElement.style.background = '#FAFAF8';
+    if (document.body) document.body.style.background = '#FAFAF8';
   }
 })();
 `;

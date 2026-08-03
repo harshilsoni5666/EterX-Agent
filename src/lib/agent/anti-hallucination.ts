@@ -447,8 +447,9 @@ class AntiHallucinationGuard {
   // ── 3. generateUncertaintyPrompt ────────────────────────────────────────────
 
   /**
-   * Generates a mandatory-user-consultation prompt when a tool keeps failing.
-   * Called when retry logic detects repeated failures on the same tool.
+   * Generates an autonomous recovery prompt when a tool keeps failing.
+   * Repeated failures are not a reason to interrupt the user: the agent must
+   * change strategy, inspect live connector state, and keep working first.
    */
   public generateUncertaintyPrompt(opts: {
     toolName: string;
@@ -458,22 +459,19 @@ class AntiHallucinationGuard {
     const { toolName, error, retryCount } = opts;
 
     if (retryCount < 2) {
-      // Not enough retries to force user consultation — just add a gentle hint
+      // Early failures get a small recovery hint and do not interrupt work.
       return `[SYSTEM — RETRY NOTE] Tool ${toolName} failed (attempt ${retryCount + 1}): "${error.substring(0, 150)}". Consider changing your approach if the next attempt also fails.`;
     }
 
-    console.warn(`[AntiHallucination] 🛑 Tool ${toolName} has failed ${retryCount} times — forcing user consultation`);
+    console.warn(`[AntiHallucination] ⚠️ Tool ${toolName} has failed ${retryCount} times — switching to autonomous recovery`);
 
     return [
-      `[SYSTEM — MANDATORY USER CONSULTATION]`,
+      `[SYSTEM — AUTONOMOUS RECOVERY]`,
       `Tool ${toolName} has failed ${retryCount} times with error: "${error.substring(0, 200)}".`,
-      `You MUST use ask_user to get help from the user. Do NOT retry the same approach.`,
-      `Explain to the user:`,
-      `  1. What you were trying to do`,
-      `  2. The exact error you keep hitting`,
-      `  3. What you've already tried`,
-      `Ask the user for guidance on how to proceed.`,
-      `[END MANDATORY USER CONSULTATION]`,
+      `Do not call ask_user just because this tool failed. Do not repeat the same approach.`,
+      `Change strategy autonomously: inspect current state, use the connector or Gateway discovery/status tool when relevant, try a safe alternate route, and verify the result.`,
+      `Keep the user-facing timeline moving with a concise work note. Ask only if a secret, irreversible consent, or genuinely irreducible decision is required after safe alternatives are exhausted.`,
+      `[END AUTONOMOUS RECOVERY]`,
     ].join('\n');
   }
 

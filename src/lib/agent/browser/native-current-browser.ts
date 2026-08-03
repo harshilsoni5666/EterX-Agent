@@ -655,26 +655,34 @@ class NativeCurrentBrowserController {
 
     const encodedScript = Buffer.from(WINDOWS_BROWSER_SCRIPT, 'utf16le').toString('base64');
     const powershell = resolveTerminalShell('powershell');
-    const { stdout } = await execFileAsync(
-      powershell,
-      [
-        '-NoProfile',
-        '-NonInteractive',
-        '-WindowStyle', 'Hidden',
-        '-ExecutionPolicy', 'Bypass',
-        '-EncodedCommand', encodedScript,
-      ],
-      {
-        timeout: 20_000,
-        maxBuffer: 30 * 1024 * 1024,
-        windowsHide: true,
-        env: {
-          ...process.env,
-          ETERX_NATIVE_BROWSER_ACTION: action,
-          ETERX_NATIVE_BROWSER_PAYLOAD: encodePayload(payload),
+    let stdout = '';
+    try {
+      ({ stdout } = await execFileAsync(
+        powershell,
+        [
+          '-NoProfile',
+          '-NonInteractive',
+          '-WindowStyle', 'Hidden',
+          '-ExecutionPolicy', 'Bypass',
+          '-EncodedCommand', encodedScript,
+        ],
+        {
+          timeout: 20_000,
+          maxBuffer: 30 * 1024 * 1024,
+          windowsHide: true,
+          env: {
+            ...process.env,
+            ETERX_NATIVE_BROWSER_ACTION: action,
+            ETERX_NATIVE_BROWSER_PAYLOAD: encodePayload(payload),
+          },
         },
-      },
-    );
+      ));
+    } catch (error: any) {
+      const stderr = String(error?.stderr || '').trim();
+      const failedStdout = String(error?.stdout || '').trim();
+      const detail = [stderr, failedStdout].filter(Boolean).join(' | ').slice(0, 900);
+      throw new Error(detail || String(error?.message || error));
+    }
     const output = String(stdout || '').trim();
     if (!output) throw new Error('The browser accessibility bridge returned no state.');
     const start = output.lastIndexOf('{"state"');

@@ -1,6 +1,7 @@
 import path from 'path';
 import fs from 'fs-extra';
 import { getEterxWorkspaceDir } from '../storage-paths';
+import { stableScopeSegment } from '../context-scope';
 
 /**
  * Inter-Agent Communication Protocol v1.0
@@ -500,7 +501,7 @@ class InterAgentMailbox {
   private async persistMessage(message: AgentMessage): Promise<void> {
     try {
       await fs.ensureDir(MAILBOX_DIR);
-      const safeProject = message.projectId.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 32);
+      const safeProject = stableScopeSegment(message.projectId, 32);
       const logFile = path.join(MAILBOX_DIR, `${safeProject}_messages.jsonl`);
       await fs.appendFile(logFile, JSON.stringify(message) + '\n');
     } catch { /* persistence is best-effort */ }

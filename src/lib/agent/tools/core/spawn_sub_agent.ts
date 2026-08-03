@@ -66,10 +66,10 @@ WHEN TO USE SPECIALIST: focused security, performance, architecture, QA, or rese
       model: z.string().min(1).optional().describe('Optional exact model ID; use together with provider'),
       thinkingLevel: z.enum(['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']).optional()
         .describe('Optional thinking level for this worker')
-    })).max(20).optional().describe('Array of tasks for spawn, consensus, debate, or specialist mode'),
+    })).optional().describe('Array of tasks for spawn, consensus, debate, or specialist mode'),
     request: z.string().optional().describe('Original user request for advise mode. Falls back to the first task if omitted.'),
     specialistRole: z.enum(SPECIALIST_ROLES).optional().describe('Required for specialist mode.'),
-    maxAgents: z.number().int().min(1).max(6).optional().describe('Maximum agents to recommend in advise mode.'),
+    maxAgents: z.number().int().min(1).optional().describe('Maximum agents to recommend in advise mode.'),
     agentName: z.string().optional().describe('Specific agent name to check status/collect/control for (or omit for all)')
   }),
   outputSchema: z.object({

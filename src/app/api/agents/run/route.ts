@@ -16,6 +16,7 @@ import { NextRequest } from 'next/server';
 import { AgentRunner } from '../../../../lib/agent/agent-runner';
 import { readAgentFlowProfile } from '../../../../lib/agent/builder-agent';
 import { buildScopedRuntimeSettings } from '../../../../lib/agent/runtime-api-keys';
+import { hydrateServerRuntimeSettings } from '../../../../lib/agent/server-runtime-hydration';
 import { resolveModelName, normalizeMainAgentMode } from '../../../../lib/agent/model-routing';
 import {
   attachAgentApiSessionCookie,
@@ -36,6 +37,7 @@ export const runtime = 'nodejs';
 const isGoogleGenAIModelName = (value: string) => /^(?:models\/)?gemini[-_]/i.test(value.trim());
 
 export async function POST(req: NextRequest) {
+  hydrateServerRuntimeSettings();
   let session: ReturnType<typeof getOrCreateAgentApiSession> | null = null;
   try {
     const originError = rejectCrossOrigin(req);
@@ -64,12 +66,24 @@ export async function POST(req: NextRequest) {
 
     const runtimeSettings = buildScopedRuntimeSettings();
     const safeMode = normalizeMainAgentMode(mode);
-    // The custom agent runner only supports Gemini via GoogleGenAI.
-    // If the user's selected provider is non-Gemini (mistral/openai/anthropic/groq/openrouter),
-    // we map to the equivalent Gemini mode so the runner always gets a valid Gemini model name.
-    const GEMINI_MODES = new Set<string>(['think', 'fast']);
-    const geminiRunnerMode = GEMINI_MODES.has(safeMode) ? safeMode : 'think';
     const requestedModel = cleanString(model, 160);
+    // This endpoint is intentionally Gemini-only. The desktop client routes
+    // external/local custom-agent runs through /api/chat, where the main
+    // provider-aware runtime preserves the selected provider and model. Do
+    // not silently reinterpret a caller's provider as Gemini here.
+    if (safeMode !== 'think' && safeMode !== 'fast') {
+      return attachAgentApiSessionCookie(
+        jsonError('The dedicated custom-agent runner supports Gemini only; use the main agent runtime for this provider.', 400),
+        session,
+      );
+    }
+    if (requestedModel && !isGoogleGenAIModelName(requestedModel)) {
+      return attachAgentApiSessionCookie(
+        jsonError('The dedicated custom-agent runner requires a Gemini model; use the main agent runtime for this provider.', 400),
+        session,
+      );
+    }
+    const geminiRunnerMode = safeMode;
     const fallbackGeminiModel = resolveModelName(geminiRunnerMode as any, runtimeSettings);
     const safeModel = requestedModel && isGoogleGenAIModelName(requestedModel)
       ? requestedModel

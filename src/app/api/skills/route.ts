@@ -1,35 +1,44 @@
 import { NextResponse } from 'next/server';
+import { existsSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import os from 'node:os';
+import { getEterxAppRoot, getEterxAssetPath, getEterxWorkspaceDir } from '../../../lib/agent/storage-paths';
 
-const roots = () => [
-  path.join(process.cwd(), 'src', 'lib', 'agent', 'skills'),
-  path.join(process.cwd(), '.agents', 'skills'),
-  path.join(os.homedir(), '.codex', 'skills'),
-  path.join(os.homedir(), '.claude', 'skills'),
-  path.join(os.homedir(), '.agents', 'skills'),
-];
+const roots = () => {
+  const sourceRoot = path.join(getEterxAppRoot(), 'src', 'lib', 'agent', 'skills-new');
+  const bundledRoot = existsSync(sourceRoot) ? sourceRoot : getEterxAssetPath('skills');
+  return [getEterxWorkspaceDir('skills'), bundledRoot]
+    .filter((root, index, all) => all.indexOf(root) === index);
+};
 
-async function walk(dir: string, root: string, result: Array<{ id: string; name: string; description: string; path: string }>) {
-  let entries: Awaited<ReturnType<typeof fs.readdir>>;
-  try { entries = await fs.readdir(dir, { withFileTypes: true }); } catch { return; }
+type SkillSummary = { id: string; name: string; description: string; path: string; editable: boolean };
+
+async function walk(dir: string, root: string, result: SkillSummary[]) {
+  let entries: Array<import('node:fs').Dirent<string>>;
+  try { entries = await fs.readdir(dir, { withFileTypes: true, encoding: 'utf8' }); } catch { return; }
   for (const entry of entries) {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) await walk(full, root, result);
-    else if (entry.isFile() && entry.name.toLowerCase().endsWith('.md')) {
+    else if (entry.isFile() && entry.name.toLowerCase().endsWith('.md') && entry.name.toLowerCase() !== 'readme.md') {
       try {
         const content = await fs.readFile(full, 'utf8');
-        const name = content.match(/^name:\s*["']?(.+?)["']?\s*$/m)?.[1]?.trim() || path.basename(entry.name, '.md').replace(/[-_]/g, ' ');
+        const name = content.match(/^name:\s*["']?(.+?)["']?\s*$/m)?.[1]?.trim() || '';
         const description = content.match(/^description:\s*["']?(.+?)["']?\s*$/m)?.[1]?.trim() || '';
-        result.push({ id: `${roots().indexOf(root)}:${path.relative(root, full).replace(/\\/g, '/')}`, name, description, path: full });
+        if (!name || !description) continue;
+        result.push({
+          id: `${roots().indexOf(root)}:${path.relative(root, full).replace(/\\/g, '/')}`,
+          name,
+          description,
+          path: full,
+          editable: path.resolve(root) === path.resolve(getEterxWorkspaceDir('skills')),
+        });
       } catch { /* ignore unreadable files */ }
     }
   }
 }
 
 export async function GET() {
-  const result: Array<{ id: string; name: string; description: string; path: string }> = [];
+  const result: SkillSummary[] = [];
   for (const root of roots()) await walk(root, root, result);
   return NextResponse.json({ skills: result.map(({ path: _path, ...skill }) => skill) });
 }
@@ -42,7 +51,21 @@ export async function POST(request: Request) {
     const fileName = `${safe.replace(/\s+/g, '-').toLowerCase()}.md`;
     const root = roots()[0];
     await fs.mkdir(root, { recursive: true });
-    try { await fs.writeFile(path.join(root, fileName), '', { encoding: 'utf8', flag: 'wx' }); }
+    const title = safe.replace(/[-_.]+/g, ' ').replace(/\b\w/g, (letter: string) => letter.toUpperCase());
+    const initialContent = [
+      '---',
+      'name: ' + safe,
+      'description: Custom local skill. Add a precise trigger and purpose.',
+      'category: core',
+      'icon: BookOpen',
+      '---',
+      '',
+      '# ' + title,
+      '',
+      'Describe the skill workflow, evidence to inspect, and verification checks.',
+      '',
+    ].join('\n');
+    try { await fs.writeFile(path.join(root, fileName), initialContent, { encoding: 'utf8', flag: 'wx' }); }
     catch { return NextResponse.json({ error: 'A skill with this name already exists.' }, { status: 409 }); }
     return NextResponse.json({ ok: true, id: `0:${fileName}`, name: safe });
   }
@@ -55,7 +78,8 @@ export async function POST(request: Request) {
   for (const item of files) {
     const name = typeof item?.name === 'string' ? path.basename(item.name) : '';
     const content = typeof item?.content === 'string' ? item.content : '';
-    if (!name.toLowerCase().endsWith('.md') || !/^[a-zA-Z0-9][a-zA-Z0-9 _.-]*\.md$/.test(name) || !content.trim()) {
+    const hasFrontmatter = /^---\r?\n[\s\S]*^name:\s*.+$[\s\S]*^description:\s*.+$[\s\S]*^---\r?\n/m.test(content);
+    if (!name.toLowerCase().endsWith('.md') || !/^[a-zA-Z0-9][a-zA-Z0-9 _.-]*\.md$/.test(name) || !content.trim() || !hasFrontmatter) {
       rejected.push({ name: name || 'unnamed file', reason: 'Structure unmatched: choose a non-empty .md skill file.' });
       continue;
     }

@@ -17,6 +17,7 @@ import {
   X,
 } from 'lucide-react';
 import { Shimmer } from '../ui/shimmer';
+import { safeCopyTextToClipboard } from '../ui/copy-button';
 
 export type WorkspaceReviewMode = 'overview' | 'review' | 'code';
 type WorkspaceInternalMode = WorkspaceReviewMode | 'subagent';
@@ -1135,11 +1136,9 @@ export function WorkspaceReviewEditor({
     return () => controller.abort();
   }, [activeFileBase, activeFileKey, loadedContentByKey, loadingContentKey, mode]);
 
-  const copyPath = (file: WorkspaceReviewFile) => {
-    if (navigator?.clipboard?.writeText) {
-      navigator.clipboard.writeText(file.filepath).catch(() => undefined);
-    }
-    onCopyPath?.(file);
+  const copyPath = async (file: WorkspaceReviewFile) => {
+    const didCopy = await safeCopyTextToClipboard(file.filepath);
+    if (didCopy) onCopyPath?.(file);
   };
 
   const activeSubagent = useMemo(() => {

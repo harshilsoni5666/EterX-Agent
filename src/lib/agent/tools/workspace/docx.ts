@@ -46,7 +46,7 @@ The file is saved to the exact path you specify. Use an absolute path valid for 
 
   category: 'workspace',
   inputSchema: z.object({
-    filepath: z.string().describe('Final DOCX path or filename. Use Desktop/requested real path, not .workspaces/sandbox. Relative names save to Desktop.'),
+    filepath: z.string().describe('Final DOCX path or filename. Use the user-requested path when provided; otherwise a relative name follows the active workspace artifact policy. Do not use .workspaces/sandbox for the final file.'),
     title: z.string().describe('Document title shown on cover page'),
     subtitle: z.string().optional().describe('Optional subtitle or description'),
     author: z.string().optional().describe('Document author name'),
@@ -114,7 +114,7 @@ The file is saved to the exact path you specify. Use an absolute path valid for 
             success: false,
             path: '',
             error: `CONTENT TOO SHORT: You provided ~${wordCount} words but need ~${minWords} words for ${targetPages} pages. You are ${shortfall} words short. ` +
-                   `Use workspace_write_file with append:true to build .workspaces/sandbox/draft.md incrementally, then call docx_generator with source_md_path=".workspaces/sandbox/draft.md" and a final Desktop filepath. ` +
+                   `Use workspace_write_file with append:true to build a draft in the runtime scratch root incrementally, then pass its absolute path to docx_generator and choose a final user-facing filepath outside scratch. ` +
                    `Each page needs ~${WORDS_PER_PAGE} words of REAL content (3-5 paragraphs of 4-6 sentences each).`
           };
         }

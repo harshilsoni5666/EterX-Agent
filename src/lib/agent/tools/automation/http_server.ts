@@ -11,8 +11,17 @@ import { resolveWorkspaceDirectoryForContext } from '../../workspace/path_resolv
  * Spin up local HTTP servers for serving files, testing APIs, or webhooks.
  */
 
-let activeServer: http.Server | null = null;
-let activePort = 0;
+interface ActiveHttpServer {
+  server: http.Server;
+  port: number;
+  root: string;
+}
+
+const activeServers: Map<string, ActiveHttpServer> = new Map();
+
+function ownerChatId(context: any): string {
+  return String(context?.chatId || context?.projectId || 'global').trim() || 'global';
+}
 
 const MIME_TYPES: Record<string, string> = {
   '.html': 'text/html', '.css': 'text/css', '.js': 'application/javascript',
@@ -24,7 +33,7 @@ const MIME_TYPES: Record<string, string> = {
 
 export const httpServerTool: ToolDefinition = {
   name: 'http_server',
-  description: `Start/stop a local HTTP file server to serve static files or preview HTML pages. Use this to preview generated websites, serve build output, or test static content. Only one server runs at a time.`,
+  description: `Start/stop a local HTTP file server owned by this chat to serve static files or preview HTML pages. Each chat has independent server control.`,
   category: 'automation',
   inputSchema: z.object({
     action: z.enum(['start', 'stop', 'status']).describe('Start, stop, or check server status'),
@@ -36,14 +45,16 @@ export const httpServerTool: ToolDefinition = {
     try {
       switch (input.action) {
         case 'start': {
-          if (activeServer) {
-            return { success: false, message: `Server already running on port ${activePort}. Stop it first.` };
+          const owner = ownerChatId(context);
+          const existing = activeServers.get(owner);
+          if (existing) {
+            return { success: false, message: `Server already running on port ${existing.port}. Stop it first.` };
           }
           const root = resolveWorkspaceDirectoryForContext(input.directory, context);
           await fs.ensureDir(root);
           const port = input.port || 8080;
 
-          activeServer = http.createServer(async (req, res) => {
+          const server = http.createServer(async (req, res) => {
             const urlPath = req.url === '/' ? '/index.html' : req.url || '/';
             const filePath = path.resolve(root, `.${decodeURIComponent(urlPath)}`);
             
@@ -75,25 +86,30 @@ export const httpServerTool: ToolDefinition = {
           });
 
           await new Promise<void>((resolve, reject) => {
-            activeServer!.listen(port, () => { activePort = port; resolve(); });
-            activeServer!.on('error', reject);
+            server.listen(port, () => resolve());
+            server.on('error', reject);
+          });
+          activeServers.set(owner, { server, port, root });
+          server.on('close', () => {
+            if (activeServers.get(owner)?.server === server) activeServers.delete(owner);
           });
 
           return { success: true, message: `🌐 Server started at http://localhost:${port} serving: ${root}`, port, url: `http://localhost:${port}` };
         }
         case 'stop': {
-          if (!activeServer) return { success: true, message: 'No server running' };
-          activeServer.close();
-          activeServer = null;
-          const p = activePort;
-          activePort = 0;
+          const active = activeServers.get(ownerChatId(context));
+          if (!active) return { success: true, message: 'No server running' };
+          active.server.close();
+          activeServers.delete(ownerChatId(context));
+          const p = active.port;
           return { success: true, message: `🛑 Server on port ${p} stopped` };
         }
         case 'status': {
+          const active = activeServers.get(ownerChatId(context));
           return {
             success: true,
-            message: activeServer ? `Server running on port ${activePort}` : 'No server running',
-            running: !!activeServer, port: activePort
+            message: active ? `Server running on port ${active.port}` : 'No server running',
+            running: !!active, port: active?.port || 0
           };
         }
         default: return { success: false, message: 'Unknown action' };

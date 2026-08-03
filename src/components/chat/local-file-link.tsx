@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { Check, Copy, ExternalLink } from 'lucide-react';
-import copy from 'copy-to-clipboard';
+import { buildFilePreviewUrl } from '../../lib/path-utils';
 
 export const LOCAL_FILE_HREF_PREFIX = '#eterx-local-file:';
 const LEGACY_LOCAL_FILE_HREF_PREFIX = 'eterx-local-file:';
@@ -218,9 +218,7 @@ export const LocalFileLinkChip = React.memo(({
   const name = label?.trim() || getLocalFileName(filePath);
 
   const previewUrl = useMemo(() => {
-    const cleanPath = filePath.replace(/\\/g, '/');
-    const segments = cleanPath.split('/').filter(Boolean).map(encodeURIComponent);
-    return `/api/preview/${ segments.join('/') }`;
+    return buildFilePreviewUrl(filePath);
   }, [filePath]);
 
   const copyPath = async (event: React.MouseEvent) => {

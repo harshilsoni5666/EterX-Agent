@@ -12,6 +12,8 @@ interface Agent {
   accessType: 'Full Access' | 'Selected Access' | 'Agent Decides';
   isSetup?: boolean;
   toolCount?: number;
+  kind?: 'agent' | 'flow';
+  stepCount?: number;
   preferredModel?: string;
   preferredThinkingLevel?: 'minimal' | 'low' | 'medium' | 'high';
   builderMessages?: {role: 'user' | 'assistant', content: string}[];
@@ -22,48 +24,23 @@ export const AgentsView = React.memo(({
   onUseAgent,
   selectedAgentId,
 }: {
-  onOpenBuilder: (id: string) => void;
+  onOpenBuilder: (id: string, name?: string) => void;
   onUseAgent?: (id: string | null, name: string) => void;
   selectedAgentId?: string | null;
 }) => {
-  const [agents, setAgents] = useState<Agent[]>(() => {
-    if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('eterx_agents');
-      if (saved) {
-        try {
-          return JSON.parse(saved);
-        } catch (e) {
-          console.error('Failed to parse saved agents', e);
-        }
-      }
-    }
-    return [{
+  const [agents, setAgents] = useState<Agent[]>([{
       id: 'default-1',
       name: 'Default Chat Agent',
       description: '',
       accessType: 'Full Access',
       isSetup: true
-    }];
-  });
+    }]);
 
   useEffect(() => {
-    localStorage.setItem('eterx_agents', JSON.stringify(agents));
     try {
       window.dispatchEvent(new CustomEvent('eterx_agents_updated'));
     } catch { }
   }, [agents]);
-
-  useEffect(() => {
-    const refreshLocalAgents = () => {
-      try {
-        const parsed = JSON.parse(localStorage.getItem('eterx_agents') || '[]');
-        if (!Array.isArray(parsed)) return;
-        setAgents(previous => JSON.stringify(previous) === JSON.stringify(parsed) ? previous : parsed);
-      } catch { }
-    };
-    window.addEventListener('eterx_agents_updated', refreshLocalAgents);
-    return () => window.removeEventListener('eterx_agents_updated', refreshLocalAgents);
-  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -83,7 +60,12 @@ export const AgentsView = React.memo(({
           const existingById = new Map(prev.map(agent => [agent.id, agent]));
           const byId = new Map(
             prev
-              .filter(agent => agent.id === 'default-1' || agent.isSetup !== true || !agent.id.startsWith('eterxagent-'))
+              .filter(agent => {
+                const serverBacked = agent.kind === 'flow'
+                  || agent.id.startsWith('eterxagent-')
+                  || agent.id.startsWith('eterxflow-');
+                return agent.id === 'default-1' || agent.isSetup !== true || !serverBacked;
+              })
               .map(agent => [agent.id, agent])
           );
 
@@ -99,6 +81,8 @@ export const AgentsView = React.memo(({
               accessType: existing?.accessType || 'Agent Decides',
               isSetup: serverAgent.status === 'ready',
               toolCount: serverAgent.toolCount,
+              kind: serverAgent.kind === 'flow' ? 'flow' : 'agent',
+              stepCount: serverAgent.stepCount,
               preferredModel: existing?.preferredModel,
               preferredThinkingLevel: existing?.preferredThinkingLevel,
               builderMessages: existing?.builderMessages || [],
@@ -107,14 +91,18 @@ export const AgentsView = React.memo(({
 
           for (const agent of prev) {
             if (agent.id === 'default-1') continue;
-            if (!agent.id.startsWith('eterxagent-')) continue;
+            const serverBacked = agent.kind === 'flow'
+              || agent.id.startsWith('eterxagent-')
+              || agent.id.startsWith('eterxflow-');
+            if (!serverBacked) continue;
             if (agent.isSetup === false && !serverIds.has(agent.id)) byId.set(agent.id, agent);
           }
 
           return Array.from(byId.values());
         });
       } catch {
-        // Local agents still render if the server list is unavailable.
+        // Keep the default card or an in-progress draft visible if the folder
+        // store is temporarily unavailable.
       }
     };
 
@@ -150,15 +138,19 @@ export const AgentsView = React.memo(({
     // Real-time full agent package export
     try {
       let serverProfile: any = null;
+      let serverKind: 'agent' | 'flow' | null = null;
       try {
         const res = await fetch(`/api/agents/list?agentId=${encodeURIComponent(agent.id)}`);
         if (res.ok) {
           const data = await res.json();
           if (data.success && data.profile) {
             serverProfile = data.profile;
+            serverKind = data.kind === 'flow' ? 'flow' : 'agent';
           }
         }
       } catch { }
+
+      const packageKind = serverKind || agent.kind || 'agent';
 
       const configData = {
         version: "1.0",
@@ -170,6 +162,8 @@ export const AgentsView = React.memo(({
           description: agent.description,
           accessType: agent.accessType,
           toolCount: agent.toolCount || 0,
+          kind: packageKind,
+          stepCount: agent.stepCount || serverProfile?.steps?.length || 0,
           isSetup: true,
           status: 'ready',
           profile: serverProfile || {
@@ -179,7 +173,12 @@ export const AgentsView = React.memo(({
             behaviorRules: [],
             safetyRules: [],
             directMainTools: [],
-            customTools: []
+            customTools: [],
+            skills: [],
+            responseStyle: 'Professional, accurate, and direct.',
+            toolUsePolicy: 'Use attached tools purposefully to achieve the mission.',
+            completionCriteria: 'All requirements of the user request have been successfully verified.',
+            notes: []
           },
           builderMessages: agent.builderMessages || []
         }
@@ -225,38 +224,66 @@ export const AgentsView = React.memo(({
 
       const random4 = Math.floor(1000 + Math.random() * 9000);
       const shortName = String(agentData.name).substring(0, 4).toLowerCase().replace(/[^a-z0-9]/g, 'a').padEnd(4, 'x');
-      const newAgentId = `eterxagent-${random4}-${shortName}`;
-
       const name = agentData.name;
       const description = agentData.description || agentData.profile?.mission || 'Imported custom agent.';
       const accessType = agentData.accessType || 'Agent Decides';
-      const toolCount = agentData.toolCount || agentData.profile?.directMainTools?.length || 0;
+      const isFlowPackage = agentData.kind === 'flow' || Array.isArray(agentData.profile?.steps);
+      const newAgentId = `${isFlowPackage ? 'eterxflow' : 'eterxagent'}-${random4}-${shortName}`;
+      const toolCount = agentData.toolCount ||
+        (agentData.profile?.directMainTools?.length || 0) +
+        (agentData.profile?.customTools?.length || 0);
       const profile = agentData.profile || {};
 
-      // 1. Write profile to server backend
+      // 1. Write the complete profile to the shared backend. An imported
+      // package is only runnable when its server profile is actually present.
       try {
-        await fetch('/api/agents/list', {
+        const createResponse = await fetch('/api/agents/list', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
+          body: JSON.stringify(isFlowPackage ? {
+            agentId: newAgentId,
+            kind: 'flow',
+            name,
+            description: profile.description || description,
+            createdAt: profile.createdAt,
+            steps: profile.steps,
+            maxIterations: profile.maxIterations,
+            notes: profile.notes || [],
+          } : {
             agentId: newAgentId,
             name,
             mission: description,
             professionalPrompt: profile.professionalPrompt || `You are ${name}. Mission: ${description}`,
+            responseStyle: profile.responseStyle,
             behaviorRules: profile.behaviorRules || [],
             safetyRules: profile.safetyRules || [],
+            skills: profile.skills || [],
+            toolUsePolicy: profile.toolUsePolicy,
+            completionCriteria: profile.completionCriteria,
             directMainTools: profile.directMainTools || [],
+            customTools: profile.customTools || [],
+            notes: profile.notes || [],
             description
           })
         });
+        const createPayload = await createResponse.json().catch(() => ({}));
+        if (!createResponse.ok || createPayload?.success === false) {
+          throw new Error(createPayload?.error || `Could not import ${name} (${createResponse.status}).`);
+        }
 
-        await fetch('/api/agents/list', {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ agentId: newAgentId, status: 'ready' })
-        });
+        if (!isFlowPackage) {
+          const readyResponse = await fetch('/api/agents/list', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ agentId: newAgentId, status: 'ready' })
+          });
+          const readyPayload = await readyResponse.json().catch(() => ({}));
+          if (!readyResponse.ok || readyPayload?.success === false) {
+            throw new Error(readyPayload?.error || `Could not finalize imported agent (${readyResponse.status}).`);
+          }
+        }
       } catch (err) {
-        console.warn('Server sync skipped for import:', err);
+        throw err;
       }
 
       // 2. Add to local state with isSetup: true (ready to use immediately!)
@@ -266,13 +293,14 @@ export const AgentsView = React.memo(({
         description,
         accessType,
         isSetup: true,
+        kind: isFlowPackage ? 'flow' : 'agent',
         toolCount,
+        stepCount: isFlowPackage ? (profile.steps?.length || 0) : undefined,
         builderMessages: agentData.builderMessages || []
       };
 
       setAgents(prev => {
         const next = [newAgent, ...prev.filter(a => a.id !== newAgentId)];
-        try { localStorage.setItem('eterx_agents', JSON.stringify(next)); } catch { }
         return next;
       });
 
@@ -342,12 +370,46 @@ export const AgentsView = React.memo(({
     return newId;
   };
 
-  const handleStartBuilder = () => {
+  const handleStartBuilder = async () => {
     if (!newAgentName.trim()) return;
     const builderId = getOrCreateBuilderId();
+    const name = newAgentName.trim();
+    setAgents(previous => [
+      {
+        id: builderId,
+        name,
+        description: 'Custom agent being configured.',
+        accessType: 'Agent Decides',
+        isSetup: false,
+        builderMessages: [],
+      },
+      ...previous.filter(agent => agent.id !== builderId),
+    ]);
+    // Create the draft in the shared app-data store immediately. This keeps
+    // named agents available after a reload without depending on browser storage.
+    try {
+      // Wait for the draft to exist before opening the room. Otherwise a fast
+      // first builder message can race this write and be overwritten by the
+      // initial placeholder profile.
+      await fetch('/api/agents/list', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        agentId: builderId,
+        name,
+        mission: 'Custom agent being configured.',
+        description: 'Custom agent being configured.',
+        professionalPrompt: `You are ${name}. Configure this agent according to the builder conversation.`,
+      }),
+      });
+    } catch {
+      // The builder can still create the profile on its first save.
+    }
     handleCloseModal();
-    setTimeout(() => onOpenBuilder(builderId), 300);
+    setTimeout(() => onOpenBuilder(builderId, name), 300);
   };
+
+  const customAgents = agents.filter(agent => agent.id !== 'default-1');
 
   return (
     <div className="eterx-agents-view flex-1 w-full h-full flex flex-col px-5 py-5 md:px-8 md:pt-6 md:pb-6 overflow-hidden relative z-20 bg-transparent">
@@ -372,7 +434,7 @@ export const AgentsView = React.memo(({
                   onClick={() => {
                     const id = setupNoticeAgent.id;
                     setSetupNoticeAgent(null);
-                    onOpenBuilder(id);
+                    onOpenBuilder(id, setupNoticeAgent.name);
                   }}
                   className="text-[11.5px] font-semibold text-black bg-white hover:bg-[#E8E6E3] px-3 py-0.5 rounded-full transition-colors cursor-pointer"
                 >
@@ -455,7 +517,11 @@ export const AgentsView = React.memo(({
 
           {/* Scrollable list grid */}
           <div className="flex-1 overflow-y-auto eterx-scrollbar pr-0.5 flex flex-col gap-2">
-            {agents.filter(a => a.id !== 'default-1').map((agent) => {
+            {customAgents.length === 0 ? (
+              <div className="flex flex-1 min-h-[220px] items-center justify-center text-center text-sm text-white/40">
+                No Agents Created
+              </div>
+            ) : customAgents.map((agent) => {
               const isDefaultAgent = agent.id === 'default-1';
               const isReady = isDefaultAgent || agent.isSetup !== false;
               const useLabel = isDefaultAgent ? 'Use General' : 'Use in chat';
@@ -463,7 +529,7 @@ export const AgentsView = React.memo(({
               return (
                 <div 
                   key={agent.id} 
-                  onClick={() => onOpenBuilder(agent.id)}
+                  onClick={() => onOpenBuilder(agent.id, agent.name)}
                   role="button"
                   tabIndex={0}
                   onKeyDown={(e) => {
@@ -471,7 +537,7 @@ export const AgentsView = React.memo(({
                     if (target.closest('button,input,textarea')) return;
                     if (e.key === 'Enter' || e.key === ' ') {
                       e.preventDefault();
-                      onOpenBuilder(agent.id);
+                      onOpenBuilder(agent.id, agent.name);
                     }
                   }}
                   className="eterx-agent-card group relative bg-[#111111] border border-white/[0.06] rounded-[14px] p-3 hover:border-white/[0.12] hover:bg-[#151515] transition-all duration-200 cursor-pointer overflow-hidden flex items-stretch justify-between shrink-0 shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/20"
@@ -489,7 +555,13 @@ export const AgentsView = React.memo(({
                             onChange={(e) => setEditingName(e.target.value)}
                             onKeyDown={(e) => {
                               if (e.key === 'Enter') {
-                                setAgents(agents.map(a => a.id === agent.id ? { ...a, name: editingName || a.name } : a));
+                                const nextName = editingName.trim() || agent.name;
+                                setAgents(previous => previous.map(a => a.id === agent.id ? { ...a, name: nextName } : a));
+                                void fetch('/api/agents/list', {
+                                  method: 'PUT',
+                                  headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({ agentId: agent.id, name: nextName }),
+                                }).catch(() => { });
                                 setEditingAgentId(null);
                               }
                             }}
@@ -531,9 +603,11 @@ export const AgentsView = React.memo(({
                         <div className="hidden md:flex items-center gap-1.5 px-2 py-0.5 rounded-[4px] bg-white/[0.03] border border-white/[0.05]">
                           <span className="text-[10px] text-[#A3A19E] font-medium tracking-normal">{agent.accessType}</span>
                         </div>
-                        {typeof agent.toolCount === 'number' && (
+                        {(agent.kind === 'flow' || typeof agent.toolCount === 'number') && (
                           <div className="hidden lg:flex items-center gap-1.5 px-2 py-0.5 rounded-[4px] bg-white/[0.025] border border-white/[0.06]">
-                            <span className="text-[10px] text-white/45 font-medium tracking-normal">{agent.toolCount} tools</span>
+                            <span className="text-[10px] text-white/45 font-medium tracking-normal">
+                              {agent.kind === 'flow' ? `${agent.stepCount || 0} steps` : `${agent.toolCount} tools`}
+                            </span>
                           </div>
                         )}
                       </div>
@@ -564,7 +638,7 @@ export const AgentsView = React.memo(({
                         onClick={(e) => {
                           e.stopPropagation();
                           if (!isReady) {
-                            onOpenBuilder(agent.id);
+                            onOpenBuilder(agent.id, agent.name);
                             return;
                           }
                           onUseAgent?.(isDefaultAgent ? null : agent.id, isDefaultAgent ? 'General' : agent.name);
@@ -579,7 +653,7 @@ export const AgentsView = React.memo(({
                       </button>
                       <button 
                         type="button"
-                        onClick={(e) => { e.stopPropagation(); onOpenBuilder(agent.id); }}
+                        onClick={(e) => { e.stopPropagation(); onOpenBuilder(agent.id, agent.name); }}
                         className="eterx-agent-open-button whitespace-nowrap px-3.5 py-1.5 bg-white text-black font-semibold text-[12px] rounded-full hover:bg-[#E8E6E3] transition-all duration-200 active:scale-95"
                       >
                         {agent.isSetup === false ? 'Setup' : 'Open'}
@@ -644,6 +718,12 @@ export const AgentsView = React.memo(({
                     placeholder="e.g. Code Reviewer, Content Creator"
                     value={newAgentName}
                     onChange={(e) => setNewAgentName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && newAgentName.trim()) {
+                        e.preventDefault();
+                        void handleStartBuilder();
+                      }
+                    }}
                     className="w-full bg-[#111111] border border-white/10 rounded-xl px-4 py-3 text-[14px] text-white outline-none focus:border-white/20 transition-all font-sans placeholder:text-[#555350]"
                   />
                 </div>

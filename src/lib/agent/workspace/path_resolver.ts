@@ -2,6 +2,7 @@ import os from 'os';
 import path from 'path';
 import fs from 'fs';
 import { execFileSync } from 'child_process';
+import { getEterxWorkspaceDir } from '../storage-paths';
 
 // ═══════════════════════════════════════════════════════════════
 // EterX Source Protection Cloak v1.0
@@ -128,7 +129,7 @@ export function checkEterXProtection(targetPath: string): { blocked: boolean; re
     if (relativeStartsWithPath(relLower, dir)) {
       return {
         blocked: true,
-        reason: `🛡️ BLOCKED: Cannot modify EterX source file "${ relativePath }". The "${ dir }/" directory is protected. Save your files to the Desktop or a different location instead.`
+        reason: `🛡️ BLOCKED: Cannot modify EterX source file "${ relativePath }". The "${ dir }/" directory is protected. Save intermediate work to the runtime scratch root or choose an explicit user path instead.`
       };
     }
   }
@@ -237,6 +238,7 @@ function uniquePaths(paths: string[]): string[] {
 }
 
 function isInternalWorkspacePath(targetPath: string): boolean {
+  if (isPathInsideOrEqual(getEterxWorkspaceDir(), targetPath)) return true;
   if (!isPathInsideOrEqual(EterX_ROOT, targetPath)) return false;
 
   const relLower = path.relative(EterX_ROOT, path.resolve(targetPath)).toLowerCase();
@@ -321,6 +323,42 @@ export function hasRuntimeWorkspaceContext(context?: any): boolean {
   ].some(candidate => typeof candidate === 'string' && candidate.trim().length > 0);
 }
 
+function isEterXInternalPath(targetPath: string): boolean {
+  return isPathInsideOrEqual(EterX_ROOT, targetPath) && !isInternalWorkspacePath(targetPath);
+}
+
+/**
+ * Return the isolated location for drafts and helper files.
+ *
+ * Main runs provide this from WorkspaceManager. The fallback keeps older
+ * callers out of the source checkout even when they do not yet provide a
+ * full runtime context.
+ */
+export function getRuntimeScratchRoot(context?: any): string {
+  const configured = String(context?.scratchRoot || '').trim();
+  if (configured) return path.resolve(configured);
+  if (context?.runLocation === 'sandbox' && typeof context?.workspaceRoot === 'string' && context.workspaceRoot.trim()) {
+    return path.resolve(context.workspaceRoot);
+  }
+  return getEterxWorkspaceDir('sandbox');
+}
+
+function resolveRuntimeScratchAlias(filename: string, context?: any): string | null {
+  const hasSandboxRoot = context?.runLocation === 'sandbox'
+    && typeof context?.workspaceRoot === 'string'
+    && context.workspaceRoot.trim().length > 0;
+  if ((!context?.scratchRoot && !hasSandboxRoot) || path.isAbsolute(filename)) return null;
+
+  const normalized = filename.replace(/\\/g, '/');
+  const lower = normalized.toLowerCase();
+  const aliases = ['.workspaces/sandbox', 'sandbox'];
+  const alias = aliases.find(candidate => lower === candidate || lower.startsWith(`${candidate}/`));
+  if (!alias) return null;
+
+  const remainder = normalized.slice(alias.length).replace(/^\/+/, '');
+  return resolveUnder(getRuntimeScratchRoot(context), remainder);
+}
+
 export function getRuntimeWorkspaceRoot(context?: any): string {
   const rawCandidates = [
     context?.workspacePath,
@@ -329,23 +367,41 @@ export function getRuntimeWorkspaceRoot(context?: any): string {
     ...(Array.isArray(context?.paths) ? context.paths : []),
   ].filter((candidate): candidate is string => typeof candidate === 'string' && candidate.trim().length > 0);
 
+  // A chat-selected workspace is authoritative even while it is temporarily
+  // missing. Returning it here makes the command/file tool report the stale
+  // target instead of silently falling back to scratch or another chat's
+  // device/workspace.
+  const explicitWorkspacePath = typeof context?.workspacePath === 'string'
+    ? context.workspacePath.trim()
+    : '';
+  if (explicitWorkspacePath) return path.resolve(explicitWorkspacePath);
+
   for (const candidate of rawCandidates) {
     const resolved = path.resolve(candidate);
     try {
       if (fs.existsSync(resolved)) {
         const stat = fs.statSync(resolved);
-        return stat.isDirectory() ? resolved : path.dirname(resolved);
+        const candidateRoot = stat.isDirectory() ? resolved : path.dirname(resolved);
+        // A selected EterX checkout is not a user workspace. Keep the main
+        // runtime's implicit operations in its scratch area instead.
+        if (context?.scratchRoot && isEterXInternalPath(candidateRoot)) continue;
+        return candidateRoot;
       }
     } catch {
       continue;
     }
   }
 
-  // IMPORTANT: Fall back to process.cwd() (EterX project root), NOT the Desktop.
-  // Relative paths like ".workspaces/sandbox/file.py" must resolve to the same
-  // location where workspace_write_file writes them (EterX root/.workspaces/sandbox/).
-  // Using the Desktop as fallback causes "python: can't open file '...Desktop\.workspaces\...'" errors.
-  return path.resolve(process.cwd());
+  if (context?.scratchRoot) return getRuntimeScratchRoot(context);
+
+  // Do not use the process CWD as the default when it is the EterX checkout.
+  // Older callers without a context still get an isolated scratch directory.
+  const cwd = path.resolve(process.cwd());
+  if (isEterXInternalPath(cwd)) return getRuntimeScratchRoot(context);
+
+  // Preserve the historical fallback for callers already running from an
+  // external user workspace.
+  return cwd;
 }
 
 function getRuntimeAllowedRoots(context?: any): string[] {
@@ -379,6 +435,11 @@ function enforceRuntimePathContainment(filePath: string, context: any, operation
     }
     return resolved;
   }
+
+  // The isolated scratch directory remains available even when a stale or
+  // accidental workspace context points at the app checkout.
+  const scratchRoot = getRuntimeScratchRoot(context);
+  if (isPathInsideOrEqual(scratchRoot, resolved)) return resolved;
 
   // Fallback: existing sandbox mode without guard
   if (context?.runLocation === 'sandbox') {
@@ -425,17 +486,19 @@ function enforceEterXProtectionForContext(filePath: string, context: any): void 
 }
 
 export function resolveWorkspacePathForContext(filename: string, context?: any): string {
-  const filePath = isExplicitUserPath(filename)
+  const scratchAlias = resolveRuntimeScratchAlias(filename, context);
+  const filePath = scratchAlias || (isExplicitUserPath(filename)
     ? resolveWorkspacePath(filename)
-    : path.resolve(getRuntimeWorkspaceRoot(context), filename);
+    : path.resolve(getRuntimeWorkspaceRoot(context), filename));
   enforceEterXProtectionForContext(filePath, context);
   return enforceRuntimePathContainment(filePath, context, 'write');
 }
 
 export function resolveReadableWorkspacePathForContext(filename: string, context?: any): string {
-  const filePath = isExplicitUserPath(filename)
+  const scratchAlias = resolveRuntimeScratchAlias(filename, context);
+  const filePath = scratchAlias || (isExplicitUserPath(filename)
     ? resolveReadableWorkspacePath(filename)
-    : path.resolve(getRuntimeWorkspaceRoot(context), filename);
+    : path.resolve(getRuntimeWorkspaceRoot(context), filename));
   enforceEterXProtectionForContext(filePath, context);
   return enforceRuntimePathContainment(filePath, context, 'read');
 }
@@ -554,9 +617,8 @@ export function getWorkspacePathCandidates(filename: string): string[] {
   if (specialUserPath) candidates.push(specialUserPath);
   for (const root of [
     process.cwd(),
-    path.resolve(process.cwd(), '.workspaces', 'sandbox'),
-    path.resolve(process.cwd(), '.workspaces', 'temp'),
-    path.resolve(process.cwd(), '.temp'),
+    getEterxWorkspaceDir('sandbox'),
+    getEterxWorkspaceDir('temp'),
     getRealDesktopPath(),
   ]) {
     try {
@@ -620,7 +682,7 @@ export function resolveWorkspacePath(filename: string): string {
 
   // Define paths
   const desktopPath = getRealDesktopPath();
-  const tempDir = path.resolve(process.cwd(), '.temp');
+  const tempDir = getEterxWorkspaceDir('temp');
 
   // Distinguish working/temp files from final output
   const lowerFilename = filename.replace(/\\/g, '/').toLowerCase();
@@ -646,14 +708,14 @@ export function resolveWorkspacePath(filename: string): string {
     lowerFilename === '.workspaces' ||
     lowerFilename.startsWith('.workspaces/')
   ) {
-    const workspacesDir = path.resolve(process.cwd(), '.workspaces');
+    const workspacesDir = getEterxWorkspaceDir();
     if (lowerFilename === '.workspaces') return workspacesDir;
     return resolveUnder(workspacesDir, filename.replace(/^\.workspaces[\/\\]/i, ''));
   }
 
   // Legacy tracker names resolve inside task storage, never the repo root.
   if (lowerFilename.startsWith('.agent_task_tracker')) {
-    return path.resolve(process.cwd(), '.workspaces', '.tasks', '_manual', path.basename(filename));
+    return getEterxWorkspaceDir('.tasks', '_manual', path.basename(filename));
   }
 
   // Default for user requests: REAL Desktop
@@ -681,7 +743,7 @@ export function getPathResolverInfo(): {
   return {
     EterXRoot: EterX_ROOT,
     desktopPath: getRealDesktopPath(),
-    tempDir: path.resolve(process.cwd(), '.temp'),
+    tempDir: getEterxWorkspaceDir('temp'),
     protectedDirs: PROTECTED_SUBDIRS,
   };
 }

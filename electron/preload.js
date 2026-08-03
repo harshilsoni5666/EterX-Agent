@@ -17,8 +17,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openPath: (path) => ipcRenderer.invoke('open-path', path),
   restartApp: () => ipcRenderer.invoke('app-restart'),
   closeApp: () => ipcRenderer.invoke('app-close'),
-  loadChatSnapshot: (chatId) => ipcRenderer.invoke('chat-snapshot-load', chatId),
-  saveChatSnapshot: (snapshot) => ipcRenderer.invoke('chat-snapshot-save', snapshot),
   showNotification: (title, body) => ipcRenderer.invoke('show-notification', title, body),
   setNativeTheme: (theme) => ipcRenderer.send('native-theme-set', theme),
   getNativeTheme: () => ipcRenderer.invoke('native-theme-get'),
@@ -57,6 +55,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const listener = (_event, state) => callback(state);
     ipcRenderer.on('desktop-update-state', listener);
     return () => ipcRenderer.removeListener('desktop-update-state', listener);
+  },
+  onPrepareForQuit: (callback) => {
+    const listener = (_event, requestId) => {
+      Promise.resolve()
+        .then(() => callback())
+        .then((ok) => ipcRenderer.send('desktop-durable-flush-complete', requestId, ok !== false))
+        .catch(() => ipcRenderer.send('desktop-durable-flush-complete', requestId, false));
+    };
+    ipcRenderer.on('desktop-prepare-for-quit', listener);
+    return () => ipcRenderer.removeListener('desktop-prepare-for-quit', listener);
   },
   openPetWindow: (status) => ipcRenderer.invoke('pet-window-open', status),
   updatePetWindow: (status) => ipcRenderer.send('pet-window-status', status),

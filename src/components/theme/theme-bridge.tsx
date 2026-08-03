@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useEffect } from 'react';
+import { appStorage, appStorageReady, FOLDER_STORAGE_READY_EVENT } from '../../lib/client-storage';
 
 type ThemePreference = 'dark' | 'light' | 'system';
 type ResolvedTheme = 'dark' | 'light';
@@ -10,14 +11,17 @@ const SETTINGS_CHANNEL = 'eterx-settings';
 
 const readThemePreference = (): ThemePreference => {
   try {
-    const saved = window.localStorage.getItem(SETTINGS_STORAGE_KEY);
+    const saved = appStorage.getItem(SETTINGS_STORAGE_KEY);
     const settings = saved ? JSON.parse(saved) : {};
     if (settings.theme === 'dark' || settings.theme === 'light' || settings.theme === 'system') {
       return settings.theme;
     }
-    return 'system';
+    // The settings model defaults to light. Keeping the bridge on the same
+    // default prevents an OS dark-mode preference from racing the persisted
+    // app preference during the first render.
+    return 'light';
   } catch {
-    return 'system';
+    return 'light';
   }
 };
 
@@ -75,15 +79,12 @@ export const ThemeBridge = React.memo(() => {
   useEffect(() => {
     const applyStoredTheme = () => applyEterxTheme();
     applyStoredTheme();
+    void appStorageReady.then(applyStoredTheme);
 
     const media = window.matchMedia?.('(prefers-color-scheme: dark)');
     const onSystemThemeChange = () => {
       if (readThemePreference() === 'system') applyStoredTheme();
     };
-    const onStorage = (event: StorageEvent) => {
-      if (event.key === SETTINGS_STORAGE_KEY) applyStoredTheme();
-    };
-
     const onLocalSettingsUpdate = (event: Event) => {
       const detail = (event as CustomEvent).detail;
       // Theme callers already perform the animated update. Reapplying it here
@@ -93,7 +94,7 @@ export const ThemeBridge = React.memo(() => {
     };
 
     window.addEventListener('eterx-settings-updated', onLocalSettingsUpdate);
-    window.addEventListener('storage', onStorage);
+    window.addEventListener(FOLDER_STORAGE_READY_EVENT, applyStoredTheme);
     media?.addEventListener('change', onSystemThemeChange);
 
     let channel: BroadcastChannel | null = null;
@@ -106,7 +107,7 @@ export const ThemeBridge = React.memo(() => {
 
     return () => {
       window.removeEventListener('eterx-settings-updated', onLocalSettingsUpdate);
-      window.removeEventListener('storage', onStorage);
+      window.removeEventListener(FOLDER_STORAGE_READY_EVENT, applyStoredTheme);
       media?.removeEventListener('change', onSystemThemeChange);
       channel?.close();
     };

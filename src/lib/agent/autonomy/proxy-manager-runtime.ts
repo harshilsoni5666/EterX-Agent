@@ -94,10 +94,13 @@ const storePath = (chatId: string) => {
 };
 
 function readStore(chatId: string): ManagerStore {
-  try {
-    const saved = fs.readJsonSync(storePath(chatId));
-    if ([1, 2, 3].includes(saved?.version) && saved?.chatId === chatId && Array.isArray(saved.messages)) {
-      return {
+  const target = storePath(chatId);
+  for (const source of [target, `${target}.backup`]) {
+    try {
+      if (!fs.existsSync(source)) continue;
+      const saved = fs.readJsonSync(source);
+      if ([1, 2, 3].includes(saved?.version) && saved?.chatId === chatId && Array.isArray(saved.messages)) {
+        return {
         version: 3,
         chatId,
         messages: saved.messages.slice(-MAX_MESSAGES),
@@ -112,9 +115,12 @@ function readStore(chatId: string): ManagerStore {
           lastOperation: saved?.coordinationModel?.lastOperation || 'none',
         },
         updatedAt: Number(saved.updatedAt || Date.now()),
-      };
+        };
+      }
+    } catch {
+      if (source === target) try { fs.renameSync(target, `${target}.corrupt-${Date.now()}`); } catch { }
     }
-  } catch { }
+  }
   return { version: 3, chatId, messages: [], pendingConcepts: [], coordinationModel: { ...EMPTY_COORDINATION_MODEL }, updatedAt: Date.now() };
 }
 
@@ -124,6 +130,7 @@ function writeStore(store: ManagerStore): void {
   const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
   try {
     fs.writeJsonSync(temporary, { ...store, messages: store.messages.slice(-MAX_MESSAGES), updatedAt: Date.now() }, { spaces: 2 });
+    if (fs.existsSync(target)) fs.copyFileSync(target, `${target}.backup`);
     fs.moveSync(temporary, target, { overwrite: true });
   } finally {
     if (fs.existsSync(temporary)) fs.removeSync(temporary);
@@ -315,6 +322,7 @@ async function runProxyManagerTurn(input: {
     selectedModelMode: resolved.mode,
     selectedModelName: resolved.modelId || undefined,
     selectedModelProvider: resolved.provider,
+    strictModelSelection: Boolean(resolved.modelId),
     selectedThinkingLevel: 'high',
     runtimeSettings: resolved.settings,
     workspacePath: live?.workspace?.path || undefined,

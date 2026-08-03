@@ -4,8 +4,9 @@ import path from 'path';
 import fs from 'fs-extra';
 import * as crypto from 'crypto';
 import { enforceToolCapability } from '../security/tool_policy';
+import { getEterxWorkspaceDir } from '../../storage-paths';
 
-const VAULT_DIR = path.resolve(process.cwd(), '.workspaces', '.vault');
+const VAULT_DIR = getEterxWorkspaceDir('.vault');
 const VAULT_FILE = path.join(VAULT_DIR, 'keys.enc.json');
 const VAULT_TMP_FILE = path.join(VAULT_DIR, 'keys.enc.json.tmp');
 const VAULT_SALT = 'eterx-api-vault-v2';
@@ -256,8 +257,18 @@ async function loadVault(): Promise<void> {
 
   try {
     await fs.ensureDir(VAULT_DIR);
-    if (await fs.pathExists(VAULT_FILE)) {
-      const data = await fs.readJSON(VAULT_FILE);
+    let data: unknown = null;
+    for (const source of [VAULT_FILE, `${VAULT_FILE}.backup`]) {
+      try {
+        if (await fs.pathExists(source)) {
+          data = await fs.readJSON(source);
+          break;
+        }
+      } catch {
+        if (source === VAULT_FILE) await fs.move(VAULT_FILE, `${VAULT_FILE}.corrupt-${Date.now()}`).catch(() => {});
+      }
+    }
+    if (data) {
       if (data && typeof data === 'object') {
         for (const [name, rawEntry] of Object.entries(data as Record<string, any>)) {
           const keyName = normalizeKeyName(name);
@@ -281,6 +292,7 @@ async function saveVault(): Promise<void> {
     data[name] = entry;
   }
   await fs.writeJSON(VAULT_TMP_FILE, data, { spaces: 2 });
+  if (await fs.pathExists(VAULT_FILE)) await fs.copyFile(VAULT_FILE, `${VAULT_FILE}.backup`).catch(() => {});
   await fs.move(VAULT_TMP_FILE, VAULT_FILE, { overwrite: true });
 }
 

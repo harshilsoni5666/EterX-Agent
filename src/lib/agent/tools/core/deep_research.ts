@@ -64,7 +64,7 @@ function summarizeSearchResult(result: any): string {
  * 1. Runs multiple search queries simultaneously (different angles)
  * 2. Scrapes top results for detailed content
  * 3. Synthesizes findings into a structured research report
- * 4. Saves the full report to .workspaces/sandbox/
+ * 4. Saves the full report using the active artifact policy
  * 
  * USE FOR: Stock analysis, competitive research, market research,
  * technology comparisons, academic research, product reviews, etc.
@@ -79,7 +79,7 @@ INPUT:
 - topic: What to research
 - angles: Different search angles/queries to explore (2-5 recommended)
 - depth: "quick" (search only) | "medium" (search + scrape top results) | "deep" (full multi-source analysis)
-- outputFile: Where to save the research report (optional, default: .workspaces/sandbox/research_<timestamp>.md)
+- outputFile: Where to save the research report (optional; omitted uses the active artifact policy)
 
 EXAMPLE:
 {

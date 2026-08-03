@@ -1,8 +1,13 @@
 import { globalToolRegistry } from './registry';
 
-// Core tools with distinct, useful runtime capabilities.
+// Shared tools with distinct, useful runtime capabilities. The normal Main
+// agent applies main-tool-policy.ts before advertising this registry; custom
+// and legacy runtimes can still resolve the full shared surface.
 import { webSearchTool } from './core/search';
 import { apiCallerTool } from './core/api';
+import { calculatorTool } from './core/math';
+import { jsonTransformTool } from './core/json_transform';
+import { regexTool } from './core/regex';
 import { skillLoaderTool } from './core/skill_loader';
 import { systemMonitorTool } from './core/sysmonitor';
 import { clipboardTool } from './core/clipboard';
@@ -39,6 +44,7 @@ import {
   workspaceSearchTextTool,
   workspaceEditFileTool,
 } from './workspace/fileops';
+import { workspaceStrReplaceTool } from './workspace/str_replace';
 import {
   workspaceRunCommandTool,
   workspaceVerifyCodeTool,
@@ -68,6 +74,8 @@ import { rssFeedTool } from './research/rss';
 import { processManagerTool } from './automation/process_manager';
 import { slackControllerTool } from './communication/slack';
 import { gatewayBridgeTool } from './communication/gateway_bridge';
+import { connectorMcpTool } from './communication/connector_mcp';
+import { agentBuilderTools } from './automation/agent_builder';
 
 // Only expose native desktop tools where their required OS facilities are
 // built in and their full declared contract is implemented. Linux desktop
@@ -83,6 +91,9 @@ const PLATFORM_TOOLS = process.platform === 'win32'
 const BUILTIN_TOOLS = [
   webSearchTool,
   apiCallerTool,
+  calculatorTool,
+  jsonTransformTool,
+  regexTool,
   skillLoaderTool,
   systemMonitorTool,
   sysAutomationTool,
@@ -109,6 +120,7 @@ const BUILTIN_TOOLS = [
   workspaceListDirectoryTool,
   workspaceSearchTextTool,
   workspaceEditFileTool,
+  workspaceStrReplaceTool,
   workspaceRunCommandTool,
   workspaceVerifyCodeTool,
   workspaceFindFilesTool,
@@ -132,11 +144,17 @@ const BUILTIN_TOOLS = [
   processManagerTool,
   slackControllerTool,
   gatewayBridgeTool,
+  connectorMcpTool,
+
+  // Agent Builder control surface. These are filtered out of normal agent
+  // runs by builder-agent.ts and exposed only in the dedicated builder room.
+  ...agentBuilderTools,
 ];
 
 /**
- * Replace the registry with the curated built-in surface. Replacement is
- * intentional: hot reloads must not retain tools removed from this list.
+ * Replace the registry with the shared built-in surface. Replacement is
+ * intentional: hot reloads must not retain tools removed from this list. The
+ * normal Main agent applies its narrower exposure policy at declaration time.
  */
 export function bootstrapTools() {
   globalToolRegistry.replaceAllTools(BUILTIN_TOOLS);

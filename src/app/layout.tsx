@@ -36,8 +36,7 @@ export const metadata: Metadata = {
 const themeInitScript = `
 (function () {
   try {
-    var saved = localStorage.getItem('eterx_settings');
-    var settings = saved ? JSON.parse(saved) : {};
+    var settings = {};
     var requested = settings.theme || 'light';
     var resolved = requested === 'system'
       ? (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')

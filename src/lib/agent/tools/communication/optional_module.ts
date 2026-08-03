@@ -1,5 +1,6 @@
 import path from 'path';
 import Module from 'module';
+import { getEterxAppRoot } from '../../storage-paths';
 
 // Use a dynamically retrieved createRequire to bypass webpack's static parser analysis
 const getCreateRequire = (): ((path: string) => NodeRequire) | null => {
@@ -26,7 +27,7 @@ declare const __non_webpack_require__: any;
 
 const createRequireFn = getCreateRequire();
 const requireFromWorkspace = createRequireFn 
-  ? createRequireFn(path.join(process.cwd(), 'package.json'))
+  ? createRequireFn(path.join(getEterxAppRoot(), 'package.json'))
   : null;
 
 export function loadOptionalModule<T = any>(moduleName: string): T | null {

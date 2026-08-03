@@ -9,6 +9,8 @@ import {
   Maximize2, Minimize2, Terminal, Search, TerminalSquare, ShieldAlert,
   Download, Settings, ChevronDown, ChevronRight, Folder, FolderOpen, Plus
 } from 'lucide-react';
+import { safeCopyTextToClipboard } from '../ui/copy-button';
+import { buildFilePreviewUrl } from '../../lib/path-utils';
 
 const Editor = dynamic(() => import('@monaco-editor/react'), { ssr: false });
 const DiffEditor = dynamic(
@@ -144,7 +146,7 @@ function getPreviewLabel(fn?: string) {
 }
 
 function buildPreviewUrl(filepath: string) {
-  return `/api/preview/${filepath.replace(/\\/g, '/').split('/').filter(Boolean).map(encodeURIComponent).join('/')}`;
+  return buildFilePreviewUrl(filepath);
 }
 
 function getPreviewAddress(_file?: PreviewFile | null, fallback = 'http://localhost:3000') {
@@ -173,6 +175,7 @@ function resolvePreviewAddress(input: string) {
   const trimmed = input.trim();
   if (!trimmed) return 'http://localhost:3000';
   if (trimmed.startsWith('/api/preview/')) return trimmed;
+  if (trimmed.startsWith('/api/preview?')) return trimmed;
 
   const localAddress = normalizeLocalhostPreviewAddress(trimmed);
   if (localAddress) return localAddress;
@@ -328,8 +331,9 @@ export const FilePanelModal = ({ filename, filepath, content: initialContent, di
     return () => document.removeEventListener('keydown', h);
   }, [onClose]);
 
-  const handleCopy = () => {
-    navigator.clipboard.writeText(localContent || diffLines?.map(l => l.content).join('\n') || '');
+  const handleCopy = async () => {
+    const didCopy = await safeCopyTextToClipboard(localContent || diffLines?.map(l => l.content).join('\n') || '');
+    if (!didCopy) return;
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
@@ -1133,9 +1137,10 @@ export const IdePanel = () => {
     }
   };
 
-  const handleCopyPreviewPath = () => {
+  const handleCopyPreviewPath = async () => {
     const pathToCopy = previewTitleFile?.filepath ? getPreviewAddress(previewTitleFile, previewUrl) : previewUrl;
-    navigator.clipboard.writeText(pathToCopy);
+    const didCopy = await safeCopyTextToClipboard(pathToCopy);
+    if (!didCopy) return;
     setCopiedPreviewPath(true);
     window.setTimeout(() => setCopiedPreviewPath(false), 1400);
   };

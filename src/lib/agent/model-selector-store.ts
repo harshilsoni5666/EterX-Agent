@@ -11,9 +11,26 @@ export const MODEL_SELECTOR_STORAGE_KEY = 'eterx_model_selector_entries';
 export const MODEL_THINKING_CAPABILITIES_STORAGE_KEY = 'eterx_model_thinking_capabilities';
 export const MODEL_CONTEXT_WINDOWS_STORAGE_KEY = 'eterx_model_context_windows';
 export const MODEL_API_KEYS_STORAGE_KEY = 'eterx_model_api_keys';
+export const API_KEY_PRESENCE_STORAGE_KEY = 'eterx_api_key_presence';
+export const MODEL_API_KEY_PRESENCE_STORAGE_KEY = 'eterx_model_api_key_presence';
 export const CHAT_MODEL_SELECTION_STORAGE_KEY = 'eterx_chat_model_selection';
 export const CHAT_CONTEXT_WINDOW_OVERRIDES_STORAGE_KEY = 'eterx_chat_context_window_overrides';
 export const AUTO_MODEL_SELECTION = 'auto';
+
+// This was an old display-only placeholder, not a provider model id. Keep it
+// out of every selector/catalog migration so it cannot reappear from folder
+// preferences or legacy browser settings.
+export const isEmbeddedModelLabel = (value: unknown) =>
+  String(value || '').trim().toLowerCase() === 'gemini 3.6 flash';
+
+/** Provider model catalogs must contain concrete model IDs, never router/default placeholders. */
+export const isConcreteModelId = (value: unknown) => {
+  const id = String(value || '').trim().toLowerCase();
+  return Boolean(id)
+    && id !== AUTO_MODEL_SELECTION
+    && id !== 'openrouter/auto'
+    && !/^(auto|default|latest|recommended)(?:[\s_-]|$)/i.test(id);
+};
 
 export const MODEL_PROVIDER_ORDER: MainAgentProvider[] = [
   'gemini', 'openai', 'anthropic', 'mistral', 'openrouter', 'groq',
@@ -79,7 +96,7 @@ export const parseModelEntryKey = (value: unknown): ModelSelectorEntry | null =>
   if (!encodedModel) return null;
   try {
     const modelId = decodeURIComponent(encodedModel).trim();
-    return modelId ? { provider, modelId } : null;
+    return modelId && !isEmbeddedModelLabel(modelId) && isConcreteModelId(modelId) ? { provider, modelId } : null;
   } catch {
     return null;
   }
@@ -121,16 +138,17 @@ export const normalizeModelSelectorEntries = (raw: unknown, legacyCatalog?: unkn
       const source = item as Record<string, unknown>;
       const provider = String(source.provider || '').trim();
       const modelId = String(source.modelId || source.model || source.id || '').trim();
-      if (isModelProvider(provider) && modelId) sourceEntries.push({ provider, modelId });
+      if (isModelProvider(provider) && isConcreteModelId(modelId)) sourceEntries.push({ provider, modelId });
     });
   }
 
-  if (sourceEntries.length === 0) {
-    sourceEntries.push(...normalizeLegacyCatalog(legacyCatalog));
+  const usableSourceEntries = sourceEntries.filter(entry => !isEmbeddedModelLabel(entry.modelId) && isConcreteModelId(entry.modelId));
+  if (usableSourceEntries.length === 0) {
+    usableSourceEntries.push(...normalizeLegacyCatalog(legacyCatalog).filter(entry => !isEmbeddedModelLabel(entry.modelId) && isConcreteModelId(entry.modelId)));
   }
 
   const seen = new Set<string>();
-  return sourceEntries.filter(entry => {
+  return usableSourceEntries.filter(entry => {
     const key = modelEntryKey(entry.provider, entry.modelId);
     if (seen.has(key)) return false;
     seen.add(key);
@@ -151,6 +169,7 @@ export const ensureModelSelectorEntry = (
   modelId: string,
 ) => {
   const cleanModel = String(modelId || '').trim();
+  if (!isConcreteModelId(cleanModel)) return entries;
   if (!cleanModel) return entries;
   const key = modelEntryKey(provider, cleanModel);
   if (entries.some(entry => modelEntryKey(entry.provider, entry.modelId) === key)) return entries;

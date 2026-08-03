@@ -6,6 +6,7 @@ import { resolveReadableWorkspacePathForContext } from '../../workspace/path_res
 import { enforceToolCapability } from '../security/tool_policy';
 import { loadOptionalModule } from './optional_module';
 import { requireOutboundApproval } from './outbound_approval';
+import { getEterxWorkspaceDir } from '../../storage-paths';
 
 let TelegramClient: any = null;
 let StringSession: any = null;
@@ -27,7 +28,7 @@ function ensureTelegramSdk(): boolean {
   return telegramAvailable;
 }
 
-const SESSION_FILE = path.resolve(process.cwd(), '.workspaces', '.telegram_session');
+const SESSION_FILE = getEterxWorkspaceDir('.telegram_session');
 let stringSession: any = null;
 let tgClient: any = null;
 let tgReady = false;
@@ -45,7 +46,7 @@ const TELEGRAM_BOT_METHODS = new Set(['getMe', 'sendMessage', 'sendDocument']);
 
 async function getTelegramBotToken(): Promise<string | null> {
   try {
-    const connectorsFile = path.resolve(process.cwd(), '.workspaces', '.connectors.json');
+    const connectorsFile = getEterxWorkspaceDir('.connectors.json');
     if (await fs.pathExists(connectorsFile)) {
       const connectors = await fs.readJson(connectorsFile);
       if (connectors?.telegram?.botToken) return connectors.telegram.botToken;

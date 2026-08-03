@@ -3,6 +3,7 @@ import fs from 'fs-extra';
 import path from 'path';
 import { ToolDefinition } from '../../schemas';
 import { globalToolRegistry } from '../registry';
+import { normalizeRegistryToolName } from '../registry';
 import {
   AgentBuilderCustomTool,
   AgentBuilderDirectTool,
@@ -25,6 +26,9 @@ import {
   writeAgentFlowProfile,
   listAgentFlowProfiles,
   deleteAgentFlowProfile,
+  sanitizeFlowId,
+  applyAgentBuilderDefaults,
+  evaluateAgentBuilderProfile,
 } from '../../builder-agent';
 import * as vm from 'vm';
 import { agentToolLoadTool, agentToolUnloadTool } from '../../tool-injector';
@@ -91,9 +95,9 @@ export const agentBuilderSaveProfileTool: ToolDefinition = {
     const runtime = requireBuilderContext(context, args.agentId);
     if (!runtime.ok) return { success: false, message: runtime.error };
 
-    const saved = await upsertAgentBuilderProfile(runtime.agentId, profile => ({
+    const saved = await upsertAgentBuilderProfile(runtime.agentId, profile => applyAgentBuilderDefaults({
       ...profile,
-      name: args.name || profile.name,
+      name: args.name || profile.name || String(context?.agentName || '').trim() || undefined,
       mission: args.mission || profile.mission,
       professionalPrompt: args.professionalPrompt || profile.professionalPrompt,
       responseStyle: args.responseStyle || profile.responseStyle,
@@ -133,7 +137,7 @@ export const agentBuilderAttachMainTool: ToolDefinition = {
     const runtime = requireBuilderContext(context, args.agentId);
     if (!runtime.ok) return { success: false, message: runtime.error };
 
-    const toolName = String(args.toolName || '').trim();
+    const toolName = normalizeRegistryToolName(String(args.toolName || '').trim());
     if (!toolName) return { success: false, message: 'toolName is required.' };
     if (isBuilderOnlyToolName(toolName) || toolName === 'create_dynamic_tool') {
       return { success: false, message: `Cannot attach "${toolName}" as a target-agent main tool.` };
@@ -166,6 +170,122 @@ export const agentBuilderAttachMainTool: ToolDefinition = {
       message: `Attached main tool "${toolName}" to ${runtime.agentId} by reference.`,
       profilePath: saved.path,
       attachedTool,
+    };
+  },
+};
+
+export const agentBuilderAttachAllMainToolsTool: ToolDefinition = {
+  name: 'agent_builder_attach_all_main_tools',
+  description: 'Attach the complete current main-agent tool catalog to the target custom agent in one operation. Builder-only. Builder orchestration tools remain excluded.',
+  category: 'automation',
+  inputSchema: z.object({
+    agentId: z.string().optional().describe('Target custom agent ID. Defaults to the current Agent Builder target.'),
+    excludeToolNames: z.array(z.string()).optional().describe('Optional main tool names to leave out of the complete catalog.'),
+  }),
+  outputSchema: z.object({
+    success: z.boolean(),
+    message: z.string(),
+    attachedCount: z.number().optional(),
+    skippedToolNames: z.array(z.string()).optional(),
+  }),
+  execute: async (args: any, context: any) => {
+    const runtime = requireBuilderContext(context, args.agentId);
+    if (!runtime.ok) return { success: false, message: runtime.error };
+
+    const excluded = new Set((Array.isArray(args.excludeToolNames) ? args.excludeToolNames : []).map((name: unknown) => String(name || '').trim()));
+    const availableTools = globalToolRegistry.getAllTools()
+      .filter(tool => !isBuilderOnlyToolName(tool.name) && tool.name !== 'create_dynamic_tool')
+      .filter(tool => !excluded.has(tool.name));
+    const availableNames = new Set(availableTools.map(tool => tool.name));
+    const skippedToolNames = Array.from(excluded).map(String).filter(name => name.length > 0 && !availableNames.has(name));
+
+    const saved = await upsertAgentBuilderProfile(runtime.agentId, profile => {
+      const existing = new Map(profile.directMainTools.map(tool => [tool.toolName, tool]));
+      for (const tool of availableTools) {
+        if (existing.has(tool.name)) continue;
+        existing.set(tool.name, {
+          toolName: tool.name,
+          purpose: `Use ${tool.name} when it is relevant to the agent's mission.`,
+          whenToUse: `Use when the user's request requires the capability provided by ${tool.name}.`,
+          inputPolicy: 'Validate arguments against the tool schema before calling.',
+          outputPolicy: 'Inspect the result, handle errors, and only then continue.',
+          attachedAt: new Date().toISOString(),
+        });
+      }
+      return { ...profile, directMainTools: Array.from(existing.values()), status: 'draft' };
+    });
+
+    return {
+      success: true,
+      message: `Attached ${saved.profile.directMainTools.length} main tools to ${runtime.agentId}.`,
+      attachedCount: saved.profile.directMainTools.length,
+      skippedToolNames,
+    };
+  },
+};
+
+export const agentBuilderAttachConnectorToolsTool: ToolDefinition = {
+  name: 'agent_builder_attach_connector_tools',
+  description: 'Attach the universal live connector bridges to the target custom agent. This grants Gateway channel access through gateway_bridge and saved REST/MCP access through connector_mcp, without copying connector implementation code or secrets into the agent profile.',
+  category: 'automation',
+  inputSchema: z.object({
+    agentId: z.string().optional().describe('Target custom agent ID. Defaults to the current Agent Builder target.'),
+    mode: z.enum(['all', 'gateway', 'mcp']).optional().describe('Attach both connector paths, only native Gateway channels, or only saved REST/MCP connectors. Defaults to all.'),
+    connectorId: z.string().optional().describe('Optional connector ID to mention in the target guidance. The credential itself is never stored in the profile.'),
+    platform: z.string().optional().describe('Optional native platform to mention in the target guidance, such as telegram or slack.'),
+  }),
+  outputSchema: z.object({
+    success: z.boolean(),
+    message: z.string(),
+    attachedToolNames: z.array(z.string()).optional(),
+    profilePath: z.string().optional(),
+  }),
+  execute: async (args: any, context: any) => {
+    const runtime = requireBuilderContext(context, args.agentId);
+    if (!runtime.ok) return { success: false, message: runtime.error };
+
+    const mode = String(args.mode || 'all');
+    const toolNames = mode === 'gateway'
+      ? ['gateway_bridge']
+      : mode === 'mcp'
+        ? ['connector_mcp']
+        : ['gateway_bridge', 'connector_mcp'];
+    const missing = toolNames.filter(toolName => !globalToolRegistry.getTool(toolName));
+    if (missing.length > 0) {
+      return { success: false, message: `Connector tools are not registered: ${missing.join(', ')}.` };
+    }
+
+    const scope = [args.platform ? `platform=${String(args.platform).trim()}` : '', args.connectorId ? `connector_id=${String(args.connectorId).trim()}` : '']
+      .filter(Boolean)
+      .join(', ');
+    const saved = await upsertAgentBuilderProfile(runtime.agentId, profile => {
+      const existing = new Map(profile.directMainTools.map(tool => [tool.toolName, tool]));
+      for (const toolName of toolNames) {
+        const isGateway = toolName === 'gateway_bridge';
+        existing.set(toolName, {
+          toolName,
+          purpose: isGateway
+            ? `Operate live native Gateway channels${scope ? ` (${scope})` : ''}.`
+            : `Operate saved REST and MCP connectors${scope ? ` (${scope})` : ''}.`,
+          whenToUse: isGateway
+            ? 'First discover live Gateway channels, then use the explicit platform, conversation, and message identifiers for the requested action.'
+            : 'First list or verify the named connector or MCP server, discover its live tools, then call the exact connector or server action required by the request.',
+          inputPolicy: isGateway
+            ? 'Keep platform, conversation_id, target, and action explicit. Never invent a connected channel.'
+            : 'Keep connector_id, server_id, tool_name, method, and path explicit. Never put secrets in visible notes or responses.',
+          outputPolicy: 'Treat the connector result as authoritative evidence. If the runtime returns an error, report the actual failure and recover with a bounded alternative; never claim success without the result.',
+          promptInjection: 'This is a real external integration. Execute directly when the user requested the action. Do not ask for routine permission or connector discovery; only stop for a genuinely missing secret, required outbound approval, or an irreducible user decision.',
+          attachedAt: new Date().toISOString(),
+        });
+      }
+      return { ...profile, directMainTools: Array.from(existing.values()), status: 'draft' };
+    });
+
+    return {
+      success: true,
+      message: `Attached live connector bridge${toolNames.length === 1 ? '' : 's'} to ${runtime.agentId}: ${toolNames.join(', ')}.`,
+      attachedToolNames: toolNames,
+      profilePath: saved.path,
     };
   },
 };
@@ -286,7 +406,7 @@ export const agentBuilderFinalizeTool: ToolDefinition = {
     const runtime = requireBuilderContext(context, args.agentId);
     if (!runtime.ok) return { success: false, message: runtime.error };
 
-    const profile = await readAgentBuilderProfile(runtime.agentId);
+    const profile = applyAgentBuilderDefaults(await readAgentBuilderProfile(runtime.agentId));
     const missing: string[] = [];
     if (!profile.mission?.trim()) missing.push('mission');
     if (!profile.professionalPrompt?.trim() || profile.professionalPrompt.length < 600) missing.push('deep professional prompt');
@@ -294,6 +414,11 @@ export const agentBuilderFinalizeTool: ToolDefinition = {
     if (profile.safetyRules.length < 2) missing.push('at least 2 safety rules');
     if (!profile.toolUsePolicy?.trim()) missing.push('tool use policy');
     if (!profile.completionCriteria?.trim()) missing.push('completion criteria');
+
+    const quality = evaluateAgentBuilderProfile(profile);
+    for (const failedCheck of quality.missing) {
+      if (!missing.includes(failedCheck)) missing.push(failedCheck);
+    }
 
     const blockedTools = profile.customTools.filter(tool => tool.safetyStatus === 'blocked').map(tool => tool.toolName);
     if (blockedTools.length > 0) missing.push(`unblocked custom tools: ${blockedTools.join(', ')}`);
@@ -327,6 +452,42 @@ export const agentBuilderFinalizeTool: ToolDefinition = {
       promptPath,
       profile: finalProfile,
     };
+  },
+};
+
+export const agentBuilderRunQualityCheckTool: ToolDefinition = {
+  name: 'agent_builder_run_quality_check',
+  description: 'Run a deterministic enterprise readiness check on the target custom agent before finalization. Reports prompt depth, safety, baseline tool coverage, adaptive training, and real-data discipline without changing the profile.',
+  category: 'automation',
+  inputSchema: z.object({
+    agentId: z.string().optional().describe('Target custom agent ID. Defaults to the current Agent Builder target.'),
+  }),
+  outputSchema: z.object({
+    success: z.boolean(),
+    score: z.number(),
+    ready: z.boolean(),
+    trainingStandard: z.boolean(),
+    checks: z.array(z.any()),
+    missing: z.array(z.string()),
+    warnings: z.array(z.string()),
+    profile: z.any().optional(),
+  }),
+  execute: async (args: any, context: any) => {
+    const runtime = requireBuilderContext(context, args.agentId);
+    if (!runtime.ok) {
+      return {
+        success: false,
+        score: 0,
+        ready: false,
+        trainingStandard: false,
+        checks: [],
+        missing: [runtime.error],
+        warnings: [],
+      };
+    }
+    const profile = applyAgentBuilderDefaults(await readAgentBuilderProfile(runtime.agentId));
+    const quality = evaluateAgentBuilderProfile(profile);
+    return { success: true, ...quality, profile };
   },
 };
 
@@ -428,16 +589,82 @@ export const agentBuilderSaveFlowTool: ToolDefinition = {
     notes: z.array(z.string()).optional().describe('Builder notes.')
   }),
   outputSchema: z.object({ success: z.boolean(), message: z.string(), flowPath: z.string().optional(), flow: z.any().optional() }),
-  execute: async (args: any) => {
+  execute: async (args: any, context: any) => {
+    const runtime = requireBuilderContext(context, args.flowId);
+    if (!runtime.ok) return { success: false, message: runtime.error };
+
+    const flowId = sanitizeFlowId(args.flowId);
+    const steps = Array.isArray(args.steps) ? args.steps : [];
+    if (steps.length === 0) {
+      return { success: false, message: 'A flow must contain at least one step.' };
+    }
+    if (steps.length > 100) {
+      return { success: false, message: 'A flow cannot contain more than 100 steps.' };
+    }
+
+    const stepIds = new Set<string>();
+    const validAgentId = (value: unknown) => {
+      const id = String(value || '').trim();
+      return id === 'default-1' || /^[a-zA-Z0-9_-]{1,96}$/.test(id);
+    };
+    for (const step of steps) {
+      const stepId = String(step?.stepId || '').trim();
+      if (!stepId || !/^[a-zA-Z0-9_-]{1,96}$/.test(stepId)) {
+        return { success: false, message: 'Every flow step needs a safe stepId (letters, numbers, hyphens, or underscores).' };
+      }
+      if (stepIds.has(stepId)) {
+        return { success: false, message: `Duplicate flow stepId: ${stepId}.` };
+      }
+      stepIds.add(stepId);
+
+      const parallelAgentIds = Array.isArray(step.parallelAgentIds) ? step.parallelAgentIds : [];
+      const promptTemplates = Array.isArray(step.promptTemplates) ? step.promptTemplates : [];
+      if (parallelAgentIds.length > 0) {
+        if (parallelAgentIds.length !== promptTemplates.length) {
+          return { success: false, message: `Step ${stepId} must provide one promptTemplate for each parallel agent.` };
+        }
+        if (!parallelAgentIds.every(validAgentId)) {
+          return { success: false, message: `Step ${stepId} contains an invalid parallel agent ID.` };
+        }
+      } else if (!validAgentId(step.agentId)) {
+        return { success: false, message: `Step ${stepId} contains an invalid agent ID.` };
+      } else if (!String(step.promptTemplate || '').trim()) {
+        return { success: false, message: `Step ${stepId} needs a promptTemplate.` };
+      }
+
+      if (step.reflection) {
+        const retries = Number(step.reflection.maxRetries);
+        if (!validAgentId(step.reflection.evaluatorAgentId) || !Number.isInteger(retries) || retries < 0 || retries > 10) {
+          return { success: false, message: `Step ${stepId} has an invalid reflection evaluator or retry limit.` };
+        }
+      }
+    }
+
+    for (const step of steps) {
+      const references = [
+        step.nextStepId,
+        ...(Array.isArray(step.conditionalBranches) ? step.conditionalBranches.map((branch: any) => branch?.targetStepId) : []),
+      ].filter(Boolean).map(String);
+      const missing = references.find(reference => !stepIds.has(reference));
+      if (missing) {
+        return { success: false, message: `Step ${String(step.stepId)} references missing step ${missing}.` };
+      }
+    }
+
+    const maxIterations = Number(args.maxIterations ?? 20);
+    if (!Number.isInteger(maxIterations) || maxIterations < 1 || maxIterations > 1000) {
+      return { success: false, message: 'maxIterations must be an integer between 1 and 1000.' };
+    }
+
     const savedPath = await writeAgentFlowProfile({
-      flowId: args.flowId,
+      flowId,
       name: args.name,
       description: args.description,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       status: 'ready',
       steps: args.steps,
-      maxIterations: args.maxIterations || 20,
+      maxIterations,
       notes: args.notes || []
     });
 
@@ -833,7 +1060,10 @@ Follow with a detailed explanation of why, and suggest specific corrections if r
 export const agentBuilderTools = [
   agentBuilderSaveProfileTool,
   agentBuilderAttachMainTool,
+  agentBuilderAttachAllMainToolsTool,
+  agentBuilderAttachConnectorToolsTool,
   agentBuilderDefineTool,
+  agentBuilderRunQualityCheckTool,
   agentBuilderFinalizeTool,
   agentBuilderSaveFlowTool,
   agentBuilderListFlowsTool,

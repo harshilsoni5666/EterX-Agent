@@ -98,15 +98,16 @@ The analysis is cached for 1 hour for performance.`,
     profile: z.any(),
     summary: z.string()
   }),
-  execute: async (input: { forceRefresh?: boolean }) => {
+  execute: async (input: { forceRefresh?: boolean }, context?: any) => {
+    const workspaceRoot = String(context?.workspaceRoot || context?.workspacePath || '').trim() || undefined;
     if (input.forceRefresh) {
-      const profile = await workspaceIntelligence.analyze();
-      const context = await workspaceIntelligence.getWorkspaceContext();
-      return { profile, summary: context };
+      const profile = await workspaceIntelligence.analyze(workspaceRoot);
+      const summary = await workspaceIntelligence.getWorkspaceContext(workspaceRoot);
+      return { profile, summary };
     }
-    const profile = await workspaceIntelligence.getProfile();
-    const context = await workspaceIntelligence.getWorkspaceContext();
-    return { profile, summary: context };
+    const profile = await workspaceIntelligence.getProfile(workspaceRoot);
+    const summary = await workspaceIntelligence.getWorkspaceContext(workspaceRoot);
+    return { profile, summary };
   }
 };
 

@@ -9,7 +9,8 @@ import { Shimmer } from '../ui/shimmer';
 import { notifyAgentFaceTraceLog } from './agent-face-controller';
 import ReactMarkdown from 'react-markdown';
 import { markdownComponents, normalizeMarkdownForRendering, remarkPlugins, rehypePlugins } from './markdown-renderer';
-import { isTerminalWorkTrace, isTurnWorkActive, shouldRenderContextCompactionEvent } from '../../lib/chat-feed-lifecycle';
+import { isInternalWorkNoteNoise, isTerminalWorkTrace, isTurnWorkActive, shouldRenderContextCompactionEvent } from '../../lib/chat-feed-lifecycle';
+import { appStorage, appStorageReady, FOLDER_STORAGE_READY_EVENT } from '../../lib/client-storage';
 
 interface ChatFeedProps {
   traceLogs: any[];
@@ -258,9 +259,7 @@ const formatShortTime = (timestamp: number | string | undefined | null): string 
 
 const formatProviderTokenCount = (tokens: number): string => {
   if (!Number.isFinite(tokens) || tokens <= 0) return '';
-  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(tokens >= 10_000_000 ? 0 : 1)}M`;
-  if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(tokens >= 10_000 ? 0 : 1)}k`;
-  return String(Math.round(tokens));
+  return Math.round(tokens).toLocaleString();
 };
 
 const UserMessageActions = React.memo(({ text, onEdit, timestamp }: { text: string; onEdit?: (text: string) => void; timestamp?: number | string | null }) => {
@@ -505,6 +504,33 @@ const USER_QUERY_PREVIEW_LIMIT = 520;
 const USER_QUERY_PREVIEW_LINES = 8;
 const INITIAL_VISIBLE_GROUPS = 40;
 const MAX_TURN_NAV_ITEMS = 80;
+const AGENT_BUILDER_INTERNAL_REQUEST_PATTERN = /^\[AGENT BUILDER REQUEST\]\s*\r?\nTarget agent ID:[^\r\n]*\r?\n\s*\r?\n\[USER REQUEST\]\s*\r?\n?([\s\S]*)$/i;
+
+const normalizeInternalUserActionLogs = (logs: any[]) => {
+  const visibleRunIds = new Set(
+    logs
+      .filter(log => log?.type === 'user_action' && !AGENT_BUILDER_INTERNAL_REQUEST_PATTERN.test(String(log.text || '')))
+      .map(log => String(log.runId || log.turnId || '').trim())
+      .filter(Boolean),
+  );
+
+  return logs.reduce<any[]>((next, log) => {
+    if (log?.type !== 'user_action') {
+      next.push(log);
+      return next;
+    }
+    const rawText = String(log.text || '');
+    const match = rawText.match(AGENT_BUILDER_INTERNAL_REQUEST_PATTERN);
+    if (!match) {
+      next.push(log);
+      return next;
+    }
+    const runId = String(log.runId || log.turnId || '').trim();
+    if (runId && visibleRunIds.has(runId)) return next;
+    next.push({ ...log, text: String(match[1] || '').trim() });
+    return next;
+  }, []);
+};
 
 const normalizeTraceText = (value: any) => String(value || '')
   .replace(/<\/?thought>/gi, '')
@@ -654,16 +680,6 @@ const dedupeFeedLogs = (logs: any[]) => {
 const isNarrationThought = (value: any) => {
   const text = String(value || '').trim();
   return /^(i['â€™]?ll|i will|i['â€™]?m|i am|let me|now let me|next\b|i need to|i can|i should|i will now)\b/i.test(text);
-};
-
-const isExternalWorkNoteNoise = (value: any) => {
-  const text = String(value || '').trim();
-  if (!text || text.length < 4) return true;
-  // Only filter very short pure-narration sentences (no real content, under 60 chars)
-  if (text.length < 60 && /^(?:i will|i'll|let me|now i will|now let me|i am going to)\s+(?:now\s+)?(?:check|look|see|find|read|run|search|analyze|inspect|verify|open|edit|write|create|update|fix|use|get|list|scan|review|explore)\b[^.!?]*$/i.test(text)) return true;
-  // Filter meta-commentary about the work note style itself
-  if (/\b(?:work note|timeline note|status line)\b/i.test(text) && /\b(?:workspace|external|prompt|rule|communication style|phase change|highly professional)\b/i.test(text)) return true;
-  return false;
 };
 
 const isInternalStatusThought = (log: any) => {
@@ -852,17 +868,37 @@ const getGroupMountIdentity = (group: any[], groupIdx: number) => {
 
 const countVisibleWorkflowActions = (logs: any[]) => {
   const identities = new Set<string>();
+  const fallbackOccurrences = new Map<string, number>();
   logs.forEach((log, index) => {
     if (!WORKFLOW_COUNT_TYPES.has(log?.type) || HIDDEN_HELPER_TYPES.has(log?.type) || isHiddenStatusOnlyLog(log)) return;
     const stableIdentity = log._traceIdx ?? log.traceId ?? log.id ?? log.toolCallId ?? log.ownerTraceId;
-    const fallbackIdentity = [
+    const stableScope = `${log.type}|${log.subAgent || log.agentName || ''}`;
+    const semanticIdentity = [
       log.type,
       log.subAgent || log.agentName || '',
-      log.command || log.text || log.secondary || '',
-      log.filename || log.filepath || log.path || '',
-      log.timestamp || log.startTime || index,
+      normalizeTraceText(log.command || log.text || log.secondary || ''),
+      String(log.filename || log.filepath || log.path || '').trim().toLowerCase(),
     ].join('|');
-    identities.add(String(stableIdentity ?? fallbackIdentity));
+    if (stableIdentity !== undefined && stableIdentity !== null && String(stableIdentity).trim()) {
+      identities.add(`stable:${stableScope}|${String(stableIdentity)}`);
+      return;
+    }
+
+    // Live providers can emit the same action once as a start event and
+    // again as a hydrated/polled event without preserving a trace id. Use
+    // the event time when available so those updates share one counter entry.
+    // If no time exists, keep an occurrence suffix: identical actions in a
+    // real sequence still count separately instead of collapsing together.
+    const rawTime = log.startTime ?? log.timestamp ?? log.endTime;
+    const eventTime = normalizeWorkTimestamp(rawTime);
+    const base = `semantic:${semanticIdentity}`;
+    if (eventTime !== null) {
+      identities.add(`${base}|${eventTime}`);
+      return;
+    }
+    const occurrence = fallbackOccurrences.get(base) || 0;
+    fallbackOccurrences.set(base, occurrence + 1);
+    identities.add(`${base}|occurrence:${occurrence}|index:${index}`);
   });
   return identities.size;
 };
@@ -962,7 +998,11 @@ const getWorkTimeBounds = (logs: any[]) => {
     if (isTimedWorkLog(log) && startValue !== null) {
       start = start === null ? startValue : Math.min(start, startValue);
     }
-    if (endValue !== null) end = end === null ? endValue : Math.max(end, endValue);
+    // Do not let bookkeeping traces (usage, model metadata, late polling
+    // records, etc.) extend the visible work duration. Only visible work and
+    // the answer/terminal boundary are valid endpoints for this counter.
+    const isWorkEnd = isTimedWorkLog(log) || log?.type === 'answer' || isTerminalWorkTrace(log);
+    if (isWorkEnd && endValue !== null) end = end === null ? endValue : Math.max(end, endValue);
   });
   if (start !== null && end !== null && end < start) end = start;
   return { start, end };
@@ -1168,7 +1208,7 @@ const RENDER_RELEVANT_LOG_FIELDS = [
   'toolCallId', 'action', 'occurrenceCount', 'spawnedAgents', 'agentDetails',
   'agentStatus', 'agentStep', 'currentAction', 'stepCount', 'durationMs', 'task',
   'taskSummary', 'traceId', 'ownerTraceId', 'isDelta', 'dedupe', 'args', 'cmd',
-  'tool', 'toolArgs', 'toolResult', 'patchResult', 'exitCode', 'errorType',
+  'tool', 'toolArgs', 'toolResult', 'patchResult', 'exitCode', 'errorType', 'streamId', 'taskId', 'backgroundTaskId',
   'file', 'files', 'fileCount', 'filesCount', 'targetPath', 'contentPreview',
   'startLine', 'endLine', 'loadedLines', 'added', 'removed', 'additions',
   'deletions', 'insertions', 'linesAdded', 'linesRemoved', 'diffLines',
@@ -1520,10 +1560,6 @@ const ChatFeedMessageGroup = React.memo(({
   const visibleWorkLogs = interactionFilteredWorkLogs.filter((log: any, index: number, logs: any[]) =>
     shouldRenderContextCompactionEvent(log, index, logs, isThinkingTurn)
   );
-  const hasStructuredWork = [...rawWorkLogs, ...liveCommandLogs].some((l: any) =>
-    WORKFLOW_COUNT_TYPES.has(l.type) && !HIDDEN_HELPER_TYPES.has(l.type)
-  );
-
   const segments: { type: 'thoughts' | 'steering' | 'ask_user' | 'context'; logs?: any[]; log?: any }[] = [];
   let currentThoughts: any[] = [];
   const segmentIdentity = (seg: { logs?: any[]; log?: any }, fallback: number) => {
@@ -1574,7 +1610,7 @@ const ChatFeedMessageGroup = React.memo(({
       if (log.type === 'work_note') {
         const text = String(log.text || '').trim().toLowerCase();
         if (!text) isValid = false;
-        else if (hasStructuredWork && isExternalWorkNoteNoise(log.text)) isValid = false;
+        else if (isInternalWorkNoteNoise(log.text)) isValid = false;
         else if (displayFinalAnswer && isLikelyAnswerEcho(log.text, displayFinalAnswer.text)) isValid = false;
         else {
           // Work-note ids are regenerated by some live runtimes. The visible
@@ -1743,7 +1779,6 @@ const ChatFeedMessageGroup = React.memo(({
   if (previous.showTokenCount !== next.showTokenCount) return false;
   if (previous.onOpenAgentTeam !== next.onOpenAgentTeam) return false;
   if (previous.subAgentAssetIndexes !== next.subAgentAssetIndexes) return false;
-  if (previous.isFeedActivityPaused !== next.isFeedActivityPaused) return false;
   if (previous.onAnswerAskUser !== next.onAnswerAskUser) return false;
   if (previous.onEditUserMessage !== next.onEditUserMessage) return false;
   if (previous.setPreviewUserMessage !== next.setPreviewUserMessage) return false;
@@ -1808,7 +1843,9 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
   // inside that exact chat. This protects the feed even if an upstream async
   // state update arrives during navigation.
   const traceLogs = useMemo(
-    () => incomingTraceLogs.filter(log => !log?.chatId || log.chatId === chatId),
+    () => normalizeInternalUserActionLogs(
+      incomingTraceLogs.filter(log => !log?.chatId || log.chatId === chatId),
+    ),
     [chatId, incomingTraceLogs]
   );
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -1821,18 +1858,21 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
   useEffect(() => {
     const refreshTokenCountPreference = () => {
       try {
-        const saved = JSON.parse(localStorage.getItem('eterx_settings') || '{}');
+        const saved = JSON.parse(appStorage.getItem('eterx_settings') || '{}');
         setShowTokenCount(saved?.showTokenCount === true);
       } catch {
         setShowTokenCount(false);
       }
     };
     refreshTokenCountPreference();
-    window.addEventListener('storage', refreshTokenCountPreference);
+    void appStorageReady.then(refreshTokenCountPreference);
     window.addEventListener('eterx-settings-updated', refreshTokenCountPreference);
+    window.addEventListener('eterx-folder-storage-updated', refreshTokenCountPreference);
+    window.addEventListener(FOLDER_STORAGE_READY_EVENT, refreshTokenCountPreference);
     return () => {
-      window.removeEventListener('storage', refreshTokenCountPreference);
       window.removeEventListener('eterx-settings-updated', refreshTokenCountPreference);
+      window.removeEventListener('eterx-folder-storage-updated', refreshTokenCountPreference);
+      window.removeEventListener(FOLDER_STORAGE_READY_EVENT, refreshTokenCountPreference);
     };
   }, []);
 

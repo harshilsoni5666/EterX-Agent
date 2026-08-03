@@ -36,11 +36,28 @@ export async function POST(req: NextRequest) {
       ? Number(hardTimeoutSeconds) * 1000
       : hardTimeoutMs;
 
+    let resolvedShell: string;
+    try {
+      resolvedShell = resolveTerminalShell(normalizeTerminalShell(terminalShell));
+    } catch (error: any) {
+      const message = String(error?.message || error);
+      return NextResponse.json({
+        command,
+        cwd: workingDir,
+        stdout: '',
+        stderr: message,
+        exitCode: 127,
+        success: false,
+        stillRunning: false,
+        error: message,
+      }, { status: 400 });
+    }
+
     const result = await runTerminalCommandWithCheckIn({
       command,
       cwd: workingDir,
       source: 'code_terminal',
-      shell: resolveTerminalShell(normalizeTerminalShell(terminalShell)),
+      shell: resolvedShell,
       env: { ...process.env, FORCE_COLOR: '0' },
       checkInMs: checkInTimeoutMs ?? timeoutSeconds ?? timeoutMs,
       hardTimeoutMs: hardTimeoutValueMs,
@@ -60,6 +77,7 @@ export async function POST(req: NextRequest) {
       stillRunning: Boolean(result.stillRunning),
       backgroundTaskId: result.backgroundTaskId,
       taskId: result.taskId,
+      streamId: result.streamId,
       pid: result.pid,
       nextActionNote: result.nextActionNote,
     });

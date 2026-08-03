@@ -41,12 +41,19 @@ export type ModelThinkingOption = {
   label: string;
 };
 
+export type ModelThinkingParameter =
+  | 'thinkingLevel'
+  | 'thinkingBudget'
+  | 'reasoning_effort'
+  | 'reasoning'
+  | 'output_config.effort';
+
 /** Capability metadata returned by a provider's live model catalog. */
 export type ModelThinkingCapabilities = {
   levels: MainAgentThinkingLevel[];
   defaultLevel?: MainAgentThinkingLevel;
-  parameter?: 'thinkingLevel' | 'reasoning_effort' | 'reasoning' | 'output_config.effort';
-  source?: 'provider';
+  parameter?: ModelThinkingParameter;
+  source?: 'provider' | 'inferred';
 };
 
 export type MainAgentModelConfig = {
@@ -61,7 +68,6 @@ export type MainAgentModelConfig = {
 // ─── Static fallback chains (newest → oldest stable) ─────────────────────────
 // These are tried IN ORDER when the primary model fails with a model-not-found error.
 export const GEMINI_THINK_FALLBACK_CHAIN: readonly string[] = [
-  'gemini-3.6-flash',
   'gemini-3.5-flash',
   'gemini-3-flash-preview',
   'gemini-3.1-pro-preview',
@@ -70,7 +76,6 @@ export const GEMINI_THINK_FALLBACK_CHAIN: readonly string[] = [
 ];
 
 export const GEMINI_FAST_FALLBACK_CHAIN: readonly string[] = [
-  'gemini-3.6-flash',
   'gemini-3.5-flash',
   'gemini-3-flash-preview',
   'gemini-3.1-flash-lite',
@@ -104,7 +109,6 @@ export const OPENAI_FALLBACK_CHAIN: readonly string[] = [
 ];
 
 export const OPENROUTER_FALLBACK_CHAIN: readonly string[] = [
-  'openrouter/auto',
   'openai/gpt-oss-120b',
   'openai/gpt-oss-20b',
   'openai/gpt-5.6-sol',
@@ -279,7 +283,7 @@ export const MAIN_AGENT_MODE_CONFIG: Record<MainAgentMode, MainAgentModelConfig>
   think: {
     id: 'think',
     provider: 'gemini',
-    label: 'Gemini 3.6 Flash',
+    label: 'Gemini (Think)',
     compactLabel: 'Gemini',
     get modelName() { return resolveModelName('think'); },
     selectable: true,
@@ -381,11 +385,24 @@ export const MAIN_AGENT_THINKING_LEVEL_OPTIONS: ModelThinkingOption[] = [
 const thinkingOptions = (...levels: MainAgentThinkingLevel[]): ModelThinkingOption[] =>
   levels.map(id => MAIN_AGENT_THINKING_LEVEL_OPTIONS.find(option => option.id === id)!);
 
+const normalizeAdvertisedThinkingLevel = (value: unknown): MainAgentThinkingLevel | null => {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim().toLowerCase().replace(/[\s_-]+/g, '-');
+  if (normalized === 'off' || normalized === 'none' || normalized === 'disabled' || normalized === 'no-thinking') return 'off';
+  if (normalized === 'minimal' || normalized === 'min') return 'minimal';
+  if (normalized === 'low') return 'low';
+  if (normalized === 'medium' || normalized === 'med') return 'medium';
+  if (normalized === 'high') return 'high';
+  if (normalized === 'xhigh' || normalized === 'extra-high') return 'xhigh';
+  if (normalized === 'max' || normalized === 'maximum') return 'max';
+  return null;
+};
+
 export const isOpenAIReasoningModel = (model: string) =>
   /(?:^|[/:_-])(?:o1|o3|o4)(?:$|[/:_-])|gpt-5|gpt-oss|luna|terra|sol/i.test(model);
 
 const isClaudeEffortModel = (model: string) =>
-  /(?:claude-(?:fable|mythos|sonnet-5|sonnet-4-6|opus-5|opus-4-(?:6|7|8)))/i.test(model);
+  /(?:claude-(?:fable|mythos|sonnet-5|sonnet-4-6|opus-5|opus-4-(?:5|6|7|8)))/i.test(model);
 
 const isClaudeXHighModel = (model: string) =>
   /(?:claude-(?:fable|mythos|sonnet-5|opus-5|opus-4-(?:7|8)))/i.test(model);
@@ -413,19 +430,22 @@ export function getModelThinkingOptions(
   if (provider === 'gemini') {
     // Gemini 3 uses thinkingLevel. "minimal" is the lowest effort; these
     // models do not provide a true thinking-off setting.
+    if (model.includes('gemini-3.1-flash-lite-image')) return thinkingOptions('minimal', 'high');
     if (model.includes('gemini-3') && model.includes('pro')) return thinkingOptions('low', 'medium', 'high');
     if (model.includes('gemini-3')) {
       return thinkingOptions('minimal', 'low', 'medium', 'high');
     }
     // Gemini 2.5 uses thinkingBudget, not thinkingLevel.
     if (model.includes('gemini-2.5-pro')) return thinkingOptions('low', 'medium', 'high');
-    if (model.includes('gemini-2.5-flash-lite')) return [];
+    if (model.includes('gemini-2.5-flash-lite')) return thinkingOptions('low', 'medium', 'high');
     if (model.includes('gemini-2.5-flash')) return thinkingOptions('off', 'low', 'medium', 'high');
     return [];
   }
 
   if (provider === 'mistral') {
-    // Mistral exposes two API values: "none" and "high".
+    // Adjustable reasoning models expose "none" and "high". Native
+    // Magistral models always reason, so do not offer a fake off switch.
+    if (/magistral/i.test(model)) return thinkingOptions('high');
     return isMistralReasoningModel(model) ? thinkingOptions('off', 'high') : [];
   }
 
@@ -435,14 +455,17 @@ export function getModelThinkingOptions(
       ? thinkingOptions('low', 'medium', 'high', 'xhigh', 'max')
       : isClaudeEffortModel(model)
         ? thinkingOptions('low', 'medium', 'high', 'max')
-        : [];
+        : /claude-(?:sonnet|opus|haiku)-4(?:[.-]|$)/i.test(model)
+          ? thinkingOptions('low', 'medium', 'high')
+          : [];
   }
 
   if (provider === 'openai') {
     if (!isOpenAIReasoningModel(model)) return [];
+    if (/gpt-5(?:\.[0-9]+)?[-.]pro(?:$|[-.])/i.test(model)) return thinkingOptions('high');
     if (model.includes('gpt-5.6')) return thinkingOptions('off', 'low', 'medium', 'high', 'xhigh', 'max');
     if (model.includes('gpt-oss')) return thinkingOptions('low', 'medium', 'high');
-    return thinkingOptions('off', 'minimal', 'low', 'medium', 'high', 'xhigh');
+    return thinkingOptions('off', 'low', 'medium', 'high');
   }
 
   if (provider === 'openrouter') {
@@ -461,6 +484,7 @@ export function getModelThinkingOptions(
       return getModelThinkingOptions('gemini', model.replace(/^google\//, ''));
     }
     if (isOpenAIReasoningModel(model) || model.includes('grok')) {
+      if (/gpt-5(?:\.[0-9]+)?[-.]pro(?:$|[-.])/i.test(model)) return thinkingOptions('high');
       if (model.includes('gpt-5.6')) return thinkingOptions('off', 'low', 'medium', 'high', 'xhigh', 'max');
       if (model.includes('gpt-oss')) return thinkingOptions('low', 'medium', 'high');
       return thinkingOptions('off', 'low', 'medium', 'high');
@@ -503,11 +527,16 @@ export function getGeminiThinkingConfig(
   level: MainAgentThinkingLevel,
   modelName: string,
   includeThoughts: boolean,
+  discovered?: ModelThinkingCapabilities | null,
 ): Record<string, unknown> | null {
   const model = String(modelName || '').toLowerCase();
-  if (!getModelThinkingOptions('gemini', model).length) return null;
+  const options = getModelThinkingOptions('gemini', model, discovered);
+  if (!options.length) return null;
 
-  if (model.includes('gemini-2.5')) {
+  const parameter = discovered?.parameter
+    || (model.includes('gemini-2.5') ? 'thinkingBudget' : 'thinkingLevel');
+
+  if (parameter === 'thinkingBudget' || model.includes('gemini-2.5')) {
     if (model.includes('gemini-2.5-pro')) {
       const thinkingBudget = level === 'low' ? 4096 : level === 'high' ? 32768 : 16384;
       return { thinkingBudget, includeThoughts };
@@ -538,16 +567,17 @@ export function normalizeModelThinkingCapabilities(value: unknown): ModelThinkin
         ? source.supportedThinkingLevels
         : [];
   const levels = Array.from(new Set(rawLevels
-    .map(level => normalizeMainAgentThinkingLevel(level))
-    .filter(level => level !== 'medium' || rawLevels.some(raw => String(raw).toLowerCase() === 'medium'))));
+    .map(level => normalizeAdvertisedThinkingLevel(level))
+    .filter((level): level is MainAgentThinkingLevel => Boolean(level))));
   if (levels.length === 0) return null;
 
   const rawDefault = source.defaultLevel ?? source.default_effort ?? source.defaultThinkingLevel;
-  const defaultLevel = rawDefault === undefined ? undefined : normalizeMainAgentThinkingLevel(rawDefault);
-  const parameter = source.parameter === 'thinkingLevel' || source.parameter === 'reasoning_effort' || source.parameter === 'reasoning' || source.parameter === 'output_config.effort'
+  const defaultLevel = rawDefault === undefined ? undefined : normalizeAdvertisedThinkingLevel(rawDefault);
+  const parameter = source.parameter === 'thinkingLevel' || source.parameter === 'thinkingBudget' || source.parameter === 'reasoning_effort' || source.parameter === 'reasoning' || source.parameter === 'output_config.effort'
     ? source.parameter
     : undefined;
-  return { levels, ...(defaultLevel && levels.includes(defaultLevel) ? { defaultLevel } : {}), ...(parameter ? { parameter } : {}), source: 'provider' };
+  const sourceKind = source.source === 'inferred' ? 'inferred' : 'provider';
+  return { levels, ...(defaultLevel && levels.includes(defaultLevel) ? { defaultLevel } : {}), ...(parameter ? { parameter } : {}), source: sourceKind };
 }
 
 /**
@@ -563,7 +593,8 @@ export function normalizeThinkingLevelForModel(
   const requested = normalizeMainAgentThinkingLevel(value);
   const options = getModelThinkingOptions(provider, modelName, discovered);
   if (options.some(option => option.id === requested)) return requested;
-  return options.find(option => option.id === 'medium')?.id
+  return (discovered?.defaultLevel && options.some(option => option.id === discovered.defaultLevel) ? discovered.defaultLevel : undefined)
+    || options.find(option => option.id === 'medium')?.id
     || options.find(option => option.id === 'low')?.id
     || options[0]?.id
     || requested;

@@ -27,7 +27,8 @@ class GatewayStore {
       const rows = fs.readFileSync(this.eventsPath, 'utf8').trim().split(/\r?\n/).slice(-10000);
       for (const row of rows) {
         if (!row) continue;
-        const event = JSON.parse(row);
+        let event;
+        try { event = JSON.parse(row); } catch { continue; }
         if (event.dedupeKey) this.seen.add(event.dedupeKey);
         this.eventCount = Math.max(this.eventCount + 1, Number(event.cursor || 0));
       }
@@ -81,6 +82,7 @@ class GatewayStore {
   flushConversations() {
     const temp = `${this.conversationsPath}.tmp-${process.pid}`;
     fs.writeFileSync(temp, JSON.stringify(this.listConversations(), null, 2), { encoding: 'utf8', mode: 0o600 });
+    this.backupBeforeReplace(this.conversationsPath);
     fs.renameSync(temp, this.conversationsPath);
   }
 
@@ -90,7 +92,15 @@ class GatewayStore {
 
   listEvents(limit = 100) {
     try {
-      return fs.readFileSync(this.eventsPath, 'utf8').trim().split(/\r?\n/).filter(Boolean).slice(-Math.max(1, Math.min(500, limit))).reverse().map(JSON.parse);
+      return fs.readFileSync(this.eventsPath, 'utf8')
+        .trim()
+        .split(/\r?\n/)
+        .filter(Boolean)
+        .slice(-Math.max(1, Math.min(500, limit)))
+        .reverse()
+        .flatMap((row) => {
+          try { return [JSON.parse(row)]; } catch { return []; }
+        });
     } catch { return []; }
   }
 
@@ -122,6 +132,7 @@ class GatewayStore {
     const values = [...this.acknowledged].slice(-10000);
     const temp = `${this.acknowledgedPath}.tmp-${process.pid}`;
     fs.writeFileSync(temp, JSON.stringify(values), { encoding: 'utf8', mode: 0o600 });
+    this.backupBeforeReplace(this.acknowledgedPath);
     fs.renameSync(temp, this.acknowledgedPath);
     return true;
   }
@@ -210,7 +221,13 @@ class GatewayStore {
   flushCollection(target, collection) {
     const temp = `${target}.tmp-${process.pid}`;
     fs.writeFileSync(temp, JSON.stringify([...collection.values()].slice(-10000), null, 2), { encoding: 'utf8', mode: 0o600 });
+    this.backupBeforeReplace(target);
     fs.renameSync(temp, target);
+  }
+
+  backupBeforeReplace(target) {
+    if (!fs.existsSync(target)) return;
+    try { fs.copyFileSync(target, `${target}.backup`); } catch { }
   }
 }
 

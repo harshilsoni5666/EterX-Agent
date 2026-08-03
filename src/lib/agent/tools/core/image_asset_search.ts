@@ -12,6 +12,7 @@ import {
   resolveWorkspaceDirectoryForContext,
 } from '../../workspace/path_resolver';
 import { safeAxiosRequest } from '../shared/url_safety';
+import { getEterxWorkspaceDir } from '../../storage-paths';
 
 type RawImageCandidate = {
   url: string;
@@ -187,9 +188,9 @@ function resolveOutputDir(outputDir?: string, context?: any): string {
     const publicDir = path.join(getRuntimeWorkspaceRoot(context), 'public');
     targetDir = fse.existsSync(publicDir)
       ? path.join(publicDir, 'eterx-assets')
-      : path.resolve(process.cwd(), '.workspaces', 'temp', 'image-assets');
+      : getEterxWorkspaceDir('temp', 'image-assets');
   } else {
-    targetDir = path.resolve(process.cwd(), '.workspaces', 'temp', 'image-assets');
+    targetDir = getEterxWorkspaceDir('temp', 'image-assets');
   }
 
   const protection = checkEterXProtection(targetDir);

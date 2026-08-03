@@ -14,6 +14,7 @@ import {
 } from '../../workspace/path_resolver';
 import { docxGeneratorTool } from './docx';
 import { safeAxiosRequest } from '../shared/url_safety';
+import { getEterxWorkspaceDir } from '../../storage-paths';
 
 const AdmZip = require('adm-zip');
 const execFileAsync = promisify(execFile);
@@ -94,13 +95,13 @@ Supports real visual assets:
 - XLSX: creates polished workbook sheets with frozen headers, filters, column sizing, formulas, styled tables, real embedded charts, and cell comments that explain summary metrics, data sources, field meanings, formulas, blanks, and large-data optimizations. Use custom spreadsheet tooling only for macros, pivots, or highly specialized models.
 
 Workflow:
-1. Draft long content in .workspaces/sandbox only when chunking is needed.
+1. Draft long content in the runtime scratch root only when chunking is needed.
 2. Call this tool with source_md_path or structured slides/sheets.
-3. Share only the final output path from this tool unless the user asks for drafts/scripts. Final artifacts never remain in .workspaces/sandbox or .temp.`,
+3. Share only the final output path from this tool unless the user asks for drafts/scripts. Final artifacts never remain in the runtime scratch root or .temp.`,
   category: 'workspace',
   inputSchema: z.object({
     format: z.enum(['docx', 'pdf', 'pptx', 'xlsx']).describe('Final consumer artifact format to create'),
-    filepath: z.string().describe('Final output path or filename. Use Desktop/requested real path, not .workspaces/sandbox. Relative names save to Desktop.'),
+    filepath: z.string().describe('Final output path or filename. Use the user-requested path when provided; otherwise a relative name follows the active workspace artifact policy. Do not use .workspaces/sandbox for the final file.'),
     title: z.string().optional().describe('Artifact title'),
     audience: z.string().optional().describe('Intended reader/viewer audience, e.g. executives, investors, students, technical team'),
     purpose: z.string().optional().describe('Business or communication purpose, e.g. decision memo, pitch, analysis, training'),
@@ -187,7 +188,7 @@ async function loadMarkdown(markdown?: string, sourcePath?: string, context?: an
 }
 
 async function tryBuildPdfViaDocx(targetPath: string, title: string, markdown: string, theme: string, context?: any): Promise<boolean> {
-  const tempDir = path.resolve(process.cwd(), '.temp', 'office-artifacts');
+  const tempDir = getEterxWorkspaceDir('temp', 'office-artifacts');
   await fse.ensureDir(tempDir);
   const tempDocx = path.join(tempDir, `pdf_source_${Date.now()}.docx`);
 
@@ -246,7 +247,7 @@ async function materializeImage(source: string, context?: any): Promise<string |
     const contentType = Array.isArray(rawContentType) ? rawContentType[0] || '' : String(rawContentType || '');
     if (!/^image\//i.test(contentType)) throw new Error(`URL is not an image (${contentType || 'unknown content type'})`);
     const ext = contentType.includes('png') ? '.png' : contentType.includes('webp') ? '.webp' : '.jpg';
-    const tempDir = path.resolve(process.cwd(), '.temp', 'office-artifacts', 'images');
+    const tempDir = getEterxWorkspaceDir('temp', 'office-artifacts', 'images');
     await fse.ensureDir(tempDir);
     const imagePath = path.join(tempDir, `image_${Date.now()}_${Math.random().toString(16).slice(2)}${ext}`);
     await fs.writeFile(imagePath, Buffer.from(response.data));

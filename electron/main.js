@@ -41,13 +41,36 @@ if (!hasSingleInstanceLock) {
 }
 
 // Keep installed-app state out of the source folder, Desktop, and roaming
-// profile. Local AppData is the standard Windows location for machine-local
-// runtime copies, logs, cache, encrypted credentials, and agent work data.
+// profile. The renderer, packaged server, and Electron IPC all use the same
+// per-user root on every supported OS.
 const LEGACY_USER_DATA_PATH = app.getPath('userData');
-if (process.platform === 'win32' && process.env.LOCALAPPDATA) {
-  const localUserData = path.join(process.env.LOCALAPPDATA, 'EterX');
-  app.setPath('userData', localUserData);
-  app.setPath('sessionData', path.join(localUserData, 'session'));
+const CANONICAL_USER_DATA_PATH = (() => {
+  const home = app.getPath('home');
+  if (process.platform === 'win32') {
+    const localRoot = String(process.env.LOCALAPPDATA || process.env.APPDATA || '').trim();
+    return path.join(localRoot || path.dirname(LEGACY_USER_DATA_PATH), 'EterX');
+  }
+  if (process.platform === 'darwin') {
+    return path.join(home, 'Library', 'Application Support', 'EterX');
+  }
+  const xdgDataHome = String(process.env.XDG_DATA_HOME || '').trim();
+  return path.join(xdgDataHome || path.join(home, '.local', 'share'), 'EterX');
+})();
+
+if (path.resolve(LEGACY_USER_DATA_PATH) !== path.resolve(CANONICAL_USER_DATA_PATH)) {
+  app.setPath('userData', CANONICAL_USER_DATA_PATH);
+}
+app.setPath('sessionData', path.join(CANONICAL_USER_DATA_PATH, 'session'));
+try {
+  fs.mkdirSync(CANONICAL_USER_DATA_PATH, { recursive: true });
+} catch { }
+
+function getEterxDataRoot() {
+  return path.join(app.getPath('userData'), 'data');
+}
+
+function getEterxSettingsRoot() {
+  return path.join(getEterxDataRoot(), 'settings');
 }
 Menu.setApplicationMenu(null);
 
@@ -76,6 +99,8 @@ let packagedServerUrl = null;
 let isQuitting = false;
 let desktopAutoUpdater = null;
 let desktopUpdateCheckPromise = null;
+const pendingRendererFlushes = new Map();
+let rendererFlushSequence = 0;
 let desktopUpdateState = {
   status: app.isPackaged ? 'idle' : 'development',
   currentVersion: app.getVersion(),
@@ -108,6 +133,8 @@ const APP_ICON_PATH = app.isPackaged
 const NATIVE_THEME_FILE = 'eterx-native-theme.json';
 const SECURE_RUNTIME_SETTINGS_FILE = 'eterx-runtime-settings.bin';
 const SECURE_GATEWAY_SETTINGS_FILE = 'eterx-gateway-settings.bin';
+const FALLBACK_GATEWAY_KEY_FILE = 'eterx-gateway-fallback.key';
+const FALLBACK_GATEWAY_SETTINGS_FILE = 'eterx-gateway-fallback.bin';
 const SECURE_RUNTIME_SETTINGS_PROVIDERS = new Set([
   'gemini', 'mistral', 'openrouter', 'anthropic', 'openai', 'groq', 'deepseek', 'grok',
   'cerebras', 'together', 'fireworks', 'sambanova', 'perplexity', 'deepinfra',
@@ -218,6 +245,46 @@ function publishDesktopUpdateState(patch = {}) {
   return desktopUpdateState;
 }
 
+function requestRendererDurableFlush(timeoutMs = 8000) {
+  const windows = BrowserWindow.getAllWindows().filter((window) => {
+    if (window.isDestroyed()) return false;
+    if (window === mainWindow) return true;
+    const url = window.webContents.getURL();
+    return isHttpTarget(url) && !/\/live-overlay(?:[/?#]|$)/i.test(url);
+  });
+  if (windows.length === 0) return Promise.resolve(true);
+
+  const requestWindowFlush = (targetWindow) => {
+    const requestId = `flush_${Date.now()}_${++rendererFlushSequence}`;
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        pendingRendererFlushes.delete(requestId);
+        logToFile(`[shutdown] Renderer durable flush timed out for window ${targetWindow.id}; continuing with the last committed AppData state.`);
+        resolve(false);
+      }, timeoutMs);
+      pendingRendererFlushes.set(requestId, { resolve, timer, sender: targetWindow.webContents });
+      try {
+        targetWindow.webContents.send('desktop-prepare-for-quit', requestId);
+      } catch (error) {
+        clearTimeout(timer);
+        pendingRendererFlushes.delete(requestId);
+        logToFile(`[shutdown] Could not request renderer durable flush: ${error?.message || error}`);
+        resolve(false);
+      }
+    });
+  };
+
+  return Promise.all(windows.map(requestWindowFlush)).then(results => results.every(Boolean));
+}
+
+ipcMain.on('desktop-durable-flush-complete', (event, requestId, ok) => {
+  const pending = pendingRendererFlushes.get(String(requestId || ''));
+  if (!pending || event.sender !== pending.sender) return;
+  pendingRendererFlushes.delete(String(requestId));
+  clearTimeout(pending.timer);
+  pending.resolve(ok !== false);
+});
+
 function getPackagedDependencyModuleRoot() {
   const dependencyArchive = path.join(process.resourcesPath, 'runtime', 'dependencies.asar');
   if (!fs.existsSync(dependencyArchive)) return null;
@@ -309,7 +376,7 @@ function normalizeNativeTheme(theme) {
 }
 
 function nativeThemePath() {
-  return path.join(app.getPath('userData'), NATIVE_THEME_FILE);
+  return path.join(getEterxSettingsRoot(), NATIVE_THEME_FILE);
 }
 
 function getSplashIconDataUrl() {
@@ -322,7 +389,7 @@ function getSplashIconDataUrl() {
 }
 
 function secureRuntimeSettingsPath() {
-  return path.join(app.getPath('userData'), SECURE_RUNTIME_SETTINGS_FILE);
+  return path.join(getEterxSettingsRoot(), SECURE_RUNTIME_SETTINGS_FILE);
 }
 
 function secureStorageAvailable() {
@@ -336,8 +403,10 @@ function secureStorageAvailable() {
 function normalizeSecureRuntimeSettings(raw) {
   const source = raw && typeof raw === 'object' ? raw : {};
   const apiKeys = {};
+  const liveApiKeys = {};
   const modelApiKeys = {};
   const modelOverrides = {};
+  const baseURLs = {};
 
   for (const [provider, value] of Object.entries(source.apiKeys || {})) {
     if (!SECURE_RUNTIME_SETTINGS_PROVIDERS.has(provider) || typeof value !== 'string') continue;
@@ -358,19 +427,33 @@ function normalizeSecureRuntimeSettings(raw) {
     if (model && model.length <= 220 && !/[\r\n\t]/.test(model)) modelOverrides[provider] = model;
   }
 
-  return { apiKeys, modelApiKeys, modelOverrides };
+  for (const [provider, value] of Object.entries(source.liveApiKeys || {})) {
+    if (!SECURE_RUNTIME_SETTINGS_PROVIDERS.has(provider) || typeof value !== 'string') continue;
+    const key = value.trim();
+    if (key && key.length <= 40_000) liveApiKeys[provider] = key;
+  }
+
+  for (const [provider, value] of Object.entries(source.baseURLs || {})) {
+    if (!SECURE_RUNTIME_SETTINGS_PROVIDERS.has(provider) || typeof value !== 'string') continue;
+    const baseURL = value.trim().replace(/\/+$/, '');
+    if (baseURL && baseURL.length <= 2048 && !/[\r\n\t]/.test(baseURL)) baseURLs[provider] = baseURL;
+  }
+
+  return { apiKeys, liveApiKeys, modelApiKeys, modelOverrides, baseURLs };
 }
 
 function readSecureRuntimeSettings() {
-  if (!secureStorageAvailable()) return { available: false, apiKeys: {}, modelApiKeys: {}, modelOverrides: {} };
+  if (!secureStorageAvailable()) return { available: false, apiKeys: {}, liveApiKeys: {}, modelApiKeys: {}, modelOverrides: {}, baseURLs: {} };
 
-  try {
-    const encrypted = fs.readFileSync(secureRuntimeSettingsPath());
-    const decoded = safeStorage.decryptString(encrypted);
-    return { available: true, ...normalizeSecureRuntimeSettings(JSON.parse(decoded)) };
-  } catch {
-    return { available: true, apiKeys: {}, modelApiKeys: {}, modelOverrides: {} };
+  for (const source of [secureRuntimeSettingsPath(), `${secureRuntimeSettingsPath()}.backup`]) {
+    try {
+      if (!fs.existsSync(source)) continue;
+      const encrypted = fs.readFileSync(source);
+      const decoded = safeStorage.decryptString(encrypted);
+      return { available: true, ...normalizeSecureRuntimeSettings(JSON.parse(decoded)) };
+    } catch { }
   }
+  return { available: true, apiKeys: {}, liveApiKeys: {}, modelApiKeys: {}, modelOverrides: {}, baseURLs: {} };
 }
 
 function writeSecureRuntimeSettings(raw) {
@@ -386,6 +469,7 @@ function writeSecureRuntimeSettings(raw) {
   try {
     fs.mkdirSync(path.dirname(target), { recursive: true });
     fs.writeFileSync(temporary, safeStorage.encryptString(serialized), { mode: 0o600 });
+    if (fs.existsSync(target)) fs.copyFileSync(target, `${target}.backup`);
     fs.rmSync(target, { force: true });
     fs.renameSync(temporary, target);
     return { ok: true, available: true, ...settings };
@@ -398,36 +482,93 @@ function writeSecureRuntimeSettings(raw) {
 function clearSecureRuntimeSettings() {
   try {
     fs.rmSync(secureRuntimeSettingsPath(), { force: true });
+    fs.rmSync(`${secureRuntimeSettingsPath()}.backup`, { force: true });
     return { ok: true };
   } catch (error) {
     return { ok: false, error: error?.message || 'Failed to clear secure settings.' };
   }
 }
 
+function connectorStoreSecret() {
+  const target = path.join(getEterxSettingsRoot(), 'eterx-connector-secret.bin');
+  if (!secureStorageAvailable()) return '';
+  try {
+    if (fs.existsSync(target)) return safeStorage.decryptString(fs.readFileSync(target));
+    const secret = crypto.randomBytes(32).toString('hex');
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, safeStorage.encryptString(secret), { mode: 0o600 });
+    return secret;
+  } catch (error) {
+    console.warn('[EterX] Connector secret unavailable:', error?.message || error);
+    return '';
+  }
+}
+
 function secureGatewaySettingsPath() {
-  return path.join(app.getPath('userData'), SECURE_GATEWAY_SETTINGS_FILE);
+  return path.join(getEterxSettingsRoot(), SECURE_GATEWAY_SETTINGS_FILE);
+}
+
+function fallbackGatewayKey() {
+  const target = path.join(getEterxSettingsRoot(), FALLBACK_GATEWAY_KEY_FILE);
+  try {
+    if (fs.existsSync(target)) {
+      const key = fs.readFileSync(target);
+      if (key.length === 32) return key;
+    }
+    const key = crypto.randomBytes(32);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, key, { mode: 0o600 });
+    return key;
+  } catch {
+    return crypto.createHash('sha256').update(`${getEterxDataRoot()}:eterx-gateway-fallback`).digest();
+  }
+}
+
+function fallbackGatewaySettingsPath() {
+  return path.join(getEterxSettingsRoot(), FALLBACK_GATEWAY_SETTINGS_FILE);
+}
+
+function encryptFallbackGatewaySettings(settings) {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', fallbackGatewayKey(), iv);
+  const data = Buffer.concat([cipher.update(JSON.stringify(settings), 'utf8'), cipher.final()]);
+  return JSON.stringify({ iv: iv.toString('base64'), tag: cipher.getAuthTag().toString('base64'), data: data.toString('base64') });
+}
+
+function decryptFallbackGatewaySettings(raw) {
+  const envelope = JSON.parse(raw);
+  const decipher = crypto.createDecipheriv('aes-256-gcm', fallbackGatewayKey(), Buffer.from(envelope.iv, 'base64'));
+  decipher.setAuthTag(Buffer.from(envelope.tag, 'base64'));
+  return JSON.parse(Buffer.concat([decipher.update(Buffer.from(envelope.data, 'base64')), decipher.final()]).toString('utf8'));
 }
 
 function readGatewaySettings() {
-  if (!secureStorageAvailable()) return normalizeGatewayConfig(DEFAULT_GATEWAY_CONFIG);
-  try {
-    const encrypted = fs.readFileSync(secureGatewaySettingsPath());
-    return normalizeGatewayConfig(JSON.parse(safeStorage.decryptString(encrypted)));
-  } catch {
-    return normalizeGatewayConfig(DEFAULT_GATEWAY_CONFIG);
+  if (secureStorageAvailable()) {
+    for (const source of [secureGatewaySettingsPath(), `${secureGatewaySettingsPath()}.backup`]) {
+      try {
+        if (!fs.existsSync(source)) continue;
+        const encrypted = fs.readFileSync(source);
+        return normalizeGatewayConfig(JSON.parse(safeStorage.decryptString(encrypted)));
+      } catch { }
+    }
   }
+  for (const source of [fallbackGatewaySettingsPath(), `${fallbackGatewaySettingsPath()}.backup`]) {
+    try {
+      if (fs.existsSync(source)) return normalizeGatewayConfig(decryptFallbackGatewaySettings(fs.readFileSync(source, 'utf8')));
+    } catch { }
+  }
+  return normalizeGatewayConfig(DEFAULT_GATEWAY_CONFIG);
 }
 
 function writeGatewaySettings(raw) {
-  if (!secureStorageAvailable()) {
-    return { ok: false, error: 'OS secure storage is unavailable; gateway credentials were not saved.' };
-  }
   const settings = normalizeGatewayConfig(raw);
-  const target = secureGatewaySettingsPath();
+  const useSecureStorage = secureStorageAvailable();
+  const target = useSecureStorage ? secureGatewaySettingsPath() : fallbackGatewaySettingsPath();
   const temporary = `${target}.tmp-${process.pid}`;
   try {
     fs.mkdirSync(path.dirname(target), { recursive: true });
-    fs.writeFileSync(temporary, safeStorage.encryptString(JSON.stringify(settings)), { mode: 0o600 });
+    fs.writeFileSync(temporary, useSecureStorage ? safeStorage.encryptString(JSON.stringify(settings)) : encryptFallbackGatewaySettings(settings), { mode: 0o600 });
+    if (fs.existsSync(target)) fs.copyFileSync(target, `${target}.backup`);
     fs.rmSync(target, { force: true });
     fs.renameSync(temporary, target);
     return { ok: true, settings };
@@ -499,7 +640,7 @@ function setGatewayLaunchAtLogin(enabled) {
 
 async function initializeGatewayDaemon() {
   gatewayDaemon = new GatewayDaemon({
-    dataDir: path.join(app.getPath('userData'), 'data', 'gateways'),
+    dataDir: path.join(getEterxDataRoot(), 'gateways'),
     config: readGatewaySettings(),
     onEvent: (event) => publishGatewayEvent('gateway-input', event),
     onStatus: (status) => publishGatewayEvent('gateway-status', status),
@@ -630,25 +771,63 @@ function removeDesktopRuntimeSettingEnvironment(env) {
 
 function migrateLegacyUserData() {
   const currentUserData = app.getPath('userData');
-  if (LEGACY_USER_DATA_PATH && path.resolve(LEGACY_USER_DATA_PATH) !== path.resolve(currentUserData) && fs.existsSync(LEGACY_USER_DATA_PATH)) {
-    // Migrate only durable user-owned state. The old runtime and browser cache
-    // are deliberately excluded so a new install always starts from its own
-    // verified packaged resources.
-    const candidates = ['data', NATIVE_THEME_FILE, SECURE_RUNTIME_SETTINGS_FILE, SECURE_GATEWAY_SETTINGS_FILE];
-    for (const name of candidates) {
-      const source = path.join(LEGACY_USER_DATA_PATH, name);
-      const destination = path.join(currentUserData, name);
+  // Migrate only durable user-owned state. The old runtime and browser cache
+  // are deliberately excluded so a new install always starts from its own
+  // verified packaged resources. Native settings used to live beside `data`;
+  // they now belong to the same AppData-backed settings directory.
+  const legacyRoots = Array.from(new Set([
+    LEGACY_USER_DATA_PATH,
+    currentUserData,
+  ].filter(Boolean).map((value) => path.resolve(value))));
+  const durableFiles = [
+    NATIVE_THEME_FILE,
+    SECURE_RUNTIME_SETTINGS_FILE,
+    SECURE_GATEWAY_SETTINGS_FILE,
+    FALLBACK_GATEWAY_KEY_FILE,
+    FALLBACK_GATEWAY_SETTINGS_FILE,
+    'eterx-connector-secret.bin',
+  ];
+  const dataRoot = getEterxDataRoot();
+  const settingsRoot = getEterxSettingsRoot();
+  for (const legacyRoot of legacyRoots) {
+    const dataSource = path.join(legacyRoot, 'data');
+    if (path.resolve(dataSource) !== path.resolve(dataRoot) && fs.existsSync(dataSource)) {
+      try {
+        if (fs.statSync(dataSource).isDirectory() && fs.existsSync(dataRoot)) copyMissingUserData(dataSource, dataRoot);
+        else if (!fs.existsSync(dataRoot)) fs.cpSync(dataSource, dataRoot, { recursive: true, force: false, dereference: true });
+      } catch (error) {
+        console.warn('[EterX] Could not migrate legacy data:', error?.message || error);
+      }
+    }
+    for (const fileName of durableFiles) {
+      const source = path.join(legacyRoot, fileName);
+      const destination = path.join(settingsRoot, fileName);
       if (!fs.existsSync(source) || fs.existsSync(destination)) continue;
       try {
         fs.mkdirSync(path.dirname(destination), { recursive: true });
         fs.cpSync(source, destination, { recursive: true, force: false, dereference: true });
       } catch (error) {
-        console.warn(`[EterX] Could not migrate legacy ${name}:`, error?.message || error);
+        console.warn(`[EterX] Could not migrate legacy ${fileName}:`, error?.message || error);
       }
     }
   }
 
   migrateLegacySourceBootstrapData(currentUserData);
+}
+
+function copyMissingUserData(sourceRoot, destinationRoot) {
+  fs.mkdirSync(destinationRoot, { recursive: true });
+  for (const entry of fs.readdirSync(sourceRoot, { withFileTypes: true })) {
+    const source = path.join(sourceRoot, entry.name);
+    const destination = path.join(destinationRoot, entry.name);
+    if (fs.existsSync(destination)) {
+      if (entry.isDirectory() && fs.statSync(destination).isDirectory()) {
+        copyMissingUserData(source, destination);
+      }
+      continue;
+    }
+    fs.cpSync(source, destination, { recursive: true, force: false, dereference: true });
+  }
 }
 
 function migrateLegacySourceBootstrapData(currentUserData) {
@@ -657,37 +836,64 @@ function migrateLegacySourceBootstrapData(currentUserData) {
   // per-user application-data directory. Keep migration platform-aware so a
   // macOS install does not accidentally look in the Linux XDG directory and
   // leave the user's old workspaces behind.
-  const sourceBase = process.platform === 'win32'
-    ? path.join(process.env.LOCALAPPDATA || currentUserData, 'EterX')
+  const sourceBases = process.platform === 'win32'
+    ? [path.join(process.env.LOCALAPPDATA || currentUserData, 'EterX')]
     : process.platform === 'darwin'
-      ? path.join(home, 'Library', 'Application Support', 'EterX')
-      : path.join(process.env.XDG_DATA_HOME || path.join(home, '.local', 'share'), 'eterx');
-  const legacyWorkspace = path.join(sourceBase, 'data');
-  const legacySource = path.join(sourceBase, 'source');
-  const destinationData = path.join(currentUserData, 'data');
+      ? [path.join(home, 'Library', 'Application Support', 'EterX')]
+      : [
+        path.join(process.env.XDG_DATA_HOME || path.join(home, '.local', 'share'), 'eterx'),
+        path.join(process.env.XDG_DATA_HOME || path.join(home, '.local', 'share'), 'EterX'),
+      ];
+  const destinationData = getEterxDataRoot();
   const destinationWorkspace = path.join(destinationData, '.workspaces');
   const migrationMarker = path.join(destinationData, '.eterx-source-bootstrap-migrated');
 
   try {
     if (fs.existsSync(migrationMarker)) return;
+    const destinationDataPath = path.resolve(destinationData);
+    const sourceBase = sourceBases
+      .map((candidate) => path.resolve(candidate))
+      .find((candidate) => path.resolve(path.join(candidate, 'data')) !== destinationDataPath && [
+        path.join(candidate, 'data', 'config', 'setup-meta.json'),
+        path.join(candidate, 'data', 'memory'),
+        path.join(candidate, 'data', '.memory_v2'),
+        path.join(candidate, 'data', 'chats'),
+        path.join(candidate, 'data', 'settings'),
+        path.join(candidate, 'data', 'scheduled-tasks'),
+        path.join(candidate, 'data', '.workspaces'),
+      ].some((marker) => fs.existsSync(marker)));
+    if (!sourceBase) return;
+    const legacyWorkspace = path.join(sourceBase, 'data');
+    const legacySource = path.join(sourceBase, 'source');
     const markerCandidates = [
       path.join(legacyWorkspace, 'config', 'setup-meta.json'),
       path.join(legacyWorkspace, 'memory'),
       path.join(legacyWorkspace, '.memory_v2'),
+      path.join(legacyWorkspace, 'chats'),
+      path.join(legacyWorkspace, 'settings'),
+      path.join(legacyWorkspace, 'scheduled-tasks'),
+      path.join(legacyWorkspace, '.workspaces'),
     ];
     if (!markerCandidates.some((candidate) => fs.existsSync(candidate))) return;
 
     fs.mkdirSync(destinationWorkspace, { recursive: true });
     const excluded = new Set([
-      '.workspaces', 'runtime', 'session', 'cache', 'logs',
+      'runtime', 'session', 'cache', 'logs',
       NATIVE_THEME_FILE, SECURE_RUNTIME_SETTINGS_FILE,
     ]);
+    const directDataEntries = new Set(['chats', 'settings', 'scheduled-tasks', 'gateway']);
     for (const entry of fs.readdirSync(legacyWorkspace, { withFileTypes: true })) {
       if (excluded.has(entry.name)) continue;
       const source = path.join(legacyWorkspace, entry.name);
-      const destination = path.join(destinationWorkspace, entry.name);
-      if (fs.existsSync(destination)) continue;
-      fs.cpSync(source, destination, { recursive: true, force: false, dereference: true });
+      const destinationRoot = directDataEntries.has(entry.name) ? destinationData : destinationWorkspace;
+      const destination = entry.name === '.workspaces'
+        ? destinationWorkspace
+        : path.join(destinationRoot, entry.name);
+      if (fs.existsSync(destination) && entry.isDirectory()) {
+        copyMissingUserData(source, destination);
+      } else if (!fs.existsSync(destination)) {
+        fs.cpSync(source, destination, { recursive: true, force: false, dereference: true });
+      }
     }
 
     const legacyEnv = path.join(legacySource, '.env.local');
@@ -705,19 +911,26 @@ function migrateLegacySourceBootstrapData(currentUserData) {
 }
 
 function readNativeTheme() {
-  try {
-    const raw = fs.readFileSync(nativeThemePath(), 'utf8');
-    return normalizeNativeTheme(JSON.parse(raw)?.theme);
-  } catch {
-    return 'light';
+  for (const source of [nativeThemePath(), `${nativeThemePath()}.backup`]) {
+    try {
+      if (!fs.existsSync(source)) continue;
+      const raw = fs.readFileSync(source, 'utf8');
+      return normalizeNativeTheme(JSON.parse(raw)?.theme);
+    } catch { }
   }
+  return 'light';
 }
 
 function writeNativeTheme(theme) {
   const safeTheme = normalizeNativeTheme(theme);
   try {
-    fs.mkdirSync(app.getPath('userData'), { recursive: true });
-    fs.writeFileSync(nativeThemePath(), JSON.stringify({ theme: safeTheme }, null, 2), 'utf8');
+    const target = nativeThemePath();
+    const temporary = `${target}.tmp-${process.pid}`;
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(temporary, JSON.stringify({ theme: safeTheme }, null, 2), 'utf8');
+    if (fs.existsSync(target)) fs.copyFileSync(target, `${target}.backup`);
+    fs.rmSync(target, { force: true });
+    fs.renameSync(temporary, target);
   } catch (error) {
     console.warn('[EterX] Failed to persist native theme:', error);
   }
@@ -1136,7 +1349,7 @@ function preparePackagedRuntime() {
     throw new Error(`Bundled runtime is missing: ${serverEntry}`);
   }
 
-  const dataRoot = path.join(app.getPath('userData'), 'data');
+  const dataRoot = getEterxDataRoot();
   fs.mkdirSync(path.join(dataRoot, '.workspaces'), { recursive: true });
   fs.mkdirSync(path.join(dataRoot, '.temp'), { recursive: true });
   packagedRuntimeRoot = runtimeRoot;
@@ -1147,7 +1360,7 @@ function pruneOldPackagedRuntimes() {
   if (!app.isPackaged) return;
   const legacyRuntimeRoot = path.join(app.getPath('userData'), 'runtime');
   const legacySourceRoot = path.join(app.getPath('userData'), 'source');
-  const dataRoot = path.join(app.getPath('userData'), 'data');
+  const dataRoot = getEterxDataRoot();
   if (!fs.existsSync(legacyRuntimeRoot) && !fs.existsSync(legacySourceRoot)) return;
   try {
     if (fs.existsSync(legacyRuntimeRoot)) {
@@ -1197,9 +1410,9 @@ async function startPackagedServer() {
   const runtimeRoot = preparePackagedRuntime();
   const startPort = Number(process.env.ETERX_PORT || process.env.PORT || 3000);
   const port = await findAvailablePort(Number.isInteger(startPort) && startPort > 0 ? startPort : 3000);
-  const persistentEnv = readEnvFile(path.join(app.getPath('userData'), 'data', '.env.local'));
+  const persistentEnv = readEnvFile(path.join(getEterxDataRoot(), '.env.local'));
   const secureSettings = readSecureRuntimeSettings();
-  const dataRoot = path.join(app.getPath('userData'), 'data');
+  const dataRoot = getEterxDataRoot();
   const runtimeModules = getPackagedDependencyModuleRoot() || path.join(runtimeRoot, 'modules');
   const env = removeDesktopRuntimeSettingEnvironment({
     ...process.env,
@@ -1213,6 +1426,8 @@ async function startPackagedServer() {
     ETERX_DATA_DIR: dataRoot,
     NODE_PATH: [runtimeModules, process.env.NODE_PATH].filter(Boolean).join(path.delimiter),
   });
+  const connectorSecret = connectorStoreSecret();
+  if (connectorSecret) env.ETERX_CONNECTOR_SECRET = connectorSecret;
   Object.assign(env, secureRuntimeSettingsEnvironment(secureSettings));
 
   // Keep the BrowserWindow origin aligned with Next's canonical local URL.
@@ -1945,110 +2160,27 @@ ipcMain.handle('open-external', async (event, url) => {
   await shell.openExternal(url);
 });
 
-ipcMain.handle('app-restart', () => {
+ipcMain.handle('app-restart', async () => {
+  await requestRendererDurableFlush();
+  isQuitting = true;
   stopPackagedServer();
   app.relaunch();
   app.exit(0);
+  return true;
 });
 
-ipcMain.handle('app-close', () => {
+ipcMain.handle('app-close', async () => {
   if (gatewayDaemon?.config?.enabled && gatewayDaemon?.config?.keepRunningOnClose) {
+    await requestRendererDurableFlush();
     mainWindow?.hide();
     ensureBackgroundTray();
     return { hiddenToTray: true };
   }
+  await requestRendererDurableFlush();
   isQuitting = true;
   stopPackagedServer();
   app.quit();
   return { hiddenToTray: false };
-});
-
-let desktopChatSnapshotCache = null;
-let desktopChatSnapshotLoadPromise = null;
-let desktopChatSnapshotGeneration = 0;
-
-const readDesktopChatSnapshot = async () => {
-  if (desktopChatSnapshotCache) return desktopChatSnapshotCache;
-  if (desktopChatSnapshotLoadPromise) return desktopChatSnapshotLoadPromise;
-  const chatsPath = path.join(app.getPath('userData'), 'data', 'chats', 'chats.json');
-  const loadGeneration = desktopChatSnapshotGeneration;
-  desktopChatSnapshotLoadPromise = fs.promises.readFile(chatsPath, 'utf8')
-    .then(raw => {
-      const parsed = JSON.parse(raw);
-      const chats = Array.isArray(parsed?.chats)
-        ? parsed.chats.filter((chat) => chat && typeof chat === 'object' && typeof chat.id === 'string').slice(0, 2000)
-        : [];
-      const snapshot = {
-        version: 1,
-        savedAt: Number.isFinite(parsed?.savedAt) ? Math.max(0, parsed.savedAt) : 0,
-        chats,
-      };
-      if (desktopChatSnapshotGeneration === loadGeneration) {
-        desktopChatSnapshotCache = snapshot;
-      }
-      return desktopChatSnapshotCache || snapshot;
-    })
-    .catch(error => {
-      if (error?.code !== 'ENOENT') throw error;
-      const emptySnapshot = { version: 1, savedAt: 0, chats: [] };
-      if (desktopChatSnapshotGeneration === loadGeneration) {
-        desktopChatSnapshotCache = emptySnapshot;
-      }
-      return desktopChatSnapshotCache || emptySnapshot;
-    })
-    .finally(() => {
-      desktopChatSnapshotLoadPromise = null;
-    });
-  return desktopChatSnapshotLoadPromise;
-};
-
-ipcMain.handle('chat-snapshot-load', async (_event, requestedChatId) => {
-  const snapshot = await readDesktopChatSnapshot();
-  const chatId = typeof requestedChatId === 'string' ? requestedChatId.trim() : '';
-  if (chatId) return { chat: snapshot.chats.find((chat) => chat.id === chatId) || null };
-  return { ...snapshot, chats: [...snapshot.chats] };
-});
-
-ipcMain.handle('chat-snapshot-save', (_event, snapshot) => {
-  const chats = Array.isArray(snapshot?.chats)
-    ? snapshot.chats.filter((chat) => chat && typeof chat === 'object' && typeof chat.id === 'string').slice(0, 2000)
-    : null;
-  const savedAt = Number(snapshot?.savedAt);
-  if (!chats || !Number.isFinite(savedAt) || savedAt <= 0) {
-    throw new Error('Invalid chat snapshot.');
-  }
-
-  const chatsDir = path.join(app.getPath('userData'), 'data', 'chats');
-  const chatsPath = path.join(chatsDir, 'chats.json');
-  let current = desktopChatSnapshotCache;
-  try {
-    if (!current) current = JSON.parse(fs.readFileSync(chatsPath, 'utf8'));
-    if (Number(current?.savedAt || 0) > savedAt) {
-      desktopChatSnapshotCache = current;
-      return { ok: true, savedAt: current.savedAt };
-    }
-  } catch {
-    if (fs.existsSync(chatsPath)) {
-      const corruptPath = path.join(chatsDir, `chats.corrupt-${Date.now()}.json`);
-      try { fs.renameSync(chatsPath, corruptPath); } catch { }
-    }
-  }
-
-  let chatsToWrite = chats;
-  if (snapshot?.partial === true && Array.isArray(snapshot?.chatIds) && current && Array.isArray(current.chats)) {
-    const safeIds = Array.from(new Set(snapshot.chatIds.filter((id) => typeof id === 'string' && id.length > 0))).slice(0, 2000);
-    const byId = new Map(current.chats.map((chat) => [chat.id, chat]));
-    for (const chat of chats) byId.set(chat.id, chat);
-    chatsToWrite = safeIds.map((id) => byId.get(id)).filter(Boolean);
-  }
-
-  fs.mkdirSync(chatsDir, { recursive: true });
-  const temporaryPath = path.join(chatsDir, `.chats.electron.${process.pid}.${Date.now()}.tmp`);
-  fs.writeFileSync(temporaryPath, JSON.stringify({ version: 1, savedAt, chats: chatsToWrite }), 'utf8');
-  fs.renameSync(temporaryPath, chatsPath);
-  desktopChatSnapshotGeneration += 1;
-  desktopChatSnapshotCache = { version: 1, savedAt, chats: chatsToWrite };
-  return { ok: true, savedAt };
 });
 
 ipcMain.handle('native-theme-get', () => readNativeTheme());
@@ -2057,9 +2189,8 @@ ipcMain.on('native-theme-set', (_event, theme) => {
   applyNativeWindowTheme(theme);
 });
 
-// API keys are kept out of the browser-origin localStorage when running as a
-// desktop app. Electron encrypts this payload with the operating system's
-// credential store, then injects it into the local runtime on the next launch.
+// Desktop credentials stay out of renderer storage. Electron encrypts this
+// AppData payload with the operating system credential store.
 ipcMain.handle('secure-runtime-settings-get', () => readSecureRuntimeSettings());
 
 ipcMain.handle('secure-runtime-settings-save', (_event, settings) => writeSecureRuntimeSettings(settings));
@@ -2155,8 +2286,17 @@ ipcMain.handle('desktop-update-download', async () => {
   return desktopUpdateState;
 });
 
-ipcMain.handle('desktop-update-install', () => {
+ipcMain.handle('desktop-update-install', async () => {
   if (!app.isPackaged || !desktopAutoUpdater || desktopUpdateState.status !== 'ready') return false;
+  const flushed = await requestRendererDurableFlush();
+  if (!flushed) {
+    publishDesktopUpdateState({
+      status: 'error',
+      percent: 100,
+      message: 'Update paused because the latest chats or settings could not be committed to AppData. Retry when the app is connected.',
+    });
+    return false;
+  }
   isQuitting = true;
   stopPackagedServer();
   setImmediate(() => desktopAutoUpdater.quitAndInstall(false, true));
@@ -2253,13 +2393,20 @@ app.on('ready', async () => {
 
 app.on('window-all-closed', function () {
   if (process.platform !== 'darwin') {
-    isQuitting = true;
-    stopPackagedServer();
     app.quit();
   }
 });
 
-app.on('before-quit', () => {
+app.on('before-quit', (event) => {
+  if (!isQuitting) {
+    event.preventDefault();
+    isQuitting = true;
+    void requestRendererDurableFlush().finally(() => {
+      stopPackagedServer();
+      app.quit();
+    });
+    return;
+  }
   isQuitting = true;
   void gatewayDaemon?.stop();
   stopPackagedServer();

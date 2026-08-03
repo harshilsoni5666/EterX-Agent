@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { ToolDefinition } from '../../schemas';
 import path from 'path';
 import fs from 'fs-extra';
+import { getEterxWorkspaceDir } from '../../storage-paths';
 
 /**
  * Permission & Safety Guard
@@ -10,7 +11,7 @@ import fs from 'fs-extra';
  * Enforces sandboxing, blacklists dangerous commands, and logs all operations.
  */
 
-const AUDIT_DIR = path.resolve(process.cwd(), '.workspaces', '.audit');
+const AUDIT_DIR = getEterxWorkspaceDir('.audit');
 const BLOCKED_COMMANDS = [
   'format', 'del /s', 'rm -rf /', 'rmdir /s c:', 'shutdown', 'restart-computer',
   'reboot', 'poweroff', 'halt', 'systemctl poweroff',
@@ -76,8 +77,8 @@ export const safetyGuardTool: ToolDefinition = {
           }
           
           // Check if path is within workspace
-          const workspaceRoot = path.resolve(process.cwd(), '.workspaces');
-          const isInWorkspace = absPath.startsWith(workspaceRoot) || absPath.startsWith(process.cwd());
+          const workspaceRoot = getEterxWorkspaceDir();
+          const isInWorkspace = absPath === workspaceRoot || absPath.startsWith(`${workspaceRoot}${path.sep}`) || absPath.startsWith(process.cwd());
           
           await logAudit('path_check', 'check', input.path, 'allowed');
           return {
@@ -124,9 +125,13 @@ export const safetyGuardTool: ToolDefinition = {
 async function logAudit(tool: string, action: string, args: string, result: 'allowed' | 'blocked', reason?: string) {
   try {
     const auditFile = path.join(AUDIT_DIR, 'audit.json');
+    await fs.ensureDir(AUDIT_DIR);
     const entries: AuditEntry[] = await fs.pathExists(auditFile) ? await fs.readJSON(auditFile) : [];
     entries.push({ timestamp: new Date().toISOString(), tool, action, args: args.substring(0, 200), result, reason });
     if (entries.length > 500) entries.splice(0, entries.length - 500);
-    await fs.writeJSON(auditFile, entries, { spaces: 2 });
+    const temporary = `${auditFile}.tmp-${process.pid}-${Date.now()}`;
+    await fs.writeJSON(temporary, entries, { spaces: 2 });
+    if (await fs.pathExists(auditFile)) await fs.copyFile(auditFile, `${auditFile}.backup`).catch(() => {});
+    await fs.move(temporary, auditFile, { overwrite: true });
   } catch { }
 }

@@ -2,8 +2,7 @@
 import React, { useDeferredValue, useMemo, useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Search, Check, ChevronRight, Puzzle } from 'lucide-react';
-import { Tooltip } from '../ui/tooltip';
+import { X, Search, Check, ChevronRight } from 'lucide-react';
 
 // Connector registry logos are local app SVGs in public/icons/connectors.
 const connectorLogo = (id: string, label: string) => (
@@ -30,7 +29,7 @@ export const CONNECTORS = [
   { id: 'google_calendar', name: 'Google Calendar', desc: 'Create and manage events and schedules', category: 'Email & Calendar', logo: connectorLogo('google_calendar', 'Google Calendar'), color: '#4285F4' },
   { id: 'outlook_calendar', name: 'Outlook Calendar', desc: 'View and manage Outlook calendar events', category: 'Email & Calendar', logo: connectorLogo('outlook_calendar', 'Outlook Calendar'), color: '#0078D4' },
   // Dev Tools
-  { id: 'github', name: 'GitHub', desc: 'Repos, PRs, issues, and code reviews', category: 'Dev Tools', logo: connectorLogo('github', 'GitHub'), color: '#24292E', functional: false },
+  { id: 'github', name: 'GitHub', desc: 'Repos, PRs, issues, and code reviews', category: 'Dev Tools', logo: connectorLogo('github', 'GitHub'), color: '#24292E' },
   { id: 'gitlab', name: 'GitLab', desc: 'Manage repos, pipelines, and merge requests', category: 'Dev Tools', logo: connectorLogo('gitlab', 'GitLab'), color: '#FC6D26' },
   { id: 'jira', name: 'Jira', desc: 'Create and track issues, manage sprints', category: 'Dev Tools', logo: connectorLogo('jira', 'Jira'), color: '#0052CC' },
   { id: 'linear', name: 'Linear', desc: 'Manage issues and track engineering work', category: 'Dev Tools', logo: connectorLogo('linear', 'Linear'), color: '#5E6AD2' },
@@ -67,7 +66,6 @@ export const getConnectorIcon = (toolName: string): React.ReactNode | null => {
   };
   return map[toolName] || null;
 };
-
 // ── Main Modal ───────────────────────────────────────────────
 interface ConnectorsModalProps {
   open: boolean;
@@ -100,7 +98,46 @@ export const ConnectorsModal: React.FC<ConnectorsModalProps> = ({ open, onClose,
   }, [open, onClose]);
 
   const [mounted, setMounted] = useState(false);
+  const [setupConnector, setSetupConnector] = useState<typeof CONNECTORS[number] | null>(null);
+  const [baseUrl, setBaseUrl] = useState('');
+  const [token, setToken] = useState('');
+  const [healthPath, setHealthPath] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [setupError, setSetupError] = useState('');
   useEffect(() => setMounted(true), []);
+
+  const openSetup = (connector: typeof CONNECTORS[number]) => {
+    if (connector.id === 'slack') {
+      onConnect(connector.id);
+      return;
+    }
+    setSetupConnector(connector);
+    setBaseUrl('');
+    setToken('');
+    setHealthPath('');
+    setSetupError('');
+  };
+
+  const saveSetup = async () => {
+    if (!setupConnector) return;
+    setSaving(true);
+    setSetupError('');
+    try {
+      const response = await fetch('/api/connectors/status', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id: setupConnector.id, baseUrl, token, healthPath }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || !payload.ok) throw new Error(payload.error || 'Connection verification failed.');
+      onConnect(setupConnector.id);
+      setSetupConnector(null);
+    } catch (error) {
+      setSetupError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSaving(false);
+    }
+  };
 
   if (!mounted) return null;
 
@@ -187,7 +224,7 @@ export const ConnectorsModal: React.FC<ConnectorsModalProps> = ({ open, onClose,
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
                         <span className="eterx-connectors-name text-[14px] font-medium text-white truncate">{connector.name}</span>
-                        {connector.functional && <span className="eterx-connectors-live px-1.5 py-0.5 rounded text-[9px] font-bold tracking-wide" style={{ background: '#34D39922', color: '#34D399', border: '1px solid #34D39933' }}>LIVE</span>}
+                        {connector.id === 'slack' && <span className="eterx-connectors-live px-1.5 py-0.5 rounded text-[9px] font-bold tracking-wide" style={{ background: '#34D39922', color: '#34D399', border: '1px solid #34D39933' }}>OAUTH</span>}
                       </div>
                       <p className="eterx-connectors-desc text-[12px] text-[#555] mt-0.5 truncate">{connector.desc}</p>
                     </div>
@@ -205,19 +242,35 @@ export const ConnectorsModal: React.FC<ConnectorsModalProps> = ({ open, onClose,
                       </button>
                     ) : (
                       <button
-                        onClick={() => onConnect(connector.id)}
-                        className={`eterx-connectors-action px-3 py-1.5 rounded-lg text-[12px] font-medium transition-all ${connector.functional ? 'text-white hover:bg-white/10' : 'text-[#555] cursor-not-allowed'}`}
+                        onClick={() => openSetup(connector)}
+                        className="eterx-connectors-action px-3 py-1.5 rounded-lg text-[12px] font-medium transition-all text-white hover:bg-white/10"
                         style={{ border: '1px solid rgba(255,255,255,0.1)' }}
-                        disabled={!connector.functional}
-                        title={!connector.functional ? 'Coming soon' : 'Connect'}
+                        title="Connect and verify"
                       >
-                        {connector.functional ? 'Connect' : 'Soon'}
+                        Connect
                       </button>
                     )}
                   </motion.div>
                 );
               })}
             </div>
+            <AnimatePresence>
+              {setupConnector && (
+                <motion.div className="absolute inset-0 z-10 flex items-center justify-center bg-black/70 p-6" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+                  <motion.div className="w-full max-w-[460px] rounded-2xl border border-white/10 bg-[#1b1b1b] p-6 shadow-2xl" initial={{ scale: 0.96, y: 10 }} animate={{ scale: 1, y: 0 }}>
+                    <div className="flex items-start justify-between gap-4">
+                      <div><h3 className="text-[18px] font-semibold text-white">Connect {setupConnector.name}</h3><p className="mt-1 text-[12px] leading-5 text-[#888]">Enter the API origin and credential. EterX verifies the connection before the agent can use it.</p></div>
+                      <button type="button" onClick={() => setSetupConnector(null)} className="rounded-lg p-1 text-[#777] hover:bg-white/10 hover:text-white"><X className="h-4 w-4" /></button>
+                    </div>
+                    <label className="mt-5 block text-[12px] font-medium text-[#bbb]">API base URL<span className="ml-1 text-[#777]">(optional when EterX has a default)</span><input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://api.example.com" className="mt-1.5 h-10 w-full rounded-lg border border-white/10 bg-black/20 px-3 text-[13px] text-white outline-none focus:border-[#5aaeff]" /></label>
+                    <label className="mt-3 block text-[12px] font-medium text-[#bbb]">API key / access token<input type="password" value={token} onChange={(event) => setToken(event.target.value)} placeholder="Stored encrypted on this device" className="mt-1.5 h-10 w-full rounded-lg border border-white/10 bg-black/20 px-3 text-[13px] text-white outline-none focus:border-[#5aaeff]" /></label>
+                    <label className="mt-3 block text-[12px] font-medium text-[#bbb]">Health-check path<span className="ml-1 text-[#777]">(optional)</span><input value={healthPath} onChange={(event) => setHealthPath(event.target.value)} placeholder="/user or /v1/me" className="mt-1.5 h-10 w-full rounded-lg border border-white/10 bg-black/20 px-3 text-[13px] text-white outline-none focus:border-[#5aaeff]" /></label>
+                    {setupError && <div className="mt-3 rounded-lg border border-red-400/20 bg-red-400/10 px-3 py-2 text-[12px] leading-5 text-red-200">{setupError}</div>}
+                    <div className="mt-5 flex items-center justify-end gap-2"><button type="button" onClick={() => setSetupConnector(null)} className="rounded-lg border border-white/10 px-3 py-2 text-[12px] text-[#aaa]">Cancel</button><button type="button" disabled={saving} onClick={() => void saveSetup()} className="rounded-lg bg-white px-3.5 py-2 text-[12px] font-semibold text-black disabled:opacity-50">{saving ? 'Verifying…' : 'Verify and connect'}</button></div>
+                  </motion.div>
+                </motion.div>
+              )}
+            </AnimatePresence>
           </motion.div>
         </motion.div>
       )}
@@ -226,13 +279,5 @@ export const ConnectorsModal: React.FC<ConnectorsModalProps> = ({ open, onClose,
   );
 };
 
-export const ConnectorsButton: React.FC<{ connectedCount: number; onToggleAction: () => void }> = ({ connectedCount, onToggleAction }) => (
-  <Tooltip text="Connectors" side="top">
-    <button
-      onClick={onToggleAction}
-      className="eterx-control-button w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full border border-transparent bg-transparent text-white transition-all duration-150 ease-out active:scale-95 group relative overflow-hidden"
-    >
-      <Puzzle className="eterx-composer-control-icon w-[20px] h-[20px] text-white transition-transform duration-200 ease-out group-hover:scale-[1.04]" strokeWidth={1.85} />
-    </button>
-  </Tooltip>
-);
+export default ConnectorsModal;
+// End of connector modal module.

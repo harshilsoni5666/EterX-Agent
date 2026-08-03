@@ -1,5 +1,6 @@
 import fs from 'fs-extra';
 import path from 'path';
+import { getEterxWorkspaceDir } from '../storage-paths';
 
 function safeSegment(value: string, fallback: string): string {
   const cleaned = String(value || '').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80);
@@ -45,7 +46,7 @@ export class WorkspaceManager {
   constructor(userId: string, projectId: string) {
     const safeUserId = safeSegment(userId, 'user');
     const safeProjectId = safeSegment(projectId, 'project');
-    this.baseDir = path.resolve(process.cwd(), '.workspaces', safeUserId, 'projects', safeProjectId);
+    this.baseDir = getEterxWorkspaceDir(safeUserId, 'projects', safeProjectId);
     
     this.inputDir = path.join(this.baseDir, 'input');
     this.workingDir = path.join(this.baseDir, 'working');

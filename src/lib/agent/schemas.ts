@@ -35,12 +35,17 @@ export type MemoryEntry = z.infer<typeof MemoryEntrySchema>;
 
 export const ProjectContextSchema = z.object({
   projectId: z.string(),
+  conversationScopeId: z.string().optional(),
+  memoryScopeId: z.string().optional(),
   conversationSummary: z.string(),
   uploadedFiles: z.array(z.string()), // File URLs or paths
   recentMemories: z.array(MemoryEntrySchema),
   userPreferences: z.record(z.string(), z.any()).optional(),
   errorHistory: z.array(z.string()).optional(),
-  userName: z.string().optional()
+  userName: z.string().optional(),
+  allowAgentSpawning: z.boolean().optional(),
+  maxSubAgents: z.number().int().min(1).optional(),
+  maxRetries: z.number().int().min(0).max(5).optional(),
 });
 export type ProjectContext = z.infer<typeof ProjectContextSchema>;
 

@@ -5,6 +5,7 @@ import { normalizeMainAgentMode } from '../../model-routing';
 import { globalSessionManager } from '../../session';
 import { trackerToTrace, writeTaskTracker, type TaskTrackerData } from '../../task-tracker-store';
 import { getPlanEngine } from '../../plan-execution-engine';
+import { getAgentConversationScope } from '../../context-scope';
 
 /** Singleton plan execution engine — shared with the agent loop and governor. */
 
@@ -49,7 +50,7 @@ export const taskDecomposerTool: ToolDefinition = {
   }),
   execute: async (input: { complexTask: string, context?: string, maxSubtasks?: number }, runtimeContext?: any) => {
     console.log(`[Tool: task_decomposer] Decomposing via API: "${ input.complexTask.substring(0, 80) }..."`);
-    const chatId = runtimeContext?.projectId || runtimeContext?.chatId || runtimeContext?.taskId || undefined;
+    const chatId = getAgentConversationScope(runtimeContext);
     const emitTrace = typeof runtimeContext?._onTrace === 'function' ? runtimeContext._onTrace : null;
 
     emitTrace?.(trackerToTrace({

@@ -818,7 +818,7 @@ function getSuggestedStructure(taskType: string): string {
  * rule and permanently embeds it into the prompt structure for this project.
  */
 export class NeuralPlasticityEngine {
-  private rulesPath = path.resolve(process.cwd(), '.workspaces', '.memory', 'neural_rules.json');
+  private rulesPath = getEterxWorkspaceDir('.memory', 'neural_rules.json');
   private evolvedRules: string[] = [];
   private loaded = false;
 

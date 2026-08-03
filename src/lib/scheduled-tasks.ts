@@ -27,6 +27,9 @@ export interface ScheduledTaskRecord {
   dateOption: 'today' | 'tomorrow' | 'custom';
   customDate?: string;
   sources: Array<{ id: string; name: string; type: string; path: string }>;
+  /** Device/workspace captured when the schedule was created. */
+  workspacePath?: string | null;
+  runLocation?: 'local' | 'sandbox';
   createdAt: number;
   updatedAt?: number;
   scheduledTimestamp: number;
@@ -140,6 +143,14 @@ export function normalizeScheduledTask(task: Partial<ScheduledTaskRecord>): Sche
     dateOption: task.dateOption === 'today' || task.dateOption === 'tomorrow' ? task.dateOption : 'custom',
     customDate: task.customDate,
     sources: Array.isArray(task.sources) ? task.sources : [],
+    workspacePath: task.workspacePath === null
+      ? null
+      : String(task.workspacePath || '').trim() || undefined,
+    runLocation: task.runLocation === 'sandbox'
+      ? 'sandbox'
+      : task.runLocation === 'local'
+        ? 'local'
+        : undefined,
     createdAt,
     updatedAt: Number(task.updatedAt || createdAt),
     scheduledTimestamp: Number(task.scheduledTimestamp || Date.now()),

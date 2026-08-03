@@ -1,14 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { apiKeyPool } from '../../../../lib/agent/api-key-pool';
 import { rejectCrossOrigin } from '../../agent/_shared';
+import { readStoredRuntimeSettings } from '../../../../lib/agent/runtime-settings-store';
+import { normalizeLiveProvider } from '../../../../lib/live/live-provider';
 
 export const dynamic = 'force-dynamic';
 
 /**
- * POST /api/live/key — Lease an API key for a Gemini Live session.
+ * POST /api/live/key — Return the dedicated Agent Live Convo API key.
  * 
  * The client calls this before connecting to the Live API WebSocket. Credentials
- * are configured only by Settings and never accepted by this endpoint.
+ * are configured only by Settings and never accepted by this endpoint. Live
+ * credentials are intentionally separate from ordinary provider/model pools.
  */
 export async function POST(req: NextRequest) {
   try {
@@ -16,19 +18,31 @@ export async function POST(req: NextRequest) {
     if (originError) return originError;
 
     const body = await req.json().catch(() => ({}));
-    const chatId = body.chatId || `live_${Date.now()}`;
-    const lease = apiKeyPool.leaseKey(chatId, 'main_agent');
-    
-    if (!lease) {
+    const provider = normalizeLiveProvider(body?.provider);
+    if (provider.provider !== 'gemini') {
       return NextResponse.json(
-        { error: 'No API keys available. All ready keys are currently in use.' },
-        { status: 503 }
+        { error: 'This Agent Live transport is not configured.' },
+        { status: 400 },
+      );
+    }
+
+    const stored = readStoredRuntimeSettings();
+    const rawKeys = stored.liveApiKeys?.gemini;
+    const keys = (Array.isArray(rawKeys) ? rawKeys : [rawKeys])
+      .map(key => String(key || '').trim())
+      .filter(Boolean);
+    const apiKey = keys[0] || '';
+    if (!apiKey) {
+      return NextResponse.json(
+        { error: 'No separate Agent Live API key is configured.' },
+        { status: 503 },
       );
     }
     
     return NextResponse.json({ 
-      apiKey: lease.apiKey,
-      chatId: chatId 
+      apiKey,
+      provider: provider.provider,
+      chatId: body.chatId || `live_${Date.now()}`,
     });
     
   } catch (error: any) {

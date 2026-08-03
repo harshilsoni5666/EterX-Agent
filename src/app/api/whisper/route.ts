@@ -1,8 +1,10 @@
 import { NextResponse } from 'next/server';
 import { getRuntimeApiKey } from '../../../lib/agent/runtime-api-keys';
+import { hydrateServerRuntimeSettings } from '../../../lib/agent/server-runtime-hydration';
 import { rejectCrossOrigin } from '../agent/_shared';
 
 export async function POST(request: Request) {
+  hydrateServerRuntimeSettings();
   try {
     const originError = rejectCrossOrigin(request as any);
     if (originError) return originError;

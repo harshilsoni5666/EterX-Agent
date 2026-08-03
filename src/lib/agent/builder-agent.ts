@@ -1,6 +1,6 @@
 import fs from 'fs-extra';
 import path from 'path';
-import { globalToolRegistry } from './tools/registry';
+import { globalToolRegistry, normalizeRegistryToolName } from './tools/registry';
 import type { MainAgentMode } from './model-routing';
 import { getEterxWorkspaceDir } from './storage-paths';
 
@@ -52,9 +52,199 @@ export interface AgentBuilderProfile {
   notes: string[];
 }
 
+/**
+ * Every finalized agent gets a dependable baseline capability set. The
+ * builder can still attach additional tools, but a profile is never left
+ * unusable just because the model forgot one of the foundational calls.
+ */
+export const AGENT_BUILDER_BASELINE_TOOL_NAMES = [
+  'web_search',
+  'web_scraper',
+  'deep_research',
+  'realtime_verify',
+  'calculator',
+  'workspace_read_file',
+  'workspace_read_many_files',
+  'workspace_list_directory',
+  'workspace_search_text',
+  'workspace_write_file',
+  'workspace_edit_file',
+  'workspace_run_command',
+  'workspace_verify_code',
+  'csv_data_analyzer',
+  'office_artifact_builder',
+] as const;
+
+const CUSTOM_AGENT_TRAINING_MARKER = 'CUSTOM AGENT TRAINING STANDARD v1';
+
+const uniqueStrings = (values: unknown[] = []): string[] => {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    const text = String(value || '').trim();
+    if (!text || seen.has(text)) continue;
+    seen.add(text);
+    result.push(text);
+  }
+  return result;
+};
+
+/** Return the exact tool names a saved custom agent is allowed to call. */
+export function getCustomAgentAllowedToolNames(profile: Partial<AgentBuilderProfile> | null | undefined): Set<string> {
+  const names = new Set<string>();
+  for (const ref of profile?.directMainTools || []) {
+    const name = normalizeRegistryToolName(String(ref?.toolName || '').trim());
+    if (name && !isBuilderOnlyToolName(name)) names.add(name);
+  }
+  for (const tool of profile?.customTools || []) {
+    const name = String(tool?.toolName || '').trim();
+    if (name && tool?.safetyStatus !== 'blocked') names.add(name);
+  }
+  return names;
+}
+
+function buildAttachedToolReference(toolName: string, existing?: AgentBuilderDirectTool): AgentBuilderDirectTool {
+  return existing || {
+    toolName,
+    purpose: `Use ${toolName} when the user's request requires the capability it provides.`,
+    whenToUse: `Use when the current request needs ${toolName}; do not call it when the answer is already grounded in the conversation.`,
+    inputPolicy: 'Validate arguments against the tool schema and keep identifiers, paths, dates, and units explicit.',
+    outputPolicy: 'Inspect the result, handle errors, preserve source details, and verify important claims before answering.',
+    attachedAt: new Date().toISOString(),
+  };
+}
+
+/** Add the baseline tools without overwriting deliberate guidance. */
+export function ensureAgentBaselineTools(profile: AgentBuilderProfile): AgentBuilderProfile {
+  const names = [...AGENT_BUILDER_BASELINE_TOOL_NAMES];
+  const existing = new Map<string, AgentBuilderDirectTool>();
+  for (const ref of profile.directMainTools || []) {
+    const toolName = normalizeRegistryToolName(String(ref?.toolName || '').trim());
+    if (!toolName || isBuilderOnlyToolName(toolName) || !globalToolRegistry.getTool(toolName)) continue;
+    existing.set(toolName, { ...ref, toolName });
+  }
+  for (const toolName of names) {
+    if (!globalToolRegistry.getTool(toolName) || existing.has(toolName)) continue;
+    existing.set(toolName, buildAttachedToolReference(toolName));
+  }
+  return { ...profile, directMainTools: Array.from(existing.values()) };
+}
+
+/**
+ * This is deliberately domain-neutral. It teaches the builder how to adapt
+ * to different requests instead of hard-coding one agent persona or output
+ * format into every profile.
+ */
+export function buildCustomAgentTrainingStandard(agentName = 'Custom Agent'): string {
+  return `
+## ${CUSTOM_AGENT_TRAINING_MARKER}
+
+You are ${agentName}, a configurable custom agent. Adapt your behavior to the user's current request, not to a fixed persona or hard-coded response template.
+
+### Request interpretation and mode switching
+1. Classify the request before acting: domain, task type, audience, desired outcome, constraints, risk level, freshness requirement, and whether the user wants an answer, analysis, plan, file, code, or external action.
+2. Reuse the target agent's mission as a boundary, then select the right operating mode for the current request. A single agent may switch between concise answers, research, structured analysis, coding, data work, document creation, or controlled actions when its attached tools and mission support them.
+3. Ask no more than one clarifying question when a missing detail truly blocks a safe, accurate result. Otherwise state a reasonable assumption and continue. Never ask for permission to perform an ordinary reversible step.
+4. Match depth and format to the request. Be brief for simple questions, thorough for complex work, and use tables, steps, code, or files only when they improve the requested outcome.
+
+### Real-data and evidence discipline
+1. Treat user-provided files, workspace data, connector results, and verified tool outputs as evidence. Do not invent facts, records, metrics, prices, names, citations, test results, or completed actions.
+2. For current, changing, or high-consequence information, use an appropriate attached research or data tool. Record the source and relevant date, period, units, assumptions, or limitations. Prefer primary or authoritative sources when available.
+3. Distinguish observed data, derived calculations, estimates, scenarios, and recommendations. Use the calculator for arithmetic and verify important transformations, units, and totals.
+4. If real data is missing, stale, contradictory, or inaccessible, say exactly what is known, what is not verified, and what input would resolve it. Never turn a placeholder into a factual claim.
+
+### Tool and recovery behavior
+1. Use only attached tools and only when they materially help. Before a call, validate arguments and preconditions; after it, inspect the result before making the next decision.
+2. Keep an internal evidence trail for important claims without exposing private chain-of-thought. Report concise user-facing progress for meaningful work and summarize verified outcomes, not raw internals.
+3. On failure, classify the cause as invalid input, missing data, permission, transient service, or fatal capability. Correct inputs or use one bounded alternative; do not repeat an identical failing call in a loop.
+4. Never claim a file was written, data was retrieved, a message was sent, or an action succeeded unless the tool result verifies it.
+
+### Adaptive output and completion
+Lead with the useful result. Include the minimum supporting evidence needed for trust, and expand only when the request calls for it. A task is complete when the requested outcome is delivered, material facts are grounded in real evidence, output is checked for correctness, and limitations are visible. If the task cannot be completed, state the exact blocker and the safest useful partial result.
+`.trim();
+}
+
+export function applyAgentBuilderDefaults(profile: AgentBuilderProfile): AgentBuilderProfile {
+  const next = ensureAgentBaselineTools(profile);
+  const prompt = String(next.professionalPrompt || '').trim();
+  return {
+    ...next,
+    professionalPrompt: prompt.includes(CUSTOM_AGENT_TRAINING_MARKER)
+      ? prompt
+      : `${prompt}\n\n${buildCustomAgentTrainingStandard(next.name || next.agentId)}`.trim(),
+    responseStyle: next.responseStyle || 'Adaptive, direct, accurate, and proportional to the request.',
+    behaviorRules: uniqueStrings([
+      ...(next.behaviorRules || []),
+      'Interpret each request before choosing a response mode or tool plan.',
+      'Use real user, workspace, connector, or verified external data; never invent missing values.',
+      'Match response depth and format to the request instead of using a fixed template.',
+      'Verify important outputs and state assumptions or limitations clearly.',
+    ]),
+    safetyRules: uniqueStrings([
+      ...(next.safetyRules || []),
+      'Never fabricate data, sources, actions, tool results, or completion status.',
+      'Do not exceed the mission or call tools that are not attached to the profile.',
+      'Never expose credentials, secrets, or private data in output or artifacts.',
+    ]),
+    skills: uniqueStrings([
+      ...(next.skills || []),
+      'request interpretation and mode switching',
+      'real-data grounding and source evaluation',
+      'tool planning and bounded recovery',
+    ]),
+    toolUsePolicy: next.toolUsePolicy || 'Use attached tools only when they materially help. For current or consequential claims, gather and verify real evidence; for calculations, use the calculator; for files and actions, verify the result before reporting success.',
+    completionCriteria: next.completionCriteria || 'The requested outcome is delivered in the appropriate format, material claims are grounded in real evidence, important outputs are verified, and assumptions, limitations, or blockers are explicit.',
+    notes: uniqueStrings([...(next.notes || []), 'Adaptive custom-agent training standard applied by Agent Builder.']),
+  };
+}
+
+export function evaluateAgentBuilderProfile(profile: AgentBuilderProfile): {
+  score: number;
+  ready: boolean;
+  trainingStandard: boolean;
+  checks: Array<{ id: string; label: string; passed: boolean; detail: string }>;
+  missing: string[];
+  warnings: string[];
+} {
+  const trainingStandard = String(profile.professionalPrompt || '').includes(CUSTOM_AGENT_TRAINING_MARKER);
+  const allowedTools = getCustomAgentAllowedToolNames(profile);
+  const missionText = String(profile.mission || '').trim();
+  const promptText = String(profile.professionalPrompt || '').trim();
+  const bespokePromptText = promptText.replace(buildCustomAgentTrainingStandard(profile.name || profile.agentId), '').trim();
+  const checks = [
+    { id: 'mission', label: 'Mission', passed: missionText.length >= 32 && !/being configured|configure this agent/i.test(missionText), detail: 'A specific mission anchors scope and distinguishes the target agent.' },
+    { id: 'prompt', label: 'Professional prompt', passed: promptText.length >= 1200 && bespokePromptText.length >= 500 && !/configure this agent according to the builder conversation/i.test(promptText), detail: 'The prompt contains bespoke operating guidance in addition to the shared training standard.' },
+    { id: 'behavior', label: 'Behavior rules', passed: profile.behaviorRules.length >= 3, detail: 'At least three testable operating rules are present.' },
+    { id: 'safety', label: 'Safety rules', passed: profile.safetyRules.length >= 2, detail: 'At least two explicit safety boundaries are present.' },
+    { id: 'tools', label: 'Baseline tools', passed: AGENT_BUILDER_BASELINE_TOOL_NAMES.filter(name => globalToolRegistry.getTool(name)).every(name => allowedTools.has(name)), detail: 'Core research, calculation, workspace, and verification tools are attached.' },
+    { id: 'policy', label: 'Tool-use policy', passed: !!profile.toolUsePolicy?.trim(), detail: 'The agent knows when to use tools and how to validate results.' },
+    { id: 'completion', label: 'Completion criteria', passed: !!profile.completionCriteria?.trim(), detail: 'The agent has a concrete done condition.' },
+    { id: 'training-standard', label: 'Adaptive training standard', passed: trainingStandard, detail: 'The agent can shift modes across different request types while preserving real-data and scope discipline.' },
+  ];
+  const missing = checks.filter(check => !check.passed).map(check => check.label);
+  const warnings: string[] = [];
+  if (profile.directMainTools.length > 40) warnings.push('The agent has a broad tool surface; keep its tool-use policy strict to control cost and accidental actions.');
+  const score = Math.round((checks.filter(check => check.passed).length / Math.max(1, checks.length)) * 100);
+  return { score, ready: missing.length === 0, trainingStandard, checks, missing, warnings };
+}
+
 const AGENT_BUILDER_ROOT = getEterxWorkspaceDir('agent-builder', 'agents');
 const BUILDER_TOOL_PREFIX = 'agent_builder_';
 const GLOBAL_DYNAMIC_TOOL_NAMES = new Set(['create_dynamic_tool']);
+const BUILDER_RUNTIME_TOOL_NAMES = new Set([
+  'agent_tool_load',
+  'agent_tool_unload',
+  'agent_flow_blackboard_set',
+  'agent_flow_blackboard_get',
+  'agent_flow_blackboard_list',
+]);
+// The builder needs a small live connector surface so it can inspect and
+// verify the real connection state while configuring a target agent. These
+// are not builder-only tools: they remain attachable to finalized agents.
+const BUILDER_LIVE_CONNECTOR_TOOL_NAMES = new Set([
+  'gateway_bridge',
+  'connector_mcp',
+]);
 
 function isPathInside(parent: string, candidate: string): boolean {
   const relative = path.relative(parent, candidate);
@@ -90,13 +280,22 @@ export function isAgentBuilderRuntimeContext(context: any): boolean {
 }
 
 export function isBuilderOnlyToolName(toolName: string): boolean {
-  return toolName.startsWith(BUILDER_TOOL_PREFIX);
+  return toolName.startsWith(BUILDER_TOOL_PREFIX) || BUILDER_RUNTIME_TOOL_NAMES.has(toolName);
+}
+
+export function isBuilderLiveConnectorToolName(toolName: string): boolean {
+  return BUILDER_LIVE_CONNECTOR_TOOL_NAMES.has(toolName);
 }
 
 export function shouldExposeToolToRuntime(toolName: string, isBuilder: boolean): boolean {
-  if (!isBuilder && isBuilderOnlyToolName(toolName)) return false;
-  if (isBuilder && GLOBAL_DYNAMIC_TOOL_NAMES.has(toolName)) return false;
-  return true;
+  if (isBuilder) {
+    // Agent Builder has its own control surface, plus the two real connector
+    // bridges needed to inspect/verify live integrations during setup. Other
+    // main-agent tools are attached to the target profile by reference and
+    // must not be callable by the builder conversation.
+    return isBuilderOnlyToolName(toolName) || isBuilderLiveConnectorToolName(toolName);
+  }
+  return !isBuilderOnlyToolName(toolName);
 }
 
 export function buildAgentBuilderPinnedContext(chatId: string, pinnedContext: any = null): Record<string, unknown> {
@@ -105,6 +304,7 @@ export function buildAgentBuilderPinnedContext(chatId: string, pinnedContext: an
     ...(pinnedContext || {}),
     agentRuntime: AGENT_BUILDER_RUNTIME,
     agentId: getAgentIdFromBuilderChatId(chatId),
+    ...(String(pinnedContext?.agentName || '').trim() ? { agentName: String(pinnedContext.agentName).trim() } : {}),
     disableOverdelivery: false,
   };
 }
@@ -218,7 +418,7 @@ export function validateAgentScopedCode(code: string): { allowed: boolean; notes
   return { allowed: notes.length === 0, notes };
 }
 
-export function buildAgentBuilderRuntimePrompt(agentId: string): string {
+export function buildAgentBuilderRuntimePrompt(agentId: string, agentName?: string): string {
   const mainToolNames = globalToolRegistry.getAllTools()
     .map(tool => tool.name)
     .filter(name => !isBuilderOnlyToolName(name))
@@ -241,6 +441,7 @@ export function buildAgentBuilderRuntimePrompt(agentId: string): string {
   return `
 AGENT BUILDER CORE — ENTERPRISE PROMPT ENGINEERING ENGINE v2
 Target agent ID: ${sanitizeAgentBuilderId(agentId)}
+${agentName ? `Human-readable target name: ${String(agentName).trim()}` : ''}
 
 You are a specialized Agent Builder — an expert system for designing, configuring, and deploying custom AI agents. You do NOT depend on or modify the main EterX system prompt. Your output is a self-contained agent profile stored under .workspaces/agent-builder/agents/.
 
@@ -265,8 +466,11 @@ You are a specialized Agent Builder — an expert system for designing, configur
 
 4. ADD TOOLS IN REAL TIME — Execute your tool design by calling:
     - agent_builder_save_profile → save the prompt, mission, rules, everything
-    - agent_builder_attach_main_tool → grant access to existing tools (with @tool_name)
+    - agent_builder_attach_main_tool → grant access to an existing tool (with @tool_name)
+    - agent_builder_attach_all_main_tools → attach the complete current main tool catalog in one operation
+    - agent_builder_attach_connector_tools → attach the universal live Gateway + REST/MCP connector bridges
     - agent_builder_define_tool → create agent-scoped custom tools
+    - agent_builder_run_quality_check → inspect prompt depth, safety, baseline tools, and domain-specific readiness before finalization
     - agent_builder_finalize → validate and mark the agent as ready
     - agent_builder_save_flow → save a multi-agent loop/flow profile
     - agent_builder_run_flow → execute a multi-agent loop/flow
@@ -527,11 +731,13 @@ DESIGN AGENT: Focus on design system adherence, accessibility standards, respons
 
 API INTEGRATION AGENT: Focus on auth flows, rate limit handling, error mapping, retry strategies, data transformation, webhook management. Include: schema validation, version compatibility, migration patterns.
 
+ADAPTIVE CUSTOM AGENT: For any target domain, identify the request types the agent must support and encode mode-switching rules, real-data/evidence handling, tool triggers, output contracts, failure recovery, and completion checks. Do not hard-code a finance, coding, research, or support persona unless the user explicitly requests it. The same custom agent may serve different request types when its mission and attached tools support them.
+
 ━━━ MANDATORY DEFAULT TOOLS ━━━
 
 ⚠️ CRITICAL: Every agent you build MUST have these core tools attached.
-Do NOT wait for the user to request them. ALWAYS call agent_builder_attach_main_tool
-for ALL of these immediately after saving the profile:
+Do NOT wait for the user to request them. ALWAYS call agent_builder_attach_all_main_tools
+(or agent_builder_attach_main_tool for each deliberate selection) immediately after saving the profile:
 
 TIER 1 — ALWAYS ATTACH (no exceptions):
   • web_search — "Search the web for information, latest data, documentation, solutions"
@@ -724,7 +930,7 @@ PROMPT QUALITY MARKERS:
 - NEVER edit src/lib/agent/Agent.ts, orchestrator.ts, agent-registry.ts, tools/index.ts
 - NEVER create or modify global runtime tools
 - NEVER modify the main agent's system prompt, tools, or behavior
-- NEVER expose secrets or ask for connector credentials
+- NEVER expose secrets or ask for connector credentials as a routine step. If the user has already supplied a credential, pass it only to the connector setup tool and never echo it.
 - Custom code must pass the safety check (no eval, child_process, rm -rf, etc.)
 - Each agent's tools are stored under its own directory, never shared
 
@@ -734,13 +940,23 @@ These tools can be attached to any custom agent via agent_builder_attach_main_to
 
 ${toolCatalog || 'No tools loaded yet.'}
 
+━━━ LIVE CONNECTOR CAPABILITY ━━━
+
+The builder can inspect the real connector runtime while it configures an agent:
+- gateway_bridge is the live native Gateway path for Telegram, Slack, WhatsApp, Discord, Signal, email, and other Gateway channels. Use it to discover channels or verify the Gateway is actually running.
+- connector_mcp is the live REST/MCP path for saved connectors and MCP servers. Use it to list saved connectors, verify a supplied connector configuration, discover live MCP tools, and confirm the endpoint before attaching it.
+- Call agent_builder_attach_connector_tools for a connector-capable target. It attaches both bridges with explicit discovery and verification guidance, so the finalized agent can use whichever connector is active.
+- Keep platform, connector_id, server_id, and target explicit. Never infer that a catalog entry is connected, never invent a connector, and never print tokens or API keys.
+- Do not ask for routine execution permission or repeat a credential request. Continue with safe discovery and verification; only stop when a real missing secret or an irreducible user decision blocks the action.
+
 ━━━ EXECUTION STYLE ━━━
 
 - Be decisive. Don't ask "should I proceed?" — just proceed.
 - Save the profile incrementally. Don't wait until the end.
 - Call agent_builder_save_profile FIRST with the complete deep prompt (including SOUL rules, search protocol, work_note protocol).
-- THEN attach ALL TIER 1 tools immediately. THEN relevant TIER 2/3 tools.
+- THEN attach the complete catalog with agent_builder_attach_all_main_tools (or attach the required tools individually). For any agent that may work with external services, also call agent_builder_attach_connector_tools so the target has the live universal connector bridges. THEN add relevant TIER 2/3 tools and exclusions.
 - THEN finalize.
+- Run agent_builder_run_quality_check immediately before finalization and fix every failed check. The builder also applies a deterministic baseline tool set during profile saves, so verify the returned profile instead of assuming attachment succeeded.
 - If the user gives a short request like "make a code agent", expand it into a DEEPLY rich agent with ALL frameworks.
 - Always end with a summary of what was built and a "try it" example.
 - Aim for ENTERPRISE QUALITY — the custom agent should be smarter and safer than any generic chatbot.
@@ -764,6 +980,44 @@ export function buildAgentBuilderStandaloneSystemInstruction(agentId = 'standalo
 function normalizeAgentBuilderProfile(value: any, fallbackAgentId: string): AgentBuilderProfile {
   const now = new Date().toISOString();
   const agentId = sanitizeAgentBuilderId(value?.agentId || fallbackAgentId);
+  const directMainTools: AgentBuilderDirectTool[] = [];
+  const seenDirectTools = new Set<string>();
+  for (const raw of Array.isArray(value?.directMainTools) ? value.directMainTools : []) {
+    const toolName = normalizeRegistryToolName(String(raw?.toolName || '').trim());
+    if (!toolName || seenDirectTools.has(toolName)) continue;
+    seenDirectTools.add(toolName);
+    directMainTools.push({
+      toolName,
+      purpose: String(raw?.purpose || `Use ${toolName} when relevant to the mission.`).trim(),
+      whenToUse: String(raw?.whenToUse || `Use when the request requires ${toolName}.`).trim(),
+      inputPolicy: raw?.inputPolicy ? String(raw.inputPolicy).trim() : undefined,
+      outputPolicy: raw?.outputPolicy ? String(raw.outputPolicy).trim() : undefined,
+      promptInjection: raw?.promptInjection ? String(raw.promptInjection).trim() : undefined,
+      attachedAt: typeof raw?.attachedAt === 'string' ? raw.attachedAt : now,
+    });
+  }
+  const customTools: AgentBuilderCustomTool[] = [];
+  const seenCustomTools = new Set<string>();
+  for (const raw of Array.isArray(value?.customTools) ? value.customTools : []) {
+    const toolName = sanitizeAgentToolName(raw?.toolName);
+    if (!toolName || seenCustomTools.has(toolName)) continue;
+    seenCustomTools.add(toolName);
+    customTools.push({
+      toolName,
+      description: String(raw?.description || '').trim(),
+      implementationType: ['prompt_macro', 'tool_chain', 'agent_scoped_code'].includes(raw?.implementationType)
+        ? raw.implementationType
+        : 'prompt_macro',
+      inputSchema: raw?.inputSchema && typeof raw.inputSchema === 'object' && !Array.isArray(raw.inputSchema) ? raw.inputSchema : undefined,
+      behaviorPrompt: raw?.behaviorPrompt ? String(raw.behaviorPrompt) : undefined,
+      toolChain: Array.isArray(raw?.toolChain) ? raw.toolChain : undefined,
+      code: raw?.code ? String(raw.code) : undefined,
+      safetyStatus: raw?.safetyStatus === 'blocked' ? 'blocked' : raw?.safetyStatus === 'needs_review' ? 'needs_review' : 'safe',
+      safetyNotes: Array.isArray(raw?.safetyNotes) ? raw.safetyNotes.map(String) : [],
+      createdAt: typeof raw?.createdAt === 'string' ? raw.createdAt : now,
+      updatedAt: typeof raw?.updatedAt === 'string' ? raw.updatedAt : now,
+    });
+  }
   return {
     agentId,
     version: 1,
@@ -779,9 +1033,9 @@ function normalizeAgentBuilderProfile(value: any, fallbackAgentId: string): Agen
     skills: Array.isArray(value?.skills) ? value.skills.map(String) : [],
     toolUsePolicy: typeof value?.toolUsePolicy === 'string' ? value.toolUsePolicy : undefined,
     completionCriteria: typeof value?.completionCriteria === 'string' ? value.completionCriteria : undefined,
-    directMainTools: Array.isArray(value?.directMainTools) ? value.directMainTools : [],
-    customTools: Array.isArray(value?.customTools) ? value.customTools : [],
-    notes: Array.isArray(value?.notes) ? value.notes.map(String) : [],
+    directMainTools,
+    customTools,
+    notes: uniqueStrings(Array.isArray(value?.notes) ? value.notes : []),
   };
 }
 
@@ -895,7 +1149,7 @@ Introduce yourself as "${profile.name || profile.agentId}" if asked who you are.
 ## Scope Guard
 You are "${profile.name || profile.agentId}". Stay within your defined mission and capabilities.
 If a request is outside your scope, politely explain what you can help with instead.
-Use ALL tools available to you — you have full access to the main EterX agent toolset.
+Use only the tools explicitly attached to this profile and shown in the runtime tool list. If a capability is not attached, do not claim to have it and do not attempt to call it.
 `.trim());
 
   // Meta-cognitive framework

@@ -137,8 +137,16 @@ fs.rmSync(path.join(stagingRoot, 'node_modules', '.bin'), { recursive: true, for
 fs.rmSync(dependencyInstallRoot, { recursive: true, force: true });
 
 const assetsRoot = path.join(stagingRoot, 'assets');
+const sourceSkillsRoot = path.join(repositoryRoot, 'src', 'lib', 'agent', 'skills-new');
+const generatedSkillsRoot = path.join(repositoryRoot, 'desktop-runtime', 'assets', 'skills');
+const skillsRoot = fs.existsSync(path.join(sourceSkillsRoot, 'docx_skill.md'))
+  ? sourceSkillsRoot
+  : generatedSkillsRoot;
+if (!fs.existsSync(skillsRoot)) {
+  throw new Error('The desktop runtime skill bundle is missing. Restore src/lib/agent/skills-new or desktop-runtime/assets/skills.');
+}
 fs.cpSync(
-  path.join(repositoryRoot, 'src', 'lib', 'agent', 'skills'),
+  skillsRoot,
   path.join(assetsRoot, 'skills'),
   { recursive: true, force: true },
 );

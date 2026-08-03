@@ -1,9 +1,21 @@
 import assert from 'node:assert/strict';
 import {
+  isInternalWorkNoteNoise,
   isTerminalWorkTrace,
   isTurnWorkActive,
   shouldRenderContextCompactionEvent,
 } from '../src/lib/chat-feed-lifecycle';
+
+assert.equal(
+  isInternalWorkNoteNoise('I will inspect the relevant files.'),
+  false,
+  'natural first-person intent must remain visible as a work note',
+);
+assert.equal(
+  isInternalWorkNoteNoise('I am following the work note communication style for this workspace.'),
+  true,
+  'protocol commentary must remain hidden',
+);
 
 const action = { type: 'command', text: 'Running tests' };
 

@@ -28,6 +28,7 @@ import fs from 'fs-extra';
 import path from 'path';
 import crypto from 'crypto';
 import { getEterxWorkspaceDir } from '../storage-paths';
+import { stableScopeSegment } from '../context-scope';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -153,9 +154,12 @@ export class ConversationLedger {
       if (this.initialized && this.currentChatId === chatId) return;
 
       this.currentChatId = chatId;
-      const sanitizedId = chatId.replace(/[^a-zA-Z0-9_-]/g, '_');
-      const chatDir = path.join(SESSION_DIR, sanitizedId);
+      const scopedId = stableScopeSegment(chatId);
+      const legacyId = chatId.replace(/[^a-zA-Z0-9_-]/g, '_');
+      const chatDir = path.join(SESSION_DIR, scopedId);
+      const legacyChatDir = path.join(SESSION_DIR, legacyId);
       this.ledgerFilePath = path.join(chatDir, 'ledger.jsonl');
+      const legacyLedgerFilePath = path.join(legacyChatDir, 'ledger.jsonl');
 
       await fs.ensureDir(chatDir);
 
@@ -164,15 +168,23 @@ export class ConversationLedger {
       this.dedupCache.clear();
       this.pendingWrites = [];
 
-      if (await fs.pathExists(this.ledgerFilePath)) {
+      const readableLedgerPath = await fs.pathExists(this.ledgerFilePath)
+        ? this.ledgerFilePath
+        : (legacyLedgerFilePath !== this.ledgerFilePath && await fs.pathExists(legacyLedgerFilePath)
+          ? legacyLedgerFilePath
+          : null);
+      if (readableLedgerPath) {
         try {
-          const content = await fs.readFile(this.ledgerFilePath, 'utf8');
+          const content = await fs.readFile(readableLedgerPath, 'utf8');
           const lines = content.trim().split('\n').filter(Boolean);
           // Only load the last MAX_ENTRIES lines
           const tail = lines.slice(-MAX_ENTRIES);
           for (const line of tail) {
             try {
               const entry = JSON.parse(line) as LedgerEntry;
+              // Old sanitized directories could collide. The record identity
+              // is the final ownership check before anything reaches memory.
+              if (String(entry.chatId || '') !== chatId) continue;
               this.entries.push(entry);
               // Rebuild dedup cache
               const dedupKey = this.getDeduplicationKey(entry.toolName, entry.argsDigest);

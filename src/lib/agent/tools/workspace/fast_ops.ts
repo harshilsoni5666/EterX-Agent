@@ -116,7 +116,7 @@ export const workspaceFindFilesTool: ToolDefinition = {
   category: 'workspace',
   inputSchema: z.object({
     glob: z.string().optional().describe('Glob filter, e.g. "*.tsx", "**/*.ts", "!**/node_modules/**"'),
-    directory: z.string().optional().describe('Directory to search. Default: workspace root'),
+    directory: z.string().optional().describe('Directory to search. Default: active user workspace, or the runtime scratch root when no user workspace is selected; never the EterX source checkout.'),
     maxResults: z.number().int().min(1).max(1000).optional().describe('Maximum files to return (default: 400)'),
   }),
   outputSchema: z.object({

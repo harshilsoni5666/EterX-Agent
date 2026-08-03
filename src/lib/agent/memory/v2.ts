@@ -171,6 +171,7 @@ async function writeJsonAtomic(filePath: string, value: unknown): Promise<void> 
   await fs.ensureDir(dir);
   const tmpPath = path.join(dir, `.${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`);
   await fs.writeJson(tmpPath, value, { spaces: 2 });
+  if (await fs.pathExists(filePath)) await fs.copyFile(filePath, `${filePath}.backup`).catch(() => {});
   await fs.move(tmpPath, filePath, { overwrite: true });
 }
 
@@ -179,7 +180,20 @@ async function writeTextAtomic(filePath: string, value: string): Promise<void> {
   await fs.ensureDir(dir);
   const tmpPath = path.join(dir, `.${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`);
   await fs.writeFile(tmpPath, value, 'utf8');
+  if (await fs.pathExists(filePath)) await fs.copyFile(filePath, `${filePath}.backup`).catch(() => {});
   await fs.move(tmpPath, filePath, { overwrite: true });
+}
+
+async function readJsonWithBackup(filePath: string): Promise<any> {
+  for (const source of [filePath, `${filePath}.backup`]) {
+    try {
+      if (!(await fs.pathExists(source))) continue;
+      return await fs.readJson(source);
+    } catch {
+      if (source === filePath) await fs.move(filePath, `${filePath}.corrupt-${Date.now()}`).catch(() => {});
+    }
+  }
+  return [];
 }
 
 export class MemoryV2Manager {
@@ -190,25 +204,34 @@ export class MemoryV2Manager {
     rawEvents: [],
   };
   private initialized = false;
+  private initializePromise: Promise<void> | null = null;
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
   private savePending = false;
 
   public async initialize(): Promise<void> {
     if (this.initialized) return;
-    await fs.ensureDir(BASE_DIR);
+    if (this.initializePromise) return this.initializePromise;
 
-    const [records, credentials, improvements, rawEvents] = await Promise.allSettled([
-      fs.pathExists(RECORDS_FILE).then(exists => exists ? fs.readJson(RECORDS_FILE) : []),
-      fs.pathExists(CREDENTIALS_FILE).then(exists => exists ? fs.readJson(CREDENTIALS_FILE) : []),
-      fs.pathExists(IMPROVEMENTS_FILE).then(exists => exists ? fs.readJson(IMPROVEMENTS_FILE) : []),
-      fs.pathExists(RAW_EVENTS_FILE).then(exists => exists ? fs.readJson(RAW_EVENTS_FILE) : []),
-    ]);
+    this.initializePromise = (async () => {
+      await fs.ensureDir(BASE_DIR);
 
-    this.state.records = records.status === 'fulfilled' && Array.isArray(records.value) ? records.value : [];
-    this.state.credentials = credentials.status === 'fulfilled' && Array.isArray(credentials.value) ? credentials.value : [];
-    this.state.improvements = improvements.status === 'fulfilled' && Array.isArray(improvements.value) ? improvements.value : [];
-    this.state.rawEvents = rawEvents.status === 'fulfilled' && Array.isArray(rawEvents.value) ? rawEvents.value : [];
-    this.initialized = true;
+      const [records, credentials, improvements, rawEvents] = await Promise.allSettled([
+        readJsonWithBackup(RECORDS_FILE),
+        readJsonWithBackup(CREDENTIALS_FILE),
+        readJsonWithBackup(IMPROVEMENTS_FILE),
+        readJsonWithBackup(RAW_EVENTS_FILE),
+      ]);
+
+      this.state.records = records.status === 'fulfilled' && Array.isArray(records.value) ? records.value : [];
+      this.state.credentials = credentials.status === 'fulfilled' && Array.isArray(credentials.value) ? credentials.value : [];
+      this.state.improvements = improvements.status === 'fulfilled' && Array.isArray(improvements.value) ? improvements.value : [];
+      this.state.rawEvents = rawEvents.status === 'fulfilled' && Array.isArray(rawEvents.value) ? rawEvents.value : [];
+      this.initialized = true;
+    })().finally(() => {
+      this.initializePromise = null;
+    });
+
+    return this.initializePromise;
   }
 
   public async flush(): Promise<void> {
@@ -757,13 +780,22 @@ export class MemoryV2Manager {
     }
 
     await fs.ensureDir(BASE_DIR);
+    for (const source of [MASTER_KEY_FILE, `${MASTER_KEY_FILE}.backup`]) {
+      try {
+        if (!(await fs.pathExists(source))) continue;
+        const raw = String(await fs.readFile(source, 'utf8')).trim();
+        const key = Buffer.from(raw, 'base64');
+        if (key.length === 32) return key;
+        if (source === MASTER_KEY_FILE) await fs.move(MASTER_KEY_FILE, `${MASTER_KEY_FILE}.corrupt-${Date.now()}`).catch(() => {});
+      } catch { }
+    }
+
     if (await fs.pathExists(MASTER_KEY_FILE)) {
-      const raw = String(await fs.readFile(MASTER_KEY_FILE, 'utf8')).trim();
-      const key = Buffer.from(raw, 'base64');
-      if (key.length !== 32) {
-        throw new Error('Invalid EterX memory vault master key. Set ETERX_MEMORY_VAULT_KEY or repair .vault_master_key.');
-      }
-      return key;
+      throw new Error('Invalid EterX memory vault master key. Set ETERX_MEMORY_VAULT_KEY or repair .vault_master_key.');
+    }
+
+    if (await fs.pathExists(`${MASTER_KEY_FILE}.backup`)) {
+      throw new Error('Invalid EterX memory vault master key backup. Set ETERX_MEMORY_VAULT_KEY or repair .vault_master_key.');
     }
 
     const key = crypto.randomBytes(32);

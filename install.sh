@@ -15,8 +15,8 @@ case "$OS" in
     ;;
   Linux)
     PLATFORM="linux"
-    STATE_ROOT="${XDG_STATE_HOME:-$HOME/.local/state}/eterx"
-    DEFAULT_INSTALL_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/eterx"
+    STATE_ROOT="${XDG_STATE_HOME:-$HOME/.local/state}/EterX"
+    DEFAULT_INSTALL_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/EterX"
     ;;
   *)
     printf '\n  EterX supports Windows, macOS, and Linux. Detected: %s\n' "$OS" >&2

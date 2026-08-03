@@ -3,12 +3,13 @@ import { agentRegistry } from '../../../../lib/agent/agent-registry';
 import { getMainAgentModelConfig, normalizeMainAgentMode, normalizeModelThinkingCapabilities, normalizeThinkingLevelForModel } from '../../../../lib/agent/model-routing';
 import {
   buildAgentBuilderPinnedContext,
-  buildAgentBuilderUserRequest,
   getAgentBuilderMode,
   getAgentIdFromBuilderChatId,
   isAgentBuilderChatId,
 } from '../../../../lib/agent/builder-agent';
 import { buildScopedRuntimeSettings } from '../../../../lib/agent/runtime-api-keys';
+import { hydrateServerRuntimeSettings } from '../../../../lib/agent/server-runtime-hydration';
+import { MODEL_PROVIDER_MODE, isModelProvider } from '../../../../lib/agent/model-selector-store';
 import { readProxyControl, updateProxyControl } from '../../../../lib/agent/autonomy/proxy-control-plane';
 import {
   attachAgentApiSessionCookie,
@@ -39,6 +40,7 @@ export const runtime = 'nodejs';
  * Returns: { status: 'started' | 'already_running' | 'no_keys', chatId, message }
  */
 export async function POST(req: NextRequest) {
+  hydrateServerRuntimeSettings();
   let session: ReturnType<typeof getOrCreateAgentApiSession> | null = null;
   try {
     const originError = rejectCrossOrigin(req);
@@ -85,15 +87,22 @@ export async function POST(req: NextRequest) {
       ? pinnedContext
       : {};
     const runtimeSettings = buildScopedRuntimeSettings();
-    const selectedModelConfig = getMainAgentModelConfig(safeMode, runtimeSettings);
     const requestedModelProvider = selectedModel && typeof selectedModel === 'object'
       ? String((selectedModel as any).provider || '').trim()
       : '';
     const requestedModelName = selectedModel && typeof selectedModel === 'object'
       ? String((selectedModel as any).modelId || (selectedModel as any).modelName || '').trim()
       : '';
-    const exactModelName = requestedModelProvider === selectedModelConfig.provider
-      && requestedModelName.length > 0
+    const hasValidSelectedModel = isModelProvider(requestedModelProvider) && requestedModelName.length > 0;
+    const hasSelectedModelRequest = selectedModel !== null && selectedModel !== undefined;
+    if (hasSelectedModelRequest && !hasValidSelectedModel) {
+      return attachAgentApiSessionCookie(jsonError('The selected model is invalid. Choose a provider and exact model ID.', 400), session);
+    }
+    const selectedModelConfig = getMainAgentModelConfig(
+      hasValidSelectedModel ? MODEL_PROVIDER_MODE[requestedModelProvider] : safeMode,
+      runtimeSettings,
+    );
+    const exactModelName = hasValidSelectedModel
       ? requestedModelName.slice(0, 200)
       : '';
     const safeModelThinkingCapability = normalizeModelThinkingCapabilities(modelThinkingCapability);
@@ -134,13 +143,18 @@ export async function POST(req: NextRequest) {
       ...(exactModelName ? {
         selectedModelName: exactModelName,
         selectedModelProvider: requestedModelProvider,
-        strictModelSelection: strictModelSelection === true,
+        // An exact selector entry is authoritative even if an older client
+        // omitted the strict flag. Never silently replace the user's model.
+        strictModelSelection: strictModelSelection === true || hasValidSelectedModel,
       } : {}),
       ...(safeModelThinkingCapability ? { modelThinkingCapability: safeModelThinkingCapability } : {}),
       agentSessionId: session.sessionId,
     };
     const promptWithAttachmentFallback = prompt || 'Please review the attached file or media and help me with it.';
-    const effectivePrompt = isBuilderChat ? buildAgentBuilderUserRequest(builderAgentId, promptWithAttachmentFallback) : promptWithAttachmentFallback;
+    // The builder identity is already carried by the pinned runtime context.
+    // Keep the user turn itself human-readable so the registry cannot echo an
+    // internal routing envelope back into the visible chat transcript.
+    const effectivePrompt = promptWithAttachmentFallback;
     const effectiveMode = isBuilderChat ? getAgentBuilderMode(safeMode) : safeMode;
 
     await agentRegistry.waitForStoppedRunToSettle(chatId, 5000);

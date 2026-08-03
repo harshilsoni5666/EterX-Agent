@@ -11,6 +11,7 @@ type CustomToolUi = {
 
 export type CustomToolActiveTrace = {
   id: string;
+  toolCallId?: string;
   toolName: string;
   command?: string;
   filename?: string;
@@ -49,6 +50,12 @@ const formatCustomToolLabel = (toolName: string) => {
     screenshot_capture: 'Capturing screen',
     markdown_to_html: 'Converting markdown',
     json_yaml_transform: 'Transforming data',
+    gateway_bridge: 'Using Gateway channel',
+    connector_mcp: 'Using connected service',
+    slack_controller: 'Slack operation',
+    telegram_user_controller: 'Telegram operation',
+    whatsapp_controller: 'WhatsApp operation',
+    email_manager: 'Email operation',
   };
   if (known[toolName]) return known[toolName];
   return String(toolName || 'Running tool')
@@ -128,6 +135,12 @@ const getCustomToolUi = (toolName: string): CustomToolUi => {
     screenshot_capture: { text: 'Capturing screen', type: 'exploration', iconCategory: 'computer', argKeys: ['target', 'filename'] },
     markdown_to_html: { text: 'Converting markdown', type: 'file_edit', iconCategory: 'file_create', argKeys: ['title', 'filename'] },
     json_yaml_transform: { text: 'Transforming data', type: 'command', iconCategory: 'computer', argKeys: ['operation'] },
+    gateway_bridge: { text: 'Using Gateway channel', type: 'communication', iconCategory: 'connector', argKeys: ['platform', 'channel', 'action', 'target'] },
+    connector_mcp: { text: 'Using connected service', type: 'communication', iconCategory: 'connector', argKeys: ['connector_id', 'connectorId', 'server_id', 'action'] },
+    slack_controller: { text: 'Slack operation', type: 'communication', iconCategory: 'connector', argKeys: ['action', 'channel', 'target'] },
+    telegram_user_controller: { text: 'Telegram operation', type: 'communication', iconCategory: 'connector', argKeys: ['action', 'chatId', 'target'] },
+    whatsapp_controller: { text: 'WhatsApp operation', type: 'communication', iconCategory: 'connector', argKeys: ['action', 'target'] },
+    email_manager: { text: 'Email operation', type: 'communication', iconCategory: 'connector', argKeys: ['action', 'subject', 'to'] },
   };
 
   if (known[toolName]) return known[toolName];
@@ -147,7 +160,7 @@ const getCustomToolUi = (toolName: string): CustomToolUi => {
 const mapCustomUiIcon = (value: any) => {
   const icon = String(value || '').toLowerCase().trim();
   if (!icon) return '';
-  if (['computer', 'agent', 'terminal', 'image', 'file_read', 'file_create', 'file_edit', 'folder_read', 'folder_create', 'search', 'web_search', 'verification'].includes(icon)) {
+  if (['computer', 'agent', 'terminal', 'image', 'file_read', 'file_create', 'file_edit', 'folder_read', 'folder_create', 'search', 'web_search', 'verification', 'connector'].includes(icon)) {
     return icon;
   }
   if (['bot', 'subagent', 'sub_agent'].includes(icon)) return 'agent';
@@ -286,7 +299,8 @@ export const createCustomToolActionLog = (
   const shouldLinkFile = ['file_read', 'file_edit', 'file_create'].includes(ui.iconCategory)
     || /workspace_(?:read|write|edit)_file|docx|pdf|csv|markdown|chart|image/i.test(toolName);
   const linkedFile = shouldLinkFile ? (traceFields.filename || filePath || primaryPath) : '';
-  const iconCategory = mapCustomUiIcon(args?.uiIcon) || (command ? 'terminal' : ui.iconCategory);
+  const isConnectorTool = ui.type === 'communication' || ['gateway_bridge', 'connector_mcp', 'slack_controller', 'telegram_user_controller', 'whatsapp_controller', 'email_manager'].includes(toolName);
+  const iconCategory = isConnectorTool ? 'connector' : (mapCustomUiIcon(args?.uiIcon) || (command ? 'terminal' : ui.iconCategory));
   return {
     id: `custom_tool_${startedAt}_${toolName}_${randomSuffix()}`,
     type,
@@ -297,6 +311,8 @@ export const createCustomToolActionLog = (
     fileCount: traceFields.fileCount,
     command: command || undefined,
     icon: args?.uiIcon,
+    toolArgs: args,
+    connectorId: args?.connectorId || args?.connector_id || args?.server_id || args?.platform || args?.channel || undefined,
     tool: toolName,
     name: toolName,
     subAgent: agentName,
@@ -354,7 +370,9 @@ export const createCustomToolResultLogs = (
   const resultText = summarizeCustomToolResult(result);
   const logs: any[] = [];
 
-  if ((active.command || /(?:system_shell|workspace_run_command)/i.test(active.toolName)) && resultText) {
+  // terminal_background already streams the command's output and emits its
+  // final event. Do not manufacture a second console card from tool_result.
+  if (!result?._consoleTraceEmitted && (active.command || /(?:system_shell|workspace_run_command)/i.test(active.toolName)) && resultText) {
     logs.push({
       id: `custom_console_${at}_${randomSuffix()}`,
       type: 'console_output',

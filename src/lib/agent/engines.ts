@@ -421,10 +421,11 @@ interface WorkspaceProfile {
 
 class WorkspaceIntelligence {
   private profile: WorkspaceProfile | null = null;
+  private profiles = new Map<string, WorkspaceProfile>();
 
   /** Analyze the current workspace and build a profile */
-  async analyze(): Promise<WorkspaceProfile> {
-    const cwd = process.cwd();
+  async analyze(targetCwd = process.cwd()): Promise<WorkspaceProfile> {
+    const cwd = path.resolve(targetCwd);
     console.log(`[WorkspaceIntel] Analyzing workspace: ${cwd}`);
 
     const profile: WorkspaceProfile = {
@@ -544,15 +545,18 @@ class WorkspaceIntelligence {
         profile.totalFiles = entries.length;
       } catch { }
 
-      this.profile = profile;
+      this.profiles.set(cwd, profile);
+      if (cwd === path.resolve(process.cwd())) this.profile = profile;
 
       console.log(`[WorkspaceIntel] ✅ Profile: ${profile.framework} | ${profile.language} | ${profile.packageManager}`);
       console.log(`[WorkspaceIntel]    Dirs: ${profile.mainDirs.join(', ')}`);
       console.log(`[WorkspaceIntel]    Features: TS=${profile.hasTypeScript} Docker=${profile.hasDocker} CI=${profile.hasCI} Tests=${profile.hasTests}`);
 
       // Persist for quick access
-      const workspaceDir = path.join(cwd, '.workspaces');
-      await writeJsonAtomic(resolveUnder(workspaceDir, 'workspace_profile.json'), profile);
+      if (cwd === path.resolve(process.cwd())) {
+        const workspaceDir = getEterxWorkspaceDir();
+        await writeJsonAtomic(resolveUnder(workspaceDir, 'workspace_profile.json'), profile);
+      }
 
       return profile;
     } catch (error: any) {
@@ -562,8 +566,12 @@ class WorkspaceIntelligence {
   }
 
   /** Get cached profile or analyze */
-  async getProfile(): Promise<WorkspaceProfile> {
-    if (this.profile) return this.profile;
+  async getProfile(targetCwd = process.cwd()): Promise<WorkspaceProfile> {
+    const cwd = path.resolve(targetCwd);
+    if (cwd === path.resolve(process.cwd()) && this.profile) return this.profile;
+    const cachedProfile = this.profiles.get(cwd);
+    if (cachedProfile) return cachedProfile;
+    if (cwd !== path.resolve(process.cwd())) return this.analyze(cwd);
 
     // Try loading from cache
     const cachePath = getEterxWorkspaceDir('workspace_profile.json');
@@ -578,12 +586,12 @@ class WorkspaceIntelligence {
       } catch { }
     }
 
-    return this.analyze();
+    return this.analyze(cwd);
   }
 
   /** Generate a concise workspace context string for system prompt injection */
-  async getWorkspaceContext(): Promise<string> {
-    const p = await this.getProfile();
+  async getWorkspaceContext(targetCwd?: string): Promise<string> {
+    const p = await this.getProfile(targetCwd || process.cwd());
     const parts = [
       `Project: ${p.framework} (${p.language})`,
       `Build: ${p.buildSystem} | PM: ${p.packageManager}`,

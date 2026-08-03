@@ -13,10 +13,11 @@ import {
 import ReactMarkdown from 'react-markdown';
 import { markdownComponents, normalizeMarkdownForRendering, remarkPlugins, rehypePlugins, WebsiteLink } from './markdown-renderer';
 import { LocalFileIcon, LocalFileLinkChip, decodeLocalFileHref, isLocalFilePath } from './local-file-link';
-import { AGENT_ICONS, resolveAgentIcon, AgentAssetIcon, SubAgentIdentityIcon } from './agent-icons';
+import { AGENT_ICONS, resolveAgentIcon, AgentAssetIcon, SubAgentIdentityIcon, ConnectorIcon, getConnectorId, isConnectorTrace } from './agent-icons';
 import { AgentFace } from './agent-face';
 import { Shimmer } from '../ui/shimmer';
 import { safeCopyTextToClipboard } from '../ui/copy-button';
+import { isThoughtStreamOpen } from '../../lib/thought-stream-lifecycle';
 
 type SubAgentAssetIndexes = Record<string, number>;
 
@@ -467,6 +468,10 @@ const shouldUseTerminalIcon = (log: any, subtitle = '', preview?: any) => {
   const iconCategory = String(log?.iconCategory || '').toLowerCase();
   const combined = `${ text } ${ secondary } ${ command }`;
 
+  // Connector traces can contain words such as "run", "server", or
+  // "request" in their action/arguments. They are external-service activity,
+  // not shell activity, and must stay on the connector visual path.
+  if (isConnectorTrace(log)) return false;
   if (log?.type === 'file_edit' || preview?.type === 'file_preview') return false;
   if (iconCategory === 'terminal') return true;
   if (preview?.type === 'console_output') return true;
@@ -493,19 +498,16 @@ const asTimestamp = (value: unknown) => {
   return timestamp;
 };
 
-const LIVE_THOUGHT_FRESH_MS = 2400;
 const LIVE_ACTION_SETTLE_MS = 1400;
 const LIVE_FACE_REGULAR_DELAY_MS = 8500;
 const LIVE_FACE_DEEP_WORK_DELAY_MS = 2400;
 const THOUGHT_ELAPSED_TICK_MS = 1000;
 
-const getLogUpdatedAt = (log: any) =>
-  asTimestamp(log?.endTime) ?? asTimestamp(log?.updatedAt) ?? asTimestamp(log?.timestamp) ?? asTimestamp(log?.startTime);
-
-const isLiveThoughtFresh = (log: any, now = Date.now()) => {
+const isLiveThoughtFresh = (log: any) => {
   if (!log || (log.type !== 'thought_stream' && log.type !== 'work_note')) return false;
-  const updatedAt = getLogUpdatedAt(log);
-  return updatedAt === null || now - updatedAt <= LIVE_THOUGHT_FRESH_MS;
+  if (log.type === 'thought_stream') return isThoughtStreamOpen(log);
+  if (log.isStreaming === false || log.isLiveTyping === false || log.streamState === 'closed') return false;
+  return log.isStreaming === true || log.isLiveTyping === true || log.streamState === 'open';
 };
 
 const isDeepWorkLog = (log: any) => {
@@ -2650,6 +2652,7 @@ const getActionIdentity = (log: any, fallbackIndex: number) => {
     compactActionKeyPart(log?.command),
     compactActionKeyPart(log?.filename),
     compactActionKeyPart(log?.responseKey),
+    compactActionKeyPart(getConnectorId(log)),
   ].join('|');
 };
 
@@ -2659,6 +2662,7 @@ const getActionLookupIdentity = (log: any) => [
   compactActionKeyPart(log?.secondary),
   compactActionKeyPart(log?.command),
   compactActionKeyPart(log?.filename),
+  compactActionKeyPart(getConnectorId(log)),
 ].join('|');
 
 const getStableActionEventId = (log: any) => {
@@ -2858,6 +2862,8 @@ const TerminalTraceCard = ({
   subtitle?: string;
   inCard?: boolean;
 }) => {
+  const connectorId = getConnectorId(log);
+  const connectorAction = isConnectorTrace(log);
   const command = getTerminalCommandText(log, preview, subtitle) || 'terminal command';
   const collapsedCommand = getCollapsedTerminalCode(log, preview, command);
   const rawResult = preview?.result ?? log?.toolResult;
@@ -2911,7 +2917,7 @@ const TerminalTraceCard = ({
       <div className={`eterx-terminal-trace w-full ${ inCard ? '' : `${ ACTION_CARD_CLASS } my-1.5` }`}>
         <div className={`eterx-terminal-trace-row flex min-h-[33px] w-full items-center gap-2 py-1 text-left ${ inCard ? 'px-1.5' : 'px-3' }`}>
           <span className="eterx-action-icon eterx-terminal-icon flex h-[26px] w-[26px] shrink-0 items-center justify-center text-[#A39B91]">
-            <Clock className={`h-[16.5px] w-[16.5px] ${ isStreaming ? 'text-[#3EE06F] animate-spin' : 'text-[#A39B91]' }`} strokeWidth={2.1} />
+            {connectorAction ? <ConnectorIcon connectorId={connectorId} size={17} title={`${ connectorId || 'connected service' } connector`} /> : <Clock className={`h-[16.5px] w-[16.5px] ${ isStreaming ? 'text-[#3EE06F] animate-spin' : 'text-[#A39B91]' }`} strokeWidth={2.1} />}
           </span>
           <Shimmer active={isStreaming} className="min-w-0 truncate text-[13.5px] font-medium leading-tight tracking-normal text-[#C8C1B8]">
             {headerLabel}
@@ -2965,7 +2971,7 @@ const TerminalTraceCard = ({
         className={`eterx-terminal-trace-row group grid min-h-[33px] w-full ${ rowGridClass } items-center gap-2 py-1 text-left transition-colors outline-none focus:outline-none focus-visible:outline-none focus-visible:ring-0 ${ inCard ? 'px-1.5 hover:bg-white/[0.024]' : 'px-3 hover:bg-white/[0.024]' }`}
       >
         <span className="eterx-action-icon eterx-terminal-icon flex h-[26px] w-[26px] shrink-0 items-center justify-center text-[#A39B91]">
-          <Terminal className="h-[16.5px] w-[16.5px]" strokeWidth={2.1} />
+          {connectorAction ? <ConnectorIcon connectorId={connectorId} size={17} title={`${ connectorId || 'connected service' } connector`} /> : <Terminal className="h-[16.5px] w-[16.5px]" strokeWidth={2.1} />}
         </span>
         <Shimmer active={isStreaming} className="min-w-0 truncate text-[13.5px] font-medium leading-tight tracking-normal text-[#C8C1B8]">
           {headerLabel}
@@ -3212,6 +3218,8 @@ const ActionChip = ({
   // workspace_apply_patch logs come in as file_edit with text 'Patching files'
   const isPatch = isEdit && /patch/i.test(String(log.text || ''));
   const { openPanel } = useFilePanelActions();
+  const connectorId = useMemo(() => getConnectorId(log), [log]);
+  const connectorAction = useMemo(() => isConnectorTrace(log), [log]);
   const logFileTargets = useMemo(() => collectFileTargets(log), [log]);
   // Subtitle: the secondary arg (command string, URL, query, etc.)
   const subtitle = log.secondary && log.secondary !== log.filename ? String(log.secondary).substring(0, 120) : '';
@@ -3437,7 +3445,18 @@ const ActionChip = ({
           const iconCategory = shouldUseTerminalIcon(log, subtitle, preview) ? 'terminal' : log.iconCategory;
           const agentEntry = resolveAgentIcon(displayVerbLabel, log.text, iconCategory);
           const { Icon: AI, color: ac } = agentEntry;
-          return <span className="eterx-action-icon flex h-[26px] w-[26px] items-center justify-center shrink-0"><AI isLive={isLiveChip} size={16.5} color={isLiveChip ? ac : '#DAD6CF'} /></span>;
+          return (
+            <span
+              className={`eterx-action-icon flex h-[26px] w-[26px] items-center justify-center shrink-0 ${ connectorAction ? 'rounded-[8px] border border-white/[0.08] bg-white/[0.035] shadow-[0_2px_8px_rgba(0,0,0,0.16)]' : '' }`}
+              title={connectorAction ? `${ (connectorId || 'connected service').replace(/_/g, ' ') } connector` : undefined}
+              data-connector={connectorId || (connectorAction ? 'connected-service' : undefined)}
+            >
+              {connectorAction
+                ? <ConnectorIcon connectorId={connectorId} size={17} title={`${ (connectorId || 'connected service').replace(/_/g, ' ') } connector`} />
+                : <AI isLive={isLiveChip} size={16.5} color={isLiveChip ? ac : '#DAD6CF'} />}
+              {connectorAction && isLiveChip && <span className="ml-[-3px] mt-[-15px] h-1.5 w-1.5 rounded-full bg-[#43E27A] shadow-[0_0_0_2px_#151514,0_0_8px_rgba(67,226,122,0.8)]" aria-label="Live connector activity" />}
+            </span>
+          );
         })()}
         {isThinkChip && <span className="h-6 w-6 shrink-0" />}
         <Shimmer active={isLiveChip} className="eterx-action-verb shrink-0 truncate text-[13.5px] font-medium leading-tight tracking-normal text-[#C8C1B8]">{displayVerbLabel}</Shimmer>
@@ -3840,6 +3859,10 @@ const CollapsibleActionGroup = ({
   const terminalOnly = cardLogs.length === 1 && isTerminalActionLike(cardLogs[0]);
   const fileChangeOnly = cardLogs.length === 1 && cardLogs[0]?.type === 'file_edit';
   const useStandaloneRows = terminalOnly || fileChangeOnly;
+  const connectorIds = useMemo(
+    () => Array.from(new Set(cardLogs.map(log => getConnectorId(log)).filter(Boolean))) as string[],
+    [cardLogs],
+  );
 
   return (
     <div className="w-full">
@@ -3859,8 +3882,21 @@ const CollapsibleActionGroup = ({
               className="flex w-full items-center gap-2 border-b border-white/[0.06] px-3 py-2 text-left text-[12px] font-medium text-white/60 transition-colors hover:bg-white/[0.035] hover:text-white/85 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30"
             >
               <ChevronDown className={`h-3.5 w-3.5 transition-transform ${ open ? '' : '-rotate-90' }`} aria-hidden="true" />
-              <span>{cardLogs.length} action{cardLogs.length === 1 ? '' : 's'}</span>
-              <span className="ml-auto text-[10px] text-white/35">{open ? 'Hide' : 'Show'}</span>
+              <span className="flex items-center gap-2">
+                <span className="h-1.5 w-1.5 rounded-full bg-[#43E27A] shadow-[0_0_8px_rgba(67,226,122,0.65)]" />
+                <span>{isActiveGroup ? 'Live activity' : `${ cardLogs.length } action${ cardLogs.length === 1 ? '' : 's' }`}</span>
+              </span>
+              {connectorIds.length > 0 && (
+                <span className="ml-auto flex items-center gap-1.5" aria-label={`${ connectorIds.length } connected service${ connectorIds.length === 1 ? '' : 's' }`}>
+                  {connectorIds.slice(0, 4).map(connectorId => (
+                    <span key={connectorId} className="grid h-5 w-5 place-items-center rounded-[6px] border border-white/[0.08] bg-white/[0.035]" title={`${ connectorId.replace(/_/g, ' ') } connector`}>
+                      <ConnectorIcon connectorId={connectorId} size={13} />
+                    </span>
+                  ))}
+                  {connectorIds.length > 4 && <span className="text-[10px] text-white/35">+{ connectorIds.length - 4 }</span>}
+                </span>
+              )}
+              <span className={`${ connectorIds.length === 0 ? 'ml-auto' : '' } text-[10px] text-white/35`}>{open ? 'Hide' : 'Show'}</span>
             </button>
           )}
           <AnimatePresence initial={false}>
@@ -4033,17 +4069,6 @@ const LiveWorkingIndicator = ({ logs }: { logs: any[] }) => {
   }, []);
 
   // React to log changes — immediately reflect mode/action
-  useEffect(() => {
-    const last = logs[logs.length - 1];
-    if (!last || (last.type !== 'thought_stream' && last.type !== 'work_note')) return;
-    if (!isLiveThoughtFresh(last)) return;
-    const updatedAt = getLogUpdatedAt(last);
-    if (updatedAt === null) return;
-    const delay = Math.max(120, LIVE_THOUGHT_FRESH_MS - (Date.now() - updatedAt) + 10);
-    const timeout = window.setTimeout(() => setStatusTick(t => t + 1), delay);
-    return () => window.clearTimeout(timeout);
-  }, [logSignature, logs, statusTick]);
-
   const prevSignatureRef = useRef(logSignature);
   useEffect(() => {
     const signatureChanged = logSignature !== prevSignatureRef.current;
@@ -4352,21 +4377,8 @@ const HtmlPreviewCard = ({ log }: { log: any }) => {
 
   const handleCopy = async () => {
     try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(rawHtml);
-      } else {
-        const textArea = document.createElement('textarea');
-        textArea.value = rawHtml;
-        textArea.setAttribute('readonly', '');
-        textArea.style.position = 'fixed';
-        textArea.style.left = '-9999px';
-        textArea.style.top = '0';
-        document.body.appendChild(textArea);
-        textArea.focus();
-        textArea.select();
-        document.execCommand('copy');
-        document.body.removeChild(textArea);
-      }
+      const didCopy = await safeCopyTextToClipboard(rawHtml);
+      if (!didCopy) return;
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch (e) {
@@ -4709,10 +4721,9 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
         const phaseIsActive = isThinking && isLast && phaseIsLastVisible;
 
         if (seg.kind === 'thought') {
-          const thoughtIsLive =
-            isThinking &&
-            seg.log.isStreaming !== false &&
-            seg.log.streamState !== 'closed';
+          // Provider state is authoritative. The global turn flag can lag
+          // behind a final API chunk while polling commits the answer.
+          const thoughtIsLive = isThoughtStreamOpen(seg.log);
           return <ProfessionalThought key={`t-${ getStreamRowIdentity(seg.log, seg.idx) }`} text={seg.log.text} isLatest={thoughtIsLive} isThinking={thoughtIsLive} startedAt={seg.log.startTime} updatedAt={seg.log.endTime} />;
         }
         if (seg.kind === 'note' && nextSeg?.kind === 'action_group') {

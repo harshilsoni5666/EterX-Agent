@@ -30,6 +30,7 @@ USE THIS WHEN:
 DO NOT USE FOR:
 - Things you can figure out yourself (file names, code structure, etc.)
 - Simple yes/no decisions where you should just pick the better option
+- Routine connector discovery, status checks, retries, or connected-service work already authorized by the task
 - Stalling or being lazy — only ask when it truly matters
 
 MODES:
@@ -138,8 +139,40 @@ The response will contain the user's answer. Continue your work based on it.`,
     const MAX_WAIT_MS = 5 * 60 * 1000;
     const POLL_INTERVAL_MS = 500;
     const startTime = Date.now();
-    
+    const isCancelled = () => Boolean(
+      ctx?.abortSignal?.aborted ||
+      ctx?.signal?.aborted ||
+      (typeof ctx?.isCancelled === 'function' && ctx.isCancelled()),
+    );
+    const waitForPollOrCancellation = () => new Promise<void>((resolve, reject) => {
+      if (isCancelled()) {
+        delete (globalThis as any).__pendingAskUser?.[responseKey];
+        reject(new Error('CANCELLED_BY_USER'));
+        return;
+      }
+
+      const signal = (ctx?.abortSignal || ctx?.signal) as AbortSignal | undefined;
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const onAbort = () => {
+        if (timer) clearTimeout(timer);
+        timer = null;
+        signal?.removeEventListener('abort', onAbort);
+        delete (globalThis as any).__pendingAskUser?.[responseKey];
+        reject(new Error('CANCELLED_BY_USER'));
+      };
+      signal?.addEventListener('abort', onAbort, { once: true });
+      timer = setTimeout(() => {
+        timer = null;
+        signal?.removeEventListener('abort', onAbort);
+        resolve();
+      }, POLL_INTERVAL_MS);
+    });
+
     while (Date.now() - startTime < MAX_WAIT_MS) {
+      if (isCancelled()) {
+        delete (globalThis as any).__pendingAskUser?.[responseKey];
+        throw new Error('CANCELLED_BY_USER');
+      }
       // Check if user has responded
       const pending = (globalThis as any).__pendingAskUser?.[responseKey];
       
@@ -157,15 +190,13 @@ The response will contain the user's answer. Continue your work based on it.`,
         };
       }
       
-      // Wait before polling again
-      await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL_MS));
+      // Wait before polling again, but let Stop/cancellation interrupt the wait.
+      await waitForPollOrCancellation();
     }
     
     // Timeout — use default or inform agent
     // Clean up
-    if ((globalThis as any).__pendingAskUser?.[responseKey]) {
-      delete (globalThis as any).__pendingAskUser[responseKey];
-    }
+    delete (globalThis as any).__pendingAskUser?.[responseKey];
     
     if (defaultValue) {
       console.log(`[Tool: ask_user] ⏰ Timeout, using default: "${defaultValue}"`);

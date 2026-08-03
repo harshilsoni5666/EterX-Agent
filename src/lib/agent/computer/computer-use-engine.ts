@@ -26,9 +26,11 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { monitorEmitter } from '../monitor/emitter';
 import { buildTerminalShellInvocation } from '../tools/core/shell_resolver';
+import { getEterxWorkspaceDir } from '../storage-paths';
+import { capturePlatformScreen, platformScreenProvider } from './platform-screen';
 
 const execFileAsync = promisify(execFile);
-const SCREENSHOTS_DIR = path.resolve(process.cwd(), '.workspaces', 'temp', 'screenshots');
+const SCREENSHOTS_DIR = getEterxWorkspaceDir('temp', 'screenshots');
 
 function isPathInside(parent: string, candidate: string): boolean {
   const relative = path.relative(parent, candidate);
@@ -125,6 +127,20 @@ export interface ScreenshotResult {
 export async function captureScreen(label: string = 'view', chatId?: string): Promise<ScreenshotResult | null> {
   await fs.ensureDir(SCREENSHOTS_DIR);
   const filePath = resolveUnder(SCREENSHOTS_DIR, `desktop_${safeArtifactLabel(label)}_${Date.now()}.png`);
+
+  if (process.platform !== 'win32') {
+    const captured = await capturePlatformScreen(label, { target: 'fullscreen' });
+    if (!captured) return null;
+    const result: ScreenshotResult = {
+      path: captured.path,
+      base64: captured.base64,
+      ts: Date.now(),
+      source: 'desktop',
+    };
+    monitorEmitter.desktopScreenshot(captured.base64, captured.path, chatId);
+    return result;
+  }
+
   try {
     await runPS(`${PS_DC_PREAMBLE}\n[DCE]::CaptureFullScreen('${filePath.replace(/\\/g, '\\\\')}');`, 12000);
     if (!await fs.pathExists(filePath)) return null;
@@ -145,6 +161,20 @@ export async function captureScreen(label: string = 'view', chatId?: string): Pr
 export async function captureWindow(windowTitle: string, label: string = 'window', chatId?: string): Promise<ScreenshotResult | null> {
   await fs.ensureDir(SCREENSHOTS_DIR);
   const filePath = resolveUnder(SCREENSHOTS_DIR, `window_${safeArtifactLabel(label, 'window')}_${Date.now()}.png`);
+
+  if (process.platform !== 'win32') {
+    const captured = await capturePlatformScreen(label, { target: 'active_window' });
+    if (!captured) return null;
+    const result: ScreenshotResult = {
+      path: captured.path,
+      base64: captured.base64,
+      ts: Date.now(),
+      source: 'window',
+    };
+    monitorEmitter.desktopScreenshot(captured.base64, captured.path, chatId);
+    return result;
+  }
+
   try {
     await runPS(`
       ${PS_DC_PREAMBLE}
@@ -355,6 +385,16 @@ export interface VisionScreenshot {
  * This enables the agent to SEE what's on screen and reason about it.
  */
 export async function screenshotForVision(label: string = 'vision', chatId?: string): Promise<VisionScreenshot | null> {
+  if (process.platform !== 'win32') {
+    const shot = await captureScreen(label, chatId);
+    if (!shot) return null;
+    return {
+      inlineData: { data: shot.base64, mimeType: 'image/png' },
+      path: `EterX Computer:${label} (${platformScreenProvider()})`,
+      ts: Date.now(),
+    };
+  }
+
   const { captureFrameForVision } = await import('./live-stream');
   const frame = await captureFrameForVision(82, 1280, chatId || '');
   if (!frame) return null;

@@ -10,6 +10,7 @@ import {
   listTerminalBackgroundTasks,
   runTerminalCommandWithCheckIn,
 } from './terminal_background';
+import { emitRuntimeTrace } from './terminal_timeout';
 import { resolveTerminalShell } from './shell_resolver';
 
 /**
@@ -32,13 +33,18 @@ import { resolveTerminalShell } from './shell_resolver';
 
 const TASKS_DIR = getEterxWorkspaceDir('background_tasks');
 
+function ownerChatId(context: any): string | undefined {
+  const value = String(context?.chatId || context?.projectId || '').trim();
+  return value || undefined;
+}
+
 function safeTaskId(value: string): string {
   return String(value || '').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80);
 }
 
 export const backgroundTaskTool: ToolDefinition = {
   name: 'background_task',
-  description: `Launch, monitor, or manage background tasks. Tasks run independently while you continue other work.
+  description: `Launch, monitor, or manage background tasks owned by this chat. Tasks run independently while you continue other work; another chat's task IDs are intentionally invisible and cannot be controlled here.
 
 MODES:
 - "launch": Start a command in the background. Returns immediately with a task ID.
@@ -64,6 +70,7 @@ Use for: long installs, builds, data processing, file watching, anything that ta
   outputSchema: z.object({
     success: z.boolean(),
     taskId: z.string().optional(),
+    streamId: z.string().optional(),
     tasks: z.array(z.any()).optional(),
     output: z.string().optional(),
     message: z.string()
@@ -97,22 +104,45 @@ Use for: long installs, builds, data processing, file watching, anything that ta
           };
         }
 
+        let shell: string;
+        try {
+          shell = resolveTerminalShell(context?.terminalShell);
+        } catch (error: any) {
+          return {
+            success: false,
+            message: String(error?.message || error),
+          };
+        }
+
         const managedResult = await runTerminalCommandWithCheckIn({
           command: input.command,
           cwd: authorization.cwd,
           env: authorization.env,
+          authorization: {
+            cwd: authorization.cwd,
+            env: authorization.env,
+          },
           source: 'background_task',
           description: input.description,
           context,
-          shell: resolveTerminalShell(context?.terminalShell),
+          shell,
           immediateHandoff: true,
           surviveRunSettlement: true,
         });
         return {
           success: managedResult.success !== false,
           taskId: managedResult.taskId,
+          backgroundTaskId: managedResult.backgroundTaskId || managedResult.taskId,
+          streamId: managedResult.streamId,
           status: managedResult.status,
+          stillRunning: Boolean(managedResult.stillRunning),
+          pid: managedResult.pid,
+          exitCode: managedResult.exitCode,
+          stdout: managedResult.stdout || '',
+          stderr: managedResult.stderr || '',
           output: managedResult.output || '',
+          nextActionNote: managedResult.nextActionNote,
+          _consoleTraceEmitted: Boolean(managedResult._consoleTraceEmitted),
           message: `Background task launched: "${input.description || input.command}" (ID: ${managedResult.taskId}, PID: ${managedResult.pid}). Use mode="check" to monitor progress.`,
         };
 
@@ -127,14 +157,30 @@ Use for: long installs, builds, data processing, file watching, anything that ta
           return { success: false, message: 'Invalid taskId' };
         }
 
-        const terminalTask = await getTerminalBackgroundTaskStatus(taskId);
-        if (terminalTask?.terminalTask) return terminalTask;
+        const terminalTask = await getTerminalBackgroundTaskStatus(taskId, ownerChatId(context));
+        if (terminalTask?.terminalTask) {
+          const output = String(terminalTask.output || terminalTask.stdout || terminalTask.stderr || '');
+          if (output || !terminalTask.running) {
+            emitRuntimeTrace(context, {
+              type: 'console_output',
+              command: terminalTask.command,
+              output,
+              content: output,
+              streamId: terminalTask.streamId,
+              taskId: terminalTask.taskId,
+              exitCode: terminalTask.running ? undefined : terminalTask.exitCode,
+              isStreaming: Boolean(terminalTask.running),
+              iconCategory: 'terminal',
+            });
+          }
+          return { ...terminalTask, _consoleTraceEmitted: true };
+        }
 
         return { success: false, taskId, message: `Task ${taskId} not found. Use mode="list" to see all tasks.` };
       }
 
       case 'list': {
-        const tasks: any[] = await listTerminalBackgroundTasks();
+        const tasks: any[] = await listTerminalBackgroundTasks(ownerChatId(context));
 
         return {
           success: true,
@@ -152,7 +198,7 @@ Use for: long installs, builds, data processing, file watching, anything that ta
           return { success: false, message: 'Invalid taskId' };
         }
 
-        const terminalTask = await killTerminalBackgroundTask(taskId);
+        const terminalTask = await killTerminalBackgroundTask(taskId, ownerChatId(context));
         if (terminalTask?.terminalTask) {
           return { ...terminalTask, success: true, message: `Task ${taskId} terminated.` };
         }

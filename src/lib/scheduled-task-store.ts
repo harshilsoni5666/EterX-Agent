@@ -5,7 +5,14 @@ import { normalizeScheduledTask, type ScheduledTaskRecord } from './scheduled-ta
 
 const STORE_DIR = path.join(getEterxDataDir(), 'scheduled-tasks');
 const STORE_PATH = path.join(STORE_DIR, 'tasks.json');
+const STORE_BACKUP_PATH = path.join(STORE_DIR, 'tasks.backup.json');
 const MAX_TASKS = 2000;
+
+const preserveCorruptTasks = async (source: string) => {
+  if (source !== STORE_PATH || !fs.existsSync(source)) return;
+  const preserved = path.join(STORE_DIR, `tasks.corrupt-${Date.now()}.json`);
+  await fs.move(source, preserved, { overwrite: false }).catch(() => {});
+};
 
 export interface ScheduledTaskSnapshot {
   version: 1;
@@ -29,15 +36,21 @@ function normalizeSnapshot(value: any): ScheduledTaskSnapshot {
 }
 
 async function readDisk(): Promise<ScheduledTaskSnapshot> {
-  if (cache) return cache;
+  // The agent tool and the API route can be loaded by separate Next/Electron
+  // module runtimes. A module-level cache can therefore be stale even though
+  // another runtime has already committed a newer tasks.json.
   try {
-    cache = normalizeSnapshot(await fs.readJson(STORE_PATH));
+    const source = await fs.pathExists(STORE_PATH) ? STORE_PATH : STORE_BACKUP_PATH;
+    const raw = await fs.readJson(source);
+    if (!raw || !Array.isArray(raw.tasks)) throw new Error('Invalid scheduled task snapshot');
+    cache = normalizeSnapshot(raw);
   } catch (error: any) {
-    if (error?.code !== 'ENOENT' && await fs.pathExists(STORE_PATH)) {
-      await fs.ensureDir(STORE_DIR);
-      await fs.move(STORE_PATH, path.join(STORE_DIR, `tasks.corrupt-${Date.now()}.json`), { overwrite: false }).catch(() => {});
+    if (error?.code !== 'ENOENT' && await fs.pathExists(STORE_PATH)) await preserveCorruptTasks(STORE_PATH);
+    try {
+      cache = normalizeSnapshot(await fs.readJson(STORE_BACKUP_PATH));
+    } catch {
+      cache = emptySnapshot();
     }
-    cache = emptySnapshot();
   }
   return cache;
 }
@@ -46,6 +59,9 @@ async function writeAtomic(snapshot: ScheduledTaskSnapshot): Promise<void> {
   await fs.ensureDir(STORE_DIR);
   const temporary = path.join(STORE_DIR, `.tasks.${process.pid}.${Date.now()}.tmp`);
   await fs.writeJson(temporary, snapshot, { spaces: 2 });
+  if (await fs.pathExists(STORE_PATH)) {
+    await fs.copyFile(STORE_PATH, STORE_BACKUP_PATH).catch(() => {});
+  }
   await fs.move(temporary, STORE_PATH, { overwrite: true });
 }
 
@@ -58,6 +74,8 @@ export async function loadScheduledTaskSnapshot(): Promise<ScheduledTaskSnapshot
 export async function saveScheduledTaskSnapshot(tasks: ScheduledTaskRecord[], savedAt = Date.now()): Promise<ScheduledTaskSnapshot> {
   const next = normalizeSnapshot({ tasks, savedAt });
   writeQueue = writeQueue.catch(() => {}).then(async () => {
+    const current = await readDisk();
+    if (next.savedAt < current.savedAt) return current;
     await writeAtomic(next);
     cache = next;
     return next;

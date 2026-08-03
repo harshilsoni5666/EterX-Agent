@@ -6,6 +6,7 @@ import { ChevronDown, Plus, Mic, ArrowUp, Check, ChevronRight, ChevronLeft, Cale
 import { PremiumSend } from '../ui/premium-icons';
 import { Shimmer } from '../ui/shimmer';
 import { normalizeScheduledTask, SCHEDULED_TASKS_STORAGE_KEY, SCHEDULED_TASKS_UPDATED_EVENT, type ScheduledTaskRecord } from '../../lib/scheduled-tasks';
+import { persistScheduledTasks } from '../../lib/scheduled-task-sync';
 
 export type ScheduledTaskItem = ScheduledTaskRecord;
 import {
@@ -22,8 +23,9 @@ import {
 } from '../../lib/agent/model-routing';
 import {
   AUTO_MODEL_SELECTION,
+  API_KEY_PRESENCE_STORAGE_KEY,
   CHAT_MODEL_SELECTION_STORAGE_KEY,
-  MODEL_API_KEYS_STORAGE_KEY,
+  MODEL_API_KEY_PRESENCE_STORAGE_KEY,
   MODEL_CATALOG_STORAGE_KEY,
   MODEL_OVERRIDE_STORAGE_KEY,
   MODEL_SELECTOR_STORAGE_KEY,
@@ -31,10 +33,12 @@ import {
   MODEL_PROVIDER_MODE,
   modelEntryKey,
   normalizeModelSelectorEntries,
+  parseModelEntryKey,
   type ModelSelectorEntry,
 } from '../../lib/agent/model-selector-store';
+import { appStorage, appStorageReady, FOLDER_STORAGE_READY_EVENT } from '../../lib/client-storage';
 
-const MODEL_API_KEY_STORAGE_KEY = 'eterx_api_keys';
+const MODEL_API_KEY_STORAGE_KEY = API_KEY_PRESENCE_STORAGE_KEY;
 const SETTINGS_CHANNEL = 'eterx-settings';
 
 const syncRuntimeModelOverrides = (modelOverrides: Record<string, string>) => {
@@ -88,7 +92,8 @@ const MODEL_PROVIDER_LABEL: Record<MainAgentProvider, string> = {
 const readStringRecord = (storageKey: string): Record<string, string> => {
   if (typeof window === 'undefined') return {};
   try {
-    const parsed = JSON.parse(window.localStorage.getItem(storageKey) || '{}');
+    const storage = appStorage;
+    const parsed = JSON.parse(storage.getItem(storageKey) || '{}');
     if (!parsed || typeof parsed !== 'object') return {};
     return Object.fromEntries(
       Object.entries(parsed as Record<string, unknown>)
@@ -103,7 +108,7 @@ const readStringRecord = (storageKey: string): Record<string, string> => {
 const readStringArrayRecord = (storageKey: string): Record<string, string[]> => {
   if (typeof window === 'undefined') return {};
   try {
-    const parsed = JSON.parse(window.localStorage.getItem(storageKey) || '{}');
+    const parsed = JSON.parse(appStorage.getItem(storageKey) || '{}');
     if (!parsed || typeof parsed !== 'object') return {};
     return Object.fromEntries(
       Object.entries(parsed as Record<string, unknown>)
@@ -132,7 +137,7 @@ const readStringArrayRecord = (storageKey: string): Record<string, string[]> => 
 const readThinkingCapabilityRecord = (): Record<string, ModelThinkingCapabilities> => {
   if (typeof window === 'undefined') return {};
   try {
-    const parsed = JSON.parse(window.localStorage.getItem(MODEL_THINKING_CAPABILITIES_STORAGE_KEY) || '{}');
+    const parsed = JSON.parse(appStorage.getItem(MODEL_THINKING_CAPABILITIES_STORAGE_KEY) || '{}');
     if (!parsed || typeof parsed !== 'object') return {};
     return Object.fromEntries(
       Object.entries(parsed as Record<string, unknown>)
@@ -151,7 +156,7 @@ const readStoredModelSettings = (): StoredModelSettings => {
   const savedEntries = typeof window !== 'undefined'
     ? (() => {
       try {
-        return JSON.parse(window.localStorage.getItem(MODEL_SELECTOR_STORAGE_KEY) || '[]');
+        return JSON.parse(appStorage.getItem(MODEL_SELECTOR_STORAGE_KEY) || '[]');
       } catch {
         return [];
       }
@@ -160,11 +165,18 @@ const readStoredModelSettings = (): StoredModelSettings => {
   const overrideEntries = Object.entries(modelOverrides)
     .map(([provider, modelId]) => ({ provider: provider as MainAgentProvider, modelId: String(modelId || '').trim() }))
     .filter(entry => entry.modelId);
-  const modelEntries = normalizeModelSelectorEntries([...normalizeModelSelectorEntries(savedEntries, modelCatalog), ...overrideEntries], modelCatalog);
-  const modelApiKeys = readStringRecord(MODEL_API_KEYS_STORAGE_KEY);
+  const storedChatModelSelection = typeof window !== 'undefined'
+    ? (appStorage.getItem(CHAT_MODEL_SELECTION_STORAGE_KEY) || AUTO_MODEL_SELECTION)
+    : AUTO_MODEL_SELECTION;
+  const parsedStoredChatModel = parseModelEntryKey(storedChatModelSelection);
+  let modelEntries = normalizeModelSelectorEntries([...normalizeModelSelectorEntries(savedEntries, modelCatalog), ...overrideEntries], modelCatalog);
+  if (parsedStoredChatModel && !modelEntries.some(entry => modelEntryKey(entry.provider, entry.modelId) === storedChatModelSelection)) {
+    modelEntries = normalizeModelSelectorEntries([...modelEntries, parsedStoredChatModel], modelCatalog);
+  }
+  const modelApiKeys = readStringRecord(MODEL_API_KEY_PRESENCE_STORAGE_KEY);
   const thinkingCapabilities = readThinkingCapabilityRecord();
-  const chatModelSelection = typeof window !== 'undefined'
-    ? (window.localStorage.getItem(CHAT_MODEL_SELECTION_STORAGE_KEY) || AUTO_MODEL_SELECTION)
+  const chatModelSelection = storedChatModelSelection === AUTO_MODEL_SELECTION || parsedStoredChatModel
+    ? storedChatModelSelection
     : AUTO_MODEL_SELECTION;
 
   return {
@@ -212,10 +224,10 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
   const [taskDescription, setTaskDescription] = useState("");
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
 
-  // Recurrence state loaded from default localStorage
+  // Recurrence state is loaded from the durable AppData-backed store.
   const [recurrence, setRecurrence] = useState(() => {
     if (typeof window !== 'undefined') {
-      return window.localStorage.getItem('eterx_scheduler_default_repeat') || 'daily';
+      return appStorage.getItem('eterx_scheduler_default_repeat') || 'daily';
     }
     return 'daily';
   });
@@ -224,7 +236,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
   const [formModel, setFormModel] = useState(AUTO_MODEL_SELECTION);
   const [formThinkingLevel, setFormThinkingLevel] = useState<MainAgentThinkingLevel>(() => {
     if (typeof window === 'undefined') return 'medium';
-    return normalizeMainAgentThinkingLevel(window.localStorage.getItem('eterx_chat_thinking_level') || 'medium');
+    return normalizeMainAgentThinkingLevel(appStorage.getItem('eterx_chat_thinking_level') || 'medium');
   });
   const [triggerTime, setTriggerTime] = useState('09:00');
 
@@ -246,7 +258,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
   const [scheduledTasks, setScheduledTasks] = useState<ScheduledTaskItem[]>(() => {
     if (typeof window !== 'undefined') {
       try {
-        const saved = JSON.parse(localStorage.getItem(SCHEDULED_TASKS_STORAGE_KEY) || '[]');
+        const saved = JSON.parse(appStorage.getItem(SCHEDULED_TASKS_STORAGE_KEY) || '[]');
         return Array.isArray(saved) ? saved.map(normalizeScheduledTask) : [];
       } catch {
         return [];
@@ -271,7 +283,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
   useEffect(() => {
     const refreshAgents = () => {
       try {
-        const custom = JSON.parse(localStorage.getItem('eterx_agents') || '[]');
+      const custom = JSON.parse(appStorage.getItem('eterx_agents') || '[]');
         const formatted = custom
           .filter((a: any) => a.id !== 'default-1' && a.isSetup !== false)
           .map((a: any) => ({ id: a.id as string, name: a.name as string }));
@@ -292,27 +304,25 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
   useEffect(() => {
     const handleSync = () => {
       try {
-        const tasks = JSON.parse(localStorage.getItem(SCHEDULED_TASKS_STORAGE_KEY) || '[]');
+      const tasks = JSON.parse(appStorage.getItem(SCHEDULED_TASKS_STORAGE_KEY) || '[]');
         setScheduledTasks(Array.isArray(tasks) ? tasks.map(normalizeScheduledTask) : []);
       } catch { }
     };
     const syncDurableTasks = async () => {
       try {
-        const pendingLocalWriteAt = Number(localStorage.getItem('eterx_scheduled_tasks_sync_pending') || 0);
+      const pendingLocalWriteAt = Number(appStorage.getItem('eterx_scheduled_tasks_sync_pending') || 0);
         if (pendingLocalWriteAt && Date.now() - pendingLocalWriteAt < 15_000) return;
-        if (pendingLocalWriteAt) localStorage.removeItem('eterx_scheduled_tasks_sync_pending');
+      if (pendingLocalWriteAt) appStorage.removeItem('eterx_scheduled_tasks_sync_pending');
         const response = await fetch('/api/scheduled-tasks', { cache: 'no-store' });
         if (!response.ok) return;
         const snapshot = await response.json();
         const durable = Array.isArray(snapshot?.tasks) ? snapshot.tasks.map(normalizeScheduledTask) : [];
-        const local = JSON.parse(localStorage.getItem(SCHEDULED_TASKS_STORAGE_KEY) || '[]');
-        if (durable.length === 0 && Array.isArray(local) && local.length > 0) {
-          void fetch('/api/scheduled-tasks', {
-            method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tasks: local }),
-          });
+      const local = JSON.parse(appStorage.getItem(SCHEDULED_TASKS_STORAGE_KEY) || '[]');
+        if (durable.length === 0 && Number(snapshot?.savedAt || 0) <= 0 && Array.isArray(local) && local.length > 0) {
+          void persistScheduledTasks(local.map(normalizeScheduledTask));
           return;
         }
-        localStorage.setItem(SCHEDULED_TASKS_STORAGE_KEY, JSON.stringify(durable));
+      appStorage.setItem(SCHEDULED_TASKS_STORAGE_KEY, JSON.stringify(durable));
         setScheduledTasks(durable);
       } catch { }
     };
@@ -329,21 +339,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
 
   const saveTasksState = useCallback((next: ScheduledTaskItem[]) => {
     setScheduledTasks(next);
-    try {
-      const syncToken = String(Date.now());
-      localStorage.setItem(SCHEDULED_TASKS_STORAGE_KEY, JSON.stringify(next));
-      localStorage.setItem('eterx_scheduled_tasks_sync_pending', syncToken);
-      window.dispatchEvent(new CustomEvent(SCHEDULED_TASKS_UPDATED_EVENT));
-      void fetch('/api/scheduled-tasks', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tasks: next }),
-      }).then(response => {
-        if (response.ok && localStorage.getItem('eterx_scheduled_tasks_sync_pending') === syncToken) {
-          localStorage.removeItem('eterx_scheduled_tasks_sync_pending');
-        }
-      }).catch(() => {});
-    } catch { }
+    void persistScheduledTasks(next);
   }, []);
 
   const computeScheduledTimestamp = useCallback((
@@ -476,7 +472,9 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
       title: taskTitle.trim(),
       description: taskDescription.trim(),
       model: formModel,
-      thinkingLevel: formThinkingLevel,
+      thinkingLevel: ['minimal', 'low', 'medium', 'high'].includes(formThinkingLevel)
+        ? formThinkingLevel as 'minimal' | 'low' | 'medium' | 'high'
+        : undefined,
       agentId: formAgent.id,
       agentName: formAgent.name,
       priority: priority as 'low' | 'medium' | 'high',
@@ -580,14 +578,14 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
   const [storedModelSettings, setStoredModelSettings] = useState(readStoredModelSettings);
   const [thinkingLevel, setThinkingLevel] = useState(() => {
     if (typeof window !== 'undefined') {
-      return (window.localStorage.getItem('eterx_chat_thinking_level') || 'medium') as MainAgentThinkingLevel;
+      return (appStorage.getItem('eterx_chat_thinking_level') || 'medium') as MainAgentThinkingLevel;
     }
     return 'medium' as MainAgentThinkingLevel;
   });
 
   const agentMode: MainAgentMode = useMemo(() => {
     if (typeof window !== 'undefined') {
-      return (window.localStorage.getItem('eterx_chat_agent_mode') || 'auto') as MainAgentMode;
+      return (appStorage.getItem('eterx_chat_agent_mode') || 'auto') as MainAgentMode;
     }
     return 'auto' as MainAgentMode;
   }, [storedModelSettings.chatModelSelection]);
@@ -596,18 +594,25 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
     const handleUpdate = () => {
       setStoredModelSettings(readStoredModelSettings());
       if (typeof window !== 'undefined') {
-        setThinkingLevel((window.localStorage.getItem('eterx_chat_thinking_level') || 'medium') as MainAgentThinkingLevel);
+        setThinkingLevel((appStorage.getItem('eterx_chat_thinking_level') || 'medium') as MainAgentThinkingLevel);
       }
     };
     window.addEventListener('eterx-settings-updated', handleUpdate);
-    return () => window.removeEventListener('eterx-settings-updated', handleUpdate);
+    window.addEventListener(FOLDER_STORAGE_READY_EVENT, handleUpdate);
+    window.addEventListener('eterx-folder-storage-updated', handleUpdate);
+    void appStorageReady.then(handleUpdate);
+    return () => {
+      window.removeEventListener('eterx-settings-updated', handleUpdate);
+      window.removeEventListener(FOLDER_STORAGE_READY_EVENT, handleUpdate);
+      window.removeEventListener('eterx-folder-storage-updated', handleUpdate);
+    };
   }, []);
 
-  // Set selected repeat rule as default in localStorage
+  // Set selected repeat rule in the durable AppData-backed store.
   const handleSetRecurrence = useCallback((val: string) => {
     setRecurrence(val);
     if (typeof window !== 'undefined') {
-      window.localStorage.setItem('eterx_scheduler_default_repeat', val);
+      appStorage.setItem('eterx_scheduler_default_repeat', val);
     }
   }, []);
 
@@ -681,19 +686,17 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
   const fallbackModelConfig = useMemo(() => getMainAgentModelConfig(agentMode), [agentMode]);
 
   const autoModelOption = useMemo<ChatModelOption>(() => ({
-    optionKey: AUTO_MODEL_SELECTION,
+    optionKey: modelOptions[0]?.optionKey || modelEntryKey(fallbackModelConfig.provider, fallbackModelConfig.modelName),
     id: fallbackModelConfig.id,
     provider: fallbackModelConfig.provider,
-    label: 'Auto',
-    compactLabel: 'Auto',
-    modelName: 'Auto',
-    isAuto: true,
-  }), [fallbackModelConfig]);
+    label: modelOptions[0]?.label || fallbackModelConfig.modelName,
+    compactLabel: modelOptions[0]?.compactLabel || fallbackModelConfig.compactLabel,
+    modelName: modelOptions[0]?.modelName || fallbackModelConfig.modelName,
+    modelId: modelOptions[0]?.modelId || fallbackModelConfig.modelName,
+  }), [fallbackModelConfig, modelOptions]);
 
   const selectedModel = useMemo(() => {
-    return storedModelSettings.chatModelSelection === AUTO_MODEL_SELECTION
-      ? autoModelOption
-      : modelOptions.find(option => option.optionKey === storedModelSettings.chatModelSelection) || autoModelOption;
+    return modelOptions.find(option => option.optionKey === storedModelSettings.chatModelSelection) || autoModelOption;
   }, [modelOptions, autoModelOption, storedModelSettings.chatModelSelection]);
 
   const getThinkingTarget = useCallback((option: ChatModelOption) => option.isAuto
@@ -719,7 +722,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
     setFormModel(selectedModel.optionKey);
   }, [selectedModel]);
 
-  const allModelOptions = useMemo(() => [autoModelOption, ...modelOptions], [autoModelOption, modelOptions]);
+  const allModelOptions = useMemo(() => modelOptions.length ? modelOptions : [autoModelOption], [autoModelOption, modelOptions]);
   const safeThinkingLevel = useMemo(() => normalizeMainAgentThinkingLevel(thinkingLevel), [thinkingLevel]);
   const activeThinkingOptions = useMemo(() => getThinkingLevelOptions(selectedModel), [selectedModel, getThinkingLevelOptions]);
   const selectedThinkingLevel = useMemo(() => {
@@ -745,8 +748,8 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
   const selectChatModelOption = useCallback((option: ChatModelOption) => {
     if (typeof window !== 'undefined') {
       if (option.isAuto) {
-        window.localStorage.setItem(CHAT_MODEL_SELECTION_STORAGE_KEY, AUTO_MODEL_SELECTION);
-        window.localStorage.setItem(MODEL_OVERRIDE_STORAGE_KEY, JSON.stringify({}));
+        appStorage.setItem(CHAT_MODEL_SELECTION_STORAGE_KEY, AUTO_MODEL_SELECTION);
+        appStorage.setItem(MODEL_OVERRIDE_STORAGE_KEY, JSON.stringify({}));
         setStoredModelSettings(prev => ({
           ...prev,
           modelOverrides: {},
@@ -755,12 +758,12 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
         emitModelSettingsUpdate({ chatModelSelection: AUTO_MODEL_SELECTION, modelOverrides: {} });
         syncRuntimeModelOverrides({});
       } else {
-        window.localStorage.setItem(CHAT_MODEL_SELECTION_STORAGE_KEY, option.optionKey);
+        appStorage.setItem(CHAT_MODEL_SELECTION_STORAGE_KEY, option.optionKey);
         const nextOverrides = {
           ...storedModelSettings.modelOverrides,
           [option.provider]: option.modelId || '',
         };
-        window.localStorage.setItem(MODEL_OVERRIDE_STORAGE_KEY, JSON.stringify(nextOverrides));
+        appStorage.setItem(MODEL_OVERRIDE_STORAGE_KEY, JSON.stringify(nextOverrides));
         setStoredModelSettings(prev => ({
           ...prev,
           modelOverrides: nextOverrides,
@@ -775,7 +778,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
 
   const selectThinkingLevel = useCallback((levelId: MainAgentThinkingLevel) => {
     if (typeof window !== 'undefined') {
-      window.localStorage.setItem('eterx_chat_thinking_level', levelId);
+      appStorage.setItem('eterx_chat_thinking_level', levelId);
       emitModelSettingsUpdate({ thinkingLevel: levelId });
       setShowThinkingLevels(false);
       setShowModelMenu(false);

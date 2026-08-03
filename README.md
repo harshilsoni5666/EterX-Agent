@@ -70,9 +70,9 @@ Application binaries and user-owned data are independent:
 
 | Platform | Application | Persistent user data |
 |---|---|---|
-| Windows | Location selected in the native installer | `%LOCALAPPDATA%\EterX` |
-| macOS | `~/Applications/EterX.app` by default | `~/Library/Application Support/EterX` |
-| Linux | `${XDG_DATA_HOME:-~/.local/share}/eterx/app` | `${XDG_CONFIG_HOME:-~/.config}/EterX` |
+| Windows | Location selected in the native installer | `%LOCALAPPDATA%\EterX\data` |
+| macOS | `~/Applications/EterX.app` by default | `~/Library/Application Support/EterX/data` |
+| Linux | `${XDG_DATA_HOME:-~/.local/share}/EterX/app` | `${XDG_DATA_HOME:-~/.local/share}/EterX/data` |
 
 Updates never replace chats, workspaces, preferences, browser profiles, logs, or
 encrypted API credentials. The runtime is activated from a versioned staging

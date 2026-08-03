@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import os from 'os';
 import path from 'path';
 import fs from 'fs-extra';
+import { getEterxWorkspaceDir } from '../agent/storage-paths';
 import {
   SandboxAuditEvent,
   SandboxCreateInput,
@@ -111,7 +112,7 @@ export function createSandboxSession(input: SandboxCreateInput = {}): SandboxSes
   const projectId = sanitizeSegment(input.projectId || 'default');
   const sessionId = sanitizeSegment(input.sessionId || crypto.randomUUID());
   const workspaceRoot = path.resolve(input.workspaceRoot || process.cwd());
-  const root = path.resolve(process.cwd(), '.workspaces', 'sandboxes', tenantId, userId, projectId, sessionId);
+  const root = getEterxWorkspaceDir('sandboxes', tenantId, userId, projectId, sessionId);
   const tempRoot = path.join(root, 'tmp');
   const auditLogPath = path.join(root, 'audit.jsonl');
 

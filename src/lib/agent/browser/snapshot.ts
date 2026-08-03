@@ -266,6 +266,10 @@ export class DOMSnapshot {
       
       // Walk the DOM tree
       function walkDOM(el: Element, depth: number) {
+        // Navigation and client-side rendering can briefly expose a detached
+        // child while the tree is being traversed. Treat it as a skipped node
+        // instead of failing the entire snapshot.
+        if (!el || typeof el !== 'object') return;
         if (refCounter > maxElements) return;
         
         const tag = el.tagName?.toLowerCase();
@@ -385,7 +389,7 @@ export class DOMSnapshot {
         }
       }
       
-      walkDOM(document.body, 0);
+      if (document.body) walkDOM(document.body, 0);
       
       // Enrich forms with their field refs
       for (const form of forms) {

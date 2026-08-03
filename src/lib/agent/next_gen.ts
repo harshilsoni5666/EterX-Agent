@@ -1,6 +1,7 @@
 import path from 'path';
 import fs from 'fs-extra';
 import crypto from 'crypto';
+import { getEterxWorkspaceDir } from './storage-paths';
 
 /**
  * ═══════════════════════════════════════════════════════════════
@@ -15,9 +16,9 @@ import crypto from 'crypto';
  * 6. Performance Analytics — Track agent performance metrics
  */
 
-const CACHE_DIR = path.resolve(process.cwd(), '.workspaces', 'cache');
-const KNOWLEDGE_DIR = path.resolve(process.cwd(), '.workspaces', 'knowledge');
-const PIPELINES_DIR = path.resolve(process.cwd(), '.workspaces', 'pipelines');
+const CACHE_DIR = getEterxWorkspaceDir('cache');
+const KNOWLEDGE_DIR = getEterxWorkspaceDir('knowledge');
+const PIPELINES_DIR = getEterxWorkspaceDir('pipelines');
 
 function isPathInside(parent: string, candidate: string): boolean {
   const relative = path.relative(parent, candidate);
@@ -82,7 +83,7 @@ const TOOL_TTL: Record<string, number> = {
 
 // Tools that should NEVER be cached (have side effects or need fresh results)
 const UNCACHEABLE_TOOLS = new Set([
-  'workspace_apply_patch', 'workspace_run_command',
+  'workspace_apply_patch', 'workspace_write_file', 'workspace_edit_file', 'workspace_edit_many_files', 'workspace_str_replace', 'workspace_run_command',
   'workspace_run_command', 'workspace_verify_code', 'git_operations',
   'docx_generator', 'task_decomposer', 'spawn_sub_agent', 'background_task',
   'scheduled_tasks',
@@ -96,7 +97,7 @@ const UNCACHEABLE_TOOLS = new Set([
 ]);
 
 const INVALIDATES_SCOPED_CACHE_TOOLS = new Set([
-  'workspace_apply_patch', 'workspace_run_command',
+  'workspace_apply_patch', 'workspace_write_file', 'workspace_edit_file', 'workspace_edit_many_files', 'workspace_str_replace', 'workspace_run_command',
   'workspace_run_command', 'workspace_verify_code', 'git_operations',
   'process_manager', 'run_macro', 'create_dynamic_tool',
 ]);

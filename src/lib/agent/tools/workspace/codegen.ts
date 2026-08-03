@@ -13,7 +13,7 @@ import { resolveWorkspacePathForContext } from '../../workspace/path_resolver';
  */
 export const codeGeneratorTool: ToolDefinition = {
   name: 'code_generator',
-  description: `Generate complete code scaffolds, project structures, and boilerplate for common patterns. Creates multiple files at once with proper structure.
+  description: `Generate starter code scaffolds, project structures, and boilerplate for common patterns. Creates multiple files at once with a useful baseline; generated code is not production-ready and should be reviewed before shipping.
   
   Supported templates:
   - react_component: React component with styles

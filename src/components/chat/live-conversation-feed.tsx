@@ -6,6 +6,33 @@ import {
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 
+const AGENT_BUILDER_INTERNAL_REQUEST_PATTERN = /^\[AGENT BUILDER REQUEST\]\s*\r?\nTarget agent ID:[^\r\n]*\r?\n\s*\r?\n\[USER REQUEST\]\s*\r?\n?([\s\S]*)$/i;
+
+const normalizeLiveTranscriptLogs = (logs: any[]) => {
+  const visibleRunIds = new Set(
+    logs
+      .filter(log => log?.type === 'user_action' && !AGENT_BUILDER_INTERNAL_REQUEST_PATTERN.test(String(log.text || '')))
+      .map(log => String(log.runId || log.turnId || '').trim())
+      .filter(Boolean),
+  );
+
+  return logs.reduce<any[]>((next, log) => {
+    if (log?.type !== 'user_action') {
+      next.push(log);
+      return next;
+    }
+    const match = String(log.text || '').match(AGENT_BUILDER_INTERNAL_REQUEST_PATTERN);
+    if (!match) {
+      next.push(log);
+      return next;
+    }
+    const runId = String(log.runId || log.turnId || '').trim();
+    if (runId && visibleRunIds.has(runId)) return next;
+    next.push({ ...log, text: String(match[1] || '').trim() });
+    return next;
+  }, []);
+};
+
 interface LiveConversationFeedProps {
   liveState: 'idle' | 'connecting' | 'connected' | 'listening' | 'thinking' | 'speaking' | 'error';
   liveInputText: string;
@@ -54,7 +81,7 @@ export const LiveConversationFeed: React.FC<LiveConversationFeedProps> = ({
   const isConnecting = liveState === 'connecting';
 
   // Filter completed live trace logs for preview
-  const liveTurnLogs = historyTraceLogs.filter(l => l.isLive);
+  const liveTurnLogs = normalizeLiveTranscriptLogs(historyTraceLogs).filter(l => l.isLive);
 
   return (
     <div className="flex flex-col w-full h-full min-h-[500px] bg-[#0D0D0E] text-[#F4F2EE] rounded-[24px] border border-white/[0.08] shadow-[0_24px_64px_rgba(0,0,0,0.6)] overflow-hidden relative backdrop-blur-2xl">
@@ -136,7 +163,7 @@ export const LiveConversationFeed: React.FC<LiveConversationFeedProps> = ({
         </div>
 
         <p className="mt-3 text-[12px] font-medium text-[#A09D98] tracking-wide">
-          {isConnecting && 'Connecting to Gemini Live API...'}
+          {isConnecting && 'Connecting to Agent Live Convo...'}
           {isListening && (isMicMuted ? 'Microphone Muted' : 'Listening for your voice...')}
           {isThinking && 'Thinking and coordinating work...'}
           {isSpeaking && 'AI is speaking...'}

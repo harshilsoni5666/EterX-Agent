@@ -4,6 +4,7 @@ import path from 'path';
 import { enforceToolCapability } from '../security/tool_policy';
 import { loadOptionalModule } from './optional_module';
 import { requireOutboundApproval } from './outbound_approval';
+import { getEterxWorkspaceDir } from '../../storage-paths';
 
 // Lazy-load whatsapp-web.js — webpack-invisible dynamic require
 let Client: any = null;
@@ -75,7 +76,7 @@ export const whatsappControllerTool: ToolDefinition = {
         if (waClient && !waReady && qrCodeText) return { success: true, status: 'Waiting for QR scan. Scan the code printed in the terminal, or render this raw string as a QR:', data: qrCodeText };
         
         console.log('[WhatsApp] Initializing headless client...');
-        const authPath = path.resolve(process.cwd(), '.workspaces', '.whatsapp_auth');
+        const authPath = getEterxWorkspaceDir('.whatsapp_auth');
 
         waClient = new (Client as any)({
           authStrategy: new (LocalAuth as any)({ dataPath: authPath }),

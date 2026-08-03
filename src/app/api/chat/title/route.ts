@@ -11,6 +11,7 @@ import {
   getScopedRuntimeApiKey,
   type ScopedRuntimeSettings,
 } from '../../../../lib/agent/runtime-api-keys';
+import { hydrateServerRuntimeSettings } from '../../../../lib/agent/server-runtime-hydration';
 import { readJsonObject, rejectCrossOrigin } from '../../agent/_shared';
 
 export const runtime = 'nodejs';
@@ -114,7 +115,7 @@ async function generateTitleWithProvider(
 
     const client = new Anthropic({
       apiKey,
-      baseURL: process.env.ANTHROPIC_BASE_URL || undefined,
+      baseURL: getProviderBaseURL('anthropic'),
     });
     const params: any = {
       model: modelName,
@@ -180,6 +181,7 @@ async function generateTitleWithProvider(
 }
 
 export async function POST(req: NextRequest) {
+  hydrateServerRuntimeSettings();
   try {
     const originError = rejectCrossOrigin(req);
     if (originError) return originError;

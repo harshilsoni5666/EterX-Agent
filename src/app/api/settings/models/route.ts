@@ -13,7 +13,12 @@ import {
   type MainAgentProvider,
   type ModelThinkingCapabilities,
 } from '../../../../lib/agent/model-routing';
-import { getProviderBaseURL, isLocalModelProvider } from '../../../../lib/agent/provider-runtime';
+import {
+  applyRuntimeProviderBaseURLs,
+  getProviderBaseURL,
+  isLocalModelProvider,
+} from '../../../../lib/agent/provider-runtime';
+import { hydrateServerRuntimeSettings } from '../../../../lib/agent/server-runtime-hydration';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -60,6 +65,7 @@ const withTimeout = async <T,>(promise: Promise<T>, ms = MODEL_FETCH_TIMEOUT_MS)
 };
 
 const NON_AGENT_MODEL_ID = /(?:^|[/:._-])(?:audio|embed(?:ding)?s?|image|moderation|orpheus|realtime|speech|transcri(?:be|ption)|translate|tts|whisper|guard|rerank|search|video)(?:$|[/:._-])/i;
+const NON_CONCRETE_MODEL_ID = /^(?:auto|default|latest|recommended)(?:[\s_-]|$)/i;
 
 const isExpired = (value: unknown) => {
   if (!value) return false;
@@ -71,7 +77,7 @@ const isExpired = (value: unknown) => {
 
 const isAgentCompatibleModel = (model: ProviderModel) => {
   const id = String(model.id || '').trim();
-  if (!id || NON_AGENT_MODEL_ID.test(id) || isExpired(model.deprecationDate)) return false;
+  if (!id || id.toLowerCase() === 'openrouter/auto' || NON_CONCRETE_MODEL_ID.test(id) || NON_AGENT_MODEL_ID.test(id) || isExpired(model.deprecationDate)) return false;
   const lifecycle = String(model.lifecycle || '').toLowerCase();
   return !['deprecated', 'retired', 'disabled', 'expired', 'unavailable'].some(status => lifecycle.includes(status));
 };
@@ -90,8 +96,7 @@ const preferredModelScore = (provider: string, model: ProviderModel) => {
   let score = Number(model.createdAt || 0) / 1_000_000_000;
   if (/preview|experimental|\bexp\b/.test(id)) score -= 20;
   if (provider === 'gemini') {
-    if (id === 'gemini-3.6-flash') score += 1000;
-    else if (id.startsWith('gemini-3.5-flash')) score += 900;
+    if (id.startsWith('gemini-3.5-flash')) score += 900;
     else if (id.startsWith('gemini-3.1-pro')) score += 850;
     else if (id.startsWith('gemini-3')) score += 800;
     else if (id.startsWith('gemini-2.5')) score += 600;
@@ -101,8 +106,7 @@ const preferredModelScore = (provider: string, model: ProviderModel) => {
     else if (id.includes('gpt-5.6-luna')) score += 850;
     else if (id.startsWith('gpt-5')) score += 700;
   } else if (provider === 'openrouter') {
-    if (id === 'openrouter/auto') score += 1200;
-    else if (id === 'openai/gpt-oss-120b') score += 1000;
+    if (id === 'openai/gpt-oss-120b') score += 1000;
     else if (id === 'openai/gpt-oss-20b') score += 900;
   } else if (provider === 'groq') {
     if (id === 'openai/gpt-oss-120b') score += 1000;
@@ -204,12 +208,16 @@ async function fetchGeminiModels(): Promise<ProviderModelResult> {
           model.inputTokenLimit ? 'text-input' : undefined,
           model.thinking ? 'thinking' : undefined,
         ].filter(Boolean),
-        thinking: readThinkingCapabilities(model, 'thinkingLevel') || (model.thinking
+        thinking: readThinkingCapabilities(
+          model,
+          /gemini-2\.5/i.test(String(model.baseModelId || model.name || '')) ? 'thinkingBudget' : 'thinkingLevel',
+        ) || (model.thinking
           ? {
             levels: getModelThinkingOptions('gemini', String(model.baseModelId || model.name || '')).map(option => option.id),
-            defaultLevel: 'medium' as const,
-            parameter: 'thinkingLevel' as const,
-            source: 'provider' as const,
+            defaultLevel: getModelThinkingOptions('gemini', String(model.baseModelId || model.name || '')).find(option => option.id === 'medium')?.id
+              || getModelThinkingOptions('gemini', String(model.baseModelId || model.name || ''))[0]?.id,
+            parameter: /gemini-2\.5/i.test(String(model.baseModelId || model.name || '')) ? 'thinkingBudget' as const : 'thinkingLevel' as const,
+            source: 'inferred' as const,
           }
           : undefined),
       }));
@@ -224,9 +232,7 @@ async function fetchOpenAIModels(): Promise<ProviderModelResult> {
   if (!apiKey) return { provider: 'openai', connected: false, source: 'unavailable', models: [], error: 'Missing OpenAI API key' };
 
   try {
-    const baseUrl = process.env.OPENAI_BASE_URL
-      ? process.env.OPENAI_BASE_URL.replace(/\/+$/, '')
-      : 'https://api.openai.com/v1';
+    const baseUrl = getProviderBaseURL('openai');
     const res = await withTimeout(fetch(`${baseUrl}/models`, {
       cache: 'no-store',
       headers: { Authorization: `Bearer ${ apiKey }` },
@@ -243,7 +249,7 @@ async function fetchOpenAIModels(): Promise<ProviderModelResult> {
         thinking: readThinkingCapabilities(model, 'reasoning_effort') || (() => {
           const levels = getModelThinkingOptions('openai', String(model.id || '')).map(option => option.id);
           return levels.length > 0
-            ? { levels, defaultLevel: levels.includes('medium') ? 'medium' as const : levels[0], parameter: 'reasoning_effort' as const, source: 'provider' as const }
+            ? { levels, defaultLevel: levels.includes('medium') ? 'medium' as const : levels[0], parameter: 'reasoning_effort' as const, source: 'inferred' as const }
             : undefined;
         })(),
       }))
@@ -260,9 +266,7 @@ async function fetchOpenRouterModels(): Promise<ProviderModelResult> {
   try {
     const headers: Record<string, string> = {};
     if (apiKey) headers.Authorization = `Bearer ${ apiKey }`;
-    const baseUrl = process.env.OPENROUTER_BASE_URL
-      ? process.env.OPENROUTER_BASE_URL.replace(/\/+$/, '')
-      : 'https://openrouter.ai/api/v1';
+    const baseUrl = getProviderBaseURL('openrouter');
     const res = await withTimeout(fetch(`${baseUrl}/models?output_modalities=all`, {
       cache: 'no-store',
       headers,
@@ -298,7 +302,7 @@ async function fetchOpenRouterModels(): Promise<ProviderModelResult> {
             ...supportedParameters,
           ].filter(Boolean),
           thinking: readThinkingCapabilities(model, 'reasoning') || (genericReasoning.length > 0
-            ? { levels: genericReasoning, defaultLevel: genericReasoning.includes('medium') ? 'medium' : genericReasoning[0], parameter: 'reasoning', source: 'provider' }
+            ? { levels: genericReasoning, defaultLevel: genericReasoning.includes('medium') ? 'medium' : genericReasoning[0], parameter: 'reasoning', source: 'inferred' }
             : undefined),
         } as ProviderModel;
       })
@@ -314,9 +318,7 @@ async function fetchGroqModels(): Promise<ProviderModelResult> {
   if (!apiKey) return { provider: 'groq', connected: false, source: 'unavailable', models: [], error: 'Missing Groq API key' };
 
   try {
-    const baseUrl = process.env.GROQ_BASE_URL
-      ? process.env.GROQ_BASE_URL.replace(/\/+$/, '')
-      : 'https://api.groq.com/openai/v1';
+    const baseUrl = getProviderBaseURL('groq');
     const res = await withTimeout(fetch(`${baseUrl}/models`, {
       cache: 'no-store',
       headers: {
@@ -337,7 +339,7 @@ async function fetchGroqModels(): Promise<ProviderModelResult> {
             levels: ['low', 'medium', 'high'],
             defaultLevel: 'medium',
             parameter: 'reasoning_effort',
-            source: 'provider',
+            source: 'inferred',
           } as ModelThinkingCapabilities
           : undefined),
       }))
@@ -353,9 +355,7 @@ async function fetchMistralModels(): Promise<ProviderModelResult> {
   if (!apiKey) return { provider: 'mistral', connected: false, source: 'unavailable', models: [], error: 'Missing Mistral API key' };
 
   try {
-    const baseUrl = (process.env.MISTRAL_BASE_URL || process.env.MISTRAL_API_BASE_URL)
-      ? (process.env.MISTRAL_BASE_URL || process.env.MISTRAL_API_BASE_URL)!.replace(/\/+$/, '')
-      : 'https://api.mistral.ai/v1';
+    const baseUrl = getProviderBaseURL('mistral');
     const res = await withTimeout(fetch(`${baseUrl}/models`, {
       cache: 'no-store',
       headers: { Authorization: `Bearer ${ apiKey }` },
@@ -377,7 +377,7 @@ async function fetchMistralModels(): Promise<ProviderModelResult> {
         thinking: readThinkingCapabilities(model, 'reasoning_effort') || (() => {
           const levels = getModelThinkingOptions('mistral', String(model.id || '')).map(option => option.id);
           return levels.length > 0
-            ? { levels, defaultLevel: levels.includes('high') ? 'high' as const : levels[0], parameter: 'reasoning_effort' as const, source: 'provider' as const }
+            ? { levels, defaultLevel: levels.includes('medium') ? 'medium' as const : levels[0], parameter: 'reasoning_effort' as const, source: 'inferred' as const }
             : undefined;
         })(),
       }));
@@ -392,10 +392,8 @@ async function fetchAnthropicModels(): Promise<ProviderModelResult> {
   if (!apiKey) return { provider: 'anthropic', connected: false, source: 'unavailable', models: [], error: 'Missing Anthropic API key' };
 
   try {
-    const baseUrl = process.env.ANTHROPIC_BASE_URL
-      ? process.env.ANTHROPIC_BASE_URL.replace(/\/+$/, '')
-      : 'https://api.anthropic.com';
-    const res = await withTimeout(fetch(`${baseUrl}/v1/models`, {
+    const baseUrl = getProviderBaseURL('anthropic');
+    const res = await withTimeout(fetch(`${baseUrl.replace(/\/+$/, '')}/v1/models`, {
       cache: 'no-store',
       headers: {
         'x-api-key': apiKey,
@@ -426,7 +424,7 @@ async function fetchAnthropicModels(): Promise<ProviderModelResult> {
         thinking: readThinkingCapabilities(model, 'output_config.effort') || (() => {
           const levels = getModelThinkingOptions('anthropic', String(model.id || '')).map(option => option.id);
           return levels.length > 0
-            ? { levels, defaultLevel: levels.includes('high') ? 'high' : levels[0], parameter: 'output_config.effort', source: 'provider' as const }
+            ? { levels, defaultLevel: levels.includes('medium') ? 'medium' : levels[0], parameter: 'output_config.effort', source: 'inferred' as const }
             : undefined;
         })(),
       };
@@ -442,7 +440,7 @@ async function fetchDeepSeekModels(): Promise<ProviderModelResult> {
   const apiKey = getRuntimeApiKeyValues('deepseek' as any)[0];
   if (!apiKey) return { provider: 'deepseek' as any, connected: false, source: 'unavailable', models: [], error: 'Missing DeepSeek API key' };
   try {
-    const res = await withTimeout(fetch('https://api.deepseek.com/v1/models', {
+    const res = await withTimeout(fetch(`${getProviderBaseURL('deepseek').replace(/\/+$/, '')}/models`, {
       cache: 'no-store',
       headers: { Authorization: `Bearer ${apiKey}` },
     }));
@@ -463,7 +461,7 @@ async function fetchGrokModels(): Promise<ProviderModelResult> {
   const apiKey = getRuntimeApiKeyValues('grok' as any)[0];
   if (!apiKey) return { provider: 'grok' as any, connected: false, source: 'unavailable', models: [], error: 'Missing xAI Grok API key' };
   try {
-    const res = await withTimeout(fetch('https://api.x.ai/v1/models', {
+    const res = await withTimeout(fetch(`${getProviderBaseURL('grok').replace(/\/+$/, '')}/models`, {
       cache: 'no-store',
       headers: { Authorization: `Bearer ${apiKey}` },
     }));
@@ -484,7 +482,7 @@ async function fetchCerebrasModels(): Promise<ProviderModelResult> {
   const apiKey = getRuntimeApiKeyValues('cerebras' as any)[0];
   if (!apiKey) return { provider: 'cerebras' as any, connected: false, source: 'unavailable', models: [], error: 'Missing Cerebras API key' };
   try {
-    const res = await withTimeout(fetch('https://api.cerebras.ai/v1/models', {
+    const res = await withTimeout(fetch(`${getProviderBaseURL('cerebras').replace(/\/+$/, '')}/models`, {
       cache: 'no-store',
       headers: { Authorization: `Bearer ${apiKey}` },
     }));
@@ -505,7 +503,7 @@ async function fetchTogetherModels(): Promise<ProviderModelResult> {
   const apiKey = getRuntimeApiKeyValues('together' as any)[0];
   if (!apiKey) return { provider: 'together' as any, connected: false, source: 'unavailable', models: [], error: 'Missing Together API key' };
   try {
-    const res = await withTimeout(fetch('https://api.together.xyz/v1/models', {
+    const res = await withTimeout(fetch(`${getProviderBaseURL('together').replace(/\/+$/, '')}/models`, {
       cache: 'no-store',
       headers: { Authorization: `Bearer ${apiKey}` },
     }));
@@ -549,7 +547,7 @@ async function fetchElevenLabsVoices(): Promise<ProviderModelResult> {
 
 async function fetchOllamaModels(): Promise<ProviderModelResult> {
   try {
-    const host = process.env.OLLAMA_HOST || 'http://localhost:11434';
+    const host = getProviderBaseURL('ollama').replace(/\/v1\/?$/i, '') || 'http://localhost:11434';
     const res = await withTimeout(fetch(`${host.replace(/\/+$/, '')}/api/tags`, {
       cache: 'no-store',
     }), 4000);
@@ -568,8 +566,8 @@ async function fetchOllamaModels(): Promise<ProviderModelResult> {
 
 async function fetchLMStudioModels(): Promise<ProviderModelResult> {
   try {
-    const host = process.env.LMSTUDIO_HOST || 'http://localhost:1234';
-    const res = await withTimeout(fetch(`${host.replace(/\/+$/, '')}/v1/models`, {
+    const host = getProviderBaseURL('lmstudio') || 'http://localhost:1234/v1';
+    const res = await withTimeout(fetch(`${host.replace(/\/+$/, '')}/models`, {
       cache: 'no-store',
     }), 4000);
     if (!res.ok) throw new Error(`LM Studio local request failed (${res.status})`);
@@ -634,9 +632,10 @@ async function fetchCompatibleModels(provider: MainAgentProvider): Promise<Provi
         || (getModelThinkingOptions(provider, String(model?.id || model?.name || '')).length
           ? {
               levels: getModelThinkingOptions(provider, String(model?.id || model?.name || '')).map(option => option.id),
-              defaultLevel: 'medium',
+              defaultLevel: getModelThinkingOptions(provider, String(model?.id || model?.name || '')).find(option => option.id === 'medium')?.id
+                || getModelThinkingOptions(provider, String(model?.id || model?.name || ''))[0]?.id,
               parameter: 'reasoning_effort',
-              source: 'provider',
+              source: 'inferred',
             } as ModelThinkingCapabilities
           : undefined),
     })));
@@ -647,19 +646,27 @@ async function fetchCompatibleModels(provider: MainAgentProvider): Promise<Provi
 
 
 export async function POST(req: NextRequest) {
+  hydrateServerRuntimeSettings();
   const body = await req.json().catch(() => ({}));
   if (body && typeof body === 'object' && Object.prototype.hasOwnProperty.call(body, 'apiKeys')) {
-    const mergedKeys = Object.keys(getRuntimeApiKeyStatus()).reduce<Record<string, string[]>>((acc, provider) => {
-      acc[provider] = getRuntimeApiKeyValues(provider as RuntimeApiKeyProvider);
-      return acc;
-    }, {});
-    Object.entries(body.apiKeys && typeof body.apiKeys === 'object' ? body.apiKeys : {}).forEach(([provider, value]) => {
-      mergedKeys[provider] = Array.isArray(value) ? value.map(String) : [String(value || '')];
-    });
-    applyRuntimeApiKeys(mergedKeys);
+    if (body.replaceRuntimeKeys === true) {
+      applyRuntimeApiKeys(body.apiKeys && typeof body.apiKeys === 'object' ? body.apiKeys : {});
+    } else {
+      const mergedKeys = Object.keys(getRuntimeApiKeyStatus()).reduce<Record<string, string[]>>((acc, provider) => {
+        acc[provider] = getRuntimeApiKeyValues(provider as RuntimeApiKeyProvider);
+        return acc;
+      }, {});
+      Object.entries(body.apiKeys && typeof body.apiKeys === 'object' ? body.apiKeys : {}).forEach(([provider, value]) => {
+        mergedKeys[provider] = Array.isArray(value) ? value.map(String) : [String(value || '')];
+      });
+      applyRuntimeApiKeys(mergedKeys);
+    }
   }
   if (body && typeof body === 'object' && Object.prototype.hasOwnProperty.call(body, 'modelOverrides')) {
     applyRuntimeModelOverrides(body.modelOverrides);
+  }
+  if (body && typeof body === 'object' && Object.prototype.hasOwnProperty.call(body, 'baseURLs')) {
+    applyRuntimeProviderBaseURLs(body.baseURLs);
   }
 
   const requested = Array.isArray(body?.providers) && body.providers.length > 0
@@ -717,6 +724,7 @@ export async function POST(req: NextRequest) {
 }
 
 export async function GET(req: NextRequest) {
+  hydrateServerRuntimeSettings();
   const url = new URL(req.url);
   const providersParam = url.searchParams.get('providers');
   const requested = providersParam

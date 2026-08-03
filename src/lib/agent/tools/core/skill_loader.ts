@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { ToolDefinition } from '../../schemas';
-import { SKILL_CATALOG, SKILL_REGISTRY } from '../../skills';
+import { SKILL_CATALOG, SKILL_REGISTRY } from '../../skills-new';
 
 // Build the list of available skill IDs dynamically from the registry
 const availableSkillIds = SKILL_CATALOG.map(skill => skill.id);

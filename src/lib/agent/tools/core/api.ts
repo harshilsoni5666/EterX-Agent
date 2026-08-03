@@ -1,10 +1,13 @@
 import { z } from 'zod';
 import { ToolDefinition } from '../../schemas';
 import { redactUrlForLog, safeAxiosRequest } from '../shared/url_safety';
+import { requireOutboundApproval } from '../communication/outbound_approval';
+
+const API_WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
 export const apiCallerTool: ToolDefinition = {
   name: 'api_caller',
-  description: 'Universal API Caller. Make any HTTP request (GET, POST, PUT, DELETE) to external services. Use this to interact with REST APIs, fetch JSON, or trigger webhooks.',
+  description: 'Call an external HTTP API. Use GET for read-only lookups; POST, PUT, PATCH, and DELETE require explicit outbound approval. Prefer connector_mcp for a saved connector and gateway_bridge for messaging channels.',
   category: 'core',
   inputSchema: z.object({
     url: z.string().url().describe('The full URL of the API endpoint'),
@@ -20,10 +23,22 @@ export const apiCallerTool: ToolDefinition = {
   execute: async (input: { url: string, method: string, headers?: Record<string, string> | string, body?: any }, context?: any) => {
     console.log(`[Tool: api_caller] Requesting ${input.method} ${redactUrlForLog(input.url)}`);
     try {
+      const method = String(input.method || 'GET').toUpperCase();
+      if (API_WRITE_METHODS.has(method)) {
+        const approval = await requireOutboundApproval(
+          'External API',
+          method,
+          input,
+          context,
+          input.url,
+          `${method} ${redactUrlForLog(input.url)}`,
+        );
+        if (approval) return { status: 0, data: null, error: approval.status };
+      }
       const headers = parseStringRecord(input.headers);
       const body = parseJsonValue(input.body);
       const response = await safeAxiosRequest({
-        method: input.method as any,
+        method: method as any,
         url: input.url,
         headers,
         data: body,

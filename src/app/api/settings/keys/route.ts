@@ -9,12 +9,15 @@ import {
 } from '../../../../lib/agent/runtime-api-keys';
 import { rejectCrossOrigin } from '../../agent/_shared';
 import { applyRuntimeProviderBaseURLs, getRuntimeProviderBaseURLs } from '../../../../lib/agent/provider-runtime';
+import { hydrateServerRuntimeSettings } from '../../../../lib/agent/server-runtime-hydration';
+import { updateStoredRuntimeSettings } from '../../../../lib/agent/runtime-settings-store';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 export async function POST(req: NextRequest) {
   try {
+    hydrateServerRuntimeSettings();
     const originError = rejectCrossOrigin(req);
     if (originError) return originError;
 
@@ -46,6 +49,18 @@ export async function POST(req: NextRequest) {
       ? applyRuntimeProviderBaseURLs(body.baseURLs)
       : getRuntimeProviderBaseURLs();
 
+    // The settings route is the authoritative server-side sync point. Persist
+    // every explicit runtime mutation here as well as applying it in memory,
+    // so closing the Settings panel cannot strand the only durable write in a
+    // renderer promise.
+    const persistedPatch: Record<string, unknown> = {};
+    if (hasExplicitApiKeys) persistedPatch.apiKeys = body.apiKeys;
+    if (hasModelOverrides) persistedPatch.modelOverrides = body.modelOverrides;
+    if (hasBaseURLs) persistedPatch.baseURLs = body.baseURLs;
+    if (Object.keys(persistedPatch).length > 0) {
+      await updateStoredRuntimeSettings(persistedPatch as any);
+    }
+
     return NextResponse.json({
       ok: true,
       acceptedCount: result.acceptedCount,
@@ -57,7 +72,6 @@ export async function POST(req: NextRequest) {
         totalKeys: pool.totalKeys,
         availableKeys: pool.availableKeys,
         activeLeases: pool.activeLeases,
-        retiredKeys: pool.retiredKeys,
         healthySummary: pool.healthySummary,
       },
     });
@@ -71,6 +85,7 @@ export async function POST(req: NextRequest) {
 
 export async function GET() {
   try {
+    hydrateServerRuntimeSettings();
     const pool = apiKeyPool.getPoolStatus();
     const providerStatus = getRuntimeApiKeyStatus();
     const providers = Object.entries(providerStatus).map(([provider, accepted]) => ({
@@ -88,7 +103,6 @@ export async function GET() {
         totalKeys: pool.totalKeys,
         availableKeys: pool.availableKeys,
         activeLeases: pool.activeLeases,
-        retiredKeys: pool.retiredKeys,
         healthySummary: pool.healthySummary,
       },
       providers,

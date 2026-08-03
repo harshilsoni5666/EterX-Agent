@@ -719,7 +719,7 @@ async function applyOperations(
 
 export const workspaceApplyPatchTool: ToolDefinition = {
   name: 'workspace_apply_patch',
-  description: 'The single file-editing tool. Apply precise, atomic changes across one or more files using context-matched patch hunks. Supports updating existing files, creating new files, and deleting files. Returns per-file diffs and readbacks.',
+  description: 'Apply precise, atomic patch changes across one or more files using context-matched hunks. Supports updating, creating, and deleting files, and returns per-file diffs and readbacks. Prefer workspace_edit_file for a small targeted edit in one existing file.',
   category: 'workspace',
   inputSchema: z.object({
     patch: z.string().describe(

@@ -121,6 +121,10 @@ class GatewayDaemon {
     this.lastEventAt = null;
     this.lastError = null;
     this.pollAbort = null;
+    this.telegramPollingTask = null;
+    this.telegramLockFd = null;
+    this.telegramLockPath = null;
+    this.configureTail = Promise.resolve();
     this.signalAbort = null;
     this.telegramOffset = 0;
     this.discordSocket = null;
@@ -190,14 +194,19 @@ class GatewayDaemon {
 
   publishStatus() { this.onStatus(this.status()); }
 
-  async configure(raw) {
-    const wasRunning = Boolean(this.server?.listening);
-    await this.stop();
-    this.config = mergeConfig(raw);
-    this.persistControlToken();
-    if (wasRunning || this.config.enabled) await this.start();
-    this.publishStatus();
-    return { config: this.publicConfig(), status: this.status() };
+  configure(raw) {
+    const run = async () => {
+      const wasRunning = Boolean(this.server?.listening);
+      await this.stop();
+      this.config = mergeConfig(raw);
+      this.persistControlToken();
+      if (wasRunning || this.config.enabled) await this.start();
+      this.publishStatus();
+      return { config: this.publicConfig(), status: this.status() };
+    };
+    const next = this.configureTail.then(run, run);
+    this.configureTail = next.catch(() => undefined);
+    return next;
   }
 
   async start() {
@@ -217,7 +226,14 @@ class GatewayDaemon {
     });
     this.startedAt = Date.now();
     for (const id of PLATFORMS) this.platformState[id] = { state: this.config.platforms[id].enabled ? 'listening' : 'disabled' };
-    if (this.config.platforms.telegram.enabled && this.config.platforms.telegram.mode === 'polling') void this.startTelegramPolling();
+    if (this.config.platforms.telegram.enabled && this.config.platforms.telegram.mode === 'polling') {
+      const pollingTask = this.startTelegramPolling();
+      this.telegramPollingTask = pollingTask;
+      void pollingTask.catch((error) => {
+        this.platformState.telegram = { state: 'retrying', lastError: error?.message || String(error) };
+        this.publishStatus();
+      });
+    }
     if (this.config.platforms.discord.enabled && this.config.platforms.discord.mode === 'gateway') void this.startDiscordGateway();
     if (this.config.platforms.signal.enabled && this.config.platforms.signal.mode === 'bridge') void this.startSignalBridge();
     this.deliveryTimer = setInterval(() => void this.retryDeliveries(), 15000);
@@ -229,6 +245,7 @@ class GatewayDaemon {
   }
 
   async stop() {
+    const pollingTask = this.telegramPollingTask;
     this.pollAbort?.abort();
     this.pollAbort = null;
     this.signalAbort?.abort();
@@ -248,10 +265,59 @@ class GatewayDaemon {
       this.server = null;
       await new Promise((resolve) => server.close(() => resolve()));
     }
+    if (pollingTask) {
+      await Promise.race([pollingTask.catch(() => undefined), new Promise((resolve) => setTimeout(resolve, 5000))]);
+      if (this.telegramPollingTask === pollingTask) this.telegramPollingTask = null;
+    }
     this.startedAt = null;
     void this.hooks.emit('gateway:shutdown', {});
     for (const id of PLATFORMS) this.platformState[id] = { state: this.config.platforms[id].enabled ? 'stopped' : 'disabled' };
     this.publishStatus();
+  }
+
+  telegramLockFile(token) {
+    const digest = crypto.createHash('sha256').update(String(token || '')).digest('hex').slice(0, 32);
+    return path.join(this.dataDir, `telegram-${digest}.lock`);
+  }
+
+  acquireTelegramLock(token) {
+    const lockPath = this.telegramLockFile(token);
+    fs.mkdirSync(this.dataDir, { recursive: true });
+    try {
+      const fd = fs.openSync(lockPath, 'wx');
+      fs.writeFileSync(fd, JSON.stringify({ pid: process.pid, startedAt: Date.now() }), 'utf8');
+      this.telegramLockFd = fd;
+      this.telegramLockPath = lockPath;
+      return true;
+    } catch (error) {
+      if (error?.code !== 'EEXIST') throw error;
+      let stale = false;
+      try {
+        const metadata = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
+        const pid = Number(metadata?.pid);
+        if (!pid) stale = true;
+        else {
+          try { process.kill(pid, 0); } catch (probeError) { stale = probeError?.code === 'ESRCH'; }
+        }
+      } catch { stale = true; }
+      if (stale) {
+        try { fs.unlinkSync(lockPath); } catch { }
+        return this.acquireTelegramLock(token);
+      }
+      return false;
+    }
+  }
+
+  releaseTelegramLock() {
+    const lockPath = this.telegramLockPath;
+    if (this.telegramLockFd !== null) {
+      try { fs.closeSync(this.telegramLockFd); } catch { }
+      this.telegramLockFd = null;
+    }
+    this.telegramLockPath = null;
+    if (lockPath) {
+      try { fs.unlinkSync(lockPath); } catch { }
+    }
   }
 
   accept(platform, payload) {
@@ -415,25 +481,61 @@ class GatewayDaemon {
       this.platformState.telegram = { state: 'needs-configuration', lastError: 'Bot token is required.' };
       return this.publishStatus();
     }
-    this.pollAbort = new AbortController();
-    this.platformState.telegram = { state: 'connecting' };
-    this.publishStatus();
-    while (!this.pollAbort.signal.aborted && this.config.enabled && settings.enabled) {
-      try {
-        const url = `https://api.telegram.org/bot${settings.token}/getUpdates?timeout=25&offset=${this.telegramOffset}&allowed_updates=${encodeURIComponent('["message","edited_message","channel_post","business_message"]')}`;
-        const result = await fetch(url, { signal: this.pollAbort.signal }).then((res) => res.json());
-        if (!result.ok) throw new Error(result.description || 'Telegram getUpdates failed');
-        this.platformState.telegram = { state: 'connected' };
-        for (const update of result.result || []) {
-          this.telegramOffset = Math.max(this.telegramOffset, Number(update.update_id) + 1);
-          this.accept('telegram', update);
+    if (!this.acquireTelegramLock(settings.token)) {
+      this.platformState.telegram = { state: 'conflict', lastError: 'Another EterX process is already using this bot token. Close the other EterX instance, then save again.' };
+      return this.publishStatus();
+    }
+    const pollAbort = new AbortController();
+    this.pollAbort = pollAbort;
+    try {
+      this.platformState.telegram = { state: 'connecting' };
+      this.publishStatus();
+      const api = async (method, query = '') => {
+        const response = await fetch(`https://api.telegram.org/bot${settings.token}/${method}${query}`, { signal: pollAbort.signal });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok || result?.ok === false) throw new Error(result?.description || `Telegram ${method} failed (${response.status})`);
+        return result;
+      };
+      await api('getMe');
+      await api('deleteWebhook', '?drop_pending_updates=false');
+      while (!pollAbort.signal.aborted && this.config.enabled && settings.enabled) {
+        try {
+          const result = await api('getUpdates', `?timeout=25&offset=${this.telegramOffset}&allowed_updates=${encodeURIComponent('["message","edited_message","channel_post","business_message"]')}`);
+          this.platformState.telegram = { state: 'connected' };
+          for (const update of result.result || []) {
+            this.telegramOffset = Math.max(this.telegramOffset, Number(update.update_id) + 1);
+            this.accept('telegram', update);
+          }
+          this.publishStatus();
+        } catch (error) {
+          if (pollAbort.signal.aborted) break;
+          const message = error?.message || String(error);
+          if (/terminated by other getupdates|another getupdates|conflict/i.test(message)) {
+            this.platformState.telegram = { state: 'conflict', lastError: 'Telegram is already being polled by another bot instance. Stop that instance, then save again.' };
+            this.publishStatus();
+            break;
+          }
+          if (/unauthorized|invalid token|not found/i.test(message)) {
+            this.platformState.telegram = { state: 'needs-configuration', lastError: 'Telegram rejected this bot token. Paste the complete token from @BotFather, for example 123456789:AA…' };
+            this.publishStatus();
+            break;
+          }
+          this.platformState.telegram = { state: 'retrying', lastError: message };
+          this.publishStatus();
+          await new Promise((resolve) => setTimeout(resolve, 3000));
         }
-      } catch (error) {
-        if (this.pollAbort?.signal.aborted) break;
-        this.platformState.telegram = { state: 'retrying', lastError: error.message };
-        this.publishStatus();
-        await new Promise((resolve) => setTimeout(resolve, 3000));
       }
+    } catch (error) {
+      if (!pollAbort.signal.aborted) {
+        const message = error?.message || String(error);
+        const state = /unauthorized|invalid token|not found/i.test(message) ? 'needs-configuration' : /terminated by other getupdates|another getupdates|conflict/i.test(message) ? 'conflict' : 'retrying';
+        const lastError = state === 'needs-configuration' ? 'Telegram rejected this bot token. Paste the complete token from @BotFather, for example 123456789:AA…' : state === 'conflict' ? 'Telegram is already being polled by another bot instance. Stop that instance, then save again.' : message;
+        this.platformState.telegram = { state, lastError };
+        this.publishStatus();
+      }
+    } finally {
+      if (this.pollAbort === pollAbort) this.pollAbort = null;
+      this.releaseTelegramLock();
     }
   }
 

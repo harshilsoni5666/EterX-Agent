@@ -21,6 +21,13 @@ export interface TerminalCommandRunOptions {
   cwd: string;
   source: string;
   context?: any;
+  /**
+   * Reuse a decision made by a higher-level tool.  Background/process tools
+   * already authorize once to resolve the final cwd and environment; doing a
+   * second broker pass here made launches needlessly slow and could reject the
+   * same command on the second pass.
+   */
+  authorization?: { cwd: string; env: NodeJS.ProcessEnv };
   description?: string;
   shell?: boolean | string;
   env?: NodeJS.ProcessEnv;
@@ -37,6 +44,8 @@ export interface TerminalBackgroundTask {
   command: string;
   description: string;
   source: string;
+  /** Chat/project owner. Terminal task IDs must not cross chat boundaries. */
+  ownerChatId?: string;
   cwd: string;
   pid?: number;
   status: TerminalTaskStatus;
@@ -108,19 +117,39 @@ const terminalTasks: Map<string, TerminalBackgroundTask> =
 export async function runTerminalCommandWithCheckIn(options: TerminalCommandRunOptions): Promise<any> {
   await fs.ensureDir(TASKS_DIR);
 
+  if (options.context?.abortSignal?.aborted || options.context?.isCancelled?.()) {
+    return {
+      success: false,
+      stdout: '',
+      stderr: 'Terminal command cancelled before launch.',
+      output: 'Terminal command cancelled before launch.',
+      exitCode: 130,
+      executionTimeMs: 0,
+      timedOut: false,
+      stillRunning: false,
+      status: 'killed',
+    };
+  }
+
   const checkInMs = normalizeCheckInMs(options.checkInMs, options.command);
   const hardTimeoutMs = normalizeHardTimeoutMs(options.hardTimeoutMs, checkInMs);
-  const networkPolicy = options.context?.networkPolicy === 'allow' || options.context?.allowNetwork === true
-    ? 'allow'
-    : 'deny';
-  const authorization = await authorizeToolCommand({
-    command: options.command,
-    cwd: options.cwd,
-    context: options.context,
-    env: options.env,
-    timeoutMs: hardTimeoutMs,
-    network: networkPolicy,
-  });
+  // Terminal tools are explicit user-directed execution surfaces. Keep the
+  // broker's historical default (network allowed) unless the caller opted
+  // into a deny policy; this prevents npm/pip/git commands from being blocked
+  // only after the first authorization pass.
+  const networkPolicy = options.context?.networkPolicy === 'deny' && options.context?.allowNetwork !== true
+    ? 'deny'
+    : 'allow';
+  const authorization: { allowed: boolean; cwd: string; env: NodeJS.ProcessEnv; reason?: string } = options.authorization
+    ? { allowed: true, cwd: options.authorization.cwd, env: options.authorization.env }
+    : await authorizeToolCommand({
+      command: options.command,
+      cwd: options.cwd,
+      context: options.context,
+      env: options.env,
+      timeoutMs: hardTimeoutMs,
+      network: networkPolicy,
+    });
   if (!authorization.allowed) {
     const reason = authorization.reason || 'Terminal command blocked by command policy';
     return {
@@ -136,6 +165,20 @@ export async function runTerminalCommandWithCheckIn(options: TerminalCommandRunO
     };
   }
 
+  if (options.context?.abortSignal?.aborted || options.context?.isCancelled?.()) {
+    return {
+      success: false,
+      stdout: '',
+      stderr: 'Terminal command cancelled before launch.',
+      output: 'Terminal command cancelled before launch.',
+      exitCode: 130,
+      executionTimeMs: 0,
+      timedOut: false,
+      stillRunning: false,
+      status: 'killed',
+    };
+  }
+
   const id = `term_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
   const startedAt = Date.now();
   const streamId = `${options.source}_${startedAt}_${crypto.randomBytes(3).toString('hex')}`;
@@ -146,6 +189,7 @@ export async function runTerminalCommandWithCheckIn(options: TerminalCommandRunO
     command: options.command,
     description: options.description || options.command,
     source: options.source,
+    ownerChatId: String(options.context?.chatId || options.context?.projectId || '').trim() || undefined,
     cwd: authorization.cwd,
     status: 'running',
     startedAt,
@@ -168,15 +212,38 @@ export async function runTerminalCommandWithCheckIn(options: TerminalCommandRunO
   terminalTasks.set(id, task);
   await persistTaskStatus(task);
 
-  const invocation = buildTerminalShellInvocation(options.command, options.shell);
-  const child = spawn(invocation.file, invocation.args, {
-    cwd: authorization.cwd,
-    shell: invocation.shell,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    windowsHide: true,
-    env: authorization.env,
-    detached: process.platform !== 'win32',
-  });
+  let invocation: ReturnType<typeof buildTerminalShellInvocation>;
+  try {
+    invocation = buildTerminalShellInvocation(options.command, options.shell);
+  } catch (error: any) {
+    task.status = 'failed';
+    task.exitCode = 127;
+    task.completedAt = Date.now();
+    appendTaskOutput(task, 'stderr', String(error?.message || error));
+    flushTaskOutput(task, true, 127);
+    await persistTaskStatus(task);
+    return buildTerminalResult(task);
+  }
+
+  let child: ChildProcess;
+  try {
+    child = spawn(invocation.file, invocation.args, {
+      cwd: authorization.cwd,
+      shell: invocation.shell,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+      env: authorization.env,
+      detached: process.platform !== 'win32',
+    });
+  } catch (error: any) {
+    task.status = 'failed';
+    task.exitCode = 127;
+    task.completedAt = Date.now();
+    appendTaskOutput(task, 'stderr', String(error?.message || error));
+    flushTaskOutput(task, true, 127);
+    await persistTaskStatus(task);
+    return buildTerminalResult(task);
+  }
 
   task.process = child;
   task.pid = child.pid || undefined;
@@ -307,11 +374,13 @@ export async function runTerminalCommandWithCheckIn(options: TerminalCommandRunO
   });
 }
 
-export async function getTerminalBackgroundTaskStatus(taskId: string): Promise<any | null> {
+export async function getTerminalBackgroundTaskStatus(taskId: string, ownerChatId?: string): Promise<any | null> {
   taskId = safeTaskId(taskId);
   if (!taskId) return null;
+  const requestedOwner = String(ownerChatId || '').trim();
   const inMemory = terminalTasks.get(taskId);
   if (inMemory) {
+    if (requestedOwner && inMemory.ownerChatId !== requestedOwner) return null;
     return buildStatusResult(inMemory);
   }
 
@@ -319,17 +388,27 @@ export async function getTerminalBackgroundTaskStatus(taskId: string): Promise<a
   if (!await fs.pathExists(statusFile)) return null;
 
   const status = await fs.readJson(statusFile);
+  if (requestedOwner && String(status.ownerChatId || '') !== requestedOwner) return null;
   const outputFile = status.outputFile && isPathInside(TASKS_DIR, path.resolve(status.outputFile))
     ? status.outputFile
     : resolveUnder(TASKS_DIR, `${taskId}_output.txt`);
   const output = await readOutputTail(outputFile);
-  const persistedStatus = status.status === 'running' && status.pid && !isProcessAlive(status.pid)
-    ? 'failed'
-    : (status.status || 'unknown');
+  let persistedStatus = status.status || 'unknown';
+  if (persistedStatus === 'running' && (!status.pid || !isProcessAlive(status.pid))) {
+    // A status file can outlive the Node process that launched it. Persist the
+    // terminal failure once so every later poll sees a settled task instead of
+    // repeatedly treating a dead PID as live.
+    persistedStatus = 'failed';
+    status.status = 'failed';
+    status.exitCode = status.exitCode ?? 1;
+    status.completedAt = status.completedAt || Date.now();
+    await writeJsonAtomic(statusFile, status).catch(() => undefined);
+  }
   return {
     success: persistedStatus === 'completed',
     terminalTask: true,
     taskId,
+    streamId: String(status.streamId || `terminal_${taskId}`),
     status: persistedStatus,
     running: persistedStatus === 'running',
     command: status.command,
@@ -349,11 +428,13 @@ export async function getTerminalBackgroundTaskStatus(taskId: string): Promise<a
   };
 }
 
-export async function listTerminalBackgroundTasks(): Promise<any[]> {
+export async function listTerminalBackgroundTasks(ownerChatId?: string): Promise<any[]> {
   await fs.ensureDir(TASKS_DIR);
+  const requestedOwner = String(ownerChatId || '').trim();
   const tasks = new Map<string, any>();
 
   for (const task of Array.from(terminalTasks.values())) {
+    if (requestedOwner && task.ownerChatId !== requestedOwner) continue;
     tasks.set(task.id, compactTask(task));
   }
 
@@ -365,9 +446,15 @@ export async function listTerminalBackgroundTasks(): Promise<any[]> {
     try {
       const status = await fs.readJson(resolveUnder(TASKS_DIR, file));
       if (status?.terminalTask === false) continue;
-      const persistedStatus = status.status === 'running' && status.pid && !isProcessAlive(status.pid)
-        ? 'failed'
-        : status.status;
+      if (requestedOwner && String(status.ownerChatId || '') !== requestedOwner) continue;
+      let persistedStatus = status.status;
+      if (persistedStatus === 'running' && (!status.pid || !isProcessAlive(status.pid))) {
+        persistedStatus = 'failed';
+        status.status = 'failed';
+        status.exitCode = status.exitCode ?? 1;
+        status.completedAt = status.completedAt || Date.now();
+        await writeJsonAtomic(resolveUnder(TASKS_DIR, file), status).catch(() => undefined);
+      }
       tasks.set(taskId, {
         id: taskId,
         terminalTask: true,
@@ -389,11 +476,13 @@ export async function listTerminalBackgroundTasks(): Promise<any[]> {
   return Array.from(tasks.values());
 }
 
-export async function killTerminalBackgroundTask(taskId: string): Promise<any | null> {
+export async function killTerminalBackgroundTask(taskId: string, ownerChatId?: string): Promise<any | null> {
   taskId = safeTaskId(taskId);
   if (!taskId) return null;
+  const requestedOwner = String(ownerChatId || '').trim();
   const task = terminalTasks.get(taskId);
   if (task) {
+    if (requestedOwner && task.ownerChatId !== requestedOwner) return null;
     if (task.status === 'running') {
       killProcessTree(task.pid);
       task.status = 'killed';
@@ -409,6 +498,7 @@ export async function killTerminalBackgroundTask(taskId: string): Promise<any | 
   const statusFile = resolveUnder(TASKS_DIR, `${taskId}_status.json`);
   if (!await fs.pathExists(statusFile)) return null;
   const status = await fs.readJson(statusFile);
+  if (requestedOwner && String(status.ownerChatId || '') !== requestedOwner) return null;
   if (status?.pid && status?.status === 'running') {
     killProcessTree(status.pid);
     status.status = 'killed';
@@ -416,7 +506,7 @@ export async function killTerminalBackgroundTask(taskId: string): Promise<any | 
     status.completedAt = Date.now();
     await writeJsonAtomic(statusFile, status);
   }
-  return getTerminalBackgroundTaskStatus(taskId);
+  return getTerminalBackgroundTaskStatus(taskId, requestedOwner);
 }
 
 function appendTaskOutput(task: TerminalBackgroundTask, stream: 'stdout' | 'stderr', text: string) {
@@ -518,6 +608,7 @@ function buildRunningResult(task: TerminalBackgroundTask, note: string): any {
     stillRunning: true,
     backgroundTaskId: task.id,
     taskId: task.id,
+    streamId: task.streamId,
     pid: task.pid,
     status: task.status,
     checkInMs: task.checkInMs,
@@ -540,6 +631,7 @@ function buildTerminalResult(task: TerminalBackgroundTask): any {
     stillRunning: task.status === 'running',
     backgroundTaskId: task.handedOff ? task.id : undefined,
     taskId: task.id,
+    streamId: task.streamId,
     pid: task.pid,
     status: task.status,
     timeoutMs: task.checkInMs,
@@ -556,6 +648,7 @@ function buildStatusResult(task: TerminalBackgroundTask): any {
     success: task.status === 'completed',
     terminalTask: true,
     taskId: task.id,
+    streamId: task.streamId,
     status: task.status,
     running: task.status === 'running',
     command: task.command,
@@ -627,6 +720,8 @@ function serializeTask(task: TerminalBackgroundTask): Record<string, any> {
     command: task.command,
     description: task.description,
     source: task.source,
+    ownerChatId: task.ownerChatId,
+    streamId: task.streamId,
     cwd: task.cwd,
     pid: task.pid,
     status: task.status,
@@ -716,7 +811,9 @@ function isProcessAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
-    return false;
+  } catch (error: any) {
+    // EPERM means the process exists but this runtime is not allowed to
+    // signal it. Treating that as dead creates false failures after restarts.
+    return error?.code === 'EPERM';
   }
 }

@@ -38,10 +38,13 @@ const controlPath = (chatId: string): string => {
 };
 
 export function readProxyControl(chatId: string): ProxyControlState {
-  try {
-    const saved = fs.readJsonSync(controlPath(chatId));
-    if (saved?.version === 1 && saved?.chatId === chatId) {
-      return {
+  const target = controlPath(chatId);
+  for (const source of [target, `${target}.backup`]) {
+    try {
+      if (!fs.existsSync(source)) continue;
+      const saved = fs.readJsonSync(source);
+      if (saved?.version === 1 && saved?.chatId === chatId) {
+        return {
         version: 1,
         chatId,
         enabled: saved.enabled !== false,
@@ -51,9 +54,12 @@ export function readProxyControl(chatId: string): ProxyControlState {
         taskQueue: Array.isArray(saved.taskQueue) ? saved.taskQueue.slice(-MAX_TASKS) : [],
         stopGeneration: Number(saved.stopGeneration || 0),
         updatedAt: Number(saved.updatedAt || Date.now()),
-      };
+        };
+      }
+    } catch {
+      if (source === target) try { fs.renameSync(target, `${target}.corrupt-${Date.now()}`); } catch { }
     }
-  } catch { }
+  }
   return {
     version: 1,
     chatId,
@@ -78,6 +84,7 @@ function writeProxyControl(state: ProxyControlState): void {
       taskQueue: state.taskQueue.slice(-MAX_TASKS),
       updatedAt: Date.now(),
     }, { spaces: 2 });
+    if (fs.existsSync(target)) fs.copyFileSync(target, `${target}.backup`);
     fs.moveSync(temporary, target, { overwrite: true });
   } finally {
     if (fs.existsSync(temporary)) fs.removeSync(temporary);

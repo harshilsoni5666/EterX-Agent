@@ -79,11 +79,12 @@ import {
 } from '../../computer/managed-computer';
 import { enforceToolCapability } from '../security/tool_policy';
 import { resolveTerminalShell } from './shell_resolver';
+import { getEterxWorkspaceDir } from '../../storage-paths';
 
 const execFileAsync = promisify(execFile);
 
 // ─── Paths ────────────────────────────────────────────────────────────────────
-const TEMP_DIR = path.resolve(process.cwd(), '.workspaces', 'temp', 'screen-agent');
+const TEMP_DIR = getEterxWorkspaceDir('temp', 'screen-agent');
 
 // ─── Hidden PS runner — no window flash, temp file approach ──────────────────
 async function ps(script: string, timeout = 12000): Promise<string> {

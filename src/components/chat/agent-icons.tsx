@@ -197,6 +197,126 @@ export const NetworkNodeIcon = ({ size = 16, color = W }: IconProps) => (
   </LineIcon>
 );
 
+// Keep connector artwork on the same asset path used by Gateway.  Action
+// cards deliberately resolve this from the trace payload instead of keeping a
+// second icon registry in the chat UI, so a connector configured in Gateway
+// looks identical while it is being configured, called, or verified.
+const CONNECTOR_ALIASES: Record<string, string> = {
+  airtable: 'airtable', asana: 'asana', bluebubbles: 'bluebubbles',
+  clickup: 'clickup', discord: 'discord', dingtalk: 'dingtalk',
+  dropbox: 'dropbox', email: 'email', feishu: 'feishu', figma: 'figma',
+  github: 'github', gitlab: 'gitlab', gmail: 'gmail',
+  googlecalendar: 'google_calendar', google_calendar: 'google_calendar',
+  googledrive: 'google_drive', google_drive: 'google_drive',
+  homeassistant: 'homeassistant', hubspot: 'hubspot', instagram: 'instagram',
+  irc: 'irc', jira: 'jira', linkedin: 'linkedin', line: 'line',
+  linear: 'linear', mattermost: 'mattermost', matrix: 'matrix',
+  messenger: 'messenger', monday: 'monday', notion: 'notion',
+  onedrive: 'onedrive', outlook: 'outlook_mail', outlookmail: 'outlook_mail',
+  outlook_calendar: 'outlook_calendar', outlookcalendar: 'outlook_calendar',
+  salesforce: 'salesforce', shopify: 'shopify', signal: 'signal',
+  slack: 'slack', sms: 'sms', stripe: 'stripe', teams: 'teams',
+  telegram: 'telegram', trello: 'trello', twitter: 'twitter',
+  whatsapp: 'whatsapp', whatsappcloud: 'whatsapp', youtube: 'youtube', zoom: 'zoom',
+};
+
+const CONNECTOR_TOOL_ALIASES: Record<string, string> = {
+  airtable: 'airtable', asana: 'asana', discord: 'discord', email_manager: 'email',
+  github: 'github', github_controller: 'github', gitlab: 'gitlab', gmail: 'gmail',
+  google_calendar: 'google_calendar', google_drive: 'google_drive', hubspot: 'hubspot',
+  jira: 'jira', linear: 'linear', matrix: 'matrix', notion: 'notion',
+  outlook_mail: 'outlook_mail', outlook_calendar: 'outlook_calendar',
+  slack: 'slack', slack_controller: 'slack', signal: 'signal',
+  teams: 'teams', telegram: 'telegram', telegram_user_controller: 'telegram',
+  trello: 'trello', whatsapp: 'whatsapp', whatsapp_controller: 'whatsapp',
+  connector_mcp: '', gateway_bridge: '',
+};
+
+const connectorToken = (value: unknown) => String(value ?? '')
+  .trim()
+  .toLowerCase()
+  .replace(/^https?:\/\/[^/]+\//, '')
+  .replace(/^connector[-_:]/, '')
+  .replace(/^channel[-_:]/, '')
+  .replace(/[\s-]+/g, '_');
+
+export const resolveConnectorId = (...values: unknown[]): string | null => {
+  for (const value of values) {
+    const token = connectorToken(value);
+    if (!token || token === 'connector_mcp' || token === 'gateway_bridge') continue;
+
+    const direct = CONNECTOR_ALIASES[token] || CONNECTOR_TOOL_ALIASES[token];
+    if (direct) return direct;
+
+    // Tool names and natural-language trace labels can contain the provider
+    // name (for example telegram_user_controller or "Sending Slack").
+    for (const [alias, id] of Object.entries(CONNECTOR_ALIASES).sort((left, right) => right[0].length - left[0].length)) {
+      if (token.includes(alias)) return id;
+    }
+  }
+  return null;
+};
+
+export const getConnectorId = (log: any): string | null => {
+  const args = log?.toolArgs || log?.args || {};
+  return resolveConnectorId(
+    log?.connectorId,
+    log?.connector_id,
+    args?.connectorId,
+    args?.connector_id,
+    args?.server_id,
+    args?.platform,
+    args?.channel,
+    args?.provider,
+    args?.service,
+    log?.platform,
+    log?.channel,
+    log?.tool,
+    log?.name,
+    log?.text,
+    log?.secondary,
+  );
+};
+
+export const isConnectorTrace = (log: any): boolean => {
+  const toolName = String(log?.tool || log?.name || '').toLowerCase();
+  const icon = String(log?.iconCategory || log?.icon || '').toLowerCase();
+  return Boolean(
+    getConnectorId(log) ||
+    icon === 'connector' ||
+    toolName === 'gateway_bridge' ||
+    toolName === 'connector_mcp' ||
+    /(?:^|_)(?:controller|connector|gateway)(?:$|_)/.test(toolName),
+  );
+};
+
+export const ConnectorIcon = ({
+  connectorId,
+  size = 18,
+  title,
+  className = '',
+}: {
+  connectorId?: string | null;
+  size?: number;
+  title?: string;
+  className?: string;
+}) => {
+  const id = resolveConnectorId(connectorId);
+  if (!id) return <NetworkNodeIcon size={size} color="#B9B1A7" />;
+  return (
+    <img
+      src={`/icons/connectors/${id}.svg`}
+      alt=""
+      aria-hidden={title ? undefined : true}
+      title={title || id.replace(/_/g, ' ')}
+      width={size}
+      height={size}
+      draggable={false}
+      className={`select-none object-contain ${className}`}
+    />
+  );
+};
+
 export const ChartLineIcon = ({ size = 16, color = W }: IconProps) => (
   <LineIcon size={size} color={color}>
     <path d="M5 19V5M5 19h14" />
@@ -356,6 +476,7 @@ const CAT_MAP: Record<string, React.FC<IconProps>> = {
   database: DatabaseStackIcon,
   data: DatabaseStackIcon,
   network: NetworkNodeIcon,
+  connector: NetworkNodeIcon,
   api: ApiNodeIcon,
   chart: ChartLineIcon,
   memory: MemoryChipIcon,

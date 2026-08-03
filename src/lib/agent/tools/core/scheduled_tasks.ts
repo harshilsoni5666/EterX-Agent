@@ -49,7 +49,7 @@ Operations: list, get, create, update, rename, run_now, pause, resume, delete. C
     sources: z.array(z.object({ path: z.string(), name: z.string().optional(), type: z.string().optional() })).optional(),
   }),
   outputSchema: z.any(),
-  execute: async (input: any) => {
+  execute: async (input: any, context?: any) => {
     if (input.operation === 'list') {
       const snapshot = await loadScheduledTaskSnapshot();
       return { success: true, tasks: snapshot.tasks, total: snapshot.tasks.length };
@@ -83,6 +83,11 @@ Operations: list, get, create, update, rename, run_now, pause, resume, delete. C
         thinkingLevel: input.thinkingLevel,
         agentId,
         agentName: String(input.agentName || (agentId === 'coding' ? 'Coding' : agentId === 'autonomous' ? 'Autonomous' : agentId || 'General')),
+        // Schedules are durable background work. Capture the originating
+        // chat's device/workspace so a later visible-chat switch cannot send
+        // its terminal commands somewhere else.
+        workspacePath: typeof context?.workspacePath === 'string' ? context.workspacePath : undefined,
+        runLocation: context?.runLocation === 'sandbox' ? 'sandbox' : context?.runLocation === 'local' ? 'local' : undefined,
         sources: Array.isArray(input.sources) ? input.sources.map((source: any) => ({
           id: randomUUID(),
           path: String(source.path),

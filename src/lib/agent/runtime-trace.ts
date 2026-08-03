@@ -1,5 +1,6 @@
 import fs from 'fs-extra';
 import path from 'path';
+import { getEterxWorkspaceDir } from './storage-paths';
 
 /**
  * Local JSONL trace sink for debugging every live run.
@@ -7,7 +8,7 @@ import path from 'path';
  * It is deliberately fire-and-forget and never affects the agent loop.
  */
 export function writeRuntimeTrace(kind: string, data: Record<string, unknown>): void {
-  const target = String(process.env.ETERX_TRACE_FILE || path.resolve(process.cwd(), 'logs', 'syn-live.jsonl')).trim();
+  const target = String(process.env.ETERX_TRACE_FILE || getEterxWorkspaceDir('logs', 'syn-live.jsonl')).trim();
 
   const record = {
     ts: new Date().toISOString(),

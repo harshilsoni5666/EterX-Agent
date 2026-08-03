@@ -4,6 +4,7 @@ import * as dns from 'dns';
 import * as fs from 'fs';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
+import { getEterxWorkspaceDir } from '../lib/agent/storage-paths';
 
 dns.setDefaultResultOrder?.('ipv4first');
 
@@ -385,7 +386,7 @@ async function sendLongText(ctx: any, text: string) {
 }
 
 function telegramMemoryDir() {
-  return path.resolve(process.cwd(), '.workspaces', '.telegram-memory');
+  return getEterxWorkspaceDir('.telegram-memory');
 }
 
 function telegramMemoryPath(chatId: number | string) {
@@ -593,7 +594,7 @@ async function downloadFile(ctx: any, fileId: string, fallbackName: string, mime
     throw new Error(`File is too large for the bot bridge (${Math.round(buffer.byteLength / 1024 / 1024)}MB).`);
   }
 
-  const dir = path.resolve(process.cwd(), '.workspaces', 'temp', 'telegram');
+  const dir = getEterxWorkspaceDir('temp', 'telegram');
   await fsp.mkdir(dir, { recursive: true });
 
   const finalName = safeName(fallbackName);

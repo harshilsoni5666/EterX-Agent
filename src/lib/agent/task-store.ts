@@ -1,6 +1,7 @@
 import fs from 'fs-extra';
 import path from 'path';
 import { getEterxWorkspaceDir } from './storage-paths';
+import { stableScopeSegment } from './context-scope';
 import { closeThoughtStreamsForBoundary, mergeThoughtStreamTrace } from '../thought-stream-lifecycle';
 import { isStreamFinalEvent, mergeStreamingText, normalizeStreamTimestamp } from '../streaming-lifecycle';
 
@@ -71,8 +72,12 @@ function resolveUnder(parent: string, ...segments: string[]): string {
 }
 
 function getTaskPath(chatId: string): string {
-  // Sanitize chatId for filesystem safety
-  const safe = (chatId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 120) || '_global');
+  const safe = stableScopeSegment(chatId, 120);
+  return resolveUnder(TASKS_DIR, `${safe}.json`);
+}
+
+function getLegacyTaskPath(chatId: string): string {
+  const safe = chatId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 120) || '_global';
   return resolveUnder(TASKS_DIR, `${safe}.json`);
 }
 
@@ -81,6 +86,7 @@ async function writeJsonAtomic(filePath: string, value: unknown): Promise<void> 
   await fs.ensureDir(dir);
   const tmpPath = path.join(dir, `.${path.basename(filePath)}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`);
   await fs.writeJson(tmpPath, value, { spaces: 2 });
+  if (await fs.pathExists(filePath)) await fs.copyFile(filePath, `${filePath}.backup`).catch(() => {});
   await fs.move(tmpPath, filePath, { overwrite: true });
 }
 
@@ -89,7 +95,21 @@ async function writeSerializedJsonAtomic(filePath: string, serialized: string): 
   await fs.ensureDir(dir);
   const tmpPath = path.join(dir, `.${path.basename(filePath)}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`);
   await fs.writeFile(tmpPath, serialized, 'utf8');
+  if (await fs.pathExists(filePath)) await fs.copyFile(filePath, `${filePath}.backup`).catch(() => {});
   await fs.move(tmpPath, filePath, { overwrite: true });
+}
+
+async function readTaskWithBackup(filePath: string): Promise<PersistedTask> {
+  for (const source of [filePath, `${filePath}.backup`]) {
+    try {
+      return await fs.readJson(source) as PersistedTask;
+    } catch {
+      if (source === filePath && await fs.pathExists(filePath)) {
+        await fs.move(filePath, `${filePath}.corrupt-${Date.now()}`).catch(() => {});
+      }
+    }
+  }
+  throw new Error(`Unable to read persisted task: ${filePath}`);
 }
 
 function compactTraceEvent(traceEvent: any): any {
@@ -119,7 +139,10 @@ function compactTraceEvent(traceEvent: any): any {
     };
   }
 
-  if ((traceEvent.type === 'thought_stream' || traceEvent.type === 'work_note') && typeof traceEvent.text === 'string' && traceEvent.text.length > 12000) {
+  // Keep cumulative thought snapshots intact. Compacting a thought update
+  // inserts non-model text into the stream and causes later updates to lose
+  // everything after the compaction boundary.
+  if (traceEvent.type === 'work_note' && typeof traceEvent.text === 'string' && traceEvent.text.length > 12000) {
     return {
       ...traceEvent,
       text: `${traceEvent.text.substring(0, 12000)}\n...[trace compacted]`,
@@ -217,7 +240,7 @@ export const taskStore = {
           if (!file.endsWith('.json')) continue;
           const taskPath = resolveUnder(TASKS_DIR, file);
           try {
-            const task = await fs.readJson(taskPath) as PersistedTask;
+            const task = await readTaskWithBackup(taskPath);
             if (task.status !== 'running') continue;
             // Recovery can overlap the first live starts after a cold launch.
             // Only tasks that existed before this module initialized are
@@ -521,10 +544,17 @@ export const taskStore = {
     // Try loading from disk
     try {
       const taskPath = getTaskPath(chatId);
-      if (await fs.pathExists(taskPath)) {
-        const task = await fs.readJson(taskPath) as PersistedTask;
+      const legacyTaskPath = getLegacyTaskPath(chatId);
+      const readableTaskPath = await fs.pathExists(taskPath)
+        ? taskPath
+        : (legacyTaskPath !== taskPath && await fs.pathExists(legacyTaskPath) ? legacyTaskPath : null);
+      if (readableTaskPath) {
+        const task = await readTaskWithBackup(readableTaskPath);
+        if (String(task.chatId || '') !== chatId) return null;
         trimTask(task, true);
         rememberTask(chatId, task);
+        // Migrate a verified legacy record to its collision-proof namespace.
+        if (readableTaskPath !== taskPath) await flushToDisk(chatId);
         return task;
       }
     } catch { /* silent */ }

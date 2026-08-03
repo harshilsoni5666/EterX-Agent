@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { ToolDefinition } from '../../schemas';
 import path from 'path';
 import fs from 'fs-extra';
+import { getEterxWorkspaceDir } from '../../storage-paths';
 
 /**
  * Local Database (JSON-backed Key-Value + Table Store)
@@ -11,7 +12,7 @@ import fs from 'fs-extra';
  * Perfect for storing user data, configs, cache, and app state.
  */
 
-const DB_DIR = path.resolve(process.cwd(), '.workspaces', '.database');
+const DB_DIR = getEterxWorkspaceDir('.database');
 
 export const databaseTool: ToolDefinition = {
   name: 'local_database',
@@ -43,7 +44,10 @@ export const databaseTool: ToolDefinition = {
   }),
   execute: async (input: any) => {
     await fs.ensureDir(DB_DIR);
-    const tablePath = input.table ? path.join(DB_DIR, `${input.table}.json`) : '';
+    const tableName = input.table
+      ? String(input.table).trim().replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 120)
+      : '';
+    const tablePath = tableName ? path.join(DB_DIR, `${tableName}.json`) : '';
 
     try {
       const parsedData = parseJsonValue(input.data);
@@ -53,7 +57,7 @@ export const databaseTool: ToolDefinition = {
         case 'create_table': {
           if (!input.table) return { success: false, message: 'table name required' };
           if (await fs.pathExists(tablePath)) return { success: true, message: `Table "${input.table}" already exists` };
-          await fs.writeJSON(tablePath, [], { spaces: 2 });
+          await saveTable(tablePath, []);
           return { success: true, message: `Table "${input.table}" created` };
         }
 
@@ -173,12 +177,25 @@ export const databaseTool: ToolDefinition = {
 };
 
 async function loadTable(filePath: string): Promise<any[]> {
-  if (!await fs.pathExists(filePath)) return [];
-  return await fs.readJSON(filePath);
+  for (const source of [filePath, `${filePath}.backup`]) {
+    try {
+      if (!await fs.pathExists(source)) continue;
+      const value = await fs.readJSON(source);
+      return Array.isArray(value) ? value : [];
+    } catch {
+      if (source === filePath && await fs.pathExists(filePath)) {
+        await fs.move(filePath, `${filePath}.corrupt-${Date.now()}`).catch(() => {});
+      }
+    }
+  }
+  return [];
 }
 
 async function saveTable(filePath: string, records: any[]): Promise<void> {
-  await fs.writeJSON(filePath, records, { spaces: 2 });
+  const temporary = `${filePath}.tmp-${process.pid}-${Date.now()}`;
+  await fs.writeJSON(temporary, records, { spaces: 2 });
+  if (await fs.pathExists(filePath)) await fs.copyFile(filePath, `${filePath}.backup`).catch(() => {});
+  await fs.move(temporary, filePath, { overwrite: true });
 }
 
 function matchesFilter(record: any, filter: Record<string, any>): boolean {

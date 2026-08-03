@@ -26,8 +26,21 @@ try {
   assert.equal(remapped.find(lease => lease.chatId.startsWith('remap-a'))?.keyIndex, 1);
   assert.equal(remapped.find(lease => lease.chatId.startsWith('remap-b'))?.keyIndex, 0);
 
+  apiKeyPool.releaseKey('remap-a');
+  apiKeyPool.releaseKey('remap-b');
+
+  const balancedLeases = ['balanced-a', 'balanced-b'].map(id => apiKeyPool.leaseKey(id));
+  assert.equal(new Set(balancedLeases.map(lease => lease?.keyIndex)).size, 2, 'all configured keys should be used before reusing one');
+
+  const failedLease = apiKeyPool.leaseKey('failure-check');
+  assert.ok(failedLease);
+  const replacementLease = apiKeyPool.reportFailure('failure-check', 'auth', 'invalid API key');
+  assert.ok(replacementLease);
+  assert.notEqual(replacementLease?.keyIndex, failedLease?.keyIndex, 'failure rotation should try another configured key');
+  assert.equal(apiKeyPool.getPoolStatus().totalKeys, 2);
+
   console.log('Parallel API-key pool integration checks passed.');
 } finally {
-  for (const id of [...leaseIds, 'remap-a', 'remap-b']) apiKeyPool.releaseKey(id);
+  for (const id of [...leaseIds, 'remap-a', 'remap-b', 'balanced-a', 'balanced-b', 'failure-check']) apiKeyPool.releaseKey(id);
   apiKeyPool.setRuntimeKeys([]);
 }

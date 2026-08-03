@@ -9,6 +9,26 @@ const STORE_FILE = path.join(MEMORY_DIR, 'memory_store.json');
 const PREFS_FILE = path.join(MEMORY_DIR, 'user_preferences.json');
 const ERROR_LOG_FILE = path.join(MEMORY_DIR, 'error_log.json');
 
+async function writeJsonAtomic(filePath: string, value: unknown): Promise<void> {
+  await fs.ensureDir(path.dirname(filePath));
+  const temporary = `${filePath}.tmp-${process.pid}-${Date.now()}`;
+  await fs.writeJSON(temporary, value, { spaces: 2 });
+  if (await fs.pathExists(filePath)) await fs.copyFile(filePath, `${filePath}.backup`).catch(() => {});
+  await fs.move(temporary, filePath, { overwrite: true });
+}
+
+async function readJsonWithBackup(filePath: string): Promise<any | null> {
+  for (const source of [filePath, `${filePath}.backup`]) {
+    try {
+      if (!(await fs.pathExists(source))) continue;
+      return await fs.readJSON(source);
+    } catch {
+      if (source === filePath) await fs.move(filePath, `${filePath}.corrupt-${Date.now()}`).catch(() => {});
+    }
+  }
+  return null;
+}
+
 /**
  * Enhanced MemoryManager
  * 
@@ -27,6 +47,7 @@ export class MemoryManager {
   private userPreferences: Map<string, any> = new Map();
   private errorLog: Array<{ timestamp: number, tool: string, error: string, context: string }> = [];
   private initialized = false;
+  private initializePromise: Promise<void> | null = null;
   private persistTimer: ReturnType<typeof setTimeout> | null = null;
   private persistPending = false;
 
@@ -35,15 +56,17 @@ export class MemoryManager {
    */
   public async initialize(): Promise<void> {
     if (this.initialized) return;
+    if (this.initializePromise) return this.initializePromise;
     
-    try {
+    this.initializePromise = (async () => {
+      try {
       await fs.ensureDir(MEMORY_DIR);
 
       // Parallel file reads — all 3 at once
       const [storeRes, prefsRes, errRes] = await Promise.allSettled([
-        fs.pathExists(STORE_FILE).then(e => e ? fs.readJSON(STORE_FILE) : null),
-        fs.pathExists(PREFS_FILE).then(e => e ? fs.readJSON(PREFS_FILE) : null),
-        fs.pathExists(ERROR_LOG_FILE).then(e => e ? fs.readJSON(ERROR_LOG_FILE) : null),
+        readJsonWithBackup(STORE_FILE),
+        readJsonWithBackup(PREFS_FILE),
+        readJsonWithBackup(ERROR_LOG_FILE),
       ]);
 
       if (storeRes.status === 'fulfilled' && storeRes.value) {
@@ -61,10 +84,14 @@ export class MemoryManager {
       }
 
       this.initialized = true;
-    } catch (error: any) {
-      console.warn(`[MemoryManager] Failed to load persisted memory: ${error.message}. Starting fresh.`);
-      this.initialized = true;
-    }
+      } catch (error: any) {
+        console.warn(`[MemoryManager] Failed to load persisted memory: ${error.message}. Starting fresh.`);
+        this.initialized = true;
+      } finally {
+        this.initializePromise = null;
+      }
+    })();
+    return this.initializePromise;
   }
 
   /**
@@ -80,17 +107,17 @@ export class MemoryManager {
         // Keep last 100 entries per project to avoid unbounded growth
         storeObj[key] = entries.slice(-100);
       }
-      await fs.writeJSON(STORE_FILE, storeObj, { spaces: 2 });
+      await writeJsonAtomic(STORE_FILE, storeObj);
 
       // Save preferences
       const prefsObj: Record<string, any> = {};
       for (const [key, value] of this.userPreferences.entries()) {
         prefsObj[key] = value;
       }
-      await fs.writeJSON(PREFS_FILE, prefsObj, { spaces: 2 });
+      await writeJsonAtomic(PREFS_FILE, prefsObj);
 
       // Save error log (keep last 200)
-      await fs.writeJSON(ERROR_LOG_FILE, this.errorLog.slice(-200), { spaces: 2 });
+      await writeJsonAtomic(ERROR_LOG_FILE, this.errorLog.slice(-200));
     } catch (error: any) {
       console.warn(`[MemoryManager] Failed to persist memory: ${error.message}`);
     }

@@ -20,7 +20,8 @@ import {
   isUnsafeHostControlEnabled,
 } from './computer-session';
 import { captureManagedFrame } from './managed-computer';
-import { getEterxAppRoot, getEterxExecutableAssetPath } from '../storage-paths';
+import { capturePlatformScreen } from './platform-screen';
+import { getEterxAppRoot, getEterxExecutableAssetPath, getEterxWorkspaceDir } from '../storage-paths';
 
 const execFileAsync = promisify(execFile);
 
@@ -54,7 +55,7 @@ async function ensureBinary(): Promise<string> {
   if (await fs.pathExists(bundledBinary)) return bundledBinary;
 
   const srcPath = path.resolve(getEterxAppRoot(), 'src', 'lib', 'agent', 'computer', 'EterXScreenStream.cs');
-  const outDir = path.resolve(process.cwd(), '.workspaces', 'temp', 'screen-stream');
+  const outDir = getEterxWorkspaceDir('temp', 'screen-stream');
   const exePath = path.join(outDir, 'EterXScreenStream.exe');
 
   await fs.ensureDir(outDir);
@@ -179,6 +180,11 @@ async function getChildProcess(): Promise<ChildProcessWithoutNullStreams | null>
 // ─── Single frame capture via warm child process ─────────────────────────────
 async function captureFrame(cfg: Required<StreamConfig>): Promise<string | null> {
   if (_pendingFrameResolve) return null;
+
+  if (process.platform !== 'win32') {
+    const captured = await capturePlatformScreen('live', { target: 'fullscreen' });
+    return captured?.base64 || null;
+  }
 
   if (!isUnsafeHostControlEnabled()) {
     return captureManagedFrame(cfg.quality, cfg.maxWidth, cfg.chatId);

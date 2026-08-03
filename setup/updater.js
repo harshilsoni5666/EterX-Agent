@@ -7,7 +7,38 @@ const fs = require('fs');
 const path = require('path');
 const { ok, warn, fail, info, spinner, c } = require('./banner');
 
-const BACKUP_DIR_NAME = '.workspaces/backups';
+const BACKUP_DIR_NAME = 'backups';
+
+function getEterxDataDir() {
+  const configured = String(process.env.ETERX_DATA_DIR || '').trim();
+  if (configured) return path.resolve(configured);
+  if (process.platform === 'win32') {
+    const root = String(process.env.LOCALAPPDATA || process.env.APPDATA || '').trim();
+    if (root) return path.resolve(root, 'EterX', 'data');
+  }
+  if (process.platform === 'darwin') {
+    return path.resolve(os.homedir(), 'Library', 'Application Support', 'EterX', 'data');
+  }
+  return path.resolve(
+    String(process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share')).trim(),
+    'EterX',
+    'data',
+  );
+}
+
+function getBackupDir() {
+  return path.join(getEterxDataDir(), BACKUP_DIR_NAME);
+}
+
+function resolveBackupPath(backupDir, backupName) {
+  const root = path.resolve(backupDir);
+  const resolved = path.resolve(root, String(backupName || ''));
+  const relative = path.relative(root, resolved);
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+    throw new Error('Invalid backup name');
+  }
+  return resolved;
+}
 
 /**
  * Check for updates from git remote
@@ -128,7 +159,7 @@ function launchBootstrapUpgrade(projectRoot) {
  * Backup .env.local and config
  */
 async function backupConfig(projectRoot) {
-  const backupDir = path.join(projectRoot, BACKUP_DIR_NAME);
+  const backupDir = getBackupDir();
   if (!fs.existsSync(backupDir)) fs.mkdirSync(backupDir, { recursive: true });
 
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
@@ -160,6 +191,16 @@ async function backupConfig(projectRoot) {
     count++;
   }
 
+  // The native app keeps chats, preferences, runtime settings, browser
+  // profiles, and agent state under AppData. Preserve that complete durable
+  // tree before a source-bootstrap upgrade as well; the code replacement must
+  // never be the thing that carries user state.
+  const appDataRoot = getEterxDataDir();
+  if (fs.existsSync(appDataRoot)) {
+    copyDirSync(appDataRoot, path.join(backupPath, 'app-data'), new Set([BACKUP_DIR_NAME]));
+    count++;
+  }
+
   ok(`Backup created: ${backupName} (${count} items)`);
   return backupPath;
 }
@@ -168,8 +209,16 @@ async function backupConfig(projectRoot) {
  * Restore from a backup
  */
 async function restoreConfig(projectRoot, backupName) {
-  const backupDir = path.join(projectRoot, BACKUP_DIR_NAME);
-  const backupPath = backupName ? path.join(backupDir, backupName) : null;
+  const backupDir = getBackupDir();
+  let backupPath = null;
+  if (backupName) {
+    try {
+      backupPath = resolveBackupPath(backupDir, backupName);
+    } catch (error) {
+      fail(error.message);
+      return false;
+    }
+  }
 
   if (backupName && !fs.existsSync(backupPath)) {
     fail(`Backup not found: ${backupName}`);
@@ -200,6 +249,8 @@ async function restoreConfig(projectRoot, backupName) {
       if (file === 'memory') {
         const dest = path.join(projectRoot, '.workspaces', 'memory');
         copyDirSync(src, dest);
+      } else if (file === 'app-data') {
+        copyDirSync(src, getEterxDataDir(), new Set([BACKUP_DIR_NAME]));
       }
     } else {
       let dest;
@@ -238,13 +289,14 @@ function getCommitHash(projectRoot) {
 }
 
 // ── Utility: recursive dir copy ──
-function copyDirSync(src, dest) {
+function copyDirSync(src, dest, excludedNames = new Set()) {
   if (!fs.existsSync(dest)) fs.mkdirSync(dest, { recursive: true });
   const entries = fs.readdirSync(src, { withFileTypes: true });
   for (const entry of entries) {
+    if (excludedNames.has(entry.name)) continue;
     const srcPath = path.join(src, entry.name);
     const destPath = path.join(dest, entry.name);
-    if (entry.isDirectory()) copyDirSync(srcPath, destPath);
+    if (entry.isDirectory()) copyDirSync(srcPath, destPath, excludedNames);
     else fs.copyFileSync(srcPath, destPath);
   }
 }

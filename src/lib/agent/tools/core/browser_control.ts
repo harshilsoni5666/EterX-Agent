@@ -12,14 +12,15 @@ import {
   resolveReadableWorkspacePathForContext,
   resolveWorkspacePathForContext,
 } from '../../workspace/path_resolver';
+import { getEterxWorkspaceDir } from '../../storage-paths';
 
 // ═══════════════════════════════════════
 // PATHS & CONSTANTS
 // ═══════════════════════════════════════
 
-const SCREENSHOTS_DIR = path.resolve(process.cwd(), '.workspaces', 'temp', 'screenshots');
-const BROWSER_LOG = path.resolve(process.cwd(), '.workspaces', 'temp', 'browser_actions.log');
-const PDF_DIR = path.resolve(process.cwd(), '.workspaces', 'temp', 'pdfs');
+const SCREENSHOTS_DIR = getEterxWorkspaceDir('temp', 'screenshots');
+const BROWSER_LOG = getEterxWorkspaceDir('temp', 'browser_actions.log');
+const PDF_DIR = getEterxWorkspaceDir('temp', 'pdfs');
 const lastBrowserMonitorUrl = new Map<string, string>();
 
 async function emitBrowserMonitorFrame(page: any, chatId?: string | null) {

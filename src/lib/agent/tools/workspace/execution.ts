@@ -46,7 +46,7 @@ export const workspaceRunCommandTool: ToolDefinition = {
   inputSchema: z.object({
     command: z.string().describe('The command to execute (e.g., "npm test", "ls -la"). Do NOT prefix with "cd path;"'),
     timeoutSeconds: z.number().optional().describe('Optional command timeout in seconds. Default: 30 seconds. Max: 120 seconds. Auto-set to 120s for install/build commands.'),
-    cwd: z.string().optional().describe('Working directory — ABSOLUTE PATH preferred, or relative to workspace root. Default: workspace root'),
+    cwd: z.string().optional().describe('Working directory — ABSOLUTE PATH preferred, or relative to the active user workspace. With no selected workspace, the default is the runtime scratch root, never the EterX source checkout.'),
     background: z.boolean().optional().describe('If true, spawns the command in the background as a managed process and returns immediately without blocking. Ideal for build steps, installations, servers, or long tasks.')
   }),
   outputSchema: z.object({
@@ -56,6 +56,7 @@ export const workspaceRunCommandTool: ToolDefinition = {
     timedOut: z.boolean().optional(),
     timeoutMs: z.number().optional(),
     processId: z.string().optional(),
+    streamId: z.string().optional(),
     nextActionNote: z.string().optional(),
     stillRunning: z.boolean().optional(),
     backgroundTaskId: z.string().optional()
@@ -86,13 +87,25 @@ export const workspaceRunCommandTool: ToolDefinition = {
       };
     }
 
+    let shell: string;
+    try {
+      shell = resolveTerminalShell(context?.terminalShell);
+    } catch (error: any) {
+      return {
+        stdout: '',
+        stderr: String(error?.message || error),
+        exitCode: 127,
+        timedOut: false,
+      };
+    }
+
     try {
       const result = await runTerminalCommandWithCheckIn({
         command: input.command,
         cwd: runDir,
         source: 'workspace_run_command',
         context,
-        shell: resolveTerminalShell(context?.terminalShell),
+        shell,
         checkInMs: input.background ? 1 : timeoutMs,
         hardTimeoutMs: undefined, // Keep background running up to EterX's 30-minute limit
         immediateHandoff: input.background === true,
@@ -106,6 +119,7 @@ export const workspaceRunCommandTool: ToolDefinition = {
         timedOut: Boolean(result.timedOut),
         timeoutMs: result.timeoutMs,
         processId: result.taskId,
+        streamId: result.streamId,
         nextActionNote: result.nextActionNote,
         stillRunning: Boolean(result.stillRunning),
         backgroundTaskId: result.backgroundTaskId || result.taskId
@@ -205,7 +219,7 @@ export const workspaceVerifyCodeTool: ToolDefinition = {
   inputSchema: z.object({
     checkType: z.enum(['lint', 'build', 'test']).describe('The type of verification to perform'),
     timeoutSeconds: z.number().optional().describe('Optional verification timeout in seconds. Default: 30 seconds. Max: 120 seconds.'),
-    cwd: z.string().optional().describe('Working directory — absolute or relative. Default: workspace root')
+    cwd: z.string().optional().describe('Working directory — absolute or relative. With no selected workspace, the default is the runtime scratch root, never the EterX source checkout.')
   }),
   outputSchema: z.object({
     passed: z.boolean(),
@@ -223,7 +237,7 @@ export const workspaceVerifyCodeTool: ToolDefinition = {
 
     // Dynamic resolution based on Project Intelligence
     const { workspaceIntelligence } = require('../../engines');
-    const profile = await workspaceIntelligence.getProfile();
+    const profile = await workspaceIntelligence.getProfile(workDir);
     let command = '';
 
     if (profile.language === 'Python') {

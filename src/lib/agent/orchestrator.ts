@@ -4,6 +4,7 @@ import { memoryV2 } from './memory/v2';
 import { getSynapseGraphForChat, flushSynapseGraph } from './memory/synapse-graph';
 import { AgentResponse, AgentTask, ProjectContext } from './schemas';
 import { createIsolatedClient } from './Agent';
+import { AgentRunner } from './agent-runner';
 import { globalSubAgentSpawner, resetCancelFlag } from './roles/sub_agent';
 import { globalSessionManager } from './session';
 // Critic removed — was causing false rejections on user-stopped outputs and wasting execution time
@@ -20,9 +21,10 @@ import {
 } from './model-routing';
 import type { ScopedRuntimeSettings } from './runtime-api-keys';
 import { DEFAULT_MAIN_AGENT_ALLOWED_CAPABILITIES } from './tools/security/tool_policy';
-import { AGENT_FLOW_RUNTIME, CUSTOM_AGENT_RUNTIME, loadCustomAgentProfile } from './builder-agent';
+import { AGENT_BUILDER_RUNTIME, AGENT_FLOW_RUNTIME, CUSTOM_AGENT_RUNTIME, loadCustomAgentProfile } from './builder-agent';
 import { agentBuilderRunFlowTool } from './tools/automation/agent_builder';
 import { isModelProvider } from './model-selector-store';
+import { getEterxWorkspaceDir } from './storage-paths';
 
 /**
  * The Enhanced Orchestrator v2
@@ -63,6 +65,7 @@ type RuntimeProjectContext = ProjectContext & {
   disableWorkspaceInit?: boolean;
   forceFastMode?: boolean;
   agentRuntime?: string;
+  agentName?: string;
   autonomy?: { enabled?: boolean; verification?: 'adaptive' | 'strict' | 'light'; initiative?: 'balanced' | 'high' | 'maximum'; maxRecoveryAttempts?: number; collaboration?: 'auto' | 'solo' | 'human_partner' | 'cognitive_team' };
   agentId?: string;
   selectedModelMode?: MainAgentMode;
@@ -84,6 +87,8 @@ type RuntimeProjectContext = ProjectContext & {
   userId?: string;
   workspacePath?: string;
   workspaceRoot?: string;
+  /** Per-project location for drafts, scripts, and other intermediate work. */
+  scratchRoot?: string;
   allowedPaths?: string[];
   paths?: string[];
   allowNetwork?: boolean;
@@ -208,8 +213,8 @@ export class AgentOrchestrator {
       return;
     }
 
-    const memoryDir = path.resolve(process.cwd(), '.workspaces', '.memory');
-    const adaptivePath = path.resolve(process.cwd(), '.workspaces', 'learning', 'adaptive_data.json');
+    const memoryDir = getEterxWorkspaceDir('.memory');
+    const adaptivePath = getEterxWorkspaceDir('learning', 'adaptive_data.json');
 
     // ALL reads in parallel — no sequential I/O blocking
     const [prefsResult, errorsResult, storeResult, adaptiveResult] = await Promise.allSettled([
@@ -354,6 +359,14 @@ export class AgentOrchestrator {
         userPreferences: {},
         errorHistory: []
       };
+    // Keep the operational project/chat id and the conversation identity
+    // explicit. Child agents replace only memoryScopeId; main-agent routing
+    // still uses projectId for cancellation and live steering.
+    context.conversationScopeId = projectId;
+    // Keep the main runtime's scratch work in the isolated per-project
+    // workspace. The app checkout is infrastructure and must never become the
+    // implicit place for drafts or helper scripts.
+    context.scratchRoot = workspace.getSandboxPath();
     if (userName) context.userName = userName;
     context.userId = userId;
     context.runtimeSettings = runtimeSettings || null;
@@ -411,6 +424,16 @@ export class AgentOrchestrator {
       if (pinnedContext?.isFocusedWorkspace) {
         context.isFocusedWorkspace = true;
       }
+      const explicitWorkspacePath = typeof pinnedContext?.workspacePath === 'string'
+        ? pinnedContext.workspacePath.trim()
+        : '';
+      if (explicitWorkspacePath) {
+        // Keep an explicit chat workspace authoritative even if it has been
+        // moved or deleted. A stale target must fail in that path, never fall
+        // back to the app checkout or another chat's folder.
+        context.workspaceRoot = path.resolve(explicitWorkspacePath);
+        context.workspacePath = context.workspaceRoot;
+      }
       if (Array.isArray(pinnedContext?.paths) && pinnedContext.paths.length > 0) {
         const pinnedPaths = pinnedContext.paths.filter((p: unknown): p is string => typeof p === 'string' && p.trim().length > 0);
         context.paths = pinnedPaths;
@@ -420,8 +443,10 @@ export class AgentOrchestrator {
         });
         const firstPath = firstDirectory || pinnedPaths[0];
         if (firstPath) {
-          context.workspaceRoot = firstDirectory || path.dirname(path.resolve(firstPath));
-          context.workspacePath = context.workspaceRoot;
+          if (!explicitWorkspacePath) {
+            context.workspaceRoot = firstDirectory || path.dirname(path.resolve(firstPath));
+            context.workspacePath = context.workspaceRoot;
+          }
         }
       }
     }
@@ -443,11 +468,20 @@ export class AgentOrchestrator {
       context.agentRuntime = pinnedContext.agentRuntime;
       context.autonomy = pinnedContext.autonomy;
       context.agentId = pinnedContext.agentId;
+      context.agentName = pinnedContext.agentName;
       context.source = pinnedContext.source;
       context.telegram = pinnedContext.telegram;
       context.selectedModelProvider = String(pinnedContext.selectedModelProvider || '').trim() || undefined;
       context.strictModelSelection = pinnedContext.strictModelSelection === true;
       context.contextCompaction = pinnedContext.contextCompaction;
+      const configuredMaxSubAgents = Number(pinnedContext.maxSubAgents);
+      if (Number.isFinite(configuredMaxSubAgents)) {
+        context.maxSubAgents = Math.max(1, Math.floor(configuredMaxSubAgents));
+      }
+      const configuredMaxRetries = Number(pinnedContext.maxRetries);
+      if (Number.isFinite(configuredMaxRetries)) {
+        context.maxRetries = Math.max(0, Math.min(5, Math.floor(configuredMaxRetries)));
+      }
       context.abortSignal = pinnedContext.abortSignal instanceof AbortSignal ? pinnedContext.abortSignal : undefined;
     }
 
@@ -540,7 +574,10 @@ export class AgentOrchestrator {
     context.selectedModelMode = routedMode;
     context.selectedModelName = modelConfig.modelName;
     context.selectedModelProvider = modelConfig.provider;
-    context.strictModelSelection = hasExplicitModel && validExplicitProvider && pinnedContext?.strictModelSelection === true;
+    // An exact provider/model pair is authoritative regardless of whether an
+    // older caller omitted the strict flag. Auto-routing is the only path
+    // allowed to use the fallback chain.
+    context.strictModelSelection = hasExplicitModel && validExplicitProvider;
     context.selectedThinkingLevel = selectedThinkingLevel;
     (context as any).modelThinkingCapability = modelThinkingCapability;
 
@@ -576,7 +613,117 @@ export class AgentOrchestrator {
       // PHASE 1: PRIMARY EXECUTION (using isolated or global client)
       // Smart model routing applies the effective mode
       // ═══════════════════════════════════════════════════════
-      if (context.agentRuntime === AGENT_FLOW_RUNTIME && pinnedContext?.flowId) {
+      if (
+        context.agentRuntime === AGENT_BUILDER_RUNTIME &&
+        context.agentId &&
+        modelConfig.provider === 'gemini'
+      ) {
+        // Builder chats use a separate draft-aware runtime. The normal Agent
+        // loop is intentionally not used here: it exposes the main agent's
+        // tool surface and cannot dynamically update agent_tool_load/unload.
+        const builderRunner = new AgentRunner();
+        const builderAnswerParts: string[] = [];
+        let builderError = '';
+        const builderAgentName = String(context.agentName || context.agentId);
+        const builderMessages = [
+          ...history
+            .filter((turn: any) => turn && typeof turn === 'object')
+            .map((turn: any) => ({
+              role: turn.role === 'model' || turn.role === 'assistant' ? 'model' as const : 'user' as const,
+              content: String(turn.content || turn.text || turn.parts?.[0]?.text || ''),
+            }))
+            .filter((turn: any) => turn.content.trim()),
+          { role: 'user' as const, content: userRequest },
+        ];
+
+        for await (const event of builderRunner.run(builderMessages, {
+          agentId: String(context.agentId),
+          runtime: 'agent_builder',
+          mode: 'think',
+          model: modelConfig.modelName,
+          apiKey: leasedApiKey || undefined,
+          preferredGeminiApiKey: leasedApiKey || undefined,
+          runtimeSettings,
+          chatId: projectId,
+          agentSessionId: context.agentSessionId,
+          runLocation,
+          pinnedContext: {
+            ...(pinnedContext || {}),
+            agentRuntime: AGENT_BUILDER_RUNTIME,
+            agentId: String(context.agentId),
+            agentName: builderAgentName,
+            abortSignal: context.abortSignal,
+          },
+        })) {
+          const eventAgentName = String(event.agentName || builderAgentName);
+          if (event.type === 'text') {
+            const text = String(event.text || '').trim();
+            if (!text) continue;
+            builderAnswerParts.push(text);
+            onTrace?.({
+              type: 'answer',
+              text,
+              agentName: eventAgentName,
+              answerId: `builder_answer_${projectId}`,
+              isDelta: false,
+              isStreaming: false,
+              timestamp: Date.now(),
+            });
+          } else if (event.type === 'thought_stream') {
+            onTrace?.({
+              ...event,
+              type: 'thought_stream',
+              agentName: eventAgentName,
+              subAgent: eventAgentName,
+              timestamp: Date.now(),
+            });
+          } else if (event.type === 'status') {
+            const text = String(event.text || '').trim();
+            if (!text) continue;
+            onTrace?.({
+              type: 'work_note',
+              text,
+              agentName: eventAgentName,
+              subAgent: eventAgentName,
+              noteId: `builder_note_${projectId}_${Date.now()}`,
+              isDelta: false,
+              isStreaming: false,
+              timestamp: Date.now(),
+            });
+          } else if (event.type === 'tool_call') {
+            onTrace?.({
+              type: 'tool_call',
+              toolName: event.toolName,
+              toolArgs: event.toolArgs || {},
+              agentName: eventAgentName,
+              timestamp: Date.now(),
+            });
+          } else if (event.type === 'tool_result') {
+            onTrace?.({
+              type: 'tool_result',
+              toolName: event.toolName,
+              toolArgs: event.toolArgs || {},
+              toolResult: event.toolResult,
+              agentName: eventAgentName,
+              timestamp: Date.now(),
+            });
+          } else if (event.type === 'model_usage' || event.type === 'ask_user') {
+            onTrace?.({ ...event, timestamp: Date.now() });
+          } else if (event.type === 'error') {
+            builderError = String(event.text || 'Agent Builder failed.');
+            onTrace?.({
+              type: 'error',
+              text: builderError,
+              agentName: eventAgentName,
+              timestamp: Date.now(),
+            });
+          }
+        }
+
+        finalAnswer = builderAnswerParts.join('\n\n').trim()
+          || (builderError ? `Agent Builder failed: ${builderError}` : 'Agent Builder returned no response.');
+        effectiveApiKey = leasedApiKey || '';
+      } else if (context.agentRuntime === AGENT_FLOW_RUNTIME && pinnedContext?.flowId) {
         const flowTrace = (trace: any) => {
           const subAgent = trace?.agentName || pinnedContext?.flowName || 'Workflow';
           if (trace?.type === 'status' || trace?.type === 'progress') {
@@ -693,7 +840,10 @@ export class AgentOrchestrator {
     }
 
     const executionTime = Date.now() - startTime;
-    const success = finalAnswer !== 'Stopped by user.' && !/^Agent Execution Failed:/i.test(finalAnswer);
+    const success = finalAnswer !== 'Stopped by user.'
+      && !/^Agent Execution Failed:/i.test(finalAnswer)
+      && !/^Agent Builder failed:/i.test(finalAnswer)
+      && !/^Agent Builder returned no response\.?$/i.test(finalAnswer.trim());
 
     if (shouldPersistLongTermMemory) {
       globalMemoryManager.saveEpisodicMemory(

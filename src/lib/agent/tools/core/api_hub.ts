@@ -5,6 +5,7 @@ import crypto from 'crypto';
 import path from 'path';
 import fs from 'fs-extra';
 import { redactUrlForLog, safeAxiosRequest } from '../shared/url_safety';
+import { getEterxWorkspaceDir } from '../../storage-paths';
 
 /**
  * Smart API Hub — Pre-configured connectors for popular APIs
@@ -13,7 +14,7 @@ import { redactUrlForLog, safeAxiosRequest } from '../shared/url_safety';
  * response caching, and safe API key management.
  */
 
-const CACHE_DIR = path.resolve(process.cwd(), '.workspaces', '.cache', 'api');
+const CACHE_DIR = getEterxWorkspaceDir('.cache', 'api');
 const rateLimitMap: Map<string, { count: number, resetAt: number }> = new Map();
 
 function isPathInside(parent: string, candidate: string): boolean {

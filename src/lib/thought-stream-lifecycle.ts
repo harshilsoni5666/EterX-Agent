@@ -17,6 +17,7 @@ const THOUGHT_CLOSING_BOUNDARY_TYPES = new Set([
   'action',
   'answer',
   'work_note',
+  'thought',
 ]);
 
 const asFiniteTimestamp = (value: unknown): number | null => {
@@ -80,11 +81,24 @@ const closeThoughtAt = (log: any, endedAt: number) => {
   };
 };
 
-const isThoughtFinalEvent = (trace: any): boolean =>
-  trace?.final === true ||
-  trace?.done === true ||
-  trace?.isStreaming === false ||
-  trace?.streamState === 'closed';
+const isThoughtFinalEvent = (trace: any): boolean => {
+  const state = String(trace?.state || trace?.status || '').trim().toLowerCase();
+  const finishReason = String(trace?.finishReason || trace?.finish_reason || '').trim().toLowerCase();
+  return trace?.final === true ||
+    trace?.done === true ||
+    trace?.isStreaming === false ||
+    trace?.streamState === 'closed' ||
+    ['completed', 'complete', 'failed', 'stopped', 'cancelled', 'canceled', 'error', 'closed'].includes(state) ||
+    Boolean(finishReason && finishReason !== 'null' && finishReason !== 'undefined');
+};
+
+/** Provider stream state is authoritative; do not infer liveness from age. */
+export const isThoughtStreamOpen = (trace: any): boolean => {
+  if (!trace || trace.type !== 'thought_stream' || isThoughtFinalEvent(trace)) return false;
+  return trace.isStreaming === true ||
+    trace.streamState === 'open' ||
+    trace.isLiveTyping === true;
+};
 
 /**
  * Close reasoning at a real lifecycle boundary. Provider final payloads may

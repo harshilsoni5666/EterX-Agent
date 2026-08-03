@@ -2,6 +2,7 @@ import fs from 'fs-extra';
 import path from 'path';
 import type { PlanState } from './plan-execution-engine';
 import { getEterxWorkspaceDir } from './storage-paths';
+import { stableScopeSegment } from './context-scope';
 
 /**
  * SessionStateManager v2 — Persistent Session Continuity + Self-Review Engine
@@ -49,6 +50,11 @@ async function writeJsonAtomic(filePath: string, data: unknown): Promise<void> {
 }
 
 function safeSessionFileId(chatId: string): string {
+  return stableScopeSegment(chatId, 120);
+}
+
+/** Previous v3 filename format, retained only for safe read/migration. */
+function legacySessionFileId(chatId: string): string {
   return chatId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 120) || '_global';
 }
 
@@ -156,6 +162,10 @@ export class SessionStateManager {
     return resolveUnder(SESSION_DIR, 'state.json'); // Legacy fallback
   }
 
+  private getLegacyStateFilePath(chatId: string): string {
+    return resolveUnder(SESSION_DIR, `${legacySessionFileId(chatId)}.json`);
+  }
+
   private isIsolatedSessionId(projectId?: string | null): boolean {
     if (!projectId) return false;
     const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(projectId);
@@ -240,15 +250,34 @@ export class SessionStateManager {
    */
   public async load(chatId?: string): Promise<boolean> {
     try {
-      const stateFile = this.getStateFilePath(chatId || this.currentProjectId || undefined);
+      const scopedChatId = chatId || this.currentProjectId || undefined;
+      const stateFile = scopedChatId
+        ? this.getStateFilePath(scopedChatId)
+        : this.getStateFilePath();
+      const legacyStateFile = scopedChatId
+        ? this.getLegacyStateFilePath(scopedChatId)
+        : null;
+      const readableStateFile = await fs.pathExists(stateFile)
+        ? stateFile
+        : (legacyStateFile && legacyStateFile !== stateFile && await fs.pathExists(legacyStateFile)
+          ? legacyStateFile
+          : null);
 
-      if (!await fs.pathExists(stateFile)) {
+      if (!readableStateFile) {
         this.state = { ...EMPTY_STATE, createdAt: Date.now(), lastActivityAt: Date.now(), boundChatId: chatId || '' };
         this.loaded = true;
         return false;
       }
 
-      const data = await fs.readJson(stateFile);
+      const data = await fs.readJson(readableStateFile);
+      // A legacy sanitized filename can be shared by multiple logical IDs.
+      // Never restore it unless the payload proves its ownership.
+      const legacyScopedFile = Boolean(scopedChatId && legacyStateFile && readableStateFile === legacyStateFile);
+      if (legacyScopedFile && (!data._projectId || String(data._projectId) !== scopedChatId)) {
+        this.state = { ...EMPTY_STATE, createdAt: Date.now(), lastActivityAt: Date.now(), boundChatId: scopedChatId || '' };
+        this.loaded = true;
+        return false;
+      }
 
       // Check if session is expired (idle too long)
       // Long-task sessions NEVER auto-expire
@@ -318,10 +347,20 @@ export class SessionStateManager {
 
     // Try loading the per-chat session file first
     const chatStateFile = this.getStateFilePath(projectId);
+    const legacyChatStateFile = this.getLegacyStateFilePath(projectId);
     
     try {
-      if (await fs.pathExists(chatStateFile)) {
-        const data = await fs.readJson(chatStateFile);
+      const readableChatStateFile = await fs.pathExists(chatStateFile)
+        ? chatStateFile
+        : (legacyChatStateFile !== chatStateFile && await fs.pathExists(legacyChatStateFile)
+          ? legacyChatStateFile
+          : null);
+      if (readableChatStateFile) {
+        const data = await fs.readJson(readableChatStateFile);
+        const legacyScopedFile = readableChatStateFile === legacyChatStateFile;
+        if (legacyScopedFile && (!data._projectId || String(data._projectId) !== projectId)) {
+          throw new Error(`Session ownership mismatch for ${projectId}`);
+        }
         
         // Check expiration
         const elapsed = Date.now() - (data.lastActivityAt || 0);

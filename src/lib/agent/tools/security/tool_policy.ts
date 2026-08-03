@@ -20,6 +20,7 @@ export const DEFAULT_MAIN_AGENT_ALLOWED_CAPABILITIES = [
   'browser.control',
   'agent.spawn',
   'code.dynamic',
+  'communication.connected',
 ];
 
 const CAPABILITY_BY_TOOL: Record<string, string> = {
@@ -58,7 +59,8 @@ const CAPABILITY_BY_TOOL: Record<string, string> = {
   slack_controller: 'communication.external',
   telegram_user_controller: 'communication.external',
   whatsapp_controller: 'communication.external',
-  gateway_bridge: 'communication.external',
+  gateway_bridge: 'communication.connected',
+  connector_mcp: 'communication.connected',
   email_manager: 'communication.external',
 
   api_key_vault: 'secrets.manage',
@@ -78,6 +80,7 @@ const DEFAULT_ALLOWED_CAPABILITIES = new Set([
   'filesystem.write',
   'memory.manage',
   'tool.utility',
+  'communication.connected',
 ]);
 
 export function validateToolInput(

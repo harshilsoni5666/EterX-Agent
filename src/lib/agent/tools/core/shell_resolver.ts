@@ -31,11 +31,19 @@ export function resolveTerminalShell(preference?: unknown): string {
       return requireExecutable([
         'bash.exe',
         path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Git', 'bin', 'bash.exe'),
+        path.join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'Git', 'bin', 'bash.exe'),
         path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Git', 'bin', 'bash.exe'),
       ], selected);
     }
     if (selected === 'auto') return defaultWindowsShell();
-    return requireExecutable(['powershell.exe', 'pwsh.exe'], selected);
+    if (['zsh', 'fish', 'sh'].includes(selected)) {
+      throw new Error(`The selected terminal shell "${selected}" is not available on Windows. Use PowerShell, cmd, Git Bash, or WSL.`);
+    }
+    return requireExecutable([
+      'powershell.exe',
+      path.join(process.env.WINDIR || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+      'pwsh.exe',
+    ], selected);
   }
 
   if (selected === 'powershell') {
@@ -52,9 +60,18 @@ export function getAvailableTerminalShells(): TerminalShellPreference[] {
   const available: TerminalShellPreference[] = ['auto'];
 
   if (process.platform === 'win32') {
-    if (findExecutable(['pwsh.exe', 'powershell.exe'])) available.push('powershell');
+    if (findExecutable([
+      'pwsh.exe',
+      'powershell.exe',
+      path.join(process.env.WINDIR || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+    ])) available.push('powershell');
     if (findExecutable([process.env.ComSpec || 'cmd.exe', 'cmd.exe'])) available.push('cmd');
-    if (findExecutable(['bash.exe', path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Git', 'bin', 'bash.exe'), path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Git', 'bin', 'bash.exe')])) available.push('git-bash');
+    if (findExecutable([
+      'bash.exe',
+      path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Git', 'bin', 'bash.exe'),
+      path.join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'Git', 'bin', 'bash.exe'),
+      path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Git', 'bin', 'bash.exe'),
+    ])) available.push('git-bash');
     if (findExecutable(['wsl.exe'])) available.push('wsl');
     return available;
   }
@@ -130,7 +147,13 @@ function defaultPosixShell(): string {
 }
 
 function defaultWindowsShell(): string {
-  return requireExecutable(['powershell.exe', 'pwsh.exe', process.env.ComSpec || 'cmd.exe', 'cmd.exe'], 'auto');
+  return requireExecutable([
+    'powershell.exe',
+    path.join(process.env.WINDIR || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+    'pwsh.exe',
+    process.env.ComSpec || 'cmd.exe',
+    'cmd.exe',
+  ], 'auto');
 }
 
 function posixShellCandidates(shell: string): string[] {

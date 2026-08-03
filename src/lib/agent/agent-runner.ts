@@ -1,7 +1,8 @@
 /**
  * Agent Runner — Runtime for executing custom-built agents
  * 
- * Loads a finalized AgentBuilderProfile and runs it as an autonomous agent:
+ * Loads a finalized AgentBuilderProfile for custom-agent runs, or a draft
+ * target profile for Agent Builder runs:
  * 1. Constructs system prompt from professionalPrompt + resolved tools
  * 2. Creates a Gemini chat session with function declarations
  * 3. Runs a ReAct loop with the agent's own tools
@@ -14,7 +15,15 @@ import path from 'path';
 import fs from 'fs';
 import { GoogleGenAI } from '@google/genai';
 import { apiKeyPool } from './api-key-pool';
-import { readAgentBuilderProfile, type AgentBuilderProfile, readAgentFlowProfile } from './builder-agent';
+import {
+  AGENT_BUILDER_RUNTIME,
+  buildAgentBuilderRuntimePrompt,
+  isBuilderLiveConnectorToolName,
+  isBuilderOnlyToolName,
+  readAgentBuilderProfile,
+  type AgentBuilderProfile,
+  readAgentFlowProfile,
+} from './builder-agent';
 import { agentBuilderRunFlowTool } from './tools/automation/agent_builder';
 import { resolveAgentTools, type ResolvedTool } from './tool-injector';
 import { globalToolRegistry, normalizeRegistryToolName } from './tools/registry';
@@ -33,14 +42,19 @@ import {
 } from './model-routing';
 import { mergeStreamingText } from '../streaming-lifecycle';
 
+// The standalone builder endpoint can import this runner without importing
+// AgentRegistry first, so ensure the complete builder tool surface is present.
+import './tools/index';
+
 // ═══════════════════════════════════════════════════════════════
 // Types
 // ═══════════════════════════════════════════════════════════════
 
 export interface AgentRunnerEvent {
-  type: 'text' | 'tool_call' | 'tool_result' | 'status' | 'error' | 'done' | 'ask_user';
+  type: 'text' | 'thought_stream' | 'tool_call' | 'tool_result' | 'console_output' | 'status' | 'error' | 'done' | 'ask_user' | 'model_usage';
   text?: string;
   toolName?: string;
+  toolCallId?: string;
   toolArgs?: Record<string, unknown>;
   toolResult?: unknown;
   agentId?: string;
@@ -51,11 +65,14 @@ export interface AgentRunnerEvent {
 
 export interface AgentRunnerConfig {
   agentId: string;
+  runtime?: 'custom_agent' | 'agent_builder';
   maxIterations?: number;
   temperature?: number;
   mode?: MainAgentMode;
   model?: string;
   preferredGeminiApiKey?: string;
+  /** A key already leased by AgentRegistry. The runner must not lease it again. */
+  apiKey?: string;
   runtimeSettings?: ScopedRuntimeSettings | null;
   chatId?: string;
   agentSessionId?: string;
@@ -120,6 +137,26 @@ function waitWithAbort(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
+function isTransientRunnerError(message: string): boolean {
+  const lower = String(message || '').toLowerCase();
+  return (
+    lower.includes('terminated') ||
+    lower.includes('socket') ||
+    lower.includes('connection reset') ||
+    lower.includes('connection closed') ||
+    lower.includes('fetch failed') ||
+    lower.includes('network error') ||
+    lower.includes('econnreset') ||
+    lower.includes('eai_again') ||
+    lower.includes('unavailable') ||
+    lower.includes('deadline_exceeded') ||
+    lower.includes('timeout') ||
+    lower.includes('429') ||
+    lower.includes('503') ||
+    lower.includes('resource_exhausted')
+  );
+}
+
 function serializeToolResult(result: unknown, maxLength: number): string {
   if (typeof result === 'string') return result.substring(0, maxLength);
   try {
@@ -152,6 +189,7 @@ export class AgentRunner {
   private loadedAgentId: string | null = null;
   private resolvedTools: ResolvedTool[] = [];
   private toolPrompt = '';
+  private runtimeKind: 'custom_agent' | 'agent_builder' = 'custom_agent';
   private cancelled = false;
   private cancelController: AbortController | null = null;
 
@@ -167,6 +205,7 @@ export class AgentRunner {
 
     this.profile = profile;
     this.loadedAgentId = agentId;
+    this.runtimeKind = 'custom_agent';
     const { tools, toolPrompt } = resolveAgentTools(profile);
     this.resolvedTools = tools;
     this.toolPrompt = toolPrompt;
@@ -174,9 +213,57 @@ export class AgentRunner {
     return profile;
   }
 
+  /**
+   * Load the draft target used by Agent Builder. Draft profiles are valid
+   * here because the builder is the process that creates and finalizes them.
+   * The builder control surface and the two live connector bridges are
+   * exposed in this runtime; target-agent tools are attached to the draft
+   * through builder tool calls.
+   */
+  async loadBuilderAgent(agentId: string, agentName?: string): Promise<AgentBuilderProfile> {
+    const profile = await readAgentBuilderProfile(agentId);
+    this.profile = {
+      ...profile,
+      name: String(agentName || profile.name || agentId).trim() || agentId,
+    };
+    this.loadedAgentId = agentId;
+    this.runtimeKind = 'agent_builder';
+    this.resolvedTools = globalToolRegistry
+      .getAllTools()
+      .filter(tool => isBuilderOnlyToolName(tool.name) || isBuilderLiveConnectorToolName(tool.name))
+      .map(tool => ({
+        name: tool.name,
+        description: tool.description,
+        declaration: {
+          name: tool.name,
+          description: tool.description.substring(0, 420),
+        },
+        promptGuidance: `Builder control tool: ${tool.name}`,
+      }));
+    this.toolPrompt = this.resolvedTools.map(tool => `- ${tool.name}: ${tool.description}`).join('\n');
+    return this.profile;
+  }
+
   /** Build the complete system instruction for this agent */
   private buildSystemInstruction(): string {
     if (!this.profile) throw new Error('Agent not loaded');
+
+    if (this.runtimeKind === 'agent_builder') {
+      return `${buildAgentBuilderRuntimePrompt(
+        this.profile.agentId,
+        this.profile.name,
+      )}
+
+## Builder execution protocol
+- Use the builder function tools to persist every profile change; do not merely describe changes in text.
+- Start with agent_builder_save_profile when the target profile needs identity, mission, or instructions.
+- Use agent_builder_attach_main_tool or agent_builder_attach_all_main_tools for target capabilities.
+- Use agent_builder_attach_connector_tools for any target that must operate connected services; it attaches gateway_bridge and connector_mcp with explicit live-discovery guidance.
+- When connector setup or verification is part of the request, use gateway_bridge or connector_mcp directly to inspect the live runtime. Do not report a connector as ready from the UI catalog alone.
+- Use agent_builder_define_tool for target-scoped custom tools, then agent_builder_finalize only after the profile is complete.
+- Use agent_tool_load and agent_tool_unload only when the builder itself needs a temporary registered capability.
+- Report the result of each builder operation clearly, and continue until the requested setup is complete.`;
+    }
 
     const parts: string[] = [];
 
@@ -214,11 +301,11 @@ export class AgentRunner {
 
 Your tool calls are rendered in the same professional work timeline as the main EterX agent.
 
-Before a tool call, write a visible work note only when it helps the user follow the live situation. It may naturally express your intent, what you are doing now, a future action you are actually about to take, why it matters, a finding, or a change in direction. Keep a free human voice with no mandatory opening, sentence count, cadence, or template; use normal prose or simple bullets as appropriate. A work note is not private deliberation, a restatement of the request, an approval question, a closing offer, or a miniature final answer. Never expose self-instructions or response drafting such as "I need to output" or "the user requested". Do not end with "Let me know", "Should I proceed?", or similar permission-seeking language; use ask_user only when input truly blocks the work. Do not write raw tool names as notes. If the action card already says everything useful, omit the work note.
+Before a non-trivial tool call, write one brief visible work note as normal user-facing text so the user can follow the live situation. It may naturally express your intent, what you are doing now, a future action you are actually about to take, why it matters, a finding, or a change in direction. Keep a free human voice with no mandatory opening, sentence count, cadence, or template; use normal prose or simple bullets as appropriate. A work note is not private deliberation, a restatement of the request, an approval question, a closing offer, or a miniature final answer. Never expose self-instructions or response drafting such as "I need to output" or "the user requested". Do not end with "Let me know", "Should I proceed?", or similar permission-seeking language; use ask_user only when input truly blocks the work. Do not write raw tool names as notes. A trivial immediate action may rely on its action card alone. Never use native thought/reasoning as a substitute for the visible note.
 
 Every tool call must include:
 - uiActionText: a precise 2-6 word action label for the timeline. No step numbers, no brackets, no punctuation-heavy text, no code dumps. Examples: "Reading data fetch script", "Locating raw dataset URL", "Executing CSV inspection", "Verifying generated file".
-- uiIcon: exactly one of computer, agent, terminal, image, file_read, file_create, file_edit, folder_read, folder_create, search, web_search, verification.
+- uiIcon: exactly one of computer, agent, terminal, image, file_read, file_create, file_edit, folder_read, folder_create, search, web_search, verification, connector. Use connector for a connected external service and keep connector_id, platform, or channel in the tool arguments when available.
 
 Use file_read for reading files, file_create for creating files, file_edit for editing files, terminal for commands, folder_read for directory listing, search for local/code searches, web_search for web lookup, and verification for checks/tests.`);
 
@@ -336,14 +423,18 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
     messages: Array<{ role: 'user' | 'model'; content: string }>,
     config: AgentRunnerConfig
   ): AsyncGenerator<AgentRunnerEvent> {
+    const isBuilderRuntime = config.runtime === 'agent_builder';
+
     // 1. Try to load as a Flow first!
     let isFlow = false;
-    try {
-      const flow = await readAgentFlowProfile(config.agentId);
-      if (flow?.status === 'ready' && flow.steps && flow.steps.length > 0) {
-        isFlow = true;
-      }
-    } catch {}
+    if (!isBuilderRuntime) {
+      try {
+        const flow = await readAgentFlowProfile(config.agentId);
+        if (flow?.status === 'ready' && flow.steps && flow.steps.length > 0) {
+          isFlow = true;
+        }
+      } catch {}
+    }
 
     if (isFlow) {
       this.cancelled = false;
@@ -384,6 +475,13 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
             toolResult: trace.toolResult ?? trace.result,
             agentName: trace.agentName || agentName,
             timestamp: Date.now(),
+          });
+        } else if (trace?.type === 'console_output') {
+          eventQueue.push({
+            ...trace,
+            type: 'console_output',
+            agentName: trace.agentName || agentName,
+            timestamp: Number(trace.timestamp || Date.now()),
           });
         } else if (['command', 'exploration', 'file_edit', 'communication', 'browser'].includes(trace?.type)) {
           // The main agent emits rich action traces rather than a literal
@@ -464,45 +562,55 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
       }
     }
 
-    if (!this.profile || this.loadedAgentId !== config.agentId) {
-      await this.loadAgent(config.agentId);
+    if (!this.profile || this.loadedAgentId !== config.agentId || this.runtimeKind !== (isBuilderRuntime ? 'agent_builder' : 'custom_agent')) {
+      if (isBuilderRuntime) {
+        await this.loadBuilderAgent(config.agentId, config.pinnedContext?.agentName);
+      } else {
+        await this.loadAgent(config.agentId);
+      }
     }
 
     this.cancelled = false;
     const runAbortController = new AbortController();
     this.cancelController = runAbortController;
+    const upstreamAbortSignal = config.pinnedContext?.abortSignal as AbortSignal | undefined;
+    const abortFromUpstream = () => runAbortController.abort();
+    if (upstreamAbortSignal?.aborted) runAbortController.abort();
+    else upstreamAbortSignal?.addEventListener('abort', abortFromUpstream, { once: true });
     const requestedMaxIterations = Number(config.maxIterations ?? 20);
     const maxIter = Number.isFinite(requestedMaxIterations)
       ? Math.max(1, Math.min(100, Math.floor(requestedMaxIterations)))
       : 20;
-    const agentName = this.profile?.name || config.agentId;
+    const agentName = this.profile?.name || config.pinnedContext?.agentName || config.agentId;
     const TOOL_TIMEOUT_MS = 45_000; // Default non-terminal tool guard
 
     // Lease an API key
     apiKeyPool.initialize();
     const sessionId = `custom_agent_${config.agentId}_${Date.now()}`;
     const scopedGeminiKeys = config.runtimeSettings?.apiKeys?.gemini || [];
-    let lease = config.preferredGeminiApiKey
+    let lease = config.apiKey ? null : (config.preferredGeminiApiKey
       ? apiKeyPool.leaseSpecificKey(sessionId, config.preferredGeminiApiKey, 'main_agent')
-      : null;
-    if (!lease) {
+      : null);
+    if (!config.apiKey && !lease) {
       for (const key of scopedGeminiKeys) {
         lease = apiKeyPool.leaseSpecificKey(sessionId, key, 'main_agent');
         if (lease) break;
       }
     }
-    if (!lease) {
+    if (!config.apiKey && !lease) {
       lease = apiKeyPool.leaseKey(sessionId, 'main_agent');
     }
-    if (!lease) {
+    if (!config.apiKey && !lease) {
       yield { type: 'error', text: 'No API keys available. Please check your API key configuration.', timestamp: Date.now() };
       return;
     }
+    const effectiveApiKey = config.apiKey || lease!.apiKey;
+    const ownsLease = !config.apiKey;
 
     try {
-      const ai = new GoogleGenAI({ apiKey: lease.apiKey });
+      const ai = new GoogleGenAI({ apiKey: effectiveApiKey });
       const systemInstruction = this.buildSystemInstruction();
-      const funcDecls = this.buildFunctionDeclarations();
+      let funcDecls = this.buildFunctionDeclarations();
       const resolvedModel = resolveGeminiRunnerModel(config);
 
       // Format conversation history
@@ -553,6 +661,10 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
       let hadSuccessfulModelResponse = false;
       let completedNaturally = false;
       let iterationsStarted = 0;
+      const configuredRetries = Number(config.pinnedContext?.maxRetries);
+      const maxTransientRetries = Number.isFinite(configuredRetries)
+        ? Math.max(0, Math.min(5, Math.floor(configuredRetries)))
+        : 2;
 
       // ReAct loop
       for (let iteration = 0; iteration < maxIter; iteration++) {
@@ -564,6 +676,10 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
 
         try {
           const supportsThinking = modelSupportsThinking(resolvedModel);
+          // Builder dynamic loading/unloading changes the declaration surface
+          // for the next turn. Rebuild it every iteration instead of freezing
+          // the initial tool list.
+          funcDecls = this.buildFunctionDeclarations();
 
           generateConfig = {
             model: resolvedModel,
@@ -572,6 +688,7 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
               systemInstruction,
               temperature: config.temperature ?? 0.4,
               abortSignal: runAbortController.signal,
+              httpOptions: { timeout: 120_000 },
             },
           };
 
@@ -595,6 +712,9 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
           let latestCandidate: any = null;
           let latestUsageMetadata: any = null;
           let streamedThought = false;
+          let accumulatedThought = '';
+          let thoughtStartTime = 0;
+          const thoughtId = `thought_${ config.agentId }_${ iteration + 1 }`;
           let bufferedVisibleText = '';
           for await (const chunk of responseStream as any) {
             latestCandidate = chunk?.candidates?.[0] || latestCandidate;
@@ -604,7 +724,19 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
               streamedParts.push(part);
               if (part.thought && part.text) {
                 streamedThought = true;
-                yield { type: 'status', text: String(part.text).substring(0, 500), agentName, timestamp: Date.now() };
+                if (!thoughtStartTime) thoughtStartTime = Date.now();
+                accumulatedThought = mergeStreamingText(accumulatedThought, String(part.text), true);
+                yield {
+                  type: 'thought_stream',
+                  text: accumulatedThought,
+                  isDelta: false,
+                  isStreaming: true,
+                  thoughtId,
+                  startTime: thoughtStartTime,
+                  endTime: Date.now(),
+                  agentName,
+                  timestamp: Date.now(),
+                };
               } else if (part.text && !part.thought) {
                 // Buffer visible text until the response boundary is known.
                 // Text accompanying a function call is a work note, not a
@@ -612,6 +744,22 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
                 bufferedVisibleText = mergeStreamingText(bufferedVisibleText, String(part.text), true);
               }
             }
+          }
+          if (accumulatedThought) {
+            const endedAt = Date.now();
+            yield {
+              type: 'thought_stream',
+              text: accumulatedThought,
+              isDelta: false,
+              isStreaming: false,
+              streamState: 'closed',
+              final: true,
+              thoughtId,
+              startTime: thoughtStartTime,
+              endTime: endedAt,
+              agentName,
+              timestamp: endedAt,
+            };
           }
           const response: any = {
             candidates: [{
@@ -642,10 +790,14 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
             if (finishReason === 'SAFETY') {
               yield { type: 'error', text: 'Response was blocked by safety filters. Try rephrasing your request.', timestamp: Date.now() };
             } else {
-              yield { type: 'text', text: 'Agent completed with no output.', timestamp: Date.now() };
+              yield {
+                type: 'error',
+                text: finishReason
+                  ? `The model returned no content (finish reason: ${String(finishReason)}).`
+                  : 'The model returned an empty response before Agent Builder could run a tool.',
+                timestamp: Date.now(),
+              };
             }
-            hadSuccessfulModelResponse = true;
-            completedNaturally = true;
             break;
           }
 
@@ -693,10 +845,15 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
               hasToolCalls = true;
               totalToolCalls++;
               const { name, args } = part.functionCall;
+              const toolCallId = String(
+                part.functionCall.id
+                || `tool_call_${config.agentId}_${iteration + 1}_${totalToolCalls}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+              );
 
               yield {
                 type: 'tool_call',
                 toolName: name,
+                toolCallId,
                 toolArgs: args as Record<string, unknown>,
                 agentName,
                 timestamp: Date.now(),
@@ -767,6 +924,7 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
               yield {
                 type: 'tool_result',
                 toolName: name,
+                toolCallId,
                 toolResult: result,
                 agentName,
                 timestamp: Date.now(),
@@ -839,8 +997,8 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
           }
 
           // Transient errors — exponential backoff
-          if (errMsg.includes('429') || errMsg.includes('503') || errMsg.includes('RESOURCE_EXHAUSTED')) {
-            if (consecutiveErrors >= 3) {
+          if (isTransientRunnerError(errMsg)) {
+            if (consecutiveErrors > maxTransientRetries) {
               yield {
                 type: 'error',
                 text: `Stopping after ${consecutiveErrors} consecutive model service errors: ${errMsg.substring(0, 240)}`,
@@ -861,7 +1019,7 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
           // Non-transient errors
           yield { type: 'error', text: `Iteration ${iteration}: ${errMsg.substring(0, 300)}`, timestamp: Date.now() };
 
-          if (consecutiveErrors >= 3) {
+          if (consecutiveErrors > maxTransientRetries) {
             yield { type: 'error', text: `Stopping after ${consecutiveErrors} consecutive errors.`, timestamp: Date.now() };
             break;
           }
@@ -882,11 +1040,12 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
           timestamp: Date.now(),
         };
       }
-      if (hadSuccessfulModelResponse) apiKeyPool.reportSuccess(sessionId);
+      if (ownsLease && hadSuccessfulModelResponse) apiKeyPool.reportSuccess(sessionId);
       yield { type: 'done', agentName, agentId: config.agentId, timestamp: Date.now() };
 
     } finally {
-      apiKeyPool.releaseKey(sessionId);
+      upstreamAbortSignal?.removeEventListener('abort', abortFromUpstream);
+      if (ownsLease) apiKeyPool.releaseKey(sessionId);
       if (this.cancelController === runAbortController) this.cancelController = null;
     }
   }
@@ -963,12 +1122,15 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
       if (customWorkspace) {
         const resolvedCustom = path.resolve(customWorkspace);
         try {
-          if (fs.existsSync(resolvedCustom)) {
-            workspaceRoot = resolvedCustom;
-            paths = [workspaceRoot];
-            allowedPaths = [workspaceRoot];
-            isFocusedWorkspace = !!config.pinnedContext?.isFocusedWorkspace;
-          }
+          const customStat = fs.existsSync(resolvedCustom) ? fs.statSync(resolvedCustom) : null;
+          // A pinned path can be a file or a folder. Terminal cwd must
+          // always be the containing directory for file pins. Preserve a
+          // missing explicit path too, so a stale chat fails in its own
+          // workspace instead of silently executing on the desktop.
+          workspaceRoot = customStat && !customStat.isDirectory() ? path.dirname(resolvedCustom) : resolvedCustom;
+          paths = [workspaceRoot];
+          allowedPaths = [workspaceRoot];
+          isFocusedWorkspace = !!config.pinnedContext?.isFocusedWorkspace;
         } catch {}
       }
     }
@@ -991,9 +1153,14 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
 
     const context = {
       agentId,
-      agentRuntime: 'custom_agent' as const,
+      agentRuntime: this.runtimeKind === 'agent_builder'
+        ? AGENT_BUILDER_RUNTIME
+        : ('custom_agent' as const),
+      agentName: config.pinnedContext?.agentName || this.profile?.name || agentId,
+      agentRunner: this,
       projectId: chatId,
       chatId,
+      conversationScopeId: chatId,
       agentSessionId: config.agentSessionId || '',
       workspaceRoot,
       workspacePath: workspaceRoot,
@@ -1015,6 +1182,8 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
       allowDynamicCode: isSandboxRun ? false : config.pinnedContext?.allowDynamicCode !== false,
       allowRawCommand: isSandboxRun ? false : config.pinnedContext?.allowRawCommand !== false,
       allowVcs: isSandboxRun ? false : config.pinnedContext?.allowVcs !== false,
+      maxSubAgents: config.pinnedContext?.maxSubAgents,
+      maxRetries: config.pinnedContext?.maxRetries,
       _onTrace: onTrace,
       abortSignal: abortSignal || this.cancelController?.signal,
       signal: abortSignal || this.cancelController?.signal,
@@ -1039,7 +1208,7 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
     // Priority 1: Resolved tool from agent profile
     try {
       toolExec.throwIfCancelled();
-      const resolvedTool = this.resolvedTools.find(t => t.name === toolName);
+      const resolvedTool = this.resolvedTools.find(t => t.name === canonicalToolName);
       if (resolvedTool?.execute) {
         const result = await resolvedTool.execute(effectiveArgs, toolExec.context);
         toolExec.throwIfCancelled();
@@ -1212,14 +1381,11 @@ function addUiTraceFieldsToSchema(schema: any): any {
   };
   next.properties.uiIcon = {
     type: 'STRING',
-    enum: ['computer', 'agent', 'terminal', 'image', 'file_read', 'file_create', 'file_edit', 'folder_read', 'folder_create', 'search', 'web_search', 'verification'],
-    description: 'Timeline icon category: computer, agent, terminal, image, file_read, file_create, file_edit, folder_read, folder_create, search, web_search, or verification.',
+    enum: ['computer', 'agent', 'terminal', 'image', 'file_read', 'file_create', 'file_edit', 'folder_read', 'folder_create', 'search', 'web_search', 'verification', 'connector'],
+    description: 'Timeline icon category: computer, agent, terminal, image, file_read, file_create, file_edit, folder_read, folder_create, search, web_search, verification, or connector.',
   };
-  next.required = Array.from(new Set([
-    ...(Array.isArray(next.required) ? next.required : []),
-    'uiActionText',
-    'uiIcon',
-  ]));
+  // Timeline decoration is optional. Requiring UI-only fields makes custom
+  // agent tool calls slower and rejects otherwise valid provider responses.
 
   return next;
 }

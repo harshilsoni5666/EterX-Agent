@@ -35,7 +35,7 @@ export async function PUT(req: NextRequest) {
       return NextResponse.json({ error: 'savedAt must be a positive number' }, { status: 400, headers: noStoreHeaders });
     }
     const snapshot = body.partial === true && Array.isArray(body.chatIds)
-      ? await patchChatSnapshot(body.chats, body.chatIds, savedAt)
+      ? await patchChatSnapshot(body.chats, body.chatIds, savedAt, body.deletedChatIds)
       : await saveChatSnapshot(body.chats, savedAt);
     return NextResponse.json({ ok: true, savedAt: snapshot.savedAt }, { headers: noStoreHeaders });
   } catch (error: any) {

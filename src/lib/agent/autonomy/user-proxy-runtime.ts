@@ -161,9 +161,6 @@ type RuntimeOptions = {
   mode: MainAgentMode;
   apiKey: string;
   runtimeSettings?: ScopedRuntimeSettings | null;
-  fallbackMode?: MainAgentMode;
-  fallbackApiKey?: string;
-  fallbackRuntimeSettings?: ScopedRuntimeSettings | null;
   history?: any[];
   attachments?: Array<{ name?: string; path?: string; mimeType?: string }>;
   onTrace?: TraceFn;
@@ -238,6 +235,21 @@ const isAutonomous = (context: any): boolean =>
 function statePathFor(projectId: string): string {
   const safe = projectId.replace(/[^a-zA-Z0-9_.-]/g, '_').slice(0, 140);
   return getEterxWorkspaceDir('autonomy', 'user-proxy', `${safe}.json`);
+}
+
+function readStateSync(projectId: string): any | null {
+  const target = statePathFor(projectId);
+  for (const source of [target, `${target}.backup`]) {
+    try {
+      if (!fs.existsSync(source)) continue;
+      return fs.readJsonSync(source);
+    } catch {
+      if (source === target) {
+        try { fs.renameSync(target, `${target}.corrupt-${Date.now()}`); } catch { }
+      }
+    }
+  }
+  return null;
 }
 
 function buildTaskContract(objective: string, context: any, history: any[] = [], attachments: RuntimeOptions['attachments'] = []): TaskContract {
@@ -910,7 +922,7 @@ export class UserProxyRuntime {
 
   private restoreCompatibleState(freshState: ProxyState): ProxyState {
     try {
-      const saved = fs.readJsonSync(statePathFor(freshState.projectId));
+      const saved = readStateSync(freshState.projectId);
       if (saved?.version !== 2) return freshState;
       if (saved?.objectiveSignature !== freshState.objectiveSignature || saved?.status === 'complete') {
         const carried = (Array.isArray(saved.managerDirectives) ? saved.managerDirectives : [])
@@ -1264,6 +1276,14 @@ export class UserProxyRuntime {
 
     const { createIsolatedClient } = await import('../Agent');
     const client = createIsolatedClient(this.options.apiKey, this.options.mode, this.options.runtimeSettings);
+    const selectedProxyModel = String((this.options.context as any).autonomy?.proxyModelSelection || '').trim();
+    const selectedProxySeparator = selectedProxyModel.indexOf(':');
+    const selectedProxyProvider = selectedProxySeparator > 0
+      ? selectedProxyModel.slice(0, selectedProxySeparator).trim()
+      : '';
+    const selectedProxyModelName = selectedProxySeparator > 0
+      ? selectedProxyModel.slice(selectedProxySeparator + 1).trim()
+      : '';
     const proxyContext: any = {
       projectId: `${this.options.context.projectId}::user-proxy`,
       agentRuntime: 'user_proxy',
@@ -1278,7 +1298,10 @@ export class UserProxyRuntime {
       disableTaskStore: true,
       disableSharedCache: true,
       selectedModelMode: this.options.mode,
-      selectedModelName: (this.options.context as any).selectedModelName,
+      selectedModelProvider: selectedProxyProvider || (this.options.context as any).selectedModelProvider,
+      selectedModelName: selectedProxyModelName || (this.options.context as any).selectedModelName,
+      strictModelSelection: Boolean(selectedProxyProvider && selectedProxyModelName)
+        || (this.options.context as any).strictModelSelection === true,
       contextCompaction: {
         enabled: (this.options.context as any).contextCompaction?.enabled !== false,
         model: (this.options.context as any).contextCompaction?.model || null,
@@ -1299,18 +1322,7 @@ export class UserProxyRuntime {
     try {
       response = await client.executeMessageLoop(proxyContext, prompt, [], undefined, []);
     } catch (error) {
-      // A user-selected Proxy model is a preference, not a single point of
-      // failure. Quietly fall back to the configured runtime priority so Main
-      // is never disturbed just because the selected Proxy model is unavailable.
-      const selectedOverrides = JSON.stringify(this.options.runtimeSettings?.modelOverrides || {});
-      const fallbackOverrides = JSON.stringify(this.options.fallbackRuntimeSettings?.modelOverrides || {});
-      if (!this.options.fallbackApiKey || !this.options.fallbackMode || selectedOverrides === fallbackOverrides) throw error;
-      const fallbackClient = createIsolatedClient(this.options.fallbackApiKey, this.options.fallbackMode, this.options.fallbackRuntimeSettings || null);
-      response = await fallbackClient.executeMessageLoop({
-        ...proxyContext,
-        selectedModelMode: this.options.fallbackMode,
-        runtimeSettings: this.options.fallbackRuntimeSettings || null,
-      }, prompt, [], undefined, []);
+      throw error;
     }
     this.state.helperUsed = Boolean(proxyContext._userProxyHelperUsed);
     const decision = extractDecision(response.text);
@@ -1613,7 +1625,10 @@ export class UserProxyRuntime {
     }
     try {
       fs.ensureDirSync(path.dirname(this.statePath));
-      fs.writeJsonSync(this.statePath, this.state, { spaces: 2 });
+      const temporary = `${this.statePath}.tmp-${process.pid}-${Date.now()}`;
+      fs.writeJsonSync(temporary, this.state, { spaces: 2 });
+      if (fs.existsSync(this.statePath)) fs.copyFileSync(this.statePath, `${this.statePath}.backup`);
+      fs.renameSync(temporary, this.statePath);
     } catch {
       // Persistence is advisory and must never block Main.
     }
@@ -1681,7 +1696,7 @@ export function getUserProxyManagerSnapshot(projectId: string): Record<string, a
   const live = runtimes.get(projectId)?.getManagerSnapshot();
   if (live) return live;
   try {
-    const saved = fs.readJsonSync(statePathFor(projectId));
+    const saved = readStateSync(projectId);
     if (!saved || saved.version !== 2) return null;
     return {
       status: saved.status || 'stopped',

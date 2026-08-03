@@ -17,6 +17,17 @@ const TERMINAL_WORK_TEXT =
   /(?:generation stopped by user|agent stopped(?:\s*:|\b)|agent connection (?:failed|did not start)|agent start failed|custom agent (?:start|connection) failed)/i;
 
 /**
+ * Suppress only commentary about the work-note protocol itself. Natural
+ * first-person intent is valid user-facing progress and must stay visible.
+ */
+export const isInternalWorkNoteNoise = (value: unknown): boolean => {
+  const text = String(value || '').trim();
+  if (!text || text.length < 4) return true;
+  return /\b(?:work note|timeline note|status line)\b/i.test(text) &&
+    /\b(?:workspace|external|prompt|rule|communication style|phase change|highly professional)\b/i.test(text);
+};
+
+/**
  * Returns true only for traces that conclusively end the current main-agent
  * turn. Tool/sub-agent errors are intentionally not inferred from arbitrary
  * text, because the main agent can recover from those.

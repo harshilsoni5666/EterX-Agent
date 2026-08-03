@@ -9,11 +9,12 @@ import OpenAI from 'openai';
 import { globalToolRegistry } from './tools/registry';
 import './tools/index'; // Bootstrap all tools!
 import { normalizeRegistryToolName } from './tools/registry';
+import { shouldExposeMainAgentTool } from './tools/main-tool-policy';
 import { normalizeRegistryToolArgs, validateRegistryToolArgs } from './tools/tool-args';
 import { DEFAULT_MAIN_AGENT_ALLOWED_CAPABILITIES, enforceToolCapability } from './tools/security/tool_policy';
 import { ProjectContext } from './schemas';
 import { zodToJsonSchema } from 'zod-to-json-schema';
-import { SKILL_PATHWAYS_PROMPT, SKILL_REGISTRY } from './skills';
+import { SKILL_PATHWAYS_PROMPT, SKILL_REGISTRY } from './skills-new';
 import { workspaceIntelligence, AgentReflectionEngine, dynamicSkillEngine } from './engines';
 import { agentMemory, ContextWindowManager } from './memory';
 import { memoryV2 } from './memory/v2';
@@ -67,7 +68,7 @@ import { reviewAutonomousCompletion } from './autonomy/user-proxy-runtime';
 
 import { readTaskTracker, readTaskTrackerMarkdown, trackerToTrace, writeTaskTrackerJson } from './task-tracker-store';
 import { normalizeTimeoutMs, secondsFromTimeoutMs } from './tools/core/terminal_timeout';
-import { buildAgentBuilderRuntimePrompt, isAgentBuilderRuntimeContext, shouldExposeToolToRuntime, isCustomAgentRuntimeContext, buildCustomAgentRuntimePrompt, loadCustomAgentProfile } from './builder-agent';
+import { buildAgentBuilderRuntimePrompt, getCustomAgentAllowedToolNames, isAgentBuilderRuntimeContext, shouldExposeToolToRuntime, isCustomAgentRuntimeContext, buildCustomAgentRuntimePrompt, loadCustomAgentProfile } from './builder-agent';
 import { buildCodingAgentPromptContext, buildCodingAgentRootPrompt, isCodingAgentProfile } from './coding-agent-profile';
 import { buildRuntimePlatformPrompt } from './runtime/platform-context';
 import { CODE_AGENT_TOOLS } from '../code/code-agent-tools';
@@ -101,6 +102,30 @@ import {
   normalizeTracePath,
 } from './tool-trace';
 import { extractProviderText, mergeStreamingText } from '../streaming-lifecycle';
+import { getAgentConversationScope } from './context-scope';
+
+const closeThoughtStream = (
+  onTrace: ((trace: any) => void) | undefined,
+  text: unknown,
+  thoughtId: unknown,
+  startTime: unknown,
+): void => {
+  const fullText = String(text || '');
+  if (!onTrace || !fullText || !thoughtId) return;
+  const endedAt = Date.now();
+  onTrace({
+    type: 'thought_stream',
+    text: fullText,
+    isDelta: false,
+    isStreaming: false,
+    streamState: 'closed',
+    final: true,
+    thoughtId,
+    startTime,
+    endTime: endedAt,
+    timestamp: endedAt,
+  });
+};
 
 const createProviderUsageTrace = (
   provider: MainAgentProvider,
@@ -122,6 +147,13 @@ const createProviderUsageTrace = (
     ...details,
     timestamp,
   };
+};
+
+const logProviderTokenUsage = (provider: MainAgentProvider, usage: any): void => {
+  const normalized = normalizeProviderCacheUsage(provider, usage);
+  console.log(
+    `[${provider}] 📊 Token Usage: Input: ${ normalized.promptTokens || 0 } | Cached: ${ normalized.cachedTokens || 0 } | Output: ${ normalized.completionTokens || 0 } | Total: ${ normalized.totalTokens || 0 }`,
+  );
 };
 
 const PROXY_MANAGER_READ_ONLY_TOOLS = new Set([
@@ -173,8 +205,32 @@ function positiveIntEnv(name: string, fallback: number): number {
 
 function isUnsupportedParallelToolCallsError(value: unknown): boolean {
   const message = String(value || '').toLowerCase();
-  return message.includes('parallel_tool_calls') &&
+  const mentionsParameter = message.includes('parallel_tool_calls') || message.includes('parallel tool calls');
+  return mentionsParameter &&
     /unsupported|unknown|unrecognized|unexpected|invalid|extra|not (?:allowed|permitted)/.test(message);
+}
+
+function isUnsupportedProviderParameterError(value: unknown, parameter: string): boolean {
+  const message = String(value || '').toLowerCase();
+  const name = parameter.toLowerCase();
+  if (!message.includes(name)) return false;
+  return /unsupported|unknown|unrecognized|unexpected|invalid|extra|not (?:allowed|permitted)/.test(message);
+}
+
+async function waitBeforeProviderRetry(context: any, attempt: number, errorMsg: string): Promise<void> {
+  if (isRunCancelled(context)) throw new Error('CANCELLED_BY_USER');
+  const lower = String(errorMsg || '').toLowerCase();
+  const baseMs = /429|quota|rate limit/.test(lower)
+    ? 900
+    : /5\d\d|unavailable|overload|demand/.test(lower)
+      ? 1_500
+      : 500;
+  const delayMs = Math.min(8_000, baseMs * Math.pow(2, Math.max(0, attempt - 1))) + Math.floor(Math.random() * 250);
+  const end = Date.now() + delayMs;
+  while (Date.now() < end) {
+    if (isRunCancelled(context)) throw new Error('CANCELLED_BY_USER');
+    await new Promise(resolve => setTimeout(resolve, Math.min(250, end - Date.now())));
+  }
 }
 
 function isSyntheticLoopCompletionText(value: unknown): boolean {
@@ -367,6 +423,7 @@ export class GeminiAgentClient {
   private runtimeSettings?: ScopedRuntimeSettings | null;
   private providerKeyCursor: Partial<Record<MainAgentProvider, number>> = {};
   private readonly openAIFileIds = new Map<string, string>();
+  private readonly unsupportedProviderParameters = new Map<MainAgentProvider, Set<string>>();
 
   constructor(options: GeminiAgentClientOptions = {}) {
     this.activeProvider = options.provider || 'gemini';
@@ -517,6 +574,19 @@ export class GeminiAgentClient {
     return (match?.[1] || message).trim();
   }
 
+  /** Keep an optimistic current user row from being sent twice on retries. */
+  private prepareHistoryForTurn(history: any[], message: string): any[] {
+    const prepared = Array.isArray(history) ? [...history] : [];
+    const currentText = this.extractTelegramUserMessage(message).trim();
+    const last = prepared[prepared.length - 1];
+    const lastText = Array.isArray(last?.parts)
+      ? last.parts.map((part: any) => String(part?.text || '')).join('\n').trim()
+      : String(last?.content || last?.text || '').trim();
+    const lastRole = last?.role === 'assistant' ? 'model' : last?.role;
+    if (lastRole === 'user' && lastText === currentText) prepared.pop();
+    return prepared;
+  }
+
   private telegramNeedsCurrentFacts(message: string): boolean {
     return /\b(latest|current|today|now|news|price|weather|score|schedule|stock|crypto|exchange rate|who is the president|ceo|released|update)\b/i.test(message);
   }
@@ -552,7 +622,8 @@ export class GeminiAgentClient {
   private async executeTelegramFastDirect(
     context: ProjectContext,
     message: string,
-    onTrace?: (t: any) => void
+    onTrace?: (t: any) => void,
+    history: any[] = [],
   ): Promise<{ text: string, trace: any[] }> {
     const trace: any[] = [];
     const userMessage = this.extractTelegramUserMessage(message);
@@ -571,14 +642,37 @@ export class GeminiAgentClient {
       'If Tavily web context is supplied, use it as the source of truth for current facts.'
     ].join('\n');
 
-    const contents = [{
+    const conversationScopeId = this.getConversationScope(context);
+    const persistedSummary = (context as any).disableSessionPersistence
+      ? ''
+      : globalSessionManager.getSessionSummaryForChat(conversationScopeId);
+    let priorContents = Array.isArray(history)
+      ? ConversationCompressor.compress(history.slice(-40))
+      : [];
+    // A caller may optimistically include the current user turn in history.
+    // Remove only an identical trailing user turn so the fast path cannot
+    // answer the same request twice just because of a send race.
+    const lastPrior = priorContents[priorContents.length - 1];
+    const lastPriorText = Array.isArray(lastPrior?.parts)
+      ? lastPrior.parts.map((part: any) => String(part?.text || '')).join('\n').trim()
+      : '';
+    if (lastPrior?.role === 'user' && lastPriorText === userMessage) {
+      priorContents = priorContents.slice(0, -1);
+    }
+    const contents = [
+      ...priorContents,
+      ...(persistedSummary && priorContents.length === 0
+        ? [{ role: 'user', parts: [{ text: `[PERSISTED CHAT CONTEXT]\n${persistedSummary}` }] }]
+        : []),
+      {
       role: 'user',
       parts: [{
         text: webContext
           ? `[CURRENT TAVILY WEB CONTEXT]\n${ webContext }\n\n[USER MESSAGE]\n${ userMessage }`
           : userMessage
       }]
-    }];
+      },
+    ];
 
     const timeoutMs = needsCurrentFacts ? 18_000 : 12_000;
     const maxAttempts = Math.max(this.apiKeys.length, 1);
@@ -619,6 +713,11 @@ export class GeminiAgentClient {
         const answerTrace = { type: 'answer', text };
         trace.push(answerTrace);
         onTrace?.(answerTrace);
+        if (!(context as any).disableSessionPersistence) {
+          globalSessionManager.setLastUserMessageForChat(conversationScopeId, userMessage);
+          globalSessionManager.setLastAgentOutputForChat(conversationScopeId, text);
+          globalSessionManager.saveForChat(conversationScopeId).catch(() => undefined);
+        }
         return { text, trace };
       } catch (error: any) {
         lastError = error;
@@ -733,6 +832,16 @@ export class GeminiAgentClient {
       'audio/mp3', 'audio/wav', 'audio/mpeg', 'audio/ogg',
       'video/mp4', 'video/mpeg', 'video/webm', 'video/mov',
     ]).has(mime) || /^(?:image|audio|video|text|application)\//.test(mime);
+  }
+
+  private isProviderParameterUnsupported(provider: MainAgentProvider, parameter: string): boolean {
+    return this.unsupportedProviderParameters.get(provider)?.has(parameter) === true;
+  }
+
+  private rememberUnsupportedProviderParameter(provider: MainAgentProvider, parameter: string): void {
+    const parameters = this.unsupportedProviderParameters.get(provider) || new Set<string>();
+    parameters.add(parameter);
+    this.unsupportedProviderParameters.set(provider, parameters);
   }
 
   /** Files API uploads for audio/video/documents may remain PROCESSING. */
@@ -972,7 +1081,7 @@ export class GeminiAgentClient {
   private createAnthropicClient(): Anthropic {
     return new Anthropic({
       apiKey: this.getAnthropicApiKey(),
-      baseURL: process.env.ANTHROPIC_BASE_URL || undefined,
+      baseURL: getProviderBaseURL('anthropic'),
       maxRetries: 0,
     });
   }
@@ -1435,7 +1544,16 @@ export class GeminiAgentClient {
       (context as any).paths?.[0] ||
       ''
     ).trim();
-    return `${String(context.projectId || (context as any).chatId || 'global')}|${workspace}`;
+    return `${getAgentConversationScope(context as any)}|${workspace}`;
+  }
+
+  /**
+   * Memory/session identity is narrower than the parent project identity for
+   * spawned agents. The parent ID remains responsible for routing, tracing,
+   * cancellation, and mailbox coordination.
+   */
+  private getConversationScope(context: ProjectContext): string {
+    return getAgentConversationScope(context as any);
   }
 
   private getActivePlanCompletionContext(chatId?: string | null): string {
@@ -1480,6 +1598,10 @@ export class GeminiAgentClient {
     const sharedCacheDisabled = !!(context as any).disableSharedCache;
     const longTermMemoryDisabled = !!(context as any).disableLongTermMemory;
     const sessionPersistenceDisabled = !!(context as any).disableSessionPersistence;
+    const conversationScopeId = this.getConversationScope(context);
+    const persistenceProjectId = (context as any).memoryScopeId
+      ? conversationScopeId
+      : context.projectId;
     const isBuilder = isAgentBuilderRuntimeContext(context) || message.includes('We are currently in the Agent Builder room');
     const userVisibleMessage = (context as any).source === 'telegram'
       ? this.extractTelegramUserMessage(message)
@@ -1504,13 +1626,13 @@ export class GeminiAgentClient {
     }
 
     let shouldUseExistingSessionContext = false;
-    if (!sessionPersistenceDisabled && globalSessionManager.hasActiveSessionForChat(context.projectId)) {
+    if (!sessionPersistenceDisabled && globalSessionManager.hasActiveSessionForChat(conversationScopeId)) {
       try {
         const boundaryPreview = chatBoundary.detect({
           newMessage: userVisibleMessage,
-          lastUserMessage: globalSessionManager.getLastUserMessageForChat(context.projectId),
-          lastAgentOutput: globalSessionManager.getLastAgentOutputForChat(context.projectId),
-          activeTaskPlan: globalSessionManager.getStateForChat(context.projectId).taskPlanSteps ?? null,
+          lastUserMessage: globalSessionManager.getLastUserMessageForChat(conversationScopeId),
+          lastAgentOutput: globalSessionManager.getLastAgentOutputForChat(conversationScopeId),
+          activeTaskPlan: globalSessionManager.getStateForChat(conversationScopeId).taskPlanSteps ?? null,
           recentToolNames: [],
           recentFileNames: [],
           pendingAskUser: false,
@@ -1535,7 +1657,10 @@ export class GeminiAgentClient {
       shouldUseExistingSessionContext,
     );
     if (isBuilder) {
-      dynamicContextParts.push(buildAgentBuilderRuntimePrompt((context as any).agentId || context.projectId));
+      dynamicContextParts.push(buildAgentBuilderRuntimePrompt(
+        (context as any).agentId || context.projectId,
+        (context as any).agentName,
+      ));
     }
     if (isCustomAgentRuntimeContext(context) && (context as any)._customAgentProfile) {
       dynamicContextParts.push(buildCustomAgentRuntimePrompt((context as any)._customAgentProfile));
@@ -1543,7 +1668,10 @@ export class GeminiAgentClient {
 
     // ── Workspace context ──
     try {
-      const wsContext = (context as any).disableWorkspaceContext ? '' : await workspaceIntelligence.getWorkspaceContext();
+      const workspaceRoot = String((context as any).workspaceRoot || (context as any).workspacePath || '').trim();
+      const wsContext = (context as any).disableWorkspaceContext
+        ? ''
+        : await workspaceIntelligence.getWorkspaceContext(workspaceRoot || undefined);
       if (wsContext) dynamicContextParts.push(wsContext);
     } catch { }
 
@@ -1554,7 +1682,7 @@ export class GeminiAgentClient {
         const memContext = agentMemory.getMemoryContext(
           message,
           { includeRecentSessions: shouldUseExistingSessionContext },
-          context.projectId,
+          conversationScopeId,
         );
         if (memContext) dynamicContextParts.push(memContext);
       } catch { }
@@ -1563,8 +1691,8 @@ export class GeminiAgentClient {
         await memoryV2.initialize();
         const memoryV2Context = await memoryV2.getPromptContext({
           userId: (context as any).userId || 'user',
-          projectId: (context as any).workspaceId || context.projectId,
-          chatId: context.projectId,
+          projectId: persistenceProjectId,
+          chatId: conversationScopeId,
           query: message,
           includeContinuity: shouldUseExistingSessionContext,
         });
@@ -1586,7 +1714,7 @@ export class GeminiAgentClient {
     // ── Chat boundary detection (previously Gemini-only) ──
     if (!sessionPersistenceDisabled) {
       try {
-        const chatId = context.projectId;
+        const chatId = conversationScopeId;
         const persistedPlan = globalSessionManager.getStateForChat(chatId).executionPlanState;
         if (persistedPlan?.status === 'executing') {
           const { getPlanEngine } = require('./plan-execution-engine');
@@ -1609,8 +1737,8 @@ export class GeminiAgentClient {
             const ledgerSummary = ledger.buildContextSummary({ maxTokens: 1000 });
             if (ledgerSummary) {
               lifetimeBrain.record({
-                chatId: context.projectId,
-                projectId: context.projectId,
+                chatId: conversationScopeId,
+                projectId: persistenceProjectId,
                 type: 'agent_decision',
                 title: 'Task boundary: archived previous task context',
                 detail: ledgerSummary.substring(0, 500),
@@ -1649,7 +1777,7 @@ export class GeminiAgentClient {
     const callHistory = new Set<string>();
     const toolCallCounts = new Map<string, number>();
     const taskDecomposerUsed = false;
-    const evidenceLedger = new RuntimeEvidenceLedger(String(context.projectId || 'agent'));
+    const evidenceLedger = new RuntimeEvidenceLedger(conversationScopeId);
     const requestedToolBudget = Number((context as any).maxToolCalls);
     const maxToolCalls = Number.isFinite(requestedToolBudget)
       ? Math.max(1, Math.min(120, Math.floor(requestedToolBudget)))
@@ -1691,18 +1819,22 @@ export class GeminiAgentClient {
     sessionPersistenceDisabled: boolean,
     shouldUseExistingSessionContext: boolean,
   ): Promise<void> {
+    const conversationScopeId = this.getConversationScope(context);
+    const persistenceProjectId = (context as any).memoryScopeId
+      ? conversationScopeId
+      : context.projectId;
     if (!sessionPersistenceDisabled && shouldUseExistingSessionContext) {
       try {
-        const sessionSummary = globalSessionManager.getSessionSummaryForChat(context.projectId);
+        const sessionSummary = globalSessionManager.getSessionSummaryForChat(conversationScopeId);
         if (sessionSummary) dynamicContextParts.push(sessionSummary);
       } catch { /* session continuity is advisory */ }
       try {
         const { buildResumeBrief } = await import('./resilience/resume-engine');
-        const sessionStateForResume = globalSessionManager.getStateForChat(context.projectId);
+        const sessionStateForResume = globalSessionManager.getStateForChat(conversationScopeId);
         const resumeResult = await buildResumeBrief({
-          chatId: context.projectId,
+          chatId: conversationScopeId,
           currentMessage: userVisibleMessage,
-          lastUserMessageInSession: globalSessionManager.getLastUserMessageForChat(context.projectId),
+          lastUserMessageInSession: globalSessionManager.getLastUserMessageForChat(conversationScopeId),
           sessionFileRecords: sessionStateForResume?.fileRecords || [],
           sessionActionSummary: sessionStateForResume?.actionSummary || [],
           sessionTaskPlan: sessionStateForResume?.taskPlanSteps || [],
@@ -1737,22 +1869,22 @@ export class GeminiAgentClient {
     try {
       await lifetimeBrain.initialize();
       const brainContext = lifetimeBrain.getBootContext({
-        chatId: context.projectId,
-        projectId: context.projectId,
+        chatId: conversationScopeId,
+        projectId: persistenceProjectId,
         query: userVisibleMessage,
       });
       if (brainContext) dynamicContextParts.push(brainContext);
       lifetimeBrain.recordSessionStart({
-        chatId: context.projectId,
-        projectId: context.projectId,
+        chatId: conversationScopeId,
+        projectId: persistenceProjectId,
         userMessage: userVisibleMessage,
       });
     } catch { /* lifetime brain is optional */ }
 
     if ((context as any).synapseGraphEnabled === true) {
       try {
-        const graph = getSynapseGraphForChat(context.projectId);
-        await graph.initialize(context.projectId, context.projectId);
+        const graph = getSynapseGraphForChat(conversationScopeId);
+        await graph.initialize(conversationScopeId, persistenceProjectId);
         const result = graph.processTurn(userVisibleMessage);
         if (result.renderedContext) dynamicContextParts.push(result.renderedContext);
       } catch { /* graph retrieval is advisory */ }
@@ -1767,7 +1899,8 @@ export class GeminiAgentClient {
   private getSynapseReasoningPulse(context: ProjectContext, query: string): string {
     if ((context as any).disableLongTermMemory || (context as any).synapseGraphEnabled !== true) return '';
     try {
-      return getSynapseGraphForChat(context.projectId).refreshReasoningContext(query).renderedContext;
+      const conversationScopeId = this.getConversationScope(context);
+      return getSynapseGraphForChat(conversationScopeId).refreshReasoningContext(query).renderedContext;
     } catch {
       return '';
     }
@@ -1784,6 +1917,7 @@ export class GeminiAgentClient {
     executionGovernor?: ExecutionGovernor,
     evidenceLedger?: RuntimeEvidenceLedger,
   ): Promise<any> {
+    const conversationScopeId = this.getConversationScope(context);
     const name = String(toolCall?.function?.name || toolCall?.name || '');
     const args = this.parseMistralToolArguments(toolCall?.function?.arguments ?? toolCall?.arguments);
     const normalizedSig = this.normalizeCallSignature(name, args);
@@ -1819,7 +1953,7 @@ export class GeminiAgentClient {
     let iconCategory = label.iconCategory || 'computer';
     if (args?.uiIcon) {
       const lowerUiIcon = String(args.uiIcon).toLowerCase();
-      if (['computer', 'agent', 'terminal', 'image', 'clock', 'file_read', 'file_create', 'file_edit', 'folder_read', 'folder_create', 'search', 'web_search', 'verification'].includes(lowerUiIcon)) {
+      if (['computer', 'agent', 'terminal', 'image', 'clock', 'file_read', 'file_create', 'file_edit', 'folder_read', 'folder_create', 'search', 'web_search', 'verification', 'connector'].includes(lowerUiIcon)) {
         iconCategory = lowerUiIcon;
       } else {
         if (['agent', 'bot', 'subagent', 'sub_agent'].includes(lowerUiIcon)) {
@@ -1861,6 +1995,7 @@ export class GeminiAgentClient {
       fileCount: traceFields.fileCount,
       tool: name,
       name,
+      toolArgs: args,
       add: undefined,
       remove: undefined,
     };
@@ -1884,33 +2019,46 @@ export class GeminiAgentClient {
     const tool = globalToolRegistry.getTool(canonicalToolName);
     if (!tool) return { error: `Tool ${ canonicalToolName } not found in registry.` };
 
-    if (canonicalToolName === 'task_decomposer' && globalSessionManager.getStateForChat(context.projectId).taskDecomposerUsed) {
+    if (canonicalToolName === 'task_decomposer' && globalSessionManager.getStateForChat(conversationScopeId).taskDecomposerUsed) {
       return {
         error: 'A persistent plan already exists for this task. Continue it with task_checkpoint; use action="revise" if new evidence requires a different plan.',
       };
     }
 
     let effectiveArgs = normalizeRegistryToolArgs(canonicalToolName, args);
+    const recordRejectedTool = (output: any) => {
+      executionGovernor?.recordTool(canonicalToolName, effectiveArgs, output);
+      evidenceLedger?.recordTool(canonicalToolName, effectiveArgs, output);
+      return output;
+    };
+    const customAgentToolSet = isCustomAgentRuntimeContext(context) && (context as any)._customAgentProfile
+      ? getCustomAgentAllowedToolNames((context as any)._customAgentProfile)
+      : null;
+    if (customAgentToolSet && !customAgentToolSet.has(canonicalToolName)) {
+      return recordRejectedTool({
+        error: `Tool ${canonicalToolName} is not attached to custom agent ${String((context as any).customAgentId || '').trim() || 'profile'}.`,
+      });
+    }
     const validation = validateRegistryToolArgs(tool, effectiveArgs);
-    if (!validation.success) return { error: validation.error };
+    if (!validation.success) return recordRejectedTool({ error: validation.error });
     effectiveArgs = validation.args;
 
     const governorDecision = executionGovernor?.beforeTool(canonicalToolName, effectiveArgs);
     if (governorDecision && !governorDecision.allowed) {
-      return {
+      return recordRejectedTool({
         error: `EXECUTION_GOVERNOR: ${governorDecision.reason || 'This repeated action is blocked.'}`,
         recovery: governorDecision.recovery,
-      };
+      });
     }
 
     const recordOutcome = (output: any) => {
       executionGovernor?.recordTool(canonicalToolName, effectiveArgs, output);
       evidenceLedger?.recordTool(canonicalToolName, effectiveArgs, output);
-      this.recordPlanToolResult(canonicalToolName, effectiveArgs, output, context.projectId);
+      this.recordPlanToolResult(canonicalToolName, effectiveArgs, output, conversationScopeId);
       this.recordProviderSessionToolActivity(canonicalToolName, effectiveArgs, output, context);
       if ((context as any).disableLongTermMemory !== true && (context as any).synapseGraphEnabled === true) {
         try {
-          const graph = getSynapseGraphForChat(context.projectId);
+          const graph = getSynapseGraphForChat(conversationScopeId);
           graph.registerToolResult(
             canonicalToolName,
             effectiveArgs,
@@ -1923,7 +2071,7 @@ export class GeminiAgentClient {
 
     const capabilityDecision = enforceToolCapability(canonicalToolName, effectiveArgs, context);
     if (!capabilityDecision.allowed) {
-      return { error: capabilityDecision.reason || `Tool ${ canonicalToolName } is not allowed` };
+      return recordRejectedTool({ error: capabilityDecision.reason || `Tool ${ canonicalToolName } is not allowed` });
     }
 
     const preEditSnapshots = await this.capturePreEditSnapshots(canonicalToolName, effectiveArgs, context);
@@ -2026,13 +2174,17 @@ export class GeminiAgentClient {
     mediaFiles: AgentMediaFile[] = []
   ): Promise<{ text: string, trace: any[] }> {
     const trace: any[] = [];
-    const strictModelSelection = (context as any).strictModelSelection === true;
+    const strictModelSelection = Boolean(
+      String((context as any).selectedModelName || '').trim()
+      && isModelProvider(String((context as any).selectedModelProvider || '').trim()),
+    ) || (context as any).strictModelSelection === true;
     const infra = await this.buildLoopInfrastructure(context, message, onTrace, mediaFiles);
     const {
       dynamicContextParts, runtimeProfileContext, callHistory, toolCallCounts, evidenceLedger,
       executionGovernor, userVisibleMessage, isBuilder,
       sharedCacheDisabled, longTermMemoryDisabled, sessionPersistenceDisabled,
     } = infra;
+    const conversationScopeId = this.getConversationScope(context);
     let taskDecomposerUsed = infra.taskDecomposerUsed;
 
     let keyInfo = this.getProviderKeyInfo(this.activeProvider);
@@ -2094,6 +2246,7 @@ export class GeminiAgentClient {
     let lastAnswer = '';
     let prematurePlanFinals = 0;
     const visibleWorkNoteTexts: string[] = [];
+    let completionReviewRejections = 0;
     const maxLoopIterations = 240;
     let provisionalAnswerId: string | null = null;
     const cancelProvisionalAnswer = () => {
@@ -2120,7 +2273,7 @@ export class GeminiAgentClient {
         const contextParts: string[] = [];
         try {
           const { getPlanEngine } = require('./plan-execution-engine');
-          const planEngine = getPlanEngine(context.projectId);
+          const planEngine = getPlanEngine(conversationScopeId);
           if (planEngine?.hasActivePlan()) {
             const planCtx = planEngine.buildModelContext();
             if (planCtx) contextParts.push(planCtx);
@@ -2132,7 +2285,7 @@ export class GeminiAgentClient {
         if (govGuidance) contextParts.push(govGuidance);
         if (executionGovernor.isBudgetExhausted() || executionGovernor.isTimedOut()) {
           const finalText = this.finalizeEvidenceBoundAnswer(
-            lastAnswer || 'Reached execution limits.', evidenceLedger, toolCallCounts, context.projectId,
+            lastAnswer || 'Reached execution limits.', evidenceLedger, toolCallCounts, conversationScopeId,
           );
           const evt = { type: 'answer', text: finalText };
           trace.push(evt);
@@ -2152,7 +2305,7 @@ export class GeminiAgentClient {
       if (shouldCheckContextBoundary) {
         try {
           const compacted = await compactContextAtBoundary({
-            chatId: context.projectId,
+            chatId: conversationScopeId,
             kind: 'provider',
             contents: messages,
             tools,
@@ -2207,10 +2360,12 @@ export class GeminiAgentClient {
       }
       // Let every OpenAI-compatible route request multiple independent calls.
       // APIs that do not implement the optional flag are retried without it.
-      if (tools.length > 0) {
+      if (tools.length > 0 && !this.isProviderParameterUnsupported(this.activeProvider, 'parallel_tool_calls')) {
         params.parallel_tool_calls = true;
       }
-      params.stream_options = { ...(params.stream_options || {}), include_usage: true };
+      if (!this.isProviderParameterUnsupported(this.activeProvider, 'stream_options')) {
+        params.stream_options = { ...(params.stream_options || {}), include_usage: true };
+      }
 
       if (currentSupportsThinking) {
         if (this.activeProvider === 'mistral') {
@@ -2226,7 +2381,23 @@ export class GeminiAgentClient {
             params.max_completion_tokens = positiveIntEnv('OPENAI_MAX_TOKENS', 8192);
             delete params.max_tokens;
             delete params.temperature;
-            params.reasoning_effort = toOpenAIReasoningEffort(currentThinkingLevel);
+          }
+          const thinkingParameter = (context as any).modelThinkingCapability?.parameter;
+          if (thinkingParameter === 'thinkingLevel') {
+            params.thinkingLevel = currentThinkingLevel;
+          } else if (thinkingParameter === 'thinkingBudget') {
+            params.thinkingBudget = currentThinkingLevel === 'low'
+              ? 1024
+              : currentThinkingLevel === 'high' || currentThinkingLevel === 'max'
+                ? 24576
+                : currentThinkingLevel === 'off'
+                  ? 0
+                  : 8192;
+          } else if (thinkingParameter === 'reasoning') {
+            params.reasoning = {
+              effort: currentThinkingLevel === 'off' ? 'none' : currentThinkingLevel,
+              exclude: true,
+            };
           } else {
             params.reasoning_effort = toOpenAIReasoningEffort(currentThinkingLevel);
           }
@@ -2237,15 +2408,20 @@ export class GeminiAgentClient {
 
       let response: any;
       let apiAttempts = 0;
-      const maxApiAttempts = 3;
+      const configuredRetries = Number((context as any).maxRetries);
+      const maxApiAttempts = Number.isFinite(configuredRetries)
+        ? 1 + Math.max(0, Math.min(5, Math.floor(configuredRetries)))
+        : 3;
       while (apiAttempts < maxApiAttempts) {
+        let accumulatedReasoning = '';
+        let thoughtStartTime = 0;
+        let thoughtId = '';
         try {
           let accumulatedContent = '';
-          let accumulatedReasoning = '';
           const responseStartTime = Date.now();
-          let thoughtStartTime = 0;
-          let thoughtId = '';
-          const toolCallsAccumulated = new Map<number, any>();
+          const toolCallsAccumulated = new Map<number | string, any>();
+          let fallbackToolCallSequence = 0;
+          let fallbackToolCallKey: string | number = 0;
           let lastUsage: any = null;
 
           writeRuntimeTrace('model_request', {
@@ -2316,7 +2492,31 @@ export class GeminiAgentClient {
               if (Array.isArray(delta.tool_calls)) {
                 if (delta.tool_calls.length > 0) cancelProvisionalAnswer();
                 for (const tc of delta.tool_calls) {
-                  const idx = tc.index;
+                  const hasIndex = Number.isInteger(tc?.index);
+                  const functionName = String(tc?.function?.name || '');
+                  let idx: string | number;
+                  if (hasIndex) {
+                    idx = tc.index;
+                  } else if (tc?.id) {
+                    idx = `id:${tc.id}`;
+                    fallbackToolCallKey = idx;
+                  } else {
+                    const activeFallback = toolCallsAccumulated.get(fallbackToolCallKey);
+                    // Some OpenAI-compatible streams omit both index and id.
+                    // Keep argument-only chunks on the active call, while a
+                    // new named call starts a new fallback slot instead of
+                    // silently merging every call into an undefined Map key.
+                    if (functionName && activeFallback?.function?.arguments) {
+                      // Without an index/id, any named chunk after an
+                      // argument-bearing fallback call is the next call,
+                      // including when the provider uses a different tool
+                      // name for it.
+                      fallbackToolCallKey = `fallback:${++fallbackToolCallSequence}`;
+                    } else if (functionName && !activeFallback) {
+                      fallbackToolCallKey = `fallback:${fallbackToolCallSequence}`;
+                    }
+                    idx = fallbackToolCallKey;
+                  }
                   if (!toolCallsAccumulated.has(idx)) {
                     toolCallsAccumulated.set(idx, {
                       id: tc.id || '',
@@ -2354,6 +2554,7 @@ export class GeminiAgentClient {
               onTrace?.(usageTrace);
               writeRuntimeTrace('model_usage', usageTrace);
             }
+            logProviderTokenUsage(this.activeProvider, lastUsage);
           }
 
           if (accumulatedReasoning && onTrace) {
@@ -2362,6 +2563,8 @@ export class GeminiAgentClient {
               text: accumulatedReasoning,
               isDelta: false,
               isStreaming: false,
+              streamState: 'closed',
+              final: true,
               thoughtId,
               startTime: thoughtStartTime,
               endTime: Date.now(),
@@ -2386,9 +2589,13 @@ export class GeminiAgentClient {
             ],
           };
           break;
-        } catch (err: any) {
-          const errorMsg = err.message || '';
-          cancelProvisionalAnswer();
+      } catch (err: any) {
+        const errorMsg = err.message || '';
+        // A provider can terminate a partial reasoning stream before the
+        // request itself is retried. Close that real stream first so the UI
+        // cannot keep its timer open while the next provider attempt starts.
+        closeThoughtStream(onTrace, accumulatedReasoning, thoughtId, thoughtStartTime);
+        cancelProvisionalAnswer();
           if (!strictModelSelection && isModelDeprecatedError(errorMsg)) {
             const fallbackChain = getFallbackChain(this.activeMode, this.runtimeSettings);
             const currentIdx = fallbackChain.indexOf(this.mistralModelName);
@@ -2423,15 +2630,28 @@ export class GeminiAgentClient {
 
           if (params.stream_options && /(?:unknown|unsupported|unrecognized|invalid).{0,80}stream_options|stream_options.{0,80}(?:unknown|unsupported|unrecognized|invalid)/i.test(errorMsg)) {
             delete params.stream_options;
+            this.rememberUnsupportedProviderParameter(this.activeProvider, 'stream_options');
             console.warn(`[${this.activeProvider}] Stream usage metadata is unsupported; continuing without an estimated token count.`);
             continue;
           }
 
           if (params.parallel_tool_calls && isUnsupportedParallelToolCallsError(errorMsg)) {
             delete params.parallel_tool_calls;
+            this.rememberUnsupportedProviderParameter(this.activeProvider, 'parallel_tool_calls');
             console.warn(`[${this.activeProvider}] Parallel tool-call flag unsupported; continuing with provider defaults.`);
             continue;
           }
+
+          let strippedOptionalParameter = false;
+          for (const parameter of ['reasoning_effort', 'reasoning', 'thinkingLevel', 'thinkingBudget']) {
+            if (params[parameter] !== undefined && isUnsupportedProviderParameterError(errorMsg, parameter)) {
+              delete params[parameter];
+              this.rememberUnsupportedProviderParameter(this.activeProvider, parameter);
+              strippedOptionalParameter = true;
+              console.warn(`[${this.activeProvider}] ${parameter} unsupported; retrying without optional reasoning controls.`);
+            }
+          }
+          if (strippedOptionalParameter) continue;
 
           apiAttempts++;
           if (apiAttempts >= maxApiAttempts || err.message === 'CANCELLED_BY_USER' || errorMsg.includes('CANCELLED_BY_USER')) {
@@ -2445,6 +2665,7 @@ export class GeminiAgentClient {
               text: traceMsg,
             });
           }
+          await waitBeforeProviderRetry(context, apiAttempts, errorMsg);
           keyInfo = this.getProviderKeyInfo(this.activeProvider);
           client = this.createMistralClientWithKey(keyInfo.apiKey);
         }
@@ -2464,7 +2685,7 @@ export class GeminiAgentClient {
       const toolCalls = Array.isArray(assistantMessage.tool_calls) ? assistantMessage.tool_calls : [];
 
       if (toolCalls.length === 0) {
-        const activePlanContext = this.getActivePlanCompletionContext(context.projectId);
+        const activePlanContext = this.getActivePlanCompletionContext(conversationScopeId);
         if (activePlanContext && prematurePlanFinals < 2 && !executionGovernor.isBudgetExhausted() && !executionGovernor.isTimedOut()) {
           prematurePlanFinals += 1;
           lastAnswer = contentText || lastAnswer;
@@ -2472,12 +2693,24 @@ export class GeminiAgentClient {
           messages.push({ role: 'user', content: `[SYSTEM - COMPLETION BLOCKED]\nThe active plan is unfinished. Do not finalize yet. Continue the active step, or use task_checkpoint to advance, revise, skip, fail, or complete it with justification.\n${activePlanContext}` });
           continue;
         }
-        const finalText = this.finalizeEvidenceBoundAnswer(contentText || lastAnswer || 'Done.', evidenceLedger, toolCallCounts, context.projectId);
-        const proxyDecision = await reviewAutonomousCompletion(context.projectId, finalText);
+        const finalText = this.finalizeEvidenceBoundAnswer(contentText || lastAnswer || 'Done.', evidenceLedger, toolCallCounts, conversationScopeId);
+        const proxyDecision = await reviewAutonomousCompletion(conversationScopeId, finalText);
         if (proxyDecision.action !== 'approve_completion') {
+          completionReviewRejections += 1;
+          if (completionReviewRejections >= 5) {
+            throw new Error('Autonomous completion review did not converge after five corrective turns.');
+          }
           messages.push({ role: 'assistant', content: contentText || lastAnswer || 'I believe the task is complete.' });
+          const reviewFeedback = [proxyDecision.message, proxyDecision.remainingGoalGap]
+            .filter(Boolean)
+            .join('\n');
+          messages.push({
+            role: 'user',
+            content: `[SYSTEM - COMPLETION REVIEW]\nThe completion review rejected the last answer. Continue only if there is concrete remaining work. Use this feedback to choose the next action:\n${reviewFeedback || 'Re-check the user goal and provide the missing evidence.'}`,
+          });
           continue;
         }
+        completionReviewRejections = 0;
         const lateSteering = this.drainLiveSteering(context.projectId, onTrace);
         if (lateSteering.length > 0) {
           messages.push({ role: 'assistant', content: contentText || lastAnswer || finalText });
@@ -2495,8 +2728,8 @@ export class GeminiAgentClient {
         trace.push(answerEvt);
         onTrace?.(answerEvt);
         if (!sessionPersistenceDisabled) {
-          globalSessionManager.setLastAgentOutputForChat(context.projectId, finalText);
-          globalSessionManager.saveForChat(context.projectId).catch(() => { });
+          globalSessionManager.setLastAgentOutputForChat(conversationScopeId, finalText);
+          globalSessionManager.saveForChat(conversationScopeId).catch(() => { });
         }
         return { text: finalText, trace };
       }
@@ -2593,7 +2826,7 @@ export class GeminiAgentClient {
       messages.push(...toolMessages);
 
       if (!sessionPersistenceDisabled) {
-        globalSessionManager.updateFromLoopForChat(context.projectId, {
+        globalSessionManager.updateFromLoopForChat(conversationScopeId, {
           callHistory,
           writtenFiles: new Set<string>(),
           loadedSkills: new Set<string>(),
@@ -2601,7 +2834,7 @@ export class GeminiAgentClient {
           toolCallCounts,
           toolResultDigest: [],
         });
-        globalSessionManager.debouncedSaveForChat(context.projectId);
+        globalSessionManager.debouncedSaveForChat(conversationScopeId);
       }
     }
 
@@ -2609,7 +2842,7 @@ export class GeminiAgentClient {
       lastAnswer || `Reached maximum Mistral tool-loop iterations (${ maxLoopIterations }).`,
       evidenceLedger,
       toolCallCounts,
-      context.projectId,
+      conversationScopeId,
     );
     const fallbackEvt = { type: 'answer', text: fallbackText };
     trace.push(fallbackEvt);
@@ -2625,13 +2858,17 @@ export class GeminiAgentClient {
     mediaFiles: AgentMediaFile[] = []
   ): Promise<{ text: string, trace: any[] }> {
     const trace: any[] = [];
-    const strictModelSelection = (context as any).strictModelSelection === true;
+    const strictModelSelection = Boolean(
+      String((context as any).selectedModelName || '').trim()
+      && isModelProvider(String((context as any).selectedModelProvider || '').trim()),
+    ) || (context as any).strictModelSelection === true;
     const infra = await this.buildLoopInfrastructure(context, message, onTrace, mediaFiles);
     const {
       dynamicContextParts, runtimeProfileContext, callHistory, toolCallCounts, evidenceLedger,
       executionGovernor, userVisibleMessage, isBuilder,
       sharedCacheDisabled, longTermMemoryDisabled, sessionPersistenceDisabled,
     } = infra;
+    const conversationScopeId = this.getConversationScope(context);
     let taskDecomposerUsed = infra.taskDecomposerUsed;
 
     let keyInfo = this.getProviderKeyInfo('anthropic');
@@ -2640,7 +2877,7 @@ export class GeminiAgentClient {
     }
     let client = new Anthropic({
       apiKey: keyInfo.apiKey,
-      baseURL: process.env.ANTHROPIC_BASE_URL || undefined,
+      baseURL: getProviderBaseURL('anthropic'),
       maxRetries: 0,
     });
     const tools = this.buildAnthropicTools(isBuilder, context);
@@ -2703,6 +2940,7 @@ export class GeminiAgentClient {
     let lastAnswer = '';
     let prematurePlanFinals = 0;
     const visibleWorkNoteTexts: string[] = [];
+    let completionReviewRejections = 0;
     const maxLoopIterations = 240;
     const maxTokens = positiveIntEnv('ANTHROPIC_MAX_TOKENS', 8192);
     let provisionalAnswerId: string | null = null;
@@ -2760,7 +2998,7 @@ export class GeminiAgentClient {
         const contextParts: string[] = [];
         try {
           const { getPlanEngine } = require('./plan-execution-engine');
-          const planEngine = getPlanEngine(context.projectId);
+          const planEngine = getPlanEngine(conversationScopeId);
           if (planEngine?.hasActivePlan()) {
             const planCtx = planEngine.buildModelContext();
             if (planCtx) contextParts.push(planCtx);
@@ -2772,7 +3010,7 @@ export class GeminiAgentClient {
         if (govGuidance) contextParts.push(govGuidance);
         if (executionGovernor.isBudgetExhausted() || executionGovernor.isTimedOut()) {
           const finalText = this.finalizeEvidenceBoundAnswer(
-            lastAnswer || 'Reached execution limits.', evidenceLedger, toolCallCounts, context.projectId,
+            lastAnswer || 'Reached execution limits.', evidenceLedger, toolCallCounts, conversationScopeId,
           );
           const evt = { type: 'answer', text: finalText };
           trace.push(evt);
@@ -2792,7 +3030,7 @@ export class GeminiAgentClient {
       if (shouldCheckAnthropicContextBoundary) {
         try {
           const compacted = await compactContextAtBoundary({
-            chatId: context.projectId,
+            chatId: conversationScopeId,
             kind: 'provider',
             contents: messages,
             systemInstruction: systemBlocks,
@@ -2823,7 +3061,7 @@ export class GeminiAgentClient {
         'anthropic',
         this.mistralModelName,
         (context as any).modelThinkingCapability,
-      ).length > 0;
+      ).length > 0 && !this.isProviderParameterUnsupported('anthropic', 'thinking');
 
       const params: any = {
         model: this.mistralModelName,
@@ -2894,14 +3132,17 @@ export class GeminiAgentClient {
 
       let response: any;
       let apiAttempts = 0;
-      const maxApiAttempts = 3;
+      const configuredRetries = Number((context as any).maxRetries);
+      const maxApiAttempts = Number.isFinite(configuredRetries)
+        ? 1 + Math.max(0, Math.min(5, Math.floor(configuredRetries)))
+        : 3;
       while (apiAttempts < maxApiAttempts) {
+        let accumulatedThought = '';
+        let thoughtId = '';
+        let thoughtStartTime = 0;
         try {
           let accumulatedText = '';
-          let accumulatedThought = '';
           const responseStartTime = Date.now();
-          let thoughtStartTime = 0;
-          let thoughtId = '';
           let hasToolUseBlock = false;
 
           writeRuntimeTrace('model_request', {
@@ -2969,6 +3210,8 @@ export class GeminiAgentClient {
               text: accumulatedThought,
               isDelta: false,
               isStreaming: false,
+              streamState: 'closed',
+              final: true,
               thoughtId,
               startTime: thoughtStartTime,
               endTime: Date.now(),
@@ -2990,6 +3233,7 @@ export class GeminiAgentClient {
               onTrace?.(usageTrace);
               writeRuntimeTrace('model_usage', usageTrace);
             }
+            logProviderTokenUsage('anthropic', response.usage);
           }
 
           if (response && response.stop_reason === 'refusal') {
@@ -3020,6 +3264,7 @@ export class GeminiAgentClient {
           break;
         } catch (err: any) {
           const errorMsg = err.message || '';
+          closeThoughtStream(onTrace, accumulatedThought, thoughtId, thoughtStartTime);
           cancelProvisionalAnswer();
           if (!strictModelSelection && isModelDeprecatedError(errorMsg)) {
             const fallbackChain = getFallbackChain('anthropic', this.runtimeSettings);
@@ -3033,11 +3278,20 @@ export class GeminiAgentClient {
               keyInfo = this.getProviderKeyInfo('anthropic');
               client = new Anthropic({
                 apiKey: keyInfo.apiKey,
-                baseURL: process.env.ANTHROPIC_BASE_URL || undefined,
+                baseURL: getProviderBaseURL('anthropic'),
                 maxRetries: 0,
               });
               continue;
             }
+          }
+
+          if (params.thinking && isUnsupportedProviderParameterError(errorMsg, 'thinking')) {
+            delete params.thinking;
+            delete params.output_config;
+            this.rememberUnsupportedProviderParameter('anthropic', 'thinking');
+            params.max_tokens = maxTokens;
+            console.warn('[Anthropic] Thinking controls unsupported; retrying without optional reasoning parameters.');
+            continue;
           }
 
           apiAttempts++;
@@ -3052,10 +3306,11 @@ export class GeminiAgentClient {
               text: traceMsg,
             });
           }
+          await waitBeforeProviderRetry(context, apiAttempts, errorMsg);
           keyInfo = this.getProviderKeyInfo('anthropic');
           client = new Anthropic({
             apiKey: keyInfo.apiKey,
-            baseURL: process.env.ANTHROPIC_BASE_URL || undefined,
+            baseURL: getProviderBaseURL('anthropic'),
             maxRetries: 0,
           });
         }
@@ -3074,7 +3329,7 @@ export class GeminiAgentClient {
       if (toolUses.length > 0) cancelProvisionalAnswer();
 
       if (toolUses.length === 0) {
-        const activePlanContext = this.getActivePlanCompletionContext(context.projectId);
+        const activePlanContext = this.getActivePlanCompletionContext(conversationScopeId);
         if (activePlanContext && prematurePlanFinals < 2 && !executionGovernor.isBudgetExhausted() && !executionGovernor.isTimedOut()) {
           prematurePlanFinals += 1;
           lastAnswer = contentText || lastAnswer;
@@ -3082,12 +3337,27 @@ export class GeminiAgentClient {
           messages.push({ role: 'user', content: [{ type: 'text', text: `[SYSTEM - COMPLETION BLOCKED]\nThe active plan is unfinished. Continue the active step, or use task_checkpoint to advance, revise, skip, fail, or complete it with justification.\n${activePlanContext}` }] });
           continue;
         }
-        const finalText = this.finalizeEvidenceBoundAnswer(contentText || lastAnswer || 'Done.', evidenceLedger, toolCallCounts, context.projectId);
-        const proxyDecision = await reviewAutonomousCompletion(context.projectId, finalText);
+        const finalText = this.finalizeEvidenceBoundAnswer(contentText || lastAnswer || 'Done.', evidenceLedger, toolCallCounts, conversationScopeId);
+        const proxyDecision = await reviewAutonomousCompletion(conversationScopeId, finalText);
         if (proxyDecision.action !== 'approve_completion') {
+          completionReviewRejections += 1;
+          if (completionReviewRejections >= 5) {
+            throw new Error('Autonomous completion review did not converge after five corrective turns.');
+          }
           messages.push({ role: 'assistant', content: contentBlocks });
+          const reviewFeedback = [proxyDecision.message, proxyDecision.remainingGoalGap]
+            .filter(Boolean)
+            .join('\n');
+          messages.push({
+            role: 'user',
+            content: [{
+              type: 'text',
+              text: `[SYSTEM - COMPLETION REVIEW]\nThe completion review rejected the last answer. Continue only if there is concrete remaining work. Use this feedback to choose the next action:\n${reviewFeedback || 'Re-check the user goal and provide the missing evidence.'}`,
+            }],
+          });
           continue;
         }
+        completionReviewRejections = 0;
         const lateSteering = this.drainLiveSteering(context.projectId, onTrace);
         if (lateSteering.length > 0) {
           messages.push({ role: 'assistant', content: contentBlocks });
@@ -3105,8 +3375,8 @@ export class GeminiAgentClient {
         trace.push(answerEvt);
         onTrace?.(answerEvt);
         if (!sessionPersistenceDisabled) {
-          globalSessionManager.setLastAgentOutputForChat(context.projectId, finalText);
-          globalSessionManager.saveForChat(context.projectId).catch(() => { });
+          globalSessionManager.setLastAgentOutputForChat(conversationScopeId, finalText);
+          globalSessionManager.saveForChat(conversationScopeId).catch(() => { });
         }
         return { text: finalText, trace };
       }
@@ -3197,7 +3467,7 @@ export class GeminiAgentClient {
       });
 
       if (!sessionPersistenceDisabled) {
-        globalSessionManager.updateFromLoopForChat(context.projectId, {
+        globalSessionManager.updateFromLoopForChat(conversationScopeId, {
           callHistory,
           writtenFiles: new Set<string>(),
           loadedSkills: new Set<string>(),
@@ -3205,7 +3475,7 @@ export class GeminiAgentClient {
           toolCallCounts,
           toolResultDigest: [],
         });
-        globalSessionManager.debouncedSaveForChat(context.projectId);
+        globalSessionManager.debouncedSaveForChat(conversationScopeId);
       }
     }
 
@@ -3213,7 +3483,7 @@ export class GeminiAgentClient {
       lastAnswer || `Reached maximum Anthropic tool-loop iterations (${ maxLoopIterations }).`,
       evidenceLedger,
       toolCallCounts,
-      context.projectId,
+      conversationScopeId,
     );
     const fallbackEvt = { type: 'answer', text: fallbackText };
     trace.push(fallbackEvt);
@@ -3490,10 +3760,19 @@ export class GeminiAgentClient {
     const telegramMode = context?.source === 'telegram';
     const codingMode = isCodingAgentProfile(context?.agentProfile);
     const codingToolSet = new Set<string>(CODE_AGENT_TOOLS);
+    const customAgentToolSet = isCustomAgentRuntimeContext(context) && context?._customAgentProfile
+      ? getCustomAgentAllowedToolNames(context._customAgentProfile)
+      : null;
 
     return globalToolRegistry.getAllTools()
       .filter(tool => {
+        if (customAgentToolSet && !customAgentToolSet.has(tool.name)) {
+          return false;
+        }
         if (codingMode && !codingToolSet.has(tool.name)) {
+          return false;
+        }
+        if (!codingMode && !isBuilder && !isAgentBuilderRuntimeContext(context) && !isCustomAgentRuntimeContext(context) && !shouldExposeMainAgentTool(tool.name)) {
           return false;
         }
         if (telegramMode && !telegramFastTools.has(tool.name)) {
@@ -3534,10 +3813,12 @@ export class GeminiAgentClient {
           };
           cleaned.properties.uiIcon = {
             type: 'string',
-            enum: ['computer', 'agent', 'terminal', 'image', 'clock', 'file_read', 'file_create', 'file_edit', 'folder_read', 'folder_create', 'search', 'web_search', 'verification'],
+            enum: ['computer', 'agent', 'terminal', 'image', 'clock', 'file_read', 'file_create', 'file_edit', 'folder_read', 'folder_create', 'search', 'web_search', 'verification', 'connector'],
             description: 'Timeline action category.'
           };
-          cleaned.required = Array.isArray(cleaned.required) ? [...cleaned.required, 'uiActionText', 'uiIcon'] : ['uiActionText', 'uiIcon'];
+          // UI metadata is optional runtime decoration. Requiring it in every
+          // provider schema adds tokens and can make otherwise valid tool calls
+          // fail on providers that do not emit presentation fields.
         }
 
         return {
@@ -4019,7 +4300,7 @@ export class GeminiAgentClient {
   ): void {
     if ((context as any).disableSessionPersistence) return;
     if (output?.error || output?.success === false) return;
-    const chatId = String(context.projectId || '').trim();
+    const chatId = this.getConversationScope(context);
     if (!chatId) return;
 
     const createTools = new Set(['workspace_write_file']);
@@ -4120,6 +4401,17 @@ export class GeminiAgentClient {
       dynamicContext,
     } = options;
     const runtimePlatformPrompt = buildRuntimePlatformPrompt((context as any).terminalShell || 'auto');
+    const scratchRoot = String((context as any).scratchRoot || '').trim();
+    const workspaceRoot = String((context as any).workspacePath || (context as any).workspaceRoot || '').trim();
+    const workspaceRouting = scratchRoot
+      ? `
+WORKSPACE ROUTING
+- Active user workspace: ${workspaceRoot || 'none selected'}.
+- Scratch/intermediate root: ${scratchRoot}.
+- Put every draft, temporary script, conversion intermediate, cache, and helper file in the scratch/intermediate root.
+- If no user workspace is explicitly selected, omitted relative workspace paths use the scratch/intermediate root; never use the EterX checkout or its source folders as an implicit workspace.
+- Use an explicit user-selected or user-named path for final deliverables. Reuse absolute paths returned by tools.`
+      : '';
 
     return `You are EterX, a capable local agent. Complete the latest user request with real actions and evidence. Be concise, accurate, and decisive.
 ${userNameText}
@@ -4138,6 +4430,7 @@ Always use the above for current dates and times.
 SCOPE AND SAFETY
 - EterX source is infrastructure, not the user's project, unless the user explicitly asks to modify EterX.
 - Work in pinned or explicitly named paths. Never expose secrets.
+- Use the runtime scratch root for all intermediate work; do not create drafts or helper files in the EterX checkout.
 - Read/search, scoped edits, local verification, and reversible decisions are allowed.
 - Ask before destructive or irreversible actions, production-impact changes, credential/secret changes, external publication, or genuine ambiguity with materially different outcomes.
 - Never invent results, files, citations, test passes, or completed actions.
@@ -4152,6 +4445,8 @@ EXECUTION LOOP
 
 TOOL ROUTING
 - ${toolCount} function tools are provided in the API tool declarations; those declarations are the authoritative names and schemas. Never invent tools or arguments.
+- Keep commands portable: use the active runtime shell and OS-neutral workspace tools; never assume PowerShell, cmd, bash, or a Windows-only path when the user has not specified one.
+- For external integrations, use gateway_bridge for native gateway channels and connector_mcp for REST/MCP connectors. First discover connected channel/connector state; if the user supplied credentials, configure and verify the named connector, then discover its live tools before operating it. Keep platform, connector_id, and server_id explicit when multiple services are active. Never claim a connector is connected from a catalog label alone.
 - workspace_write_file creates new files and emits the real created-file preview. workspace_edit_file makes targeted changes to existing files and emits the expandable real diff.
 - Explore with semantic search, text search, file discovery, outlines, and targeted reads; batch known reads.
 - Use workspace_run_command for finite commands and process_manager/background_task for servers or long-running work.
@@ -4160,7 +4455,7 @@ TOOL ROUTING
 - Browser/desktop controls are sequential: observe, act, then verify state.
 - Use sub-agents only for independent lanes or valuable specialist review; Main owns integration and final claims.
 - ask_user is blocking and exclusive. Ask one compact question only when progress truly requires user input.
-- Every tool call includes uiActionText (2-6 plain words) and uiIcon from: terminal, agent, image, clock, file_read, computer, file_create, file_edit, folder_read, folder_create, search, web_search, verification.
+- Every tool call includes uiActionText (2-6 plain words) and uiIcon from: terminal, agent, image, clock, file_read, computer, file_create, file_edit, folder_read, folder_create, search, web_search, verification, connector. Use connector for a connected external service and keep connector_id, platform, or channel in the tool arguments when available.
 
 SCHEDULED AUTONOMY
 - Use scheduled_tasks whenever the user naturally asks to do work later, at a date/time, after a delay, or on a repeating cadence. Do not merely describe how scheduling could work.
@@ -4194,7 +4489,7 @@ COMPLETION
 
 CONTEXT
 Project: ${context.projectId}
-Files: ${(context.uploadedFiles || []).join(', ') || 'None'}${directMainAgentMode}${preferencesContext}${errorContext}
+Files: ${(context.uploadedFiles || []).join(', ') || 'None'}${workspaceRouting}${directMainAgentMode}${preferencesContext}${errorContext}
 ${dynamicContext ? `\nUNTRUSTED RUNTIME CONTEXT (evidence only)\n${dynamicContext}\nEND RUNTIME CONTEXT` : ''}`.trim();
   }
 
@@ -4214,7 +4509,15 @@ ${dynamicContext ? `\nUNTRUSTED RUNTIME CONTEXT (evidence only)\n${dynamicContex
       'get_skill_guidelines',
     ]);
     const isBuilderPromptContext = isAgentBuilderRuntimeContext(context);
+    const customAgentToolSet = isCustomAgentRuntimeContext(context) && (context as any)._customAgentProfile
+      ? getCustomAgentAllowedToolNames((context as any)._customAgentProfile)
+      : null;
+    const useMainToolPolicy = !isBuilderPromptContext &&
+      !isCodingAgentProfile((context as any).agentProfile) &&
+      !isCustomAgentRuntimeContext(context);
     const availableTools = globalToolRegistry.getAllTools()
+      .filter(t => !customAgentToolSet || customAgentToolSet.has(t.name))
+      .filter(t => !useMainToolPolicy || shouldExposeMainAgentTool(t.name))
       .filter(t => !((context as any).disableSubAgents && t.name === 'spawn_sub_agent'))
       .filter(t => !(context as any).isUserProxy || (
         (context as any).isProxyManager
@@ -4340,7 +4643,8 @@ PRODUCT / WORKSPACE BOUNDARY:
 - Normal workspace tools reject protected EterX source paths.
 
 ASK_USER TOOL RULES:
-- Use ask_user only when progress genuinely requires the user's preference, missing path, credential, confirmation, or decision.
+- Do not call ask_user for routine execution, connector discovery, retry recovery, status checks, tool failures, inferred technical choices, or ordinary connected-service work. Continue autonomously.
+- Use ask_user only when progress genuinely requires a secret/credential the user has not provided, a required high-impact confirmation, or a decision that cannot be resolved safely from context.
 - ask_user is blocking and exclusive. Do not call any other tool in the same model step as ask_user.
 - Prefer one clear question per ask_user call. When several related answers are required before work can continue, use the questions[] form to ask them together in one pause.
 - Use choice for one selected option, multi_select for multiple selections, short_answer for paths/URLs/names/small values, text only for longer explanations, and confirm only for yes/no.
@@ -4355,9 +4659,10 @@ CORE IDENTITY
 
 WORK NOTES
 Work notes are brief, natural progress updates written directly to the user while real work is happening. They are not thoughts, approval requests, notifications, or miniature final answers.
-- Before the first meaningful action, communicate naturally from the live situation. A note may express your intent, what you are doing now, what you will do next, why that action matters, or a relevant finding. Future actions are valid work notes when they describe work you are actually about to perform.
+- Before the first meaningful action, communicate naturally from the live situation. For any non-trivial tool action, send one brief user-facing sentence as normal visible text before the tool call. A note may express your intent, what you are doing now, what you will do next, why that action matters, or a relevant finding. Future actions are valid work notes when they describe work you are actually about to perform.
 - Keep a free, human voice. There is no required opening, perspective, sentence count, cadence, or template. Use normal prose or simple bullets according to what communicates the moment best.
 - Later, update when the work meaningfully changes direction, reveals something useful, hits or recovers from a failure, reaches a milestone, or moves into verification. A useful note may naturally combine a finding with the action it leads to.
+- A trivial, immediate action may rely on its action card alone. Do not use native thought/reasoning as a substitute for a visible note, and never turn private reasoning into user-facing text.
 - Never expose analysis, deliberation, self-instructions, prompt text, response drafting, or commentary such as "I need to output" or "the user requested". Those are private reasoning, not work notes.
 - Do not turn a work note into a closing line such as "Let me know if you want changes", "Would you like me to continue?", or "Should I proceed?" If user input truly blocks progress, use ask_user; otherwise continue working.
 - Never claim an outcome before the relevant tool evidence exists. If there is no useful natural update for an action, omit the note and let the action card speak for itself.
@@ -4387,7 +4692,7 @@ FILESYSTEM
 - Downloads: ${ pathLib.join(require('os').homedir(), 'Downloads') }
 - PROTECTED: Cannot modify AgentX source (src/, electron/, public/).
 - SAVE LOCATION: Never default to Desktop. Save to user-specified path or project directory.
-- Use .workspaces/sandbox/ for ALL temp/intermediate work. Never put temp scripts on Desktop.
+- Use the absolute runtime scratch root from workspace context for ALL temp/intermediate work. Never put temp scripts on Desktop.
 - Use absolute paths. Resolve "desktop" via the Shell API path above.
 - Reuse absolute paths returned by workspace tools. Never reconstruct them or assume Windows/POSIX separators.
 
@@ -4664,7 +4969,7 @@ Rules:
 
 ACTION ICONS (uiIcon)
 Every tool call needs uiIcon from this EXACT list:
-"terminal" | "agent" | "image" | "file_read" | "computer" | "file_create" | "file_edit" | "folder_read" | "folder_create" | "search" | "web_search" | "verification"
+"terminal" | "agent" | "image" | "file_read" | "computer" | "file_create" | "file_edit" | "folder_read" | "folder_create" | "search" | "web_search" | "verification" | "connector"
 Never use Lucide names. No step numbers in uiActionText.
 
 AVAILABLE TOOLS
@@ -4699,6 +5004,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
     mediaFiles: AgentMediaFile[] = [],
     imageBackupParts: any[] = []
   ): Promise<{ text: string, trace: any[] }> {
+    const preparedHistory = this.prepareHistoryForTurn(history, message);
     const selectedModelName = String((context as any).selectedModelName || '').trim();
     const selectedModelProvider = String((context as any).selectedModelProvider || '').trim();
     if (selectedModelName && isModelProvider(selectedModelProvider)) {
@@ -4712,7 +5018,12 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
     } else {
       this.mistralModelName = this.resolveModelForMode(this.activeMode);
     }
-    const strictModelSelection = (context as any).strictModelSelection === true;
+    // Treat a concrete provider/model pair as strict even for older callers
+    // that did not send the explicit flag. Only Auto/model-mode routing may
+    // switch models after an error.
+    const strictModelSelection = Boolean(
+      selectedModelName && isModelProvider(selectedModelProvider),
+    ) || (context as any).strictModelSelection === true;
     if (selectedModelName && selectedModelProvider === this.activeProvider) {
       if (this.activeProvider === 'gemini') {
         this.modelName = selectedModelName;
@@ -4749,22 +5060,25 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
       && imageBackupParts.length === 0;
 
     if (this.activeProvider === 'anthropic') {
-      return this.runAnthropicReActLoop(context, message, history, onTrace, mediaFiles);
+      return this.runAnthropicReActLoop(context, message, preparedHistory, onTrace, mediaFiles);
     }
 
     if (this.activeProvider !== 'gemini') {
-      return this.runMistralReActLoop(context, message, history, onTrace, mediaFiles);
+      return this.runMistralReActLoop(context, message, preparedHistory, onTrace, mediaFiles);
     }
 
     if (telegramFastDirect) {
-      return this.executeTelegramFastDirect(context, message, onTrace);
+      return this.executeTelegramFastDirect(context, message, onTrace, preparedHistory);
     }
 
     let attempts = 0;
     const isTelegramContext = (context as any).source === 'telegram' || !!(context as any).forceFastMode;
-    const maxAttempts = isTelegramContext
-      ? positiveIntEnv('GEMINI_TELEGRAM_LOOP_MAX_ATTEMPTS', 2)
-      : positiveIntEnv('GEMINI_REACT_LOOP_MAX_ATTEMPTS', 3);
+    const configuredRetries = Number((context as any).maxRetries);
+    const maxAttempts = Number.isFinite(configuredRetries)
+      ? 1 + Math.max(0, Math.min(5, Math.floor(configuredRetries)))
+      : isTelegramContext
+        ? positiveIntEnv('GEMINI_TELEGRAM_LOOP_MAX_ATTEMPTS', 2)
+        : positiveIntEnv('GEMINI_REACT_LOOP_MAX_ATTEMPTS', 3);
 
     // === SURVIVOR STATE: Persists across API key rotations ===
     // When a 429/503 hits mid-task, we resume with ALL prior context intact.
@@ -4801,7 +5115,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
         return await this.runReActLoop(
           context,
           message,
-          history,
+          preparedHistory,
           onTrace,
           mediaFiles,
           imageBackupParts,
@@ -4854,6 +5168,12 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
             });
           }
 
+          if (strictModelSelection && (errorMsg.includes('404') || errorMsg.includes('not found'))) {
+            // An exact user-selected model is authoritative. Retrying the same
+            // invalid model or rotating unrelated API keys only adds latency.
+            throw error;
+          }
+
           if (errorMsg.includes('503') || errorMsg.includes('unavailable') || errorMsg.includes('demand') || errorMsg.includes('500')) {
             // Server overload â€” NOT a key or model issue. Rotate key without penalizing health.
             console.warn(`[GeminiClient] ðŸ›‘ Server overload (503/500). Rotating key without penalty and retrying.`);
@@ -4878,7 +5198,6 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
               console.warn(`[GeminiClient] ${traceMsg}`);
               if (onTrace) onTrace({ type: 'progress', text: traceMsg });
               attempts++;
-              continue;
             } else {
               this.rotateKeyForError(context, errorMsg);
               attempts++;
@@ -4886,6 +5205,9 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
           } else {
             this.rotateKeyForError(context, errorMsg);
             attempts++;
+          }
+          if (attempts < maxAttempts) {
+            await waitBeforeProviderRetry(context, attempts, errorMsg);
           }
         } else if (errorMsg.includes('token') && (errorMsg.includes('limit') || errorMsg.includes('exceed') || errorMsg.includes('count'))) {
           // Token limit: survivorState is attached â€” emit graceful partial answer if available
@@ -5116,13 +5438,26 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
 
   private isParallelSafeToolCall(call: any): boolean {
     const name = String(call?.name || call?.function?.name || '');
-    const args = call?.args || call?.input || this.parseMistralToolArguments(call?.function?.arguments ?? call?.arguments);
+    const args = call?.args || call?.input || this.parseMistralToolArguments(call?.function?.arguments ?? call?.arguments) || {};
     if (this.isStatelessTool(name)) return true;
 
-    // Status reads are safe to parallelize. Launching a background command can
-    // still mutate the same files/process registry, so starts remain ordered.
+    // Terminal commands are independent process executions, but finite shell
+    // commands may mutate the same workspace. Parallelize explicit background
+    // launches and conservative read-only commands; keep writes/installations
+    // ordered so a later command cannot observe a half-written workspace.
+    // A launch stays ordered with checks/lists from the same model turn so a
+    // check cannot race the task registration and report a false "not found".
     if (name === 'background_task') return ['check', 'list'].includes(String(args.mode || ''));
     if (name === 'process_manager') return ['status', 'logs', 'list'].includes(String(args.action || ''));
+    if (name === 'system_shell' || name === 'workspace_run_command') {
+      if (args.background === true) return true;
+      const command = String(args.command || '').trim();
+      if (!command || /(?:^|[\s;&|])(?:rm|rmdir|del|erase|mv|move|cp|copy|ren|rename|remove-item|set-content|out-file|tee|npm\s+(?:install|ci|run\s+build)|pnpm\s+(?:install|run\s+build)|yarn\s+(?:install|build)|git\s+(?:checkout|switch|reset|clean|commit|merge|rebase|pull|push))\b/i.test(command)) {
+        return false;
+      }
+      if (/[>]{1,2}/.test(command)) return false;
+      return /^(?:cat|type|get-content|get-childitem|dir|ls|pwd|where|where\.exe|which|head|tail|rg|grep|find|findstr|select-string|test-path|git\s+(?:status|diff|log|show|branch|rev-parse)|node\s+--version|npm\s+--version|pnpm\s+--version|yarn\s+--version|python(?:3)?\s+--version|py\s+--version)\b/i.test(command);
+    }
     return false;
   }
 
@@ -5294,7 +5629,10 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
     cognitiveSession: cognitiveCore.CognitiveCoreSession = cognitiveCore.createCognitiveCoreSession(),
     reflectionEngine: AgentReflectionEngine = new AgentReflectionEngine(),
   ): Promise<{ text: string, trace: any[] }> {
-    const strictModelSelection = (context as any).strictModelSelection === true;
+    const strictModelSelection = Boolean(
+      String((context as any).selectedModelName || '').trim()
+      && isModelProvider(String((context as any).selectedModelProvider || '').trim()),
+    ) || (context as any).strictModelSelection === true;
     const sessionPersistenceDisabled = !!(context as any).disableSessionPersistence;
     const longTermMemoryDisabled = !!(context as any).disableLongTermMemory;
     const sharedCacheDisabled = !!(context as any).disableSharedCache;
@@ -5325,7 +5663,10 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
       .map(item => item.text as string);
 
     // === SESSION CONTINUITY: Hydrate from previous messages ===
-    const chatId = context.projectId;
+    const chatId = this.getConversationScope(context);
+    const persistenceProjectId = (context as any).memoryScopeId
+      ? chatId
+      : context.projectId;
     // Keep a direct ledger reference for the entire run. The legacy singleton
     // proxy chooses the most recently initialized chat, which is unsafe while
     // two chats are executing at the same time.
@@ -5350,8 +5691,12 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
     const toolCallCounts = survivorState?.toolCallCounts ?? new Map<string, number>();
     const loadedSkills = survivorState?.loadedSkills ?? (sessionHydrated && sessionState?.loadedSkills ? new Set<string>(sessionState.loadedSkills) : new Set<string>());
     const writtenFiles = survivorState?.writtenFiles ?? new Set<string>();
-    const evidenceLedger = new RuntimeEvidenceLedger(String(context.projectId || chatId || 'agent'));
-    const executionGovernor = new ExecutionGovernor();
+    const evidenceLedger = new RuntimeEvidenceLedger(chatId);
+    const requestedToolBudget = Number((context as any).maxToolCalls);
+    const maxToolCalls = Number.isFinite(requestedToolBudget)
+      ? Math.max(1, Math.min(120, Math.floor(requestedToolBudget)))
+      : lightweightTelegramMode ? 40 : 120;
+    const executionGovernor = new ExecutionGovernor({ maxToolCalls });
     let interactions = survivorState?.interactions ?? 0;
     let noToolCallStreak = 0;
     let taskDecomposerUsed = survivorState?.taskDecomposerUsed ?? false;
@@ -5381,8 +5726,8 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
           const ledgerSummary = ledger.buildContextSummary({ maxTokens: 1000 });
           if (ledgerSummary) {
             lifetimeBrain.record({
-              chatId: context.projectId,
-              projectId: context.projectId,
+              chatId,
+              projectId: persistenceProjectId,
               type: 'agent_decision',
               title: `Task boundary: archived previous task context`,
               detail: ledgerSummary.substring(0, 500),
@@ -5585,7 +5930,10 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
     await appendRuntimeProfileContext(runtimeProfileParts, context);
     const runtimeProfileContext = runtimeProfileParts.join('\n\n');
     if (isBuilder) {
-      dynamicContextParts.push(buildAgentBuilderRuntimePrompt((context as any).agentId || context.projectId));
+      dynamicContextParts.push(buildAgentBuilderRuntimePrompt(
+        (context as any).agentId || context.projectId,
+        (context as any).agentName,
+      ));
     }
     if (isCustomAgentRuntimeContext(context) && (context as any)._customAgentProfile) {
       dynamicContextParts.push(buildCustomAgentRuntimePrompt((context as any)._customAgentProfile));
@@ -5596,7 +5944,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
         const { buildResumeBrief } = await import('./resilience/resume-engine');
         const sessionStateForResume = globalSessionManager.getStateForChat(chatId);
         const resumeResult = await buildResumeBrief({
-          chatId: context.projectId,
+          chatId,
           currentMessage: userVisibleMessage,
           lastUserMessageInSession: globalSessionManager.getLastUserMessageForChat(chatId),
           sessionFileRecords: sessionStateForResume?.fileRecords || [],
@@ -5616,7 +5964,10 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
 
     // === WORKSPACE INTELLIGENCE: Inject project stack info ===
     try {
-      const wsContext = (context as any).disableWorkspaceContext ? '' : await workspaceIntelligence.getWorkspaceContext();
+      const workspaceRoot = String((context as any).workspaceRoot || (context as any).workspacePath || '').trim();
+      const wsContext = (context as any).disableWorkspaceContext
+        ? ''
+        : await workspaceIntelligence.getWorkspaceContext(workspaceRoot || undefined);
       if (wsContext) dynamicContextParts.push(wsContext);
     } catch { /* silent â€” workspace intel is optional */ }
 
@@ -5635,8 +5986,8 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
         await memoryV2.initialize();
         const memoryV2Context = await memoryV2.getPromptContext({
           userId: (context as any).userId || 'user',
-          projectId: (context as any).workspaceId || context.projectId,
-          chatId: context.projectId,
+          projectId: persistenceProjectId,
+          chatId,
           query: message,
           includeContinuity: wantsSessionContext,
         });
@@ -5651,8 +6002,8 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
       try {
         await lifetimeBrain.initialize();
         const brainContext = lifetimeBrain.getBootContext({
-          chatId: context.projectId,
-          projectId: context.projectId,
+          chatId,
+          projectId: persistenceProjectId,
           query: userVisibleMessage,
         });
         if (brainContext) {
@@ -5660,8 +6011,8 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
           console.log('[GeminiClient] ðŸ§  Lifetime brain context injected');
         }
         lifetimeBrain.recordSessionStart({
-          chatId: context.projectId,
-          projectId: context.projectId,
+          chatId,
+          projectId: persistenceProjectId,
           userMessage: userVisibleMessage,
         });
       } catch { /* brain is always optional */ }
@@ -5670,8 +6021,8 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
     // === SYNAPSE GRAPH v2: Structured record storage + 5-question decision surface ===
     if (!longTermMemoryDisabled && (context as any).synapseGraphEnabled === true) {
       try {
-        const _sg = getSynapseGraphForChat(context.projectId);
-        await _sg.initialize(context.projectId, context.projectId);
+        const _sg = getSynapseGraphForChat(chatId);
+        await _sg.initialize(chatId, persistenceProjectId);
         const _sr = _sg.processTurn(userVisibleMessage);
         if (_sr.renderedContext) dynamicContextParts.push(_sr.renderedContext);
         writeRuntimeTrace('synapse_injection', {
@@ -5806,6 +6157,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
       (context as any).selectedThinkingLevel || 'low',
       'gemini',
       this.modelName,
+      (context as any).modelThinkingCapability,
     );
 
     // Auto-detect if this is a direct conversational question or greeting without file interactions
@@ -5816,7 +6168,12 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
       /^(thanks?|ok|okay|cool|hello|hi|yes|no|correct|right|sure|fine)$/i.test(message.trim().replace(/[.,!]/g, ''))) && !mentionsFile;
 
     const includeThoughts = !lightweightTelegramMode && !isDirectAnswer;
-    const initialThinkingConfig = getGeminiThinkingConfig(selectedThinkingLevel, this.modelName, includeThoughts);
+    const initialThinkingConfig = getGeminiThinkingConfig(
+      selectedThinkingLevel,
+      this.modelName,
+      includeThoughts,
+      (context as any).modelThinkingCapability,
+    );
     if (initialThinkingConfig) config.thinkingConfig = initialThinkingConfig as any;
 
     // === UNLIMITED ITERATIONS â€” agent works until done or user stops ===
@@ -5834,6 +6191,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
     // Track accumulated text at loop level for fallback message
     let loopAccumulatedText = survivorState?.loopAccumulatedText ?? '';
     let prematurePlanFinals = 0;
+    let completionReviewRejections = 0;
     let currentRunToolCallCount = survivorState?.currentRunToolCallCount ?? (survivorState ? survivorState.callHistory.size : 0);
     let exploratoryCallsWithoutArtifact = survivorState?.exploratoryCallsWithoutArtifact ?? 0;
     let userFacingArtifactCreated = survivorState?.userFacingArtifactCreated ?? false;
@@ -5853,7 +6211,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
         .join(', ');
       const recentContext = recentTools ? ` Recent action evidence came from: ${ recentTools }.` : '';
 
-      return `PROGRESS BOUNDARY ${iteration}: If this boundary needs a work note, speak naturally about your intent, the live action, a future action you are about to take, or a useful finding before calling tools. Keep your own voice; this is progress communication, not private deliberation, an approval request, or a closing sentence. Omit the note when the action card is sufficient.${recentContext}`;
+      return `PROGRESS BOUNDARY ${iteration}: Before any non-trivial tool action, write one brief natural user-facing sentence as normal visible text, then call the tool. Describe the live action, your intent, a useful finding, or the next step you are actually about to take. Keep your own voice: no fixed opening, template, or sentence count. This sentence must be visible progress communication, never native thought/reasoning, private deliberation, an approval request, or a closing sentence. Skip it only for a trivial immediate action whose action card already communicates the user-relevant progress.${recentContext}`;
     };
 
     // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -5955,7 +6313,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
       if (shouldCheckGeminiContextBoundary) {
         try {
           const ctxResult = await compactContextAtBoundary({
-            chatId: context.projectId,
+            chatId,
             kind: 'gemini',
             contents,
             // Count the full static prompt and declarations even when Gemini
@@ -6218,7 +6576,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
       const lastHasFunctionResponse = lastContent?.parts?.some((p: any) => p.functionResponse);
       if (lastContent?.role === 'model' && !lastHasFunctionResponse) {
         const trackerState = (!plannerToolsDisabled && (taskDecomposerUsed || wantsLoopResume || !!survivorState))
-          ? this.readTaskTrackerState((context as any).projectId || (context as any).chatId)
+          ? this.readTaskTrackerState(chatId)
           : ''; // Cached by mtime
 
         // Plan Execution Engine context — model-driven plan state awareness
@@ -6286,10 +6644,15 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
           ? `${ baseSystemInstruction }\n${ iterationSystemCue }`
           : baseSystemInstruction;
       }
-      if (getModelThinkingOptions('gemini', currentModel).length > 0) {
+      if (getModelThinkingOptions('gemini', currentModel, (context as any).modelThinkingCapability).length > 0) {
         // Preserve the exact composer level for all tool-loop turns.
         const dynamicThinkingLevel: MainAgentThinkingLevel = selectedThinkingLevel;
-        const dynamicThinkingConfig = getGeminiThinkingConfig(dynamicThinkingLevel, currentModel, includeThoughts);
+        const dynamicThinkingConfig = getGeminiThinkingConfig(
+          dynamicThinkingLevel,
+          currentModel,
+          includeThoughts,
+          (context as any).modelThinkingCapability,
+        );
         if (dynamicThinkingConfig) config.thinkingConfig = dynamicThinkingConfig as any;
       }
 
@@ -6723,6 +7086,8 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
             text: accumulatedThought,
             isDelta: false,
             isStreaming: false,
+            streamState: 'closed',
+            final: true,
             thoughtId,
             startTime: thoughtStartTime,
             endTime: Date.now(),
@@ -6730,6 +7095,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
         }
       } catch (streamReadErr: any) {
         const errMsg = String(streamReadErr?.message || streamReadErr);
+        closeThoughtStream(onTrace, accumulatedThought, thoughtId, thoughtStartTime);
         cancelProvisionalAnswer();
         activeStreamAbortController?.abort();
         activeStreamAbortController = null;
@@ -6792,7 +7158,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
       // Keep normal model text separate from native thoughts whenever tools follow.
       // The UI renders this outside the collapsible Think card.
       if (accumulatedThought && functionCalls.length > 0) {
-        trace.push({ type: 'thought_stream', text: accumulatedThought, isDelta: false, isStreaming: false, thoughtId, startTime: thoughtStartTime, endTime: Date.now() });
+        trace.push({ type: 'thought_stream', text: accumulatedThought, isDelta: false, isStreaming: false, streamState: 'closed', final: true, thoughtId, startTime: thoughtStartTime, endTime: Date.now() });
       }
       if (forcedCompletionIterations > 0) {
         delete (config as any).cachedContent;
@@ -6891,7 +7257,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
           // If a task tracker exists with pending steps, don't let the agent stop prematurely
           if (taskDecomposerUsed && !(metaCognition as any).incompleteTaskNudged) {
             try {
-              const trackerCheck = this.readTaskTrackerState((context as any).projectId || (context as any).chatId);
+              const trackerCheck = this.readTaskTrackerState(chatId);
               if (trackerCheck && /pending|in_progress/i.test(trackerCheck) && !/all.*(?:done|complete)/i.test(trackerCheck)) {
                 console.warn('[GeminiClient] ðŸ§  Agent tried to stop but task tracker has pending steps.');
                 (metaCognition as any).incompleteTaskNudged = true;
@@ -6924,7 +7290,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
               contents.push({
                 role: 'user',
                 parts: [{
-                  text: '[SYSTEM] Your response expresses uncertainty. Before giving up:\n1. Try using web_search, workspace_read_file, or workspace_search_text to find the answer.\n2. If you genuinely need user input, use ask_user to ask a specific question.\n3. Only express uncertainty in your final answer if you have exhausted all available tools.\nDo NOT guess - either find the answer or ask.',
+                  text: '[SYSTEM] Your response expresses uncertainty. Before giving up:\n1. Try using web_search, workspace_read_file, or workspace_search_text to find the answer.\n2. Continue with available tools and safe alternate approaches; do not ask_user for routine work or tool failures. Use ask_user only for a missing secret or genuinely blocking decision.\n3. Only express uncertainty in your final answer if you have exhausted all available tools.\nDo NOT guess - investigate, recover, verify, or explain the real blocker.',
                 }],
               });
               accumulatedText = '';
@@ -7008,11 +7374,25 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
           }
           const proxyDecision = await reviewAutonomousCompletion(chatId, cleanText);
           if (proxyDecision.action !== 'approve_completion') {
+            completionReviewRejections += 1;
+            if (completionReviewRejections >= 5) {
+              throw new Error('Autonomous completion review did not converge after five corrective turns.');
+            }
             if (fullResponseContent) contents.push(fullResponseContent);
+            const reviewFeedback = [proxyDecision.message, proxyDecision.remainingGoalGap]
+              .filter(Boolean)
+              .join('\n');
+            contents.push({
+              role: 'user',
+              parts: [{
+                text: `[SYSTEM - COMPLETION REVIEW]\nThe completion review rejected the last answer. Continue only if there is concrete remaining work. Use this feedback to choose the next action:\n${reviewFeedback || 'Re-check the user goal and provide the missing evidence.'}`,
+              }],
+            });
             accumulatedText = '';
             accumulatedThought = '';
             continue;
           }
+          completionReviewRejections = 0;
           const lateSteering = this.drainLiveSteering(chatId, onTrace);
           if (lateSteering.length > 0) {
             if (fullResponseContent) contents.push(fullResponseContent);
@@ -7068,7 +7448,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
         if (fullResponseContent) contents.push(fullResponseContent);
 
         const trackerState = (!plannerToolsDisabled && (taskDecomposerUsed || wantsLoopResume || !!survivorState))
-          ? this.readTaskTrackerState((context as any).projectId || (context as any).chatId)
+          ? this.readTaskTrackerState(chatId)
           : '';
         let nudge: string;
         if (noToolCallStreak >= 3) {
@@ -7128,6 +7508,9 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
         office_artifact_builder: { text: 'Generating artifact', type: 'file_edit', iconCategory: 'file_create', argKey: 'format' },
         image_generator: { text: 'Generating image', type: 'file_edit', iconCategory: 'image', argKey: 'prompt' },
         email_manager: { text: 'Managing email', type: 'command', iconCategory: 'computer', argKey: 'subject' },
+        gateway_bridge: { text: 'Using Gateway channel', type: 'communication', iconCategory: 'connector', argKey: 'platform' },
+        connector_mcp: { text: 'Using connected service', type: 'communication', iconCategory: 'connector', argKey: 'connector_id' },
+        slack_controller: { text: 'Slack operation', type: 'communication', iconCategory: 'connector', argKey: 'action' },
         process_manager: { text: 'Managing process', type: 'command', iconCategory: 'terminal', argKey: 'command' },
         network_tools: { text: 'Network operation', type: 'exploration', iconCategory: 'computer', argKey: 'target' },
         file_compression: { text: 'Compressing files', type: 'file_edit', iconCategory: 'file_create', argKey: 'source' },
@@ -7177,7 +7560,6 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
         task_checkpoint: { text: 'Saving progress', type: 'command', iconCategory: 'computer', argKey: 'action' },
         image_asset_search: { text: 'Searching images', type: 'exploration', iconCategory: 'image', argKey: 'query' },
         desktop_control: { text: 'Controlling desktop', type: 'command', iconCategory: 'computer', argKey: 'action' },
-        slack_controller: { text: 'Slack operation', type: 'communication', iconCategory: 'computer', argKey: 'action' },
       };
 
       // Safety detection pattern
@@ -7374,7 +7756,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
         let iconCategory = label.iconCategory || 'computer';
         if (args?.uiIcon) {
           const lowerUiIcon = String(args.uiIcon).toLowerCase();
-          if (['computer', 'agent', 'terminal', 'image', 'clock', 'file_read', 'file_create', 'file_edit', 'folder_read', 'folder_create', 'search', 'web_search', 'verification'].includes(lowerUiIcon)) {
+          if (['computer', 'agent', 'terminal', 'image', 'clock', 'file_read', 'file_create', 'file_edit', 'folder_read', 'folder_create', 'search', 'web_search', 'verification', 'connector'].includes(lowerUiIcon)) {
             iconCategory = lowerUiIcon;
           } else {
             if (['agent', 'bot', 'subagent', 'sub_agent'].includes(lowerUiIcon)) {
@@ -7569,6 +7951,12 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
         const tool = globalToolRegistry.getTool(canonicalToolName);
         let effectiveArgs = normalizeRegistryToolArgs(canonicalToolName, call.args);
         let preflightError = '';
+        const customAgentToolSet = isCustomAgentRuntimeContext(context) && (context as any)._customAgentProfile
+          ? getCustomAgentAllowedToolNames((context as any)._customAgentProfile)
+          : null;
+        if (customAgentToolSet && !customAgentToolSet.has(canonicalToolName)) {
+          preflightError = `Tool ${canonicalToolName} is not attached to this custom agent profile.`;
+        }
         if (tool) {
           const validation = validateRegistryToolArgs(tool, effectiveArgs);
           if (validation.success) {
@@ -7662,8 +8050,8 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
               // === LIFETIME BRAIN: Auto-ingest every tool result (fire-and-forget) ===
               try {
                 lifetimeBrain.autoIngestToolResult({
-                  chatId: context.projectId,
-                  projectId: context.projectId,
+                  chatId,
+                  projectId: persistenceProjectId,
                   toolName: canonicalToolName,
                   args: (effectiveArgs || {}) as Record<string, any>,
                   result: toolOutput,
@@ -7672,7 +8060,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
                 // === SYNAPSE GRAPH: Feed tool results for topic tracking ===
                 if ((context as any).disableLongTermMemory !== true && (context as any).synapseGraphEnabled === true) {
                   try {
-                    const _sg2 = getSynapseGraphForChat(context.projectId);
+                    const _sg2 = getSynapseGraphForChat(chatId);
                     _sg2.registerToolResult(
                       canonicalToolName,
                       (effectiveArgs || {}) as Record<string, any>,
@@ -7986,7 +8374,11 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
               }
 
               // ═══ LIVE CONSOLE OUTPUT: Emit real shell stdout/stderr to UI ═══
-              if (['system_shell', 'workspace_run_command', 'workspace_execute_script', 'workspace_verify_code', 'background_task', 'process_manager'].includes(call.name) && toolOutput) {
+              // terminal_background already emits authoritative streaming and
+              // final console traces.  Synthesizing another one here creates
+              // duplicate cards and can make a completed command look live.
+              const terminalTraceAlreadyEmitted = Boolean(toolOutput?._consoleTraceEmitted);
+              if (!terminalTraceAlreadyEmitted && ['system_shell', 'workspace_run_command', 'workspace_execute_script', 'workspace_verify_code', 'background_task', 'process_manager'].includes(call.name) && toolOutput) {
                 const scalarResult = typeof toolOutput?.result === 'string' || typeof toolOutput?.result === 'number'
                   ? toolOutput.result
                   : '';
@@ -8040,8 +8432,8 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
               // === LIFETIME BRAIN: Record tool errors for permanent learning ===
               try {
                 lifetimeBrain.recordError({
-                  chatId: context.projectId,
-                  projectId: context.projectId,
+                  chatId,
+                  projectId: persistenceProjectId,
                   tool: canonicalToolName,
                   error: err.message,
                 });
@@ -8250,7 +8642,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
         // === CONVERSATION LEDGER: Record to persistent structured log ===
         try {
           ledger.recordToolCall({
-            chatId: context.projectId,
+            chatId,
             toolName: call.name,
             args: args || {},
             result: toolOutput,
@@ -8435,7 +8827,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
 
     } catch { /* self-assessment is advisory */ }
 
-    const fallbackText = loopAccumulatedText || ' ';
+    const fallbackText = loopAccumulatedText || 'The agent reached its execution limit before producing a final answer.';
 
     const fallbackEvt = { type: 'answer', text: fallbackText };
     trace.push(fallbackEvt);

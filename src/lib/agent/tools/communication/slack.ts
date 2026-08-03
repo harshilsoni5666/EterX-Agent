@@ -6,6 +6,7 @@ import { resolveReadableWorkspacePathForContext } from '../../workspace/path_res
 import { enforceToolCapability } from '../security/tool_policy';
 import { loadOptionalModule } from './optional_module';
 import { requireOutboundApproval } from './outbound_approval';
+import { getConnectorRecord } from '../../../connectors/store';
 
 const SLACK_WRITE_ACTIONS = new Set([
   'send',
@@ -34,11 +35,9 @@ if (!WebClient) console.warn('[Slack] @slack/web-api not yet available.');
 // ─── Token resolution: OAuth file > env var ──────────────
 async function getSlackToken(): Promise<string | null> {
   try {
-    const connectorsFile = path.resolve(process.cwd(), '.workspaces', '.connectors.json');
-    if (await fs.pathExists(connectorsFile)) {
-      const connectors = await fs.readJson(connectorsFile);
-      if (connectors?.slack?.accessToken) return connectors.slack.accessToken;
-    }
+    const record = getConnectorRecord('slack');
+    const token = record?.credentials?.accessToken || record?.credentials?.botToken;
+    if (record?.connected && token) return token;
   } catch { }
   return process.env.SLACK_ACCESS_TOKEN || null;
 }

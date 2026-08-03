@@ -4,7 +4,8 @@ import fs from 'fs-extra';
 import { apiKeyPool, KeyLease } from '../api-key-pool';
 import { interAgentMailbox } from './inter_agent_comm';
 import { getEterxWorkspaceDir } from '../storage-paths';
-import type { MainAgentMode, MainAgentProvider, MainAgentThinkingLevel } from '../model-routing';
+import { stableScopeSegment } from '../context-scope';
+import { getMainAgentModelConfig, type MainAgentMode, type MainAgentProvider, type MainAgentThinkingLevel } from '../model-routing';
 
 /**
  * Sub-Agent Spawner v5 — Parallel API Keys, Fire-and-Forget, Non-Blocking
@@ -40,6 +41,15 @@ export type SubAgentTaskSpec = {
 
 const MAX_PENDING_RESULTS_PER_PROJECT = 100;
 const MAX_PENDING_RESULTS_TOTAL = 1000;
+const DEFAULT_MAX_SUB_AGENTS = 5;
+
+const limitConfiguredTasks = (tasks: SubAgentTaskSpec[], context: ProjectContext): SubAgentTaskSpec[] => {
+  const configured = Number((context as any)?.maxSubAgents);
+  const limit = Number.isFinite(configured)
+    ? Math.max(1, Math.floor(configured))
+    : DEFAULT_MAX_SUB_AGENTS;
+  return tasks.slice(0, limit);
+};
 
 const AGENTS_DIR = getEterxWorkspaceDir('agents');
 const MAX_SUB_AGENT_TRACE_LOGS = 400;
@@ -71,9 +81,7 @@ async function writeJsonAtomic(filePath: string, data: unknown): Promise<void> {
 }
 
 function safeAgentSegment(value: string, fallback: string): string {
-  return String(value || fallback)
-    .replace(/[^a-zA-Z0-9_-]/g, '_')
-    .slice(0, 80) || fallback;
+  return stableScopeSegment(String(value || fallback), 80);
 }
 
 // === PER-CHAT CANCELLATION FLAGS ===
@@ -691,6 +699,10 @@ export class SubAgentSpawner {
       isSubAgent: true,
       subAgentId: agentId,
       subAgentChatId,
+      // Parent projectId remains the routing/coordination scope. All
+      // persisted conversation state must use the child thread identity.
+      memoryScopeId: subAgentChatId,
+      conversationScopeId: subAgentChatId,
       abortSignal: abortController.signal,
     };
     if (modelOverride?.mode) {
@@ -753,11 +765,17 @@ export class SubAgentSpawner {
 
     try {
       // Import createIsolatedClient dynamically to avoid circular deps
-      const { createIsolatedClient } = await import('../Agent');
-      lease = apiKeyPool.leaseSubAgentKey(context.projectId, name);
-      if (!lease) throw new Error('No API keys available for sub-agent');
       const subAgentMode = (context as any).selectedModelMode || 'fast';
-      const subAgentClient = createIsolatedClient(lease.apiKey, subAgentMode, (context as any).runtimeSettings);
+      const subAgentProvider = getMainAgentModelConfig(subAgentMode, (context as any).runtimeSettings).provider;
+      // Gemini sub-agents use the isolated Gemini pool. External and local
+      // providers use their own runtime settings and must not be blocked by a
+      // missing Gemini lease.
+      if (subAgentProvider === 'gemini') {
+        lease = apiKeyPool.leaseSubAgentKey(context.projectId, name);
+        if (!lease) throw new Error('No Gemini API keys available for sub-agent');
+      }
+      const { createIsolatedClient } = await import('../Agent');
+      const subAgentClient = createIsolatedClient(lease?.apiKey || '', subAgentMode, (context as any).runtimeSettings);
       
       const result = await subAgentClient.executeMessageLoop(
         subAgentContext,
@@ -934,7 +952,7 @@ export class SubAgentSpawner {
       return { agentId, name, result: instance.result!, success: false, durationMs, traceLog };
     } finally {
       parentAbortSignal?.removeEventListener('abort', abortFromParent);
-      apiKeyPool.releaseSubAgentKey(context.projectId, name);
+      if (lease) apiKeyPool.releaseSubAgentKey(context.projectId, name);
       this.activeAgents.delete(agentId);
     }
   }
@@ -951,9 +969,10 @@ export class SubAgentSpawner {
     parentContext?: string,
     onTrace?: (trace: any) => void
   ): { agentNames: string[], message: string } {
-    const teamSize = tasks.length;
+    const activeTasks = limitConfiguredTasks(tasks, context);
+    const teamSize = activeTasks.length;
     const reservedNames = new Set<SubAgentName>();
-    const agentNames = tasks.map((t) => {
+    const agentNames = activeTasks.map((t) => {
       const name = this.resolveAgentName(context.projectId, t.name, reservedNames);
       reservedNames.add(name);
       return name;
@@ -964,7 +983,7 @@ export class SubAgentSpawner {
       status: 'coordinating',
       progress: `Managing ${teamSize} planned sub-agent(s)`,
     });
-    tasks.forEach((taskItem, index) => {
+    activeTasks.forEach((taskItem, index) => {
       interAgentMailbox.registerAgent(context.projectId, agentNames[index], {
         role: 'sub_agent',
         task: taskItem.task,
@@ -979,7 +998,7 @@ export class SubAgentSpawner {
           text: `Launching ${ teamSize } parallel agents`,
           secondary: agentNames.join(' · '),
           spawnedAgents: agentNames,
-          agentDetails: tasks.map((t, i) => ({
+          agentDetails: activeTasks.map((t, i) => ({
             name: agentNames[i],
             task: t.task.substring(0, 100),
             status: 'running'
@@ -988,7 +1007,7 @@ export class SubAgentSpawner {
     }
 
     // Launch all agents in parallel — each with a staggered start and different API key
-    tasks.forEach((t, index) => {
+    activeTasks.forEach((t, index) => {
       const name = agentNames[index];
       const runKey = `${ context.projectId }:${ name }:${ Date.now() }:${ index }`;
 
@@ -1041,8 +1060,9 @@ export class SubAgentSpawner {
     failCount: number
   }> {
     const startTime = Date.now();
+    const activeTasks = limitConfiguredTasks(tasks, context);
     const reservedNames = new Set<SubAgentName>();
-    const agentNames = tasks.map((t) => {
+    const agentNames = activeTasks.map((t) => {
       const name = this.resolveAgentName(context.projectId, t.name, reservedNames);
       reservedNames.add(name);
       return name;
@@ -1051,9 +1071,9 @@ export class SubAgentSpawner {
     interAgentMailbox.registerAgent(context.projectId, 'Main', {
       role: 'main',
       status: 'coordinating',
-      progress: `Waiting for ${tasks.length} parallel sub-agent(s)`,
+      progress: `Waiting for ${activeTasks.length} parallel sub-agent(s)`,
     });
-    tasks.forEach((taskItem, index) => {
+    activeTasks.forEach((taskItem, index) => {
       interAgentMailbox.registerAgent(context.projectId, agentNames[index], {
         role: 'sub_agent',
         task: taskItem.task,
@@ -1065,13 +1085,13 @@ export class SubAgentSpawner {
     if (onTrace) {
       onTrace({
         type: 'command',
-        text: `Spawning ${ tasks.length } parallel agents`,
+        text: `Spawning ${ activeTasks.length } parallel agents`,
         secondary: agentNames.join(' + '),
         spawnedAgents: agentNames
       });
     }
 
-    const promises = tasks.map((t, index) => {
+    const promises = activeTasks.map((t, index) => {
       const name = agentNames[index];
       return new Promise<any>(async (resolve) => {
         if (isCancelled(context.projectId)) {
@@ -1110,7 +1130,7 @@ export class SubAgentSpawner {
     if (onTrace) {
       onTrace({
         type: 'command',
-        text: `${ successCount }/${ tasks.length } agents completed`,
+        text: `${ successCount }/${ activeTasks.length } agents completed`,
         secondary: `${ (totalDurationMs / 1000).toFixed(1) }s total`
       });
     }

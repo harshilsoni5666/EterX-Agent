@@ -254,7 +254,7 @@ export const workspaceReadTool: ToolDefinition = {
 
     const stats = await fs.stat(filePath);
     if (stats.size > 10 * 1024 * 1024) {
-      throw new Error(`File too large (${ (stats.size / 1024 / 1024).toFixed(1) }MB). Use shell_command with "Get-Content -First N" or "Select-Object" to read portions.`);
+      throw new Error(`File too large (${ (stats.size / 1024 / 1024).toFixed(1) }MB). Use workspace_read_file with startLine/endLine or maxLines to read a targeted portion.`);
     }
 
     const extension = path.extname(filePath).toLowerCase().slice(1);
@@ -327,7 +327,7 @@ export const workspaceWriteTool: ToolDefinition = {
   description: 'Create a NEW file or append to an existing file and show the created-file preview in the UI. For modifying an existing file, use workspace_edit_file instead of rewriting it.',
   category: 'workspace',
   inputSchema: z.object({
-    filename: z.string().describe('File path — absolute or relative to workspace'),
+    filename: z.string().describe('File path — absolute or relative to the active workspace. When no user workspace is selected, relative new files go to the runtime scratch root.'),
     content: z.string().describe('Content to write'),
     append: z.boolean().optional().describe('Set to true to append to the file instead of overwriting. EXTREMELY helpful for the auto-chunk workflow.'),
     overwrite: z.boolean().optional().describe('Explicitly allow replacing an existing file. Defaults to false because this tool is intended for new files.')
@@ -389,7 +389,7 @@ export const workspaceWriteTool: ToolDefinition = {
     if (isDesktopHelperScript(filePath)) {
       return {
         success: false,
-        error: '⚠️ HINT: Creating scripts directly on the Desktop root is discouraged. Use .workspaces/sandbox/ for temporary scripts, or place project scripts in the project directory. If this is intentional, use workspace_run_command to write it manually.',
+        error: '⚠️ HINT: Creating scripts directly on the Desktop root is discouraged. Use the runtime scratch root for temporary scripts, or place project scripts in the explicitly selected project directory. If this is intentional, use workspace_run_command to write it manually.',
         path: filePath,
       };
     }
@@ -453,10 +453,10 @@ export const workspaceWriteTool: ToolDefinition = {
 
 export const workspaceListDirectoryTool: ToolDefinition = {
   name: 'workspace_list_directory',
-  description: 'List files and directories at ANY path on the local system. Use absolute paths for Desktop, Documents, etc. Use relative for workspace.',
+  description: 'List files and directories in the current workspace or another path permitted by the active runtime. Use absolute paths only when the user explicitly names a location; use relative paths for the workspace.',
   category: 'workspace',
   inputSchema: z.object({
-    directory: z.string().optional().describe('Absolute OS path or relative workspace directory. Default: workspace root'),
+    directory: z.string().optional().describe('Absolute OS path or relative workspace directory. Default: active user workspace, or the runtime scratch root when no user workspace is selected; never the EterX source checkout.'),
     depth: z.number().int().min(1).max(5).optional().describe('Maximum depth for recursive listing (default: 1 = current dir only, 2 = one level deep)')
   }),
   outputSchema: z.object({
@@ -520,7 +520,7 @@ export const workspaceListDirectoryTool: ToolDefinition = {
     });
 
     if (entries.length > 500) {
-      items.push(`... [Truncated ${ entries.length - 500 } additional items. Use shell_command with "Get-ChildItem" for full listing]`);
+      items.push(`... [Truncated ${ entries.length - 500 } additional items. Narrow the directory/depth or use workspace_find_files for discovery.]`);
     }
 
     const entriesInfo = await Promise.all(entries.slice(0, 500).map(async e => {
@@ -553,11 +553,11 @@ export const workspaceListDirectoryTool: ToolDefinition = {
 // ════════════════════════════════════════════════════════════════════
 export const workspaceSearchTextTool: ToolDefinition = {
   name: 'workspace_search_text',
-  description: 'Search for a text pattern across files using ripgrep (rg). Fast, respects .gitignore, supports regex. Equivalent to rg -n. For complex searches, use shell_command directly with rg.',
+  description: 'Search for a text pattern across files using ripgrep (rg). Fast, respects .gitignore, and supports regex. Use workspace_run_command only when the search needs custom shell logic.',
   category: 'workspace',
   inputSchema: z.object({
     pattern: z.string().describe('String or regex pattern to search for'),
-    directory: z.string().optional().describe('Directory to search in (absolute or relative). Default: workspace'),
+    directory: z.string().optional().describe('Directory to search in (absolute or relative). Default: active user workspace, or the runtime scratch root when no user workspace is selected; never the EterX source checkout.'),
     fileType: z.string().optional().describe('File type filter (e.g. "ts", "py", "js"). Maps to rg --type'),
     glob: z.string().optional().describe('Glob filter for files (e.g. "*.tsx", "!**/node_modules/**")'),
     caseSensitive: z.boolean().optional().describe('Case-sensitive search (default: smart case)'),
