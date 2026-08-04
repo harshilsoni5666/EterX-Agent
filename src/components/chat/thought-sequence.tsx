@@ -1287,7 +1287,13 @@ const TrpMarkdown = React.memo(({ content }: { content: string }) => (
     [&_th]:bg-white/[0.04] [&_th]:text-[#9A9388] [&_th]:font-semibold [&_th]:px-2.5 [&_th]:py-1.5 [&_th]:text-left [&_th]:border [&_th]:border-white/[0.06]
     [&_td]:px-2.5 [&_td]:py-1.5 [&_td]:border [&_td]:border-white/[0.045] [&_td]:text-[#C0B8B0]
   ">
-    <ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins}>{content}</ReactMarkdown>
+    <ReactMarkdown
+      remarkPlugins={remarkPlugins}
+      rehypePlugins={rehypePlugins}
+      components={markdownComponents}
+    >
+      {normalizeMarkdownForRendering(content)}
+    </ReactMarkdown>
   </div>
 ));
 TrpMarkdown.displayName = 'TrpMarkdown';
@@ -3226,8 +3232,8 @@ const ActionChip = ({
   const preview = useMemo(() => {
     if (log.toolResult !== undefined && log.toolResult !== null) {
       const EXCLUDED_PREVIEW_TOOLS = new Set([
-        'skill_loader', 'screenshot_capture', 'system_automation', 'self_improve',
-        'memory_v2', 'api_hub', 'api_key_vault', 'env_manager', 'desktop_control',
+        'skill_loader', 'screenshot_capture', 'system_automation',
+        'memory_v2', 'desktop_control',
         'browser_control', 'checkpoint', 'computer', 'screen_agent'
       ]);
       const toolName = log.tool || log.name || '';

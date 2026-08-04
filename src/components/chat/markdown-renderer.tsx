@@ -387,6 +387,72 @@ const unwrapAccidentalMarkdownFence = (value: string) => {
   return inner;
 };
 
+// Models occasionally start a Markdown fence and then continue writing prose
+// without closing it. Letting remark parse that entire tail as code makes a
+// normal answer appear as a red monospace wall. Preserve real code fences,
+// but unwrap an unfinished fence when its body is clearly prose/Markdown.
+const normalizeUnclosedMarkdownFence = (value: string) => {
+  const lines = value.split('\n');
+  let openerIndex = -1;
+  let openerChar = '';
+  let openerLength = 0;
+  let openerInfo = '';
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const opener = line.match(/^\s*(`{3,}|~{3,})([^\n]*)$/);
+    if (!opener) continue;
+
+    const marker = opener[1];
+    const info = opener[2].trim().split(/\s+/)[0].toLowerCase();
+    if (openerIndex < 0) {
+      openerIndex = index;
+      openerChar = marker[0];
+      openerLength = marker.length;
+      openerInfo = info;
+      continue;
+    }
+
+    if (marker[0] === openerChar && marker.length >= openerLength) {
+      openerIndex = -1;
+      openerChar = '';
+      openerLength = 0;
+      openerInfo = '';
+    }
+  }
+
+  if (openerIndex < 0) return value;
+
+  const body = lines.slice(openerIndex + 1).join('\n').trim();
+  const isAccidentalLanguage = ACCIDENTAL_MARKDOWN_FENCE_LANGUAGES.has(openerInfo);
+  const shouldUnwrap = isAccidentalLanguage || !looksLikeCodePayload(body, openerInfo);
+  if (shouldUnwrap) {
+    lines.splice(openerIndex, 1);
+  } else {
+    lines.push(`${ openerChar.repeat(openerLength) }`);
+  }
+  return lines.join('\n');
+};
+
+const looksLikeStandaloneLatex = (line: string) => {
+  const trimmed = line.trim();
+  if (!trimmed || trimmed.includes('$') || trimmed.startsWith('```') || trimmed.startsWith('~~~')) return false;
+  if (/^(?:[-+*]|\d{1,2}[.)]|#{1,6})\s/.test(trimmed)) return false;
+  const hasLatexCommand = /\\[A-Za-z]+/.test(trimmed);
+  const hasMathOperator = /(?:=|\^|_|\\(?:frac|int|sum|cdot|times|approx|infty|sqrt|left|right)\b)/.test(trimmed);
+  const wordCount = trimmed.match(/[A-Za-z]{2,}/g)?.length || 0;
+  return hasLatexCommand && hasMathOperator && trimmed.length <= 320 && wordCount <= 28;
+};
+
+const normalizeStandaloneLatexOutsideCode = (value: string) =>
+  value.split(CODE_FENCE_SPLIT).map((chunk) => {
+    if (/^(```|~~~)/.test(chunk)) return chunk;
+    return chunk
+      .split('\n')
+      .map(line => looksLikeStandaloneLatex(line) ? `$$\n${ line.trim() }\n$$` : line)
+      .join('\n');
+  }).join('');
+
 const SYSTEM_TAGS = [
   'thought',
   'deep_work_action',
@@ -434,7 +500,14 @@ const stripSystemTagsOutsideCode = (value: string) =>
 
 export const normalizeMarkdownForRendering = (value: string) => {
   if (!value) return '';
-  return linkifyLocalFilePaths(repairMarkdownTablesOutsideCode(normalizeLatexOutsideCode(stripSystemTagsOutsideCode(unwrapAccidentalMarkdownFence(value))))
+  const normalized = normalizeStandaloneLatexOutsideCode(
+    normalizeLatexOutsideCode(
+      stripSystemTagsOutsideCode(
+        normalizeUnclosedMarkdownFence(unwrapAccidentalMarkdownFence(value)),
+      ),
+    ),
+  );
+  return linkifyLocalFilePaths(repairMarkdownTablesOutsideCode(normalized)
     .replace(/\n{3,}(\$\$)/g, '\n\n$1')
     .replace(/(\$\$)\n{3,}/g, '$1\n\n'));
 };
@@ -1389,11 +1462,18 @@ const makeHeading = (Tag: keyof JSX.IntrinsicElements, className: string) => {
 };
 
 export const markdownComponents = {
-  span: ({ node, className = '', children, ...props }: any) => (
-    String(className).split(/\s+/).includes('katex-display')
+  span: ({ node, className = '', title: _title, children, ...props }: any) => {
+    const classes = String(className).split(/\s+/).filter(Boolean);
+    // rehype-katex intentionally keeps rendering after a parse failure. Its
+    // default error span exposes a red parser message and a browser tooltip;
+    // keep the source readable as ordinary answer text instead.
+    if (classes.includes('katex-error')) {
+      return <span className="eterx-katex-fallback" {...props}>{children}</span>;
+    }
+    return classes.includes('katex-display')
       ? <ResponsiveMath className={className} {...props}>{children}</ResponsiveMath>
-      : <span className={className} {...props}>{children}</span>
-  ),
+      : <span className={className} {...props}>{children}</span>;
+  },
   code({ inline, className, children, node, ...props }: any) {
     const match = /language-([^\s]+)/.exec(className || '');
     const language = match ? match[1].toLowerCase() : '';
