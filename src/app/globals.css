@@ -6683,6 +6683,129 @@
   background: rgba(255, 255, 255, .035) !important;
 }
 
+/* Browser control uses a flat institutional settings treatment: no hero
+   panel, status pill, or decorative metric cards. */
+.eterx-browser-service-card {
+  overflow: visible;
+  border: 0 !important;
+  border-radius: 0;
+  padding: 0;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.eterx-browser-service-card__header {
+  align-items: flex-start;
+  gap: 20px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, .10);
+}
+
+.eterx-browser-service-card__status-text {
+  flex: 0 0 auto;
+  padding-top: 2px;
+  color: #9b9b9b;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.4;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+}
+
+.eterx-browser-service-card__meta {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0;
+  margin-top: 0;
+  border-bottom: 1px solid rgba(255, 255, 255, .10);
+}
+
+.eterx-browser-service-card__meta > div {
+  border: 0 !important;
+  border-radius: 0;
+  padding: 12px 14px 12px 0;
+  background: transparent !important;
+}
+
+.eterx-browser-service-card__meta > div + div {
+  border-left: 1px solid rgba(255, 255, 255, .10) !important;
+  padding-left: 14px;
+}
+
+.eterx-browser-service-card__meta-label {
+  color: #858585 !important;
+}
+
+.eterx-browser-service-card__meta-value {
+  color: #dedede !important;
+}
+
+.eterx-browser-service-card__actions {
+  margin-top: 14px;
+}
+
+.eterx-browser-service-card__actions .eterx-browser-runtime-card__button {
+  border-color: #3b3b3b !important;
+  background: transparent !important;
+  color: #d6d6d6 !important;
+  box-shadow: none !important;
+}
+
+.eterx-browser-service-card__actions .eterx-browser-runtime-card__button:hover:not(:disabled) {
+  border-color: #707070 !important;
+  background: #242424 !important;
+}
+
+.eterx-browser-service-card__actions .eterx-browser-runtime-card__button--signed {
+  border-color: #ededed !important;
+  background: #ededed !important;
+  color: #151515 !important;
+}
+
+.eterx-browser-service-card__actions .eterx-browser-runtime-card__button--signed:hover:not(:disabled) {
+  border-color: #ffffff !important;
+  background: #ffffff !important;
+}
+
+.eterx-browser-service-card__note {
+  margin-top: 11px;
+  border-top: 0;
+  padding-top: 0;
+  color: #777 !important;
+}
+
+.eterx-browser-runtime-card__message,
+.eterx-browser-runtime-card__warning {
+  color: #a0a0a0 !important;
+}
+
+:root[data-theme="light"] .eterx-settings-panel .eterx-browser-service-card {
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+@media (max-width: 720px) {
+  .eterx-browser-service-card__meta {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .eterx-browser-service-card__meta > div:nth-child(3) {
+    border-left: 0 !important;
+    border-top: 1px solid rgba(255, 255, 255, .10) !important;
+    padding-left: 0;
+  }
+
+  .eterx-browser-service-card__meta > div:nth-child(4) {
+    border-top: 1px solid rgba(255, 255, 255, .10) !important;
+  }
+}
+
+@media (max-width: 480px) {
+  .eterx-browser-service-card {
+    padding: 0;
+  }
+}
+
 /* Computer Use is a compact operational setting. Keep the actionable rows
    high contrast while letting the surrounding settings surface show through. */
 .eterx-computer-control-plane {

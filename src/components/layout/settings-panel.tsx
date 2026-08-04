@@ -1847,6 +1847,68 @@ const MANUAL_GUIDES: Record<string, { title: string; intro: string; steps: Array
   },
 };
 
+type ManualDocumentSection = {
+  title: string;
+  paragraphs: string[];
+  bullets?: string[];
+  subSections?: Array<{ title: string; text: string }>;
+};
+
+const FULL_MANUAL_SECTIONS: ManualDocumentSection[] = [
+  { title: 'Connecting a Model and API Provider', paragraphs: ['To connect a model and its API provider, first open the Models section and select the provider whose models you want to use.', 'By default, a provider may not display its complete or latest model list. To load all currently available models, you must add at least one API key for that provider.', 'Open the API section, select the relevant provider, and add at least one valid API key. After the API key has been added successfully, return to the Models section. The complete and updated list of models available from that provider will now appear.', 'Select the model you want to use and add it to your Custom Models list. You can add models from multiple providers and manage them together within the same custom list.', 'Once a model has been added, check the chat input bar. From there, you can select your preferred model, configure its thinking level, and adjust any other available model settings.'] },
+  { title: 'Connecting External Services', paragraphs: ['External services, such as web search, image generation, and other integrations, can be configured from the Settings tab.', 'Open Settings, navigate to External Services, and select the appropriate provider for the service you want to use. Add the required API key or authentication credentials to complete the connection.', 'Once the credentials have been validated, the external service will be ready to use.', 'Depending on the selected provider, you may also be able to configure additional permissions, access controls, or provider-specific settings.'] },
+  { title: 'Selecting an Agent and Operating Mode', paragraphs: ['From the chat input bar, you can select a built-in or custom agent.', 'The agent selector allows you to choose between the following operating modes:'], bullets: ['Chat Mode', 'Agent Mode', 'Autonomous Mode'], subSections: [{ title: 'Chat Mode', text: 'Chat Mode is designed for direct conversations and standard interactions with the selected model or agent.' }, { title: 'Agent Mode', text: 'Agent Mode allows the selected agent to use its available tools, instructions, memory, and connected services to complete more advanced tasks.' }, { title: 'Autonomous Mode', text: 'Autonomous Mode uses a proxy agent that works on your behalf. The proxy agent communicates with, guides, and supervises the main agent while the task is being completed. Select Autonomous Mode and send your first request; a separate proxy-agent panel will appear when the workflow begins.' }], },
+  { title: 'Communicating with the Proxy Agent', paragraphs: ['You can communicate directly with the side proxy agent while working in Autonomous Mode.', 'The proxy agent manages proxy-related instructions, task supervision, preferences, and operating rules. You can provide instructions for the current task or define rules that should be followed during future workflows.', 'For example, you can tell the proxy agent:'], bullets: ['How frequently it should intervene', 'What actions require your approval', 'Which rules the main agent must always follow', 'How it should handle errors or uncertain results', 'How much autonomy the main agent should receive'], },
+  { title: 'Background Tasks', paragraphs: ['To enable background task execution, open Settings, navigate to General, and turn on Background Tasks.', 'When background execution is enabled, supported tasks can continue running even after the main application window has been closed.', 'Background execution may depend on your operating system, application permissions, power settings, and the type of task being performed.'] },
+  { title: 'Scheduling Tasks', paragraphs: ['To create a scheduled task, open the Tasks section within the application. Select the option to create a new task, then configure:'], bullets: ['The task instructions', 'The execution date and time', 'The recurrence schedule, if required', 'The agent or model that should perform the task', 'Any required tools, permissions, or connectors'], subSections: [{ title: 'Task management', text: 'The Tasks section allows you to view and manage active tasks, upcoming scheduled tasks, tasks that are currently running, completed tasks, task results, and execution history. Scheduled and completed tasks may also appear in the sidebar history so you can reopen and review them easily.' }] },
+  { title: 'Running Multiple Agents in Parallel', paragraphs: ['The application supports running multiple agents in parallel.', 'This allows different agents to work on separate tasks or different parts of the same larger task at the same time.', 'For example, one agent may perform research while another analyzes files, writes documentation, tests code, or reviews the results. Parallel execution can help complete complex workflows more efficiently.'] },
+  { title: 'Using Sub-Agents', paragraphs: ['Agents can create sub-agents to handle specialized, independent, or smaller parts of a task.', 'You can open an individual sub-agent to:'], bullets: ['View its current activity', 'Review its instructions', 'Monitor its progress', 'Communicate with it', 'Change its task', 'Stop its execution'], },
+  { title: 'Creating a Custom Agent', paragraphs: ['To create your own custom agent, open the Agents section and start a conversation with the Builder Agent.', 'Describe the purpose of the agent and explain what you want it to do. You may provide information such as:'], bullets: ['The agent’s role', 'The tasks it should perform', 'Its preferred behavior', 'The tools it should use', 'The models it should access', 'Its permissions', 'Its response style', 'Its operating rules', 'Its memory and context requirements'], subSections: [{ title: 'After creation', text: 'The Builder Agent will use your instructions to create an advanced custom agent. Once created, it will appear in the agent selector and can be selected directly from the chat input bar.' }] },
+  { title: 'Selecting a Custom Agent', paragraphs: ['Open the agent selector from the chat input bar and choose your custom agent from the available list.', 'After selecting the agent, choose the appropriate operating mode and send your request.', 'The custom agent will follow the tools, instructions, permissions, and behavior configured during its creation.'] },
+  { title: 'Mounting and Using Connectors', paragraphs: ['The application supports conversational connectors and other service integrations.', 'Connectors allow agents to interact with supported external platforms, services, accounts, and data sources.', 'You can connect a supported service by providing the required access token, credentials, or authorization permissions. You may also ask the main agent to guide you through connector setup or complete supported parts of the connection process on your behalf.', 'Once a connector has been mounted and properly authorized, agents may use it to:'], bullets: ['Retrieve information', 'Search connected services', 'Access permitted files or data', 'Perform supported actions', 'Complete tasks across connected applications', 'Use connected information during conversations'], },
+  { title: 'Connectors in Autonomous and Scheduled Tasks', paragraphs: ['When sufficient permissions are available, agents may use mounted connectors while performing autonomous, background, or scheduled tasks.', 'For example, an agent may use a connector to retrieve information, process connected data, perform an approved action, or complete a scheduled workflow.', 'Review connector permissions carefully and provide only the level of access required for the task.'] },
+  { title: 'Checking for Application Updates', paragraphs: ['You can check for application updates at any time.', 'Open Settings, navigate to the Updates tab, and select Check for Updates.', 'The application will check whether a newer version is available.', 'If an update is available, the application will notify you and provide the available update options. Depending on your settings, the update may be downloaded or installed automatically, or the application may ask for your approval before continuing.', 'Follow the on-screen instructions to complete the update.'] },
+  { title: 'Customizing the Application', paragraphs: ['The Settings section provides a wide range of options for customizing the application.', 'Review each settings category and adjust the application according to your preferences and workflow.', 'Changes will be applied based on the selected options, allowing you to personalize the application, agent behavior, interface, permissions, and overall workflow.'] },
+];
+
+const UserManualOverlay: React.FC<{ onClose: () => void }> = ({ onClose }) => {
+  const [activeSection, setActiveSection] = useState(0);
+  const [query, setQuery] = useState('');
+  const visibleSections = FULL_MANUAL_SECTIONS
+    .map((section, index) => ({ section, index }))
+    .filter(({ section }) => `${section.title} ${section.paragraphs.join(' ')} ${(section.bullets || []).join(' ')}`.toLowerCase().includes(query.trim().toLowerCase()));
+
+  const jumpToSection = (index: number) => {
+    setActiveSection(index);
+    document.getElementById(`manual-section-${index}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
+  return (
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[100001] flex items-start justify-center bg-black/55 px-3 pb-4 pt-12 backdrop-blur-md sm:px-6 sm:pb-6 sm:pt-14">
+      <motion.div initial={{ opacity: 0, y: 18, scale: 0.98 }} animate={{ opacity: 1, y: 0, scale: 1 }} transition={{ duration: 0.22 }} className="relative flex h-[min(860px,calc(100vh-72px))] w-[min(1180px,calc(100vw-24px))] flex-col overflow-hidden rounded-2xl border border-white/[0.13] bg-[#151515] shadow-[0_24px_90px_rgba(0,0,0,0.72)]">
+        <header className="flex shrink-0 items-center justify-between border-b border-white/[0.09] bg-[#1B1B1B]/95 px-5 py-4 backdrop-blur-xl sm:px-7">
+          <div className="min-w-0"><div className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#76B9FF]">EterX-Agent documentation</div><h2 className="mt-1 truncate text-[19px] font-semibold tracking-[-0.02em] text-[#F4F4F4] sm:text-[21px]">Application Setup and Usage Guide</h2><p className="mt-1 hidden text-[12px] text-[#8F8F8F] sm:block">Everything you need to connect, configure, and operate the app.</p></div>
+          <button type="button" onClick={onClose} className="ml-4 shrink-0 rounded-lg border border-white/[0.1] px-3 py-2 text-[12px] font-medium text-[#D8D8D8] transition-colors hover:bg-white/[0.07]">Close</button>
+        </header>
+        <div className="flex min-h-0 flex-1">
+          <aside className="hidden w-[265px] shrink-0 flex-col border-r border-white/[0.08] bg-[#181818] lg:flex">
+            <div className="border-b border-white/[0.07] p-4"><div className="mb-3 text-[10px] font-bold uppercase tracking-[0.16em] text-[#777]">Contents</div><div className="relative"><Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#777]" /><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search the manual" className="h-9 w-full rounded-lg border border-white/[0.09] bg-[#121212] pl-8 pr-3 text-[12px] text-[#F1F1F1] outline-none placeholder:text-[#666] focus:border-[#3D9BFF]/50" /></div></div>
+            <nav className="eterx-scrollbar flex-1 overflow-y-auto p-3">{visibleSections.map(({ section, index }) => <button key={section.title} type="button" onClick={() => jumpToSection(index)} className={`mb-1 flex w-full items-start gap-2.5 rounded-lg px-3 py-2.5 text-left transition-colors ${activeSection === index ? 'bg-[#2B3B4D] text-[#F1F1F1]' : 'text-[#A2A2A2] hover:bg-white/[0.05] hover:text-[#F1F1F1]'}`}><span className={`mt-0.5 text-[10px] font-bold ${activeSection === index ? 'text-[#76B9FF]' : 'text-[#666]'}`}>{String(index + 1).padStart(2, '0')}</span><span className="text-[12px] leading-4">{section.title}</span></button>)}</nav>
+            <div className="border-t border-white/[0.07] p-4 text-[11px] leading-5 text-[#777]">Read in order for first-time setup, then use Contents to jump to a feature.</div>
+          </aside>
+          <main className="eterx-scrollbar min-w-0 flex-1 overflow-y-auto px-5 py-6 sm:px-9 sm:py-8">
+            <div className="mx-auto max-w-[790px]">
+              <div className="mb-8 rounded-xl border border-[#3D9BFF]/20 bg-gradient-to-br from-[#203247] to-[#1C232D] px-5 py-5 sm:px-6"><div className="text-[10px] font-bold uppercase tracking-[0.16em] text-[#8CC7FF]">New here?</div><h3 className="mt-2 text-[17px] font-semibold text-[#F1F1F1]">Follow this setup path</h3><p className="mt-2 text-[13px] leading-5 text-[#BBD7EE]">Connect a provider → add a model → configure services → choose an agent mode → explore automation and customization.</p></div>
+              {visibleSections.length === 0 && <div className="rounded-xl border border-white/[0.08] bg-[#1D1D1D] px-5 py-8 text-center text-[13px] text-[#999]">No matching sections. Try a different search.</div>}
+              <div className="space-y-10">{visibleSections.map(({ section, index }) => <section id={`manual-section-${index}`} key={section.title} className="scroll-mt-6 border-b border-white/[0.08] pb-9 last:border-b-0"><div className="flex items-start gap-3"><span className="mt-1 rounded-md bg-[#25384A] px-2 py-1 text-[10px] font-bold tracking-[0.1em] text-[#8CC7FF]">{String(index + 1).padStart(2, '0')}</span><h3 className="text-[20px] font-semibold leading-tight tracking-[-0.02em] text-[#F1F1F1]">{section.title}</h3></div><div className="mt-5 space-y-3">{section.paragraphs.map(paragraph => <p key={paragraph} className="text-[13.5px] leading-6 text-[#B0B0B0]">{paragraph}</p>)}</div>{section.bullets && <div className="mt-5 rounded-xl border border-white/[0.08] bg-[#1C1C1C] p-4"><ul className="space-y-2 text-[13px] leading-5 text-[#C4C4C4]">{section.bullets.map(item => <li key={item} className="flex gap-2.5"><span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-[#5FAFFF]" />{item}</li>)}</ul></div>}{section.subSections && <div className="mt-5 grid gap-3 sm:grid-cols-2">{section.subSections.map(sub => <div key={sub.title} className="rounded-xl border border-white/[0.08] bg-[#1C1C1C] px-4 py-3.5"><div className="text-[13px] font-semibold text-[#F1F1F1]">{sub.title}</div><p className="mt-1.5 text-[12.5px] leading-5 text-[#9F9F9F]">{sub.text}</p></div>)}</div>}</section>)}</div>
+            </div>
+          </main>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+};
+
 const SETTINGS_DROPDOWN_OPEN_EVENT = 'eterx-settings-dropdown-open';
 
 const ModernSelect: React.FC<{
@@ -5556,19 +5618,12 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                           <SectionHeader title="Browser control" />
                           <div className="eterx-browser-service-card mb-5">
                             <div className="eterx-browser-service-card__header">
-                              <div className="flex min-w-0 items-start gap-3">
-                                <div className={`eterx-browser-service-card__status-dot mt-1.5 ${browserRuntimeStatus?.signedBrowser || browserRuntimeStatus?.managedBrowser ? 'is-ready' : 'is-pending'}`} />
-                                <div className="min-w-0">
-                                  <div className="eterx-browser-service-card__eyebrow">Browser runtime</div>
-                                  <div className="eterx-browser-runtime-card__title mt-1 text-[16px] font-semibold text-[#F1F1F1]">{browserRuntimeStatus?.signedBrowser ? 'Signed-in browser connected' : browserRuntimeStatus?.managedBrowser ? 'New isolated browser connected' : 'Choose a browser mode'}</div>
-                                  <div className="eterx-browser-runtime-card__message mt-1 text-[12px] leading-5 text-[#A5A5A5]">{browserRuntimeMessage}</div>
-                                  {browserRuntimeStatus?.signedBrowserAvailable === false && <div className="eterx-browser-runtime-card__warning mt-1 text-[11px] text-amber-300">Signed-in mode is disabled: {browserRuntimeStatus.signedBrowserReason}</div>}
-                                </div>
+                              <div className="min-w-0">
+                                <div className="eterx-browser-runtime-card__title text-[16px] font-semibold text-[#F1F1F1]">{browserRuntimeStatus?.signedBrowser ? 'Signed-in browser connected' : browserRuntimeStatus?.managedBrowser ? 'New isolated browser connected' : 'Choose a browser mode'}</div>
+                                <div className="eterx-browser-runtime-card__message mt-1 text-[12px] leading-5 text-[#A5A5A5]">{browserRuntimeMessage}</div>
+                                {browserRuntimeStatus?.signedBrowserAvailable === false && <div className="eterx-browser-runtime-card__warning mt-1 text-[11px] text-amber-300">Signed-in mode is disabled: {browserRuntimeStatus.signedBrowserReason}</div>}
                               </div>
-                              <div className={`eterx-browser-service-card__state ${browserRuntimeStatus?.signedBrowser || browserRuntimeStatus?.managedBrowser ? 'is-ready' : 'is-pending'}`}>
-                                <span className="eterx-browser-service-card__state-dot" />
-                                {browserRuntimeStatus?.signedBrowser || browserRuntimeStatus?.managedBrowser ? 'Connected' : 'Needs setup'}
-                              </div>
+                              <div className="eterx-browser-service-card__status-text">{browserRuntimeStatus?.signedBrowser || browserRuntimeStatus?.managedBrowser ? 'Connected' : 'Needs setup'}</div>
                             </div>
                             <div className="eterx-browser-service-card__meta">
                               <div><span className="eterx-browser-service-card__meta-label">Platform</span><span className="eterx-browser-service-card__meta-value">{browserRuntimeStatus?.platform || terminalPlatform}</span></div>
@@ -5581,7 +5636,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                               <button type="button" disabled={browserRuntimeBusy} onClick={() => runBrowserRuntimeAction('launch_managed')} className="eterx-browser-runtime-card__button rounded-lg border border-white/[0.10] bg-white/[0.06] px-3 py-2 text-[11px] font-semibold text-[#D8D8D8] transition-colors hover:bg-white/[0.11] disabled:opacity-50">New isolated browser</button>
                               <button type="button" disabled={browserRuntimeBusy} onClick={refreshBrowserRuntimeStatus} className="eterx-browser-runtime-card__button rounded-lg border border-white/[0.10] px-3 py-2 text-[11px] font-semibold text-[#A5A5A5] transition-colors hover:bg-white/[0.08] disabled:opacity-50">Refresh status</button>
                             </div>
-                            <div className="eterx-browser-runtime-card__note mt-3 text-[11px] leading-5 text-[#777]">Signed-in mode uses your existing Chrome, Edge, or Brave profile. If it is already open without control enabled, close it once and retry so EterX can reopen the same profile with browser control.</div>
+                            <div className="eterx-browser-runtime-card__note mt-3 text-[11px] leading-5 text-[#777]">Uses your existing Chrome, Edge, or Brave profile. Close an unmanaged browser before reconnecting.</div>
                           </div>
                           <SettingRow icon={<Globe className="w-4 h-4" />} title="Allow browser control" description="Inspect pages and use signed-in browser sessions.">
                             <Toggle enabled={settings.browserAccess} onChange={v => updateSetting('browserAccess', v)} />
@@ -5930,6 +5985,10 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
             </motion.div>
           </motion.div>
         )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {isOpen && manualOpen && <UserManualOverlay onClose={() => setManualOpen(false)} />}
       </AnimatePresence>
 
       <AnimatePresence>
